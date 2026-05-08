@@ -83,9 +83,7 @@ brew install --cask maddada/tap/zmux
 - T3code sessions support
 - Much more!
 
-## Integrates with Chrome Canary as the dedicated agent browser (instructions below)
-
-Note: Would be really easy to add a browser like cmux does but it would be Safari which I don't like. Let me know if you really need this. 
+## How to use Chrome Canary as the dedicated agent browser
 
 ### MCP setting to make Chrome Canary always used by your agent:
 
@@ -125,12 +123,4 @@ Note: Would be really easy to add a browser like cmux does but it would be Safar
 command = "npx"
 enabled = true
 args = [ "chrome-devtools-mcp@latest", "--auto-connect", "--channel=canary" ]
-```
-
-## Development
-
-```bash
-bun install
-bun start
-bun storybook
 ```
