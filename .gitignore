@@ -27,3 +27,5 @@ native/macos/zmuxHost/zmux.xcodeproj/
 # CDXC:RepoSafety 2026-05-02-00:11: The zmux release-to-brew skill is local
 # agent workflow documentation and must remain available on this machine without
 # appearing in the public GitHub repository tree.
+.idea
+react-doctor.config.json
