@@ -1,8 +1,9 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
 import { CommandConfigModal, type CommandConfigDraft } from "../../sidebar/command-config-modal";
 import { ConfigureActionsModal } from "../../sidebar/configure-actions-modal";
+import { ConfigureAgentsModal } from "../../sidebar/configure-agents-modal";
 import { DaemonSessionsModal } from "../../sidebar/daemon-sessions-modal";
 import { FindPreviousSessionModal } from "../../sidebar/find-previous-session-modal";
 import { HotkeysModal } from "../../sidebar/hotkeys-modal";
@@ -33,6 +34,7 @@ type AppModalKind =
   | "agentConfig"
   | "commandConfig"
   | "configureActions"
+  | "configureAgents"
   | "daemonSessions"
   | "findPreviousSession"
   | "hotkeys"
@@ -63,6 +65,8 @@ type AppModalHostMessage =
       type: "open";
     }
   | { type: "close" }
+  | { details?: string; event: string; type: "debugLog" }
+  | { modal: AppModalKind; type: "presented" }
   | { message: unknown; type: "sidebarState" };
 
 type RenameSessionModalState = {
@@ -141,6 +145,36 @@ function AppModalHost() {
   const settings = useSidebarStore((state) => state.hud.settings);
   const customThemeColor = useSidebarStore((state) => state.hud.customThemeColor);
   const theme = useSidebarStore((state) => state.hud.theme);
+  const isSettingsRenderable = activeModal === "settings" && settings !== undefined;
+  const isActiveModalRenderable = isModalRenderable({
+    activeModal,
+    config,
+    findPreviousSession,
+    firstUserMessage,
+    renameSession,
+    settings,
+    t3BrowserAccess,
+    t3ThreadId,
+  });
+
+  /**
+   * CDXC:AppModals 2026-05-08-09:00
+   * Native should unhide the transparent modal webview only after the requested
+   * modal has enough state to render. This prevents a blank overlay flash while
+   * sidebar state is still syncing into the app-modal host.
+   */
+  useLayoutEffect(() => {
+    if (!activeModal || !isActiveModalRenderable) {
+      return;
+    }
+    postAppModalHostMessage(
+      {
+        modal: activeModal,
+        type: "presented",
+      },
+      "AppModals:presented",
+    );
+  }, [activeModal, isActiveModalRenderable]);
 
   useEffect(() => {
     document.body.dataset.sidebarTheme = theme;
@@ -244,7 +278,7 @@ function AppModalHost() {
       />
       <SettingsModal
         accessibilityPermissionGranted={window.__zmux_NATIVE_HOST__?.accessibilityPermissionGranted}
-        isOpen={activeModal === "settings"}
+        isOpen={isSettingsRenderable}
         onChange={(nextSettings) => {
           vscode.postMessage({
             settings: nextSettings,
@@ -259,6 +293,11 @@ function AppModalHost() {
       />
       <ConfigureActionsModal
         isOpen={activeModal === "configureActions"}
+        onClose={closeModal}
+        vscode={vscode}
+      />
+      <ConfigureAgentsModal
+        isOpen={activeModal === "configureAgents"}
         onClose={closeModal}
         vscode={vscode}
       />
@@ -370,6 +409,18 @@ function useModalStateFromNative() {
         }
 
         if (message.type === "open") {
+          postAppModalHostMessage(
+            {
+              details: JSON.stringify({
+                hasSettings: useSidebarStore.getState().hud.settings !== undefined,
+                modal: message.modal,
+                performanceNow: performance.now(),
+              }),
+              event: "modalHost.open.received",
+              type: "debugLog",
+            },
+            "AppModals:debug",
+          );
           if (message.modal === "renameSession") {
             if (!message.sessionId) {
               throw new Error("Rename modal request is missing sessionId.");
@@ -471,6 +522,14 @@ function useModalStateFromNative() {
         }
 
         if (message.type === "close") {
+          postAppModalHostMessage(
+            {
+              details: JSON.stringify({ performanceNow: performance.now() }),
+              event: "modalHost.close.received",
+              type: "debugLog",
+            },
+            "AppModals:debug",
+          );
           setActiveModal(undefined);
           setConfig({});
           setFindPreviousSession(undefined);
@@ -522,6 +581,55 @@ function createEmptyAgentDraft(): AgentConfigDraft {
     command: "",
     name: "",
   };
+}
+
+function isModalRenderable({
+  activeModal,
+  config,
+  findPreviousSession,
+  firstUserMessage,
+  renameSession,
+  settings,
+  t3BrowserAccess,
+  t3ThreadId,
+}: {
+  activeModal: AppModalKind | undefined;
+  config: ConfigModalState;
+  findPreviousSession: FindPreviousSessionModalState | undefined;
+  firstUserMessage: FirstUserMessageModalState | undefined;
+  renameSession: RenameSessionModalState | undefined;
+  settings: unknown;
+  t3BrowserAccess: T3BrowserAccessMessage | undefined;
+  t3ThreadId: T3ThreadIdModalState | undefined;
+}): boolean {
+  switch (activeModal) {
+    case undefined:
+      return false;
+    case "agentConfig":
+      return config.agentDraft !== undefined;
+    case "commandConfig":
+      return config.commandDraft !== undefined;
+    case "findPreviousSession":
+      return findPreviousSession !== undefined;
+    case "firstUserMessage":
+      return firstUserMessage !== undefined;
+    case "renameSession":
+      return renameSession !== undefined;
+    case "settings":
+      return settings !== undefined;
+    case "t3BrowserAccess":
+      return t3BrowserAccess !== undefined;
+    case "t3ThreadId":
+      return t3ThreadId !== undefined;
+    case "configureActions":
+    case "configureAgents":
+    case "daemonSessions":
+    case "hotkeys":
+    case "pinnedPrompts":
+    case "previousSessions":
+    case "scratchPad":
+      return true;
+  }
 }
 
 function applySidebarStateMessage(message: unknown) {

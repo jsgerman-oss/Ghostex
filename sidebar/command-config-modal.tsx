@@ -1,6 +1,18 @@
-import { IconTrash, IconX } from "@tabler/icons-react";
-import { createPortal } from "react-dom";
+import { IconTrash } from "@tabler/icons-react";
 import { useEffect, useId, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Field, FieldContent, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { DEFAULT_BROWSER_ACTION_URL, type SidebarActionType } from "../shared/sidebar-commands";
 import {
   DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
@@ -36,6 +48,12 @@ export type CommandConfigModalProps = {
   onSave: (draft: CommandConfigDraft) => void;
 };
 
+/**
+ * CDXC:AppModals 2026-05-08-09:00
+ * Reference-mode action configuration uses the shared shadcn dialog stack so
+ * app-modal-host presentation, keyboard closing, and form density match the
+ * agent configuration editor.
+ */
 export function CommandConfigModal({
   draft,
   isOpen,
@@ -56,8 +74,10 @@ export function CommandConfigModal({
   const checkboxId = useId();
   const globalCheckboxId = useId();
   const soundCheckboxId = useId();
-  const descriptionId = useId();
-  const titleId = useId();
+  const actionTypeId = useId();
+  const commandId = useId();
+  const nameId = useId();
+  const urlId = useId();
   const isActionTypeLocked = lockedActionType !== undefined;
 
   useEffect(() => {
@@ -104,10 +124,6 @@ export function CommandConfigModal({
     };
   }, [isOpen, onCancel]);
 
-  if (!isOpen) {
-    return null;
-  }
-
   const targetValue = actionType === "browser" ? url.trim() : command.trim();
   const trimmedName = name.trim();
   const isSaveDisabled =
@@ -117,58 +133,63 @@ export function CommandConfigModal({
       ? "This action opens the URL in a VS Code browser tab. The tab is detected and shown in the Browsers group."
       : "This action opens a new VS Code panel terminal each time it runs.";
 
-  return createPortal(
-    <div className="confirm-modal-root scroll-mask-y" role="presentation">
-      <button className="confirm-modal-backdrop" onClick={onCancel} type="button" />
-      <div
-        aria-describedby={descriptionId}
-        aria-labelledby={titleId}
-        aria-modal="true"
-        className="confirm-modal command-config-modal scroll-mask-y"
-        role="dialog"
-      >
-        <button
-          aria-label="Close action configuration"
-          className="confirm-modal-close-button"
-          onClick={onCancel}
-          type="button"
-        >
-          <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
-        </button>
-        <div className="confirm-modal-header confirm-modal-header-with-close">
-          <div className="confirm-modal-title" id={titleId}>
-            Configure Action
-          </div>
-          <div className="confirm-modal-description" id={descriptionId}>
-            {description}
-          </div>
-        </div>
-        <div className="command-config-fields">
+  return (
+    <Dialog
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onCancel();
+        }
+      }}
+      open={isOpen}
+    >
+      <DialogContent className="zmux-settings-shadcn dark command-config-modal-shadcn">
+        <DialogHeader>
+          <DialogTitle className="text-2xl">Configure action</DialogTitle>
+          <DialogDescription className="text-base">{description}</DialogDescription>
+        </DialogHeader>
+        <FieldGroup className="gap-6">
           {isActionTypeLocked ? null : (
-            <label className="command-config-field">
-              <span className="command-config-label">Type</span>
-              <select
-                className="group-title-input command-config-input"
-                onChange={(event) =>
-                  setActionType(event.currentTarget.value === "browser" ? "browser" : "terminal")
-                }
+            <Field className="gap-2.5">
+              <FieldContent>
+                <FieldTitle>
+                  <FieldLabel className="text-base" htmlFor={actionTypeId}>
+                    Type
+                  </FieldLabel>
+                </FieldTitle>
+              </FieldContent>
+              <Select
+                onValueChange={(value) => setActionType(value === "browser" ? "browser" : "terminal")}
                 value={actionType}
               >
-                <option value="terminal">Terminal</option>
-                <option value="browser">Browser</option>
-              </select>
-            </label>
+                <SelectTrigger className="h-11 w-full px-3 text-base" id={actionTypeId}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="terminal">Terminal</SelectItem>
+                    <SelectItem value="browser">Browser</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </Field>
           )}
-          <label className="command-config-field">
-            <span className="command-config-label">Text</span>
-            <input
+          <Field className="gap-2.5">
+            <FieldContent>
+              <FieldTitle>
+                <FieldLabel className="text-base" htmlFor={nameId}>
+                  Text
+                </FieldLabel>
+              </FieldTitle>
+            </FieldContent>
+            <Input
               autoFocus
-              className="group-title-input command-config-input"
+              className="h-11 px-3 text-base md:text-base"
+              id={nameId}
               onChange={(event) => setName(event.currentTarget.value)}
               placeholder={actionType === "browser" ? "Docs" : "Dev"}
               value={name}
             />
-          </label>
+          </Field>
           <CommandIconPicker
             icon={icon}
             iconColor={iconColor}
@@ -176,71 +197,85 @@ export function CommandConfigModal({
             onIconColorChange={setIconColor}
           />
           {actionType === "browser" ? (
-            <label className="command-config-field">
-              <span className="command-config-label">URL</span>
+            <Field className="gap-2.5">
+              <FieldContent>
+                <FieldTitle>
+                  <FieldLabel className="text-base" htmlFor={urlId}>
+                    URL
+                  </FieldLabel>
+                </FieldTitle>
+              </FieldContent>
               <textarea
-                className="group-title-input command-config-input command-config-textarea"
+                className="command-config-textarea-shadcn"
+                id={urlId}
                 onChange={(event) => setUrl(event.currentTarget.value)}
                 placeholder={DEFAULT_BROWSER_ACTION_URL}
                 rows={3}
                 value={url}
               />
-            </label>
+            </Field>
           ) : (
             <>
-              <label className="command-config-field">
-                <span className="command-config-label">Command</span>
+              <Field className="gap-2.5">
+                <FieldContent>
+                  <FieldTitle>
+                    <FieldLabel className="text-base" htmlFor={commandId}>
+                      Command
+                    </FieldLabel>
+                  </FieldTitle>
+                </FieldContent>
                 <textarea
-                  className="group-title-input command-config-input command-config-textarea"
+                  className="command-config-textarea-shadcn"
+                  id={commandId}
                   onChange={(event) => setCommand(event.currentTarget.value)}
                   placeholder="vp dev"
                   rows={3}
                   value={command}
                 />
-              </label>
-              <label className="command-config-toggle" htmlFor={checkboxId}>
-                <input
+              </Field>
+              <Field className="items-center justify-between" orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel className="text-base" htmlFor={checkboxId}>
+                    Close terminal after the command finishes
+                  </FieldLabel>
+                </FieldContent>
+                <Switch
                   checked={closeTerminalOnExit}
-                  className="command-config-checkbox"
                   id={checkboxId}
-                  onChange={(event) => setCloseTerminalOnExit(event.currentTarget.checked)}
-                  type="checkbox"
+                  onCheckedChange={setCloseTerminalOnExit}
                 />
-                <span className="command-config-toggle-copy">
-                  Close terminal after the command finishes
-                </span>
-              </label>
-              <label className="command-config-toggle" htmlFor={soundCheckboxId}>
-                <input
+              </Field>
+              <Field className="items-center justify-between" orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel className="text-base" htmlFor={soundCheckboxId}>
+                    Play completion sound
+                  </FieldLabel>
+                </FieldContent>
+                <Switch
                   checked={playCompletionSound}
-                  className="command-config-checkbox"
                   id={soundCheckboxId}
-                  onChange={(event) => setPlayCompletionSound(event.currentTarget.checked)}
-                  type="checkbox"
+                  onCheckedChange={setPlayCompletionSound}
                 />
-                <span className="command-config-toggle-copy">
-                  Play the configured action completion sound when the command finishes
-                </span>
-              </label>
+              </Field>
             </>
           )}
-          <label className="command-config-toggle" htmlFor={globalCheckboxId}>
-            <input
+          <Field className="items-center justify-between" orientation="horizontal">
+            <FieldContent>
+              <FieldLabel className="text-base" htmlFor={globalCheckboxId}>
+                Show this action in every zmux project
+              </FieldLabel>
+            </FieldContent>
+            <Switch
               checked={isGlobal}
-              className="command-config-checkbox"
               id={globalCheckboxId}
-              onChange={(event) => setIsGlobal(event.currentTarget.checked)}
-              type="checkbox"
+              onCheckedChange={setIsGlobal}
             />
-            <span className="command-config-toggle-copy">
-              Show this action in every zmux project
-            </span>
-          </label>
-        </div>
-        <div className="confirm-modal-actions command-config-actions">
+          </Field>
+        </FieldGroup>
+        <DialogFooter>
           {onDelete && draft.commandId ? (
-            <button
-              className="secondary confirm-modal-button command-config-delete-button"
+            <Button
+              className="mr-auto"
               onClick={() =>
                 onDelete({
                   actionType,
@@ -256,16 +291,16 @@ export function CommandConfigModal({
                 })
               }
               type="button"
+              variant="destructive"
             >
-              <IconTrash aria-hidden="true" size={15} stroke={1.8} />
+              <IconTrash aria-hidden="true" data-icon="inline-start" />
               Delete
-            </button>
+            </Button>
           ) : null}
-          <button className="secondary confirm-modal-button" onClick={onCancel} type="button">
+          <Button onClick={onCancel} type="button" variant="outline">
             Cancel
-          </button>
-          <button
-            className="primary confirm-modal-button"
+          </Button>
+          <Button
             disabled={isSaveDisabled}
             onClick={() =>
               onSave({
@@ -284,10 +319,9 @@ export function CommandConfigModal({
             type="button"
           >
             Save
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

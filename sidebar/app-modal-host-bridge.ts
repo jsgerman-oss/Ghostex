@@ -10,6 +10,7 @@ export type AppModalKind =
   | "agentConfig"
   | "commandConfig"
   | "configureActions"
+  | "configureAgents"
   | "daemonSessions"
   | "findPreviousSession"
   | "hotkeys"

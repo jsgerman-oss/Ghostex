@@ -37,6 +37,21 @@
   background: rgb(0 0 0 / 10%);
 }
 
+/**
+ * CDXC:AppModals 2026-05-08-06:18
+ * Native opens the full-window WKWebView as a presentation layer. Let AppKit
+ * perform the reveal and keep React dialogs at their final visual state so
+ * Settings does not flash through Radix's initial opacity/zoom animation.
+ */
+.app-modal-host-body [data-slot="dialog-overlay"],
+.app-modal-host-body [data-slot="dialog-content"],
+.app-modal-host-body .confirm-modal-root,
+.app-modal-host-body .confirm-modal-backdrop,
+.app-modal-host-body .confirm-modal {
+  animation: none !important;
+  opacity: 1 !important;
+}
+
 .confirm-modal-backdrop {
   background: color-mix(in srgb, #05070a 68%, transparent);
   border: 0;
@@ -172,6 +187,12 @@
   overflow: auto;
 }
 
+.configure-agents-footer {
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
 .configure-actions-list-item {
   align-items: center;
   background: color-mix(in srgb, var(--app-card-active) 68%, transparent);
@@ -185,6 +206,54 @@
   padding: 8px 10px;
   text-align: left;
   width: 100%;
+}
+
+.configure-agents-list-item {
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  padding: 8px 10px;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    opacity 160ms ease;
+}
+
+.configure-agents-list-item[data-dragging="true"] {
+  opacity: 0.64;
+}
+
+.configure-agents-row-grip {
+  align-items: center;
+  color: color-mix(in srgb, var(--app-muted) 78%, var(--app-foreground) 22%);
+  cursor: grab;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.configure-agents-row-main {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.configure-agents-row-actions {
+  display: inline-flex;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.configure-agents-list-item:hover .configure-agents-row-actions,
+.configure-agents-list-item:focus-within .configure-agents-row-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .configure-actions-list-item:hover,
@@ -203,6 +272,18 @@
   height: 28px;
   justify-content: center;
   width: 28px;
+}
+
+.configure-agents-list-agent-icon {
+  display: block;
+  height: 16px;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  width: 16px;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
 }
 
 .configure-actions-list-copy {
@@ -1125,6 +1206,91 @@
 .command-config-textarea {
   min-height: 88px;
   resize: vertical;
+}
+
+.command-config-modal-shadcn {
+  color-scheme: dark;
+  font-family: var(--app-font-family, var(--vscode-font-family, ui-sans-serif, system-ui));
+  font-size: 16px;
+  max-height: min(720px, calc(100vh - 2rem));
+  overflow: auto;
+  width: min(560px, calc(100vw - 2rem));
+}
+
+.command-config-modal-shadcn [data-slot="dialog-title"] {
+  font-family: inherit;
+  font-weight: 800;
+}
+
+.command-config-modal-shadcn [data-slot="field-label"],
+.command-config-modal-shadcn .command-config-label {
+  color: var(--foreground);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.command-config-modal-shadcn [data-slot="dialog-description"] {
+  line-height: 1.55;
+}
+
+.command-config-modal-shadcn [data-slot="button"],
+.command-config-modal-shadcn [data-slot="input"],
+.command-config-modal-shadcn [data-slot="select-trigger"],
+.command-config-modal-shadcn .command-config-textarea-shadcn,
+.command-config-modal-shadcn .command-icon-picker-trigger,
+.command-config-modal-shadcn .command-icon-color-text,
+.command-config-modal-shadcn .command-icon-picker-search {
+  font-family: inherit;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.command-config-textarea-shadcn {
+  background: color-mix(in srgb, var(--input) 30%, transparent);
+  border: 1px solid var(--input);
+  border-radius: 18px;
+  color: var(--foreground);
+  line-height: 1.45;
+  min-height: 112px;
+  outline: none;
+  padding: 10px 12px;
+  resize: vertical;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+  width: 100%;
+}
+
+.command-config-textarea-shadcn::placeholder {
+  color: var(--muted-foreground);
+}
+
+.command-config-textarea-shadcn:focus-visible {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent);
+}
+
+.command-config-modal-shadcn .command-icon-picker-fields {
+  gap: 18px;
+}
+
+.command-config-modal-shadcn .command-icon-picker-trigger {
+  background: color-mix(in srgb, var(--input) 30%, transparent);
+  border: 1px solid var(--input);
+  border-radius: 18px;
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.command-config-modal-shadcn .command-icon-picker-search,
+.command-config-modal-shadcn .command-icon-color-text {
+  background: color-mix(in srgb, var(--input) 30%, transparent);
+  border: 1px solid var(--input);
+  border-radius: 18px;
+  min-height: 44px;
+  padding: 0 12px;
 }
 
 .git-commit-modal-textarea {

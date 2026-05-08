@@ -1,6 +1,16 @@
-import { IconX } from "@tabler/icons-react";
-import { createPortal } from "react-dom";
 import { useEffect, useId, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Field, FieldContent, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   DEFAULT_SIDEBAR_AGENTS,
   getDefaultSidebarAgentByIcon,
@@ -21,12 +31,19 @@ export type AgentConfigModalProps = {
   onSave: (draft: AgentConfigDraft) => void;
 };
 
+/**
+ * CDXC:AppModals 2026-05-08-09:00
+ * Reference-mode agent configuration uses the shared shadcn dialog stack so
+ * native and web modal hosts render consistent focus management, sizing, and
+ * close behavior.
+ */
 export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfigModalProps) {
   const [command, setCommand] = useState(draft.command);
   const [icon, setIcon] = useState<SidebarAgentIcon | "custom">(draft.icon ?? "custom");
   const [name, setName] = useState(draft.name);
-  const descriptionId = useId();
-  const titleId = useId();
+  const agentTypeId = useId();
+  const commandId = useId();
+  const nameId = useId();
 
   useEffect(() => {
     if (!isOpen) {
@@ -55,45 +72,36 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
     };
   }, [isOpen, onCancel]);
 
-  if (!isOpen) {
-    return null;
-  }
-
   const isSaveDisabled = name.trim().length === 0 || command.trim().length === 0;
 
-  return createPortal(
-    <div className="confirm-modal-root scroll-mask-y" role="presentation">
-      <button className="confirm-modal-backdrop" onClick={onCancel} type="button" />
-      <div
-        aria-describedby={descriptionId}
-        aria-labelledby={titleId}
-        aria-modal="true"
-        className="confirm-modal command-config-modal scroll-mask-y"
-        role="dialog"
-      >
-        <button
-          aria-label="Close agent configuration"
-          className="confirm-modal-close-button"
-          onClick={onCancel}
-          type="button"
-        >
-          <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
-        </button>
-        <div className="confirm-modal-header confirm-modal-header-with-close">
-          <div className="confirm-modal-title" id={titleId}>
-            Configure agent
-          </div>
-          <div className="confirm-modal-description" id={descriptionId}>
+  return (
+    <Dialog
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onCancel();
+        }
+      }}
+      open={isOpen}
+    >
+      <DialogContent className="zmux-settings-shadcn dark command-config-modal-shadcn">
+        <DialogHeader>
+          <DialogTitle className="text-2xl">Configure agent</DialogTitle>
+          <DialogDescription className="text-base">
             Launches a new zmux session and runs this agent command in it.
-          </div>
-        </div>
-        <div className="command-config-fields">
-          <label className="command-config-field">
-            <span className="command-config-label">Agent Type</span>
-            <select
-              className="group-title-input command-config-input"
-              onChange={(event) => {
-                const nextType = event.currentTarget.value as SidebarAgentIcon | "custom";
+          </DialogDescription>
+        </DialogHeader>
+        <FieldGroup className="gap-6">
+          <Field className="gap-2.5">
+            <FieldContent>
+              <FieldTitle>
+                <FieldLabel className="text-base" htmlFor={agentTypeId}>
+                  Agent type
+                </FieldLabel>
+              </FieldTitle>
+            </FieldContent>
+            <Select
+              onValueChange={(value) => {
+                const nextType = value as SidebarAgentIcon | "custom";
                 const previousDefaultAgent = getDefaultSidebarAgentByIcon(
                   icon === "custom" ? undefined : icon,
                 );
@@ -129,41 +137,61 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
               }}
               value={icon}
             >
-              <option value="custom">Custom</option>
-              {DEFAULT_SIDEBAR_AGENTS.map((agent) => (
-                <option key={agent.agentId} value={agent.icon}>
-                  {agent.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="command-config-field">
-            <span className="command-config-label">Name</span>
-            <input
+              <SelectTrigger className="h-11 w-full px-3 text-base" id={agentTypeId}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="custom">Custom</SelectItem>
+                  {DEFAULT_SIDEBAR_AGENTS.map((agent) => (
+                    <SelectItem key={agent.agentId} value={agent.icon}>
+                      {agent.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field className="gap-2.5">
+            <FieldContent>
+              <FieldTitle>
+                <FieldLabel className="text-base" htmlFor={nameId}>
+                  Name
+                </FieldLabel>
+              </FieldTitle>
+            </FieldContent>
+            <Input
               autoFocus
-              className="group-title-input command-config-input"
+              className="h-11 px-3 text-base md:text-base"
+              id={nameId}
               onChange={(event) => setName(event.currentTarget.value)}
               placeholder="Codex"
               value={name}
             />
-          </label>
-          <label className="command-config-field">
-            <span className="command-config-label">Command</span>
+          </Field>
+          <Field className="gap-2.5">
+            <FieldContent>
+              <FieldTitle>
+                <FieldLabel className="text-base" htmlFor={commandId}>
+                  Command
+                </FieldLabel>
+              </FieldTitle>
+            </FieldContent>
             <textarea
-              className="group-title-input command-config-input command-config-textarea"
+              className="command-config-textarea-shadcn"
+              id={commandId}
               onChange={(event) => setCommand(event.currentTarget.value)}
               placeholder="codex"
               rows={3}
               value={command}
             />
-          </label>
-        </div>
-        <div className="confirm-modal-actions">
-          <button className="secondary confirm-modal-button" onClick={onCancel} type="button">
+          </Field>
+        </FieldGroup>
+        <DialogFooter>
+          <Button onClick={onCancel} type="button" variant="outline">
             Cancel
-          </button>
-          <button
-            className="primary confirm-modal-button"
+          </Button>
+          <Button
             disabled={isSaveDisabled}
             onClick={() =>
               onSave({
@@ -176,10 +204,9 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
             type="button"
           >
             Save
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
