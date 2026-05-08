@@ -1,6 +1,8 @@
 # ZMUX - Native Ghostty Fork with an IDE Integrated Agents Manager
 
-<img width="1295" height="953" alt="image" src="https://github.com/user-attachments/assets/7ed8791d-eae2-4951-a417-27f4b217eb9e" />
+<!-- CDXC:ReadmeUX 2026-05-08-15:54 README presents one unified workspace experience only: new screenshots show the simplified Codex-familiar sidebar, and legacy workspace-layout references are intentionally omitted. -->
+
+<img width="1295" alt="ZMUX simplified sidebar with agent sessions" src="media/readme/zmux-simplified-sidebar.png" />
 
 ## Install (macOS only for now. Need help with Windows/Linux ports)
 
@@ -13,15 +15,10 @@ brew install --cask maddada/tap/zmux
 - Auto naming Codex/Claude/Gemini/Copilot terminal sessions (more soon).
 - Auto sync of the terminal title and status with UI.
 - Show status indicators for running/done.
-- Allows up to 3x3 split and multiple groups per project each with different split
+- Allows up to 3x3 split and multiple groups per project each with different split.
+- A simplified sidebar that feels familiar if you are coming from the Codex app: New chat, Plugins, Actions, Search, Chats, Projects, Recent Projects, and Settings stay in predictable places.
 
-## Combined Mode (default, all projects in 1 sidebar):
-
-<img width="3456" height="2234" alt="2026-05-06_zmux_01-50-19@2x" src="https://github.com/user-attachments/assets/4e9b06f4-a1d8-4f43-b77e-95c32f7ab566" />
-
-## Separated Mode (each workspace is separate tab):
-
-<img width="1000" src="https://github.com/user-attachments/assets/61d2cdf4-dcaf-409a-a292-477e0f78baf5" />
+<img width="1000" alt="ZMUX sidebar with terminal and browser panes" src="media/readme/zmux-browser-pane.png" />
 
 ## Shows a button on the attached IDE to show zmux.
 
@@ -30,16 +27,14 @@ brew install --cask maddada/tap/zmux
 - Hotkey to hide/show.
 - Click on your IDE to hide zmux
 
-<img width="1000" src="https://github.com/user-attachments/assets/e68f9cce-897b-4cc4-97fa-7d229fb62899" />
-
 ## Best features:
 
 - Native Sparkle updates for macOS releases.
 - `zmux sessions`, `zmux attach`, `zmux kill`, `zmux sleep`, `zmux wake`, and `zmux focus` manage live terminal sessions from a shell.
-- Reference-style Combined sidebar layout with refined project groups, search, scroll glow, modal, and session-card styling.
+- Simplified Codex-style sidebar layout with refined project groups, search, scroll glow, modal, and session-card styling.
 - Pi is available as a supported agent with matching sidebar iconography.
 - Native T3 Code panes with managed runtime bootstrap, authenticated thread routing, and remote/browser access links.
-- Optional Browser Panes mode opens browser actions as workspace panes with address navigation, reload, DevTools, React Grab, profiles, and favicon-backed sidebar cards.
+- Browser panes open browser actions as workspace panes with address navigation, reload, DevTools, React Grab, profiles, and favicon-backed sidebar cards.
 - Embedded code-server editor panes open project-scoped code surfaces with diff stats and native CEF hosting.
 - Embedded editor panes preserve VS Code workbench layout across app restarts through persistent Chromium storage.
 - Embedded editor panes keep VS Code sidebar and panel drag/drop targets responsive while moving views inside code-server.
@@ -54,14 +49,13 @@ brew install --cask maddada/tap/zmux
 - Native floating status indicators show running, attention, and available session counts with click-to-focus routing and selectable size.
 - Native editor panes keep resize, accessibility-permission, and T3 diagnostics routed through native controls.
 - Main window size, position, and display restore across launches, including IDE-attached sessions.
-- Combined sidebar mode shows one project group per project across all projects, with Separated mode still available.
-- Recent Projects keeps closed or empty combined-mode projects available with fuzzy project/path search.
+- The sidebar shows one project group per project, with fuzzy project/path search for Recent Projects.
 - Previous Sessions can restore archived terminal sessions with agent identity, first-message metadata, title provenance, favorites, and resume inputs.
 - Persistent terminal session providers preserve terminal restore metadata across app restarts.
 - Workspace theme menus can set preset themes or custom colors that tint the dock, project headers, and active workspace sidebar surfaces.
-- Empty Combined-mode project and Chats groups auto-collapse while empty and expand when sessions appear.
-- Sparse Combined sidebars stay pinned instead of rubber-banding when collapsed project lists fit the viewport.
-- Combined-mode Chats grouping keeps its synthetic group marker through sidebar store normalization.
+- Empty project and Chats groups auto-collapse while empty and expand when sessions appear.
+- Sparse sidebars stay pinned instead of rubber-banding when collapsed project lists fit the viewport.
+- Chats grouping keeps its synthetic group marker through sidebar store normalization.
 - Project context menus can set project theme, copy path, open in Finder, open in a specific IDE, or close a project into Recent Projects.
 - Native draggable workspace pane resizing for Ghostty and web panes.
 - Native pane header drag-to-reorder across terminal, T3, and browser panes.
@@ -73,15 +67,13 @@ brew install --cask maddada/tap/zmux
 - Embedded Ghostty terminals strip inherited color-disabling environment keys so agent CLIs keep color output.
 - Agent launch diagnostics record inherited color-related environment values for debugging monochrome CLI sessions.
 - Workspace dock highlights the active project and dims inactive project icons.
-- Rich text mode pop up (ctrl+g) <- in testing
+- Rich text popup (ctrl+g) <- in testing
 - T3code sessions support <- in testing
 - Much more!
 
 ## Integrates with Chrome Canary as the dedicated agent browser (instructions below)
 
 Note: Would be really easy to add a browser like cmux does but it would be Safari which I don't like. Let me know if you really need this. 
-
-<img width="1000" src="https://github.com/user-attachments/assets/77f8cd07-e3fc-4c3f-9006-18c1835ff36f" />
 
 ### MCP setting to make Chrome Canary always used by your agent:
 
