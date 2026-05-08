@@ -111,6 +111,12 @@ targets:
       - path: Web
         buildPhase: resources
         type: folder
+      # CDXC:Branding 2026-05-08-18:04: The installed macOS app must use the
+      # same app icon as agent-manager-x. Bundle its AppIcon asset catalog here
+      # so Finder, Dock, app switcher, and signed release builds all resolve the
+      # compiled icon from Xcode instead of falling back to a generic app icon.
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
     dependencies:
       - framework: ${GHOSTTY_ROOT}/macos/GhosttyKit.xcframework
         embed: false
@@ -118,7 +124,7 @@ targets:
         product: Sparkle
     settings:
       base:
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # CDXC:Branding 2026-04-26-04:18: The native app must be named
         # "zmux" everywhere users see it, including the .app bundle,
         # process/executable, menu title, and window title.
