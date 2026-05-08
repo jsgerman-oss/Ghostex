@@ -1,28 +1,31 @@
 ## Ghostty + Codex App + Built-in Browser = ZMUX!<br />
 ### Fully-featured Native Agent CLIs Manager<br />Embedded Browser | Advanced Agents Support | Fast & Lower RAM <br /><br />
 
-## Install (macOS only for now. Need help with testing for Windows/Linux ports)
+#### Install on macOS
 
 ```bash
 brew install --cask maddada/tap/zmux
 ```
 
+Need help with testing for Windows/Linux ports)
+
+### Work with tens of agents in multiple projects easily:
+
 <img width="1295" alt="ZMUX simplified sidebar with agent sessions" src="media/readme/zmux-simplified-sidebar.png" />
 
+<br />
 
-## Includes Chromium based embedded browser with Devtools, profiles, and MCP access:
+### Includes Chromium based embedded browser with Devtools, profiles, and MCP access:
 
 <img width="1000" alt="ZMUX sidebar with terminal and browser panes" src="media/readme/zmux-browser-pane.png" />
 
+<br />
 
-
----
-
-## Includes embedded VSCode for editing files, checking PRs, and working with git<br />(loaded on demand)
+### Includes embedded VSCode for editing files, checking PRs, and working with git<br />(loaded on demand)
 
 <img width="3327" height="2065" alt="2026-05-08_CleanShot_18-38-12@2x" src="https://github.com/user-attachments/assets/f1cc7d00-7098-44fe-bc29-590ae03ea8e9" />
 
----
+<br />
 
 ## Best features:
 
