@@ -1,4 +1,4 @@
-# ZMUX - Ghostty + Codex app = zmux! Native Agent CLIs manager for macOS. Embedded browser. Strong agents support.
+# Ghostty + Codex app = ZMUX! Native Agent CLIs manager for macOS. Embedded browser. Strong agents support.
 
 <!-- CDXC:ReadmeUX 2026-05-08-15:54 README presents one unified workspace experience only: new screenshots show the simplified Codex-familiar sidebar, and legacy workspace-layout references are intentionally omitted. -->
 
