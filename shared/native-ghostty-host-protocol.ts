@@ -111,6 +111,13 @@ export type NativeGhosttyHostCommand =
       backgroundColor?: string;
       focusRequestId?: number;
       focusedSessionId?: string;
+      /**
+       * CDXC:NativeGpu 2026-05-08-16:45
+       * Sidebar status/title/icon updates must still reach native pane chrome,
+       * but they must not be treated as geometry changes. This flag lets the
+       * native host skip AppKit surface relayout when only metadata changed.
+       */
+      layoutChanged?: boolean;
       layout?: NativeTerminalLayout;
       paneGap?: number;
       sessionActivities?: Record<string, "attention" | "working">;

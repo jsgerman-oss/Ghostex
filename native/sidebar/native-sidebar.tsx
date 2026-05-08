@@ -27,7 +27,7 @@ import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "../../sidebar/agent-logos";
 import { TOOLTIP_DELAY_MS } from "../../sidebar/tooltip-delay";
 import {
   explainFirstPromptAutoRenameDecision,
-  isGenericAgentSessionTitle,
+  getCurrentTitleForFirstPromptAutoRename,
   resolveFirstPromptAutoRenameStrategy,
   type FirstPromptAutoRenameStrategy,
 } from "../../shared/first-prompt-session-title";
@@ -256,6 +256,12 @@ type NativeHostCommand =
       activeProjectEditorId?: string;
       focusRequestId?: number;
       focusedSessionId?: string;
+      /**
+       * CDXC:NativeGpu 2026-05-08-16:45
+       * Metadata-only native syncs update pane chrome without forcing AppKit
+       * to reframe terminal/browser surfaces.
+       */
+      layoutChanged?: boolean;
       layout?: NativeTerminalLayout;
       paneGap?: number;
       sessionAgentIconDataUrls?: Record<string, string>;
@@ -653,6 +659,8 @@ const PROJECT_DIFF_UNTRACKED_WC_CHUNK_SIZE = 100;
 const projectDiffStatsByProjectId = new Map<string, SidebarProjectDiffStats>();
 const pendingProjectDiffRefreshProjectIds = new Set<string>();
 let lastNativeLayoutSyncKey: string | undefined;
+let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
+let lastPersistedProjectsPayloadJson: string | undefined;
 const projectEditorSleepTimeoutByProjectId = new Map<string, number>();
 const projectEditorSurfaceByProjectId = new Map<
   string,
@@ -1007,6 +1015,9 @@ function appendSessionTitleDebugLog(event: string, details?: unknown): void {
   if (!isNativeSidebarDebugLoggingEnabled()) {
     return;
   }
+  if (!shouldPersistNativeSidebarDiagnostic(event)) {
+    return;
+  }
   postNative({
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event,
@@ -1031,12 +1042,16 @@ function appendSessionTitleGenerationErrorLog(event: string, details?: unknown):
 
 function appendAgentDetectionDebugLog(event: string, details?: unknown): void {
   /**
-   * CDXC:AgentDetection 2026-04-29-09:16
-   * Non-error native sidebar diagnostics must follow the settings debug switch,
-   * and high-frequency title/projection traces are intentionally not emitted so
-   * spinner-driven status updates do not create multi-GB log files.
+   * CDXC:AgentDetection 2026-05-08-16:41
+   * Native diagnostics should preserve actionable failures, not routine
+   * activity/title/projection churn. Keep normal debug logs behind the settings
+   * switch and drop non-error events before they cross the WebKit bridge so
+   * long-running sidebar sessions cannot create multi-GB app logs.
    */
   if (!isNativeSidebarDebugLoggingEnabled()) {
+    return;
+  }
+  if (!shouldPersistNativeSidebarDiagnostic(event)) {
     return;
   }
   postNative({
@@ -1048,12 +1063,15 @@ function appendAgentDetectionDebugLog(event: string, details?: unknown): void {
 
 function appendTerminalFocusDebugLog(event: string, details?: unknown): void {
   /**
-   * CDXC:NativeTerminalFocus 2026-04-29-09:16
-   * Native sidebar actions can focus terminals directly or indirectly through
-   * layout sync. Mirror those actions into the focus-only log so split-terminal
-   * focus jumps can be traced only when debugging mode is enabled.
+   * CDXC:NativeTerminalFocus 2026-05-08-16:41
+   * Focus diagnostics are useful only around failures or unusual boundaries.
+   * Routine key, focus, and layout events are too frequent for persistent logs,
+   * so only important diagnostic events are posted to native.
    */
   if (!isNativeSidebarDebugLoggingEnabled()) {
+    return;
+  }
+  if (!shouldPersistNativeSidebarDiagnostic(event)) {
     return;
   }
   window.webkit?.messageHandlers?.zmuxNativeHost?.postMessage({
@@ -1105,6 +1123,9 @@ function appendRestoreDebugLog(event: string, details?: unknown): void {
   if (!isNativeSidebarDebugLoggingEnabled()) {
     return;
   }
+  if (!shouldPersistNativeSidebarDiagnostic(event)) {
+    return;
+  }
   postNative({
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event,
@@ -1116,11 +1137,29 @@ function appendWorkspaceDockIndicatorDebugLog(event: string, details?: unknown):
   if (!isNativeSidebarDebugLoggingEnabled()) {
     return;
   }
+  if (!shouldPersistNativeSidebarDiagnostic(event)) {
+    return;
+  }
   postNative({
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event,
     type: "appendWorkspaceDockIndicatorDebugLog",
   });
+}
+
+function shouldPersistNativeSidebarDiagnostic(event: string): boolean {
+  const normalizedEvent = event.toLowerCase();
+  return (
+    normalizedEvent.includes("fail") ||
+    normalizedEvent.includes("error") ||
+    normalizedEvent.includes("invalid") ||
+    normalizedEvent.includes("missing") ||
+    normalizedEvent.includes("timeout") ||
+    normalizedEvent.includes("exhausted") ||
+    normalizedEvent.includes("crash") ||
+    normalizedEvent.includes("unhealthy") ||
+    normalizedEvent.includes("portbusy")
+  );
 }
 
 function isNativeSidebarDebugLoggingEnabled(): boolean {
@@ -2012,18 +2051,14 @@ function normalizeStartupTerminalSleepState(
 function writeStoredProjects(reason: string): void {
   persistSharedProjectsSnapshot(activeProjectId, projects);
   /**
-   * CDXC:WorkspaceRestore 2026-04-26-10:00
-   * CDXC:DevAppFlavor 2026-04-28-02:01
+   * CDXC:WorkspaceRestore 2026-05-08-16:41
    * zmux-dev and default zmux must share workspace/session state. Persist the
-   * canonical project snapshot to the native shared state file and mirror it to
-   * localStorage only as a same-webview cache.
+   * canonical project snapshot to the native shared state file, but do not log
+   * successful writes. Workspace snapshots contain the full project/session tree
+   * and can be rewritten often during normal session activity; only persistence
+   * failures should create durable diagnostics.
    */
-  appendRestoreDebugLog("nativeSidebar.projects.persist", {
-    activeProjectId,
-    projectCount: projects.length,
-    projects: projects.map(summarizeNativeProject),
-    reason,
-  });
+  void reason;
 }
 
 function persistSharedProjectsSnapshot(
@@ -2034,7 +2069,28 @@ function persistSharedProjectsSnapshot(
     activeProjectId: nextActiveProjectId,
     projects: nextProjects,
   });
+  /**
+   * CDXC:NativeGpu 2026-05-08-16:45
+   * Re-persisting an identical project tree wakes the native bridge and
+   * rewrites native-sidebar-projects.json without changing user state.
+   * Suppress byte-identical snapshots here so idle status/layout publishes
+   * cannot keep WindowServer and filesystem work active.
+   */
+  const sharedProjectsJson = window.__zmux_NATIVE_HOST__?.sharedSidebarStorage?.projects;
+  const localProjectsJson = localStorage.getItem(PROJECTS_STORAGE_KEY);
+  if (payloadJson === sharedProjectsJson) {
+    if (payloadJson !== localProjectsJson) {
+      localStorage.setItem(PROJECTS_STORAGE_KEY, payloadJson);
+    }
+    lastPersistedProjectsPayloadJson = payloadJson;
+    return;
+  }
+  if (payloadJson === lastPersistedProjectsPayloadJson && payloadJson === localProjectsJson) {
+    lastPersistedProjectsPayloadJson = payloadJson;
+    return;
+  }
   localStorage.setItem(PROJECTS_STORAGE_KEY, payloadJson);
+  lastPersistedProjectsPayloadJson = payloadJson;
   postNative({ key: "projects", payloadJson, type: "persistSharedSidebarStorage" });
 }
 
@@ -4926,12 +4982,28 @@ function canRestoreNativeTerminalSession(session: TerminalSessionRecord): boolea
 function getNativeTerminalTitleBarActions(
   session: TerminalSessionRecord,
 ): NativeTerminalTitleBarAction[] {
-  return canRestoreNativeTerminalSession(session)
+  return shouldShowNativeTerminalTitleBarRestoreActions(session)
     ? ["rename", "fork", "reload", "sleep", "close"]
     : ["rename", "sleep", "close"];
 }
 
 type NativeResumeAgentId = "claude" | "codex" | "copilot" | "gemini" | "opencode" | "pi";
+
+function shouldShowNativeTerminalTitleBarRestoreActions(session: TerminalSessionRecord): boolean {
+  const agentId = resolveNativeResumeAgentId(session.agentName);
+  /**
+   * CDXC:CodexAgent 2026-05-08-16:18
+   * Codex cards already expose one-click Fork and Full reload from the sidebar
+   * context menu. Show the same actions in the native pane title bar even when
+   * title trust is still catching up; the action handlers still validate the
+   * actual resumable identity before recreating the terminal.
+   */
+  if (agentId === "codex") {
+    return Boolean(resolveNativeAgentCommand(agentId));
+  }
+
+  return canRestoreNativeTerminalSession(session);
+}
 
 function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string | undefined {
   const agentId = resolveNativeResumeAgentId(session.agentName);
@@ -5019,6 +5091,50 @@ function buildNativeCopyResumeCommand(
   }
 }
 
+function buildNativeCodexForkCommand(session: TerminalSessionRecord): string | undefined {
+  const agentCommand = resolveNativeAgentCommand("codex");
+  const resumeTitle = getNativeTrustedResumeTitle(session);
+  if (!agentCommand || !resumeTitle) {
+    return undefined;
+  }
+
+  /**
+   * CDXC:CodexAgent 2026-05-08-16:22
+   * Codex title-bar Fork must launch `codex fork <session-id>` instead of a
+   * blank terminal. The CLI fork subcommand accepts UUIDs, while zmux's stored
+   * Codex identity is the trusted thread title used for resume, so resolve the
+   * latest matching thread name from Codex session indexes at launch time.
+   */
+  const lookupCommand = [
+    "CODEX_FORK_SESSION_ID=\"$(",
+    `/usr/bin/python3 -c ${quoteNativeShellArg(getNativeCodexSessionIdLookupScript())} ${quoteNativeShellArg(resumeTitle)}`,
+    ")\"",
+    "&&",
+    "test -n \"$CODEX_FORK_SESSION_ID\"",
+    "&&",
+    `${agentCommand} fork "$CODEX_FORK_SESSION_ID"`,
+    "||",
+    `printf '%s\\n' ${quoteNativeShellArg(`Unable to find Codex session id for "${resumeTitle}".`)}`,
+  ].join(" ");
+  return lookupCommand;
+}
+
+function buildNativeClaudeForkCommand(session: TerminalSessionRecord): string | undefined {
+  const agentCommand = resolveNativeAgentCommand("claude");
+  const resumeTitle = getNativeTrustedResumeTitle(session);
+  if (!agentCommand || !resumeTitle) {
+    return undefined;
+  }
+
+  /**
+   * CDXC:ClaudeAgent 2026-05-08-16:25
+   * Claude Code exposes forking as `--fork-session` on a resumed conversation.
+   * Use that real CLI path for native Fork actions instead of opening an empty
+   * pane, matching Claude's documented resume/fork semantics.
+   */
+  return `${agentCommand} --resume ${quoteNativeShellArg(resumeTitle)} --fork-session`;
+}
+
 function getNativePiSessionReference(session: TerminalSessionRecord): string | undefined {
   return session.agentSessionPath?.trim() || session.agentSessionId?.trim() || undefined;
 }
@@ -5033,6 +5149,60 @@ function buildNativePiForkCommand(session: TerminalSessionRecord): string | unde
 
 function buildNativeOpenCodeResumeCommand(agentCommand: string, resumeTitle: string): string {
   return `${agentCommand} -s "$(${agentCommand} session list --format json | /usr/bin/python3 -c ${quoteNativeShellArg(getNativeOpenCodeSessionLookupScript())} ${quoteNativeShellArg(resumeTitle)})"`;
+}
+
+function getNativeCodexSessionIdLookupScript(): string {
+  return `import json
+import os
+import pathlib
+import sys
+
+title = sys.argv[1].strip()
+if not title:
+    sys.exit(1)
+
+home = pathlib.Path.home()
+candidate_homes = []
+for value in [os.environ.get("CODEX_HOME")]:
+    if value:
+        candidate_homes.append(pathlib.Path(value).expanduser())
+for value in [
+    home / ".codex-profiles" / "personal",
+    home / ".codex-profiles" / "work",
+    home / ".codex",
+]:
+    candidate_homes.append(value)
+
+seen = set()
+matches = []
+for codex_home in candidate_homes:
+    codex_home = codex_home.resolve() if codex_home.exists() else codex_home
+    if str(codex_home) in seen:
+        continue
+    seen.add(str(codex_home))
+    index_path = codex_home / "session_index.jsonl"
+    try:
+        lines = index_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        continue
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if str(item.get("thread_name") or "").strip() != title:
+            continue
+        session_id = str(item.get("id") or "").strip()
+        if not session_id:
+            continue
+        matches.append((str(item.get("updated_at") or ""), session_id))
+
+if not matches:
+    sys.exit(1)
+
+matches.sort()
+sys.stdout.write(matches[-1][1])
+`;
 }
 
 function buildNativeOpenCodeCopyResumeCommand(
@@ -6146,26 +6316,14 @@ async function processNativeFirstPromptAutoRename(
   }
   const pendingPrompt = persistedState.pendingFirstPromptAutoRenamePrompt?.trim();
   const agentName = persistedState.agentName || terminalState.agentName;
-  /**
-   * CDXC:SessionTitleSync 2026-05-05-04:27
-   * A pending first prompt is stronger than a terminal-auto title. Codex can set
-   * its thread title before the native poller processes the hook state; treating
-   * that terminal-auto title as the current user title makes auto-generation
-   * clear the prompt as stale instead of sending `/rename <generated title>`.
-   *
-   * CDXC:SessionTitleSync 2026-05-07-16:41
-   * This claim only applies to fresh sessions. Restored trusted titles are
-   * persisted names, so first-prompt automation must treat them as real current
-   * titles and skip generation.
-   */
-  const shouldLetFirstPromptAutoRenameClaimTitle =
-    Boolean(pendingPrompt) &&
-    terminalState.protectStoredTitleFromAutomation !== true &&
-    (session.titleSource === "terminal-auto" ||
-      isGenericAgentSessionTitle(agentName, session.title));
-  const currentTitle = shouldLetFirstPromptAutoRenameClaimTitle
-    ? undefined
-    : persistedState.title || session.title || terminalState.terminalTitle;
+  const currentTitle = getCurrentTitleForFirstPromptAutoRename({
+    agentName,
+    pendingPrompt,
+    persistedTitle: persistedState.title,
+    protectStoredTitleFromAutomation: terminalState.protectStoredTitleFromAutomation,
+    sessionTitle: session.title,
+    terminalTitle: terminalState.terminalTitle,
+  });
   const decision = explainFirstPromptAutoRenameDecision({
     agentName,
     /**
@@ -7278,20 +7436,25 @@ function forkNativeSession(sessionId: string): void {
   if (activeProjectId !== reference.project.projectId) {
     focusProject(reference.project.projectId);
   }
-  const piForkCommand =
-    resolveNativeResumeAgentId(session.agentName) === "pi"
+  const agentId = resolveNativeResumeAgentId(session.agentName);
+  const forkCommand =
+    agentId === "pi"
       ? buildNativePiForkCommand(session)
-      : undefined;
+      : agentId === "codex"
+        ? buildNativeCodexForkCommand(session)
+        : agentId === "claude"
+          ? buildNativeClaudeForkCommand(session)
+          : undefined;
   createTerminal(
     `${session.title || DEFAULT_TERMINAL_SESSION_TITLE} Fork`,
-    piForkCommand ? `${piForkCommand}\r` : "",
+    forkCommand ? `${forkCommand}\r` : "",
     groupId,
-    piForkCommand ? session.agentName : undefined,
+    forkCommand ? session.agentName : undefined,
     {
-      sessionPersistenceName: piForkCommand
+      sessionPersistenceName: forkCommand
         ? session.sessionPersistenceName ?? session.tmuxSessionName
         : undefined,
-      sessionPersistenceProvider: piForkCommand
+      sessionPersistenceProvider: forkCommand
         ? resolveTerminalSessionPersistenceProvider(session)
         : undefined,
     },
@@ -10071,21 +10234,42 @@ function postNativeLayoutSync(
   command: NativeSetActiveTerminalSetCommand,
   options: { force?: boolean } = {},
 ): void {
+  const commandSyncKey = createNativeCommandSyncKey(command);
   const layoutSyncKey = createNativeLayoutSyncKey(command);
   if (
     options.force !== true &&
     command.focusRequestId === undefined &&
-    layoutSyncKey === lastNativeLayoutSyncKey
+    commandSyncKey === lastNativeSetActiveTerminalSetCommandKey
   ) {
     return;
   }
+  const layoutChanged = options.force === true || layoutSyncKey !== lastNativeLayoutSyncKey;
+  lastNativeSetActiveTerminalSetCommandKey = commandSyncKey;
   lastNativeLayoutSyncKey = layoutSyncKey;
-  postNative(command);
+  postNative({ ...command, layoutChanged });
+}
+
+function createNativeCommandSyncKey(command: NativeSetActiveTerminalSetCommand): string {
+  const { focusRequestId: _focusRequestId, ...layoutCommand } = command;
+  return JSON.stringify(normalizeNativeLayoutSyncValue(layoutCommand));
 }
 
 function createNativeLayoutSyncKey(command: NativeSetActiveTerminalSetCommand): string {
-  const { focusRequestId: _focusRequestId, ...layoutCommand } = command;
-  return JSON.stringify(normalizeNativeLayoutSyncValue(layoutCommand));
+  /**
+   * CDXC:NativeGpu 2026-05-08-16:45
+   * The expensive native AppKit layout only depends on visible surface
+   * identity, split geometry, pane gap, and active editor surface. Pane titles,
+   * activity colors, focus display, and icons are chrome metadata and must not
+   * make the host reframe IOSurface-backed terminal/browser views.
+   */
+  return JSON.stringify(
+    normalizeNativeLayoutSyncValue({
+      activeProjectEditorId: command.activeProjectEditorId,
+      activeSessionIds: command.activeSessionIds,
+      layout: command.layout,
+      paneGap: command.paneGap,
+    }),
+  );
 }
 
 function normalizeNativeLayoutSyncValue(value: unknown): unknown {

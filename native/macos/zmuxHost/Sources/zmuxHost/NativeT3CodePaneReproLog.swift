@@ -5,6 +5,17 @@ import WebKit
 enum NativeT3CodePaneReproLog {
   private static let logger = Logger(
     subsystem: "com.madda.zmux.host", category: "native-t3-code-pane-repro")
+  private static let noisyEvents = Set([
+    "nativeSidebar.chrome.layout",
+    "nativeSidebar.chrome.resize",
+    "nativeWorkspace.projectEditor.dnd.nativeMonitorBypassed",
+    "nativeWorkspace.projectEditor.dnd.nativeMonitorSync",
+    "nativeWorkspace.projectEditor.layout.active",
+    "nativeWorkspace.projectEditor.layout.end",
+    "nativeWorkspace.projectEditor.layout.start",
+    "nativeWorkspace.t3WebPane.layout.deferred",
+    "nativeWorkspace.t3WebPane.layout.deferredPin",
+  ])
   private static let logDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS ZZZZ"
@@ -15,14 +26,15 @@ enum NativeT3CodePaneReproLog {
   private static var didCreateLogsDirectory = false
 
   /**
-   CDXC:T3Code 2026-04-30-03:02
+   CDXC:T3Code 2026-05-08-16:41
    Native T3 Code blank-pane repros need a dedicated log file separate from
    terminal focus and sidebar lifecycle logs. Capture runtime launch, WKWebView
    navigation, HTTP response, and injected page diagnostics when debugging mode
-   is enabled so gray-pane failures can be reproduced without changing behavior.
+   is enabled, while dropping layout/resize breadcrumbs that can fire every
+   frame during normal sidebar resizing.
    */
   static func append(_ event: String, _ details: [String: Any] = [:]) {
-    guard NativeDebugLogging.isEnabled else {
+    guard NativeDebugLogging.isEnabled, !noisyEvents.contains(event) else {
       return
     }
     let logsDirectory = ZmuxAppStorage.logsDirectory

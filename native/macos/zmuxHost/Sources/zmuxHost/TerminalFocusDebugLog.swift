@@ -3,8 +3,16 @@ import Foundation
 enum TerminalFocusDebugLog {
   private static let noisyEvents = Set([
     "nativeSidebar.postNative",
+    "nativeHotkeys.appKitKeyEquivalent",
+    "nativeHotkeys.appKitNoAction",
+    "nativeHotkeys.appKitNoMatch",
+    "nativeHotkeys.domKeyIgnored",
+    "nativeWorkspace.focusedResponderIgnored",
+    "nativeWorkspace.setActiveTerminalSet.applied",
+    "nativeWorkspace.terminalFocused.emitted",
     "nativeSidebar.terminalFocused.applied",
     "nativeSidebar.terminalFocused.duplicateSkipped",
+    "nativeWorkspace.terminalResize",
     "nativeWorkspace.focusTerminal.completed",
     "nativeWorkspace.sendTerminalEnter.sent",
     "nativeWorkspace.sendTerminalEnter.start",
@@ -25,10 +33,10 @@ enum TerminalFocusDebugLog {
   private static var didCreateLogsDirectory = false
 
   /**
-   CDXC:NativeTerminalFocus 2026-04-29-09:16
+   CDXC:NativeTerminalFocus 2026-05-08-16:41
    Split Ghostty focus debugging must land in a completely separate
    app storage logs file. These native entries record AppKit first-responder
-   state only when debugging mode is enabled, with high-frequency focus/layout
+   state only when debugging mode is enabled, with routine focus/layout/hotkey
    events suppressed so normal terminal use cannot generate oversized logs.
    */
   static func append(event: String, details: [String: Any] = [:]) {

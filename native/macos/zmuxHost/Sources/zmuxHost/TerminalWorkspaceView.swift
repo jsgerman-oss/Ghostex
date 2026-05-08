@@ -284,6 +284,7 @@ final class TerminalWorkspaceView: NSView {
   private var focusedSessionId: String?
   private var lastEmittedFocusedSessionId: String?
   private var lastAppliedLayoutFocusRequestId: Int?
+  private var workspaceBackgroundColorValue: String?
   private var paneGap = TerminalWorkspaceView.defaultPaneGap
   private var sidebarSide: SidebarSide = .left
   private var programmaticFocusDepth = 0
@@ -1524,35 +1525,45 @@ final class TerminalWorkspaceView: NSView {
 
   func setActiveTerminalSet(_ command: SetActiveTerminalSet) {
     let responderBefore = responderSnapshot()
-    activeSessionIds = Set(command.activeSessionIds)
+    let nextActiveSessionIds = Set(command.activeSessionIds)
+    let nextActiveProjectEditorId = command.activeProjectEditorId
+    let nextPaneGap = Self.clampedPaneGap(command.paneGap)
+    let nextLayout = command.layout
+    let shouldRelayout =
+      command.layoutChanged
+      ?? (nativeLayoutSignature(
+          activeSessionIds: nextActiveSessionIds,
+          activeProjectEditorId: nextActiveProjectEditorId,
+          layout: nextLayout,
+          paneGap: nextPaneGap
+        )
+        != nativeLayoutSignature(
+          activeSessionIds: activeSessionIds,
+          activeProjectEditorId: activeProjectEditorId,
+          layout: terminalLayout,
+          paneGap: paneGap
+        ))
+    activeSessionIds = nextActiveSessionIds
     attentionSessionIds = Set(command.attentionSessionIds ?? [])
     sessionAgentIconColors = command.sessionAgentIconColors ?? [:]
     sessionAgentIconDataUrls = command.sessionAgentIconDataUrls ?? [:]
     sessionActivities = command.sessionActivities ?? [:]
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
-    activeProjectEditorId = command.activeProjectEditorId
+    activeProjectEditorId = nextActiveProjectEditorId
     syncPaneHeaderEventMonitorForCurrentSurface(reason: "setActiveTerminalSet")
     focusedSessionId = command.focusedSessionId
-    terminalLayout = command.layout
-    paneGap = Self.clampedPaneGap(command.paneGap)
+    terminalLayout = nextLayout
+    paneGap = nextPaneGap
     /**
      CDXC:WorkspaceLayout 2026-04-28-06:08
      The terminal workspace background is user-configurable from Settings.
      Apply the chosen color directly to the AppKit backing layer so the
      visible space created by Pane Gap uses the user's color.
     */
-    layer?.backgroundColor = Self.workspaceBackgroundColor(command.backgroundColor).cgColor
+    applyWorkspaceBackgroundColor(command.backgroundColor)
     let isProjectEditorActive = activeProjectEditorId != nil
     for session in sessions.values {
-      session.scrollView.isHidden = false
-      session.searchBarView.isHidden =
-        (
-          isProjectEditorActive || !activeSessionIds.contains(session.sessionId)
-            || session.view.searchState == nil
-        )
-      session.titleBarView.isHidden = false
-      session.borderView.isHidden = false
       if let title = sessionTitles[session.sessionId] {
         session.titleBarView.setTitle(
           normalizedTerminalSessionTitle(title, sessionId: session.sessionId)
@@ -1564,38 +1575,51 @@ final class TerminalWorkspaceView: NSView {
       session.titleBarView.setAgentIconDataUrl(
         sessionAgentIconDataUrls[session.sessionId],
         colorHex: sessionAgentIconColors[session.sessionId])
-      if isProjectEditorActive || !activeSessionIds.contains(session.sessionId) {
-        moveOffscreen(session.scrollView)
-        moveOffscreen(session.searchBarView)
-        moveOffscreen(session.titleBarView)
-        moveOffscreen(session.borderView)
+      if shouldRelayout {
+        let isActive = !isProjectEditorActive && activeSessionIds.contains(session.sessionId)
+        session.scrollView.isHidden = false
+        session.searchBarView.isHidden = !isActive || session.view.searchState == nil
+        session.titleBarView.isHidden = !isActive
+        session.borderView.isHidden = !isActive
+        if !isActive {
+          moveOffscreen(session.scrollView)
+          moveOffscreen(session.searchBarView)
+          moveOffscreen(session.titleBarView)
+          moveOffscreen(session.borderView)
+        }
       }
     }
     for session in webPaneSessions.values {
-      session.hostView.isHidden = false
-      session.titleBarView.isHidden = false
-      session.borderView.isHidden = false
       session.titleBarView.setAgentIconDataUrl(
         sessionAgentIconDataUrls[session.sessionId],
         colorHex: sessionAgentIconColors[session.sessionId])
-      if isProjectEditorActive || !activeSessionIds.contains(session.sessionId) {
-        moveOffscreen(session.hostView)
-        moveOffscreen(session.titleBarView)
-        moveOffscreen(session.borderView)
+      if shouldRelayout {
+        let isActive = !isProjectEditorActive && activeSessionIds.contains(session.sessionId)
+        session.hostView.isHidden = !isActive
+        session.titleBarView.isHidden = !isActive
+        session.borderView.isHidden = !isActive
+        if !isActive {
+          moveOffscreen(session.hostView)
+          moveOffscreen(session.titleBarView)
+          moveOffscreen(session.borderView)
+        }
       }
     }
-    for session in projectEditorPaneSessions.values {
-      session.hostView.isHidden = false
-      if activeProjectEditorId == session.projectId {
-        layoutProjectEditorPane(session)
-        orderProjectEditorPaneToFront(session)
-      } else {
-        moveOffscreen(session.hostView)
+    if shouldRelayout {
+      for session in projectEditorPaneSessions.values {
+        let isActive = activeProjectEditorId == session.projectId
+        session.hostView.isHidden = !isActive
+        if isActive {
+          layoutProjectEditorPane(session)
+          orderProjectEditorPaneToFront(session)
+        } else {
+          moveOffscreen(session.hostView)
+        }
       }
+      needsLayout = true
+      layoutSubtreeIfNeeded()
+      scheduleDeferredWebPaneLayout(sessionId: command.focusedSessionId, reason: "setActiveTerminalSet")
     }
-    needsLayout = true
-    layoutSubtreeIfNeeded()
-    scheduleDeferredWebPaneLayout(sessionId: command.focusedSessionId, reason: "setActiveTerminalSet")
     updateAllTerminalBorders()
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.setActiveTerminalSet.applied",
@@ -1606,6 +1630,7 @@ final class TerminalWorkspaceView: NSView {
         "backgroundColor": command.backgroundColor ?? "default",
         "focusRequestId": command.focusRequestId ?? 0,
         "focusedSessionId": nullableString(command.focusedSessionId),
+        "layoutChanged": shouldRelayout,
         "paneGap": Double(paneGap),
         "responderAfterLayout": responderSnapshot(),
         "responderBefore": responderBefore,
@@ -2222,15 +2247,6 @@ final class TerminalWorkspaceView: NSView {
       return nil
     }
     return clamped
-  }
-
-  override func resetCursorRects() {
-    super.resetCursorRects()
-    for hit in paneResizeHits {
-      addCursorRect(
-        hit.rect,
-        cursor: hit.direction == .horizontal ? .resizeLeftRight : .resizeUpDown)
-    }
   }
 
   private func paneResizeCursor(at point: CGPoint) -> NSCursor? {
@@ -4609,17 +4625,70 @@ final class TerminalWorkspaceView: NSView {
     String(Int(value.rounded()))
   }
 
+  private func nativeLayoutSignature(
+    activeSessionIds: Set<String>,
+    activeProjectEditorId: String?,
+    layout: NativeTerminalLayout?,
+    paneGap: CGFloat
+  ) -> String {
+    [
+      "active=\(activeSessionIds.sorted().joined(separator: ","))",
+      "editor=\(activeProjectEditorId ?? "")",
+      "gap=\(roundedSignature(paneGap * 100))",
+      "layout=\(nativeLayoutNodeSignature(layout))",
+    ].joined(separator: "|")
+  }
+
+  private func nativeLayoutNodeSignature(_ layout: NativeTerminalLayout?) -> String {
+    guard let layout else {
+      return "none"
+    }
+    switch layout {
+    case .leaf(let sessionId):
+      return "leaf:\(sessionId)"
+    case .split(let direction, let ratio, let children):
+      let ratioSignature = ratio.map { String(format: "%.5f", $0) } ?? "nil"
+      return
+        "split:\(direction.rawValue):\(ratioSignature):[\(children.map { nativeLayoutNodeSignature($0) }.joined(separator: ","))]"
+    }
+  }
+
   private func moveOffscreen(_ view: NSView) {
     let size =
       view.frame.size.width > 1 && view.frame.size.height > 1
       ? view.frame.size
       : bounds.size
-    view.frame = CGRect(
+    let nextFrame = CGRect(
       x: bounds.maxX + 10_000,
       y: bounds.maxY + 10_000,
       width: max(size.width, 1),
       height: max(size.height, 1)
     )
+    if !rectsMatch(view.frame, nextFrame) {
+      view.frame = nextFrame
+    }
+  }
+
+  private func applyWorkspaceBackgroundColor(_ value: String?) {
+    let nextValue = value ?? ""
+    guard workspaceBackgroundColorValue != nextValue else {
+      return
+    }
+    /**
+     CDXC:NativeGpu 2026-05-08-16:45
+     Passive metadata sync can arrive without a visual workspace change.
+     Reassign the AppKit backing-layer color only when the configured value
+     changes so repeated status updates do not dirty the whole workspace layer.
+     */
+    workspaceBackgroundColorValue = nextValue
+    layer?.backgroundColor = Self.workspaceBackgroundColor(value).cgColor
+  }
+
+  private func setHidden(_ hidden: Bool, for view: NSView) {
+    guard view.isHidden != hidden else {
+      return
+    }
+    view.isHidden = hidden
   }
 
   private func updateAllTerminalBorders() {
@@ -4634,9 +4703,9 @@ final class TerminalWorkspaceView: NSView {
   private func updateTerminalBorder(for sessionId: String) {
     if let session = webPaneSessions[sessionId] {
       let isActive = activeSessionIds.contains(sessionId)
-      session.hostView.isHidden = !isActive
-      session.titleBarView.isHidden = !isActive
-      session.borderView.isHidden = !isActive
+      setHidden(!isActive, for: session.hostView)
+      setHidden(!isActive, for: session.titleBarView)
+      setHidden(!isActive, for: session.borderView)
       session.titleBarView.setState(activity: sessionActivities[sessionId])
       session.borderView.setState(
         isFocused: shouldShowFocusedPaneBorder(for: sessionId),
@@ -4649,9 +4718,9 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     let isActive = activeSessionIds.contains(sessionId)
-    session.titleBarView.isHidden = !isActive
-    session.searchBarView.isHidden = !isActive || session.view.searchState == nil
-    session.borderView.isHidden = !isActive
+    setHidden(!isActive, for: session.titleBarView)
+    setHidden(!isActive || session.view.searchState == nil, for: session.searchBarView)
+    setHidden(!isActive, for: session.borderView)
     session.titleBarView.setState(
       activity: sessionActivities[sessionId]
     )
@@ -5977,6 +6046,112 @@ private final class TerminalPaneHeaderDragGhostView: NSView {
 
 }
 
+private final class TerminalTitleBarActionButton: NSButton {
+  private static let normalTintColor = NSColor(calibratedWhite: 0.88, alpha: 0.72)
+  private static let hoverTintColor = NSColor(calibratedWhite: 0.96, alpha: 0.88)
+  private static let activeTintColor = NSColor(calibratedWhite: 1.0, alpha: 0.96)
+  private static let hoverBackgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.11).cgColor
+  private static let activeBackgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.18).cgColor
+
+  private var hoverTrackingArea: NSTrackingArea?
+  private var isPointerInside = false {
+    didSet { updateActionChrome() }
+  }
+
+  override var isHighlighted: Bool {
+    didSet { updateActionChrome() }
+  }
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    configureActionChrome()
+  }
+
+  required init?(coder: NSCoder) {
+    super.init(coder: coder)
+    configureActionChrome()
+  }
+
+  /**
+   CDXC:PaneTitleBarUX 2026-05-08-16:02
+   Pane title-bar actions across terminal, managed web/editor, and browser
+   panes need clear interactivity without adding permanent chrome. A shared
+   button subclass provides a subtle circular hover background, a slightly
+   stronger pressed state, and the expected pointing-hand cursor everywhere the
+   native title-bar action controls are used.
+   */
+  private func configureActionChrome() {
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.clear.cgColor
+    layer?.masksToBounds = true
+    contentTintColor = Self.normalTintColor
+  }
+
+  override func layout() {
+    super.layout()
+    layer?.cornerRadius = min(bounds.width, bounds.height) / 2
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let hoverTrackingArea {
+      removeTrackingArea(hoverTrackingArea)
+    }
+    let trackingArea = NSTrackingArea(
+      rect: .zero,
+      options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+      owner: self,
+      userInfo: nil
+    )
+    hoverTrackingArea = trackingArea
+    addTrackingArea(trackingArea)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    isPointerInside = true
+    NSCursor.pointingHand.set()
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    isPointerInside = true
+    NSCursor.pointingHand.set()
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    isPointerInside = false
+  }
+
+  override func resetCursorRects() {
+    super.resetCursorRects()
+    addCursorRect(bounds, cursor: .pointingHand)
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if let window {
+      window.invalidateCursorRects(for: self)
+    }
+  }
+
+  private func updateActionChrome() {
+    guard isEnabled else {
+      contentTintColor = Self.normalTintColor.withAlphaComponent(0.4)
+      layer?.backgroundColor = NSColor.clear.cgColor
+      return
+    }
+    if isHighlighted {
+      contentTintColor = Self.activeTintColor
+      layer?.backgroundColor = Self.activeBackgroundColor
+    } else if isPointerInside {
+      contentTintColor = Self.hoverTintColor
+      layer?.backgroundColor = Self.hoverBackgroundColor
+    } else {
+      contentTintColor = Self.normalTintColor
+      layer?.backgroundColor = NSColor.clear.cgColor
+    }
+  }
+}
+
 private final class TerminalSessionTitleBarView: NSView {
   private static let borderColor = NSColor(
     calibratedRed: 0x58 / 255,
@@ -6015,6 +6190,8 @@ private final class TerminalSessionTitleBarView: NSView {
   private let bottomBorderView = NSView(frame: .zero)
   private var actionButtons: [(action: TerminalTitleBarAction, button: NSButton)]
   private var agentIconColor: NSColor?
+  private var agentIconColorHex: String?
+  private var agentIconDataUrl: String?
   private var agentIconImage: NSImage?
   private var activity: NativeTerminalActivity?
   private var faviconImage: NSImage?
@@ -6184,11 +6361,12 @@ private final class TerminalSessionTitleBarView: NSView {
   override func resetCursorRects() {
     super.resetCursorRects()
     /**
-     CDXC:NativePaneResize 2026-05-03-05:06
-     Gap-sized native resize bands can border title-bar hit testing when pane
-     gaps are small. Cursor precedence must favor split resizing at the pane
-     boundary, so the title bar registers resize cursor rects for any boundary
-     overlap before falling back to the pane-reorder hand cursor.
+     CDXC:NativePaneResize 2026-05-08-14:08
+     Pane resize cursors must be advertised only by
+     TerminalWorkspacePaneResizeHandleView, which also owns mouseDown/drag/up.
+     Keeping title-bar fallback resize cursor rects lets AppKit show a resize
+     cursor in adjacent header pixels where the transparent resize handle is
+     not the hit-test winner, so dragging appears possible but does nothing.
      */
     let firstActionButtonX = actionButtons.map(\.button.frame.minX).min() ?? bounds.maxX
     let probeStep: CGFloat = 2
@@ -6197,8 +6375,8 @@ private final class TerminalSessionTitleBarView: NSView {
     var x: CGFloat = 0
     while x <= bounds.width {
       let probePoint = CGPoint(x: min(x, bounds.width), y: bounds.midY)
-      let resizeCursor = resizeCursorForPoint?(probePoint)
-      let cursor = resizeCursor ?? (probePoint.x < firstActionButtonX ? NSCursor.openHand : nil)
+      let actionCursor = actionButtonAction(at: probePoint) == nil ? nil : NSCursor.pointingHand
+      let cursor = actionCursor ?? (probePoint.x < firstActionButtonX ? NSCursor.openHand : nil)
       let cursorChanged = cursor !== cursorRunCursor
       if cursorChanged {
         if let cursorRunStart, let cursorRunCursor {
@@ -6259,11 +6437,9 @@ private final class TerminalSessionTitleBarView: NSView {
 
   private func setHeaderCursor(for event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
-    if let resizeCursor = resizeCursorForPoint?(point) {
-      resizeCursor.set()
-      return
-    }
-    if isDraggableHeaderPoint(point) {
+    if actionButtonAction(at: point) != nil {
+      NSCursor.pointingHand.set()
+    } else if isDraggableHeaderPoint(point) {
       NSCursor.openHand.set()
     } else {
       NSCursor.arrow.set()
@@ -6414,12 +6590,26 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   func setAgentIconDataUrl(_ dataUrl: String?, colorHex: String?) {
+    guard agentIconDataUrl != dataUrl || agentIconColorHex != colorHex else {
+      return
+    }
+    /**
+     CDXC:NativeGpu 2026-05-08-16:45
+     Native pane chrome receives frequent sidebar metadata syncs. Decode SVG
+     masks and relayout the title bar only when the icon payload actually
+     changes, otherwise repeated status updates keep AppKit layers dirty.
+     */
+    agentIconDataUrl = dataUrl
+    agentIconColorHex = colorHex
     agentIconImage = nativePaneImage(fromDataUrl: dataUrl, isTemplate: true)
     agentIconColor = nativePaneColor(fromHex: colorHex)
     needsLayout = true
   }
 
   func setState(activity nextActivity: NativeTerminalActivity?) {
+    guard activity != nextActivity else {
+      return
+    }
     activity = nextActivity
     switch nextActivity {
     case .attention:
@@ -6462,12 +6652,11 @@ private final class TerminalSessionTitleBarView: NSView {
     fallbackTitle: String,
     tooltip: String
   ) -> NSButton {
-    let button = NSButton(title: "", target: nil, action: nil)
+    let button = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
     button.bezelStyle = .texturedRounded
     button.isBordered = false
     button.imagePosition = .imageOnly
     button.toolTip = tooltip
-    button.contentTintColor = NSColor(calibratedWhite: 0.88, alpha: 0.72)
     if let image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: tooltip) {
       button.image = image
     } else {

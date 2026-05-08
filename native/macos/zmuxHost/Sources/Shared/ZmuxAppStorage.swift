@@ -102,7 +102,18 @@ enum ZmuxAppStorage {
     _ = try JSONSerialization.jsonObject(with: data)
     try FileManager.default.createDirectory(
       at: sharedStateDirectory, withIntermediateDirectories: true)
-    try data.write(to: sharedStateDirectory.appendingPathComponent(file.fileName), options: [.atomic])
+    let url = sharedStateDirectory.appendingPathComponent(file.fileName)
+    /**
+     CDXC:NativeGpu 2026-05-08-16:45
+     Shared sidebar storage can receive frequent snapshots from routine
+     status/layout publishes. Byte-identical payloads do not represent a state
+     change, so avoid atomic rewrites that wake filesystem observers and keep
+     the native app doing work while the workspace is visually idle.
+     */
+    if let existingData = try? Data(contentsOf: url), existingData == data {
+      return
+    }
+    try data.write(to: url, options: [.atomic])
   }
 
   private static func readSharedSidebarStorageFile(_ fileName: String) -> String? {
