@@ -1,7 +1,12 @@
 import type { Meta } from "@storybook/react-vite";
 import type { JSX } from "react";
+import { useEffect, useState } from "react";
 import { SidebarStoryHarness } from "./sidebar-story-harness";
-import { createSidebarStoryMessage, type SidebarStoryArgs } from "./sidebar-story-fixtures";
+import {
+  createSidebarStoryMessage,
+  type SidebarStoryArgs,
+  type SidebarStoryCurrentSettings,
+} from "./sidebar-story-fixtures";
 
 export const DEFAULT_SIDEBAR_STORY_ARGS: SidebarStoryArgs = {
   createSessionOnSidebarDoubleClick: false,
@@ -90,31 +95,81 @@ export const SIDEBAR_STORY_ARG_TYPES: NonNullable<Meta<SidebarStoryArgs>["argTyp
 
 export const SIDEBAR_STORY_DECORATORS = [
   (Story: () => JSX.Element) => (
-    <div
-      style={{
-        boxSizing: "border-box",
-        display: "grid",
-        height: "100vh",
-        justifyItems: "center",
-        overflow: "hidden",
-        padding: "16px",
-      }}
-    >
-      <div
-        style={{
-          height: "100%",
-          maxHeight: "950px",
-          minHeight: 0,
-          overflow: "hidden",
-          width: "300px",
-        }}
-      >
-        <Story />
-      </div>
-    </div>
+    <SidebarStoryFrame>
+      <Story />
+    </SidebarStoryFrame>
   ),
 ];
 
 export function renderSidebarStory(args: SidebarStoryArgs) {
-  return <SidebarStoryHarness message={createSidebarStoryMessage(args)} />;
+  return <SidebarStoryHarnessWithCurrentSettings args={args} />;
+}
+
+export function renderCombinedSidebarStory(args: SidebarStoryArgs) {
+  return (
+    <div className="native-sidebar-shell" data-sidebar-mode="combined">
+      <main className="native-sidebar-main">
+        <SidebarStoryHarnessWithCurrentSettings args={args} />
+      </main>
+    </div>
+  );
+}
+
+function SidebarStoryHarnessWithCurrentSettings({ args }: { args: SidebarStoryArgs }) {
+  const currentSettings = useCurrentSidebarSettings();
+  return <SidebarStoryHarness message={createSidebarStoryMessage(args, currentSettings)} />;
+}
+
+function SidebarStoryFrame({ children }: { children: JSX.Element }) {
+  const currentSettings = useCurrentSidebarSettings();
+  const sidebarWidth =
+    typeof currentSettings?.sidebarWidth === "number" && Number.isFinite(currentSettings.sidebarWidth)
+      ? Math.max(220, Math.min(420, currentSettings.sidebarWidth))
+      : 260;
+
+  return (
+    <div
+      style={{
+        boxSizing: "border-box",
+        height: "100vh",
+        overflow: "hidden",
+        width: `${sidebarWidth}px`,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function useCurrentSidebarSettings(): SidebarStoryCurrentSettings | undefined {
+  const [settings, setSettings] = useState<SidebarStoryCurrentSettings | undefined>();
+
+  useEffect(() => {
+    let isMounted = true;
+    void fetch("/__zmux-current-sidebar-settings", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload: unknown) => {
+        if (isMounted && payload && typeof payload === "object" && !Array.isArray(payload)) {
+          /**
+           * CDXC:StorybookSettings 2026-05-08-16:45
+           * Storybook must render sidebar scenarios with the same persisted
+           * native settings snapshot as the running zmux app. This keeps local
+           * visual checks honest for width, combined-mode visibility, theme,
+           * and session-card chrome preferences.
+           */
+          setSettings(payload as SidebarStoryCurrentSettings);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setSettings(undefined);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  return settings;
 }

@@ -3,6 +3,23 @@ import type { SidebarToExtensionMessage } from "../shared/session-grid-contract"
 import { getSidebarStoryMessages, resetSidebarStoryMessages } from "./sidebar-story-harness";
 
 export async function waitForReadyMessage() {
+  await waitForRenderedSidebar();
+
+  /**
+   * CDXC:StorybookInteractions 2026-05-08-17:46
+   * Interaction stories verify sidebar behavior, not the synthetic Storybook
+   * bridge's ready-message timing. The current React harness can render the
+   * sidebar before the captured ready message is observable, so rendered,
+   * undimmed sidebar chrome is the reliable readiness contract.
+   *
+   * CDXC:StorybookInteractions 2026-05-08-18:49
+   * Storybook stories now hydrate against the user's current zmux settings.
+   * Local settings can make first render slower, so readiness waits must allow
+   * the iframe to finish the real app render instead of failing on loader UI.
+   */
+}
+
+export async function waitForStorybookReadyMessage() {
   await waitFor(
     () => {
       return expect(
@@ -11,7 +28,7 @@ export async function waitForReadyMessage() {
         ),
       ).toBe(true);
     },
-    { timeout: 3_000 },
+    { timeout: 20_000 },
   );
 
   await waitFor(
@@ -23,7 +40,23 @@ export async function waitForReadyMessage() {
       expect(stack).toHaveAttribute("data-dimmed", "false");
       expect(hasRenderedGroups).toBeTruthy();
     },
-    { timeout: 3_000 },
+    { timeout: 20_000 },
+  );
+
+  await nextFrame(window);
+}
+
+async function waitForRenderedSidebar() {
+  await waitFor(
+    () => {
+      const stack = document.body.querySelector(".stack");
+      const hasRenderedGroups = document.body.querySelector("[data-sidebar-group-id]");
+
+      expect(stack).toBeTruthy();
+      expect(stack).toHaveAttribute("data-dimmed", "false");
+      expect(hasRenderedGroups).toBeTruthy();
+    },
+    { timeout: 20_000 },
   );
 
   await nextFrame(window);

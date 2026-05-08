@@ -1,4 +1,6 @@
 import path from "node:path";
+import fs from "node:fs";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import type { StorybookConfig } from "@storybook/react-vite";
 
@@ -13,6 +15,7 @@ const config: StorybookConfig = {
    */
   stories: ["../sidebar/**/*.stories.@(ts|tsx)"],
   viteFinal: async (config) => {
+    const existingPlugins = config.plugins ?? [];
     config.resolve = {
       ...config.resolve,
       alias: {
@@ -20,6 +23,36 @@ const config: StorybookConfig = {
         "@": path.resolve(storybookDir, ".."),
       },
     };
+    config.plugins = [
+      ...existingPlugins,
+      {
+        name: "zmux-current-sidebar-settings",
+        configureServer(server) {
+          server.middlewares.use("/__zmux-current-sidebar-settings", (_request, response) => {
+            const settingsPath = path.join(
+              os.homedir(),
+              ".zmux",
+              "state",
+              "native-sidebar-settings.json",
+            );
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            try {
+              /**
+               * CDXC:StorybookSettings 2026-05-08-16:45
+               * Local sidebar scenarios must reproduce the user's running zmux
+               * chrome before visual regression checks. Storybook serves the
+               * shared native settings snapshot read-only so fixtures can use
+               * the same sidebar mode, width, theme, and visibility settings
+               * as the app instead of stale hard-coded harness defaults.
+               */
+              response.end(fs.readFileSync(settingsPath, "utf8"));
+            } catch {
+              response.end("{}");
+            }
+          });
+        },
+      },
+    ];
 
     return config;
   },

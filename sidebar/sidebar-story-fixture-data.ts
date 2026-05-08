@@ -638,8 +638,64 @@ const COMBINED_SPARSE_REFERENCE_GROUPS: SidebarStoryGroup[] = [
         sessionId: "combined-sparse-zmux-session",
         shortcutLabel: "⌘⌥2",
       }),
+      /**
+       * CDXC:SidebarSearch 2026-05-08-12:02
+       * Combined-reference search stories need multiple matching project rows
+       * before Previous Sessions so regressions in current-result height
+       * measurement reproduce in Storybook.
+       */
+      createStorySession({
+        alias: "Disable Button Entry",
+        agentIcon: "codex",
+        detail: "OpenAI Codex",
+        lastInteractionAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        sessionId: "combined-sparse-disable-button",
+        shortcutLabel: "⌘⌥3",
+      }),
+      createStorySession({
+        alias: "Floating Indicator Button Text",
+        agentIcon: "codex",
+        detail: "OpenAI Codex",
+        lastInteractionAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+        sessionId: "combined-sparse-floating-button",
+        shortcutLabel: "⌘⌥4",
+      }),
     ],
     title: "zmux",
+  },
+  {
+    groupId: "combined-sparse-project-release-manager",
+    isActive: false,
+    kind: "workspace",
+    projectContext: createStoryProjectContext("combined-sparse-project-release-manager"),
+    sessions: [
+      createStorySession({
+        alias: "nn release manager",
+        agentIcon: "codex",
+        detail: "OpenAI Codex",
+        lastInteractionAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+        sessionId: "combined-sparse-release-manager-session",
+        shortcutLabel: "⌘⌥5",
+      }),
+    ],
+    title: "releases manager",
+  },
+  {
+    groupId: "combined-sparse-project-iscode-embed",
+    isActive: false,
+    kind: "workspace",
+    projectContext: createStoryProjectContext("combined-sparse-project-iscode-embed"),
+    sessions: [
+      createStorySession({
+        alias: "nn iscode embed",
+        agentIcon: "codex",
+        detail: "OpenAI Codex",
+        lastInteractionAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+        sessionId: "combined-sparse-iscode-embed-session",
+        shortcutLabel: "⌘⌥6",
+      }),
+    ],
+    title: "iscode embed",
   },
 ];
 

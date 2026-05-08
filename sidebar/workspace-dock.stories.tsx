@@ -29,7 +29,6 @@ const state: WorkspaceBarStateMessage = {
 };
 
 const meta = {
-  component: WorkspaceDock,
   decorators: [
     (Story) => (
       <div style={{ height: 520, width: 54 }}>
@@ -38,14 +37,28 @@ const meta = {
     ),
   ],
   parameters: {
+    /**
+     * CDXC:StorybookInteractions 2026-05-08-17:46
+     * WorkspaceDock is exported from the native sidebar module, whose prop
+     * types include action maps and native state shapes that Storybook docgen
+     * cannot reliably convert. Keep this story as an explicit render harness
+     * instead of component-driven controls so the iframe loads without manager
+     * introspection errors.
+     */
+    controls: { disable: true },
+    docs: { disable: true },
     layout: "fullscreen",
   },
   title: "Sidebar/Workspace Dock",
-} satisfies Meta<typeof WorkspaceDock>;
+} satisfies Meta<WorkspaceDockStoryArgs>;
 
 export default meta;
 
-type Story = StoryObj<typeof meta>;
+type WorkspaceDockStoryArgs = {
+  state: WorkspaceBarStateMessage;
+};
+
+type Story = StoryObj<WorkspaceDockStoryArgs>;
 
 export const Default: Story = {
   args: {

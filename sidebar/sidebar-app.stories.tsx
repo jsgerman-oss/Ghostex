@@ -1,11 +1,10 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { SidebarStoryArgs } from "./sidebar-story-fixtures";
-import { createSidebarStoryMessage } from "./sidebar-story-fixtures";
-import { SidebarStoryHarness } from "./sidebar-story-harness";
 import {
   DEFAULT_SIDEBAR_STORY_ARGS,
   SIDEBAR_STORY_ARG_TYPES,
   SIDEBAR_STORY_DECORATORS,
+  renderCombinedSidebarStory,
   renderSidebarStory,
 } from "./sidebar-story-meta";
 
@@ -125,13 +124,7 @@ export const CombinedHeaderAlignment: Story = {
     viewMode: "grid",
     visibleCount: 1,
   },
-  render: (args) => (
-    <div className="native-sidebar-shell" data-sidebar-mode="combined">
-      <main className="native-sidebar-main">
-        <SidebarStoryHarness message={createSidebarStoryMessage(args)} />
-      </main>
-    </div>
-  ),
+  render: renderCombinedSidebarStory,
 };
 
 export const CombinedRecentProjects: Story = {
@@ -145,13 +138,7 @@ export const CombinedRecentProjects: Story = {
     viewMode: "grid",
     visibleCount: 1,
   },
-  render: (args) => (
-    <div className="native-sidebar-shell" data-sidebar-mode="combined">
-      <main className="native-sidebar-main">
-        <SidebarStoryHarness message={createSidebarStoryMessage(args)} />
-      </main>
-    </div>
-  ),
+  render: renderCombinedSidebarStory,
 };
 
 export const CombinedSparseReference: Story = {
@@ -165,11 +152,5 @@ export const CombinedSparseReference: Story = {
     viewMode: "grid",
     visibleCount: 1,
   },
-  render: (args) => (
-    <div className="native-sidebar-shell" data-sidebar-mode="combined">
-      <main className="native-sidebar-main">
-        <SidebarStoryHarness message={createSidebarStoryMessage(args)} />
-      </main>
-    </div>
-  ),
+  render: renderCombinedSidebarStory,
 };

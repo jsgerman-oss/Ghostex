@@ -61,7 +61,10 @@ type SidebarSessionDecoration = Pick<
 
 export type SidebarStoryWorkspace = {
   groupMetadataById: Readonly<
-    Record<string, Pick<SidebarHydrateMessage["groups"][number], "kind" | "projectContext">>
+    Record<
+      string,
+      Pick<SidebarHydrateMessage["groups"][number], "isChatCollection" | "kind" | "projectContext">
+    >
   >;
   options: SidebarStoryWorkspaceOptions;
   pinnedPrompts: SidebarHydrateMessage["pinnedPrompts"];
@@ -94,6 +97,14 @@ export function createSidebarStoryWorkspace(message: SidebarHydrateMessage): Sid
       message.groups.map((group) => [
         group.groupId,
         {
+          /**
+           * CDXC:StorybookSettings 2026-05-08-17:01
+           * Combined sidebar stories must preserve the synthetic Chats marker
+           * through the Storybook workspace round trip. Dropping this flag
+           * makes Storybook classify Chats as a project group, which no longer
+           * matches the native app's separate Chats and Projects sections.
+           */
+          isChatCollection: group.isChatCollection,
           kind: group.kind,
           projectContext: group.projectContext,
         },
@@ -160,6 +171,7 @@ export function createSidebarStoryMessage(
 
     return {
       groupId: group.groupId,
+      isChatCollection: workspace.groupMetadataById[group.groupId]?.isChatCollection,
       isActive: workspace.snapshot.activeGroupId === group.groupId,
       isFocusModeActive: isSessionGridFocusModeActive(group.snapshot),
       kind: workspace.groupMetadataById[group.groupId]?.kind,
