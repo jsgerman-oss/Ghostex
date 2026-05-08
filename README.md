@@ -36,6 +36,8 @@ brew install --cask maddada/tap/zmux
 
 - Native Sparkle updates for macOS releases.
 - `zmux sessions`, `zmux attach`, `zmux kill`, `zmux sleep`, `zmux wake`, and `zmux focus` manage live terminal sessions from a shell.
+- Reference-style Combined sidebar layout with refined project groups, search, scroll glow, modal, and session-card styling.
+- Pi is available as a supported agent with matching sidebar iconography.
 - Native T3 Code panes with managed runtime bootstrap, authenticated thread routing, and remote/browser access links.
 - Optional Browser Panes mode opens browser actions as workspace panes with address navigation, reload, DevTools, React Grab, profiles, and favicon-backed sidebar cards.
 - Embedded code-server editor panes open project-scoped code surfaces with diff stats and native CEF hosting.
@@ -50,6 +52,7 @@ brew install --cask maddada/tap/zmux
 - Configure Actions modal supports readable project-action rows plus create, edit, and delete flows.
 - Settings show modified values with reset-to-default tooltips, floating indicator sizing, and left/right sidebar placement.
 - Native floating status indicators show running, attention, and available session counts with click-to-focus routing and selectable size.
+- Native editor panes keep resize, accessibility-permission, and T3 diagnostics routed through native controls.
 - Main window size, position, and display restore across launches, including IDE-attached sessions.
 - Combined sidebar mode shows one project group per project across all projects, with Separated mode still available.
 - Recent Projects keeps closed or empty combined-mode projects available with fuzzy project/path search.

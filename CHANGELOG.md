@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.11 - 2026-05-08
+
+<!-- CDXC:Distribution 2026-05-08-13:47: Release notes for 1.4.11 must include
+all commits after v1.4.10 so README, GitHub, Sparkle, and Homebrew release
+metadata describe the same shipped behavior. -->
+
+- Added reference-style sidebar action flows, modal flows, story fixtures, and Combined layout refinements.
+- Added Pi as a supported agent option with icon assets, tests, and agent configuration UI wiring.
+- Improved sidebar group, session-card, search, modal, and scroll styling to better match the reference layout.
+- Improved native editor pane handling, pane resize routing, T3 diagnostics, and accessibility-permission driven controls.
+- Improved floating session status indicators with refined drawing, attention/running visual treatment, and additional settings support.
+- Improved session title, activity, rename, and first-prompt metadata handling so loading and restored-title states are more reliable.
+
 ## 1.4.10 - 2026-05-08
 
 <!-- CDXC:Distribution 2026-05-08-00:46: Release notes for 1.4.10 must include
