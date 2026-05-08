@@ -36,9 +36,9 @@
 .group[data-project-group="true"][data-collapsed="false"] {
   /*
    * CDXC:ProjectGroups 2026-05-06-18:42
-   * Project groups show the editor card as the first body row. Keep the header
-   * to editor spacing tighter than normal session stacks so the editor button
-   * reads as part of the project header controls instead of a separated card.
+   * Project groups keep title/editor controls visually connected to their
+   * session stack. The editor launcher moved into the header on 2026-05-08, so
+   * expanded projects still use tighter header-to-session spacing.
    */
   gap: calc(5px * var(--sidebar-density-scale));
 }
@@ -279,6 +279,22 @@
 .group-title-spacer {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.group-title-row:has(.group-collapsed-status-counts) .group-title-spacer {
+  flex: 0 0 auto;
+}
+
+.group-title-row:has(.group-collapsed-status-counts)
+  .group-header-actions:not([data-open="true"]) {
+  display: none;
+}
+
+.group-head:hover .group-title-row:has(.group-collapsed-status-counts) .group-header-actions,
+.group-head:has(:focus-visible)
+  .group-title-row:has(.group-collapsed-status-counts)
+  .group-header-actions {
+  display: inline-flex;
 }
 
 .group-title {
@@ -522,6 +538,16 @@
   justify-content: flex-start;
 }
 
+.group-terminal-menu-item[data-selected="true"] {
+  /*
+   * CDXC:ProjectTerminalMenu 2026-05-08-09:07
+   * The selected project-terminal launcher must keep the same icon and label
+   * color as sibling launch options; only the row background and checkmark
+   * communicate selection in this dropdown.
+   */
+  color: inherit;
+}
+
 .group-terminal-menu-label {
   flex: 1 1 auto;
   min-width: 0;
@@ -551,6 +577,15 @@
   flex: none;
 }
 
+.group-code-editor-icon {
+  display: block;
+  flex: none;
+  filter: grayscale(1) saturate(0);
+  height: 14px;
+  opacity: 0.62;
+  width: 14px;
+}
+
 .group-collapsed-summary {
   pointer-events: none;
   margin-left: -4px;
@@ -574,6 +609,77 @@
 
 .group-collapsed-summary[data-activity="attention"] .session-status-dot {
   --session-status-dot-color: var(--attention-dot);
+}
+
+.group-collapsed-status-counts {
+  /*
+   * CDXC:ProjectStatusIndicators 2026-05-08-09:33
+   * Collapsed project rows show hidden attention/done and working session
+   * counts in the title row. Hover and focus reveal project actions, so this
+   * trailing indicator slot collapses before those controls animate in.
+   * CDXC:ProjectStatusIndicators 2026-05-08-10:48
+   * Project-header indicators sit at the far right of the title row and list
+   * working before attention so the active-work count is seen first. When the
+   * count cluster is visible, hidden header actions leave layout entirely so
+   * their flex gap does not pull the project indicators away from the edge.
+   */
+  --project-status-attention-color: #73e79c;
+  --project-status-working-color: #f8ad07;
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  gap: calc(6px * var(--sidebar-density-scale));
+  justify-content: flex-end;
+  margin-left: auto;
+  max-width: calc(68px * var(--sidebar-density-scale));
+  min-height: calc(16px * var(--sidebar-density-scale));
+  opacity: 1;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    gap 120ms ease,
+    margin-left 120ms ease,
+    max-width 140ms ease,
+    opacity 120ms ease,
+    visibility 0s linear 0s;
+  visibility: visible;
+}
+
+.group-collapsed-status-count {
+  align-items: center;
+  color: var(--project-status-attention-color);
+  display: inline-flex;
+  flex: none;
+  font-size: calc(10px * var(--sidebar-density-scale));
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  gap: calc(3px * var(--sidebar-density-scale));
+  justify-content: center;
+  line-height: 1;
+}
+
+.group-collapsed-status-count::before {
+  background: currentColor;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+  content: "";
+  display: block;
+  flex: none;
+  height: calc(6px * var(--sidebar-density-scale));
+  width: calc(6px * var(--sidebar-density-scale));
+}
+
+.group-collapsed-status-count[data-activity="working"] {
+  color: var(--project-status-working-color);
+}
+
+.group-head:hover .group-collapsed-status-counts,
+.group-head:has(:focus-visible) .group-collapsed-status-counts,
+.group-title-row:has(.group-header-actions[data-open="true"]) .group-collapsed-status-counts {
+  gap: 0;
+  max-width: 0;
+  opacity: 0;
+  visibility: hidden;
 }
 
 .group-meta {
@@ -707,11 +813,11 @@
   /*
    * CDXC:SidebarHover 2026-05-04-07:00
    * The group trailing controls should end flush with the header surface. The
-   * sidebar runs under CSS zoom, so a 132px cap resolves to about 120px visually:
-   * enough for terminal split, browser, and visible-count controls in project
+   * sidebar runs under CSS zoom, so a 160px cap leaves room for terminal
+   * split, browser, VS Code reveal, and visible-count controls in project
    * headers.
    */
-  max-width: 132px;
+  max-width: 160px;
   opacity: 1;
   /*
    * CDXC:SidebarHover 2026-05-04-08:28
@@ -968,6 +1074,15 @@
   width: calc(100% - 14px);
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-project-group-list {
+  /*
+   * CDXC:ReferenceSidebar 2026-05-08-09:13
+   * Project rows in the reference sidebar need an 11px visual gap between
+   * different projects while preserving the compact spacing inside each group.
+   */
+  row-gap: 11px;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .group {
   border: none;
   border-radius: 0;
@@ -1001,8 +1116,7 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-head::before,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-head::after,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-session-connector-rail,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-session-connector-button,
-.sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-card-button {
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-session-connector-button {
   display: none;
 }
 
@@ -1054,8 +1168,15 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-header-actions {
+  /*
+   * CDXC:ProjectGroups 2026-05-08-12:31
+   * Combined project-header action buttons must reveal instantly instead of
+   * animating in beside the project title, so hover/focus state changes do not
+   * draw attention away from scanning project rows.
+   */
   gap: 0;
   max-width: 0;
+  transition: none;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-head:hover .group-header-actions,
@@ -1065,7 +1186,7 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-header-actions[data-open="true"] {
   gap: 2px;
   margin-left: 6px;
-  max-width: 112px;
+  max-width: 136px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button,
@@ -1080,11 +1201,20 @@
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-control-button {
+  transition: none;
   width: 22px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-code-editor-icon {
+  filter: grayscale(1) saturate(0);
+  height: 14px;
+  opacity: 0.55;
+  width: 14px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-split-button {
   grid-template-columns: 22px 18px;
+  transition: none;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button {
@@ -1119,7 +1249,18 @@
   margin-top: 8px;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"] .reference-chat-group-list .group-empty-state {
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-empty-drop-target {
+  margin-top: 12px;
+}
+
+/*
+ * CDXC:SidebarSearch 2026-05-08-11:26
+ * The no-match search placeholder should be visually identical to the
+ * reference sidebar's empty Chats placeholder, because both represent an empty
+ * section body rather than a standalone alert or card.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-chat-group-list .group-empty-state,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-empty-state.group-empty-state {
   border: 0;
   box-sizing: border-box;
   color: #444444;
@@ -1129,6 +1270,7 @@
   justify-content: flex-start;
   letter-spacing: 0;
   line-height: 1.15;
+  min-height: 0;
   padding-left: 10px;
 }
 
@@ -1158,6 +1300,14 @@
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-sessions-shell {
   margin-top: 0;
+  /*
+   * CDXC:SidebarSearch 2026-05-08-11:34
+   * Search can shrink a project group to one matching session while Previous
+   * Sessions renders immediately after it. The collapsible shell must contain
+   * session rows during height transitions so stale measurements cannot let a
+   * project session paint underneath the next section header.
+   */
+  overflow: hidden;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-sessions {
@@ -1165,7 +1315,9 @@
   overflow: visible;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-session-connector="true"] .project-editor-card-button,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-session-connector="true"]
+  .project-editor-session-frame,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-session-connector="true"] .session-frame {
   margin-left: 0;
   width: 100%;

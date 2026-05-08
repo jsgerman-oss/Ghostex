@@ -8,16 +8,15 @@ export type ScrollGlowState = {
 
 const SCROLL_GLOW_EPSILON_PX = 2;
 
-function getScrollableContentBottom(element: HTMLElement): number {
-  const elementRect = element.getBoundingClientRect();
-  let contentBottom = 0;
-
-  for (const child of Array.from(element.children)) {
-    const childRect = child.getBoundingClientRect();
-    contentBottom = Math.max(contentBottom, childRect.bottom - elementRect.top);
-  }
-
-  return contentBottom;
+function getScrollableContentHeight(element: HTMLElement): number {
+  /**
+   * CDXC:SidebarScroll 2026-05-08-10:53
+   * Bottom-of-list scrolling must preserve the user's offset. Child
+   * getBoundingClientRect() values move upward as scrollTop increases, so
+   * using them made the list look non-overflowing at the bottom and reset to
+   * the top. scrollHeight is stable across scroll positions.
+   */
+  return element.scrollHeight;
 }
 
 export function useScrollGlowState(
@@ -40,8 +39,8 @@ export function useScrollGlowState(
     const updateScrollGlowState = () => {
       animationFrameId = 0;
 
-      const contentBottom = getScrollableContentBottom(element);
-      const hasOverflow = contentBottom - element.clientHeight > SCROLL_GLOW_EPSILON_PX;
+      const contentHeight = getScrollableContentHeight(element);
+      const hasOverflow = contentHeight - element.clientHeight > SCROLL_GLOW_EPSILON_PX;
       /**
        * CDXC:SidebarScroll 2026-05-05-05:29
        * Combined-mode sparse project lists must not rubber-band or preserve a
@@ -53,7 +52,7 @@ export function useScrollGlowState(
         element.scrollTop = 0;
       }
       const showTopGlow = hasOverflow && element.scrollTop > SCROLL_GLOW_EPSILON_PX;
-      const remainingBottom = contentBottom - element.clientHeight - element.scrollTop;
+      const remainingBottom = contentHeight - element.clientHeight - element.scrollTop;
       const showBottomGlow = hasOverflow && remainingBottom > SCROLL_GLOW_EPSILON_PX;
 
       setScrollGlowState((previous) =>

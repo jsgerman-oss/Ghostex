@@ -144,15 +144,15 @@ export function CommandConfigModal({
     >
       <DialogContent className="zmux-settings-shadcn dark command-config-modal-shadcn">
         <DialogHeader>
-          <DialogTitle className="text-2xl">Configure action</DialogTitle>
-          <DialogDescription className="text-base">{description}</DialogDescription>
+          <DialogTitle className="text-xl">Configure action</DialogTitle>
+          <DialogDescription className="text-sm">{description}</DialogDescription>
         </DialogHeader>
         <FieldGroup className="gap-6">
           {isActionTypeLocked ? null : (
             <Field className="gap-2.5">
               <FieldContent>
                 <FieldTitle>
-                  <FieldLabel className="text-base" htmlFor={actionTypeId}>
+                  <FieldLabel className="text-sm" htmlFor={actionTypeId}>
                     Type
                   </FieldLabel>
                 </FieldTitle>
@@ -161,7 +161,7 @@ export function CommandConfigModal({
                 onValueChange={(value) => setActionType(value === "browser" ? "browser" : "terminal")}
                 value={actionType}
               >
-                <SelectTrigger className="h-11 w-full px-3 text-base" id={actionTypeId}>
+                <SelectTrigger className="h-10 w-full px-3 text-sm" id={actionTypeId}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -176,14 +176,14 @@ export function CommandConfigModal({
           <Field className="gap-2.5">
             <FieldContent>
               <FieldTitle>
-                <FieldLabel className="text-base" htmlFor={nameId}>
+                <FieldLabel className="text-sm" htmlFor={nameId}>
                   Text
                 </FieldLabel>
               </FieldTitle>
             </FieldContent>
             <Input
               autoFocus
-              className="h-11 px-3 text-base md:text-base"
+              className="h-10 px-3 text-sm md:text-sm"
               id={nameId}
               onChange={(event) => setName(event.currentTarget.value)}
               placeholder={actionType === "browser" ? "Docs" : "Dev"}
@@ -200,7 +200,7 @@ export function CommandConfigModal({
             <Field className="gap-2.5">
               <FieldContent>
                 <FieldTitle>
-                  <FieldLabel className="text-base" htmlFor={urlId}>
+                  <FieldLabel className="text-sm" htmlFor={urlId}>
                     URL
                   </FieldLabel>
                 </FieldTitle>
@@ -219,7 +219,7 @@ export function CommandConfigModal({
               <Field className="gap-2.5">
                 <FieldContent>
                   <FieldTitle>
-                    <FieldLabel className="text-base" htmlFor={commandId}>
+                    <FieldLabel className="text-sm" htmlFor={commandId}>
                       Command
                     </FieldLabel>
                   </FieldTitle>
@@ -235,7 +235,7 @@ export function CommandConfigModal({
               </Field>
               <Field className="items-center justify-between" orientation="horizontal">
                 <FieldContent>
-                  <FieldLabel className="text-base" htmlFor={checkboxId}>
+                  <FieldLabel className="text-sm" htmlFor={checkboxId}>
                     Close terminal after the command finishes
                   </FieldLabel>
                 </FieldContent>
@@ -247,7 +247,7 @@ export function CommandConfigModal({
               </Field>
               <Field className="items-center justify-between" orientation="horizontal">
                 <FieldContent>
-                  <FieldLabel className="text-base" htmlFor={soundCheckboxId}>
+                  <FieldLabel className="text-sm" htmlFor={soundCheckboxId}>
                     Play completion sound
                   </FieldLabel>
                 </FieldContent>
@@ -261,7 +261,7 @@ export function CommandConfigModal({
           )}
           <Field className="items-center justify-between" orientation="horizontal">
             <FieldContent>
-              <FieldLabel className="text-base" htmlFor={globalCheckboxId}>
+              <FieldLabel className="text-sm" htmlFor={globalCheckboxId}>
                 Show this action in every zmux project
               </FieldLabel>
             </FieldContent>

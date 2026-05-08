@@ -38,6 +38,7 @@ export const SIDEBAR_STORY_ARG_TYPES: NonNullable<Meta<SidebarStoryArgs>["argTyp
       "sort-toggle-demo",
       "selector-states",
       "overflow-stress",
+      "scroll-end-retention",
       "empty-groups",
       "three-groups-stress",
     ],

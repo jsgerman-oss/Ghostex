@@ -61,16 +61,18 @@ export function reconcileCollapsedGroupsById({
   autoCollapseGroupIds,
   browserGroupIds,
   collapseBlockedGroupIds = [],
+  expandOnSessionCountIncreaseGroupIds,
   groupIds,
-  previousBrowserSessionCountsByGroup,
+  previousSessionCountsByGroup,
   previousCollapsedGroupsById,
   sessionIdsByGroup,
 }: {
   autoCollapseGroupIds?: readonly string[];
   browserGroupIds: readonly string[];
   collapseBlockedGroupIds?: readonly string[];
+  expandOnSessionCountIncreaseGroupIds?: readonly string[];
   groupIds: readonly string[];
-  previousBrowserSessionCountsByGroup: Readonly<Record<string, number>>;
+  previousSessionCountsByGroup: Readonly<Record<string, number>>;
   previousCollapsedGroupsById: CollapsedGroupsById;
   sessionIdsByGroup: SessionIdsByGroup;
 }): CollapsedGroupsById {
@@ -96,7 +98,6 @@ export function reconcileCollapsedGroupsById({
    * collapse for non-empty groups unless their session count increases.
    */
   for (const groupId of new Set(autoCollapseGroupIds ?? browserGroupIds)) {
-    const previousCount = previousBrowserSessionCountsByGroup[groupId];
     const nextCount = (sessionIdsByGroup[groupId] ?? []).length;
 
     if (nextCount === 0) {
@@ -110,7 +111,20 @@ export function reconcileCollapsedGroupsById({
       }
       continue;
     }
+  }
 
+  /**
+   * CDXC:SidebarGroups 2026-05-08-11:09
+   * Any action that creates a session inside a collapsed Chats/project group
+   * must reveal the result. Keep this separate from empty-group auto-collapse
+   * so project groups can avoid forced empty collapse but still expand when
+   * their session count increases.
+   */
+  for (const groupId of new Set(
+    expandOnSessionCountIncreaseGroupIds ?? autoCollapseGroupIds ?? browserGroupIds,
+  )) {
+    const previousCount = previousSessionCountsByGroup[groupId];
+    const nextCount = (sessionIdsByGroup[groupId] ?? []).length;
     if (previousCount !== undefined && nextCount > previousCount && next[groupId]) {
       delete next[groupId];
       changed = true;

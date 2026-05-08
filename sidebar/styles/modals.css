@@ -151,11 +151,23 @@
 
 .configure-actions-modal {
   gap: 14px;
+  /* CDXC:AppModals 2026-05-08-11:28
+     Configure Actions and Configure Agents list dialogs must follow the same
+     Settings typography proportions as their editor dialogs: 20px dialog
+     titles, 14px primary row/control text, and smaller metadata. Scope the
+     scale here because the shared confirm-modal styles serve several compact
+     confirmation surfaces that should not inherit the management-dialog sizing. */
+  font-size: 14px;
   max-height: min(640px, calc(100vh - 24px));
   max-width: min(560px, 100%);
   overflow: hidden;
   padding: 20px;
   width: min(560px, 100%);
+}
+
+.configure-actions-modal .confirm-modal-title {
+  font-size: 20px;
+  line-height: 1.4;
 }
 
 .configure-actions-toolbar {
@@ -173,6 +185,7 @@
 .configure-actions-add-button {
   align-items: center;
   display: inline-flex;
+  font-size: 14px;
   gap: 6px;
   justify-content: center;
   min-height: 34px;
@@ -191,6 +204,10 @@
   display: flex;
   justify-content: center;
   padding-top: 4px;
+}
+
+.configure-agents-footer [data-slot="button"] {
+  font-size: 14px;
 }
 
 .configure-actions-list-item {
@@ -293,7 +310,7 @@
 }
 
 .configure-actions-list-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.25;
   overflow: hidden;
@@ -303,7 +320,7 @@
 
 .configure-actions-list-meta {
   color: color-mix(in srgb, var(--app-muted) 84%, var(--app-foreground) 16%);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.25;
   overflow: hidden;
@@ -313,7 +330,7 @@
 
 .configure-actions-empty-state {
   color: color-mix(in srgb, var(--app-muted) 86%, var(--app-foreground) 14%);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   padding: 10px 2px;
 }
@@ -1211,7 +1228,12 @@
 .command-config-modal-shadcn {
   color-scheme: dark;
   font-family: var(--app-font-family, var(--vscode-font-family, ui-sans-serif, system-ui));
-  font-size: 16px;
+  /* CDXC:AppModals 2026-05-08-11:26
+     Configure action and Configure agent must use the same typography scale as
+     Settings: 20px titles and 14px form/control text. The editor modals share
+     this class, so keep their scoped overrides in sync with Settings instead
+     of letting local text-base classes make the dialogs feel oversized. */
+  font-size: 14px;
   max-height: min(720px, calc(100vh - 2rem));
   overflow: auto;
   width: min(560px, calc(100vw - 2rem));
@@ -1225,7 +1247,7 @@
 .command-config-modal-shadcn [data-slot="field-label"],
 .command-config-modal-shadcn .command-config-label {
   color: var(--foreground);
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 650;
   letter-spacing: 0;
   text-transform: none;
@@ -1243,7 +1265,7 @@
 .command-config-modal-shadcn .command-icon-color-text,
 .command-config-modal-shadcn .command-icon-picker-search {
   font-family: inherit;
-  font-size: 16px;
+  font-size: 14px;
   letter-spacing: 0;
 }
 
@@ -1473,6 +1495,23 @@
   flex: 1 1 112px;
   max-width: 100%;
   min-width: 112px;
+}
+
+.session-rename-generate-button {
+  /**
+   * CDXC:SidebarRename 2026-05-08-18:56
+   * The rename modal must show the 50-character Generate Name threshold before
+   * submit instead of immediately sending long pasted text. Use a distinct
+   * action color so the user can tell the submit will generate from the entered
+   * text rather than apply the text verbatim.
+   */
+  background: color-mix(in srgb, #2f8f67 88%, var(--app-button-background) 12%);
+  color: #ffffff;
+}
+
+.session-rename-generate-button:hover,
+.session-rename-generate-button:focus-visible {
+  background: color-mix(in srgb, #36a875 92%, var(--app-button-background) 8%);
 }
 
 .command-config-actions {

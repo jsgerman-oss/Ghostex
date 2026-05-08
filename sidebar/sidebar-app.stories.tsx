@@ -90,6 +90,17 @@ export const OverflowStress: Story = {
   },
 };
 
+export const ScrollEndRetention: Story = {
+  args: {
+    fixture: "scroll-end-retention",
+    highlightedVisibleCount: 1,
+    showLastInteractionTimeOnSessionCards: true,
+    theme: "plain-dark",
+    viewMode: "grid",
+    visibleCount: 1,
+  },
+};
+
 export const EmptyGroups: Story = {
   args: {
     fixture: "empty-groups",

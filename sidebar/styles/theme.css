@@ -19,7 +19,7 @@
   --working-secondary: color-mix(in srgb, #ffd27a 62%, #2f6feb 38%);
   --attention-primary: color-mix(in srgb, #5ea0ff 68%, #2f6feb 32%);
   --attention-secondary: color-mix(in srgb, #9dcbff 62%, #184896 38%);
-  --attention-dot: #63e58f;
+  --attention-dot: #73e79c;
 }
 
 body:not([data-sidebar-theme]),

@@ -695,6 +695,67 @@ body[data-sidebar-theme^="light-"]
   opacity: 0.52;
 }
 
+/*
+ * CDXC:SidebarSearch 2026-05-08-11:20
+ * Inline search results in the reference sidebar must treat Previous Sessions
+ * as a peer section to Chats and Projects. Use the same section heading inset
+ * and vertical rhythm so search does not pin the header to the webview edge.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-previous-group {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: default;
+  gap: 0;
+  justify-self: stretch;
+  margin: 0;
+  max-width: none;
+  padding: 0;
+  width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-previous-group .group-head {
+  align-items: center;
+  border-radius: 0;
+  display: flex;
+  margin: 48px 15px 10px 17px;
+  min-height: 22px;
+  padding: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-search-previous-group
+  .group-head::before {
+  content: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-search-previous-group
+  .group-title-row {
+  align-items: center;
+  gap: 0;
+  min-height: 22px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-search-previous-group
+  .group-title {
+  color: #686868;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.15;
+  text-transform: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-search-previous-group
+  .group-sessions {
+  justify-items: center;
+  width: 100%;
+}
+
 /* CDXC:SidebarReference 2026-05-08-01:10: Combined mode must copy the
    provided app sidebar: a dark full-height rail, top window/navigation chrome,
    hidden legacy grids via display:none, section labels, and a persistent
@@ -719,7 +780,11 @@ body[data-sidebar-theme^="light-"]
    affordance instead of leading the label.
    CDXC:SidebarReference 2026-05-08-02:56: Project bulk controls are icon-only
    buttons; Collapse All uses arrows-diagonal-2, and Expand Previous uses
-   arrows-diagonal-minimize. */
+   arrows-diagonal-minimize.
+   CDXC:SidebarSearch 2026-05-08-11:49: The top sidebar search field must use
+   the same color surface as the Recent Projects search field, replace the
+   Search nav row while active, animate the row swap, close on Escape or empty
+   focus-away, and sit 6px from the left sidebar edge and 7px from the right. */
 .sidebar-reference-layout {
   display: contents;
 }
@@ -742,7 +807,7 @@ body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .stack {
   --app-card: #252525;
   --app-card-active: #2a2a2a;
   --app-button-background: #7da4f8;
-  --attention-dot: #7da4f8;
+  --attention-dot: #73e79c;
   background: var(--app-background);
   box-sizing: border-box;
   color: var(--app-foreground);
@@ -824,6 +889,26 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   padding: 0;
 }
 
+.reference-sidebar-nav-item {
+  position: relative;
+}
+
+.reference-sidebar-search-slot {
+  min-width: 0;
+}
+
+.reference-sidebar-search-slot[data-active="false"] .reference-sidebar-nav-button {
+  animation: reference-sidebar-search-button-enter 140ms ease-out both;
+}
+
+.reference-sidebar-search-field {
+  animation: reference-sidebar-search-field-enter 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  box-sizing: border-box;
+  margin-left: -1px;
+  min-width: 0;
+  width: calc(100% + 1px);
+}
+
 .reference-sidebar-nav-button,
 .reference-sidebar-settings-button,
 .reference-sidebar-project-row {
@@ -850,6 +935,65 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   padding: 10px;
   text-align: left;
   width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-actions-button {
+  padding-right: 42px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-search-slot[data-active="false"]
+  .reference-sidebar-nav-button {
+  padding-right: 42px;
+}
+
+/*
+ * CDXC:SidebarActions 2026-05-08-09:11
+ * The combined-sidebar Actions row owns a small hover-only right-side quick
+ * run button. It must not resize the row or replace the main click target,
+ * because the row opens the action list while the icon launches the project
+ * scoped recent action.
+ *
+ * CDXC:SidebarSearch 2026-05-08-12:41
+ * The combined-sidebar Search row owns a matching hover-only right-side
+ * Previous Sessions button so history can open directly without replacing the
+ * Search row's primary click target.
+ */
+.reference-sidebar-hover-action {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--app-foreground) 88%, var(--app-muted) 12%);
+  display: inline-flex;
+  height: 26px;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  transition:
+    background-color 120ms ease,
+    opacity 120ms ease;
+  width: 26px;
+}
+
+.reference-sidebar-nav-item:hover .reference-sidebar-hover-action,
+.reference-sidebar-nav-item:focus-within .reference-sidebar-hover-action {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.reference-sidebar-hover-action:hover,
+.reference-sidebar-hover-action:focus-visible {
+  background: color-mix(in srgb, var(--app-foreground) 10%, transparent);
+  outline: none;
+}
+
+.reference-sidebar-hover-action:disabled {
+  color: color-mix(in srgb, var(--app-muted) 80%, transparent);
+  cursor: default;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
@@ -899,45 +1043,76 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-top {
   margin-top: 4px;
-  padding-left: 2px;
-  padding-right: 2px;
+  padding-left: 6px;
+  padding-right: 7px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-toolbar {
   padding: 0;
+  width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input-shell {
+  width: 100%;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input {
-  background: #151515;
-  border: 1px solid #2c2c2c;
+  background: color-mix(in srgb, var(--app-foreground) 5%, transparent);
+  border: 1px solid color-mix(in srgb, #ffffff 10%, transparent);
   border-radius: 8px;
-  color: #b8b8b8;
-  font-size: 15.55px;
+  box-sizing: border-box;
+  color: var(--app-foreground);
+  font-size: 13px;
   font-weight: 400;
   letter-spacing: 0;
-  line-height: 14px;
-  height: 34px;
-  min-height: 34px;
+  height: 32px;
+  line-height: 1.3;
+  min-height: 32px;
   padding: 0 34px 0 10px;
+  width: 100%;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input::placeholder {
-  color: #6f6f6f;
+  color: color-mix(in srgb, var(--app-foreground) 62%, transparent);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input:focus {
-  border-color: #505050;
+  border-color: color-mix(in srgb, var(--app-button-background) 46%, var(--app-border));
   box-shadow: none;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input-icon {
-  color: #7a7a7a;
+  color: color-mix(in srgb, var(--app-foreground) 62%, transparent);
   right: 10px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-clear-button {
-  color: #7a7a7a;
+  color: color-mix(in srgb, var(--app-foreground) 62%, transparent);
   right: 5px;
+}
+
+@keyframes reference-sidebar-search-field-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes reference-sidebar-search-button-enter {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-content {
@@ -1166,11 +1341,18 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .reference-sidebar-section-actions {
+  /*
+   * CDXC:Chats 2026-05-08-11:53
+   * Chats header actions are hover-only: the browser and new-chat buttons must
+   * stay visually and interactively hidden until the user hovers or focuses the
+   * Chats section header, matching the project section controls.
+   */
   align-items: center;
   display: flex;
   flex: none;
   gap: 2px;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 120ms ease;
 }
 
@@ -1178,6 +1360,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 .reference-sidebar-section-row:focus-within .reference-sidebar-section-actions,
 .reference-sidebar-section-row[data-actions-always-visible="true"] .reference-sidebar-section-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .reference-sidebar-section-action {
@@ -1323,15 +1506,61 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   gap: 8px;
 }
 
+/*
+ * CDXC:SidebarSearch 2026-05-08-11:54
+ * Recent Projects search must visually match the active top Search sessions
+ * field: same box metrics, right-side icon, typography, placeholder color, and
+ * focus border. Keep this as explicit CSS instead of relying on the base
+ * Recent Projects flex field, which places the icon on the left.
+ */
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-search {
   background: color-mix(in srgb, var(--app-foreground) 5%, transparent);
-  border-color: color-mix(in srgb, #ffffff 10%, transparent);
+  border: 1px solid color-mix(in srgb, #ffffff 10%, transparent);
+  border-radius: 8px;
+  box-sizing: border-box;
+  color: var(--app-foreground);
+  display: grid;
+  gap: 0;
+  height: 32px;
   min-height: 32px;
+  padding: 0;
+  position: relative;
   width: 100%;
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-search:focus-within {
+  border-color: color-mix(in srgb, var(--app-button-background) 46%, var(--app-border));
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-search input {
+  background: transparent;
+  border: none;
+  box-sizing: border-box;
+  color: var(--app-foreground);
   font-size: 13px;
+  font-weight: 400;
+  height: 32px;
+  letter-spacing: 0;
+  line-height: 1.3;
+  min-width: 0;
+  outline: none;
+  padding: 0 34px 0 10px;
+  width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-search
+  input::placeholder {
+  color: color-mix(in srgb, var(--app-foreground) 62%, transparent);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-search-icon {
+  color: color-mix(in srgb, var(--app-foreground) 62%, transparent);
+  pointer-events: none;
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-list {

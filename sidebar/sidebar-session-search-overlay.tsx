@@ -5,6 +5,7 @@ import { SessionHistoryCard } from "./session-history-card";
 
 export type SidebarSessionSearchFieldProps = {
   inputRef: RefObject<HTMLInputElement | null>;
+  onEmptyBlur?: () => void;
   onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
   query: string;
   setQuery: (query: string) => void;
@@ -12,6 +13,7 @@ export type SidebarSessionSearchFieldProps = {
 
 export function SidebarSessionSearchField({
   inputRef,
+  onEmptyBlur,
   onKeyDown,
   query,
   setQuery,
@@ -35,6 +37,18 @@ export function SidebarSessionSearchField({
         <input
           aria-label="Search current and previous sessions"
           className="group-title-input session-search-input"
+          onBlur={() => {
+            /**
+             * CDXC:SidebarSearch 2026-05-08-11:49
+             * In combined mode, an empty Search sessions field is only a
+             * transient replacement for the Search nav button. Any focus-away
+             * action should restore the button automatically, while typed
+             * content keeps the search UI open for result review.
+             */
+            if (query.trim().length === 0) {
+              onEmptyBlur?.();
+            }
+          }}
           onChange={(event) => {
             setQuery(event.target.value);
           }}

@@ -97,82 +97,86 @@ export function ConfigureActionsModal({ isOpen, onClose, vscode }: ConfigureActi
     return null;
   }
 
+  const isEditorOpen = editorState !== undefined;
+
   /**
-   * CDXC:SidebarActions 2026-05-06-04:36
+   * CDXC:SidebarActions 2026-05-08-10:17
    * Configure Actions is a compact management dialog, not another sidebar.
-   * Render readable action rows instead of icon-only grid buttons, open the
-   * editor on row click, and put deletion in the editor so users do not depend
-   * on a context menu inside the modal.
+   * Render readable action rows for management, but hide that management modal
+   * while the action editor is open so users never see stacked Configure
+   * Actions and Configure action dialogs for one edit flow.
    */
   return createPortal(
     <>
-      <div className="confirm-modal-root scroll-mask-y" role="presentation">
-        <button className="confirm-modal-backdrop" onClick={onClose} type="button" />
-        <div
-          aria-label="Configure Actions"
-          aria-modal="true"
-          className="confirm-modal configure-actions-modal"
-          data-sidebar-theme={theme}
-          role="dialog"
-        >
-          <button
-            aria-label="Close Configure Actions"
-            className="confirm-modal-close-button"
-            onClick={onClose}
-            type="button"
+      {!isEditorOpen ? (
+        <div className="confirm-modal-root scroll-mask-y" role="presentation">
+          <button className="confirm-modal-backdrop" onClick={onClose} type="button" />
+          <div
+            aria-label="Configure Actions"
+            aria-modal="true"
+            className="confirm-modal configure-actions-modal"
+            data-sidebar-theme={theme}
+            role="dialog"
           >
-            <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
-          </button>
-          <div className="confirm-modal-header confirm-modal-header-with-close">
-            <div className="confirm-modal-title">Configure Actions</div>
-          </div>
-          <div className="configure-actions-toolbar">
             <button
-              className="secondary configure-actions-add-button"
-              onClick={() => openCreateCommandEditor("terminal")}
+              aria-label="Close Configure Actions"
+              className="confirm-modal-close-button"
+              onClick={onClose}
               type="button"
             >
-              <IconPlus aria-hidden="true" size={16} stroke={1.8} />
-              Add Terminal Action
+              <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
             </button>
-            <button
-              className="secondary configure-actions-add-button"
-              onClick={() => openCreateCommandEditor("browser")}
-              type="button"
-            >
-              <IconPlus aria-hidden="true" size={16} stroke={1.8} />
-              Add Browser Action
-            </button>
-          </div>
-          <div className="configure-actions-list scroll-mask-y">
-            {commands.length > 0 ? (
-              commands.map((command) => (
-                <button
-                  className="configure-actions-list-item"
-                  key={command.commandId}
-                  onClick={() => openCommandEditor(command)}
-                  type="button"
-                >
-                  <span aria-hidden="true" className="configure-actions-list-icon">
-                    <ConfigureActionIcon command={command} />
-                  </span>
-                  <span className="configure-actions-list-copy">
-                    <span className="configure-actions-list-title">{getActionTitle(command)}</span>
-                    <span className="configure-actions-list-meta">
-                      {getActionMeta(command)}
+            <div className="confirm-modal-header confirm-modal-header-with-close">
+              <div className="confirm-modal-title">Configure Actions</div>
+            </div>
+            <div className="configure-actions-toolbar">
+              <button
+                className="secondary configure-actions-add-button"
+                onClick={() => openCreateCommandEditor("terminal")}
+                type="button"
+              >
+                <IconPlus aria-hidden="true" size={16} stroke={1.8} />
+                Add Terminal Action
+              </button>
+              <button
+                className="secondary configure-actions-add-button"
+                onClick={() => openCreateCommandEditor("browser")}
+                type="button"
+              >
+                <IconPlus aria-hidden="true" size={16} stroke={1.8} />
+                Add Browser Action
+              </button>
+            </div>
+            <div className="configure-actions-list scroll-mask-y">
+              {commands.length > 0 ? (
+                commands.map((command) => (
+                  <button
+                    className="configure-actions-list-item"
+                    key={command.commandId}
+                    onClick={() => openCommandEditor(command)}
+                    type="button"
+                  >
+                    <span aria-hidden="true" className="configure-actions-list-icon">
+                      <ConfigureActionIcon command={command} />
                     </span>
-                  </span>
-                </button>
-              ))
-            ) : (
-              <div className="configure-actions-empty-state">No actions configured.</div>
-            )}
+                    <span className="configure-actions-list-copy">
+                      <span className="configure-actions-list-title">
+                        {getActionTitle(command)}
+                      </span>
+                      <span className="configure-actions-list-meta">{getActionMeta(command)}</span>
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <div className="configure-actions-empty-state">No actions configured.</div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
       <CommandConfigModal
         draft={editorState?.draft ?? createCommandDraft("terminal")}
-        isOpen={editorState !== undefined}
+        isOpen={isEditorOpen}
         lockedActionType={editorState?.lockedActionType}
         onCancel={() => setEditorState(undefined)}
         onDelete={deleteCommand}

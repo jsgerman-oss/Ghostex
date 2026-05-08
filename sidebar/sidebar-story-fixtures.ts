@@ -34,6 +34,7 @@ export type SidebarStoryFixture =
   | "sort-toggle-demo"
   | "selector-states"
   | "overflow-stress"
+  | "scroll-end-retention"
   | "empty-groups"
   | "three-groups-stress";
 
@@ -68,6 +69,28 @@ const PREVIOUS_SESSIONS_BY_FIXTURE: Partial<
       detail: "Claude Code",
       historyId: "history-2",
       sessionId: "history-session-2",
+      shortcutLabel: "⌘⌥8",
+    }),
+  ],
+  /**
+   * CDXC:SidebarSearch 2026-05-08-11:34
+   * Combined-reference Storybook fixtures need real previous-session search
+   * hits so spacing between project matches and Previous Sessions can be
+   * reproduced without synthetic DOM injection.
+   */
+  "combined-sparse-reference": [
+    createStoryPreviousSession({
+      alias: "Rename Modal Generator",
+      detail: "OpenAI Codex",
+      historyId: "combined-history-1",
+      sessionId: "combined-history-session-1",
+      shortcutLabel: "⌘⌥7",
+    }),
+    createStoryPreviousSession({
+      alias: "Sidebar interactions search",
+      detail: "Browser",
+      historyId: "combined-history-2",
+      sessionId: "combined-history-session-2",
       shortcutLabel: "⌘⌥8",
     }),
   ],

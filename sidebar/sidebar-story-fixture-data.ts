@@ -480,6 +480,33 @@ const OVERFLOW_STRESS_GROUPS: SidebarStoryGroup[] = [
   },
 ];
 
+/*
+ * CDXC:SidebarScroll 2026-05-08-10:53
+ * Keep a long, stable sidebar fixture for bottom-scroll retention checks. The
+ * session list must remain overflowed after the user reaches the end instead
+ * of being reclassified as sparse content and snapped back to the top.
+ */
+const SCROLL_END_RETENTION_GROUPS: SidebarStoryGroup[] = Array.from(
+  { length: 16 },
+  (_, groupIndex) => ({
+    groupId: `scroll-retention-group-${groupIndex + 1}`,
+    isActive: groupIndex === 0,
+    sessions: [
+      createStorySession({
+        activity: groupIndex % 5 === 0 ? "working" : undefined,
+        alias: `scroll retention session ${groupIndex + 1}`,
+        detail: groupIndex % 2 === 0 ? "OpenAI Codex" : "Claude Code",
+        isFocused: groupIndex === 0,
+        isVisible: groupIndex === 0,
+        lastInteractionAt: minutesAgo(groupIndex + 1),
+        sessionId: `scroll-retention-session-${groupIndex + 1}`,
+        shortcutLabel: `⌘⌥${(groupIndex % 9) + 1}`,
+      }),
+    ],
+    title: `Project ${groupIndex + 1}`,
+  }),
+);
+
 const EMPTY_GROUPS: SidebarStoryGroup[] = [
   {
     groupId: "group-1",
@@ -694,6 +721,7 @@ export const GROUPS_BY_FIXTURE: Record<SidebarStoryFixture, SidebarStoryGroup[]>
   default: DEFAULT_GROUPS,
   "empty-groups": EMPTY_GROUPS,
   "overflow-stress": OVERFLOW_STRESS_GROUPS,
+  "scroll-end-retention": SCROLL_END_RETENTION_GROUPS,
   "selector-states": SELECTOR_STATE_GROUPS,
   "sort-toggle-demo": SORT_TOGGLE_DEMO_GROUPS,
   "three-groups-stress": THREE_GROUPS_STRESS,

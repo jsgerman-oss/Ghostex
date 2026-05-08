@@ -41,6 +41,33 @@ async function unhoverSidebarChrome(storyRoot: HTMLElement) {
   fireEvent.mouseLeave(await findRequiredElement(storyRoot, ".stack", "sidebar stack"));
 }
 
+async function waitForSidebarScrollObservers(windowLike: Window | null) {
+  for (let index = 0; index < 3; index += 1) {
+    await new Promise((resolve) => {
+      if (!windowLike || typeof windowLike.requestAnimationFrame !== "function") {
+        window.setTimeout(resolve, 0);
+        return;
+      }
+
+      windowLike.requestAnimationFrame(resolve);
+    });
+  }
+}
+
+async function waitForRenderedSidebar(storyRoot: ParentNode) {
+  await waitFor(
+    () => {
+      const stack = storyRoot.querySelector(".stack");
+      const hasRenderedGroups = storyRoot.querySelector("[data-sidebar-group-id]");
+
+      expect(stack).toBeTruthy();
+      expect(stack).toHaveAttribute("data-dimmed", "false");
+      expect(hasRenderedGroups).toBeTruthy();
+    },
+    { timeout: 3_000 },
+  );
+}
+
 export const ToolbarActions: Story = {
   args: {
     highlightedVisibleCount: 2,
@@ -167,6 +194,42 @@ export const ToolbarActions: Story = {
       await openContextMenu(group);
       await userEvent.click(await body.findByRole("menuitem", { name: "Full reload" }));
       await expectMessage({ groupId: "group-1", type: "fullReloadGroup" });
+    });
+  },
+};
+
+export const ScrollEndRetention: Story = {
+  args: {
+    fixture: "scroll-end-retention",
+    showLastInteractionTimeOnSessionCards: true,
+    theme: "plain-dark",
+  },
+  play: async ({ canvasElement, step }) => {
+    await waitForRenderedSidebar(canvasElement.ownerDocument.body);
+
+    await step("retain the bottom scroll offset after the glow hook updates", async () => {
+      const scrollViewport = await findRequiredElement(
+        canvasElement.ownerDocument.body,
+        ".session-groups-content",
+        "session groups scroll viewport",
+      );
+
+      await waitFor(() => {
+        expect(scrollViewport.scrollHeight).toBeGreaterThan(scrollViewport.clientHeight + 24);
+      });
+
+      const maxScrollTop = scrollViewport.scrollHeight - scrollViewport.clientHeight;
+      scrollViewport.scrollTop = maxScrollTop;
+      fireEvent.scroll(scrollViewport);
+      await waitForSidebarScrollObservers(canvasElement.ownerDocument.defaultView);
+
+      /*
+       * CDXC:SidebarScroll 2026-05-08-10:53
+       * Reaching the end of the sidebar list is a stable user scroll state.
+       * Storybook should catch regressions where overflow measurement flips
+       * false at the bottom and sends the list back to scrollTop 0.
+       */
+      expect(scrollViewport.scrollTop).toBeGreaterThan(maxScrollTop - 4);
     });
   },
 };

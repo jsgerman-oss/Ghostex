@@ -80,7 +80,7 @@ describe("shouldFocusGroupOnHeaderActivation", () => {
 });
 
 describe("formatProjectEditorButtonLabel", () => {
-  test("formats the compact files and changed-lines summary", () => {
+  test("formats the compact pipe-separated files and changed-lines summary", () => {
     expect(
       formatProjectEditorButtonLabel({
         additions: 9,
@@ -89,6 +89,6 @@ describe("formatProjectEditorButtonLabel", () => {
         isLoading: false,
         isRepo: true,
       }),
-    ).toBe("1 [+9 | -11]");
+    ).toBe("1 | +9 | -11");
   });
 });

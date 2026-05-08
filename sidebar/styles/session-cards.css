@@ -19,9 +19,23 @@
  * text and the same font sizing/weight used by normal session aliases.
  *
  * CDXC:EditorPanes 2026-05-06-18:55
- * The project editor card mirrors session-card agent identity placement: the
- * VS Code brand icon lives in the trailing right-side slot, and middle-click
- * closes the editor surface instead of opening it.
+ * The project editor card mirrors session-card controls while staying a
+ * project-level action: middle-click closes the editor surface instead of
+ * opening it.
+ *
+ * CDXC:EditorPanes 2026-05-08-12:20
+ * The project editor launcher can sit directly below each project title in the
+ * sidebar while keeping the existing diff summary and open command.
+ *
+ * CDXC:EditorPanes 2026-05-08-12:43
+ * The VS Code icon leads the stat text and is intentionally grayscale with low
+ * opacity, so it identifies the editor action without competing with the diff
+ * numbers.
+ *
+ * CDXC:EditorPanes 2026-05-08-12:46
+ * The full editor launcher is hidden by default and revealed by the project
+ * header's VS Code icon. Once revealed, it should look like sibling session
+ * buttons instead of a permanent header control.
  */
 .project-editor-card-button {
   --project-editor-surface: linear-gradient(
@@ -44,7 +58,7 @@
   font-size: calc(13px * var(--sidebar-density-scale));
   font-weight: 600;
   gap: calc(7px * var(--sidebar-density-scale));
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   height: calc(31px * var(--sidebar-density-scale));
   isolation: isolate;
   letter-spacing: 0.02em;
@@ -62,6 +76,12 @@
     opacity 120ms ease;
   width: 100%;
   text-align: left;
+}
+
+.project-editor-card-button.session {
+  gap: 0;
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 0;
 }
 
 .project-editor-card-button::before,
@@ -125,12 +145,6 @@
   opacity: 0.52;
 }
 
-.group[data-session-connector="true"] .project-editor-card-button {
-  margin-left: calc(19px * var(--sidebar-density-scale));
-  width: calc(100% - calc(19px * var(--sidebar-density-scale)));
-  z-index: 1;
-}
-
 .project-editor-card-icon,
 .project-editor-diff-label,
 .project-editor-diff-stat {
@@ -142,16 +156,43 @@
 }
 
 .project-editor-card-icon {
+  filter: grayscale(1) saturate(0);
   height: calc(15px * var(--sidebar-density-scale));
   justify-content: center;
-  justify-self: end;
-  opacity: 0.7;
+  justify-self: start;
+  opacity: 0.34;
   width: calc(15px * var(--sidebar-density-scale));
 }
 
 .project-editor-card-button:is(:hover, :focus-visible, [data-open="true"])
   .project-editor-card-icon {
+  opacity: 0.5;
+}
+
+.project-editor-session-frame .project-editor-floating-icon {
+  filter: grayscale(1) saturate(0);
+  opacity: 0.34;
+}
+
+.project-editor-session-frame:hover .project-editor-floating-icon,
+.project-editor-session-frame:has(.project-editor-card-button:focus-visible)
+  .project-editor-floating-icon,
+.project-editor-session-frame[data-focused="true"] .project-editor-floating-icon {
+  opacity: 0.5;
+}
+
+.project-editor-close-button {
+  position: absolute;
+  right: calc(10px * var(--sidebar-density-scale));
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 6;
+}
+
+.project-editor-session-frame:hover .project-editor-close-button,
+.project-editor-session-frame:focus-within .project-editor-close-button {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .project-editor-card-brand-icon {
@@ -796,18 +837,23 @@
   background: color-mix(in srgb, var(--app-card-active) 88%, #000000 12%);
   border: 1px solid color-mix(in srgb, var(--app-button-background) 42%, var(--app-border));
   border-radius: calc(7px * var(--sidebar-density-scale));
-  color: var(--app-foreground);
+  color: color-mix(in srgb, var(--app-foreground) 76%, #82b7ff 24%);
   display: flex;
-  font-size: calc(11px * var(--sidebar-density-scale));
-  font-weight: 650;
-  gap: calc(6px * var(--sidebar-density-scale));
+  font-size: calc(13px * var(--sidebar-density-scale));
+  font-weight: 600;
   inset: calc(4px * var(--sidebar-density-scale));
+  letter-spacing: 0.02em;
   /* CDXC:SessionTitleLoading 2026-04-27-09:44
    * The first-prompt title generation state must read like the normal session
-   * title row: loading label and spinner stay left-aligned instead of centered.
+   * title row: loading label stays left-aligned instead of centered.
+   *
+   * CDXC:SessionTitleLoading 2026-05-08-09:07
+   * The visible generating label inherits the normal session title typography,
+   * uses a slight blue tint, and replaces the extra left-side spinner with a
+   * one/two/three-dot loop that advances every 0.75s.
    */
   justify-content: flex-start;
-  line-height: 1;
+  line-height: 1.3;
   min-width: 0;
   padding-inline: calc(10px * var(--sidebar-density-scale));
   pointer-events: none;
@@ -815,17 +861,24 @@
   z-index: 6;
 }
 
-.session-title-generation-overlay span {
+.session-title-generation-overlay-label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.session-title-generation-overlay-icon {
-  animation: session-agent-icon-spin 0.9s linear infinite;
-  color: var(--session-agent-icon-color, var(--app-foreground));
-  flex: 0 0 auto;
+.session-title-generation-overlay-dots {
+  display: inline-flex;
+  min-width: 1.15em;
+}
+
+.session-title-generation-overlay-dots span:nth-child(2) {
+  animation: session-title-generation-dot-two 2.25s step-end infinite;
+}
+
+.session-title-generation-overlay-dots span:nth-child(3) {
+  animation: session-title-generation-dot-three 2.25s step-end infinite;
 }
 
 .session-floating-agent-icon[data-agent-icon="codex"],
@@ -924,8 +977,8 @@
 }
 
 .session-last-interaction-time {
-  color: color-mix(in srgb, var(--app-muted) 88%, transparent);
-  font-size: calc(11px * var(--sidebar-density-scale));
+  color: #4f5359;
+  font-size: calc(9px * var(--sidebar-density-scale));
   font-variant-numeric: tabular-nums;
   font-weight: 500;
   letter-spacing: 0.01em;
@@ -1129,6 +1182,30 @@
   }
 }
 
+@keyframes session-title-generation-dot-two {
+  0%,
+  33.333% {
+    opacity: 0;
+  }
+
+  33.334%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes session-title-generation-dot-three {
+  0%,
+  66.666% {
+    opacity: 0;
+  }
+
+  66.667%,
+  100% {
+    opacity: 1;
+  }
+}
+
 .session-frame:not(.session-history-frame)
   .session:hover
   .session-head-trailing[data-hover-trailing-display="icon"]
@@ -1155,8 +1232,8 @@
 }
 
 /* CDXC:SidebarReference 2026-05-08-01:10: The reference screenshots require
-   flat rounded active rows, always-visible last-active times, a small blue
-   attention dot, and a gray ring spinner for working sessions.
+   flat rounded active rows, always-visible last-active times, a compact
+   attention dot, and a ring spinner for working sessions.
    CDXC:SidebarReference 2026-05-08-01:28: Session row typography and controls
    must use app CSS-pixel scale rather than screenshot pixels, keeping cards
    similar to Codex.app sidebar density on Retina displays.
@@ -1167,7 +1244,13 @@
    must occupy the same fixed trailing slot so rows do not shift when a session
    changes between idle, attention, and working states.
    CDXC:SidebarReference 2026-05-08-13:34: Hover and active session rows use a
-   neutral gray surface instead of the app accent's blue-tinted active color. */
+   neutral gray surface instead of the app accent's blue-tinted active color.
+   CDXC:SessionStatusIndicators 2026-05-08-09:09: Working and attention status
+   indicators belong against the session button's right edge; attention uses
+   #73e79c, and working uses a subtly orange spinner.
+   CDXC:SessionStatusIndicators 2026-05-08-09:14: The smaller attention dot
+   shifts 3px left from the shared right edge so its visual center aligns with
+   the wider working spinner. */
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame {
   --reference-session-agent-icon-size: 13px;
   --reference-session-icon-size: 15px;
@@ -1186,7 +1269,7 @@
   height: 34px;
   min-height: 34px;
   outline: none;
-  padding: 10px var(--reference-session-trailing-inset) 10px
+  padding: 7px var(--reference-session-trailing-inset) 7px
     var(--reference-session-title-inset);
 }
 
@@ -1225,29 +1308,87 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-head {
   gap: 6px;
   grid-template-columns: minmax(0, 1fr) var(--reference-session-trailing-slot-width);
-  height: 14px;
+  height: 20px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-alias-heading {
-  color: #d8d8d8;
+  color: #b4b8c0;
   font-size: 15.55px;
-  font-weight: 500 !important;
+  /*
+   * CDXC:SidebarReference 2026-05-08-10:31
+   * Project and Chats session rows must match the lightweight project header
+   * typography instead of becoming visually heavier than their group labels.
+   *
+   * CDXC:SidebarReference 2026-05-08-11:01
+   * Session availability is encoded with color rather than font weight:
+   * sleeping is dimmed further, awake-not-surfaced is readable, and
+   * surfaced/active share the same brighter title color because active already
+   * has row chrome.
+   *
+   * CDXC:SidebarReference 2026-05-08-12:05
+   * Session titles need a line box taller than the 15.55px text so descenders
+   * in labels such as google.com are not clipped by the fixed-height button's
+   * overflow boundary. Keep the 34px row height and center the 20px text line
+   * with 7px vertical padding instead of shrinking the glyph box.
+   */
+  font-weight: 300 !important;
   letter-spacing: 0;
-  line-height: 14px;
+  line-height: 20px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-title-generation-overlay {
+  border-radius: 8px;
+  color: color-mix(in srgb, #d8d8d8 74%, #82b7ff 26%);
+  font-size: 15.55px;
+  font-weight: 300 !important;
+  inset: 0;
+  letter-spacing: 0;
+  line-height: 20px;
+  padding: 7px var(--reference-session-trailing-inset) 7px
+    var(--reference-session-title-inset);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session[data-visible="true"]
   .session-alias-heading {
-  font-weight: 700 !important;
+  color: #d8d8d8;
+  font-weight: 300 !important;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session[data-focused="true"]
+  .session-alias-heading {
+  color: #d8d8d8;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session[data-sleeping="true"] {
+  opacity: 1;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session[data-sleeping="true"]
+  .session-alias-heading {
+  color: #5f646b;
+  opacity: 0.42;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session[data-visible="true"]
+  .session-title-generation-overlay {
+  font-weight: 300 !important;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-last-interaction-time {
-  color: #858585 !important;
-  font-size: 15.55px;
-  font-weight: 500 !important;
+  /*
+   * CDXC:SidebarSessions 2026-05-08-11:01
+   * Last Active should stay visually stable: fixed #4f5359 color, no elapsed
+   * age color shifts, and 2px smaller than the session title text.
+   */
+  color: #4f5359;
+  font-size: 13.55px;
+  font-weight: 300 !important;
   letter-spacing: 0;
-  line-height: 14px;
+  line-height: 20px;
   min-width: max-content;
   opacity: 1 !important;
   overflow: visible;
@@ -1259,7 +1400,7 @@
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session[data-visible="true"]
   .session-last-interaction-time {
-  font-weight: 700 !important;
+  font-weight: 300 !important;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-head-trailing {
@@ -1284,10 +1425,39 @@
   display: block;
   height: var(--reference-session-icon-size);
   left: var(--reference-session-leading-inset);
-  opacity: 1;
+  /*
+   * CDXC:SidebarReference 2026-05-08-11:51
+   * Agent-icon visibility is state-based only: non-surfaced sessions stay
+   * hidden, surfaced-but-not-active sessions show a low-opacity icon, and the
+   * active session shows the icon at 80% opacity.
+   */
+  opacity: 0;
   top: 50%;
+  transition: opacity 90ms ease;
   translate: 0 -50%;
   width: var(--reference-session-icon-size);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-visible="true"]
+  .session-floating-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-visible="true"]
+  .session-floating-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-visible="true"]
+  .session-floating-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-visible="true"]
+  .session-persistence-provider-badge[data-slot="floating"] {
+  opacity: 0.22;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-focused="true"]
+  .session-floating-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-focused="true"]
+  .session-floating-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-focused="true"]
+  .session-floating-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-focused="true"]
+  .session-persistence-provider-badge[data-slot="floating"] {
+  opacity: 0.8;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
@@ -1315,13 +1485,10 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot {
-  background: #7da4f8;
+  background: #73e79c;
   box-shadow: none;
   height: 7px;
-  right: calc(
-    var(--reference-session-trailing-inset) +
-      ((var(--reference-session-trailing-slot-width) - 7px) / 2)
-  );
+  right: var(--reference-session-trailing-inset);
   top: 50%;
   translate: 0 -50%;
   width: 7px;
@@ -1335,22 +1502,20 @@
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-activity="attention"] .session-status-dot,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot-anchored[data-activity="attention"] {
-  --session-status-dot-color: #7da4f8;
+  --session-status-dot-color: #73e79c;
   animation: none;
-  background: #7da4f8;
+  background: #73e79c;
+  right: calc(var(--reference-session-trailing-inset) + 3px);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-activity="working"] .session-status-dot,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot-anchored[data-activity="working"] {
   animation: reference-sidebar-working-spin 0.82s linear infinite;
   background: transparent;
-  border: 1.5px solid #8b929b;
+  border: 1.5px solid #d99a62;
   border-right-color: transparent;
   height: 12px;
-  right: calc(
-    var(--reference-session-trailing-inset) +
-      ((var(--reference-session-trailing-slot-width) - 12px) / 2)
-  );
+  right: var(--reference-session-trailing-inset);
   width: 12px;
 }
 
@@ -1364,6 +1529,43 @@
     .session-status-dot-inline {
     display: block;
   }
+}
+
+/*
+ * CDXC:EditorPanes 2026-05-08-12:52
+ * The revealed VS Code editor row copies the real session-frame/session DOM,
+ * but its identity icon is a custom SVG. Keep it visible with the same
+ * left-floating placement while preserving the requested muted grayscale look.
+ */
+.project-editor-session-frame .project-editor-floating-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .project-editor-session-frame
+  .project-editor-floating-icon {
+  display: block;
+  filter: grayscale(1) saturate(0);
+  opacity: 0.34;
+}
+
+.project-editor-session-frame:hover .project-editor-floating-icon,
+.project-editor-session-frame:has(.project-editor-card-button:focus-visible)
+  .project-editor-floating-icon,
+.project-editor-session-frame[data-focused="true"] .project-editor-floating-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .project-editor-session-frame:hover
+  .project-editor-floating-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .project-editor-session-frame:has(.project-editor-card-button:focus-visible)
+  .project-editor-floating-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .project-editor-session-frame[data-focused="true"]
+  .project-editor-floating-icon {
+  opacity: 0.5;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-close-button {
+  right: var(--reference-session-trailing-inset);
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 @keyframes reference-sidebar-working-spin {

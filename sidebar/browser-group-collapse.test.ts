@@ -65,7 +65,7 @@ describe("reconcileCollapsedGroupsById", () => {
       reconcileCollapsedGroupsById({
         browserGroupIds: [],
         groupIds: ["group-1"],
-        previousBrowserSessionCountsByGroup: {},
+        previousSessionCountsByGroup: {},
         previousCollapsedGroupsById: {
           "group-1": true,
           "group-2": true,
@@ -84,7 +84,7 @@ describe("reconcileCollapsedGroupsById", () => {
       reconcileCollapsedGroupsById({
         browserGroupIds: ["browser-tabs"],
         groupIds: ["browser-tabs", "group-1"],
-        previousBrowserSessionCountsByGroup: {},
+        previousSessionCountsByGroup: {},
         previousCollapsedGroupsById: {},
         sessionIdsByGroup: {
           "browser-tabs": [],
@@ -101,7 +101,7 @@ describe("reconcileCollapsedGroupsById", () => {
       reconcileCollapsedGroupsById({
         browserGroupIds: ["browser-tabs"],
         groupIds: ["browser-tabs", "group-1"],
-        previousBrowserSessionCountsByGroup: {
+        previousSessionCountsByGroup: {
           "browser-tabs": 0,
         },
         previousCollapsedGroupsById: {
@@ -120,7 +120,7 @@ describe("reconcileCollapsedGroupsById", () => {
       reconcileCollapsedGroupsById({
         browserGroupIds: ["browser-tabs"],
         groupIds: ["browser-tabs", "group-1"],
-        previousBrowserSessionCountsByGroup: {
+        previousSessionCountsByGroup: {
           "browser-tabs": 2,
         },
         previousCollapsedGroupsById: {},
@@ -140,7 +140,7 @@ describe("reconcileCollapsedGroupsById", () => {
         autoCollapseGroupIds: ["combined-chats", "project-zmux"],
         browserGroupIds: [],
         groupIds: ["combined-chats", "project-zmux"],
-        previousBrowserSessionCountsByGroup: {},
+        previousSessionCountsByGroup: {},
         previousCollapsedGroupsById: {},
         sessionIdsByGroup: {
           "combined-chats": [],
@@ -159,7 +159,7 @@ describe("reconcileCollapsedGroupsById", () => {
         autoCollapseGroupIds: ["combined-chats", "project-zmux"],
         browserGroupIds: [],
         groupIds: ["combined-chats", "project-zmux"],
-        previousBrowserSessionCountsByGroup: {
+        previousSessionCountsByGroup: {
           "combined-chats": 0,
           "project-zmux": 0,
         },
@@ -175,13 +175,44 @@ describe("reconcileCollapsedGroupsById", () => {
     ).toEqual({});
   });
 
+  test("should expand a collapsed project group when a session is created without auto-collapsing empty projects", () => {
+    /**
+     * CDXC:SidebarGroups 2026-05-08-11:09
+     * Project groups do not use empty auto-collapse because empty projects
+     * expose project controls, but a newly added terminal/browser/agent session
+     * inside a collapsed project must still expand that project.
+     */
+    expect(
+      reconcileCollapsedGroupsById({
+        autoCollapseGroupIds: ["combined-chats"],
+        browserGroupIds: [],
+        expandOnSessionCountIncreaseGroupIds: ["combined-chats", "project-zmux"],
+        groupIds: ["combined-chats", "project-zmux"],
+        previousSessionCountsByGroup: {
+          "combined-chats": 1,
+          "project-zmux": 1,
+        },
+        previousCollapsedGroupsById: {
+          "combined-chats": true,
+          "project-zmux": true,
+        },
+        sessionIdsByGroup: {
+          "combined-chats": ["chat-session-1"],
+          "project-zmux": ["session-1", "session-2"],
+        },
+      }),
+    ).toEqual({
+      "combined-chats": true,
+    });
+  });
+
   test("should defer browser auto-collapse while a browser open is still settling", () => {
     expect(
       reconcileCollapsedGroupsById({
         browserGroupIds: ["browser-tabs"],
         collapseBlockedGroupIds: ["browser-tabs"],
         groupIds: ["browser-tabs", "group-1"],
-        previousBrowserSessionCountsByGroup: {
+        previousSessionCountsByGroup: {
           "browser-tabs": 1,
         },
         previousCollapsedGroupsById: {},
@@ -203,7 +234,7 @@ describe("reconcileCollapsedGroupsById", () => {
       reconcileCollapsedGroupsById({
         browserGroupIds: ["browser-tabs"],
         groupIds: ["browser-tabs", "group-1"],
-        previousBrowserSessionCountsByGroup: {
+        previousSessionCountsByGroup: {
           "browser-tabs": 1,
         },
         previousCollapsedGroupsById: collapsedGroupsById,
