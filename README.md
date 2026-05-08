@@ -1,13 +1,15 @@
 ## Ghostty + Codex App + Built-in Browser = ZMUX!<br />
 ### Fully-featured Native Agent CLIs Manager<br />Embedded Browser | Advanced Agents Support | Fast & Lower RAM <br /><br />
 
-#### Install on macOS
+#### Install on macOS using brew or dmg in releases page
+###### (Looking for help with dev/testing for Windows & Linux ports)
 
 ```bash
 brew install --cask maddada/tap/zmux
 ```
 
-(Looking for help with dev/testing for Windows & Linux ports)
+
+<br />
 
 ### Work with tens of agents in multiple projects easily:
 
@@ -44,24 +46,24 @@ brew install --cask maddada/tap/zmux
 
 ---
 
-# Other features:
+## Other features:
 
-## Can be attached to your IDE: Shows a button on the attached IDE (Zed / VScode) to show zmux.
+### Can be attached to your IDE: Shows a button on the attached IDE (Zed / VScode) to show zmux.
 
 - Follows your IDE size/position.
 - Project in IDE & zmux is mirrored.
 - Hotkey to hide/show.
 - Click on your IDE to hide zmux
 
-## How to use Chrome Canary as the dedicated agent browser
+### How to use Chrome Canary as the dedicated agent browser
 
-### MCP setting to make Chrome Canary always used by your agent:
+#### MCP setting to make Chrome Canary always used by your agent:
 
 1. Ask the agent to use "Chrome Devtools MCP"
 2. Enable remote debugging on Chrome Canary
 3. Set your mcp to use canary channel:
 
-#### For Claude Code:
+##### For Claude Code:
 
 ~/.claude.json
 
@@ -84,7 +86,7 @@ brew install --cask maddada/tap/zmux
   ...
 ```
 
-#### For Codex:
+##### For Codex:
 
 ~/.codex/config.toml
 
