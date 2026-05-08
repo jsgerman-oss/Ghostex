@@ -114,6 +114,30 @@ export function shouldAutoNameSessionFromFirstPrompt(input: {
   return explainFirstPromptAutoRenameDecision(input).shouldAutoName;
 }
 
+export function getCurrentTitleForFirstPromptAutoRename(input: {
+  agentName: string | undefined;
+  pendingPrompt: string | undefined;
+  persistedTitle: string | undefined;
+  protectStoredTitleFromAutomation?: boolean;
+  sessionTitle: string | undefined;
+  terminalTitle: string | undefined;
+}): string | undefined {
+  /**
+   * CDXC:SessionTitleSync 2026-05-08-16:23
+   * First-prompt auto-rename may claim a terminal-auto title only while the
+   * session is still effectively generic, such as `Codex Session`. A meaningful
+   * Codex-provided terminal title is already the desired session name and must
+   * block `/rename <generated title>` from being sent later for the same prompt.
+   */
+  const shouldClaimGenericCurrentTitle =
+    Boolean(input.pendingPrompt?.trim()) &&
+    input.protectStoredTitleFromAutomation !== true &&
+    isGenericAgentSessionTitle(input.agentName, input.sessionTitle);
+  return shouldClaimGenericCurrentTitle
+    ? undefined
+    : input.persistedTitle || input.sessionTitle || input.terminalTitle;
+}
+
 export function explainFirstPromptAutoRenameDecision(input: {
   agentName: string | undefined;
   currentTitle: string | undefined;
