@@ -1,4 +1,4 @@
-## Ghostty + Codex App + Built-in Browser = ZMUX!<br />
+## The best parts of Ghostty & Codex App = ZMUX!<br />
 ### Fully-featured Native Agent CLIs Manager<br />Embedded Browser | Advanced Agents Support | Fast & Lower RAM <br /><br />
 
 #### Install on macOS using brew or dmg in releases page
