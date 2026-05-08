@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.0 - 2026-05-08
+
+<!-- CDXC:Distribution 2026-05-08-17:16: Release notes for 2.0.0 must emphasize
+the full UI refresh plus stability and performance work shipped since v1.4.11
+so README, GitHub, Sparkle, and Homebrew metadata describe the same release. -->
+
+- Changed the whole zmux UI around the simplified Codex-style workspace: refreshed top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, icons, and README screenshots.
+- Improved workspace stability and performance by suppressing byte-identical native storage writes, skipping metadata-only AppKit relayouts, reducing high-frequency native diagnostics, and filtering noisy T3/focus logs.
+- Added native workspace visibility helpers and tests so sidebar/native sync can avoid unnecessary workspace work while preserving visible pane behavior.
+- Improved restore and fork actions for native terminal title bars, including Codex and Claude fork command paths.
+- Fixed first-prompt auto-rename so meaningful terminal-synced titles are preserved instead of being overwritten by redundant generated rename commands.
+- Updated Storybook sidebar scenarios, interaction readiness, and fixtures so visual checks match current local settings and the redesigned sidebar behavior.
+
 ## 1.4.11 - 2026-05-08
 
 <!-- CDXC:Distribution 2026-05-08-13:47: Release notes for 1.4.11 must include
