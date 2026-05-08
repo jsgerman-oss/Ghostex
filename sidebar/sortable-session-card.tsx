@@ -180,8 +180,10 @@ export function SortableSessionCard({
     !isBrowserSession &&
     Boolean(session?.sessionPersistenceProvider && session.sessionPersistenceName);
   const canFullReloadSession = session ? !isBrowserSession && supportsFullReload(session) : false;
-  const canGenerateSessionName = session
-    ? !isBrowserSession && supportsGeneratedName(session)
+  const canGenerateSessionTitle = session
+    ? !isBrowserSession &&
+      supportsGeneratedName(session) &&
+      Boolean(session.firstUserMessage?.trim())
     : false;
   const canSleepSession = session ? !isBrowserSession : false;
   const postSessionDragDebugLog = useEffectEvent(
@@ -608,29 +610,38 @@ export function SortableSessionCard({
     });
   };
 
-  const requestGenerateSessionName = () => {
+  const requestGenerateSessionTitle = () => {
+    const firstMessage = session.firstUserMessage?.trim();
+    if (!firstMessage) {
+      return;
+    }
+
     setContextMenuPosition(undefined);
     /**
-     * CDXC:SessionNaming 2026-04-30-02:20
-     * The Generate Name click needs a sidebar-origin log before posting the
-     * command so failures can be separated into UI, bridge, and controller
-     * stages.
+     * CDXC:SessionNaming 2026-05-08-10:54
+     * Generate Title must summarize the captured 1st user message through the
+     * normal renameSession flow. That controller path already owns Codex title
+     * generation, Agent CLI sync, and the "Generating title..." card loading
+     * state, so the sidebar must send the first message as the rename input
+     * instead of posting a separate generateSessionName command.
      */
     vscode.postMessage({
       details: {
         agentIcon: session.agentIcon,
-        hasFirstUserMessage: Boolean(session.firstUserMessage?.trim()),
+        firstUserMessageLength: firstMessage.length,
         isGeneratingFirstPromptTitle: session.isGeneratingFirstPromptTitle === true,
         primaryTitle: session.primaryTitle,
         sessionId: session.sessionId,
         terminalTitle: session.terminalTitle,
       },
-      event: "session.generateName.clicked",
+      event: "session.generateTitle.clicked",
       type: "sidebarDebugLog",
     });
     vscode.postMessage({
       sessionId: session.sessionId,
-      type: "generateSessionName",
+      shouldGenerateTitle: true,
+      title: firstMessage,
+      type: "renameSession",
     });
   };
 
@@ -841,12 +852,13 @@ export function SortableSessionCard({
       onClick: requestForkSession,
     });
   }
-  if (canGenerateSessionName) {
+  if (canGenerateSessionTitle) {
     /**
-     * CDXC:SessionNaming 2026-04-30-01:50
-     * Claude and Codex thread cards need a direct "Generate Name" action in
-     * the context menu. The backend owns the agent-specific behavior so the
-     * sidebar only exposes the command for supported agent identities.
+     * CDXC:SessionNaming 2026-05-08-10:54
+     * Claude and Codex thread cards need a direct "Generate Title" action that
+     * retitles the session from the saved 1st user message. The action is only
+     * useful once that message exists, because the controller intentionally
+     * generates from real user text rather than from title fallbacks.
      */
     sessionActions.push({
       icon: (
@@ -857,9 +869,9 @@ export function SortableSessionCard({
           stroke={1.8}
         />
       ),
-      key: "generate-name",
-      label: "Generate Name",
-      onClick: requestGenerateSessionName,
+      key: "generate-title",
+      label: "Generate Title",
+      onClick: requestGenerateSessionTitle,
     });
   }
   if (canFullReloadSession) {
@@ -1150,12 +1162,23 @@ function supportsResumeCommandCopy(session: SidebarSessionItem): boolean {
     session.agentIcon === "claude" ||
     session.agentIcon === "copilot" ||
     session.agentIcon === "gemini" ||
-    session.agentIcon === "opencode"
+    session.agentIcon === "opencode" ||
+    session.agentIcon === "pi"
   );
 }
 
 function supportsFork(session: SidebarSessionItem): boolean {
-  return session.agentIcon === "codex" || session.agentIcon === "claude";
+  /**
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi exposes a real `--fork <session>` CLI path once zmux has captured the
+   * Pi session id/path, so Pi cards should show the same one-click Fork action
+   * as Codex in the session context menu.
+   */
+  return (
+    session.agentIcon === "codex" ||
+    session.agentIcon === "claude" ||
+    session.agentIcon === "pi"
+  );
 }
 
 function supportsGeneratedName(session: SidebarSessionItem): boolean {

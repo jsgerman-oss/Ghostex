@@ -538,6 +538,9 @@ describe("SessionCardContent", () => {
 
     expect(markup).toContain("session-header-reloading-icon");
     expect(markup).not.toContain("session-header-agent-icon");
+    expect(markup).toContain("session-title-generation-overlay-label");
+    expect(markup).toContain("session-title-generation-overlay-dots");
+    expect(markup).not.toContain("session-title-generation-overlay-icon");
   });
 });
 

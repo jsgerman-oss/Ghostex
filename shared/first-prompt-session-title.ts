@@ -7,7 +7,10 @@ import { getVisiblePrimaryTitle, normalizeTerminalTitle } from "./session-grid-c
  * removed without changing native Ghostty session naming.
  */
 
-export type FirstPromptAutoRenameStrategy = "sendBareRenameCommand" | "generateTitleAndRename";
+export type FirstPromptAutoRenameStrategy =
+  | "sendBareRenameCommand"
+  | "generateTitleAndRename"
+  | "generateTitleAndName";
 export type FirstPromptAutoRenameDecisionReason =
   | "alreadyAutoNamed"
   | "alreadyPending"
@@ -46,6 +49,7 @@ const GENERIC_SESSION_TITLES_BY_AGENT = new Map<string, ReadonlySet<string>>([
   ["codex", new Set(["codex", "openai codex", "codex cli"])],
   ["gemini", new Set(["gemini"])],
   ["opencode", new Set(["opencode", "open code"])],
+  ["pi", new Set(["pi", "π"])],
 ]);
 const LEADING_PROMPT_FILLER_PATTERN =
   /^(?:(?:please|kindly|hey|hi|hello)\s+|(?:can|could|would|will)\s+you\s+|(?:can|could|would)\s+we\s+|help\s+me\s+|i\s+need(?:\s+you)?\s+to\s+|i\s+need\s+|how\s+do\s+i\s+|how\s+does\s+|is\s+there\s+(?:any\s+)?way\s+to\s+)+/iu;
@@ -61,6 +65,16 @@ export function resolveFirstPromptAutoRenameStrategy(
 
   if (normalizedAgentName === "codex") {
     return "generateTitleAndRename";
+  }
+
+  if (normalizedAgentName === "pi" || normalizedAgentName === "π") {
+    /**
+     * CDXC:PiAgent 2026-05-08-09:42
+     * Pi's CLI names sessions with `/name <title>` instead of Codex's
+     * `/rename <title>`. Keep the generation policy shared while letting the
+     * native sender choose Pi's command syntax.
+     */
+    return "generateTitleAndName";
   }
 
   return undefined;

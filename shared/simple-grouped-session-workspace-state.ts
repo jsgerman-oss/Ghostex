@@ -574,6 +574,37 @@ export function setTerminalSessionAgentNameInSimpleWorkspace(
   });
 }
 
+export function setTerminalSessionAgentSessionMetadataInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+  metadata: { agentSessionId?: string; agentSessionPath?: string },
+): WorkspaceMutationResult {
+  const nextAgentSessionId = metadata.agentSessionId?.trim() || undefined;
+  const nextAgentSessionPath = metadata.agentSessionPath?.trim() || undefined;
+  /**
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi resumes and forks by its own jsonl session path/id, not by the visible
+   * sidebar title. Persist those values on the terminal record whenever the Pi
+   * extension reports them so sleeping, wake, app restart, and previous-session
+   * restore all target the original Pi conversation.
+   */
+  return updateSession(snapshot, sessionId, (session) => {
+    if (
+      session.kind !== "terminal" ||
+      (session.agentSessionId === nextAgentSessionId &&
+        session.agentSessionPath === nextAgentSessionPath)
+    ) {
+      return session;
+    }
+
+    return {
+      ...session,
+      agentSessionId: nextAgentSessionId,
+      agentSessionPath: nextAgentSessionPath,
+    };
+  });
+}
+
 export function setTerminalSessionPersistenceNameInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,

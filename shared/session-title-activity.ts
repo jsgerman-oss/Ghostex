@@ -36,6 +36,7 @@ const GEMINI_IDLE_MARKER = "◇";
 const COPILOT_WORKING_MARKER = "🤖";
 const COPILOT_IDLE_MARKER = "🔔";
 const OPENCODE_TITLE_PREFIX_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✦◇🤖🔔]*OC\s*\|/iu;
+const PI_TITLE_PREFIX_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✦◇🤖🔔]*π\s*-/u;
 export const TITLE_ACTIVITY_WINDOW_MS = 1_000;
 export const SLOW_SPINNER_ACTIVITY_WINDOW_MS = 3_000;
 
@@ -195,7 +196,10 @@ function getTitleState(
   title: string,
   knownAgentName?: string,
 ):
-  | { agentName: "claude" | "codex" | "copilot" | "gemini" | "opencode"; state: "idle" | "working" }
+  | {
+      agentName: "claude" | "codex" | "copilot" | "gemini" | "opencode" | "pi";
+      state: "idle" | "working";
+    }
   | undefined {
   const normalizedAgentName = normalizeKnownAgentName(knownAgentName);
   const normalizedTitle = title.trim().replace(/\s+/g, " ");
@@ -208,6 +212,14 @@ function getTitleState(
     return {
       agentName: "claude",
       state: claudeCodeTitleState,
+    };
+  }
+
+  const piTitleState = getPiTitleState(title, normalizedAgentName === "pi");
+  if (piTitleState) {
+    return {
+      agentName: "pi",
+      state: piTitleState,
     };
   }
 
@@ -323,6 +335,31 @@ function getCodexTitleState(
   return "idle";
 }
 
+function getPiTitleState(
+  title: string,
+  allowAgentHintMatch = false,
+): "idle" | "working" | undefined {
+  const normalizedTitle = title.trim().replace(/\s+/g, " ");
+  const hasPiTitlePrefix = PI_TITLE_PREFIX_PATTERN.test(normalizedTitle);
+  const hasPiWorkingMarker = getCodexWorkingMarker(normalizedTitle) !== undefined;
+  /**
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi sets terminal titles as `π - <session> - <cwd>` and the zmux Pi
+   * extension reuses Codex's slow braille spinner frames. Detect manual `pi`
+   * launches from that title prefix so blank terminals become Pi sessions
+   * without requiring launch through the sidebar button.
+   */
+  if (!allowAgentHintMatch && !hasPiTitlePrefix) {
+    return undefined;
+  }
+
+  if (hasPiWorkingMarker) {
+    return "working";
+  }
+
+  return hasPiTitlePrefix || allowAgentHintMatch ? "idle" : undefined;
+}
+
 function getGeminiTitleState(
   title: string,
   allowAgentHintMatch = false,
@@ -386,7 +423,7 @@ function containsAnyMarker(title: string, markers: readonly string[]): boolean {
 
 function normalizeKnownAgentName(
   knownAgentName: string | undefined,
-): "claude" | "codex" | "copilot" | "gemini" | "opencode" | undefined {
+): "claude" | "codex" | "copilot" | "gemini" | "opencode" | "pi" | undefined {
   const normalizedAgentName = knownAgentName?.trim().toLowerCase();
   if (normalizedAgentName === "claude code") {
     return "claude";
@@ -400,12 +437,16 @@ function normalizeKnownAgentName(
   if (normalizedAgentName === "open code") {
     return "opencode";
   }
+  if (normalizedAgentName === "π") {
+    return "pi";
+  }
   if (
     normalizedAgentName === "claude" ||
     normalizedAgentName === "codex" ||
     normalizedAgentName === "gemini" ||
     normalizedAgentName === "copilot" ||
-    normalizedAgentName === "opencode"
+    normalizedAgentName === "opencode" ||
+    normalizedAgentName === "pi"
   ) {
     return normalizedAgentName;
   }
@@ -416,7 +457,7 @@ function normalizeKnownAgentName(
 function requiresObservedTitleTransitions(
   agentName: TitleDerivedSessionActivity["agentName"],
 ): boolean {
-  return agentName === "claude" || agentName === "codex";
+  return agentName === "claude" || agentName === "codex" || agentName === "pi";
 }
 
 export function getTitleActivityWindowMs(

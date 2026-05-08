@@ -7,6 +7,7 @@ import {
   getSessionGridLayoutVisibleCount,
   getSlotPosition,
   isSessionGridFocusModeActive,
+  normalizeTerminalAgentSessionIdentity,
   normalizeTerminalSessionAgentName,
   normalizeTerminalSessionPersistenceProvider,
   normalizeTerminalEngine,
@@ -274,6 +275,12 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
     alias,
     agentName: normalizeTerminalSessionAgentName(
       session.kind === "terminal" ? session.agentName : undefined,
+    ),
+    agentSessionId: normalizeTerminalAgentSessionIdentity(
+      session.kind === "terminal" ? session.agentSessionId : undefined,
+    ),
+    agentSessionPath: normalizeTerminalAgentSessionIdentity(
+      session.kind === "terminal" ? session.agentSessionPath : undefined,
     ),
     displayId,
     kind: "terminal",

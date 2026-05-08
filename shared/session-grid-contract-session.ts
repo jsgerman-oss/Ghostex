@@ -42,6 +42,8 @@ const IGNORED_GENERIC_TERMINAL_TITLES = new Set([
   "codex",
   "codex cli",
   "openai codex",
+  "pi",
+  "π",
   "zmux",
 ]);
 const IGNORED_PLACEHOLDER_SESSION_TITLES = new Set([
@@ -55,6 +57,7 @@ const IGNORED_PLACEHOLDER_SESSION_TITLES = new Set([
   "opencode session",
   "open code session",
   "openai codex session",
+  "pi session",
   "t3 code session",
 ]);
 const DEFAULT_SESSION_AGENT_TITLE_NAMES = new Map<string, string>([
@@ -66,6 +69,8 @@ const DEFAULT_SESSION_AGENT_TITLE_NAMES = new Map<string, string>([
   ["gemini", "Gemini"],
   ["opencode", "OpenCode"],
   ["open-code", "OpenCode"],
+  ["pi", "Pi"],
+  ["π", "Pi"],
   ["t3", "T3 Code"],
 ]);
 const ELLIPSIZED_PATH_TITLE_PATTERN = /^(?:…|\.\.\.)[\\/]/u;
@@ -124,6 +129,13 @@ export function clampAgentManagerZoomPercent(value: number | undefined): number 
 export function clampSidebarThemeSetting(value: string | undefined): SidebarThemeSetting {
   switch (value) {
     case "auto":
+      /**
+       * CDXC:SidebarTheme 2026-05-08-11:14
+       * Auto is no longer an active sidebar theme. Normalize legacy saved Auto
+       * settings to Dark Gray instead of preserving a hidden system-dependent
+       * mode after the picker has been removed from Settings.
+       */
+      return "plain";
     case "plain":
     case "dark-modern":
     case "dark-green":
@@ -145,7 +157,7 @@ export function clampSidebarThemeSetting(value: string | undefined): SidebarThem
     case "solarized-dark":
       return "dark-blue";
     default:
-      return "auto";
+      return "plain";
   }
 }
 
@@ -382,6 +394,8 @@ export function createSessionRecord(
   return {
     alias,
     agentName: normalizeTerminalSessionAgentName(terminalAgentName),
+    agentSessionId: normalizeTerminalAgentSessionIdentity(options?.agentSessionId),
+    agentSessionPath: normalizeTerminalAgentSessionIdentity(options?.agentSessionPath),
     column: position.column,
     createdAt,
     displayId,
@@ -419,6 +433,11 @@ function normalizeSessionTitleSource(
 
 export function normalizeTerminalSessionAgentName(value: string | undefined): string | undefined {
   const normalizedValue = value?.replace(/\s+/g, " ").trim();
+  return normalizedValue && normalizedValue.length > 0 ? normalizedValue : undefined;
+}
+
+export function normalizeTerminalAgentSessionIdentity(value: string | undefined): string | undefined {
+  const normalizedValue = value?.trim();
   return normalizedValue && normalizedValue.length > 0 ? normalizedValue : undefined;
 }
 
@@ -535,7 +554,31 @@ export function normalizeTerminalTitle(title: string | undefined): string | unde
     .replace(LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN, "")
     .replace(LEADING_TERMINAL_TITLE_PREFIX_PATTERN, "")
     .trim();
-  return sanitizedTitle || undefined;
+  return normalizePiTerminalTitle(sanitizedTitle) ?? (sanitizedTitle || undefined);
+}
+
+function normalizePiTerminalTitle(title: string): string | undefined {
+  const match = /^π\s*-\s*(.+)$/u.exec(title.trim());
+  if (!match) {
+    return undefined;
+  }
+
+  const parts = match[1]
+    .split(/\s+-\s+/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  /**
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi emits `π - <cwd>` before a session is named and
+   * `π - <session name> - <cwd>` afterward. Keep unnamed Pi titles generic
+   * while surfacing the named session portion as the sidebar title, matching
+   * Codex's generated-title behavior without persisting the cwd as a name.
+   */
+  if (parts.length < 2) {
+    return "π";
+  }
+
+  return parts.slice(0, -1).join(" - ") || "π";
 }
 
 export function getVisibleTerminalTitle(title: string | undefined): string | undefined {

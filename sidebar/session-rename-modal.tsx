@@ -5,7 +5,6 @@ import {
   useId,
   useRef,
   useState,
-  type ClipboardEvent as ReactClipboardEvent,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
@@ -16,7 +15,7 @@ export type SessionRenameModalProps = {
   initialTitle: string;
   isOpen: boolean;
   onCancel: () => void;
-  onConfirm: (title: string) => void;
+  onConfirm: (title: string, options?: { shouldGenerateTitle?: boolean }) => void;
 };
 
 /**
@@ -73,36 +72,31 @@ export function SessionRenameModal({
   }
 
   const trimmedTitle = title.trim();
+  /**
+   * CDXC:SidebarRename 2026-05-08-18:56
+   * Long pasted rename text must stay in the input so the user can edit or
+   * cancel it. Once the entered text exceeds 50 characters, the submit action
+   * becomes Generate Name and explicitly asks the controller to summarize from
+   * that text instead of applying it verbatim.
+   */
+  const shouldGenerateTitle = trimmedTitle.length > SESSION_RENAME_PASTE_SUMMARY_THRESHOLD;
   const confirmTitle = (nextTitle: string) => {
     const normalizedTitle = nextTitle.trim();
     if (!normalizedTitle) {
       return;
     }
 
-    onConfirm(normalizedTitle);
+    onConfirm(
+      normalizedTitle,
+      normalizedTitle.length > SESSION_RENAME_PASTE_SUMMARY_THRESHOLD
+        ? { shouldGenerateTitle: true }
+        : undefined,
+    );
   };
 
   const submitRename = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     confirmTitle(title);
-  };
-
-  const handleInputPaste = (event: ReactClipboardEvent<HTMLInputElement>) => {
-    const pastedTitle = event.clipboardData.getData("text").trim();
-    if (pastedTitle.length <= SESSION_RENAME_PASTE_SUMMARY_THRESHOLD) {
-      return;
-    }
-
-    /**
-     * CDXC:SidebarRename 2026-05-04-14:57
-     * Pasting more than 50 characters is an explicit auto-name request. Submit
-     * the full pasted text immediately through the normal renameSession command
-     * so the active host backend generates the concise thread title before
-     * syncing `/rename` into the agent CLI.
-     */
-    event.preventDefault();
-    setTitle(pastedTitle);
-    confirmTitle(pastedTitle);
   };
 
   const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -146,7 +140,7 @@ export function SessionRenameModal({
             Rename Session
           </div>
           <div className="confirm-modal-description" id={descriptionId}>
-            Paste text over 50 characters to auto-generate a name.
+            Text over 50 characters will generate a name.
           </div>
         </div>
         <label className="command-config-field">
@@ -156,7 +150,6 @@ export function SessionRenameModal({
             className="group-title-input command-config-input"
             onChange={(event) => setTitle(event.currentTarget.value)}
             onKeyDown={handleInputKeyDown}
-            onPaste={handleInputPaste}
             ref={inputRef}
             value={title}
           />
@@ -165,8 +158,14 @@ export function SessionRenameModal({
           <button className="secondary confirm-modal-button" onClick={onCancel} type="button">
             Cancel
           </button>
-          <button className="primary confirm-modal-button" disabled={!trimmedTitle} type="submit">
-            Rename
+          <button
+            className={`primary confirm-modal-button${
+              shouldGenerateTitle ? " session-rename-generate-button" : ""
+            }`}
+            disabled={!trimmedTitle}
+            type="submit"
+          >
+            {shouldGenerateTitle ? "Generate Name" : "Rename"}
           </button>
         </div>
       </form>

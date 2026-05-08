@@ -1,16 +1,19 @@
-import { describe, expect, test } from "vite-plus/test";
+import { describe, expect, test } from "vitest";
 import type { SidebarSessionItem } from "../shared/session-grid-contract";
 import { getGroupSessionSummary } from "./group-session-summary";
 
 describe("getGroupSessionSummary", () => {
-  test("should prefer the green indicator when any attention session exists", () => {
+  test("should count attention and working sessions while preserving the green priority indicator", () => {
     expect(
       getGroupSessionSummary([
         createSession("session-1", { activity: "working", lifecycleState: "running" }),
         createSession("session-2", { activity: "attention", lifecycleState: "done" }),
+        createSession("session-3", { activity: "attention", lifecycleState: "done" }),
       ]),
     ).toEqual({
+      attentionCount: 2,
       indicatorActivity: "attention",
+      workingCount: 1,
     });
   });
 
@@ -22,7 +25,9 @@ describe("getGroupSessionSummary", () => {
         createSession("session-3", { activity: "working", lifecycleState: "done" }),
       ]),
     ).toEqual({
+      attentionCount: 0,
       indicatorActivity: "working",
+      workingCount: 1,
     });
   });
 
@@ -45,7 +50,9 @@ describe("getGroupSessionSummary", () => {
         createSession("session-4", { activity: "idle", lifecycleState: "error", isRunning: false }),
       ]),
     ).toEqual({
+      attentionCount: 0,
       indicatorActivity: undefined,
+      workingCount: 0,
     });
   });
 });

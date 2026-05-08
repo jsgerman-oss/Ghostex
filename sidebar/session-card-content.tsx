@@ -17,7 +17,7 @@ import {
 } from "../shared/session-grid-contract";
 import { getSidebarAgentNameByIcon, type SidebarAgentIcon } from "../shared/sidebar-agents";
 import { AGENT_LOGOS } from "./agent-logos";
-import { formatRelativeTime, getRelativeTimeColor } from "./relative-time";
+import { formatRelativeTime } from "./relative-time";
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
 import { useRelativeTimeTick } from "./use-relative-time-tick";
 
@@ -28,6 +28,7 @@ const AGENT_SECONDARY_LABELS: Record<SidebarAgentIcon, readonly string[]> = {
   copilot: ["copilot", "github copilot"],
   gemini: ["gemini"],
   opencode: ["open code", "opencode"],
+  pi: ["pi", "π"],
   t3: ["t3", "t3 code"],
 };
 
@@ -70,10 +71,6 @@ export function SessionCardContent({
           allowJustNow: false,
         }).value
       : undefined;
-  const lastInteractionStyle =
-    hasLastInteractionTime && session.lastInteractionAt
-      ? { color: getRelativeTimeColor(session.lastInteractionAt) }
-      : undefined;
   /**
    * CDXC:SidebarSessions 2026-04-28-05:18
    * Settings selects the default trailing mode. Agent Icon mode must keep
@@ -87,6 +84,10 @@ export function SessionCardContent({
    * CDXC:Sidebar-overflow-menu 2026-05-04-03:54
    * Agent Icon/Last Active is a settings preference, not an overflow-menu
    * shortcut, because it changes the default display behavior for all cards.
+   *
+   * CDXC:SidebarSessions 2026-05-08-11:01
+   * Last Active uses one fixed visual color in session cards. Elapsed time can
+   * change the text label, but must not recolor the timestamp by age.
    */
   const defaultTrailingDisplay = !showLastInteractionTime
     ? "icon"
@@ -118,9 +119,7 @@ export function SessionCardContent({
             data-hover-trailing-display={hoverTrailingDisplay}
           >
             {lastInteractionLabel ? (
-              <div className="session-last-interaction-time" style={lastInteractionStyle}>
-                {lastInteractionLabel}
-              </div>
+              <div className="session-last-interaction-time">{lastInteractionLabel}</div>
             ) : null}
             {hasHeaderAgentIcon ? (
               <SessionHeaderAgentIcon
@@ -159,13 +158,26 @@ export function SessionCardContent({
         </div> */}
       </div>
       {isGeneratingFirstPromptTitle ? (
-        <div className="session-title-generation-overlay" role="status">
-          <IconLoader2
-            aria-hidden="true"
-            className="session-title-generation-overlay-icon"
-            size={13}
-          />
-          <span>Generating title</span>
+        <div
+          className="session-title-generation-overlay"
+          role="status"
+          aria-label="Generating title"
+        >
+          {/**
+           * CDXC:SessionTitleLoading 2026-05-08-09:07
+           * First-prompt title generation should look like the real sidebar
+           * title text with a subtle blue state color. The label owns the
+           * progress cue through looping dots, so it must not render the extra
+           * left-side spinner that made the row typography feel mismatched.
+           */}
+          <span className="session-title-generation-overlay-label">
+            Generating title
+            <span className="session-title-generation-overlay-dots" aria-hidden="true">
+              <span>.</span>
+              <span>.</span>
+              <span>.</span>
+            </span>
+          </span>
         </div>
       ) : null}
     </>

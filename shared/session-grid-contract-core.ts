@@ -98,6 +98,15 @@ export type BaseSessionRecord = {
 
 export type TerminalSessionRecord = BaseSessionRecord & {
   agentName?: string;
+  /**
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Some agents need a durable conversation identity that is not the sidebar
+   * title or terminal-provider session name. Pi restore/fork uses its session
+   * jsonl path/id, so store that metadata on the terminal record beside Codex's
+   * title-based identity.
+   */
+  agentSessionId?: string;
+  agentSessionPath?: string;
   kind: "terminal";
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
@@ -130,6 +139,8 @@ export type CreateSessionRecordOptions =
     }
   | {
       agentName?: string;
+      agentSessionId?: string;
+      agentSessionPath?: string;
       displayId?: string;
       initialPresentation?: "background" | "focused";
       kind?: "terminal";

@@ -429,6 +429,12 @@ describe("visible primary titles", () => {
     expect(normalizeTerminalTitle("🔔 Copilot fix")).toBe("Copilot fix");
     expect(normalizeTerminalTitle("OC | Review repository")).toBe("Review repository");
     expect(normalizeTerminalTitle("⠸ OC | Review repository")).toBe("Review repository");
+    expect(normalizeTerminalTitle("π - Implement Pi restore - zmux")).toBe(
+      "Implement Pi restore",
+    );
+    expect(normalizeTerminalTitle("⠸ π - Implement Pi restore - zmux")).toBe(
+      "Implement Pi restore",
+    );
   });
 
   test("should hide generated Session N placeholder titles in sidebar items", () => {
@@ -477,6 +483,7 @@ describe("visible primary titles", () => {
     expect(getPreferredSessionTitle("Session 1", "Codex")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Codex CLI")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "OpenAI Codex")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "π - zmux")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Claude")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Claude Code")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "  ⠸ Codex  ")).toBeUndefined();
@@ -494,6 +501,7 @@ describe("visible primary titles", () => {
 
   test("should expose placeholder titles through sidebar session items without making them persisted titles", () => {
     expect(createAgentSessionDefaultTitle("codex")).toBe("Codex Session");
+    expect(createAgentSessionDefaultTitle("pi")).toBe("Pi Session");
     const items = createSidebarSessionItems(
       {
         focusedSessionId: "session-1",
