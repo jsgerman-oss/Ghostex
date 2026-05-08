@@ -481,6 +481,9 @@ export function SessionGroupSection({
   const shouldSuppressProjectCollapseTooltip =
     Boolean(projectContext) && canToggleCollapsed && !shouldSelectEmptyProject;
   const splitCountTooltip = "Select Split Count";
+  const createBrowserPaneTooltip = "Create Browser Pane";
+  const revealCodeEditorTooltip = "Show Code Editor";
+  const terminalSelectorTooltip = "Select Terminal or Agent";
   const createSessionTooltip = isBrowserGroup
     ? "Open a Browser"
     : isChatCollection
@@ -1108,6 +1111,48 @@ export function SessionGroupSection({
                       ) : null}
                     </button>
                   </AppTooltip>
+                ) : projectContext ? (
+                  <AppTooltip content={groupTitleActionLabel}>
+                    <button
+                      aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
+                      aria-disabled={!canToggleCollapsed && !shouldSelectEmptyProject}
+                      aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
+                      aria-label={groupTitleActionLabel}
+                      className="group-collapse-button section-titlebar-toggle"
+                      data-collapsed={String(isCollapsed)}
+                      data-empty-project={String(shouldSelectEmptyProject)}
+                      data-has-idle-icon={String(canToggleCollapsed)}
+                      data-static-icon={String(!canToggleCollapsed)}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleCollapsedOrSelectEmptyProject();
+                      }}
+                      type="button"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="group-collapse-icon group-collapse-idle-icon section-titlebar-toggle-icon section-titlebar-toggle-idle-icon"
+                      >
+                        {isBrowserGroup ? (
+                          <IconWorld size={16} stroke={1.8} />
+                        ) : isChatCollection ? (
+                          <IconMessageCircle size={16} stroke={1.8} />
+                        ) : isCollapsed ? (
+                          <IconFolder size={16} stroke={1.8} />
+                        ) : (
+                          <IconFolderOpen size={16} stroke={1.8} />
+                        )}
+                      </span>
+                      {canToggleCollapsed ? (
+                        <IconCaretRightFilled
+                          aria-hidden="true"
+                          className="group-collapse-icon group-collapse-chevron-icon section-titlebar-toggle-icon section-titlebar-toggle-chevron-icon"
+                          size={16}
+                        />
+                      ) : null}
+                    </button>
+                  </AppTooltip>
                 ) : (
                   <button
                     aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
@@ -1246,101 +1291,116 @@ export function SessionGroupSection({
                        * The VS Code header icon is a reveal control, not the
                        * editor launcher itself. Clicking it shows the
                        * session-style project editor button below the header.
+                       *
+                       * CDXC:ProjectGroups 2026-05-08-15:28
+                       * Top-level project row icon buttons need Radix
+                       * tooltips so compact controls remain understandable
+                       * without adding visible labels to the header.
                        */
                       <>
                         <div className="group-layout-controls">
                           <div className="group-control-anchor">
-                            <button
-                              aria-expanded={openControlMenu === "visible-count"}
-                              aria-haspopup="menu"
-                              aria-label={`Select split count for ${group.title}`}
-                              className="group-add-button group-control-button"
-                              data-open={String(openControlMenu === "visible-count")}
-                              onClick={() => {
-                                setOpenControlMenu((previous) =>
-                                  previous === "visible-count" ? undefined : "visible-count",
-                                );
-                              }}
-                              onContextMenu={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                setOpenControlMenu((previous) =>
-                                  previous === "visible-count" ? undefined : "visible-count",
-                                );
-                              }}
-                              ref={visibleCountButtonRef}
-                              type="button"
-                            >
-                              <SplitCountIcon
-                                aria-hidden="true"
-                                className="group-control-count-icon"
-                                size={16}
-                              />
-                            </button>
+                            <AppTooltip content={splitCountTooltip}>
+                              <button
+                                aria-expanded={openControlMenu === "visible-count"}
+                                aria-haspopup="menu"
+                                aria-label={`Select split count for ${group.title}`}
+                                className="group-add-button group-control-button"
+                                data-open={String(openControlMenu === "visible-count")}
+                                onClick={() => {
+                                  setOpenControlMenu((previous) =>
+                                    previous === "visible-count" ? undefined : "visible-count",
+                                  );
+                                }}
+                                onContextMenu={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  setOpenControlMenu((previous) =>
+                                    previous === "visible-count" ? undefined : "visible-count",
+                                  );
+                                }}
+                                ref={visibleCountButtonRef}
+                                type="button"
+                              >
+                                <SplitCountIcon
+                                  aria-hidden="true"
+                                  className="group-control-count-icon"
+                                  size={16}
+                                />
+                              </button>
+                            </AppTooltip>
                           </div>
                         </div>
-                        <button
-                          aria-label={`Create a browser pane in ${group.title}`}
-                          className="group-add-button group-browser-button"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            requestCreateBrowserPane();
-                          }}
-                          type="button"
-                        >
-                          <IconWorld
-                            aria-hidden="true"
-                            className="group-add-icon"
-                            size={14}
-                            stroke={2}
-                          />
-                        </button>
-                        <button
-                          aria-label={`Open code editor for ${group.title}`}
-                          className="group-add-button group-code-editor-button"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            openProjectEditorFromHeader();
-                          }}
-                          type="button"
-                        >
-                          <VisualStudioCodeIcon
-                            aria-hidden="true"
-                            className="group-code-editor-icon"
-                          />
-                        </button>
+                        <AppTooltip content={createBrowserPaneTooltip}>
+                          <button
+                            aria-label={`Create a browser pane in ${group.title}`}
+                            className="group-add-button group-browser-button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              requestCreateBrowserPane();
+                            }}
+                            type="button"
+                          >
+                            <IconWorld
+                              aria-hidden="true"
+                              className="group-add-icon"
+                              size={14}
+                              stroke={2}
+                            />
+                          </button>
+                        </AppTooltip>
+                        <AppTooltip content={revealCodeEditorTooltip}>
+                          <button
+                            aria-label={`Open code editor for ${group.title}`}
+                            className="group-add-button group-code-editor-button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openProjectEditorFromHeader();
+                            }}
+                            type="button"
+                          >
+                            <VisualStudioCodeIcon
+                              aria-hidden="true"
+                              className="group-code-editor-icon"
+                            />
+                          </button>
+                        </AppTooltip>
                         <div className="group-control-anchor">
                           <div className="group-terminal-split-button">
-                            <button
-                              aria-label={`Create ${primaryProjectTerminalLabel} in ${group.title}`}
-                              className="group-terminal-main-button"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                requestCreateProjectTerminal(primaryProjectTerminalAgent);
-                              }}
-                              type="button"
-                            >
-                              <ProjectTerminalLauncherIcon agent={primaryProjectTerminalAgent} />
-                            </button>
-                            <button
-                              aria-expanded={openControlMenu === "project-terminal"}
-                              aria-haspopup="menu"
-                              aria-label={`Select terminal or agent for ${group.title}`}
-                              className="group-terminal-toggle-button"
-                              data-open={String(openControlMenu === "project-terminal")}
-                              onClick={() => {
-                                setOpenControlMenu((previous) =>
-                                  previous === "project-terminal" ? undefined : "project-terminal",
-                                );
-                              }}
-                              ref={projectTerminalButtonRef}
-                              type="button"
-                            >
-                              <IconChevronDown aria-hidden="true" size={13} stroke={2} />
-                            </button>
+                            <AppTooltip content={`Create ${primaryProjectTerminalLabel}`}>
+                              <button
+                                aria-label={`Create ${primaryProjectTerminalLabel} in ${group.title}`}
+                                className="group-terminal-main-button"
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  requestCreateProjectTerminal(primaryProjectTerminalAgent);
+                                }}
+                                type="button"
+                              >
+                                <ProjectTerminalLauncherIcon agent={primaryProjectTerminalAgent} />
+                              </button>
+                            </AppTooltip>
+                            <AppTooltip content={terminalSelectorTooltip}>
+                              <button
+                                aria-expanded={openControlMenu === "project-terminal"}
+                                aria-haspopup="menu"
+                                aria-label={`Select terminal or agent for ${group.title}`}
+                                className="group-terminal-toggle-button"
+                                data-open={String(openControlMenu === "project-terminal")}
+                                onClick={() => {
+                                  setOpenControlMenu((previous) =>
+                                    previous === "project-terminal" ? undefined : "project-terminal",
+                                  );
+                                }}
+                                ref={projectTerminalButtonRef}
+                                type="button"
+                              >
+                                <IconChevronDown aria-hidden="true" size={13} stroke={2} />
+                              </button>
+                            </AppTooltip>
                           </div>
                         </div>
                       </>

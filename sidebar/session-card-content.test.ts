@@ -218,6 +218,34 @@ describe("getSessionCardTitleTooltip", () => {
       tooltipWhen: "always",
     });
   });
+
+  test("should include previous session restore details when requested", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "Session 1",
+          detail: "OpenAI Codex",
+          isPrimaryTitleTerminalTitle: true,
+          primaryTitle: "Fix restore",
+          projectName: "zmux",
+          projectPath: "/Users/madda/dev/_active/zmux",
+          sessionNumber: undefined,
+          sessionPersistenceName: "zmux-session-1",
+          sessionPersistenceProvider: "zmx",
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: false,
+        showSessionDetails: true,
+      }),
+    ).toEqual({
+      headingText: "Fix restore",
+      tooltip:
+        "Fix restore\n\nAgent: Codex\n\nProject: zmux (/Users/madda/dev/_active/zmux)\n\nProvider: zmx\n\nzmx session: zmux-session-1",
+      tooltipWhen: "always",
+    });
+  });
 });
 
 describe("SessionFloatingAgentIcon", () => {

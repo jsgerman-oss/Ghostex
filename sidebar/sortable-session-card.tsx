@@ -1182,7 +1182,18 @@ function supportsFork(session: SidebarSessionItem): boolean {
 }
 
 function supportsGeneratedName(session: SidebarSessionItem): boolean {
-  return session.agentIcon === "codex" || session.agentIcon === "claude";
+  /**
+   * CDXC:PiAgent 2026-05-08-16:18
+   * Pi cards should expose the same right-click Generate Title action as Codex
+   * once the first user message has been captured. The native rename path
+   * already switches Pi to `/name <title>`, so the menu gate should include Pi
+   * instead of creating a Pi-only title-generation command.
+   */
+  return (
+    session.agentIcon === "codex" ||
+    session.agentIcon === "claude" ||
+    session.agentIcon === "pi"
+  );
 }
 
 function supportsFullReload(session: SidebarSessionItem): boolean {
@@ -1190,11 +1201,16 @@ function supportsFullReload(session: SidebarSessionItem): boolean {
    * CDXC:SessionRestore 2026-04-27-08:04
    * Match agent-tiler context-menu visibility: Full reload is only shown for
    * agent sessions that can be recreated and resumed programmatically.
+   *
+   * CDXC:PiAgent 2026-05-08-16:18
+   * Pi has a restorable CLI identity through its captured session id/path, so
+   * right-click Full reload should be visible on Pi cards like it is for Codex.
    */
   return (
     session.agentIcon === "codex" ||
     session.agentIcon === "claude" ||
-    session.agentIcon === "opencode"
+    session.agentIcon === "opencode" ||
+    session.agentIcon === "pi"
   );
 }
 

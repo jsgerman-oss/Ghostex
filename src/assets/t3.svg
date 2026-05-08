@@ -1,4 +1,10 @@
-<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M25 34H103V48H72V95H56V48H25V34Z" fill="#101820"/>
-  <path d="M44 75C44 64.5066 52.5066 56 63 56H90C98.8366 56 106 63.1634 106 72C106 80.8366 98.8366 88 90 88H58V74H88C91.3137 74 94 71.3137 94 68C94 64.6863 91.3137 62 88 62H63C60.2386 62 58 64.2386 58 67V95H44V75Z" fill="#101820"/>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 128 128" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g transform="matrix(1.537501,0,0,1.537501,-35.206308,-34.668807)">
+        <path d="M25,34L103,34L103,48L72,48L72,95L56,95L56,48L25,48L25,34Z" style="fill:rgb(16,24,32);fill-rule:nonzero;"/>
+    </g>
+    <g transform="matrix(1.537501,0,0,1.537501,-35.206308,-34.668807)">
+        <path d="M44,75C44,64.507 52.507,56 63,56L90,56C98.837,56 106,63.163 106,72C106,80.837 98.837,88 90,88L58,88L58,74L88,74C91.314,74 94,71.314 94,68C94,64.686 91.314,62 88,62L63,62C60.239,62 58,64.239 58,67L58,95L44,95L44,75Z" style="fill:rgb(16,24,32);fill-rule:nonzero;"/>
+    </g>
 </svg>

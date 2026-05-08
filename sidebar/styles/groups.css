@@ -847,7 +847,13 @@
 
 .group-sessions {
   display: grid;
-  gap: 0;
+  /*
+   * CDXC:SidebarSessions 2026-05-08-14:16
+   * Sidebar session and chat buttons need a 1px row gap so adjacent rows remain
+   * visually separated without adding per-card margins that would interfere
+   * with drag/drop hit areas.
+   */
+  gap: 1px;
   min-height: 0;
   overflow: hidden;
   position: relative;
@@ -1298,20 +1304,8 @@
   display: none;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-sessions-shell {
-  margin-top: 0;
-  /*
-   * CDXC:SidebarSearch 2026-05-08-11:34
-   * Search can shrink a project group to one matching session while Previous
-   * Sessions renders immediately after it. The collapsible shell must contain
-   * session rows during height transitions so stale measurements cannot let a
-   * project session paint underneath the next section header.
-   */
-  overflow: hidden;
-}
-
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-sessions {
-  gap: 0;
+  gap: 1px;
   overflow: visible;
 }
 

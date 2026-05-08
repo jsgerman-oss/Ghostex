@@ -1006,6 +1006,19 @@
   opacity: 1;
 }
 
+/*
+ * CDXC:PreviousSessions 2026-05-08-16:07
+ * Previous-session restore cards reveal a top-right delete button on hover and
+ * keyboard focus. Hide Last Active in those states so the timestamp cannot
+ * overlap the delete affordance in compact search results.
+ */
+.session-history-card:hover .session-last-interaction-time,
+.session-history-card:focus-visible .session-last-interaction-time,
+.session-history-card:focus-within .session-last-interaction-time {
+  opacity: 0;
+  visibility: hidden;
+}
+
 .session-frame:not(.session-history-frame):hover
   .session-head-trailing[data-hover-trailing-display="icon"]
   .session-last-interaction-time,
@@ -1430,6 +1443,11 @@
    * Agent-icon visibility is state-based only: non-surfaced sessions stay
    * hidden, surfaced-but-not-active sessions show a low-opacity icon, and the
    * active session shows the icon at 80% opacity.
+   *
+   * CDXC:SidebarReference 2026-05-08-16:11
+   * Hovered session buttons reveal the agent icon at the same low opacity as
+   * surfaced-but-not-active sessions. The low-opacity value is 20% stronger
+   * than the previous 0.22 value so the icon reads without acting active.
    */
   opacity: 0;
   top: 50%;
@@ -1445,8 +1463,24 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-visible="true"]
   .session-floating-reloading-icon,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-visible="true"]
+  .session-persistence-provider-badge[data-slot="floating"],
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:hover)
+  .session-floating-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:hover)
+  .session-floating-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:hover)
+  .session-floating-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:hover)
+  .session-persistence-provider-badge[data-slot="floating"],
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:focus-visible)
+  .session-floating-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:focus-visible)
+  .session-floating-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:focus-visible)
+  .session-floating-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:focus-visible)
   .session-persistence-provider-badge[data-slot="floating"] {
-  opacity: 0.22;
+  opacity: 0.26;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-focused="true"]
@@ -1458,6 +1492,31 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-focused="true"]
   .session-persistence-provider-badge[data-slot="floating"] {
   opacity: 0.8;
+}
+
+/*
+ * CDXC:PreviousSessions 2026-05-08-16:07
+ * Filtered Previous Sessions in reference search are historical restore rows,
+ * not currently visible panes, but they still need persistent agent identity.
+ * Override the reference sidebar's visible/focused-only icon rule for them.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-search-previous-group
+  .session-history-frame
+  .session-floating-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-search-previous-group
+  .session-history-frame
+  .session-floating-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-search-previous-group
+  .session-history-frame
+  .session-floating-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-search-previous-group
+  .session-history-frame
+  .session-persistence-provider-badge[data-slot="floating"] {
+  opacity: 0.52;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]

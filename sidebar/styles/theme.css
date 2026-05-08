@@ -565,7 +565,15 @@ button:where(:not([data-slot])):disabled {
  */
 body:hover .sidebar-floating-overflow-trigger,
 body:has(:focus-visible) .sidebar-floating-overflow-trigger,
+body.storybook-force-sidebar-hover .sidebar-floating-overflow-trigger,
 .sidebar-floating-overflow-trigger[data-selected="true"] {
+  /*
+   * CDXC:StorybookInteractions 2026-05-08-18:05
+   * Storybook play functions cannot reliably create CSS :hover on a trigger
+   * that starts with pointer-events disabled. The test-only body class lets
+   * interaction stories exercise the same overflow menu without weakening the
+   * app's quiet default chrome.
+   */
   opacity: 1;
   pointer-events: auto;
   transition-delay: 0s;

@@ -716,10 +716,15 @@ body[data-sidebar-theme^="light-"]
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-previous-group .group-head {
+  /*
+   * CDXC:SidebarSearch 2026-05-08-15:07
+   * Filtered Previous Sessions appears after the Projects results section and
+   * should use the same vertical gap that Projects uses after Chats.
+   */
   align-items: center;
   border-radius: 0;
   display: flex;
-  margin: 48px 15px 10px 17px;
+  margin: 17px 15px 10px 17px;
   min-height: 22px;
   padding: 0;
 }
@@ -942,6 +947,12 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-nav-item:has(.reference-sidebar-overflow-action)
+  .reference-sidebar-nav-button {
+  padding-right: 42px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
   .reference-sidebar-search-slot[data-active="false"]
   .reference-sidebar-nav-button {
   padding-right: 42px;
@@ -958,6 +969,11 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
  * The combined-sidebar Search row owns a matching hover-only right-side
  * Previous Sessions button so history can open directly without replacing the
  * Search row's primary click target.
+ *
+ * CDXC:SidebarReference 2026-05-08-14:48
+ * Combined-sidebar New chat owns the same small right-side overflow trigger as
+ * the Actions and Search rows. Reserve right padding on that row so the menu
+ * icon never covers the New chat label or primary click target.
  */
 .reference-sidebar-hover-action {
   align-items: center;
@@ -1116,6 +1132,15 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-content {
+  /*
+   * CDXC:SidebarSearch 2026-05-08-16:20
+   * Reference-mode search renders filtered current projects followed by
+   * Previous Sessions in the same scroll surface. The shared grid layout can
+   * collapse the project-list track to 0px while its session rows still paint,
+   * causing the history heading to overlap project rows. Use block flow here so
+   * each section contributes its real height before the next section starts.
+   */
+  display: block;
   gap: 0;
   padding-right: 0;
   scrollbar-width: none;

@@ -188,6 +188,7 @@ export function getSessionCardTitleTooltip({
   alwaysShowTitleTooltip = false,
   session,
   showDebugSessionNumbers,
+  showSessionDetails = false,
 }: {
   alwaysShowTitleTooltip?: boolean;
   session: Pick<
@@ -204,8 +205,12 @@ export function getSessionCardTitleTooltip({
     | "sessionPersistenceProvider"
     | "sessionNumber"
     | "terminalTitle"
-  >;
+  > & {
+    projectName?: string;
+    projectPath?: string;
+  };
   showDebugSessionNumbers: boolean;
+  showSessionDetails?: boolean;
 }): {
   headingText: string;
   tooltip?: string;
@@ -231,8 +236,15 @@ export function getSessionCardTitleTooltip({
     terminalTitle: session.terminalTitle,
     alias: session.alias,
   });
+  /**
+   * CDXC:PreviousSessions 2026-05-08-16:07
+   * Previous-session search cards need scannable restore context in their
+   * title tooltip: archived agent, source project, and persistence provider
+   * must be visible without exposing extra columns in the compact result row.
+   */
   const tooltipMetadata = [
     getSessionTooltipSecondaryText(session),
+    ...(showSessionDetails ? getSessionDetailsTooltipLines(session) : []),
     getSessionPersistenceTooltipText(session),
   ]
     .filter((value): value is string => Boolean(value))
@@ -646,6 +658,53 @@ function getSessionPersistenceProviderBadgeLabel(
     default:
       return undefined;
   }
+}
+
+function getSessionDetailsTooltipLines(
+  session: Pick<SidebarSessionItem, "agentIcon" | "sessionKind" | "sessionPersistenceProvider"> & {
+    projectName?: string;
+    projectPath?: string;
+  },
+): string[] {
+  const agentName = getSessionDetailsAgentName(session);
+  const projectLabel = getSessionDetailsProjectLabel(session);
+  const providerLabel = session.sessionPersistenceProvider ?? "none";
+
+  return [`Agent: ${agentName}`, `Project: ${projectLabel}`, `Provider: ${providerLabel}`];
+}
+
+function getSessionDetailsAgentName(
+  session: Pick<SidebarSessionItem, "agentIcon" | "sessionKind">,
+): string {
+  if (session.agentIcon) {
+    return getSidebarAgentNameByIcon(session.agentIcon) ?? session.agentIcon;
+  }
+
+  if (session.sessionKind === "browser") {
+    return "Browser";
+  }
+
+  return "None";
+}
+
+function getSessionDetailsProjectLabel({
+  projectName,
+  projectPath,
+}: {
+  projectName?: string;
+  projectPath?: string;
+}): string {
+  const normalizedProjectName = projectName?.trim();
+  const normalizedProjectPath = projectPath?.trim();
+  if (
+    normalizedProjectName &&
+    normalizedProjectPath &&
+    normalizedProjectName !== normalizedProjectPath
+  ) {
+    return `${normalizedProjectName} (${normalizedProjectPath})`;
+  }
+
+  return normalizedProjectName || normalizedProjectPath || "None";
 }
 
 function getSessionPersistenceTooltipText(

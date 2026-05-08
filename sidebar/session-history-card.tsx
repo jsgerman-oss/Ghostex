@@ -6,6 +6,7 @@ import {
   OverflowTooltipText,
   SessionCardContent,
   SessionFloatingAgentIcon,
+  shouldShowTerminalSessionIcon,
 } from "./session-card-content";
 import { getSessionHistoryCardTitle } from "./session-history-card-title";
 
@@ -42,6 +43,7 @@ export function SessionHistoryCard({
     alwaysShowTitleTooltip: true,
     session: displaySession,
     showDebugSessionNumbers,
+    showSessionDetails: true,
   });
 
   return (
@@ -58,13 +60,28 @@ export function SessionHistoryCard({
         data-restorable={String(session.isRestorable)}
         data-visible="false"
       >
-        <SessionFloatingAgentIcon agentIcon={session.agentIcon} isFavorite={session.isFavorite} />
+        {/**
+         * CDXC:PreviousSessions 2026-05-08-16:07
+         * Search results use Previous Sessions cards as restore affordances,
+         * so archived sessions must keep the same leading agent/browser/plain
+         * terminal icon context that regular sidebar cards expose.
+         */}
+        <SessionFloatingAgentIcon
+          agentIcon={session.agentIcon}
+          faviconDataUrl={session.faviconDataUrl}
+          isFavorite={session.isFavorite}
+          sessionPersistenceName={session.sessionPersistenceName}
+          sessionPersistenceProvider={session.sessionPersistenceProvider}
+          showTerminalIcon={shouldShowTerminalSessionIcon(session)}
+        />
         <article
           aria-disabled={!session.isRestorable}
           aria-pressed="false"
           aria-label={session.isRestorable ? `Restore ${displayTitle}` : displayTitle}
           className="session session-history-card"
-          data-has-agent-icon={String(Boolean(session.agentIcon))}
+          data-has-agent-icon={String(
+            Boolean(session.agentIcon) || shouldShowTerminalSessionIcon(session),
+          )}
           data-dragging="false"
           data-focused="false"
           data-running="false"

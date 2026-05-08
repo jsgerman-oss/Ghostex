@@ -24,6 +24,7 @@ import {
   IconKeyboard,
   IconLayoutSidebar,
   IconList,
+  IconMenu2Filled,
   IconPencil,
   IconPlayerPlay,
   IconPlus,
@@ -33,6 +34,7 @@ import {
   IconTerminal2,
   IconWorld,
   type TablerIcon,
+  IconListDetailsFilled,
 } from "@tabler/icons-react";
 import {
   useEffect,
@@ -1858,12 +1860,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         {isCombinedSidebarMode ? (
           <SidebarReferenceTopChrome
             commands={commands}
+            isOverflowMenuOpen={isOverflowMenuOpen}
             isSessionSearchOpen={isSessionSearchOpen}
             onCloseSearch={closeSessionSearch}
             onCreateChat={createReferenceChat}
             onOpenPlugins={openReferencePlugins}
             onOpenPreviousSessions={openPreviousSessions}
             onSearch={toggleSessionSearch}
+            onToggleMenu={toggleOverflowMenu}
             projectHeader={projectHeader}
             searchInputRef={searchInputRef}
             sessionSearchQuery={sessionSearchQuery}
@@ -2340,12 +2344,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
 function SidebarReferenceTopChrome({
   commands,
+  isOverflowMenuOpen,
   isSessionSearchOpen,
   onCloseSearch,
   onCreateChat,
   onOpenPlugins,
   onOpenPreviousSessions,
   onSearch,
+  onToggleMenu,
   projectHeader,
   searchInputRef,
   sessionSearchQuery,
@@ -2353,12 +2359,14 @@ function SidebarReferenceTopChrome({
   vscode,
 }: {
   commands: readonly SidebarCommandButton[];
+  isOverflowMenuOpen: boolean;
   isSessionSearchOpen: boolean;
   onCloseSearch: () => void;
   onCreateChat: () => void;
   onOpenPlugins: () => void;
   onOpenPreviousSessions: () => void;
   onSearch: () => void;
+  onToggleMenu: (trigger: HTMLElement) => void;
   projectHeader: SidebarProjectHeaderData | undefined;
   searchInputRef: RefObject<HTMLInputElement | null>;
   sessionSearchQuery: string;
@@ -2438,6 +2446,11 @@ function SidebarReferenceTopChrome({
    * chat, Plugins, Actions, and Search. Actions owns a hover quick-run button
    * that launches the last project-scoped action, while the row opens the
    * action list and Configure entry.
+   *
+   * CDXC:SidebarReference 2026-05-08-14:48
+   * Combined mode needs the same overflow menu as separated mode, exposed as a
+   * small right-side control on the New chat row so global sidebar actions stay
+   * close to the primary create-chat affordance without replacing it.
    */
   return (
     <header className="reference-sidebar-top">
@@ -2450,7 +2463,11 @@ function SidebarReferenceTopChrome({
         <IconArrowRight className="reference-sidebar-window-icon" size={17} stroke={1.9} />
       </div>
       <nav aria-label="Sidebar primary navigation" className="reference-sidebar-primary-nav">
-        <SidebarReferenceNavButton icon={IconPencil} label="New chat" onClick={onCreateChat} />
+        <SidebarReferenceNewChatNavItem
+          isOverflowMenuOpen={isOverflowMenuOpen}
+          onCreateChat={onCreateChat}
+          onToggleMenu={onToggleMenu}
+        />
         <SidebarReferenceNavButton icon={IconGridDots} label="Plugins" onClick={onOpenPlugins} />
         <SidebarReferenceActionsNavItem
           command={primaryCommand}
@@ -2484,6 +2501,40 @@ function SidebarReferenceTopChrome({
           )
         : null}
     </header>
+  );
+}
+
+function SidebarReferenceNewChatNavItem({
+  isOverflowMenuOpen,
+  onCreateChat,
+  onToggleMenu,
+}: {
+  isOverflowMenuOpen: boolean;
+  onCreateChat: () => void;
+  onToggleMenu: (trigger: HTMLElement) => void;
+}) {
+  return (
+    <div className="reference-sidebar-nav-item">
+      <SidebarReferenceNavButton icon={IconPencil} label="New chat" onClick={onCreateChat} />
+      <AppTooltip content="More">
+        <button
+          aria-controls="sidebar-overflow-menu"
+          aria-expanded={isOverflowMenuOpen}
+          aria-haspopup="menu"
+          aria-label="Open sidebar menu"
+          className="reference-sidebar-hover-action reference-sidebar-overflow-action"
+          data-sidebar-overflow-trigger="true"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onToggleMenu(event.currentTarget);
+          }}
+          type="button"
+        >
+          <IconMenu2Filled aria-hidden="true" size={15} />
+        </button>
+      </AppTooltip>
+    </div>
   );
 }
 
@@ -3173,7 +3224,7 @@ function renderFloatingOverflowMenu({
                   role="menuitemcheckbox"
                   type="button"
                 >
-                  <IconHistory aria-hidden="true" className="session-context-menu-icon" size={14} />
+                  <IconListDetailsFilled aria-hidden="true" className="session-context-menu-icon" size={14} />
                   Previous Sessions
                 </button>
                 <button

@@ -331,8 +331,9 @@ export function SettingsModal({
       {
         key: "sessionPersistenceProvider",
         options: SESSION_PERSISTENCE_PROVIDER_OPTIONS,
-        subtitle: "Choose Off, tmux, zmx, or zellij for restart-safe terminal sessions.",
-        title: "Session Persistence",
+        subtitle:
+          "Enable only when you need ssh from other devices to continue zmux-created sessions.",
+        title: "Session Persistence (Beta)",
       },
     ]),
     terminalBehavior: getSettingsSectionSearch(settingsSearchQuery, "Terminal Behavior", [
@@ -883,10 +884,17 @@ export function SettingsModal({
 
                  CDXC:SessionPersistence 2026-05-06-03:43
                   zellij shares the same Settings selector and semantics as
-                  tmux/zmx instead of adding a separate mode-specific control. */
+                  tmux/zmx instead of adding a separate mode-specific control.
+
+                 CDXC:SessionPersistence 2026-05-08-14:04
+                  Label the setting as beta and explain that users should
+                  enable it only when they care about ssh from other devices
+                  continuing sessions created through zmux. Recommend zmx with
+                  zmx-session-manager because it leaves Agent CLI tools
+                  unaffected while minor issues remain. */
               <SelectField
-                description="Choose Off, tmux, zmx, or zellij for restart-safe terminal sessions."
-                label="Session Persistence"
+                description="Enable this feature only if you care about using ssh from other devices to continue working on sessions created using zmux. My favorite option is using zmx with zmx-session-manager because it doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
+                label="Session Persistence (Beta)"
                 {...getSettingModificationProps("sessionPersistenceProvider")}
                 onChange={(value) =>
                   updateDraft("sessionPersistenceProvider", value as SessionPersistenceProvider)
