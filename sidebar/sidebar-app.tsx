@@ -2,25 +2,34 @@ import { KeyboardSensor, PointerActivationConstraints, PointerSensor } from "@dn
 import { move } from "@dnd-kit/helpers";
 import { DragDropProvider, type DragDropEventHandlers } from "@dnd-kit/react";
 import {
+  IconArrowLeft,
+  IconArrowRight,
+  IconArrowsDiagonal2,
+  IconArrowsDiagonalMinimize,
   IconBell,
   IconBellOff,
   IconArrowsSort,
   IconBookmark,
+  IconClock,
   IconCaretRightFilled,
   IconChevronDown,
   IconChevronRight,
   IconDeviceMobile,
   IconEye,
+  IconFilter2,
   IconFolder,
+  IconGridDots,
   IconHelpCircle,
   IconHistory,
   IconKeyboard,
   IconLayoutSidebar,
   IconPencil,
+  IconPlus,
   IconPlusFilled,
   IconSearch,
   IconSettings,
   IconTerminal2,
+  type TablerIcon,
 } from "@tabler/icons-react";
 import {
   useEffect,
@@ -35,6 +44,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
+import { Button } from "@/components/ui/button";
 import {
   MAX_GROUP_COUNT,
   type ExtensionToSidebarMessage,
@@ -171,6 +181,8 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const [isPinnedPromptsOpen, setIsPinnedPromptsOpen] = useState(false);
   const [isPreviousSessionsOpen, setIsPreviousSessionsOpen] = useState(false);
   const [isRecentProjectsOpen, setIsRecentProjectsOpen] = useState(false);
+  const [isReferenceChatsCollapsed, setIsReferenceChatsCollapsed] = useState(false);
+  const [isReferenceProjectsCollapsed, setIsReferenceProjectsCollapsed] = useState(false);
   const [isScratchPadOpen, setIsScratchPadOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSessionSearchOpen, setIsSessionSearchOpen] = useState(false);
@@ -178,6 +190,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     Record<string, number>
   >({});
   const [collapsedGroupsById, setCollapsedGroupsById] = useState<Record<string, true>>({});
+  const previousExpandedReferenceProjectGroupIdsRef = useRef<string[]>([]);
   const [recentProjectsQuery, setRecentProjectsQuery] = useState("");
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const [sessionDropIndicatorGroupId, setSessionDropIndicatorGroupId] = useState<string>();
@@ -389,6 +402,31 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       const next = { ...previous };
       delete next[groupId];
       return next;
+    });
+  };
+
+  const setGroupsCollapsed = (groupIds: readonly string[], collapsed: boolean) => {
+    setCollapsedGroupsById((previous) => {
+      if (collapsed) {
+        const next = { ...previous };
+        let changed = false;
+        for (const groupId of groupIds) {
+          if (!next[groupId]) {
+            next[groupId] = true;
+            changed = true;
+          }
+        }
+        return changed ? next : previous;
+      }
+
+      let next: Record<string, true> | undefined;
+      for (const groupId of groupIds) {
+        if (previous[groupId]) {
+          next ??= { ...previous };
+          delete next[groupId];
+        }
+      }
+      return next ?? previous;
     });
   };
 
@@ -854,12 +892,18 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const isManualActiveSessionsSort = activeSessionsSortMode === "manual";
   const visibleBrowserGroupIds =
     !isCombinedSidebarMode && sectionVisibility.browsers ? browserGroupIds : [];
-  const shouldShowActionsPanel = !isCombinedSidebarMode && sectionVisibility.actions;
+  const shouldShowActionsPanel = sectionVisibility.actions;
   /**
    * CDXC:SidebarMode 2026-05-04-07:00
    * Combined mode hides Actions but keeps the current-project header. The
    * Agents section remains governed by the normal sidebar setting so agent
    * sessions stay reachable while scanning all project groups.
+   *
+   * CDXC:SidebarReference 2026-05-08-01:10
+   * The ChatGPT-style sidebar reference replaces the visible Actions/Agents
+   * grids with primary navigation rows in Combined mode. Keep the underlying
+   * panels mounted but hidden so their modal/configuration flows remain
+   * available through the new Plugins and Automations entries.
    */
   const shouldShowAgentsPanel = sectionVisibility.agents;
 
@@ -931,6 +975,20 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       ),
     [displayedWorkspaceSessionIdsByGroup, effectiveGroupIds, isSessionSearchFiltering],
   );
+  const displayedReferenceChatGroupIds = useMemo(
+    () =>
+      isCombinedSidebarMode
+        ? displayedWorkspaceGroupIds.filter((groupId) => groupsById[groupId]?.isChatCollection)
+        : [],
+    [displayedWorkspaceGroupIds, groupsById, isCombinedSidebarMode],
+  );
+  const displayedReferenceProjectGroupIds = useMemo(
+    () =>
+      isCombinedSidebarMode
+        ? displayedWorkspaceGroupIds.filter((groupId) => !groupsById[groupId]?.isChatCollection)
+        : displayedWorkspaceGroupIds,
+    [displayedWorkspaceGroupIds, groupsById, isCombinedSidebarMode],
+  );
   const filteredPreviousSessions = useMemo(
     () =>
       !isSessionSearchFiltering
@@ -941,6 +999,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const filteredRecentProjects = useMemo(
     () => filterRecentProjects(recentProjects, recentProjectsQuery),
     [recentProjects, recentProjectsQuery],
+  );
+  const hasExpandedReferenceProjects = useMemo(
+    () =>
+      displayedReferenceProjectGroupIds.some((groupId) => collapsedGroupsById[groupId] !== true),
+    [collapsedGroupsById, displayedReferenceProjectGroupIds],
   );
   const focusedSessionId = useMemo(
     () => Object.values(sessionsById).find((session) => session.isFocused)?.sessionId,
@@ -974,13 +1037,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     ],
   );
   const dragStructureKey = useMemo(
-    () => createDragStructureKey(displayedWorkspaceGroupIds, displayedWorkspaceSessionIdsByGroup),
-    [displayedWorkspaceGroupIds, displayedWorkspaceSessionIdsByGroup],
+    () =>
+      createDragStructureKey(displayedReferenceProjectGroupIds, displayedWorkspaceSessionIdsByGroup),
+    [displayedReferenceProjectGroupIds, displayedWorkspaceSessionIdsByGroup],
   );
 
   useEffect(() => {
-    groupIdsRef.current = displayedWorkspaceGroupIds;
-  }, [displayedWorkspaceGroupIds]);
+    groupIdsRef.current = displayedReferenceProjectGroupIds;
+  }, [displayedReferenceProjectGroupIds]);
 
   useEffect(() => {
     sessionIdsByGroupRef.current = displayedWorkspaceSessionIdsByGroup;
@@ -1652,6 +1716,24 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     vscode.postMessage({ type: "openWorkspaceWelcome" });
   };
 
+  const pickWorkspaceFolder = () => {
+    setIsOverflowMenuOpen(false);
+    vscode.postMessage({ type: "pickWorkspaceFolder" });
+  };
+
+  const createReferenceChat = () => {
+    vscode.postMessage({ type: "createChat" });
+  };
+
+  const openReferencePlugins = () => {
+    setAgentCreateRequestId((requestId) => requestId + 1);
+  };
+
+  const openReferenceAutomations = () => {
+    setCommandCreateActionType("terminal");
+    setCommandCreateRequestId((requestId) => requestId + 1);
+  };
+
   const browserAccessSessionId = useMemo(() => {
     const orderedSessionIds = groupOrder.flatMap(
       (groupId) => authoritativeSessionIdsByGroup[groupId] ?? [],
@@ -1721,6 +1803,15 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   return (
     <TooltipProvider delayDuration={TOOLTIP_DELAY_MS}>
+      <div className="sidebar-reference-layout" data-reference-sidebar={String(isCombinedSidebarMode)}>
+        {isCombinedSidebarMode ? (
+          <SidebarReferenceTopChrome
+            onCreateChat={createReferenceChat}
+            onOpenAutomations={openReferenceAutomations}
+            onOpenPlugins={openReferencePlugins}
+            onSearch={toggleSessionSearch}
+          />
+        ) : null}
       {/* CDXC:SidebarMode 2026-05-04-07:00: Combined mode still shows the
           current-project header because empty project groups act as project
           selectors for subsequent agent/action launches. */}
@@ -1823,36 +1914,137 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                 onDragStart={handleDragStart}
                 sensors={sensors}
               >
-                <div className="group-list workspace-group-list">
-                  {displayedWorkspaceGroupIds.map((groupId, groupIndex) => (
-                    <SessionGroupSection
-                      autoEdit={autoEditingGroupId === groupId}
-                      canClose={effectiveGroupIds.length > 1}
-                      completionFlashNonceBySessionId={completionFlashNonceBySessionId}
-                      draggingDisabled={isSessionSearchOpen}
-                      groupId={groupId}
-                      index={groupIndex}
-                      isCollapsed={collapsedGroupsById[groupId] === true}
-                      key={groupId}
-                      onAutoEditHandled={() => setAutoEditingGroupId(undefined)}
-                      onCollapsedChange={setGroupCollapsed}
-                      onFocusRequested={applyLocalFocus}
-                      orderedSessionIds={displayedWorkspaceSessionIdsByGroup[groupId] ?? []}
-                      selectedSearchSessionId={
-                        isSessionSearchSelectionVisible &&
-                        selectedSessionSearchResult?.kind === "session"
-                          ? selectedSessionSearchResult.sessionId
-                          : undefined
+                {isCombinedSidebarMode && displayedReferenceChatGroupIds.length > 0 ? (
+                  <>
+                    <SidebarReferenceSectionHeader
+                      actionsAlwaysVisible={true}
+                      collapsed={isReferenceChatsCollapsed}
+                      onCreateChat={createReferenceChat}
+                      onFilterChats={toggleSessionSearch}
+                      onToggleCollapsed={() =>
+                        setIsReferenceChatsCollapsed((previous) => !previous)
                       }
-                      sessionDropIndicatorGroupId={sessionDropIndicatorGroupId}
-                      sessionDraggingDisabled={isCombinedSidebarMode}
-                      showHeaderActions={true}
-                      showSessionDropPositionIndicators={
-                        !isCombinedSidebarMode && !isSessionSearchOpen && isManualActiveSessionsSort
-                      }
-                      vscode={vscode}
+                      title="Chats"
                     />
-                  ))}
+                    <div
+                      aria-hidden={isReferenceChatsCollapsed}
+                      className="group-list workspace-group-list reference-chat-group-list reference-sidebar-collapsible-body"
+                      data-collapsed={String(isReferenceChatsCollapsed)}
+                    >
+                      {displayedReferenceChatGroupIds.map((groupId, groupIndex) => (
+                        <SessionGroupSection
+                          autoEdit={autoEditingGroupId === groupId}
+                          canClose={effectiveGroupIds.length > 1}
+                          completionFlashNonceBySessionId={completionFlashNonceBySessionId}
+                          draggingDisabled={true}
+                          groupId={groupId}
+                          index={groupIndex}
+                          isCollapsed={false}
+                          key={groupId}
+                          onAutoEditHandled={() => setAutoEditingGroupId(undefined)}
+                          onCollapsedChange={setGroupCollapsed}
+                          onFocusRequested={applyLocalFocus}
+                          orderedSessionIds={displayedWorkspaceSessionIdsByGroup[groupId] ?? []}
+                          selectedSearchSessionId={
+                            isSessionSearchSelectionVisible &&
+                            selectedSessionSearchResult?.kind === "session"
+                              ? selectedSessionSearchResult.sessionId
+                              : undefined
+                          }
+                          sessionDropIndicatorGroupId={sessionDropIndicatorGroupId}
+                          sessionDraggingDisabled={true}
+                          showHeaderActions={true}
+                          showSessionDropPositionIndicators={false}
+                          vscode={vscode}
+                        />
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+                {isCombinedSidebarMode ? (
+                  <SidebarReferenceSectionHeader
+                    actionsAlwaysVisible={displayedReferenceProjectGroupIds.length === 0}
+                    bulkActionLabel={
+                      displayedReferenceProjectGroupIds.length > 0
+                        ? hasExpandedReferenceProjects
+                          ? "Collapse All"
+                          : "Expand Previous"
+                        : undefined
+                    }
+                    collapsed={isReferenceProjectsCollapsed}
+                    onAddProject={pickWorkspaceFolder}
+                    onBulkProjectToggle={
+                      displayedReferenceProjectGroupIds.length > 0
+                        ? () => {
+                            setIsReferenceProjectsCollapsed(false);
+                            if (hasExpandedReferenceProjects) {
+                              previousExpandedReferenceProjectGroupIdsRef.current =
+                                displayedReferenceProjectGroupIds.filter(
+                                  (groupId) => collapsedGroupsById[groupId] !== true,
+                                );
+                              setGroupsCollapsed(displayedReferenceProjectGroupIds, true);
+                              return;
+                            }
+
+                            const previousExpandedProjectGroupIds =
+                              previousExpandedReferenceProjectGroupIdsRef.current.filter(
+                                (groupId) => displayedReferenceProjectGroupIds.includes(groupId),
+                              );
+                            setGroupsCollapsed(
+                              previousExpandedProjectGroupIds.length > 0
+                                ? previousExpandedProjectGroupIds
+                                : displayedReferenceProjectGroupIds,
+                              false,
+                            );
+                          }
+                        : undefined
+                    }
+                    onToggleCollapsed={() =>
+                      setIsReferenceProjectsCollapsed((previous) => !previous)
+                    }
+                    title="Projects"
+                  />
+                ) : null}
+                <div
+                  aria-hidden={isCombinedSidebarMode && isReferenceProjectsCollapsed}
+                  className="group-list workspace-group-list reference-project-group-list reference-sidebar-collapsible-body"
+                  data-collapsed={String(isCombinedSidebarMode && isReferenceProjectsCollapsed)}
+                >
+                    {displayedReferenceProjectGroupIds.length > 0 ? (
+                      displayedReferenceProjectGroupIds.map((groupId, groupIndex) => (
+                        <SessionGroupSection
+                          autoEdit={autoEditingGroupId === groupId}
+                          canClose={effectiveGroupIds.length > 1}
+                          completionFlashNonceBySessionId={completionFlashNonceBySessionId}
+                          draggingDisabled={isSessionSearchOpen}
+                          groupId={groupId}
+                          index={groupIndex}
+                          isCollapsed={collapsedGroupsById[groupId] === true}
+                          key={groupId}
+                          onAutoEditHandled={() => setAutoEditingGroupId(undefined)}
+                          onCollapsedChange={setGroupCollapsed}
+                          onFocusRequested={applyLocalFocus}
+                          orderedSessionIds={displayedWorkspaceSessionIdsByGroup[groupId] ?? []}
+                          selectedSearchSessionId={
+                            isSessionSearchSelectionVisible &&
+                            selectedSessionSearchResult?.kind === "session"
+                              ? selectedSessionSearchResult.sessionId
+                              : undefined
+                          }
+                          sessionDropIndicatorGroupId={sessionDropIndicatorGroupId}
+                          sessionDraggingDisabled={isCombinedSidebarMode}
+                          showHeaderActions={true}
+                          showSessionDropPositionIndicators={
+                            !isCombinedSidebarMode &&
+                            !isSessionSearchOpen &&
+                            isManualActiveSessionsSort
+                          }
+                          vscode={vscode}
+                        />
+                      ))
+                    ) : isCombinedSidebarMode ? (
+                      <div className="reference-sidebar-empty-state">No projects</div>
+                    ) : null}
                 </div>
               </DragDropProvider>
               {isSessionSearchFiltering ? (
@@ -1971,8 +2163,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                 </span>
               </span>
             </button>
-            {isRecentProjectsOpen ? (
-              <div className="recent-projects-drawer-body">
+            <div
+              aria-hidden={!isRecentProjectsOpen}
+              className="recent-projects-drawer-body"
+              data-collapsed={String(!isRecentProjectsOpen)}
+            >
                 <label className="recent-projects-search">
                   <IconSearch aria-hidden="true" size={14} stroke={1.8} />
                   <input
@@ -2021,8 +2216,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     <div className="recent-projects-empty">No projects match that search.</div>
                   )}
                 </div>
-              </div>
-            ) : null}
+            </div>
           </section>
         ) : null}
         <GitCommitModal
@@ -2064,7 +2258,194 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           </AppTooltip>
         ) : null}
       </div>
+      {isCombinedSidebarMode ? (
+        <SidebarReferenceSettingsButton onOpenSettings={openSidebarSettings} />
+      ) : null}
+      </div>
     </TooltipProvider>
+  );
+}
+
+function SidebarReferenceTopChrome({
+  onCreateChat,
+  onOpenAutomations,
+  onOpenPlugins,
+  onSearch,
+}: {
+  onCreateChat: () => void;
+  onOpenAutomations: () => void;
+  onOpenPlugins: () => void;
+  onSearch: () => void;
+}) {
+  /**
+   * CDXC:SidebarReference 2026-05-08-01:10
+   * Combined mode should visually match the provided app sidebar: native-style
+   * window dots, disabled back/forward chrome, and large primary rows for New
+   * chat, Plugins, Automations, and Search. These rows replace the old visible
+   * action grids without removing their underlying configuration behavior.
+   */
+  return (
+    <header className="reference-sidebar-top">
+      <div aria-hidden="true" className="reference-sidebar-window-row">
+        <span className="reference-sidebar-window-dot" data-window-dot="close" />
+        <span className="reference-sidebar-window-dot" data-window-dot="minimize" />
+        <span className="reference-sidebar-window-dot" data-window-dot="zoom" />
+        <IconLayoutSidebar className="reference-sidebar-window-icon" size={16} stroke={1.9} />
+        <IconArrowLeft className="reference-sidebar-window-icon" size={17} stroke={1.9} />
+        <IconArrowRight className="reference-sidebar-window-icon" size={17} stroke={1.9} />
+      </div>
+      <nav aria-label="Sidebar primary navigation" className="reference-sidebar-primary-nav">
+        <SidebarReferenceNavButton icon={IconPencil} label="New chat" onClick={onCreateChat} />
+        <SidebarReferenceNavButton icon={IconGridDots} label="Plugins" onClick={onOpenPlugins} />
+        <SidebarReferenceNavButton
+          icon={IconClock}
+          label="Automations"
+          onClick={onOpenAutomations}
+        />
+        <SidebarReferenceNavButton icon={IconSearch} label="Search" onClick={onSearch} />
+      </nav>
+    </header>
+  );
+}
+
+function SidebarReferenceNavButton({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: TablerIcon;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      className="reference-sidebar-nav-button"
+      onClick={onClick}
+      size="sm"
+      type="button"
+      variant="ghost"
+    >
+      <Icon
+        aria-hidden="true"
+        className="reference-sidebar-nav-icon"
+        data-icon="inline-start"
+        size={15}
+        stroke={1.9}
+      />
+      <span className="reference-sidebar-nav-label">{label}</span>
+    </Button>
+  );
+}
+
+function SidebarReferenceSectionHeader({
+  actionsAlwaysVisible,
+  bulkActionLabel,
+  collapsed,
+  onAddProject,
+  onBulkProjectToggle,
+  onCreateChat,
+  onFilterChats,
+  onToggleCollapsed,
+  title,
+}: {
+  actionsAlwaysVisible?: boolean;
+  bulkActionLabel?: string;
+  collapsed: boolean;
+  onAddProject?: () => void;
+  onBulkProjectToggle?: () => void;
+  onCreateChat?: () => void;
+  onFilterChats?: () => void;
+  onToggleCollapsed: () => void;
+  title: string;
+}) {
+  /**
+   * CDXC:SidebarReference 2026-05-08-01:41
+   * Reference-mode Chats and Projects are collapsible section headers. Projects
+   * also expose add-project and expand/collapse-all controls on hover so the
+   * compact Codex.app-style list keeps the management actions nearby.
+   *
+   * CDXC:SidebarReference 2026-05-08-02:21
+   * The project bulk control is one stateful text button: "Collapse All" while
+   * any project is expanded, then "Expand Previous" after it collapses the
+   * previously expanded projects.
+   *
+   * CDXC:SidebarReference 2026-05-08-02:56
+   * The bulk project button stays icon-only in the visible UI: use
+   * IconArrowsDiagonal2 for Collapse All and IconArrowsDiagonalMinimize for
+   * Expand Previous, while preserving the text labels for tooltips and
+   * accessibility.
+   */
+  const BulkProjectIcon =
+    bulkActionLabel === "Collapse All" ? IconArrowsDiagonal2 : IconArrowsDiagonalMinimize;
+  const hasActions = onAddProject || onBulkProjectToggle || onCreateChat || onFilterChats;
+
+  return (
+    <div
+      className="reference-sidebar-section-row"
+      data-actions-always-visible={String(actionsAlwaysVisible === true)}
+    >
+      <button
+        aria-expanded={!collapsed}
+        className="reference-sidebar-section-heading"
+        onClick={onToggleCollapsed}
+        type="button"
+      >
+        <span>{title}</span>
+        <IconCaretRightFilled
+          aria-hidden="true"
+          className="reference-sidebar-section-chevron"
+          size={13}
+        />
+      </button>
+      {hasActions ? (
+        <div className="reference-sidebar-section-actions">
+          {onCreateChat ? (
+            <AppTooltip content="New chat">
+              <button
+                aria-label="New chat"
+                className="reference-sidebar-section-action"
+                onClick={onCreateChat}
+                type="button"
+              >
+                <IconPencil aria-hidden="true" size={15} stroke={1.9} />
+              </button>
+            </AppTooltip>
+          ) : null}
+          {onBulkProjectToggle && bulkActionLabel ? (
+            <AppTooltip content={bulkActionLabel}>
+              <button
+                aria-label={bulkActionLabel}
+                className="reference-sidebar-section-action"
+                onClick={onBulkProjectToggle}
+                type="button"
+              >
+                <BulkProjectIcon aria-hidden="true" size={14} stroke={1.9} />
+              </button>
+            </AppTooltip>
+          ) : null}
+          {onAddProject ? (
+            <AppTooltip content="Add project">
+              <button
+                aria-label="Add project"
+                className="reference-sidebar-section-action"
+                onClick={onAddProject}
+                type="button"
+              >
+                <IconPlus aria-hidden="true" size={14} stroke={2} />
+              </button>
+            </AppTooltip>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SidebarReferenceSettingsButton({ onOpenSettings }: { onOpenSettings: () => void }) {
+  return (
+    <div className="reference-sidebar-settings-row">
+      <SidebarReferenceNavButton icon={IconSettings} label="Settings" onClick={onOpenSettings} />
+    </div>
   );
 }
 

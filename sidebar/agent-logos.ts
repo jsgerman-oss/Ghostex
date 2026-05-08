@@ -41,5 +41,5 @@ export const AGENT_LOGO_COLORS: Record<SidebarAgentIcon, string> = {
   copilot: "#ffffff",
   gemini: "#8b9aff",
   opencode: "#6d96c0",
-  t3: "#ffa6fb",
+  t3: "#ff6af3",
 };

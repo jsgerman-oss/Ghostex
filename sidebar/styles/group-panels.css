@@ -694,3 +694,662 @@ body[data-sidebar-theme^="light-"]
 .session-search-previous-group .session-history-frame .session-floating-agent-tabler-icon {
   opacity: 0.52;
 }
+
+/* CDXC:SidebarReference 2026-05-08-01:10: Combined mode must copy the
+   provided app sidebar: a dark full-height rail, top window/navigation chrome,
+   hidden legacy grids via display:none, section labels, and a persistent
+   bottom Settings row.
+   CDXC:SidebarReference 2026-05-08-01:28: Reference sizing follows the
+   measured sidebar button geometry: a 298px viewport gives 7px side margins
+   and 284x34px primary rows with compact 12px icons.
+   CDXC:SidebarReference 2026-05-08-01:41: Plain/default reference mode uses
+   the requested dark reference color as the sidebar background, keeps Recent Projects in the bottom
+   drawer, and exposes collapsible Chats/Projects section headers with project
+   management actions on hover.
+   CDXC:SidebarReference 2026-05-08-02:21: The reference background must fill
+   the whole native sidebar viewport, including parent shell/main surfaces that
+   would otherwise keep the plain-dark theme's #111 background visible.
+   CDXC:SidebarReference 2026-05-08-02:31: The top native-style window/chrome
+   controls are no longer part of the requested reference sidebar; keep the
+   component mounted but hide that row with display:none.
+   CDXC:SidebarReference 2026-05-08-02:40: Match the sidebar webview background
+   to the requested standalone macOS titlebar color (#0e0e0e).
+   CDXC:SidebarReference 2026-05-08-02:52: Section collapse chevrons belong on
+   the right side of the Chats/Projects label, matching the reference header
+   affordance instead of leading the label.
+   CDXC:SidebarReference 2026-05-08-02:56: Project bulk controls are icon-only
+   buttons; Collapse All uses arrows-diagonal-2, and Expand Previous uses
+   arrows-diagonal-minimize. */
+.sidebar-reference-layout {
+  display: contents;
+}
+
+body:has(.sidebar-reference-layout[data-reference-sidebar="true"]),
+body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) #root,
+body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .native-sidebar-shell,
+body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .native-sidebar-main,
+body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .stack {
+  --app-background: #0e0e0e;
+  background: #0e0e0e;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] {
+  --sidebar-density-scale: 1;
+  --app-background: #0e0e0e;
+  --app-foreground: #c8cdd5;
+  --app-muted: #747b85;
+  --app-border: color-mix(in srgb, #ffffff 10%, transparent);
+  --app-card: #252525;
+  --app-card-active: #2a2a2a;
+  --app-button-background: #7da4f8;
+  --attention-dot: #7da4f8;
+  background: var(--app-background);
+  box-sizing: border-box;
+  color: var(--app-foreground);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 12px 7px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"],
+.sidebar-reference-layout[data-reference-sidebar="true"] * {
+  font-weight: 300 !important;
+}
+
+.native-sidebar-shell[data-sidebar-mode="combined"] .native-sidebar-main {
+  padding: 0;
+}
+
+body:has(.sidebar-reference-layout[data-reference-sidebar="true"])
+  .native-sidebar-shell[data-sidebar-mode="combined"]
+  .native-sidebar-main {
+  padding: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .sidebar-project-header-region,
+.sidebar-reference-layout[data-reference-sidebar="true"] .sidebar-top-panels,
+.sidebar-reference-layout[data-reference-sidebar="true"] .sidebar-floating-overflow-trigger {
+  display: none;
+}
+
+.reference-sidebar-top {
+  flex: none;
+}
+
+.reference-sidebar-window-row {
+  align-items: center;
+  display: none;
+  gap: 12px;
+  height: 56px;
+  padding: 14px 12px 0;
+}
+
+.reference-sidebar-window-dot {
+  background: #30343a;
+  border-radius: 999px;
+  display: inline-flex;
+  height: 14px;
+  width: 14px;
+}
+
+body:focus-within .reference-sidebar-window-dot[data-window-dot="close"] {
+  background: #ff5f57;
+}
+
+body:focus-within .reference-sidebar-window-dot[data-window-dot="minimize"] {
+  background: #ffca3a;
+}
+
+body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
+  background: #5fcf65;
+}
+
+.reference-sidebar-window-icon {
+  color: #7f858d;
+  flex: none;
+  margin-left: 16px;
+}
+
+.reference-sidebar-window-icon + .reference-sidebar-window-icon {
+  margin-left: 8px;
+}
+
+.reference-sidebar-primary-nav {
+  display: grid;
+  gap: 0;
+  margin: 14px -5px 0;
+  padding: 0;
+}
+
+.reference-sidebar-nav-button,
+.reference-sidebar-settings-button,
+.reference-sidebar-project-row {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: var(--app-foreground);
+  font: inherit;
+  letter-spacing: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-nav-button {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  flex: none;
+  font-size: 15.55px;
+  font-weight: 300;
+  gap: 11px;
+  height: 34px;
+  justify-content: flex-start;
+  line-height: 14px;
+  min-height: 34px;
+  padding: 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-nav-button
+  svg.reference-sidebar-nav-icon {
+  flex: none;
+  height: 15px !important;
+  width: 15px !important;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-nav-label {
+  display: block;
+  height: 14px;
+  line-height: 14px;
+  min-width: 0;
+}
+
+.reference-sidebar-nav-button:hover,
+.reference-sidebar-nav-button:focus-visible,
+.recent-projects-drawer-toggle.group-head:hover,
+.recent-projects-drawer-toggle.group-head:focus-visible,
+.reference-sidebar-settings-button:hover,
+.reference-sidebar-settings-button:focus-visible,
+.reference-sidebar-project-row:hover,
+.reference-sidebar-project-row:focus-visible,
+.reference-sidebar-section-action:hover,
+.reference-sidebar-section-action:focus-visible {
+  background: color-mix(in srgb, var(--app-foreground) 8%, transparent);
+  outline: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .stack {
+  flex: 1 1 auto;
+  grid-template-rows: minmax(0, 1fr);
+  height: auto;
+  min-height: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-panel {
+  gap: 0;
+  height: 100%;
+  margin-left: -12px;
+  margin-right: -12px;
+  min-height: 0;
+  width: calc(100% + 24px);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-top {
+  margin-top: 4px;
+  padding-left: 2px;
+  padding-right: 2px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-toolbar {
+  padding: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input {
+  background: #151515;
+  border: 1px solid #2c2c2c;
+  border-radius: 8px;
+  color: #b8b8b8;
+  font-size: 15.55px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 14px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 34px 0 10px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input::placeholder {
+  color: #6f6f6f;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input:focus {
+  border-color: #505050;
+  box-shadow: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input-icon {
+  color: #7a7a7a;
+  right: 10px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-search-clear-button {
+  color: #7a7a7a;
+  right: 5px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-content {
+  gap: 0;
+  padding-right: 0;
+  scrollbar-width: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-content::-webkit-scrollbar {
+  height: 0;
+  width: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-groups-scroll-shell[data-scroll-glow-top="false"]
+  .session-groups-content {
+  --tw-scroll-mask-top: linear-gradient(#000000, #000000) !important;
+  --tw-scroll-mask-top-size: 0px !important;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-groups-scroll-shell[data-scroll-glow-bottom="false"]
+  .session-groups-content {
+  --tw-scroll-mask-bottom: linear-gradient(#000000, #000000) !important;
+  --tw-scroll-mask-bottom-size: 0px !important;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-groups-content[data-scrollable-y="false"] {
+  animation: none !important;
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+  overflow-y: hidden !important;
+}
+
+.reference-sidebar-section-row {
+  align-items: center;
+  display: flex;
+  margin: 48px 15px 10px 17px;
+  min-height: 22px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-groups-content
+  > .reference-sidebar-section-row:first-child {
+  margin-top: 23px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-groups-content
+  > .reference-chat-group-list[data-collapsed="false"]
+  + .reference-sidebar-section-row,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-groups-content
+  > .reference-sidebar-section-row
+  + .reference-sidebar-section-row {
+  margin-top: 17px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-groups-content
+  > .reference-chat-group-list[data-collapsed="true"]
+  + .reference-sidebar-section-row {
+  margin-top: 17px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-groups-content
+  > .reference-chat-group-list[data-collapsed="false"]:has(.group-empty-state)
+  + .reference-sidebar-section-row {
+  margin-top: 23px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-collapsible-body,
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-body {
+  max-height: 2000px;
+  opacity: 1;
+  overflow: hidden;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition:
+    max-height 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 150ms ease,
+    transform 180ms ease,
+    visibility 0s linear 0s;
+  visibility: visible;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-collapsible-body[data-collapsed="true"],
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="true"] {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    max-height 210ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 120ms ease,
+    transform 150ms ease,
+    visibility 0s linear 210ms;
+  visibility: hidden;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  > *,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  > *,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  .recent-projects-list
+  > * {
+  animation: reference-sidebar-child-fade-in 220ms ease both;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  > :nth-child(1),
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  > :nth-child(1),
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  .recent-projects-list
+  > :nth-child(1) {
+  animation-delay: 20ms;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  > :nth-child(2),
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  > :nth-child(2),
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  .recent-projects-list
+  > :nth-child(2) {
+  animation-delay: 50ms;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  > :nth-child(3),
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  .recent-projects-list
+  > :nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  > :nth-child(4),
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  .recent-projects-list
+  > :nth-child(4) {
+  animation-delay: 110ms;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  > :nth-child(n + 5),
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-body[data-collapsed="false"]
+  .recent-projects-list
+  > :nth-child(n + 5) {
+  animation-delay: 140ms;
+}
+
+@keyframes reference-sidebar-child-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.reference-sidebar-section-heading {
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: #686868;
+  display: inline-flex;
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 500;
+  gap: 8px;
+  letter-spacing: 0;
+  line-height: 1.15;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.reference-sidebar-section-heading:focus-visible {
+  outline: none;
+}
+
+.reference-sidebar-section-chevron {
+  color: #727982;
+  flex: none;
+  opacity: 0;
+  transform: rotate(90deg);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.reference-sidebar-section-heading[aria-expanded="false"] .reference-sidebar-section-chevron {
+  transform: rotate(0deg);
+}
+
+.reference-sidebar-section-row:hover .reference-sidebar-section-chevron,
+.reference-sidebar-section-heading:focus-visible .reference-sidebar-section-chevron,
+.reference-sidebar-section-row:focus-within .reference-sidebar-section-chevron {
+  opacity: 1;
+}
+
+.reference-sidebar-section-actions {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.reference-sidebar-section-row:hover .reference-sidebar-section-actions,
+.reference-sidebar-section-row:focus-within .reference-sidebar-section-actions,
+.reference-sidebar-section-row[data-actions-always-visible="true"] .reference-sidebar-section-actions {
+  opacity: 1;
+}
+
+.reference-sidebar-section-action {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: #858c95;
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.reference-sidebar-recent-project-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.reference-sidebar-project-row {
+  align-items: center;
+  display: grid;
+  font-size: 15px;
+  font-weight: 500;
+  gap: 12px;
+  grid-template-columns: 17px minmax(0, 1fr) minmax(max-content, 44px);
+  min-height: 34px;
+  padding: 0;
+  text-align: left;
+}
+
+.reference-sidebar-project-row-icon {
+  color: #a6adb6;
+}
+
+.reference-sidebar-project-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-sidebar-project-row-time {
+  color: var(--app-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: max-content;
+  overflow: visible;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.reference-sidebar-settings-row {
+  flex: none;
+  margin: 0 -5px 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer {
+  border-top: 0;
+  flex: none;
+  gap: 6px;
+  margin: 10px -5px 0;
+  padding: 8px 0 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-toggle.group-head,
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-row.group-head {
+  border-radius: 8px;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-toggle.group-head {
+  align-items: center;
+  color: var(--app-foreground);
+  display: flex;
+  font-size: 15.55px;
+  font-weight: 300;
+  height: 34px;
+  line-height: 14px;
+  min-height: 34px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-title,
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-row-title,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-toggle.group-head
+  .recent-projects-drawer-title.group-title,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-row.group-head
+  .recent-projects-row-title.group-title {
+  color: inherit;
+  font-size: 16px;
+  font-weight: 300;
+  letter-spacing: 0;
+  line-height: 1.15;
+  text-transform: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-toggle
+  .group-collapse-button {
+  color: inherit;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-toggle
+  .group-title-row {
+  gap: 11px;
+  height: 14px;
+  min-height: 14px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-toggle
+  .group-collapse-button {
+  border: 0;
+  height: 15px;
+  padding: 0;
+  right: auto;
+  top: auto;
+  width: 15px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-toggle
+  .section-titlebar-toggle-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-toggle
+  .group-collapse-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-drawer-toggle
+  svg {
+  height: 15px;
+  width: 15px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-body {
+  gap: 8px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-search {
+  background: color-mix(in srgb, var(--app-foreground) 5%, transparent);
+  border-color: color-mix(in srgb, #ffffff 10%, transparent);
+  min-height: 32px;
+  width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-search input {
+  font-size: 13px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-list {
+  gap: 0;
+  max-height: min(230px, 36vh);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-row .group-title-row {
+  gap: 12px;
+  min-height: 32px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-session-count.group-add-button {
+  background: transparent;
+  border: none;
+  color: var(--app-muted);
+  font-size: 13px;
+  height: auto;
+  min-width: 0;
+  width: auto;
+}

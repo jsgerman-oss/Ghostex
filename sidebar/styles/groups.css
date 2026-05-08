@@ -383,6 +383,15 @@
   visibility: hidden;
 }
 
+.group-terminal-split-button {
+  display: inline-grid;
+  flex: none;
+  grid-template-columns: 24px 17px;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
 .group-add-button {
   align-items: center;
   background: color-mix(in srgb, var(--app-card-active) 88%, transparent);
@@ -400,8 +409,37 @@
   width: 22px;
 }
 
+.group-terminal-main-button,
+.group-terminal-toggle-button {
+  align-items: center;
+  background: color-mix(in srgb, var(--app-card-active) 88%, transparent);
+  border-color: color-mix(in srgb, var(--app-border) 92%, transparent);
+  color: color-mix(in srgb, var(--app-button-background) 74%, var(--app-foreground) 26%);
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  min-width: 0;
+  padding: 0;
+}
+
+.group-terminal-main-button {
+  border-radius: 999px 0 0 999px;
+  width: 24px;
+}
+
+.group-terminal-toggle-button {
+  border-left-width: 0;
+  border-radius: 0 999px 999px 0;
+  width: 17px;
+}
+
 .group-add-button:hover,
-.group-add-button:focus-visible {
+.group-add-button:focus-visible,
+.group-terminal-main-button:hover,
+.group-terminal-main-button:focus-visible,
+.group-terminal-toggle-button:hover,
+.group-terminal-toggle-button:focus-visible,
+.group-terminal-toggle-button[data-open="true"] {
   background: color-mix(in srgb, var(--app-button-background) 12%, var(--app-card-active) 88%);
   border-color: color-mix(in srgb, var(--app-button-background) 54%, var(--app-border));
   color: var(--app-button-background);
@@ -459,7 +497,11 @@
   justify-content: center;
 }
 
-.group-control-count-value,
+.group-control-count-icon {
+  display: block;
+  flex: none;
+}
+
 .group-control-count-option-value {
   font-size: 12px;
   font-weight: 700;
@@ -470,6 +512,38 @@
 .group-control-menu-item[data-selected="true"] {
   background: color-mix(in srgb, var(--app-button-background) 20%, transparent);
   color: color-mix(in srgb, var(--app-button-background) 78%, var(--app-foreground) 22%);
+}
+
+.group-terminal-menu {
+  min-width: 172px;
+}
+
+.group-terminal-menu-item {
+  justify-content: flex-start;
+}
+
+.group-terminal-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-terminal-launcher-icon {
+  display: block;
+  flex: none;
+  height: 14px;
+  width: 14px;
+}
+
+.group-terminal-launcher-agent-icon {
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
 }
 
 .group-add-icon {
@@ -633,10 +707,11 @@
   /*
    * CDXC:SidebarHover 2026-05-04-07:00
    * The group trailing controls should end flush with the header surface. The
-   * sidebar runs under CSS zoom, so an 84px cap resolves to about 76px visually:
-   * enough for visible-count, browser, and plus controls in project headers.
+   * sidebar runs under CSS zoom, so a 132px cap resolves to about 120px visually:
+   * enough for terminal split, browser, and visible-count controls in project
+   * headers.
    */
-  max-width: 84px;
+  max-width: 132px;
   opacity: 1;
   /*
    * CDXC:SidebarHover 2026-05-04-08:28
@@ -652,10 +727,13 @@
 
 .group-head:hover .group-add-button,
 .group-head:hover .group-control-button,
+.group-head:hover .group-terminal-split-button,
 .group-head:has(:focus-visible) .group-add-button,
 .group-head:has(:focus-visible) .group-control-button,
+.group-head:has(:focus-visible) .group-terminal-split-button,
 .group-header-actions[data-open="true"] .group-add-button,
-.group-header-actions[data-open="true"] .group-control-button {
+.group-header-actions[data-open="true"] .group-control-button,
+.group-header-actions[data-open="true"] .group-terminal-split-button {
   opacity: 1;
   pointer-events: auto;
   visibility: visible;
@@ -862,4 +940,233 @@
 
 .group-create-button-label {
   color: inherit;
+}
+
+/* CDXC:SidebarReference 2026-05-08-01:10: Reference-mode groups should read
+   like the provided sidebar: muted section labels, normal-case project names,
+   folder icons for projects, no connector rail, and no visible legacy header
+   action cluster.
+   CDXC:SidebarReference 2026-05-08-01:28: Use Codex.app-sized CSS pixels for
+   group labels and rows; the previous screenshot-pixel scale made every
+   sidebar element visually massive in the real app.
+   CDXC:SidebarReference 2026-05-08-01:41: Reference section headers now own
+   Chats/Projects collapse, while project rows keep normal folder icons at
+   rest and open folder icons while expanded even during hover. */
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-list {
+  --sidebar-session-column-offset: 0px;
+  justify-items: stretch;
+  padding-left: 20px;
+  padding-right: 20px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-chat-group-list,
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-project-group-list {
+  margin-left: 7px;
+  margin-right: 7px;
+  padding-left: 0;
+  padding-right: 0;
+  width: calc(100% - 14px);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group {
+  border: none;
+  border-radius: 0;
+  cursor: default;
+  gap: 0;
+  margin-bottom: 0;
+  max-width: 100%;
+  padding: 0;
+  width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-collapsed="false"],
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"][data-collapsed="false"],
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-empty-project="true"] {
+  gap: 0;
+  margin-bottom: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-head {
+  border-radius: 8px;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .group-head {
+  box-sizing: border-box;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-head::before,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-head::after,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-session-connector-rail,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-session-connector-button,
+.sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-card-button {
+  display: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group:not([data-project-group="true"])
+  .group-header-actions {
+  display: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-title-row {
+  gap: 12px;
+  min-height: 32px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-collapse-button {
+  color: #a6adb6;
+  height: 16px;
+  padding: 0;
+  right: auto;
+  top: auto;
+  width: 16px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .section-titlebar-toggle-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-collapse-icon {
+  height: 16px;
+  width: 16px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-title,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-title-input {
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.15;
+  text-transform: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-title {
+  color: #a5a5a5;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-active="true"] .group-title {
+  color: #a5a5a5;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-title-handle {
+  max-width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-header-actions {
+  gap: 0;
+  max-width: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-head:hover .group-header-actions,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group-head:has(:focus-visible)
+  .group-header-actions,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-header-actions[data-open="true"] {
+  gap: 2px;
+  margin-left: 6px;
+  max-width: 112px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button {
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: #858c95;
+  height: 22px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-control-button {
+  width: 22px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-split-button {
+  grid-template-columns: 22px 18px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button {
+  width: 22px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button {
+  width: 18px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button:hover,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button:focus-visible,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button:hover,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button:focus-visible,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button:hover,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button:focus-visible,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button[data-open="true"],
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-control-button[data-open="true"] {
+  background: color-mix(in srgb, var(--app-foreground) 8%, transparent);
+  color: #aeb4bd;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-chat-collection="true"] {
+  margin-bottom: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-chat-collection="true"] .group-head {
+  display: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-chat-group-list .group-empty-drop-target {
+  margin-top: 8px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-chat-group-list .group-empty-state {
+  border: 0;
+  box-sizing: border-box;
+  color: #444444;
+  font-size: 15.55px;
+  font-weight: 500;
+  height: auto;
+  justify-content: flex-start;
+  letter-spacing: 0;
+  line-height: 1.15;
+  padding-left: 10px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-empty-state {
+  box-sizing: border-box;
+  color: #444444;
+  font-size: 15.55px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.15;
+  margin-top: 8px;
+  padding-left: 10px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .group-head:hover .section-titlebar-toggle-idle-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"]
+  .group-head:has(.group-collapse-button:focus-visible)
+  .section-titlebar-toggle-idle-icon {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .section-titlebar-toggle-chevron-icon {
+  display: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-sessions-shell {
+  margin-top: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-sessions {
+  gap: 0;
+  overflow: visible;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-session-connector="true"] .project-editor-card-button,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-session-connector="true"] .session-frame {
+  margin-left: 0;
+  width: 100%;
 }

@@ -1,6 +1,7 @@
 import {
   IconCaretRightFilled,
   IconCheck,
+  IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
   IconCode,
@@ -14,6 +15,14 @@ import {
   IconPlayerPlay,
   IconPlus,
   IconRefresh,
+  IconSettings,
+  IconSquareNumber1Filled,
+  IconSquareNumber2Filled,
+  IconSquareNumber3Filled,
+  IconSquareNumber4Filled,
+  IconSquareNumber6Filled,
+  IconSquareNumber9Filled,
+  IconTerminal2,
   IconTrash,
   IconWorld,
   IconX,
@@ -35,12 +44,14 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { AppTooltip } from "./app-tooltip";
+import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import {
   getSidebarSessionLifecycleState,
   type SidebarTheme,
   type VisibleSessionCount,
 } from "../shared/session-grid-contract";
 import type { SidebarProjectDiffStats } from "../shared/project-diff-stats";
+import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import {
   DEFAULT_zmux_SETTINGS,
   getZedOverlayTargetAppLabel,
@@ -59,6 +70,7 @@ import { SortableSessionCard } from "./sortable-session-card";
 import { useCollapsibleHeight } from "./use-collapsible-height";
 import type { WebviewApi } from "./webview-api";
 import { VisualStudioCodeIcon } from "./brand-icons";
+import { openAppModal } from "./app-modal-host-bridge";
 import {
   DEFAULT_WORKSPACE_THEME_COLOR,
   normalizeWorkspaceThemeColor,
@@ -73,6 +85,9 @@ const CONTEXT_MENU_ITEM_HEIGHT_PX = 34;
 const CONTEXT_MENU_VERTICAL_PADDING_PX = 12;
 const COUNT_OPTIONS: VisibleSessionCount[] = [1, 2, 3, 4, 6, 9];
 const GROUP_CONTROL_MENU_MARGIN_PX = 12;
+const GROUP_CONTROL_COUNT_MENU_WIDTH_PX = 132;
+const GROUP_TERMINAL_MENU_WIDTH_PX = 220;
+const PROJECT_TERMINAL_LAUNCHER_STORAGE_KEY = "zmux-sidebar-project-terminal-launcher";
 const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
@@ -89,6 +104,14 @@ const PROJECT_CONTEXT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: Sideb
   { label: "Light Pink", value: "light-pink" },
   { label: "Light Orange", value: "light-orange" },
 ];
+const SPLIT_COUNT_ICONS = {
+  1: IconSquareNumber1Filled,
+  2: IconSquareNumber2Filled,
+  3: IconSquareNumber3Filled,
+  4: IconSquareNumber4Filled,
+  6: IconSquareNumber6Filled,
+  9: IconSquareNumber9Filled,
+} satisfies Record<VisibleSessionCount, typeof IconSquareNumber1Filled>;
 
 function getAnchoredSessionStatusStyle(sessionId: string): CSSProperties {
   return {
@@ -164,7 +187,7 @@ type GroupContextMenuPosition = ContextMenuPosition & {
   view: "group" | "project-custom-theme" | "project-themes";
 };
 
-type GroupControlMenu = "visible-count";
+type GroupControlMenu = "project-terminal" | "visible-count";
 
 export function getEmptyBrowserGroupExpandTooltip({
   browserTabCount,
@@ -302,9 +325,13 @@ export function SessionGroupSection({
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [openControlMenu, setOpenControlMenu] = useState<GroupControlMenu>();
+  const [primaryProjectTerminalLauncherId, setPrimaryProjectTerminalLauncherId] = useState(
+    readPrimaryProjectTerminalLauncherId,
+  );
   const { collapsibleStyle, contentRef } = useCollapsibleHeight<HTMLDivElement>();
   const menuRef = useRef<HTMLDivElement>(null);
   const controlMenuRef = useRef<HTMLDivElement>(null);
+  const projectTerminalButtonRef = useRef<HTMLButtonElement>(null);
   const visibleCountButtonRef = useRef<HTMLButtonElement>(null);
   const debugInstanceIdRef = useRef(createSessionGroupDebugInstanceId());
   const isBrowserGroup = group?.kind === "browser";
@@ -329,6 +356,7 @@ export function SessionGroupSection({
    */
   const areSessionDropTargetsDisabled = draggingDisabled || sessionDraggingDisabled;
   const debuggingMode = useSidebarStore((state) => state.hud.debuggingMode);
+  const agents = useSidebarStore((state) => state.hud.agents);
   const selectedIdeTarget = useSidebarStore(
     (state) => state.hud.settings?.zedOverlayTargetApp ?? DEFAULT_zmux_SETTINGS.zedOverlayTargetApp,
   );
@@ -413,7 +441,7 @@ export function SessionGroupSection({
     hasProjectEditor: Boolean(projectContext),
     sessions: groupSessions,
   });
-  const emptyStateLabel = isBrowserGroup ? "No browsers" : "No sessions";
+  const emptyStateLabel = isBrowserGroup ? "No browsers" : isChatCollection ? "No chats" : "No sessions";
   const shouldSelectEmptyProject = Boolean(projectContext && actualSessionCount === 0);
   /**
    * CDXC:ProjectGroups 2026-05-06-18:42
@@ -430,13 +458,19 @@ export function SessionGroupSection({
       : canToggleCollapsed
         ? `${isCollapsed ? "Expand" : "Collapse"} ${group.title}`
         : group.title);
+  const shouldSuppressProjectCollapseTooltip =
+    Boolean(projectContext) && canToggleCollapsed && !shouldSelectEmptyProject;
   const splitCountTooltip = "Select Split Count";
-  const createBrowserPaneTooltip = "Create a Browser";
   const createSessionTooltip = isBrowserGroup
     ? "Open a Browser"
     : isChatCollection
       ? "Create a Chat"
       : "Create a Terminal";
+  const primaryProjectTerminalAgent = agents.find(
+    (agent) => agent.agentId === primaryProjectTerminalLauncherId,
+  );
+  const primaryProjectTerminalLabel = primaryProjectTerminalAgent?.name ?? "Terminal";
+  const SplitCountIcon = SPLIT_COUNT_ICONS[group.layoutVisibleCount];
 
   useEffect(() => {
     postGroupDebugLog("group.sectionMounted", {
@@ -560,6 +594,7 @@ export function SessionGroupSection({
 
       if (
         controlMenuRef.current?.contains(target) ||
+        projectTerminalButtonRef.current?.contains(target) ||
         visibleCountButtonRef.current?.contains(target)
       ) {
         return;
@@ -641,6 +676,37 @@ export function SessionGroupSection({
     });
   };
 
+  const persistPrimaryProjectTerminalLauncher = (agentId: string | undefined) => {
+    setPrimaryProjectTerminalLauncherId(agentId);
+    writePrimaryProjectTerminalLauncherId(agentId);
+  };
+
+  const requestCreateProjectTerminal = (agent: SidebarAgentButton | undefined) => {
+    setOpenControlMenu(undefined);
+    if (!projectContext) {
+      requestCreateSession();
+      return;
+    }
+
+    if (!agent) {
+      persistPrimaryProjectTerminalLauncher(undefined);
+      requestCreateSession();
+      return;
+    }
+
+    persistPrimaryProjectTerminalLauncher(agent.agentId);
+    vscode.postMessage({
+      agentId: agent.agentId,
+      groupId: group.groupId,
+      type: "runSidebarAgent",
+    });
+  };
+
+  const openConfigureAgentsModal = () => {
+    setOpenControlMenu(undefined);
+    openAppModal({ modal: "configureAgents", type: "open" });
+  };
+
   const requestCreateBrowserPane = () => {
     if (!projectContext) {
       return;
@@ -659,6 +725,7 @@ export function SessionGroupSection({
 
     setOpenControlMenu(undefined);
     vscode.postMessage({
+      groupId: group.groupId,
       type: "setVisibleCount",
       visibleCount,
     });
@@ -898,6 +965,7 @@ export function SessionGroupSection({
         data-empty-space-blocking="true"
         data-empty-project={String(shouldSelectEmptyProject)}
         data-project-group={String(Boolean(projectContext))}
+        data-chat-collection={String(isChatCollection)}
         data-session-connector={String(showSessionGroupConnector)}
         data-sidebar-group-id={group.groupId}
         data-workspace-custom-theme={String(Boolean(projectContext?.themeColor))}
@@ -1024,7 +1092,7 @@ export function SessionGroupSection({
                   data-draggable={String(!isBrowserGroup && !isChatCollection)}
                   ref={isBrowserGroup || isChatCollection ? undefined : sortable.handleRef}
                 >
-                  <AppTooltip content={groupTitleActionLabel}>
+                  {shouldSuppressProjectCollapseTooltip ? (
                     <button
                       aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
                       aria-disabled={
@@ -1045,7 +1113,30 @@ export function SessionGroupSection({
                     >
                       <span className="group-title section-titlebar-label">{group.title}</span>
                     </button>
-                  </AppTooltip>
+                  ) : (
+                    <AppTooltip content={groupTitleActionLabel}>
+                      <button
+                        aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
+                        aria-disabled={
+                          emptyBrowserExpandTooltip !== undefined ||
+                          (!canToggleCollapsed && !shouldSelectEmptyProject)
+                        }
+                        aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
+                        aria-label={groupTitleActionLabel}
+                        className="group-title-button"
+                        data-empty-browser-group={String(emptyBrowserExpandTooltip !== undefined)}
+                        data-empty-project={String(shouldSelectEmptyProject)}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          toggleCollapsedOrSelectEmptyProject();
+                        }}
+                        type="button"
+                      >
+                        <span className="group-title section-titlebar-label">{group.title}</span>
+                      </button>
+                    </AppTooltip>
+                  )}
                 </div>
                 <div className="group-title-spacer" />
                 {/*
@@ -1063,10 +1154,18 @@ export function SessionGroupSection({
                       event.stopPropagation();
                     }}
                   >
-                    {group.isActive && !isBrowserGroup && !isChatCollection ? (
-                      <div className="group-layout-controls">
-                        <div className="group-control-anchor">
-                          <AppTooltip content={splitCountTooltip}>
+                    {projectContext ? (
+                      /**
+                       * CDXC:ProjectGroups 2026-05-08-13:12
+                       * Project headers expose the same compact control family
+                       * on every project row: a project-scoped split selector,
+                       * browser pane creation, and a terminal/agent split
+                       * launcher. Each action posts the group id so native
+                       * focuses the clicked project before mutating panes.
+                       */
+                      <>
+                        <div className="group-layout-controls">
+                          <div className="group-control-anchor">
                             <button
                               aria-expanded={openControlMenu === "visible-count"}
                               aria-haspopup="menu"
@@ -1088,23 +1187,14 @@ export function SessionGroupSection({
                               ref={visibleCountButtonRef}
                               type="button"
                             >
-                              <span className="group-control-count-value">
-                                {String(group.layoutVisibleCount)}
-                              </span>
+                              <SplitCountIcon
+                                aria-hidden="true"
+                                className="group-control-count-icon"
+                                size={16}
+                              />
                             </button>
-                          </AppTooltip>
+                          </div>
                         </div>
-                      </div>
-                    ) : null}
-                    {projectContext ? (
-                      /**
-                       * CDXC:ProjectGroups 2026-05-06-18:42
-                       * Project headers own the New Browser action. Keep it
-                       * immediately left of the create-session plus button so
-                       * browser panes are created from the project context
-                       * instead of a floating global sidebar control.
-                       */
-                      <AppTooltip content={createBrowserPaneTooltip}>
                         <button
                           aria-label={`Create a browser pane in ${group.title}`}
                           className="group-add-button group-browser-button"
@@ -1122,28 +1212,103 @@ export function SessionGroupSection({
                             stroke={2}
                           />
                         </button>
-                      </AppTooltip>
-                    ) : null}
-                    <AppTooltip content={createSessionTooltip}>
-                      <button
-                        aria-label={
-                          isBrowserGroup
-                            ? `Open a browser in ${group.title}`
-                            : isChatCollection
-                              ? `Create a chat in ${group.title}`
-                            : `Create a session in ${group.title}`
-                        }
-                        className="group-add-button"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          requestCreateSession();
-                        }}
-                        type="button"
-                      >
-                        <IconPlus aria-hidden="true" className="group-add-icon" size={14} stroke={2} />
-                      </button>
-                    </AppTooltip>
+                        <div className="group-control-anchor">
+                          <div className="group-terminal-split-button">
+                            <button
+                              aria-label={`Create ${primaryProjectTerminalLabel} in ${group.title}`}
+                              className="group-terminal-main-button"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                requestCreateProjectTerminal(primaryProjectTerminalAgent);
+                              }}
+                              type="button"
+                            >
+                              <ProjectTerminalLauncherIcon agent={primaryProjectTerminalAgent} />
+                            </button>
+                            <button
+                              aria-expanded={openControlMenu === "project-terminal"}
+                              aria-haspopup="menu"
+                              aria-label={`Select terminal or agent for ${group.title}`}
+                              className="group-terminal-toggle-button"
+                              data-open={String(openControlMenu === "project-terminal")}
+                              onClick={() => {
+                                setOpenControlMenu((previous) =>
+                                  previous === "project-terminal" ? undefined : "project-terminal",
+                                );
+                              }}
+                              ref={projectTerminalButtonRef}
+                              type="button"
+                            >
+                              <IconChevronDown aria-hidden="true" size={13} stroke={2} />
+                            </button>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        {group.isActive && !isBrowserGroup && !isChatCollection ? (
+                          <div className="group-layout-controls">
+                            <div className="group-control-anchor">
+                              <AppTooltip content={splitCountTooltip}>
+                                <button
+                                  aria-expanded={openControlMenu === "visible-count"}
+                                  aria-haspopup="menu"
+                                  aria-label={`Select split count for ${group.title}`}
+                                  className="group-add-button group-control-button"
+                                  data-open={String(openControlMenu === "visible-count")}
+                                  onClick={() => {
+                                    setOpenControlMenu((previous) =>
+                                      previous === "visible-count" ? undefined : "visible-count",
+                                    );
+                                  }}
+                                  onContextMenu={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    setOpenControlMenu((previous) =>
+                                      previous === "visible-count" ? undefined : "visible-count",
+                                    );
+                                  }}
+                                  ref={visibleCountButtonRef}
+                                  type="button"
+                                >
+                                  <SplitCountIcon
+                                    aria-hidden="true"
+                                    className="group-control-count-icon"
+                                    size={16}
+                                  />
+                                </button>
+                              </AppTooltip>
+                            </div>
+                          </div>
+                        ) : null}
+                        <AppTooltip content={createSessionTooltip}>
+                          <button
+                            aria-label={
+                              isBrowserGroup
+                                ? `Open a browser in ${group.title}`
+                                : isChatCollection
+                                  ? `Create a chat in ${group.title}`
+                                  : `Create a session in ${group.title}`
+                            }
+                            className="group-add-button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              requestCreateSession();
+                            }}
+                            type="button"
+                          >
+                            <IconPlus
+                              aria-hidden="true"
+                              className="group-add-icon"
+                              size={14}
+                              stroke={2}
+                            />
+                          </button>
+                        </AppTooltip>
+                      </>
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -1592,6 +1757,60 @@ export function SessionGroupSection({
             document.body,
           )
         : null}
+      {projectContext && openControlMenu === "project-terminal"
+        ? createPortal(
+            <div
+              className="group-control-menu session-context-menu group-terminal-menu"
+              onClick={(event) => event.stopPropagation()}
+              ref={controlMenuRef}
+              role="menu"
+              style={getPortalMenuStyle(projectTerminalButtonRef.current, GROUP_TERMINAL_MENU_WIDTH_PX)}
+            >
+              <button
+                aria-pressed={primaryProjectTerminalAgent === undefined}
+                className="session-context-menu-item group-control-menu-item group-terminal-menu-item"
+                data-selected={String(primaryProjectTerminalAgent === undefined)}
+                onClick={() => requestCreateProjectTerminal(undefined)}
+                role="menuitem"
+                type="button"
+              >
+                <IconTerminal2 aria-hidden="true" className="session-context-menu-icon" size={14} />
+                <span className="group-terminal-menu-label">Terminal</span>
+                {primaryProjectTerminalAgent === undefined ? (
+                  <IconCheck aria-hidden="true" className="session-context-menu-icon" size={14} />
+                ) : null}
+              </button>
+              {agents.map((agent) => (
+                <button
+                  aria-pressed={primaryProjectTerminalAgent?.agentId === agent.agentId}
+                  className="session-context-menu-item group-control-menu-item group-terminal-menu-item"
+                  data-selected={String(primaryProjectTerminalAgent?.agentId === agent.agentId)}
+                  key={agent.agentId}
+                  onClick={() => requestCreateProjectTerminal(agent)}
+                  role="menuitem"
+                  type="button"
+                >
+                  <ProjectTerminalLauncherIcon agent={agent} />
+                  <span className="group-terminal-menu-label">{agent.name}</span>
+                  {primaryProjectTerminalAgent?.agentId === agent.agentId ? (
+                    <IconCheck aria-hidden="true" className="session-context-menu-icon" size={14} />
+                  ) : null}
+                </button>
+              ))}
+              <div className="session-context-menu-divider" role="separator" />
+              <button
+                className="session-context-menu-item group-control-menu-item group-terminal-menu-item"
+                onClick={openConfigureAgentsModal}
+                role="menuitem"
+                type="button"
+              >
+                <IconSettings aria-hidden="true" className="session-context-menu-icon" size={14} />
+                <span className="group-terminal-menu-label">Configure</span>
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
       {!isBrowserGroup && openControlMenu === "visible-count"
         ? createPortal(
             <div
@@ -1599,7 +1818,10 @@ export function SessionGroupSection({
               onClick={(event) => event.stopPropagation()}
               ref={controlMenuRef}
               role="menu"
-              style={getPortalMenuStyle(visibleCountButtonRef.current)}
+              style={getPortalMenuStyle(
+                visibleCountButtonRef.current,
+                GROUP_CONTROL_COUNT_MENU_WIDTH_PX,
+              )}
             >
               {COUNT_OPTIONS.map((visibleCount) => (
                 <AppTooltip content={getVisibleCountMenuLabel(visibleCount)} key={visibleCount}>
@@ -1640,17 +1862,76 @@ export function SessionGroupSection({
   );
 }
 
-function getPortalMenuStyle(button: HTMLButtonElement | null) {
+function ProjectTerminalLauncherIcon({ agent }: { agent?: SidebarAgentButton }) {
+  if (!agent) {
+    return (
+      <IconTerminal2
+        aria-hidden="true"
+        className="group-terminal-launcher-icon group-terminal-launcher-tabler-icon"
+        size={14}
+        stroke={1.9}
+      />
+    );
+  }
+
+  if (agent.icon) {
+    return (
+      <span
+        aria-hidden="true"
+        className="group-terminal-launcher-icon group-terminal-launcher-agent-icon"
+        data-agent-icon={agent.icon}
+        style={{
+          backgroundColor: AGENT_LOGO_COLORS[agent.icon],
+          maskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
+          WebkitMaskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
+        }}
+      />
+    );
+  }
+
+  return (
+    <IconCode
+      aria-hidden="true"
+      className="group-terminal-launcher-icon group-terminal-launcher-tabler-icon"
+      size={14}
+      stroke={1.9}
+    />
+  );
+}
+
+function readPrimaryProjectTerminalLauncherId(): string | undefined {
+  return localStorage.getItem(PROJECT_TERMINAL_LAUNCHER_STORAGE_KEY)?.trim() || undefined;
+}
+
+function writePrimaryProjectTerminalLauncherId(agentId: string | undefined): void {
+  if (!agentId) {
+    localStorage.removeItem(PROJECT_TERMINAL_LAUNCHER_STORAGE_KEY);
+    return;
+  }
+
+  localStorage.setItem(PROJECT_TERMINAL_LAUNCHER_STORAGE_KEY, agentId);
+}
+
+function getPortalMenuStyle(button: HTMLButtonElement | null, menuWidth: number) {
   const position = getControlMenuPosition(button);
+  const bounds = button?.getBoundingClientRect();
   if (!position) {
     return undefined;
   }
 
+  const left = Math.max(
+    GROUP_CONTROL_MENU_MARGIN_PX,
+    Math.min(
+      (bounds?.right ?? position.x) - menuWidth,
+      window.innerWidth - menuWidth - GROUP_CONTROL_MENU_MARGIN_PX,
+    ),
+  );
+
   return {
-    left: `${position.x}px`,
+    left: `${left}px`,
     position: "fixed" as const,
     top: `${position.y}px`,
-    transform: "translateX(-50%)",
+    width: `${menuWidth}px`,
   };
 }
 

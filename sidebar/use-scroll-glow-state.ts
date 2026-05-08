@@ -8,6 +8,18 @@ export type ScrollGlowState = {
 
 const SCROLL_GLOW_EPSILON_PX = 2;
 
+function getScrollableContentBottom(element: HTMLElement): number {
+  const elementRect = element.getBoundingClientRect();
+  let contentBottom = 0;
+
+  for (const child of Array.from(element.children)) {
+    const childRect = child.getBoundingClientRect();
+    contentBottom = Math.max(contentBottom, childRect.bottom - elementRect.top);
+  }
+
+  return contentBottom;
+}
+
 export function useScrollGlowState(
   scrollContainerRef: RefObject<HTMLElement | null>,
 ): ScrollGlowState {
@@ -28,7 +40,8 @@ export function useScrollGlowState(
     const updateScrollGlowState = () => {
       animationFrameId = 0;
 
-      const hasOverflow = element.scrollHeight - element.clientHeight > SCROLL_GLOW_EPSILON_PX;
+      const contentBottom = getScrollableContentBottom(element);
+      const hasOverflow = contentBottom - element.clientHeight > SCROLL_GLOW_EPSILON_PX;
       /**
        * CDXC:SidebarScroll 2026-05-05-05:29
        * Combined-mode sparse project lists must not rubber-band or preserve a
@@ -40,7 +53,7 @@ export function useScrollGlowState(
         element.scrollTop = 0;
       }
       const showTopGlow = hasOverflow && element.scrollTop > SCROLL_GLOW_EPSILON_PX;
-      const remainingBottom = element.scrollHeight - element.clientHeight - element.scrollTop;
+      const remainingBottom = contentBottom - element.clientHeight - element.scrollTop;
       const showBottomGlow = hasOverflow && remainingBottom > SCROLL_GLOW_EPSILON_PX;
 
       setScrollGlowState((previous) =>

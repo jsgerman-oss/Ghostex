@@ -1153,3 +1153,225 @@
   .session-header-agent-tabler-icon[data-favorite="true"] {
   opacity: 1;
 }
+
+/* CDXC:SidebarReference 2026-05-08-01:10: The reference screenshots require
+   flat rounded active rows, always-visible last-active times, a small blue
+   attention dot, and a gray ring spinner for working sessions.
+   CDXC:SidebarReference 2026-05-08-01:28: Session row typography and controls
+   must use app CSS-pixel scale rather than screenshot pixels, keeping cards
+   similar to Codex.app sidebar density on Retina displays.
+   CDXC:SidebarReference 2026-05-08-01:41: Match the smaller Codex.app sidebar
+   text scale across session rows and timestamps while preserving the compact
+   attention dot and working spinner affordances.
+   CDXC:SidebarReference 2026-05-08-02:52: Time labels and activity indicators
+   must occupy the same fixed trailing slot so rows do not shift when a session
+   changes between idle, attention, and working states.
+   CDXC:SidebarReference 2026-05-08-13:34: Hover and active session rows use a
+   neutral gray surface instead of the app accent's blue-tinted active color. */
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame {
+  --reference-session-agent-icon-size: 13px;
+  --reference-session-icon-size: 15px;
+  --reference-session-leading-inset: 10px;
+  --reference-session-title-inset: 36px;
+  --reference-session-trailing-inset: 10px;
+  --reference-session-trailing-slot-width: 44px;
+  min-height: 34px;
+  width: 100%;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session {
+  border: none;
+  border-radius: 8px;
+  box-sizing: border-box;
+  height: 34px;
+  min-height: 34px;
+  outline: none;
+  padding: 10px var(--reference-session-trailing-inset) 10px
+    var(--reference-session-title-inset);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .session {
+  padding-left: var(--reference-session-title-inset);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session::before {
+  display: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session::after {
+  background: #202020;
+  inset: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session:is(:hover, :focus-visible, [data-focused="true"], [data-search-selected="true"]) {
+  border-color: transparent;
+  box-shadow: none;
+  outline-color: transparent;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session:is(:hover, :focus-visible, [data-focused="true"], [data-search-selected="true"])::after {
+  opacity: 1;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session[data-visible="true"]::after {
+  opacity: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session[data-visible="true"]:is(:hover, :focus-visible, [data-focused="true"], [data-search-selected="true"])::after {
+  opacity: 1;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-head {
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) var(--reference-session-trailing-slot-width);
+  height: 14px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-alias-heading {
+  color: #d8d8d8;
+  font-size: 15.55px;
+  font-weight: 500 !important;
+  letter-spacing: 0;
+  line-height: 14px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session[data-visible="true"]
+  .session-alias-heading {
+  font-weight: 700 !important;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-last-interaction-time {
+  color: #858585 !important;
+  font-size: 15.55px;
+  font-weight: 500 !important;
+  letter-spacing: 0;
+  line-height: 14px;
+  min-width: max-content;
+  opacity: 1 !important;
+  overflow: visible;
+  position: static;
+  text-align: right;
+  width: max-content;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session[data-visible="true"]
+  .session-last-interaction-time {
+  font-weight: 700 !important;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-head-trailing {
+  display: grid;
+  justify-items: end;
+  min-width: var(--reference-session-trailing-slot-width);
+  overflow: visible;
+  width: var(--reference-session-trailing-slot-width);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-header-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-header-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-header-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-persistence-provider-badge[data-slot="header"] {
+  display: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-floating-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-floating-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-floating-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-persistence-provider-badge[data-slot="floating"] {
+  display: block;
+  height: var(--reference-session-icon-size);
+  left: var(--reference-session-leading-inset);
+  opacity: 1;
+  top: 50%;
+  translate: 0 -50%;
+  width: var(--reference-session-icon-size);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-persistence-provider-badge[data-slot="floating"] {
+  display: grid;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-floating-agent-icon {
+  height: var(--reference-session-agent-icon-size);
+  left: calc(
+    var(--reference-session-leading-inset) +
+      ((var(--reference-session-icon-size) - var(--reference-session-agent-icon-size)) / 2)
+  );
+  width: var(--reference-session-agent-icon-size);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-floating-agent-tabler-icon[data-agent-icon="terminal"],
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-floating-agent-tabler-icon[data-agent-icon="browser"][data-icon-variant="favicon"] {
+  height: var(--reference-session-icon-size);
+  left: var(--reference-session-leading-inset);
+  top: 50%;
+  width: var(--reference-session-icon-size);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot {
+  background: #7da4f8;
+  box-shadow: none;
+  height: 7px;
+  right: calc(
+    var(--reference-session-trailing-inset) +
+      ((var(--reference-session-trailing-slot-width) - 7px) / 2)
+  );
+  top: 50%;
+  translate: 0 -50%;
+  width: 7px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame:is([data-activity="attention"], [data-activity="working"])
+  .session-last-interaction-time {
+  opacity: 0 !important;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-activity="attention"] .session-status-dot,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot-anchored[data-activity="attention"] {
+  --session-status-dot-color: #7da4f8;
+  animation: none;
+  background: #7da4f8;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-activity="working"] .session-status-dot,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot-anchored[data-activity="working"] {
+  animation: reference-sidebar-working-spin 0.82s linear infinite;
+  background: transparent;
+  border: 1.5px solid #8b929b;
+  border-right-color: transparent;
+  height: 12px;
+  right: calc(
+    var(--reference-session-trailing-inset) +
+      ((var(--reference-session-trailing-slot-width) - 12px) / 2)
+  );
+  width: 12px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot-anchored {
+  display: none;
+}
+
+@supports (position-anchor: --session-status-anchor) {
+  .sidebar-reference-layout[data-reference-sidebar="true"]
+    .session-frame[data-group-connector="true"]
+    .session-status-dot-inline {
+    display: block;
+  }
+}
+
+@keyframes reference-sidebar-working-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
