@@ -30,6 +30,7 @@ brew install --cask maddada/tap/zmux
 ## Best features:
 
 - Native Sparkle updates for macOS releases.
+- Version 2.1 ships the branded macOS app icon from agent-manager-x while carrying forward the 2.x UI, stability, and performance refresh.
 - Version 2.0 refreshes the whole UI around a simplified Codex-style workspace with cleaner top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, and updated screenshots.
 - Version 2.0 includes broad stability and performance work across native sidebar sync, AppKit relayouts, shared storage writes, diagnostic logging, and workspace visibility.
 - `zmux sessions`, `zmux attach`, `zmux kill`, `zmux sleep`, `zmux wake`, and `zmux focus` manage live terminal sessions from a shell.

@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.0 - 2026-05-08
+
+<!-- CDXC:Distribution 2026-05-08-18:04: Release notes for 2.1.0 must keep
+the 2.x messaging focused on the full UI refresh plus stability/performance
+work, while also calling out the macOS app icon shipped after v2.0. -->
+
+- Continued the 2.x UI refresh messaging: zmux now presents the redesigned simplified Codex-style workspace, refreshed project groups, action controls, tooltips, session cards, settings surfaces, and updated screenshots.
+- Continued the 2.x stability and performance focus across native sidebar sync, AppKit relayout avoidance, shared storage writes, diagnostic filtering, and workspace visibility.
+- Added the macOS application icon from agent-manager-x so Finder, Dock, app switcher, and signed release builds use the intended branded icon instead of a generic app icon.
+- Compiled the icon through Xcode's `AppIcon` asset catalog so signed and notarized release bundles carry the same icon metadata as local builds.
+
 ## 2.0.0 - 2026-05-08
 
 <!-- CDXC:Distribution 2026-05-08-17:16: Release notes for 2.0.0 must emphasize
