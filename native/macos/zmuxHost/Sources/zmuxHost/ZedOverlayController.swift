@@ -798,9 +798,10 @@ final class ZedOverlayController: NSObject {
        Accessibility permission must be framed narrowly for users: zmux uses
        it only to move/resize the integrated browser window and to read IDE
        window frames for attaching to Zed, VS Code, and other supported IDEs.
-       The actual DockDoor-style request dialog is now owned by AppDelegate on
-       first startup, so attachment should only keep the native button hidden
-       until the same signed /Applications/zmux.app identity is allowed.
+       CDXC:AccessibilityPermissions 2026-05-08-13:08
+       The actual request dialog is owned by AppDelegate when Settings enables
+       attachment, so attachment should only keep the native button hidden until
+       the same signed /Applications/zmux.app identity is allowed.
        */
       BrowserOverlayRestoreReproLog.append(
         "zedOverlay.readTargetWindowFrame.accessibilityDenied",

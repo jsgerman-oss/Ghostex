@@ -255,6 +255,7 @@ final class TerminalWorkspaceView: NSView {
   private static let singlePaneInset: CGFloat = 1
   private static let paneResizeMinimumHeight: CGFloat = 160
   private static let paneResizeMinimumWidth: CGFloat = 220
+  private static let paneResizeOuterEdgeExclusion: CGFloat = 8
   private static let paneHeaderDragThreshold: CGFloat = 6
   private static let paneHeaderDragGhostMaxWidth: CGFloat = 230
   private static let cefNativeDragHoverInterval: TimeInterval = 1.0 / 30.0
@@ -1125,6 +1126,11 @@ final class TerminalWorkspaceView: NSView {
   }
 
   func createProjectEditorPane(_ command: CreateProjectEditorPane) {
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.create.received", [
+      "projectId": command.projectId,
+      "title": command.title,
+      "url": command.url,
+    ])
     if let existingSession = projectEditorPaneSessions[command.projectId] {
       let nextSession = ProjectEditorPaneSession(
         chromiumView: existingSession.chromiumView,
@@ -1688,6 +1694,18 @@ final class TerminalWorkspaceView: NSView {
     if let activeProjectEditorId,
       let editorSession = projectEditorPaneSessions[activeProjectEditorId]
     {
+      /**
+       CDXC:EditorPanes 2026-05-08-13:02
+       Sidebar resize changes the workspace bounds while VS Code owns the
+       visible pane. Log the active editor layout branch before touching hosted
+       Chromium so crash reports can be matched to the last AppKit frame.
+       */
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.active", [
+        "activeProjectEditorId": activeProjectEditorId,
+        "hostFrameBefore": describeFrame(editorSession.hostView.frame),
+        "workspaceBounds": describeFrame(bounds),
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
       hideSplitSessionSurfacesForActiveEditor()
       editorSession.hostView.isHidden = false
       layoutProjectEditorPane(editorSession)
@@ -1815,14 +1833,57 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func layoutProjectEditorPane(_ session: ProjectEditorPaneSession) {
-    session.hostView.frame = bounds
-    session.hostView.refreshHostedWebView(reason: "layoutProjectEditorPane")
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.start", [
+      "hostFrameBefore": describeFrame(session.hostView.frame),
+      "projectId": session.projectId,
+      "url": session.url,
+      "workspaceBounds": describeFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+    let nextFrame = bounds
+    /**
+     CDXC:EditorPanes 2026-05-08-13:37
+     Sidebar resize must not synchronously refresh or display the hosted VS
+     Code CEF view from inside TerminalWorkspaceView.layout(). Resizing only
+     moves the host frame; WebPaneHostView.layout owns the child Chromium frame
+     on the normal AppKit pass. Do not mark the host as needing layout from
+     this layout method, because that self-invalidates and can loop when the
+     project editor is the active workspace surface.
+     */
+    if !rectsMatch(session.hostView.frame, nextFrame) {
+      session.hostView.frame = nextFrame
+    }
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.end", [
+      "hostFrameAfter": describeFrame(session.hostView.frame),
+      "projectId": session.projectId,
+      "url": session.url,
+      "workspaceBounds": describeFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+  }
+
+  private func rectsMatch(_ left: CGRect, _ right: CGRect) -> Bool {
+    let epsilon: CGFloat = 0.5
+    return abs(left.minX - right.minX) <= epsilon
+      && abs(left.minY - right.minY) <= epsilon
+      && abs(left.width - right.width) <= epsilon
+      && abs(left.height - right.height) <= epsilon
   }
 
   private func orderProjectEditorPaneToFront(_ session: ProjectEditorPaneSession) {
     if session.hostView.superview !== self {
       addSubview(session.hostView)
+      return
     }
+    guard subviews.last !== session.hostView else {
+      return
+    }
+    /**
+     CDXC:EditorPanes 2026-05-08-13:37
+     Reordering the active VS Code host by remove/add invalidates AppKit
+     layout. Only move it when another workspace surface is actually above it;
+     doing this on every layout pass creates a self-sustaining layout loop.
+     */
     session.hostView.removeFromSuperview()
     addSubview(session.hostView, positioned: .above, relativeTo: nil)
   }
@@ -2057,6 +2118,14 @@ final class TerminalWorkspaceView: NSView {
     for boundaryIndex in 1..<childRects.count {
       let previous = childRects[boundaryIndex - 1]
       let next = childRects[boundaryIndex]
+      guard isInteriorPaneResizeBoundary(
+        previous: previous,
+        next: next,
+        direction: direction,
+        container: rect
+      ) else {
+        continue
+      }
       let hitRect: CGRect
       switch direction {
       case .horizontal:
@@ -2076,7 +2145,11 @@ final class TerminalWorkspaceView: NSView {
           height: hitSize
         )
       }
-      if hitRect.width > 0, hitRect.height > 0 {
+      if let hitRect = paneResizeHitRectExcludingOuterEdges(
+        hitRect,
+        direction: direction,
+        container: rect
+      ) {
         paneResizeHits.append(
           PaneResizeHit(
             availableLength: max(
@@ -2093,6 +2166,62 @@ final class TerminalWorkspaceView: NSView {
           ))
       }
     }
+  }
+
+  private func isInteriorPaneResizeBoundary(
+    previous: CGRect,
+    next: CGRect,
+    direction: NativeTerminalLayout.SplitDirection,
+    container: CGRect
+  ) -> Bool {
+    /**
+     CDXC:NativePaneResize 2026-05-08-12:38
+     Terminal resize handles are only valid where two visible pane siblings
+     share an interior boundary. Do not create edge handles along the workspace
+     perimeter; the sidebar/workspace boundary is owned by zmuxRootView's
+     sidebar resize handle and must not compete with terminal pane hit zones.
+     */
+    let epsilon: CGFloat = 0.5
+    switch direction {
+    case .horizontal:
+      let boundaryCenter = (previous.maxX + next.minX) / 2
+      let overlapHeight = min(previous.maxY, next.maxY) - max(previous.minY, next.minY)
+      return boundaryCenter > container.minX + epsilon
+        && boundaryCenter < container.maxX - epsilon
+        && overlapHeight > epsilon
+    case .vertical:
+      let boundaryCenter = (previous.minY + next.maxY) / 2
+      let overlapWidth = min(previous.maxX, next.maxX) - max(previous.minX, next.minX)
+      return boundaryCenter > container.minY + epsilon
+        && boundaryCenter < container.maxY - epsilon
+        && overlapWidth > epsilon
+    }
+  }
+
+  private func paneResizeHitRectExcludingOuterEdges(
+    _ hitRect: CGRect,
+    direction: NativeTerminalLayout.SplitDirection,
+    container: CGRect
+  ) -> CGRect? {
+    /**
+     CDXC:NativePaneResize 2026-05-08-12:38
+     Interior split handles should not expose draggable caps on pane sides that
+     touch no sibling pane. Trim those caps so a terminal split handle cannot
+     sit immediately beside the sidebar resize handle at the workspace edge.
+     */
+    let edgeInset = min(Self.paneResizeOuterEdgeExclusion, max(0, paneGap))
+    let trimmed: CGRect
+    switch direction {
+    case .horizontal:
+      trimmed = hitRect.insetBy(dx: 0, dy: edgeInset)
+    case .vertical:
+      trimmed = hitRect.insetBy(dx: edgeInset, dy: 0)
+    }
+    let clamped = trimmed.intersection(container)
+    guard clamped.width > 0, clamped.height > 0 else {
+      return nil
+    }
+    return clamped
   }
 
   override func resetCursorRects() {
@@ -6597,6 +6726,21 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   func refreshHostedWebView(reason: String) {
+    /**
+     CDXC:EditorPanes 2026-05-08-13:02
+     VS Code editor crashes during sidebar resize need before/after logging
+     around hosted Chromium frame refresh, including whether refresh forces
+     immediate layout/display on the CEF NSView.
+     */
+    NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.host.refresh.start", [
+      "browserFrameBefore": Self.describeFrame(browserView.frame),
+      "hostBounds": Self.describeFrame(bounds),
+      "hostFrame": Self.describeFrame(frame),
+      "reason": reason,
+      "showsBrowserToolbar": showsBrowserToolbar,
+      "webUrl": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     if showsBrowserToolbar, toolbarView.superview !== self {
       toolbarView.removeFromSuperview()
       addSubview(toolbarView)
@@ -6622,11 +6766,14 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     needsDisplay = true
     browserView.needsLayout = true
     browserView.needsDisplay = true
-    layoutSubtreeIfNeeded()
-    browserView.layoutSubtreeIfNeeded()
-    displayIfNeeded()
-    browserView.displayIfNeeded()
-    NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.host.refresh", [
+    /**
+     CDXC:EditorPanes 2026-05-08-13:13
+     Hosted Chromium frame refresh is a state update, not a synchronous paint
+     command. Forcing layout/display here can re-enter CEF while AppKit is
+     already processing sidebar or workspace resize, which crashes the visible
+     VS Code pane. Mark the views dirty and let the run loop flush them.
+     */
+    NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.host.refresh.end", [
       "hostFrame": Self.describeFrame(frame),
       "reason": reason,
       "webFrame": Self.describeFrame(browserView.frame),

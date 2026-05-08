@@ -8,6 +8,7 @@ import {
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
   SIDEBAR_MODE_OPTIONS,
   SIDEBAR_SIDE_OPTIONS,
+  SIDEBAR_THEME_SETTING_OPTIONS,
   ZED_OVERLAY_TARGET_APP_OPTIONS,
 } from "./zmux-settings";
 
@@ -112,6 +113,23 @@ describe("normalizezmuxSettings", () => {
       { label: "Left", value: "left" },
       { label: "Right", value: "right" },
     ]);
+  });
+
+  test("defaults sidebar theme to Dark Gray and removes Auto from visible theme options", () => {
+    /**
+     * CDXC:SidebarTheme 2026-05-08-11:14
+     * Auto is retired from user-facing sidebar themes while the full picker is
+     * hidden. Defaults and legacy Auto values normalize to Dark Gray so the
+     * sidebar starts in the requested palette without a transient auto theme.
+     */
+    expect(DEFAULT_zmux_SETTINGS.sidebarTheme).toBe("plain");
+    expect(normalizezmuxSettings({})).toMatchObject({
+      sidebarTheme: "plain",
+    });
+    expect(normalizezmuxSettings({ sidebarTheme: "auto" })).toMatchObject({
+      sidebarTheme: "plain",
+    });
+    expect(SIDEBAR_THEME_SETTING_OPTIONS).toEqual([{ label: "Dark Gray", value: "plain" }]);
   });
 
   test("defaults session status indicators to Medium and keeps four selectable sizes", () => {

@@ -611,6 +611,7 @@ enum NativeT3RuntimeLauncher {
   private static let bootstrapCredentialLock = NSLock()
   private static var bootstrapCredential: String?
   private static var ownerBearerToken: String?
+  private static let startupUnresponsiveRetentionSeconds = 90
   private static let staleRuntimeShutdownTimeout: TimeInterval = 2.0
   private static let appClosedRuntimeShutdownTimeoutSeconds = 300
 
@@ -631,7 +632,6 @@ enum NativeT3RuntimeLauncher {
     }
 
     let heartbeatAgeSeconds = appHeartbeatAgeSeconds()
-    let shouldRetainOwnedRuntime = !forceOwnedRuntimeStop && isAppHeartbeatFresh(ageSeconds: heartbeatAgeSeconds)
 
     for listener in listeners {
       guard isAnyT3RuntimeCommand(listener.command) else {
@@ -643,13 +643,17 @@ enum NativeT3RuntimeLauncher {
         continue
       }
 
+      let shouldRetainOwnedRuntime =
+        !forceOwnedRuntimeStop && shouldRetainUnresponsiveManagedRuntime(
+          pid: listener.pid, heartbeatAgeSeconds: heartbeatAgeSeconds)
       if shouldRetainOwnedRuntime {
         /**
-         CDXC:T3Code 2026-05-04-09:00
-         A zmux-started T3 runtime must stay alive while zmux is open and across
-         quick app restarts. Health probes can fail while the server is warming or
-         owner auth is being restored; do not classify a fresh-heartbeat runtime
-         as stale unless the user explicitly kills it from the Running modal.
+         CDXC:T3Code 2026-05-08-13:11
+         Native T3 startup can report an open port before auth and orchestration
+         endpoints answer. Retain an unresponsive managed listener only during a
+         short startup grace window; older listeners that still time out are
+         wedged providers and must be replaced instead of keeping panes on the
+         embedded-workspace loader.
          */
         NativeT3CodePaneReproLog.append("\(logPrefix).t3Runtime.freshHeartbeatRetained", [
           "command": listener.command,
@@ -658,6 +662,8 @@ enum NativeT3RuntimeLauncher {
           "parentPid": listener.parentPid,
           "pid": listener.pid,
           "port": port,
+          "runtimeAgeSeconds": runtimeAgeSeconds(pid: listener.pid) ?? NSNull(),
+          "startupRetentionSeconds": startupUnresponsiveRetentionSeconds,
         ])
         continue
       }
@@ -670,6 +676,8 @@ enum NativeT3RuntimeLauncher {
         "parentPid": listener.parentPid,
         "pid": listener.pid,
         "port": port,
+        "runtimeAgeSeconds": runtimeAgeSeconds(pid: listener.pid) ?? NSNull(),
+        "startupRetentionSeconds": startupUnresponsiveRetentionSeconds,
       ])
       if isT3RuntimeSupervisorCommand(listener.parentCommand) {
         terminate(pid: listener.parentPid)
@@ -686,9 +694,12 @@ enum NativeT3RuntimeLauncher {
      owned T3 runtime processes after the graceful timeout expires.
      */
     let remainingOwnedListeners =
-      forceOwnedRuntimeStop || !shouldRetainOwnedRuntime
-      ? listeningProcesses(onPort: port).filter { isOwnedT3RuntimeProcess($0) }
-      : []
+      listeningProcesses(onPort: port).filter {
+        isOwnedT3RuntimeProcess($0)
+          && (forceOwnedRuntimeStop
+            || !shouldRetainUnresponsiveManagedRuntime(
+              pid: $0.pid, heartbeatAgeSeconds: heartbeatAgeSeconds))
+      }
     for listener in remainingOwnedListeners {
       NativeT3CodePaneReproLog.append("\(logPrefix).t3Runtime.staleProcess.forceKill", [
         "command": listener.command,
@@ -698,6 +709,7 @@ enum NativeT3RuntimeLauncher {
         "parentPid": listener.parentPid,
         "pid": listener.pid,
         "port": port,
+        "runtimeAgeSeconds": runtimeAgeSeconds(pid: listener.pid) ?? NSNull(),
       ])
       if isT3RuntimeSupervisorCommand(listener.parentCommand) {
         forceTerminate(pid: listener.parentPid)
@@ -717,6 +729,36 @@ enum NativeT3RuntimeLauncher {
     isAppHeartbeatFresh(ageSeconds: appHeartbeatAgeSeconds())
   }
 
+  static func shouldRetainUnresponsiveManagedRuntime(pid: Int) -> Bool {
+    shouldRetainUnresponsiveManagedRuntime(pid: pid, heartbeatAgeSeconds: appHeartbeatAgeSeconds())
+  }
+
+  private static func shouldRetainUnresponsiveManagedRuntime(
+    pid: Int,
+    heartbeatAgeSeconds: Int?
+  ) -> Bool {
+    guard isAppHeartbeatFresh(ageSeconds: heartbeatAgeSeconds) else {
+      return false
+    }
+    guard let ageSeconds = runtimeAgeSeconds(pid: pid) else {
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.listener.startupGrace.missingAge", [
+        "heartbeatAgeSeconds": heartbeatAgeSeconds ?? NSNull(),
+        "pid": pid,
+        "startupRetentionSeconds": startupUnresponsiveRetentionSeconds,
+      ])
+      return false
+    }
+    let shouldRetain = ageSeconds <= startupUnresponsiveRetentionSeconds
+    NativeT3CodePaneReproLog.append("nativeT3Runtime.listener.startupGrace.evaluated", [
+      "heartbeatAgeSeconds": heartbeatAgeSeconds ?? NSNull(),
+      "pid": pid,
+      "runtimeAgeSeconds": ageSeconds,
+      "shouldRetain": shouldRetain,
+      "startupRetentionSeconds": startupUnresponsiveRetentionSeconds,
+    ])
+    return shouldRetain
+  }
+
   /**
    CDXC:T3Code 2026-05-01-14:44
    A T3-looking listener on port 3774 is not enough to reuse it: a wedged Bun
@@ -729,8 +771,17 @@ enum NativeT3RuntimeLauncher {
   static func hasResponsiveManagedRuntimeListener() -> Bool {
     let listeners = listeningProcesses(onPort: port).filter { isOwnedT3RuntimeProcess($0) }
     guard !listeners.isEmpty else {
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.listener.health.noOwnedListeners", [
+        "port": port
+      ])
       return false
     }
+    NativeT3CodePaneReproLog.append("nativeT3Runtime.listener.health.start", [
+      "listenerCount": listeners.count,
+      "pids": listeners.map(\.pid),
+      "port": port,
+      "runtimeAgeSeconds": listeners.map { runtimeAgeSeconds(pid: $0.pid) ?? -1 },
+    ])
     guard
       probeManagedRuntimeEndpoint(path: "/.well-known/t3/environment", expectedStatusCode: 200),
       probeManagedRuntimeEndpoint(path: "/api/auth/session", expectedStatusCode: 200)
@@ -1196,6 +1247,24 @@ enum NativeT3RuntimeLauncher {
     let pipe = Pipe()
     process.executableURL = URL(fileURLWithPath: "/bin/ps")
     process.arguments = ["-p", String(pid), "-o", "ppid="]
+    process.standardOutput = pipe
+    process.standardError = FileHandle.nullDevice
+    do {
+      try process.run()
+      process.waitUntilExit()
+    } catch {
+      return nil
+    }
+    let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return Int(raw)
+  }
+
+  private static func runtimeAgeSeconds(pid: Int) -> Int? {
+    let process = Process()
+    let pipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/bin/ps")
+    process.arguments = ["-p", String(pid), "-o", "etimes="]
     process.standardOutput = pipe
     process.standardError = FileHandle.nullDevice
     do {

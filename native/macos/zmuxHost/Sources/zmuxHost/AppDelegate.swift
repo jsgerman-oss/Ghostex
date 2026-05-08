@@ -101,7 +101,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       startBridge()
       startT3RuntimeAppHeartbeat()
       startSparkleBackgroundUpdateCheck()
-      presentAccessibilityPermissionDialogIfNeeded()
     }
     tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
       self?.ghostty.appTick()
@@ -295,14 +294,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       message, to: logURL, logsDirectory: logsDirectory, label: "Ghostty config startup")
   }
 
-  fileprivate static func appendSessionTitleDebugLog(event: String, details: String?) {
+  fileprivate static func appendSessionTitleDebugLog(
+    event: String, details: String?, force: Bool = false
+  ) {
     /**
      CDXC:SessionTitleDiagnostics 2026-04-26-08:03
      The native packaged app must write session-title diagnostics into the
      same app storage logs location as the Bun controller so missing Codex
      auto-renames can be correlated with native Ghostty title events.
+
+     CDXC:SessionTitleSync 2026-05-08-09:09
+     Forced session-title entries record Codex title-generation failures even
+     when debugging mode is disabled. Those failures must persist to the
+     session-title log instead of interrupting the user with a native alert.
      */
-    guard NativeDebugLogging.isEnabled else {
+    guard force || NativeDebugLogging.isEnabled else {
       return
     }
     let logsDirectory = ZmuxAppStorage.logsDirectory
@@ -703,6 +709,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       },
       openGhosttyConfigFile: { [weak self] in
         self?.handle(.openGhosttyConfigFile)
+      },
+      openAccessibilityPreferences: { [weak self] in
+        self?.handle(.openAccessibilityPreferences)
       },
       openBrowserWindow: { [weak self] command in
         self?.handle(.openBrowserWindow(command))
@@ -1119,7 +1128,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     case .appendRestoreDebugLog(let command):
       Self.appendRestoreDebugLog(event: command.event, details: command.details)
     case .appendSessionTitleDebugLog(let command):
-      Self.appendSessionTitleDebugLog(event: command.event, details: command.details)
+      Self.appendSessionTitleDebugLog(
+        event: command.event, details: command.details, force: command.force == true)
     case .appendWorkspaceDockIndicatorDebugLog(let command):
       Self.appendWorkspaceDockIndicatorDebugLog(event: command.event, details: command.details)
     case .persistSharedSidebarStorage(let command):
@@ -1136,6 +1146,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       applyGhosttyConfigSettings(command)
     case .openGhosttyConfigFile:
       openGhosttyConfigFile()
+    case .openAccessibilityPreferences:
+      openAccessibilityPreferences()
     case .openExternalUrl(let command):
       openExternalUrl(command)
     case .openWorkspaceInFinder(let command):
@@ -1182,6 +1194,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
         hasUserDetachedZedOverlay = false
       } else {
         hasUserDetachedZedOverlay = true
+      }
+      if command.enabled, command.reason == "settings-enable" {
+        /**
+         CDXC:AccessibilityPermissions 2026-05-08-13:08
+         Settings is the consent point for IDE attachment. When attachment is
+         switched on from Settings, ask for Accessibility immediately; other
+         settings saves, startup syncs, and workspace focus messages must not
+         create a permission prompt.
+         */
+        presentAccessibilityPermissionDialogIfNeeded()
       }
       updateAttachToIdeTitlebarButton(
         enabled: command.enabled,
@@ -1236,13 +1258,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
        the handle only after the same health probe used for listener adoption.
        */
       guard NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
-        if NativeT3RuntimeLauncher.hasFreshAppHeartbeat() {
+        if NativeT3RuntimeLauncher.shouldRetainUnresponsiveManagedRuntime(
+          pid: Int(process.processIdentifier))
+        {
           /**
-           CDXC:T3Code 2026-05-04-09:00
-           A tracked T3 runtime with a fresh zmux heartbeat must not be killed
-           just because startup/auth health probes are not ready yet. Keep the
-           server alive while zmux is open; explicit Running-modal kill remains
-           the recovery path for genuinely wedged providers.
+           CDXC:T3Code 2026-05-08-13:11
+           A tracked T3 runtime can briefly fail auth and environment probes
+           while its desktop server is still booting. Retain only that startup
+           case; an older unresponsive process is wedged and must be replaced so
+           T3 Code does not stay on "Preparing the embedded workspace".
            */
           NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.runningUnhealthyRetained", [
             "cwd": command.cwd,
@@ -1479,17 +1503,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     window?.makeKeyAndOrderFront(nil)
 
     /**
-     CDXC:AccessibilityPermissions 2026-04-28-16:57
-     Accessibility permission should be requested on first startup when it is
-     missing, independent of whether the user has enabled IDE attachment. Keep
-     the copy narrow: zmux uses this permission only to move/resize the
-     integrated browser window and attach to Zed, VS Code, or other supported
-     IDE windows.
+     CDXC:AccessibilityPermissions 2026-05-08-13:08
+     Accessibility permission must be requested only after the user explicitly
+     enables IDE attachment in Settings. Startup should not ask because default
+     zmux sessions do not need Accessibility until attachment is active.
      */
     let alert = NSAlert()
     alert.messageText = "Accessibility Permissions Required"
     alert.informativeText =
-      "zmux uses Accessibility only to move the integrated browser to the correct position and size, and to attach to Zed, VS Code, or other IDE windows. Click OK to open System Settings and enable Accessibility for zmux. A restart may be required after granting permission."
+      "zmux uses Accessibility to attach to Zed, VS Code, or other supported IDE windows. Click OK to open System Settings and enable Accessibility for zmux. A restart may be required after granting permission."
     alert.alertStyle = .warning
     alert.addButton(withTitle: "OK")
     alert.addButton(withTitle: "Cancel")
@@ -2403,6 +2425,7 @@ final class zmuxRootView: NSView {
   private let syncGhosttyTerminalSettings: (SyncGhosttyTerminalSettings) -> Void
   private let applyGhosttyConfigSettings: (ApplyGhosttyConfigSettings) -> Void
   private let openGhosttyConfigFile: () -> Void
+  private let openAccessibilityPreferences: () -> Void
   private let openBrowserWindow: (OpenBrowserWindow) -> Void
   private let openZedWorkspace: (OpenZedWorkspace) -> Void
   private let openWorkspaceInFinder: (OpenWorkspaceInFinder) -> Void
@@ -2442,6 +2465,7 @@ final class zmuxRootView: NSView {
     syncGhosttyTerminalSettings: @escaping (SyncGhosttyTerminalSettings) -> Void,
     applyGhosttyConfigSettings: @escaping (ApplyGhosttyConfigSettings) -> Void,
     openGhosttyConfigFile: @escaping () -> Void,
+    openAccessibilityPreferences: @escaping () -> Void,
     openBrowserWindow: @escaping (OpenBrowserWindow) -> Void,
     openZedWorkspace: @escaping (OpenZedWorkspace) -> Void,
     openWorkspaceInFinder: @escaping (OpenWorkspaceInFinder) -> Void,
@@ -2458,6 +2482,7 @@ final class zmuxRootView: NSView {
     self.syncGhosttyTerminalSettings = syncGhosttyTerminalSettings
     self.applyGhosttyConfigSettings = applyGhosttyConfigSettings
     self.openGhosttyConfigFile = openGhosttyConfigFile
+    self.openAccessibilityPreferences = openAccessibilityPreferences
     self.openBrowserWindow = openBrowserWindow
     self.openZedWorkspace = openZedWorkspace
     self.openWorkspaceInFinder = openWorkspaceInFinder
@@ -2675,7 +2700,8 @@ final class zmuxRootView: NSView {
     case .appendRestoreDebugLog(let command):
       AppDelegate.appendRestoreDebugLog(event: command.event, details: command.details)
     case .appendSessionTitleDebugLog(let command):
-      AppDelegate.appendSessionTitleDebugLog(event: command.event, details: command.details)
+      AppDelegate.appendSessionTitleDebugLog(
+        event: command.event, details: command.details, force: command.force == true)
     case .appendWorkspaceDockIndicatorDebugLog(let command):
       AppDelegate.appendWorkspaceDockIndicatorDebugLog(
         event: command.event, details: command.details)
@@ -2697,6 +2723,14 @@ final class zmuxRootView: NSView {
       applyGhosttyConfigSettings(command)
     case .openGhosttyConfigFile:
       openGhosttyConfigFile()
+    case .openAccessibilityPreferences:
+      /**
+       CDXC:AccessibilityPermissions 2026-05-08-13:08
+       The Settings modal owns the one-click path into macOS Accessibility
+       settings, so the view-level router forwards the button command to the
+       native app instead of showing another permission dialog.
+       */
+      openAccessibilityPreferences()
     case .openExternalUrl(let command):
       openExternalUrl(command)
     case .openWorkspaceInFinder(let command):
@@ -2774,13 +2808,15 @@ final class zmuxRootView: NSView {
        WKWebView.
        */
       guard NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
-        if NativeT3RuntimeLauncher.hasFreshAppHeartbeat() {
+        if NativeT3RuntimeLauncher.shouldRetainUnresponsiveManagedRuntime(
+          pid: Int(process.processIdentifier))
+        {
           /**
-           CDXC:T3Code 2026-05-04-09:00
-           Sidebar-driven T3 starts can race with the provider finishing startup
-           or auth bootstrap. A fresh heartbeat means zmux is still supervising
-           the runtime, so keep it alive instead of replacing it underneath the
-           active pane.
+           CDXC:T3Code 2026-05-08-13:11
+           Sidebar-driven T3 starts can race with a newly spawned provider
+           finishing startup. Retain only young unresponsive processes; older
+           listeners that still time out are stale runtime owners and should be
+           replaced instead of blocking the active pane.
            */
           NativeT3CodePaneReproLog.append(
             "nativeSidebar.t3Runtime.start.runningUnhealthyRetained",
@@ -3202,6 +3238,24 @@ final class zmuxRootView: NSView {
     let workspaceX: CGFloat = sidebarSide == .left ? chromeWidth : 0
     let workspaceWidth = max(bounds.width - chromeWidth, 1)
     /**
+     CDXC:EditorPanes 2026-05-08-13:02
+     Resizing the sidebar while a VS Code editor pane is visible can crash the
+     native host. Log the root layout inputs and child frames before assignment
+     so crash repros show whether the editor pane died during sidebar chrome
+     layout, workspace layout, or embedded Chromium refresh.
+     */
+    NativeT3CodePaneReproLog.append("nativeSidebar.chrome.layout", [
+      "bounds": Self.describeFrame(bounds),
+      "chromeWidth": Double(chromeWidth),
+      "maxSidebarWidth": Double(maxSidebarWidth),
+      "minSidebarWidth": Double(minSidebarWidth),
+      "sidebarSide": sidebarSide.rawValue,
+      "sidebarWidth": Double(sidebarWidth),
+      "workspaceFrameBefore": Self.describeFrame(workspaceView.frame),
+      "workspaceWidth": Double(workspaceWidth),
+      "workspaceX": Double(workspaceX),
+    ])
+    /**
      CDXC:SidebarPlacement 2026-05-06-18:26
      The resize handle must sit between the workspace and sidebar. Left-side
      sidebars keep the handle on their right edge; right-side sidebars put the
@@ -3242,10 +3296,25 @@ final class zmuxRootView: NSView {
   private func resizeSidebar(by deltaX: CGFloat) {
     let maxSidebarWidth = currentMaxSidebarWidth()
     let effectiveDelta = sidebarSide == .left ? deltaX : -deltaX
+    let previousSidebarWidth = sidebarWidth
     sidebarWidth = min(
       max(sidebarWidth + effectiveDelta, currentSidebarMinWidth()),
       maxSidebarWidth
     )
+    /**
+     CDXC:EditorPanes 2026-05-08-13:02
+     Sidebar drag crashes with visible VS Code panes need the exact resize
+     delta and clamped width recorded before AppKit schedules child layout.
+     */
+    NativeT3CodePaneReproLog.append("nativeSidebar.chrome.resize", [
+      "bounds": Self.describeFrame(bounds),
+      "deltaX": Double(deltaX),
+      "effectiveDelta": Double(effectiveDelta),
+      "maxSidebarWidth": Double(maxSidebarWidth),
+      "previousSidebarWidth": Double(previousSidebarWidth),
+      "sidebarSide": sidebarSide.rawValue,
+      "sidebarWidth": Double(sidebarWidth),
+    ])
     needsLayout = true
   }
 
@@ -3284,6 +3353,17 @@ final class zmuxRootView: NSView {
 
   private func persistSidebarWidth() {
     nativeSettingsStore.persistSidebarWidth(sidebarWidth)
+  }
+
+  private static func describeFrame(_ frame: CGRect) -> [String: Double] {
+    [
+      "height": Double(frame.height),
+      "maxX": Double(frame.maxX),
+      "maxY": Double(frame.maxY),
+      "minX": Double(frame.minX),
+      "minY": Double(frame.minY),
+      "width": Double(frame.width),
+    ]
   }
 
   private func handleAppModalHostMessage(_ body: Any) {
@@ -4319,13 +4399,39 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
       return
     }
 
-    guard JSONSerialization.isValidJSONObject(message.body),
-      let data = try? JSONSerialization.data(withJSONObject: message.body),
-      let command = try? decoder.decode(HostCommand.self, from: data)
-    else {
+    guard JSONSerialization.isValidJSONObject(message.body) else {
+      let bodyDescription = String(String(describing: message.body).prefix(1000))
+      /**
+       CDXC:EditorPanes 2026-05-08-13:31
+       Sidebar-to-native editor commands must fail observably. A malformed
+       WebKit bridge payload can otherwise drop createProjectEditorPane before
+       focusProjectEditorPane runs, leaving the VS Code button apparently dead.
+       */
+      NativeT3CodePaneReproLog.append("nativeSidebar.bridge.command.invalidJson", [
+        "body": bodyDescription,
+        "messageName": message.name,
+      ])
       return
     }
-    router.onCommand?(command)
+
+    do {
+      let data = try JSONSerialization.data(withJSONObject: message.body)
+      let command = try decoder.decode(HostCommand.self, from: data)
+      router.onCommand?(command)
+    } catch {
+      let body = message.body as? [String: Any]
+      let bodyDescription = String(String(describing: message.body).prefix(1000))
+      let commandType = body?["type"] as? String ?? "<missing>"
+      NativeT3CodePaneReproLog.append("nativeSidebar.bridge.command.decodeFailed", [
+        "body": bodyDescription,
+        "error": error.localizedDescription,
+        "messageName": message.name,
+        "type": commandType,
+      ])
+      Self.logger.error(
+        "Sidebar command decode failed type=\(commandType, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+      )
+    }
   }
 }
 

@@ -36,6 +36,7 @@ enum HostCommand: Decodable {
   case syncGhosttyTerminalSettings(SyncGhosttyTerminalSettings)
   case applyGhosttyConfigSettings(ApplyGhosttyConfigSettings)
   case openGhosttyConfigFile
+  case openAccessibilityPreferences
   case openExternalUrl(OpenExternalUrl)
   case openWorkspaceInFinder(OpenWorkspaceInFinder)
   case openWorkspaceInIde(OpenWorkspaceInIde)
@@ -90,6 +91,7 @@ enum HostCommand: Decodable {
     case syncGhosttyTerminalSettings
     case applyGhosttyConfigSettings
     case openGhosttyConfigFile
+    case openAccessibilityPreferences
     case openExternalUrl
     case openWorkspaceInFinder
     case openWorkspaceInIde
@@ -179,6 +181,8 @@ enum HostCommand: Decodable {
       self = .applyGhosttyConfigSettings(try ApplyGhosttyConfigSettings(from: decoder))
     case .openGhosttyConfigFile:
       self = .openGhosttyConfigFile
+    case .openAccessibilityPreferences:
+      self = .openAccessibilityPreferences
     case .openExternalUrl:
       self = .openExternalUrl(try OpenExternalUrl(from: decoder))
     case .openWorkspaceInFinder:
@@ -342,6 +346,7 @@ struct AppendTerminalFocusDebugLog: Decodable {
 struct AppendSessionTitleDebugLog: Decodable {
   let details: String?
   let event: String
+  let force: Bool?
 }
 
 struct AppendRestoreDebugLog: Decodable {

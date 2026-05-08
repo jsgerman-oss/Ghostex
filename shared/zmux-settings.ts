@@ -177,7 +177,13 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    * placement from Settings instead of relying only on the move-sidebar hotkey.
    */
   sidebarSide: "left",
-  sidebarTheme: "auto",
+  /**
+   * CDXC:SidebarTheme 2026-05-08-11:14
+   * Dark Gray is the only active user-facing sidebar theme while the broader
+   * theme picker is hidden. New installs must start on the persisted "plain"
+   * value so the resolved chrome is the dark gray palette immediately.
+   */
+  sidebarTheme: "plain",
   terminalCursorStyle: "bar",
   terminalCursorStyleBlink: true,
   terminalEngine: "ghostty-native",
@@ -223,22 +229,16 @@ export const SIDEBAR_THEME_SETTING_OPTIONS: ReadonlyArray<{
   label: string;
   value: SidebarThemeSetting;
 }> = [
-  { label: "Auto", value: "auto" },
   /**
+   * CDXC:SidebarTheme 2026-05-08-11:14
+   * Hide Auto and the other theme presets from Settings until theme selection
+   * returns. Keep only Dark Gray visible so the UI matches the active default.
+   *
    * CDXC:SidebarTheme 2026-04-26-21:32: Keep the persisted value as "plain"
    * for compatibility, but present it as Dark Gray because the option now
    * always selects the dark gray sidebar palette.
    */
   { label: "Dark Gray", value: "plain" },
-  { label: "Dark Green", value: "dark-green" },
-  { label: "Dark Blue", value: "dark-blue" },
-  { label: "Dark Red", value: "dark-red" },
-  { label: "Dark Pink", value: "dark-pink" },
-  { label: "Dark Orange", value: "dark-orange" },
-  { label: "Light Blue", value: "light-blue" },
-  { label: "Light Green", value: "light-green" },
-  { label: "Light Pink", value: "light-pink" },
-  { label: "Light Orange", value: "light-orange" },
 ];
 
 export const TERMINAL_ENGINE_SETTING_OPTIONS: ReadonlyArray<{

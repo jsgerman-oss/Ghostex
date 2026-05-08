@@ -114,6 +114,7 @@ import {
   setSessionSleepingInSimpleWorkspace,
   setSessionTitleInSimpleWorkspace,
   setT3SessionMetadataInSimpleWorkspace,
+  setTerminalSessionAgentSessionMetadataInSimpleWorkspace,
   setTerminalSessionAgentNameInSimpleWorkspace,
   setTerminalSessionPersistenceNameInSimpleWorkspace,
   setTerminalSessionPersistenceProviderInSimpleWorkspace,
@@ -291,7 +292,7 @@ type NativeHostCommand =
   | { details?: string; event: string; type: "appendAgentDetectionDebugLog" }
   | { details?: string; event: string; type: "appendTerminalFocusDebugLog" }
   | { details?: string; event: string; type: "appendRestoreDebugLog" }
-  | { details?: string; event: string; type: "appendSessionTitleDebugLog" }
+  | { details?: string; event: string; force?: boolean; type: "appendSessionTitleDebugLog" }
   | { details?: string; event: string; type: "appendWorkspaceDockIndicatorDebugLog" }
   | {
       key: "previousSessions" | "projects" | "settings";
@@ -334,6 +335,7 @@ type NativeHostCommand =
       type: "applyGhosttyConfigSettings";
     }
   | { type: "openGhosttyConfigFile" }
+  | { type: "openAccessibilityPreferences" }
   | { type: "openExternalUrl"; url: string }
   | { type: "openWorkspaceInFinder"; workspacePath: string }
   | {
@@ -351,7 +353,7 @@ type NativeHostCommand =
   | {
       enabled: boolean;
       hideTitlebarButton: boolean;
-      reason?: "settings-save" | "startup" | "workspace-focus";
+      reason?: "settings-enable" | "settings-save" | "startup" | "workspace-focus";
       targetApp: ZedOverlayTargetApp;
       type: "configureZedOverlay";
       workspacePath: string;
@@ -556,6 +558,7 @@ const CHROME_CANARY_RUNNING_POLL_MS = 2_000;
 const CHROME_CANARY_BROWSER_GROUP_ID = "browser-chrome-canary";
 const CHROME_CANARY_BROWSER_SESSION_ID = "browser-chrome-canary-window";
 const COMBINED_CHATS_GROUP_ID = "combined-chats";
+const PLUGINS_BROWSER_CHAT_URL = "https://skills.sh/";
 const NATIVE_T3_REMOTE_ACCESS_ORIGIN = "http://127.0.0.1:3774";
 const NATIVE_T3_REMOTE_ACCESS_AUTH_ATTEMPTS = 30;
 const NATIVE_T3_REMOTE_ACCESS_AUTH_RETRY_MS = 500;
@@ -579,6 +582,7 @@ const AUTO_SUBMIT_STAGED_RENAME_DELAY_MS = 1_000;
 const NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS = 7_000;
 const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
 const zmux_AGENT_NOTIFY_HOOK_PATH = `${nativeZmuxHomeDirectory()}/hooks/agent-shell-notify.sh`;
+const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/zmux.ts`;
 const FIND_PREVIOUS_SESSION_AGENT_ID = "codex";
 const FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS = 1_500;
 /**
@@ -604,14 +608,7 @@ const WORKSPACE_DOCK_THEME_OPTIONS: ReadonlyArray<{ label: string; value: Sideba
  * Native first-prompt title generation must match zmux's Codex `/rename`
  * path, including the 39-character generated title cap and 250-character
  * prompt sample used before asking Codex for a short session name.
- *
- * CDXC:SessionNaming 2026-05-04-14:57
- * Pasting more than 50 characters into the rename modal is a request to name
- * the session from the pasted text. Native rename handling must generate the
- * title before persisting or staging `/rename` so the full paste never becomes
- * the thread name.
  */
-const SESSION_RENAME_SUMMARY_THRESHOLD = 50;
 const GENERATED_SESSION_TITLE_MAX_LENGTH = 39;
 const GENERATED_SESSION_TITLE_SOURCE_MAX_LENGTH = 250;
 let storedAgents: StoredSidebarAgent[] = [];
@@ -851,6 +848,8 @@ const terminalStateById = new Map<
   {
     activity: "attention" | "idle" | "working";
     agentName?: string;
+    agentSessionId?: string;
+    agentSessionPath?: string;
     firstPromptAutoRenameInProgress?: boolean;
     firstPromptAutoRenameLastLogKey?: string;
     firstPromptAutoRenameProcessedPrompt?: string;
@@ -1011,6 +1010,21 @@ function appendSessionTitleDebugLog(event: string, details?: unknown): void {
   postNative({
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event,
+    type: "appendSessionTitleDebugLog",
+  });
+}
+
+function appendSessionTitleGenerationErrorLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:SessionTitleSync 2026-05-08-09:09
+   * Codex title-generation failures are user-facing workflow failures even when
+   * debug UI is disabled. Persist them to the session-title log without showing
+   * native alerts so rename and first-prompt title timeouts remain diagnosable.
+   */
+  postNative({
+    details: details === undefined ? undefined : safeSerializeForNativeLog(details),
+    event,
+    force: true,
     type: "appendSessionTitleDebugLog",
   });
 }
@@ -1562,7 +1576,11 @@ function saveSettings(nextSettings: zmuxSettings): void {
   persistSharedSettingsSnapshot(settings);
   syncNativeSidebarSide(settings.sidebarSide, previousSettings.sidebarSide);
   syncGhosttyTerminalSettings(settings, previousSettings);
-  postZedOverlaySettings();
+  postZedOverlaySettings(
+    !previousSettings.zedOverlayEnabled && settings.zedOverlayEnabled
+      ? "settings-enable"
+      : "settings-save",
+  );
   syncCodeServerRuntimeSettings(settings, previousSettings);
   publish();
   previewNativeSoundSettingChange(previousSettings, settings);
@@ -2701,6 +2719,8 @@ function createArchivedPreviousSessionRecord(
   return {
     ...session,
     agentName: terminalState?.agentName ?? session.agentName,
+    agentSessionId: terminalState?.agentSessionId ?? session.agentSessionId,
+    agentSessionPath: terminalState?.agentSessionPath ?? session.agentSessionPath,
     firstUserMessage: session.firstUserMessage ?? terminalState?.firstUserMessage,
     isSleeping: false,
     title: archiveTitle.title ?? session.title,
@@ -2855,6 +2875,8 @@ function restorePreviousTerminalSession(
   const terminalState = terminalStateById.get(restoredSession.sessionId);
   if (terminalState) {
     terminalState.agentName = restoredRecord.agentName;
+    terminalState.agentSessionId = restoredRecord.agentSessionId;
+    terminalState.agentSessionPath = restoredRecord.agentSessionPath;
     terminalState.firstUserMessage = restoredRecord.firstUserMessage;
     /**
      * CDXC:SessionTitleSync 2026-05-07-16:41
@@ -2932,6 +2954,8 @@ function mergeArchivedTerminalDetails(
   return {
     ...restoredSession,
     agentName: archivedRecord.agentName ?? restoredSession.agentName,
+    agentSessionId: archivedRecord.agentSessionId ?? restoredSession.agentSessionId,
+    agentSessionPath: archivedRecord.agentSessionPath ?? restoredSession.agentSessionPath,
     firstUserMessage: archivedRecord.firstUserMessage,
     isFavorite: archivedRecord.isFavorite,
     isSleeping: false,
@@ -3021,7 +3045,9 @@ storedCommandOrder = readStoredCommandOrder();
 deletedDefaultCommandIds = readDeletedDefaultCommandIds();
 refreshCommands();
 
-function postZedOverlaySettings(reason: "settings-save" | "startup" | "workspace-focus" = "settings-save"): void {
+function postZedOverlaySettings(
+  reason: "settings-enable" | "settings-save" | "startup" | "workspace-focus" = "settings-save",
+): void {
   /**
    * CDXC:IDEAttachment 2026-04-26-22:38
    * Attach commands always use the IDE selected in settings. VS Code targets
@@ -3032,6 +3058,12 @@ function postZedOverlaySettings(reason: "settings-save" | "startup" | "workspace
    * Workspace selection is only a settings sync, not a user request to attach.
    * Include the reason so native detach can reject stale workspace-focus
    * `enabled: true` messages while still allowing explicit Settings attach.
+   *
+   * CDXC:AccessibilityPermissions 2026-05-08-13:08
+   * The first Settings transition from detached to attached is the only webview
+   * settings save that should ask macOS for Accessibility. Subsequent saves
+   * keep syncing attachment configuration without reopening the permission
+   * prompt.
    */
   postNative({
     enabled: settings.zedOverlayEnabled,
@@ -3238,6 +3270,17 @@ function setTerminalSessionAgentName(sessionId: string, agentName: string | unde
   );
 }
 
+function setTerminalSessionAgentSessionMetadata(
+  sessionId: string,
+  metadata: { agentSessionId?: string; agentSessionPath?: string },
+): void {
+  updateActiveProjectWorkspace(
+    (workspace) =>
+      setTerminalSessionAgentSessionMetadataInSimpleWorkspace(workspace, sessionId, metadata)
+        .snapshot,
+  );
+}
+
 function setTerminalSessionPersistenceName(
   sessionId: string,
   sessionPersistenceName: string | undefined,
@@ -3385,8 +3428,10 @@ function createCombinedSidebarGroups(): SidebarSessionGroup[] {
    *
    * CDXC:Chats 2026-05-04-09:41
    * Combined mode groups all projectless chat folders under one Chats header.
-   * Each chat still owns exactly one project-scoped terminal session so the
-   * native terminal title/agent-icon detection path stays unchanged.
+   * Normal chats own exactly one project-scoped terminal session so the native
+   * terminal title/agent-icon detection path stays unchanged. Plugins uses the
+   * same chat collection but opens a browser pane there because the user asked
+   * for skills.sh in Chats instead of in the active project.
    *
    * CDXC:SidebarMode 2026-05-03-10:42
    * Non-chat projects still render as one draggable group per project. The
@@ -3713,6 +3758,7 @@ function buildSidebarMessage(): SidebarHydrateMessage {
       projectHeader: {
         directory: project.path,
         name: project.name,
+        projectId: project.projectId,
       },
       customThemeColor: normalizeWorkspaceThemeColor(project.themeColor),
       recentProjects: isCombinedSidebarMode ? createSidebarRecentProjects() : [],
@@ -3920,6 +3966,8 @@ function restoreNativeTerminalSession(
   terminalStateById.set(session.sessionId, {
     activity: "idle",
     agentName: session.agentName,
+    agentSessionId: session.agentSessionId,
+    agentSessionPath: session.agentSessionPath,
     lifecycleState: "running",
     /**
      * CDXC:SessionTitleSync 2026-05-07-16:41
@@ -4229,6 +4277,11 @@ function createNativeAgentSessionEnvironment(args: {
    * First-prompt hooks may be installed by either the old VSmux pipeline or the
    * native zmux pipeline. Provide both VSMUX_* and ZMUX_* environment keys so
    * the hook can write one canonical session-state file.
+   *
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi's globally installed extension reads the same session-state env keys in
+   * blank terminals and agent-launched terminals, which lets manual `pi`
+   * starts report Pi session metadata back into the sidebar.
    */
   return {
     VSMUX_AGENT: args.agentName ?? "",
@@ -4308,6 +4361,11 @@ async function ensureNativeAgentFirstPromptHooks(): Promise<void> {
    * profile directory such as ~/.codex-profiles/personal. Install the native
    * first-prompt hook into every existing Codex profile as well as ~/.codex so
    * prompt capture follows the Codex home that the terminal actually uses.
+   *
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi can be launched manually in a blank terminal, so zmux installs its Pi
+   * extension into Pi's global auto-discovery directory instead of relying only
+   * on zmux-created launch commands to pass an extension flag.
    */
   const command = buildEnsureNativeAgentHooksCommand();
   const result = await runNativeProcess("/bin/zsh", ["-lc", command]);
@@ -4326,20 +4384,25 @@ async function ensureNativeAgentFirstPromptHooks(): Promise<void> {
       ? installedCodexHooksPaths
       : [`${nativeHomeDirectory()}/.codex/hooks.json`],
     notifyHookPath: zmux_AGENT_NOTIFY_HOOK_PATH,
+    piExtensionPath: NATIVE_PI_EXTENSION_PATH,
   });
 }
 
 function buildEnsureNativeAgentHooksCommand(): string {
   const notifyHookPath = zmux_AGENT_NOTIFY_HOOK_PATH;
+  const piExtensionPath = NATIVE_PI_EXTENSION_PATH;
   const homeDirectory = nativeHomeDirectory();
   const claudeSettingsPath = `${nativeHomeDirectory()}/.claude/settings.json`;
   return [
     "set -e",
-    `mkdir -p ${quoteNativeShellArg(dirnameNativePath(notifyHookPath))} ${quoteNativeShellArg(dirnameNativePath(claudeSettingsPath))}`,
+    `mkdir -p ${quoteNativeShellArg(dirnameNativePath(notifyHookPath))} ${quoteNativeShellArg(dirnameNativePath(claudeSettingsPath))} ${quoteNativeShellArg(dirnameNativePath(piExtensionPath))}`,
     `cat > ${quoteNativeShellArg(notifyHookPath)} <<'zmux_NOTIFY_HOOK'`,
     getNativeCodexNotifyHookScript(),
     "zmux_NOTIFY_HOOK",
     `chmod 755 ${quoteNativeShellArg(notifyHookPath)}`,
+    `cat > ${quoteNativeShellArg(piExtensionPath)} <<'zmux_PI_EXTENSION'`,
+    getNativePiExtensionScript(),
+    "zmux_PI_EXTENSION",
     `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'zmux_CODEX_HOOK_MERGE_ALL'`,
     getNativeCodexHookMergeAllScript(),
     "zmux_CODEX_HOOK_MERGE_ALL",
@@ -4392,7 +4455,7 @@ try:
         for line in handle:
             key, separator, value = line.partition("=")
             if separator:
-                state[key] = value.strip() if key == "firstUserMessageBase64" else " ".join(value.strip().split())
+                state[key] = value.strip() if key in {"firstUserMessageBase64", "agentSessionPath"} else " ".join(value.strip().split())
 except FileNotFoundError:
     pass
 
@@ -4411,6 +4474,7 @@ if state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
         "status",
         "agent",
         "agentSessionId",
+        "agentSessionPath",
         "firstUserMessageBase64",
         "frozenAt",
         "autoTitleFromFirstPrompt",
@@ -4429,6 +4493,7 @@ keys = [
     "status",
     "agent",
     "agentSessionId",
+    "agentSessionPath",
     "firstUserMessageBase64",
     "frozenAt",
     "autoTitleFromFirstPrompt",
@@ -4510,7 +4575,166 @@ hooks_path.parent.mkdir(parents=True, exist_ok=True)
 with open(hooks_path, "w", encoding="utf-8") as handle:
     json.dump(data, handle, indent=2)
     handle.write("\\n")
-	`;
+`;
+}
+
+function getNativePiExtensionScript(): string {
+  return `import fs from "node:fs";
+import path from "node:path";
+import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
+
+const BRAILLE_FRAMES = ["⠸", "⠴", "⠼", "⠧", "⠦", "⠏", "⠋", "⠇", "⠙", "⠹"] as const;
+const STATE_KEYS = [
+  "status",
+  "agent",
+  "agentSessionId",
+  "agentSessionPath",
+  "firstUserMessageBase64",
+  "frozenAt",
+  "autoTitleFromFirstPrompt",
+  "historyBase64",
+  "lastActivityAt",
+  "pendingFirstPromptAutoRenamePrompt",
+  "title",
+] as const;
+
+function getStateFile(): string | undefined {
+  return (
+    process.env.VSMUX_SESSION_STATE_FILE ||
+    process.env.ZMUX_SESSION_STATE_FILE ||
+    process.env.zmux_SESSION_STATE_FILE
+  );
+}
+
+function readState(filePath: string): Record<string, string> {
+  const state: Record<string, string> = {};
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    for (const line of raw.split(/\\r?\\n/g)) {
+      const separatorIndex = line.indexOf("=");
+      if (separatorIndex <= 0) {
+        continue;
+      }
+      const key = line.slice(0, separatorIndex);
+      const value = line.slice(separatorIndex + 1);
+      state[key] = key === "firstUserMessageBase64" || key === "agentSessionPath"
+        ? value.trim()
+        : value.trim().replace(/\\s+/g, " ");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return state;
+}
+
+function writeState(filePath: string, state: Record<string, string>): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = filePath + ".tmp";
+  fs.writeFileSync(
+    tempPath,
+    STATE_KEYS.map((key) => key + "=" + (state[key] || "")).join("\\n") + "\\n",
+    "utf8",
+  );
+  fs.renameSync(tempPath, filePath);
+}
+
+function baseTitle(pi: ExtensionAPI, ctx: ExtensionContext): string {
+  const cwd = path.basename(ctx.cwd || process.cwd());
+  const session = pi.getSessionName();
+  return session ? "π - " + session + " - " + cwd : "π - " + cwd;
+}
+
+function syncSessionState(pi: ExtensionAPI, ctx: ExtensionContext, updates: Record<string, string> = {}): void {
+  const filePath = getStateFile();
+  if (!filePath) {
+    return;
+  }
+  const state = readState(filePath);
+  state.status = updates.status || state.status || "idle";
+  state.agent = "pi";
+  state.agentSessionId = ctx.sessionManager.getSessionId() || state.agentSessionId || "";
+  state.agentSessionPath = ctx.sessionManager.getSessionFile() || state.agentSessionPath || "";
+  state.title = pi.getSessionName() || state.title || "";
+  for (const [key, value] of Object.entries(updates)) {
+    state[key] = value;
+  }
+  writeState(filePath, state);
+}
+
+function captureInput(pi: ExtensionAPI, event: InputEvent, ctx: ExtensionContext): void {
+  const prompt = event.text.trim();
+  if (!prompt) {
+    return;
+  }
+  const filePath = getStateFile();
+  if (!filePath) {
+    return;
+  }
+  const state = readState(filePath);
+  state.status = state.status || "idle";
+  state.agent = "pi";
+  state.agentSessionId = ctx.sessionManager.getSessionId() || state.agentSessionId || "";
+  state.agentSessionPath = ctx.sessionManager.getSessionFile() || state.agentSessionPath || "";
+  state.title = pi.getSessionName() || state.title || "";
+  state.firstUserMessageBase64 =
+    state.firstUserMessageBase64 || Buffer.from(prompt, "utf8").toString("base64");
+  state.lastActivityAt = new Date().toISOString();
+  if (!state.pendingFirstPromptAutoRenamePrompt && !/^(1|true)$/iu.test(state.autoTitleFromFirstPrompt || "")) {
+    state.pendingFirstPromptAutoRenamePrompt = prompt.replace(/\\s+/g, " ");
+  }
+  writeState(filePath, state);
+}
+
+export default function (pi: ExtensionAPI) {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let frameIndex = 0;
+
+  function stopAnimation(ctx: ExtensionContext): void {
+    if (timer) {
+      clearInterval(timer);
+      timer = undefined;
+    }
+    frameIndex = 0;
+    ctx.ui.setTitle(baseTitle(pi, ctx));
+  }
+
+  function startAnimation(ctx: ExtensionContext): void {
+    stopAnimation(ctx);
+    timer = setInterval(() => {
+      const frame = BRAILLE_FRAMES[frameIndex % BRAILLE_FRAMES.length];
+      ctx.ui.setTitle(frame + " " + baseTitle(pi, ctx));
+      frameIndex += 1;
+    }, 120);
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
+    syncSessionState(pi, ctx);
+    ctx.ui.setTitle(baseTitle(pi, ctx));
+  });
+
+  pi.on("input", async (event, ctx) => {
+    captureInput(pi, event, ctx);
+    return { action: "continue" };
+  });
+
+  pi.on("agent_start", async (_event, ctx) => {
+    syncSessionState(pi, ctx, { status: "working", lastActivityAt: new Date().toISOString() });
+    startAnimation(ctx);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    syncSessionState(pi, ctx, { status: "idle", lastActivityAt: new Date().toISOString() });
+    stopAnimation(ctx);
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    syncSessionState(pi, ctx, { status: "idle" });
+    stopAnimation(ctx);
+  });
+}
+`;
 }
 
 function getNativeCodexHookMergeAllScript(): string {
@@ -4689,6 +4913,9 @@ function buildNativeRestoredTerminalInitialInput(session: TerminalSessionRecord)
 
 function canRestoreNativeTerminalSession(session: TerminalSessionRecord): boolean {
   const agentId = resolveNativeResumeAgentId(session.agentName);
+  if (agentId === "pi") {
+    return Boolean(resolveNativeAgentCommand(agentId) && getNativePiSessionReference(session));
+  }
   return (
     (agentId === "claude" || agentId === "codex" || agentId === "opencode") &&
     Boolean(resolveNativeAgentCommand(agentId)) &&
@@ -4704,16 +4931,17 @@ function getNativeTerminalTitleBarActions(
     : ["rename", "sleep", "close"];
 }
 
-type NativeResumeAgentId = "claude" | "codex" | "copilot" | "gemini" | "opencode";
+type NativeResumeAgentId = "claude" | "codex" | "copilot" | "gemini" | "opencode" | "pi";
 
 function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string | undefined {
   const agentId = resolveNativeResumeAgentId(session.agentName);
-  if (agentId !== "claude" && agentId !== "codex" && agentId !== "opencode") {
+  if (agentId !== "claude" && agentId !== "codex" && agentId !== "opencode" && agentId !== "pi") {
     return undefined;
   }
   const agentCommand = resolveNativeAgentCommand(agentId);
-  const resumeTitle = getNativeTrustedResumeTitle(session);
-  if (!agentId || !agentCommand || !resumeTitle) {
+  const resumeTitle = agentId === "pi" ? undefined : getNativeTrustedResumeTitle(session);
+  const piSessionReference = agentId === "pi" ? getNativePiSessionReference(session) : undefined;
+  if (!agentId || !agentCommand || (agentId === "pi" ? !piSessionReference : !resumeTitle)) {
     return undefined;
   }
 
@@ -4723,14 +4951,33 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
    * Claude receives `claude --resume <title>`, Codex receives
    * `codex resume <title>`, and OpenCode resolves the stored title to its
    * session ID before launching so restored terminals attach to saved sessions.
+   *
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi restore must use the Pi jsonl session path/id captured by the global Pi
+   * extension. Titles are display labels only and are not unique enough for Pi
+   * resume or fork parity with Codex.
    */
   switch (agentId) {
     case "codex":
+      if (!resumeTitle) {
+        return undefined;
+      }
       return `${agentCommand} resume ${quoteNativeShellArg(resumeTitle)}`;
     case "claude":
+      if (!resumeTitle) {
+        return undefined;
+      }
       return `${agentCommand} --resume ${quoteNativeShellArg(resumeTitle)}`;
     case "opencode":
+      if (!resumeTitle) {
+        return undefined;
+      }
       return buildNativeOpenCodeResumeCommand(agentCommand, resumeTitle);
+    case "pi":
+      if (!piSessionReference) {
+        return undefined;
+      }
+      return `${agentCommand} --session ${quoteNativeShellArg(piSessionReference)}`;
     default:
       return undefined;
   }
@@ -4757,6 +5004,12 @@ function buildNativeCopyResumeCommand(
         : `${agentCommand} --resume`;
     case "opencode":
       return buildNativeOpenCodeCopyResumeCommand(agentCommand, session);
+    case "pi": {
+      const piSessionReference = getNativePiSessionReference(session);
+      return piSessionReference
+        ? `${agentCommand} --session ${quoteNativeShellArg(piSessionReference)}`
+        : `${agentCommand} --resume`;
+    }
     case "gemini":
       return `${agentCommand} --list-sessions && echo 'Enter ${agentCommand} -r id' to resume a session`;
     case "copilot":
@@ -4764,6 +5017,18 @@ function buildNativeCopyResumeCommand(
     default:
       return undefined;
   }
+}
+
+function getNativePiSessionReference(session: TerminalSessionRecord): string | undefined {
+  return session.agentSessionPath?.trim() || session.agentSessionId?.trim() || undefined;
+}
+
+function buildNativePiForkCommand(session: TerminalSessionRecord): string | undefined {
+  const agentCommand = resolveNativeAgentCommand("pi");
+  const piSessionReference = getNativePiSessionReference(session);
+  return agentCommand && piSessionReference
+    ? `${agentCommand} --fork ${quoteNativeShellArg(piSessionReference)}`
+    : undefined;
 }
 
 function buildNativeOpenCodeResumeCommand(agentCommand: string, resumeTitle: string): string {
@@ -4887,6 +5152,9 @@ function resolveNativeResumeAgentId(
   if (isNativeResumeAgentId(normalizedAgentName)) {
     return normalizedAgentName;
   }
+  if (normalizedAgentName === "π") {
+    return "pi";
+  }
 
   const defaultAgent = getDefaultSidebarAgentById(normalizedAgentName);
   if (isNativeResumeAgentId(defaultAgent?.agentId)) {
@@ -4907,7 +5175,8 @@ function isNativeResumeAgentId(agentId: string | undefined): agentId is NativeRe
     agentId === "codex" ||
     agentId === "copilot" ||
     agentId === "gemini" ||
-    agentId === "opencode"
+    agentId === "opencode" ||
+    agentId === "pi"
   );
 }
 
@@ -5023,6 +5292,8 @@ function createTerminal(
   terminalStateById.set(session.sessionId, {
     activity: initialInput.trim() && !agentName ? "working" : "idle",
     agentName,
+    agentSessionId: session.agentSessionId,
+    agentSessionPath: session.agentSessionPath,
     lifecycleState: "running",
     sessionPersistenceName: session.sessionPersistenceName ?? session.tmuxSessionName,
     sessionPersistenceProvider,
@@ -5805,6 +6076,8 @@ function isValidNativeAgentTerminalTitle(title: string, agentName: string | unde
 
 type NativePersistedSessionState = {
   agentName?: string;
+  agentSessionId?: string;
+  agentSessionPath?: string;
   firstUserMessage?: string;
   hasAutoTitleFromFirstPrompt?: boolean;
   lastActivityAt?: string;
@@ -5843,6 +6116,11 @@ async function processNativeFirstPromptAutoRename(
   }
 
   const persistedState = await readNativePersistedSessionState(terminalState.sessionStateFilePath);
+  const didUpdateAgentSessionState = syncNativePersistedAgentSessionState(
+    sessionId,
+    terminalState,
+    persistedState,
+  );
   const didUpdateFirstUserMessage =
     persistedState.firstUserMessage !== undefined &&
     terminalState.firstUserMessage !== persistedState.firstUserMessage;
@@ -5861,6 +6139,9 @@ async function processNativeFirstPromptAutoRename(
      * timestamps and last-active ordering advance after user prompts.
      */
     terminalState.lastActivityAt = persistedState.lastActivityAt;
+    publish();
+  }
+  if (didUpdateAgentSessionState) {
     publish();
   }
   const pendingPrompt = persistedState.pendingFirstPromptAutoRenamePrompt?.trim();
@@ -5972,7 +6253,7 @@ async function processNativeFirstPromptAutoRename(
       pendingPrompt,
     );
     terminalState.firstPromptAutoRenameProcessedPrompt = pendingPrompt;
-    appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.failed", {
+    appendSessionTitleGenerationErrorLog("nativeSidebar.firstPromptAutoRename.failed", {
       agentName,
       error: error instanceof Error ? error.message : String(error),
       pendingPromptCleared: true,
@@ -5993,6 +6274,39 @@ async function readNativePersistedSessionState(
     return {};
   }
   return parseNativePersistedSessionState(result.stdout);
+}
+
+function syncNativePersistedAgentSessionState(
+  sessionId: string,
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
+  persistedState: NativePersistedSessionState,
+): boolean {
+  const nextAgentName = persistedState.agentName?.trim() || undefined;
+  const nextAgentSessionId = persistedState.agentSessionId?.trim() || undefined;
+  const nextAgentSessionPath = persistedState.agentSessionPath?.trim() || undefined;
+  let didChange = false;
+
+  if (nextAgentName && terminalState.agentName !== nextAgentName) {
+    terminalState.agentName = nextAgentName;
+    setTerminalSessionAgentName(sessionId, nextAgentName);
+    didChange = true;
+  }
+
+  if (
+    (nextAgentSessionId !== undefined || nextAgentSessionPath !== undefined) &&
+    (terminalState.agentSessionId !== nextAgentSessionId ||
+      terminalState.agentSessionPath !== nextAgentSessionPath)
+  ) {
+    terminalState.agentSessionId = nextAgentSessionId;
+    terminalState.agentSessionPath = nextAgentSessionPath;
+    setTerminalSessionAgentSessionMetadata(sessionId, {
+      agentSessionId: nextAgentSessionId,
+      agentSessionPath: nextAgentSessionPath,
+    });
+    didChange = true;
+  }
+
+  return didChange;
 }
 
 async function clearNativeFirstPromptAutoRenamePendingPrompt(
@@ -6044,6 +6358,7 @@ keys = [
     "status",
     "agent",
     "agentSessionId",
+    "agentSessionPath",
     "firstUserMessageBase64",
     "frozenAt",
     "autoTitleFromFirstPrompt",
@@ -6064,12 +6379,19 @@ function parseNativePersistedSessionState(rawState: string): NativePersistedSess
   for (const line of rawState.split(/\r?\n/g)) {
     const [key, ...valueParts] = line.split("=");
     const rawValue = valueParts.join("=").trim();
-    const value = key === "firstUserMessageBase64" ? rawValue : rawValue.replace(/\s+/g, " ");
+    const value =
+      key === "firstUserMessageBase64" || key === "agentSessionPath"
+        ? rawValue
+        : rawValue.replace(/\s+/g, " ");
     if (!value) {
       continue;
     }
     if (key === "agent") {
       state.agentName = value;
+    } else if (key === "agentSessionId") {
+      state.agentSessionId = value;
+    } else if (key === "agentSessionPath") {
+      state.agentSessionPath = value;
     } else if (key === "firstUserMessageBase64") {
       state.firstUserMessage = normalizeNativePersistedTextBase64(value);
     } else if (key === "autoTitleFromFirstPrompt") {
@@ -6205,7 +6527,11 @@ async function sendNativeFirstPromptRenameCommand(
 ): Promise<void> {
   const nativeSessionId = nativeSessionIdForSidebarSession(sessionId);
   const commandText =
-    strategy === "sendBareRenameCommand" ? "/rename" : `/rename ${title ?? ""}`.trim();
+    strategy === "sendBareRenameCommand"
+      ? "/rename"
+      : strategy === "generateTitleAndName"
+        ? `/name ${title ?? ""}`.trim()
+        : `/rename ${title ?? ""}`.trim();
   postNative({ sessionId: nativeSessionId, text: commandText, type: "writeTerminalText" });
   await new Promise((resolve) => window.setTimeout(resolve, AUTO_SUBMIT_STAGED_RENAME_DELAY_MS));
   /**
@@ -6727,9 +7053,11 @@ async function renameNativeSidebarTerminalSession(
   sessionId: string,
   title: string,
   source: string,
+  options?: { shouldGenerateTitle?: boolean },
 ): Promise<void> {
   const reference = resolveSidebarSessionReference(sessionId);
-  if (!findTerminalSessionInProject(reference.project, reference.sessionId)) {
+  const session = findTerminalSessionInProject(reference.project, reference.sessionId);
+  if (!session) {
     return;
   }
 
@@ -6738,8 +7066,14 @@ async function renameNativeSidebarTerminalSession(
     return;
   }
 
-  const shouldGenerateTitle =
-    requestedTitleInput.length > SESSION_RENAME_SUMMARY_THRESHOLD;
+  /**
+   * CDXC:SessionNaming 2026-05-08-18:56
+   * Long pasted text in the rename modal must remain editable until the user
+   * submits. The modal owns the 50-character threshold UI and marks Generate
+   * Name submits explicitly, while the controller only generates for that
+   * explicit request or the saved first-message Generate Title action.
+   */
+  const shouldGenerateTitle = options?.shouldGenerateTitle === true;
   const terminalState = terminalStateById.get(reference.sessionId);
   let requestedTitle = requestedTitleInput;
   if (shouldGenerateTitle) {
@@ -6765,13 +7099,12 @@ async function renameNativeSidebarTerminalSession(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      appendSessionTitleDebugLog("nativeSidebar.renameSession.generateTitle.failed", {
+      appendSessionTitleGenerationErrorLog("nativeSidebar.renameSession.generateTitle.failed", {
         error: message,
         pastedTextLength: requestedTitleInput.length,
         sessionId: reference.sessionId,
         source,
       });
-      showNativeMessage("error", message);
       return;
     } finally {
       if (terminalState) {
@@ -6793,13 +7126,20 @@ async function renameNativeSidebarTerminalSession(
     reference.sessionId,
   );
   const normalizedRenameTitle = normalizeTerminalTitle(requestedTitle) ?? requestedTitle;
-  const commandText = `/rename ${normalizedRenameTitle}`;
+  const isPiSession = resolveNativeResumeAgentId(terminalState?.agentName ?? session.agentName) === "pi";
+  const commandText = isPiSession
+    ? `/name ${normalizedRenameTitle}`
+    : `/rename ${normalizedRenameTitle}`;
   /**
    * CDXC:SidebarRename 2026-04-28-15:49
    * Manual sidebar renames in the native app must match the reference
    * controller flow: persist the card title, stage `/rename <title>` in the
    * targeted terminal, then submit through the native Enter path so the Agent
    * CLI thread name changes instead of only the sidebar label changing.
+   *
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi uses `/name <title>` for session naming. Native manual renames must
+   * stage that command for Pi panes while keeping Codex/Claude on `/rename`.
    */
   postNative({ sessionId: nativeSessionId, text: commandText, type: "writeTerminalText" });
   window.setTimeout(() => {
@@ -6895,7 +7235,7 @@ function restartNativeSession(sessionId: string): void {
   if (!initialInput.trim()) {
     showNativeMessage(
       "info",
-      "Full reload is only available for Codex, Claude, and OpenCode sessions with a visible title.",
+      "Full reload is only available for Codex, Claude, OpenCode, and Pi sessions with a restorable identity.",
     );
     return;
   }
@@ -6931,14 +7271,31 @@ function forkNativeSession(sessionId: string): void {
   if (!canRestoreNativeTerminalSession(session)) {
     showNativeMessage(
       "info",
-      "Fork is only available for Codex, Claude, and OpenCode sessions with a visible title.",
+      "Fork is only available for Codex, Claude, OpenCode, and Pi sessions with a restorable identity.",
     );
     return;
   }
   if (activeProjectId !== reference.project.projectId) {
     focusProject(reference.project.projectId);
   }
-  createTerminal(`${session.title || DEFAULT_TERMINAL_SESSION_TITLE} Fork`, "", groupId);
+  const piForkCommand =
+    resolveNativeResumeAgentId(session.agentName) === "pi"
+      ? buildNativePiForkCommand(session)
+      : undefined;
+  createTerminal(
+    `${session.title || DEFAULT_TERMINAL_SESSION_TITLE} Fork`,
+    piForkCommand ? `${piForkCommand}\r` : "",
+    groupId,
+    piForkCommand ? session.agentName : undefined,
+    {
+      sessionPersistenceName: piForkCommand
+        ? session.sessionPersistenceName ?? session.tmuxSessionName
+        : undefined,
+      sessionPersistenceProvider: piForkCommand
+        ? resolveTerminalSessionPersistenceProvider(session)
+        : undefined,
+    },
+  );
 }
 
 function findSidebarSessionForCli(
@@ -7560,6 +7917,17 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         if (kind === "section") {
           const section = id as SidebarCollapsibleSection;
           setSidebarSectionCollapsed(section, !collapsedSections[section]);
+          return { ok: true, state: summarizeCliState() };
+        }
+        if (kind === "projectEditor") {
+          /**
+           * CDXC:DebugCli 2026-05-08-13:13
+           * Crash repros need to open the same project-owned VS Code surface
+           * as the sidebar button before Computer Use drags the native sidebar
+           * divider. Route the CLI button action through the real group command
+           * instead of constructing native editor commands by hand.
+           */
+          openProjectEditorForGroup(id);
           return { ok: true, state: summarizeCliState() };
         }
         throw new Error(`Unsupported button kind: ${kind}`);
@@ -8253,6 +8621,81 @@ async function createNativeChat(title = "chat"): Promise<void> {
   publish();
 }
 
+async function createNativePluginsBrowserChat(): Promise<void> {
+  /**
+   * CDXC:Plugins 2026-05-08-10:44
+   * The top-sidebar Plugins button is a Chats-level directory browser, not a
+   * project action. Create a projectless chat folder and place the Chromium
+   * browser pane there so the active code project is not mutated by the click.
+   */
+  const createdAt = new Date();
+  const chatPath = createNativeChatDirectoryPath("plugins", createdAt);
+  const result = await runNativeProcess("/bin/mkdir", ["-p", chatPath]);
+  if (result.exitCode !== 0) {
+    showNativeMessage(
+      "error",
+      result.stderr.trim() || result.stdout.trim() || `Unable to create plugins chat: ${chatPath}`,
+    );
+    return;
+  }
+
+  const projectId = createProjectId(chatPath);
+  if (!projects.some((project) => project.projectId === projectId)) {
+    projects = orderNativeProjectsForSidebar([
+      ...projects,
+      {
+        isChat: true,
+        name: "Plugins",
+        path: chatPath,
+        projectId,
+        theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
+        workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+      },
+    ]);
+    writeStoredProjects("createPluginsBrowserChat");
+  }
+  focusProject(projectId);
+  createNativeBrowserSession(PLUGINS_BROWSER_CHAT_URL);
+}
+
+async function createNativeBrowserChat(): Promise<void> {
+  /**
+   * CDXC:Chats 2026-05-08-11:07
+   * The Chats header browser button must behave like New Chat, but seed the
+   * new projectless chat with a Chromium browser pane. This keeps browser panes
+   * out of the active code project when the click starts from the Chats
+   * collection header.
+   */
+  const createdAt = new Date();
+  const chatPath = createNativeChatDirectoryPath("browser", createdAt);
+  const result = await runNativeProcess("/bin/mkdir", ["-p", chatPath]);
+  if (result.exitCode !== 0) {
+    showNativeMessage(
+      "error",
+      result.stderr.trim() || result.stdout.trim() || `Unable to create browser chat: ${chatPath}`,
+    );
+    return;
+  }
+
+  const projectId = createProjectId(chatPath);
+  if (!projects.some((project) => project.projectId === projectId)) {
+    projects = orderNativeProjectsForSidebar([
+      ...projects,
+      {
+        isChat: true,
+        name: "Browser",
+        path: chatPath,
+        projectId,
+        theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
+        workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+      },
+    ]);
+    writeStoredProjects("createBrowserChat");
+  }
+  focusProject(projectId);
+  createNativeBrowserSession(DEFAULT_BROWSER_LAUNCH_URL);
+}
+
 function removeProject(projectId: string): void {
   if (projects.length <= 1) {
     showNativeMessage("warning", "Keep at least one workspace in zmux.");
@@ -8640,6 +9083,18 @@ function stopCodeServerRuntimeIfEveryEditorSleeping(): void {
   }
 }
 
+function projectEditorTitle(project: NativeProject): string {
+  const storedName = typeof project.name === "string" ? project.name.trim() : "";
+  /**
+   * CDXC:EditorPanes 2026-05-08-13:31
+   * The native project-editor command is decoded as a strict Swift struct.
+   * Always send a concrete title string so legacy or partially restored
+   * project snapshots cannot omit `title` and silently drop the create-pane
+   * command before the later focus command runs.
+   */
+  return storedName || projectNameFromPath(project.path);
+}
+
 function wakeProjectEditorSurface(project: NativeProject): void {
   const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
   cancelProjectEditorSleepTimer(project.projectId);
@@ -8655,7 +9110,7 @@ function wakeProjectEditorSurface(project: NativeProject): void {
   });
   postNative({
     projectId: project.projectId,
-    title: project.name,
+    title: projectEditorTitle(project),
     type: "createProjectEditorPane",
     url: createCodeServerProjectEditorUrl(project.path),
   });
@@ -9006,6 +9461,12 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "createChat":
       void createNativeChat(message.title);
       return;
+    case "openPluginsBrowserChat":
+      void createNativePluginsBrowserChat();
+      return;
+    case "openBrowserChat":
+      void createNativeBrowserChat();
+      return;
     case "createSessionInGroup": {
       const groupReference = resolveSidebarGroupReference(message.groupId);
       if (groupReference.isChatCollection) {
@@ -9153,6 +9614,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.sessionId,
         message.title,
         "native-sidebar-rename-session",
+        { shouldGenerateTitle: message.shouldGenerateTitle },
       );
       return;
     case "renameGroup":
@@ -9541,6 +10003,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "openGhosttyConfigFile":
       openGhosttyConfigFile();
+      return;
+    case "openAccessibilityPreferences":
+      postNative({ type: "openAccessibilityPreferences" });
       return;
     case "setVisibleCount":
       if (typeof message.groupId === "string") {
@@ -10022,7 +10487,7 @@ window.addEventListener("zmux-native-host-event", (event) => {
        * CDXC:AgentDetection 2026-04-26-10:50
        * Native Ghostty sessions may start as plain shells and only later reveal
        * the active agent through terminal titles. Mirror demo-project's title
-       * detector so Codex, Claude, Gemini, and Copilot titles update the sidebar
+       * detector so Codex, Claude, Pi, Gemini, and Copilot titles update the sidebar
        * icon/status without requiring launch through an agent button.
        */
       if (effectiveDerivedActivity) {

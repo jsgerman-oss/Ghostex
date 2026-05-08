@@ -288,6 +288,15 @@ function AppModalHost() {
         onGhosttySettingsAction={(action) => {
           vscode.postMessage({ type: action });
         }}
+        onOpenAccessibilityPreferences={() => {
+          /**
+           * CDXC:AccessibilityPermissions 2026-05-08-13:08
+           * The settings modal button should open macOS Accessibility settings
+           * directly. It must not reuse the attach-enable prompt path because
+           * viewing status is not consent to enable IDE attachment.
+           */
+          vscode.postMessage({ type: "openAccessibilityPreferences" });
+        }}
         onClose={closeModal}
         settings={settings}
       />
@@ -332,12 +341,13 @@ function AppModalHost() {
         initialTitle={renameSession?.initialTitle ?? ""}
         isOpen={activeModal === "renameSession" && renameSession !== undefined}
         onCancel={closeModal}
-        onConfirm={(title) => {
+        onConfirm={(title, options) => {
           if (!renameSession) {
             return;
           }
           vscode.postMessage({
             sessionId: renameSession.sessionId,
+            ...(options?.shouldGenerateTitle ? { shouldGenerateTitle: true } : {}),
             title,
             type: "renameSession",
           });

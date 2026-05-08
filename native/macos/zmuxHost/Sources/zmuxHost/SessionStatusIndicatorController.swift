@@ -13,7 +13,7 @@ final class SessionStatusIndicatorController {
    CDXC:SessionStatusIndicators 2026-05-05-19:47
    Session counts must be rendered by AppKit, not SwiftUI, so the floating
    status UI can live outside the zmux content view, default to the built-in or
-   primary display, and support Shift-drag repositioning without webview hit
+   primary display, and support direct drag repositioning without webview hit
    testing.
    */
   init(onClick: @escaping (NativeSessionStatusIndicatorStatus) -> Void) {
@@ -22,7 +22,7 @@ final class SessionStatusIndicatorController {
         NSApp.activate(ignoringOtherApps: true)
         onClick(status)
       },
-      onShiftDrag: {})
+      onDrag: {})
     let panel = NSPanel(
       contentRect: NSRect(origin: .zero, size: view.preferredSize),
       styleMask: [.borderless, .nonactivatingPanel],
@@ -41,7 +41,7 @@ final class SessionStatusIndicatorController {
     panel.isOpaque = false
     panel.isReleasedWhenClosed = false
     panel.level = .floating
-    view.onShiftDrag = { [weak self] in
+    view.onDrag = { [weak self] in
       self?.hasUserPositionedPanel = true
     }
   }
@@ -72,6 +72,9 @@ final class SessionStatusIndicatorController {
      Attention and running counts are action states and should suppress the
      gray available-session total whenever either exists. The gray circle is
      only a quiet all-available summary for the fully idle case.
+     CDXC:SessionStatusIndicators 2026-05-08-09:09
+     Floating status badges should use darker fills for calmer contrast against
+     transparent desktop content after the shared capsule backdrop was removed.
      */
     if command.attentionCount > 0 || command.runningCount > 0 {
       return [
@@ -79,13 +82,13 @@ final class SessionStatusIndicatorController {
           ? SessionStatusIndicatorItem(
             status: .attention,
             count: command.attentionCount,
-            color: NSColor(calibratedRed: 0.13, green: 0.54, blue: 0.20, alpha: 1))
+            color: NSColor(calibratedRed: 0.10, green: 0.42, blue: 0.16, alpha: 1))
           : nil,
         command.runningCount > 0
           ? SessionStatusIndicatorItem(
             status: .running,
             count: command.runningCount,
-            color: NSColor(calibratedRed: 0.70, green: 0.36, blue: 0.10, alpha: 1))
+            color: NSColor(calibratedRed: 0.54, green: 0.27, blue: 0.07, alpha: 1))
           : nil,
       ].compactMap { $0 }
     }
@@ -97,7 +100,7 @@ final class SessionStatusIndicatorController {
       SessionStatusIndicatorItem(
         status: .available,
         count: command.availableCount,
-        color: NSColor(calibratedWhite: 0.32, alpha: 1))
+        color: NSColor(calibratedWhite: 0.25, alpha: 1))
     ]
   }
 
@@ -113,7 +116,14 @@ final class SessionStatusIndicatorController {
     guard let screen = screen(containing: origin) ?? defaultScreenOptional() else {
       return origin
     }
-    let frame = screen.visibleFrame
+    /**
+     CDXC:SessionStatusIndicators 2026-05-08-10:22
+     User-positioned floating indicators must be allowed in bottom screen
+     corners beside the Dock. Clamp manual positions to the full screen frame,
+     not visibleFrame, so count/size updates do not push them out of the Dock
+     strip after the user places them there.
+     */
+    let frame = screen.frame
     let maxX = max(frame.minX, frame.maxX - size.width)
     let maxY = max(frame.minY, frame.maxY - size.height)
     return NSPoint(
@@ -159,26 +169,20 @@ private final class SessionStatusIndicatorView: NSView {
     var itemGap: CGFloat { 6 * scale }
     var minimumTextPadding: CGFloat { 20 * scale }
     var countFont: NSFont {
-      NSFont.monospacedDigitSystemFont(ofSize: 23 * scale, weight: .bold)
+      NSFont.monospacedDigitSystemFont(ofSize: 25 * scale, weight: .bold)
     }
 
-    var backdropInset: CGFloat { 3 * scale }
-    var backdropShadowBlur: CGFloat { 14 * scale }
-    var backdropShadowOffset: CGFloat { -3 * scale }
-    var backdropStrokeWidth: CGFloat { max(0.6, 1.4 * scale) }
-    var innerBackdropInset: CGFloat { 2.5 * scale }
-    var topHighlightInset: CGFloat { 5 * scale }
-    var badgeShadowBlur: CGFloat { 8 * scale }
-    var badgeShadowOffset: CGFloat { -2 * scale }
-    var badgeRingInset: CGFloat { 2 * scale }
-    var badgeFillInset: CGFloat { 5.5 * scale }
-    var badgeStrokeWidth: CGFloat { max(0.5, 1.2 * scale) }
+    var badgeShadowBlur: CGFloat { 5 * scale }
+    var badgeShadowOffset: CGFloat { -1 * scale }
+    var badgeFillInset: CGFloat { 3.5 * scale }
+    var badgeStrokeWidth: CGFloat { max(0.5, 0.8 * scale) }
     var textBaselineOffset: CGFloat { 0.5 * scale }
   }
 
-  private struct ShiftDragState {
+  private struct DragState {
     let mouseStart: NSPoint
     let windowOriginStart: NSPoint
+    var didMove: Bool = false
   }
 
   /**
@@ -202,6 +206,19 @@ private final class SessionStatusIndicatorView: NSView {
    The capsule should fit the visible badges tightly, including the single
    badge case. Badge fill colors stay darker for text contrast, and numbers
    render as full white rather than tinted text.
+   CDXC:SessionStatusIndicators 2026-05-08-09:09
+   The floating indicator must not draw a shared background behind the badges.
+   Keep the NSPanel and NSView clear so only the circular status pills render.
+   CDXC:SessionStatusIndicators 2026-05-08-09:17
+   Status buttons should not have a gray outer ring. Use a flatter colored
+   badge with subtle lighting and shadow so the control remains polished
+   without the heavy 3D button treatment.
+   CDXC:SessionStatusIndicators 2026-05-08-10:21
+   Indicator numbers should render 2px larger at the base drawing scale while
+   preserving the existing Small/Medium/Large/X-Large size scaling behavior.
+   CDXC:SessionStatusIndicators 2026-05-08-10:27
+   Repositioning must not require a Shift modifier. Track ordinary drags from
+   mouse-down and reserve click activation for mouse-up without panel movement.
    */
   private static func metrics(for size: NativeSessionStatusIndicatorSize) -> IndicatorMetrics {
     switch size {
@@ -245,16 +262,16 @@ private final class SessionStatusIndicatorView: NSView {
   }
 
   private let onClick: (NativeSessionStatusIndicatorStatus) -> Void
-  var onShiftDrag: () -> Void
+  var onDrag: () -> Void
   private var mouseDownStatus: NativeSessionStatusIndicatorStatus?
-  private var shiftDragState: ShiftDragState?
+  private var dragState: DragState?
 
   init(
     onClick: @escaping (NativeSessionStatusIndicatorStatus) -> Void,
-    onShiftDrag: @escaping () -> Void
+    onDrag: @escaping () -> Void
   ) {
     self.onClick = onClick
-    self.onShiftDrag = onShiftDrag
+    self.onDrag = onDrag
     super.init(frame: NSRect(origin: .zero, size: .zero))
     wantsLayer = true
     layer?.backgroundColor = NSColor.clear.cgColor
@@ -275,7 +292,6 @@ private final class SessionStatusIndicatorView: NSView {
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
     let metrics = currentMetrics
-    drawBackdrop(metrics: metrics)
     for (item, rect) in itemRects() {
       drawBadge(item, in: rect, metrics: metrics)
 
@@ -290,106 +306,43 @@ private final class SessionStatusIndicatorView: NSView {
     }
   }
 
-  private func drawBackdrop(metrics: IndicatorMetrics) {
-    let rect = bounds.insetBy(dx: metrics.backdropInset, dy: metrics.backdropInset)
-    let radius = rect.height / 2
-    let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
-
-    NSGraphicsContext.saveGraphicsState()
-    let shadow = NSShadow()
-    shadow.shadowBlurRadius = metrics.backdropShadowBlur
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.58)
-    shadow.shadowOffset = NSSize(width: 0, height: metrics.backdropShadowOffset)
-    shadow.set()
-    NSColor(calibratedWhite: 0.06, alpha: 0.72).setFill()
-    path.fill()
-    NSGraphicsContext.restoreGraphicsState()
-
-    NSGradient(colors: [
-      NSColor(calibratedWhite: 0.31, alpha: 0.90),
-      NSColor(calibratedWhite: 0.16, alpha: 0.84),
-      NSColor(calibratedWhite: 0.07, alpha: 0.88),
-    ])?.draw(in: path, angle: -90)
-
-    NSColor.white.withAlphaComponent(0.28).setStroke()
-    path.lineWidth = metrics.backdropStrokeWidth
-    path.stroke()
-
-    let innerRect = rect.insetBy(dx: metrics.innerBackdropInset, dy: metrics.innerBackdropInset)
-    let innerPath = NSBezierPath(
-      roundedRect: innerRect,
-      xRadius: innerRect.height / 2,
-      yRadius: innerRect.height / 2)
-    NSColor.black.withAlphaComponent(0.52).setStroke()
-    innerPath.lineWidth = 1
-    innerPath.stroke()
-
-    let topHighlightRect = NSRect(
-      x: rect.minX + metrics.topHighlightInset,
-      y: rect.midY,
-      width: rect.width - metrics.topHighlightInset * 2,
-      height: rect.height * 0.42)
-    NSGradient(colors: [
-      NSColor.white.withAlphaComponent(0.18),
-      NSColor.white.withAlphaComponent(0.0),
-    ])?.draw(
-      in: NSBezierPath(
-        roundedRect: topHighlightRect,
-        xRadius: topHighlightRect.height / 2,
-        yRadius: topHighlightRect.height / 2),
-      angle: -90)
-  }
-
   private func drawBadge(
     _ item: SessionStatusIndicatorItem,
     in rect: NSRect,
     metrics: IndicatorMetrics
   ) {
-    let outerRingPath = NSBezierPath(ovalIn: rect)
+    let badgeRect = rect.insetBy(dx: metrics.badgeFillInset, dy: metrics.badgeFillInset)
+    let badgePath = NSBezierPath(ovalIn: badgeRect)
     NSGraphicsContext.saveGraphicsState()
     let shadow = NSShadow()
     shadow.shadowBlurRadius = metrics.badgeShadowBlur
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.52)
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.38)
     shadow.shadowOffset = NSSize(width: 0, height: metrics.badgeShadowOffset)
     shadow.set()
-    NSColor(calibratedWhite: 0.03, alpha: 0.76).setFill()
-    outerRingPath.fill()
+    (item.color.shadow(withLevel: 0.20) ?? item.color).withAlphaComponent(0.92).setFill()
+    badgePath.fill()
     NSGraphicsContext.restoreGraphicsState()
 
     NSGradient(colors: [
-      NSColor.white.withAlphaComponent(0.30),
-      NSColor.black.withAlphaComponent(0.42),
-    ])?.draw(in: outerRingPath, angle: -90)
-
-    let ringPath = NSBezierPath(
-      ovalIn: rect.insetBy(dx: metrics.badgeRingInset, dy: metrics.badgeRingInset))
-    NSGradient(colors: [
-      NSColor(calibratedWhite: 0.72, alpha: 0.34),
-      NSColor(calibratedWhite: 0.08, alpha: 0.70),
-    ])?.draw(in: ringPath, angle: -90)
-
-    let fillRect = rect.insetBy(dx: metrics.badgeFillInset, dy: metrics.badgeFillInset)
-    let fillPath = NSBezierPath(ovalIn: fillRect)
-    NSGradient(colors: [
-      item.color.highlight(withLevel: 0.20) ?? item.color,
+      item.color.highlight(withLevel: 0.10) ?? item.color,
       item.color,
-      item.color.shadow(withLevel: 0.52) ?? item.color,
-    ])?.draw(in: fillPath, angle: -90)
+      item.color.shadow(withLevel: 0.22) ?? item.color,
+    ])?.draw(in: badgePath, angle: -90)
 
-    NSColor.black.withAlphaComponent(0.34).setStroke()
-    fillPath.lineWidth = metrics.badgeStrokeWidth
-    fillPath.stroke()
+    NSColor.black.withAlphaComponent(0.18).setStroke()
+    badgePath.lineWidth = metrics.badgeStrokeWidth
+    badgePath.stroke()
 
-    item.color.highlight(withLevel: 0.2)?.withAlphaComponent(0.70).setStroke()
-    NSBezierPath(ovalIn: fillRect.insetBy(dx: 1, dy: 1)).stroke()
+    item.color.highlight(withLevel: 0.16)?.withAlphaComponent(0.38).setStroke()
+    NSBezierPath(ovalIn: badgeRect.insetBy(dx: 1, dy: 1)).stroke()
 
     let highlightRect = NSRect(
-      x: fillRect.minX + fillRect.width * 0.17,
-      y: fillRect.midY + fillRect.height * 0.10,
-      width: fillRect.width * 0.66,
-      height: fillRect.height * 0.34)
+      x: badgeRect.minX + badgeRect.width * 0.20,
+      y: badgeRect.midY + badgeRect.height * 0.12,
+      width: badgeRect.width * 0.60,
+      height: badgeRect.height * 0.28)
     NSGradient(colors: [
-      NSColor.white.withAlphaComponent(0.30),
+      NSColor.white.withAlphaComponent(0.14),
       NSColor.white.withAlphaComponent(0.0),
     ])?.draw(
       in: NSBezierPath(ovalIn: highlightRect),
@@ -410,33 +363,32 @@ private final class SessionStatusIndicatorView: NSView {
 
   override func mouseDown(with event: NSEvent) {
     mouseDownStatus = nil
-    if event.modifierFlags.contains(.shift) {
-      beginShiftDrag()
-      return
-    }
+    beginDragTracking()
     mouseDownStatus = status(at: convert(event.locationInWindow, from: nil))
   }
 
   override func mouseDragged(with event: NSEvent) {
-    if shiftDragState == nil, event.modifierFlags.contains(.shift) {
-      beginShiftDrag()
-    }
-    guard let shiftDragState, let window else {
+    guard let dragState, let window else {
       return
+    }
+    if !dragState.didMove {
+      self.dragState?.didMove = true
+      mouseDownStatus = nil
+      onDrag()
     }
     let mouseLocation = NSEvent.mouseLocation
     window.setFrameOrigin(
       NSPoint(
-        x: shiftDragState.windowOriginStart.x + mouseLocation.x - shiftDragState.mouseStart.x,
-        y: shiftDragState.windowOriginStart.y + mouseLocation.y - shiftDragState.mouseStart.y))
-    onShiftDrag()
+        x: dragState.windowOriginStart.x + mouseLocation.x - dragState.mouseStart.x,
+        y: dragState.windowOriginStart.y + mouseLocation.y - dragState.mouseStart.y))
   }
 
   override func mouseUp(with event: NSEvent) {
-    if shiftDragState != nil {
-      shiftDragState = nil
+    if dragState?.didMove == true {
+      dragState = nil
       return
     }
+    dragState = nil
     guard let mouseDownStatus else {
       return
     }
@@ -448,15 +400,13 @@ private final class SessionStatusIndicatorView: NSView {
     }
   }
 
-  private func beginShiftDrag() {
+  private func beginDragTracking() {
     guard let window else {
       return
     }
-    shiftDragState = ShiftDragState(
+    dragState = DragState(
       mouseStart: NSEvent.mouseLocation,
       windowOriginStart: window.frame.origin)
-    mouseDownStatus = nil
-    onShiftDrag()
   }
 
   private func status(at point: NSPoint) -> NativeSessionStatusIndicatorStatus? {

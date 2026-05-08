@@ -37,7 +37,6 @@ import { ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES } from "../shared/ghostty-config-
 import {
   resolveSidebarTheme,
   type SidebarTheme,
-  type SidebarThemeSetting,
   type SidebarThemeVariant,
 } from "../shared/session-grid-contract";
 import {
@@ -100,6 +99,7 @@ export type SettingsModalProps = {
   isOpen: boolean;
   onChange: (settings: zmuxSettings) => void;
   onClose: () => void;
+  onOpenAccessibilityPreferences?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
   settings?: zmuxSettings;
   theme?: SidebarTheme;
@@ -110,6 +110,7 @@ export function SettingsModal({
   isOpen,
   onChange,
   onClose,
+  onOpenAccessibilityPreferences,
   onGhosttySettingsAction,
   settings,
   theme = "dark-blue",
@@ -149,6 +150,11 @@ export function SettingsModal({
       },
     ]),
     ideAttachment: getSettingsSectionSearch(settingsSearchQuery, "IDE Attachment", [
+      {
+        key: "accessibilityPermission",
+        subtitle: "Check macOS Accessibility status and open the privacy settings page.",
+        title: "Accessibility Permission",
+      },
       {
         key: "zedOverlayEnabled",
         subtitle: "Attach zmux as an overlay to the selected IDE.",
@@ -583,13 +589,13 @@ export function SettingsModal({
           <div className="flex flex-col gap-6 px-5 pb-5">
             {accessibilityPermissionGranted === false ? (
               /**
-               * CDXC:AccessibilityPermissions 2026-04-28-16:57
-               * Settings should keep a short, persistent notice when macOS
-               * Accessibility is disabled because browser placement and IDE
-               * attachment are the two user-facing features that depend on it.
+               * CDXC:AccessibilityPermissions 2026-05-08-13:08
+               * Settings should expose missing macOS Accessibility status
+               * without implying zmux needs the permission at startup. IDE
+               * attachment is the feature that asks for it when enabled.
                */
               <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-foreground">
-                Accessibility is off. Browser placement and IDE attachment won't work.
+                Accessibility is off. IDE attachment won't work until it is allowed in macOS.
               </div>
             ) : null}
 
@@ -623,13 +629,9 @@ export function SettingsModal({
               />
               ) : null}
               {shouldShowSetting(settingsSearch.sidebar, "sidebarTheme") ? (
-              <SelectField
-                description="Choose the sidebar color scheme."
+              <StaticNoteField
+                description="Dark Gray is active. Themes are coming back soon."
                 label="Theme"
-                {...getSettingModificationProps("sidebarTheme")}
-                onChange={(value) => updateDraft("sidebarTheme", value as SidebarThemeSetting)}
-                options={SIDEBAR_THEME_SETTING_OPTIONS}
-                value={draft.sidebarTheme}
               />
               ) : null}
               {/* CDXC:SessionStatusIndicators 2026-05-07-18:20: The floating
@@ -1128,6 +1130,19 @@ export function SettingsModal({
 
             {shouldShowSettingsSection(settingsSearch.ideAttachment) ? (
             <SettingsSection title="IDE Attachment">
+              {/* CDXC:AccessibilityPermissions 2026-05-08-13:08: Settings must
+                  show the current macOS Accessibility status and provide a
+                  one-click path to the matching System Settings pane without
+                  presenting the permission dialog unless attachment is enabled. */}
+              {shouldShowSetting(settingsSearch.ideAttachment, "accessibilityPermission") ? (
+              <ActionButtonField
+                description={getAccessibilityPermissionDescription(accessibilityPermissionGranted)}
+                label="Accessibility Permission"
+                onClick={() => onOpenAccessibilityPreferences?.()}
+              >
+                {getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
+              </ActionButtonField>
+              ) : null}
               {/* CDXC:IDEAttachment 2026-04-26-22:38: Settings select the IDE
                   that the workspace header link button attaches to. The
                   persisted keys remain zedOverlay* so existing installs keep
@@ -1505,6 +1520,47 @@ function formatSliderNumber(value: number, step: number): string {
   return value.toFixed(decimals);
 }
 
+function getAccessibilityPermissionDescription(granted: boolean | undefined): string {
+  if (granted === true) {
+    return "Allowed in macOS. IDE attachment can read and follow the selected IDE window.";
+  }
+  if (granted === false) {
+    return "Not allowed in macOS. Open Accessibility settings to add zmux.";
+  }
+  return "Status is unavailable in this environment. Open macOS Accessibility settings if attachment cannot follow the IDE.";
+}
+
+function getAccessibilityPermissionButtonLabel(granted: boolean | undefined): string {
+  if (granted === true) {
+    return "Accessibility Allowed";
+  }
+  if (granted === false) {
+    return "Accessibility Off - Open Settings";
+  }
+  return "Open Accessibility Settings";
+}
+
+function ActionButtonField({
+  children,
+  description,
+  label,
+  onClick,
+}: {
+  children: ReactNode;
+  description?: string;
+  label: string;
+  onClick: () => void;
+}) {
+  const id = useId();
+  return (
+    <SettingRow description={description} htmlFor={id} label={label}>
+      <Button className="h-10 w-full justify-start px-3 text-sm" id={id} onClick={onClick} type="button">
+        {children}
+      </Button>
+    </SettingRow>
+  );
+}
+
 function SelectField({
   contentClassName,
   description,
@@ -1547,6 +1603,27 @@ function SelectField({
           </SelectGroup>
         </SelectContent>
       </Select>
+    </SettingRow>
+  );
+}
+
+function StaticNoteField({ description, label }: { description: string; label: string }) {
+  const id = useId();
+  /**
+   * CDXC:SidebarTheme 2026-05-08-11:14
+   * The Sidebar Theme setting should no longer expose Auto or the previous
+   * theme presets. Show a non-editable note while theme selection is paused so
+   * Settings communicates the temporary product state without offering hidden
+   * values.
+   */
+  return (
+    <SettingRow description={description} htmlFor={id} label={label}>
+      <div
+        className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+        id={id}
+      >
+        Themes are coming back soon.
+      </div>
     </SettingRow>
   );
 }
