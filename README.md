@@ -7,7 +7,7 @@
 brew install --cask maddada/tap/zmux
 ```
 
-Need help with testing for Windows/Linux ports)
+(Looking for help with dev/testing for Windows & Linux ports)
 
 ### Work with tens of agents in multiple projects easily:
 
