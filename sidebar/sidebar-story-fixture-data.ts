@@ -580,6 +580,42 @@ const COMBINED_HEADER_ALIGNMENT_GROUPS: SidebarStoryGroup[] = [
   },
 ];
 
+const COMBINED_SPARSE_REFERENCE_GROUPS: SidebarStoryGroup[] = [
+  {
+    groupId: "combined-sparse-chats",
+    isActive: true,
+    isChatCollection: true,
+    kind: "workspace",
+    sessions: [
+      createStorySession({
+        alias: "Terminal Session",
+        detail: "Terminal",
+        lastInteractionAt: minutesAgo(59),
+        sessionId: "combined-sparse-terminal",
+        shortcutLabel: "⌘⌥1",
+      }),
+    ],
+    title: "Chats",
+  },
+  {
+    groupId: "combined-sparse-project-zmux",
+    isActive: false,
+    kind: "workspace",
+    projectContext: createStoryProjectContext("combined-sparse-project-zmux"),
+    sessions: [
+      createStorySession({
+        alias: "Sidebar and settings integration",
+        agentIcon: "codex",
+        detail: "OpenAI Codex",
+        lastInteractionAt: new Date(Date.now() - 9 * 60 * 60 * 1000).toISOString(),
+        sessionId: "combined-sparse-zmux-session",
+        shortcutLabel: "⌘⌥2",
+      }),
+    ],
+    title: "zmux",
+  },
+];
+
 const THREE_GROUPS_STRESS: SidebarStoryGroup[] = [
   {
     groupId: "group-1",
@@ -653,6 +689,7 @@ export const GROUPS_BY_FIXTURE: Record<SidebarStoryFixture, SidebarStoryGroup[]>
   "combined-recent-projects": COMBINED_HEADER_ALIGNMENT_GROUPS.filter(
     (group) => group.sessions.length > 0 || group.isChatCollection === true,
   ),
+  "combined-sparse-reference": COMBINED_SPARSE_REFERENCE_GROUPS,
   "command-indicator-active": COMMAND_INDICATOR_ACTIVE_GROUPS,
   default: DEFAULT_GROUPS,
   "empty-groups": EMPTY_GROUPS,

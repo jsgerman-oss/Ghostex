@@ -28,6 +28,7 @@ export type SidebarStoryFixture =
   | "browser-groups"
   | "combined-header-alignment"
   | "combined-recent-projects"
+  | "combined-sparse-reference"
   | "command-indicator-active"
   | "default"
   | "sort-toggle-demo"
@@ -117,7 +118,7 @@ export function createSidebarStoryMessage(args: SidebarStoryArgs): SidebarHydrat
     isFocusModeActive: args.isFocusModeActive,
     pendingAgentIds: [],
     recentProjects:
-      args.fixture === "combined-recent-projects"
+      args.fixture === "combined-recent-projects" || args.fixture === "combined-sparse-reference"
         ? [
             {
               path: "/Users/story/dev/shortpoint",
@@ -137,7 +138,9 @@ export function createSidebarStoryMessage(args: SidebarStoryArgs): SidebarHydrat
         : [],
     sectionVisibility: createDefaultSidebarSectionVisibility(),
     settings:
-      args.fixture === "combined-header-alignment" || args.fixture === "combined-recent-projects"
+      args.fixture === "combined-header-alignment" ||
+      args.fixture === "combined-recent-projects" ||
+      args.fixture === "combined-sparse-reference"
         ? {
             ...DEFAULT_zmux_SETTINGS,
             sidebarMode: "combined",
@@ -156,7 +159,11 @@ export function createSidebarStoryMessage(args: SidebarStoryArgs): SidebarHydrat
     visibleSlotLabels: getVisibleSlotLabels(groups),
   };
 
-  if (args.fixture === "combined-header-alignment" || args.fixture === "combined-recent-projects") {
+  if (
+    args.fixture === "combined-header-alignment" ||
+    args.fixture === "combined-recent-projects" ||
+    args.fixture === "combined-sparse-reference"
+  ) {
     hud.projectHeader = {
       directory: "/Users/story/dev/zmux",
       name: "zmux",

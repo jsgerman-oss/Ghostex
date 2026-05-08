@@ -32,6 +32,7 @@ export const SIDEBAR_STORY_ARG_TYPES: NonNullable<Meta<SidebarStoryArgs>["argTyp
       "browser-groups",
       "combined-header-alignment",
       "combined-recent-projects",
+      "combined-sparse-reference",
       "command-indicator-active",
       "default",
       "sort-toggle-demo",

@@ -142,3 +142,23 @@ export const CombinedRecentProjects: Story = {
     </div>
   ),
 };
+
+export const CombinedSparseReference: Story = {
+  args: {
+    fixture: "combined-sparse-reference",
+    highlightedVisibleCount: 1,
+    showCloseButtonOnSessionCards: false,
+    showHotkeysOnSessionCards: false,
+    showLastInteractionTimeOnSessionCards: true,
+    theme: "plain-dark",
+    viewMode: "grid",
+    visibleCount: 1,
+  },
+  render: (args) => (
+    <div className="native-sidebar-shell" data-sidebar-mode="combined">
+      <main className="native-sidebar-main">
+        <SidebarStoryHarness message={createSidebarStoryMessage(args)} />
+      </main>
+    </div>
+  ),
+};

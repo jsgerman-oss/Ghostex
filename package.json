@@ -5,6 +5,7 @@
   "description": "zmux native macOS workarea and sessions UI.",
   "type": "module",
   "scripts": {
+    "s": "node scripts/build-t3code-if-needed.mjs && native/macos/zmuxHost/run-zmux-host.sh",
     "start": "node scripts/build-t3code-if-needed.mjs && native/macos/zmuxHost/run-zmux-host.sh",
     "build": "native/macos/zmuxHost/build-zmux-host.sh",
     "build:dev": "ZMUX_APP_VARIANT=dev native/macos/zmuxHost/build-zmux-host.sh",
