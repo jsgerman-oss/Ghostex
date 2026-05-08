@@ -12,25 +12,35 @@ brew install --cask maddada/tap/zmux
 
 ## Screenshots:
 
+## Best features:
+
+- Sessions stay I can sleep unused terminals to save ram (restores to that session).
+- Search any thread title from all Agent CLIs.
+- I have a feature to prompt to find any past thread in your history with just a few keywords. Very useful if you want to continue with an agent that already has context about a complex feature.
+- Reopening the app always resumes your terminal sessions how they were.
+- Floating running & done indicators and sound for almsot all agent clis.
+- Embedded browser is chromium not webkit.
+- Includes light VScode embed for editing files quickly.
+- Embeds T3code for people who prefer GUIs.
 - Auto naming Codex/Claude/Gemini/Copilot terminal sessions (more soon).
 - Auto sync of the terminal title and status with UI.
-- Show status indicators for running/done.
 - Allows up to 3x3 split and multiple groups per project each with different split.
-- A simplified sidebar that feels familiar if you are coming from the Codex app: New chat, Plugins, Actions, Search, Chats, Projects, Recent Projects, and Settings stay in predictable places.
+- A simplified sidebar that feels familiar if you are coming from the Codex app
 
 <img width="1000" alt="ZMUX sidebar with terminal and browser panes" src="media/readme/zmux-browser-pane.png" />
 
-## Shows a button on the attached IDE to show zmux.
+## Shows a button on the attached IDE (Zed / VScode) to show zmux.
 
 - Follows your IDE size/position.
 - Project in IDE & zmux is mirrored.
 - Hotkey to hide/show.
 - Click on your IDE to hide zmux
 
-## Best features:
+---
+
+## All features:
 
 - Native Sparkle updates for macOS releases.
-- Version 2.1 ships the branded macOS app icon from agent-manager-x while carrying forward the 2.x UI, stability, and performance refresh.
 - Version 2.0 refreshes the whole UI around a simplified Codex-style workspace with cleaner top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, and updated screenshots.
 - Version 2.0 includes broad stability and performance work across native sidebar sync, AppKit relayouts, shared storage writes, diagnostic logging, and workspace visibility.
 - `zmux sessions`, `zmux attach`, `zmux kill`, `zmux sleep`, `zmux wake`, and `zmux focus` manage live terminal sessions from a shell.
@@ -48,8 +58,6 @@ brew install --cask maddada/tap/zmux
 - Chromium CEF browser panes keep native browser storage and cookies across app restarts.
 - Shared Ghostty settings keep terminal configuration consistent between the native host and sidebar settings UI.
 - Zellij, tmux, and zmx session persistence providers can keep terminal sessions restart-safe, with stable zellij names, direct zmx attach behavior, sidebar provider badges, and copyable attach commands.
-- Sidebar Actions and Open In split controls can run the primary command or show React-rendered dropdown menus for Finder, Visual Studio Code, and Zed.
-- Configure Actions modal supports readable project-action rows plus create, edit, and delete flows.
 - Settings show modified values with reset-to-default tooltips, floating indicator sizing, and left/right sidebar placement.
 - Native floating status indicators show running, attention, and available session counts with click-to-focus routing and selectable size.
 - Native editor panes keep resize, accessibility-permission, and T3 diagnostics routed through native controls.
@@ -72,8 +80,7 @@ brew install --cask maddada/tap/zmux
 - Embedded Ghostty terminals strip inherited color-disabling environment keys so agent CLIs keep color output.
 - Agent launch diagnostics record inherited color-related environment values for debugging monochrome CLI sessions.
 - Workspace dock highlights the active project and dims inactive project icons.
-- Rich text popup (ctrl+g) <- in testing
-- T3code sessions support <- in testing
+- T3code sessions support
 - Much more!
 
 ## Integrates with Chrome Canary as the dedicated agent browser (instructions below)
