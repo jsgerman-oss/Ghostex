@@ -24,6 +24,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Codex",
       },
       {
+        agentId: "pi",
+        command: "pi",
+        icon: "pi",
+        isDefault: true,
+        name: "Pi",
+      },
+      {
         agentId: "copilot",
         command: "copilot",
         icon: "copilot",
@@ -69,6 +76,13 @@ describe("createSidebarAgentButtons", () => {
         icon: "codex",
         isDefault: true,
         name: "Codex",
+      },
+      {
+        agentId: "pi",
+        command: "pi",
+        icon: "pi",
+        isDefault: true,
+        name: "Pi",
       },
       {
         agentId: "copilot",
@@ -134,6 +148,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Codex",
       },
       {
+        agentId: "pi",
+        command: "pi",
+        icon: "pi",
+        isDefault: true,
+        name: "Pi",
+      },
+      {
         agentId: "copilot",
         command: "copilot",
         icon: "copilot",
@@ -192,6 +213,13 @@ describe("createSidebarAgentButtons", () => {
         name: "T3 Code",
       },
       {
+        agentId: "pi",
+        command: "pi",
+        icon: "pi",
+        isDefault: true,
+        name: "Pi",
+      },
+      {
         agentId: "copilot",
         command: "copilot",
         icon: "copilot",
@@ -247,6 +275,13 @@ describe("createSidebarAgentButtons", () => {
         icon: "codex",
         isDefault: true,
         name: "Codex",
+      },
+      {
+        agentId: "pi",
+        command: "pi",
+        icon: "pi",
+        isDefault: true,
+        name: "Pi",
       },
       {
         agentId: "copilot",
@@ -337,6 +372,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Codex",
       },
       {
+        agentId: "pi",
+        command: "pi",
+        icon: "pi",
+        isDefault: true,
+        name: "Pi",
+      },
+      {
         agentId: "copilot",
         command: "copilot",
         icon: "copilot",
@@ -357,6 +399,7 @@ describe("createSidebarAgentButtons", () => {
 describe("shouldPreferTerminalTitleForAgentIcon", () => {
   test("should prefer terminal titles for OpenCode", () => {
     expect(shouldPreferTerminalTitleForAgentIcon("opencode")).toBe(true);
+    expect(shouldPreferTerminalTitleForAgentIcon("pi")).toBe(true);
   });
 });
 

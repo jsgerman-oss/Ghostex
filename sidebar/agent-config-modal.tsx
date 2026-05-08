@@ -85,8 +85,8 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
     >
       <DialogContent className="zmux-settings-shadcn dark command-config-modal-shadcn">
         <DialogHeader>
-          <DialogTitle className="text-2xl">Configure agent</DialogTitle>
-          <DialogDescription className="text-base">
+          <DialogTitle className="text-xl">Configure agent</DialogTitle>
+          <DialogDescription className="text-sm">
             Launches a new zmux session and runs this agent command in it.
           </DialogDescription>
         </DialogHeader>
@@ -94,7 +94,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
           <Field className="gap-2.5">
             <FieldContent>
               <FieldTitle>
-                <FieldLabel className="text-base" htmlFor={agentTypeId}>
+                <FieldLabel className="text-sm" htmlFor={agentTypeId}>
                   Agent type
                 </FieldLabel>
               </FieldTitle>
@@ -137,7 +137,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
               }}
               value={icon}
             >
-              <SelectTrigger className="h-11 w-full px-3 text-base" id={agentTypeId}>
+              <SelectTrigger className="h-10 w-full px-3 text-sm" id={agentTypeId}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -155,14 +155,14 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
           <Field className="gap-2.5">
             <FieldContent>
               <FieldTitle>
-                <FieldLabel className="text-base" htmlFor={nameId}>
+                <FieldLabel className="text-sm" htmlFor={nameId}>
                   Name
                 </FieldLabel>
               </FieldTitle>
             </FieldContent>
             <Input
               autoFocus
-              className="h-11 px-3 text-base md:text-base"
+              className="h-10 px-3 text-sm md:text-sm"
               id={nameId}
               onChange={(event) => setName(event.currentTarget.value)}
               placeholder="Codex"
@@ -172,7 +172,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
           <Field className="gap-2.5">
             <FieldContent>
               <FieldTitle>
-                <FieldLabel className="text-base" htmlFor={commandId}>
+                <FieldLabel className="text-sm" htmlFor={commandId}>
                   Command
                 </FieldLabel>
               </FieldTitle>

@@ -17,6 +17,18 @@ export const DEFAULT_SIDEBAR_AGENTS = [
     icon: "codex",
     name: "Codex",
   },
+  /**
+   * CDXC:PiAgent 2026-05-08-09:42
+   * Pi is a first-class default agent so the configure-agent modal, sidebar
+   * launch buttons, automatic icon selection, and restore commands can share
+   * the same default-agent registry used by Codex.
+   */
+  {
+    agentId: "pi",
+    command: "pi",
+    icon: "pi",
+    name: "Pi",
+  },
   {
     agentId: "copilot",
     command: "copilot",
@@ -161,7 +173,7 @@ export function getSidebarAgentNameByIcon(icon: SidebarAgentIcon | undefined): s
 }
 
 export function shouldPreferTerminalTitleForAgentIcon(icon: SidebarAgentIcon | undefined): boolean {
-  return icon === "claude" || icon === "codex" || icon === "opencode";
+  return icon === "claude" || icon === "codex" || icon === "opencode" || icon === "pi";
 }
 
 export function normalizeStoredSidebarAgents(candidate: unknown): StoredSidebarAgent[] {

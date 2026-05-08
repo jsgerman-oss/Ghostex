@@ -4,6 +4,7 @@ import codexLogo from "../src/assets/codex.svg" with { type: "text" };
 import copilotLogo from "../src/assets/copilot.svg" with { type: "text" };
 import geminiLogo from "../src/assets/gemini.svg" with { type: "text" };
 import opencodeLogo from "../src/assets/opencode.svg" with { type: "text" };
+import piLogo from "../src/assets/pi.svg" with { type: "text" };
 import t3Logo from "../src/assets/t3.svg" with { type: "text" };
 import type { SidebarAgentIcon } from "../shared/sidebar-agents";
 
@@ -24,6 +25,7 @@ export const AGENT_LOGOS: Record<SidebarAgentIcon, string> = {
   copilot: svgTextToDataUrl(copilotLogo),
   gemini: svgTextToDataUrl(geminiLogo),
   opencode: svgTextToDataUrl(opencodeLogo),
+  pi: svgTextToDataUrl(piLogo),
   t3: svgTextToDataUrl(t3Logo),
 };
 
@@ -41,5 +43,6 @@ export const AGENT_LOGO_COLORS: Record<SidebarAgentIcon, string> = {
   copilot: "#ffffff",
   gemini: "#8b9aff",
   opencode: "#6d96c0",
+  pi: "#c8ff62",
   t3: "#ff6af3",
 };

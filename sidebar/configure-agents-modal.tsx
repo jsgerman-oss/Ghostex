@@ -150,56 +150,66 @@ export function ConfigureAgentsModal({ isOpen, onClose, vscode }: ConfigureAgent
     return null;
   }
 
+  const isEditorOpen = editorState !== undefined;
+
+  /**
+   * CDXC:SidebarAgents 2026-05-08-11:18
+   * Configure Agents and Configure agent are one edit flow. Hide the management
+   * modal while the agent editor is open so users never see stacked configure
+   * dialogs when creating or editing an agent.
+   */
   return createPortal(
     <>
-      <div className="confirm-modal-root scroll-mask-y" role="presentation">
-        <button className="confirm-modal-backdrop" onClick={onClose} type="button" />
-        <div
-          aria-label="Configure Agents"
-          aria-modal="true"
-          className="confirm-modal configure-actions-modal"
-          data-sidebar-theme={theme}
-          role="dialog"
-        >
-          <button
-            aria-label="Close Configure Agents"
-            className="confirm-modal-close-button"
-            onClick={onClose}
-            type="button"
+      {!isEditorOpen ? (
+        <div className="confirm-modal-root scroll-mask-y" role="presentation">
+          <button className="confirm-modal-backdrop" onClick={onClose} type="button" />
+          <div
+            aria-label="Configure Agents"
+            aria-modal="true"
+            className="confirm-modal configure-actions-modal"
+            data-sidebar-theme={theme}
+            role="dialog"
           >
-            <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
-          </button>
-          <div className="confirm-modal-header confirm-modal-header-with-close">
-            <div className="confirm-modal-title">Configure Agents</div>
-          </div>
-          <div className="configure-actions-list scroll-mask-y">
-            {orderedAgents.length > 0 ? (
-              <DragDropProvider onDragEnd={handleDragEnd}>
-                {orderedAgents.map((agent, index) => (
-                  <SortableConfigureAgentRow
-                    agent={agent}
-                    index={index}
-                    key={agent.agentId}
-                    onDelete={() => deleteAgent(agent)}
-                    onEdit={() => openAgentEditor(agent)}
-                  />
-                ))}
-              </DragDropProvider>
-            ) : (
-              <div className="configure-actions-empty-state">No agents configured.</div>
-            )}
-          </div>
-          <div className="configure-agents-footer">
-            <Button onClick={openCreateAgentEditor} type="button" variant="outline">
-              <IconPlus aria-hidden="true" data-icon="inline-start" />
-              Add Agent
-            </Button>
+            <button
+              aria-label="Close Configure Agents"
+              className="confirm-modal-close-button"
+              onClick={onClose}
+              type="button"
+            >
+              <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
+            </button>
+            <div className="confirm-modal-header confirm-modal-header-with-close">
+              <div className="confirm-modal-title">Configure Agents</div>
+            </div>
+            <div className="configure-actions-list scroll-mask-y">
+              {orderedAgents.length > 0 ? (
+                <DragDropProvider onDragEnd={handleDragEnd}>
+                  {orderedAgents.map((agent, index) => (
+                    <SortableConfigureAgentRow
+                      agent={agent}
+                      index={index}
+                      key={agent.agentId}
+                      onDelete={() => deleteAgent(agent)}
+                      onEdit={() => openAgentEditor(agent)}
+                    />
+                  ))}
+                </DragDropProvider>
+              ) : (
+                <div className="configure-actions-empty-state">No agents configured.</div>
+              )}
+            </div>
+            <div className="configure-agents-footer">
+              <Button onClick={openCreateAgentEditor} type="button" variant="outline">
+                <IconPlus aria-hidden="true" data-icon="inline-start" />
+                Add Agent
+              </Button>
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
       <AgentConfigModal
         draft={editorState?.draft ?? { command: "", name: "" }}
-        isOpen={editorState !== undefined}
+        isOpen={isEditorOpen}
         onCancel={() => setEditorState(undefined)}
         onSave={saveAgent}
       />
