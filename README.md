@@ -38,9 +38,9 @@ brew install --cask maddada/tap/zmux
 
 ---
 
-## Includes VSCode for editing files
+## Includes VSCode for editing files, checking PRs, and working with git
 
-<img width="3456" height="2234" alt="2026-05-08_CleanShot_18-38-12@2x" src="https://github.com/user-attachments/assets/198fc964-d21d-4dfc-928f-e18684fe2bc9" />
+<img width="3327" height="2065" alt="2026-05-08_CleanShot_18-38-12@2x" src="https://github.com/user-attachments/assets/f1cc7d00-7098-44fe-bc29-590ae03ea8e9" />
 
 ---
 
