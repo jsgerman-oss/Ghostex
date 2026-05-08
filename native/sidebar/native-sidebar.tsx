@@ -200,6 +200,7 @@ import {
 import "../../sidebar/styles.css";
 
 type NativeSessionStatusIndicatorStatus = "attention" | "running" | "available";
+type NativeTerminalTitleBarAction = "close" | "fork" | "reload" | "rename" | "sleep";
 
 type NativeHostCommand =
   | {
@@ -259,6 +260,7 @@ type NativeHostCommand =
       sessionAgentIconDataUrls?: Record<string, string>;
       sessionAgentIconColors?: Record<string, string>;
       sessionActivities?: Record<string, "attention" | "working">;
+      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;
       type: "setActiveTerminalSet";
     }
@@ -422,7 +424,7 @@ type NativeHostEvent =
   | { faviconDataUrl?: string; sessionId: string; type: "browserFaviconChanged" }
   | { sessionId: string; type: "browserUrlChanged"; url: string }
   | {
-      action: "close" | "fork" | "reload" | "rename" | "sleep";
+      action: NativeTerminalTitleBarAction;
       sessionId: string;
       type: "terminalTitleBarAction";
     }
@@ -4685,6 +4687,23 @@ function buildNativeRestoredTerminalInitialInput(session: TerminalSessionRecord)
   return command ? `${command}\r` : "";
 }
 
+function canRestoreNativeTerminalSession(session: TerminalSessionRecord): boolean {
+  const agentId = resolveNativeResumeAgentId(session.agentName);
+  return (
+    (agentId === "claude" || agentId === "codex" || agentId === "opencode") &&
+    Boolean(resolveNativeAgentCommand(agentId)) &&
+    getNativeStoredTrustedResumeTitle(session).title !== undefined
+  );
+}
+
+function getNativeTerminalTitleBarActions(
+  session: TerminalSessionRecord,
+): NativeTerminalTitleBarAction[] {
+  return canRestoreNativeTerminalSession(session)
+    ? ["rename", "fork", "reload", "sleep", "close"]
+    : ["rename", "sleep", "close"];
+}
+
 type NativeResumeAgentId = "claude" | "codex" | "copilot" | "gemini" | "opencode";
 
 function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string | undefined {
@@ -6909,6 +6928,13 @@ function forkNativeSession(sessionId: string): void {
   if (!session) {
     return;
   }
+  if (!canRestoreNativeTerminalSession(session)) {
+    showNativeMessage(
+      "info",
+      "Fork is only available for Codex, Claude, and OpenCode sessions with a visible title.",
+    );
+    return;
+  }
   if (activeProjectId !== reference.project.projectId) {
     focusProject(reference.project.projectId);
   }
@@ -7707,7 +7733,12 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
          * in-workspace browser creation as the sidebar button when macOS
          * accessibility automation is unavailable in local agent sessions.
          */
-        return { ok: true, session: createNativeBrowserSession(DEFAULT_BROWSER_LAUNCH_URL) };
+        return {
+          ok: true,
+          session: createNativeBrowserSession(
+            typeof payload.url === "string" ? payload.url : DEFAULT_BROWSER_LAUNCH_URL,
+          ),
+        };
       case "showBrowser":
         showNativeBrowserWindow();
         return { ok: true };
@@ -8154,7 +8185,12 @@ function closeAllNativeSessions(): void {
 function addProject(path: string, name = projectNameFromPath(path)): void {
   const normalizedPath = path.replace(/\/+$/, "") || path;
   const projectId = createProjectId(normalizedPath);
-  if (!projects.some((project) => project.projectId === projectId)) {
+  const existingProject = projects.find((project) => project.projectId === projectId);
+  if (existingProject?.isRecentProject === true) {
+    restoreRecentProject(projectId);
+    return;
+  }
+  if (!existingProject) {
     projects = [
       ...projects,
       {
@@ -8996,7 +9032,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
        * directly, not route through browserOpenMode where legacy Canary remains
        * a valid user setting for browser command actions.
        */
-      createNativeBrowserSession(DEFAULT_BROWSER_LAUNCH_URL);
+      createNativeBrowserSession(message.url ?? DEFAULT_BROWSER_LAUNCH_URL);
       return;
     case "openBrowserPaneInGroup": {
       const groupReference = resolveSidebarGroupReference(message.groupId);
@@ -9017,6 +9053,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     }
     case "openWorkspaceWelcome":
       openNativeExternalUrl("https://github.com/maddada/zmux");
+      return;
+    case "pickWorkspaceFolder":
+      postNative({ type: "pickWorkspaceFolder" });
       return;
     case "openSettings":
       publish();
@@ -9424,13 +9463,24 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "runSidebarAgent": {
       const agent = agents.find((candidate) => candidate.agentId === message.agentId);
+      const groupReference =
+        typeof message.groupId === "string"
+          ? resolveSidebarGroupReference(message.groupId)
+          : undefined;
+      if (groupReference?.isChatCollection) {
+        return;
+      }
+      if (groupReference && activeProjectId !== groupReference.project.projectId) {
+        focusProject(groupReference.project.projectId);
+      }
+      const groupId = groupReference?.groupId;
       if (agent?.agentId === "t3") {
-        createNativeT3Session();
+        createNativeT3Session(groupId);
       } else if (agent?.command) {
         createTerminal(
           createAgentSessionDefaultTitle(agent.name),
           `${agent.command}\r`,
-          undefined,
+          groupId,
           agent.agentId,
         );
       }
@@ -9493,6 +9543,25 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       openGhosttyConfigFile();
       return;
     case "setVisibleCount":
+      if (typeof message.groupId === "string") {
+        const groupReference = resolveSidebarGroupReference(message.groupId);
+        if (groupReference.isChatCollection) {
+          return;
+        }
+        if (activeProjectId !== groupReference.project.projectId) {
+          focusProject(groupReference.project.projectId);
+        }
+        updateActiveProjectWorkspace((workspace) =>
+          setVisibleCountInSimpleWorkspace(
+            groupReference.groupId
+              ? focusGroupInSimpleWorkspace(workspace, groupReference.groupId).snapshot
+              : workspace,
+            message.visibleCount,
+          ),
+        );
+        publish();
+        return;
+      }
       updateActiveProjectWorkspace((workspace) =>
         setVisibleCountInSimpleWorkspace(workspace, message.visibleCount),
       );
@@ -9609,6 +9678,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const sessionActivities: Record<string, "attention" | "working"> = {};
   const sessionAgentIconColors: Record<string, string> = {};
   const sessionAgentIconDataUrls: Record<string, string> = {};
+  const sessionTitleBarActions: Record<string, NativeTerminalTitleBarAction[]> = {};
   const sessionTitles: Record<string, string> = {};
   for (const session of visibleSessions) {
     const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
@@ -9628,6 +9698,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     if (session.kind !== "terminal") {
       continue;
     }
+    sessionTitleBarActions[nativeSessionId] = getNativeTerminalTitleBarActions(session);
     const activity = terminalStateById.get(session.sessionId)?.activity;
     if (activity === "attention" || activity === "working") {
       sessionActivities[nativeSessionId] = activity;
@@ -9688,6 +9759,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     sessionAgentIconDataUrls,
     sessionAgentIconColors,
     sessionActivities,
+    sessionTitleBarActions,
     sessionTitles,
     type: "setActiveTerminalSet",
   };

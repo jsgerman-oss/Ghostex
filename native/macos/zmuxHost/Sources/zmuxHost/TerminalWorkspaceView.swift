@@ -277,6 +277,7 @@ final class TerminalWorkspaceView: NSView {
   private var sessionAgentIconColors = [String: String]()
   private var sessionAgentIconDataUrls = [String: String]()
   private var sessionActivities = [String: NativeTerminalActivity]()
+  private var sessionTitleBarActions = [String: [TerminalTitleBarAction]]()
   private var sessionTitles = [String: String]()
   private var activeProjectEditorId: String?
   private var focusedSessionId: String?
@@ -713,6 +714,7 @@ final class TerminalWorkspaceView: NSView {
     activeSessionIds.remove(sessionId)
     sessionActivities.removeValue(forKey: sessionId)
     sessionAgentIconDataUrls.removeValue(forKey: sessionId)
+    sessionTitleBarActions.removeValue(forKey: sessionId)
     sessionTitles.removeValue(forKey: sessionId)
     resizeLogSignatureBySessionId.removeValue(forKey: sessionId)
     /**
@@ -1038,6 +1040,7 @@ final class TerminalWorkspaceView: NSView {
     activeSessionIds.remove(sessionId)
     sessionActivities.removeValue(forKey: sessionId)
     sessionAgentIconDataUrls.removeValue(forKey: sessionId)
+    sessionTitleBarActions.removeValue(forKey: sessionId)
     completedWebPaneLoadSessionIds.remove(sessionId)
     pendingAuthenticatedWebPaneLoadSessionIds.remove(sessionId)
     t3ThreadRouteRetryAttemptsBySessionId.removeValue(forKey: sessionId)
@@ -1520,6 +1523,7 @@ final class TerminalWorkspaceView: NSView {
     sessionAgentIconColors = command.sessionAgentIconColors ?? [:]
     sessionAgentIconDataUrls = command.sessionAgentIconDataUrls ?? [:]
     sessionActivities = command.sessionActivities ?? [:]
+    sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
     activeProjectEditorId = command.activeProjectEditorId
     syncPaneHeaderEventMonitorForCurrentSurface(reason: "setActiveTerminalSet")
@@ -1547,6 +1551,9 @@ final class TerminalWorkspaceView: NSView {
         session.titleBarView.setTitle(
           normalizedTerminalSessionTitle(title, sessionId: session.sessionId)
         )
+      }
+      if let actions = sessionTitleBarActions[session.sessionId] {
+        session.titleBarView.setActions(actions)
       }
       session.titleBarView.setAgentIconDataUrl(
         sessionAgentIconDataUrls[session.sessionId],
@@ -4503,7 +4510,7 @@ final class TerminalWorkspaceView: NSView {
       session.borderView.isHidden = !isActive
       session.titleBarView.setState(activity: sessionActivities[sessionId])
       session.borderView.setState(
-        isFocused: focusedSessionId == sessionId,
+        isFocused: shouldShowFocusedPaneBorder(for: sessionId),
         isAttention: attentionSessionIds.contains(sessionId)
       )
       return
@@ -4520,9 +4527,13 @@ final class TerminalWorkspaceView: NSView {
       activity: sessionActivities[sessionId]
     )
     session.borderView.setState(
-      isFocused: focusedSessionId == sessionId,
+      isFocused: shouldShowFocusedPaneBorder(for: sessionId),
       isAttention: attentionSessionIds.contains(sessionId)
     )
+  }
+
+  private func shouldShowFocusedPaneBorder(for sessionId: String) -> Bool {
+    focusedSessionId == sessionId && orderedVisibleSessionIds().count > 1
   }
 
   private func responderSnapshot() -> [String: Any] {
@@ -5873,7 +5884,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private let titleLabel = NSTextField(labelWithString: "")
   private let activityIndicatorView = NSView(frame: .zero)
   private let bottomBorderView = NSView(frame: .zero)
-  private let actionButtons: [(action: TerminalTitleBarAction, button: NSButton)]
+  private var actionButtons: [(action: TerminalTitleBarAction, button: NSButton)]
   private var agentIconColor: NSColor?
   private var agentIconImage: NSImage?
   private var activity: NativeTerminalActivity?
@@ -6243,6 +6254,28 @@ private final class TerminalSessionTitleBarView: NSView {
     if titleLabel.stringValue != title {
       titleLabel.stringValue = title
       needsLayout = true
+    }
+  }
+
+  func setActions(_ actions: [TerminalTitleBarAction]) {
+    guard actionButtons.map(\.action) != actions else {
+      return
+    }
+
+    for item in actionButtons {
+      item.button.removeFromSuperview()
+    }
+    actionButtons = actions.map { action in
+      (action, Self.makeActionButton(for: action))
+    }
+    for item in actionButtons {
+      item.button.target = self
+      item.button.action = #selector(performTitleBarAction(_:))
+      addSubview(item.button)
+    }
+    needsLayout = true
+    if let window {
+      window.invalidateCursorRects(for: self)
     }
   }
 
@@ -7193,9 +7226,9 @@ final class TerminalPaneBorderView: NSView {
   }
 
   private static let focusedBorderColor = NSColor(
-    calibratedRed: 0x5A / 255,
-    green: 0x86 / 255,
-    blue: 0xFF / 255,
+    calibratedRed: 0x73 / 255,
+    green: 0x73 / 255,
+    blue: 0x73 / 255,
     alpha: 0.95
   ).cgColor
   private static let attentionBorderColor = NSColor(
@@ -7262,7 +7295,7 @@ final class TerminalPaneBorderView: NSView {
     /**
      CDXC:NativeSessionStatus 2026-04-27-08:02
      Native Ghostty panes are outside the React workspace DOM. Mirror the
-     existing workspace UX with a blue selected border and a green border for
+     existing workspace UX with a selected border and a green border for
      done/attention sessions, without stealing terminal input.
      */
     let nextState: BorderState = isAttention ? .attention : isFocused ? .focused : .none

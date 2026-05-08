@@ -494,6 +494,7 @@ export type SidebarToExtensionMessage =
        * browser pane, independent of the legacy browserOpenMode setting that
        * can still target Chrome Canary for other browser actions.
        */
+      url?: string;
       type: "openBrowserPane";
     }
   | {
@@ -508,6 +509,14 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "openWorkspaceWelcome";
+    }
+  | {
+      /**
+       * CDXC:NativeWorkspacePicker 2026-05-08-18:45
+       * The reference Projects header add button should open the trusted native
+       * folder picker, matching the workspace dock plus button.
+       */
+      type: "pickWorkspaceFolder";
     }
   | {
       type: "createSessionInGroup";
@@ -758,6 +767,7 @@ export type SidebarToExtensionMessage =
   | {
       type: "setVisibleCount";
       visibleCount: VisibleSessionCount;
+      groupId?: string;
     }
   | {
       type: "setViewMode";
@@ -838,6 +848,7 @@ export type SidebarToExtensionMessage =
   | {
       type: "runSidebarAgent";
       agentId: string;
+      groupId?: string;
     }
   | {
       type: "saveSidebarAgent";

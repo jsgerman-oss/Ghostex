@@ -25,12 +25,12 @@
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>${ZMUX_SPARKLE_FEED_URL}</string>
+	<string>https://raw.githubusercontent.com/maddada/zmux/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>${ZMUX_SPARKLE_PUBLIC_ED_KEY}</string>
+	<string>AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=</string>
 	<key>ZMUXHomeDirectoryName</key>
-	<string>${ZMUX_HOME_DIRECTORY_NAME}</string>
+	<string>.zmux</string>
 	<key>ZMUXSharedHomeDirectoryName</key>
-	<string>${ZMUX_SHARED_HOME_DIRECTORY_NAME}</string>
+	<string>.zmux</string>
 </dict>
 </plist>

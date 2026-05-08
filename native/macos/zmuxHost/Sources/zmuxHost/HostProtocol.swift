@@ -282,6 +282,7 @@ struct SetActiveTerminalSet: Decodable {
   let sessionAgentIconColors: [String: String]?
   let sessionAgentIconDataUrls: [String: String]?
   let sessionActivities: [String: NativeTerminalActivity]?
+  let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
 }
 
@@ -643,7 +644,7 @@ enum HostEvent: Encodable {
   }
 }
 
-enum TerminalTitleBarAction: String, Encodable {
+enum TerminalTitleBarAction: String, Codable {
   case close
   case fork
   case reload

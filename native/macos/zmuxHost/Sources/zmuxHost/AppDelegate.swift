@@ -6,6 +6,18 @@ import Sparkle
 import UniformTypeIdentifiers
 import WebKit
 
+/**
+ CDXC:SidebarReference 2026-05-08-02:40
+ The reference sidebar and standalone macOS title bar must share the same
+ requested background color (#0e0e0e). Keep this in native code because AppKit,
+ not the webview CSS, owns the NSWindow titlebar surface.
+ */
+private let zmuxReferenceSidebarChromeBackgroundColor = NSColor(
+  srgbRed: 14.0 / 255.0,
+  green: 14.0 / 255.0,
+  blue: 14.0 / 255.0,
+  alpha: 1.0)
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, GhosttyAppDelegate {
   static let logger = Logger(subsystem: "com.madda.zmux.host", category: "app")
   private static let logDateFormatter: DateFormatter = {
@@ -738,6 +750,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     }
     window.title = "zmux"
     window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.backgroundColor = zmuxReferenceSidebarChromeBackgroundColor
     window.contentView = root
     window.delegate = self
     installAttachToIdeTitlebarButton(on: window)
@@ -2536,7 +2550,7 @@ final class zmuxRootView: NSView {
     }
 
     wantsLayer = true
-    layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    layer?.backgroundColor = zmuxReferenceSidebarChromeBackgroundColor.cgColor
     sidebarView.setValue(false, forKey: "drawsBackground")
     modalHostView.setValue(false, forKey: "drawsBackground")
     modalHostView.isHidden = true
@@ -3285,12 +3299,20 @@ final class zmuxRootView: NSView {
     }
 
     switch type {
+    case "debugLog":
+      let event = message["event"] as? String ?? "nativeBridge.appModal.debug"
+      let details = message["details"] as? String
+      AppDelegate.appendAgentDetectionDebugLog(event: "nativeBridge.appModal.\(event)", details: details)
     case "logError":
       let area = message["area"] as? String ?? "AppModals:unknown"
       let errorMessage = message["message"] as? String ?? String(describing: message)
       let stack = message["stack"] as? String
       AppDelegate.appendAppModalErrorLog(area: area, message: errorMessage, stack: stack)
     case "ready":
+      AppDelegate.appendAgentDetectionDebugLog(
+        event: "nativeBridge.appModal.ready",
+        details: "hasLatestState=\(latestModalHostSidebarState != nil) hasPendingOpen=\(pendingModalHostOpenMessage != nil)"
+      )
       isModalHostReady = true
       if let latestModalHostSidebarState {
         dispatchModalHostMessage(latestModalHostSidebarState)
@@ -3306,13 +3328,35 @@ final class zmuxRootView: NSView {
        longer pauses or resurfaces external terminal windows. The modal host
        only needs to show its overlay above the embedded terminal view.
        */
-      modalHostView.isHidden = false
-      pendingModalHostOpenMessage = isModalHostReady ? nil : message
+      AppDelegate.appendAgentDetectionDebugLog(
+        event: "nativeBridge.appModal.open.received",
+        details:
+          "modal=\(message["modal"] as? String ?? "unknown") ready=\(isModalHostReady) hasLatestState=\(latestModalHostSidebarState != nil) wasHidden=\(modalHostView.isHidden)"
+      )
+      if !isModalHostReady {
+        pendingModalHostOpenMessage = message
+        return
+      }
+      pendingModalHostOpenMessage = nil
       if let latestModalHostSidebarState {
         dispatchModalHostMessage(latestModalHostSidebarState)
       }
+      AppDelegate.appendAgentDetectionDebugLog(
+        event: "nativeBridge.appModal.open.dispatch",
+        details: "modal=\(message["modal"] as? String ?? "unknown")"
+      )
       dispatchModalHostMessage(message)
+    case "presented":
+      AppDelegate.appendAgentDetectionDebugLog(
+        event: "nativeBridge.appModal.presented",
+        details: "modal=\(message["modal"] as? String ?? "unknown") wasHidden=\(modalHostView.isHidden)"
+      )
+      modalHostView.isHidden = false
     case "close":
+      AppDelegate.appendAgentDetectionDebugLog(
+        event: "nativeBridge.appModal.close.received",
+        details: "wasHidden=\(modalHostView.isHidden)"
+      )
       dispatchModalHostMessage(["type": "close"])
       pendingModalHostOpenMessage = nil
       modalHostView.isHidden = true
@@ -4172,16 +4216,11 @@ final class PaneResizeHandleView: NSView {
   /**
    CDXC:NativeSidebarChrome 2026-04-26-07:27
    The resize hit target stays wide enough to drag comfortably, but the
-   visible sidebar edge should be a subtle true-pixel #343434 separator
-   instead of the previous filled black gutter or Retina-scaled two-pixel line.
+   visible sidebar edge is intentionally transparent so the reference sidebar
+   does not show a light vertical drag-area separator.
    */
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
-    NSColor(calibratedRed: 0x34 / 255, green: 0x34 / 255, blue: 0x34 / 255, alpha: 1).setFill()
-    let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
-    let separatorWidth = 1 / backingScale
-    let separatorX = floor(bounds.midX * backingScale) / backingScale
-    NSRect(x: separatorX, y: 0, width: separatorWidth, height: bounds.height).fill()
   }
 
   override func mouseDown(with event: NSEvent) {

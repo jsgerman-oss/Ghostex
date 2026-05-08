@@ -12,6 +12,8 @@ export type NativeTerminalLayout =
       ratio?: number;
     };
 
+export type NativeTerminalTitleBarAction = "close" | "fork" | "reload" | "rename" | "sleep";
+
 export type NativeGhosttyHostCommand =
   | {
       activateOnCreate?: boolean;
@@ -114,6 +116,7 @@ export type NativeGhosttyHostCommand =
       sessionActivities?: Record<string, "attention" | "working">;
       sessionAgentIconColors?: Record<string, string>;
       sessionAgentIconDataUrls?: Record<string, string>;
+      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;
       type: "setActiveTerminalSet";
     }
