@@ -9,7 +9,7 @@
 brew install --cask maddada/tap/zmux
 ```
 
-## Screenshots:
+## Includes Chromium based embedded browser with Devtools, profiles, and MCP access:
 
 <img width="1000" alt="ZMUX sidebar with terminal and browser panes" src="media/readme/zmux-browser-pane.png" />
 
