@@ -7,14 +7,14 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <description>Sparkle appcast for zmux macOS releases.</description>
         <item>
             <title>2.0.0</title>
-            <pubDate>Fri, 08 May 2026 17:20:47 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v2.0.0</sparkle:fullReleaseNotesLink>
+            <pubDate>Fri, 08 May 2026 17:22:43 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v2.0</sparkle:fullReleaseNotesLink>
             <sparkle:version>20000</sparkle:version>
             <sparkle:shortVersionString>2.0.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <sparkle:releaseNotesLink sparkle:edSignature="BKKTqYdpedmdBSsXfDqtZhNyXDNLRmrs97uAJuGBsEi3KC70XugovkVwr4NRAJAP9dacSq4+m/yqusTK0BjqDA==" sparkle:length="787">https://raw.githubusercontent.com/maddada/zmux/main/zmux-2.0.0.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/zmux/releases/download/v2.0.0/zmux-2.0.0.dmg" length="172517819" type="application/octet-stream" sparkle:edSignature="47W6kOrSbjQSOmHA+CLhydU7U6McmEaNnhnnaJyC0J1YJUmdmEFjncqfDUzWELpnJhtifIbzsZXAnTv+SU/NDA=="></enclosure>
+            <enclosure url="https://github.com/maddada/zmux/releases/download/v2.0/zmux-2.0.0.dmg" length="172517819" type="application/octet-stream" sparkle:edSignature="47W6kOrSbjQSOmHA+CLhydU7U6McmEaNnhnnaJyC0J1YJUmdmEFjncqfDUzWELpnJhtifIbzsZXAnTv+SU/NDA=="></enclosure>
         </item>
         <item>
             <title>1.4.11</title>
@@ -69,6 +69,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: Lu/x8zHvQFX7UBQvehh8aqgkELK1kZuLlJJ/CxJdChsAQsiJYSilt8WxjHMw2M/aQGwQajPIqip6fjc6GaE4Dw==
-length: 6001
+edSignature: Z218SChU1z5/AUVxeKwkU3dKoTmGGdDrJMOhl88LO+faVoc1JY/3G2jrsd+DkUUV1ur9gVXOdajVg9f4qVhKAg==
+length: 5997
 -->
