@@ -1,4 +1,4 @@
-import { IconLoader2, IconTerminal2, IconWorld } from "@tabler/icons-react";
+import { IconLoader2, IconTerminal2, IconWorld, IconX } from "@tabler/icons-react";
 import {
   cloneElement,
   useEffect,
@@ -40,6 +40,7 @@ const GHOST_PLACEHOLDER_TITLE_PATTERN = /^👻(?:\s+Terminal Session)?$/u;
 
 export type SessionCardContentProps = {
   aliasHeadingRef?: RefObject<HTMLDivElement | null>;
+  hideHeaderAgentIcon?: boolean;
   onClose?: () => void;
   session: SidebarSessionItem;
   showDebugSessionNumbers: boolean;
@@ -50,7 +51,10 @@ export type SessionCardContentProps = {
 
 export function SessionCardContent({
   aliasHeadingRef,
+  hideHeaderAgentIcon = false,
+  onClose,
   session,
+  showCloseButton,
   showDebugSessionNumbers,
   showLastInteractionTime = false,
 }: SessionCardContentProps) {
@@ -61,9 +65,10 @@ export function SessionCardContent({
   });
   const hasLastInteractionTime = Boolean(session.lastInteractionAt);
   const showHeaderLoadingSpinner = session.isReloading === true || isGeneratingFirstPromptTitle;
-  const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
+  const showTerminalSessionIcon = !hideHeaderAgentIcon && shouldShowTerminalSessionIcon(session);
   const hasHeaderAgentIcon =
-    Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner;
+    !hideHeaderAgentIcon &&
+    (Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
   useRelativeTimeTick(hasLastInteractionTime);
   const lastInteractionLabel =
     hasLastInteractionTime && session.lastInteractionAt
@@ -104,11 +109,29 @@ export function SessionCardContent({
       : hasHeaderAgentIcon
         ? "icon"
         : "time";
-  const hasSessionHeadTrailing = Boolean(lastInteractionLabel) || hasHeaderAgentIcon;
+  /**
+   * CDXC:SidebarSessions 2026-05-09-16:55
+   * Session rows expose close as hover chrome for project and chat cards. The
+   * button renders in the header layer so it can outrank Last Active and agent
+   * indicators without reserving a permanent title slot.
+   *
+   * CDXC:SidebarSessions 2026-05-09-18:09
+   * Close belongs in the same trailing slot as Last Active and header icons so
+   * it aligns to the established right-side title affordance and can hide those
+   * competing indicators as a single hover state.
+   */
+  const canCloseFromCard = showCloseButton && Boolean(onClose);
+  const hasSessionHeadTrailing = Boolean(lastInteractionLabel) || hasHeaderAgentIcon || canCloseFromCard;
 
   return (
     <>
       <div className="session-head">
+        {/**
+         * CDXC:PreviousSessions 2026-05-09-17:44
+         * Previous Sessions rows use this shared sidebar title row but must not
+         * show the agent icon in the trailing slot. Their trailing slot is
+         * reserved for Last Active, matching the confirmed modal layout.
+         */}
         <div className="session-alias-heading" ref={aliasHeadingRef}>
           {headingText}
         </div>
@@ -133,29 +156,22 @@ export function SessionCardContent({
                 showTerminalIcon={showTerminalSessionIcon}
               />
             ) : null}
-          </div>
-        ) : null}
-        {/* <div className="session-head-actions">
-          <div className="session-meta" data-visible={String(showMeta)}>
-            {showHotkeys ? (
-              <span className="session-shortcut-label">{session.shortcutLabel}</span>
+            {canCloseFromCard ? (
+              <button
+                aria-label="Close session"
+                className="session-card-close-button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onClose?.();
+                }}
+                type="button"
+              >
+                <IconX aria-hidden="true" size={14} stroke={1.8} />
+              </button>
             ) : null}
           </div>
-          {showCloseButton && onClose ? (
-            <button
-              aria-label="Close session"
-              className="close-button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onClose();
-              }}
-              type="button"
-            >
-              ×
-            </button>
-          ) : null}
-        </div> */}
+        ) : null}
       </div>
       {isGeneratingFirstPromptTitle ? (
         <div

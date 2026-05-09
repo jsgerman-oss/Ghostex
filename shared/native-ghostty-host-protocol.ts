@@ -183,6 +183,18 @@ export type NativeGhosttyHostEvent =
       type: "terminalError";
     }
   | {
+      /**
+       * CDXC:EditorPanes 2026-05-09-17:24
+       * Native reports project editor load state separately from terminal
+       * sessions so the sidebar can keep the VS Code row visible through
+       * startup, success, and error states.
+       */
+      message?: string;
+      projectId: string;
+      status: "opening" | "running" | "error";
+      type: "projectEditorLoadState";
+    }
+  | {
       projectId: string;
       serverOrigin: string;
       sessionId: string;

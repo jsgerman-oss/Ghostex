@@ -484,6 +484,37 @@ describe("SessionCardContent", () => {
     expect(markup).toContain("session-header-agent-icon");
   });
 
+  test("should allow previous-session rows to reserve the trailing slot for last active", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionCardContent, {
+        hideHeaderAgentIcon: true,
+        session: {
+          activity: "idle",
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "00",
+          column: 0,
+          isFocused: false,
+          isRunning: false,
+          isVisible: false,
+          lastInteractionAt: "2026-04-18T10:00:00.000Z",
+          row: 0,
+          sessionId: "session-1",
+          shortcutLabel: "1",
+        },
+        showCloseButton: false,
+        showDebugSessionNumbers: false,
+        showHotkeys: false,
+        showLastInteractionTime: true,
+      }),
+    );
+
+    expect(markup).toContain('data-default-trailing-display="time"');
+    expect(markup).toContain('data-hover-trailing-display="time"');
+    expect(markup).toContain("session-last-interaction-time");
+    expect(markup).not.toContain("session-header-agent-icon");
+  });
+
   test("should render a spinner instead of the header agent icon while reloading", () => {
     const markup = renderToStaticMarkup(
       createElement(SessionCardContent, {
@@ -569,6 +600,34 @@ describe("SessionCardContent", () => {
     expect(markup).toContain("session-title-generation-overlay-label");
     expect(markup).toContain("session-title-generation-overlay-dots");
     expect(markup).not.toContain("session-title-generation-overlay-icon");
+  });
+
+  test("should render a hover-only close button when card closing is enabled", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionCardContent, {
+        onClose: () => undefined,
+        session: {
+          activity: "idle",
+          activityLabel: undefined,
+          agentIcon: "t3",
+          alias: "00",
+          column: 0,
+          isFocused: false,
+          isRunning: true,
+          isVisible: true,
+          row: 0,
+          sessionId: "session-1",
+          sessionKind: "t3",
+          shortcutLabel: "1",
+        },
+        showCloseButton: true,
+        showDebugSessionNumbers: false,
+        showHotkeys: false,
+      }),
+    );
+
+    expect(markup).toContain('aria-label="Close session"');
+    expect(markup).toContain("session-card-close-button");
   });
 });
 

@@ -104,7 +104,7 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
       settings: DEFAULT_zmux_SETTINGS,
       createSessionOnSidebarDoubleClick: false,
       renameSessionOnDoubleClick: false,
-      showCloseButtonOnSessionCards: false,
+      showCloseButtonOnSessionCards: DEFAULT_zmux_SETTINGS.showCloseButtonOnSessionCards,
       showHotkeysOnSessionCards: false,
       showLastInteractionTimeOnSessionCards: false,
       theme: getInitialSidebarTheme(),
@@ -577,14 +577,21 @@ function haveSameSidebarProjectContext(
    * Project editor buttons update from native diff-stat refreshes and open
    * state changes. Include editor context in group equality so the store does
    * not suppress those project-card updates as duplicate hydration payloads.
+   *
+   * CDXC:EditorPanes 2026-05-09-17:24
+   * Project editor load status and error text are sidebar-visible state. They
+   * must participate in equality so opening, timeout, and crash diagnostics are
+   * not dropped when the focused workspace switches to a terminal session.
    */
   return (
     left.canRemoveProject === right.canRemoveProject &&
     left.theme === right.theme &&
     left.themeColor === right.themeColor &&
     left.editor.projectId === right.editor.projectId &&
+    left.editor.errorMessage === right.editor.errorMessage &&
     left.editor.isOpen === right.editor.isOpen &&
     left.editor.isSleeping === right.editor.isSleeping &&
+    left.editor.status === right.editor.status &&
     left.editor.diffStats.additions === right.editor.diffStats.additions &&
     left.editor.diffStats.deletions === right.editor.diffStats.deletions &&
     left.editor.diffStats.files === right.editor.diffStats.files &&

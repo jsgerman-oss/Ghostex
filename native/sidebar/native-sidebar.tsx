@@ -71,6 +71,7 @@ import {
   type SidebarSessionItem,
   type SidebarTheme,
   type SidebarToExtensionMessage,
+  type SidebarZmuxFolderStatsMessage,
   type TerminalSessionPersistenceProvider,
   type TerminalSessionRecord,
   type T3SessionRecord,
@@ -200,8 +201,9 @@ import {
 } from "../../shared/ghostty-config-actions";
 import "../../sidebar/styles.css";
 
-type NativeSessionStatusIndicatorStatus = "attention" | "running" | "available";
+type NativeSessionStatusIndicatorStatus = "attention" | "working" | "available";
 type NativeTerminalTitleBarAction = "close" | "fork" | "reload" | "rename" | "sleep";
+type ProjectEditorLoadStatus = "idle" | "opening" | "running" | "error";
 
 type NativeHostCommand =
   | {
@@ -280,7 +282,15 @@ type NativeHostCommand =
        */
       attentionCount: number;
       availableCount: number;
-      runningCount: number;
+      /**
+       * CDXC:SessionStatusIndicators 2026-05-09-17:30
+       * Floating and menu bar indicator visibility are independent settings:
+       * floating badges are hidden by default, menu bar badges are shown by
+       * default, and both surfaces still share one count and click target model.
+       */
+      hideFloatingIndicators: boolean;
+      hideMenuBarIndicators: boolean;
+      workingCount: number;
       /**
        * CDXC:SessionStatusIndicators 2026-05-07-18:20
        * The native AppKit indicator receives the persisted named size with the
@@ -442,6 +452,12 @@ type NativeHostEvent =
   | { sessionId: string; type: "terminalFocused" }
   | { sessionId: string; type: "terminalBell" }
   | { message: string; sessionId: string; type: "terminalError" }
+  | {
+      message?: string;
+      projectId: string;
+      status: Exclude<ProjectEditorLoadStatus, "idle">;
+      type: "projectEditorLoadState";
+    }
   | { status: NativeSessionStatusIndicatorStatus; type: "sessionStatusIndicatorClicked" }
   | {
       projectId: string;
@@ -654,19 +670,24 @@ let gitState = createDefaultSidebarGitState(
  * webviews use the same delay before closing their native Chromium surface.
  */
 const CODE_SERVER_EDITOR_ORIGIN = "http://127.0.0.1:3775";
+const PROJECT_EDITOR_OPEN_TIMEOUT_MS = 10 * 1000;
 const PROJECT_EDITOR_SLEEP_TIMEOUT_MS = 5 * 60 * 1000;
 const PROJECT_DIFF_UNTRACKED_WC_CHUNK_SIZE = 100;
 const projectDiffStatsByProjectId = new Map<string, SidebarProjectDiffStats>();
 const pendingProjectDiffRefreshProjectIds = new Set<string>();
 let lastNativeLayoutSyncKey: string | undefined;
 let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
+let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
 let lastPersistedProjectsPayloadJson: string | undefined;
 const projectEditorSleepTimeoutByProjectId = new Map<string, number>();
+const projectEditorOpenTimeoutByProjectId = new Map<string, number>();
 const projectEditorSurfaceByProjectId = new Map<
   string,
   {
+    errorMessage?: string;
     isOpen: boolean;
     isSleeping: boolean;
+    status: ProjectEditorLoadStatus;
   }
 >();
 let isChromeCanaryRunning = false;
@@ -1011,6 +1032,11 @@ function showNativeMessage(level: "info" | "warning" | "error", message: string)
   postNative({ level, message, type: "showMessage" });
 }
 
+function postZmuxFolderStats(message: SidebarZmuxFolderStatsMessage): void {
+  sidebarBus.post(message);
+  postAppModalHost({ message, type: "sidebarState" });
+}
+
 function appendSessionTitleDebugLog(event: string, details?: unknown): void {
   if (!isNativeSidebarDebugLoggingEnabled()) {
     return;
@@ -1150,6 +1176,7 @@ function appendWorkspaceDockIndicatorDebugLog(event: string, details?: unknown):
 function shouldPersistNativeSidebarDiagnostic(event: string): boolean {
   const normalizedEvent = event.toLowerCase();
   return (
+    normalizedEvent.startsWith("nativefocustrace.") ||
     normalizedEvent.includes("fail") ||
     normalizedEvent.includes("error") ||
     normalizedEvent.includes("invalid") ||
@@ -1205,6 +1232,18 @@ function queueNativeLayoutFocusRequest(sessionId: string, reason: string): void 
     requestId: ++nextNativeLayoutFocusRequestId,
     sessionId,
   };
+  /**
+   * CDXC:NativeTerminalFocus 2026-05-09-15:30
+   * User-reproduced active-border misses need the explicit sidebar focus
+   * request id before layout sync consumes it. Persist only request creation
+   * breadcrumbs so click-driven focus can be matched to the native AppKit log.
+   */
+  appendTerminalFocusDebugLog("nativeFocusTrace.sidebarFocusRequestQueued", {
+    activeProjectId,
+    reason,
+    requestId: pendingNativeLayoutFocusRequest.requestId,
+    sessionId,
+  });
 }
 
 function summarizeNativeLayoutLeafSessionIds(layout: NativeTerminalLayout | undefined): string[] {
@@ -1472,6 +1511,84 @@ async function runGh(
     throw new Error(result.stderr.trim() || result.stdout.trim() || `gh ${args.join(" ")} failed`);
   }
   return result;
+}
+
+async function requestZmuxFolderStats(): Promise<void> {
+  const folderPath = nativeZmuxHomeDirectory();
+  /**
+   * CDXC:SettingsStorage 2026-05-09-15:25
+   * The settings storage card is lazy. When it becomes visible, run one native
+   * background `du` scan over the trusted zmux home and publish only immediate
+   * child folder totals so the modal can identify large folders without
+   * blocking initial Settings rendering.
+   */
+  try {
+    const result = await runNativeProcess("/bin/sh", [
+      "-lc",
+      [
+        'root="$1"',
+        '[ -d "$root" ] || exit 2',
+        '/usr/bin/find "$root" -mindepth 1 -maxdepth 1 -type d -exec /usr/bin/du -sk {} +',
+      ].join("\n"),
+      "sh",
+      folderPath,
+    ]);
+    if (result.exitCode !== 0) {
+      postZmuxFolderStats({
+        errorMessage:
+          result.stderr.trim() || result.stdout.trim() || "Could not read the zmux folder.",
+        folderPath,
+        folders: [],
+        generatedAt: new Date().toISOString(),
+        totalBytes: 0,
+        type: "zmuxFolderStats",
+      });
+      return;
+    }
+
+    const folders = result.stdout
+      .split(/\r?\n/u)
+      .map((line) => parseDuFolderStatLine(line))
+      .filter((folder): folder is NonNullable<typeof folder> => folder !== undefined)
+      .sort(
+        (left, right) => right.sizeBytes - left.sizeBytes || left.name.localeCompare(right.name),
+      );
+    postZmuxFolderStats({
+      folderPath,
+      folders,
+      generatedAt: new Date().toISOString(),
+      totalBytes: folders.reduce((total, folder) => total + folder.sizeBytes, 0),
+      type: "zmuxFolderStats",
+    });
+  } catch (error) {
+    postZmuxFolderStats({
+      errorMessage: error instanceof Error ? error.message : "Could not read the zmux folder.",
+      folderPath,
+      folders: [],
+      generatedAt: new Date().toISOString(),
+      totalBytes: 0,
+      type: "zmuxFolderStats",
+    });
+  }
+}
+
+function parseDuFolderStatLine(
+  line: string,
+): SidebarZmuxFolderStatsMessage["folders"][number] | undefined {
+  const match = /^(\d+)\s+(.+)$/u.exec(line.trim());
+  if (!match) {
+    return undefined;
+  }
+  const sizeKb = Number(match[1]);
+  const path = match[2]?.trim();
+  if (!Number.isFinite(sizeKb) || !path) {
+    return undefined;
+  }
+  return {
+    name: path.split("/").filter(Boolean).at(-1) ?? path,
+    path,
+    sizeBytes: sizeKb * 1024,
+  };
 }
 
 async function refreshChromeCanaryRunningState(): Promise<void> {
@@ -3080,7 +3197,13 @@ function createNativeSidebarCommandButtons(): SidebarCommandButton[] {
 
     switch (command.commandId) {
       case "dev":
-        return { ...command, command: "bun run start" };
+        /**
+         * CDXC:DevAppFlavor 2026-05-09-16:17
+         * The default Dev command should use the short local `bun s` path so
+         * sidebar-launched repo sessions start zmux-dev instead of replacing
+         * the installed release app.
+         */
+        return { ...command, command: "bun s" };
       case "build":
         return { ...command, command: "bun run build" };
       case "test":
@@ -3603,9 +3726,11 @@ function createSidebarProjectEditorState(
   const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
   return {
     diffStats: getProjectDiffStats(project.projectId),
+    errorMessage: surfaceState?.errorMessage,
     isOpen: surfaceState?.isOpen === true,
     isSleeping: surfaceState?.isSleeping === true,
     projectId: project.projectId,
+    status: surfaceState?.status ?? "idle",
   };
 }
 
@@ -4179,9 +4304,16 @@ function createNativeSessionStatusIndicatorCandidates(): NativeSessionStatusIndi
   /**
    * CDXC:SessionStatusIndicators 2026-05-05-19:47
    * Floating AppKit circles summarize every open zmux project session, not only
-   * the active group's visible panes. "Running" maps to the existing orange
-   * working activity state; gray available counts include all remaining
-   * non-recent sessions so the idle total is complete.
+   * the active group's visible panes. Working means activity=`working`, while
+   * available covers idle live sessions and other non-attention sessions.
+   * CDXC:SessionStatusIndicators 2026-05-09-15:48
+   * Menu bar status badges reuse this same candidate list and click routing.
+   * Green selects attention sessions; orange selects activity=`working`
+   * sessions, not lifecycleState=`running` live-idle sessions.
+   * CDXC:SessionStatusIndicators 2026-05-09-15:53
+   * The status-indicator native contract now uses `working` for the orange
+   * work state everywhere. Reserve `running` for live runtime state, including
+   * the workspace rail's gray live-idle count.
    */
   const candidates: NativeSessionStatusIndicatorCandidate[] = [];
   let order = 0;
@@ -4215,7 +4347,7 @@ function getNativeSessionStatusIndicatorStatus(
     return "attention";
   }
   if (session.activity === "working") {
-    return "running";
+    return "working";
   }
   return "available";
 }
@@ -4224,7 +4356,7 @@ function syncNativeSessionStatusIndicators(): void {
   const counts = {
     attention: 0,
     available: 0,
-    running: 0,
+    working: 0,
   };
   for (const candidate of createNativeSessionStatusIndicatorCandidates()) {
     counts[candidate.status] += 1;
@@ -4232,7 +4364,9 @@ function syncNativeSessionStatusIndicators(): void {
   postNative({
     attentionCount: counts.attention,
     availableCount: counts.available,
-    runningCount: counts.running,
+    hideFloatingIndicators: settings.hideFloatingSessionStatusIndicators,
+    hideMenuBarIndicators: settings.hideMenuBarSessionStatusIndicators,
+    workingCount: counts.working,
     size: settings.sessionStatusIndicatorSize,
     type: "setSessionStatusIndicators",
   });
@@ -7225,9 +7359,9 @@ async function renameNativeSidebarTerminalSession(
   }
 
   /**
-   * CDXC:SessionNaming 2026-05-08-18:56
+   * CDXC:SessionNaming 2026-05-09-17:25
    * Long pasted text in the rename modal must remain editable until the user
-   * submits. The modal owns the 50-character threshold UI and marks Generate
+   * submits. The modal owns the 70-character threshold UI and marks Generate
    * Name submits explicitly, while the controller only generates for that
    * explicit request or the saved first-message Generate Title action.
    */
@@ -9195,6 +9329,68 @@ function createCodeServerProjectEditorUrl(projectPath: string): string {
   return url.toString();
 }
 
+function cancelProjectEditorOpenTimer(projectId: string): void {
+  const timeout = projectEditorOpenTimeoutByProjectId.get(projectId);
+  if (timeout !== undefined) {
+    window.clearTimeout(timeout);
+    projectEditorOpenTimeoutByProjectId.delete(projectId);
+  }
+}
+
+function scheduleProjectEditorOpenTimeout(projectId: string): void {
+  cancelProjectEditorOpenTimer(projectId);
+  const timeout = window.setTimeout(() => {
+    const surfaceState = projectEditorSurfaceByProjectId.get(projectId);
+    if (!surfaceState || surfaceState.status !== "opening") {
+      return;
+    }
+    /**
+     * CDXC:EditorPanes 2026-05-09-17:24
+     * Starting VS Code can fail after the sidebar row is shown. Keep the row
+     * visible and convert it to an error state after ten seconds so the user
+     * can click/retry or read the startup failure instead of losing the row.
+     */
+    projectEditorSurfaceByProjectId.set(projectId, {
+      ...surfaceState,
+      errorMessage: "VS Code did not finish loading within 10 seconds.",
+      status: "error",
+    });
+    projectEditorOpenTimeoutByProjectId.delete(projectId);
+    publish();
+  }, PROJECT_EDITOR_OPEN_TIMEOUT_MS);
+  projectEditorOpenTimeoutByProjectId.set(projectId, timeout);
+}
+
+function setProjectEditorLoadState(
+  projectId: string,
+  status: Exclude<ProjectEditorLoadStatus, "idle">,
+  message?: string,
+): void {
+  const surfaceState = projectEditorSurfaceByProjectId.get(projectId);
+  if (!surfaceState) {
+    return;
+  }
+
+  if (status === "opening") {
+    projectEditorSurfaceByProjectId.set(projectId, {
+      ...surfaceState,
+      errorMessage: undefined,
+      status,
+    });
+    scheduleProjectEditorOpenTimeout(projectId);
+    publish();
+    return;
+  }
+
+  cancelProjectEditorOpenTimer(projectId);
+  projectEditorSurfaceByProjectId.set(projectId, {
+    ...surfaceState,
+    errorMessage: status === "error" ? (message ?? "VS Code failed to load.") : undefined,
+    status,
+  });
+  publish();
+}
+
 function cancelProjectEditorSleepTimer(projectId: string): void {
   const timeout = projectEditorSleepTimeoutByProjectId.get(projectId);
   if (timeout !== undefined) {
@@ -9231,6 +9427,7 @@ function sleepProjectEditorSurface(projectId: string): void {
     ...surfaceState,
     isSleeping: true,
   });
+  cancelProjectEditorOpenTimer(projectId);
   projectEditorSleepTimeoutByProjectId.delete(projectId);
   postNative({ projectId, type: "closeProjectEditorPane" });
   stopCodeServerRuntimeIfEveryEditorSleeping();
@@ -9262,9 +9459,12 @@ function wakeProjectEditorSurface(project: NativeProject): void {
   const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
   cancelProjectEditorSleepTimer(project.projectId);
   projectEditorSurfaceByProjectId.set(project.projectId, {
+    errorMessage: undefined,
     isOpen: surfaceState?.isOpen === true,
     isSleeping: false,
+    status: "opening",
   });
+  scheduleProjectEditorOpenTimeout(project.projectId);
   postNative({
     cwd: project.path,
     linkVscodeUserConfig: settings.codeServerLinkVscodeUserConfig,
@@ -9296,9 +9496,12 @@ function openProjectEditorForGroup(groupId: string): void {
    * across later project switches.
    */
   projectEditorSurfaceByProjectId.set(project.projectId, {
+    errorMessage: undefined,
     isOpen: true,
     isSleeping: false,
+    status: "opening",
   });
+  scheduleProjectEditorOpenTimeout(project.projectId);
   wakeProjectEditorSurface(project);
   postNative({ projectId: project.projectId, type: "focusProjectEditorPane" });
   void refreshProjectDiffStats(project.projectId);
@@ -9322,6 +9525,7 @@ function closeProjectEditorForGroup(groupId: string): void {
    * stop the shared code-server runtime when no awake editor surfaces remain.
    */
   cancelProjectEditorSleepTimer(project.projectId);
+  cancelProjectEditorOpenTimer(project.projectId);
   projectEditorSurfaceByProjectId.delete(project.projectId);
   postNative({ projectId: project.projectId, type: "closeProjectEditorPane" });
   stopCodeServerRuntimeIfEveryEditorSleeping();
@@ -9342,6 +9546,7 @@ function activateWorkspaceSurfaceForProject(projectId: string): void {
 
 function disposeProjectEditorSurface(projectId: string): void {
   cancelProjectEditorSleepTimer(projectId);
+  cancelProjectEditorOpenTimer(projectId);
   projectEditorSurfaceByProjectId.delete(projectId);
   projectDiffStatsByProjectId.delete(projectId);
   pendingProjectDiffRefreshProjectIds.delete(projectId);
@@ -9683,6 +9888,12 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "openSettings":
       publish();
+      return;
+    case "requestZmuxFolderStats":
+      void requestZmuxFolderStats();
+      return;
+    case "openZmuxFolder":
+      openNativeWorkspaceInFinder(nativeZmuxHomeDirectory());
       return;
     case "refreshDaemonSessions":
       refreshDaemonSessionsState();
@@ -10233,7 +10444,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
 function postNativeLayoutSync(
   command: NativeSetActiveTerminalSetCommand,
   options: { force?: boolean } = {},
-): void {
+): boolean {
   const commandSyncKey = createNativeCommandSyncKey(command);
   const layoutSyncKey = createNativeLayoutSyncKey(command);
   if (
@@ -10241,12 +10452,13 @@ function postNativeLayoutSync(
     command.focusRequestId === undefined &&
     commandSyncKey === lastNativeSetActiveTerminalSetCommandKey
   ) {
-    return;
+    return false;
   }
   const layoutChanged = options.force === true || layoutSyncKey !== lastNativeLayoutSyncKey;
   lastNativeSetActiveTerminalSetCommandKey = commandSyncKey;
   lastNativeLayoutSyncKey = layoutSyncKey;
   postNative({ ...command, layoutChanged });
+  return true;
 }
 
 function createNativeCommandSyncKey(command: NativeSetActiveTerminalSetCommand): string {
@@ -10412,7 +10624,31 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     sessionTitles,
     type: "setActiveTerminalSet",
   };
-  postNativeLayoutSync(command, options);
+  const didPostNativeLayoutSync = postNativeLayoutSync(command, options);
+  /**
+   * CDXC:NativeTerminalFocus 2026-05-09-15:30
+   * Focus trace logging should show whether sidebar state actually crossed the
+   * native bridge, but only when the focused pane changes or an explicit focus
+   * request exists. This keeps reproduction logs useful without recording every
+   * passive status/layout publish.
+   */
+  const shouldTraceLayoutFocus =
+    focusRequestId !== undefined ||
+    focusedNativeSessionId !== lastNativeFocusTraceLayoutFocusedSessionId;
+  if (shouldTraceLayoutFocus) {
+    appendTerminalFocusDebugLog("nativeFocusTrace.sidebarLayoutFocusSync", {
+      activeProjectId,
+      didPostNativeLayoutSync,
+      focusedNativeSessionId,
+      focusedSidebarSessionId: snapshot.focusedSessionId,
+      focusRequestId,
+      pendingFocusRequest: pendingNativeLayoutFocusRequest,
+      shouldConsumeFocusRequest,
+      visibleNativeSessionIds: visibleSessionIds,
+      visibleSidebarSessionIds: visibleSessions.map((session) => session.sessionId),
+    });
+    lastNativeFocusTraceLayoutFocusedSessionId = focusedNativeSessionId;
+  }
   if (shouldConsumeFocusRequest) {
     pendingNativeLayoutFocusRequest = undefined;
   }
@@ -10474,6 +10710,10 @@ window.addEventListener("zmux-native-host-event", (event) => {
   }
   if (hostEvent.type === "sessionStatusIndicatorClicked") {
     handleNativeSessionStatusIndicatorClicked(hostEvent.status);
+    return;
+  }
+  if (hostEvent.type === "projectEditorLoadState") {
+    setProjectEditorLoadState(hostEvent.projectId, hostEvent.status, hostEvent.message);
     return;
   }
   if (hostEvent.type === "paneReorderRequested") {
@@ -10585,13 +10825,34 @@ window.addEventListener("zmux-native-host-event", (event) => {
      * they do not have terminal runtime state. Handle focus before the
      * terminal-only state guard so clicking a WKWebView updates the active
      * sidebar card instead of only drawing the AppKit border.
-     */
+    */
     const previousFocusedSessionId = activeSnapshot().focusedSessionId;
+    /**
+     * CDXC:NativeTerminalFocus 2026-05-09-15:30
+     * When a pane click fails to move the active border, the sidebar log must
+     * show whether Swift emitted terminalFocused and whether the store applied
+     * or treated it as a duplicate. These events are focus-only, not render
+     * loop logs, so they stay small during reproduction.
+     */
+    appendTerminalFocusDebugLog("nativeFocusTrace.sidebarTerminalFocusedReceived", {
+      activeProjectId,
+      incomingSessionId: sidebarSessionId,
+      nativeSessionId: hostEvent.sessionId,
+      previousFocusedSessionId,
+      visibleSessionIds: activeSnapshot().visibleSessionIds,
+    });
     if (previousFocusedSessionId === sidebarSessionId) {
       const acknowledgedAttention = acknowledgeNativeTerminalAttention(
         sidebarSessionId,
         "native-focus",
       );
+      appendTerminalFocusDebugLog("nativeFocusTrace.sidebarTerminalFocusedDuplicate", {
+        acknowledgedAttention,
+        activeProjectId,
+        incomingSessionId: sidebarSessionId,
+        nativeSessionId: hostEvent.sessionId,
+        previousFocusedSessionId,
+      });
       appendTerminalFocusDebugLog("nativeSidebar.terminalFocused.duplicateSkipped", {
         acknowledgedAttention,
         nativeSessionId: hostEvent.sessionId,
@@ -10614,8 +10875,24 @@ window.addEventListener("zmux-native-host-event", (event) => {
       previousFocusedSessionId,
       sessionId: sidebarSessionId,
     });
-    acknowledgeNativeTerminalAttention(sidebarSessionId, "native-focus");
+    const acknowledgedAttention = acknowledgeNativeTerminalAttention(
+      sidebarSessionId,
+      "native-focus",
+    );
+    appendTerminalFocusDebugLog("nativeFocusTrace.sidebarTerminalFocusedApplied", {
+      acknowledgedAttention,
+      activeProjectId,
+      focusChanged,
+      focusedSessionIdAfter: activeSnapshot().focusedSessionId,
+      incomingSessionId: sidebarSessionId,
+      nativeSessionId: hostEvent.sessionId,
+      previousFocusedSessionId,
+      visibleSessionIdsAfter: activeSnapshot().visibleSessionIds,
+    });
     if (!focusChanged) {
+      if (acknowledgedAttention) {
+        publish();
+      }
       return;
     }
   } else {

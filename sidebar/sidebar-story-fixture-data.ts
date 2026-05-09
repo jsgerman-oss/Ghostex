@@ -17,12 +17,17 @@ function createStoryProjectContext(projectId: string): NonNullable<SidebarStoryG
      * CDXC:EditorPanes 2026-05-06-14:21
      * Sidebar stories model the project editor launcher as project context so
      * visual fixtures keep matching production expanded project cards.
+     *
+     * CDXC:EditorPanes 2026-05-09-17:24
+     * Project editor fixture state includes load status because Storybook must
+     * exercise the same visibility contract used for opening/error rows.
      */
     editor: {
       diffStats: createDefaultSidebarProjectDiffStats(),
       isOpen: false,
       isSleeping: false,
       projectId,
+      status: "idle",
     },
     theme: "plain-dark",
   };
@@ -616,7 +621,14 @@ const COMBINED_SPARSE_REFERENCE_GROUPS: SidebarStoryGroup[] = [
     sessions: [
       createStorySession({
         alias: "Terminal Session",
-        detail: "Terminal",
+        /**
+         * CDXC:SidebarStories 2026-05-09-18:52
+         * The sparse reference story is used to validate session title, Last
+         * Active, close button, and agent-icon alignment. Keep this row on the
+         * explicit agent-icon path instead of the agentless terminal fallback.
+         */
+        agentIcon: "codex",
+        detail: "OpenAI Codex",
         lastInteractionAt: minutesAgo(59),
         sessionId: "combined-sparse-terminal",
         shortcutLabel: "⌘⌥1",

@@ -1165,6 +1165,11 @@ final class TerminalWorkspaceView: NSView {
         .terminalError(
           sessionId: "project-editor-\(command.projectId)",
           message: "Chromium runtime is not bundled for editor panes"))
+      sendEvent(
+        .projectEditorLoadState(
+          projectId: command.projectId,
+          status: "error",
+          message: "Chromium runtime is not bundled for editor panes"))
       return
     }
 
@@ -1543,6 +1548,28 @@ final class TerminalWorkspaceView: NSView {
           layout: terminalLayout,
           paneGap: paneGap
         ))
+    let previousFocusedSessionId = focusedSessionId
+    let responderSessionIdBefore = currentResponderSessionId()
+    if command.focusRequestId != nil || previousFocusedSessionId != command.focusedSessionId {
+      /**
+       CDXC:NativeTerminalFocus 2026-05-09-15:30
+       Active-border misses can be caused by a later setActiveTerminalSet
+       repainting native focus from sidebar state. Record only focus-changing
+       layout commands, including whether they are explicit focus requests or
+       passive sync, so reproduction logs show the overwrite boundary.
+       */
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.setActiveTerminalSetFocusInput",
+        details: [
+          "activeSessionIdsBefore": Array(activeSessionIds).sorted(),
+          "commandFocusedSessionId": nullableString(command.focusedSessionId),
+          "focusRequestId": command.focusRequestId ?? 0,
+          "previousFocusedSessionId": nullableString(previousFocusedSessionId),
+          "responderBefore": responderSnapshot(),
+          "responderSessionIdBefore": nullableString(responderSessionIdBefore),
+          "shouldRelayout": shouldRelayout,
+        ])
+    }
     activeSessionIds = nextActiveSessionIds
     attentionSessionIds = Set(command.attentionSessionIds ?? [])
     sessionAgentIconColors = command.sessionAgentIconColors ?? [:]
@@ -1621,6 +1648,22 @@ final class TerminalWorkspaceView: NSView {
       scheduleDeferredWebPaneLayout(sessionId: command.focusedSessionId, reason: "setActiveTerminalSet")
     }
     updateAllTerminalBorders()
+    let responderSessionIdAfterBorderApply = currentResponderSessionId()
+    if command.focusRequestId == nil,
+      let responderSessionIdAfterBorderApply,
+      activeSessionIds.contains(responderSessionIdAfterBorderApply),
+      responderSessionIdAfterBorderApply != focusedSessionId
+    {
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.passiveSyncResponderMismatch",
+        details: [
+          "commandFocusedSessionId": nullableString(command.focusedSessionId),
+          "focusedSessionIdAfterApply": nullableString(focusedSessionId),
+          "responderAfterBorderApply": responderSnapshot(),
+          "responderSessionIdAfterBorderApply": responderSessionIdAfterBorderApply,
+          "visibleSessionIds": orderedVisibleSessionIds(),
+        ])
+    }
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.setActiveTerminalSet.applied",
       details: [
@@ -1932,8 +1975,15 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func loadProjectEditorPaneWhenReady(projectId: String, url: String, reason: String) {
+    /**
+     CDXC:EditorPanes 2026-05-09-17:24
+     Report editor startup state to the sidebar. The sidebar keeps the VS Code
+     row visible through loading and turns it into a retryable error row if
+     code-server does not become responsive within ten seconds.
+     */
+    sendEvent(.projectEditorLoadState(projectId: projectId, status: "opening", message: nil))
     Task.detached { [weak self] in
-      let isReady = NativeCodeServerRuntimeLauncher.waitUntilResponsive(timeout: 12.0)
+      let isReady = NativeCodeServerRuntimeLauncher.waitUntilResponsive(timeout: 10.0)
       await MainActor.run {
         guard let self, let session = self.projectEditorPaneSessions[projectId], session.url == url
         else {
@@ -1945,6 +1995,13 @@ final class TerminalWorkspaceView: NSView {
           "reason": reason,
           "url": url,
         ])
+        if !isReady {
+          self.sendEvent(
+            .projectEditorLoadState(
+              projectId: projectId,
+              status: "error",
+              message: "VS Code did not finish loading within 10 seconds."))
+        }
         session.chromiumView.loadURLString(url)
         session.hostView.refreshHostedWebView(reason: reason)
       }
@@ -2004,6 +2061,7 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     session.hostView.setInitialLoadingOverlayVisible(false, reason: reason)
+    sendEvent(.projectEditorLoadState(projectId: projectId, status: "running", message: nil))
   }
 
   private func orderedVisibleSessionIds() -> [String] {
@@ -2499,6 +2557,8 @@ final class TerminalWorkspaceView: NSView {
     switch event.type {
     case .leftMouseDown:
       let point = convert(event.locationInWindow, from: nil)
+      logPaneFocusMouseDownProbe(at: point)
+      acknowledgeClickedAttentionPane(at: point)
       if let titleBarAction = paneTitleBarAction(at: point) {
         /**
          CDXC:BrowserPanes 2026-05-03-11:06
@@ -2561,6 +2621,61 @@ final class TerminalWorkspaceView: NSView {
     paneHeaderActionPress = nil
     paneHeaderDrag = nil
     endPaneHeaderDragFeedback(restoresCursor: false)
+  }
+
+  private func logPaneFocusMouseDownProbe(at point: CGPoint) {
+    guard let clickedSessionId = paneSessionId(at: point) else {
+      return
+    }
+    let responderSessionId = currentResponderSessionId()
+    guard clickedSessionId != focusedSessionId || clickedSessionId != responderSessionId else {
+      return
+    }
+    /**
+     CDXC:NativeTerminalFocus 2026-05-09-15:30
+     User-reproduced active-border misses need a low-volume click breadcrumb
+     before AppKit first-responder updates. Log only pane clicks that disagree
+     with native focus/responder state so the focus handoff can be correlated
+     without recording every terminal click.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.mouseDownPaneProbe",
+      details: [
+        "activeSessionIds": Array(activeSessionIds).sorted(),
+        "clickedSessionId": clickedSessionId,
+        "focusedSessionIdBefore": nullableString(focusedSessionId),
+        "point": describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0)),
+        "responderBefore": responderSnapshot(),
+        "responderSessionIdBefore": nullableString(responderSessionId),
+        "visibleSessionIds": orderedVisibleSessionIds(),
+      ])
+  }
+
+  private func acknowledgeClickedAttentionPane(at point: CGPoint) {
+    guard let clickedSessionId = paneSessionId(at: point),
+      attentionSessionIds.contains(clickedSessionId)
+    else {
+      return
+    }
+    /**
+     CDXC:NativeSessionStatus 2026-05-09-15:30
+     Clicking a green/done pane is an acknowledgement even when that pane is
+     already first responder and AppKit will not emit a focus transition. Send
+     the existing terminalFocused event from the mouse-down monitor so the
+     sidebar clears attention through the same source-of-truth path as normal
+     focus, with a local border update for immediate visual feedback.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.attentionPaneMouseDownAcknowledged",
+      details: [
+        "clickedSessionId": clickedSessionId,
+        "focusedSessionIdBefore": nullableString(focusedSessionId),
+        "responderBefore": responderSnapshot(),
+        "visibleSessionIds": orderedVisibleSessionIds(),
+      ])
+    attentionSessionIds.remove(clickedSessionId)
+    updateTerminalBorder(for: clickedSessionId)
+    sendEvent(.terminalFocused(sessionId: clickedSessionId))
   }
 
   private static func describeMouseEventType(_ type: NSEvent.EventType) -> String {
@@ -4747,6 +4862,13 @@ final class TerminalWorkspaceView: NSView {
     ]
   }
 
+  private func currentResponderSessionId() -> String? {
+    guard let responder = window?.firstResponder else {
+      return nil
+    }
+    return sessionId(containing: responder)
+  }
+
   private func shouldPreserveNonTerminalFirstResponder() -> Bool {
     guard let responder = window?.firstResponder else {
       return false
@@ -4802,6 +4924,24 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     if lastEmittedFocusedSessionId == focusedSessionId {
+      if self.focusedSessionId != focusedSessionId {
+        /**
+         CDXC:NativeTerminalFocus 2026-05-09-15:30
+         Duplicate native focus events can still be diagnostically important
+         when local border state was changed by a later layout sync. Preserve a
+         breadcrumb without changing behavior so reproduction logs show whether
+         duplicate suppression left the active border stale.
+         */
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.duplicateFocusWithStaleBorderState",
+          details: [
+            "emittedFocusedSessionId": focusedSessionId,
+            "lastEmittedFocusedSessionId": nullableString(lastEmittedFocusedSessionId),
+            "localFocusedSessionId": nullableString(self.focusedSessionId),
+            "reason": reason,
+            "responder": responderSnapshot(),
+          ])
+      }
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.terminalFocused.duplicateSkipped",
         details: [

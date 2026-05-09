@@ -13,7 +13,7 @@ const DEFAULT_STORY_ARGS: SidebarStoryArgs = {
   highlightedVisibleCount: 1,
   isFocusModeActive: false,
   renameSessionOnDoubleClick: false,
-  showCloseButtonOnSessionCards: false,
+  showCloseButtonOnSessionCards: true,
   showHotkeysOnSessionCards: false,
   showLastInteractionTimeOnSessionCards: false,
   theme: "dark-blue",

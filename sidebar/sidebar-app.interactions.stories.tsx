@@ -165,21 +165,19 @@ export const ToolbarActions: Story = {
       ).toBeNull();
     });
 
-    await step("open sidebar settings", async () => {
-      resetSidebarStoryMessages();
+    await step("keep removed actions out of the sidebar menu", async () => {
       await openSidebarMenuForStory(canvasElement.ownerDocument.body);
-      const settingsItem = body.queryByRole("menuitem", { name: /Settings/ });
-      if (settingsItem) {
-        await userEvent.click(settingsItem);
-        await expectMessage({ type: "openSettings" });
-      }
+      await body.findByRole("menuitem", { name: "Pinned Prompts" });
+      expect(body.queryByRole("menuitem", { name: "Search" })).toBeNull();
+      expect(body.queryByRole("menuitem", { name: "Previous Sessions" })).toBeNull();
+      expect(body.queryByRole("menuitem", { name: /Sort/ })).toBeNull();
+      expect(body.queryByRole("menuitem", { name: "Settings" })).toBeNull();
     });
 
     await step("open the scratch pad from the sidebar menu", async () => {
       await openSidebarMenuForStory(canvasElement.ownerDocument.body);
-      const scratchPadItem = body.queryByRole("menuitem", { name: "Show Scratch Pad" });
+      const scratchPadItem = body.queryByRole("menuitem", { name: "Scratch Pad" });
       if (scratchPadItem) {
-        await body.findByRole("menuitem", { name: "Sort: Manual" });
         await userEvent.click(scratchPadItem);
         await body.findByRole("dialog", { name: "Scratch Pad" });
         await userEvent.click(body.getByRole("button", { name: "Close scratch pad" }));

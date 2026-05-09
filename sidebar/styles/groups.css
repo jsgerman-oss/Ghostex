@@ -586,6 +586,16 @@
   width: 14px;
 }
 
+/*
+ * CDXC:EditorPanes 2026-05-09-15:39
+ * The project-header VS Code icon should regain brand color at 80% opacity
+ * when its code pane is active, matching the revealed editor row state.
+ */
+.group-code-editor-button[data-open="true"] .group-code-editor-icon {
+  filter: none;
+  opacity: 0.8;
+}
+
 .group-collapsed-summary {
   pointer-events: none;
   margin-left: -4px;
@@ -1216,6 +1226,13 @@
   height: 14px;
   opacity: 0.55;
   width: 14px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group-code-editor-button[data-open="true"]
+  .group-code-editor-icon {
+  filter: none;
+  opacity: 0.8;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-split-button {

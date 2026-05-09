@@ -45,6 +45,8 @@ export function SessionHistoryCard({
     showDebugSessionNumbers,
     showSessionDetails: true,
   });
+  const projectLabel = getSessionHistoryProjectLabel(session);
+  const isActiveHistorySession = session.isFocused || session.isVisible;
 
   return (
     <OverflowTooltipText
@@ -55,25 +57,27 @@ export function SessionHistoryCard({
     >
       <div
         className="session-frame session-history-frame"
-        data-focused="false"
-        data-running="false"
+        data-focused={String(Boolean(session.isFocused))}
+        data-running={String(Boolean(session.isRunning))}
         data-restorable={String(session.isRestorable)}
-        data-visible="false"
+        data-visible={String(Boolean(session.isVisible))}
       >
         {/**
-         * CDXC:PreviousSessions 2026-05-08-16:07
-         * Search results use Previous Sessions cards as restore affordances,
-         * so archived sessions must keep the same leading agent/browser/plain
-         * terminal icon context that regular sidebar cards expose.
+         * CDXC:PreviousSessions 2026-05-09-17:44
+         * The modal copies the reference sidebar active-row signal: only the
+         * active/focused previous-session row may show the leading agent icon,
+         * and the active row background is suppressed in CSS.
          */}
-        <SessionFloatingAgentIcon
-          agentIcon={session.agentIcon}
-          faviconDataUrl={session.faviconDataUrl}
-          isFavorite={session.isFavorite}
-          sessionPersistenceName={session.sessionPersistenceName}
-          sessionPersistenceProvider={session.sessionPersistenceProvider}
-          showTerminalIcon={shouldShowTerminalSessionIcon(session)}
-        />
+        {isActiveHistorySession ? (
+          <SessionFloatingAgentIcon
+            agentIcon={session.agentIcon}
+            faviconDataUrl={session.faviconDataUrl}
+            isFavorite={session.isFavorite}
+            sessionPersistenceName={session.sessionPersistenceName}
+            sessionPersistenceProvider={session.sessionPersistenceProvider}
+            showTerminalIcon={shouldShowTerminalSessionIcon(session)}
+          />
+        ) : null}
         <article
           aria-disabled={!session.isRestorable}
           aria-pressed="false"
@@ -83,12 +87,12 @@ export function SessionHistoryCard({
             Boolean(session.agentIcon) || shouldShowTerminalSessionIcon(session),
           )}
           data-dragging="false"
-          data-focused="false"
-          data-running="false"
+          data-focused={String(Boolean(session.isFocused))}
+          data-running={String(Boolean(session.isRunning))}
           data-search-selected={String(isSearchSelected)}
           data-sidebar-history-id={session.historyId}
           data-restorable={String(session.isRestorable)}
-          data-visible="false"
+          data-visible={String(Boolean(session.isVisible))}
           onAuxClick={(event) => {
             if (event.button !== 1) {
               return;
@@ -123,6 +127,11 @@ export function SessionHistoryCard({
           role={session.isRestorable ? "button" : undefined}
           tabIndex={session.isRestorable ? 0 : -1}
         >
+          {projectLabel ? (
+            <div className="session-history-project-label" aria-hidden="true">
+              {projectLabel}
+            </div>
+          ) : null}
           <button
             aria-label={`Delete ${displayTitle} from previous sessions`}
             className="previous-session-delete-button"
@@ -152,14 +161,30 @@ export function SessionHistoryCard({
           ) : null}
           <SessionCardContent
             aliasHeadingRef={aliasHeadingRef}
+            hideHeaderAgentIcon={true}
             session={displaySession}
             showDebugSessionNumbers={showDebugSessionNumbers}
             showCloseButton={false}
             showHotkeys={showHotkeys}
-            showLastInteractionTime={false}
+            showLastInteractionTime={true}
           />
         </article>
       </div>
     </OverflowTooltipText>
   );
+}
+
+function getSessionHistoryProjectLabel(session: SidebarPreviousSessionItem): string | undefined {
+  const projectName = session.projectName?.trim();
+  if (projectName) {
+    return projectName;
+  }
+
+  const projectPath = session.projectPath?.trim();
+  if (!projectPath) {
+    return undefined;
+  }
+
+  const pathParts = projectPath.split(/[\\/]/u).filter(Boolean);
+  return pathParts[pathParts.length - 1] ?? projectPath;
 }

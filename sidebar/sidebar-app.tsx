@@ -8,7 +8,6 @@ import {
   IconArrowsDiagonalMinimize,
   IconBell,
   IconBellOff,
-  IconArrowsSort,
   IconBookmark,
   IconClock,
   IconCaretRightFilled,
@@ -21,9 +20,9 @@ import {
   IconGridDots,
   IconHelpCircle,
   IconHistory,
+  IconHistoryToggle,
   IconKeyboard,
   IconLayoutSidebar,
-  IconList,
   IconMenu2Filled,
   IconPencil,
   IconPlayerPlay,
@@ -34,7 +33,6 @@ import {
   IconTerminal2,
   IconWorld,
   type TablerIcon,
-  IconListDetailsFilled,
 } from "@tabler/icons-react";
 import {
   useEffect,
@@ -1820,12 +1818,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const topControlOptions = {
     browserAccessSessionId,
     completionBellEnabled,
-    isManualActiveSessionsSort,
     isOverflowMenuOpen,
     isPinnedPromptsOpen,
-    isPreviousSessionsOpen,
     isScratchPadOpen,
-    isSessionSearchOpen,
     sessionPersistenceProvider: settings?.sessionPersistenceProvider,
     onMoveSidebar: moveSidebar,
     onAccessT3FromBrowser: (sessionId: string) => {
@@ -1837,15 +1832,8 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     },
     onOpenHelp: openWorkspaceWelcome,
     onOpenHotkeys: openHotkeys,
-    onOpenSettings: openSidebarSettings,
     onShowRunning: openRunningSessions,
     onTogglePinnedPrompts: togglePinnedPrompts,
-    onTogglePreviousSessions: openPreviousSessions,
-    onToggleSessionSearch: () => {
-      setIsOverflowMenuOpen(false);
-      toggleSessionSearch();
-    },
-    onToggleActiveSessionsSortMode: toggleActiveSessionsSortMode,
     onToggleBell: toggleCompletionBell,
     onToggleMenu: toggleOverflowMenu,
     onToggleScratchPad: openScratchPad,
@@ -2516,7 +2504,7 @@ function SidebarReferenceNewChatNavItem({
   return (
     <div className="reference-sidebar-nav-item">
       <SidebarReferenceNavButton icon={IconPencil} label="New chat" onClick={onCreateChat} />
-      <AppTooltip content="More">
+      <AppTooltip align="end" collisionPadding={4} content="More">
         <button
           aria-controls="sidebar-overflow-menu"
           aria-expanded={isOverflowMenuOpen}
@@ -2569,7 +2557,7 @@ function SidebarReferenceSearchNavItem({
       ) : (
         <div className="reference-sidebar-nav-item">
           <SidebarReferenceNavButton icon={IconSearch} label="Search" onClick={onSearch} />
-          <AppTooltip content="Previous Sessions">
+          <AppTooltip align="end" collisionPadding={4} content="Previous Sessions">
             <button
               aria-label="Previous Sessions"
               className="reference-sidebar-hover-action reference-sidebar-previous-sessions-button"
@@ -2580,7 +2568,13 @@ function SidebarReferenceSearchNavItem({
               }}
               type="button"
             >
-              <IconList aria-hidden="true" size={15} stroke={1.9} />
+              {/*
+               * CDXC:PreviousSessions 2026-05-09-17:49
+               * The Search row's hover action uses IconHistoryToggle so the
+               * affordance reads as opening historical sessions instead of a
+               * generic list.
+               */}
+              <IconHistoryToggle aria-hidden="true" size={15} stroke={1.9} />
             </button>
           </AppTooltip>
         </div>
@@ -2657,7 +2651,18 @@ function SidebarReferenceActionsNavItem({
         />
         <span className="reference-sidebar-nav-label">Actions</span>
       </Button>
-      <AppTooltip content={command ? `Run ${label}` : "No actions configured"}>
+      {/*
+       * CDXC:SidebarTooltips 2026-05-09-17:49
+       * Right-edge hover action tooltips must align their right edge with the
+       * compact icon trigger. Centered placement plus broad collision padding
+       * drifts left in the narrow sidebar and visually disconnects the label
+       * from the hovered target.
+       */}
+      <AppTooltip
+        align="end"
+        collisionPadding={4}
+        content={command ? `Run ${label}` : "No actions configured"}
+      >
         <button
           aria-label={command ? `Run ${label}` : "No actions configured"}
           className="reference-sidebar-hover-action reference-sidebar-action-quick-run"
@@ -3077,10 +3082,6 @@ function OverflowIcon() {
   );
 }
 
-function getActiveSessionsSortMenuLabel(isManualActiveSessionsSort: boolean): string {
-  return isManualActiveSessionsSort ? "Manual Sort" : "Last Activity Sort";
-}
-
 function getScratchPadMenuLabel(isScratchPadOpen: boolean): string {
   return isScratchPadOpen ? "Hide Scratch Pad" : "Scratch Pad";
 }
@@ -3101,24 +3102,17 @@ function getSessionPersistenceProviderMenuLabel(provider: string | undefined): s
 type RenderSidebarTopControlsOptions = {
   browserAccessSessionId?: string;
   completionBellEnabled: boolean;
-  isManualActiveSessionsSort: boolean;
   isOverflowMenuOpen: boolean;
   isPinnedPromptsOpen: boolean;
-  isPreviousSessionsOpen: boolean;
   isScratchPadOpen: boolean;
-  isSessionSearchOpen: boolean;
   sessionPersistenceProvider?: string;
   onAccessT3FromBrowser: (sessionId: string) => void;
   onMoveSidebar: () => void;
   onOpenHelp: () => void;
   onOpenHotkeys: () => void;
-  onOpenSettings: () => void;
   onShowRunning: () => void;
   onTogglePinnedPrompts: () => void;
-  onTogglePreviousSessions: () => void;
-  onToggleSessionSearch: () => void;
   onCycleSessionPersistenceProvider: () => void;
-  onToggleActiveSessionsSortMode: () => void;
   onToggleBell: () => void;
   onToggleMenu: (trigger: HTMLElement) => void;
   onToggleScratchPad: () => void;
@@ -3129,24 +3123,17 @@ type RenderSidebarTopControlsOptions = {
 function renderFloatingOverflowMenu({
   browserAccessSessionId,
   completionBellEnabled,
-  isManualActiveSessionsSort,
   isOverflowMenuOpen,
   isPinnedPromptsOpen,
-  isPreviousSessionsOpen,
   isScratchPadOpen,
-  isSessionSearchOpen,
   sessionPersistenceProvider,
   onAccessT3FromBrowser,
   onMoveSidebar: _onMoveSidebar,
   onOpenHelp,
   onOpenHotkeys,
-  onOpenSettings,
   onShowRunning,
-  onToggleActiveSessionsSortMode,
   onToggleBell,
   onTogglePinnedPrompts,
-  onTogglePreviousSessions,
-  onToggleSessionSearch,
   onCycleSessionPersistenceProvider,
   onToggleMenu,
   onToggleScratchPad,
@@ -3192,41 +3179,20 @@ function renderFloatingOverflowMenu({
               <div className="session-context-menu-group">
                 {/*
                  * CDXC:SidebarMode 2026-05-03-17:34
-                 * Previous sessions, pinned prompts, search, and scratch pad
-                 * are permanent overflow-menu actions in both Combined and
-                 * Separated modes so the compact toolbar controls remain
-                 * reachable from one consistent menu.
+                 * Pinned prompts and scratch pad are permanent overflow-menu
+                 * actions in both Combined and Separated modes so compact
+                 * secondary tools stay reachable from one consistent menu.
                  *
                  * CDXC:Sidebar-overflow-menu 2026-05-04-03:09
                  * The overflow menu order must match the grouped desktop menu:
-                 * primary navigation, session behavior, status/help, then
-                 * Settings as its own final action.
+                 * secondary tools, session behavior, then status/help.
+                 *
+                 * CDXC:Sidebar-overflow-menu 2026-05-09-15:18
+                 * The sidebar hamburger menu is intentionally compact: Search,
+                 * Previous Sessions, Last Activity Sort, and Settings stay out
+                 * of this menu because they are available from primary chrome or
+                 * dedicated settings surfaces.
                  */}
-                <button
-                  aria-checked={isSessionSearchOpen}
-                  className="session-context-menu-item"
-                  onClick={onToggleSessionSearch}
-                  role="menuitemcheckbox"
-                  type="button"
-                >
-                  <IconSearch
-                    aria-hidden="true"
-                    className="session-context-menu-icon"
-                    size={14}
-                    stroke={1.8}
-                  />
-                  Search
-                </button>
-                <button
-                  aria-checked={isPreviousSessionsOpen}
-                  className="session-context-menu-item"
-                  onClick={onTogglePreviousSessions}
-                  role="menuitemcheckbox"
-                  type="button"
-                >
-                  <IconListDetailsFilled aria-hidden="true" className="session-context-menu-icon" size={14} />
-                  Previous Sessions
-                </button>
                 <button
                   aria-checked={isPinnedPromptsOpen}
                   className="session-context-menu-item"
@@ -3303,20 +3269,6 @@ function renderFloatingOverflowMenu({
                   />
                   {getSessionPersistenceProviderMenuLabel(sessionPersistenceProvider)}
                 </button>
-                <button
-                  className="session-context-menu-item"
-                  onClick={onToggleActiveSessionsSortMode}
-                  role="menuitem"
-                  type="button"
-                >
-                  <IconArrowsSort
-                    aria-hidden="true"
-                    className="session-context-menu-icon"
-                    size={14}
-                    stroke={1.8}
-                  />
-                  {getActiveSessionsSortMenuLabel(isManualActiveSessionsSort)}
-                </button>
               </div>
               <div className="session-context-menu-divider" role="separator" />
               <div className="session-context-menu-group">
@@ -3372,23 +3324,6 @@ function renderFloatingOverflowMenu({
                     stroke={1.8}
                   />
                   Tips &amp; Tricks
-                </button>
-              </div>
-              <div className="session-context-menu-divider" role="separator" />
-              <div className="session-context-menu-group">
-                <button
-                  className="session-context-menu-item"
-                  onClick={onOpenSettings}
-                  role="menuitem"
-                  type="button"
-                >
-                  <IconSettings
-                    aria-hidden="true"
-                    className="session-context-menu-icon"
-                    size={14}
-                    stroke={1.8}
-                  />
-                  Settings
                 </button>
               </div>
             </div>,

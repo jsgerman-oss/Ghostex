@@ -36,7 +36,12 @@ export function createSidebarHudState(
   snapshot: SessionGridSnapshot,
   theme: SidebarTheme = "dark-blue",
   agentManagerZoomPercent = DEFAULT_AGENT_MANAGER_ZOOM_PERCENT,
-  showCloseButtonOnSessionCards = false,
+  /**
+   * CDXC:SidebarSessions 2026-05-09-17:00
+   * Fresh sidebar HUD snapshots default close-on-hover to enabled so normal
+   * project and chat session cards match the Settings default.
+   */
+  showCloseButtonOnSessionCards = true,
   showHotkeysOnSessionCards = false,
   showLastInteractionTimeOnSessionCards = false,
   debuggingMode = false,

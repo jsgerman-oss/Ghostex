@@ -293,14 +293,16 @@ struct SetActiveTerminalSet: Decodable {
 
 struct SetSessionStatusIndicators: Decodable {
   let attentionCount: Int
-  let runningCount: Int
+  let workingCount: Int
   let availableCount: Int
+  let hideFloatingIndicators: Bool
+  let hideMenuBarIndicators: Bool
   let size: NativeSessionStatusIndicatorSize
 }
 
 enum NativeSessionStatusIndicatorStatus: String, Codable {
   case attention
-  case running
+  case working
   case available
 }
 
@@ -516,6 +518,7 @@ enum HostEvent: Encodable {
   case terminalFocused(sessionId: String)
   case terminalBell(sessionId: String)
   case terminalError(sessionId: String, message: String)
+  case projectEditorLoadState(projectId: String, status: String, message: String?)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
   case t3ThreadReady(
     sessionId: String, projectId: String, threadId: String, serverOrigin: String, workspaceRoot: String)
@@ -614,6 +617,17 @@ enum HostEvent: Encodable {
       try container.encode("terminalError", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
       try container.encode(message, forKey: .message)
+    case .projectEditorLoadState(let projectId, let status, let message):
+      /**
+       CDXC:EditorPanes 2026-05-09-17:24
+       Project editor load state is not terminal state. Report it through a
+       project-scoped native event so the sidebar can keep the VS Code row
+       visible while loading and show startup timeout/error diagnostics.
+       */
+      try container.encode("projectEditorLoadState", forKey: .type)
+      try container.encode(projectId, forKey: .projectId)
+      try container.encode(status, forKey: .status)
+      try container.encodeIfPresent(message, forKey: .message)
     case .sessionStatusIndicatorClicked(let status):
       /**
        CDXC:SessionStatusIndicators 2026-05-05-19:47

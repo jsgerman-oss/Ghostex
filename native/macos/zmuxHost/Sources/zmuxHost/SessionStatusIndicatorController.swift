@@ -7,6 +7,8 @@ final class SessionStatusIndicatorController {
 
   private let panel: NSPanel
   private let indicatorView: SessionStatusIndicatorView
+  private let menuBarStatusItem: NSStatusItem
+  private let menuBarClickTarget: MenuBarSessionStatusIndicatorTarget
   private var hasUserPositionedPanel = false
 
   /**
@@ -17,12 +19,24 @@ final class SessionStatusIndicatorController {
    testing.
    */
   init(onClick: @escaping (NativeSessionStatusIndicatorStatus) -> Void) {
+    /**
+     CDXC:SessionStatusIndicators 2026-05-09-15:48
+     The menu bar indicator must be a second presentation of the floating
+     status indicator, not a separate state machine. Reuse the same computed
+     visible items and click callback so green routes to attention sessions and
+     orange routes to working sessions through the existing sidebar selector.
+     */
     let view = SessionStatusIndicatorView(
       onClick: { status in
         NSApp.activate(ignoringOtherApps: true)
         onClick(status)
       },
       onDrag: {})
+    let menuBarStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let menuBarClickTarget = MenuBarSessionStatusIndicatorTarget(onClick: { status in
+      NSApp.activate(ignoringOtherApps: true)
+      onClick(status)
+    })
     let panel = NSPanel(
       contentRect: NSRect(origin: .zero, size: view.preferredSize),
       styleMask: [.borderless, .nonactivatingPanel],
@@ -30,6 +44,8 @@ final class SessionStatusIndicatorController {
       defer: false
     )
     self.indicatorView = view
+    self.menuBarStatusItem = menuBarStatusItem
+    self.menuBarClickTarget = menuBarClickTarget
     self.panel = panel
     panel.backgroundColor = .clear
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -44,13 +60,26 @@ final class SessionStatusIndicatorController {
     view.onDrag = { [weak self] in
       self?.hasUserPositionedPanel = true
     }
+    menuBarStatusItem.isVisible = false
+    if let button = menuBarStatusItem.button {
+      button.action = #selector(MenuBarSessionStatusIndicatorTarget.clicked(_:))
+      button.imagePosition = .imageOnly
+      button.target = menuBarClickTarget
+    }
   }
 
   func apply(_ command: SetSessionStatusIndicators) {
     let items = Self.visibleItems(for: command)
     indicatorView.sizeSetting = command.size
     indicatorView.items = items
-    guard !items.isEmpty else {
+    applyMenuBarItems(items, isHidden: command.hideMenuBarIndicators)
+    /**
+     CDXC:SessionStatusIndicators 2026-05-09-17:30
+     Floating badges are hidden by default while menu bar badges remain visible
+     by default. Apply both visibility settings after computing shared items so
+     hiding a surface never changes counts or click target ordering.
+     */
+    guard !items.isEmpty && !command.hideFloatingIndicators else {
       panel.orderOut(nil)
       return
     }
@@ -69,14 +98,18 @@ final class SessionStatusIndicatorController {
   ) -> [SessionStatusIndicatorItem] {
     /**
      CDXC:SessionStatusIndicators 2026-05-05-19:47
-     Attention and running counts are action states and should suppress the
+     Attention and working counts are action states and should suppress the
      gray available-session total whenever either exists. The gray circle is
      only a quiet all-available summary for the fully idle case.
      CDXC:SessionStatusIndicators 2026-05-08-09:09
      Floating status badges should use darker fills for calmer contrast against
      transparent desktop content after the shared capsule backdrop was removed.
+     CDXC:SessionStatusIndicators 2026-05-09-15:53
+     Orange status badges are `working`, not `running`. Keep native naming
+     aligned with app terminology so `running` remains reserved for live
+     runtime state and the gray live-idle rail count.
      */
-    if command.attentionCount > 0 || command.runningCount > 0 {
+    if command.attentionCount > 0 || command.workingCount > 0 {
       return [
         command.attentionCount > 0
           ? SessionStatusIndicatorItem(
@@ -84,10 +117,10 @@ final class SessionStatusIndicatorController {
             count: command.attentionCount,
             color: NSColor(calibratedRed: 0.10, green: 0.42, blue: 0.16, alpha: 1))
           : nil,
-        command.runningCount > 0
+        command.workingCount > 0
           ? SessionStatusIndicatorItem(
-            status: .running,
-            count: command.runningCount,
+            status: .working,
+            count: command.workingCount,
             color: NSColor(calibratedRed: 0.54, green: 0.27, blue: 0.07, alpha: 1))
           : nil,
       ].compactMap { $0 }
@@ -102,6 +135,29 @@ final class SessionStatusIndicatorController {
         count: command.availableCount,
         color: NSColor(calibratedWhite: 0.25, alpha: 1))
     ]
+  }
+
+  private func applyMenuBarItems(_ items: [SessionStatusIndicatorItem], isHidden: Bool) {
+    guard !items.isEmpty && !isHidden else {
+      menuBarClickTarget.items = []
+      menuBarStatusItem.isVisible = false
+      return
+    }
+
+    let sizeSetting = SessionStatusIndicatorView.menuBarSizeSetting
+    let preferredSize = SessionStatusIndicatorView.preferredSize(
+      for: items,
+      sizeSetting: sizeSetting)
+    menuBarClickTarget.items = items
+    menuBarClickTarget.sizeSetting = sizeSetting
+    menuBarStatusItem.length = preferredSize.width
+    menuBarStatusItem.isVisible = true
+    guard let button = menuBarStatusItem.button else {
+      return
+    }
+    button.image = SessionStatusIndicatorView.image(for: items, sizeSetting: sizeSetting)
+    button.image?.isTemplate = false
+    button.toolTip = "zmux session status"
   }
 
   private static func defaultOrigin(size: NSSize) -> NSPoint {
@@ -179,6 +235,8 @@ private final class SessionStatusIndicatorView: NSView {
     var textBaselineOffset: CGFloat { 0.5 * scale }
   }
 
+  static let menuBarSizeSetting: NativeSessionStatusIndicatorSize = .small
+
   private struct DragState {
     let mouseStart: NSPoint
     let windowOriginStart: NSPoint
@@ -246,8 +304,15 @@ private final class SessionStatusIndicatorView: NSView {
   }
 
   var preferredSize: NSSize {
-    let metrics = currentMetrics
-    let itemWidths = items.map { diameter(for: $0) }
+    Self.preferredSize(for: items, sizeSetting: sizeSetting)
+  }
+
+  static func preferredSize(
+    for items: [SessionStatusIndicatorItem],
+    sizeSetting: NativeSessionStatusIndicatorSize
+  ) -> NSSize {
+    let metrics = currentMetrics(for: sizeSetting)
+    let itemWidths = items.map { diameter(for: $0, sizeSetting: sizeSetting) }
     let contentWidth =
       itemWidths.reduce(0, +)
       + CGFloat(max(items.count - 1, 0)) * metrics.itemGap
@@ -259,6 +324,12 @@ private final class SessionStatusIndicatorView: NSView {
 
   private var currentMetrics: IndicatorMetrics {
     Self.metrics(for: sizeSetting)
+  }
+
+  private static func currentMetrics(
+    for sizeSetting: NativeSessionStatusIndicatorSize
+  ) -> IndicatorMetrics {
+    metrics(for: sizeSetting)
   }
 
   private let onClick: (NativeSessionStatusIndicatorStatus) -> Void
@@ -291,8 +362,28 @@ private final class SessionStatusIndicatorView: NSView {
 
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
-    let metrics = currentMetrics
-    for (item, rect) in itemRects() {
+    Self.draw(items: items, in: bounds, sizeSetting: sizeSetting)
+  }
+
+  static func image(
+    for items: [SessionStatusIndicatorItem],
+    sizeSetting: NativeSessionStatusIndicatorSize
+  ) -> NSImage {
+    let size = preferredSize(for: items, sizeSetting: sizeSetting)
+    let image = NSImage(size: size)
+    image.lockFocus()
+    draw(items: items, in: NSRect(origin: .zero, size: size), sizeSetting: sizeSetting)
+    image.unlockFocus()
+    return image
+  }
+
+  private static func draw(
+    items: [SessionStatusIndicatorItem],
+    in bounds: NSRect,
+    sizeSetting: NativeSessionStatusIndicatorSize
+  ) {
+    let metrics = currentMetrics(for: sizeSetting)
+    for (item, rect) in itemRects(items: items, bounds: bounds, sizeSetting: sizeSetting) {
       drawBadge(item, in: rect, metrics: metrics)
 
       let label = NSAttributedString(
@@ -306,7 +397,7 @@ private final class SessionStatusIndicatorView: NSView {
     }
   }
 
-  private func drawBadge(
+  private static func drawBadge(
     _ item: SessionStatusIndicatorItem,
     in rect: NSRect,
     metrics: IndicatorMetrics
@@ -349,7 +440,7 @@ private final class SessionStatusIndicatorView: NSView {
       angle: -90)
   }
 
-  private func textAttributes(metrics: IndicatorMetrics) -> [NSAttributedString.Key: Any] {
+  private static func textAttributes(metrics: IndicatorMetrics) -> [NSAttributedString.Key: Any] {
     let shadow = NSShadow()
     shadow.shadowBlurRadius = 2 * metrics.scale
     shadow.shadowColor = NSColor.black.withAlphaComponent(0.58)
@@ -410,19 +501,37 @@ private final class SessionStatusIndicatorView: NSView {
   }
 
   private func status(at point: NSPoint) -> NativeSessionStatusIndicatorStatus? {
-    itemRects().first { _, rect in rect.contains(point) }?.0.status
+    Self.status(at: point, in: bounds, items: items, sizeSetting: sizeSetting)
+  }
+
+  static func status(
+    at point: NSPoint,
+    in bounds: NSRect,
+    items: [SessionStatusIndicatorItem],
+    sizeSetting: NativeSessionStatusIndicatorSize
+  ) -> NativeSessionStatusIndicatorStatus? {
+    itemRects(items: items, bounds: bounds, sizeSetting: sizeSetting)
+      .first { _, rect in rect.contains(point) }?.0.status
   }
 
   private func itemRects() -> [(SessionStatusIndicatorItem, NSRect)] {
-    let metrics = currentMetrics
+    Self.itemRects(items: items, bounds: bounds, sizeSetting: sizeSetting)
+  }
+
+  private static func itemRects(
+    items: [SessionStatusIndicatorItem],
+    bounds: NSRect,
+    sizeSetting: NativeSessionStatusIndicatorSize
+  ) -> [(SessionStatusIndicatorItem, NSRect)] {
+    let metrics = currentMetrics(for: sizeSetting)
     let centerY = bounds.midY
-    let itemWidths = items.map { diameter(for: $0) }
+    let itemWidths = items.map { diameter(for: $0, sizeSetting: sizeSetting) }
     let groupWidth =
       itemWidths.reduce(0, +)
       + CGFloat(max(items.count - 1, 0)) * metrics.itemGap
     var x = (bounds.width - groupWidth) / 2
     return items.map { item in
-      let diameter = diameter(for: item)
+      let diameter = diameter(for: item, sizeSetting: sizeSetting)
       let rect = NSRect(
         x: x,
         y: centerY - diameter / 2,
@@ -434,10 +543,47 @@ private final class SessionStatusIndicatorView: NSView {
   }
 
   private func diameter(for item: SessionStatusIndicatorItem) -> CGFloat {
-    let metrics = currentMetrics
+    Self.diameter(for: item, sizeSetting: sizeSetting)
+  }
+
+  private static func diameter(
+    for item: SessionStatusIndicatorItem,
+    sizeSetting: NativeSessionStatusIndicatorSize
+  ) -> CGFloat {
+    let metrics = currentMetrics(for: sizeSetting)
     let label = NSAttributedString(
       string: "\(item.count)",
       attributes: [.font: metrics.countFont])
     return max(metrics.circleDiameter, ceil(label.size().width + metrics.minimumTextPadding))
+  }
+}
+
+@MainActor
+private final class MenuBarSessionStatusIndicatorTarget: NSObject {
+  var items: [SessionStatusIndicatorItem] = []
+  var sizeSetting: NativeSessionStatusIndicatorSize = SessionStatusIndicatorView.menuBarSizeSetting
+  private let onClick: (NativeSessionStatusIndicatorStatus) -> Void
+
+  init(onClick: @escaping (NativeSessionStatusIndicatorStatus) -> Void) {
+    self.onClick = onClick
+  }
+
+  @objc func clicked(_ sender: NSStatusBarButton) {
+    guard !items.isEmpty else {
+      return
+    }
+    let point =
+      NSApp.currentEvent.map { sender.convert($0.locationInWindow, from: nil) }
+      ?? NSPoint(x: sender.bounds.midX, y: sender.bounds.midY)
+    guard
+      let status = SessionStatusIndicatorView.status(
+        at: point,
+        in: sender.bounds,
+        items: items,
+        sizeSetting: sizeSetting)
+    else {
+      return
+    }
+    onClick(status)
   }
 }

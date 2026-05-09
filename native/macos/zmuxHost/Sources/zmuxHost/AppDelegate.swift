@@ -834,9 +834,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
   private func handleSessionStatusIndicatorClick(_ status: NativeSessionStatusIndicatorStatus) {
     /**
      CDXC:SessionStatusIndicators 2026-05-05-19:47
-     Clicking a floating status circle should raise zmux and ask the sidebar to
+     Clicking a status indicator badge should raise zmux and ask the sidebar to
      choose the live matching session. Keep click routing on the typed native
      host event bus so AppKit chrome and webview/sidebar state stay decoupled.
+     CDXC:SessionStatusIndicators 2026-05-09-17:30
+     Floating and menu bar badges intentionally share this event so visibility
+     settings do not fork green attention or orange working navigation behavior.
      */
     let event = HostEvent.sessionStatusIndicatorClicked(status: status)
     window?.makeKeyAndOrderFront(nil)

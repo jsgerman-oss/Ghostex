@@ -45,6 +45,59 @@
   opacity: revert-layer;
 }
 
+/* CDXC:UnifiedSettings 2026-05-09-17:01: The unified Settings modal should
+   use the sidebar reference button radius across cards and controls, with the
+   modal surface pinned to #0e0e0e so Settings, Agents, Actions, and Hotkeys
+   read as one product surface. */
+.zmux-settings-shadcn {
+  --background: #0e0e0e;
+  --card: #0e0e0e;
+  --popover: #0e0e0e;
+  --radius: 7px;
+  --settings-control-radius: 7px;
+}
+
+.zmux-settings-shadcn[data-slot="dialog-content"] {
+  background-color: #0e0e0e !important;
+  border-radius: var(--settings-control-radius) !important;
+}
+
+.zmux-settings-shadcn [data-slot="button"],
+.zmux-settings-shadcn [data-slot="card"],
+.zmux-settings-shadcn [data-slot="empty"],
+.zmux-settings-shadcn [data-slot="input"],
+.zmux-settings-shadcn [data-slot="select-content"],
+.zmux-settings-shadcn [data-slot="select-item"],
+.zmux-settings-shadcn [data-slot="select-trigger"],
+.zmux-settings-shadcn [data-slot="tabs-list"],
+.zmux-settings-shadcn [data-slot="tabs-trigger"],
+.zmux-settings-shadcn [data-slot="textarea"],
+.zmux-settings-shadcn .settings-management-edit-button,
+.zmux-settings-shadcn .settings-management-icon,
+.zmux-settings-shadcn .settings-management-row,
+.zmux-settings-shadcn .settings-section-title-pill {
+  border-radius: var(--settings-control-radius) !important;
+}
+
+.zmux-settings-shadcn .settings-section-with-actions {
+  padding-top: 2.75rem;
+}
+
+.zmux-settings-shadcn .settings-section-header-actions {
+  align-items: center;
+  background: #0e0e0e;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  max-width: calc(100% - 9rem);
+  padding: 0 0.25rem;
+  position: absolute;
+  right: 1rem;
+  top: -1.125rem;
+  z-index: 1;
+}
+
 /* CDXC:SettingsModifiedState 2026-05-07-19:44: Modified settings use a small
    gray IconAsterisk to the left of the label. Absolute positioning keeps the
    marker from changing label layout or pushing controls around, and the 3px
@@ -81,9 +134,8 @@
    the text and clipping labels like "Sidebar". */
 .zmux-settings-shadcn .settings-section-title-pill {
   align-items: center !important;
-  background: var(--card) !important;
+  background: #0e0e0e !important;
   border: 1px solid var(--border) !important;
-  border-radius: 999px !important;
   display: inline-flex !important;
   gap: 0 !important;
   left: 1rem !important;

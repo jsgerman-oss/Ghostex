@@ -10,9 +10,11 @@ import type { SidebarSessionActivityState } from "./session-grid-contract";
 const CLAUDE_CODE_IDLE_MARKERS = ["✳", "*"] as const;
 /**
  * CDXC:Claude-session-status 2026-04-25-08:29
- * Claude Code terminal titles drive zmux running/done indicators. Claude uses
- * braille glyphs such as `⠐` while running; keep star-glyph support scoped here
+ * Claude Code terminal titles drive zmux working/done indicators. Claude uses
+ * braille glyphs such as `⠐` while working; keep star-glyph support scoped here
  * for title variants while `✳` remains the idle/done marker.
+ * CDXC:Terminology 2026-05-09-15:53
+ * Use working for agent work status. Reserve running for live runtime state.
  */
 const CLAUDE_CODE_WORKING_MARKERS = [
   "⠐",

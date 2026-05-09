@@ -140,9 +140,17 @@ export type SidebarSessionGroup = {
      */
     editor: {
       diffStats: SidebarProjectDiffStats;
+      /**
+       * CDXC:EditorPanes 2026-05-09-17:24
+       * Project editor rows represent attempted/running editor surfaces, not
+       * only focused panes. Carry load status so the sidebar can keep the row
+       * visible through startup failures and show timeout diagnostics.
+       */
+      errorMessage?: string;
       isOpen: boolean;
       isSleeping: boolean;
       projectId: string;
+      status: "idle" | "opening" | "running" | "error";
     };
     theme?: SidebarTheme;
     themeColor?: string;
@@ -384,6 +392,28 @@ export type SidebarShowT3BrowserAccessMessage = {
   type: "showT3BrowserAccess";
 };
 
+export type SidebarZmuxFolderStat = {
+  name: string;
+  path: string;
+  sizeBytes: number;
+};
+
+/**
+ * CDXC:SettingsStorage 2026-05-09-15:25
+ * Settings exposes ~/.zmux disk usage only after the user scrolls to the
+ * bottom of the modal. The native sidebar sends per-folder byte counts back as
+ * a sidebar message so the full-window modal can render stats without owning
+ * filesystem access or accepting client-provided paths.
+ */
+export type SidebarZmuxFolderStatsMessage = {
+  errorMessage?: string;
+  folderPath: string;
+  folders: SidebarZmuxFolderStat[];
+  generatedAt: string;
+  totalBytes: number;
+  type: "zmuxFolderStats";
+};
+
 /**
  * CDXC:AppModals 2026-04-28-16:18
  * User-input flows must not use VS Code input boxes, quick picks, or modal
@@ -418,6 +448,7 @@ export type ExtensionToSidebarMessage =
   | SidebarDaemonSessionsStateMessage
   | SidebarPromptGitCommitMessage
   | SidebarShowT3BrowserAccessMessage
+  | SidebarZmuxFolderStatsMessage
   | SidebarShowSessionRenameModalMessage
   | SidebarShowFindPreviousSessionModalMessage
   | SidebarShowT3ThreadIdModalMessage;
@@ -425,6 +456,14 @@ export type ExtensionToSidebarMessage =
 export type SidebarToExtensionMessage =
   | {
       type: "openSettings";
+    }
+  | {
+      /**
+       * CDXC:SettingsStorage 2026-05-09-15:25
+       * The settings modal can request ~/.zmux folder stats lazily, but native
+       * resolves the folder path itself and never trusts a path from React.
+       */
+      type: "requestZmuxFolderStats" | "openZmuxFolder";
     }
   | {
       settings: zmuxSettings;
@@ -576,10 +615,10 @@ export type SidebarToExtensionMessage =
       sessionId: string;
       title: string;
       /**
-       * CDXC:SessionNaming 2026-05-08-10:54
+       * CDXC:SessionNaming 2026-05-09-17:25
        * Generate Title reuses renameSession with the saved 1st user message,
        * but must force controller-side title generation even when that message
-       * is shorter than the paste-summary threshold.
+       * is shorter than the rename modal's 70-character Generate Name threshold.
        */
       shouldGenerateTitle?: boolean;
     }

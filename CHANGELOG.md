@@ -34,7 +34,7 @@ metadata describe the same shipped behavior. -->
 - Added Pi as a supported agent option with icon assets, tests, and agent configuration UI wiring.
 - Improved sidebar group, session-card, search, modal, and scroll styling to better match the reference layout.
 - Improved native editor pane handling, pane resize routing, T3 diagnostics, and accessibility-permission driven controls.
-- Improved floating session status indicators with refined drawing, attention/running visual treatment, and additional settings support.
+- Improved floating session status indicators with refined drawing, attention/working visual treatment, and additional settings support.
 - Improved session title, activity, rename, and first-prompt metadata handling so loading and restored-title states are more reliable.
 
 ## 1.4.10 - 2026-05-08
@@ -90,7 +90,7 @@ metadata describe the same shipped behavior. -->
 - Added persistent terminal session providers so terminal metadata, restore inputs, and provider state can survive app restarts.
 - Added Chromium CEF native browser support with vendored CEF build wiring, persistent browser storage, and cookie flushing on app termination.
 - Added shared Ghostty settings so terminal configuration can be reused across the native host and sidebar settings surfaces.
-- Added native floating session status indicators for running, attention, and available session counts, including click-to-focus routing back into the workspace.
+- Added native floating session status indicators for working, attention, and available session counts, including click-to-focus routing back into the workspace.
 - Added a Configure Actions modal with readable action rows plus create, edit, and delete flows for sidebar project actions.
 - Added Previous Sessions restore for archived terminal session records so restored sessions keep agent identity, first-message metadata, title provenance, favorites, and resume inputs.
 - Filtered placeholder Previous Sessions entries so default titles such as `Terminal Session` and `Codex Session` are not saved as low-signal history cards.

@@ -326,7 +326,7 @@ describe("sidebar HUD state", () => {
     });
     expect(hud.createSessionOnSidebarDoubleClick).toBe(false);
     expect(hud.renameSessionOnDoubleClick).toBe(false);
-    expect(hud.showCloseButtonOnSessionCards).toBe(false);
+    expect(hud.showCloseButtonOnSessionCards).toBe(true);
     expect(hud.showHotkeysOnSessionCards).toBe(false);
     expect(hud.showLastInteractionTimeOnSessionCards).toBe(true);
     expect(hud.activeSessionsSortMode).toBe("lastActivity");

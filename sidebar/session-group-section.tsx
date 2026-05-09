@@ -10,18 +10,17 @@ import {
   IconFolderOpen,
   IconMessageCircle,
   IconMoon,
-  IconPalette,
   IconPencil,
   IconPlayerPlay,
   IconPlus,
   IconRefresh,
   IconSettings,
-  IconSquareNumber1Filled,
-  IconSquareNumber2Filled,
-  IconSquareNumber3Filled,
-  IconSquareNumber4Filled,
-  IconSquareNumber6Filled,
-  IconSquareNumber9Filled,
+  IconSquareNumber1,
+  IconSquareNumber2,
+  IconSquareNumber3,
+  IconSquareNumber4,
+  IconSquareNumber6,
+  IconSquareNumber9,
   IconTerminal2,
   IconTrash,
   IconWorld,
@@ -92,6 +91,7 @@ const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
 const TOUCH_GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
+type ProjectEditorButtonStatus = "idle" | "opening" | "running" | "error";
 const PROJECT_CONTEXT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: SidebarTheme }> = [
   { label: "Dark Gray", value: "plain-dark" },
   { label: "Dark Green", value: "dark-green" },
@@ -104,14 +104,20 @@ const PROJECT_CONTEXT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: Sideb
   { label: "Light Pink", value: "light-pink" },
   { label: "Light Orange", value: "light-orange" },
 ];
+/**
+ * CDXC:SidebarGroups 2026-05-09-17:15
+ * Split-count header buttons must use outline number-square icons so the
+ * compact project controls match the neighboring outline browser/editor
+ * actions instead of reading as filled selected-state buttons.
+ */
 const SPLIT_COUNT_ICONS = {
-  1: IconSquareNumber1Filled,
-  2: IconSquareNumber2Filled,
-  3: IconSquareNumber3Filled,
-  4: IconSquareNumber4Filled,
-  6: IconSquareNumber6Filled,
-  9: IconSquareNumber9Filled,
-} satisfies Record<VisibleSessionCount, typeof IconSquareNumber1Filled>;
+  1: IconSquareNumber1,
+  2: IconSquareNumber2,
+  3: IconSquareNumber3,
+  4: IconSquareNumber4,
+  6: IconSquareNumber6,
+  9: IconSquareNumber9,
+} satisfies Record<VisibleSessionCount, typeof IconSquareNumber1>;
 
 function getAnchoredSessionStatusStyle(sessionId: string): CSSProperties {
   return {
@@ -230,11 +236,87 @@ export function shouldFocusGroupOnHeaderActivation({
 
 export function formatProjectEditorButtonLabel(stats: SidebarProjectDiffStats): string {
   /**
-   * CDXC:EditorPanes 2026-05-08-12:23
-   * Project editor diff labels use the terse sidebar format requested for the
-   * header button: file count, additions, and deletions separated by pipes.
+   * CDXC:EditorPanes 2026-05-09-15:39
+   * Project editor diff labels must identify the code pane before the
+   * git-related counts, then keep the terse file/add/remove pipe summary for
+   * screen readers and non-visual callers.
    */
-  return `${stats.files} | +${stats.additions} | -${stats.deletions}`;
+  return `Code ${stats.files} | +${stats.additions} | -${stats.deletions}`;
+}
+
+function formatProjectEditorStatusLabel(
+  stats: SidebarProjectDiffStats,
+  status: ProjectEditorButtonStatus,
+  errorMessage: string | undefined,
+): string {
+  if (status === "opening") {
+    return "Code opening";
+  }
+  if (status === "error") {
+    return `Code error: ${errorMessage ?? "VS Code failed to load."}`;
+  }
+  return formatProjectEditorButtonLabel(stats);
+}
+
+function ProjectEditorDiffLabel({
+  errorMessage,
+  stats,
+  status,
+}: {
+  errorMessage?: string;
+  stats: SidebarProjectDiffStats;
+  status: ProjectEditorButtonStatus;
+}) {
+  /**
+   * CDXC:EditorPanes 2026-05-09-15:39
+   * Visible code-pane diff counts use pastel semantic colors: blue for files,
+   * green for added lines, and red for removed lines, while preserving the
+   * compact sidebar label requested for the project editor row.
+   *
+   * CDXC:EditorPanes 2026-05-09-17:24
+   * Startup and crash states stay in the same session-card row instead of
+   * disappearing. Opening/error labels make the row clickable for retry and
+   * expose startup diagnostics after the native ten-second timeout.
+   */
+  if (status === "opening") {
+    return <span className="project-editor-status-label project-editor-status-opening">Code opening</span>;
+  }
+  if (status === "error") {
+    return (
+      <span className="project-editor-status-label project-editor-status-error">
+        <span className="project-editor-status-prefix">Code error</span>
+        {errorMessage ? (
+          <>
+            <span aria-hidden="true" className="project-editor-diff-divider">
+              |
+            </span>
+            <span className="project-editor-status-message">{errorMessage}</span>
+          </>
+        ) : null}
+      </span>
+    );
+  }
+  return (
+    <span className="project-editor-diff-label">
+      <span className="project-editor-diff-prefix">Code</span>
+      <span aria-hidden="true" className="project-editor-diff-divider">
+        |
+      </span>
+      <span className="project-editor-diff-files">{stats.files}</span>
+      <span aria-hidden="true" className="project-editor-diff-divider">
+        |
+      </span>
+      <span className="project-editor-diff-stat project-editor-diff-stat-additions">
+        +{stats.additions}
+      </span>
+      <span aria-hidden="true" className="project-editor-diff-divider">
+        |
+      </span>
+      <span className="project-editor-diff-stat project-editor-diff-stat-deletions">
+        -{stats.deletions}
+      </span>
+    </span>
+  );
 }
 
 export type SessionGroupSectionProps = {
@@ -441,6 +523,31 @@ export function SessionGroupSection({
     Boolean(projectContext) &&
     isCollapsed &&
     (sessionSummary.attentionCount > 0 || sessionSummary.workingCount > 0);
+  const projectEditorStatus: ProjectEditorButtonStatus =
+    projectContext?.editor.status ??
+    (projectContext?.editor.isOpen === true ? "running" : "idle");
+  const displayedProjectEditorStatus: ProjectEditorButtonStatus =
+    projectEditorStatus === "idle" && isProjectEditorButtonShown ? "opening" : projectEditorStatus;
+  const projectEditorErrorMessage =
+    projectContext?.editor.errorMessage?.trim() || "VS Code failed to load.";
+  const projectEditorActivity =
+    displayedProjectEditorStatus === "error"
+      ? "attention"
+      : displayedProjectEditorStatus === "opening"
+        ? "working"
+        : "idle";
+  const projectEditorLifecycleState =
+    displayedProjectEditorStatus === "error" ? "error" : "running";
+  const projectEditorTooltipContent =
+    displayedProjectEditorStatus === "error" ? projectEditorErrorMessage : "Open Code Editor";
+  /**
+   * CDXC:EditorPanes 2026-05-09-17:24
+   * The project editor row represents a started editor attempt. Keep it visible
+   * while VS Code is opening, after load errors, and when running even if the
+   * focused workspace surface switches to a terminal.
+   */
+  const shouldShowProjectEditorRow =
+    displayedProjectEditorStatus !== "idle" || isProjectEditorButtonShown;
   const collapsedSummaryLabel = getCollapsedSummaryLabel(collapsedIndicatorActivity);
   const sessionsRegionId = `${group.groupId}-sessions`;
   const groupHeaderAnchorStyle = {
@@ -1354,6 +1461,7 @@ export function SessionGroupSection({
                           <button
                             aria-label={`Open code editor for ${group.title}`}
                             className="group-add-button group-code-editor-button"
+                            data-open={String(projectContext.editor.isOpen)}
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -1511,7 +1619,7 @@ export function SessionGroupSection({
                 />
               </>
             ) : null}
-            {projectContext && isProjectEditorButtonShown ? (
+            {projectContext && shouldShowProjectEditorRow ? (
               /*
                * CDXC:EditorPanes 2026-05-08-12:46
                * After reveal, the code editor affordance should read like the
@@ -1528,13 +1636,13 @@ export function SessionGroupSection({
                * The revealed VS Code row belongs inside the project group list
                * before normal sessions and has its own close control.
                */
-              <AppTooltip content="Open Code Editor">
+              <AppTooltip content={projectEditorTooltipContent}>
                 <div
                   className="session-frame project-editor-session-frame"
-                  data-activity="idle"
+                  data-activity={projectEditorActivity}
                   data-focused={String(projectContext.editor.isOpen)}
                   data-group-connector={String(showSessionGroupConnector)}
-                  data-lifecycle-state="running"
+                  data-lifecycle-state={projectEditorLifecycleState}
                   data-running="true"
                   data-sleeping={String(projectContext.editor.isSleeping)}
                   data-visible={String(projectContext.editor.isOpen)}
@@ -1544,12 +1652,15 @@ export function SessionGroupSection({
                     className="session-floating-agent-tabler-icon project-editor-floating-icon"
                   />
                   <article
-                    aria-label={`Open code editor for ${group.title}: ${formatProjectEditorButtonLabel(
+                    aria-label={`Open code editor for ${group.title}: ${formatProjectEditorStatusLabel(
                       projectContext.editor.diffStats,
+                      displayedProjectEditorStatus,
+                      projectEditorErrorMessage,
                     )}`}
                     aria-pressed={projectContext.editor.isOpen}
                     className="session project-editor-card-button"
                     data-focused={String(projectContext.editor.isOpen)}
+                    data-load-status={displayedProjectEditorStatus}
                     data-placement="session"
                     data-sleeping={String(projectContext.editor.isSleeping)}
                     data-visible={String(projectContext.editor.isOpen)}
@@ -1572,16 +1683,14 @@ export function SessionGroupSection({
                     role="button"
                     tabIndex={0}
                   >
-                    <div className="session-head">
+                    <div className="session-head project-editor-session-head">
                       <div className="session-alias-heading">
-                        {formatProjectEditorButtonLabel(projectContext.editor.diffStats)}
+                        <ProjectEditorDiffLabel
+                          errorMessage={projectEditorErrorMessage}
+                          stats={projectContext.editor.diffStats}
+                          status={displayedProjectEditorStatus}
+                        />
                       </div>
-                      <div
-                        aria-hidden="true"
-                        className="session-head-trailing"
-                        data-default-trailing-display="icon"
-                        data-hover-trailing-display="icon"
-                      />
                     </div>
                   </article>
                   <button
@@ -1594,7 +1703,7 @@ export function SessionGroupSection({
                     }}
                     type="button"
                   >
-                    ×
+                    <IconX aria-hidden="true" size={14} stroke={1.8} />
                   </button>
                 </div>
               </AppTooltip>
@@ -1795,33 +1904,20 @@ export function SessionGroupSection({
                     {/*
                      * CDXC:SidebarMode 2026-05-03-19:19
                      * Combined mode hides the workspace rail, so the project
-                     * group's right-click menu owns Theme, Copy Path, and
-                     * Close Project actions for that project.
+                     * group's right-click menu owns Copy Path and Close
+                     * Project actions for that project.
                      * Close Project parks the project in Recent Projects
                      * without deleting saved sessions.
                      * CDXC:WorkspaceActions 2026-05-04-08:22
                      * Project cards must also expose direct "open project"
                      * commands: Finder reveals the workspace folder, while
                      * the IDE action targets the selected IDE from Settings.
+                     * CDXC:WorkspaceTheme 2026-05-09-17:18
+                     * The Theme submenu is unused in the UI for now because
+                     * theming has been disabled in this app for now. Keep the
+                     * theme implementation available for a later re-enable, but
+                     * hide its project right-click menu entry point.
                      */}
-                    <button
-                      className="session-context-menu-item"
-                      onClick={openProjectThemeMenu}
-                      role="menuitem"
-                      type="button"
-                    >
-                      <IconPalette
-                        aria-hidden="true"
-                        className="session-context-menu-icon"
-                        size={14}
-                      />
-                      Theme
-                      <IconChevronRight
-                        aria-hidden="true"
-                        className="session-context-menu-trailing-icon"
-                        size={14}
-                      />
-                    </button>
                     <button
                       className="session-context-menu-item"
                       onClick={copyProjectPath}

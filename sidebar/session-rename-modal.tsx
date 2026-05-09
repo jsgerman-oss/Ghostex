@@ -1,5 +1,3 @@
-import { IconX } from "@tabler/icons-react";
-import { createPortal } from "react-dom";
 import {
   useEffect,
   useId,
@@ -8,8 +6,19 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Textarea } from "@/components/ui/textarea";
 
-const SESSION_RENAME_PASTE_SUMMARY_THRESHOLD = 50;
+const SESSION_RENAME_GENERATE_NAME_THRESHOLD = 70;
 
 export type SessionRenameModalProps = {
   initialTitle: string;
@@ -32,9 +41,8 @@ export function SessionRenameModal({
   onConfirm,
 }: SessionRenameModalProps) {
   const [title, setTitle] = useState(initialTitle);
-  const descriptionId = useId();
-  const inputRef = useRef<HTMLInputElement>(null);
-  const titleId = useId();
+  const inputId = useId();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -53,19 +61,10 @@ export function SessionRenameModal({
       inputRef.current?.focus();
       inputRef.current?.select();
     });
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onCancel();
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
     return () => {
       window.cancelAnimationFrame(animationFrame);
-      document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isOpen, onCancel]);
+  }, [isOpen]);
 
   if (!isOpen) {
     return null;
@@ -73,103 +72,108 @@ export function SessionRenameModal({
 
   const trimmedTitle = title.trim();
   /**
-   * CDXC:SidebarRename 2026-05-08-18:56
+   * CDXC:SidebarRename 2026-05-09-17:25
    * Long pasted rename text must stay in the input so the user can edit or
-   * cancel it. Once the entered text exceeds 50 characters, the submit action
-   * becomes Generate Name and explicitly asks the controller to summarize from
-   * that text instead of applying it verbatim.
+   * cancel it. Once the entered text is longer than 70 characters, Enter
+   * becomes a Generate Name submit and explicitly asks the controller to
+   * summarize from that text instead of applying it verbatim.
    */
-  const shouldGenerateTitle = trimmedTitle.length > SESSION_RENAME_PASTE_SUMMARY_THRESHOLD;
-  const confirmTitle = (nextTitle: string) => {
+  const canGenerateTitle = trimmedTitle.length > SESSION_RENAME_GENERATE_NAME_THRESHOLD;
+  const confirmTitle = (nextTitle: string, shouldGenerateTitle: boolean) => {
     const normalizedTitle = nextTitle.trim();
     if (!normalizedTitle) {
       return;
     }
 
-    onConfirm(
-      normalizedTitle,
-      normalizedTitle.length > SESSION_RENAME_PASTE_SUMMARY_THRESHOLD
-        ? { shouldGenerateTitle: true }
-        : undefined,
-    );
+    onConfirm(normalizedTitle, shouldGenerateTitle ? { shouldGenerateTitle: true } : undefined);
   };
 
   const submitRename = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    confirmTitle(title);
+    confirmTitle(title, canGenerateTitle);
   };
 
-  const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+  const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.nativeEvent.isComposing) {
+      return;
+    }
+    if (event.shiftKey) {
       return;
     }
 
     /**
-     * CDXC:SidebarRename 2026-04-28-15:34
+     * CDXC:SidebarRename 2026-05-09-17:25
      * The native full-window modal host must preserve the reference rename
-     * behavior where typing a session name and pressing Enter immediately
-     * submits the existing renameSession command path. Bind Enter at the input
-     * so WKWebView form-submission differences cannot leave the modal inert.
+     * behavior where pressing Enter immediately submits the existing
+     * renameSession command path. Bind Enter at the input so WKWebView
+     * form-submission differences cannot leave the modal inert, but route
+     * entered text longer than 70 characters to Generate Name.
      */
     event.preventDefault();
     event.stopPropagation();
-    confirmTitle(event.currentTarget.value);
+    confirmTitle(event.currentTarget.value, canGenerateTitle);
   };
 
-  return createPortal(
-    <div className="confirm-modal-root scroll-mask-y" role="presentation">
-      <button className="confirm-modal-backdrop" onClick={onCancel} type="button" />
-      <form
-        aria-describedby={descriptionId}
-        aria-labelledby={titleId}
-        aria-modal="true"
-        className="confirm-modal session-rename-modal scroll-mask-y"
-        onSubmit={submitRename}
-        role="dialog"
+  return (
+    <Dialog
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onCancel();
+        }
+      }}
+      open={isOpen}
+    >
+      <DialogContent
+        className="command-config-modal-shadcn session-rename-modal-shadcn font-sans"
+        showCloseButton={false}
       >
-        <button
-          aria-label="Close rename session modal"
-          className="confirm-modal-close-button"
-          onClick={onCancel}
-          type="button"
-        >
-          <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
-        </button>
-        <div className="confirm-modal-header confirm-modal-header-with-close">
-          <div className="confirm-modal-title" id={titleId}>
-            Rename Session
-          </div>
-          <div className="confirm-modal-description" id={descriptionId}>
-            Text over 50 characters will generate a name.
-          </div>
-        </div>
-        <label className="command-config-field">
-          <span className="command-config-label">Session Name</span>
-          <input
-            autoFocus
-            className="group-title-input command-config-input"
-            onChange={(event) => setTitle(event.currentTarget.value)}
-            onKeyDown={handleInputKeyDown}
-            ref={inputRef}
-            value={title}
-          />
-        </label>
-        <div className="confirm-modal-actions">
-          <button className="secondary confirm-modal-button" onClick={onCancel} type="button">
-            Cancel
-          </button>
-          <button
-            className={`primary confirm-modal-button${
-              shouldGenerateTitle ? " session-rename-generate-button" : ""
-            }`}
-            disabled={!trimmedTitle}
-            type="submit"
-          >
-            {shouldGenerateTitle ? "Generate Name" : "Rename"}
-          </button>
-        </div>
-      </form>
-    </div>,
-    document.body,
+        <form className="session-rename-form" onSubmit={submitRename}>
+          <DialogHeader>
+            <DialogTitle className="text-xl">Rename Session</DialogTitle>
+            <DialogDescription>
+              Rename directly or generate a name from longer text.
+            </DialogDescription>
+          </DialogHeader>
+          <FieldGroup className="session-rename-field-group">
+            <Field>
+              <FieldLabel htmlFor={inputId}>Session name</FieldLabel>
+              <Textarea
+                aria-label="Session Name"
+                autoFocus
+                className="session-rename-textarea"
+                id={inputId}
+                onChange={(event) => setTitle(event.currentTarget.value)}
+                onKeyDown={handleInputKeyDown}
+                ref={inputRef}
+                value={title}
+              />
+              <FieldDescription>
+                {trimmedTitle.length} / {SESSION_RENAME_GENERATE_NAME_THRESHOLD} characters
+              </FieldDescription>
+            </Field>
+          </FieldGroup>
+          <DialogFooter>
+            <Button onClick={onCancel} type="button" variant="outline">
+              Cancel
+            </Button>
+            <Button
+              disabled={!trimmedTitle}
+              onClick={() => confirmTitle(title, false)}
+              type="button"
+              variant="secondary"
+            >
+              Rename
+            </Button>
+            <Button
+              disabled={!canGenerateTitle}
+              onClick={() => confirmTitle(title, true)}
+              type="button"
+            >
+              Generate Name
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

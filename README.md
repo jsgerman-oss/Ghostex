@@ -35,7 +35,7 @@ brew install --cask maddada/tap/zmux
 - Search any thread title from all Agent CLIs.
 - I have a feature to prompt to find any past thread in your history with just a few keywords. Very useful if you want to continue with an agent that already has context about a complex feature.
 - Reopening the app always resumes your terminal sessions how they were.
-- Floating running & done indicators and sound for almsot all agent clis.
+- Floating working & done indicators and sound for almsot all agent clis.
 - Embedded browser is chromium not webkit.
 - Includes light VScode embed for editing files quickly.
 - Embeds T3code for people who prefer GUIs.

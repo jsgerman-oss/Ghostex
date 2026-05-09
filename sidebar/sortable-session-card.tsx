@@ -1087,6 +1087,12 @@ export function SortableSessionCard({
             style={sessionAnchorStyle}
             tabIndex={0}
           >
+            {/**
+             * CDXC:SidebarSessions 2026-05-09-16:55
+             * Project and chat session cards route the close-on-hover setting
+             * through the same shared row across terminal, agent, T3 Code, and
+             * browser panes.
+             */}
             <SessionCardContent
               aliasHeadingRef={aliasHeadingRef}
               onClose={() => requestClose("programmatic")}
