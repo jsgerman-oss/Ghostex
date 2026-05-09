@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.2.0 - 2026-05-09
+
+<!-- CDXC:Distribution 2026-05-09-22:23: Release notes for 2.2.0 must describe
+the unified settings surface, menu bar status indicators, editor-row
+diagnostics, dev startup split, and README updates shipped after v2.1 so
+GitHub, Sparkle, and Homebrew metadata stay aligned. -->
+
+- Added a unified tabbed Settings dialog that brings Settings, Agents, Actions, and Hotkeys into one configuration surface.
+- Added lazy `~/.zmux` folder usage stats and an Open zmux Folder action from Settings.
+- Added menu bar session status indicators while making floating desktop indicators independently optional.
+- Renamed orange agent status from running to working so agent activity is distinct from live runtime state.
+- Improved project editor rows so opening and error states stay visible, show diagnostics, and can be retried instead of disappearing.
+- Improved session card and Previous Sessions row chrome with hover close controls, clearer last-active placement, and refined editor diff labels.
+- Added a separate `start:dev` app startup path for `zmux-dev` so normal `bun s` keeps release-like behavior.
+- Updated README presentation and feature wording for the current Zmux positioning.
+
 ## 2.1.0 - 2026-05-08
 
 <!-- CDXC:Distribution 2026-05-08-18:04: Release notes for 2.1.0 must keep

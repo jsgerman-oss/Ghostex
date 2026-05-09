@@ -31,6 +31,9 @@ brew install --cask maddada/tap/zmux
 
 ## Best features:
 
+- Version 2.2 adds a unified Settings dialog with tabs for Settings, Agents, Actions, and Hotkeys.
+- Version 2.2 adds menu bar session status indicators, optional floating desktop indicators, and clearer working/done terminology for agent activity.
+- Version 2.2 improves embedded VSCode rows with opening/error diagnostics and retry visibility.
 - Sessions stay I can sleep unused terminals to save ram (restores to that session).
 - Search any thread title from all Agent CLIs.
 - I have a feature to prompt to find any past thread in your history with just a few keywords. Very useful if you want to continue with an agent that already has context about a complex feature.
