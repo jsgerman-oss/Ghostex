@@ -22,11 +22,16 @@ const ignoredDirectoryNames = new Set([
 
 /**
  * CDXC:T3Code 2026-05-02-01:05
- * `bun run start` launches the native app against the local t3code-embed fork,
- * so the fork's server and web assets must be current before zmux opens a T3
- * pane. Fingerprint source files outside generated output and rebuild only
- * when that fingerprint changes, preserving fast no-op starts while preventing
- * stale web/server contract mismatches.
+ * `bun run start` and its short alias `bun s` launch the normal native app
+ * against the local t3code-embed fork, so the fork's server and web assets must
+ * be current before zmux opens a T3 pane. Fingerprint source files outside
+ * generated output and rebuild only when that fingerprint changes, preserving
+ * fast no-op starts while preventing stale web/server contract mismatches.
+ *
+ * CDXC:StartCommand 2026-05-09-16:53
+ * `bun s` must be the normal app start path, not the dev app variant. Keep
+ * variant-specific launching on explicit dev commands so the short command
+ * preserves its existing release-like behavior.
  */
 async function main() {
   const t3Root = resolveT3CodeRoot();

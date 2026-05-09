@@ -209,6 +209,7 @@ export ZMUX_BUNDLE_ID
 export ZMUX_HOME_DIRECTORY_NAME
 export ZMUX_SHARED_HOME_DIRECTORY_NAME
 export CEF_ROOT
+mkdir -p "$SCRIPT_DIR/build"
 xcodegen generate --spec "$SCRIPT_DIR/project.yml"
 
 STALE_APP_PATH="$DERIVED_DATA/Build/Products/$CONFIGURATION/$ZMUX_APP_NAME.app"

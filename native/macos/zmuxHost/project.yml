@@ -43,7 +43,10 @@ targets:
     platform: macOS
     productName: ${ZMUX_APP_NAME}
     info:
-      path: AppInfo.plist
+      # CDXC:DevAppFlavor 2026-05-09-16:24: `bun s` generates zmux-dev
+      # bundle metadata. Write variant-specific Info.plists into the ignored
+      # native build directory so dev starts do not dirty tracked source files.
+      path: build/AppInfo-${ZMUX_APP_NAME}.plist
       properties:
         CFBundleShortVersionString: ${MARKETING_VERSION}
         # CDXC:DevAppFlavor 2026-04-28-03:13: Custom storage keys must be
