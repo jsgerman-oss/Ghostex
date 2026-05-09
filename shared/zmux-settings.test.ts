@@ -138,10 +138,27 @@ describe("normalizezmuxSettings", () => {
      * Medium is the default because it is 50% of the current approved X-Large
      * indicator size. Settings must expose all named scale points so users can
      * return to the larger visual or choose smaller indicators later.
+     * CDXC:SessionStatusIndicators 2026-05-09-17:30
+     * Floating status badges are hidden by default now that the menu bar
+     * indicator is the default always-visible chrome. Keep menu bar visibility
+     * independent so users can hide either surface without affecting counts.
      */
+    expect(DEFAULT_zmux_SETTINGS.hideFloatingSessionStatusIndicators).toBe(true);
+    expect(DEFAULT_zmux_SETTINGS.hideMenuBarSessionStatusIndicators).toBe(false);
     expect(DEFAULT_zmux_SETTINGS.sessionStatusIndicatorSize).toBe("medium");
     expect(normalizezmuxSettings({})).toMatchObject({
+      hideFloatingSessionStatusIndicators: true,
+      hideMenuBarSessionStatusIndicators: false,
       sessionStatusIndicatorSize: "medium",
+    });
+    expect(
+      normalizezmuxSettings({
+        hideFloatingSessionStatusIndicators: false,
+        hideMenuBarSessionStatusIndicators: true,
+      }),
+    ).toMatchObject({
+      hideFloatingSessionStatusIndicators: false,
+      hideMenuBarSessionStatusIndicators: true,
     });
     expect(normalizezmuxSettings({ sessionStatusIndicatorSize: "x-large" })).toMatchObject({
       sessionStatusIndicatorSize: "x-large",

@@ -7,7 +7,9 @@ import {
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 
 type AppTooltipProps = ComponentProps<typeof Tooltip> & {
+  align?: ComponentProps<typeof TooltipContent>["align"];
   children: ReactElement;
+  collisionPadding?: ComponentProps<typeof TooltipContent>["collisionPadding"];
   content: ReactNode;
   contentClassName?: string;
   sideOffset?: number;
@@ -21,7 +23,9 @@ type AppTooltipProps = ComponentProps<typeof Tooltip> & {
  * supplies that context.
  */
 export function AppTooltip({
+  align,
   children,
+  collisionPadding,
   content,
   contentClassName,
   sideOffset = 8,
@@ -34,7 +38,12 @@ export function AppTooltip({
   return (
     <Tooltip {...tooltipProps}>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent className={contentClassName} sideOffset={sideOffset}>
+      <TooltipContent
+        align={align}
+        className={contentClassName}
+        collisionPadding={collisionPadding}
+        sideOffset={sideOffset}
+      >
         {content}
       </TooltipContent>
     </Tooltip>

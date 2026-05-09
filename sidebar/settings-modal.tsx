@@ -1,9 +1,17 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { DragDropProvider, type DragDropEventHandlers } from "@dnd-kit/react";
+import { isSortableOperation, useSortable } from "@dnd-kit/react/sortable";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import Fuse from "fuse.js";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import {
   Field,
   FieldContent,
@@ -25,17 +33,30 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { IconAsterisk } from "@tabler/icons-react";
+import {
+  IconAsterisk,
+  IconCodeDots,
+  IconFolderOpen,
+  IconGripVertical,
+  IconPencil,
+  IconPlus,
+  IconTerminal2,
+  IconTrash,
+  IconWorld,
+} from "@tabler/icons-react";
 import { COMPLETION_SOUND_OPTIONS, type CompletionSoundSetting } from "../shared/completion-sound";
 import { ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES } from "../shared/ghostty-config-actions";
 import {
   resolveSidebarTheme,
+  type SidebarZmuxFolderStatsMessage,
   type SidebarTheme,
   type SidebarThemeVariant,
 } from "../shared/session-grid-contract";
@@ -65,6 +86,36 @@ import {
   type ZedOverlayTargetApp,
   type zmuxSettings,
 } from "../shared/zmux-settings";
+import {
+  DEFAULT_SIDEBAR_AGENTS,
+  getDefaultSidebarAgentByIcon,
+  type SidebarAgentButton,
+  type SidebarAgentIcon,
+} from "../shared/sidebar-agents";
+import {
+  DEFAULT_BROWSER_ACTION_URL,
+  type SidebarActionType,
+  type SidebarCommandButton,
+} from "../shared/sidebar-commands";
+import {
+  DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
+  normalizeSidebarCommandIconColor,
+  type SidebarCommandIcon,
+} from "../shared/sidebar-command-icons";
+import {
+  DEFAULT_zmux_HOTKEYS,
+  ZMUX_HOTKEY_DEFINITIONS,
+  normalizeHotkeyText,
+  normalizezmuxHotkeySettings,
+  type zmuxHotkeyActionId,
+  type zmuxHotkeySettings,
+} from "../shared/zmux-hotkeys";
+import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
+import { SidebarCommandIconGlyph, SIDEBAR_COMMAND_ICON_OPTIONS } from "./sidebar-command-icon";
+import { useSidebarStore } from "./sidebar-store";
+import type { AgentConfigDraft } from "./agent-config-modal";
+import type { CommandConfigDraft } from "./command-config-modal";
+import type { WebviewApi } from "./webview-api";
 
 const NUMERIC_SETTINGS_DEBOUNCE_MS = 180;
 const GHOSTTY_THEME_UNMANAGED_VALUE = "__zmux_ghostty_theme_unmanaged__";
@@ -88,6 +139,8 @@ type SettingModificationProps = {
   onResetToDefault?: () => void;
 };
 
+export type SettingsModalTab = "settings" | "agents" | "actions" | "hotkeys";
+
 export type GhosttySettingsAction =
   | "applyRecommendedGhosttySettings"
   | "openGhosttyConfigFile"
@@ -96,29 +149,44 @@ export type GhosttySettingsAction =
 
 export type SettingsModalProps = {
   accessibilityPermissionGranted?: boolean;
+  initialTab?: SettingsModalTab;
   isOpen: boolean;
   onChange: (settings: zmuxSettings) => void;
   onClose: () => void;
   onOpenAccessibilityPreferences?: () => void;
+  onOpenZmuxFolder?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
+  onRequestZmuxFolderStats?: () => void;
   settings?: zmuxSettings;
   theme?: SidebarTheme;
+  vscode?: WebviewApi;
+  zmuxFolderStats?: SidebarZmuxFolderStatsMessage;
+  zmuxFolderStatsLoading?: boolean;
 };
 
 export function SettingsModal({
   accessibilityPermissionGranted,
+  initialTab = "settings",
   isOpen,
   onChange,
   onClose,
   onOpenAccessibilityPreferences,
+  onOpenZmuxFolder,
   onGhosttySettingsAction,
+  onRequestZmuxFolderStats,
   settings,
   theme = "dark-blue",
+  vscode,
+  zmuxFolderStats,
+  zmuxFolderStatsLoading = false,
 }: SettingsModalProps) {
   const [draft, setDraft] = useState<zmuxSettings>(normalizezmuxSettings(settings));
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<SettingsModalTab>(initialTab);
   const pendingSettingsRef = useRef<zmuxSettings | undefined>(undefined);
   const pendingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const storageSectionRef = useRef<HTMLDivElement>(null);
+  const hasRequestedStorageStatsRef = useRef(false);
   const modalTheme = resolveSidebarTheme(draft.sidebarTheme, getSidebarThemeVariant(theme));
   const isModalDarkTheme = getSidebarThemeVariant(modalTheme) === "dark";
 
@@ -214,6 +282,16 @@ export function SettingsModal({
         title: "Theme",
       },
       {
+        key: "hideFloatingSessionStatusIndicators",
+        subtitle: "Hide the desktop floating session status badges.",
+        title: "Hide Floating Session Indicators",
+      },
+      {
+        key: "hideMenuBarSessionStatusIndicators",
+        subtitle: "Hide the menu bar session status badges.",
+        title: "Hide Menu Bar Session Indicators",
+      },
+      {
         key: "sessionStatusIndicatorSize",
         options: SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
         subtitle: "Scale the floating session status indicator.",
@@ -267,6 +345,18 @@ export function SettingsModal({
         options: COMPLETION_SOUND_OPTIONS,
         subtitle: "Sound for action completions.",
         title: "Action Completion Sound",
+      },
+    ]),
+    storage: getSettingsSectionSearch(settingsSearchQuery, "Storage", [
+      {
+        key: "zmuxFolderStats",
+        options: [
+          { label: "Open zmux folder", value: "openZmuxFolder" },
+          { label: "Folder sizes", value: "folderSizes" },
+          { label: "Disk usage", value: "diskUsage" },
+        ],
+        subtitle: "Show ~/.zmux folder sizes and open the folder in Finder.",
+        title: "zmux folder",
       },
     ]),
     terminal: getSettingsSectionSearch(settingsSearchQuery, "Terminal", [
@@ -420,10 +510,58 @@ export function SettingsModal({
 
   useEffect(() => {
     if (!isOpen) {
+      hasRequestedStorageStatsRef.current = false;
       return;
     }
     setDraft(normalizezmuxSettings(settings));
-  }, [isOpen, settings]);
+    setActiveTab(initialTab);
+  }, [initialTab, isOpen, settings]);
+
+  useEffect(() => {
+    if (
+      !isOpen ||
+      activeTab !== "settings" ||
+      zmuxFolderStats ||
+      zmuxFolderStatsLoading ||
+      !onRequestZmuxFolderStats ||
+      hasRequestedStorageStatsRef.current
+    ) {
+      return;
+    }
+    const sectionElement = storageSectionRef.current;
+    if (!sectionElement) {
+      return;
+    }
+
+    const requestStats = () => {
+      hasRequestedStorageStatsRef.current = true;
+      onRequestZmuxFolderStats();
+    };
+
+    /**
+     * CDXC:SettingsStorage 2026-05-09-15:25
+     * Folder-size scans can touch many files, so Settings waits until the
+     * bottom storage card is near the viewport before asking native for stats.
+     */
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          requestStats();
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "96px 0px" },
+    );
+    observer.observe(sectionElement);
+    return () => observer.disconnect();
+  }, [
+    activeTab,
+    isOpen,
+    onRequestZmuxFolderStats,
+    settingsSearchQuery,
+    zmuxFolderStats,
+    zmuxFolderStatsLoading,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -566,27 +704,52 @@ export function SettingsModal({
     >
       <DialogContent
         className={cn(
-          "zmux-settings-shadcn max-h-[min(700px,calc(100vh-2rem))] gap-0 overflow-hidden p-0 font-sans sm:max-w-xl",
+          "zmux-settings-shadcn flex h-[min(700px,calc(100vh-2rem))] max-h-[min(700px,calc(100vh-2rem))] flex-col gap-0 overflow-hidden p-0 font-sans sm:max-w-xl",
           isModalDarkTheme && "dark",
         )}
         data-sidebar-theme={modalTheme}
       >
         <TooltipProvider delayDuration={300}>
+          <Tabs
+            className="flex min-h-0 flex-1 flex-col"
+            onValueChange={(value) => setActiveTab(value as SettingsModalTab)}
+            value={activeTab}
+          >
           <DialogHeader className="px-5 pt-5 pb-3">
             <DialogTitle className="text-xl">Settings</DialogTitle>
-            <Input
-              aria-label="Search settings"
-              className="mt-3 h-10 px-3 text-sm"
-              onChange={(event) => setSettingsSearchQuery(event.currentTarget.value)}
-              placeholder="Search settings"
-              value={settingsSearchQuery}
-            />
+            {/*
+             * CDXC:UnifiedSettings 2026-05-09-15:30
+             * Settings is the single configuration surface. Agents, Actions,
+             * and Hotkeys are tabs in this shadcn dialog instead of separate
+             * configure modals, while the original Settings content remains the
+             * first tab and keeps its search behavior.
+             */}
+            <TabsList className="mt-3 w-full">
+              <TabsTrigger value="settings">Settings</TabsTrigger>
+              <TabsTrigger value="agents">Agents</TabsTrigger>
+              <TabsTrigger value="actions">Actions</TabsTrigger>
+              <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
+            </TabsList>
+            {activeTab === "settings" ? (
+              <Input
+                aria-label="Search settings"
+                className="mt-3 h-10 px-3 text-sm"
+                onChange={(event) => setSettingsSearchQuery(event.currentTarget.value)}
+                placeholder="Search settings"
+                value={settingsSearchQuery}
+              />
+            ) : null}
           </DialogHeader>
 
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="settings">
           {/* CDXC:Settings 2026-04-26-10:43: The settings dialog lives inside a
               narrow sidebar webview, so the Radix scroll area needs an explicit
               height instead of letting Dialog crop an auto-height viewport. */}
-          <ScrollArea className="h-[min(560px,calc(100vh-9rem))] min-h-0">
+          {/* CDXC:UnifiedSettings 2026-05-09-17:08: The Settings dialog is now a
+              tabbed surface with variable header height. The active tab owns
+              the remaining vertical space so the dialog never clips the bottom
+              of a fixed-height scroll area. */}
+          <ScrollArea className="h-full min-h-0">
           <div className="flex flex-col gap-6 px-5 pb-5">
             {accessibilityPermissionGranted === false ? (
               /**
@@ -633,6 +796,27 @@ export function SettingsModal({
               <StaticNoteField
                 description="Dark Gray is active. Themes are coming back soon."
                 label="Theme"
+              />
+              ) : null}
+              {/* CDXC:SessionStatusIndicators 2026-05-09-17:30: Settings must
+                  expose independent hide toggles because floating badges are
+                  hidden by default while menu bar badges are shown by default. */}
+              {shouldShowSetting(settingsSearch.sidebar, "hideFloatingSessionStatusIndicators") ? (
+              <ToggleField
+                checked={draft.hideFloatingSessionStatusIndicators}
+                description="Hide the desktop floating session status badges."
+                label="Hide Floating Session Indicators"
+                {...getSettingModificationProps("hideFloatingSessionStatusIndicators")}
+                onChange={(checked) => updateDraft("hideFloatingSessionStatusIndicators", checked)}
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.sidebar, "hideMenuBarSessionStatusIndicators") ? (
+              <ToggleField
+                checked={draft.hideMenuBarSessionStatusIndicators}
+                description="Hide the menu bar session status badges."
+                label="Hide Menu Bar Session Indicators"
+                {...getSettingModificationProps("hideMenuBarSessionStatusIndicators")}
+                onChange={(checked) => updateDraft("hideMenuBarSessionStatusIndicators", checked)}
               />
               ) : null}
               {/* CDXC:SessionStatusIndicators 2026-05-07-18:20: The floating
@@ -1234,6 +1418,16 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
+            {shouldShowSettingsSection(settingsSearch.storage) ? (
+              <div ref={storageSectionRef}>
+                <ZmuxFolderStatsSection
+                  isLoading={zmuxFolderStatsLoading}
+                  onOpenZmuxFolder={onOpenZmuxFolder}
+                  stats={zmuxFolderStats}
+                />
+              </div>
+            ) : null}
+
             {!hasVisibleSettings ? (
               <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
                 No settings match your search.
@@ -1253,10 +1447,1228 @@ export function SettingsModal({
             </div>
           </div>
           </ScrollArea>
+          </TabsContent>
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="agents">
+            <AgentsSettingsTab vscode={vscode} />
+          </TabsContent>
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="actions">
+            <ActionsSettingsTab vscode={vscode} />
+          </TabsContent>
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="hotkeys">
+            <HotkeysSettingsTab
+              hotkeys={draft.hotkeys}
+              onChange={(hotkeys) => updateDraft("hotkeys", hotkeys)}
+            />
+          </TabsContent>
+          </Tabs>
         </TooltipProvider>
       </DialogContent>
     </Dialog>
   );
+}
+
+type SettingsAgentEditorState = {
+  draft: AgentConfigDraft;
+};
+
+type SettingsCommandEditorState = {
+  draft: CommandConfigDraft;
+  lockedActionType?: SidebarActionType;
+};
+
+type SettingsAgentDragData = {
+  agentId: string;
+  kind: "settings-agent";
+};
+
+type SettingsCommandDragData = {
+  commandId: string;
+  kind: "settings-command";
+};
+
+function AgentsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
+  const agents = useSidebarStore((state) => state.hud.agents);
+  const [editorState, setEditorState] = useState<SettingsAgentEditorState>();
+  const [draftAgentIds, setDraftAgentIds] = useState<string[]>();
+
+  useEffect(() => {
+    setDraftAgentIds((previousDraft) => reconcileDraftIds(previousDraft, agents, "agentId"));
+  }, [agents]);
+
+  const orderedAgents = useMemo(() => {
+    const agentById = new Map(agents.map((agent) => [agent.agentId, agent]));
+    const orderedAgentIds = draftAgentIds
+      ? mergeIds(
+          draftAgentIds,
+          agents.map((agent) => agent.agentId),
+        )
+      : agents.map((agent) => agent.agentId);
+
+    return orderedAgentIds
+      .map((agentId) => agentById.get(agentId))
+      .filter((agent): agent is SidebarAgentButton => agent !== undefined);
+  }, [agents, draftAgentIds]);
+
+  const saveAgent = (draft: AgentConfigDraft) => {
+    if (!vscode) {
+      return;
+    }
+    vscode.postMessage({
+      agentId: draft.agentId,
+      command: draft.command,
+      icon: draft.icon,
+      name: draft.name,
+      type: "saveSidebarAgent",
+    });
+    setEditorState(undefined);
+  };
+
+  const deleteAgent = (agent: SidebarAgentButton) => {
+    vscode?.postMessage({
+      agentId: agent.agentId,
+      type: "deleteSidebarAgent",
+    });
+  };
+
+  const handleDragEnd = ((event) => {
+    if (event.canceled || !isSortableOperation(event.operation)) {
+      return;
+    }
+
+    const { source, target } = event.operation;
+    const sourceData = source ? getSettingsAgentDragData(source) : undefined;
+    if (!source || !sourceData) {
+      return;
+    }
+
+    const targetIndex =
+      "index" in source && typeof source.index === "number" ? source.index : target?.index;
+    if (targetIndex == null || source.initialIndex === targetIndex) {
+      return;
+    }
+
+    const nextAgentIds = moveId(
+      orderedAgents.map((agent) => agent.agentId),
+      source.initialIndex,
+      targetIndex,
+    );
+    setDraftAgentIds(nextAgentIds);
+    vscode?.postMessage({
+      agentIds: nextAgentIds,
+      requestId: createSettingsReorderRequestId("agents"),
+      type: "syncSidebarAgentOrder",
+    });
+  }) satisfies DragDropEventHandlers["onDragEnd"];
+
+  return (
+    <ScrollArea className="h-full min-h-0">
+      <div className="flex flex-col gap-6 px-5 pb-5">
+        <SettingsSection
+          actions={
+            !editorState ? (
+              <Button
+                disabled={!vscode}
+                onClick={() => setEditorState({ draft: { command: "", name: "" } })}
+                type="button"
+                variant="outline"
+              >
+                <IconPlus aria-hidden="true" data-icon="inline-start" />
+                Add Agent
+              </Button>
+            ) : null
+          }
+          title={editorState ? "Agent" : "Agents"}
+        >
+          {editorState ? (
+            <AgentSettingsEditor
+              draft={editorState.draft}
+              onCancel={() => setEditorState(undefined)}
+              onSave={saveAgent}
+            />
+          ) : (
+            <>
+              {orderedAgents.length > 0 ? (
+                <DragDropProvider onDragEnd={handleDragEnd}>
+                  <div className="flex flex-col gap-2">
+                    {orderedAgents.map((agent, index) => (
+                      <SettingsAgentRow
+                        agent={agent}
+                        index={index}
+                        key={agent.agentId}
+                        onDelete={() => deleteAgent(agent)}
+                        onEdit={() =>
+                          setEditorState({
+                            draft: {
+                              agentId: agent.agentId,
+                              command: agent.command ?? "",
+                              icon: agent.icon,
+                              name: agent.name,
+                            },
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                </DragDropProvider>
+              ) : (
+                <Empty className="border border-border bg-muted/20">
+                  <EmptyHeader>
+                    <EmptyTitle>No agents configured</EmptyTitle>
+                    <EmptyDescription>Add an agent launcher to start new sessions.</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              )}
+            </>
+          )}
+        </SettingsSection>
+      </div>
+    </ScrollArea>
+  );
+}
+
+function SettingsAgentRow({
+  agent,
+  index,
+  onDelete,
+  onEdit,
+}: {
+  agent: SidebarAgentButton;
+  index: number;
+  onDelete: () => void;
+  onEdit: () => void;
+}) {
+  const sortable = useSortable({
+    accept: "settings-agent",
+    data: createSettingsAgentDragData(agent.agentId),
+    group: "settings-agents",
+    id: agent.agentId,
+    index,
+    type: "settings-agent",
+  });
+
+  const setRowRef = (element: HTMLDivElement | null) => {
+    sortable.ref(element);
+    sortable.sourceRef(element);
+  };
+
+  return (
+    <div
+      className="settings-management-row flex items-center gap-2 border border-border bg-muted/20 p-2"
+      data-dragging={String(Boolean(sortable.isDragging))}
+      ref={setRowRef}
+    >
+      <Button
+        aria-label={`Reorder ${agent.name}`}
+        ref={sortable.handleRef}
+        size="icon-sm"
+        type="button"
+        variant="ghost"
+      >
+        <IconGripVertical aria-hidden="true" />
+      </Button>
+      <Button
+        className="settings-management-edit-button h-auto min-w-0 flex-1 justify-start gap-3 px-2 py-2 text-left"
+        onClick={onEdit}
+        type="button"
+        variant="ghost"
+      >
+        <span
+          aria-hidden="true"
+          className="settings-management-icon flex size-9 shrink-0 items-center justify-center bg-muted"
+        >
+          <SettingsAgentIcon agent={agent} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-foreground">{agent.name}</span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {agent.command?.trim() || "Not configured"}
+          </span>
+        </span>
+      </Button>
+      <Button aria-label={`Edit ${agent.name}`} onClick={onEdit} size="icon-sm" type="button" variant="ghost">
+        <IconPencil aria-hidden="true" />
+      </Button>
+      <Button
+        aria-label={`Delete ${agent.name}`}
+        onClick={onDelete}
+        size="icon-sm"
+        type="button"
+        variant="destructive"
+      >
+        <IconTrash aria-hidden="true" />
+      </Button>
+    </div>
+  );
+}
+
+function AgentSettingsEditor({
+  draft,
+  onCancel,
+  onSave,
+}: {
+  draft: AgentConfigDraft;
+  onCancel: () => void;
+  onSave: (draft: AgentConfigDraft) => void;
+}) {
+  const [command, setCommand] = useState(draft.command);
+  const [icon, setIcon] = useState<SidebarAgentIcon | "custom">(draft.icon ?? "custom");
+  const [name, setName] = useState(draft.name);
+  const agentTypeId = useId();
+  const commandId = useId();
+  const nameId = useId();
+  const isSaveDisabled = name.trim().length === 0 || command.trim().length === 0;
+
+  const updateAgentType = (value: string) => {
+    const nextType = value as SidebarAgentIcon | "custom";
+    const previousDefaultAgent = getDefaultSidebarAgentByIcon(
+      icon === "custom" ? undefined : icon,
+    );
+    const nextDefaultAgent = getDefaultSidebarAgentByIcon(
+      nextType === "custom" ? undefined : nextType,
+    );
+
+    setIcon(nextType);
+    if (!nextDefaultAgent) {
+      return;
+    }
+
+    setName((previousName) =>
+      previousName.trim().length === 0 || previousName === previousDefaultAgent?.name
+        ? nextDefaultAgent.name
+        : previousName,
+    );
+    setCommand((previousCommand) =>
+      previousCommand.trim().length === 0 || previousCommand === previousDefaultAgent?.command
+        ? nextDefaultAgent.command
+        : previousCommand,
+    );
+  };
+
+  return (
+    <>
+      <Field className="gap-2.5">
+        <FieldContent>
+          <FieldLabel className="text-sm" htmlFor={agentTypeId}>
+            Agent type
+          </FieldLabel>
+        </FieldContent>
+        <Select onValueChange={updateAgentType} value={icon}>
+          <SelectTrigger className="h-10 w-full px-3 text-sm" id={agentTypeId}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="custom">Custom</SelectItem>
+              {DEFAULT_SIDEBAR_AGENTS.map((agent) => (
+                <SelectItem key={agent.agentId} value={agent.icon}>
+                  {agent.name}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field className="gap-2.5">
+        <FieldContent>
+          <FieldLabel className="text-sm" htmlFor={nameId}>
+            Name
+          </FieldLabel>
+        </FieldContent>
+        <Input
+          autoFocus
+          className="h-10 px-3 text-sm"
+          id={nameId}
+          onChange={(event) => setName(event.currentTarget.value)}
+          placeholder="Codex"
+          value={name}
+        />
+      </Field>
+      <Field className="gap-2.5">
+        <FieldContent>
+          <FieldLabel className="text-sm" htmlFor={commandId}>
+            Command
+          </FieldLabel>
+        </FieldContent>
+        <Textarea
+          id={commandId}
+          onChange={(event) => setCommand(event.currentTarget.value)}
+          placeholder="codex"
+          rows={3}
+          value={command}
+        />
+      </Field>
+      <div className="flex justify-end gap-3">
+        <Button onClick={onCancel} type="button" variant="outline">
+          Cancel
+        </Button>
+        <Button
+          disabled={isSaveDisabled}
+          onClick={() =>
+            onSave({
+              agentId: draft.agentId,
+              command: command.trim(),
+              icon: icon === "custom" ? undefined : icon,
+              name: name.trim(),
+            })
+          }
+          type="button"
+        >
+          Save
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function ActionsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
+  const commands = useSidebarStore((state) => state.hud.commands);
+  const [editorState, setEditorState] = useState<SettingsCommandEditorState>();
+  const [draftCommandIds, setDraftCommandIds] = useState<string[]>();
+
+  useEffect(() => {
+    setDraftCommandIds((previousDraft) => reconcileDraftIds(previousDraft, commands, "commandId"));
+  }, [commands]);
+
+  const orderedCommands = useMemo(() => {
+    const commandById = new Map(commands.map((command) => [command.commandId, command]));
+    const orderedCommandIds = draftCommandIds
+      ? mergeIds(
+          draftCommandIds,
+          commands.map((command) => command.commandId),
+        )
+      : commands.map((command) => command.commandId);
+
+    return orderedCommandIds
+      .map((commandId) => commandById.get(commandId))
+      .filter((command): command is SidebarCommandButton => command !== undefined);
+  }, [commands, draftCommandIds]);
+
+  const openCreateCommandEditor = (actionType: SidebarActionType) => {
+    setEditorState({
+      draft: createSettingsCommandDraft(actionType),
+      lockedActionType: actionType,
+    });
+  };
+
+  const saveCommand = (draft: CommandConfigDraft) => {
+    if (!vscode) {
+      return;
+    }
+    vscode.postMessage({
+      actionType: draft.actionType,
+      closeTerminalOnExit: draft.closeTerminalOnExit,
+      command: draft.command,
+      commandId: draft.commandId,
+      icon: draft.icon,
+      iconColor: draft.iconColor,
+      isGlobal: draft.isGlobal,
+      name: draft.name,
+      playCompletionSound: draft.playCompletionSound,
+      type: "saveSidebarCommand",
+      url: draft.url,
+    });
+    setEditorState(undefined);
+  };
+
+  const deleteCommand = (draft: CommandConfigDraft) => {
+    if (!draft.commandId) {
+      setEditorState(undefined);
+      return;
+    }
+    vscode?.postMessage({
+      commandId: draft.commandId,
+      type: "deleteSidebarCommand",
+    });
+    setEditorState(undefined);
+  };
+
+  const handleDragEnd = ((event) => {
+    if (event.canceled || !isSortableOperation(event.operation)) {
+      return;
+    }
+
+    const { source, target } = event.operation;
+    const sourceData = source ? getSettingsCommandDragData(source) : undefined;
+    if (!source || !sourceData) {
+      return;
+    }
+
+    const targetIndex =
+      "index" in source && typeof source.index === "number" ? source.index : target?.index;
+    if (targetIndex == null || source.initialIndex === targetIndex) {
+      return;
+    }
+
+    const nextCommandIds = moveId(
+      orderedCommands.map((command) => command.commandId),
+      source.initialIndex,
+      targetIndex,
+    );
+    setDraftCommandIds(nextCommandIds);
+    vscode?.postMessage({
+      commandIds: nextCommandIds,
+      requestId: createSettingsReorderRequestId("actions"),
+      type: "syncSidebarCommandOrder",
+    });
+  }) satisfies DragDropEventHandlers["onDragEnd"];
+
+  return (
+    <ScrollArea className="h-full min-h-0">
+      <div className="flex flex-col gap-6 px-5 pb-5">
+        <SettingsSection
+          actions={
+            !editorState ? (
+              <>
+                <Button
+                  disabled={!vscode}
+                  onClick={() => openCreateCommandEditor("terminal")}
+                  type="button"
+                  variant="outline"
+                >
+                  <IconPlus aria-hidden="true" data-icon="inline-start" />
+                  Terminal Action
+                </Button>
+                <Button
+                  disabled={!vscode}
+                  onClick={() => openCreateCommandEditor("browser")}
+                  type="button"
+                  variant="outline"
+                >
+                  <IconPlus aria-hidden="true" data-icon="inline-start" />
+                  Browser Action
+                </Button>
+              </>
+            ) : null
+          }
+          title={editorState ? "Action" : "Actions"}
+        >
+          {editorState ? (
+            <ActionSettingsEditor
+              draft={editorState.draft}
+              lockedActionType={editorState.lockedActionType}
+              onCancel={() => setEditorState(undefined)}
+              onDelete={deleteCommand}
+              onSave={saveCommand}
+            />
+          ) : (
+            <>
+              {orderedCommands.length > 0 ? (
+                <DragDropProvider onDragEnd={handleDragEnd}>
+                  <div className="flex flex-col gap-2">
+                    {orderedCommands.map((command, index) => (
+                      <SettingsCommandRow
+                        command={command}
+                        index={index}
+                        key={command.commandId}
+                        onEdit={() =>
+                          setEditorState({
+                            draft: createSettingsCommandDraftFromButton(command),
+                          })
+                        }
+                      />
+                    ))}
+                  </div>
+                </DragDropProvider>
+              ) : (
+                <Empty className="border border-border bg-muted/20">
+                  <EmptyHeader>
+                    <EmptyTitle>No actions configured</EmptyTitle>
+                    <EmptyDescription>Add a terminal or browser action.</EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              )}
+            </>
+          )}
+        </SettingsSection>
+      </div>
+    </ScrollArea>
+  );
+}
+
+function SettingsCommandRow({
+  command,
+  index,
+  onEdit,
+}: {
+  command: SidebarCommandButton;
+  index: number;
+  onEdit: () => void;
+}) {
+  const sortable = useSortable({
+    accept: "settings-command",
+    data: createSettingsCommandDragData(command.commandId),
+    group: "settings-commands",
+    id: command.commandId,
+    index,
+    type: "settings-command",
+  });
+
+  const setRowRef = (element: HTMLDivElement | null) => {
+    sortable.ref(element);
+    sortable.sourceRef(element);
+  };
+
+  return (
+    <div
+      className="settings-management-row flex items-center gap-2 border border-border bg-muted/20 p-2"
+      data-dragging={String(Boolean(sortable.isDragging))}
+      ref={setRowRef}
+    >
+      <Button
+        aria-label={`Reorder ${getActionTitle(command)}`}
+        ref={sortable.handleRef}
+        size="icon-sm"
+        type="button"
+        variant="ghost"
+      >
+        <IconGripVertical aria-hidden="true" />
+      </Button>
+      <Button
+        className="settings-management-edit-button h-auto min-w-0 flex-1 justify-start gap-3 px-2 py-2 text-left"
+        onClick={onEdit}
+        type="button"
+        variant="ghost"
+      >
+        <span
+          aria-hidden="true"
+          className="settings-management-icon flex size-9 shrink-0 items-center justify-center bg-muted"
+        >
+          <SettingsActionIcon command={command} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-foreground">
+            {getActionTitle(command)}
+          </span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {getActionMeta(command)}
+          </span>
+        </span>
+      </Button>
+      <Button aria-label={`Edit ${getActionTitle(command)}`} onClick={onEdit} size="icon-sm" type="button" variant="ghost">
+        <IconPencil aria-hidden="true" />
+      </Button>
+    </div>
+  );
+}
+
+function ActionSettingsEditor({
+  draft,
+  lockedActionType,
+  onCancel,
+  onDelete,
+  onSave,
+}: {
+  draft: CommandConfigDraft;
+  lockedActionType?: SidebarActionType;
+  onCancel: () => void;
+  onDelete: (draft: CommandConfigDraft) => void;
+  onSave: (draft: CommandConfigDraft) => void;
+}) {
+  const [actionType, setActionType] = useState<SidebarActionType>(draft.actionType);
+  const [closeTerminalOnExit, setCloseTerminalOnExit] = useState(draft.closeTerminalOnExit);
+  const [command, setCommand] = useState(draft.command ?? "");
+  const [icon, setIcon] = useState<SidebarCommandIcon | undefined>(draft.icon);
+  const [iconColor, setIconColor] = useState(draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
+  const [iconColorText, setIconColorText] = useState(
+    draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
+  );
+  const [isGlobal, setIsGlobal] = useState(draft.isGlobal === true);
+  const [name, setName] = useState(draft.name);
+  const [playCompletionSound, setPlayCompletionSound] = useState(draft.playCompletionSound);
+  const [url, setUrl] = useState(
+    draft.url ??
+      ((lockedActionType ?? draft.actionType) === "browser" ? DEFAULT_BROWSER_ACTION_URL : ""),
+  );
+  const actionTypeId = useId();
+  const closeTerminalOnExitId = useId();
+  const commandId = useId();
+  const globalId = useId();
+  const iconColorId = useId();
+  const iconColorTextId = useId();
+  const iconId = useId();
+  const nameId = useId();
+  const soundId = useId();
+  const urlId = useId();
+  const isActionTypeLocked = lockedActionType !== undefined;
+  const targetValue = actionType === "browser" ? url.trim() : command.trim();
+  const trimmedName = name.trim();
+  const isSaveDisabled =
+    targetValue.length === 0 || (trimmedName.length === 0 && icon === undefined);
+
+  const commitIconColorText = () => {
+    const normalizedColor = normalizeSidebarCommandIconColor(iconColorText);
+    if (!normalizedColor) {
+      setIconColorText(iconColor);
+      return;
+    }
+    setIconColor(normalizedColor);
+    setIconColorText(normalizedColor);
+  };
+
+  const getDraft = (): CommandConfigDraft => ({
+    actionType,
+    closeTerminalOnExit: actionType === "terminal" ? closeTerminalOnExit : false,
+    command: actionType === "terminal" ? command.trim() : undefined,
+    commandId: draft.commandId,
+    icon,
+    iconColor: icon ? iconColor : undefined,
+    isGlobal,
+    name: trimmedName,
+    playCompletionSound: actionType === "terminal" ? playCompletionSound : false,
+    url: actionType === "browser" ? url.trim() : undefined,
+  });
+
+  return (
+    <>
+      {isActionTypeLocked ? null : (
+        <Field className="gap-2.5">
+          <FieldContent>
+            <FieldLabel className="text-sm" htmlFor={actionTypeId}>
+              Type
+            </FieldLabel>
+          </FieldContent>
+          <Select
+            onValueChange={(value) => {
+              const nextActionType = value === "browser" ? "browser" : "terminal";
+              setActionType(nextActionType);
+              if (nextActionType === "browser" && url.trim().length === 0) {
+                setUrl(DEFAULT_BROWSER_ACTION_URL);
+              }
+            }}
+            value={actionType}
+          >
+            <SelectTrigger className="h-10 w-full px-3 text-sm" id={actionTypeId}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="terminal">Terminal</SelectItem>
+                <SelectItem value="browser">Browser</SelectItem>
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </Field>
+      )}
+      <Field className="gap-2.5">
+        <FieldContent>
+          <FieldLabel className="text-sm" htmlFor={nameId}>
+            Text
+          </FieldLabel>
+        </FieldContent>
+        <Input
+          autoFocus
+          className="h-10 px-3 text-sm"
+          id={nameId}
+          onChange={(event) => setName(event.currentTarget.value)}
+          placeholder={actionType === "browser" ? "Docs" : "Dev"}
+          value={name}
+        />
+      </Field>
+      <Field className="gap-2.5">
+        <FieldContent>
+          <FieldLabel className="text-sm" htmlFor={iconId}>
+            Icon
+          </FieldLabel>
+        </FieldContent>
+        <Select
+          onValueChange={(value) => {
+            setIcon(value === "__none__" ? undefined : (value as SidebarCommandIcon));
+            if (value !== "__none__" && !normalizeSidebarCommandIconColor(iconColorText)) {
+              setIconColor(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
+              setIconColorText(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
+            }
+          }}
+          value={icon ?? "__none__"}
+        >
+          <SelectTrigger className="h-10 w-full px-3 text-sm" id={iconId}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="max-h-72" showScrollButtons={false}>
+            <SelectGroup>
+              <SelectItem value="__none__">No icon</SelectItem>
+              {SIDEBAR_COMMAND_ICON_OPTIONS.map((option) => (
+                <SelectItem key={option.icon} value={option.icon}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </Field>
+      <Field className="gap-2.5" data-disabled={icon === undefined}>
+        <FieldContent>
+          <FieldLabel className="text-sm" htmlFor={iconColorTextId}>
+            Icon Color
+          </FieldLabel>
+        </FieldContent>
+        <div className="grid grid-cols-[2.75rem_minmax(0,1fr)] items-center gap-3">
+          <Input
+            aria-label="Icon color picker"
+            className="h-10 cursor-pointer rounded-xl p-1"
+            disabled={icon === undefined}
+            id={iconColorId}
+            onChange={(event) => {
+              setIconColor(event.currentTarget.value);
+              setIconColorText(event.currentTarget.value);
+            }}
+            type="color"
+            value={iconColor}
+          />
+          <Input
+            disabled={icon === undefined}
+            id={iconColorTextId}
+            className="h-10 px-3 text-sm"
+            onBlur={commitIconColorText}
+            onChange={(event) => setIconColorText(event.currentTarget.value)}
+            placeholder={DEFAULT_SIDEBAR_COMMAND_ICON_COLOR}
+            value={iconColorText}
+          />
+        </div>
+      </Field>
+      {actionType === "browser" ? (
+        <Field className="gap-2.5">
+          <FieldContent>
+            <FieldLabel className="text-sm" htmlFor={urlId}>
+              URL
+            </FieldLabel>
+          </FieldContent>
+          <Textarea
+            id={urlId}
+            onChange={(event) => setUrl(event.currentTarget.value)}
+            placeholder={DEFAULT_BROWSER_ACTION_URL}
+            rows={3}
+            value={url}
+          />
+        </Field>
+      ) : (
+        <>
+          <Field className="gap-2.5">
+            <FieldContent>
+              <FieldLabel className="text-sm" htmlFor={commandId}>
+                Command
+              </FieldLabel>
+            </FieldContent>
+            <Textarea
+              id={commandId}
+              onChange={(event) => setCommand(event.currentTarget.value)}
+              placeholder="vp dev"
+              rows={3}
+              value={command}
+            />
+          </Field>
+          <Field className="items-center justify-between" orientation="horizontal">
+            <FieldContent>
+              <FieldLabel className="text-sm" htmlFor={closeTerminalOnExitId}>
+                Close terminal after the command finishes
+              </FieldLabel>
+            </FieldContent>
+            <Switch
+              checked={closeTerminalOnExit}
+              id={closeTerminalOnExitId}
+              onCheckedChange={setCloseTerminalOnExit}
+            />
+          </Field>
+          <Field className="items-center justify-between" orientation="horizontal">
+            <FieldContent>
+              <FieldLabel className="text-sm" htmlFor={soundId}>
+                Play completion sound
+              </FieldLabel>
+            </FieldContent>
+            <Switch
+              checked={playCompletionSound}
+              id={soundId}
+              onCheckedChange={setPlayCompletionSound}
+            />
+          </Field>
+        </>
+      )}
+      <Field className="items-center justify-between" orientation="horizontal">
+        <FieldContent>
+          <FieldLabel className="text-sm" htmlFor={globalId}>
+            Show this action in every zmux project
+          </FieldLabel>
+        </FieldContent>
+        <Switch checked={isGlobal} id={globalId} onCheckedChange={setIsGlobal} />
+      </Field>
+      <div className="flex justify-end gap-3">
+        {draft.commandId ? (
+          <Button className="mr-auto" onClick={() => onDelete(getDraft())} type="button" variant="destructive">
+            <IconTrash aria-hidden="true" data-icon="inline-start" />
+            Delete
+          </Button>
+        ) : null}
+        <Button onClick={onCancel} type="button" variant="outline">
+          Cancel
+        </Button>
+        <Button disabled={isSaveDisabled} onClick={() => onSave(getDraft())} type="button">
+          Save
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function HotkeysSettingsTab({
+  hotkeys,
+  onChange,
+}: {
+  hotkeys?: zmuxHotkeySettings;
+  onChange: (hotkeys: zmuxHotkeySettings) => void;
+}) {
+  const normalizedHotkeys = normalizezmuxHotkeySettings(hotkeys);
+  const duplicateIds = useMemo(
+    () => getDuplicateHotkeyIds(normalizedHotkeys),
+    [normalizedHotkeys],
+  );
+
+  const updateHotkey = (id: zmuxHotkeyActionId, value: string) => {
+    onChange(
+      normalizezmuxHotkeySettings({
+        ...normalizedHotkeys,
+        [id]: normalizeHotkeyText(value),
+      }),
+    );
+  };
+
+  const resetHotkeys = () => {
+    onChange(normalizezmuxHotkeySettings(DEFAULT_zmux_HOTKEYS));
+  };
+
+  return (
+    <ScrollArea className="h-full min-h-0">
+      <div className="flex flex-col gap-6 px-5 pb-5">
+        <SettingsSection title="Hotkeys">
+          {ZMUX_HOTKEY_DEFINITIONS.map((definition) => {
+            const value = normalizedHotkeys[definition.id] ?? definition.defaultKey;
+            const isDuplicate = duplicateIds.has(definition.id);
+            return (
+              <Field className="gap-2.5" data-invalid={isDuplicate} key={definition.id}>
+                <FieldContent>
+                  <FieldLabel className="text-sm" htmlFor={`hotkey-${definition.id}`}>
+                    {definition.title}
+                  </FieldLabel>
+                  <FieldDescription className="text-sm">{definition.description}</FieldDescription>
+                </FieldContent>
+                <Input
+                  aria-invalid={isDuplicate}
+                  className="h-10 px-3 text-sm"
+                  id={`hotkey-${definition.id}`}
+                  onChange={(event) => updateHotkey(definition.id, event.currentTarget.value)}
+                  value={value}
+                />
+              </Field>
+            );
+          })}
+          <div className="flex justify-end">
+            <Button onClick={resetHotkeys} type="button" variant="outline">
+              Reset Hotkeys
+            </Button>
+          </div>
+        </SettingsSection>
+      </div>
+    </ScrollArea>
+  );
+}
+
+function SettingsAgentIcon({ agent }: { agent: SidebarAgentButton }) {
+  if (agent.icon) {
+    return (
+      <span
+        aria-hidden="true"
+        className="configure-agents-list-agent-icon"
+        style={{
+          backgroundColor: AGENT_LOGO_COLORS[agent.icon],
+          maskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
+          WebkitMaskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
+        }}
+      />
+    );
+  }
+
+  return <IconCodeDots aria-hidden="true" />;
+}
+
+function SettingsActionIcon({ command }: { command: SidebarCommandButton }) {
+  if (command.icon) {
+    return (
+      <SidebarCommandIconGlyph
+        color={command.iconColor}
+        icon={command.icon}
+        stroke={1.8}
+      />
+    );
+  }
+
+  return command.actionType === "browser" ? (
+    <IconWorld aria-hidden="true" />
+  ) : (
+    <IconTerminal2 aria-hidden="true" />
+  );
+}
+
+function getActionTitle(command: SidebarCommandButton): string {
+  const name = command.name.trim();
+  if (name.length > 0) {
+    return name;
+  }
+
+  const target = getActionTarget(command);
+  return target ?? "Untitled Action";
+}
+
+function getActionMeta(command: SidebarCommandButton): string {
+  const target = getActionTarget(command);
+  const typeLabel = command.actionType === "browser" ? "Browser" : "Terminal";
+  if (!target) {
+    return `${typeLabel} - Not configured`;
+  }
+
+  return `${typeLabel} - ${target}`;
+}
+
+function getActionTarget(command: SidebarCommandButton): string | undefined {
+  const target = command.actionType === "browser" ? command.url?.trim() : command.command?.trim();
+  if (!target) {
+    return undefined;
+  }
+
+  return target.split("\n")[0] || undefined;
+}
+
+function createSettingsCommandDraft(actionType: SidebarActionType): CommandConfigDraft {
+  return {
+    actionType,
+    closeTerminalOnExit: false,
+    command: actionType === "terminal" ? "" : undefined,
+    commandId: undefined,
+    icon: undefined,
+    iconColor: undefined,
+    isGlobal: false,
+    name: "",
+    playCompletionSound: actionType === "terminal",
+    url: actionType === "browser" ? DEFAULT_BROWSER_ACTION_URL : undefined,
+  };
+}
+
+function createSettingsCommandDraftFromButton(command: SidebarCommandButton): CommandConfigDraft {
+  return {
+    actionType: command.actionType,
+    closeTerminalOnExit: command.closeTerminalOnExit,
+    command: command.command,
+    commandId: command.commandId,
+    icon: command.icon,
+    iconColor: command.iconColor,
+    isGlobal: command.isGlobal === true,
+    name: command.name,
+    playCompletionSound: command.playCompletionSound,
+    url: command.url,
+  };
+}
+
+function getDuplicateHotkeyIds(hotkeys: zmuxHotkeySettings): Set<zmuxHotkeyActionId> {
+  const idsByHotkey = new Map<string, zmuxHotkeyActionId[]>();
+  for (const definition of ZMUX_HOTKEY_DEFINITIONS) {
+    const hotkey = normalizeHotkeyText(hotkeys[definition.id] ?? definition.defaultKey);
+    if (!hotkey) {
+      continue;
+    }
+    idsByHotkey.set(hotkey, [...(idsByHotkey.get(hotkey) ?? []), definition.id]);
+  }
+
+  return new Set(
+    Array.from(idsByHotkey.values())
+      .filter((ids) => ids.length > 1)
+      .flat(),
+  );
+}
+
+function createSettingsAgentDragData(agentId: string): SettingsAgentDragData {
+  return {
+    agentId,
+    kind: "settings-agent",
+  };
+}
+
+function getSettingsAgentDragData(candidate: unknown): SettingsAgentDragData | undefined {
+  if (!hasData(candidate)) {
+    return undefined;
+  }
+
+  const data = candidate.data;
+  if (!isObjectRecord(data) || data.kind !== "settings-agent" || typeof data.agentId !== "string") {
+    return undefined;
+  }
+
+  return {
+    agentId: data.agentId,
+    kind: "settings-agent",
+  };
+}
+
+function createSettingsCommandDragData(commandId: string): SettingsCommandDragData {
+  return {
+    commandId,
+    kind: "settings-command",
+  };
+}
+
+function getSettingsCommandDragData(candidate: unknown): SettingsCommandDragData | undefined {
+  if (!hasData(candidate)) {
+    return undefined;
+  }
+
+  const data = candidate.data;
+  if (
+    !isObjectRecord(data) ||
+    data.kind !== "settings-command" ||
+    typeof data.commandId !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    commandId: data.commandId,
+    kind: "settings-command",
+  };
+}
+
+function moveId(ids: readonly string[], initialIndex: number, index: number): string[] {
+  const nextIds = [...ids];
+  const [id] = nextIds.splice(initialIndex, 1);
+  if (id === undefined) {
+    return nextIds;
+  }
+
+  nextIds.splice(index, 0, id);
+  return nextIds;
+}
+
+function mergeIds(draftIds: readonly string[], syncedIds: readonly string[]): string[] {
+  const syncedIdSet = new Set(syncedIds);
+  const mergedIds = draftIds.filter((id) => syncedIdSet.has(id));
+
+  for (const id of syncedIds) {
+    if (!mergedIds.includes(id)) {
+      mergedIds.push(id);
+    }
+  }
+
+  return mergedIds;
+}
+
+function reconcileDraftIds<Item extends Record<Key, string>, Key extends keyof Item>(
+  draftIds: readonly string[] | undefined,
+  items: readonly Item[],
+  key: Key,
+): string[] | undefined {
+  if (!draftIds) {
+    return undefined;
+  }
+
+  const syncedIds = items.map((item) => item[key]);
+  const nextDraftIds = mergeIds(draftIds, syncedIds);
+  return haveSameOrder(nextDraftIds, syncedIds) ? undefined : nextDraftIds;
+}
+
+function haveSameOrder(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function createSettingsReorderRequestId(kind: "actions" | "agents"): string {
+  return `settings-${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function hasData(candidate: unknown): candidate is { data?: unknown } {
+  return isObjectRecord(candidate) && "data" in candidate;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function ZmuxFolderStatsSection({
+  isLoading,
+  onOpenZmuxFolder,
+  stats,
+}: {
+  isLoading: boolean;
+  onOpenZmuxFolder?: () => void;
+  stats?: SidebarZmuxFolderStatsMessage;
+}) {
+  const folders = stats?.folders ?? [];
+  return (
+    <SettingsSection title="Storage">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">zmux folder</div>
+          <div className="mt-1 truncate text-xs text-muted-foreground">
+            {stats?.folderPath ?? "~/.zmux"}
+          </div>
+        </div>
+        <Button
+          className="h-9 shrink-0 gap-2 px-3 text-sm"
+          disabled={!onOpenZmuxFolder}
+          onClick={onOpenZmuxFolder}
+          type="button"
+          variant="outline"
+        >
+          <IconFolderOpen aria-hidden="true" className="size-4" />
+          Open Folder
+        </Button>
+      </div>
+
+      {isLoading && !stats ? (
+        <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
+          Loading folder sizes...
+        </div>
+      ) : null}
+
+      {stats?.errorMessage ? (
+        <div className="rounded-md border border-destructive/45 bg-destructive/10 px-3 py-2 text-sm text-foreground">
+          {stats.errorMessage}
+        </div>
+      ) : null}
+
+      {stats && !stats.errorMessage ? (
+        <div className="rounded-md border border-border bg-muted/20">
+          {folders.length > 0 ? (
+            folders.map((folder) => (
+              <div
+                className="flex items-center justify-between gap-3 border-b border-border px-3 py-2 text-sm last:border-b-0"
+                key={folder.path}
+              >
+                <span className="min-w-0 truncate text-foreground">{folder.name}</span>
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {formatBytes(folder.sizeBytes)}
+                </span>
+              </div>
+            ))
+          ) : (
+            <div className="px-3 py-2 text-sm text-muted-foreground">No folders found.</div>
+          )}
+          <div className="flex items-center justify-between gap-3 border-t border-border px-3 py-2 text-sm font-medium">
+            <span>Total</span>
+            <span className="tabular-nums">{formatBytes(stats.totalBytes)}</span>
+          </div>
+        </div>
+      ) : null}
+    </SettingsSection>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const decimals = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(decimals)} ${units[unitIndex] ?? "B"}`;
 }
 
 function GhosttySettingsActions({
@@ -1377,9 +2789,20 @@ function shouldShowSetting(result: SettingsSectionSearchResult, settingKey: stri
   return !result.isSearching || result.sectionMatches || result.visibleSettingKeys.has(settingKey);
 }
 
-function SettingsSection({ children, title }: { children: ReactNode; title: string }) {
+function SettingsSection({
+  actions,
+  children,
+  title,
+}: {
+  actions?: ReactNode;
+  children: ReactNode;
+  title: string;
+}) {
   return (
-    <Card className="relative mt-5 overflow-visible pt-8" size="sm">
+    <Card
+      className={cn("relative mt-5 overflow-visible pt-8", actions && "settings-section-with-actions")}
+      size="sm"
+    >
       {/* CDXC:Settings 2026-04-26-12:31: The target settings examples stack the
           text above controls. Keeping rows vertical avoids squeezing labels in
           the narrow zmux sidebar modal. */}
@@ -1398,6 +2821,11 @@ function SettingsSection({ children, title }: { children: ReactNode; title: stri
       <div className="settings-section-title-pill">
         <CardTitle className="settings-section-title-pill-text">{title}</CardTitle>
       </div>
+      {/* CDXC:UnifiedSettings 2026-05-09-17:01: Agents and Actions management
+          controls belong in the section header row. Action creation labels omit
+          "Add", while the agent creation CTA keeps "Add Agent" per product
+          requirements. */}
+      {actions ? <div className="settings-section-header-actions">{actions}</div> : null}
       <CardContent className="pt-2">
         <FieldGroup className="gap-6">{children}</FieldGroup>
       </CardContent>

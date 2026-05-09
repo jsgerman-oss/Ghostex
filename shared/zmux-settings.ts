@@ -63,6 +63,8 @@ export type zmuxSettings = {
   showSidebarActions: boolean;
   showSidebarAgents: boolean;
   showSidebarGitButton: boolean;
+  hideFloatingSessionStatusIndicators: boolean;
+  hideMenuBarSessionStatusIndicators: boolean;
   sessionStatusIndicatorSize: SessionStatusIndicatorSize;
   sessionPersistenceProvider: SessionPersistenceProvider;
   sidebarMode: SidebarMode;
@@ -136,12 +138,25 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
   createSessionOnSidebarDoubleClick: false,
   debuggingMode: false,
   renameSessionOnDoubleClick: false,
-  showCloseButtonOnSessionCards: false,
+  /**
+   * CDXC:SidebarSessions 2026-05-09-17:00
+   * Session-card close controls should be available out of the box. Users can
+   * still turn the hover chrome off from Settings when they want quieter cards.
+   */
+  showCloseButtonOnSessionCards: true,
   showHotkeysOnSessionCards: false,
   showLastInteractionTimeOnSessionCards: false,
   showSidebarActions: true,
   showSidebarAgents: true,
   showSidebarGitButton: true,
+  /**
+   * CDXC:SessionStatusIndicators 2026-05-09-17:30
+   * Floating desktop status badges are opt-in because the menu bar now shows
+   * the same working/attention/available counts by default. Keep separate hide
+   * toggles so users can independently choose desktop and menu bar chrome.
+   */
+  hideFloatingSessionStatusIndicators: true,
+  hideMenuBarSessionStatusIndicators: false,
   /**
    * CDXC:SessionStatusIndicators 2026-05-07-18:20
    * The AppKit floating session indicator defaults to Medium, which is half of
@@ -448,6 +463,22 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       source,
       "showSidebarGitButton",
       DEFAULT_zmux_SETTINGS.showSidebarGitButton,
+    ),
+    /**
+     * CDXC:SessionStatusIndicators 2026-05-09-17:30
+     * Visibility is persisted as explicit hide flags: floating is hidden by
+     * default, while the menu bar remains visible by default. Normalize missing
+     * values to those defaults without coupling either surface to indicator size.
+     */
+    hideFloatingSessionStatusIndicators: readBoolean(
+      source,
+      "hideFloatingSessionStatusIndicators",
+      DEFAULT_zmux_SETTINGS.hideFloatingSessionStatusIndicators,
+    ),
+    hideMenuBarSessionStatusIndicators: readBoolean(
+      source,
+      "hideMenuBarSessionStatusIndicators",
+      DEFAULT_zmux_SETTINGS.hideMenuBarSessionStatusIndicators,
     ),
     /**
      * CDXC:SessionStatusIndicators 2026-05-07-18:20

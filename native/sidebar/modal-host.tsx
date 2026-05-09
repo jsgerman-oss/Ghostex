@@ -2,21 +2,21 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
 import { CommandConfigModal, type CommandConfigDraft } from "../../sidebar/command-config-modal";
-import { ConfigureActionsModal } from "../../sidebar/configure-actions-modal";
-import { ConfigureAgentsModal } from "../../sidebar/configure-agents-modal";
 import { DaemonSessionsModal } from "../../sidebar/daemon-sessions-modal";
 import { FindPreviousSessionModal } from "../../sidebar/find-previous-session-modal";
-import { HotkeysModal } from "../../sidebar/hotkeys-modal";
 import { FirstUserMessageModal } from "../../sidebar/first-user-message-modal";
 import { PinnedPromptsModal } from "../../sidebar/pinned-prompts-modal";
 import { PreviousSessionsModal } from "../../sidebar/previous-sessions-modal";
 import { ScratchPadModal } from "../../sidebar/scratch-pad-modal";
-import { SettingsModal } from "../../sidebar/settings-modal";
+import { SettingsModal, type SettingsModalTab } from "../../sidebar/settings-modal";
 import { SessionRenameModal } from "../../sidebar/session-rename-modal";
 import { T3BrowserAccessModal } from "../../sidebar/t3-browser-access-modal";
 import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
-import type { ExtensionToSidebarMessage } from "../../shared/session-grid-contract";
+import type {
+  ExtensionToSidebarMessage,
+  SidebarZmuxFolderStatsMessage,
+} from "../../shared/session-grid-contract";
 import {
   getWorkspaceThemeForeground,
   normalizeWorkspaceThemeColor,
@@ -132,6 +132,34 @@ function closeModal() {
   postAppModalHostMessage({ type: "close" }, "AppModals:close");
 }
 
+function isSettingsModalKind(modal: AppModalKind | undefined): boolean {
+  return (
+    modal === "settings" ||
+    modal === "configureAgents" ||
+    modal === "configureActions" ||
+    modal === "hotkeys"
+  );
+}
+
+function getSettingsInitialTab(modal: AppModalKind | undefined): SettingsModalTab {
+  /**
+   * CDXC:UnifiedSettings 2026-05-09-15:30
+   * Existing entry points still request their historic modal kind, but the
+   * app-modal host now routes Settings, Agents, Actions, and Hotkeys into one
+   * tabbed Settings dialog so users have a single configuration surface.
+   */
+  if (modal === "configureAgents") {
+    return "agents";
+  }
+  if (modal === "configureActions") {
+    return "actions";
+  }
+  if (modal === "hotkeys") {
+    return "hotkeys";
+  }
+  return "settings";
+}
+
 function AppModalHost() {
   const {
     activeModal,
@@ -141,11 +169,14 @@ function AppModalHost() {
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
+    zmuxFolderStats,
   } = useModalStateFromNative();
+  const [zmuxFolderStatsLoading, setZmuxFolderStatsLoading] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
   const customThemeColor = useSidebarStore((state) => state.hud.customThemeColor);
   const theme = useSidebarStore((state) => state.hud.theme);
-  const isSettingsRenderable = activeModal === "settings" && settings !== undefined;
+  const isSettingsRenderable = isSettingsModalKind(activeModal) && settings !== undefined;
+  const settingsInitialTab = getSettingsInitialTab(activeModal);
   const isActiveModalRenderable = isModalRenderable({
     activeModal,
     config,
@@ -175,6 +206,18 @@ function AppModalHost() {
       "AppModals:presented",
     );
   }, [activeModal, isActiveModalRenderable]);
+
+  useEffect(() => {
+    if (activeModal !== "settings") {
+      setZmuxFolderStatsLoading(false);
+    }
+  }, [activeModal]);
+
+  useEffect(() => {
+    if (zmuxFolderStats) {
+      setZmuxFolderStatsLoading(false);
+    }
+  }, [zmuxFolderStats]);
 
   useEffect(() => {
     document.body.dataset.sidebarTheme = theme;
@@ -262,22 +305,9 @@ function AppModalHost() {
           });
         }}
       />
-      <HotkeysModal
-        hotkeys={settings?.hotkeys}
-        isOpen={activeModal === "hotkeys"}
-        onChange={(hotkeys) => {
-          if (!settings) {
-            return;
-          }
-          vscode.postMessage({
-            settings: { ...settings, hotkeys },
-            type: "updateSettings",
-          });
-        }}
-        onClose={closeModal}
-      />
       <SettingsModal
         accessibilityPermissionGranted={window.__zmux_NATIVE_HOST__?.accessibilityPermissionGranted}
+        initialTab={settingsInitialTab}
         isOpen={isSettingsRenderable}
         onChange={(nextSettings) => {
           vscode.postMessage({
@@ -297,18 +327,18 @@ function AppModalHost() {
            */
           vscode.postMessage({ type: "openAccessibilityPreferences" });
         }}
+        onOpenZmuxFolder={() => {
+          vscode.postMessage({ type: "openZmuxFolder" });
+        }}
+        onRequestZmuxFolderStats={() => {
+          setZmuxFolderStatsLoading(true);
+          vscode.postMessage({ type: "requestZmuxFolderStats" });
+        }}
         onClose={closeModal}
         settings={settings}
-      />
-      <ConfigureActionsModal
-        isOpen={activeModal === "configureActions"}
-        onClose={closeModal}
         vscode={vscode}
-      />
-      <ConfigureAgentsModal
-        isOpen={activeModal === "configureAgents"}
-        onClose={closeModal}
-        vscode={vscode}
+        zmuxFolderStats={zmuxFolderStats}
+        zmuxFolderStatsLoading={zmuxFolderStatsLoading}
       />
       <T3ThreadIdModal
         currentThreadId={t3ThreadId?.currentThreadId ?? ""}
@@ -409,6 +439,7 @@ function useModalStateFromNative() {
   const [renameSession, setRenameSession] = useState<RenameSessionModalState>();
   const [t3BrowserAccess, setT3BrowserAccess] = useState<T3BrowserAccessMessage>();
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
+  const [zmuxFolderStats, setZmuxFolderStats] = useState<SidebarZmuxFolderStatsMessage>();
 
   useEffect(() => {
     const handleMessage = (event: Event) => {
@@ -527,6 +558,9 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
           }
+          if (message.modal === "settings") {
+            setZmuxFolderStats(undefined);
+          }
           setActiveModal(message.modal);
           return;
         }
@@ -547,10 +581,15 @@ function useModalStateFromNative() {
           setRenameSession(undefined);
           setT3BrowserAccess(undefined);
           setT3ThreadId(undefined);
+          setZmuxFolderStats(undefined);
           return;
         }
 
         if (message.type === "sidebarState") {
+          if (isZmuxFolderStatsMessage(message.message)) {
+            setZmuxFolderStats(message.message);
+            return;
+          }
           applySidebarStateMessage(message.message);
         }
       } catch (error) {
@@ -574,7 +613,17 @@ function useModalStateFromNative() {
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
+    zmuxFolderStats,
   };
+}
+
+function isZmuxFolderStatsMessage(message: unknown): message is SidebarZmuxFolderStatsMessage {
+  return Boolean(
+    message &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === "zmuxFolderStats",
+  );
 }
 
 function createEmptyCommandDraft(): CommandConfigDraft {
@@ -626,15 +675,15 @@ function isModalRenderable({
     case "renameSession":
       return renameSession !== undefined;
     case "settings":
+    case "configureActions":
+    case "configureAgents":
+    case "hotkeys":
       return settings !== undefined;
     case "t3BrowserAccess":
       return t3BrowserAccess !== undefined;
     case "t3ThreadId":
       return t3ThreadId !== undefined;
-    case "configureActions":
-    case "configureAgents":
     case "daemonSessions":
-    case "hotkeys":
     case "pinnedPrompts":
     case "previousSessions":
     case "scratchPad":
