@@ -138,6 +138,18 @@ export type NativeGhosttyHostCommand =
       sessionId: string;
       type: "setTerminalVisibility";
       visible: boolean;
+    }
+  | {
+      /**
+       * CDXC:SessionAttentionNotifications 2026-05-10-16:46
+       * The sidebar owns attention transitions and rate limits; the native host
+       * only presents the macOS banner and reports a click for exact-session
+       * focus routing.
+       */
+      body?: string;
+      sessionId: string;
+      title: string;
+      type: "showSessionAttentionNotification";
     };
 
 export type NativeGhosttyHostEvent =
@@ -183,6 +195,10 @@ export type NativeGhosttyHostEvent =
   | {
       sessionId: string;
       type: "terminalBell";
+    }
+  | {
+      sessionId: string;
+      type: "sessionAttentionNotificationClicked";
     }
   | {
       message: string;

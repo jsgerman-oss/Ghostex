@@ -189,6 +189,22 @@ describe("normalizezmuxSettings", () => {
     ]);
   });
 
+  test("enables macOS attention notifications by default", () => {
+    /**
+     * CDXC:SessionAttentionNotifications 2026-05-10-16:46
+     * Attention banners are a first-install behavior so finished background
+     * sessions can surface themselves. Persisted false remains authoritative
+     * because users need a Settings switch to disable system notifications.
+     */
+    expect(DEFAULT_zmux_SETTINGS.showMacOSAttentionNotifications).toBe(true);
+    expect(normalizezmuxSettings({})).toMatchObject({
+      showMacOSAttentionNotifications: true,
+    });
+    expect(normalizezmuxSettings({ showMacOSAttentionNotifications: false })).toMatchObject({
+      showMacOSAttentionNotifications: false,
+    });
+  });
+
   test("keeps the workspace background color setting", () => {
     expect(DEFAULT_zmux_SETTINGS.workspaceBackgroundColor).toBe("#121212");
     expect(normalizezmuxSettings({ workspaceBackgroundColor: "#202020" })).toMatchObject({

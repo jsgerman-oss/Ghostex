@@ -4,6 +4,7 @@ import GhosttyKit
 import OSLog
 import Sparkle
 import UniformTypeIdentifiers
+import UserNotifications
 import WebKit
 
 /**
@@ -66,6 +67,98 @@ private func normalizedNativeProcessPath(_ path: String?) -> String {
     .joined(separator: ":")
 }
 
+private final class SessionAttentionNotificationController: NSObject, UNUserNotificationCenterDelegate {
+  private let center = UNUserNotificationCenter.current()
+  private let onSessionClicked: (String) -> Void
+
+  init(onSessionClicked: @escaping (String) -> Void) {
+    self.onSessionClicked = onSessionClicked
+    super.init()
+    center.delegate = self
+  }
+
+  func show(_ command: ShowSessionAttentionNotification) {
+    /**
+     CDXC:SessionAttentionNotifications 2026-05-10-16:46
+     The sidebar decides when attention notifications are allowed. Native code
+     requests macOS alert permission only on first use, then posts a banner for
+     the exact session id so click handling can focus the right pane.
+     */
+    center.getNotificationSettings { [weak self] settings in
+      guard let self else { return }
+      switch settings.authorizationStatus {
+      case .authorized, .provisional:
+        self.deliver(command)
+      case .notDetermined:
+        self.center.requestAuthorization(options: [.alert]) { granted, _ in
+          if granted {
+            self.deliver(command)
+          }
+        }
+      case .denied:
+        break
+      @unknown default:
+        break
+      }
+    }
+  }
+
+  private func deliver(_ command: ShowSessionAttentionNotification) {
+    let identifier = "zmux.session.attention.\(command.sessionId).\(UUID().uuidString)"
+    let content = UNMutableNotificationContent()
+    let title = command.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    content.title = title.isEmpty ? "Session needs attention" : title
+    content.body = command.body ?? "A zmux session needs attention."
+    content.categoryIdentifier = "zmux.session.attention"
+    content.threadIdentifier = "zmux.session.attention.\(command.sessionId)"
+    content.targetContentIdentifier = command.sessionId
+    content.userInfo = ["sessionId": command.sessionId]
+    center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) {
+      [weak self] error in
+      guard error == nil else { return }
+      self?.removeDeliveredNotificationLater(identifier)
+    }
+  }
+
+  private func removeDeliveredNotificationLater(_ identifier: String) {
+    /**
+     CDXC:SessionAttentionNotifications 2026-05-10-16:46
+     Attention notifications should behave like temporary banners by default:
+     if the user ignores or swipes one away, remove the delivered notification
+     shortly afterward so it does not accumulate in Notification Center.
+     */
+    DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self] in
+      self?.center.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.banner])
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    guard
+      response.notification.request.content.categoryIdentifier == "zmux.session.attention",
+      let sessionId = response.notification.request.content.userInfo["sessionId"] as? String
+    else {
+      completionHandler()
+      return
+    }
+    DispatchQueue.main.async { [onSessionClicked] in
+      onSessionClicked(sessionId)
+      completionHandler()
+    }
+  }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, GhosttyAppDelegate {
   static let logger = Logger(subsystem: "com.madda.zmux.host", category: "app")
   private static let logDateFormatter: DateFormatter = {
@@ -107,6 +200,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
   private var t3CodeRuntimeProcess: Process?
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
+  private lazy var sessionAttentionNotificationController =
+    SessionAttentionNotificationController { [weak self] sessionId in
+      Task { @MainActor in
+        self?.handleSessionAttentionNotificationClick(sessionId)
+      }
+    }
 
   override init() {
     let configSelection = Self.preferredGhosttyConfig()
@@ -914,6 +1013,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     (window?.contentView as? zmuxRootView)?.postHostEvent(event)
   }
 
+  @MainActor
+  private func handleSessionAttentionNotificationClick(_ sessionId: String) {
+    /**
+     CDXC:SessionAttentionNotifications 2026-05-10-16:46
+     A clicked notification should raise zmux before the sidebar focuses the
+     target session, otherwise AppKit may select the pane without making it the
+     first responder for immediate typing.
+     */
+    let event = HostEvent.sessionAttentionNotificationClicked(sessionId: sessionId)
+    NSApp.activate(ignoringOtherApps: true)
+    window?.makeKeyAndOrderFront(nil)
+    bridge?.send(event)
+    (window?.contentView as? zmuxRootView)?.postHostEvent(event)
+  }
+
   private func restoredInitialWindowFrame() -> NSRect {
     /**
      CDXC:NativeWindowChrome 2026-05-07-08:17
@@ -1230,6 +1344,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       workspaceView?.setActiveTerminalSet(command)
     case .setSessionStatusIndicators(let command):
       sessionStatusIndicatorController?.apply(command)
+    case .showSessionAttentionNotification(let command):
+      sessionAttentionNotificationController.show(command)
     case .setTerminalLayout(let command):
       workspaceView?.setTerminalLayout(command.layout)
     case .setTerminalVisibility(let command):
@@ -2569,6 +2685,10 @@ final class zmuxRootView: NSView {
   private var t3CodeRuntimeProcess: Process?
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
+  private lazy var sessionAttentionNotificationController =
+    SessionAttentionNotificationController { [weak self] sessionId in
+      self?.handleSessionAttentionNotificationClick(sessionId)
+    }
   private var sidebarWidth: CGFloat
   private var sidebarSide: SidebarSide = .left
 
@@ -2748,6 +2868,19 @@ final class zmuxRootView: NSView {
       """)
   }
 
+  private func handleSessionAttentionNotificationClick(_ sessionId: String) {
+    /**
+     CDXC:SessionAttentionNotifications 2026-05-10-16:46
+     Sidebar-hosted notification commands still need click routing through the
+     native event bus so direct WKWebView messages and WebSocket bridge clients
+     focus sessions with the same project/pane activation behavior.
+     */
+    let event = HostEvent.sessionAttentionNotificationClicked(sessionId: sessionId)
+    NSApp.activate(ignoringOtherApps: true)
+    window?.makeKeyAndOrderFront(nil)
+    sendHostEvent(event)
+  }
+
   func applyNativeZedOverlayDetached(targetApp: ZedOverlayTargetApp) {
     guard let data = try? JSONSerialization.data(withJSONObject: targetApp.rawValue),
       let json = String(data: data, encoding: .utf8)
@@ -2813,6 +2946,8 @@ final class zmuxRootView: NSView {
       workspaceView.setActiveTerminalSet(command)
     case .setSessionStatusIndicators(let command):
       setSessionStatusIndicators(command)
+    case .showSessionAttentionNotification(let command):
+      sessionAttentionNotificationController.show(command)
     case .setTerminalLayout(let command):
       workspaceView.setTerminalLayout(command.layout)
     case .setTerminalVisibility(let command):

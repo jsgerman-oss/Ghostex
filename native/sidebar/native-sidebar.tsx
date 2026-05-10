@@ -318,6 +318,12 @@ type NativeHostCommand =
     }
   | { fileName: string; type: "playSound"; volume?: number }
   | {
+      body?: string;
+      sessionId: string;
+      title: string;
+      type: "showSessionAttentionNotification";
+    }
+  | {
       args: string[];
       cwd?: string;
       env?: Record<string, string>;
@@ -460,6 +466,7 @@ type NativeHostEvent =
       type: "projectEditorLoadState";
     }
   | { status: NativeSessionStatusIndicatorStatus; type: "sessionStatusIndicatorClicked" }
+  | { sessionId: string; type: "sessionAttentionNotificationClicked" }
   | {
       projectId: string;
       serverOrigin: string;
@@ -896,6 +903,18 @@ const terminalStateById = new Map<
 const titleDerivedActivityBySessionId = new Map<string, TitleDerivedSessionActivity>();
 const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
+/**
+ * CDXC:SessionAttentionNotifications 2026-05-10-16:46
+ * Notification rate limits live next to the sidebar activity source of truth:
+ * one banner per session every 20 seconds, plus a global cap of eight banners
+ * per minute, prevents repeated bell/title churn from spamming macOS.
+ */
+const NATIVE_ATTENTION_NOTIFICATION_SESSION_COOLDOWN_MS = 20_000;
+const NATIVE_ATTENTION_NOTIFICATION_GLOBAL_WINDOW_MS = 60_000;
+const NATIVE_ATTENTION_NOTIFICATION_GLOBAL_LIMIT = 8;
+const nativeAttentionNotificationLastSentAtBySessionId = new Map<string, number>();
+let nativeAttentionNotificationWindowStartedAt = 0;
+let nativeAttentionNotificationWindowCount = 0;
 type NativeSidebarCommandSession = {
   closeOnExit: boolean;
   commandId: string;
@@ -1976,6 +1995,71 @@ function playNativeSessionCompletionSound(sessionId: string, source: string): vo
     source,
   });
   playNativeSound(settings.completionSound);
+}
+
+function handleNativeSessionEnteredAttention(sessionId: string, source: string): void {
+  /**
+   * CDXC:SessionAttentionNotifications 2026-05-10-16:46
+   * Attention transitions fan out to both optional sounds and optional macOS
+   * banners. Keep this on the transition edge rather than every publish so
+   * long-running title/bell updates do not repeatedly notify the user.
+   */
+  playNativeSessionCompletionSound(sessionId, source);
+  showNativeSessionAttentionNotification(sessionId, source);
+}
+
+function showNativeSessionAttentionNotification(sessionId: string, source: string): void {
+  if (!settings.showMacOSAttentionNotifications) {
+    return;
+  }
+  if (!consumeNativeAttentionNotificationBudget(sessionId)) {
+    appendAgentDetectionDebugLog("nativeSidebar.attentionNotification.rateLimited", {
+      sessionId,
+      source,
+    });
+    return;
+  }
+
+  const reference = resolveSidebarSessionReference(sessionId);
+  const session = findSessionRecordInProject(reference.project, reference.sessionId);
+  const title =
+    getSessionCardPrimaryTitle({ title: session?.title || DEFAULT_TERMINAL_SESSION_TITLE }) ??
+    DEFAULT_TERMINAL_SESSION_TITLE;
+  postNative({
+    body: `${reference.project.name} needs attention.`,
+    sessionId: nativeSessionIdForProjectSidebarSession(
+      reference.project.projectId,
+      reference.sessionId,
+    ),
+    title,
+    type: "showSessionAttentionNotification",
+  });
+}
+
+function consumeNativeAttentionNotificationBudget(sessionId: string): boolean {
+  const now = Date.now();
+  const previousSessionSentAt = nativeAttentionNotificationLastSentAtBySessionId.get(sessionId);
+  if (
+    previousSessionSentAt !== undefined &&
+    now - previousSessionSentAt < NATIVE_ATTENTION_NOTIFICATION_SESSION_COOLDOWN_MS
+  ) {
+    return false;
+  }
+
+  if (
+    nativeAttentionNotificationWindowStartedAt <= 0 ||
+    now - nativeAttentionNotificationWindowStartedAt >= NATIVE_ATTENTION_NOTIFICATION_GLOBAL_WINDOW_MS
+  ) {
+    nativeAttentionNotificationWindowStartedAt = now;
+    nativeAttentionNotificationWindowCount = 0;
+  }
+  if (nativeAttentionNotificationWindowCount >= NATIVE_ATTENTION_NOTIFICATION_GLOBAL_LIMIT) {
+    return false;
+  }
+
+  nativeAttentionNotificationWindowCount += 1;
+  nativeAttentionNotificationLastSentAtBySessionId.set(sessionId, now);
+  return true;
 }
 
 function previewNativeSoundSettingChange(
@@ -4448,6 +4532,20 @@ function handleNativeSessionStatusIndicatorClicked(
     focusProject(target.projectId);
   }
   focusSidebarSession(target.sessionId);
+}
+
+function handleNativeSessionAttentionNotificationClicked(sessionId: string): void {
+  /**
+   * CDXC:SessionAttentionNotifications 2026-05-10-16:46
+   * Clicking a macOS attention banner must route through the same sidebar
+   * focus path as session cards so project switching, pane restoration, and
+   * native first-responder activation all happen before the user types.
+   */
+  if (!findSessionRecord(sessionId)) {
+    return;
+  }
+  postNative({ type: "activateApp" });
+  focusSidebarSession(sessionId);
 }
 
 function selectNativeSessionStatusIndicatorTarget(
@@ -6983,6 +7081,7 @@ function closeTerminal(sessionId: string): void {
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
+  nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
   postNative({
     sessionId: nativeSessionId,
     type:
@@ -10887,6 +10986,12 @@ window.addEventListener("zmux-native-host-event", (event) => {
     handleNativeSessionStatusIndicatorClicked(hostEvent.status);
     return;
   }
+  if (hostEvent.type === "sessionAttentionNotificationClicked") {
+    handleNativeSessionAttentionNotificationClicked(
+      sidebarSessionIdForNativeSession(hostEvent.sessionId),
+    );
+    return;
+  }
   if (hostEvent.type === "projectEditorLoadState") {
     setProjectEditorLoadState(hostEvent.projectId, hostEvent.status, hostEvent.message);
     return;
@@ -11135,7 +11240,7 @@ window.addEventListener("zmux-native-host-event", (event) => {
         terminalState.activity = effectiveDerivedActivity.activity;
         setTerminalSessionAgentName(sidebarSessionId, effectiveDerivedActivity.agentName);
         if (previousActivity !== "attention" && terminalState.activity === "attention") {
-          playNativeSessionCompletionSound(sidebarSessionId, "terminal-title");
+          handleNativeSessionEnteredAttention(sidebarSessionId, "terminal-title");
         }
       } else {
         titleDerivedActivityBySessionId.delete(sidebarSessionId);
@@ -11167,10 +11272,14 @@ window.addEventListener("zmux-native-host-event", (event) => {
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
       handleNativeSidebarCommandSessionExit(sidebarSessionId, hostEvent.exitCode);
     } else if (hostEvent.type === "terminalError") {
+      const previousActivity = terminalState.activity;
       terminalState.lifecycleState = "error";
       terminalState.activity = "attention";
       terminalState.terminalTitle = hostEvent.message;
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
+      if (previousActivity !== "attention") {
+        handleNativeSessionEnteredAttention(sidebarSessionId, "terminal-error");
+      }
     } else if (hostEvent.type === "terminalBell") {
       const suppressedUntil = getNativeActivitySuppressedUntil(sidebarSessionId);
       if (
@@ -11187,7 +11296,7 @@ window.addEventListener("zmux-native-host-event", (event) => {
       const previousActivity = terminalState.activity;
       terminalState.activity = "attention";
       if (previousActivity !== "attention") {
-        playNativeSessionCompletionSound(sidebarSessionId, "terminal-bell");
+        handleNativeSessionEnteredAttention(sidebarSessionId, "terminal-bell");
       }
     } else if (hostEvent.type === "terminalReady") {
       terminalState.lifecycleState = "running";

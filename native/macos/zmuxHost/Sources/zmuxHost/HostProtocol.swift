@@ -20,6 +20,7 @@ enum HostCommand: Decodable {
   case sendTerminalEnter(SessionCommand)
   case setActiveTerminalSet(SetActiveTerminalSet)
   case setSessionStatusIndicators(SetSessionStatusIndicators)
+  case showSessionAttentionNotification(ShowSessionAttentionNotification)
   case setTerminalLayout(SetTerminalLayout)
   case setTerminalVisibility(SetTerminalVisibility)
   case pickWorkspaceFolder
@@ -75,6 +76,7 @@ enum HostCommand: Decodable {
     case sendTerminalEnter
     case setActiveTerminalSet
     case setSessionStatusIndicators
+    case showSessionAttentionNotification
     case setTerminalLayout
     case setTerminalVisibility
     case pickWorkspaceFolder
@@ -148,6 +150,8 @@ enum HostCommand: Decodable {
       self = .setActiveTerminalSet(try SetActiveTerminalSet(from: decoder))
     case .setSessionStatusIndicators:
       self = .setSessionStatusIndicators(try SetSessionStatusIndicators(from: decoder))
+    case .showSessionAttentionNotification:
+      self = .showSessionAttentionNotification(try ShowSessionAttentionNotification(from: decoder))
     case .setTerminalLayout:
       self = .setTerminalLayout(try SetTerminalLayout(from: decoder))
     case .setTerminalVisibility:
@@ -305,6 +309,18 @@ struct SetSessionStatusIndicators: Decodable {
   let hideFloatingIndicators: Bool
   let hideMenuBarIndicators: Bool
   let size: NativeSessionStatusIndicatorSize
+}
+
+struct ShowSessionAttentionNotification: Decodable {
+  /**
+   CDXC:SessionAttentionNotifications 2026-05-10-16:46
+   The sidebar posts already-rate-limited attention notification requests with
+   the native pane id. The native host must preserve that id in userInfo so a
+   click can route back to the same session and activate it for typing.
+   */
+  let body: String?
+  let sessionId: String
+  let title: String
 }
 
 enum NativeSessionStatusIndicatorStatus: String, Codable {
@@ -527,6 +543,7 @@ enum HostEvent: Encodable {
   case terminalError(sessionId: String, message: String)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
+  case sessionAttentionNotificationClicked(sessionId: String)
   case t3ThreadReady(
     sessionId: String, projectId: String, threadId: String, serverOrigin: String, workspaceRoot: String)
   case t3ThreadChanged(sessionId: String, threadId: String, title: String?)
@@ -644,6 +661,14 @@ enum HostEvent: Encodable {
        */
       try container.encode("sessionStatusIndicatorClicked", forKey: .type)
       try container.encode(status, forKey: .status)
+    case .sessionAttentionNotificationClicked(let sessionId):
+      /**
+       CDXC:SessionAttentionNotifications 2026-05-10-16:46
+       Notification clicks carry the concrete native session id instead of a
+       status bucket so the sidebar can focus the exact completed session.
+       */
+      try container.encode("sessionAttentionNotificationClicked", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
     case .t3ThreadReady(let sessionId, let projectId, let threadId, let serverOrigin, let workspaceRoot):
       try container.encode("t3ThreadReady", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)

@@ -64,6 +64,7 @@ export type zmuxSettings = {
   showSidebarActions: boolean;
   showSidebarAgents: boolean;
   showSidebarGitButton: boolean;
+  showMacOSAttentionNotifications: boolean;
   hideFloatingSessionStatusIndicators: boolean;
   hideMenuBarSessionStatusIndicators: boolean;
   sessionStatusIndicatorSize: SessionStatusIndicatorSize;
@@ -158,6 +159,13 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
   showSidebarActions: true,
   showSidebarAgents: true,
   showSidebarGitButton: true,
+  /**
+   * CDXC:SessionAttentionNotifications 2026-05-10-16:46
+   * macOS attention notifications are enabled by default so a background
+   * session that transitions into attention can surface itself without relying
+   * on persistent status badges or completion sounds.
+   */
+  showMacOSAttentionNotifications: true,
   /**
    * CDXC:SessionStatusIndicators 2026-05-09-17:30
    * Floating desktop status badges are opt-in because the menu bar now shows
@@ -489,6 +497,16 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       source,
       "showSidebarGitButton",
       DEFAULT_zmux_SETTINGS.showSidebarGitButton,
+    ),
+    /**
+     * CDXC:SessionAttentionNotifications 2026-05-10-16:46
+     * Older settings files should opt into macOS attention notifications, and
+     * explicit false must be preserved for users who disable system banners.
+     */
+    showMacOSAttentionNotifications: readBoolean(
+      source,
+      "showMacOSAttentionNotifications",
+      DEFAULT_zmux_SETTINGS.showMacOSAttentionNotifications,
     ),
     /**
      * CDXC:SessionStatusIndicators 2026-05-09-17:30

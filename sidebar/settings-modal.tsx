@@ -349,6 +349,11 @@ export function SettingsModal({
         title: "Completion Sound",
       },
       {
+        key: "showMacOSAttentionNotifications",
+        subtitle: "Show a macOS banner when a session needs attention.",
+        title: "macOS Attention Notifications",
+      },
+      {
         key: "actionCompletionSound",
         options: COMPLETION_SOUND_OPTIONS,
         subtitle: "Sound for action completions.",
@@ -1446,6 +1451,18 @@ export function SettingsModal({
                 {...getSettingModificationProps("completionSound")}
                 onChange={(value) => updateDraft("completionSound", value)}
                 value={draft.completionSound}
+              />
+              ) : null}
+              {/* CDXC:SessionAttentionNotifications 2026-05-10-16:46:
+                  Attention banners are separate from completion sounds because
+                  users may want clickable macOS routing without audible alerts. */}
+              {shouldShowSetting(settingsSearch.sounds, "showMacOSAttentionNotifications") ? (
+              <ToggleField
+                checked={draft.showMacOSAttentionNotifications}
+                description="Show a macOS banner when a session needs attention."
+                label="macOS Attention Notifications"
+                {...getSettingModificationProps("showMacOSAttentionNotifications")}
+                onChange={(checked) => updateDraft("showMacOSAttentionNotifications", checked)}
               />
               ) : null}
               {shouldShowSetting(settingsSearch.sounds, "actionCompletionSound") ? (
