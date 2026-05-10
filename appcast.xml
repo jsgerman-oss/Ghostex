@@ -8,6 +8,17 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/zmux/releases</link>
         <description>Sparkle appcast for zmux macOS releases.</description>
         <item>
+            <title>2.3.0</title>
+            <pubDate>Sun, 10 May 2026 16:35:16 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v2.3</sparkle:fullReleaseNotesLink>
+            <sparkle:version>20300</sparkle:version>
+            <sparkle:shortVersionString>2.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <sparkle:releaseNotesLink sparkle:edSignature="4Itl0tuc4XL7n3r91+w7QCq053749pmdQYLqUXJFZWkDOH2vufAzDk1AfoCZ7v05ZW0cmxncbHsagdvXUCh4Ag==" sparkle:length="1205">https://raw.githubusercontent.com/maddada/zmux/main/zmux-2.3.0.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/maddada/zmux/releases/download/v2.3/zmux-2.3.0.dmg" length="174540491" type="application/octet-stream" sparkle:edSignature="xlPugF/Qrtt3sZeo+4ZZPTMHTLgqqCXmD2iH/aSjnwbvb+MMVZRoRctDAoc1lfkXNYNFVLGhPtfxtSR4u1mnCw=="/>
+        </item>
+        <item>
             <title>2.2.0</title>
             <pubDate>Sat, 09 May 2026 22:30:49 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v2.2</sparkle:fullReleaseNotesLink>
@@ -60,19 +71,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/maddada/zmux/releases/download/v1.4.10/zmux-1.4.10.dmg" length="172176571" type="application/octet-stream" sparkle:edSignature="fWMOF4x1Gstm8n5/3vJejU0BPdHxW9y3jibNuQVNTPEYMGryIhsapUp6Z9zz+eLozv0sfssLDcapPM5aGxUwAg=="/>
         </item>
-        <item>
-            <title>1.4.9</title>
-            <pubDate>Thu, 07 May 2026 08:07:40 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v1.4.9</sparkle:fullReleaseNotesLink>
-            <sparkle:version>10409</sparkle:version>
-            <sparkle:shortVersionString>1.4.9</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/maddada/zmux/releases/download/v1.4.9/zmux-1.4.9.dmg" length="172191659" type="application/octet-stream" sparkle:edSignature="IMoZMLS6s5Zw4dk8JbaB3M5a4i6Z6IFGcUMU3Yiu0mlzFpCu7FZE14mKT/W0gGiAJhzu/N2emZKllye9wGw5Bg=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: 7Ax8mVfIvPzPM5Gtqt6MpXZRzqQiaXCsMfKNByOP4xm8ADzKpPD54wRt8Ycnwy1klNgqefmmeF0T8uySGtWWBg==
-length: 6190
+edSignature: J733XUXGT0xafDeiFLFFBrew9h8kcAy0KhNel4O6NzKllyEYdowHpZsESWSDri2YdgY/tNGgkflOnWaHy3ioCA==
+length: 6450
 -->
