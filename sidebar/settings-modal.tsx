@@ -219,6 +219,11 @@ export function SettingsModal({
         subtitle: "Use the VS Code Insiders user settings directory.",
         title: "Use VS Code Insiders settings",
       },
+      {
+        key: "showProjectEditorDiffFileCount",
+        subtitle: "Show changed-file counts in project editor rows.",
+        title: "Show editor file count",
+      },
     ]),
     ideAttachment: getSettingsSectionSearch(settingsSearchQuery, "IDE Attachment", [
       {
@@ -1343,6 +1348,15 @@ export function SettingsModal({
                 onChange={(checked) =>
                   updateDraft("codeServerUseVscodeInsidersUserConfig", checked)
                 }
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.editor, "showProjectEditorDiffFileCount") ? (
+              <ToggleField
+                checked={draft.showProjectEditorDiffFileCount}
+                description="Show changed-file counts in project editor rows."
+                label="Show editor file count"
+                {...getSettingModificationProps("showProjectEditorDiffFileCount")}
+                onChange={(checked) => updateDraft("showProjectEditorDiffFileCount", checked)}
               />
               ) : null}
             </SettingsSection>

@@ -11,8 +11,8 @@
  * CDXC:EditorPanes 2026-05-06-14:21
  * Expanded project groups reserve the first card-list row for a compact
  * project editor launcher. It mirrors session-card interaction styling while
- * staying half-height so the files/[+lines|-lines] summary scans as a tool,
- * not as another split pane session.
+ * staying half-height so the right-aligned [+lines -lines] summary scans as a
+ * tool, not as another split pane session.
  *
  * CDXC:ProjectGroups 2026-05-06-18:42
  * The editor launcher should read like a session card title: left-aligned diff
@@ -28,8 +28,7 @@
  * sidebar while keeping the existing diff summary and open command.
  *
  * CDXC:EditorPanes 2026-05-09-15:39
- * The active project editor row must show the VS Code brand color at 80%
- * opacity, and the visible code diff counts use pastel blue/green/red so files,
+ * The visible code diff counts use pastel blue/green/red so optional files,
  * added lines, and removed lines scan separately without harsh contrast.
  *
  * CDXC:EditorPanes 2026-05-08-12:46
@@ -82,6 +81,13 @@
   gap: 0;
   grid-template-columns: minmax(0, 1fr);
   margin-bottom: 0;
+  /*
+   * CDXC:EditorPanes 2026-05-10-16:24
+   * Project editor diff stats should sit at the far right edge of the row.
+   * The close button occupies that same edge on hover/focus, so do not reserve
+   * the normal session trailing inset for the stats while the row is idle.
+   */
+  padding-right: calc(4px * var(--sidebar-density-scale));
 }
 
 /*
@@ -90,9 +96,9 @@
  * so their title row must not reserve the shared session trailing slot.
  *
  * CDXC:EditorPanes 2026-05-09-17:47
- * The code diff label must let every stat use its natural width before any
- * card-edge clipping occurs. Do not make the additions segment the flexible
- * column; it can truncate while the visible title slot still has free space.
+ * The code diff label must keep Code at the left and the numeric diff summary
+ * at the right edge without bullets or brackets. Each stat keeps its natural
+ * width before any card-edge clipping occurs.
  *
  * CDXC:EditorPanes 2026-05-09-17:03
  * When the close button is hidden, the code editor title should use the full
@@ -173,6 +179,7 @@
 
 .project-editor-card-icon,
 .project-editor-diff-label,
+.project-editor-diff-stats,
 .project-editor-diff-stat,
 .project-editor-status-label {
   align-items: center;
@@ -248,11 +255,12 @@
 .project-editor-diff-label {
   align-items: center;
   display: flex;
-  gap: calc(6px * var(--sidebar-density-scale));
+  gap: calc(8px * var(--sidebar-density-scale));
   justify-self: start;
   line-height: 1.3;
   min-width: 0;
   max-width: 100%;
+  position: relative;
   width: 100%;
 }
 
@@ -261,20 +269,35 @@
   flex: 0 0 auto;
 }
 
-.project-editor-diff-punctuation {
-  color: color-mix(in srgb, var(--app-muted) 78%, transparent);
-  flex: 0 0 auto;
+.project-editor-diff-stats {
+  display: inline-flex;
+  flex: 0 1 auto;
+  font-size: calc(9px * var(--sidebar-density-scale));
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  gap: calc(8px * var(--sidebar-density-scale));
+  justify-content: flex-end;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  margin-left: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  transition:
+    opacity 120ms ease,
+    visibility 0s linear 0s;
 }
 
 .project-editor-diff-files {
   color: color-mix(in srgb, #8ec7ff 88%, var(--app-foreground) 12%);
   flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
 }
 
 .project-editor-diff-stat {
   flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
   gap: calc(5px * var(--sidebar-density-scale));
   min-width: 0;
 }
@@ -291,21 +314,24 @@
   white-space: nowrap;
 }
 
+.project-editor-session-frame:hover .project-editor-diff-stats,
+.project-editor-session-frame:focus-within .project-editor-diff-stats {
+  /*
+   * CDXC:EditorPanes 2026-05-10-16:24
+   * The hover close button owns the project editor row's right edge. Hide the
+   * diff stats while close is available so the X never competes with counts.
+   */
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    visibility 0s linear 120ms;
+  visibility: hidden;
+}
+
 .project-editor-diff-divider,
 .project-editor-diff-stat-divider {
   color: color-mix(in srgb, var(--app-muted) 78%, transparent);
   flex: 0 0 auto;
-}
-
-.project-editor-diff-tooltip-content {
-  max-width: 240px;
-  text-align: left;
-}
-
-.project-editor-diff-tooltip {
-  display: grid;
-  gap: 3px;
-  line-height: 1.35;
 }
 
 /*
@@ -1987,6 +2013,22 @@
   right: 4px;
   top: 50%;
   transform: translateY(-50%);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-card-button.session {
+  padding-right: 4px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-diff-stats {
+  /*
+   * CDXC:EditorPanes 2026-05-10-16:24
+   * In reference-sidebar mode, project editor diff stats should match the
+   * Last Active timestamp scale used by agent session rows below it.
+   */
+  font-size: 13.55px;
+  font-weight: 300 !important;
+  letter-spacing: 0;
+  line-height: 20px;
 }
 
 @keyframes reference-sidebar-working-spin {

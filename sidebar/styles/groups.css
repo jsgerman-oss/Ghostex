@@ -569,6 +569,13 @@
 }
 
 .group-agent-launcher-icon {
+  /*
+   * CDXC:ProjectHeaders 2026-05-10-15:56
+   * Project header agent launch icons must stay monochrome in every hover,
+   * focus, selected, and open state; brand color appears too loud in the
+   * compact project action row.
+   */
+  color: color-mix(in srgb, var(--app-foreground) 62%, var(--app-muted) 38%);
   display: block;
   flex: none;
   height: 14px;
@@ -576,6 +583,7 @@
 }
 
 .group-agent-launcher-agent-icon {
+  background: currentColor;
   mask-position: center;
   mask-repeat: no-repeat;
   mask-size: contain;
@@ -599,13 +607,13 @@
 }
 
 /*
- * CDXC:EditorPanes 2026-05-09-15:39
- * The project-header VS Code icon should regain brand color at 80% opacity
- * when its code pane is active, matching the revealed editor row state.
+ * CDXC:EditorPanes 2026-05-10-15:56
+ * The project-header VS Code icon is a compact action glyph, not a session
+ * status indicator, so it stays monochrome even when the editor pane is open.
  */
 .group-code-editor-button[data-open="true"] .group-code-editor-icon {
-  filter: none;
-  opacity: 0.8;
+  filter: grayscale(1) saturate(0);
+  opacity: 0.62;
 }
 
 .group-collapsed-summary {
@@ -1243,8 +1251,8 @@
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .group-code-editor-button[data-open="true"]
   .group-code-editor-icon {
-  filter: none;
-  opacity: 0.8;
+  filter: grayscale(1) saturate(0);
+  opacity: 0.55;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-split-button {

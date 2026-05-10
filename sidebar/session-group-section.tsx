@@ -43,7 +43,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { AppTooltip } from "./app-tooltip";
-import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
+import { AGENT_LOGOS } from "./agent-logos";
 import {
   getSidebarSessionLifecycleState,
   type SidebarTheme,
@@ -236,16 +236,24 @@ export function shouldFocusGroupOnHeaderActivation({
   return shouldSelectEmptyProject || (hasProjectContext && !isActive);
 }
 
-export function formatProjectEditorButtonLabel(stats: SidebarProjectDiffStats): string {
+export function formatProjectEditorButtonLabel(
+  stats: SidebarProjectDiffStats,
+  showFileCount = false,
+): string {
   /**
-   * CDXC:EditorPanes 2026-05-10-11:43
-   * Project editor diff labels use the compact "Code (files • +added •
-   * -removed)" form. Display values are capped for stable sidebar width:
-   * files stop at 99, added/removed line counts stop at 999.
+   * CDXC:EditorPanes 2026-05-10-16:12
+   * Project editor diff labels avoid brackets and bullet separators. The row
+   * shows added/removed line counts by default, and only includes the changed
+   * file count when the user enables that Settings toggle.
    */
-  return `Code (${formatProjectEditorFilesCount(stats.files)} • +${formatProjectEditorLineCount(
-    stats.additions,
-  )} • -${formatProjectEditorLineCount(stats.deletions)})`;
+  return [
+    "Code",
+    showFileCount ? formatProjectEditorFilesCount(stats.files) : undefined,
+    `+${formatProjectEditorLineCount(stats.additions)}`,
+    `-${formatProjectEditorLineCount(stats.deletions)}`,
+  ]
+    .filter((part): part is string => part !== undefined)
+    .join(" ");
 }
 
 function formatProjectEditorFilesCount(files: number): string {
@@ -260,6 +268,7 @@ function formatProjectEditorStatusLabel(
   stats: SidebarProjectDiffStats,
   status: ProjectEditorButtonStatus,
   errorMessage: string | undefined,
+  showFileCount: boolean,
 ): string {
   if (status === "opening") {
     return "Code opening";
@@ -267,23 +276,25 @@ function formatProjectEditorStatusLabel(
   if (status === "error") {
     return `Code error: ${errorMessage ?? "VS Code failed to load."}`;
   }
-  return formatProjectEditorButtonLabel(stats);
+  return formatProjectEditorButtonLabel(stats, showFileCount);
 }
 
 function ProjectEditorDiffLabel({
   errorMessage,
+  showFileCount,
   stats,
   status,
 }: {
   errorMessage?: string;
+  showFileCount: boolean;
   stats: SidebarProjectDiffStats;
   status: ProjectEditorButtonStatus;
 }) {
   /**
-   * CDXC:EditorPanes 2026-05-09-15:39
-   * Visible code-pane diff counts use pastel semantic colors: blue for files,
-   * green for added lines, and red for removed lines, while preserving the
-   * compact sidebar label requested for the project editor row.
+   * CDXC:EditorPanes 2026-05-10-16:12
+   * Visible project editor diff counts align to the right edge without
+   * brackets or bullet separators. Files stay hidden unless Settings enables
+   * them, while added/removed lines keep semantic green/red colors.
    *
    * CDXC:EditorPanes 2026-05-09-17:24
    * Startup and crash states stay in the same session-card row instead of
@@ -315,44 +326,20 @@ function ProjectEditorDiffLabel({
   return (
     <span className="project-editor-diff-label">
       <span className="project-editor-diff-prefix">Code</span>
-      <span aria-hidden="true" className="project-editor-diff-punctuation">
-        (
-      </span>
-      <span className="project-editor-diff-files">
-        {formatProjectEditorFilesCount(stats.files)}
-      </span>
-      <span aria-hidden="true" className="project-editor-diff-divider">
-        •
-      </span>
-      <span className="project-editor-diff-stat project-editor-diff-stat-additions">
-        +{formatProjectEditorLineCount(stats.additions)}
-      </span>
-      <span aria-hidden="true" className="project-editor-diff-divider">
-        •
-      </span>
-      <span className="project-editor-diff-stat project-editor-diff-stat-deletions">
-        -{formatProjectEditorLineCount(stats.deletions)}
-      </span>
-      <span aria-hidden="true" className="project-editor-diff-punctuation">
-        )
+      <span className="project-editor-diff-stats">
+        {showFileCount ? (
+          <span className="project-editor-diff-files">
+            {formatProjectEditorFilesCount(stats.files)}
+          </span>
+        ) : null}
+        <span className="project-editor-diff-stat project-editor-diff-stat-additions">
+          +{formatProjectEditorLineCount(stats.additions)}
+        </span>
+        <span className="project-editor-diff-stat project-editor-diff-stat-deletions">
+          -{formatProjectEditorLineCount(stats.deletions)}
+        </span>
       </span>
     </span>
-  );
-}
-
-function ProjectEditorDiffTooltip() {
-  /**
-   * CDXC:EditorPanes 2026-05-10-11:43
-   * The Code row tooltip explains the three compact diff numbers directly in
-   * three shadcn tooltip lines so users can decode the capped files/add/remove
-   * summary without adding persistent sidebar help text.
-   */
-  return (
-    <div className="project-editor-diff-tooltip">
-      <div>Files changed in this project</div>
-      <div>Lines added across changed files</div>
-      <div>Lines removed across changed files</div>
-    </div>
   );
 }
 
@@ -482,6 +469,11 @@ export function SessionGroupSection({
   const areSessionDropTargetsDisabled = draggingDisabled || sessionDraggingDisabled;
   const debuggingMode = useSidebarStore((state) => state.hud.debuggingMode);
   const agents = useSidebarStore((state) => state.hud.agents);
+  const showProjectEditorDiffFileCount = useSidebarStore(
+    (state) =>
+      state.hud.settings?.showProjectEditorDiffFileCount ??
+      DEFAULT_zmux_SETTINGS.showProjectEditorDiffFileCount,
+  );
   const selectedIdeTarget = useSidebarStore(
     (state) => state.hud.settings?.zedOverlayTargetApp ?? DEFAULT_zmux_SETTINGS.zedOverlayTargetApp,
   );
@@ -575,14 +567,6 @@ export function SessionGroupSection({
         : "idle";
   const projectEditorLifecycleState =
     displayedProjectEditorStatus === "error" ? "error" : "running";
-  const projectEditorTooltipContent =
-    displayedProjectEditorStatus === "error" ? (
-      projectEditorErrorMessage
-    ) : displayedProjectEditorStatus === "opening" ? (
-      "Opening code editor"
-    ) : (
-      <ProjectEditorDiffTooltip />
-    );
   /**
    * CDXC:EditorPanes 2026-05-09-17:24
    * The project editor row represents a started editor attempt. Keep it visible
@@ -1703,81 +1687,82 @@ export function SessionGroupSection({
                * CDXC:EditorPanes 2026-05-08-13:00
                * The revealed VS Code row belongs inside the project group list
                * before normal sessions and has its own close control.
+               *
+               * CDXC:EditorPanes 2026-05-10-16:20
+               * The project editor row has no hover tooltip; the visible Code
+               * label and right-aligned diff stats are self-explanatory here.
                */
-              <AppTooltip
-                content={projectEditorTooltipContent}
-                contentClassName="project-editor-diff-tooltip-content"
+              <div
+                className="session-frame project-editor-session-frame"
+                data-activity={projectEditorActivity}
+                data-focused={String(projectContext.editor.isOpen)}
+                data-group-connector={String(showSessionGroupConnector)}
+                data-lifecycle-state={projectEditorLifecycleState}
+                data-running="true"
+                data-sleeping={String(projectContext.editor.isSleeping)}
+                data-visible={String(projectContext.editor.isOpen)}
               >
-                <div
-                  className="session-frame project-editor-session-frame"
-                  data-activity={projectEditorActivity}
+                <VisualStudioCodeIcon
+                  aria-hidden="true"
+                  className="session-floating-agent-tabler-icon project-editor-floating-icon"
+                />
+                <article
+                  aria-label={`Open code editor for ${group.title}: ${formatProjectEditorStatusLabel(
+                    projectContext.editor.diffStats,
+                    displayedProjectEditorStatus,
+                    projectEditorErrorMessage,
+                    showProjectEditorDiffFileCount,
+                  )}`}
+                  aria-pressed={projectContext.editor.isOpen}
+                  className="session project-editor-card-button"
                   data-focused={String(projectContext.editor.isOpen)}
-                  data-group-connector={String(showSessionGroupConnector)}
-                  data-lifecycle-state={projectEditorLifecycleState}
-                  data-running="true"
+                  data-load-status={displayedProjectEditorStatus}
+                  data-placement="session"
                   data-sleeping={String(projectContext.editor.isSleeping)}
                   data-visible={String(projectContext.editor.isOpen)}
-                >
-                  <VisualStudioCodeIcon
-                    aria-hidden="true"
-                    className="session-floating-agent-tabler-icon project-editor-floating-icon"
-                  />
-                  <article
-                    aria-label={`Open code editor for ${group.title}: ${formatProjectEditorStatusLabel(
-                      projectContext.editor.diffStats,
-                      displayedProjectEditorStatus,
-                      projectEditorErrorMessage,
-                    )}`}
-                    aria-pressed={projectContext.editor.isOpen}
-                    className="session project-editor-card-button"
-                    data-focused={String(projectContext.editor.isOpen)}
-                    data-load-status={displayedProjectEditorStatus}
-                    data-placement="session"
-                    data-sleeping={String(projectContext.editor.isSleeping)}
-                    data-visible={String(projectContext.editor.isOpen)}
-                    onAuxClick={(event) => {
-                      if (event.button !== 1) {
-                        return;
-                      }
+                  onAuxClick={(event) => {
+                    if (event.button !== 1) {
+                      return;
+                    }
 
-                      event.preventDefault();
-                      event.stopPropagation();
-                      hideProjectEditorButton();
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      openProjectEditor();
-                    }}
-                    onKeyDown={handleProjectEditorKeyDown}
-                    onMouseEnter={refreshProjectDiffStats}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <div className="session-head project-editor-session-head">
-                      <div className="session-alias-heading">
-                        <ProjectEditorDiffLabel
-                          errorMessage={projectEditorErrorMessage}
-                          stats={projectContext.editor.diffStats}
-                          status={displayedProjectEditorStatus}
-                        />
-                      </div>
+                    event.preventDefault();
+                    event.stopPropagation();
+                    hideProjectEditorButton();
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    openProjectEditor();
+                  }}
+                  onKeyDown={handleProjectEditorKeyDown}
+                  onMouseEnter={refreshProjectDiffStats}
+                  role="button"
+                  tabIndex={0}
+                >
+                  <div className="session-head project-editor-session-head">
+                    <div className="session-alias-heading">
+                      <ProjectEditorDiffLabel
+                        errorMessage={projectEditorErrorMessage}
+                        showFileCount={showProjectEditorDiffFileCount}
+                        stats={projectContext.editor.diffStats}
+                        status={displayedProjectEditorStatus}
+                      />
                     </div>
-                  </article>
-                  <button
-                    aria-label={`Close code editor button for ${group.title}`}
-                    className="close-button project-editor-close-button"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      hideProjectEditorButton();
-                    }}
-                    type="button"
-                  >
-                    <IconX aria-hidden="true" size={14} stroke={1.8} />
-                  </button>
-                </div>
-              </AppTooltip>
+                  </div>
+                </article>
+                <button
+                  aria-label={`Close code editor button for ${group.title}`}
+                  className="close-button project-editor-close-button"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    hideProjectEditorButton();
+                  }}
+                  type="button"
+                >
+                  <IconX aria-hidden="true" size={14} stroke={1.8} />
+                </button>
+              </div>
             ) : null}
             {orderedSessionIds.length > 0 ? (
               orderedSessionIds.map((sessionId, sessionIndex) => (
@@ -2228,7 +2213,7 @@ function ProjectAgentLauncherIcon({ agent }: { agent?: SidebarAgentButton }) {
         className="group-agent-launcher-icon group-agent-launcher-agent-icon"
         data-agent-icon={agent.icon}
         style={{
-          backgroundColor: AGENT_LOGO_COLORS[agent.icon],
+          backgroundColor: "currentColor",
           maskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
           WebkitMaskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
         }}

@@ -69,6 +69,21 @@ describe("normalizezmuxSettings", () => {
     });
   });
 
+  test("hides project editor file counts by default", () => {
+    /**
+     * CDXC:EditorPanes 2026-05-10-16:12
+     * Project editor rows default to showing added/removed line counts only;
+     * the changed-file number is an explicit Settings preference.
+     */
+    expect(DEFAULT_zmux_SETTINGS.showProjectEditorDiffFileCount).toBe(false);
+    expect(normalizezmuxSettings({})).toMatchObject({
+      showProjectEditorDiffFileCount: false,
+    });
+    expect(normalizezmuxSettings({ showProjectEditorDiffFileCount: true })).toMatchObject({
+      showProjectEditorDiffFileCount: true,
+    });
+  });
+
   test("defaults new installs to Combined sidebar mode and keeps Separated selectable", () => {
     /**
      * CDXC:SidebarMode 2026-05-03-10:42

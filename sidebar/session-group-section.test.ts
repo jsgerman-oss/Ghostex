@@ -80,7 +80,7 @@ describe("shouldFocusGroupOnHeaderActivation", () => {
 });
 
 describe("formatProjectEditorButtonLabel", () => {
-  test("formats the compact code-prefixed files and changed-lines summary", () => {
+  test("formats the compact code-prefixed changed-lines summary by default", () => {
     expect(
       formatProjectEditorButtonLabel({
         additions: 9,
@@ -89,7 +89,7 @@ describe("formatProjectEditorButtonLabel", () => {
         isLoading: false,
         isRepo: true,
       }),
-    ).toBe("Code (1 • +9 • -11)");
+    ).toBe("Code +9 -11");
   });
 
   test("caps the compact project editor diff counts for stable sidebar width", () => {
@@ -101,6 +101,21 @@ describe("formatProjectEditorButtonLabel", () => {
         isLoading: false,
         isRepo: true,
       }),
-    ).toBe("Code (99 • +999 • -999)");
+    ).toBe("Code +999 -999");
+  });
+
+  test("includes the capped file count when enabled", () => {
+    expect(
+      formatProjectEditorButtonLabel(
+        {
+          additions: 1200,
+          deletions: 1001,
+          files: 120,
+          isLoading: false,
+          isRepo: true,
+        },
+        true,
+      ),
+    ).toBe("Code 99 +999 -999");
   });
 });

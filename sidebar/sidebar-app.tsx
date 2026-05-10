@@ -140,6 +140,13 @@ type SidebarSessionPointerDragState = {
   };
 };
 
+type SidebarUiCollapseState = {
+  collapsedGroupsById: Record<string, true>;
+  isRecentProjectsOpen: boolean;
+  isReferenceChatsCollapsed: boolean;
+  isReferenceProjectsCollapsed: boolean;
+};
+
 const sensors = [
   PointerSensor.configure({
     activationConstraints(event) {
@@ -157,6 +164,7 @@ const SIDEBAR_STARTUP_INTERACTION_BLOCK_MS = 1500;
 const SIDEBAR_STARTUP_REPRO_WINDOW_MS = 15_000;
 const SIDEBAR_POINTER_DRAG_REORDER_THRESHOLD_PX = 8;
 const SIDEBAR_SECTION_COLLAPSE_PERSIST_DEBOUNCE_MS = 200;
+const SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY = "zmux-sidebar-ui-collapse-state";
 const BROWSER_AUTO_COLLAPSE_SUPPRESSION_MS = 1_200;
 const MIN_SESSION_SEARCH_QUERY_LENGTH = 2;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
@@ -176,7 +184,72 @@ const DEBUG_BUILD_STAMP_STYLE: CSSProperties = {
   opacity: 0.72,
 };
 
+function createDefaultSidebarUiCollapseState(): SidebarUiCollapseState {
+  return {
+    collapsedGroupsById: {},
+    isRecentProjectsOpen: false,
+    isReferenceChatsCollapsed: false,
+    isReferenceProjectsCollapsed: false,
+  };
+}
+
+function readSidebarUiCollapseState(): SidebarUiCollapseState {
+  if (typeof window === "undefined") {
+    return createDefaultSidebarUiCollapseState();
+  }
+
+  try {
+    const candidate = JSON.parse(
+      window.localStorage.getItem(SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY) ?? "null",
+    );
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return createDefaultSidebarUiCollapseState();
+    }
+
+    return {
+      collapsedGroupsById: normalizeStoredCollapsedGroupsById(
+        (candidate as Partial<SidebarUiCollapseState>).collapsedGroupsById,
+      ),
+      isRecentProjectsOpen:
+        (candidate as Partial<SidebarUiCollapseState>).isRecentProjectsOpen === true,
+      isReferenceChatsCollapsed:
+        (candidate as Partial<SidebarUiCollapseState>).isReferenceChatsCollapsed === true,
+      isReferenceProjectsCollapsed:
+        (candidate as Partial<SidebarUiCollapseState>).isReferenceProjectsCollapsed === true,
+    };
+  } catch {
+    return createDefaultSidebarUiCollapseState();
+  }
+}
+
+function normalizeStoredCollapsedGroupsById(candidate: unknown): Record<string, true> {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    return {};
+  }
+
+  const collapsedGroupsById: Record<string, true> = {};
+  for (const [groupId, collapsed] of Object.entries(candidate)) {
+    if (collapsed === true) {
+      collapsedGroupsById[groupId] = true;
+    }
+  }
+  return collapsedGroupsById;
+}
+
+function writeSidebarUiCollapseState(state: SidebarUiCollapseState): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Ignore storage failures; the in-memory collapse state should still update.
+  }
+}
+
 export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) {
+  const [initialUiCollapseState] = useState(readSidebarUiCollapseState);
   const [isStartupInteractionBlocked, setIsStartupInteractionBlocked] = useState(true);
   const [autoEditingGroupId, setAutoEditingGroupId] = useState<string>();
   const [agentCreateRequestId, setAgentCreateRequestId] = useState(0);
@@ -184,16 +257,24 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const [isDaemonSessionsOpen, setIsDaemonSessionsOpen] = useState(false);
   const [isPinnedPromptsOpen, setIsPinnedPromptsOpen] = useState(false);
   const [isPreviousSessionsOpen, setIsPreviousSessionsOpen] = useState(false);
-  const [isRecentProjectsOpen, setIsRecentProjectsOpen] = useState(false);
-  const [isReferenceChatsCollapsed, setIsReferenceChatsCollapsed] = useState(false);
-  const [isReferenceProjectsCollapsed, setIsReferenceProjectsCollapsed] = useState(false);
+  const [isRecentProjectsOpen, setIsRecentProjectsOpen] = useState(
+    initialUiCollapseState.isRecentProjectsOpen,
+  );
+  const [isReferenceChatsCollapsed, setIsReferenceChatsCollapsed] = useState(
+    initialUiCollapseState.isReferenceChatsCollapsed,
+  );
+  const [isReferenceProjectsCollapsed, setIsReferenceProjectsCollapsed] = useState(
+    initialUiCollapseState.isReferenceProjectsCollapsed,
+  );
   const [isScratchPadOpen, setIsScratchPadOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSessionSearchOpen, setIsSessionSearchOpen] = useState(false);
   const [completionFlashNonceBySessionId, setCompletionFlashNonceBySessionId] = useState<
     Record<string, number>
   >({});
-  const [collapsedGroupsById, setCollapsedGroupsById] = useState<Record<string, true>>({});
+  const [collapsedGroupsById, setCollapsedGroupsById] = useState<Record<string, true>>(
+    initialUiCollapseState.collapsedGroupsById,
+  );
   const previousExpandedReferenceProjectGroupIdsRef = useRef<string[]>([]);
   const [recentProjectsQuery, setRecentProjectsQuery] = useState("");
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
@@ -211,6 +292,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const groupIdsRef = useRef<string[]>([]);
   const sessionIdsByGroupRef = useRef<SessionIdsByGroup>({});
   const previousSessionCountsByGroupRef = useRef<Record<string, number>>({});
+  const didApplyStartupEmptyChatsCollapseRef = useRef(false);
   const browserAutoCollapseSuppressedUntilRef = useRef(0);
   const previousNormalizedSessionSearchQueryRef = useRef("");
   const pointerDownSessionTargetRef = useRef<SidebarPointerDownSessionTarget | undefined>(
@@ -1045,6 +1127,50 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     () => Object.values(sessionsById).find((session) => session.isFocused)?.sessionId,
     [sessionsById],
   );
+  useLayoutEffect(() => {
+    if (
+      didApplyStartupEmptyChatsCollapseRef.current ||
+      !hasAppliedHydrateRef.current ||
+      !isCombinedSidebarMode
+    ) {
+      return;
+    }
+
+    didApplyStartupEmptyChatsCollapseRef.current = true;
+    const hasChatSessions = displayedReferenceChatGroupIds.some(
+      (groupId) => (authoritativeSessionIdsByGroup[groupId] ?? []).length > 0,
+    );
+    if (!hasChatSessions) {
+      /**
+       * CDXC:SidebarReference 2026-05-10-15:51
+       * Startup restores the user's section/group collapse state, except an empty
+       * Combined Chats section must always begin collapsed so a project-only
+       * workspace does not waste vertical space on an empty chat container.
+       */
+      setIsReferenceChatsCollapsed(true);
+    }
+  }, [authoritativeSessionIdsByGroup, displayedReferenceChatGroupIds, isCombinedSidebarMode]);
+
+  useEffect(() => {
+    /**
+     * CDXC:SidebarReference 2026-05-10-15:51
+     * Combined section headers, Recent Projects, and per-group collapse state are
+     * UI navigation state. Persist them in the sidebar webview so restarting
+     * zmux keeps collapsed items collapsed and expanded items expanded.
+     */
+    writeSidebarUiCollapseState({
+      collapsedGroupsById,
+      isRecentProjectsOpen,
+      isReferenceChatsCollapsed,
+      isReferenceProjectsCollapsed,
+    });
+  }, [
+    collapsedGroupsById,
+    isRecentProjectsOpen,
+    isReferenceChatsCollapsed,
+    isReferenceProjectsCollapsed,
+  ]);
+
   const shouldShowSessionSearchEmptyState =
     isSessionSearchFiltering &&
     displayedBrowserGroupIds.length === 0 &&

@@ -52,6 +52,7 @@ export type zmuxSettings = {
   browserOpenMode: BrowserOpenMode;
   codeServerLinkVscodeUserConfig: boolean;
   codeServerUseVscodeInsidersUserConfig: boolean;
+  showProjectEditorDiffFileCount: boolean;
   completionBellEnabled: boolean;
   completionSound: CompletionSoundSetting;
   createSessionOnSidebarDoubleClick: boolean;
@@ -134,6 +135,13 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    */
   codeServerLinkVscodeUserConfig: true,
   codeServerUseVscodeInsidersUserConfig: false,
+  /**
+   * CDXC:EditorPanes 2026-05-10-16:12
+   * Project editor rows should hide the changed-file count by default and show
+   * only added/removed line counts. Users can opt back into the file number
+   * from Settings when they want the full diff summary.
+   */
+  showProjectEditorDiffFileCount: false,
   completionBellEnabled: false,
   completionSound: DEFAULT_COMPLETION_SOUND,
   createSessionOnSidebarDoubleClick: false,
@@ -422,6 +430,16 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       source,
       "codeServerUseVscodeInsidersUserConfig",
       DEFAULT_zmux_SETTINGS.codeServerUseVscodeInsidersUserConfig,
+    ),
+    /**
+     * CDXC:EditorPanes 2026-05-10-16:12
+     * Missing or invalid older settings must keep the project editor row in
+     * the quieter default that hides the changed-file count.
+     */
+    showProjectEditorDiffFileCount: readBoolean(
+      source,
+      "showProjectEditorDiffFileCount",
+      DEFAULT_zmux_SETTINGS.showProjectEditorDiffFileCount,
     ),
     completionBellEnabled: readBoolean(
       source,
