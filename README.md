@@ -47,7 +47,11 @@ brew install --cask maddada/tap/zmux
 ---
 
 ## Other useful stuff:
-- Prompt to find any past thread in your history with just a few keywords.
+- Built in zmx/tmux/zellij support 
+  - Can continue via ssh then use zmux cli to attach. Beta but working well already with especially zmx.
+- Automations and cross agent messages (coming very soon)
+- Better worktrees support coming very soon - Want to nail the UX
+- Prompt to find any past thread in your history with just a few keywords
   - Very useful if you want to continue with an agent that already has context about a complex feature
 - Auto sync of the terminal title and status with UI
 - Allows up to 3x3 split and multiple groups per project each with different split
