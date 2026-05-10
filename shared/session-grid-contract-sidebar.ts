@@ -486,6 +486,7 @@ export type SidebarToExtensionMessage =
         | "openAccessibilityPreferences"
         | "openGhosttyConfigFile"
         | "openGhosttySettingsDocs"
+        | "installZapet"
         | "resetGhosttySettingsToDefault";
     }
   | {

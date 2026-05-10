@@ -318,6 +318,9 @@ function AppModalHost() {
         onGhosttySettingsAction={(action) => {
           vscode.postMessage({ type: action });
         }}
+        onInstallZapet={() => {
+          vscode.postMessage({ type: "installZapet" });
+        }}
         onOpenAccessibilityPreferences={() => {
           /**
            * CDXC:AccessibilityPermissions 2026-05-08-13:08

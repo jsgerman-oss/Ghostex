@@ -1439,6 +1439,37 @@ function openGhosttyConfigFile(): void {
   postNative({ type: "openGhosttyConfigFile" });
 }
 
+async function installZapetFromBrew(): Promise<void> {
+  /**
+   * CDXC:ZapetPromptEditing 2026-05-10-11:11
+   * The Settings install button installs Zapet from the user's Homebrew tap.
+   * macOS GUI launches may not inherit a shell PATH, so resolve Homebrew from
+   * the shell command before running the single brew install operation.
+   */
+  const result = await runNativeProcess(
+    "/bin/zsh",
+    [
+      "-lc",
+      [
+        "if command -v brew >/dev/null 2>&1; then BREW=$(command -v brew);",
+        "elif [ -x /opt/homebrew/bin/brew ]; then BREW=/opt/homebrew/bin/brew;",
+        "elif [ -x /usr/local/bin/brew ]; then BREW=/usr/local/bin/brew;",
+        "else echo 'Homebrew was not found on PATH, /opt/homebrew/bin, or /usr/local/bin.' >&2; exit 127; fi;",
+        '"$BREW" install maddada/tap/zapet',
+      ].join(" "),
+    ],
+    { timeoutMs: 5 * 60_000 },
+  );
+  if (result.exitCode === 0) {
+    showNativeMessage("info", "Zapet installed from Homebrew.");
+    return;
+  }
+  showNativeMessage(
+    "error",
+    `Zapet install failed: ${(result.stderr || result.stdout || "brew install failed").trim()}`,
+  );
+}
+
 function showNativeBrowserWindow(): void {
   /**
    * CDXC:BrowserOverlay 2026-04-26-07:37
@@ -1453,13 +1484,18 @@ function showNativeBrowserWindow(): void {
 function runNativeProcess(
   executable: string,
   args: string[],
-  options: { cwd?: string; env?: Record<string, string> } = {},
+  options: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {},
 ): Promise<NativeProcessResult> {
   /**
    * CDXC:NativeCommandBridge 2026-04-26-03:16
    * Native sidebar features can request background process execution from Swift.
    * This keeps Git and URL-launch workflows native while preserving the shared
    * sidebar UI contract.
+   *
+   * CDXC:ZapetPromptEditing 2026-05-10-11:11
+   * Homebrew installs can exceed the short default command timeout. Allow the
+   * Zapet install button to request a longer wait without changing existing
+   * Git and diagnostics command timing.
    */
   const requestId = `process-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   postNative({
@@ -1474,7 +1510,7 @@ function runNativeProcess(
     const timeout = window.setTimeout(() => {
       pendingProcessResults.delete(requestId);
       reject(new Error(`${executable} ${args.join(" ")} timed out`));
-    }, 30_000);
+    }, options.timeoutMs ?? 30_000);
     pendingProcessResults.set(requestId, { reject, resolve, timeout });
   });
 }
@@ -1820,29 +1856,35 @@ function activeSessionPersistenceProviderFromSettings(): TerminalSessionPersiste
     : undefined;
 }
 
-function resolveTerminalSessionPersistenceProvider(
-  session: Pick<
-    TerminalSessionRecord,
-    "sessionPersistenceName" | "sessionPersistenceProvider" | "tmuxSessionName"
-  >,
+function resolveTerminalSessionPersistenceProvider(): TerminalSessionPersistenceProvider | undefined {
+  /**
+   * CDXC:SessionPersistence 2026-05-10-03:35
+   * Settings is now the source of truth for provider-backed terminal creation.
+   * Reload, wake, app restore, and previous-session restore must use the
+   * currently selected tmux/zmx/zellij/off value instead of reusing the provider
+   * that happened to be active when the session record was first created.
+   */
+  return activeSessionPersistenceProviderFromSettings();
+}
+
+function sessionPersistenceNameForProvider(
+  provider: TerminalSessionPersistenceProvider | undefined,
+  session: Pick<TerminalSessionRecord, "sessionPersistenceName" | "tmuxSessionName">,
+): string | undefined {
+  return provider ? session.sessionPersistenceName ?? session.tmuxSessionName : undefined;
+}
+
+function resolveTerminalAttachProvider(
+  session: TerminalSessionRecord,
 ): TerminalSessionPersistenceProvider | undefined {
   /**
-   * CDXC:SessionPersistence 2026-05-07-20:32
-   * Reconnect semantics are per session, not per current Settings value. Prefer
-   * the stored provider/name pair, keep legacy tmuxSessionName records on tmux,
-   * and only use the active Settings provider for records that predate provider
-   * persistence.
+   * CDXC:SessionPersistence 2026-05-10-03:35
+   * Copying an attach command is an inspection action for the live persisted
+   * backend, so it uses the stored provider/name pair. Recreate paths use
+   * resolveTerminalSessionPersistenceProvider instead so Settings can override
+   * old records on reload, wake, and previous-session restore.
    */
-  if (session.sessionPersistenceProvider) {
-    return session.sessionPersistenceProvider;
-  }
-  if (session.tmuxSessionName) {
-    return "tmux";
-  }
-  if (session.sessionPersistenceName) {
-    return activeSessionPersistenceProviderFromSettings();
-  }
-  return activeSessionPersistenceProviderFromSettings();
+  return session.sessionPersistenceProvider ?? (session.tmuxSessionName ? "tmux" : undefined);
 }
 
 function syncGhosttyTerminalSettings(
@@ -3026,14 +3068,18 @@ function restorePreviousTerminalSession(
   const project = activatePreviousSessionProject(previousSession);
   const groupId = resolvePreviousSessionRestoreGroupId(project, previousSession.groupId);
   const initialInput = buildNativeRestoredTerminalInitialInput(archivedRecord);
+  const sessionPersistenceProvider = resolveTerminalSessionPersistenceProvider();
   const restoredSession = createTerminal(
     archivedRecord.title || previousSession.primaryTitle || DEFAULT_TERMINAL_SESSION_TITLE,
     initialInput,
     groupId,
     archivedRecord.agentName,
     {
-      sessionPersistenceName: archivedRecord.sessionPersistenceName ?? archivedRecord.tmuxSessionName,
-      sessionPersistenceProvider: resolveTerminalSessionPersistenceProvider(archivedRecord),
+      sessionPersistenceName: sessionPersistenceNameForProvider(
+        sessionPersistenceProvider,
+        archivedRecord,
+      ),
+      sessionPersistenceProvider,
     },
   );
   if (!restoredSession) {
@@ -3132,14 +3178,8 @@ function mergeArchivedTerminalDetails(
     firstUserMessage: archivedRecord.firstUserMessage,
     isFavorite: archivedRecord.isFavorite,
     isSleeping: false,
-    sessionPersistenceName:
-      archivedRecord.sessionPersistenceName ??
-      archivedRecord.tmuxSessionName ??
-      restoredSession.sessionPersistenceName,
-    sessionPersistenceProvider:
-      archivedRecord.sessionPersistenceProvider ??
-      resolveTerminalSessionPersistenceProvider(archivedRecord) ??
-      restoredSession.sessionPersistenceProvider,
+    sessionPersistenceName: restoredSession.sessionPersistenceName,
+    sessionPersistenceProvider: restoredSession.sessionPersistenceProvider,
     terminalEngine: archivedRecord.terminalEngine ?? restoredSession.terminalEngine,
     title: archivedRecord.title || restoredSession.title,
     titleSource: archivedRecord.titleSource ?? restoredSession.titleSource,
@@ -4128,20 +4168,29 @@ function restoreNativeTerminalSession(
   if (initialInput.trim()) {
     suppressNativeSessionActivityIndicators(session.sessionId, "restore-resume-command");
   }
-  const sessionPersistenceProvider = resolveTerminalSessionPersistenceProvider(session);
+  const sessionPersistenceProvider = resolveTerminalSessionPersistenceProvider();
+  const sessionPersistenceName = sessionPersistenceNameForProvider(
+    sessionPersistenceProvider,
+    session,
+  );
   if (
-    sessionPersistenceProvider &&
-    session.sessionPersistenceProvider !== sessionPersistenceProvider
+    session.sessionPersistenceProvider !== sessionPersistenceProvider ||
+    session.sessionPersistenceName !== sessionPersistenceName
   ) {
     updateProjectWorkspace(
       project.projectId,
-      (workspace) =>
-        setTerminalSessionPersistenceProviderInSimpleWorkspace(
+      (workspace) => {
+        const providerUpdate = setTerminalSessionPersistenceProviderInSimpleWorkspace(
           workspace,
           session.sessionId,
           sessionPersistenceProvider,
-        )
-          .snapshot,
+        ).snapshot;
+        return setTerminalSessionPersistenceNameInSimpleWorkspace(
+          providerUpdate,
+          session.sessionId,
+          sessionPersistenceName,
+        ).snapshot;
+      },
     );
   }
   terminalStateById.set(session.sessionId, {
@@ -4158,7 +4207,7 @@ function restoreNativeTerminalSession(
      */
     protectStoredTitleFromAutomation:
       getNativeStoredTrustedResumeTitle(session).title !== undefined,
-    sessionPersistenceName: session.sessionPersistenceName ?? session.tmuxSessionName,
+    sessionPersistenceName,
     sessionPersistenceProvider,
     sessionStateFilePath,
     terminalTitle: session.title,
@@ -4171,7 +4220,7 @@ function restoreNativeTerminalSession(
     reason,
     sessionId: session.sessionId,
     sessionStateFilePath,
-    sessionPersistenceName: session.sessionPersistenceName ?? session.tmuxSessionName,
+    sessionPersistenceName,
     sessionPersistenceProvider,
     terminalTitle: session.title,
   });
@@ -4202,7 +4251,7 @@ function restoreNativeTerminalSession(
     env: nativeEnvironment,
     initialInput,
     sessionId: nativeSessionId,
-    sessionPersistenceName: session.sessionPersistenceName ?? session.tmuxSessionName,
+    sessionPersistenceName,
     sessionPersistenceProvider,
     title: session.title,
     type: "createTerminal",
@@ -4473,7 +4522,7 @@ function createNativeAgentSessionEnvironment(args: {
    * blank terminals and agent-launched terminals, which lets manual `pi`
    * starts report Pi session metadata back into the sidebar.
    */
-  return {
+  const environment: Record<string, string> = {
     VSMUX_AGENT: args.agentName ?? "",
     VSMUX_SESSION_ID: args.sessionId,
     VSMUX_SESSION_STATE_FILE: args.sessionStateFilePath,
@@ -4490,6 +4539,18 @@ function createNativeAgentSessionEnvironment(args: {
     zmux_WORKSPACE_ID: args.project.projectId,
     zmux_WORKSPACE_ROOT: args.project.path,
   };
+  if (settings.richPromptEditingWithZapet) {
+    /**
+     * CDXC:ZapetPromptEditing 2026-05-10-11:11
+     * Rich Prompt Editing with Zapet changes the launched app/agent terminal
+     * environment directly. Inject EDITOR=zapet only when the Settings toggle
+     * is enabled; native then enforces it after zsh profile files so
+     * prompt-editor CLIs open Zapet without a try/fallback path.
+     */
+    environment.EDITOR = "zapet";
+    environment.ZMUX_RICH_PROMPT_EDITING_WITH_ZAPET = "1";
+  }
+  return environment;
 }
 
 function nativeHomeDirectory(): string {
@@ -5554,17 +5615,22 @@ function createTerminal(
     visibleSessionIdsBefore: beforeSnapshot?.visibleSessionIds,
   });
   /**
-   * CDXC:SessionPersistence 2026-05-07-20:32
-   * New and reloaded terminals persist the selected provider on the session
-   * record at creation time. Later Settings changes must not change which
-   * tmux/zmx/zellij backend an existing card reconnects to.
+   * CDXC:SessionPersistence 2026-05-10-03:35
+   * New, reloaded, restored, and previous-session terminals use the current
+   * Settings provider as the source of truth. Recreate callers pass that
+   * resolved provider through options so archived records cannot keep an old
+   * tmux/zmx/zellij backend alive after the user switches provider or turns
+   * persistence off.
    */
   const sessionPersistenceProvider =
     options?.sessionPersistenceProvider ?? activeSessionPersistenceProviderFromSettings();
+  const sessionPersistenceName = sessionPersistenceProvider
+    ? options?.sessionPersistenceName
+    : undefined;
   const result = createSessionInSimpleWorkspace(targetWorkspace, {
     agentName,
     initialPresentation: options?.initialPresentation,
-    sessionPersistenceName: options?.sessionPersistenceName,
+    sessionPersistenceName,
     sessionPersistenceProvider,
     terminalEngine: "ghostty-native",
     title,
@@ -5599,7 +5665,7 @@ function createTerminal(
     agentSessionId: session.agentSessionId,
     agentSessionPath: session.agentSessionPath,
     lifecycleState: "running",
-    sessionPersistenceName: session.sessionPersistenceName ?? session.tmuxSessionName,
+    sessionPersistenceName,
     sessionPersistenceProvider,
     sessionStateFilePath,
     terminalTitle: title,
@@ -5639,7 +5705,7 @@ function createTerminal(
     colorEnv: readAgentColorEnvironmentSnapshot(nativeEnvironment),
     nativeSessionId,
     projectId: project.projectId,
-    sessionPersistenceName: session.sessionPersistenceName ?? session.tmuxSessionName,
+    sessionPersistenceName,
     sessionPersistenceProvider,
     sessionId: session.sessionId,
   });
@@ -5656,7 +5722,7 @@ function createTerminal(
     env: nativeEnvironment,
     initialInput,
     sessionId: nativeSessionId,
-    sessionPersistenceName: session.sessionPersistenceName ?? session.tmuxSessionName,
+    sessionPersistenceName,
     sessionPersistenceProvider,
     title,
     type: "createTerminal",
@@ -6986,6 +7052,8 @@ function focusSidebarSession(sessionId: string): void {
   focusTerminal(sessionId);
 }
 
+const NATIVE_HOTKEY_VISIBLE_COUNT_STEPS: readonly VisibleSessionCount[] = [1, 2, 3, 4, 6, 9];
+
 function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
   const action = getzmuxHotkeyActionById(actionId);
   if (!action) {
@@ -7004,6 +7072,9 @@ function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
    * focus shortcuts do not depend on a hidden fallback UI path.
    */
   switch (action.kind) {
+    case "adjustVisibleCount":
+      adjustNativeHotkeyVisibleCount(action.direction);
+      return;
     case "createSession":
       if (activeProject().isChat === true) {
         void createNativeChat();
@@ -7053,6 +7124,34 @@ function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
       publish();
       return;
   }
+}
+
+function adjustNativeHotkeyVisibleCount(direction: -1 | 1): void {
+  const currentVisibleCount = activeSnapshot().visibleCount;
+  const currentIndex = NATIVE_HOTKEY_VISIBLE_COUNT_STEPS.indexOf(currentVisibleCount);
+  const startingIndex = currentIndex >= 0 ? currentIndex : 0;
+  const nextIndex = Math.max(
+    0,
+    Math.min(NATIVE_HOTKEY_VISIBLE_COUNT_STEPS.length - 1, startingIndex + direction),
+  );
+  const nextVisibleCount = NATIVE_HOTKEY_VISIBLE_COUNT_STEPS[nextIndex] ?? currentVisibleCount;
+  if (nextVisibleCount === currentVisibleCount) {
+    logNativeHotkeyDebug("nativeHotkeys.visibleCountUnchanged", {
+      direction,
+      visibleCount: currentVisibleCount,
+    });
+    return;
+  }
+  /**
+   * CDXC:Hotkeys 2026-05-10-12:31
+   * Cmd+D and Cmd+Shift+D are separate default bindings for the same Split More
+   * action because tmux-style side/down split directions both map to increasing
+   * zmux's visible split count. Split Less uses the same ladder in reverse.
+   */
+  updateActiveProjectWorkspace((workspace) =>
+    setVisibleCountInSimpleWorkspace(workspace, nextVisibleCount),
+  );
+  publish();
 }
 
 function getMatchingNativeHotkeyActionId(
@@ -7150,6 +7249,14 @@ function normalizeNativeHotkeyKey(key: string): string | undefined {
 }
 
 function isNativeHotkeyEditableTarget(target: EventTarget | null): boolean {
+  if (target instanceof Element && target.closest("[data-hotkey-recorder='true']")) {
+    /**
+     * CDXC:Hotkeys 2026-05-10-12:06
+     * Rebinding must let the recorder own Command/Option chords that are already
+     * assigned globally. Do not dispatch app actions from inside recorder chrome.
+     */
+    return true;
+  }
   return (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
@@ -7540,6 +7647,7 @@ function restartNativeSession(sessionId: string): void {
   if (activeProjectId !== reference.project.projectId) {
     focusProject(reference.project.projectId);
   }
+  const sessionPersistenceProvider = resolveTerminalSessionPersistenceProvider();
   closeTerminal(reference.sessionId);
   createTerminal(
     session.title || DEFAULT_TERMINAL_SESSION_TITLE,
@@ -7547,8 +7655,11 @@ function restartNativeSession(sessionId: string): void {
     groupId,
     session.agentName,
     {
-      sessionPersistenceName: session.sessionPersistenceName ?? session.tmuxSessionName,
-      sessionPersistenceProvider: resolveTerminalSessionPersistenceProvider(session),
+      sessionPersistenceName: sessionPersistenceNameForProvider(
+        sessionPersistenceProvider,
+        session,
+      ),
+      sessionPersistenceProvider,
     },
   );
 }
@@ -7579,18 +7690,20 @@ function forkNativeSession(sessionId: string): void {
         : agentId === "claude"
           ? buildNativeClaudeForkCommand(session)
           : undefined;
+  const sessionPersistenceProvider = forkCommand
+    ? resolveTerminalSessionPersistenceProvider()
+    : undefined;
   createTerminal(
     `${session.title || DEFAULT_TERMINAL_SESSION_TITLE} Fork`,
     forkCommand ? `${forkCommand}\r` : "",
     groupId,
     forkCommand ? session.agentName : undefined,
     {
-      sessionPersistenceName: forkCommand
-        ? session.sessionPersistenceName ?? session.tmuxSessionName
-        : undefined,
-      sessionPersistenceProvider: forkCommand
-        ? resolveTerminalSessionPersistenceProvider(session)
-        : undefined,
+      sessionPersistenceName: sessionPersistenceNameForProvider(
+        sessionPersistenceProvider,
+        session,
+      ),
+      sessionPersistenceProvider,
     },
   );
 }
@@ -8446,8 +8559,15 @@ function copyAttachCommand(sessionId: string): void {
   if (!session) {
     return;
   }
-  const provider = resolveTerminalSessionPersistenceProvider(session);
-  const sessionPersistenceName = session.sessionPersistenceName ?? session.tmuxSessionName;
+  const terminalState = terminalStateById.get(reference.sessionId);
+  const provider =
+    terminalState?.sessionPersistenceProvider ??
+    (terminalState ? undefined : resolveTerminalAttachProvider(session));
+  const sessionPersistenceName =
+    terminalState?.sessionPersistenceName ??
+    (terminalState
+      ? undefined
+      : session.sessionPersistenceName ?? session.tmuxSessionName);
   if (!provider || !sessionPersistenceName) {
     showNativeMessage("info", "No persistence attach command is available for this session.");
     return;
@@ -9488,6 +9608,34 @@ function openProjectEditorForGroup(groupId: string): void {
   if (activeProjectId !== project.projectId) {
     focusProject(project.projectId);
   }
+  const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
+  if (
+    surfaceState?.isSleeping !== true &&
+    (surfaceState?.status === "opening" || surfaceState?.status === "running")
+  ) {
+    /**
+     * CDXC:EditorPanes 2026-05-10-11:24
+     * Clicking the revealed VS Code row for an already opening/running editor
+     * must focus the existing project-owned pane. Re-sending start/create would
+     * reset sidebar status to opening, while native only focuses the existing
+     * same-URL pane and does not emit a fresh running event, causing a false
+     * ten-second Code Error timeout.
+     */
+    cancelProjectEditorSleepTimer(project.projectId);
+    if (surfaceState.status === "running") {
+      cancelProjectEditorOpenTimer(project.projectId);
+    }
+    projectEditorSurfaceByProjectId.set(project.projectId, {
+      ...surfaceState,
+      errorMessage: undefined,
+      isOpen: true,
+      isSleeping: false,
+    });
+    postNative({ projectId: project.projectId, type: "focusProjectEditorPane" });
+    void refreshProjectDiffStats(project.projectId);
+    publish();
+    return;
+  }
   /**
    * CDXC:EditorPanes 2026-05-06-14:21
    * Opening a project editor should replace the workspace surface without
@@ -10378,6 +10526,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "openGhosttyConfigFile":
       openGhosttyConfigFile();
       return;
+    case "installZapet":
+      void installZapetFromBrew();
+      return;
     case "openAccessibilityPreferences":
       postNative({ type: "openAccessibilityPreferences" });
       return;
@@ -10928,14 +11079,17 @@ window.addEventListener("zmux-native-host-event", (event) => {
       if (hostEvent.sessionPersistenceName !== undefined) {
         /**
          * CDXC:SessionPersistence 2026-05-05-07:28
-         * Native persistence names are the durable reconnect identity. Persist
-         * them separately from the visible card title so app restart can attach
-         * to a live provider session before recreating and resuming the agent.
+         * Native persistence names are the durable provider-session identity.
+         * Persist them separately from the visible card title so the active
+         * Settings provider can attach to the named backend session when
+         * recreation is provider-backed.
          *
-         * CDXC:SessionPersistence 2026-05-07-20:32
-         * Persist the provider from the mounted terminal state together with
-         * the native-confirmed session name so restored cards can copy attach
-         * commands and reconnect even after Settings changes.
+         * CDXC:SessionPersistence 2026-05-10-03:35
+         * Persist the provider from the mounted terminal state for live badges
+         * and copy-attach commands. Reload, wake, app restore, and
+         * previous-session restore still resolve the next provider from current
+         * Settings, so this stored provider is descriptive rather than
+         * authoritative for recreation.
          */
         terminalState.sessionPersistenceName = hostEvent.sessionPersistenceName;
         setTerminalSessionPersistenceName(sidebarSessionId, hostEvent.sessionPersistenceName);

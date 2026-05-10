@@ -1,6 +1,52 @@
 import AppKit
 import GhosttyKit
 
+private func terminalCliArguments() -> [String] {
+  CommandLine.arguments.dropFirst().filter { argument in
+    !argument.hasPrefix("-psn_")
+  }
+}
+
+private func runBundledCli(arguments: [String]) -> Never {
+  guard
+    let cliScriptPath = Bundle.main.resourceURL?
+      .appendingPathComponent("Web/cli/zmux-cli.mjs").path,
+    FileManager.default.fileExists(atPath: cliScriptPath)
+  else {
+    fputs("zmux CLI is missing from this app bundle. Rebuild or reinstall zmux.\n", stderr)
+    exit(1)
+  }
+
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+  process.arguments = ["node", cliScriptPath] + arguments
+  process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+  process.standardInput = FileHandle.standardInput
+  process.standardOutput = FileHandle.standardOutput
+  process.standardError = FileHandle.standardError
+  do {
+    try process.run()
+    process.waitUntilExit()
+    exit(process.terminationStatus)
+  } catch {
+    fputs("zmux CLI failed to start node: \(error.localizedDescription)\n", stderr)
+    exit(1)
+  }
+}
+
+let cliArguments = terminalCliArguments()
+if !cliArguments.isEmpty {
+  /**
+   CDXC:CliSessions 2026-05-10-03:28
+   The installed `zmux` executable is also what shells resolve from PATH. When
+   users run `zmux --help` or `zmux sessions`, treat argv as CLI intent and
+   proxy to the bundled Node CLI before AppKit, CEF, or Ghostty can launch the
+   GUI/browser path. LaunchServices `-psn_*` arguments are ignored above so Dock
+   and Finder launches still start the app normally.
+   */
+  runBundledCli(arguments: cliArguments)
+}
+
 /**
  CDXC:ChromiumBrowserPanes 2026-05-04-16:38
  Chromium browser panes require CEF's NSApplication subclass before AppKit

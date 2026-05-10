@@ -65,6 +65,8 @@ private let nativeGhosttyTerminalColorDisablingEnvironmentKeys = [
   "NODE_DISABLE_COLORS",
 ]
 
+private let nativeZapetPromptEditor = "zapet"
+
 private enum TerminalPaneRoundedBottomCorner {
   case left
   case none
@@ -86,7 +88,92 @@ private func nativeGhosttyTerminalEnvironment(
     result.removeValue(forKey: key)
   }
   result["CLICOLOR"] = "1"
+  nativeApplyZapetPromptEditingEnvironment(&result)
   return result
+}
+
+private func nativeApplyZapetPromptEditingEnvironment(_ environment: inout [String: String]) {
+  guard environment["ZMUX_RICH_PROMPT_EDITING_WITH_ZAPET"] == "1" else {
+    return
+  }
+
+  /**
+   CDXC:ZapetPromptEditing 2026-05-10-11:27
+   Zsh startup files can export EDITOR after Ghostty receives the process
+   environment. When Zapet is enabled, launch zsh through a zmux-owned ZDOTDIR
+   shim that sources the user's real startup files first, then exports Zapet
+   last so Ctrl+G/edit-command-line uses Zapet instead of the profile editor.
+   */
+  environment["EDITOR"] = nativeZapetPromptEditor
+  environment["VISUAL"] = nativeZapetPromptEditor
+  let originalZdotdir =
+    environment["ZDOTDIR"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    ? environment["ZDOTDIR"]!
+    : ProcessInfo.processInfo.environment["ZDOTDIR"]
+  guard let shimZdotdir = nativeEnsureZapetZdotdirShim() else {
+    return
+  }
+  environment["ZMUX_ORIGINAL_ZDOTDIR"] = originalZdotdir ?? ""
+  environment["ZDOTDIR"] = shimZdotdir
+}
+
+private func nativeEnsureZapetZdotdirShim() -> String? {
+  let directory = ZmuxAppStorage.sharedStateDirectory.appendingPathComponent(
+    "zapet-zdotdir",
+    isDirectory: true
+  )
+  do {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    for startupFile in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
+      let shouldExportZapet = startupFile != ".zshenv"
+      let contents = nativeZapetZshStartupShim(fileName: startupFile, exportZapet: shouldExportZapet)
+      try contents.write(
+        to: directory.appendingPathComponent(startupFile),
+        atomically: true,
+        encoding: .utf8
+      )
+    }
+    return directory.path
+  } catch {
+    NSLog("Failed to prepare Zapet zsh startup shim: \(error.localizedDescription)")
+    return nil
+  }
+}
+
+private func nativeZapetZshStartupShim(fileName: String, exportZapet: Bool) -> String {
+  let originalZdotdirUpdateBlock =
+    fileName == ".zshenv"
+    ? """
+
+      if [ -n "${ZDOTDIR}" ] && [ "${ZDOTDIR}" != "${_zmux_shim_zdotdir}" ]; then
+        export ZMUX_ORIGINAL_ZDOTDIR="${ZDOTDIR}"
+      fi
+      ZDOTDIR="${_zmux_shim_zdotdir}"
+      """
+    : ""
+  let exportBlock =
+    exportZapet
+    ? "\nexport EDITOR=\(nativeShellQuote(nativeZapetPromptEditor))\nexport VISUAL=\(nativeShellQuote(nativeZapetPromptEditor))\n"
+    : ""
+  return """
+    # CDXC:ZapetPromptEditing 2026-05-10-11:27
+    # Source the user's real zsh startup file, then let zmux force Zapet as the
+    # prompt editor after profile exports that would otherwise override EDITOR.
+    _zmux_shim_zdotdir="${ZDOTDIR}"
+    _zmux_original_zdotdir="${ZMUX_ORIGINAL_ZDOTDIR:-$HOME}"
+    if [ -r "${_zmux_original_zdotdir}/\(fileName)" ]; then
+      ZDOTDIR="${_zmux_original_zdotdir}"
+      source "${_zmux_original_zdotdir}/\(fileName)"
+      ZDOTDIR="${_zmux_shim_zdotdir}"
+    fi\(originalZdotdirUpdateBlock)\(exportBlock)
+    unset _zmux_shim_zdotdir
+    unset _zmux_original_zdotdir
+
+    """
+}
+
+private func nativeShellQuote(_ value: String) -> String {
+  "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
 private func nativeGhosttyTerminalEffectiveProcessEnvironment() -> [String: String] {
@@ -1265,6 +1352,52 @@ final class TerminalWorkspaceView: NSView {
       syncPaneHeaderEventMonitorForCurrentSurface(reason: "closeProjectEditorPane")
       needsLayout = true
     }
+  }
+
+  func closeFocusedSession(reason: String) -> Bool {
+    /**
+     CDXC:PaneClose 2026-05-10-11:56
+     Cmd-W must close the user's focused workspace surface, not the native app
+     window. Prefer AppKit's current responder so embedded Chrome/Ghostty focus
+     wins over stale sidebar state, then fall back to the last focused session id.
+     */
+    if let activeProjectEditorId, projectEditorPaneSessions[activeProjectEditorId] != nil {
+      closeProjectEditorPane(projectId: activeProjectEditorId)
+      return true
+    }
+
+    let candidates = [currentResponderSessionId(), focusedSessionId].compactMap { $0 }
+    guard let sessionId = candidates.first(where: { activeSessionIds.contains($0) }) else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.closeFocusedSession.missingFocus",
+        details: [
+          "activeProjectEditorId": nullableString(activeProjectEditorId),
+          "activeSessionIds": Array(activeSessionIds).sorted(),
+          "focusedSessionId": nullableString(focusedSessionId),
+          "reason": reason,
+          "responder": responderSnapshot(),
+        ])
+      return false
+    }
+
+    if sessions[sessionId] != nil {
+      closeTerminal(sessionId: sessionId, requestGhosttyClose: true, reason: reason)
+      return true
+    }
+    if webPaneSessions[sessionId] != nil {
+      closeWebPane(sessionId: sessionId)
+      return true
+    }
+
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.closeFocusedSession.staleFocus",
+      details: [
+        "activeSessionIds": Array(activeSessionIds).sorted(),
+        "focusedSessionId": nullableString(focusedSessionId),
+        "reason": reason,
+        "sessionId": sessionId,
+      ])
+    return false
   }
 
   func openBrowserDevTools(sessionId: String) {
@@ -5723,6 +5856,9 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
     if handleZmuxSearchKeyEquivalent(event) {
       return true
     }
+    if handleCommandEditingKeyEquivalent(event) {
+      return true
+    }
     return super.performKeyEquivalent(with: event)
   }
 
@@ -5796,6 +5932,112 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
       return false
     }
   }
+
+  /**
+   CDXC:NativeTerminals 2026-05-10-13:27
+   AppKit menu key equivalents claim standard Command editing shortcuts before
+   embedded Ghostty can encode them for terminal applications. When a Ghostty
+   surface owns focus, consume those equivalents here and replay the terminal
+   editing intent through Ghostty's normal keyDown path. Keep native search
+   above this handler so Cmd-F/Cmd-G continue to drive Ghostty search chrome.
+   */
+  private func handleCommandEditingKeyEquivalent(_ event: NSEvent) -> Bool {
+    guard event.type == .keyDown, focused else {
+      return false
+    }
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.contains(.command), flags.isDisjoint(with: [.control, .option]) else {
+      return false
+    }
+
+    if flags.isDisjoint(with: [.shift]),
+      let key = event.charactersIgnoringModifiers?.lowercased(),
+      let controlCharacter = Self.controlCharacter(forCommandKey: key)
+    {
+      return replayTerminalKey(
+        from: event,
+        characters: controlCharacter,
+        charactersIgnoringModifiers: key,
+        keyCode: event.keyCode,
+        modifierFlags: [.control],
+        label: "cmd-\(key)-as-control")
+    }
+
+    switch event.keyCode {
+    case 123:
+      return replayTerminalKey(
+        from: event,
+        characters: Self.homeFunctionKey,
+        charactersIgnoringModifiers: Self.homeFunctionKey,
+        keyCode: 115,
+        modifierFlags: flags.contains(.shift) ? [.shift] : [],
+        label: flags.contains(.shift) ? "cmd-shift-left-as-shift-home" : "cmd-left-as-home")
+    case 124:
+      return replayTerminalKey(
+        from: event,
+        characters: Self.endFunctionKey,
+        charactersIgnoringModifiers: Self.endFunctionKey,
+        keyCode: 119,
+        modifierFlags: flags.contains(.shift) ? [.shift] : [],
+        label: flags.contains(.shift) ? "cmd-shift-right-as-shift-end" : "cmd-right-as-end")
+    default:
+      return false
+    }
+  }
+
+  private func replayTerminalKey(
+    from event: NSEvent,
+    characters: String,
+    charactersIgnoringModifiers: String,
+    keyCode: UInt16,
+    modifierFlags: NSEvent.ModifierFlags,
+    label: String
+  ) -> Bool {
+    guard
+      let replayedEvent = NSEvent.keyEvent(
+        with: .keyDown,
+        location: event.locationInWindow,
+        modifierFlags: modifierFlags,
+        timestamp: event.timestamp,
+        windowNumber: event.windowNumber,
+        context: nil,
+        characters: characters,
+        charactersIgnoringModifiers: charactersIgnoringModifiers,
+        isARepeat: event.isARepeat,
+        keyCode: keyCode
+      )
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.commandEditingKeyReplayFailed",
+        details: ["label": label])
+      return false
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.commandEditingKeyReplayed",
+      details: ["label": label])
+    super.keyDown(with: replayedEvent)
+    return true
+  }
+
+  private static let homeFunctionKey = String(UnicodeScalar(NSHomeFunctionKey)!)
+  private static let endFunctionKey = String(UnicodeScalar(NSEndFunctionKey)!)
+
+  private static func controlCharacter(forCommandKey key: String) -> String? {
+    switch key {
+    case "a":
+      return "\u{1}"
+    case "c":
+      return "\u{3}"
+    case "s":
+      return "\u{13}"
+    case "v":
+      return "\u{16}"
+    case "x":
+      return "\u{18}"
+    default:
+      return nil
+    }
+  }
 }
 
 private final class BrowserAddressTextFieldCell: NSTextFieldCell {
@@ -5851,6 +6093,58 @@ private final class BrowserAddressTextFieldCell: NSTextFieldCell {
   }
 }
 
+private final class TerminalSearchTextFieldCell: NSTextFieldCell {
+  private static let verticalTextOffset: CGFloat = 3
+
+  override func drawingRect(forBounds rect: NSRect) -> NSRect {
+    adjustedTextFrame(super.drawingRect(forBounds: rect))
+  }
+
+  override func edit(
+    withFrame rect: NSRect,
+    in controlView: NSView,
+    editor textObj: NSText,
+    delegate: Any?,
+    event: NSEvent?
+  ) {
+    super.edit(
+      withFrame: adjustedTextFrame(rect),
+      in: controlView,
+      editor: textObj,
+      delegate: delegate,
+      event: event)
+  }
+
+  override func select(
+    withFrame rect: NSRect,
+    in controlView: NSView,
+    editor textObj: NSText,
+    delegate: Any?,
+    start selStart: Int,
+    length selLength: Int
+  ) {
+    super.select(
+      withFrame: adjustedTextFrame(rect),
+      in: controlView,
+      editor: textObj,
+      delegate: delegate,
+      start: selStart,
+      length: selLength)
+  }
+
+  private func adjustedTextFrame(_ frame: NSRect) -> NSRect {
+    var nextFrame = frame
+    /**
+     CDXC:NativeTerminals 2026-05-10-11:58
+     Embedded Ghostty search text and placeholder must be visually centered in
+     the search box. Offset only the field cell's text/edit rect down three
+     pixels so icon button placement and the surrounding bar layout stay fixed.
+     */
+    nextFrame.origin.y += Self.verticalTextOffset
+    return nextFrame
+  }
+}
+
 private final class TerminalSearchTextField: NSTextField {
   var onClose: (() -> Void)?
   var onFindNext: (() -> Void)?
@@ -5880,6 +6174,14 @@ private final class TerminalSearchTextField: NSTextField {
       onClose?()
       return
     }
+    if event.keyCode == 36 || event.keyCode == 76 {
+      if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift) {
+        onFindPrevious?()
+      } else {
+        onFindNext?()
+      }
+      return
+    }
     super.keyDown(with: event)
   }
 
@@ -5889,17 +6191,23 @@ private final class TerminalSearchTextField: NSTextField {
 }
 
 private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
+  /**
+   CDXC:NativeTerminals 2026-05-10-12:02
+   Embedded Ghostty search should read as a neutral grey utility control, not
+   a blue-tinted element. Keep the palette near-equal RGB so the floating find
+   box stays visually calm over terminal content.
+   */
   private static let backgroundColor = NSColor(
-    calibratedRed: 0x12 / 255,
-    green: 0x16 / 255,
-    blue: 0x20 / 255,
+    calibratedRed: 0x19 / 255,
+    green: 0x19 / 255,
+    blue: 0x1B / 255,
     alpha: 0.96
   ).cgColor
   private static let borderColor = NSColor(
-    calibratedRed: 0x7C / 255,
-    green: 0x8D / 255,
-    blue: 0xAA / 255,
-    alpha: 0.38
+    calibratedRed: 0x83 / 255,
+    green: 0x83 / 255,
+    blue: 0x88 / 255,
+    alpha: 0.42
   ).cgColor
 
   private weak var surfaceView: Ghostty.SurfaceView?
@@ -6020,11 +6328,26 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
       closeSearch()
       return true
     }
+    if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+      /**
+       CDXC:NativeTerminals 2026-05-10-11:51
+       Embedded Ghostty search Return keys must navigate matches from the
+       active AppKit field editor. Handling the text command directly prevents
+       NSTextField from treating Return as a no-op field action.
+       */
+      navigateSearchFromReturn(shouldGoPrevious: false)
+      return true
+    }
+    if commandSelector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)) {
+      navigateSearchFromReturn(shouldGoPrevious: true)
+      return true
+    }
     return false
   }
 
   private func configureTextField() {
     textField.delegate = self
+    textField.cell = TerminalSearchTextFieldCell(textCell: "")
     textField.placeholderString = "Search"
     textField.focusRingType = .none
     textField.isBezeled = false
@@ -6065,6 +6388,15 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
       countLabel.stringValue = "-/\(total)"
     } else {
       countLabel.stringValue = ""
+    }
+  }
+
+  private func navigateSearchFromReturn(shouldGoPrevious: Bool) {
+    let flags = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+    if shouldGoPrevious || flags.contains(.shift) {
+      findPrevious()
+    } else {
+      findNext()
     }
   }
 

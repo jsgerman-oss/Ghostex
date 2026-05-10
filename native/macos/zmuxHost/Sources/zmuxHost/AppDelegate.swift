@@ -18,6 +18,54 @@ private let zmuxReferenceSidebarChromeBackgroundColor = NSColor(
   blue: 14.0 / 255.0,
   alpha: 1.0)
 
+private func normalizedNativeProcessEnvironment(overrides: [String: String]?) -> [String: String] {
+  /**
+   CDXC:NativeCommandBridge 2026-05-10-12:08
+   macOS GUI launches do not reliably inherit the user's shell PATH. Native
+   background commands must still find common developer tools installed through
+   Homebrew, mise, asdf, or ~/.local/bin, because features such as session title
+   generation run Codex through this process bridge instead of inside a terminal.
+   */
+  var environment = ProcessInfo.processInfo.environment
+  environment["PATH"] = normalizedNativeProcessPath(environment["PATH"])
+  if let overrides {
+    environment.merge(overrides) { _, newValue in newValue }
+    environment["PATH"] = normalizedNativeProcessPath(environment["PATH"])
+  }
+  return environment
+}
+
+private func normalizedNativeProcessPath(_ path: String?) -> String {
+  let homeDirectory = NSHomeDirectory()
+  let defaultEntries = [
+    "\(homeDirectory)/.local/share/mise/shims",
+    "\(homeDirectory)/.local/bin",
+    "\(homeDirectory)/.asdf/shims",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ]
+  let existingEntries = (path ?? "")
+    .split(separator: ":")
+    .map(String.init)
+  var seen = Set<String>()
+  return (defaultEntries + existingEntries)
+    .filter { entry in
+      let normalizedEntry = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !normalizedEntry.isEmpty, !seen.contains(normalizedEntry) else {
+        return false
+      }
+      seen.insert(normalizedEntry)
+      return true
+    }
+    .joined(separator: ":")
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, GhosttyAppDelegate {
   static let logger = Logger(subsystem: "com.madda.zmux.host", category: "app")
   private static let logDateFormatter: DateFormatter = {
@@ -545,7 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     appMenuItem.submenu = appMenu
     mainMenu.addItem(appMenuItem)
 
-    mainMenu.addItem(Self.makeFileMenu())
+    mainMenu.addItem(makeFileMenu())
     mainMenu.addItem(Self.makeEditMenu())
     mainMenu.addItem(Self.makeViewMenu())
     mainMenu.addItem(Self.makeWindowMenu())
@@ -564,13 +612,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
   }
 
   @MainActor
-  private static func makeFileMenu() -> NSMenuItem {
+  private func makeFileMenu() -> NSMenuItem {
     let menuItem = NSMenuItem()
     let menu = NSMenu(title: "File")
-    menu.addItem(
-      withTitle: "Close Window",
-      action: #selector(NSWindow.performClose(_:)),
+    /**
+     CDXC:MacMenuBar 2026-05-10-11:56
+     Cmd-W is a pane/session close shortcut in zmux, matching browser-tab and
+     Ghostty-pane expectations. Route the File menu item to the focused workspace
+     surface so the top-level app window is not closed by a normal close hotkey.
+     */
+    let closePaneItem = menu.addItem(
+      withTitle: "Close Pane",
+      action: #selector(closeFocusedSessionFromMainMenu(_:)),
       keyEquivalent: "w")
+    closePaneItem.target = self
     menuItem.submenu = menu
     return menuItem
   }
@@ -657,6 +712,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
      actions share one implementation path.
      */
     root.postHostEvent(.nativeHotkey(actionId: "openSettings"))
+  }
+
+  @objc @MainActor private func closeFocusedSessionFromMainMenu(_ sender: Any?) {
+    guard workspaceView?.closeFocusedSession(reason: "mainMenuClosePane") == true else {
+      NSSound.beep()
+      return
+    }
   }
 
   @MainActor
@@ -2035,11 +2097,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       if let cwd = command.cwd {
         process.currentDirectoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
       }
-      if let env = command.env {
-        process.environment = ProcessInfo.processInfo.environment.merging(env) { _, newValue in
-          newValue
-        }
-      }
+      process.environment = normalizedNativeProcessEnvironment(overrides: command.env)
       let stdoutPipe = Pipe()
       let stderrPipe = Pipe()
       process.standardInput = FileHandle.nullDevice
@@ -2126,12 +2184,22 @@ private final class NativeSettingsStore {
     "moveSidebar": "cmd+alt+b",
     "openSettings": "cmd+alt+,",
     "renameActiveSession": "cmd+alt+r",
-    "showFour": "cmd+alt+s 4",
-    "showNine": "cmd+alt+s 9",
-    "showOne": "cmd+alt+s 1",
-    "showSix": "cmd+alt+s 6",
-    "showThree": "cmd+alt+s 3",
-    "showTwo": "cmd+alt+s 2",
+    "showFour": "cmd+ctrl+4",
+    "showNine": "cmd+ctrl+9",
+    "showOne": "cmd+ctrl+1",
+    "showSix": "cmd+ctrl+6",
+    "showThree": "cmd+ctrl+3",
+    "showTwo": "cmd+ctrl+2",
+    /**
+     CDXC:Hotkeys 2026-05-10-12:31
+     Cmd+D and Cmd+Shift+D both increase visible splits to match common tmux
+     and terminal split-direction muscle memory. Split Less stays on the D key
+     family but avoids Cmd+W close-pane, Cmd+Alt+D Dock, and Cmd+Ctrl+D lookup
+     defaults.
+     */
+    "splitLess": "cmd+ctrl+shift+d",
+    "splitMore": "cmd+d",
+    "splitMoreDown": "cmd+shift+d",
   ]
 
   /**
@@ -2335,6 +2403,7 @@ private final class NativeSettingsStore {
       .replacingOccurrences(of: "command", with: "cmd")
       .replacingOccurrences(of: "option", with: "alt")
       .replacingOccurrences(of: "control", with: "ctrl")
+      .replacingOccurrences(of: "\\bmod\\b", with: "cmd", options: .regularExpression)
       .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
   }
 
@@ -3030,6 +3099,15 @@ final class zmuxRootView: NSView {
     guard event.type == .keyDown else {
       return false
     }
+    if isWebChromeFirstResponder() {
+      /**
+       CDXC:Hotkeys 2026-05-10-12:06
+       Settings and sidebar WebKit views need first chance at shortcut recording
+       and editable controls. AppKit should only preempt key equivalents while
+       Ghostty/native workspace surfaces own focus.
+       */
+      return false
+    }
     let hotkeyText = Self.hotkeyText(for: event)
     if Self.isHotkeyCandidate(event) {
       logNativeHotkeyDebug(
@@ -3061,6 +3139,16 @@ final class zmuxRootView: NSView {
       ])
     dispatchNativeHotkey(actionId)
     return true
+  }
+
+  private func isWebChromeFirstResponder() -> Bool {
+    guard let responderView = window?.firstResponder as? NSView else {
+      return false
+    }
+    return responderView === sidebarView
+      || responderView.isDescendant(of: sidebarView)
+      || responderView === modalHostView
+      || responderView.isDescendant(of: modalHostView)
   }
 
   private func matchedHotkeyActionId(for hotkeyText: String) -> String? {
@@ -3674,11 +3762,7 @@ final class zmuxRootView: NSView {
       if let cwd = command.cwd {
         process.currentDirectoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
       }
-      if let env = command.env {
-        process.environment = ProcessInfo.processInfo.environment.merging(env) { _, newValue in
-          newValue
-        }
-      }
+      process.environment = normalizedNativeProcessEnvironment(overrides: command.env)
       let stdoutPipe = Pipe()
       let stderrPipe = Pipe()
       process.standardInput = FileHandle.nullDevice

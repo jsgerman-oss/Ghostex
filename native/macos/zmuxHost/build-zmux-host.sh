@@ -102,6 +102,13 @@ fi
 
 mkdir -p "$WEB_DIR"
 cp "$REPO_ROOT/native/sidebar/index.html" "$WEB_DIR/index.html"
+rm -rf "$WEB_DIR/cli"
+mkdir -p "$WEB_DIR/cli"
+# CDXC:CliSessions 2026-05-10-03:28: Shells resolve the installed macOS
+# executable as `zmux`. Bundle the Node CLI beside the web assets so main.swift
+# can proxy terminal argv such as `zmux --help` and `zmux sessions` before the
+# AppKit app starts.
+cp "$REPO_ROOT/scripts/zmux-cli.mjs" "$WEB_DIR/cli/zmux-cli.mjs"
 rm -rf "$WEB_DIR/sounds"
 mkdir -p "$WEB_DIR/sounds"
 # CDXC:NativeSound 2026-04-29-16:30: Bundle completion sound assets beside
