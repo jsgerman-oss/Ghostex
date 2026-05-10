@@ -101,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
   private var isFlushingCEFBeforeTerminate = false
   private var didFlushCEFBeforeTerminate = false
   private weak var attachToIdeTitlebarButton: NSButton?
+  private weak var appTitlebarLabel: NSTextField?
   private let nativeSettingsStore = NativeSettingsStore()
   private let updaterController: SPUStandardUpdaterController
   private var t3CodeRuntimeProcess: Process?
@@ -790,6 +791,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       showBrowserWindow: { [weak self] in
         self?.handle(.showBrowserWindow)
       },
+      setAppTitlebarTitle: { [weak self] title in
+        self?.updateAppTitlebarTitle(title)
+      },
       setSessionStatusIndicators: { [weak sessionStatusIndicatorController] command in
         sessionStatusIndicatorController?.apply(command)
       }
@@ -819,12 +823,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     window.onKeyEquivalent = { [weak root] event in
       root?.handleHotkeyEquivalent(event) ?? false
     }
-    window.title = "zmux"
+    window.title = "Zmux"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.backgroundColor = zmuxReferenceSidebarChromeBackgroundColor
     window.contentView = root
     window.delegate = self
+    installAppTitlebarLabel(on: window)
     installAttachToIdeTitlebarButton(on: window)
     window.makeKeyAndOrderFront(nil)
     self.window = window
@@ -1007,6 +1012,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     return number.uint32Value
   }
 
+  @MainActor private func installAppTitlebarLabel(on window: NSWindow) {
+    /**
+     CDXC:NativeWindowChrome 2026-05-10-14:19
+     Users need the outer macOS title bar to show the active code project. Keep
+     this as a custom left title item because the centered native title slot is
+     already used by the Attach/Detach IDE control.
+     */
+    guard let titlebarView = window.standardWindowButton(.closeButton)?.superview else {
+      return
+    }
+    let label = NSTextField(labelWithString: window.title)
+    label.font = .systemFont(ofSize: 12, weight: .semibold)
+    label.textColor = NSColor(calibratedWhite: 0.88, alpha: 1)
+    label.lineBreakMode = .byTruncatingTail
+    label.toolTip = window.title
+    label.translatesAutoresizingMaskIntoConstraints = false
+    titlebarView.addSubview(label)
+
+    let centerYAnchor =
+      window.standardWindowButton(.closeButton)?.centerYAnchor ?? titlebarView.centerYAnchor
+    let leadingAnchor = window.standardWindowButton(.zoomButton)?.trailingAnchor
+      ?? window.standardWindowButton(.miniaturizeButton)?.trailingAnchor
+      ?? window.standardWindowButton(.closeButton)?.trailingAnchor
+      ?? titlebarView.leadingAnchor
+    NSLayoutConstraint.activate([
+      label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+      label.centerYAnchor.constraint(equalTo: centerYAnchor),
+      label.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+    ])
+    appTitlebarLabel = label
+  }
+
+  @MainActor private func updateAppTitlebarTitle(_ title: String?) {
+    let normalizedTitle = normalizedAppTitlebarTitle(title)
+    window?.title = normalizedTitle
+    appTitlebarLabel?.stringValue = normalizedTitle
+    appTitlebarLabel?.toolTip = normalizedTitle
+  }
+
+  private func normalizedAppTitlebarTitle(_ title: String?) -> String {
+    let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return normalizedTitle.isEmpty ? "Zmux" : normalizedTitle
+  }
+
   @MainActor private func installAttachToIdeTitlebarButton(on window: NSWindow) {
     /**
      CDXC:IDEAttachment 2026-04-27-00:54
@@ -1044,6 +1093,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       button.heightAnchor.constraint(equalToConstant: 24),
       button.widthAnchor.constraint(greaterThanOrEqualToConstant: 132),
     ])
+    if let appTitlebarLabel {
+      appTitlebarLabel.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -12)
+        .isActive = true
+    }
     attachToIdeTitlebarButton = button
   }
 
@@ -1173,6 +1226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     case .sendTerminalEnter(let command):
       workspaceView?.sendTerminalEnter(sessionId: command.sessionId)
     case .setActiveTerminalSet(let command):
+      updateAppTitlebarTitle(command.appTitle)
       workspaceView?.setActiveTerminalSet(command)
     case .setSessionStatusIndicators(let command):
       sessionStatusIndicatorController?.apply(command)
@@ -2503,6 +2557,7 @@ final class zmuxRootView: NSView {
   private let openWorkspaceInFinder: (OpenWorkspaceInFinder) -> Void
   private let openWorkspaceInIde: (OpenWorkspaceInIde) -> Void
   private let showBrowserWindow: () -> Void
+  private let setAppTitlebarTitle: (String?) -> Void
   private let setSessionStatusIndicators: (SetSessionStatusIndicators) -> Void
   private let sendHostEvent: (HostEvent) -> Void
   private let nativeSettingsStore = NativeSettingsStore()
@@ -2543,6 +2598,7 @@ final class zmuxRootView: NSView {
     openWorkspaceInFinder: @escaping (OpenWorkspaceInFinder) -> Void,
     openWorkspaceInIde: @escaping (OpenWorkspaceInIde) -> Void,
     showBrowserWindow: @escaping () -> Void,
+    setAppTitlebarTitle: @escaping (String?) -> Void,
     setSessionStatusIndicators: @escaping (SetSessionStatusIndicators) -> Void
   ) {
     self.workspaceView = TerminalWorkspaceView(
@@ -2560,6 +2616,7 @@ final class zmuxRootView: NSView {
     self.openWorkspaceInFinder = openWorkspaceInFinder
     self.openWorkspaceInIde = openWorkspaceInIde
     self.showBrowserWindow = showBrowserWindow
+    self.setAppTitlebarTitle = setAppTitlebarTitle
     self.setSessionStatusIndicators = setSessionStatusIndicators
     self.sendHostEvent = sendEvent
     self.sidebarWidth = nativeSettingsStore.readSidebarChrome().width ?? Self.defaultSidebarWidth
@@ -2752,6 +2809,7 @@ final class zmuxRootView: NSView {
     case .sendTerminalEnter(let command):
       workspaceView.sendTerminalEnter(sessionId: command.sessionId)
     case .setActiveTerminalSet(let command):
+      setAppTitlebarTitle(command.appTitle)
       workspaceView.setActiveTerminalSet(command)
     case .setSessionStatusIndicators(let command):
       setSessionStatusIndicators(command)

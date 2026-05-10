@@ -277,6 +277,13 @@ struct WriteTerminalText: Decodable {
 struct SetActiveTerminalSet: Decodable {
   let activeProjectEditorId: String?
   let activeSessionIds: [String]
+  /**
+   CDXC:NativeWindowChrome 2026-05-10-14:19
+   The sidebar owns active project/chat state, so it sends the native app title
+   with layout sync. AppKit uses this for the outer window title bar while pane
+   title bars continue to read per-session titles.
+   */
+  let appTitle: String?
   let attentionSessionIds: [String]?
   let backgroundColor: String?
   let focusRequestId: Int?

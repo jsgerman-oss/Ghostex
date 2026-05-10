@@ -2462,15 +2462,40 @@ final class TerminalWorkspaceView: NSView {
    during AppKit hit testing. Route only exact title-bar hits to the title-bar
    view before falling back to normal pane hit testing; resize handles keep
    priority so split resizing is not converted into pane dragging.
+
+   CDXC:NativePaneReorder 2026-05-10-14:24
+   Repro logs showed a bottom-edge terminal selection hit resolving to a
+   TerminalSessionTitleBarView while the registered title-bar frame was at the
+   pane top. Treat any title-bar hit outside the current registered draggable
+   title-bar band as invalid and reroute it to the pane content so the last
+   terminal line remains selectable and cannot start pane reordering.
    */
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard !isProjectEditorInteractionSurfaceActive else {
       return super.hitTest(point)
     }
     if let titleBarHitView = paneTitleBarHitView(at: point) {
+      if isPaneBottomEdgeProbePoint(point) {
+        logPaneReorderProbe(
+          event: "nativePaneReorder.hitTest.titleBarNearBottom",
+          at: point,
+          details: [
+            "returnedHitView": String(describing: type(of: titleBarHitView)),
+          ])
+      }
       return titleBarHitView
     }
-    return super.hitTest(point)
+    let hitView = super.hitTest(point)
+    if paneTitleBarAncestor(of: hitView) != nil {
+      logPaneReorderProbe(
+        event: "nativePaneReorder.hitTest.invalidTitleBarRerouted",
+        at: point,
+        details: [
+          "originalHitView": hitView.map { String(describing: type(of: $0)) } ?? "nil",
+        ])
+      return paneContentHitView(at: point)
+    }
+    return hitView
   }
 
   private func paneTitleBarHitView(at point: CGPoint) -> NSView? {
@@ -2501,6 +2526,31 @@ final class TerminalWorkspaceView: NSView {
     }
     let titleBarPoint = convert(point, to: titleBarView)
     return titleBarView.hitTest(titleBarPoint)
+  }
+
+  private func paneTitleBarAncestor(of view: NSView?) -> TerminalSessionTitleBarView? {
+    var currentView = view
+    while let view = currentView {
+      if let titleBarView = view as? TerminalSessionTitleBarView {
+        return titleBarView
+      }
+      currentView = view.superview
+    }
+    return nil
+  }
+
+  private func paneContentHitView(at point: CGPoint) -> NSView? {
+    for sessionId in orderedVisibleSessionIds().reversed() {
+      if let session = sessions[sessionId], session.scrollView.frame.contains(point) {
+        let contentPoint = convert(point, to: session.scrollView)
+        return session.scrollView.hitTest(contentPoint)
+      }
+      if let session = webPaneSessions[sessionId], session.hostView.frame.contains(point) {
+        let contentPoint = convert(point, to: session.hostView)
+        return session.hostView.hitTest(contentPoint)
+      }
+    }
+    return nil
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -3202,6 +3252,24 @@ final class TerminalWorkspaceView: NSView {
     focusReason: String
   ) {
     let startPoint = convert(event.locationInWindow, from: nil)
+    guard paneTitleBarSessionId(at: startPoint) == sessionId else {
+      /**
+       CDXC:NativePaneReorder 2026-05-10-14:24
+       A stale or misplaced TerminalSessionTitleBarView can still receive
+       AppKit mouseDown before hit-test rerouting has invalidated it. Never
+       create paneHeaderDrag unless the event point matches the current
+       registered title-bar frame for this session.
+       */
+      logPaneReorderProbe(
+        event: "nativePaneReorder.titleBar.mouseDownRejected",
+        at: startPoint,
+        details: [
+          "focusReason": focusReason,
+          "sessionId": sessionId,
+          "titleBarFrame": describeFrame(paneTitleBarFrame(for: sessionId) ?? .zero),
+        ])
+      return
+    }
     /**
      CDXC:NativePaneReorderDiagnostics 2026-05-06-02:45
      Titlebar-only pane drag regressions need precise native breadcrumbs because
@@ -3214,7 +3282,15 @@ final class TerminalWorkspaceView: NSView {
         "focusReason": focusReason,
         "sessionId": sessionId,
         "startPoint": describeFrame(
-          CGRect(x: startPoint.x, y: startPoint.y, width: 0, height: 0)),
+            CGRect(x: startPoint.x, y: startPoint.y, width: 0, height: 0)),
+      ])
+    logPaneReorderProbe(
+      event: "nativePaneReorder.titleBar.mouseDown",
+      at: startPoint,
+      details: [
+        "focusReason": focusReason,
+        "sessionId": sessionId,
+        "titleBarFrame": describeFrame(paneTitleBarFrame(for: sessionId) ?? .zero),
       ])
     focusSession(sessionId: sessionId, reason: focusReason)
     paneHeaderDrag = PaneHeaderDrag(
@@ -3242,6 +3318,14 @@ final class TerminalWorkspaceView: NSView {
         event: "nativePaneReorder.dragStarted",
         details: [
           "point": describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0)),
+          "sessionId": sessionId,
+          "startPoint": describeFrame(
+            CGRect(x: drag.startPoint.x, y: drag.startPoint.y, width: 0, height: 0)),
+        ])
+      logPaneReorderProbe(
+        event: "nativePaneReorder.dragStarted",
+        at: point,
+        details: [
           "sessionId": sessionId,
           "startPoint": describeFrame(
             CGRect(x: drag.startPoint.x, y: drag.startPoint.y, width: 0, height: 0)),
@@ -3409,6 +3493,67 @@ final class TerminalWorkspaceView: NSView {
       }
     }
     return nil
+  }
+
+  private func paneBorderFrame(for sessionId: String) -> CGRect? {
+    if let session = sessions[sessionId] {
+      return session.borderView.frame
+    }
+    if let session = webPaneSessions[sessionId] {
+      return session.borderView.frame
+    }
+    return nil
+  }
+
+  private func paneTitleBarFrame(for sessionId: String) -> CGRect? {
+    if let session = sessions[sessionId] {
+      return session.titleBarView.frame
+    }
+    if let session = webPaneSessions[sessionId] {
+      return session.titleBarView.frame
+    }
+    return nil
+  }
+
+  private func isPaneBottomEdgeProbePoint(_ point: CGPoint) -> Bool {
+    guard let sessionId = paneSessionId(at: point),
+      let borderFrame = paneBorderFrame(for: sessionId)
+    else {
+      return false
+    }
+    return point.y - borderFrame.minY <= 16
+  }
+
+  /**
+   CDXC:NativePaneReorderDiagnostics 2026-05-10-12:32
+   Bottom-edge pane drags need exact AppKit routing evidence. Log the pane,
+   title-bar, resize, and hit-test state at drag lifecycle points only, so the
+   repro can distinguish a false title-bar hit from stale paneHeaderDrag state.
+   */
+  private func logPaneReorderProbe(
+    event: String,
+    at point: CGPoint,
+    details: [String: Any] = [:]
+  ) {
+    let paneSessionId = paneSessionId(at: point)
+    let titleBarSessionId = paneTitleBarSessionId(at: point)
+    let resizeHit = paneResizeHit(at: point)
+    var payload = details
+    payload["activeSessionIds"] = orderedVisibleSessionIds()
+    payload["bottomEdgeDistance"] =
+      paneSessionId.flatMap { id in paneBorderFrame(for: id).map { Double(point.y - $0.minY) } }
+      ?? NSNull()
+    payload["paneFrame"] =
+      paneSessionId.flatMap { id in paneBorderFrame(for: id).map(describeFrame) } ?? NSNull()
+    payload["paneSessionId"] = paneSessionId ?? NSNull()
+    payload["point"] = describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0))
+    payload["resizeHitDirection"] = resizeHit.map { String(describing: $0.direction) } ?? NSNull()
+    payload["resizeHitRect"] = resizeHit.map { describeFrame($0.rect) } ?? NSNull()
+    payload["titleBarFrame"] =
+      titleBarSessionId.flatMap { id in paneTitleBarFrame(for: id).map(describeFrame) } ?? NSNull()
+    payload["titleBarSessionId"] = titleBarSessionId ?? NSNull()
+    payload["workspaceBounds"] = describeFrame(bounds)
+    NativePaneReorderReproLog.append(event: event, details: payload)
   }
 
   private func paneTitleBarSessionId(at point: CGPoint) -> String? {
@@ -5935,11 +6080,11 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
 
   /**
    CDXC:NativeTerminals 2026-05-10-13:27
-   AppKit menu key equivalents claim standard Command editing shortcuts before
-   embedded Ghostty can encode them for terminal applications. When a Ghostty
-   surface owns focus, consume those equivalents here and replay the terminal
-   editing intent through Ghostty's normal keyDown path. Keep native search
-   above this handler so Cmd-F/Cmd-G continue to drive Ghostty search chrome.
+   AppKit's Select All menu key equivalent claims Cmd-A before embedded
+   Ghostty can encode it for terminal applications. Keep this bridge narrow:
+   Cmd-V/C/X/S must stay on the normal terminal/AppKit path so unrelated TUIs
+   keep their expected paste/copy/save behavior. Keep native search above this
+   handler so Cmd-F/Cmd-G continue to drive Ghostty search chrome.
    */
   private func handleCommandEditingKeyEquivalent(_ event: NSEvent) -> Bool {
     guard event.type == .keyDown, focused else {
@@ -5951,16 +6096,15 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
     }
 
     if flags.isDisjoint(with: [.shift]),
-      let key = event.charactersIgnoringModifiers?.lowercased(),
-      let controlCharacter = Self.controlCharacter(forCommandKey: key)
+      event.charactersIgnoringModifiers?.lowercased() == "a"
     {
       return replayTerminalKey(
         from: event,
-        characters: controlCharacter,
-        charactersIgnoringModifiers: key,
+        characters: "\u{1}",
+        charactersIgnoringModifiers: "a",
         keyCode: event.keyCode,
         modifierFlags: [.control],
-        label: "cmd-\(key)-as-control")
+        label: "cmd-a-as-control")
     }
 
     switch event.keyCode {
@@ -6022,22 +6166,6 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
   private static let homeFunctionKey = String(UnicodeScalar(NSHomeFunctionKey)!)
   private static let endFunctionKey = String(UnicodeScalar(NSEndFunctionKey)!)
 
-  private static func controlCharacter(forCommandKey key: String) -> String? {
-    switch key {
-    case "a":
-      return "\u{1}"
-    case "c":
-      return "\u{3}"
-    case "s":
-      return "\u{13}"
-    case "v":
-      return "\u{16}"
-    case "x":
-      return "\u{18}"
-    default:
-      return nil
-    }
-  }
 }
 
 private final class BrowserAddressTextFieldCell: NSTextFieldCell {

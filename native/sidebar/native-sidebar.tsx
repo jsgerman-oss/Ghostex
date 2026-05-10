@@ -253,6 +253,7 @@ type NativeHostCommand =
   | { sessionId: string; type: "sendTerminalEnter" }
   | {
       activeSessionIds: string[];
+      appTitle?: string;
       attentionSessionIds?: string[];
       backgroundColor?: string;
       activeProjectEditorId?: string;
@@ -3400,6 +3401,19 @@ function activeProject(): NativeProject {
   return projects.find((project) => project.projectId === activeProjectId) ?? projects[0]!;
 }
 
+function nativeAppTitleForProject(project: NativeProject): string {
+  /**
+   * CDXC:NativeWindowChrome 2026-05-10-14:19
+   * The native app title bar should name the active code project. Chat
+   * workspaces are projectless conversation containers, so they keep the
+   * product title "Zmux" instead of exposing the generated chat folder name.
+   */
+  if (project.isChat === true) {
+    return "Zmux";
+  }
+  return project.name.trim() || projectNameFromPath(project.path) || "Zmux";
+}
+
 function findProject(projectId: string): NativeProject | undefined {
   return projects.find((project) => project.projectId === projectId);
 }
@@ -5734,6 +5748,22 @@ function createTerminal(
   return session;
 }
 
+function createNativeSessionInCurrentContext(): void {
+  /**
+   * CDXC:SessionCreation 2026-05-10-14:47
+   * The top "New Session" action and matching hotkey create in the currently
+   * live project. When the selected context is the Combined Chats group, starting
+   * a session means creating a new projectless chat folder instead of adding a
+   * second terminal to an existing one-session chat container.
+   */
+  if (activeProject().isChat === true) {
+    void createNativeChat();
+    return;
+  }
+
+  createTerminal();
+}
+
 function createNativeT3Session(groupId?: string): T3SessionRecord | undefined {
   const project = activeProject();
   activateWorkspaceSurfaceForProject(project.projectId);
@@ -7076,11 +7106,7 @@ function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
       adjustNativeHotkeyVisibleCount(action.direction);
       return;
     case "createSession":
-      if (activeProject().isChat === true) {
-        void createNativeChat();
-      } else {
-        createTerminal();
-      }
+      createNativeSessionInCurrentContext();
       return;
     case "focusDirection":
       focusNativeHotkeyDirection(action.direction);
@@ -9968,11 +9994,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
    */
   switch (message.type) {
     case "createSession":
-      if (activeProject().isChat === true) {
-        void createNativeChat();
-      } else {
-        createTerminal();
-      }
+      createNativeSessionInCurrentContext();
       return;
     case "createChat":
       void createNativeChat(message.title);
@@ -10651,6 +10673,7 @@ function normalizeNativeLayoutSyncValue(value: unknown): unknown {
 }
 
 function syncNativeLayout(options: { force?: boolean } = {}): void {
+  const currentProject = activeProject();
   const sidebarSessionsById = new Map(
     createProjectedSidebarSessionsForGroup(activeWorkspaceGroup()).map((session) => [
       session.sessionId,
@@ -10751,6 +10774,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
    */
   const command: NativeSetActiveTerminalSetCommand = {
     activeSessionIds: visibleSessionIds,
+    appTitle: nativeAppTitleForProject(currentProject),
     activeProjectEditorId:
       projectEditorSurfaceByProjectId.get(activeProjectId)?.isOpen === true &&
       projectEditorSurfaceByProjectId.get(activeProjectId)?.isSleeping !== true

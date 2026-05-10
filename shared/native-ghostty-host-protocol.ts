@@ -107,6 +107,13 @@ export type NativeGhosttyHostCommand =
   | {
       activeProjectEditorId?: string;
       activeSessionIds: string[];
+      /**
+       * CDXC:NativeWindowChrome 2026-05-10-14:19
+       * Native host commands carry the outer app title separately from pane
+       * titles so project switches can update macOS chrome without changing
+       * individual terminal/browser title bars.
+       */
+      appTitle?: string;
       attentionSessionIds?: string[];
       backgroundColor?: string;
       focusRequestId?: number;
