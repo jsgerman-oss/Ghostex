@@ -9,8 +9,6 @@ brew install --cask maddada/tap/zmux
 ```
 
 
-<br />
-
 ### Work with tens of agents in multiple projects with ease:
 
 <img width="1295" alt="ZMUX simplified sidebar with agent sessions" src="media/readme/zmux-simplified-sidebar.png" />
