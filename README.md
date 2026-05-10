@@ -121,8 +121,8 @@ Clone both repositories into the same parent directory and keep the Ghostty
 folder named `ghostty`:
 
 ```bash
-mkdir -p ~/dev/zmux-work
-cd ~/dev/zmux-work
+mkdir -p ~/dev/zmux-repos
+cd ~/dev/zmux-repos
 git clone https://github.com/maddada/zmux.git zmux
 git clone https://github.com/maddada/ghostty.git ghostty
 ```
