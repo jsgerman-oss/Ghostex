@@ -9,6 +9,7 @@ release/*.zip
 .vsmux/
 .DS_Store
 .vscode/
+.fresh/
 AGENTS.md
 .agents/skills/zmux-release-to-brew/SKILL.md
 storybook-static/
@@ -27,5 +28,8 @@ native/macos/zmuxHost/zmux.xcodeproj/
 # CDXC:RepoSafety 2026-05-02-00:11: The zmux release-to-brew skill is local
 # agent workflow documentation and must remain available on this machine without
 # appearing in the public GitHub repository tree.
+# CDXC:RepoSafety 2026-05-10-10:21: Fresh workspace state records local window
+# layout for this developer machine and should not be published with zmux source
+# or release metadata.
 .idea
 react-doctor.config.json

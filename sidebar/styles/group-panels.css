@@ -1452,6 +1452,16 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   padding: 8px 0 0;
 }
 
+/*
+ * CDXC:SidebarReference 2026-05-10-12:14
+ * The closed Recent Projects and Settings buttons should sit 6px closer
+ * together; the drawer body is hidden but its grid row gap otherwise still
+ * adds visual space below the closed Recent Projects button.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer[data-open="false"] {
+  gap: 0;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-toggle.group-head,
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-row.group-head {
   border-radius: 8px;

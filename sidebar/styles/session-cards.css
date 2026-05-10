@@ -939,8 +939,13 @@
 }
 
 .session-frame:not(.project-editor-session-frame) .session-alias-heading {
-  align-items: center;
-  display: flex;
+  /*
+   * CDXC:SidebarSessions 2026-05-10-13:49
+   * Terminal, T3 Code, and browser session card titles must render ellipsis
+   * truncation instead of hard clipping. Keep the title as a normal text box;
+   * flex layout prevents text-overflow from painting the visible dots.
+   */
+  display: block;
 }
 
 .session-head-trailing {
@@ -1600,7 +1605,12 @@
   --reference-session-leading-inset: 10px;
   --reference-session-title-inset: 36px;
   --reference-session-trailing-inset: 10px;
-  --reference-session-trailing-slot-width: 44px;
+  /*
+   * CDXC:SidebarSessions 2026-05-10-13:49
+   * Terminal, T3 Code, and browser session titles need 15px more readable
+   * width before the right-side status/close slot starts.
+   */
+  --reference-session-trailing-slot-width: 29px;
   min-height: 34px;
   width: 100%;
 }
