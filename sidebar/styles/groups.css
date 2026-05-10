@@ -265,7 +265,12 @@
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
-  max-width: min(100%, 220px);
+  /*
+   * CDXC:ProjectHeaders 2026-05-10-15:52
+   * Project header titles need 30px more horizontal room before
+   * hover-revealed controls force ellipsis, so the title handle cap is 250px.
+   */
+  max-width: min(100%, 250px);
 }
 
 .group-title-handle[data-draggable="true"] {
@@ -399,7 +404,7 @@
   visibility: hidden;
 }
 
-.group-terminal-split-button {
+.group-agent-split-button {
   display: inline-grid;
   flex: none;
   grid-template-columns: 24px 17px;
@@ -425,8 +430,8 @@
   width: 22px;
 }
 
-.group-terminal-main-button,
-.group-terminal-toggle-button {
+.group-agent-main-button,
+.group-agent-toggle-button {
   align-items: center;
   background: color-mix(in srgb, var(--app-card-active) 88%, transparent);
   border-color: color-mix(in srgb, var(--app-border) 92%, transparent);
@@ -438,12 +443,12 @@
   padding: 0;
 }
 
-.group-terminal-main-button {
+.group-agent-main-button {
   border-radius: 999px 0 0 999px;
   width: 24px;
 }
 
-.group-terminal-toggle-button {
+.group-agent-toggle-button {
   border-left-width: 0;
   border-radius: 0 999px 999px 0;
   width: 17px;
@@ -451,11 +456,18 @@
 
 .group-add-button:hover,
 .group-add-button:focus-visible,
-.group-terminal-main-button:hover,
-.group-terminal-main-button:focus-visible,
-.group-terminal-toggle-button:hover,
-.group-terminal-toggle-button:focus-visible,
-.group-terminal-toggle-button[data-open="true"] {
+.group-agent-split-button:hover .group-agent-main-button,
+.group-agent-split-button:hover .group-agent-toggle-button,
+.group-agent-split-button:focus-within .group-agent-main-button,
+.group-agent-split-button:focus-within .group-agent-toggle-button,
+.group-agent-split-button[data-open="true"] .group-agent-main-button,
+.group-agent-split-button[data-open="true"] .group-agent-toggle-button {
+  /*
+   * CDXC:ProjectAgents 2026-05-10-14:18
+   * The agent launcher and chevron are one split button. Hover, focus, and
+   * open states highlight both halves together so the touching edge reads as a
+   * shared control instead of two unrelated adjacent buttons.
+   */
   background: color-mix(in srgb, var(--app-button-background) 12%, var(--app-card-active) 88%);
   border-color: color-mix(in srgb, var(--app-button-background) 54%, var(--app-border));
   color: var(--app-button-background);
@@ -530,25 +542,25 @@
   color: color-mix(in srgb, var(--app-button-background) 78%, var(--app-foreground) 22%);
 }
 
-.group-terminal-menu {
+.group-agent-menu {
   min-width: 172px;
 }
 
-.group-terminal-menu-item {
+.group-agent-menu-item {
   justify-content: flex-start;
 }
 
-.group-terminal-menu-item[data-selected="true"] {
+.group-agent-menu-item[data-selected="true"] {
   /*
-   * CDXC:ProjectTerminalMenu 2026-05-08-09:07
-   * The selected project-terminal launcher must keep the same icon and label
-   * color as sibling launch options; only the row background and checkmark
-   * communicate selection in this dropdown.
+   * CDXC:ProjectAgents 2026-05-10-14:18
+   * The selected project agent must keep the same icon and label color as
+   * sibling launch options; only the row background and checkmark communicate
+   * selection in the agent-only dropdown.
    */
   color: inherit;
 }
 
-.group-terminal-menu-label {
+.group-agent-menu-label {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -556,14 +568,14 @@
   white-space: nowrap;
 }
 
-.group-terminal-launcher-icon {
+.group-agent-launcher-icon {
   display: block;
   flex: none;
   height: 14px;
   width: 14px;
 }
 
-.group-terminal-launcher-agent-icon {
+.group-agent-launcher-agent-icon {
   mask-position: center;
   mask-repeat: no-repeat;
   mask-size: contain;
@@ -823,8 +835,8 @@
   /*
    * CDXC:SidebarHover 2026-05-04-07:00
    * The group trailing controls should end flush with the header surface. The
-   * sidebar runs under CSS zoom, so a 160px cap leaves room for terminal
-   * split, browser, VS Code reveal, and visible-count controls in project
+   * sidebar runs under CSS zoom, so a 160px cap leaves room for split count,
+   * browser, VS Code reveal, agent split, and the terminal button in project
    * headers.
    */
   max-width: 160px;
@@ -843,13 +855,13 @@
 
 .group-head:hover .group-add-button,
 .group-head:hover .group-control-button,
-.group-head:hover .group-terminal-split-button,
+.group-head:hover .group-agent-split-button,
 .group-head:has(:focus-visible) .group-add-button,
 .group-head:has(:focus-visible) .group-control-button,
-.group-head:has(:focus-visible) .group-terminal-split-button,
+.group-head:has(:focus-visible) .group-agent-split-button,
 .group-header-actions[data-open="true"] .group-add-button,
 .group-header-actions[data-open="true"] .group-control-button,
-.group-header-actions[data-open="true"] .group-terminal-split-button {
+.group-header-actions[data-open="true"] .group-agent-split-button {
   opacity: 1;
   pointer-events: auto;
   visibility: visible;
@@ -1206,17 +1218,17 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button {
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-main-button,
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-toggle-button {
   background: transparent;
   border: none;
-  border-radius: 7px;
   color: #858c95;
   height: 22px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-control-button {
+  border-radius: 7px;
   transition: none;
   width: 22px;
 }
@@ -1235,26 +1247,41 @@
   opacity: 0.8;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-split-button {
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-split-button {
   grid-template-columns: 22px 18px;
   transition: none;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button {
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-main-button {
+  border-radius: 7px 0 0 7px;
   width: 22px;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button {
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-toggle-button {
+  border-radius: 0 7px 7px 0;
   width: 18px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button:hover,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button:focus-visible,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button:hover,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-main-button:focus-visible,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button:hover,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button:focus-visible,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-terminal-toggle-button[data-open="true"],
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group-agent-split-button:hover
+  .group-agent-main-button,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group-agent-split-button:hover
+  .group-agent-toggle-button,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group-agent-split-button:focus-within
+  .group-agent-main-button,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group-agent-split-button:focus-within
+  .group-agent-toggle-button,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group-agent-split-button[data-open="true"]
+  .group-agent-main-button,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group-agent-split-button[data-open="true"]
+  .group-agent-toggle-button,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-control-button[data-open="true"] {
   background: color-mix(in srgb, var(--app-foreground) 8%, transparent);
   color: #aeb4bd;

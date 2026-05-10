@@ -85,13 +85,15 @@ const CONTEXT_MENU_VERTICAL_PADDING_PX = 12;
 const COUNT_OPTIONS: VisibleSessionCount[] = [1, 2, 3, 4, 6, 9];
 const GROUP_CONTROL_MENU_MARGIN_PX = 12;
 const GROUP_CONTROL_COUNT_MENU_WIDTH_PX = 132;
-const GROUP_TERMINAL_MENU_WIDTH_PX = 220;
-const PROJECT_TERMINAL_LAUNCHER_STORAGE_KEY = "zmux-sidebar-project-terminal-launcher";
+const GROUP_AGENT_MENU_WIDTH_PX = 220;
+const PROJECT_AGENT_LAUNCHER_STORAGE_KEY = "zmux-sidebar-project-terminal-launcher";
 const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
 const TOUCH_GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 type ProjectEditorButtonStatus = "idle" | "opening" | "running" | "error";
+const PROJECT_EDITOR_DISPLAY_MAX_FILES = 99;
+const PROJECT_EDITOR_DISPLAY_MAX_LINES = 999;
 const PROJECT_CONTEXT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: SidebarTheme }> = [
   { label: "Dark Gray", value: "plain-dark" },
   { label: "Dark Green", value: "dark-green" },
@@ -193,7 +195,7 @@ type GroupContextMenuPosition = ContextMenuPosition & {
   view: "group" | "project-custom-theme" | "project-themes";
 };
 
-type GroupControlMenu = "project-terminal" | "visible-count";
+type GroupControlMenu = "project-agent" | "visible-count";
 
 export function getEmptyBrowserGroupExpandTooltip({
   browserTabCount,
@@ -236,12 +238,22 @@ export function shouldFocusGroupOnHeaderActivation({
 
 export function formatProjectEditorButtonLabel(stats: SidebarProjectDiffStats): string {
   /**
-   * CDXC:EditorPanes 2026-05-09-15:39
-   * Project editor diff labels must identify the code pane before the
-   * git-related counts, then keep the terse file/add/remove pipe summary for
-   * screen readers and non-visual callers.
+   * CDXC:EditorPanes 2026-05-10-11:43
+   * Project editor diff labels use the compact "Code (files • +added •
+   * -removed)" form. Display values are capped for stable sidebar width:
+   * files stop at 99, added/removed line counts stop at 999.
    */
-  return `Code ${stats.files} | +${stats.additions} | -${stats.deletions}`;
+  return `Code (${formatProjectEditorFilesCount(stats.files)} • +${formatProjectEditorLineCount(
+    stats.additions,
+  )} • -${formatProjectEditorLineCount(stats.deletions)})`;
+}
+
+function formatProjectEditorFilesCount(files: number): string {
+  return String(Math.min(PROJECT_EDITOR_DISPLAY_MAX_FILES, Math.max(0, files)));
+}
+
+function formatProjectEditorLineCount(lines: number): string {
+  return String(Math.min(PROJECT_EDITOR_DISPLAY_MAX_LINES, Math.max(0, lines)));
 }
 
 function formatProjectEditorStatusLabel(
@@ -277,9 +289,13 @@ function ProjectEditorDiffLabel({
    * Startup and crash states stay in the same session-card row instead of
    * disappearing. Opening/error labels make the row clickable for retry and
    * expose startup diagnostics after the native ten-second timeout.
-   */
+  */
   if (status === "opening") {
-    return <span className="project-editor-status-label project-editor-status-opening">Code opening</span>;
+    return (
+      <span className="project-editor-status-label project-editor-status-opening">
+        Code opening
+      </span>
+    );
   }
   if (status === "error") {
     return (
@@ -299,23 +315,44 @@ function ProjectEditorDiffLabel({
   return (
     <span className="project-editor-diff-label">
       <span className="project-editor-diff-prefix">Code</span>
-      <span aria-hidden="true" className="project-editor-diff-divider">
-        |
+      <span aria-hidden="true" className="project-editor-diff-punctuation">
+        (
       </span>
-      <span className="project-editor-diff-files">{stats.files}</span>
+      <span className="project-editor-diff-files">
+        {formatProjectEditorFilesCount(stats.files)}
+      </span>
       <span aria-hidden="true" className="project-editor-diff-divider">
-        |
+        •
       </span>
       <span className="project-editor-diff-stat project-editor-diff-stat-additions">
-        +{stats.additions}
+        +{formatProjectEditorLineCount(stats.additions)}
       </span>
       <span aria-hidden="true" className="project-editor-diff-divider">
-        |
+        •
       </span>
       <span className="project-editor-diff-stat project-editor-diff-stat-deletions">
-        -{stats.deletions}
+        -{formatProjectEditorLineCount(stats.deletions)}
+      </span>
+      <span aria-hidden="true" className="project-editor-diff-punctuation">
+        )
       </span>
     </span>
+  );
+}
+
+function ProjectEditorDiffTooltip() {
+  /**
+   * CDXC:EditorPanes 2026-05-10-11:43
+   * The Code row tooltip explains the three compact diff numbers directly in
+   * three shadcn tooltip lines so users can decode the capped files/add/remove
+   * summary without adding persistent sidebar help text.
+   */
+  return (
+    <div className="project-editor-diff-tooltip">
+      <div>Files changed in this project</div>
+      <div>Lines added across changed files</div>
+      <div>Lines removed across changed files</div>
+    </div>
   );
 }
 
@@ -413,13 +450,13 @@ export function SessionGroupSection({
   const [isEditing, setIsEditing] = useState(false);
   const [isProjectEditorButtonShown, setIsProjectEditorButtonShown] = useState(false);
   const [openControlMenu, setOpenControlMenu] = useState<GroupControlMenu>();
-  const [primaryProjectTerminalLauncherId, setPrimaryProjectTerminalLauncherId] = useState(
-    readPrimaryProjectTerminalLauncherId,
+  const [primaryProjectAgentLauncherId, setPrimaryProjectAgentLauncherId] = useState(
+    readPrimaryProjectAgentLauncherId,
   );
   const { collapsibleStyle, contentRef } = useCollapsibleHeight<HTMLDivElement>();
   const menuRef = useRef<HTMLDivElement>(null);
   const controlMenuRef = useRef<HTMLDivElement>(null);
-  const projectTerminalButtonRef = useRef<HTMLButtonElement>(null);
+  const projectAgentButtonRef = useRef<HTMLButtonElement>(null);
   const visibleCountButtonRef = useRef<HTMLButtonElement>(null);
   const debugInstanceIdRef = useRef(createSessionGroupDebugInstanceId());
   const isBrowserGroup = group?.kind === "browser";
@@ -539,7 +576,13 @@ export function SessionGroupSection({
   const projectEditorLifecycleState =
     displayedProjectEditorStatus === "error" ? "error" : "running";
   const projectEditorTooltipContent =
-    displayedProjectEditorStatus === "error" ? projectEditorErrorMessage : "Open Code Editor";
+    displayedProjectEditorStatus === "error" ? (
+      projectEditorErrorMessage
+    ) : displayedProjectEditorStatus === "opening" ? (
+      "Opening code editor"
+    ) : (
+      <ProjectEditorDiffTooltip />
+    );
   /**
    * CDXC:EditorPanes 2026-05-09-17:24
    * The project editor row represents a started editor attempt. Keep it visible
@@ -590,16 +633,16 @@ export function SessionGroupSection({
   const splitCountTooltip = "Select Split Count";
   const createBrowserPaneTooltip = "Create Browser Pane";
   const revealCodeEditorTooltip = "Show Code Editor";
-  const terminalSelectorTooltip = "Select Terminal or Agent";
+  const agentSelectorTooltip = "Select Agent";
+  const createProjectTerminalTooltip = "Create Terminal";
   const createSessionTooltip = isBrowserGroup
     ? "Open a Browser"
     : isChatCollection
       ? "Create a Chat"
       : "Create a Terminal";
-  const primaryProjectTerminalAgent = agents.find(
-    (agent) => agent.agentId === primaryProjectTerminalLauncherId,
-  );
-  const primaryProjectTerminalLabel = primaryProjectTerminalAgent?.name ?? "Terminal";
+  const primaryProjectAgent =
+    agents.find((agent) => agent.agentId === primaryProjectAgentLauncherId) ?? agents[0];
+  const primaryProjectAgentLabel = primaryProjectAgent?.name ?? "Agent";
   const SplitCountIcon = SPLIT_COUNT_ICONS[group.layoutVisibleCount];
 
   useEffect(() => {
@@ -725,7 +768,7 @@ export function SessionGroupSection({
 
       if (
         controlMenuRef.current?.contains(target) ||
-        projectTerminalButtonRef.current?.contains(target) ||
+        projectAgentButtonRef.current?.contains(target) ||
         visibleCountButtonRef.current?.contains(target)
       ) {
         return;
@@ -807,25 +850,22 @@ export function SessionGroupSection({
     });
   };
 
-  const persistPrimaryProjectTerminalLauncher = (agentId: string | undefined) => {
-    setPrimaryProjectTerminalLauncherId(agentId);
-    writePrimaryProjectTerminalLauncherId(agentId);
+  const persistPrimaryProjectAgentLauncher = (agentId: string) => {
+    setPrimaryProjectAgentLauncherId(agentId);
+    writePrimaryProjectAgentLauncherId(agentId);
   };
 
-  const requestCreateProjectTerminal = (agent: SidebarAgentButton | undefined) => {
+  const requestCreateProjectTerminal = () => {
     setOpenControlMenu(undefined);
-    if (!projectContext) {
-      requestCreateSession();
+    requestCreateSession();
+  };
+
+  const requestRunProjectAgent = (agent: SidebarAgentButton | undefined) => {
+    setOpenControlMenu(undefined);
+    if (!projectContext || !agent) {
       return;
     }
-
-    if (!agent) {
-      persistPrimaryProjectTerminalLauncher(undefined);
-      requestCreateSession();
-      return;
-    }
-
-    persistPrimaryProjectTerminalLauncher(agent.agentId);
+    persistPrimaryProjectAgentLauncher(agent.agentId);
     vscode.postMessage({
       agentId: agent.agentId,
       groupId: group.groupId,
@@ -1387,12 +1427,14 @@ export function SessionGroupSection({
                   >
                     {projectContext ? (
                       /**
-                       * CDXC:ProjectGroups 2026-05-08-13:12
+                       * CDXC:ProjectGroups 2026-05-10-14:18
                        * Project headers expose the same compact control family
                        * on every project row: a project-scoped split selector,
-                       * browser pane creation, and a terminal/agent split
-                       * launcher. Each action posts the group id so native
-                       * focuses the clicked project before mutating panes.
+                       * browser pane creation, code editor reveal, an
+                       * agent-only split launcher, and a separate terminal
+                       * button at the far right. Terminal creation is not an
+                       * agent dropdown option so terminal and agent launches
+                       * stay visually and behaviorally distinct.
                        *
                        * CDXC:EditorPanes 2026-05-08-12:46
                        * The VS Code header icon is a reveal control, not the
@@ -1476,34 +1518,41 @@ export function SessionGroupSection({
                           </button>
                         </AppTooltip>
                         <div className="group-control-anchor">
-                          <div className="group-terminal-split-button">
-                            <AppTooltip content={`Create ${primaryProjectTerminalLabel}`}>
+                          <div
+                            className="group-agent-split-button"
+                            data-open={String(openControlMenu === "project-agent")}
+                          >
+                            <AppTooltip content={`Create ${primaryProjectAgentLabel}`}>
                               <button
-                                aria-label={`Create ${primaryProjectTerminalLabel} in ${group.title}`}
-                                className="group-terminal-main-button"
+                                aria-label={`Create ${primaryProjectAgentLabel} in ${group.title}`}
+                                className="group-agent-main-button"
                                 onClick={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
-                                  requestCreateProjectTerminal(primaryProjectTerminalAgent);
+                                  if (!primaryProjectAgent) {
+                                    openConfigureAgentsModal();
+                                    return;
+                                  }
+                                  requestRunProjectAgent(primaryProjectAgent);
                                 }}
                                 type="button"
                               >
-                                <ProjectTerminalLauncherIcon agent={primaryProjectTerminalAgent} />
+                                <ProjectAgentLauncherIcon agent={primaryProjectAgent} />
                               </button>
                             </AppTooltip>
-                            <AppTooltip content={terminalSelectorTooltip}>
+                            <AppTooltip content={agentSelectorTooltip}>
                               <button
-                                aria-expanded={openControlMenu === "project-terminal"}
+                                aria-expanded={openControlMenu === "project-agent"}
                                 aria-haspopup="menu"
-                                aria-label={`Select terminal or agent for ${group.title}`}
-                                className="group-terminal-toggle-button"
-                                data-open={String(openControlMenu === "project-terminal")}
+                                aria-label={`Select agent for ${group.title}`}
+                                className="group-agent-toggle-button"
+                                data-open={String(openControlMenu === "project-agent")}
                                 onClick={() => {
                                   setOpenControlMenu((previous) =>
-                                    previous === "project-terminal" ? undefined : "project-terminal",
+                                    previous === "project-agent" ? undefined : "project-agent",
                                   );
                                 }}
-                                ref={projectTerminalButtonRef}
+                                ref={projectAgentButtonRef}
                                 type="button"
                               >
                                 <IconChevronDown aria-hidden="true" size={13} stroke={2} />
@@ -1511,6 +1560,25 @@ export function SessionGroupSection({
                             </AppTooltip>
                           </div>
                         </div>
+                        <AppTooltip content={createProjectTerminalTooltip}>
+                          <button
+                            aria-label={`Create a terminal in ${group.title}`}
+                            className="group-add-button group-project-terminal-button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              requestCreateProjectTerminal();
+                            }}
+                            type="button"
+                          >
+                            <IconTerminal2
+                              aria-hidden="true"
+                              className="group-add-icon"
+                              size={14}
+                              stroke={2}
+                            />
+                          </button>
+                        </AppTooltip>
                       </>
                     ) : (
                       <>
@@ -1636,7 +1704,10 @@ export function SessionGroupSection({
                * The revealed VS Code row belongs inside the project group list
                * before normal sessions and has its own close control.
                */
-              <AppTooltip content={projectEditorTooltipContent}>
+              <AppTooltip
+                content={projectEditorTooltipContent}
+                contentClassName="project-editor-diff-tooltip-content"
+              >
                 <div
                   className="session-frame project-editor-session-frame"
                   data-activity={projectEditorActivity}
@@ -2045,55 +2116,43 @@ export function SessionGroupSection({
             document.body,
           )
         : null}
-      {projectContext && openControlMenu === "project-terminal"
+      {projectContext && openControlMenu === "project-agent"
         ? createPortal(
             <div
-              className="group-control-menu session-context-menu group-terminal-menu"
+              className="group-control-menu session-context-menu group-agent-menu"
               onClick={(event) => event.stopPropagation()}
               ref={controlMenuRef}
               role="menu"
-              style={getPortalMenuStyle(projectTerminalButtonRef.current, GROUP_TERMINAL_MENU_WIDTH_PX)}
+              style={getPortalMenuStyle(projectAgentButtonRef.current, GROUP_AGENT_MENU_WIDTH_PX)}
             >
-              <button
-                aria-pressed={primaryProjectTerminalAgent === undefined}
-                className="session-context-menu-item group-control-menu-item group-terminal-menu-item"
-                data-selected={String(primaryProjectTerminalAgent === undefined)}
-                onClick={() => requestCreateProjectTerminal(undefined)}
-                role="menuitem"
-                type="button"
-              >
-                <IconTerminal2 aria-hidden="true" className="session-context-menu-icon" size={14} />
-                <span className="group-terminal-menu-label">Terminal</span>
-                {primaryProjectTerminalAgent === undefined ? (
-                  <IconCheck aria-hidden="true" className="session-context-menu-icon" size={14} />
-                ) : null}
-              </button>
               {agents.map((agent) => (
                 <button
-                  aria-pressed={primaryProjectTerminalAgent?.agentId === agent.agentId}
-                  className="session-context-menu-item group-control-menu-item group-terminal-menu-item"
-                  data-selected={String(primaryProjectTerminalAgent?.agentId === agent.agentId)}
+                  aria-pressed={primaryProjectAgent?.agentId === agent.agentId}
+                  className="session-context-menu-item group-control-menu-item group-agent-menu-item"
+                  data-selected={String(primaryProjectAgent?.agentId === agent.agentId)}
                   key={agent.agentId}
-                  onClick={() => requestCreateProjectTerminal(agent)}
+                  onClick={() => requestRunProjectAgent(agent)}
                   role="menuitem"
                   type="button"
                 >
-                  <ProjectTerminalLauncherIcon agent={agent} />
-                  <span className="group-terminal-menu-label">{agent.name}</span>
-                  {primaryProjectTerminalAgent?.agentId === agent.agentId ? (
+                  <ProjectAgentLauncherIcon agent={agent} />
+                  <span className="group-agent-menu-label">{agent.name}</span>
+                  {primaryProjectAgent?.agentId === agent.agentId ? (
                     <IconCheck aria-hidden="true" className="session-context-menu-icon" size={14} />
                   ) : null}
                 </button>
               ))}
-              <div className="session-context-menu-divider" role="separator" />
+              {agents.length > 0 ? (
+                <div className="session-context-menu-divider" role="separator" />
+              ) : null}
               <button
-                className="session-context-menu-item group-control-menu-item group-terminal-menu-item"
+                className="session-context-menu-item group-control-menu-item group-agent-menu-item"
                 onClick={openConfigureAgentsModal}
                 role="menuitem"
                 type="button"
               >
                 <IconSettings aria-hidden="true" className="session-context-menu-icon" size={14} />
-                <span className="group-terminal-menu-label">Configure</span>
+                <span className="group-agent-menu-label">Configure</span>
               </button>
             </div>,
             document.body,
@@ -2150,12 +2209,12 @@ export function SessionGroupSection({
   );
 }
 
-function ProjectTerminalLauncherIcon({ agent }: { agent?: SidebarAgentButton }) {
+function ProjectAgentLauncherIcon({ agent }: { agent?: SidebarAgentButton }) {
   if (!agent) {
     return (
-      <IconTerminal2
+      <IconCode
         aria-hidden="true"
-        className="group-terminal-launcher-icon group-terminal-launcher-tabler-icon"
+        className="group-agent-launcher-icon group-agent-launcher-tabler-icon"
         size={14}
         stroke={1.9}
       />
@@ -2166,7 +2225,7 @@ function ProjectTerminalLauncherIcon({ agent }: { agent?: SidebarAgentButton }) 
     return (
       <span
         aria-hidden="true"
-        className="group-terminal-launcher-icon group-terminal-launcher-agent-icon"
+        className="group-agent-launcher-icon group-agent-launcher-agent-icon"
         data-agent-icon={agent.icon}
         style={{
           backgroundColor: AGENT_LOGO_COLORS[agent.icon],
@@ -2180,24 +2239,25 @@ function ProjectTerminalLauncherIcon({ agent }: { agent?: SidebarAgentButton }) 
   return (
     <IconCode
       aria-hidden="true"
-      className="group-terminal-launcher-icon group-terminal-launcher-tabler-icon"
+      className="group-agent-launcher-icon group-agent-launcher-tabler-icon"
       size={14}
       stroke={1.9}
     />
   );
 }
 
-function readPrimaryProjectTerminalLauncherId(): string | undefined {
-  return localStorage.getItem(PROJECT_TERMINAL_LAUNCHER_STORAGE_KEY)?.trim() || undefined;
+function readPrimaryProjectAgentLauncherId(): string | undefined {
+  /**
+   * CDXC:ProjectAgents 2026-05-10-14:18
+   * Project headers persist only the chosen agent for the split agent button.
+   * The storage key remains the historic terminal-launcher key so existing
+   * agent choices survive the UI split that moved Terminal to its own button.
+   */
+  return localStorage.getItem(PROJECT_AGENT_LAUNCHER_STORAGE_KEY)?.trim() || undefined;
 }
 
-function writePrimaryProjectTerminalLauncherId(agentId: string | undefined): void {
-  if (!agentId) {
-    localStorage.removeItem(PROJECT_TERMINAL_LAUNCHER_STORAGE_KEY);
-    return;
-  }
-
-  localStorage.setItem(PROJECT_TERMINAL_LAUNCHER_STORAGE_KEY, agentId);
+function writePrimaryProjectAgentLauncherId(agentId: string): void {
+  localStorage.setItem(PROJECT_AGENT_LAUNCHER_STORAGE_KEY, agentId);
 }
 
 function getPortalMenuStyle(button: HTMLButtonElement | null, menuWidth: number) {

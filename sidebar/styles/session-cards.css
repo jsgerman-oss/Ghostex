@@ -261,6 +261,11 @@
   flex: 0 0 auto;
 }
 
+.project-editor-diff-punctuation {
+  color: color-mix(in srgb, var(--app-muted) 78%, transparent);
+  flex: 0 0 auto;
+}
+
 .project-editor-diff-files {
   color: color-mix(in srgb, #8ec7ff 88%, var(--app-foreground) 12%);
   flex: 0 0 auto;
@@ -290,6 +295,17 @@
 .project-editor-diff-stat-divider {
   color: color-mix(in srgb, var(--app-muted) 78%, transparent);
   flex: 0 0 auto;
+}
+
+.project-editor-diff-tooltip-content {
+  max-width: 240px;
+  text-align: left;
+}
+
+.project-editor-diff-tooltip {
+  display: grid;
+  gap: 3px;
+  line-height: 1.35;
 }
 
 /*

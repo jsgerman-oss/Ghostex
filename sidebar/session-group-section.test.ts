@@ -89,6 +89,18 @@ describe("formatProjectEditorButtonLabel", () => {
         isLoading: false,
         isRepo: true,
       }),
-    ).toBe("Code 1 | +9 | -11");
+    ).toBe("Code (1 • +9 • -11)");
+  });
+
+  test("caps the compact project editor diff counts for stable sidebar width", () => {
+    expect(
+      formatProjectEditorButtonLabel({
+        additions: 1200,
+        deletions: 1001,
+        files: 120,
+        isLoading: false,
+        isRepo: true,
+      }),
+    ).toBe("Code (99 • +999 • -999)");
   });
 });
