@@ -44,7 +44,7 @@ brew install --cask maddada/tap/zmux
 - Embedded T3code
 - Integrations for all the popular Agent CLI 
 
---
+---
 
 ## Other useful stuff:
 - Prompt to find any past thread in your history with just a few keywords.
