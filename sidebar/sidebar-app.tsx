@@ -1765,6 +1765,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     vscode.postMessage({ type: "pickWorkspaceFolder" });
   };
 
+  const createReferenceSession = () => {
+    /**
+     * CDXC:SidebarReference 2026-05-10-14:47
+     * The top primary row is "New Session", not "New Chat". It must target the
+     * currently live project context through createSession, while the Chats
+     * section header remains the explicit path for creating a new chat folder.
+     */
+    vscode.postMessage({ type: "createSession" });
+  };
+
   const createReferenceChat = () => {
     vscode.postMessage({ type: "createChat" });
   };
@@ -1851,7 +1861,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
             isOverflowMenuOpen={isOverflowMenuOpen}
             isSessionSearchOpen={isSessionSearchOpen}
             onCloseSearch={closeSessionSearch}
-            onCreateChat={createReferenceChat}
+            onCreateSession={createReferenceSession}
             onOpenPlugins={openReferencePlugins}
             onOpenPreviousSessions={openPreviousSessions}
             onSearch={toggleSessionSearch}
@@ -2335,7 +2345,7 @@ function SidebarReferenceTopChrome({
   isOverflowMenuOpen,
   isSessionSearchOpen,
   onCloseSearch,
-  onCreateChat,
+  onCreateSession,
   onOpenPlugins,
   onOpenPreviousSessions,
   onSearch,
@@ -2350,7 +2360,7 @@ function SidebarReferenceTopChrome({
   isOverflowMenuOpen: boolean;
   isSessionSearchOpen: boolean;
   onCloseSearch: () => void;
-  onCreateChat: () => void;
+  onCreateSession: () => void;
   onOpenPlugins: () => void;
   onOpenPreviousSessions: () => void;
   onSearch: () => void;
@@ -2431,14 +2441,14 @@ function SidebarReferenceTopChrome({
    * CDXC:SidebarReference 2026-05-08-09:11
    * Combined mode should visually match the provided app sidebar: native-style
    * window dots, disabled back/forward chrome, and large primary rows for New
-   * chat, Plugins, Actions, and Search. Actions owns a hover quick-run button
+   * Session, Plugins, Actions, and Search. Actions owns a hover quick-run button
    * that launches the last project-scoped action, while the row opens the
    * action list and Configure entry.
    *
    * CDXC:SidebarReference 2026-05-08-14:48
    * Combined mode needs the same overflow menu as separated mode, exposed as a
-   * small right-side control on the New chat row so global sidebar actions stay
-   * close to the primary create-chat affordance without replacing it.
+   * small right-side control on the New Session row so global sidebar actions
+   * stay close to the primary create-session affordance without replacing it.
    */
   return (
     <header className="reference-sidebar-top">
@@ -2451,9 +2461,9 @@ function SidebarReferenceTopChrome({
         <IconArrowRight className="reference-sidebar-window-icon" size={17} stroke={1.9} />
       </div>
       <nav aria-label="Sidebar primary navigation" className="reference-sidebar-primary-nav">
-        <SidebarReferenceNewChatNavItem
+        <SidebarReferenceNewSessionNavItem
           isOverflowMenuOpen={isOverflowMenuOpen}
-          onCreateChat={onCreateChat}
+          onCreateSession={onCreateSession}
           onToggleMenu={onToggleMenu}
         />
         <SidebarReferenceNavButton icon={IconGridDots} label="Plugins" onClick={onOpenPlugins} />
@@ -2492,18 +2502,22 @@ function SidebarReferenceTopChrome({
   );
 }
 
-function SidebarReferenceNewChatNavItem({
+function SidebarReferenceNewSessionNavItem({
   isOverflowMenuOpen,
-  onCreateChat,
+  onCreateSession,
   onToggleMenu,
 }: {
   isOverflowMenuOpen: boolean;
-  onCreateChat: () => void;
+  onCreateSession: () => void;
   onToggleMenu: (trigger: HTMLElement) => void;
 }) {
   return (
     <div className="reference-sidebar-nav-item">
-      <SidebarReferenceNavButton icon={IconPencil} label="New chat" onClick={onCreateChat} />
+      <SidebarReferenceNavButton
+        icon={IconPencil}
+        label="New Session"
+        onClick={onCreateSession}
+      />
       <AppTooltip align="end" collisionPadding={4} content="More">
         <button
           aria-controls="sidebar-overflow-menu"

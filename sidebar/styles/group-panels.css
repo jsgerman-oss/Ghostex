@@ -971,9 +971,9 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
  * Search row's primary click target.
  *
  * CDXC:SidebarReference 2026-05-08-14:48
- * Combined-sidebar New chat owns the same small right-side overflow trigger as
- * the Actions and Search rows. Reserve right padding on that row so the menu
- * icon never covers the New chat label or primary click target.
+ * Combined-sidebar New Session owns the same small right-side overflow trigger
+ * as the Actions and Search rows. Reserve right padding on that row so the menu
+ * icon never covers the New Session label or primary click target.
  */
 .reference-sidebar-hover-action {
   align-items: center;

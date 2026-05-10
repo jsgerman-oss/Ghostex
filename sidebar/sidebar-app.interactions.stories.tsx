@@ -499,6 +499,21 @@ export const CombinedSearchKeepsPreviousSessionsBelowProjects: Story = {
 
     await waitForRenderedSidebar(storyRoot);
 
+    await step("top row creates a session and keeps the overflow trigger", async () => {
+      /**
+       * CDXC:SidebarReference 2026-05-10-14:47
+       * Combined mode's top primary row is New Session. It posts createSession
+       * for the current project/chat context and still contains the sidebar
+       * overflow trigger inside the row.
+       */
+      resetSidebarStoryMessages();
+      const newSessionButton = canvas.getByRole("button", { name: "New Session" });
+      const newSessionRow = newSessionButton.closest(".reference-sidebar-nav-item");
+      expect(newSessionRow?.querySelector('[data-sidebar-overflow-trigger="true"]')).toBeTruthy();
+      await userEvent.click(newSessionButton);
+      await expectMessage({ type: "createSession" });
+    });
+
     await step("search matching project and previous-session rows", async () => {
       /**
        * CDXC:SidebarSearch 2026-05-08-17:21
