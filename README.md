@@ -11,7 +11,7 @@ brew install --cask maddada/tap/zmux
 
 ### Work with tens of agents in multiple projects with ease:
 
-<img width="1295" alt="ZMUX simplified sidebar with agent sessions" src="media/readme/zmux-simplified-sidebar.png" />
+<img width="3324" height="2058" alt="image" src="https://github.com/user-attachments/assets/a65dbb58-b5c8-41c6-94a1-d9ecef370077" />
 
 ### All Agent CLIs supported (please send an issue or PR for integrating any missing agent cli)
 
