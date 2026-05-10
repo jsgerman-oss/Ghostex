@@ -31,25 +31,30 @@ brew install --cask maddada/tap/zmux
 
 ## Best features:
 
-- Version 2.2 adds a unified Settings dialog with tabs for Settings, Agents, Actions, and Hotkeys.
-- Version 2.2 adds menu bar session status indicators, optional floating desktop indicators, and clearer working/done terminology for agent activity.
-- Version 2.2 improves embedded VSCode rows with opening/error diagnostics and retry visibility.
-- Sessions stay I can sleep unused terminals to save ram (restores to that session).
-- Search any thread title from all Agent CLIs.
-- I have a feature to prompt to find any past thread in your history with just a few keywords. Very useful if you want to continue with an agent that already has context about a complex feature.
-- Reopening the app always resumes your terminal sessions how they were.
-- Floating working & done indicators and sound for almsot all agent clis.
-- Embedded browser is chromium not webkit.
-- Includes light VScode embed for editing files quickly.
-- Embeds T3code for people who prefer GUIs.
-- Auto naming Codex/Claude/Gemini/Copilot terminal sessions (more soon).
-- Auto sync of the terminal title and status with UI.
-- Allows up to 3x3 split and multiple groups per project each with different split.
-- A simplified sidebar that feels familiar if you are coming from the Codex app
+- Native swift macOS app for better performance
+- Native Ghostty for best cpu/ram use and compatibility
+- Inspired by Codex App's UX
+- Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
+- Auto sleep unused terminals to save ram (auto-restore when clicked)
+- Auto session naming for Codex/Claude/Pi/Gemini/Copilot cli sessions (more soon)
+- Reopening the app always resumes your agent cli sessions
+- Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
+- The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
+- Menu bar working & done indicators and notification sounds for almost all agent clis
+- Embedded T3code
+- Integrations for all the popular Agent CLI 
+
+--
+
+## Other useful stuff:
+- Prompt to find any past thread in your history with just a few keywords.
+  - Very useful if you want to continue with an agent that already has context about a complex feature
+- Auto sync of the terminal title and status with UI
+- Allows up to 3x3 split and multiple groups per project each with different split
 
 ---
 
-## Other features:
+## Even more useful features:
 
 ### Can be attached to your IDE: Shows a button on the attached IDE (Zed / VScode) to show zmux.
 
@@ -58,7 +63,7 @@ brew install --cask maddada/tap/zmux
 - Hotkey to hide/show.
 - Click on your IDE to hide zmux
 
-### How to use Chrome Canary as the dedicated agent browser
+### Can also integrate with Chrome Canary as the default agentic browser (positions it inside zmux and adds it to the sidebar)
 
 #### MCP setting to make Chrome Canary always used by your agent:
 
