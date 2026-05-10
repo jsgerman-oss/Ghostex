@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.3.2 - 2026-05-10
+
+<!-- CDXC:Distribution 2026-05-10-16:56: Release notes for 2.3.2 must include
+macOS session attention banners and project editor diff-row alignment shipped
+after v2.3 so GitHub, Sparkle, and Homebrew metadata stay aligned without
+editing README. -->
+
+- Added optional macOS attention banners for sessions that need attention, including Settings control, native notification permission handling, click-to-focus routing, and sidebar rate limiting.
+- Kept attention notifications separate from completion sounds so users can enable clickable system routing without audible alerts.
+- Improved project editor diff-row alignment in the reference sidebar and expanded Storybook fixture coverage for open editor rows with diff stats.
+
 ## 2.3.0 - 2026-05-10
 
 <!-- CDXC:Distribution 2026-05-10-14:08: Release notes for 2.3.0 must include
