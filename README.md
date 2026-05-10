@@ -42,6 +42,9 @@ brew install --cask maddada/tap/zmux
 - Reopening the app always resumes your agent cli sessions
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
 - The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
+- Rich Prompt Editing with Zapet can be enabled from Settings and installed from Homebrew inside the app.
+- Hotkeys use a recorder UI with direct split controls like Split More, Split Less, and single-chord split-count shortcuts.
+- The installed `zmux` app also proxies terminal CLI commands such as `zmux sessions`.
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Embedded T3code
 - Integrations for all the popular Agent CLI 
