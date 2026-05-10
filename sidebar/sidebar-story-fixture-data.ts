@@ -33,6 +33,33 @@ function createStoryProjectContext(projectId: string): NonNullable<SidebarStoryG
   };
 }
 
+function createStoryOpenProjectEditorContext(
+  projectId: string,
+): NonNullable<SidebarStoryGroup["projectContext"]> {
+  const projectContext = createStoryProjectContext(projectId);
+  return {
+    ...projectContext,
+    /**
+     * CDXC:EditorPanes 2026-05-10-16:20
+     * The Combined header-alignment Storybook fixture keeps the project editor
+     * row visible with nonzero diff stats so its right-edge alignment can be
+     * verified against normal session Last Active timestamps.
+     */
+    editor: {
+      ...projectContext.editor,
+      diffStats: {
+        additions: 5,
+        deletions: 5,
+        files: 2,
+        isLoading: false,
+        isRepo: true,
+      },
+      isOpen: true,
+      status: "running",
+    },
+  };
+}
+
 const DEFAULT_GROUPS: SidebarStoryGroup[] = [
   {
     groupId: "group-1",
@@ -589,7 +616,7 @@ const COMBINED_HEADER_ALIGNMENT_GROUPS: SidebarStoryGroup[] = [
     groupId: "combined-project-zmux",
     isActive: false,
     kind: "workspace",
-    projectContext: createStoryProjectContext("combined-project-zmux"),
+    projectContext: createStoryOpenProjectEditorContext("combined-project-zmux"),
     sessions: [
       createStorySession({
         alias: "Terminal Session",

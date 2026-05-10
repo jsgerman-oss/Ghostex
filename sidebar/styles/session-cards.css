@@ -2016,7 +2016,18 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-card-button.session {
-  padding-right: 4px;
+  padding-right: var(--reference-session-trailing-inset);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-session-head {
+  /*
+   * CDXC:EditorPanes 2026-05-10-16:20
+   * Reference session rows reserve a trailing timestamp slot, but the project
+   * editor row owns its diff stats inside the title label. Keep this row as a
+   * single full-width column so the git numbers align to the same right edge
+   * as Last Active times instead of stopping before their reserved slot.
+   */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-diff-stats {
