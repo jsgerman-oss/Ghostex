@@ -111,6 +111,7 @@ import {
   type zmuxHotkeySettings,
 } from "../shared/zmux-hotkeys";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
+import { HotkeyRecorderField } from "./hotkey-recorder-field";
 import { SidebarCommandIconGlyph, SIDEBAR_COMMAND_ICON_OPTIONS } from "./sidebar-command-icon";
 import { useSidebarStore } from "./sidebar-store";
 import type { AgentConfigDraft } from "./agent-config-modal";
@@ -156,6 +157,7 @@ export type SettingsModalProps = {
   onOpenAccessibilityPreferences?: () => void;
   onOpenZmuxFolder?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
+  onInstallZapet?: () => void;
   onRequestZmuxFolderStats?: () => void;
   settings?: zmuxSettings;
   theme?: SidebarTheme;
@@ -173,6 +175,7 @@ export function SettingsModal({
   onOpenAccessibilityPreferences,
   onOpenZmuxFolder,
   onGhosttySettingsAction,
+  onInstallZapet,
   onRequestZmuxFolderStats,
   settings,
   theme = "dark-blue",
@@ -424,6 +427,13 @@ export function SettingsModal({
         subtitle:
           "Enable only when you need ssh from other devices to continue zmux-created sessions.",
         title: "Session Persistence (Beta)",
+      },
+      {
+        key: "richPromptEditingWithZapet",
+        options: [{ label: "Install Zapet", value: "installZapet" }],
+        subtitle:
+          "Install Zapet and make new terminals use Zapet when a CLI opens an editor for a prompt.",
+        title: "Rich Prompt Editing with Zapet",
       },
     ]),
     terminalBehavior: getSettingsSectionSearch(settingsSearchQuery, "Terminal Behavior", [
@@ -1085,6 +1095,24 @@ export function SettingsModal({
                 }
                 options={SESSION_PERSISTENCE_PROVIDER_OPTIONS}
                 value={draft.sessionPersistenceProvider}
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.terminal, "richPromptEditingWithZapet") ? (
+              /**
+               * CDXC:ZapetPromptEditing 2026-05-10-11:11
+               * Settings must expose both the Homebrew install action and the
+               * feature toggle. The toggle controls future terminal launch
+               * environments; the install action is separate so users can
+               * install Zapet without silently enabling EDITOR=zapet.
+               */
+              <ZapetPromptEditingField
+                checked={draft.richPromptEditingWithZapet}
+                isModified={getSettingModificationProps("richPromptEditingWithZapet").isModified}
+                onInstall={() => onInstallZapet?.()}
+                onChange={(checked) => updateDraft("richPromptEditingWithZapet", checked)}
+                onResetToDefault={
+                  getSettingModificationProps("richPromptEditingWithZapet").onResetToDefault
+                }
               />
               ) : null}
             </SettingsSection>
@@ -2349,12 +2377,11 @@ function HotkeysSettingsTab({
                   </FieldLabel>
                   <FieldDescription className="text-sm">{definition.description}</FieldDescription>
                 </FieldContent>
-                <Input
+                <HotkeyRecorderField
                   aria-invalid={isDuplicate}
-                  className="h-10 px-3 text-sm"
                   id={`hotkey-${definition.id}`}
-                  onChange={(event) => updateHotkey(definition.id, event.currentTarget.value)}
-                  value={value}
+                  hotkey={value}
+                  onChange={(nextHotkey) => updateHotkey(definition.id, nextHotkey)}
                 />
               </Field>
             );
@@ -2714,6 +2741,48 @@ function GhosttySettingsActions({
         Open Ghostty config
       </Button>
     </div>
+  );
+}
+
+function ZapetPromptEditingField({
+  checked,
+  isModified,
+  onChange,
+  onInstall,
+  onResetToDefault,
+}: {
+  checked: boolean;
+  isModified?: boolean;
+  onChange: (checked: boolean) => void;
+  onInstall: () => void;
+  onResetToDefault?: () => void;
+}) {
+  const id = useId();
+  return (
+    <SettingRow
+      description="When enabled, new terminals use Zapet when a CLI opens an editor for prompt text, including zsh edit-command-line."
+      htmlFor={id}
+      isModified={isModified}
+      label="Rich Prompt Editing with Zapet"
+      onResetToDefault={onResetToDefault}
+    >
+      <div className="flex flex-col items-start gap-3">
+        <div className="flex w-full items-center justify-between gap-3 rounded-md border border-border bg-muted/20 px-3 py-2">
+          <span className="min-w-0 text-sm font-medium text-foreground">
+            Use Zapet as the prompt editor
+          </span>
+          <Switch checked={checked} id={id} onCheckedChange={onChange} />
+        </div>
+        <Button
+          className="h-9 w-fit px-3 text-sm"
+          onClick={onInstall}
+          type="button"
+          variant="outline"
+        >
+          Install Zapet
+        </Button>
+      </div>
+    </SettingRow>
   );
 }
 

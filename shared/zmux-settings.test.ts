@@ -302,6 +302,22 @@ describe("normalizezmuxSettings", () => {
     });
   });
 
+  test("keeps Zapet rich prompt editing opt-in", () => {
+    /**
+     * CDXC:ZapetPromptEditing 2026-05-10-11:11
+     * Rich Prompt Editing with Zapet must default off. Enabling it is an
+     * explicit user choice because it changes the EDITOR seen by launched
+     * agent/app terminal processes.
+     */
+    expect(DEFAULT_zmux_SETTINGS.richPromptEditingWithZapet).toBe(false);
+    expect(normalizezmuxSettings({})).toMatchObject({
+      richPromptEditingWithZapet: false,
+    });
+    expect(normalizezmuxSettings({ richPromptEditingWithZapet: true })).toMatchObject({
+      richPromptEditingWithZapet: true,
+    });
+  });
+
   test("keeps Ghostty typography settings in documented practical ranges", () => {
     /**
      * CDXC:TerminalTypographySettings 2026-04-29-09:32

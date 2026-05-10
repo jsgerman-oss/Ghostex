@@ -21,6 +21,9 @@ export type zmuxHotkeyActionId =
   | "showFour"
   | "showSix"
   | "showNine"
+  | "splitLess"
+  | "splitMore"
+  | "splitMoreDown"
   | `focusGroup${1 | 2 | 3 | 4}`
   | `focusSessionSlot${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
 
@@ -35,7 +38,8 @@ export type zmuxHotkeyAction =
   | { id: zmuxHotkeyActionId; kind: "openSettings" }
   | { id: zmuxHotkeyActionId; kind: "renameActiveSession" }
   | { id: zmuxHotkeyActionId; kind: "setViewMode"; viewMode: TerminalViewMode }
-  | { id: zmuxHotkeyActionId; kind: "setVisibleCount"; visibleCount: VisibleSessionCount };
+  | { id: zmuxHotkeyActionId; kind: "setVisibleCount"; visibleCount: VisibleSessionCount }
+  | { id: zmuxHotkeyActionId; kind: "adjustVisibleCount"; direction: -1 | 1 };
 
 export type zmuxHotkeyDefinition = {
   action: zmuxHotkeyAction;
@@ -140,11 +144,51 @@ export const ZMUX_HOTKEY_DEFINITIONS: readonly zmuxHotkeyDefinition[] = [
       kind: "setVisibleCount" as const,
       visibleCount: visibleCount as VisibleSessionCount,
     },
-    defaultKey: `cmd+alt+s ${visibleCount}`,
-    description: `Show ${visibleCount} session${visibleCount === 1 ? "" : "s"}.`,
+    /**
+     * CDXC:Hotkeys 2026-05-10-12:06
+     * Split-count hotkeys must be single chords because AppKit and embedded
+     * browser panes do not reliably keep multi-stroke prefixes alive across the
+     * native/WebKit boundary.
+     */
+    defaultKey: `cmd+ctrl+${visibleCount}`,
+    description: `Show ${visibleCount} split${visibleCount === 1 ? "" : "s"}.`,
     id: id as zmuxHotkeyActionId,
-    title: `Show ${visibleCount}`,
+    title: `View ${visibleCount}`,
   })),
+  {
+    action: { direction: 1, id: "splitMore", kind: "adjustVisibleCount" },
+    /**
+     * CDXC:Hotkeys 2026-05-10-12:31
+     * Cmd+D and Cmd+Shift+D both increase visible splits to match common tmux
+     * and terminal split-direction muscle memory: sideways and downward split
+     * commands should both mean "split more" in zmux's count-based layout.
+     */
+    defaultKey: "cmd+d",
+    description: "Show one more split.",
+    id: "splitMore",
+    title: "Split More Sideways",
+  },
+  {
+    action: { direction: 1, id: "splitMoreDown", kind: "adjustVisibleCount" },
+    defaultKey: "cmd+shift+d",
+    description: "Show one more split.",
+    id: "splitMoreDown",
+    title: "Split More Downwards",
+  },
+  {
+    action: { direction: -1, id: "splitLess", kind: "adjustVisibleCount" },
+    /**
+     * CDXC:Hotkeys 2026-05-10-12:31
+     * Split Less must not use Cmd+W because that closes the focused pane, and
+     * Cmd+Alt+D / Cmd+Ctrl+D collide with common macOS Dock and lookup
+     * shortcuts. Keep the command on the D key family with a lower-conflict
+     * modifier shape.
+     */
+    defaultKey: "cmd+ctrl+shift+d",
+    description: "Show one fewer split.",
+    id: "splitLess",
+    title: "Split Less",
+  },
 ];
 
 export const DEFAULT_zmux_HOTKEYS: zmuxHotkeySettings = Object.fromEntries(
@@ -157,7 +201,9 @@ export function normalizezmuxHotkeySettings(candidate: unknown): zmuxHotkeySetti
   for (const definition of ZMUX_HOTKEY_DEFINITIONS) {
     const value = source[definition.id];
     normalized[definition.id] =
-      typeof value === "string" && value.trim() ? normalizeHotkeyText(value) : definition.defaultKey;
+      typeof value === "string" && value.trim()
+        ? normalizeHotkeyText(value)
+        : definition.defaultKey;
   }
   return normalized;
 }
@@ -174,6 +220,7 @@ export function normalizeHotkeyText(value: string): string {
     .replace(/⌥|option/g, "alt")
     .replace(/⌃|control/g, "ctrl")
     .replace(/⇧|shift/g, "shift")
+    .replace(/\bmod\b/g, "cmd")
     .replace(/\s+/g, " ");
 }
 

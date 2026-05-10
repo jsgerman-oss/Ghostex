@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import {
   DEFAULT_zmux_HOTKEYS,
   ZMUX_HOTKEY_DEFINITIONS,
@@ -10,6 +9,7 @@ import {
   type zmuxHotkeyActionId,
   type zmuxHotkeySettings,
 } from "../shared/zmux-hotkeys";
+import { HotkeyRecorderField } from "./hotkey-recorder-field";
 
 export type HotkeysModalProps = {
   hotkeys?: zmuxHotkeySettings;
@@ -52,9 +52,10 @@ export function HotkeysModal({ hotkeys, isOpen, onChange, onClose }: HotkeysModa
         <DialogHeader className="px-5 pt-5 pb-3">
           <DialogTitle className="text-xl">Hotkeys</DialogTitle>
         </DialogHeader>
-        {/* CDXC:Hotkeys 2026-04-28-05:20
-            Hotkeys are edited as normalized chord strings because the native
-            host consumes the same persisted values before terminal input.
+        {/* CDXC:Hotkeys 2026-05-10-12:06
+            Hotkeys are rebound through a recorder control so macOS Command
+            chords are captured as shortcuts instead of being typed into a text
+            field or stolen by the global hotkey listener.
             CDXC:Hotkeys 2026-04-28-05:31
             The hotkey list must use a constrained native overflow container
             so long shortcut sets scroll inside the modal instead of expanding
@@ -70,11 +71,11 @@ export function HotkeysModal({ hotkeys, isOpen, onChange, onClose }: HotkeysModa
                     <span className="hotkeys-modal-title">{definition.title}</span>
                     <span className="hotkeys-modal-description">{definition.description}</span>
                   </span>
-                  <Input
+                  <HotkeyRecorderField
                     aria-invalid={isDuplicate}
                     className="hotkeys-modal-input"
-                    onChange={(event) => updateHotkey(definition.id, event.currentTarget.value)}
-                    value={value}
+                    hotkey={value}
+                    onChange={(nextHotkey) => updateHotkey(definition.id, nextHotkey)}
                   />
                 </label>
               );

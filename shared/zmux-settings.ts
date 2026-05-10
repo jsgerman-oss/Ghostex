@@ -90,6 +90,7 @@ export type zmuxSettings = {
   terminalClipboardPasteProtection: boolean;
   terminalMouseHideWhileTyping: boolean;
   terminalScrollbar: GhosttyScrollbar;
+  richPromptEditingWithZapet: boolean;
   hotkeys: zmuxHotkeySettings;
   workspaceActivePaneBorderColor: string;
   workspaceBackgroundColor: string;
@@ -225,6 +226,13 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
   terminalClipboardPasteProtection: true,
   terminalMouseHideWhileTyping: false,
   terminalScrollbar: "system",
+  /**
+   * CDXC:ZapetPromptEditing 2026-05-10-11:11
+   * Zapet is an opt-in rich prompt editing TUI. When enabled, zmux injects
+   * EDITOR=zapet into new app/agent terminal environments, and the native
+   * terminal startup keeps Zapet in charge after zsh profile files load.
+   */
+  richPromptEditingWithZapet: false,
   hotkeys: DEFAULT_zmux_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
   workspaceBackgroundColor: "#121212",
@@ -652,6 +660,16 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
     ),
     terminalScrollbar: normalizeGhosttyScrollbar(
       readString(source, "terminalScrollbar", DEFAULT_zmux_SETTINGS.terminalScrollbar),
+    ),
+    /**
+     * CDXC:ZapetPromptEditing 2026-05-10-11:11
+     * Older settings files should keep the feature disabled until users turn
+     * on Rich Prompt Editing with Zapet from Settings.
+     */
+    richPromptEditingWithZapet: readBoolean(
+      source,
+      "richPromptEditingWithZapet",
+      DEFAULT_zmux_SETTINGS.richPromptEditingWithZapet,
     ),
     /**
      * CDXC:Hotkeys 2026-04-28-05:20
