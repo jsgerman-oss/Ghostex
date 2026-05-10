@@ -7,7 +7,7 @@
 ```bash
 brew install --cask maddada/tap/zmux
 ```
-
+<br />
 
 ### Work with tens of agents in multiple projects with ease:
 
