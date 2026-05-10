@@ -6,8 +6,9 @@
 the hotkey recorder, Zapet prompt editing, bundled CLI proxy, native terminal
 runtime fixes, persistence recreation behavior, active-project titlebar sync,
 project agent/terminal launcher separation, Combined New Session routing,
-sidebar polish, and README updates shipped after v2.2 so GitHub, Sparkle, and
-Homebrew metadata stay aligned. -->
+project editor row preferences, sidebar collapse persistence, sidebar polish,
+and README updates shipped after v2.2 so GitHub, Sparkle, and Homebrew metadata
+stay aligned. -->
 
 - Added a shortcut recorder for hotkey settings so Command chords are captured directly instead of typed into text fields.
 - Updated split-count shortcuts to single-chord defaults and added direct Split More / Split Less actions for faster workspace layout control.
@@ -20,6 +21,7 @@ Homebrew metadata stay aligned. -->
 - Changed provider-backed terminal recreation so reload, wake, restore, and previous-session restore follow the current Settings provider while attach-command inspection still uses stored provider metadata.
 - Separated project agent launching from plain terminal creation so project headers have distinct agent and terminal controls.
 - Changed the Combined sidebar top row to New Session so it creates in the active project/chat context while chat creation stays in the Chats section.
+- Added persistent sidebar collapse state and a Settings toggle for showing project editor changed-file counts.
 - Polished sidebar spacing and session-title truncation so reference layout controls and session cards scan more cleanly.
 - Updated README development setup and feature wording for the current Ghostty fork and 2.3 workflow.
 
