@@ -4,9 +4,10 @@
 
 <!-- CDXC:Distribution 2026-05-10-14:08: Release notes for 2.3.0 must include
 the hotkey recorder, Zapet prompt editing, bundled CLI proxy, native terminal
-runtime fixes, persistence recreation behavior, sidebar polish, and README
-updates shipped after v2.2 so GitHub, Sparkle, and Homebrew metadata stay
-aligned. -->
+runtime fixes, persistence recreation behavior, active-project titlebar sync,
+project agent/terminal launcher separation, Combined New Session routing,
+sidebar polish, and README updates shipped after v2.2 so GitHub, Sparkle, and
+Homebrew metadata stay aligned. -->
 
 - Added a shortcut recorder for hotkey settings so Command chords are captured directly instead of typed into text fields.
 - Updated split-count shortcuts to single-chord defaults and added direct Split More / Split Less actions for faster workspace layout control.
@@ -14,7 +15,11 @@ aligned. -->
 - Added installed-app CLI proxying so terminal commands such as `zmux --help` and `zmux sessions` run the bundled Node CLI before the macOS app starts.
 - Improved native command execution by normalizing GUI-launched process `PATH` values so background commands can find common developer tools.
 - Improved terminal search keyboard behavior, centering, and neutral styling for embedded Ghostty panes.
+- Added active-project names to the macOS title bar while keeping chat workspaces labeled as Zmux.
+- Added focused native pane-reorder diagnostics and rejected stale title-bar hits so bottom-edge terminal selection does not become pane dragging.
 - Changed provider-backed terminal recreation so reload, wake, restore, and previous-session restore follow the current Settings provider while attach-command inspection still uses stored provider metadata.
+- Separated project agent launching from plain terminal creation so project headers have distinct agent and terminal controls.
+- Changed the Combined sidebar top row to New Session so it creates in the active project/chat context while chat creation stays in the Chats section.
 - Polished sidebar spacing and session-title truncation so reference layout controls and session cards scan more cleanly.
 - Updated README development setup and feature wording for the current Ghostty fork and 2.3 workflow.
 

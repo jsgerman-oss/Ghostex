@@ -45,6 +45,8 @@ brew install --cask maddada/tap/zmux
 - Rich Prompt Editing with Zapet can be enabled from Settings and installed from Homebrew inside the app.
 - Hotkeys use a recorder UI with direct split controls like Split More, Split Less, and single-chord split-count shortcuts.
 - The installed `zmux` app also proxies terminal CLI commands such as `zmux sessions`.
+- The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
+- Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Embedded T3code
 - Integrations for all the popular Agent CLI 
