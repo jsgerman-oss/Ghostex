@@ -1,49 +1,6 @@
 ## The best parts of Ghostty & Codex App = Zmux!<br />
 ### Fully-featured Native Agent CLIs Manager<br />Embedded Browser | Advanced Agents Support | Fast & Lower RAM <br /><br />
 
-## Dev Setup With The zmux Ghostty Fork
-
-<!--
-CDXC:NativeTerminals 2026-05-10-05:05
-Developers need the zmux Ghostty fork checked out beside zmux so the native
-macOS host can compile Ghostty.SurfaceView sources and link GhosttyKit from a
-stable sibling path without committing maintainer-local absolute paths.
--->
-
-Clone both repositories into the same parent directory and keep the Ghostty
-folder named `ghostty`:
-
-```bash
-mkdir -p ~/dev/zmux-work
-cd ~/dev/zmux-work
-git clone https://github.com/maddada/zmux.git zmux
-git clone https://github.com/maddada/ghostty.git ghostty
-```
-
-Build Ghostty's native macOS framework first:
-
-```bash
-cd ghostty
-env DEVELOPER_DIR=/Library/Developer/CommandLineTools \
-  SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \
-  GHOSTTY_METAL_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  zig build -Demit-xcframework -Dxcframework-target=native -Demit-macos-app=false
-```
-
-Then build or run zmux:
-
-```bash
-cd ../zmux
-bun run build
-```
-
-If the Ghostty checkout is not beside `zmux` or is not named `ghostty`, set
-`GHOSTTY_ROOT` explicitly:
-
-```bash
-GHOSTTY_ROOT=/path/to/ghostty bun run build
-```
-
 #### Install on macOS using brew or dmg in releases page
 ###### (Looking for help with dev/testing for Windows & Linux ports)
 
@@ -150,4 +107,48 @@ brew install --cask maddada/tap/zmux
 command = "npx"
 enabled = true
 args = [ "chrome-devtools-mcp@latest", "--auto-connect", "--channel=canary" ]
+```
+
+
+## Dev Setup With The zmux Ghostty Fork
+
+<!--
+CDXC:NativeTerminals 2026-05-10-05:05
+Developers need the zmux Ghostty fork checked out beside zmux so the native
+macOS host can compile Ghostty.SurfaceView sources and link GhosttyKit from a
+stable sibling path without committing maintainer-local absolute paths.
+-->
+
+Clone both repositories into the same parent directory and keep the Ghostty
+folder named `ghostty`:
+
+```bash
+mkdir -p ~/dev/zmux-work
+cd ~/dev/zmux-work
+git clone https://github.com/maddada/zmux.git zmux
+git clone https://github.com/maddada/ghostty.git ghostty
+```
+
+Build Ghostty's native macOS framework first:
+
+```bash
+cd ghostty
+env DEVELOPER_DIR=/Library/Developer/CommandLineTools \
+  SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \
+  GHOSTTY_METAL_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  zig build -Demit-xcframework -Dxcframework-target=native -Demit-macos-app=false
+```
+
+Then build or run zmux:
+
+```bash
+cd ../zmux
+bun run build
+```
+
+If the Ghostty checkout is not beside `zmux` or is not named `ghostty`, set
+`GHOSTTY_ROOT` explicitly:
+
+```bash
+GHOSTTY_ROOT=/path/to/ghostty bun run build
 ```
