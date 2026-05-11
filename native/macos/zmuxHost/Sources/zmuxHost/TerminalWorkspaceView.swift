@@ -397,6 +397,7 @@ private func nativeTerminalColorEnvironmentSnapshot(_ environment: [String: Stri
 @MainActor
 final class TerminalWorkspaceView: NSView {
   private struct TerminalSession {
+    let containerView: TerminalPaneLeafContainerView
     let sessionId: String
     let view: Ghostty.SurfaceView
     let scrollView: SurfaceScrollView
@@ -412,6 +413,7 @@ final class TerminalWorkspaceView: NSView {
 
   private struct WebPaneSession {
     let browserTitleObservation: NSKeyValueObservation?
+    let containerView: TerminalPaneLeafContainerView
     let chromiumView: ZmuxCEFBrowserView?
     let diagnosticsBridge: T3CodePaneDiagnosticsBridge
     let hostView: WebPaneHostView
@@ -1318,8 +1320,11 @@ final class TerminalWorkspaceView: NSView {
     }
     let borderView = TerminalPaneBorderView()
     borderView.translatesAutoresizingMaskIntoConstraints = false
+    let containerView = TerminalPaneLeafContainerView()
+    containerView.translatesAutoresizingMaskIntoConstraints = true
 
     var session = TerminalSession(
+      containerView: containerView,
       sessionId: command.sessionId,
       view: surfaceView,
       scrollView: scrollView,
@@ -1383,10 +1388,7 @@ final class TerminalWorkspaceView: NSView {
       .store(in: &session.cancellables)
 
     sessions[command.sessionId] = session
-    addSubview(scrollView)
-    addSubview(searchBarView)
-    addSubview(titleBarView)
-    addSubview(borderView)
+    mountTerminalPaneContainer(for: session)
     logFocusSurfaceState(
       event: "nativeFocusTrace.createTerminalSurfaceState",
       reason: "createTerminal.registered",
@@ -1410,6 +1412,7 @@ final class TerminalWorkspaceView: NSView {
       moveOffscreen(searchBarView)
       moveOffscreen(titleBarView)
       moveOffscreen(borderView)
+      moveOffscreen(containerView)
       searchBarView.isHidden = true
       titleBarView.isHidden = true
       borderView.isHidden = true
@@ -1533,10 +1536,7 @@ final class TerminalWorkspaceView: NSView {
       ttyName: session.view.surfaceModel?.ttyName ?? session.ttyName,
       foregroundPid: session.view.surfaceModel?.foregroundPID ?? session.foregroundPid,
       reason: reason)
-    session.scrollView.removeFromSuperview()
-    session.searchBarView.removeFromSuperview()
-    session.titleBarView.removeFromSuperview()
-    session.borderView.removeFromSuperview()
+    session.containerView.removeFromSuperview()
     terminalLayout = prunedLayout(removing: sessionId, from: terminalLayout)
     attentionSessionIds.remove(sessionId)
     if focusedSessionId == sessionId {
@@ -1575,6 +1575,7 @@ final class TerminalWorkspaceView: NSView {
       if existingSession.isManagedT3Pane, isManagedT3Pane {
         webPaneSessions[command.sessionId] = WebPaneSession(
           browserTitleObservation: existingSession.browserTitleObservation,
+          containerView: existingSession.containerView,
           chromiumView: existingSession.chromiumView,
           diagnosticsBridge: existingSession.diagnosticsBridge,
           hostView: existingSession.hostView,
@@ -1783,6 +1784,8 @@ final class TerminalWorkspaceView: NSView {
     }
     let borderView = TerminalPaneBorderView()
     borderView.translatesAutoresizingMaskIntoConstraints = false
+    let containerView = TerminalPaneLeafContainerView()
+    containerView.translatesAutoresizingMaskIntoConstraints = true
     /**
      CDXC:BrowserPanes 2026-05-03-01:58
      Browser panes should name native chrome from the loaded page, not the
@@ -1794,6 +1797,7 @@ final class TerminalWorkspaceView: NSView {
 
     webPaneSessions[command.sessionId] = WebPaneSession(
       browserTitleObservation: browserTitleObservation,
+      containerView: containerView,
       chromiumView: chromiumView,
       diagnosticsBridge: diagnosticsBridge,
       hostView: hostView,
@@ -1809,10 +1813,10 @@ final class TerminalWorkspaceView: NSView {
       borderView: borderView
     )
     activeSessionIds.insert(command.sessionId)
-    addSubview(hostView)
-    addSubview(titleBarView)
-    addSubview(borderView)
-    orderWebPaneViewsToFront(webPaneSessions[command.sessionId])
+    if let session = webPaneSessions[command.sessionId] {
+      mountWebPaneContainer(for: session)
+      orderWebPaneViewsToFront(session)
+    }
     terminalLayout = terminalLayout ?? .leaf(sessionId: command.sessionId)
 
     if let url = initialUrl {
@@ -1888,9 +1892,7 @@ final class TerminalWorkspaceView: NSView {
     NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.close.browserTeardown.completed", [
       "sessionId": sessionId,
     ])
-    session.hostView.removeFromSuperview()
-    session.titleBarView.removeFromSuperview()
-    session.borderView.removeFromSuperview()
+    session.containerView.removeFromSuperview()
     terminalLayout = prunedLayout(removing: sessionId, from: terminalLayout)
     attentionSessionIds.remove(sessionId)
     if focusedSessionId == sessionId {
@@ -2496,13 +2498,12 @@ final class TerminalWorkspaceView: NSView {
       ])
     if visible {
       activeSessionIds.insert(sessionId)
+      session.containerView.isHidden = false
     } else {
       activeSessionIds.remove(sessionId)
-      moveOffscreen(session.scrollView)
-      moveOffscreen(session.searchBarView)
-      moveOffscreen(session.titleBarView)
-      moveOffscreen(session.borderView)
+      moveOffscreen(session.containerView)
     }
+    session.containerView.isHidden = !visible
     session.scrollView.isHidden = false
     session.searchBarView.isHidden = !visible || session.view.searchState == nil
     session.titleBarView.isHidden = !visible
@@ -2594,15 +2595,13 @@ final class TerminalWorkspaceView: NSView {
       if shouldRelayout {
         let isPoppedOut = poppedOutSessionIds.contains(session.sessionId)
         let isActive = !isProjectEditorActive && activeSessionIds.contains(session.sessionId)
+        session.containerView.isHidden = !isActive || isPoppedOut
         session.scrollView.isHidden = false
         session.searchBarView.isHidden = !isActive || session.view.searchState == nil
         session.titleBarView.isHidden = !isActive && !isPoppedOut
         session.borderView.isHidden = !isActive
         if !isActive && !isPoppedOut {
-          moveOffscreen(session.scrollView)
-          moveOffscreen(session.searchBarView)
-          moveOffscreen(session.titleBarView)
-          moveOffscreen(session.borderView)
+          moveOffscreen(session.containerView)
         }
       }
     }
@@ -2621,13 +2620,12 @@ final class TerminalWorkspaceView: NSView {
       if shouldRelayout {
         let isPoppedOut = poppedOutSessionIds.contains(session.sessionId)
         let isActive = !isProjectEditorActive && activeSessionIds.contains(session.sessionId)
+        session.containerView.isHidden = !isActive || isPoppedOut
         session.hostView.isHidden = !isActive && !isPoppedOut
         session.titleBarView.isHidden = !isActive && !isPoppedOut
         session.borderView.isHidden = !isActive
         if !isActive && !isPoppedOut {
-          moveOffscreen(session.hostView)
-          moveOffscreen(session.titleBarView)
-          moveOffscreen(session.borderView)
+          moveOffscreen(session.containerView)
         }
       }
     }
@@ -2927,6 +2925,48 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  private func mountTerminalPaneContainer(for session: TerminalSession) {
+    /**
+     CDXC:NativePaneResize 2026-05-11-13:38
+     Muxy's resize reliability comes from a child/divider/child layout tree,
+     not from overlay rails fighting terminal content. Mount each terminal pane
+     as one AppKit leaf container so Ghostty, search, title chrome, and borders
+     move as a unit while split dividers remain separate sibling views.
+     */
+    if session.containerView.superview !== self {
+      session.containerView.removeFromSuperview()
+      addSubview(session.containerView)
+    }
+    mount(session.titleBarView, in: session.containerView)
+    mount(session.scrollView, in: session.containerView)
+    mount(session.searchBarView, in: session.containerView)
+    mount(session.borderView, in: session.containerView)
+  }
+
+  private func mountWebPaneContainer(for session: WebPaneSession) {
+    /**
+     CDXC:NativePaneResize 2026-05-11-13:38
+     Web panes follow the same Muxy-style leaf container model as Ghostty
+     panes. The split divider is a sibling of the pane container, so WKWebView
+     or CEF cannot own mouse events that belong to the divider gap.
+     */
+    if session.containerView.superview !== self {
+      session.containerView.removeFromSuperview()
+      addSubview(session.containerView)
+    }
+    mount(session.titleBarView, in: session.containerView)
+    mount(session.hostView, in: session.containerView)
+    mount(session.borderView, in: session.containerView)
+  }
+
+  private func mount(_ view: NSView, in containerView: TerminalPaneLeafContainerView) {
+    guard view.superview !== containerView else {
+      return
+    }
+    view.removeFromSuperview()
+    containerView.addSubview(view)
+  }
+
   private func updateOuterBottomPaneBorderCorner() {
     /**
      CDXC:NativePaneChrome 2026-05-07-15:13
@@ -2944,8 +2984,8 @@ final class TerminalWorkspaceView: NSView {
     }
 
     let roundedSessionId = visibleBorders.max { left, right in
-      let leftFrame = left.borderView.frame
-      let rightFrame = right.borderView.frame
+      let leftFrame = left.borderView.convert(left.borderView.bounds, to: self)
+      let rightFrame = right.borderView.convert(right.borderView.bounds, to: self)
       let leftOuterX = sidebarSide == .left ? leftFrame.maxX : -leftFrame.minX
       let rightOuterX = sidebarSide == .left ? rightFrame.maxX : -rightFrame.minX
       if abs(leftOuterX - rightOuterX) > 0.5 {
@@ -3029,15 +3069,10 @@ final class TerminalWorkspaceView: NSView {
     setHoveredPaneSessionId(nil)
     resetPaneHeaderInteractionState()
     for session in sessions.values {
-      moveOffscreen(session.scrollView)
-      moveOffscreen(session.searchBarView)
-      moveOffscreen(session.titleBarView)
-      moveOffscreen(session.borderView)
+      moveOffscreen(session.containerView)
     }
     for session in webPaneSessions.values {
-      moveOffscreen(session.hostView)
-      moveOffscreen(session.titleBarView)
-      moveOffscreen(session.borderView)
+      moveOffscreen(session.containerView)
     }
     hidePaneResizeHandleViews()
     discardCursorRects()
@@ -3503,10 +3538,10 @@ final class TerminalWorkspaceView: NSView {
     _ titleBarView: TerminalSessionTitleBarView,
     at point: CGPoint
   ) -> NSView? {
-    guard !titleBarView.isHidden, titleBarView.frame.contains(point) else {
+    let titleBarPoint = convert(point, to: titleBarView)
+    guard !titleBarView.isHidden, titleBarView.bounds.contains(titleBarPoint) else {
       return nil
     }
-    let titleBarPoint = convert(point, to: titleBarView)
     return titleBarView.hitTest(titleBarPoint)
   }
 
@@ -3523,13 +3558,17 @@ final class TerminalWorkspaceView: NSView {
 
   private func paneContentHitView(at point: CGPoint) -> NSView? {
     for sessionId in orderedVisibleSessionIds().reversed() {
-      if let session = sessions[sessionId], session.scrollView.frame.contains(point) {
+      if let session = sessions[sessionId] {
         let contentPoint = convert(point, to: session.scrollView)
-        return session.scrollView.hitTest(contentPoint)
+        if session.scrollView.bounds.contains(contentPoint) {
+          return session.scrollView.hitTest(contentPoint)
+        }
       }
-      if let session = webPaneSessions[sessionId], session.hostView.frame.contains(point) {
+      if let session = webPaneSessions[sessionId] {
         let contentPoint = convert(point, to: session.hostView)
-        return session.hostView.hitTest(contentPoint)
+        if session.hostView.bounds.contains(contentPoint) {
+          return session.hostView.hitTest(contentPoint)
+        }
       }
     }
     return nil
@@ -4683,10 +4722,10 @@ final class TerminalWorkspaceView: NSView {
 
   private func visiblePaneTitleBarViews() -> [(ownerSessionId: String, titleBarView: TerminalSessionTitleBarView)] {
     let terminalTitleBars = sessions.values
-      .filter { !$0.titleBarView.isHidden && $0.titleBarView.superview === self }
+      .filter { !$0.containerView.isHidden && !$0.titleBarView.isHidden && $0.titleBarView.window != nil }
       .map { (ownerSessionId: $0.sessionId, titleBarView: $0.titleBarView) }
     let webPaneTitleBars = webPaneSessions.values
-      .filter { !$0.titleBarView.isHidden && $0.titleBarView.superview === self }
+      .filter { !$0.containerView.isHidden && !$0.titleBarView.isHidden && $0.titleBarView.window != nil }
       .map { (ownerSessionId: $0.sessionId, titleBarView: $0.titleBarView) }
     return terminalTitleBars + webPaneTitleBars
   }
@@ -4814,10 +4853,10 @@ final class TerminalWorkspaceView: NSView {
 
   private func paneFrame(for sessionId: String) -> CGRect? {
     if let session = sessions[sessionId] {
-      return session.borderView.frame
+      return session.containerView.frame
     }
     if let session = webPaneSessions[sessionId] {
-      return session.borderView.frame
+      return session.containerView.frame
     }
     return nil
   }
@@ -4846,12 +4885,12 @@ final class TerminalWorkspaceView: NSView {
 
   private func paneSessionId(at point: CGPoint) -> String? {
     for (sessionId, session) in sessions where activeSessionIds.contains(sessionId) {
-      if session.borderView.frame.contains(point) {
+      if !session.containerView.isHidden && session.containerView.frame.contains(point) {
         return sessionId
       }
     }
     for (sessionId, session) in webPaneSessions where activeSessionIds.contains(sessionId) {
-      if session.borderView.frame.contains(point) {
+      if !session.containerView.isHidden && session.containerView.frame.contains(point) {
         return sessionId
       }
     }
@@ -4894,20 +4933,20 @@ final class TerminalWorkspaceView: NSView {
 
   private func paneBorderFrame(for sessionId: String) -> CGRect? {
     if let session = sessions[sessionId] {
-      return session.borderView.frame
+      return session.borderView.convert(session.borderView.bounds, to: self)
     }
     if let session = webPaneSessions[sessionId] {
-      return session.borderView.frame
+      return session.borderView.convert(session.borderView.bounds, to: self)
     }
     return nil
   }
 
   private func paneTitleBarFrame(for sessionId: String) -> CGRect? {
     if let session = sessions[sessionId] {
-      return session.titleBarView.frame
+      return session.titleBarView.convert(session.titleBarView.bounds, to: self)
     }
     if let session = webPaneSessions[sessionId] {
-      return session.titleBarView.frame
+      return session.titleBarView.convert(session.titleBarView.bounds, to: self)
     }
     return nil
   }
@@ -4989,10 +5028,10 @@ final class TerminalWorkspaceView: NSView {
     titleBarSessionId: String
   )? {
     for (sessionId, session) in sessions where activeSessionIds.contains(sessionId) {
-      guard session.titleBarView.frame.contains(point) else {
+      let titleBarPoint = convert(point, to: session.titleBarView)
+      guard session.titleBarView.bounds.contains(titleBarPoint) else {
         continue
       }
-      let titleBarPoint = convert(point, to: session.titleBarView)
       if let tabSessionId = session.titleBarView.tabSessionId(at: titleBarPoint) {
         return (
           session.titleBarView.tabFrame(for: tabSessionId).map {
@@ -5004,10 +5043,10 @@ final class TerminalWorkspaceView: NSView {
       }
     }
     for (sessionId, session) in webPaneSessions where activeSessionIds.contains(sessionId) {
-      guard session.titleBarView.frame.contains(point) else {
+      let titleBarPoint = convert(point, to: session.titleBarView)
+      guard session.titleBarView.bounds.contains(titleBarPoint) else {
         continue
       }
-      let titleBarPoint = convert(point, to: session.titleBarView)
       if let tabSessionId = session.titleBarView.tabSessionId(at: titleBarPoint) {
         return (
           session.titleBarView.tabFrame(for: tabSessionId).map {
@@ -5039,19 +5078,19 @@ final class TerminalWorkspaceView: NSView {
     sessionId: String, action: TerminalTitleBarAction
   )? {
     for (sessionId, session) in sessions where activeSessionIds.contains(sessionId) {
-      guard session.titleBarView.frame.contains(point) else {
+      let titleBarPoint = convert(point, to: session.titleBarView)
+      guard session.titleBarView.bounds.contains(titleBarPoint) else {
         continue
       }
-      let titleBarPoint = convert(point, to: session.titleBarView)
       if let action = session.titleBarView.actionButtonAction(at: titleBarPoint) {
         return (sessionId, action)
       }
     }
     for (sessionId, session) in webPaneSessions where activeSessionIds.contains(sessionId) {
-      guard session.titleBarView.frame.contains(point) else {
+      let titleBarPoint = convert(point, to: session.titleBarView)
+      guard session.titleBarView.bounds.contains(titleBarPoint) else {
         continue
       }
-      let titleBarPoint = convert(point, to: session.titleBarView)
       if let action = session.titleBarView.actionButtonAction(at: titleBarPoint) {
         return (sessionId, action)
       }
@@ -5063,10 +5102,10 @@ final class TerminalWorkspaceView: NSView {
     _ titleBarView: TerminalSessionTitleBarView,
     containsDraggablePoint point: CGPoint
   ) -> Bool {
-    guard titleBarView.frame.contains(point) else {
+    let titleBarPoint = convert(point, to: titleBarView)
+    guard titleBarView.bounds.contains(titleBarPoint) else {
       return false
     }
-    let titleBarPoint = convert(point, to: titleBarView)
     return titleBarView.isDraggableHeaderPoint(titleBarPoint)
   }
 
@@ -5171,10 +5210,9 @@ final class TerminalWorkspaceView: NSView {
     }
     controller.closeProgrammatically()
     if let session = sessions[sessionId] {
-      addSubview(session.scrollView)
-      addSubview(session.searchBarView)
+      mountTerminalPaneContainer(for: session)
     } else if let session = webPaneSessions[sessionId] {
-      addSubview(session.hostView)
+      mountWebPaneContainer(for: session)
     }
     removePoppedOutPlaceholder(sessionId: sessionId)
     needsLayout = true
@@ -5260,19 +5298,27 @@ final class TerminalWorkspaceView: NSView {
 
   private func currentPaneRectForPlaceholder(sessionId: String) -> CGRect? {
     if let session = sessions[sessionId] {
+      if session.containerView.frame.width > 1, session.containerView.frame.height > 1 {
+        return session.containerView.frame
+      }
       if session.borderView.frame.width > 1, session.borderView.frame.height > 1 {
-        return session.borderView.frame
+        return session.containerView.convert(session.borderView.frame, to: self)
       }
       if session.titleBarView.frame.width > 1, session.scrollView.frame.width > 1 {
-        return session.titleBarView.frame.union(session.scrollView.frame)
+        let localRect = session.titleBarView.frame.union(session.scrollView.frame)
+        return session.containerView.convert(localRect, to: self)
       }
     }
     if let session = webPaneSessions[sessionId] {
+      if session.containerView.frame.width > 1, session.containerView.frame.height > 1 {
+        return session.containerView.frame
+      }
       if session.borderView.frame.width > 1, session.borderView.frame.height > 1 {
-        return session.borderView.frame
+        return session.containerView.convert(session.borderView.frame, to: self)
       }
       if session.titleBarView.frame.width > 1, session.hostView.frame.width > 1 {
-        return session.titleBarView.frame.union(session.hostView.frame)
+        let localRect = session.titleBarView.frame.union(session.hostView.frame)
+        return session.containerView.convert(localRect, to: self)
       }
     }
     return nil
@@ -5323,29 +5369,23 @@ final class TerminalWorkspaceView: NSView {
     placeholderView.frame = placeholderRect
     placeholderView.isHidden = false
     if let session = sessions[sessionId] {
+      session.containerView.isHidden = true
       session.titleBarView.frame = titleBarRect
       session.titleBarView.isHidden = false
-      if session.titleBarView.superview === self {
-        session.titleBarView.removeFromSuperview()
-      }
+      session.titleBarView.removeFromSuperview()
       addSubview(session.titleBarView)
       session.borderView.frame = rect
-      if session.borderView.superview === self {
-        session.borderView.removeFromSuperview()
-      }
+      session.borderView.removeFromSuperview()
       addSubview(session.borderView)
       session.borderView.isHidden = false
     } else if let session = webPaneSessions[sessionId] {
+      session.containerView.isHidden = true
       session.titleBarView.frame = titleBarRect
       session.titleBarView.isHidden = false
-      if session.titleBarView.superview === self {
-        session.titleBarView.removeFromSuperview()
-      }
+      session.titleBarView.removeFromSuperview()
       addSubview(session.titleBarView)
       session.borderView.frame = rect
-      if session.borderView.superview === self {
-        session.borderView.removeFromSuperview()
-      }
+      session.borderView.removeFromSuperview()
       addSubview(session.borderView)
       session.borderView.isHidden = false
     }
@@ -5381,15 +5421,18 @@ final class TerminalWorkspaceView: NSView {
      therefore laid out below native chrome instead of covering the full pane.
      */
     let titleBarHeight = min(Self.terminalTitleBarHeight, max(rect.height, 0))
+    mountTerminalPaneContainer(for: session)
+    session.containerView.frame = rect
+    session.containerView.isHidden = false
     let titleBarRect = CGRect(
-      x: rect.minX,
-      y: rect.maxY - titleBarHeight,
+      x: 0,
+      y: rect.height - titleBarHeight,
       width: rect.width,
       height: titleBarHeight
     )
     let availableTerminalRect = CGRect(
-      x: rect.minX,
-      y: rect.minY,
+      x: 0,
+      y: 0,
       width: rect.width,
       height: max(rect.height - titleBarHeight, 1)
     )
@@ -5407,7 +5450,7 @@ final class TerminalWorkspaceView: NSView {
     session.scrollView.needsLayout = true
     session.scrollView.layoutSubtreeIfNeeded()
     session.searchBarView.frame = searchBarFrame(in: terminalRect)
-    session.borderView.frame = rect
+    session.borderView.frame = session.containerView.bounds
     logTerminalResizeIfNeeded(
       session: session,
       paneRect: rect,
@@ -5425,23 +5468,20 @@ final class TerminalWorkspaceView: NSView {
       guard !poppedOutSessionIds.contains(sessionId) else {
         moveOffscreen(session.titleBarView)
         moveOffscreen(session.borderView)
+        moveOffscreen(session.containerView)
         return
       }
-      moveOffscreen(session.scrollView)
-      moveOffscreen(session.searchBarView)
-      moveOffscreen(session.titleBarView)
-      moveOffscreen(session.borderView)
+      moveOffscreen(session.containerView)
       return
     }
     if let session = webPaneSessions[sessionId] {
       guard !poppedOutSessionIds.contains(sessionId) else {
         moveOffscreen(session.titleBarView)
         moveOffscreen(session.borderView)
+        moveOffscreen(session.containerView)
         return
       }
-      moveOffscreen(session.hostView)
-      moveOffscreen(session.titleBarView)
-      moveOffscreen(session.borderView)
+      moveOffscreen(session.containerView)
     }
   }
 
@@ -5488,15 +5528,18 @@ final class TerminalWorkspaceView: NSView {
       resolvedRect = rect
     }
     let titleBarHeight = min(Self.terminalTitleBarHeight, max(resolvedRect.height, 0))
+    mountWebPaneContainer(for: session)
+    session.containerView.frame = resolvedRect
+    session.containerView.isHidden = false
     let titleBarRect = CGRect(
-      x: resolvedRect.minX,
-      y: resolvedRect.maxY - titleBarHeight,
+      x: 0,
+      y: resolvedRect.height - titleBarHeight,
       width: resolvedRect.width,
       height: titleBarHeight
     )
     let contentRect = CGRect(
-      x: resolvedRect.minX,
-      y: resolvedRect.minY,
+      x: 0,
+      y: 0,
       width: resolvedRect.width,
       height: max(resolvedRect.height - titleBarHeight, 1)
     )
@@ -5506,7 +5549,7 @@ final class TerminalWorkspaceView: NSView {
     session.hostView.translatesAutoresizingMaskIntoConstraints = true
     session.hostView.frame = contentRect
     session.hostView.refreshHostedWebView(reason: "setWebPaneFrame")
-    session.borderView.frame = resolvedRect
+    session.borderView.frame = session.containerView.bounds
     if focusedSessionId == session.sessionId {
       orderWebPaneViewsToFront(session)
     }
@@ -5572,23 +5615,16 @@ final class TerminalWorkspaceView: NSView {
     guard !poppedOutSessionIds.contains(session.sessionId) else {
       return
     }
-    if session.hostView.superview !== self {
-      session.hostView.removeFromSuperview()
-      addSubview(session.hostView)
+    mountWebPaneContainer(for: session)
+    guard session.containerView.superview === self else {
+      return
     }
-    session.hostView.alphaValue = 1
-    session.hostView.layer?.zPosition = 100
-    if session.titleBarView.superview === self {
-      session.titleBarView.removeFromSuperview()
+    if subviews.last !== session.containerView {
+      session.containerView.removeFromSuperview()
+      addSubview(session.containerView, positioned: .above, relativeTo: nil)
     }
-    addSubview(session.titleBarView)
-    session.titleBarView.wantsLayer = true
-    session.titleBarView.layer?.zPosition = 110
-    if session.borderView.superview === self {
-      session.borderView.removeFromSuperview()
-    }
-    addSubview(session.borderView)
-    session.borderView.layer?.zPosition = 120
+    session.containerView.alphaValue = 1
+    session.containerView.layer?.zPosition = 100
     bringPaneResizeHandleViewsToFront()
   }
 
@@ -7154,13 +7190,16 @@ final class TerminalWorkspaceView: NSView {
       return sessions.first { _, session in responder === session.view }?.key
     }
     for (sessionId, session) in sessions {
-      if responderView === session.view || responderView.isDescendant(of: session.view) {
+      if responderView === session.containerView || responderView.isDescendant(of: session.containerView)
+        || responderView === session.view || responderView.isDescendant(of: session.view)
+      {
         return sessionId
       }
     }
     for (sessionId, session) in webPaneSessions {
       let contentView = session.browserContentView
-      if responderView === session.hostView || responderView.isDescendant(of: session.hostView)
+      if responderView === session.containerView || responderView.isDescendant(of: session.containerView)
+        || responderView === session.hostView || responderView.isDescendant(of: session.hostView)
         || responderView === contentView || responderView.isDescendant(of: contentView)
       {
         return sessionId
@@ -12391,6 +12430,22 @@ private final class PoppedOutPanePlaceholderView: NSView {
 
   @objc private func reattach() {
     onReattach()
+  }
+}
+
+private final class TerminalPaneLeafContainerView: NSView {
+  override var isOpaque: Bool {
+    false
+  }
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.clear.cgColor
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
   }
 }
 
