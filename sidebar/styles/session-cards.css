@@ -209,9 +209,12 @@
 
 .project-editor-session-frame:hover .project-editor-floating-icon,
 .project-editor-session-frame:has(.project-editor-card-button:focus-visible)
-  .project-editor-floating-icon,
-.project-editor-session-frame[data-focused="true"] .project-editor-floating-icon {
+  .project-editor-floating-icon {
   opacity: 0.8;
+}
+
+.project-editor-session-frame[data-focused="true"] .project-editor-floating-icon {
+  opacity: 1;
 }
 
 .close-button.project-editor-close-button {
@@ -653,17 +656,33 @@
 
 /**
  * CDXC:PreviousSessions 2026-05-09-17:44
- * The full Previous Sessions modal copies reference-sidebar session rows:
- * compact 34px buttons, Last Active on the right, no active-row fill, and a
- * floating project label aligned to the title inset without changing row
- * height.
+ * The full Previous Sessions modal copies reference-sidebar session row chrome:
+ * Last Active stays on the right, active-row fill is suppressed, and the
+ * project label aligns to the title inset.
+ *
+ * CDXC:PreviousSessions 2026-05-11-08:12
+ * Project labels are rendered inside the history button, so the row must be
+ * tall enough for a two-line layout. Negative-position labels are clipped by
+ * the session button's overflow and overlap sidebar search rows.
+ *
+ * CDXC:PreviousSessions 2026-05-11-08:37
+ * The project label is floating metadata, not part of the title flow. Keep the
+ * session button at normal sidebar-row height and reserve only inter-row space
+ * for the label so it never moves the title baseline.
  */
 .previous-sessions-modal .group-sessions {
   gap: 13px;
   overflow: visible;
+  padding-top: 11px;
 }
 
-.previous-sessions-modal .session-history-frame {
+.session-search-previous-group .group-sessions {
+  gap: 13px;
+  overflow: visible;
+  padding-top: 11px;
+}
+
+.session-history-frame {
   --reference-session-title-inset: 36px;
   --reference-session-trailing-inset: 10px;
   --reference-session-trailing-slot-width: 44px;
@@ -671,13 +690,16 @@
   width: 100%;
 }
 
-.previous-sessions-modal .session-history-card {
+.session-history-card,
+.previous-sessions-modal .session-history-card,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session.session-history-card {
   border: none;
   border-radius: 8px;
   box-sizing: border-box;
   height: 34px;
   min-height: 34px;
   outline: none;
+  overflow: visible;
   padding: 7px var(--reference-session-trailing-inset) 7px
     var(--reference-session-title-inset);
 }
@@ -708,13 +730,19 @@
   outline-color: transparent;
 }
 
-.previous-sessions-modal .session-history-card .session-head {
+.session-history-card .session-head,
+.previous-sessions-modal .session-history-card .session-head,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-history-card .session-head {
   gap: 6px;
   grid-template-columns: minmax(0, 1fr) var(--reference-session-trailing-slot-width);
   height: 20px;
 }
 
-.previous-sessions-modal .session-history-card .session-alias-heading {
+.session-history-card .session-alias-heading,
+.previous-sessions-modal .session-history-card .session-alias-heading,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-history-card
+  .session-alias-heading {
   color: #b4b8c0;
   font-size: 15.55px;
   font-weight: 300 !important;
@@ -727,7 +755,11 @@
   color: #d8d8d8;
 }
 
-.previous-sessions-modal .session-history-card .session-head-trailing {
+.session-history-card .session-head-trailing,
+.previous-sessions-modal .session-history-card .session-head-trailing,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-history-card
+  .session-head-trailing {
   display: grid;
   justify-items: end;
   min-width: var(--reference-session-trailing-slot-width);
@@ -735,7 +767,11 @@
   width: var(--reference-session-trailing-slot-width);
 }
 
-.previous-sessions-modal .session-history-card .session-last-interaction-time {
+.session-history-card .session-last-interaction-time,
+.previous-sessions-modal .session-history-card .session-last-interaction-time,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-history-card
+  .session-last-interaction-time {
   color: #4f5359;
   font-size: 13.55px;
   font-weight: 300 !important;
@@ -749,7 +785,9 @@
   width: max-content;
 }
 
-.previous-sessions-modal .session-history-project-label {
+.session-history-project-label,
+.previous-sessions-modal .session-history-project-label,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-history-project-label {
   color: #4f5359;
   font-size: 9.8px;
   font-weight: 300 !important;
@@ -783,20 +821,9 @@
 .session-history-frame .session-floating-agent-icon,
 .session-history-frame .session-floating-agent-tabler-icon {
   left: calc(10px * var(--sidebar-density-scale));
-  opacity: 0;
+  opacity: 0.52;
   top: 50%;
   translate: 0 -50%;
-}
-
-.previous-sessions-modal .session-history-frame[data-focused="true"] .session-floating-agent-icon,
-.previous-sessions-modal
-  .session-history-frame[data-focused="true"]
-  .session-floating-agent-tabler-icon,
-.previous-sessions-modal .session-history-frame[data-visible="true"] .session-floating-agent-icon,
-.previous-sessions-modal
-  .session-history-frame[data-visible="true"]
-  .session-floating-agent-tabler-icon {
-  opacity: 0.8;
 }
 
 .session-history-frame .session-floating-agent-icon[data-favorite="true"],
@@ -821,31 +848,6 @@
     color 120ms ease;
   width: calc(18px * var(--sidebar-density-scale));
   z-index: 2;
-}
-
-.previous-session-first-message-button {
-  align-items: center;
-  background: color-mix(in srgb, var(--app-button-background) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--app-button-background) 18%, transparent);
-  border-radius: 7px;
-  color: var(--app-muted);
-  cursor: pointer;
-  display: inline-flex;
-  font-size: 11px;
-  gap: 5px;
-  line-height: 1;
-  padding: 5px 7px;
-  position: absolute;
-  right: 8px;
-  top: 34px;
-  z-index: 4;
-}
-
-.previous-session-first-message-button:hover,
-.previous-session-first-message-button:focus-visible {
-  background: color-mix(in srgb, var(--app-button-background) 24%, transparent);
-  color: var(--app-foreground);
-  outline: none;
 }
 
 .session-history-card:hover .previous-session-delete-button,
@@ -1982,8 +1984,12 @@
 /*
  * CDXC:EditorPanes 2026-05-09-15:39
  * The revealed VS Code editor row copies the real session-frame/session DOM,
- * but its identity icon is a custom SVG. When the code pane is active, show
- * the brand color at 80% opacity instead of muting it behind session chrome.
+ * but its identity icon is a custom SVG.
+ *
+ * CDXC:EditorPanes 2026-05-11-02:28
+ * The active Code row's VS Code brand icon must not fade down on hover. Keep
+ * inactive rows muted, but let the active state outrank hover/focus so hovering
+ * the open editor button only changes the button chrome.
  */
 .project-editor-session-frame .project-editor-floating-icon,
 .sidebar-reference-layout[data-reference-sidebar="true"]
@@ -2002,11 +2008,15 @@
   .project-editor-floating-icon,
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .project-editor-session-frame:has(.project-editor-card-button:focus-visible)
-  .project-editor-floating-icon,
+  .project-editor-floating-icon {
+  opacity: 0.8;
+}
+
+.project-editor-session-frame[data-focused="true"] .project-editor-floating-icon,
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .project-editor-session-frame[data-focused="true"]
   .project-editor-floating-icon {
-  opacity: 0.8;
+  opacity: 1;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .close-button.project-editor-close-button {

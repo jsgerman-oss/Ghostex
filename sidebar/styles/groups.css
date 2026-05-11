@@ -474,20 +474,8 @@
   outline: none;
 }
 
-.group-layout-controls {
-  align-items: center;
-  display: inline-flex;
-  gap: 6px;
-}
-
 .group-control-anchor {
   position: relative;
-}
-
-.group-control-button[data-open="true"] {
-  background: color-mix(in srgb, var(--app-button-background) 12%, var(--app-card-active) 88%);
-  border-color: color-mix(in srgb, var(--app-button-background) 54%, var(--app-border));
-  color: var(--app-button-background);
 }
 
 .group-control-menu,
@@ -501,40 +489,12 @@
   z-index: 40;
 }
 
-.group-control-count-menu {
-  display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  justify-content: center;
-  min-width: 132px;
-}
-
 .group-control-menu-item {
   align-items: center;
   gap: 8px;
   padding-left: 5px;
   padding-right: 5px;
   width: 100%;
-}
-
-.group-control-count-menu .group-control-menu-item {
-  height: 24px;
-  min-width: 0;
-  padding-left: 8px;
-  padding-right: 8px;
-  justify-content: center;
-}
-
-.group-control-count-icon {
-  display: block;
-  flex: none;
-}
-
-.group-control-count-option-value {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  line-height: 1;
 }
 
 .group-control-menu-item[data-selected="true"] {
@@ -843,11 +803,10 @@
   /*
    * CDXC:SidebarHover 2026-05-04-07:00
    * The group trailing controls should end flush with the header surface. The
-   * sidebar runs under CSS zoom, so a 160px cap leaves room for split count,
-   * browser, VS Code reveal, agent split, and the terminal button in project
-   * headers.
+   * sidebar runs under CSS zoom, so a 140px cap leaves room for browser, VS
+   * Code reveal, terminal, and agent split buttons in project headers.
    */
-  max-width: 160px;
+  max-width: 140px;
   opacity: 1;
   /*
    * CDXC:SidebarHover 2026-05-04-08:28
@@ -862,13 +821,10 @@
 }
 
 .group-head:hover .group-add-button,
-.group-head:hover .group-control-button,
 .group-head:hover .group-agent-split-button,
 .group-head:has(:focus-visible) .group-add-button,
-.group-head:has(:focus-visible) .group-control-button,
 .group-head:has(:focus-visible) .group-agent-split-button,
 .group-header-actions[data-open="true"] .group-add-button,
-.group-header-actions[data-open="true"] .group-control-button,
 .group-header-actions[data-open="true"] .group-agent-split-button {
   opacity: 1;
   pointer-events: auto;
@@ -1234,8 +1190,7 @@
   height: 22px;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-control-button {
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button {
   border-radius: 7px;
   transition: none;
   width: 22px;
@@ -1289,8 +1244,7 @@
   .group-agent-main-button,
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .group-agent-split-button[data-open="true"]
-  .group-agent-toggle-button,
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-control-button[data-open="true"] {
+  .group-agent-toggle-button {
   background: color-mix(in srgb, var(--app-foreground) 8%, transparent);
   color: #aeb4bd;
 }

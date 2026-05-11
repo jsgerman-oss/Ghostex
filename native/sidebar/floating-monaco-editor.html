@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      content="width=device-width, initial-scale=1.0"
+      name="viewport"
+    />
+    <style>
+      html,
+      body,
+      #editor {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        width: 100%;
+      }
+
+      body {
+        background: #151515;
+      }
+    </style>
+    <script src="./monaco/vs/loader.js"></script>
+  </head>
+  <body>
+    <div id="editor"></div>
+    <script>
+      window.MonacoEnvironment = {
+        getWorkerUrl: function () {
+          return "./monaco/vs/base/worker/workerMain.js";
+        },
+      };
+
+      require.config({
+        paths: {
+          vs: "./monaco/vs",
+        },
+      });
+
+      require(["vs/editor/editor.main"], function () {
+        const initialText =
+          typeof window.__ZMUX_MONACO_INITIAL_TEXT__ === "string"
+            ? window.__ZMUX_MONACO_INITIAL_TEXT__
+            : "";
+        const language =
+          typeof window.__ZMUX_MONACO_LANGUAGE__ === "string" && window.__ZMUX_MONACO_LANGUAGE__
+            ? window.__ZMUX_MONACO_LANGUAGE__
+            : "markdown";
+
+        const editor = monaco.editor.create(document.getElementById("editor"), {
+          automaticLayout: true,
+          cursorBlinking: "smooth",
+          fontFamily:
+            "JetBrains Mono, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
+          fontLigatures: true,
+          fontSize: 14,
+          language,
+          lineNumbersMinChars: 3,
+          minimap: {
+            enabled: false,
+          },
+          padding: {
+            bottom: 48,
+            top: 12,
+          },
+          renderLineHighlight: "all",
+          scrollBeyondLastLine: false,
+          theme: "vs-dark",
+          value: initialText,
+          wordWrap: "on",
+        });
+
+        window.zmuxMonacoGetValue = function () {
+          return editor.getValue();
+        };
+
+        editor.focus();
+      });
+    </script>
+  </body>
+</html>

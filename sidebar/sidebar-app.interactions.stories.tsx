@@ -125,38 +125,10 @@ export const ToolbarActions: Story = {
       const createButton = await findGroupControl(
         canvasElement.ownerDocument.body,
         "group-4",
-        ".group-add-button:not(.group-control-button)",
+        ".group-add-button",
       );
       fireEvent.click(createButton);
       await expectMessage({ groupId: "group-4", type: "createSessionInGroup" });
-    });
-
-    await step("toggle sessions shown", async () => {
-      resetSidebarStoryMessages();
-      const splitCountButton = await findGroupControl(
-        canvasElement.ownerDocument.body,
-        "group-4",
-        ".group-control-button",
-      );
-      fireEvent.click(splitCountButton);
-      await userEvent.click(await body.findByRole("menuitem", { name: "Show 2 splits" }));
-      await expectMessage({ type: "setVisibleCount", visibleCount: 2 });
-    });
-
-    await step("keep the split menu available on right click", async () => {
-      resetSidebarStoryMessages();
-      const splitModeButton = await findGroupControl(
-        canvasElement.ownerDocument.body,
-        "group-4",
-        ".group-control-button",
-      );
-      await openContextMenu(splitModeButton);
-      await body.findByRole("menuitem", { name: "Show 3 splits" });
-      await body.findByRole("menuitem", { name: "Show 4 splits" });
-      await body.findByRole("menuitem", { name: "Show 6 splits" });
-      await body.findByRole("menuitem", { name: "Show 9 splits" });
-      await userEvent.click(await body.findByRole("menuitem", { name: "Show 4 splits" }));
-      await expectMessage({ type: "setVisibleCount", visibleCount: 4 });
     });
 
     await step("keep the layout selector hidden", async () => {
@@ -212,7 +184,7 @@ export const ToolbarActions: Story = {
       const createButton = await findGroupControl(
         canvasElement.ownerDocument.body,
         "group-4",
-        ".group-add-button:not(.group-control-button)",
+        ".group-add-button",
       );
       fireEvent.click(createButton);
       await expectMessage({ groupId: "group-4", type: "createSessionInGroup" });
@@ -860,12 +832,12 @@ export const SessionCardActions: Story = {
       await expectMessage({ sessionId: "session-3", sleeping: true, type: "setSessionSleeping" });
     });
 
-    await step("terminate through the session context menu", async () => {
+    await step("close through the session context menu", async () => {
       resetSidebarStoryMessages();
 
       const sessionCard = await findSessionCard();
       await openContextMenu(sessionCard);
-      await userEvent.click(await body.findByRole("menuitem", { name: "Terminate" }));
+      await userEvent.click(await body.findByRole("menuitem", { name: "Close" }));
 
       await expectMessage({ sessionId: "session-3", type: "closeSession" });
     });

@@ -9,7 +9,6 @@ import {
   IconBell,
   IconBellOff,
   IconBookmark,
-  IconClock,
   IconCaretRightFilled,
   IconChevronDown,
   IconChevronRight,
@@ -25,7 +24,6 @@ import {
   IconLayoutSidebar,
   IconMenu2Filled,
   IconPencil,
-  IconPlayerPlay,
   IconPlus,
   IconPlusFilled,
   IconSearch,
@@ -37,7 +35,6 @@ import {
 import {
   useEffect,
   useEffectEvent,
-  forwardRef,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -59,13 +56,11 @@ import {
   getWorkspaceThemeForeground,
   normalizeWorkspaceThemeColor,
 } from "../shared/workspace-dock-icons";
-import type { SidebarCommandButton } from "../shared/sidebar-commands";
 import { playCompletionSound, prepareCompletionSoundPlayback } from "./completion-sound-player";
 import { AgentsPanel } from "./agents-panel";
 import { CommandsPanel } from "./commands-panel";
 import { GitCommitModal } from "./git-commit-modal";
 import { SidebarProjectHeader } from "./project-header";
-import { SidebarCommandIconGlyph } from "./sidebar-command-icon";
 import {
   SidebarPreviousSessionsSearchGroup,
   SidebarSessionSearchField,
@@ -78,6 +73,11 @@ import {
   type SidebarSessionSearchSelection,
 } from "./sidebar-session-search";
 import { logSidebarDebug } from "./sidebar-debug";
+import {
+  createSidebarRefreshDebugInstanceId,
+  postSidebarRefreshDebugLog,
+  summarizeSidebarRefreshMessage,
+} from "./sidebar-refresh-debug-log";
 import { postSidebarOrderReproLog } from "./sidebar-order-repro-log";
 import { scrollElementIntoViewIfNeeded } from "./scroll-into-view-if-needed";
 import { resetSidebarStore, useSidebarStore } from "./sidebar-store";
@@ -111,6 +111,12 @@ import { filterPreviousSessions, filterSidebarSessionItems } from "./previous-se
 import { filterRecentProjects } from "./recent-project-search";
 import { isEmptySidebarDoubleClick } from "./empty-sidebar-double-click";
 import { closeAppModal, openAppModal } from "./app-modal-host-bridge";
+import {
+  ZMUX_HOTKEY_DEFINITIONS,
+  normalizeHotkeyText,
+  normalizezmuxHotkeySettings,
+  type zmuxHotkeySettings,
+} from "../shared/zmux-hotkeys";
 
 export type SidebarAppProps = {
   messageSource?: Pick<Window, "addEventListener" | "removeEventListener">;
@@ -122,6 +128,113 @@ type FloatingMenuPosition = {
   right: number;
   top: number;
 };
+
+function useCommandHotkeyOverlay(): boolean {
+  const [isVisible, setIsVisible] = useState(false);
+  const showTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    const clearOverlayTimer = () => {
+      if (showTimerRef.current !== undefined) {
+        window.clearTimeout(showTimerRef.current);
+        showTimerRef.current = undefined;
+      }
+    };
+    const hideOverlay = () => {
+      clearOverlayTimer();
+      setIsVisible(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Meta" || showTimerRef.current !== undefined) {
+        return;
+      }
+      /**
+       * CDXC:Hotkeys 2026-05-11-09:26
+       * Holding Cmd for one second should reveal an in-sidebar cheat sheet of
+       * the current effective hotkeys. Delay the overlay so normal Cmd chords
+       * do not flash UI while still making discovery available from the key the
+       * simplified keymap now centers on.
+       */
+      showTimerRef.current = window.setTimeout(() => {
+        showTimerRef.current = undefined;
+        setIsVisible(true);
+      }, 1_000);
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Meta" || !event.metaKey) {
+        hideOverlay();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("blur", hideOverlay);
+    return () => {
+      clearOverlayTimer();
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", hideOverlay);
+    };
+  }, []);
+
+  return isVisible;
+}
+
+function SidebarHotkeyOverlay({ hotkeys }: { hotkeys?: zmuxHotkeySettings }) {
+  const normalizedHotkeys = normalizezmuxHotkeySettings(hotkeys);
+  const rows = ZMUX_HOTKEY_DEFINITIONS.flatMap((definition) => {
+    const hotkey = normalizeHotkeyText(normalizedHotkeys[definition.id] ?? "");
+    return hotkey ? [{ hotkey, title: definition.title }] : [];
+  });
+
+  return (
+    <aside aria-label="Keyboard shortcuts" className="sidebar-hotkey-overlay">
+      <div className="sidebar-hotkey-overlay-title">Hotkeys</div>
+      <div className="sidebar-hotkey-overlay-grid">
+        {rows.map((row) => (
+          <div className="sidebar-hotkey-overlay-row" key={`${row.title}-${row.hotkey}`}>
+            <span className="sidebar-hotkey-overlay-action">{row.title}</span>
+            <kbd className="sidebar-hotkey-overlay-key">{formatSidebarHotkeyLabel(row.hotkey)}</kbd>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function formatSidebarHotkeyLabel(hotkey: string): string {
+  return hotkey
+    .split(" ")
+    .map((chord) =>
+      chord
+        .split("+")
+        .map(formatSidebarHotkeyPart)
+        .join("+"),
+    )
+    .join(" ");
+}
+
+function formatSidebarHotkeyPart(part: string): string {
+  switch (part) {
+    case "cmd":
+      return "⌘";
+    case "ctrl":
+      return "⌃";
+    case "alt":
+      return "⌥";
+    case "shift":
+      return "⇧";
+    case "up":
+      return "↑";
+    case "right":
+      return "→";
+    case "down":
+      return "↓";
+    case "left":
+      return "←";
+    default:
+      return part.length === 1 ? part.toUpperCase() : part;
+  }
+}
 
 type SidebarPointerDownSessionTarget = {
   groupId: string;
@@ -269,6 +382,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const [isScratchPadOpen, setIsScratchPadOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSessionSearchOpen, setIsSessionSearchOpen] = useState(false);
+  const showCommandHotkeyOverlay = useCommandHotkeyOverlay();
   const [completionFlashNonceBySessionId, setCompletionFlashNonceBySessionId] = useState<
     Record<string, number>
   >({});
@@ -295,6 +409,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const didApplyStartupEmptyChatsCollapseRef = useRef(false);
   const browserAutoCollapseSuppressedUntilRef = useRef(0);
   const previousNormalizedSessionSearchQueryRef = useRef("");
+  const refreshDebugInstanceIdRef = useRef(createSidebarRefreshDebugInstanceId());
   const pointerDownSessionTargetRef = useRef<SidebarPointerDownSessionTarget | undefined>(
     undefined,
   );
@@ -308,6 +423,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const hasAppliedHydrateRef = useRef(false);
   const firstHydrateRevisionRef = useRef<number | undefined>(undefined);
   const lastSidebarStartupRenderStateKeyRef = useRef<string | undefined>(undefined);
+  const didLogRefreshInstanceObservedRef = useRef(false);
 
   if (!didResetStoreRef.current) {
     resetSidebarStore();
@@ -343,7 +459,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     sectionVisibility,
     settings,
     projectHeader,
-    commands,
     revision,
     showHotkeysOnSessionCards,
     showLastInteractionTimeOnSessionCards,
@@ -365,7 +480,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       previousSessions: state.previousSessions,
       recentProjects: state.hud.recentProjects,
       projectHeader: state.hud.projectHeader,
-      commands: state.hud.commands,
       revision: state.revision,
       sectionVisibility: state.hud.sectionVisibility,
       settings: state.hud.settings,
@@ -409,6 +523,17 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       type: "sidebarDebugLog",
     });
   });
+
+  const postSidebarRefreshLifecycleLog = useEffectEvent(
+    (event: string, details: Record<string, unknown>) => {
+      postSidebarRefreshDebugLog(
+        useSidebarStore.getState().hud.debuggingMode,
+        vscode,
+        event,
+        details,
+      );
+    },
+  );
 
   /**
    * CDXC:SidebarMode 2026-05-03-10:42
@@ -712,6 +837,20 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       stale: event.data.revision < revision,
       startupInteractionBlocked: isStartupInteractionBlocked,
     });
+    postSidebarRefreshDebugLog(event.data.hud.debuggingMode, vscode, "messageReceived", {
+      ...summarizeSidebarRefreshMessage(event.data, revision),
+      hasHydrateBeforeMessage: hasAppliedHydrateRef.current,
+      instanceId: refreshDebugInstanceIdRef.current,
+    });
+    if (event.data.hud.debuggingMode && !didLogRefreshInstanceObservedRef.current) {
+      didLogRefreshInstanceObservedRef.current = true;
+      postSidebarRefreshDebugLog(event.data.hud.debuggingMode, vscode, "appInstanceObserved", {
+        elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
+        instanceId: refreshDebugInstanceIdRef.current,
+        messageType: event.data.type,
+        revision: event.data.revision,
+      });
+    }
     if (event.data.type === "sessionState" && !hasAppliedHydrateRef.current) {
       postSidebarStartupReproLog("sessionStateBeforeHydrate", {
         elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
@@ -744,6 +883,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     }
 
     applySidebarMessage(event.data);
+    postSidebarRefreshDebugLog(event.data.hud.debuggingMode, vscode, "messageApplied", {
+      ...summarizeSidebarRefreshMessage(event.data, revision),
+      hasHydrateAfterApply: hasAppliedHydrateRef.current,
+      instanceId: refreshDebugInstanceIdRef.current,
+      storeRevisionAfterApply: useSidebarStore.getState().revision,
+      storeSessionCountAfterApply: Object.keys(useSidebarStore.getState().sessionsById).length,
+    });
     postSidebarAgentIconBoundaryLog(vscode, "sidebar.agentIcon.messageApplied", {
       messageType: event.data.type,
       revision: event.data.revision,
@@ -768,9 +914,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   });
 
   useEffect(() => {
+    const instanceId = refreshDebugInstanceIdRef.current;
     postSidebarStartupReproLog("appMounted", {
       elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
       startupInteractionBlockMs: SIDEBAR_STARTUP_INTERACTION_BLOCK_MS,
+    });
+    postSidebarRefreshLifecycleLog("appMounted", {
+      elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
+      instanceId,
+      revision: useSidebarStore.getState().revision,
+      sessionCount: Object.keys(useSidebarStore.getState().sessionsById).length,
     });
 
     return () => {
@@ -778,8 +931,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
         finalRevision: useSidebarStore.getState().revision,
       });
+      postSidebarRefreshLifecycleLog("appUnmounted", {
+        elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
+        finalRevision: useSidebarStore.getState().revision,
+        instanceId,
+        sessionCount: Object.keys(useSidebarStore.getState().sessionsById).length,
+      });
     };
-  }, [postSidebarStartupReproLog]);
+  }, [postSidebarRefreshLifecycleLog, postSidebarStartupReproLog]);
 
   useEffect(() => {
     const renderState = {
@@ -800,16 +959,26 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
     lastSidebarStartupRenderStateKeyRef.current = renderStateKey;
     postSidebarStartupReproLog("renderState", renderState);
+    postSidebarRefreshDebugLog(debuggingMode, vscode, "renderStateChanged", {
+      ...renderState,
+      instanceId: refreshDebugInstanceIdRef.current,
+    });
     if (hasAppliedHydrateRef.current && renderState.sessionCount === 0) {
       postSidebarStartupReproLog("emptyStateAfterHydrate", renderState);
+      postSidebarRefreshDebugLog(debuggingMode, vscode, "emptyStateAfterHydrate", {
+        ...renderState,
+        instanceId: refreshDebugInstanceIdRef.current,
+      });
     }
   }, [
     browserGroupIds,
+    debuggingMode,
     groupOrder,
     isStartupInteractionBlocked,
     postSidebarStartupReproLog,
     revision,
     sessionsById,
+    vscode,
     workspaceGroupIds,
   ]);
 
@@ -1901,6 +2070,24 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     vscode.postMessage({ type: "createSession" });
   };
 
+  const createFullWidthTerminalPane = () => {
+    /**
+     * CDXC:PaneTabs 2026-05-11-11:51
+     * Header-level terminal shortcuts create focused tabs in the active
+     * session's tab group. Keep this legacy message path for the Settings-row
+     * hover action, but do not describe or request full-width pane placement.
+     */
+    setIsOverflowMenuOpen(false);
+    setIsPinnedPromptsOpen(false);
+    setIsPreviousSessionsOpen(false);
+    setIsDaemonSessionsOpen(false);
+    setIsScratchPadOpen(false);
+    setIsSessionSearchSelectionVisible(false);
+    setIsSessionSearchOpen(false);
+    setSessionSearchQuery("");
+    vscode.postMessage({ type: "createFullWidthTerminalPane" });
+  };
+
   const createReferenceChat = () => {
     vscode.postMessage({ type: "createChat" });
   };
@@ -1981,9 +2168,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   return (
     <TooltipProvider delayDuration={TOOLTIP_DELAY_MS}>
       <div className="sidebar-reference-layout" data-reference-sidebar={String(isCombinedSidebarMode)}>
+        {showCommandHotkeyOverlay ? <SidebarHotkeyOverlay hotkeys={settings?.hotkeys} /> : null}
         {isCombinedSidebarMode ? (
           <SidebarReferenceTopChrome
-            commands={commands}
             isOverflowMenuOpen={isOverflowMenuOpen}
             isSessionSearchOpen={isSessionSearchOpen}
             onCloseSearch={closeSessionSearch}
@@ -1996,7 +2183,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
             searchInputRef={searchInputRef}
             sessionSearchQuery={sessionSearchQuery}
             setSessionSearchQuery={setSessionSearchQuery}
-            vscode={vscode}
           />
         ) : null}
       {/* CDXC:SidebarMode 2026-05-04-07:00: Combined mode still shows the
@@ -2459,7 +2645,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         ) : null}
       </div>
       {isCombinedSidebarMode ? (
-        <SidebarReferenceSettingsButton onOpenSettings={openSidebarSettings} />
+        <SidebarReferenceSettingsButton
+          onCreateFullWidthTerminalPane={createFullWidthTerminalPane}
+          onOpenSettings={openSidebarSettings}
+        />
       ) : null}
       </div>
     </TooltipProvider>
@@ -2467,7 +2656,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 }
 
 function SidebarReferenceTopChrome({
-  commands,
   isOverflowMenuOpen,
   isSessionSearchOpen,
   onCloseSearch,
@@ -2480,9 +2668,7 @@ function SidebarReferenceTopChrome({
   searchInputRef,
   sessionSearchQuery,
   setSessionSearchQuery,
-  vscode,
 }: {
-  commands: readonly SidebarCommandButton[];
   isOverflowMenuOpen: boolean;
   isSessionSearchOpen: boolean;
   onCloseSearch: () => void;
@@ -2495,86 +2681,22 @@ function SidebarReferenceTopChrome({
   searchInputRef: RefObject<HTMLInputElement | null>;
   sessionSearchQuery: string;
   setSessionSearchQuery: (query: string) => void;
-  vscode: WebviewApi;
 }) {
-  const [actionsMenu, setActionsMenu] = useState<ReferenceActionsMenuState>();
-  const [primaryCommandId, setPrimaryCommandId] = useState<string | undefined>(() =>
-    readProjectPrimaryCommandId(projectHeader),
-  );
-  const actionsMenuRef = useRef<HTMLDivElement>(null);
-  const runnableCommands = useMemo(
-    () => commands.filter(isRunnableSidebarCommand),
-    [commands],
-  );
-  const primaryCommand = resolveProjectPrimaryCommand(runnableCommands, primaryCommandId);
-
-  useEffect(() => {
-    setPrimaryCommandId(readProjectPrimaryCommandId(projectHeader));
-  }, [projectHeader?.directory, projectHeader?.projectId]);
-
-  useEffect(() => {
-    if (!actionsMenu) {
-      return;
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (isNode(event.target) && actionsMenuRef.current?.contains(event.target)) {
-        return;
-      }
-
-      setActionsMenu(undefined);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setActionsMenu(undefined);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [actionsMenu]);
-
-  const openActionsMenu = (event: ReactMouseEvent<HTMLElement>) => {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    setActionsMenu({
-      position: clampReferenceActionsMenuPosition(bounds),
-    });
-  };
-
-  const runCommand = (command: SidebarCommandButton | undefined) => {
-    if (!command) {
-      return;
-    }
-
-    persistProjectPrimaryCommand(projectHeader, command.commandId);
-    setPrimaryCommandId(command.commandId);
-    vscode.postMessage({
-      commandId: command.commandId,
-      type: "runSidebarCommand",
-    });
-  };
-
-  const configureActions = () => {
-    setActionsMenu(undefined);
-    openAppModal({ modal: "configureActions", type: "open" });
-  };
-
   /**
    * CDXC:SidebarReference 2026-05-08-09:11
    * Combined mode should visually match the provided app sidebar: native-style
    * window dots, disabled back/forward chrome, and large primary rows for New
-   * Session, Plugins, Actions, and Search. Actions owns a hover quick-run button
-   * that launches the last project-scoped action, while the row opens the
-   * action list and Configure entry.
+   * Session, Plugins, and Search.
    *
    * CDXC:SidebarReference 2026-05-08-14:48
    * Combined mode needs the same overflow menu as separated mode, exposed as a
    * small right-side control on the New Session row so global sidebar actions
    * stay close to the primary create-session affordance without replacing it.
+   *
+   * CDXC:TitlebarActions 2026-05-11-02:46
+   * Actions moved out of the sidebar header into the native titlebar beside
+   * Open In. Keep this top chrome focused on navigation/search so the action
+   * menu has one home and one split-button UX.
    */
   return (
     <header className="reference-sidebar-top">
@@ -2593,11 +2715,6 @@ function SidebarReferenceTopChrome({
           onToggleMenu={onToggleMenu}
         />
         <SidebarReferenceNavButton icon={IconGridDots} label="Plugins" onClick={onOpenPlugins} />
-        <SidebarReferenceActionsNavItem
-          command={primaryCommand}
-          onOpenActions={openActionsMenu}
-          onQuickRun={() => runCommand(primaryCommand)}
-        />
         <SidebarReferenceSearchNavItem
           inputRef={searchInputRef}
           isOpen={isSessionSearchOpen}
@@ -2608,22 +2725,6 @@ function SidebarReferenceTopChrome({
           setQuery={setSessionSearchQuery}
         />
       </nav>
-      {actionsMenu
-        ? createPortal(
-            <ReferenceActionsMenu
-              commands={runnableCommands}
-              menu={actionsMenu}
-              onConfigure={configureActions}
-              onRunCommand={(command) => {
-                setActionsMenu(undefined);
-                runCommand(command);
-              }}
-              primaryCommandId={primaryCommand?.commandId}
-              ref={actionsMenuRef}
-            />,
-            document.body,
-          )
-        : null}
     </header>
   );
 }
@@ -2752,230 +2853,6 @@ function SidebarReferenceNavButton({
   );
 }
 
-type ReferenceActionsMenuState = {
-  position: {
-    x: number;
-    y: number;
-  };
-};
-
-const REFERENCE_ACTIONS_MENU_MARGIN_PX = 12;
-const REFERENCE_ACTIONS_MENU_WIDTH_PX = 220;
-const PROJECT_PRIMARY_COMMAND_STORAGE_PREFIX = "zmux-sidebar-primary-command-by-project:";
-
-function SidebarReferenceActionsNavItem({
-  command,
-  onOpenActions,
-  onQuickRun,
-}: {
-  command: SidebarCommandButton | undefined;
-  onOpenActions: (event: ReactMouseEvent<HTMLElement>) => void;
-  onQuickRun: () => void;
-}) {
-  const label = command ? getSidebarActionLabel(command) : "Action";
-  return (
-    <div className="reference-sidebar-nav-item">
-      <Button
-        className="reference-sidebar-nav-button reference-sidebar-actions-button"
-        onClick={onOpenActions}
-        size="sm"
-        type="button"
-        variant="ghost"
-      >
-        <IconClock
-          aria-hidden="true"
-          className="reference-sidebar-nav-icon"
-          data-icon="inline-start"
-          size={15}
-          stroke={1.9}
-        />
-        <span className="reference-sidebar-nav-label">Actions</span>
-      </Button>
-      {/*
-       * CDXC:SidebarTooltips 2026-05-09-17:49
-       * Right-edge hover action tooltips must align their right edge with the
-       * compact icon trigger. Centered placement plus broad collision padding
-       * drifts left in the narrow sidebar and visually disconnects the label
-       * from the hovered target.
-       */}
-      <AppTooltip
-        align="end"
-        collisionPadding={4}
-        content={command ? `Run ${label}` : "No actions configured"}
-      >
-        <button
-          aria-label={command ? `Run ${label}` : "No actions configured"}
-          className="reference-sidebar-hover-action reference-sidebar-action-quick-run"
-          disabled={!command}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onQuickRun();
-          }}
-          type="button"
-        >
-          <SidebarReferenceActionIcon command={command} />
-        </button>
-      </AppTooltip>
-    </div>
-  );
-}
-
-const ReferenceActionsMenu = forwardRef<
-  HTMLDivElement,
-  {
-    commands: readonly SidebarCommandButton[];
-    menu: ReferenceActionsMenuState;
-    onConfigure: () => void;
-    onRunCommand: (command: SidebarCommandButton) => void;
-    primaryCommandId: string | undefined;
-  }
->(function ReferenceActionsMenu(
-  { commands, menu, onConfigure, onRunCommand, primaryCommandId },
-  ref,
-) {
-  return (
-    <div
-      className="quick-action-menu reference-actions-menu"
-      onClick={(event) => event.stopPropagation()}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-      ref={ref}
-      role="menu"
-      style={{
-        left: `${menu.position.x}px`,
-        top: `${menu.position.y}px`,
-        width: `${REFERENCE_ACTIONS_MENU_WIDTH_PX}px`,
-      }}
-    >
-      {commands.length > 0 ? (
-        commands.map((command) => (
-          <button
-            className="quick-action-menu-item"
-            data-selected={String(command.commandId === primaryCommandId)}
-            key={command.commandId}
-            onClick={() => onRunCommand(command)}
-            role="menuitem"
-            type="button"
-          >
-            <span aria-hidden="true" className="quick-action-menu-item-icon">
-              <SidebarReferenceActionIcon command={command} />
-            </span>
-            <span className="quick-action-menu-item-label">{getSidebarActionLabel(command)}</span>
-          </button>
-        ))
-      ) : (
-        <div className="quick-action-menu-empty">No Actions configured</div>
-      )}
-      <div className="quick-action-menu-divider" role="separator" />
-      <button className="quick-action-menu-item" onClick={onConfigure} role="menuitem" type="button">
-        <span aria-hidden="true" className="quick-action-menu-item-icon">
-          <IconSettings size={18} stroke={1.8} />
-        </span>
-        <span className="quick-action-menu-item-label">Configure</span>
-      </button>
-    </div>
-  );
-});
-
-function SidebarReferenceActionIcon({ command }: { command: SidebarCommandButton | undefined }) {
-  if (command?.icon) {
-    return (
-      <SidebarCommandIconGlyph
-        className="quick-action-icon"
-        color={command.iconColor}
-        icon={command.icon}
-        size={18}
-        stroke={1.8}
-      />
-    );
-  }
-
-  if (command?.actionType === "browser") {
-    return <IconWorld aria-hidden="true" className="quick-action-icon" size={18} stroke={1.8} />;
-  }
-
-  if (command?.actionType === "terminal") {
-    return <IconTerminal2 aria-hidden="true" className="quick-action-icon" size={18} stroke={1.8} />;
-  }
-
-  return <IconPlayerPlay aria-hidden="true" className="quick-action-icon" size={18} stroke={1.8} />;
-}
-
-function isRunnableSidebarCommand(command: SidebarCommandButton): boolean {
-  return command.actionType === "browser"
-    ? Boolean(command.url?.trim())
-    : Boolean(command.command?.trim());
-}
-
-function resolveProjectPrimaryCommand(
-  commands: readonly SidebarCommandButton[],
-  primaryCommandId: string | undefined,
-): SidebarCommandButton | undefined {
-  /**
-   * CDXC:SidebarActions 2026-05-08-09:11
-   * When the active project has no recorded action yet, the quick-run icon must
-   * target the first runnable action in sidebar order so first use is a direct
-   * launch rather than a configuration detour.
-   */
-  return commands.find((command) => command.commandId === primaryCommandId) ?? commands[0];
-}
-
-function getSidebarActionLabel(command: SidebarCommandButton): string {
-  return command.name.trim() || command.commandId;
-}
-
-function clampReferenceActionsMenuPosition(bounds: DOMRect): ReferenceActionsMenuState["position"] {
-  return {
-    x: Math.max(
-      REFERENCE_ACTIONS_MENU_MARGIN_PX,
-      Math.min(
-        bounds.left,
-        window.innerWidth - REFERENCE_ACTIONS_MENU_WIDTH_PX - REFERENCE_ACTIONS_MENU_MARGIN_PX,
-      ),
-    ),
-    y: Math.max(
-      REFERENCE_ACTIONS_MENU_MARGIN_PX,
-      Math.min(bounds.bottom + 4, window.innerHeight - REFERENCE_ACTIONS_MENU_MARGIN_PX),
-    ),
-  };
-}
-
-function readProjectPrimaryCommandId(
-  projectHeader: SidebarProjectHeaderData | undefined,
-): string | undefined {
-  const storageKey = getProjectPrimaryCommandStorageKey(projectHeader);
-  return storageKey ? localStorage.getItem(storageKey)?.trim() || undefined : undefined;
-}
-
-function persistProjectPrimaryCommand(
-  projectHeader: SidebarProjectHeaderData | undefined,
-  commandId: string,
-) {
-  const storageKey = getProjectPrimaryCommandStorageKey(projectHeader);
-  if (!storageKey) {
-    return;
-  }
-
-  localStorage.setItem(storageKey, commandId);
-}
-
-function getProjectPrimaryCommandStorageKey(
-  projectHeader: SidebarProjectHeaderData | undefined,
-): string | undefined {
-  /**
-   * CDXC:SidebarActions 2026-05-08-09:11
-   * The hover quick-run button must remember the most recently launched action
-   * inside the active project only. Do not reuse the older global primary
-   * command key from the Agents panel because that leaks actions across
-   * projects.
-   */
-  const projectKey = projectHeader?.projectId?.trim() || projectHeader?.directory.trim();
-  return projectKey ? `${PROJECT_PRIMARY_COMMAND_STORAGE_PREFIX}${projectKey}` : undefined;
-}
-
 function isNode(value: EventTarget | null): value is Node {
   return value instanceof Node;
 }
@@ -3100,10 +2977,32 @@ function SidebarReferenceSectionHeader({
   );
 }
 
-function SidebarReferenceSettingsButton({ onOpenSettings }: { onOpenSettings: () => void }) {
+function SidebarReferenceSettingsButton({
+  onCreateFullWidthTerminalPane,
+  onOpenSettings,
+}: {
+  onCreateFullWidthTerminalPane: () => void;
+  onOpenSettings: () => void;
+}) {
   return (
     <div className="reference-sidebar-settings-row">
-      <SidebarReferenceNavButton icon={IconSettings} label="Settings" onClick={onOpenSettings} />
+      <div className="reference-sidebar-nav-item">
+        <SidebarReferenceNavButton icon={IconSettings} label="Settings" onClick={onOpenSettings} />
+        <AppTooltip align="end" collisionPadding={4} content="Create terminal tab">
+          <button
+            aria-label="Create terminal tab"
+            className="reference-sidebar-hover-action reference-sidebar-settings-terminal-action"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCreateFullWidthTerminalPane();
+            }}
+            type="button"
+          >
+            <IconTerminal2 aria-hidden="true" size={15} stroke={1.9} />
+          </button>
+        </AppTooltip>
+      </div>
     </div>
   );
 }

@@ -48,6 +48,7 @@ import {
   createSidebarHudState,
   DEFAULT_TERMINAL_SESSION_TITLE,
   createSidebarSessionItems,
+  getCodexSessionIdFromTitle,
   getSessionCardPrimaryTitle,
   isGhostPlaceholderSessionTitle,
   normalizeTerminalTitle,
@@ -79,6 +80,7 @@ import {
   type SidebarCommandSessionIndicator,
   type SessionGridDirection,
   type SessionGroupRecord,
+  type SessionPaneLayoutNode,
   type BrowserSessionRecord,
 } from "../../shared/session-grid-contract";
 import { createDisplaySessionLayout } from "../../shared/active-sessions-sort";
@@ -103,15 +105,19 @@ import {
   focusGroupByIndexInSimpleWorkspace,
   focusGroupInSimpleWorkspace,
   focusSessionInSimpleWorkspace,
+  moveSessionInPaneLayoutInSimpleWorkspace,
   moveSessionToGroupInSimpleWorkspace,
   normalizeSimpleGroupedSessionWorkspaceSnapshot,
   removeGroupInSimpleWorkspace,
   removeSessionInSimpleWorkspace,
+  reorderSessionInPaneTabGroupInSimpleWorkspace,
   renameGroupInSimpleWorkspace,
+  selectPaneTabInSimpleWorkspace,
   setGroupSleepingInSimpleWorkspace,
   setBrowserSessionFaviconDataUrlInSimpleWorkspace,
   setBrowserSessionUrlInSimpleWorkspace,
   setSessionFavoriteInSimpleWorkspace,
+  setSessionPoppedOutInSimpleWorkspace,
   setSessionSleepingInSimpleWorkspace,
   setSessionTitleInSimpleWorkspace,
   setT3SessionMetadataInSimpleWorkspace,
@@ -125,6 +131,9 @@ import {
   syncGroupOrderInSimpleWorkspace,
   syncSessionOrderInSimpleWorkspace,
   toggleFullscreenSessionInSimpleWorkspace,
+  type VisibleSessionPlacement,
+  type SessionPaneDropPlacement,
+  type SessionPaneTabReorderPosition,
 } from "../../shared/simple-grouped-session-workspace-state";
 import {
   normalizeSidebarPinnedPrompts,
@@ -158,6 +167,7 @@ import {
   normalizeSidebarCommandIconColor,
 } from "../../shared/sidebar-command-icons";
 import { SidebarCommandIconGlyph } from "../../sidebar/sidebar-command-icon";
+import { SIDEBAR_REFRESH_DEBUG_EVENT_PREFIX } from "../../sidebar/sidebar-refresh-debug-log";
 import {
   createCombinedProjectGroupId,
   createCombinedProjectSessionId,
@@ -176,6 +186,7 @@ import {
   normalizeWorkspaceDockIconDataUrl,
   normalizeWorkspaceThemeColor,
   readWorkspaceThemeColorHistory,
+  resolveWorkspaceProjectIconDataUrl,
   updateWorkspaceThemeColorHistory,
   writeWorkspaceThemeColorHistory,
   type WorkspaceDockIcon,
@@ -188,6 +199,13 @@ import {
   type ZedOverlayTargetApp,
   type zmuxSettings,
 } from "../../shared/zmux-settings";
+import {
+  ALWAYS_AVAILABLE_WORKSPACE_OPEN_TARGET_IDS,
+  BUILT_IN_WORKSPACE_OPEN_TARGETS,
+  normalizeWorkspaceOpenTargetAvailability,
+  type BuiltInWorkspaceOpenTargetId,
+  type CustomWorkspaceOpenTarget,
+} from "../../shared/workspace-open-targets";
 import {
   getCompletionSoundFileName,
   type CompletionSoundSetting,
@@ -202,7 +220,19 @@ import {
 import "../../sidebar/styles.css";
 
 type NativeSessionStatusIndicatorStatus = "attention" | "working" | "available";
-type NativeTerminalTitleBarAction = "close" | "fork" | "reload" | "rename" | "sleep";
+type NativeTerminalTitleBarAction =
+  | "close"
+  | "delayedSend"
+  | "fork"
+  | "newTerminal"
+  | "openBrowser"
+  | "popOut"
+  | "reload"
+  | "rename"
+  | "restorePopOut"
+  | "sleep"
+  | "splitHorizontal"
+  | "splitVertical";
 type ProjectEditorLoadStatus = "idle" | "opening" | "running" | "error";
 
 type NativeHostCommand =
@@ -232,6 +262,16 @@ type NativeHostCommand =
   | { sessionId: string; type: "focusWebPane" }
   | { sessionId: string; type: "reloadWebPane" }
   | { cwd: string; type: "startT3CodeRuntime" }
+  | {
+      /**
+       * CDXC:T3Code 2026-05-10-22:48
+       * The sidebar is authoritative for whether a T3 card is shown and awake.
+       * Native uses this set to keep the managed t3code server alive while a
+       * T3 session is running, independent of which workspace pane is focused.
+       */
+      runningSessionIds: string[];
+      type: "setT3CodeRuntimeSessionState";
+    }
   | { type: "stopT3CodeRuntime" }
   | {
       cwd: string;
@@ -252,13 +292,22 @@ type NativeHostCommand =
   | { sessionId: string; text: string; type: "writeTerminalText" }
   | { sessionId: string; type: "sendTerminalEnter" }
   | {
-      activeSessionIds: string[];
+	      activeSessionIds: string[];
+	      activeProjectDiffStats?: SidebarProjectDiffStats;
+	      activeProjectEditorIsOpen?: boolean;
+	      activeProjectEditorIsSleeping?: boolean;
+	      activeProjectEditorStatus?: ProjectEditorLoadStatus;
+	      activeProjectId?: string;
+      activeProjectIconDataUrl?: string;
+      activeProjectName?: string;
+      activeProjectPath?: string;
       appTitle?: string;
       attentionSessionIds?: string[];
       backgroundColor?: string;
       activeProjectEditorId?: string;
       focusRequestId?: number;
       focusedSessionId?: string;
+      sleepingSessionIds?: string[];
       /**
        * CDXC:NativeGpu 2026-05-08-16:45
        * Metadata-only native syncs update pane chrome without forcing AppKit
@@ -267,13 +316,24 @@ type NativeHostCommand =
       layoutChanged?: boolean;
       layout?: NativeTerminalLayout;
       paneGap?: number;
+      poppedOutSessionIds?: string[];
+      sessionFaviconDataUrls?: Record<string, string>;
       sessionAgentIconDataUrls?: Record<string, string>;
       sessionAgentIconColors?: Record<string, string>;
-      sessionActivities?: Record<string, "attention" | "working">;
-      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
-      sessionTitles?: Record<string, string>;
-      type: "setActiveTerminalSet";
-    }
+      sessionActivities?: Record<string, "attention" | "sleeping" | "working">;
+	      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
+	      sessionTitles?: Record<string, string>;
+	      showProjectEditorDiffFileCount?: boolean;
+	      sidebarActions?: {
+	        commands: SidebarCommandButton[];
+	      };
+	      type: "setActiveTerminalSet";
+	      workspaceOpenTargets?: {
+	        availability: zmuxSettings["workspaceOpenTargetAvailability"];
+	        customTargets: CustomWorkspaceOpenTarget[];
+	        hiddenTargetIds: string[];
+	      };
+	    }
   | {
       /**
        * CDXC:SessionStatusIndicators 2026-05-05-19:47
@@ -310,6 +370,7 @@ type NativeHostCommand =
   | { details?: string; event: string; type: "appendTerminalFocusDebugLog" }
   | { details?: string; event: string; type: "appendRestoreDebugLog" }
   | { details?: string; event: string; force?: boolean; type: "appendSessionTitleDebugLog" }
+  | { details?: string; event: string; type: "appendSidebarRefreshDebugLog" }
   | { details?: string; event: string; type: "appendWorkspaceDockIndicatorDebugLog" }
   | {
       key: "previousSessions" | "projects" | "settings";
@@ -319,6 +380,7 @@ type NativeHostCommand =
   | { fileName: string; type: "playSound"; volume?: number }
   | {
       body?: string;
+      iconDataUrl?: string;
       sessionId: string;
       title: string;
       type: "showSessionAttentionNotification";
@@ -359,6 +421,8 @@ type NativeHostCommand =
     }
   | { type: "openGhosttyConfigFile" }
   | { type: "openAccessibilityPreferences" }
+  | { type: "requestMacOSNotificationPermission" }
+  | { type: "openMacOSNotificationSettings" }
   | { type: "openExternalUrl"; url: string }
   | { type: "openWorkspaceInFinder"; workspacePath: string }
   | {
@@ -373,6 +437,16 @@ type NativeHostCommand =
   | { sessionId: string; type: "showBrowserProfilePicker" }
   | { sessionId: string; type: "showBrowserImportSettings" }
   | { side: SidebarSide; type: "setSidebarSide" }
+  | {
+      /**
+       * CDXC:ReactTitlebar 2026-05-09-17:11
+       * React titlebar hosts report DOM hit regions to native so AppKit can
+       * keep blank chrome draggable and let future dropdown surfaces receive
+       * real pointer events inside the workspace overlay.
+       */
+      regions: Array<{ height: number; width: number; x: number; y: number }>;
+      type: "setReactTitlebarHitRegions";
+    }
   | {
       enabled: boolean;
       hideTitlebarButton: boolean;
@@ -425,12 +499,24 @@ export type WorkspaceBarStateMessage = {
 
 type NativeTerminalLayout =
   | { kind: "leaf"; sessionId: string }
+  | { activeSessionId?: string; kind: "tabs"; sessionIds: string[] }
   | {
       children: NativeTerminalLayout[];
       direction: "horizontal" | "vertical";
       kind: "split";
       ratio?: number;
     };
+
+type NativeSplitLayoutHint = {
+  direction: "horizontal" | "vertical";
+  nextSessionId: string;
+  projectId: string;
+  targetSessionId: string;
+};
+
+type NativeResolvedSplitLayoutHint = Omit<NativeSplitLayoutHint, "projectId">;
+type NativePaneTabCloseScope = "close" | "closeLeft" | "closeOthers" | "closeRight";
+type NativePaneTabSleepScope = "sleep" | "sleepLeft" | "sleepOthers" | "sleepRight";
 
 type NativeHostEvent =
   | {
@@ -453,7 +539,21 @@ type NativeHostEvent =
       sessionId: string;
       type: "terminalTitleBarAction";
     }
-  | { sourceSessionId: string; targetSessionId: string; type: "paneReorderRequested" }
+  | {
+      placement?: SessionPaneDropPlacement;
+      sourceSessionId: string;
+      targetSessionId: string;
+      type: "paneReorderRequested";
+    }
+  | { sessionId: string; type: "paneTabSelected" }
+  | { scope: NativePaneTabCloseScope; sessionId: string; type: "paneTabCloseRequested" }
+  | { scope: NativePaneTabSleepScope; sessionId: string; type: "paneTabSleepRequested" }
+  | {
+      position: SessionPaneTabReorderPosition;
+      sourceSessionId: string;
+      targetSessionId: string;
+      type: "paneTabReorderRequested";
+    }
   | { cwd: string; sessionId: string; type: "terminalCwdChanged" }
   | { exitCode?: number; sessionId: string; type: "terminalExited" }
   | { sessionId: string; type: "terminalFocused" }
@@ -527,10 +627,15 @@ declare global {
       setProjectTheme: (projectId: string, theme: SidebarTheme) => void;
       setProjectThemeColor: (projectId: string, themeColor: string) => void;
     };
-    __zmux_NATIVE_SETTINGS__?: {
-      attachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
-      detachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
-    };
+	    __zmux_NATIVE_SETTINGS__?: {
+	      attachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
+	      detachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
+	    };
+	    __zmux_NATIVE_SIDEBAR__?: {
+	      openActiveProjectEditorFromTitlebar: () => void;
+	      refreshWorkspaceOpenTargetAvailabilityFromTitlebar: () => void;
+	      runSidebarCommandFromTitlebar: (commandId: string) => void;
+	    };
     __zmux_NATIVE_CLI__?: {
       handleCommand: (action: string, payload: Record<string, unknown>) => Promise<unknown>;
     };
@@ -609,6 +714,7 @@ const SYNC_OPEN_PROJECT_WITH_ZED_DEBOUNCE_MS = 2_000;
  * the later native Enter command handles submission separately from text input.
  */
 const AUTO_SUBMIT_STAGED_RENAME_DELAY_MS = 1_000;
+const DELAYED_SEND_MAX_DELAY_MS = 2_147_483_647;
 const NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS = 7_000;
 const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
 const zmux_AGENT_NOTIFY_HOOK_PATH = `${nativeZmuxHomeDirectory()}/hooks/agent-shell-notify.sh`;
@@ -686,6 +792,8 @@ const pendingProjectDiffRefreshProjectIds = new Set<string>();
 let lastNativeLayoutSyncKey: string | undefined;
 let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
+let lastNativeT3RuntimeSessionStateKey: string | undefined;
+let nativeSplitLayoutHint: NativeSplitLayoutHint | undefined;
 let lastPersistedProjectsPayloadJson: string | undefined;
 const projectEditorSleepTimeoutByProjectId = new Map<string, number>();
 const projectEditorOpenTimeoutByProjectId = new Map<string, number>();
@@ -915,6 +1023,7 @@ const NATIVE_ATTENTION_NOTIFICATION_GLOBAL_LIMIT = 8;
 const nativeAttentionNotificationLastSentAtBySessionId = new Map<string, number>();
 let nativeAttentionNotificationWindowStartedAt = 0;
 let nativeAttentionNotificationWindowCount = 0;
+const delayedSendTimeoutBySessionId = new Map<string, number>();
 type NativeSidebarCommandSession = {
   closeOnExit: boolean;
   commandId: string;
@@ -1035,6 +1144,18 @@ function logNativeHotkeyDebug(event: string, details: Record<string, unknown>): 
 function postNative(command: NativeHostCommand): void {
   if (isTerminalFocusDebugCommand(command)) {
     const snapshot = getTerminalFocusDebugSnapshot();
+    /**
+     * CDXC:NativeTerminalStartupFocus 2026-05-11-12:31
+     * Startup focus drift can depend on command ordering across create,
+     * layout, and explicit focus messages. Persist the actual native command
+     * boundary under the focus-trace allowlist while Debugging Mode is enabled
+     * so a repro minute shows which pane the sidebar asked native to focus.
+     */
+    appendTerminalFocusDebugLog("nativeFocusTrace.sidebarPostNativeFocusCommand", {
+      command: summarizeNativeFocusCommand(command),
+      focusedSessionId: snapshot?.focusedSessionId,
+      visibleSessionIds: snapshot?.visibleSessionIds,
+    });
     appendTerminalFocusDebugLog("nativeSidebar.postNative", {
       command: summarizeNativeFocusCommand(command),
       focusedSessionId: snapshot?.focusedSessionId,
@@ -1113,6 +1234,12 @@ function appendTerminalFocusDebugLog(event: string, details?: unknown): void {
    * Focus diagnostics are useful only around failures or unusual boundaries.
    * Routine key, focus, and layout events are too frequent for persistent logs,
    * so only important diagnostic events are posted to native.
+   *
+   * CDXC:PaneLayoutDiagnostics 2026-05-11-12:19
+   * User-reproduced tab creation bugs need low-volume paneLayout traces while
+   * Debugging Mode is enabled. Persist only explicit create/focus/layout-post
+   * boundaries so a reproduction minute can show whether a new terminal,
+   * browser, or T3 pane was requested as a tab, split, or fallback layout.
    */
   if (!isNativeSidebarDebugLoggingEnabled()) {
     return;
@@ -1179,6 +1306,24 @@ function appendRestoreDebugLog(event: string, details?: unknown): void {
   });
 }
 
+function appendSidebarRefreshDebugLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:SidebarRefreshDiagnostics 2026-05-11-12:32
+   * User repros for unexpected sidebar refreshes need a dedicated native log
+   * file keyed to the Settings debugging switch. Persist only explicit React
+   * lifecycle, hydrate, publish, and requested create/close boundaries so the
+   * log shows whether the sidebar remounted or merely received a new snapshot.
+   */
+  if (!isNativeSidebarDebugLoggingEnabled()) {
+    return;
+  }
+  postNative({
+    details: details === undefined ? undefined : safeSerializeForNativeLog(details),
+    event,
+    type: "appendSidebarRefreshDebugLog",
+  });
+}
+
 function appendWorkspaceDockIndicatorDebugLog(event: string, details?: unknown): void {
   if (!isNativeSidebarDebugLoggingEnabled()) {
     return;
@@ -1197,6 +1342,7 @@ function shouldPersistNativeSidebarDiagnostic(event: string): boolean {
   const normalizedEvent = event.toLowerCase();
   return (
     normalizedEvent.startsWith("nativefocustrace.") ||
+    normalizedEvent.startsWith("nativepanelayouttrace.") ||
     normalizedEvent.includes("fail") ||
     normalizedEvent.includes("error") ||
     normalizedEvent.includes("invalid") ||
@@ -1273,7 +1419,123 @@ function summarizeNativeLayoutLeafSessionIds(layout: NativeTerminalLayout | unde
   if (layout.kind === "leaf") {
     return [layout.sessionId];
   }
+  if (layout.kind === "tabs") {
+    return layout.sessionIds;
+  }
   return layout.children.flatMap(summarizeNativeLayoutLeafSessionIds);
+}
+
+function appendPaneLayoutTraceDebugLog(event: string, details?: unknown): void {
+  appendTerminalFocusDebugLog(`nativePaneLayoutTrace.${event}`, details);
+}
+
+function summarizeSessionPaneLayout(
+  layout: SessionPaneLayoutNode | undefined,
+  depth = 0,
+): unknown {
+  if (!layout) {
+    return undefined;
+  }
+  if (depth > 4) {
+    return { kind: "truncated" };
+  }
+  switch (layout.kind) {
+    case "leaf":
+      return { kind: "leaf", sessionId: layout.sessionId };
+    case "tabs":
+      return {
+        activeSessionId: layout.activeSessionId,
+        kind: "tabs",
+        sessionIds: layout.sessionIds,
+      };
+    case "split":
+      return {
+        children: layout.children.map((child) => summarizeSessionPaneLayout(child, depth + 1)),
+        direction: layout.direction,
+        kind: "split",
+        ratio: layout.ratio,
+      };
+  }
+}
+
+function summarizeNativePaneLayout(layout: NativeTerminalLayout | undefined, depth = 0): unknown {
+  if (!layout) {
+    return undefined;
+  }
+  if (depth > 4) {
+    return { kind: "truncated" };
+  }
+  switch (layout.kind) {
+    case "leaf":
+      return { kind: "leaf", sessionId: layout.sessionId };
+    case "tabs":
+      return {
+        activeSessionId: layout.activeSessionId,
+        kind: "tabs",
+        sessionIds: layout.sessionIds,
+      };
+    case "split":
+      return {
+        children: layout.children.map((child) => summarizeNativePaneLayout(child, depth + 1)),
+        direction: layout.direction,
+        kind: "split",
+        ratio: layout.ratio,
+      };
+  }
+}
+
+function summarizeVisiblePlacement(placement: VisibleSessionPlacement | undefined): unknown {
+  if (!placement) {
+    return undefined;
+  }
+  switch (placement.kind) {
+    case "appendFullWidth":
+      return { kind: placement.kind };
+    case "appendToTabGroup":
+    case "replace":
+      return { kind: placement.kind, targetSessionId: placement.targetSessionId };
+    case "insertAfter":
+      return {
+        kind: placement.kind,
+        splitDirection: placement.splitDirection,
+        targetSessionId: placement.targetSessionId,
+      };
+    case "replaceNonFocused":
+      return { kind: placement.kind, preserveSessionId: placement.preserveSessionId };
+  }
+}
+
+function summarizeWorkspaceGroupForPaneLayoutTrace(
+  workspace: GroupedSessionWorkspaceSnapshot,
+  groupId?: string,
+): unknown {
+  const group =
+    (groupId ? workspace.groups.find((candidate) => candidate.groupId === groupId) : undefined) ??
+    workspace.groups.find((candidate) => candidate.groupId === workspace.activeGroupId) ??
+    workspace.groups[0];
+  if (!group) {
+    return {
+      activeGroupId: workspace.activeGroupId,
+      groupCount: workspace.groups.length,
+      requestedGroupId: groupId,
+    };
+  }
+  return {
+    activeGroupId: workspace.activeGroupId,
+    focusedSessionId: group.snapshot.focusedSessionId,
+    groupCount: workspace.groups.length,
+    groupId: group.groupId,
+    paneLayout: summarizeSessionPaneLayout(group.snapshot.paneLayout),
+    requestedGroupId: groupId,
+    sessions: group.snapshot.sessions.map((session) => ({
+      isPoppedOut: session.isPoppedOut === true || undefined,
+      isSleeping: session.isSleeping === true || undefined,
+      kind: session.kind,
+      sessionId: session.sessionId,
+    })),
+    visibleCount: group.snapshot.visibleCount,
+    visibleSessionIds: group.snapshot.visibleSessionIds,
+  };
 }
 
 function summarizeTerminalText(text: string): string {
@@ -1370,13 +1632,33 @@ function browserPaneTitleFromUrl(url: string): string {
   }
 }
 
-function createNativeBrowserSession(url: string, groupId?: string): BrowserSessionRecord | undefined {
+function createNativeBrowserSession(
+  url: string,
+  groupId?: string,
+  options?: {
+    visiblePlacement?: VisibleSessionPlacement;
+  },
+): BrowserSessionRecord | undefined {
   const project = activeProject();
   activateWorkspaceSurfaceForProject(project.projectId);
   const normalizedUrl = normalizeBrowserPaneUrl(url);
   const targetWorkspace = groupId
     ? focusGroupInSimpleWorkspace(project.workspace, groupId).snapshot
     : project.workspace;
+  appendSidebarRefreshDebugLog("nativeSidebar.createBrowser.before", {
+    groupId,
+    project: summarizeSidebarRefreshProject(project),
+    url: normalizedUrl,
+    visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
+  });
+  appendPaneLayoutTraceDebugLog("createBrowser.request", {
+    activeProjectId,
+    groupId,
+    projectId: project.projectId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(targetWorkspace, groupId),
+    url: normalizedUrl,
+    visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
+  });
   /**
    * CDXC:BrowserPanes 2026-05-02-06:35
    * Browser-pane mode turns every browser action into a first-class workspace
@@ -1384,18 +1666,41 @@ function createNativeBrowserSession(url: string, groupId?: string): BrowserSessi
    * group instead of appearing in the old dedicated Chrome Canary Browsers
    * section, matching the requested pane-based workflow.
    */
-  const result = createSessionInSimpleWorkspace(targetWorkspace, {
-    browser: { url: normalizedUrl },
-    kind: "browser",
-    title: browserPaneTitleFromUrl(normalizedUrl),
-  });
+  const result = createSessionInSimpleWorkspace(
+    targetWorkspace,
+    {
+      browser: { url: normalizedUrl },
+      kind: "browser",
+      title: browserPaneTitleFromUrl(normalizedUrl),
+    },
+    options?.visiblePlacement ? { visiblePlacement: options.visiblePlacement } : undefined,
+  );
   const session = result.session?.kind === "browser" ? result.session : undefined;
   if (!session) {
+    appendPaneLayoutTraceDebugLog("createBrowser.noSession", {
+      activeProjectId,
+      groupId,
+      projectId: project.projectId,
+      url: normalizedUrl,
+      visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
+    });
     return undefined;
   }
 
   const nativeSessionId = rememberNativeSessionMapping(project.projectId, session.sessionId);
   updateActiveProjectWorkspace(() => result.snapshot);
+  appendPaneLayoutTraceDebugLog("createBrowser.created", {
+    activeProjectId,
+    nativeSessionId,
+    projectId: project.projectId,
+    sessionId: session.sessionId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
+      result.snapshot,
+      result.snapshot.activeGroupId,
+    ),
+    url: normalizedUrl,
+    visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
+  });
   postNative({
     cwd: project.path,
     sessionId: nativeSessionId,
@@ -1405,6 +1710,12 @@ function createNativeBrowserSession(url: string, groupId?: string): BrowserSessi
   });
   postNative({ sessionId: nativeSessionId, type: "focusWebPane" });
   publish();
+  appendSidebarRefreshDebugLog("nativeSidebar.createBrowser.afterPublish", {
+    nativeSessionId,
+    project: summarizeSidebarRefreshProject(),
+    sessionId: session.sessionId,
+    url: normalizedUrl,
+  });
   return session;
 }
 
@@ -1533,6 +1844,151 @@ function runNativeProcess(
     }, options.timeoutMs ?? 30_000);
     pendingProcessResults.set(requestId, { reject, resolve, timeout });
   });
+}
+
+async function refreshWorkspaceOpenTargetAvailabilityAtStartup(): Promise<void> {
+  try {
+    const nextAvailability = await detectWorkspaceOpenTargetAvailability();
+    applyWorkspaceOpenTargetAvailability(nextAvailability, false);
+  } catch (error) {
+    console.warn("Failed to detect Open In targets", error);
+  }
+}
+
+async function refreshWorkspaceOpenTargetAvailabilityFromTitlebar(): Promise<void> {
+  try {
+    const nextAvailability = await detectWorkspaceOpenTargetAvailability();
+    /**
+     * CDXC:TitlebarOpenIn 2026-05-11-03:13
+     * The titlebar reload button manually rechecks installed Open In targets.
+     * Persist the fresh scan even when the target set is unchanged so the
+     * native layout sync acknowledges the user's explicit refresh command.
+     */
+    applyWorkspaceOpenTargetAvailability(nextAvailability, true);
+  } catch (error) {
+    console.warn("Failed to refresh Open In targets", error);
+  }
+}
+
+function applyWorkspaceOpenTargetAvailability(
+  nextAvailability: zmuxSettings["workspaceOpenTargetAvailability"],
+  forceSave: boolean,
+): void {
+  if (
+    !forceSave &&
+    workspaceOpenTargetAvailabilityEquals(settings.workspaceOpenTargetAvailability, nextAvailability)
+  ) {
+    return;
+  }
+  saveSettings({
+    ...settings,
+    workspaceOpenTargetAvailability: nextAvailability,
+  });
+}
+
+async function detectWorkspaceOpenTargetAvailability(): Promise<
+  zmuxSettings["workspaceOpenTargetAvailability"]
+> {
+  /**
+   * CDXC:TitlebarOpenIn 2026-05-11-02:03
+   * Installed Open In targets are detected once when the native sidebar starts.
+   * Detection checks both shell commands and macOS .app bundles, then persists
+   * availability separately from user-hidden ids so manual disables survive
+   * every startup scan.
+   */
+  const script = createWorkspaceOpenTargetDetectionScript();
+  const result = await runNativeProcess("/bin/zsh", ["-lc", script], { timeoutMs: 45_000 });
+  const availableTargetIds = new Set<BuiltInWorkspaceOpenTargetId>(
+    ALWAYS_AVAILABLE_WORKSPACE_OPEN_TARGET_IDS,
+  );
+  const resolvedCommands: Record<string, string> = {};
+  const resolvedAppNames: Record<string, string> = {};
+  const builtInTargetIds = new Set<string>(BUILT_IN_WORKSPACE_OPEN_TARGETS.map((target) => target.id));
+
+  if (result.exitCode === 0) {
+    for (const line of result.stdout.split("\n")) {
+      const [kind, targetId, value] = line.split("\t");
+      if (!targetId || !value || !builtInTargetIds.has(targetId)) {
+        continue;
+      }
+      availableTargetIds.add(targetId as BuiltInWorkspaceOpenTargetId);
+      if (kind === "command" && resolvedCommands[targetId] === undefined) {
+        resolvedCommands[targetId] = value;
+      }
+      if (kind === "app" && resolvedAppNames[targetId] === undefined) {
+        resolvedAppNames[targetId] = value;
+      }
+    }
+  }
+
+  return normalizeWorkspaceOpenTargetAvailability({
+    availableTargetIds: [...availableTargetIds],
+    checkedAtMs: Date.now(),
+    resolvedAppNames,
+    resolvedCommands,
+  });
+}
+
+function createWorkspaceOpenTargetDetectionScript(): string {
+  const commandChecks = BUILT_IN_WORKSPACE_OPEN_TARGETS.flatMap((target) =>
+    (target.commands ?? []).map(
+      (command) =>
+        `if command -v ${shellQuote(command)} >/dev/null 2>&1; then printf 'command\\t%s\\t%s\\n' ${shellQuote(target.id)} ${shellQuote(command)}; fi`,
+    ),
+  );
+  const appChecks = BUILT_IN_WORKSPACE_OPEN_TARGETS.flatMap((target) =>
+    (target.macOSAppNames ?? []).map(
+      (appName) =>
+        `if zmux_app_exists ${shellQuote(appName)}; then printf 'app\\t%s\\t%s\\n' ${shellQuote(target.id)} ${shellQuote(appName)}; fi`,
+    ),
+  );
+  return [
+    "set +e",
+    "zmux_app_exists() {",
+    "  local app_name=\"$1\"",
+    "  local app_bundle=\"${app_name}.app\"",
+    "  local base",
+    "  for base in /Applications \"$HOME/Applications\" /System/Applications; do",
+    "    if [ -d \"$base/$app_bundle\" ]; then return 0; fi",
+    "  done",
+    "  local found",
+    "  found=$(/usr/bin/mdfind \"kMDItemFSName == '$app_bundle'cd && kMDItemContentType == 'com.apple.application-bundle'\" 2>/dev/null | /usr/bin/head -n 1)",
+    "  [ -n \"$found\" ]",
+    "}",
+    ...commandChecks,
+    ...appChecks,
+  ].join("\n");
+}
+
+function workspaceOpenTargetAvailabilityEquals(
+  left: zmuxSettings["workspaceOpenTargetAvailability"],
+  right: zmuxSettings["workspaceOpenTargetAvailability"],
+): boolean {
+  return (
+    arraySetEquals(left.availableTargetIds, right.availableTargetIds) &&
+    recordEquals(left.resolvedCommands, right.resolvedCommands) &&
+    recordEquals(left.resolvedAppNames, right.resolvedAppNames)
+  );
+}
+
+function arraySetEquals(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const rightSet = new Set(right);
+  return left.every((value) => rightSet.has(value));
+}
+
+function recordEquals(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftEntries = Object.entries(left);
+  if (leftEntries.length !== Object.keys(right).length) {
+    return false;
+  }
+  return leftEntries.every(([key, value]) => right[key] === value);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 async function runGit(
@@ -2008,7 +2464,11 @@ function handleNativeSessionEnteredAttention(sessionId: string, source: string):
   showNativeSessionAttentionNotification(sessionId, source);
 }
 
-function showNativeSessionAttentionNotification(sessionId: string, source: string): void {
+function showNativeSessionAttentionNotification(
+  sessionId: string,
+  source: string,
+  contentOverride?: { body: string; iconDataUrl?: string; title: string },
+): void {
   if (!settings.showMacOSAttentionNotifications) {
     return;
   }
@@ -2021,18 +2481,97 @@ function showNativeSessionAttentionNotification(sessionId: string, source: strin
   }
 
   const reference = resolveSidebarSessionReference(sessionId);
-  const session = findSessionRecordInProject(reference.project, reference.sessionId);
-  const title =
-    getSessionCardPrimaryTitle({ title: session?.title || DEFAULT_TERMINAL_SESSION_TITLE }) ??
-    DEFAULT_TERMINAL_SESSION_TITLE;
+  const session = reference
+    ? findSessionRecordInProject(reference.project, reference.sessionId)
+    : undefined;
+  const content =
+    contentOverride
+      ? {
+          ...contentOverride,
+          iconDataUrl:
+            contentOverride.iconDataUrl ??
+            resolveWorkspaceProjectIconDataUrl(reference?.project ?? activeProject()),
+        }
+      : createNativeSessionAttentionNotificationContent(
+          reference?.project,
+          session,
+          terminalStateById.get(sessionId),
+        );
   postNative({
-    body: `${reference.project.name} needs attention.`,
-    sessionId: nativeSessionIdForProjectSidebarSession(
-      reference.project.projectId,
-      reference.sessionId,
-    ),
-    title,
+    body: content.body,
+    iconDataUrl: content.iconDataUrl,
+    sessionId: reference
+      ? nativeSessionIdForProjectSidebarSession(reference.project.projectId, reference.sessionId)
+      : sessionId,
+    title: content.title,
     type: "showSessionAttentionNotification",
+  });
+}
+
+function createNativeSessionAttentionNotificationContent(
+  project: NativeProject | undefined,
+  session: SessionRecord | undefined,
+  terminalState: ReturnType<typeof terminalStateById.get>,
+): { body: string; iconDataUrl?: string; title: string } {
+  /**
+   * CDXC:SessionAttentionNotifications 2026-05-11-01:14
+   * macOS attention banners must identify the project, thread/session, and
+   * agent on separate lines when possible so multiple background completions
+   * can be distinguished without opening zmux first.
+   */
+  const agentName =
+    session?.kind === "terminal"
+      ? terminalState?.agentName ?? session.agentName
+      : session?.kind === "t3"
+        ? "t3"
+        : undefined;
+  const threadName =
+    getSessionCardPrimaryTitle({
+      agentName,
+      title: session?.title || DEFAULT_TERMINAL_SESSION_TITLE,
+    }) ?? DEFAULT_TERMINAL_SESSION_TITLE;
+  return {
+    body: [
+      `Project: ${project?.name.trim() || "zmux"}`,
+      `Thread: ${threadName}`,
+      `Agent: ${getNativeAttentionNotificationAgentLabel(agentName)}`,
+    ].join("\n"),
+    iconDataUrl: resolveWorkspaceProjectIconDataUrl(project),
+    title: "Agent task needs attention",
+  };
+}
+
+function getNativeAttentionNotificationAgentLabel(agentName: string | undefined): string {
+  const normalizedAgentName = agentName?.trim();
+  if (!normalizedAgentName) {
+    return "Unknown";
+  }
+  const normalizedKey = normalizedAgentName.toLowerCase();
+  return (
+    getDefaultSidebarAgentById(normalizedKey)?.name ??
+    agents.find(
+      (agent) =>
+        agent.agentId.trim().toLowerCase() === normalizedKey ||
+        agent.name.trim().toLowerCase() === normalizedKey,
+    )?.name ??
+    normalizedAgentName
+  );
+}
+
+function testNativeAgentTaskCompletion(): void {
+  /**
+   * CDXC:SessionAttentionNotifications 2026-05-11-01:14
+   * The Settings test action must use the same settings-gated completion flow
+   * as real attention transitions: completionBellEnabled chooses audio,
+   * showMacOSAttentionNotifications chooses the macOS banner, and the selected
+   * completionSound is played by the normal native sound bridge.
+   */
+  const focusedSessionId = activeSnapshot().focusedSessionId;
+  const testSessionId = focusedSessionId ?? "__zmux-settings-attention-test__";
+  playNativeSessionCompletionSound(testSessionId, "settings-test");
+  showNativeSessionAttentionNotification(testSessionId, "settings-test", {
+    body: "This is a test of the current zmux completion alert settings.",
+    title: "Test agent task completion",
   });
 }
 
@@ -3638,7 +4177,35 @@ function nativeSessionIdForProjectSidebarSession(projectId: string, sessionId: s
 }
 
 function sidebarSessionIdForNativeSession(sessionId: string): string {
-  return sidebarSessionIdByNativeSessionId.get(sessionId) ?? sessionId;
+  const mappedSessionId = sidebarSessionIdByNativeSessionId.get(sessionId);
+  if (mappedSessionId) {
+    return mappedSessionId;
+  }
+  const durableReference = parseDurableNativeSessionId(sessionId);
+  return durableReference?.sessionId ?? sessionId;
+}
+
+function parseDurableNativeSessionId(
+  nativeSessionId: string,
+): { project: NativeProject; sessionId: string } | undefined {
+  /**
+   * CDXC:SessionSleep 2026-05-11-07:06
+   * Sleeping a terminal disposes its native surface and removes the live
+   * native<->sidebar mapping, but sleeping tabs still carry the durable native
+   * id in the pane layout. Decode that id at host-event boundaries so Close on a
+   * sleeping tab can still remove the stored sidebar session.
+   */
+  const project = [...projects]
+    .sort((left, right) => right.projectId.length - left.projectId.length)
+    .find((candidate) => nativeSessionId.startsWith(`${candidate.projectId}:`));
+  if (!project) {
+    return undefined;
+  }
+  const sessionId = nativeSessionId.slice(project.projectId.length + 1);
+  if (!sessionId) {
+    return undefined;
+  }
+  return { project, sessionId };
 }
 
 function forgetNativeSessionMapping(sidebarSessionId: string): string {
@@ -4091,6 +4658,23 @@ function buildSidebarMessage(): SidebarHydrateMessage {
   };
 }
 
+function summarizeSidebarRefreshProject(project = activeProject()): Record<string, unknown> {
+  const sessionIds = project.workspace.groups.flatMap((group) =>
+    group.snapshot.sessions.map((session) => session.sessionId),
+  );
+  return {
+    activeGroupId: project.workspace.activeGroupId,
+    activeProjectId,
+    focusedSessionIdsByGroup: Object.fromEntries(
+      project.workspace.groups.map((group) => [group.groupId, group.snapshot.focusedSessionId]),
+    ),
+    groupCount: project.workspace.groups.length,
+    projectId: project.projectId,
+    sessionCount: sessionIds.length,
+    sessionIds,
+  };
+}
+
 function createAgentManagerXWorkspaceSnapshots(): AgentManagerXWorkspaceSnapshotMessage[] {
   const updatedAt = new Date().toISOString();
   return projects
@@ -4194,34 +4778,68 @@ function publish(): void {
   */
   postAppModalHost({ message: sidebarMessage, type: "sidebarState" });
   postWorkspaceBarState();
+  syncNativeT3RuntimeSessionState(sidebarMessage);
   syncNativeLayout({ force: didCreateNativeSession });
   syncNativeSessionStatusIndicators();
+}
+
+function syncNativeT3RuntimeSessionState(sidebarMessage: SidebarHydrateMessage): void {
+  /**
+   * CDXC:T3Code 2026-05-10-22:48
+   * A T3 session is "running" for provider keepalive purposes when its card is
+   * present in the current session sidebar projection and the card is not
+   * sleeping. This deliberately decouples provider lifetime from AppKit pane
+   * visibility so split focus changes do not stop an awake T3 session.
+   */
+  const runningSessionIds = sidebarMessage.groups
+    .flatMap((group) => group.sessions)
+    .filter(
+      (session) =>
+        session.agentIcon === "t3" &&
+        session.isSleeping !== true &&
+        session.isRunning !== false &&
+        session.lifecycleState !== "sleeping",
+    )
+    .map((session) => session.sessionId)
+    .sort();
+  const nextKey = JSON.stringify(runningSessionIds);
+  if (nextKey === lastNativeT3RuntimeSessionStateKey) {
+    return;
+  }
+  lastNativeT3RuntimeSessionStateKey = nextKey;
+  postNative({
+    runningSessionIds,
+    type: "setT3CodeRuntimeSessionState",
+  });
 }
 
 function ensureVisibleNativeSessions(reason: string): boolean {
   let didCreateNativeSession = false;
   /**
    * CDXC:SessionRestore 2026-04-29-09:16
-   * Native zmux only recreates terminal processes for sessions that are actually
-   * on screen: the active workspace, active group, and current visible card set.
-   * Hidden terminals remain sleeping until focus/wake asks for their resume;
-   * this hot publish path must not emit per-session diagnostics.
+   * Native zmux recreates terminal processes for awake sessions in the active
+   * workspace group. Sleeping terminals remain parked until focus/wake asks for
+   * their resume; this hot publish path must not emit per-session diagnostics.
    *
    * CDXC:T3Code 2026-04-30-19:23
    * Visible restored T3 sessions also need their native WKWebView recreated at
    * startup. A persisted T3 card without a native web-pane surface leaves the
    * workspace focused on a session id AppKit cannot render, producing the blank
    * gray pane even though the sidebar card is selected.
+   *
+   * CDXC:PaneTabs 2026-05-11-01:31
+   * All non-sleeping sessions in the active group are native pane-tab inventory.
+   * Do not gate surface creation on visibleSessionIds, because tabs can surface
+   * live sessions that no longer consume a separate split pane.
    */
   for (const project of projects) {
     for (const group of project.workspace.groups) {
-      const visibleIds = new Set(group.snapshot.visibleSessionIds);
       for (const session of group.snapshot.sessions) {
-        const isVisibleOnScreen =
+        const isAwakeInActiveWorkspaceGroup =
           project.projectId === activeProjectId &&
           group.groupId === project.workspace.activeGroupId &&
-          visibleIds.has(session.sessionId);
-        if (!isVisibleOnScreen) {
+          session.isSleeping !== true;
+        if (!isAwakeInActiveWorkspaceGroup) {
           continue;
         }
         if (session.kind === "t3") {
@@ -4651,16 +5269,23 @@ function createNativeAgentSessionEnvironment(args: {
     zmux_WORKSPACE_ID: args.project.projectId,
     zmux_WORKSPACE_ROOT: args.project.path,
   };
-  if (settings.richPromptEditingWithZapet) {
+  if (settings.promptEditorBackend === "monaco" || settings.promptEditorBackend === "zpet") {
     /**
-     * CDXC:ZapetPromptEditing 2026-05-10-11:11
-     * Rich Prompt Editing with Zapet changes the launched app/agent terminal
-     * environment directly. Inject EDITOR=zapet only when the Settings toggle
-     * is enabled; native then enforces it after zsh profile files so
-     * prompt-editor CLIs open Zapet without a try/fallback path.
+     * CDXC:PromptEditorBackend 2026-05-11-14:38
+     * Ctrl+G prompt editing is selected in Settings as a backend. Inject both
+     * the immediate EDITOR value and the backend marker native uses to reapply
+     * the same command after zsh startup files have run.
      */
-    environment.EDITOR = "zapet";
-    environment.ZMUX_RICH_PROMPT_EDITING_WITH_ZAPET = "1";
+    const promptEditorCommand =
+      settings.promptEditorBackend === "zpet"
+        ? "zmux floating-editor -- zpet"
+        : "zmux floating-monaco-editor";
+    environment.EDITOR = promptEditorCommand;
+    environment.VISUAL = promptEditorCommand;
+    environment.ZMUX_PROMPT_EDITOR_BACKEND = settings.promptEditorBackend;
+    environment.ZMUX_PROMPT_EDITING_ENABLED = "1";
+    environment.ZMUX_RICH_PROMPT_EDITING_WITH_ZAPET =
+      settings.promptEditorBackend === "zpet" ? "1" : "0";
   }
   return environment;
 }
@@ -4687,9 +5312,11 @@ function codeServerVscodeUserConfigDirectory(): string {
 function nativeZmuxHomeDirectory(): string {
   /**
    * CDXC:DevAppFlavor 2026-04-28-02:01
-   * Native zmux-dev and default zmux intentionally share hook scripts and
-   * per-session state under ~/.zmux so both app identities show the same
-   * workspaces and restorable sessions.
+   * The native host supplies the app-specific zmux home used for hooks and
+   * per-session state.
+   * CDXC:DevAppFlavor 2026-05-11-12:10
+   * `bun start:dev` must not read or write the installed app's ~/.zmux data,
+   * so zmux-dev receives ~/.zmux-dev here while production keeps ~/.zmux.
    */
   return (
     window.__zmux_NATIVE_HOST__?.zmuxHomeDir?.trim() ||
@@ -5279,38 +5906,51 @@ function canRestoreNativeTerminalSession(session: TerminalSessionRecord): boolea
   if (agentId === "pi") {
     return Boolean(resolveNativeAgentCommand(agentId) && getNativePiSessionReference(session));
   }
+  if (agentId === "codex") {
+    return Boolean(
+      resolveNativeAgentCommand(agentId) &&
+        (getNativeStoredTrustedResumeTitle(session).title !== undefined ||
+          getNativeCodexSessionReference(session) !== undefined),
+    );
+  }
   return (
-    (agentId === "claude" || agentId === "codex" || agentId === "opencode") &&
+    (agentId === "claude" || agentId === "opencode") &&
     Boolean(resolveNativeAgentCommand(agentId)) &&
     getNativeStoredTrustedResumeTitle(session).title !== undefined
   );
 }
 
-function getNativeTerminalTitleBarActions(
-  session: TerminalSessionRecord,
-): NativeTerminalTitleBarAction[] {
-  return shouldShowNativeTerminalTitleBarRestoreActions(session)
-    ? ["rename", "fork", "reload", "sleep", "close"]
-    : ["rename", "sleep", "close"];
+function getNativePaneTitleBarActions(session: SessionRecord): NativeTerminalTitleBarAction[] {
+  /**
+   * CDXC:PaneTitleBarUX 2026-05-11-11:05
+   * Terminal title bars expose hover-only reload/fork/rename, Delayed Send,
+   * split, browser, and terminal creation controls. Close and Sleep moved into
+   * each hovered tab on 2026-05-11-02:02 so the tab controls target the
+   * represented session even when the selected pane owns a different titlebar
+   * view.
+   *
+   * Browser and T3 Code panes expose only pane creation plus split controls in
+   * title-bar chrome: Terminal, Browser, separator, Split Right, Split Down.
+   * Their page/runtime tooling stays in the dedicated browser/T3 surfaces.
+   */
+  const popOutAction = session.isPoppedOut === true ? "restorePopOut" : "popOut";
+  if (session.kind === "browser" || session.kind === "t3") {
+    return ["newTerminal", "openBrowser", "splitHorizontal", "splitVertical"];
+  }
+  return [
+    "newTerminal",
+    "openBrowser",
+    "splitHorizontal",
+    "splitVertical",
+    "rename",
+    "delayedSend",
+    "fork",
+    "reload",
+    popOutAction,
+  ];
 }
 
 type NativeResumeAgentId = "claude" | "codex" | "copilot" | "gemini" | "opencode" | "pi";
-
-function shouldShowNativeTerminalTitleBarRestoreActions(session: TerminalSessionRecord): boolean {
-  const agentId = resolveNativeResumeAgentId(session.agentName);
-  /**
-   * CDXC:CodexAgent 2026-05-08-16:18
-   * Codex cards already expose one-click Fork and Full reload from the sidebar
-   * context menu. Show the same actions in the native pane title bar even when
-   * title trust is still catching up; the action handlers still validate the
-   * actual resumable identity before recreating the terminal.
-   */
-  if (agentId === "codex") {
-    return Boolean(resolveNativeAgentCommand(agentId));
-  }
-
-  return canRestoreNativeTerminalSession(session);
-}
 
 function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string | undefined {
   const agentId = resolveNativeResumeAgentId(session.agentName);
@@ -5319,8 +5959,14 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
   }
   const agentCommand = resolveNativeAgentCommand(agentId);
   const resumeTitle = agentId === "pi" ? undefined : getNativeTrustedResumeTitle(session);
+  const codexSessionReference =
+    agentId === "codex" ? (resumeTitle ?? getNativeCodexSessionReference(session)) : undefined;
   const piSessionReference = agentId === "pi" ? getNativePiSessionReference(session) : undefined;
-  if (!agentId || !agentCommand || (agentId === "pi" ? !piSessionReference : !resumeTitle)) {
+  if (
+    !agentId ||
+    !agentCommand ||
+    (agentId === "pi" ? !piSessionReference : agentId === "codex" ? !codexSessionReference : !resumeTitle)
+  ) {
     return undefined;
   }
 
@@ -5338,10 +5984,10 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
    */
   switch (agentId) {
     case "codex":
-      if (!resumeTitle) {
+      if (!codexSessionReference) {
         return undefined;
       }
-      return `${agentCommand} resume ${quoteNativeShellArg(resumeTitle)}`;
+      return `${agentCommand} resume ${quoteNativeShellArg(codexSessionReference)}`;
     case "claude":
       if (!resumeTitle) {
         return undefined;
@@ -5373,10 +6019,12 @@ function buildNativeCopyResumeCommand(
   const resumeTitle = getNativeTrustedResumeTitle(session);
 
   switch (agentId) {
-    case "codex":
-      return resumeTitle
-        ? `${agentCommand} resume ${quoteNativeShellArg(resumeTitle)}`
+    case "codex": {
+      const codexSessionReference = resumeTitle ?? getNativeCodexSessionReference(session);
+      return codexSessionReference
+        ? `${agentCommand} resume ${quoteNativeShellArg(codexSessionReference)}`
         : `${agentCommand} resume`;
+    }
     case "claude":
       return resumeTitle
         ? `${agentCommand} --resume ${quoteNativeShellArg(resumeTitle)}`
@@ -5440,6 +6088,10 @@ function buildNativeClaudeForkCommand(session: TerminalSessionRecord): string | 
    * pane, matching Claude's documented resume/fork semantics.
    */
   return `${agentCommand} --resume ${quoteNativeShellArg(resumeTitle)} --fork-session`;
+}
+
+function getNativeCodexSessionReference(session: TerminalSessionRecord): string | undefined {
+  return getCodexSessionIdFromTitle(session.agentSessionId) ?? undefined;
 }
 
 function getNativePiSessionReference(session: TerminalSessionRecord): string | undefined {
@@ -5678,6 +6330,8 @@ function createTerminal(
     focusAfterCreate?: boolean;
     sessionPersistenceName?: string;
     sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
+    splitDirection?: "horizontal" | "vertical";
+    visiblePlacement?: VisibleSessionPlacement;
   },
 ): TerminalSessionRecord | undefined {
   const project = activeProject();
@@ -5714,6 +6368,13 @@ function createTerminal(
   const beforeSnapshot = targetWorkspace.groups.find(
     (group) => group.groupId === targetWorkspace.activeGroupId,
   )?.snapshot;
+  appendSidebarRefreshDebugLog("nativeSidebar.createTerminal.before", {
+    agentName,
+    groupId,
+    project: summarizeSidebarRefreshProject(project),
+    title,
+    visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
+  });
   appendTerminalLaunchDebugLog("nativeSidebar.createTerminal.request", {
     activeProjectId,
     agentName,
@@ -5725,6 +6386,14 @@ function createTerminal(
     sessionCountBefore: beforeSnapshot?.sessions.length,
     title,
     visibleSessionIdsBefore: beforeSnapshot?.visibleSessionIds,
+  });
+  appendPaneLayoutTraceDebugLog("createTerminal.request", {
+    activeProjectId,
+    groupId,
+    projectId: project.projectId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(targetWorkspace),
+    title,
+    visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
   });
   /**
    * CDXC:SessionPersistence 2026-05-10-03:35
@@ -5739,14 +6408,25 @@ function createTerminal(
   const sessionPersistenceName = sessionPersistenceProvider
     ? options?.sessionPersistenceName
     : undefined;
-  const result = createSessionInSimpleWorkspace(targetWorkspace, {
-    agentName,
-    initialPresentation: options?.initialPresentation,
-    sessionPersistenceName,
-    sessionPersistenceProvider,
-    terminalEngine: "ghostty-native",
-    title,
-  });
+  const result = createSessionInSimpleWorkspace(
+    targetWorkspace,
+    {
+      agentName,
+      initialPresentation: options?.initialPresentation,
+      sessionPersistenceName,
+      sessionPersistenceProvider,
+      terminalEngine: "ghostty-native",
+      title,
+    },
+    options?.visiblePlacement
+      ? {
+          visiblePlacement:
+            options.visiblePlacement.kind === "insertAfter" && options.splitDirection
+              ? { ...options.visiblePlacement, splitDirection: options.splitDirection }
+              : options.visiblePlacement,
+        }
+      : undefined,
+  );
   const generatedSession = result.session?.kind === "terminal" ? result.session : undefined;
   if (!generatedSession) {
     appendTerminalLaunchDebugLog("nativeSidebar.createTerminal.noSession", {
@@ -5758,6 +6438,24 @@ function createTerminal(
     return undefined;
   }
   const nativeSessionId = rememberNativeSessionMapping(project.projectId, generatedSession.sessionId);
+  if (
+    options?.splitDirection &&
+    options.visiblePlacement?.kind === "insertAfter" &&
+    options.visiblePlacement.targetSessionId
+  ) {
+    /**
+     * CDXC:NativeSplits 2026-05-10-18:30
+     * Split direction is a layout hint for the newly created target/new pair.
+     * The sidebar still owns visibleSessionIds, while native layout uses this
+     * hint to split the targeted pane sideways or downward immediately.
+     */
+    nativeSplitLayoutHint = {
+      direction: options.splitDirection,
+      nextSessionId: generatedSession.sessionId,
+      projectId: project.projectId,
+      targetSessionId: options.visiblePlacement.targetSessionId,
+    };
+  }
   const sessionStateFilePath = createNativeSessionStateFilePath(
     project.projectId,
     generatedSession.sessionId,
@@ -5796,6 +6494,19 @@ function createTerminal(
     visibleSessionIdsAfter: result.snapshot.groups.find(
       (group) => group.groupId === result.snapshot.activeGroupId,
     )?.snapshot.visibleSessionIds,
+  });
+  appendPaneLayoutTraceDebugLog("createTerminal.created", {
+    activeProjectId,
+    agentName,
+    nativeSessionId,
+    projectId: project.projectId,
+    sessionId: session.sessionId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
+      result.snapshot,
+      result.snapshot.activeGroupId,
+    ),
+    title,
+    visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
   });
   appendAgentDetectionDebugLog("nativeSidebar.terminalState.created", {
     agentName,
@@ -5840,59 +6551,207 @@ function createTerminal(
     type: "createTerminal",
   });
   publish();
+  appendSidebarRefreshDebugLog("nativeSidebar.createTerminal.afterPublish", {
+    agentName,
+    nativeSessionId,
+    project: summarizeSidebarRefreshProject(),
+    sessionId: session.sessionId,
+    title,
+  });
   if (options?.focusAfterCreate !== false) {
     postNative({ sessionId: nativeSessionId, type: "focusTerminal" });
   }
   return session;
 }
 
+function createFocusedTabGroupPlacement(groupId?: string): VisibleSessionPlacement | undefined {
+  const project = activeProject();
+  const targetWorkspace = groupId
+    ? focusGroupInSimpleWorkspace(project.workspace, groupId).snapshot
+    : project.workspace;
+  const targetGroup =
+    targetWorkspace.groups.find((group) => group.groupId === targetWorkspace.activeGroupId) ??
+    targetWorkspace.groups[0];
+  const targetSessionId = targetGroup?.snapshot.focusedSessionId;
+  if (!targetGroup || !targetSessionId) {
+    appendPaneLayoutTraceDebugLog("focusedTabPlacement.unresolved", {
+      activeProjectId,
+      groupId,
+      projectId: project.projectId,
+      reason: !targetGroup ? "group-missing" : "focused-session-missing",
+      targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(targetWorkspace, groupId),
+    });
+    return undefined;
+  }
+
+  const targetSession = targetGroup.snapshot.sessions.find(
+    (session) => session.sessionId === targetSessionId,
+  );
+  if (!targetSession || targetSession.isSleeping === true) {
+    appendPaneLayoutTraceDebugLog("focusedTabPlacement.unresolved", {
+      activeProjectId,
+      groupId,
+      projectId: project.projectId,
+      reason: !targetSession ? "focused-session-record-missing" : "focused-session-sleeping",
+      targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(targetWorkspace, targetGroup.groupId),
+      targetSessionId,
+    });
+    return undefined;
+  }
+
+  /**
+   * CDXC:PaneTabs 2026-05-11-11:51
+   * Empty-sidebar double-click, top New Session, and project-header pane
+   * buttons must add the new pane as the active tab in the currently focused
+   * tab group. Require the focused session to already be surfaced so creation
+   * preserves the user's split tree, tab groups, and pane ratios instead of
+   * rebuilding layout from a hidden or sleeping anchor.
+   */
+  if (!targetGroup.snapshot.visibleSessionIds.includes(targetSessionId)) {
+    appendPaneLayoutTraceDebugLog("focusedTabPlacement.unresolved", {
+      activeProjectId,
+      groupId,
+      projectId: project.projectId,
+      reason: "focused-session-not-visible",
+      targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(targetWorkspace, targetGroup.groupId),
+      targetSessionId,
+    });
+    return undefined;
+  }
+
+  appendPaneLayoutTraceDebugLog("focusedTabPlacement.resolved", {
+    activeProjectId,
+    groupId,
+    projectId: project.projectId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(targetWorkspace, targetGroup.groupId),
+    targetSessionId,
+  });
+  return { kind: "appendToTabGroup", targetSessionId };
+}
+
 function createNativeSessionInCurrentContext(): void {
   /**
-   * CDXC:SessionCreation 2026-05-10-14:47
+   * CDXC:SessionCreation 2026-05-11-11:51
    * The top "New Session" action and matching hotkey create in the currently
    * live project. When the selected context is the Combined Chats group, starting
    * a session means creating a new projectless chat folder instead of adding a
-   * second terminal to an existing one-session chat container.
+   * second terminal to an existing one-session chat container. In normal projects,
+   * add the terminal as a selected tab in the focused pane's existing tab group
+   * so double-click creation never opens a new split group or resizes panes.
    */
   if (activeProject().isChat === true) {
     void createNativeChat();
     return;
   }
 
-  createTerminal();
+  createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", undefined, undefined, {
+    visiblePlacement: createFocusedTabGroupPlacement(),
+  });
 }
 
-function createNativeT3Session(groupId?: string): T3SessionRecord | undefined {
+function createFullWidthTerminalPaneInCurrentProject(): void {
+  /**
+   * CDXC:PaneTabs 2026-05-11-11:51
+   * The legacy-named Settings-row terminal shortcut now follows the same
+   * focused-tab placement as project-header terminal creation. The user expects
+   * any header-level terminal shortcut to keep split sizes and tab groupings
+   * unchanged while focusing the newly created terminal tab.
+   */
+  createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", undefined, undefined, {
+    visiblePlacement: createFocusedTabGroupPlacement(),
+  });
+}
+
+function splitFocusedNativePane(direction: "horizontal" | "vertical"): void {
+  const targetSessionId = activeSnapshot().focusedSessionId;
+  /**
+   * CDXC:NativeSplits 2026-05-10-18:30
+   * Split hotkeys create a new terminal and insert it next to the pane that was
+   * focused before the shortcut. Direction is kept explicit for the command
+   * surface even while the native layout still renders the exact visible set
+   * with the current automatic split tree.
+   */
+  appendTerminalLaunchDebugLog("nativeSidebar.splitFocusedPane.request", {
+    direction,
+    targetSessionId,
+    visibleSessionIdsBefore: activeSnapshot().visibleSessionIds,
+  });
+  createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", undefined, undefined, {
+    splitDirection: direction,
+    visiblePlacement: {
+      kind: "insertAfter",
+      targetSessionId,
+    },
+  });
+}
+
+function createNativeT3Session(
+  groupId?: string,
+  options?: {
+    visiblePlacement?: VisibleSessionPlacement;
+  },
+): T3SessionRecord | undefined {
   const project = activeProject();
   activateWorkspaceSurfaceForProject(project.projectId);
   const targetWorkspace = groupId
     ? focusGroupInSimpleWorkspace(project.workspace, groupId).snapshot
     : project.workspace;
   const pendingThreadId = `pending-${Date.now().toString(36)}`;
+  appendPaneLayoutTraceDebugLog("createT3.request", {
+    activeProjectId,
+    groupId,
+    pendingThreadId,
+    projectId: project.projectId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(targetWorkspace, groupId),
+    visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
+  });
   /**
    * CDXC:T3Code 2026-04-30-02:24
    * Native T3 Code buttons must create T3 pane records, matching the reference
    * app's special T3 path. Do not launch `npx --yes t3` in a terminal because
    * the CLI opens its own browser instead of becoming an embedded zmux pane.
    */
-  const result = createSessionInSimpleWorkspace(targetWorkspace, {
-    kind: "t3",
-    t3: {
-      boundThreadId: pendingThreadId,
-      projectId: `native-${project.projectId}`,
-      serverOrigin: "http://127.0.0.1:0",
-      threadId: pendingThreadId,
-      workspaceRoot: project.path,
+  const result = createSessionInSimpleWorkspace(
+    targetWorkspace,
+    {
+      kind: "t3",
+      t3: {
+        boundThreadId: pendingThreadId,
+        projectId: `native-${project.projectId}`,
+        serverOrigin: "http://127.0.0.1:0",
+        threadId: pendingThreadId,
+        workspaceRoot: project.path,
+      },
+      title: "T3 Code",
     },
-    title: "T3 Code",
-  });
+    options?.visiblePlacement ? { visiblePlacement: options.visiblePlacement } : undefined,
+  );
   const session = result.session?.kind === "t3" ? result.session : undefined;
   if (!session) {
+    appendPaneLayoutTraceDebugLog("createT3.noSession", {
+      activeProjectId,
+      groupId,
+      pendingThreadId,
+      projectId: project.projectId,
+      visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
+    });
     return undefined;
   }
 
   const nativeSessionId = rememberNativeSessionMapping(project.projectId, session.sessionId);
   updateActiveProjectWorkspace(() => result.snapshot);
+  appendPaneLayoutTraceDebugLog("createT3.created", {
+    activeProjectId,
+    nativeSessionId,
+    projectId: project.projectId,
+    sessionId: session.sessionId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
+      result.snapshot,
+      result.snapshot.activeGroupId,
+    ),
+    threadId: session.t3.threadId,
+    visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
+  });
   postNative({ cwd: project.path, type: "startT3CodeRuntime" });
   postNative({
     cwd: project.path,
@@ -6405,10 +7264,14 @@ function syncSessionTitleFromNativeTerminalTitle(
   sessionId: string,
   rawTitle: string,
   previousTerminalTitle: string | undefined,
-): void {
+): boolean {
   const terminalState = terminalStateById.get(sessionId);
   const session = findSessionRecord(sessionId);
   const visibleTitle = getVisibleTerminalTitle(rawTitle);
+  const didCaptureCodexSessionId =
+    terminalState && session?.kind === "terminal"
+      ? syncNativeCodexSessionIdFromTerminalTitle(sessionId, rawTitle, terminalState, session)
+      : false;
   if (!terminalState || !session || !visibleTitle) {
     appendSessionTitleDebugLog("nativeSidebar.sessionRenameSkipped", {
       agentName: terminalState?.agentName,
@@ -6423,7 +7286,7 @@ function syncSessionTitleFromNativeTerminalTitle(
       sessionId,
       visibleTitle,
     });
-    return;
+    return didCaptureCodexSessionId;
   }
   if (isEllipsizedNativeTerminalWindowTitle(visibleTitle)) {
     /**
@@ -6441,7 +7304,7 @@ function syncSessionTitleFromNativeTerminalTitle(
       sessionId,
       visibleTitle,
     });
-    return;
+    return didCaptureCodexSessionId;
   }
   if (
     session.kind === "terminal" &&
@@ -6463,7 +7326,7 @@ function syncSessionTitleFromNativeTerminalTitle(
       sessionId,
       visibleTitle,
     });
-    return;
+    return didCaptureCodexSessionId;
   }
   const decision = getNativeTerminalTitleSessionSyncDecision({
     agentName: terminalState.agentName,
@@ -6482,7 +7345,7 @@ function syncSessionTitleFromNativeTerminalTitle(
       sessionId,
       visibleTitle,
     });
-    return;
+    return didCaptureCodexSessionId;
   }
 
   updateActiveProjectWorkspace(
@@ -6499,6 +7362,41 @@ function syncSessionTitleFromNativeTerminalTitle(
     sessionId,
     visibleTitle,
   });
+  return true;
+}
+
+function syncNativeCodexSessionIdFromTerminalTitle(
+  sessionId: string,
+  rawTitle: string,
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
+  session: TerminalSessionRecord,
+): boolean {
+  const codexSessionId = getCodexSessionIdFromTitle(rawTitle);
+  if (!codexSessionId || resolveNativeResumeAgentId(terminalState.agentName ?? session.agentName) !== "codex") {
+    return false;
+  }
+
+  if (terminalState.agentSessionId === codexSessionId && session.agentSessionId === codexSessionId) {
+    return false;
+  }
+
+  /**
+   * CDXC:CodexAgent 2026-05-11-07:35
+   * Codex CLI can surface the conversation UUID as a terminal title. Persist it
+   * as the agent session identity for restore, while shared title filtering
+   * keeps it from replacing the human sidebar title.
+   */
+  terminalState.agentSessionId = codexSessionId;
+  setTerminalSessionAgentSessionMetadata(sessionId, {
+    agentSessionId: codexSessionId,
+    agentSessionPath: terminalState.agentSessionPath ?? session.agentSessionPath,
+  });
+  appendSessionTitleDebugLog("nativeSidebar.codexSessionIdCaptured", {
+    rawTitle,
+    sessionId,
+    codexSessionId,
+  });
+  return true;
 }
 
 function isEllipsizedNativeTerminalWindowTitle(title: string): boolean {
@@ -7067,6 +7965,12 @@ function getNativePromptPreview(prompt: string | undefined): string | undefined 
 function closeTerminal(sessionId: string): void {
   const reference = resolveSidebarSessionReference(sessionId);
   const sessionRecord = findSessionRecordInProject(reference.project, reference.sessionId);
+  appendSidebarRefreshDebugLog("nativeSidebar.closeSession.before", {
+    project: summarizeSidebarRefreshProject(reference.project),
+    requestedSessionId: sessionId,
+    resolvedSessionId: reference.sessionId,
+    sessionKind: sessionRecord?.kind,
+  });
   const nativeSessionId = forgetNativeSessionMappingForProject(
     reference.project.projectId,
     reference.sessionId,
@@ -7082,6 +7986,7 @@ function closeTerminal(sessionId: string): void {
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
   nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
+  clearDelayedSendTimer(reference.sessionId);
   postNative({
     sessionId: nativeSessionId,
     type:
@@ -7090,6 +7995,13 @@ function closeTerminal(sessionId: string): void {
         : "closeTerminal",
   });
   publish();
+  appendSidebarRefreshDebugLog("nativeSidebar.closeSession.afterPublish", {
+    nativeSessionId,
+    project: summarizeSidebarRefreshProject(),
+    requestedSessionId: sessionId,
+    resolvedSessionId: reference.sessionId,
+    sessionKind: sessionRecord?.kind,
+  });
 }
 
 function focusTerminal(sessionId: string): void {
@@ -7181,8 +8093,6 @@ function focusSidebarSession(sessionId: string): void {
   focusTerminal(sessionId);
 }
 
-const NATIVE_HOTKEY_VISIBLE_COUNT_STEPS: readonly VisibleSessionCount[] = [1, 2, 3, 4, 6, 9];
-
 function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
   const action = getzmuxHotkeyActionById(actionId);
   if (!action) {
@@ -7201,20 +8111,17 @@ function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
    * focus shortcuts do not depend on a hidden fallback UI path.
    */
   switch (action.kind) {
-    case "adjustVisibleCount":
-      adjustNativeHotkeyVisibleCount(action.direction);
-      return;
     case "createSession":
       createNativeSessionInCurrentContext();
+      return;
+    case "focusAdjacentGroup":
+      focusAdjacentNativeHotkeyGroup(action.direction);
       return;
     case "focusDirection":
       focusNativeHotkeyDirection(action.direction);
       return;
     case "focusGroup":
-      updateActiveProjectWorkspace(
-        (workspace) => focusGroupByIndexInSimpleWorkspace(workspace, action.groupIndex).snapshot,
-      );
-      publish();
+      focusNativeHotkeyGroupByIndex(action.groupIndex);
       return;
     case "focusSessionSlot":
       if (action.slotNumber === -1) {
@@ -7236,47 +8143,16 @@ function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
     case "renameActiveSession":
       promptRenameFocusedNativeHotkeySession();
       return;
-    case "setVisibleCount":
-      updateActiveProjectWorkspace((workspace) =>
-        setVisibleCountInSimpleWorkspace(workspace, action.visibleCount),
-      );
-      publish();
-      return;
     case "setViewMode":
       updateActiveProjectWorkspace((workspace) =>
         setViewModeInSimpleWorkspace(workspace, action.viewMode),
       );
       publish();
       return;
+    case "splitFocusedPane":
+      splitFocusedNativePane(action.direction);
+      return;
   }
-}
-
-function adjustNativeHotkeyVisibleCount(direction: -1 | 1): void {
-  const currentVisibleCount = activeSnapshot().visibleCount;
-  const currentIndex = NATIVE_HOTKEY_VISIBLE_COUNT_STEPS.indexOf(currentVisibleCount);
-  const startingIndex = currentIndex >= 0 ? currentIndex : 0;
-  const nextIndex = Math.max(
-    0,
-    Math.min(NATIVE_HOTKEY_VISIBLE_COUNT_STEPS.length - 1, startingIndex + direction),
-  );
-  const nextVisibleCount = NATIVE_HOTKEY_VISIBLE_COUNT_STEPS[nextIndex] ?? currentVisibleCount;
-  if (nextVisibleCount === currentVisibleCount) {
-    logNativeHotkeyDebug("nativeHotkeys.visibleCountUnchanged", {
-      direction,
-      visibleCount: currentVisibleCount,
-    });
-    return;
-  }
-  /**
-   * CDXC:Hotkeys 2026-05-10-12:31
-   * Cmd+D and Cmd+Shift+D are separate default bindings for the same Split More
-   * action because tmux-style side/down split directions both map to increasing
-   * zmux's visible split count. Split Less uses the same ladder in reverse.
-   */
-  updateActiveProjectWorkspace((workspace) =>
-    setVisibleCountInSimpleWorkspace(workspace, nextVisibleCount),
-  );
-  publish();
 }
 
 function getMatchingNativeHotkeyActionId(
@@ -7423,6 +8299,44 @@ function focusNativeHotkeyDirection(direction: SessionGridDirection): void {
   }
 }
 
+function focusNativeHotkeyGroupByIndex(groupIndex: number): void {
+  const targetGroup = activeProject().workspace.groups[groupIndex - 1];
+  if (!targetGroup) {
+    logNativeHotkeyDebug("nativeHotkeys.groupIndexMissing", {
+      groupCount: activeProject().workspace.groups.length,
+      groupIndex,
+    });
+    return;
+  }
+  focusNativeHotkeyGroup(targetGroup.groupId, "index");
+}
+
+function focusAdjacentNativeHotkeyGroup(direction: -1 | 1): void {
+  const groups = activeProject().workspace.groups;
+  if (groups.length === 0) {
+    logNativeHotkeyDebug("nativeHotkeys.adjacentGroupMissing", { direction });
+    return;
+  }
+  const activeGroupIndex = Math.max(
+    0,
+    groups.findIndex((group) => group.groupId === activeProject().workspace.activeGroupId),
+  );
+  const nextIndex = (activeGroupIndex + direction + groups.length) % groups.length;
+  focusNativeHotkeyGroup(groups[nextIndex]!.groupId, direction > 0 ? "next" : "previous");
+}
+
+function focusNativeHotkeyGroup(groupId: string, source: "index" | "next" | "previous"): void {
+  updateActiveProjectWorkspace(
+    (workspace) => focusGroupInSimpleWorkspace(workspace, groupId).snapshot,
+  );
+  publish();
+  const focusedSessionId = activeSnapshot().focusedSessionId;
+  if (focusedSessionId) {
+    focusSidebarSession(focusedSessionId);
+  }
+  logNativeHotkeyDebug("nativeHotkeys.groupFocused", { groupId, source });
+}
+
 function focusNativeHotkeySessionSlot(slotNumber: number): void {
   const sessions = getVisualNativeHotkeySessionsForActiveGroup();
   const session = sessions[slotNumber - 1];
@@ -7438,18 +8352,62 @@ function focusNativeHotkeySessionSlot(slotNumber: number): void {
 }
 
 function focusAdjacentNativeHotkeySession(direction: -1 | 1): void {
-  const snapshot = activeSnapshot();
-  const sessions = getVisualNativeHotkeySessionsForActiveGroup();
+  const sessions = getVisibleNativeHotkeySidebarSessionsForNavigation();
   if (sessions.length === 0) {
     logNativeHotkeyDebug("nativeHotkeys.adjacentSessionMissing", { direction });
     return;
   }
-  const focusedIndex = Math.max(
-    0,
-    sessions.findIndex((session) => session.sessionId === snapshot.focusedSessionId),
-  );
-  const nextIndex = (focusedIndex + direction + sessions.length) % sessions.length;
+  const focusedIndex = sessions.findIndex((session) => isNativeHotkeyFocusedSession(session));
+  /**
+   * CDXC:Hotkeys 2026-05-11-09:26
+   * Cmd+[ and Cmd+] navigate the visible sidebar session list, not only the
+   * active workspace group. In Combined mode this crosses into the next
+   * expanded project group and skips collapsed project sections because users
+   * expect hidden sessions to stay out of keyboard traversal.
+   */
+  const nextIndex =
+    focusedIndex === -1
+      ? direction > 0
+        ? 0
+        : sessions.length - 1
+      : (focusedIndex + direction + sessions.length) % sessions.length;
   focusSidebarSession(sessions[nextIndex]!.sessionId);
+}
+
+function getVisibleNativeHotkeySidebarSessionsForNavigation(): SidebarSessionItem[] {
+  if (settings.sidebarMode !== "combined") {
+    return getVisualNativeHotkeySessionsForActiveGroup();
+  }
+  return createCombinedSidebarGroups().flatMap((group) =>
+    isNativeHotkeySidebarGroupExpanded(group.groupId) ? group.sessions : [],
+  );
+}
+
+function isNativeHotkeyFocusedSession(session: SidebarSessionItem): boolean {
+  const reference = resolveSidebarSessionReference(session.sessionId);
+  return (
+    reference.project.projectId === activeProjectId &&
+    reference.sessionId === activeSnapshot().focusedSessionId
+  );
+}
+
+function isNativeHotkeySidebarGroupExpanded(groupId: string): boolean {
+  const element = document.querySelector(
+    `[data-sidebar-group-id="${escapeNativeHotkeySelectorValue(groupId)}"]`,
+  );
+  if (!element) {
+    return true;
+  }
+  return (
+    element.getAttribute("data-collapsed") !== "true" &&
+    !element.closest(".reference-sidebar-collapsible-body[data-collapsed='true']")
+  );
+}
+
+function escapeNativeHotkeySelectorValue(value: string): string {
+  return typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(value)
+    : value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function getVisualNativeHotkeySessionsForActiveGroup(): SidebarSessionItem[] {
@@ -7650,16 +8608,35 @@ async function renameNativeSidebarTerminalSession(
     reference.sessionId,
   );
   const normalizedRenameTitle = normalizeTerminalTitle(requestedTitle) ?? requestedTitle;
-  const isPiSession = resolveNativeResumeAgentId(terminalState?.agentName ?? session.agentName) === "pi";
+  const agentName = terminalState?.agentName ?? session.agentName;
+  if (!agentName?.trim()) {
+    /**
+     * CDXC:SidebarRename 2026-05-11-12:37
+     * Plain terminal sessions can be renamed in zmux without an Agent CLI.
+     * Do not stage `/rename <title>` into those shells; only agent-backed
+     * terminals should receive an in-terminal rename command.
+     */
+    appendSessionTitleDebugLog("terminalRenameCommand.skipped", {
+      nativeSessionId,
+      reason: "no-agent-associated",
+      requestedTitle,
+      sessionId: reference.sessionId,
+      source,
+    });
+    publish();
+    return;
+  }
+  const isPiSession = resolveNativeResumeAgentId(agentName) === "pi";
   const commandText = isPiSession
     ? `/name ${normalizedRenameTitle}`
     : `/rename ${normalizedRenameTitle}`;
   /**
    * CDXC:SidebarRename 2026-04-28-15:49
-   * Manual sidebar renames in the native app must match the reference
-   * controller flow: persist the card title, stage `/rename <title>` in the
-   * targeted terminal, then submit through the native Enter path so the Agent
-   * CLI thread name changes instead of only the sidebar label changing.
+   * Manual sidebar renames for agent-backed terminals in the native app must
+   * match the reference controller flow: persist the card title, stage
+   * `/rename <title>` in the targeted terminal, then submit through the native
+   * Enter path so the Agent CLI thread name changes instead of only the
+   * sidebar label changing.
    *
    * CDXC:PiAgent 2026-05-08-09:42
    * Pi uses `/name <title>` for session naming. Native manual renames must
@@ -7708,6 +8685,26 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
       restoreNativeTerminalSession(reference.project, nextSession, "wake-session");
     }
   }
+  publish();
+}
+
+function setNativeSessionPoppedOut(sessionId: string, poppedOut: boolean): void {
+  const reference = resolveSidebarSessionReference(sessionId);
+  const session = findSessionRecordInProject(reference.project, reference.sessionId);
+  if (!session || session.isSleeping === true) {
+    return;
+  }
+  updateProjectWorkspace(
+    reference.project.projectId,
+    (workspace) =>
+      setSessionPoppedOutInSimpleWorkspace(workspace, reference.sessionId, poppedOut).snapshot,
+  );
+  /**
+   * CDXC:PanePopOut 2026-05-11-09:35
+   * The sidebar owns the persisted pop-out flag while Swift owns native window
+   * reparenting. Publish immediately so closing the pop-out window or pressing
+   * the in-pane reattach button sends one authoritative layout sync.
+   */
   publish();
 }
 
@@ -7831,6 +8828,79 @@ function forkNativeSession(sessionId: string): void {
       sessionPersistenceProvider,
     },
   );
+}
+
+function promptDelayedSend(sessionId: string): void {
+  const session = findSessionRecord(sessionId);
+  if (!session || session.kind !== "terminal") {
+    return;
+  }
+  openAppModal({
+    modal: "delayedSend",
+    sessionId,
+    title: session.title || DEFAULT_TERMINAL_SESSION_TITLE,
+    type: "open",
+  });
+}
+
+function scheduleDelayedSend(sessionId: string, delayMs: number): void {
+  const session = findSessionRecord(sessionId);
+  if (!session || session.kind !== "terminal") {
+    showNativeMessage("info", "Delayed Send is only available for terminal sessions.");
+    return;
+  }
+  if (!Number.isFinite(delayMs) || delayMs <= 0 || delayMs > DELAYED_SEND_MAX_DELAY_MS) {
+    showNativeMessage("warning", "Choose a Delayed Send timer between 1 second and 24 days.");
+    return;
+  }
+
+  const existingTimeout = delayedSendTimeoutBySessionId.get(sessionId);
+  if (existingTimeout !== undefined) {
+    window.clearTimeout(existingTimeout);
+  }
+
+  /**
+   * CDXC:DelayedSend 2026-05-11-11:56
+   * Delayed Send must press Enter in the existing terminal after the requested
+   * wait, so use the native sendTerminalEnter command instead of writing a
+   * carriage return as terminal text.
+   */
+  const timeout = window.setTimeout(() => {
+    delayedSendTimeoutBySessionId.delete(sessionId);
+    const currentSession = findSessionRecord(sessionId);
+    if (!currentSession || currentSession.kind !== "terminal" || currentSession.isSleeping === true) {
+      return;
+    }
+    postNative({
+      sessionId: nativeSessionIdForSidebarSession(sessionId),
+      type: "sendTerminalEnter",
+    });
+  }, delayMs);
+
+  delayedSendTimeoutBySessionId.set(sessionId, timeout);
+  showNativeMessage("info", `Delayed Send will press Enter in ${formatDelayedSendDelay(delayMs)}.`);
+}
+
+function clearDelayedSendTimer(sessionId: string): void {
+  const timeout = delayedSendTimeoutBySessionId.get(sessionId);
+  if (timeout === undefined) {
+    return;
+  }
+  window.clearTimeout(timeout);
+  delayedSendTimeoutBySessionId.delete(sessionId);
+}
+
+function formatDelayedSendDelay(delayMs: number): string {
+  const totalSeconds = Math.max(1, Math.round(delayMs / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [
+    hours > 0 ? `${hours}h` : undefined,
+    minutes > 0 ? `${minutes}m` : undefined,
+    seconds > 0 ? `${seconds}s` : undefined,
+  ].filter((part): part is string => part !== undefined);
+  return parts.join(" ") || "1s";
 }
 
 function findSidebarSessionForCli(
@@ -9002,13 +10072,14 @@ function refreshDaemonSessionsState(): void {
     for (const group of project.workspace.groups) {
       for (const session of group.snapshot.sessions) {
         if (session.kind === "t3") {
+          const isSleeping = session.isSleeping === true;
           t3Sessions.push({
             activity: "idle",
             detail: session.t3?.serverOrigin ?? "Native T3 Code pane",
             isCurrentWorkspace: project.projectId === activeProjectId,
             isFocused: group.snapshot.focusedSessionId === session.sessionId,
-            isRunning: true,
-            isSleeping: false,
+            isRunning: !isSleeping,
+            isSleeping,
             lastInteractionAt: now,
             sessionId: session.sessionId,
             threadId: session.t3?.threadId,
@@ -9781,6 +10852,36 @@ function openProjectEditorForGroup(groupId: string): void {
   publish();
 }
 
+function openActiveProjectEditorFromTitlebar(): void {
+  const project = activeProject();
+  if (project.isChat === true || project.isRecentProject === true) {
+    return;
+  }
+  /**
+   * CDXC:TitlebarOpenIn 2026-05-11-00:22
+   * The titlebar "Embedded Editor" and "Code" buttons must behave exactly like
+   * the sidebar project-header VS Code row. Route both through the same
+   * project-editor opener instead of duplicating code-server startup/focus
+   * decisions in the titlebar webview or Swift.
+   */
+  openProjectEditorForGroup(createCombinedProjectGroupId(project.projectId));
+}
+
+function runSidebarCommandFromTitlebar(commandId: string): void {
+  const command = commands.find((candidate) => candidate.commandId === commandId);
+  if (!command) {
+    return;
+  }
+  /**
+   * CDXC:TitlebarActions 2026-05-11-02:46
+   * The titlebar Actions split button is a relocation of the sidebar-header
+   * Actions control. Route clicks through the existing sidebar command runner
+   * so browser actions, background terminal actions, and run-state feedback
+   * keep the same behavior.
+   */
+  runNativeSidebarCommand(command);
+}
+
 function closeProjectEditorForGroup(groupId: string): void {
   const reference = resolveSidebarGroupReference(groupId);
   const project = reference.project;
@@ -10095,6 +11196,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "createSession":
       createNativeSessionInCurrentContext();
       return;
+    case "createFullWidthTerminalPane":
+      createFullWidthTerminalPaneInCurrentProject();
+      return;
     case "createChat":
       void createNativeChat(message.title);
       return;
@@ -10114,10 +11218,14 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         if (activeProjectId !== groupReference.project.projectId) {
           focusProject(groupReference.project.projectId);
         }
-        createTerminal();
+        createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", undefined, undefined, {
+          visiblePlacement: createFocusedTabGroupPlacement(),
+        });
         return;
       }
-      createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", message.groupId);
+      createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", groupReference.groupId, undefined, {
+        visiblePlacement: createFocusedTabGroupPlacement(groupReference.groupId),
+      });
       return;
     }
     case "openBrowser":
@@ -10141,12 +11249,16 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         focusProject(groupReference.project.projectId);
       }
       /**
-       * CDXC:ProjectGroups 2026-05-06-18:42
+       * CDXC:ProjectGroups 2026-05-11-11:51
        * The project header browser button is scoped to the clicked project.
        * Focus the resolved project first, then create the browser pane in the
-       * resolved workspace group when one exists.
+       * resolved workspace group when one exists. Header-level pane creation
+       * must append to the active tab group instead of introducing a new split,
+       * preserving user-controlled pane sizing and grouping.
        */
-      createNativeBrowserSession(DEFAULT_BROWSER_LAUNCH_URL, groupReference.groupId);
+      createNativeBrowserSession(DEFAULT_BROWSER_LAUNCH_URL, groupReference.groupId, {
+        visiblePlacement: createFocusedTabGroupPlacement(groupReference.groupId),
+      });
       return;
     }
     case "openWorkspaceWelcome":
@@ -10338,6 +11450,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "forkSession":
       forkNativeSession(message.sessionId);
+      return;
+    case "scheduleDelayedSend":
+      scheduleDelayedSend(message.sessionId, message.delayMs);
       return;
     case "fullReloadSession":
       restartNativeSession(message.sessionId);
@@ -10558,6 +11673,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       if (!isNativeSidebarDebugLoggingEnabled()) {
         return;
       }
+      if (message.event.startsWith(SIDEBAR_REFRESH_DEBUG_EVENT_PREFIX)) {
+        appendSidebarRefreshDebugLog(message.event, message.details);
+        return;
+      }
       if (message.event.startsWith("sidebar.agentIcon.")) {
         appendAgentDetectionDebugLog(message.event, message.details);
       }
@@ -10579,14 +11698,22 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         focusProject(groupReference.project.projectId);
       }
       const groupId = groupReference?.groupId;
+      const visiblePlacement = createFocusedTabGroupPlacement(groupId);
       if (agent?.agentId === "t3") {
-        createNativeT3Session(groupId);
+        createNativeT3Session(groupId, { visiblePlacement });
       } else if (agent?.command) {
+        /**
+         * CDXC:PaneTabs 2026-05-11-11:51
+         * Project-header agent buttons create terminal-backed agent sessions.
+         * They must use the same focused tab group placement as the plain
+         * terminal button so launching an agent never changes split geometry.
+         */
         createTerminal(
           createAgentSessionDefaultTitle(agent.name),
           `${agent.command}\r`,
           groupId,
           agent.agentId,
+          { visiblePlacement },
         );
       }
       return;
@@ -10653,6 +11780,18 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "openAccessibilityPreferences":
       postNative({ type: "openAccessibilityPreferences" });
       return;
+    case "requestMacOSNotificationPermission":
+      postNative({ type: "requestMacOSNotificationPermission" });
+      return;
+    case "openMacOSNotificationSettings":
+      postNative({ type: "openMacOSNotificationSettings" });
+      return;
+    case "playCompletionSoundPreview":
+      playNativeSound(message.sound);
+      return;
+    case "testAgentTaskCompletion":
+      testNativeAgentTaskCompletion();
+      return;
     case "setVisibleCount":
       if (typeof message.groupId === "string") {
         const groupReference = resolveSidebarGroupReference(message.groupId);
@@ -10716,21 +11855,21 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
 function postNativeLayoutSync(
   command: NativeSetActiveTerminalSetCommand,
   options: { force?: boolean } = {},
-): boolean {
+): { didPost: boolean; layoutChanged: boolean } {
   const commandSyncKey = createNativeCommandSyncKey(command);
   const layoutSyncKey = createNativeLayoutSyncKey(command);
+  const layoutChanged = options.force === true || layoutSyncKey !== lastNativeLayoutSyncKey;
   if (
     options.force !== true &&
     command.focusRequestId === undefined &&
     commandSyncKey === lastNativeSetActiveTerminalSetCommandKey
   ) {
-    return false;
+    return { didPost: false, layoutChanged };
   }
-  const layoutChanged = options.force === true || layoutSyncKey !== lastNativeLayoutSyncKey;
   lastNativeSetActiveTerminalSetCommandKey = commandSyncKey;
   lastNativeLayoutSyncKey = layoutSyncKey;
   postNative({ ...command, layoutChanged });
-  return true;
+  return { didPost: true, layoutChanged };
 }
 
 function createNativeCommandSyncKey(command: NativeSetActiveTerminalSetCommand): string {
@@ -10773,6 +11912,7 @@ function normalizeNativeLayoutSyncValue(value: unknown): unknown {
 
 function syncNativeLayout(options: { force?: boolean } = {}): void {
   const currentProject = activeProject();
+  const currentProjectEditor = createSidebarProjectEditorState(currentProject);
   const sidebarSessionsById = new Map(
     createProjectedSidebarSessionsForGroup(activeWorkspaceGroup()).map((session) => [
       session.sessionId,
@@ -10795,10 +11935,12 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
    * full stored session list can resurrect hidden sessions when pane
    * drag-and-drop changes only the visible split placement.
    */
-  const visibleSessions = snapshot.visibleSessionIds
-    .map((sessionId) => visibleSessionRecordsById.get(sessionId))
-    .filter((session): session is NonNullable<typeof session> => session !== undefined);
-  const visibleSessionIds = visibleSessions
+  const visibleSessions = getNativePaneSessionsForSnapshot(snapshot, visibleSessionRecordsById);
+  const awakeVisibleSessions = visibleSessions.filter((session) => session.isSleeping !== true);
+  const visibleSessionIds = awakeVisibleSessions
+    .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
+  const sleepingSessionIds = visibleSessions
+    .filter((session) => session.isSleeping === true)
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
   const attentionSessionIds = visibleSessions
     .filter((session) => {
@@ -10809,11 +11951,13 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
       return terminalState?.activity === "attention";
     })
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
-  const sessionActivities: Record<string, "attention" | "working"> = {};
+  const sessionActivities: Record<string, "attention" | "sleeping" | "working"> = {};
   const sessionAgentIconColors: Record<string, string> = {};
   const sessionAgentIconDataUrls: Record<string, string> = {};
+  const sessionFaviconDataUrls: Record<string, string> = {};
   const sessionTitleBarActions: Record<string, NativeTerminalTitleBarAction[]> = {};
   const sessionTitles: Record<string, string> = {};
+  const poppedOutSessionIds: string[] = [];
   for (const session of visibleSessions) {
     const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
     sessionTitles[nativeSessionId] = session.title;
@@ -10823,24 +11967,46 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
      * session card. Send the projected sidebar icon data URL and CSS mask
      * color through layout sync so Swift uses live agent detection and renders
      * the same tinted logo instead of re-implementing agent artwork.
+     *
+     * CDXC:PaneTabs 2026-05-11-08:32
+     * Native pane tabs use the same identity source as session cards: browser
+     * favicon first, otherwise the projected agent/browser SVG mask. Send both
+     * maps because AppKit tab buttons are native controls outside React.
      */
     const agentIcon = sidebarSessionsById.get(session.sessionId)?.agentIcon;
     if (agentIcon) {
       sessionAgentIconDataUrls[nativeSessionId] = AGENT_LOGOS[agentIcon];
       sessionAgentIconColors[nativeSessionId] = AGENT_LOGO_COLORS[agentIcon];
     }
+    if (session.kind === "browser" && session.browser.faviconDataUrl) {
+      sessionFaviconDataUrls[nativeSessionId] = session.browser.faviconDataUrl;
+    }
+    if (session.isPoppedOut === true && session.isSleeping !== true) {
+      poppedOutSessionIds.push(nativeSessionId);
+    }
+    if (session.isSleeping === true) {
+      sessionActivities[nativeSessionId] = "sleeping";
+    }
+    if (session.isSleeping === true) {
+      continue;
+    }
+    sessionTitleBarActions[nativeSessionId] = getNativePaneTitleBarActions(session);
     if (session.kind !== "terminal") {
       continue;
     }
-    sessionTitleBarActions[nativeSessionId] = getNativeTerminalTitleBarActions(session);
     const activity = terminalStateById.get(session.sessionId)?.activity;
     if (activity === "attention" || activity === "working") {
       sessionActivities[nativeSessionId] = activity;
     }
   }
   const layout = buildLayout(
-    visibleSessionIds,
-    snapshot.visibleCount,
+    snapshot.paneLayout,
+    visibleSessions.map((session) => session.sessionId),
+    visibleSessions.map((session) => nativeSessionIdForSidebarSession(session.sessionId)),
+    new Set(awakeVisibleSessions.map((session) => session.sessionId)),
+    new Set(visibleSessionIds),
+    clampVisibleSessionCount(visibleSessions.length),
+    getActiveNativeSplitLayoutHint(snapshot),
   );
   const focusedNativeSessionId = snapshot.focusedSessionId
     ? nativeSessionIdForSidebarSession(snapshot.focusedSessionId)
@@ -10873,12 +12039,26 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
    */
   const command: NativeSetActiveTerminalSetCommand = {
     activeSessionIds: visibleSessionIds,
+    /**
+     * CDXC:ReactTitlebar 2026-05-11-00:22
+     * The native React titlebar mirrors the active project header: project
+     * title/path, embedded-editor state, and per-project diff stats are sent in
+     * the same layout command that already tracks active project changes.
+     */
+    activeProjectDiffStats: currentProjectEditor.diffStats,
+    activeProjectEditorIsOpen: currentProjectEditor.isOpen,
+    activeProjectEditorIsSleeping: currentProjectEditor.isSleeping,
+    activeProjectEditorStatus: currentProjectEditor.status,
     appTitle: nativeAppTitleForProject(currentProject),
+    activeProjectId: currentProject.projectId,
+    activeProjectIconDataUrl: resolveWorkspaceProjectIconDataUrl(currentProject),
     activeProjectEditorId:
       projectEditorSurfaceByProjectId.get(activeProjectId)?.isOpen === true &&
       projectEditorSurfaceByProjectId.get(activeProjectId)?.isSleeping !== true
         ? activeProjectId
         : undefined,
+    activeProjectName: currentProject.name,
+    activeProjectPath: currentProject.path,
     attentionSessionIds,
     backgroundColor: settings.workspaceBackgroundColor,
     ...(focusRequestId !== undefined ? { focusRequestId } : {}),
@@ -10891,14 +12071,45 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
      * with every native layout sync so slider drags repaint AppKit spacing.
      */
     paneGap: settings.workspacePaneGap,
+    poppedOutSessionIds,
     sessionAgentIconDataUrls,
     sessionAgentIconColors,
+    sessionFaviconDataUrls,
     sessionActivities,
+    sleepingSessionIds,
+    sidebarActions: {
+      commands,
+    },
     sessionTitleBarActions,
     sessionTitles,
+    showProjectEditorDiffFileCount: settings.showProjectEditorDiffFileCount,
     type: "setActiveTerminalSet",
+    workspaceOpenTargets: {
+      availability: settings.workspaceOpenTargetAvailability,
+      customTargets: settings.customWorkspaceOpenTargets,
+      hiddenTargetIds: settings.workspaceOpenTargetHiddenIds,
+    },
   };
-  const didPostNativeLayoutSync = postNativeLayoutSync(command, options);
+  const layoutSyncResult = postNativeLayoutSync(command, options);
+  const didPostNativeLayoutSync = layoutSyncResult.didPost;
+  if (layoutSyncResult.didPost && (layoutSyncResult.layoutChanged || focusRequestId !== undefined)) {
+    appendPaneLayoutTraceDebugLog("layoutSync.posted", {
+      activeNativeSessionIds: visibleSessionIds,
+      activeProjectId,
+      focusedNativeSessionId,
+      focusedSidebarSessionId: snapshot.focusedSessionId,
+      focusRequestId,
+      layoutChanged: layoutSyncResult.layoutChanged,
+      nativeLayout: summarizeNativePaneLayout(layout),
+      pendingFocusRequest: pendingNativeLayoutFocusRequest,
+      projectId: currentProject.projectId,
+      sidebarGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
+        currentProject.workspace,
+        currentProject.workspace.activeGroupId,
+      ),
+      sleepingSessionIds,
+    });
+  }
   /**
    * CDXC:NativeTerminalFocus 2026-05-09-15:30
    * Focus trace logging should show whether sidebar state actually crossed the
@@ -10929,29 +12140,215 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
 }
 
 function buildLayout(
+  paneLayout: SessionPaneLayoutNode | undefined,
+  sidebarSessionIds: string[],
   sessionIds: string[],
+  activeSidebarSessionIds: ReadonlySet<string>,
+  activeSessionIds: ReadonlySet<string>,
   visibleCount: VisibleSessionCount,
+  splitHint?: NativeResolvedSplitLayoutHint,
 ): NativeTerminalLayout | undefined {
-  const visible = sessionIds.slice(0, visibleCount);
+  const visible = sessionIds.filter((sessionId) => activeSessionIds.has(sessionId)).slice(0, visibleCount);
   if (visible.length === 0) {
     return undefined;
   }
-  if (visible.length === 1) {
-    return { kind: "leaf", sessionId: visible[0]! };
+  const persistedLayout = paneLayout
+    ? buildNativeLayoutFromPaneLayout(paneLayout, new Set(sidebarSessionIds))
+    : undefined;
+  if (persistedLayout) {
+    /**
+     * CDXC:NativeSplits 2026-05-10-18:30
+     * Native split geometry comes from the persisted paneLayout tree when it
+     * exists. This prevents visible-count auto layout from reshaping four
+     * side-by-side panes into a square grid after Cmd+D creates another pane.
+     *
+     * CDXC:PaneTabs 2026-05-11-01:31
+     * Older in-memory paneLayout snapshots can predate the all-awake tab rule.
+     * Append any awake session missing from the persisted tree on the right so
+     * the native layout immediately shows every non-sleeping session card.
+     */
+    const missingSessionIds = sessionIds.filter((sessionId, index) => {
+      const sidebarSessionId = sidebarSessionIds[index];
+      return (
+        sidebarSessionId !== undefined &&
+        activeSidebarSessionIds.has(sidebarSessionId) &&
+        !nativeLayoutContainsSession(persistedLayout, sessionId)
+      );
+    });
+    if (missingSessionIds.length === 0) {
+      return persistedLayout;
+    }
+    const missingLayoutItems = createNativeLayoutItems(missingSessionIds, splitHint);
+    return {
+      children: [
+        persistedLayout,
+        ...(missingLayoutItems.length === 1
+          ? missingLayoutItems
+          : [{ children: missingLayoutItems, direction: "vertical" as const, kind: "split" as const }]),
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+  }
+  const layoutItems = createNativeLayoutItems(visible, splitHint);
+  if (layoutItems.length === 1) {
+    return layoutItems[0]!;
   }
 
-  const columns = visible.length === 2 ? 2 : visible.length <= 4 ? 2 : 3;
+  const columns = layoutItems.length === 2 ? 2 : layoutItems.length <= 4 ? 2 : 3;
   const rows: NativeTerminalLayout[] = [];
-  for (let index = 0; index < visible.length; index += columns) {
-    const row = visible.slice(index, index + columns).map<NativeTerminalLayout>((sessionId) => ({
-      kind: "leaf",
-      sessionId,
-    }));
+  for (let index = 0; index < layoutItems.length; index += columns) {
+    const row = layoutItems.slice(index, index + columns);
     rows.push(
       row.length === 1 ? row[0]! : { children: row, direction: "horizontal", kind: "split" },
     );
   }
   return rows.length === 1 ? rows[0] : { children: rows, direction: "vertical", kind: "split" };
+}
+
+function getNativePaneSessionsForSnapshot(
+  snapshot: SessionGridSnapshot,
+  sessionRecordsById: ReadonlyMap<string, SessionRecord>,
+): SessionRecord[] {
+  /**
+   * CDXC:PaneTabs 2026-05-11-01:31
+   * Native pane tabs represent every workspace session, not only the
+   * legacy visibleCount slice. Keep visibleSessionIds as the preferred ordering,
+   * then append any additional session cards so sleeping sessions can stay
+   * visible as dim parked tabs without creating native terminal/web surfaces.
+   */
+  const orderedSessionIds = [
+    ...snapshot.visibleSessionIds,
+    ...snapshot.sessions.map((session) => session.sessionId),
+  ];
+  const seenSessionIds = new Set<string>();
+  const sessions: SessionRecord[] = [];
+  for (const sessionId of orderedSessionIds) {
+    if (seenSessionIds.has(sessionId)) {
+      continue;
+    }
+    seenSessionIds.add(sessionId);
+    const session = sessionRecordsById.get(sessionId);
+    if (!session) {
+      continue;
+    }
+    sessions.push(session);
+  }
+  return sessions;
+}
+
+function nativeLayoutContainsSession(layout: NativeTerminalLayout, sessionId: string): boolean {
+  switch (layout.kind) {
+    case "leaf":
+      return layout.sessionId === sessionId;
+    case "tabs":
+      return layout.sessionIds.includes(sessionId);
+    case "split":
+      return layout.children.some((child) => nativeLayoutContainsSession(child, sessionId));
+  }
+}
+
+function buildNativeLayoutFromPaneLayout(
+  paneLayout: SessionPaneLayoutNode,
+  visibleSidebarSessionIds: ReadonlySet<string>,
+): NativeTerminalLayout | undefined {
+  switch (paneLayout.kind) {
+    case "leaf":
+      return visibleSidebarSessionIds.has(paneLayout.sessionId)
+        ? { kind: "leaf", sessionId: nativeSessionIdForSidebarSession(paneLayout.sessionId) }
+        : undefined;
+    case "tabs": {
+      const sessionIds = paneLayout.sessionIds.filter((sessionId) =>
+        visibleSidebarSessionIds.has(sessionId),
+      );
+      const activeSessionId =
+        paneLayout.activeSessionId && sessionIds.includes(paneLayout.activeSessionId)
+          ? paneLayout.activeSessionId
+          : sessionIds[0];
+      return activeSessionId
+        ? {
+            activeSessionId: nativeSessionIdForSidebarSession(activeSessionId),
+            kind: "tabs",
+            sessionIds: sessionIds.map(nativeSessionIdForSidebarSession),
+          }
+        : undefined;
+    }
+    case "split": {
+      const children = paneLayout.children
+        .map((child) => buildNativeLayoutFromPaneLayout(child, visibleSidebarSessionIds))
+        .filter((child): child is NativeTerminalLayout => child !== undefined);
+      if (children.length === 0) {
+        return undefined;
+      }
+      if (children.length === 1) {
+        return children[0];
+      }
+      return {
+        children,
+        direction: paneLayout.direction,
+        kind: "split",
+        ...(paneLayout.ratio === undefined ? {} : { ratio: paneLayout.ratio }),
+      };
+    }
+  }
+}
+
+function getActiveNativeSplitLayoutHint(
+  snapshot: SessionGridSnapshot,
+): NativeResolvedSplitLayoutHint | undefined {
+  if (!nativeSplitLayoutHint || nativeSplitLayoutHint.projectId !== activeProjectId) {
+    return undefined;
+  }
+  const targetSessionId = nativeSessionIdForSidebarSession(nativeSplitLayoutHint.targetSessionId);
+  const nextSessionId = nativeSessionIdForSidebarSession(nativeSplitLayoutHint.nextSessionId);
+  const visibleSessionIdSet = new Set(snapshot.visibleSessionIds);
+  if (
+    !visibleSessionIdSet.has(nativeSplitLayoutHint.targetSessionId) ||
+    !visibleSessionIdSet.has(nativeSplitLayoutHint.nextSessionId)
+  ) {
+    nativeSplitLayoutHint = undefined;
+    return undefined;
+  }
+  return {
+    direction: nativeSplitLayoutHint.direction,
+    nextSessionId,
+    targetSessionId,
+  };
+}
+
+function createNativeLayoutItems(
+  visibleSessionIds: readonly string[],
+  splitHint: NativeResolvedSplitLayoutHint | undefined,
+): NativeTerminalLayout[] {
+  /**
+   * CDXC:NativeSplits 2026-05-10-18:30
+   * A split command divides the targeted pane area into a target/new pair.
+   * The rest of the visible pane set keeps the existing automatic grid, so
+   * exact counts work without introducing a persisted split-tree migration.
+   */
+  const items: NativeTerminalLayout[] = [];
+  for (let index = 0; index < visibleSessionIds.length; index += 1) {
+    const sessionId = visibleSessionIds[index]!;
+    const nextSessionId = visibleSessionIds[index + 1];
+    if (
+      splitHint &&
+      sessionId === splitHint.targetSessionId &&
+      nextSessionId === splitHint.nextSessionId
+    ) {
+      items.push({
+        children: [
+          { kind: "leaf", sessionId },
+          { kind: "leaf", sessionId: nextSessionId },
+        ],
+        direction: splitHint.direction,
+        kind: "split",
+      });
+      index += 1;
+      continue;
+    }
+    items.push({ kind: "leaf", sessionId });
+  }
+  return items;
 }
 
 window.addEventListener("zmux-native-host-event", (event) => {
@@ -10996,10 +12393,37 @@ window.addEventListener("zmux-native-host-event", (event) => {
     setProjectEditorLoadState(hostEvent.projectId, hostEvent.status, hostEvent.message);
     return;
   }
+  if (hostEvent.type === "paneTabSelected") {
+    handleNativePaneTabSelected(sidebarSessionIdForNativeSession(hostEvent.sessionId));
+    return;
+  }
+  if (hostEvent.type === "paneTabCloseRequested") {
+    handleNativePaneTabCloseRequested(
+      sidebarSessionIdForNativeSession(hostEvent.sessionId),
+      hostEvent.scope,
+    );
+    return;
+  }
+  if (hostEvent.type === "paneTabSleepRequested") {
+    handleNativePaneTabSleepRequested(
+      sidebarSessionIdForNativeSession(hostEvent.sessionId),
+      hostEvent.scope,
+    );
+    return;
+  }
+  if (hostEvent.type === "paneTabReorderRequested") {
+    handleNativePaneTabReorderRequested(
+      sidebarSessionIdForNativeSession(hostEvent.sourceSessionId),
+      sidebarSessionIdForNativeSession(hostEvent.targetSessionId),
+      hostEvent.position,
+    );
+    return;
+  }
   if (hostEvent.type === "paneReorderRequested") {
     handleNativePaneReorderRequested(
       sidebarSessionIdForNativeSession(hostEvent.sourceSessionId),
       sidebarSessionIdForNativeSession(hostEvent.targetSessionId),
+      hostEvent.placement,
     );
     return;
   }
@@ -11121,6 +12545,13 @@ window.addEventListener("zmux-native-host-event", (event) => {
       previousFocusedSessionId,
       visibleSessionIds: activeSnapshot().visibleSessionIds,
     });
+    appendPaneLayoutTraceDebugLog("terminalFocused.received", {
+      activeProjectId,
+      incomingSessionId: sidebarSessionId,
+      nativeSessionId: hostEvent.sessionId,
+      previousFocusedSessionId,
+      targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(activeProject().workspace),
+    });
     if (previousFocusedSessionId === sidebarSessionId) {
       const acknowledgedAttention = acknowledgeNativeTerminalAttention(
         sidebarSessionId,
@@ -11168,6 +12599,14 @@ window.addEventListener("zmux-native-host-event", (event) => {
       nativeSessionId: hostEvent.sessionId,
       previousFocusedSessionId,
       visibleSessionIdsAfter: activeSnapshot().visibleSessionIds,
+    });
+    appendPaneLayoutTraceDebugLog("terminalFocused.applied", {
+      activeProjectId,
+      acknowledgedAttention,
+      focusChanged,
+      incomingSessionId: sidebarSessionId,
+      nativeSessionId: hostEvent.sessionId,
+      targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(activeProject().workspace),
     });
     if (!focusChanged) {
       if (acknowledgedAttention) {
@@ -11245,7 +12684,7 @@ window.addEventListener("zmux-native-host-event", (event) => {
       } else {
         titleDerivedActivityBySessionId.delete(sidebarSessionId);
       }
-      syncSessionTitleFromNativeTerminalTitle(
+      const didSyncSessionTitle = syncSessionTitleFromNativeTerminalTitle(
         sidebarSessionId,
         hostEvent.title,
         previousTerminalTitle,
@@ -11262,7 +12701,8 @@ window.addEventListener("zmux-native-host-event", (event) => {
         previousActivity === terminalState.activity &&
         knownAgentNameBeforeDetection === terminalState.agentName &&
         haveSameTitleDerivedSessionActivity(previousDerivedActivity, effectiveDerivedActivity) &&
-        !didUpdateSessionPersistenceName
+        !didUpdateSessionPersistenceName &&
+        !didSyncSessionTitle
       ) {
         return;
       }
@@ -11316,17 +12756,22 @@ window.addEventListener("zmux-native-host-event", (event) => {
 function handleNativePaneReorderRequested(
   sourceSessionId: string,
   targetSessionId: string,
+  placement?: SessionPaneDropPlacement,
 ): void {
   if (sourceSessionId === targetSessionId) {
     return;
   }
   const group = activeWorkspaceGroup();
-  const currentVisibleSessionIds = group.snapshot.visibleSessionIds;
-  const sourceIndex = currentVisibleSessionIds.indexOf(sourceSessionId);
-  const targetIndex = currentVisibleSessionIds.indexOf(targetSessionId);
+  const currentPaneSessionIds = getNativePaneSessionsForSnapshot(
+    group.snapshot,
+    new Map(group.snapshot.sessions.map((session) => [session.sessionId, session])),
+  ).map((session) => session.sessionId);
+  const sourceIndex = currentPaneSessionIds.indexOf(sourceSessionId);
+  const targetIndex = currentPaneSessionIds.indexOf(targetSessionId);
   if (sourceIndex < 0 || targetIndex < 0) {
     appendTerminalFocusDebugLog("nativePaneReorder.ignored", {
       groupId: group.groupId,
+      paneSessionIds: currentPaneSessionIds,
       reason: "session-not-visible",
       sourceSessionId,
       targetSessionId,
@@ -11334,7 +12779,36 @@ function handleNativePaneReorderRequested(
     return;
   }
 
-  const nextVisibleSessionIds = currentVisibleSessionIds.map((sessionId) => {
+  if (placement) {
+    const result = moveSessionInPaneLayoutInSimpleWorkspace(
+      activeProject().workspace,
+      group.groupId,
+      sourceSessionId,
+      targetSessionId,
+      placement,
+    );
+    if (!result.changed) {
+      appendTerminalFocusDebugLog("nativePaneLayoutDrop.ignored", {
+        groupId: group.groupId,
+        placement,
+        reason: "unchanged",
+        sourceSessionId,
+        targetSessionId,
+      });
+      return;
+    }
+    updateActiveProjectWorkspace(() => result.snapshot);
+    appendTerminalFocusDebugLog("nativePaneLayoutDrop.applied", {
+      groupId: group.groupId,
+      placement,
+      sourceSessionId,
+      targetSessionId,
+    });
+    publish();
+    return;
+  }
+
+  const nextVisibleSessionIds = currentPaneSessionIds.map((sessionId) => {
     if (sessionId === sourceSessionId) {
       return targetSessionId;
     }
@@ -11373,6 +12847,238 @@ function handleNativePaneReorderRequested(
   publish();
 }
 
+function handleNativePaneTabSelected(sessionId: string): void {
+  const group = activeWorkspaceGroup();
+  const selectedSessionBefore = findSessionRecord(sessionId);
+  const wasSleeping = selectedSessionBefore?.isSleeping === true;
+  appendPaneLayoutTraceDebugLog("paneTabSelected.received", {
+    activeProjectId,
+    groupId: group.groupId,
+    sessionId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(activeProject().workspace, group.groupId),
+    wasSleeping,
+  });
+  const workspaceWithWake = wasSleeping
+    ? setSessionSleepingInSimpleWorkspace(activeProject().workspace, sessionId, false).snapshot
+    : activeProject().workspace;
+  const result = selectPaneTabInSimpleWorkspace(workspaceWithWake, group.groupId, sessionId);
+  if (!result.changed && !wasSleeping) {
+    appendPaneLayoutTraceDebugLog("paneTabSelected.unchanged", {
+      activeProjectId,
+      groupId: group.groupId,
+      sessionId,
+      targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(workspaceWithWake, group.groupId),
+    });
+    return;
+  }
+  /**
+   * CDXC:PaneTabs 2026-05-11-10:58
+   * Native tab clicks select the active tab in paneLayout and focus the same
+   * session. If the clicked tab is sleeping, wake its persisted session record
+   * first, recreate the native terminal/web surface, then publish the selected
+   * tab layout so sleeping tabs are not inert controls.
+   */
+  updateActiveProjectWorkspace(() => (result.changed ? result.snapshot : workspaceWithWake));
+  appendPaneLayoutTraceDebugLog("paneTabSelected.applied", {
+    activeProjectId,
+    groupId: group.groupId,
+    sessionId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
+      result.changed ? result.snapshot : workspaceWithWake,
+      group.groupId,
+    ),
+    wasSleeping,
+  });
+  if (wasSleeping) {
+    const restoredSession = findSessionRecord(sessionId) ?? selectedSessionBefore;
+    if (restoredSession?.kind === "t3") {
+      restoreNativeT3Session(activeProject(), restoredSession, "pane-tab-wake");
+    } else if (restoredSession?.kind === "browser") {
+      restoreNativeBrowserSession(activeProject(), restoredSession, "pane-tab-wake");
+    } else if (restoredSession?.kind === "terminal" && !terminalStateById.has(sessionId)) {
+      restoreNativeTerminalSession(activeProject(), restoredSession, "pane-tab-wake");
+    }
+  }
+  queueNativeLayoutFocusRequest(sessionId, wasSleeping ? "paneTabWake" : "paneTabSelected");
+  publish();
+}
+
+function handleNativePaneTabCloseRequested(
+  sessionId: string,
+  scope: NativePaneTabCloseScope,
+): void {
+  const sessionIds = getPaneTabCloseSessionIds(sessionId, scope);
+  if (sessionIds.length === 0) {
+    appendTerminalFocusDebugLog("nativePaneTabClose.missingTargets", {
+      scope,
+      sessionExists: findSessionRecord(sessionId) !== undefined,
+      sessionId,
+    });
+    return;
+  }
+  /**
+   * CDXC:PaneTabs 2026-05-11-00:45
+   * Native tab close commands must stay scoped to the containing paneLayout
+   * tab group. Resolve the clicked tab's sibling list before closing anything
+   * so Close Left, Close Right, and Close Other Tabs cannot cross into another
+   * split pane or another session group.
+   */
+  for (const tabSessionId of sessionIds) {
+    closeTerminal(tabSessionId);
+  }
+}
+
+function handleNativePaneTabSleepRequested(
+  sessionId: string,
+  scope: NativePaneTabSleepScope,
+): void {
+  const sessionIds = getPaneTabSleepSessionIds(sessionId, scope);
+  if (sessionIds.length === 0) {
+    appendTerminalFocusDebugLog("nativePaneTabSleep.missingTargets", {
+      scope,
+      sessionExists: findSessionRecord(sessionId) !== undefined,
+      sessionId,
+    });
+    return;
+  }
+  /**
+   * CDXC:PaneTabs 2026-05-11-02:16
+   * Native tab sleep commands use the same tab-group scoping rules as tab
+   * closes, but route through setNativeSessionSleeping so terminal sessions
+   * preserve their sidebar card and can wake from the normal session path.
+   */
+  for (const tabSessionId of sessionIds) {
+    setNativeSessionSleeping(tabSessionId, true);
+  }
+}
+
+function handleNativePaneTabReorderRequested(
+  sourceSessionId: string,
+  targetSessionId: string,
+  position: SessionPaneTabReorderPosition,
+): void {
+  const group = activeWorkspaceGroup();
+  const result = reorderSessionInPaneTabGroupInSimpleWorkspace(
+    activeProject().workspace,
+    group.groupId,
+    sourceSessionId,
+    targetSessionId,
+    position,
+  );
+  if (!result.changed) {
+    appendTerminalFocusDebugLog("nativePaneTabReorder.ignored", {
+      groupId: group.groupId,
+      position,
+      reason: "unchanged",
+      sourceSessionId,
+      targetSessionId,
+    });
+    return;
+  }
+  /**
+   * CDXC:PaneTabs 2026-05-11-01:43
+   * Native tab-bar reorder gestures persist the order inside the existing tab
+   * group. This differs from pane drop center/edge gestures, which group or
+   * split panes and may change visibleSessionIds.
+   */
+  updateActiveProjectWorkspace(() => result.snapshot);
+  appendTerminalFocusDebugLog("nativePaneTabReorder.applied", {
+    groupId: group.groupId,
+    position,
+    sourceSessionId,
+    targetSessionId,
+  });
+  publish();
+}
+
+function getPaneTabCloseSessionIds(
+  sessionId: string,
+  scope: NativePaneTabCloseScope,
+): string[] {
+  const group = activeWorkspaceGroup();
+  const tabSessionIds = findPaneTabGroupSessionIds(group.snapshot.paneLayout, sessionId);
+  if (!tabSessionIds) {
+    return scope === "close" && findSessionRecord(sessionId) ? [sessionId] : [];
+  }
+  if (tabSessionIds.length === 1 && scope === "close") {
+    return tabSessionIds;
+  }
+  if (tabSessionIds.length === 1) {
+    return [];
+  }
+  const tabIndex = tabSessionIds.indexOf(sessionId);
+  if (tabIndex < 0) {
+    return [];
+  }
+  switch (scope) {
+    case "close":
+      return [sessionId];
+    case "closeLeft":
+      return tabSessionIds.slice(0, tabIndex);
+    case "closeOthers":
+      return tabSessionIds.filter((tabSessionId) => tabSessionId !== sessionId);
+    case "closeRight":
+      return tabSessionIds.slice(tabIndex + 1);
+  }
+  return [];
+}
+
+function getPaneTabSleepSessionIds(
+  sessionId: string,
+  scope: NativePaneTabSleepScope,
+): string[] {
+  const group = activeWorkspaceGroup();
+  const tabSessionIds = findPaneTabGroupSessionIds(group.snapshot.paneLayout, sessionId);
+  if (!tabSessionIds) {
+    return scope === "sleep" && findSessionRecord(sessionId) ? [sessionId] : [];
+  }
+  if (tabSessionIds.length === 1 && scope === "sleep") {
+    return tabSessionIds;
+  }
+  if (tabSessionIds.length === 1) {
+    return [];
+  }
+  const tabIndex = tabSessionIds.indexOf(sessionId);
+  if (tabIndex < 0) {
+    return [];
+  }
+  switch (scope) {
+    case "sleep":
+      return [sessionId];
+    case "sleepLeft":
+      return tabSessionIds.slice(0, tabIndex);
+    case "sleepOthers":
+      return tabSessionIds.filter((tabSessionId) => tabSessionId !== sessionId);
+    case "sleepRight":
+      return tabSessionIds.slice(tabIndex + 1);
+  }
+  return [];
+}
+
+function findPaneTabGroupSessionIds(
+  node: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): string[] | undefined {
+  if (!node) {
+    return undefined;
+  }
+  if (node.kind === "leaf") {
+    return node.sessionId === sessionId ? [sessionId] : undefined;
+  }
+  if (node.kind === "tabs") {
+    return node.sessionIds.includes(sessionId) ? node.sessionIds : undefined;
+  }
+  if (node.kind === "split") {
+    for (const child of node.children) {
+      const tabSessionIds = findPaneTabGroupSessionIds(child, sessionId);
+      if (tabSessionIds) {
+        return tabSessionIds;
+      }
+    }
+  }
+  return undefined;
+}
+
 function handleNativeTerminalTitleBarAction(
   sessionId: string,
   action: Extract<NativeHostEvent, { type: "terminalTitleBarAction" }>["action"],
@@ -11389,6 +13095,38 @@ function handleNativeTerminalTitleBarAction(
    * card controls mutate one source of workspace truth.
    */
   switch (action) {
+    case "popOut":
+      setNativeSessionPoppedOut(sessionId, true);
+      return;
+    case "restorePopOut":
+      setNativeSessionPoppedOut(sessionId, false);
+      return;
+    case "newTerminal":
+      createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", findSessionGroupId(sessionId), undefined, {
+        visiblePlacement: {
+          kind: "appendToTabGroup",
+          targetSessionId: sessionId,
+        },
+      });
+      return;
+    case "openBrowser":
+      createNativeBrowserSession(DEFAULT_BROWSER_LAUNCH_URL, findSessionGroupId(sessionId), {
+        visiblePlacement: {
+          kind: "appendToTabGroup",
+          targetSessionId: sessionId,
+        },
+      });
+      return;
+    case "splitHorizontal":
+    case "splitVertical":
+      createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", findSessionGroupId(sessionId), undefined, {
+        splitDirection: action === "splitHorizontal" ? "horizontal" : "vertical",
+        visiblePlacement: {
+          kind: "insertAfter",
+          targetSessionId: sessionId,
+        },
+      });
+      return;
     case "rename":
       openAppModal({
         initialTitle: session.title || DEFAULT_TERMINAL_SESSION_TITLE,
@@ -11396,6 +13134,9 @@ function handleNativeTerminalTitleBarAction(
         sessionId,
         type: "open",
       });
+      return;
+    case "delayedSend":
+      promptDelayedSend(sessionId);
       return;
     case "fork":
       if (session.kind === "terminal") {
@@ -11459,6 +13200,12 @@ window.__zmux_NATIVE_SETTINGS__ = {
       zedOverlayTargetApp: targetApp,
     });
   },
+};
+
+window.__zmux_NATIVE_SIDEBAR__ = {
+  openActiveProjectEditorFromTitlebar,
+  refreshWorkspaceOpenTargetAvailabilityFromTitlebar,
+  runSidebarCommandFromTitlebar,
 };
 
 window.__zmux_NATIVE_CLI__ = {
@@ -12234,4 +13981,6 @@ if (rootElement && !isStorybookPreview) {
       publish();
     }
   });
+
+  void refreshWorkspaceOpenTargetAvailabilityAtStartup();
 }

@@ -10,6 +10,37 @@
 @import "./styles/session-overlays.css";
 @import "./styles/workspace-dock.css";
 
+/**
+ * CDXC:ContextMenus 2026-05-11-01:39
+ * Sidebar and app context menus should behave like native menus: menu items
+ * keep the default cursor instead of the hand pointer, and every menu surface
+ * uses the same #181818 background regardless of the theme/card color below.
+ */
+[data-slot="dropdown-menu-content"],
+[data-slot="dropdown-menu-sub-content"],
+.command-icon-picker-menu,
+.git-action-menu,
+.quick-action-menu,
+.session-context-menu {
+  background: #181818 !important;
+  background-color: #181818 !important;
+}
+
+[data-slot="dropdown-menu-checkbox-item"],
+[data-slot="dropdown-menu-item"],
+[data-slot="dropdown-menu-radio-item"],
+[data-slot="dropdown-menu-sub-trigger"],
+.command-icon-picker-option,
+.git-action-menu-item,
+.group-agent-menu-item,
+.group-control-menu-item,
+.quick-action-menu-item,
+.session-context-menu-item,
+.session-context-menu-split-item,
+.workspace-dock-theme-menu-item {
+  cursor: default !important;
+}
+
 .copy-cursor {
   cursor: pointer !important;
 }

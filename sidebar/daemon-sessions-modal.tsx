@@ -400,7 +400,7 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
       </div>
       <ConfirmationModal
         confirmLabel="Kill Daemon"
-        description="This will terminate the shared zmux daemon and disconnect every daemon-managed terminal session across workspaces."
+        description="This will close the shared zmux daemon and disconnect every daemon-managed terminal session across workspaces."
         isOpen={isKillDaemonConfirmOpen}
         onCancel={() => setIsKillDaemonConfirmOpen(false)}
         onConfirm={() => {

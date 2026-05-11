@@ -3,6 +3,7 @@ import type {
   SidebarPreviousSessionItem,
   SidebarSessionItem,
 } from "../shared/session-grid-contract";
+import { getSessionHistoryCardTitle } from "./session-history-card-title";
 
 export type PreviousSessionsModalDayGroup = {
   dayLabel: string;
@@ -42,12 +43,13 @@ export function filterPreviousSessions(
   const filteredSessions = options.favoritesOnly
     ? previousSessions.filter((session) => session.isFavorite)
     : [...previousSessions];
+  const dedupedSessions = dedupePreviousSessionsByProjectAndTitle(filteredSessions);
 
   if (!normalizedQuery) {
-    return filteredSessions;
+    return dedupedSessions;
   }
 
-  return filterSidebarSessionItems(filteredSessions, query);
+  return filterSidebarSessionItems(dedupedSessions, query);
 }
 
 export function groupPreviousSessionsByDay(
@@ -148,6 +150,70 @@ function normalizeSessionSearchValue(value: string | undefined): string {
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function dedupePreviousSessionsByProjectAndTitle(
+  sessions: readonly SidebarPreviousSessionItem[],
+): SidebarPreviousSessionItem[] {
+  /**
+   * CDXC:PreviousSessions 2026-05-11-09:04
+   * Previous Sessions must not show duplicate historical cards for the same
+   * project and session name. Keep only the latest closed/active item before
+   * search so both the modal and sidebar search share the same unique list.
+   */
+  const dedupedByKey = new Map<
+    string,
+    {
+      item: SidebarPreviousSessionItem;
+      itemIndex: number;
+      timestamp: number;
+    }
+  >();
+
+  sessions.forEach((session, itemIndex) => {
+    const key = createPreviousSessionDedupeKey(session);
+    const timestamp = getPreviousSessionDedupeTimestamp(session);
+    const current = dedupedByKey.get(key);
+    if (current && current.timestamp >= timestamp) {
+      return;
+    }
+
+    dedupedByKey.set(key, {
+      item: session,
+      itemIndex,
+      timestamp,
+    });
+  });
+
+  return [...dedupedByKey.values()]
+    .sort((left, right) => left.itemIndex - right.itemIndex)
+    .map((entry) => entry.item);
+}
+
+function createPreviousSessionDedupeKey(session: SidebarPreviousSessionItem): string {
+  const projectKey = normalizeSessionSearchValue(
+    session.projectPath || session.projectId || session.projectName || "",
+  );
+  const scopedProjectKey = projectKey || `history:${session.historyId}`;
+  const titleKey = normalizeSessionSearchValue(getSessionHistoryCardTitle(session));
+
+  return `${scopedProjectKey}\u0000${titleKey}`;
+}
+
+function getPreviousSessionDedupeTimestamp(session: SidebarPreviousSessionItem): number {
+  const lastInteractionTimestamp = parsePreviousSessionTimestamp(session.lastInteractionAt);
+  const closedTimestamp = parsePreviousSessionTimestamp(session.closedAt);
+
+  return Math.max(lastInteractionTimestamp, closedTimestamp);
+}
+
+function parsePreviousSessionTimestamp(value: string | undefined): number {
+  if (!value) {
+    return 0;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function matchesNormalizedQueryTokens(searchText: string, queryTokens: readonly string[]): boolean {

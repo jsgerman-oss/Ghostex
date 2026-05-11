@@ -958,6 +958,12 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   padding-right: 42px;
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .reference-sidebar-settings-row
+  .reference-sidebar-nav-button {
+  padding-right: 42px;
+}
+
 /*
  * CDXC:SidebarActions 2026-05-08-09:11
  * The combined-sidebar Actions row owns a small hover-only right-side quick
@@ -974,6 +980,11 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
  * Combined-sidebar New Session owns the same small right-side overflow trigger
  * as the Actions and Search rows. Reserve right padding on that row so the menu
  * icon never covers the New Session label or primary click target.
+ *
+ * CDXC:WorkspacePanes 2026-05-11-02:51
+ * Combined-sidebar Settings owns a matching secondary terminal action that
+ * creates a full-width pane in the active project. Reserve row padding so the
+ * hover icon never overlaps the Settings label.
  */
 .reference-sidebar-hover-action {
   align-items: center;
@@ -1616,4 +1627,72 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   height: auto;
   min-width: 0;
   width: auto;
+}
+
+/* CDXC:Hotkeys 2026-05-11-09:26
+   Holding Cmd for one second reveals this lightweight cheat sheet inside the
+   sidebar. It floats above the session list, uses the current effective
+   bindings, and disappears as soon as Cmd is released or the app loses focus. */
+.sidebar-hotkey-overlay {
+  background: color-mix(in srgb, var(--app-surface) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border) 84%, transparent);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px color-mix(in srgb, #000 34%, transparent);
+  color: var(--app-foreground);
+  display: grid;
+  gap: 10px;
+  left: 10px;
+  max-height: calc(100vh - 20px);
+  overflow: auto;
+  padding: 12px;
+  position: fixed;
+  right: 10px;
+  top: 10px;
+  z-index: 80;
+}
+
+.sidebar-hotkey-overlay-title {
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.sidebar-hotkey-overlay-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.sidebar-hotkey-overlay-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  min-width: 0;
+}
+
+.sidebar-hotkey-overlay-action {
+  color: var(--app-foreground);
+  font-size: 12px;
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-hotkey-overlay-key {
+  background: color-mix(in srgb, var(--app-button-background) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border) 70%, transparent);
+  border-radius: 6px;
+  color: var(--app-foreground);
+  font-family: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 5px 7px;
+  white-space: nowrap;
 }

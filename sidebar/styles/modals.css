@@ -27,14 +27,28 @@
 /**
  * CDXC:AppModals 2026-04-26-15:47
  * Full-app modal overlays should preserve terminal readability behind dialogs:
- * no backdrop blur, and only a 10% dark scrim instead of the old heavy sidebar
- * modal dimming.
+ * no backdrop blur, and a 65% dark scrim so settings and configuration
+ * dialogs read as focused modal surfaces without changing their content
+ * layout.
+ *
+ * CDXC:AppModals 2026-05-11-08:14
+ * Settings and settings-launched dialogs need a stronger shared backdrop when
+ * shown. Apply the same dark overlay to legacy confirm-modal backdrops and
+ * shadcn/Radix dialog overlays because the app modal host mixes both stacks.
+ *
+ * CDXC:AppModals 2026-05-11-10:06
+ * Modal backdrops should be 15 percentage points darker than the previous 50%
+ * scrim. Use 65% black across legacy and shadcn modal overlays.
  */
 .app-modal-host-body .confirm-modal-backdrop,
 .app-modal-host-body [data-slot="dialog-overlay"] {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  background: rgb(0 0 0 / 10%);
+  background: rgb(0 0 0 / 65%);
+}
+
+[data-slot="dialog-overlay"] {
+  background: rgb(0 0 0 / 65%);
 }
 
 /**
@@ -53,7 +67,7 @@
 }
 
 .confirm-modal-backdrop {
-  background: color-mix(in srgb, #05070a 68%, transparent);
+  background: rgb(0 0 0 / 65%);
   border: 0;
   border-radius: 0;
   inset: 0;
@@ -1534,6 +1548,31 @@
    * Generate Name actions.
    */
   max-width: min(520px, calc(100vw - 2rem));
+}
+
+.delayed-send-modal-shadcn {
+  /**
+   * CDXC:DelayedSend 2026-05-11-11:56
+   * The timer dialog should be compact enough for the full-window modal host
+   * while still giving hours, minutes, and seconds stable columns.
+   */
+  max-width: min(460px, calc(100vw - 2rem));
+}
+
+.delayed-send-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.delayed-send-field-group {
+  gap: 12px;
+}
+
+.delayed-send-duration-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .session-rename-form {

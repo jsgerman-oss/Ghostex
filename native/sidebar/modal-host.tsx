@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
 import { CommandConfigModal, type CommandConfigDraft } from "../../sidebar/command-config-modal";
 import { DaemonSessionsModal } from "../../sidebar/daemon-sessions-modal";
+import { DelayedSendModal } from "../../sidebar/delayed-send-modal";
 import { FindPreviousSessionModal } from "../../sidebar/find-previous-session-modal";
 import { FirstUserMessageModal } from "../../sidebar/first-user-message-modal";
 import { PinnedPromptsModal } from "../../sidebar/pinned-prompts-modal";
@@ -36,8 +37,10 @@ type AppModalKind =
   | "configureActions"
   | "configureAgents"
   | "daemonSessions"
+  | "delayedSend"
   | "findPreviousSession"
   | "hotkeys"
+  | "openTargets"
   | "pinnedPrompts"
   | "previousSessions"
   | "firstUserMessage"
@@ -76,6 +79,11 @@ type RenameSessionModalState = {
 
 type FirstUserMessageModalState = {
   message: string;
+  title?: string;
+};
+
+type DelayedSendModalState = {
+  sessionId: string;
   title?: string;
 };
 
@@ -137,6 +145,7 @@ function isSettingsModalKind(modal: AppModalKind | undefined): boolean {
     modal === "settings" ||
     modal === "configureAgents" ||
     modal === "configureActions" ||
+    modal === "openTargets" ||
     modal === "hotkeys"
   );
 }
@@ -157,6 +166,9 @@ function getSettingsInitialTab(modal: AppModalKind | undefined): SettingsModalTa
   if (modal === "hotkeys") {
     return "hotkeys";
   }
+  if (modal === "openTargets") {
+    return "openTargets";
+  }
   return "settings";
 }
 
@@ -164,6 +176,7 @@ function AppModalHost() {
   const {
     activeModal,
     config,
+    delayedSend,
     findPreviousSession,
     firstUserMessage,
     renameSession,
@@ -180,6 +193,7 @@ function AppModalHost() {
   const isActiveModalRenderable = isModalRenderable({
     activeModal,
     config,
+    delayedSend,
     findPreviousSession,
     firstUserMessage,
     renameSession,
@@ -281,6 +295,22 @@ function AppModalHost() {
           closeModal();
         }}
       />
+      <DelayedSendModal
+        isOpen={activeModal === "delayedSend" && delayedSend !== undefined}
+        onCancel={closeModal}
+        onConfirm={(delayMs) => {
+          if (!delayedSend) {
+            return;
+          }
+          vscode.postMessage({
+            delayMs,
+            sessionId: delayedSend.sessionId,
+            type: "scheduleDelayedSend",
+          });
+          closeModal();
+        }}
+        sessionTitle={delayedSend?.title}
+      />
       <ScratchPadModal
         isOpen={activeModal === "scratchPad"}
         onClose={closeModal}
@@ -321,6 +351,9 @@ function AppModalHost() {
         onInstallZapet={() => {
           vscode.postMessage({ type: "installZapet" });
         }}
+        onPlayCompletionSound={(sound) => {
+          vscode.postMessage({ sound, type: "playCompletionSoundPreview" });
+        }}
         onOpenAccessibilityPreferences={() => {
           /**
            * CDXC:AccessibilityPermissions 2026-05-08-13:08
@@ -330,12 +363,21 @@ function AppModalHost() {
            */
           vscode.postMessage({ type: "openAccessibilityPreferences" });
         }}
+        onOpenMacOSNotificationSettings={() => {
+          vscode.postMessage({ type: "openMacOSNotificationSettings" });
+        }}
         onOpenZmuxFolder={() => {
           vscode.postMessage({ type: "openZmuxFolder" });
+        }}
+        onRequestMacOSNotificationPermission={() => {
+          vscode.postMessage({ type: "requestMacOSNotificationPermission" });
         }}
         onRequestZmuxFolderStats={() => {
           setZmuxFolderStatsLoading(true);
           vscode.postMessage({ type: "requestZmuxFolderStats" });
+        }}
+        onTestAgentTaskCompletion={() => {
+          vscode.postMessage({ type: "testAgentTaskCompletion" });
         }}
         onClose={closeModal}
         settings={settings}
@@ -437,6 +479,7 @@ function AppModalHost() {
 function useModalStateFromNative() {
   const [activeModal, setActiveModal] = useState<AppModalKind | undefined>();
   const [config, setConfig] = useState<ConfigModalState>({});
+  const [delayedSend, setDelayedSend] = useState<DelayedSendModalState>();
   const [findPreviousSession, setFindPreviousSession] = useState<FindPreviousSessionModalState>();
   const [firstUserMessage, setFirstUserMessage] = useState<FirstUserMessageModalState>();
   const [renameSession, setRenameSession] = useState<RenameSessionModalState>();
@@ -474,6 +517,7 @@ function useModalStateFromNative() {
               sessionId: message.sessionId,
             });
             setConfig({});
+            setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setT3BrowserAccess(undefined);
@@ -487,7 +531,22 @@ function useModalStateFromNative() {
               title: typeof message.title === "string" ? message.title : undefined,
             });
             setConfig({});
+            setDelayedSend(undefined);
             setFindPreviousSession(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
+          } else if (message.modal === "delayedSend") {
+            if (!message.sessionId) {
+              throw new Error("Delayed Send modal request is missing sessionId.");
+            }
+            setDelayedSend({
+              sessionId: message.sessionId,
+              title: typeof message.title === "string" ? message.title : undefined,
+            });
+            setConfig({});
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -497,6 +556,7 @@ function useModalStateFromNative() {
                 typeof message.initialQuery === "string" ? message.initialQuery : undefined,
             });
             setConfig({});
+            setDelayedSend(undefined);
             setFirstUserMessage(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
@@ -513,6 +573,7 @@ function useModalStateFromNative() {
              */
             setT3BrowserAccess(message.access);
             setConfig({});
+            setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setRenameSession(undefined);
@@ -526,6 +587,7 @@ function useModalStateFromNative() {
               sessionId: message.sessionId,
             });
             setConfig({});
+            setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setRenameSession(undefined);
@@ -538,6 +600,7 @@ function useModalStateFromNative() {
               commandDraft: message.commandDraft,
               lockedActionType: message.lockedActionType,
             });
+            setDelayedSend(undefined);
             setFirstUserMessage(undefined);
             setFindPreviousSession(undefined);
             setRenameSession(undefined);
@@ -548,6 +611,7 @@ function useModalStateFromNative() {
               throw new Error("Agent config modal request is missing agentDraft.");
             }
             setConfig({ agentDraft: message.agentDraft });
+            setDelayedSend(undefined);
             setFirstUserMessage(undefined);
             setFindPreviousSession(undefined);
             setRenameSession(undefined);
@@ -555,6 +619,7 @@ function useModalStateFromNative() {
             setT3ThreadId(undefined);
           } else {
             setConfig({});
+            setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setRenameSession(undefined);
@@ -579,6 +644,7 @@ function useModalStateFromNative() {
           );
           setActiveModal(undefined);
           setConfig({});
+          setDelayedSend(undefined);
           setFindPreviousSession(undefined);
           setFirstUserMessage(undefined);
           setRenameSession(undefined);
@@ -611,6 +677,7 @@ function useModalStateFromNative() {
   return {
     activeModal,
     config,
+    delayedSend,
     findPreviousSession,
     firstUserMessage,
     renameSession,
@@ -648,6 +715,7 @@ function createEmptyAgentDraft(): AgentConfigDraft {
 function isModalRenderable({
   activeModal,
   config,
+  delayedSend,
   findPreviousSession,
   firstUserMessage,
   renameSession,
@@ -657,6 +725,7 @@ function isModalRenderable({
 }: {
   activeModal: AppModalKind | undefined;
   config: ConfigModalState;
+  delayedSend: DelayedSendModalState | undefined;
   findPreviousSession: FindPreviousSessionModalState | undefined;
   firstUserMessage: FirstUserMessageModalState | undefined;
   renameSession: RenameSessionModalState | undefined;
@@ -671,6 +740,8 @@ function isModalRenderable({
       return config.agentDraft !== undefined;
     case "commandConfig":
       return config.commandDraft !== undefined;
+    case "delayedSend":
+      return delayedSend !== undefined;
     case "findPreviousSession":
       return findPreviousSession !== undefined;
     case "firstUserMessage":
@@ -681,6 +752,7 @@ function isModalRenderable({
     case "configureActions":
     case "configureAgents":
     case "hotkeys":
+    case "openTargets":
       return settings !== undefined;
     case "t3BrowserAccess":
       return t3BrowserAccess !== undefined;

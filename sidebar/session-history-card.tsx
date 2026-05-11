@@ -1,4 +1,4 @@
-import { IconMessageCircle, IconTrash } from "@tabler/icons-react";
+import { IconTrash } from "@tabler/icons-react";
 import { useRef } from "react";
 import type { SidebarPreviousSessionItem } from "../shared/session-grid-contract";
 import {
@@ -13,7 +13,6 @@ import { getSessionHistoryCardTitle } from "./session-history-card-title";
 export type SessionHistoryCardProps = {
   isSearchSelected?: boolean;
   onDelete: () => void;
-  onViewFirstMessage?: () => void;
   onRestore: () => void;
   session: SidebarPreviousSessionItem;
   showDebugSessionNumbers: boolean;
@@ -21,9 +20,7 @@ export type SessionHistoryCardProps = {
 };
 
 export function SessionHistoryCard({
-  isSearchSelected = false,
   onDelete,
-  onViewFirstMessage,
   onRestore,
   session,
   showDebugSessionNumbers,
@@ -46,7 +43,6 @@ export function SessionHistoryCard({
     showSessionDetails: true,
   });
   const projectLabel = getSessionHistoryProjectLabel(session);
-  const isActiveHistorySession = session.isFocused || session.isVisible;
 
   return (
     <OverflowTooltipText
@@ -57,27 +53,30 @@ export function SessionHistoryCard({
     >
       <div
         className="session-frame session-history-frame"
-        data-focused={String(Boolean(session.isFocused))}
-        data-running={String(Boolean(session.isRunning))}
+        data-focused="false"
+        data-running="false"
         data-restorable={String(session.isRestorable)}
-        data-visible={String(Boolean(session.isVisible))}
+        data-visible="false"
       >
         {/**
          * CDXC:PreviousSessions 2026-05-09-17:44
-         * The modal copies the reference sidebar active-row signal: only the
-         * active/focused previous-session row may show the leading agent icon,
-         * and the active row background is suppressed in CSS.
+         * History rows are archived restore entries. Render the leading icon
+         * as identity only, and never let stale live-session visible/focused
+         * state make previous-session cards look like active UI rows.
+         *
+         * CDXC:PreviousSessions 2026-05-11-09:04
+         * Sidebar search and the modal must show every previous-session button
+         * with the same row chrome; active/live highlights are misleading here
+         * because these rows restore history instead of representing open UI.
          */}
-        {isActiveHistorySession ? (
-          <SessionFloatingAgentIcon
-            agentIcon={session.agentIcon}
-            faviconDataUrl={session.faviconDataUrl}
-            isFavorite={session.isFavorite}
-            sessionPersistenceName={session.sessionPersistenceName}
-            sessionPersistenceProvider={session.sessionPersistenceProvider}
-            showTerminalIcon={shouldShowTerminalSessionIcon(session)}
-          />
-        ) : null}
+        <SessionFloatingAgentIcon
+          agentIcon={session.agentIcon}
+          faviconDataUrl={session.faviconDataUrl}
+          isFavorite={session.isFavorite}
+          sessionPersistenceName={session.sessionPersistenceName}
+          sessionPersistenceProvider={session.sessionPersistenceProvider}
+          showTerminalIcon={shouldShowTerminalSessionIcon(session)}
+        />
         <article
           aria-disabled={!session.isRestorable}
           aria-pressed="false"
@@ -87,12 +86,12 @@ export function SessionHistoryCard({
             Boolean(session.agentIcon) || shouldShowTerminalSessionIcon(session),
           )}
           data-dragging="false"
-          data-focused={String(Boolean(session.isFocused))}
-          data-running={String(Boolean(session.isRunning))}
-          data-search-selected={String(isSearchSelected)}
+          data-focused="false"
+          data-running="false"
+          data-search-selected="false"
           data-sidebar-history-id={session.historyId}
           data-restorable={String(session.isRestorable)}
-          data-visible={String(Boolean(session.isVisible))}
+          data-visible="false"
           onAuxClick={(event) => {
             if (event.button !== 1) {
               return;
@@ -144,21 +143,6 @@ export function SessionHistoryCard({
           >
             <IconTrash aria-hidden="true" size={12} stroke={1.9} />
           </button>
-          {session.firstUserMessage?.trim() ? (
-            <button
-              aria-label={`View 1st message for ${displayTitle}`}
-              className="previous-session-first-message-button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onViewFirstMessage?.();
-              }}
-              type="button"
-            >
-              <IconMessageCircle aria-hidden="true" size={12} stroke={1.9} />
-              <span>View 1st message</span>
-            </button>
-          ) : null}
           <SessionCardContent
             aliasHeadingRef={aliasHeadingRef}
             hideHeaderAgentIcon={true}

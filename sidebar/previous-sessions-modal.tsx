@@ -2,7 +2,6 @@ import { IconStar, IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { filterPreviousSessions, groupPreviousSessionsByDay } from "./previous-session-search";
-import { FirstUserMessageModal } from "./first-user-message-modal";
 import { SessionHistoryCard } from "./session-history-card";
 import { useSidebarStore } from "./sidebar-store";
 import {
@@ -26,10 +25,6 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
   const showHotkeys = useSidebarStore((state) => state.hud.showHotkeysOnSessionCards);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [firstMessageSession, setFirstMessageSession] = useState<{
-    message: string;
-    title?: string;
-  }>();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingSelectionRef = useRef<{ end: number; start: number } | undefined>(undefined);
   const filteredSessions = useMemo(
@@ -48,13 +43,6 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (firstMessageSession) {
-          setFirstMessageSession(undefined);
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-
         onClose();
         return;
       }
@@ -95,12 +83,11 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
     return () => {
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [firstMessageSession, isOpen, onClose]);
+  }, [isOpen, onClose]);
 
   useEffect(() => {
     if (!isOpen) {
       setFavoritesOnly(false);
-      setFirstMessageSession(undefined);
       setSearchQuery("");
       pendingSelectionRef.current = undefined;
     }
@@ -230,20 +217,6 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
                           });
                           onClose();
                         }}
-                        onViewFirstMessage={() => {
-                          const message = session.firstUserMessage?.trim();
-                          if (!message) {
-                            return;
-                          }
-
-                          setFirstMessageSession({
-                            message,
-                            title:
-                              session.primaryTitle?.trim() ||
-                              session.terminalTitle?.trim() ||
-                              session.alias,
-                          });
-                        }}
                         session={session}
                         showDebugSessionNumbers={showDebugSessionNumbers}
                         showHotkeys={showHotkeys}
@@ -291,12 +264,6 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
               Prompt to Find Session
             </button>
           </div>
-          <FirstUserMessageModal
-            isOpen={firstMessageSession !== undefined}
-            message={firstMessageSession?.message ?? ""}
-            onClose={() => setFirstMessageSession(undefined)}
-            title={firstMessageSession?.title}
-          />
         </div>
       </div>
     </TooltipProvider>,

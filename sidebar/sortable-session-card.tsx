@@ -1,6 +1,7 @@
 import {
   IconCopy,
   IconCode,
+  IconClock,
   IconDeviceMobile,
   IconDownload,
   IconGitFork,
@@ -173,6 +174,7 @@ export function SortableSessionCard({
   const isT3Session = session?.sessionKind === "t3";
   const canFavoriteSession = !isBrowserSession;
   const canForkSession = session ? !isBrowserSession && supportsFork(session) : false;
+  const canDelayedSend = session ? !isBrowserSession && !isT3Session : false;
   const canCopyResumeCommand = session
     ? !isBrowserSession && supportsResumeCommandCopy(session)
     : false;
@@ -572,6 +574,26 @@ export function SortableSessionCard({
     });
   };
 
+  const requestDelayedSend = () => {
+    if (!canDelayedSend) {
+      return;
+    }
+
+    setContextMenuPosition(undefined);
+    /**
+     * CDXC:DelayedSend 2026-05-11-11:56
+     * Terminal session context menus mirror the native title-bar clock action:
+     * open the full-window timer modal and let native press Enter later for
+     * the command text already staged in that terminal.
+     */
+    openAppModal({
+      modal: "delayedSend",
+      sessionId: session.sessionId,
+      title: getSessionRenameInitialTitle(session),
+      type: "open",
+    });
+  };
+
   const requestT3BrowserAccess = () => {
     if (!isT3Session) {
       return;
@@ -837,6 +859,21 @@ export function SortableSessionCard({
       onClick: requestCopyAttachCommand,
     });
   }
+  if (canDelayedSend) {
+    sessionActions.push({
+      icon: (
+        <IconClock
+          aria-hidden="true"
+          className="session-context-menu-icon"
+          size={16}
+          stroke={1.8}
+        />
+      ),
+      key: "delayed-send",
+      label: "Delayed Send",
+      onClick: requestDelayedSend,
+    });
+  }
   if (canForkSession) {
     sessionActions.push({
       icon: (
@@ -896,8 +933,14 @@ export function SortableSessionCard({
       icon: (
         <IconX aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
       ),
-      key: "terminate",
-      label: isBrowserSession ? "Close" : "Terminate",
+      /**
+       * CDXC:SessionClose 2026-05-11-00:45
+       * User-facing session removal language is Close. Keep the
+       * destructive action behavior unchanged while making terminal, T3, and
+       * browser context menus use the same visible verb.
+       */
+      key: "close",
+      label: "Close",
       onClick: () => requestClose("context-menu"),
     },
   ];

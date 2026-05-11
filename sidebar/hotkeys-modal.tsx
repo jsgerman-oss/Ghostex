@@ -48,7 +48,14 @@ export function HotkeysModal({ hotkeys, isOpen, onChange, onClose }: HotkeysModa
 
   return (
     <Dialog onOpenChange={(nextOpen) => (!nextOpen ? onClose() : undefined)} open={isOpen}>
-      <DialogContent className="zmux-settings-shadcn hotkeys-modal max-h-[min(760px,calc(100vh-2rem))] gap-0 overflow-hidden p-0 font-sans sm:max-w-2xl">
+      <DialogContent
+        className="zmux-settings-shadcn hotkeys-modal max-h-[min(760px,calc(100vh-2rem))] gap-0 overflow-hidden p-0 font-sans sm:max-w-2xl"
+        onEscapeKeyDown={(event) => {
+          if (hasActiveHotkeyRecorder()) {
+            event.preventDefault();
+          }
+        }}
+      >
         <DialogHeader className="px-5 pt-5 pb-3">
           <DialogTitle className="text-xl">Hotkeys</DialogTitle>
         </DialogHeader>
@@ -72,7 +79,7 @@ export function HotkeysModal({ hotkeys, isOpen, onChange, onClose }: HotkeysModa
                     <span className="hotkeys-modal-description">{definition.description}</span>
                   </span>
                   <HotkeyRecorderField
-                    aria-invalid={isDuplicate}
+                    ariaInvalid={isDuplicate}
                     className="hotkeys-modal-input"
                     hotkey={value}
                     onChange={(nextHotkey) => updateHotkey(definition.id, nextHotkey)}
@@ -93,6 +100,10 @@ export function HotkeysModal({ hotkeys, isOpen, onChange, onClose }: HotkeysModa
       </DialogContent>
     </Dialog>
   );
+}
+
+function hasActiveHotkeyRecorder(): boolean {
+  return Boolean(document.querySelector("[data-hotkey-recorder='true'][data-recording='true']"));
 }
 
 function getDuplicateHotkeyIds(hotkeys: zmuxHotkeySettings): Set<zmuxHotkeyActionId> {

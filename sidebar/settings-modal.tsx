@@ -47,6 +47,7 @@ import {
   IconFolderOpen,
   IconGripVertical,
   IconPencil,
+  IconPlayerPlay,
   IconPlus,
   IconTerminal2,
   IconTrash,
@@ -67,6 +68,8 @@ import {
   GHOSTTY_COPY_ON_SELECT_OPTIONS,
   GHOSTTY_SCROLLBAR_OPTIONS,
   GHOSTTY_THEME_SETTING_OPTIONS,
+  PROMPT_EDITOR_BACKEND_OPTIONS,
+  type PromptEditorBackend,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
   SIDEBAR_MODE_OPTIONS,
@@ -86,6 +89,14 @@ import {
   type ZedOverlayTargetApp,
   type zmuxSettings,
 } from "../shared/zmux-settings";
+import {
+  BUILT_IN_WORKSPACE_OPEN_TARGETS,
+  CUSTOM_WORKSPACE_OPEN_TARGET_ID_PREFIX,
+  createWorkspaceOpenTargetSlug,
+  normalizeCustomWorkspaceOpenTargets,
+  normalizeWorkspaceOpenTargetHiddenIds,
+  type CustomWorkspaceOpenTarget,
+} from "../shared/workspace-open-targets";
 import {
   DEFAULT_SIDEBAR_AGENTS,
   getDefaultSidebarAgentByIcon,
@@ -140,7 +151,26 @@ type SettingModificationProps = {
   onResetToDefault?: () => void;
 };
 
-export type SettingsModalTab = "settings" | "agents" | "actions" | "hotkeys";
+export type SettingsModalTab = "settings" | "agents" | "actions" | "openTargets" | "hotkeys";
+
+let rememberedSettingsModalTab: SettingsModalTab | undefined;
+
+function getInitialSettingsModalTab(initialTab: SettingsModalTab): SettingsModalTab {
+  /**
+   * CDXC:Settings 2026-05-11-09:06
+   * Settings remembers the last selected tab for the current app session. A
+   * non-default entry point such as Hotkeys still opens its requested tab, then
+   * that tab becomes the remembered choice until the app restarts.
+   */
+  if (initialTab !== "settings") {
+    return initialTab;
+  }
+  return rememberedSettingsModalTab ?? initialTab;
+}
+
+function hasActiveHotkeyRecorder(): boolean {
+  return Boolean(document.querySelector("[data-hotkey-recorder='true'][data-recording='true']"));
+}
 
 export type GhosttySettingsAction =
   | "applyRecommendedGhosttySettings"
@@ -155,10 +185,14 @@ export type SettingsModalProps = {
   onChange: (settings: zmuxSettings) => void;
   onClose: () => void;
   onOpenAccessibilityPreferences?: () => void;
+  onOpenMacOSNotificationSettings?: () => void;
   onOpenZmuxFolder?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
   onInstallZapet?: () => void;
+  onPlayCompletionSound?: (sound: CompletionSoundSetting) => void;
+  onRequestMacOSNotificationPermission?: () => void;
   onRequestZmuxFolderStats?: () => void;
+  onTestAgentTaskCompletion?: () => void;
   settings?: zmuxSettings;
   theme?: SidebarTheme;
   vscode?: WebviewApi;
@@ -173,10 +207,14 @@ export function SettingsModal({
   onChange,
   onClose,
   onOpenAccessibilityPreferences,
+  onOpenMacOSNotificationSettings,
   onOpenZmuxFolder,
   onGhosttySettingsAction,
   onInstallZapet,
+  onPlayCompletionSound,
+  onRequestMacOSNotificationPermission,
   onRequestZmuxFolderStats,
+  onTestAgentTaskCompletion,
   settings,
   theme = "dark-blue",
   vscode,
@@ -185,13 +223,28 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [draft, setDraft] = useState<zmuxSettings>(normalizezmuxSettings(settings));
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<SettingsModalTab>(initialTab);
+  const [activeTab, setActiveTabState] = useState<SettingsModalTab>(() =>
+    getInitialSettingsModalTab(initialTab),
+  );
   const pendingSettingsRef = useRef<zmuxSettings | undefined>(undefined);
   const pendingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const storageSectionRef = useRef<HTMLDivElement>(null);
   const hasRequestedStorageStatsRef = useRef(false);
   const modalTheme = resolveSidebarTheme(draft.sidebarTheme, getSidebarThemeVariant(theme));
   const isModalDarkTheme = getSidebarThemeVariant(modalTheme) === "dark";
+  const setActiveTab = (nextTab: SettingsModalTab) => {
+    rememberedSettingsModalTab = nextTab;
+    setActiveTabState(nextTab);
+  };
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    const nextTab = getInitialSettingsModalTab(initialTab);
+    rememberedSettingsModalTab = nextTab;
+    setActiveTabState(nextTab);
+  }, [initialTab, isOpen]);
 
   /**
    * CDXC:SettingsSearch 2026-05-04-02:30
@@ -354,6 +407,11 @@ export function SettingsModal({
         title: "macOS Attention Notifications",
       },
       {
+        key: "attentionNotificationActions",
+        subtitle: "Test the current completion alert settings or open macOS Notification Settings.",
+        title: "Agent Completion Alert Test",
+      },
+      {
         key: "actionCompletionSound",
         options: COMPLETION_SOUND_OPTIONS,
         subtitle: "Sound for action completions.",
@@ -439,11 +497,11 @@ export function SettingsModal({
         title: "Session Persistence (Beta)",
       },
       {
-        key: "richPromptEditingWithZapet",
-        options: [{ label: "Install Zapet", value: "installZapet" }],
+        key: "promptEditorBackend",
+        options: [...PROMPT_EDITOR_BACKEND_OPTIONS, { label: "Install Zapet", value: "installZapet" }],
         subtitle:
-          "Install Zapet and make new terminals use Zapet when a CLI opens an editor for a prompt.",
-        title: "Rich Prompt Editing with Zapet",
+          "Choose which floating editor Ctrl+G uses when a terminal prompt asks for $EDITOR.",
+        title: "Ctrl+G prompt editor",
       },
     ]),
     terminalBehavior: getSettingsSectionSearch(settingsSearchQuery, "Terminal Behavior", [
@@ -728,6 +786,11 @@ export function SettingsModal({
           isModalDarkTheme && "dark",
         )}
         data-sidebar-theme={modalTheme}
+        onEscapeKeyDown={(event) => {
+          if (hasActiveHotkeyRecorder()) {
+            event.preventDefault();
+          }
+        }}
       >
         <TooltipProvider delayDuration={300}>
           <Tabs
@@ -748,6 +811,7 @@ export function SettingsModal({
               <TabsTrigger value="settings">Settings</TabsTrigger>
               <TabsTrigger value="agents">Agents</TabsTrigger>
               <TabsTrigger value="actions">Actions</TabsTrigger>
+              <TabsTrigger value="openTargets">Open In</TabsTrigger>
               <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
             </TabsList>
             {activeTab === "settings" ? (
@@ -1107,21 +1171,20 @@ export function SettingsModal({
                 value={draft.sessionPersistenceProvider}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.terminal, "richPromptEditingWithZapet") ? (
+              {shouldShowSetting(settingsSearch.terminal, "promptEditorBackend") ? (
               /**
-               * CDXC:ZapetPromptEditing 2026-05-10-11:11
-               * Settings must expose both the Homebrew install action and the
-               * feature toggle. The toggle controls future terminal launch
-               * environments; the install action is separate so users can
-               * install Zapet without silently enabling EDITOR=zapet.
+               * CDXC:PromptEditorBackend 2026-05-11-14:38
+               * Ctrl+G prompt editing can render either through the native
+               * WebKit Monaco overlay or the existing zpet TUI floating
+               * terminal. Keep the install action with the zpet option.
                */
               <ZapetPromptEditingField
-                checked={draft.richPromptEditingWithZapet}
-                isModified={getSettingModificationProps("richPromptEditingWithZapet").isModified}
+                backend={draft.promptEditorBackend}
+                isModified={getSettingModificationProps("promptEditorBackend").isModified}
                 onInstall={() => onInstallZapet?.()}
-                onChange={(checked) => updateDraft("richPromptEditingWithZapet", checked)}
+                onChange={(backend) => updateDraft("promptEditorBackend", backend)}
                 onResetToDefault={
-                  getSettingModificationProps("richPromptEditingWithZapet").onResetToDefault
+                  getSettingModificationProps("promptEditorBackend").onResetToDefault
                 }
               />
               ) : null}
@@ -1450,6 +1513,7 @@ export function SettingsModal({
                 label="Completion Sound"
                 {...getSettingModificationProps("completionSound")}
                 onChange={(value) => updateDraft("completionSound", value)}
+                onPlay={onPlayCompletionSound}
                 value={draft.completionSound}
               />
               ) : null}
@@ -1462,7 +1526,32 @@ export function SettingsModal({
                 description="Show a macOS banner when a session needs attention."
                 label="macOS Attention Notifications"
                 {...getSettingModificationProps("showMacOSAttentionNotifications")}
-                onChange={(checked) => updateDraft("showMacOSAttentionNotifications", checked)}
+                onChange={(checked) => {
+                  updateDraft("showMacOSAttentionNotifications", checked);
+                  if (checked) {
+                    onRequestMacOSNotificationPermission?.();
+                  }
+                }}
+              />
+              ) : null}
+              {/* CDXC:SessionAttentionNotifications 2026-05-11-01:14:
+                  The Settings test button must run the real completion alert
+                  path while the adjacent macOS button handles denied or muted
+                  system notification permission outside zmux settings. */}
+              {shouldShowSetting(settingsSearch.sounds, "attentionNotificationActions") ? (
+              <ActionButtonPairField
+                actions={[
+                  {
+                    label: "Test agent task completion",
+                    onClick: () => onTestAgentTaskCompletion?.(),
+                  },
+                  {
+                    label: "macOS Notification Settings",
+                    onClick: () => onOpenMacOSNotificationSettings?.(),
+                  },
+                ]}
+                description="Run the current completion sound and notification flow, or open macOS notification permissions."
+                label="Completion Alerts"
               />
               ) : null}
               {shouldShowSetting(settingsSearch.sounds, "actionCompletionSound") ? (
@@ -1471,6 +1560,7 @@ export function SettingsModal({
                 label="Action Completion Sound"
                 {...getSettingModificationProps("actionCompletionSound")}
                 onChange={(value) => updateDraft("actionCompletionSound", value)}
+                onPlay={onPlayCompletionSound}
                 value={draft.actionCompletionSound}
               />
               ) : null}
@@ -1513,6 +1603,12 @@ export function SettingsModal({
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="actions">
             <ActionsSettingsTab vscode={vscode} />
           </TabsContent>
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="openTargets">
+            <OpenTargetsSettingsTab
+              onChange={(nextSettings) => applySettings(nextSettings)}
+              settings={draft}
+            />
+          </TabsContent>
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="hotkeys">
             <HotkeysSettingsTab
               hotkeys={draft.hotkeys}
@@ -1535,6 +1631,15 @@ type SettingsCommandEditorState = {
   lockedActionType?: SidebarActionType;
 };
 
+type SettingsOpenTargetEditorState = {
+  draft: {
+    argsText: string;
+    command: string;
+    label: string;
+  };
+  id?: string;
+};
+
 type SettingsAgentDragData = {
   agentId: string;
   kind: "settings-agent";
@@ -1544,6 +1649,221 @@ type SettingsCommandDragData = {
   commandId: string;
   kind: "settings-command";
 };
+
+function OpenTargetsSettingsTab({
+  onChange,
+  settings,
+}: {
+  onChange: (settings: zmuxSettings) => void;
+  settings: zmuxSettings;
+}) {
+  const [editorState, setEditorState] = useState<SettingsOpenTargetEditorState>();
+  const hiddenIds = new Set(settings.workspaceOpenTargetHiddenIds);
+  /**
+   * CDXC:TitlebarOpenIn 2026-05-11-02:03
+   * Settings shows installed built-ins as toggleable and unavailable built-ins
+   * as disabled rows. Turning an installed target off writes only hidden ids,
+   * so the startup scan can refresh availability without undoing that choice.
+   */
+  const availableBuiltInIds = new Set(settings.workspaceOpenTargetAvailability.availableTargetIds);
+
+  const updateHiddenTarget = (targetId: string, isVisible: boolean) => {
+    const nextHiddenIds = new Set(settings.workspaceOpenTargetHiddenIds);
+    if (isVisible) {
+      nextHiddenIds.delete(targetId);
+    } else {
+      nextHiddenIds.add(targetId);
+    }
+    onChange({
+      ...settings,
+      workspaceOpenTargetHiddenIds: normalizeWorkspaceOpenTargetHiddenIds([...nextHiddenIds]),
+    });
+  };
+
+  const saveCustomTarget = () => {
+    if (!editorState) {
+      return;
+    }
+    const label = editorState.draft.label.trim();
+    const command = editorState.draft.command.trim();
+    if (!label || !command) {
+      return;
+    }
+    const nextTarget: CustomWorkspaceOpenTarget = {
+      args: editorState.draft.argsText
+        .split("\n")
+        .map((arg) => arg.trim())
+        .filter(Boolean),
+      command,
+      id:
+        editorState.id ??
+        `${CUSTOM_WORKSPACE_OPEN_TARGET_ID_PREFIX}${createWorkspaceOpenTargetSlug(label)}-${Date.now().toString(36)}`,
+      label,
+    };
+    const existingTargets = settings.customWorkspaceOpenTargets.filter(
+      (target) => target.id !== editorState.id,
+    );
+    onChange({
+      ...settings,
+      customWorkspaceOpenTargets: normalizeCustomWorkspaceOpenTargets([
+        ...existingTargets,
+        nextTarget,
+      ]),
+    });
+    setEditorState(undefined);
+  };
+
+  const removeCustomTarget = (targetId: string) => {
+    onChange({
+      ...settings,
+      customWorkspaceOpenTargets: settings.customWorkspaceOpenTargets.filter(
+        (target) => target.id !== targetId,
+      ),
+    });
+  };
+
+  return (
+    <ScrollArea className="h-full min-h-0">
+      <div className="flex flex-col gap-6 px-5 pb-5">
+        <SettingsSection title="Open In">
+          {/* CDXC:TitlebarOpenIn 2026-05-11-00:22
+              Users need a Settings tab opened from the titlebar dropdown to
+              show or hide IDE targets and add custom project-open commands. */}
+          <div className="flex flex-col gap-2">
+            {BUILT_IN_WORKSPACE_OPEN_TARGETS.map((target) => {
+              const isEmbeddedEditor = target.id === "embedded-editor";
+              const isAvailable = isEmbeddedEditor || availableBuiltInIds.has(target.id);
+              return (
+                <div
+                  className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/40 px-3 py-2"
+                  key={target.id}
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium">{target.label}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {isAvailable
+                        ? target.commands?.join(", ") ?? (isEmbeddedEditor ? "zmux" : "macOS")
+                        : "Not installed"}
+                    </div>
+                  </div>
+                  <Switch
+                    checked={isEmbeddedEditor || (isAvailable && !hiddenIds.has(target.id))}
+                    disabled={isEmbeddedEditor || !isAvailable}
+                    onCheckedChange={(checked) => updateHiddenTarget(target.id, checked)}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Custom Open Targets">
+          <div className="flex flex-col gap-2">
+            {settings.customWorkspaceOpenTargets.map((target) => (
+              <div
+                className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/40 px-3 py-2"
+                key={target.id}
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{target.label}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {[target.command, ...target.args].join(" ")}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    onClick={() =>
+                      setEditorState({
+                        draft: {
+                          argsText: target.args.join("\n"),
+                          command: target.command,
+                          label: target.label,
+                        },
+                        id: target.id,
+                      })
+                    }
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconPencil aria-hidden="true" size={14} />
+                    <span className="sr-only">Edit</span>
+                  </Button>
+                  <Button
+                    onClick={() => removeCustomTarget(target.id)}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconTrash aria-hidden="true" size={14} />
+                    <span className="sr-only">Remove</span>
+                  </Button>
+                </div>
+              </div>
+            ))}
+            {editorState ? (
+              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-card/40 p-3">
+                <Input
+                  aria-label="Open target name"
+                  onChange={(event) =>
+                    setEditorState({
+                      ...editorState,
+                      draft: { ...editorState.draft, label: event.currentTarget.value },
+                    })
+                  }
+                  placeholder="Name"
+                  value={editorState.draft.label}
+                />
+                <Input
+                  aria-label="Open target command"
+                  onChange={(event) =>
+                    setEditorState({
+                      ...editorState,
+                      draft: { ...editorState.draft, command: event.currentTarget.value },
+                    })
+                  }
+                  placeholder="Command"
+                  value={editorState.draft.command}
+                />
+                <Textarea
+                  aria-label="Open target arguments"
+                  onChange={(event) =>
+                    setEditorState({
+                      ...editorState,
+                      draft: { ...editorState.draft, argsText: event.currentTarget.value },
+                    })
+                  }
+                  placeholder="Optional arguments, one per line"
+                  value={editorState.draft.argsText}
+                />
+                <div className="flex justify-end gap-2">
+                  <Button onClick={() => setEditorState(undefined)} type="button" variant="ghost">
+                    Cancel
+                  </Button>
+                  <Button onClick={saveCustomTarget} type="button">
+                    Save
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                className="w-fit"
+                onClick={() =>
+                  setEditorState({ draft: { argsText: "", command: "", label: "" } })
+                }
+                type="button"
+                variant="outline"
+              >
+                <IconPlus aria-hidden="true" size={16} />
+                Add target
+              </Button>
+            )}
+          </div>
+        </SettingsSection>
+      </div>
+    </ScrollArea>
+  );
+}
 
 function AgentsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
   const agents = useSidebarStore((state) => state.hud.agents);
@@ -2409,7 +2729,7 @@ function HotkeysSettingsTab({
                   <FieldDescription className="text-sm">{definition.description}</FieldDescription>
                 </FieldContent>
                 <HotkeyRecorderField
-                  aria-invalid={isDuplicate}
+                  ariaInvalid={isDuplicate}
                   id={`hotkey-${definition.id}`}
                   hotkey={value}
                   onChange={(nextHotkey) => updateHotkey(definition.id, nextHotkey)}
@@ -2776,34 +3096,42 @@ function GhosttySettingsActions({
 }
 
 function ZapetPromptEditingField({
-  checked,
+  backend,
   isModified,
   onChange,
   onInstall,
   onResetToDefault,
 }: {
-  checked: boolean;
+  backend: PromptEditorBackend;
   isModified?: boolean;
-  onChange: (checked: boolean) => void;
+  onChange: (backend: PromptEditorBackend) => void;
   onInstall: () => void;
   onResetToDefault?: () => void;
 }) {
   const id = useId();
   return (
     <SettingRow
-      description="When enabled, new terminals use Zapet when a CLI opens an editor for prompt text, including zsh edit-command-line."
+      description="Choose which floating editor new terminals use when Ctrl+G asks the shell to edit prompt text."
       htmlFor={id}
       isModified={isModified}
-      label="Rich Prompt Editing with Zapet"
+      label="Ctrl+G prompt editor"
       onResetToDefault={onResetToDefault}
     >
       <div className="flex flex-col items-start gap-3">
-        <div className="flex w-full items-center justify-between gap-3 rounded-md border border-border bg-muted/20 px-3 py-2">
-          <span className="min-w-0 text-sm font-medium text-foreground">
-            Use Zapet as the prompt editor
-          </span>
-          <Switch checked={checked} id={id} onCheckedChange={onChange} />
-        </div>
+        <Select onValueChange={(value) => onChange(value as PromptEditorBackend)} value={backend}>
+          <SelectTrigger className="h-10 w-full px-3 text-sm" id={id}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              {PROMPT_EDITOR_BACKEND_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
         <Button
           className="h-9 w-fit px-3 text-sm"
           onClick={onInstall}
@@ -3097,6 +3425,36 @@ function ActionButtonField({
   );
 }
 
+function ActionButtonPairField({
+  actions,
+  description,
+  label,
+}: {
+  actions: ReadonlyArray<{ label: string; onClick: () => void }>;
+  description?: string;
+  label: string;
+}) {
+  const id = useId();
+  return (
+    <SettingRow description={description} htmlFor={id} label={label}>
+      <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
+        {actions.map((action, index) => (
+          <Button
+            className="h-10 w-full justify-center px-3 text-center text-sm"
+            id={index === 0 ? id : undefined}
+            key={action.label}
+            onClick={action.onClick}
+            type="button"
+            variant="outline"
+          >
+            {action.label}
+          </Button>
+        ))}
+      </div>
+    </SettingRow>
+  );
+}
+
 function SelectField({
   contentClassName,
   description,
@@ -3169,12 +3527,14 @@ function SoundField({
   isModified,
   label,
   onChange,
+  onPlay,
   onResetToDefault,
   value,
 }: {
   description?: string;
   label: string;
   onChange: (value: CompletionSoundSetting) => void;
+  onPlay?: (value: CompletionSoundSetting) => void;
   value: CompletionSoundSetting;
 } & SettingModificationProps) {
   /**
@@ -3182,19 +3542,57 @@ function SoundField({
    * Sound pickers have enough options that Radix hover-scroll buttons can
    * fight wheel scrolling inside the modal. Disable those auto-scroll zones so
    * mouse and trackpad wheel direction remains stable.
+   *
+   * CDXC:Settings 2026-05-11-02:06
+   * Every sound picker needs an adjacent icon-only preview button so users can
+   * audition the selected sound without changing settings or triggering the
+   * broader agent-completion notification test flow.
    */
+  const id = useId();
   return (
-    <SelectField
-      contentClassName="max-h-72"
+    <SettingRow
       description={description}
+      htmlFor={id}
       isModified={isModified}
       label={label}
-      onChange={(nextValue) => onChange(nextValue as CompletionSoundSetting)}
       onResetToDefault={onResetToDefault}
-      options={COMPLETION_SOUND_OPTIONS}
-      showScrollButtons={false}
-      value={value}
-    />
+    >
+      <div className="grid grid-cols-[minmax(0,1fr)_2.5rem] items-center gap-2">
+        <Select
+          onValueChange={(nextValue) => onChange(nextValue as CompletionSoundSetting)}
+          value={value}
+        >
+          <SelectTrigger className="h-10 w-full px-3 text-sm" id={id}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="max-h-72" showScrollButtons={false}>
+            <SelectGroup>
+              {COMPLETION_SOUND_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              aria-label={`Play ${label}`}
+              className="h-10 w-10 rounded-md"
+              disabled={!onPlay}
+              onClick={() => onPlay?.(value)}
+              size="icon"
+              type="button"
+              variant="outline"
+            >
+              <IconPlayerPlay aria-hidden="true" className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent sideOffset={6}>Play selected sound</TooltipContent>
+        </Tooltip>
+      </div>
+    </SettingRow>
   );
 }
 

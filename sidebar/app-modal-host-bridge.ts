@@ -14,9 +14,11 @@ export type AppModalKind =
   | "daemonSessions"
   | "findPreviousSession"
   | "hotkeys"
+  | "openTargets"
   | "pinnedPrompts"
   | "previousSessions"
   | "firstUserMessage"
+  | "delayedSend"
   | "renameSession"
   | "scratchPad"
   | "settings"
@@ -29,6 +31,7 @@ export type OpenAppModalMessage =
         AppModalKind,
         | "agentConfig"
         | "commandConfig"
+        | "delayedSend"
         | "firstUserMessage"
         | "findPreviousSession"
         | "renameSession"
@@ -53,6 +56,7 @@ export type OpenAppModalMessage =
       title?: string;
       type: "open";
     }
+  | { modal: "delayedSend"; sessionId: string; title?: string; type: "open" }
   | { initialTitle: string; modal: "renameSession"; sessionId: string; type: "open" };
 
 declare global {

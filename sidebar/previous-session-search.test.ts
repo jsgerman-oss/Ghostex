@@ -72,6 +72,38 @@ describe("filterPreviousSessions", () => {
     ]);
     expect(filterPreviousSessions(previousSessions, "normal", { favoritesOnly: true })).toEqual([]);
   });
+
+  test("should keep only the latest session for the same project and title", () => {
+    const previousSessions = [
+      createPreviousSession({
+        alias: "Duplicate title",
+        closedAt: "2026-03-24T10:00:00.000Z",
+        historyId: "history-old",
+        projectName: "zmux",
+        projectPath: "/Users/madda/dev/_active/zmux",
+      }),
+      createPreviousSession({
+        alias: "Other project duplicate title",
+        closedAt: "2026-03-24T11:00:00.000Z",
+        historyId: "history-other-project",
+        primaryTitle: "Duplicate title",
+        projectName: "other",
+        projectPath: "/Users/madda/dev/_active/other",
+      }),
+      createPreviousSession({
+        alias: "Duplicate title",
+        closedAt: "2026-03-24T12:00:00.000Z",
+        historyId: "history-new",
+        projectName: "zmux",
+        projectPath: "/Users/madda/dev/_active/zmux",
+      }),
+    ];
+
+    expect(filterPreviousSessions(previousSessions, "")).toMatchObject([
+      { historyId: "history-other-project" },
+      { historyId: "history-new" },
+    ]);
+  });
 });
 
 function createPreviousSession(
