@@ -21,6 +21,6 @@
 	<key>ZMUXHomeDirectoryName</key>
 	<string>.zmux-dev</string>
 	<key>ZMUXSharedHomeDirectoryName</key>
-	<string>.zmux</string>
+	<string>.zmux-dev</string>
 </dict>
 </plist>

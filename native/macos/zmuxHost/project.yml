@@ -133,7 +133,11 @@ targets:
         # process/executable, menu title, and window title.
         # CDXC:DevAppFlavor 2026-04-28-02:01: Dev scripts override these
         # generated app identifiers to build zmux-dev as a separate app that
-        # keeps diagnostics in ~/.zmux-dev while sharing ~/.zmux workflow state.
+        # keeps diagnostics in ~/.zmux-dev.
+        # CDXC:DevAppFlavor 2026-05-11-12:10: zmux-dev must not share settings,
+        # projects, sessions, hooks, browser profiles, or runtime state with
+        # the installed app; generated metadata now points all dev state at the
+        # dev home.
         EXECUTABLE_NAME: ${ZMUX_APP_NAME}
         INFOPLIST_KEY_CFBundleDisplayName: ${ZMUX_APP_DISPLAY_NAME}
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools

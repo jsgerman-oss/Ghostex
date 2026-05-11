@@ -20,10 +20,12 @@ enum ZmuxAppStorage {
 
   /**
    CDXC:DevAppFlavor 2026-04-28-02:01
-   zmux-dev must keep diagnostic logs under ~/.zmux-dev, while hooks,
-   workspaces, and session state stay shared with the default app under
-   ~/.zmux. Bundle metadata owns both directory names so LaunchServices
-   launches get the same storage split as shell-launched builds.
+   Bundle metadata owns the diagnostic and workflow directory names so
+   LaunchServices launches get the same storage split as shell-launched builds.
+   CDXC:DevAppFlavor 2026-05-11-12:10
+   `bun start:dev` must not share settings, projects, sessions, hooks, browser
+   profiles, or runtime files with the installed app. zmux-dev therefore points
+   both diagnostics and shared workflow state at ~/.zmux-dev.
    */
   static var diagnosticsHomeDirectoryName: String {
     let candidate = Bundle.main.object(forInfoDictionaryKey: "ZMUXHomeDirectoryName") as? String
@@ -204,10 +206,19 @@ enum ZmuxAppStorage {
     /**
      CDXC:DevAppFlavor 2026-04-28-02:01
      Existing user state lives in the default app's WKWebView localStorage under
-     com.madda.zmux.host. zmux-dev has a separate bundle WebKit container, so
-     import missing shared settings/workspace snapshots from that production
-     localStorage before falling back to empty defaults.
+     com.madda.zmux.host. Production can import missing shared
+     settings/workspace snapshots from that localStorage before falling back to
+     empty defaults.
+     CDXC:DevAppFlavor 2026-05-11-12:10
+     zmux-dev must start from its own ~/.zmux-dev state instead of cloning or
+     reading production localStorage. Only the production shared home may run
+     the legacy import.
      */
+    guard sharedHomeDirectoryName == ".zmux",
+      Bundle.main.bundleIdentifier == "com.madda.zmux.host"
+    else {
+      return nil
+    }
     let webKitRoot = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent("Library/WebKit/com.madda.zmux.host", isDirectory: true)
     guard let enumerator = FileManager.default.enumerator(
@@ -296,19 +307,39 @@ enum ZmuxAppStorage {
 }
 
 enum NativeDebugLogging {
+  private static let isEnabledCacheInterval: TimeInterval = 0.25
+  private static var cachedIsEnabled: Bool?
+  private static var cachedIsEnabledReadAt: TimeInterval = 0
+
   /**
    CDXC:Diagnostics 2026-04-29-09:16
    Non-error native diagnostics must honor the sidebar Settings debug switch so
    routine title, focus, restore, and workspace updates cannot create persistent
    memory and disk pressure when debugging UI is disabled.
+   CDXC:NativeTerminalFocus 2026-05-11-11:48
+   Keyboard-route probes can run for every keyDown during a repro. Cache the
+   debug switch briefly so disabled diagnostics do not read shared settings
+   from disk on every keystroke, while still reacting quickly when the user
+   enables Debugging Mode before reproducing.
    */
   static var isEnabled: Bool {
+    let now = ProcessInfo.processInfo.systemUptime
+    if let cachedIsEnabled, now - cachedIsEnabledReadAt < isEnabledCacheInterval {
+      return cachedIsEnabled
+    }
+    let value: Bool
     guard let data = try? Data(contentsOf: ZmuxAppStorage.sharedSidebarSettingsURL),
       let object = try? JSONSerialization.jsonObject(with: data),
       let settings = object as? [String: Any]
     else {
-      return false
+      value = false
+      cachedIsEnabled = value
+      cachedIsEnabledReadAt = now
+      return value
     }
-    return settings["debuggingMode"] as? Bool ?? false
+    value = settings["debuggingMode"] as? Bool ?? false
+    cachedIsEnabled = value
+    cachedIsEnabledReadAt = now
+    return value
   }
 }

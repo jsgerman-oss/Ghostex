@@ -623,9 +623,18 @@ enum NativeT3RuntimeLauncher {
   private static let bootstrapCredentialLock = NSLock()
   private static var bootstrapCredential: String?
   private static var ownerBearerToken: String?
+  @MainActor private static var runningSessionHeartbeatTimer: Timer?
+  @MainActor private static var runningSessionHeartbeatSessionIds: [String] = []
   private static let startupUnresponsiveRetentionSeconds = 90
   private static let staleRuntimeShutdownTimeout: TimeInterval = 2.0
-  private static let appClosedRuntimeShutdownTimeoutSeconds = 300
+  /**
+   CDXC:T3Code 2026-05-10-22:07
+   Background managed t3code should be killed after three minutes without a
+   running T3 session in the sidebar, because hidden Bun providers can keep
+   burning CPU/GPU-side compositing energy while users are only looking at
+   normal terminals.
+   */
+  private static let appClosedRuntimeShutdownTimeoutSeconds = 180
 
   /**
    CDXC:T3Code 2026-04-30-03:39
@@ -874,6 +883,11 @@ enum NativeT3RuntimeLauncher {
    the sibling/custom checkout runs through Bun from `apps/server/src/bin.ts`.
    zmux still supplies the desktop bootstrap envelope on fd 3 so the WKWebView
    renders the authenticated provider without opening a browser.
+
+   CDXC:T3Code 2026-05-10-22:07
+   A newly spawned provider gets one startup keepalive write so stale heartbeat
+   files from earlier sessions cannot make the wrapper kill it immediately.
+   After startup, only running T3 sidebar sessions refresh the keepalive.
    */
   static func createLaunch(cwd: String) throws -> NativeT3RuntimeLaunch {
     touchAppHeartbeat(reason: "createLaunch")
@@ -902,11 +916,11 @@ enum NativeT3RuntimeLauncher {
   }
 
   /**
-   CDXC:T3Code 2026-05-02-02:31
-   T3 Code should survive quick zmux restarts, but it must not live forever
-   after the app is closed. The native app refreshes this heartbeat while it is
-   open and once during graceful termination; the T3 wrapper exits the managed
-   runtime if the heartbeat stays stale for five minutes.
+   CDXC:T3Code 2026-05-10-22:07
+   Despite the historical filename, this heartbeat now represents running T3
+   sidebar-session ownership, not generic app liveness. The sidebar refreshes it
+   only while a T3 card is shown and not sleeping; the wrapper exits the managed
+   runtime when no running T3 card has refreshed it for the shutdown timeout.
    */
   static func touchAppHeartbeat(reason: String) {
     do {
@@ -918,6 +932,54 @@ enum NativeT3RuntimeLauncher {
       NativeT3CodePaneReproLog.append("nativeT3Runtime.appHeartbeat.write.failed", [
         "error": error.localizedDescription,
         "reason": reason,
+      ])
+    }
+  }
+
+  /**
+   CDXC:T3Code 2026-05-10-22:48
+   The sidebar defines "running T3" from the visible session list and sleep
+   state. Native keeps the provider heartbeat alive while that set is non-empty,
+   then stops refreshing it so the wrapper kills background t3code after three
+   stale minutes.
+   */
+  @MainActor
+  static func setRunningSessionHeartbeat(runningSessionIds: [String], reason: String) {
+    let normalizedSessionIds = Array(Set(runningSessionIds)).sorted()
+    guard !normalizedSessionIds.isEmpty else {
+      if !runningSessionHeartbeatSessionIds.isEmpty || runningSessionHeartbeatTimer != nil {
+        NativeT3CodePaneReproLog.append("nativeT3Runtime.runningSessionHeartbeat.stopped", [
+          "reason": reason,
+        ])
+      }
+      runningSessionHeartbeatSessionIds = []
+      runningSessionHeartbeatTimer?.invalidate()
+      runningSessionHeartbeatTimer = nil
+      return
+    }
+
+    let previousSessionIds = runningSessionHeartbeatSessionIds
+    runningSessionHeartbeatSessionIds = normalizedSessionIds
+    touchAppHeartbeat(reason: "runningT3Sessions.\(reason)")
+    if runningSessionHeartbeatTimer == nil {
+      let timer = Timer(
+        timeInterval: appHeartbeatInterval,
+        repeats: true
+      ) { _ in
+        Task { @MainActor in
+          guard !runningSessionHeartbeatSessionIds.isEmpty else {
+            return
+          }
+          touchAppHeartbeat(reason: "runningT3Sessions.timer")
+        }
+      }
+      runningSessionHeartbeatTimer = timer
+      RunLoop.main.add(timer, forMode: .common)
+    }
+    if previousSessionIds != normalizedSessionIds {
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.runningSessionHeartbeat.updated", [
+        "reason": reason,
+        "runningSessionIds": normalizedSessionIds,
       ])
     }
   }
@@ -1004,6 +1066,14 @@ enum NativeT3RuntimeLauncher {
       "noBrowser": true,
       "port": port,
       "t3Home": t3HomeDirectory().path,
+      /**
+       CDXC:T3Code 2026-05-10-18:36
+       t3code's desktop bootstrap schema requires explicit Tailscale serve
+       exposure fields. zmux-managed panes run local-only, so send disabled
+       state instead of relying on upstream defaults after schema decoding.
+       */
+      "tailscaleServeEnabled": false,
+      "tailscaleServePort": 443,
     ]
     var data = try JSONSerialization.data(withJSONObject: payload, options: [])
     /**

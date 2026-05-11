@@ -83,6 +83,11 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
      The sidebar decides when attention notifications are allowed. Native code
      requests macOS alert permission only on first use, then posts a banner for
      the exact session id so click handling can focus the right pane.
+
+     CDXC:SessionAttentionNotifications 2026-05-11-01:14
+     Attention notifications must not add their own macOS notification sound.
+     Request only alert permission and leave notification content sound unset;
+     the existing completion-bell setting remains the only audio path.
      */
     center.getNotificationSettings { [weak self] settings in
       guard let self else { return }
@@ -103,6 +108,22 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     }
   }
 
+  func requestPermissionFromSettings() {
+    center.getNotificationSettings { [weak self] settings in
+      guard let self else { return }
+      switch settings.authorizationStatus {
+      case .authorized, .provisional:
+        self.presentNotificationAlreadyEnabledDialog()
+      case .notDetermined:
+        self.presentNotificationPermissionExplanation()
+      case .denied:
+        self.presentNotificationSettingsDialog()
+      @unknown default:
+        self.presentNotificationSettingsDialog()
+      }
+    }
+  }
+
   private func deliver(_ command: ShowSessionAttentionNotification) {
     let identifier = "zmux.session.attention.\(command.sessionId).\(UUID().uuidString)"
     let content = UNMutableNotificationContent()
@@ -113,14 +134,112 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     content.threadIdentifier = "zmux.session.attention.\(command.sessionId)"
     content.targetContentIdentifier = command.sessionId
     content.userInfo = ["sessionId": command.sessionId]
+    content.sound = nil
+    let attachmentUrl = applyProjectIconAttachment(
+      to: content,
+      command: command,
+      identifier: identifier
+    )
     center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil)) {
       [weak self] error in
       guard error == nil else { return }
-      self?.removeDeliveredNotificationLater(identifier)
+      self?.removeDeliveredNotificationLater(identifier, attachmentUrl: attachmentUrl)
     }
   }
 
-  private func removeDeliveredNotificationLater(_ identifier: String) {
+  private func applyProjectIconAttachment(
+    to content: UNMutableNotificationContent,
+    command: ShowSessionAttentionNotification,
+    identifier: String
+  ) -> URL? {
+    /**
+     CDXC:ProjectIcons 2026-05-11-01:50
+     Attention notifications should show the same project image selected in the
+     sidebar/React project model. Convert the shared data URL into a bounded
+     temporary PNG attachment because macOS notification attachments require a
+     file URL and may not render SVG data directly.
+     */
+    guard let attachmentUrl = Self.writeNotificationProjectIcon(
+      command.iconDataUrl,
+      notificationIdentifier: identifier
+    ) else {
+      return nil
+    }
+    do {
+      content.attachments = [
+        try UNNotificationAttachment(
+          identifier: "projectIcon",
+          url: attachmentUrl,
+          options: [UNNotificationAttachmentOptionsTypeHintKey: UTType.png.identifier]
+        )
+      ]
+      return attachmentUrl
+    } catch {
+      try? FileManager.default.removeItem(at: attachmentUrl)
+      return nil
+    }
+  }
+
+  private static func writeNotificationProjectIcon(
+    _ dataUrl: String?,
+    notificationIdentifier: String
+  ) -> URL? {
+    guard let dataUrl = dataUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+      dataUrl.count <= 700_000,
+      let commaIndex = dataUrl.firstIndex(of: ",")
+    else {
+      return nil
+    }
+    let header = dataUrl[..<commaIndex].lowercased()
+    guard header.hasPrefix("data:image/"), header.contains(";base64") else {
+      return nil
+    }
+    let payload = String(dataUrl[dataUrl.index(after: commaIndex)...])
+    guard let rawData = Data(base64Encoded: payload), rawData.count <= 512_000 else {
+      return nil
+    }
+    guard let image = NSImage(data: rawData), let pngData = pngDataForNotificationIcon(image) else {
+      return nil
+    }
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("zmux-notification-icons", isDirectory: true)
+    do {
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let fileName = notificationIdentifier.replacingOccurrences(of: "/", with: "_") + ".png"
+      let fileUrl = directory.appendingPathComponent(fileName, isDirectory: false)
+      try pngData.write(to: fileUrl, options: .atomic)
+      return fileUrl
+    } catch {
+      return nil
+    }
+  }
+
+  private static func pngDataForNotificationIcon(_ image: NSImage) -> Data? {
+    let targetSize = NSSize(width: 128, height: 128)
+    let sourceSize = image.size.width > 0 && image.size.height > 0 ? image.size : targetSize
+    let scale = min(targetSize.width / sourceSize.width, targetSize.height / sourceSize.height)
+    let drawSize = NSSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+    let drawRect = NSRect(
+      x: (targetSize.width - drawSize.width) / 2.0,
+      y: (targetSize.height - drawSize.height) / 2.0,
+      width: drawSize.width,
+      height: drawSize.height
+    )
+    let output = NSImage(size: targetSize)
+    output.lockFocus()
+    NSColor.clear.setFill()
+    NSRect(origin: .zero, size: targetSize).fill()
+    image.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+    output.unlockFocus()
+    guard let tiffData = output.tiffRepresentation,
+      let bitmap = NSBitmapImageRep(data: tiffData)
+    else {
+      return nil
+    }
+    return bitmap.representation(using: .png, properties: [:])
+  }
+
+  private func removeDeliveredNotificationLater(_ identifier: String, attachmentUrl: URL?) {
     /**
      CDXC:SessionAttentionNotifications 2026-05-10-16:46
      Attention notifications should behave like temporary banners by default:
@@ -129,7 +248,87 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
      */
     DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self] in
       self?.center.removeDeliveredNotifications(withIdentifiers: [identifier])
+      if let attachmentUrl {
+        try? FileManager.default.removeItem(at: attachmentUrl)
+      }
     }
+  }
+
+  private func presentNotificationPermissionExplanation() {
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      let alert = NSAlert()
+      alert.messageText = "Enable zmux Notifications"
+      alert.informativeText =
+        "zmux can show a temporary macOS banner when an agent task needs attention. Completion sounds remain controlled by zmux Settings."
+      alert.alertStyle = .informational
+      alert.addButton(withTitle: "Enable Notifications")
+      alert.addButton(withTitle: "Cancel")
+      if let primaryButton = alert.buttons.first {
+        primaryButton.keyEquivalent = "\r"
+        primaryButton.bezelColor = .controlAccentColor
+      }
+      if alert.buttons.count > 1 {
+        alert.buttons[1].keyEquivalent = "\u{1b}"
+      }
+      guard alert.runModal() == .alertFirstButtonReturn else {
+        return
+      }
+      self.center.requestAuthorization(options: [.alert]) { [weak self] granted, _ in
+        if !granted {
+          self?.presentNotificationSettingsDialog()
+        }
+      }
+    }
+  }
+
+  private func presentNotificationAlreadyEnabledDialog() {
+    DispatchQueue.main.async {
+      let alert = NSAlert()
+      alert.messageText = "zmux Notifications Are Enabled"
+      alert.informativeText =
+        "macOS already allows zmux to show notification banners. Use Test agent task completion to verify your current zmux sound and notification settings."
+      alert.alertStyle = .informational
+      alert.addButton(withTitle: "OK")
+      alert.runModal()
+    }
+  }
+
+  private func presentNotificationSettingsDialog() {
+    DispatchQueue.main.async {
+      let alert = NSAlert()
+      alert.messageText = "Enable Notifications in macOS Settings"
+      alert.informativeText =
+        "macOS is not allowing zmux notification banners. Open Notification Settings and allow notifications for zmux."
+      alert.alertStyle = .warning
+      alert.addButton(withTitle: "Open Settings")
+      alert.addButton(withTitle: "Cancel")
+      if let primaryButton = alert.buttons.first {
+        primaryButton.keyEquivalent = "\r"
+        primaryButton.bezelColor = .controlAccentColor
+      }
+      if alert.buttons.count > 1 {
+        alert.buttons[1].keyEquivalent = "\u{1b}"
+      }
+      guard alert.runModal() == .alertFirstButtonReturn else {
+        return
+      }
+      Self.openMacOSNotificationSettings()
+    }
+  }
+
+  static func openMacOSNotificationSettings() {
+    /**
+     CDXC:SessionAttentionNotifications 2026-05-11-01:14
+     Settings exposes a direct path to macOS Notifications so users can repair
+     denied banner permission without hunting through System Settings.
+     */
+    guard
+      let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+    else {
+      return
+    }
+    NSWorkspace.shared.open(url)
   }
 
   func userNotificationCenter(
@@ -169,7 +368,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     return formatter
   }()
   private static var createdLogDirectories = Set<String>()
-
   nonisolated(unsafe) let ghostty: Ghostty.App
   let undoManager = UndoManager()
   private let ghosttyConfigSelection: GhosttyConfigSelection
@@ -190,7 +388,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
   private var isMainWindowHiddenByIdeAttachment = false
   private var lastVisibleMainWindowFrameForPersistence: NSRect?
   private var pendingGhosttyConfigReloadTimer: Timer?
-  private var t3RuntimeHeartbeatTimer: Timer?
   private var isFlushingCEFBeforeTerminate = false
   private var didFlushCEFBeforeTerminate = false
   private weak var attachToIdeTitlebarButton: NSButton?
@@ -247,7 +444,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
        */
       makeWindow()
       startBridge()
-      startT3RuntimeAppHeartbeat()
       startSparkleBackgroundUpdateCheck()
     }
     tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
@@ -260,9 +456,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     Self.appendNativeHostLifecycleLog(
       "applicationWillTerminate pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false)"
     )
-    NativeT3RuntimeLauncher.touchAppHeartbeat(reason: "applicationWillTerminate")
-    t3RuntimeHeartbeatTimer?.invalidate()
-    t3RuntimeHeartbeatTimer = nil
     stopCodeServerRuntime(logPrefix: "nativeHost.applicationWillTerminate")
     (window?.contentView as? zmuxRootView)?.stopCodeServerRuntimeForAppTermination()
   }
@@ -506,6 +699,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     let message = details.map { "\(event) \($0)" } ?? event
     appendLogLine(
       message, to: logURL, logsDirectory: logsDirectory, label: "workspace restore debug")
+  }
+
+  fileprivate static func appendSidebarRefreshDebugLog(event: String, details: String?) {
+    SidebarRefreshDebugLog.append(event: event, details: details)
   }
 
   fileprivate static func appendWorkspaceDockIndicatorDebugLog(event: String, details: String?) {
@@ -900,7 +1097,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     workspaceView = root.workspaceView
 
     let initialWindowFrame = restoredInitialWindowFrame()
-    let windowStyleMask: NSWindow.StyleMask = [.closable, .miniaturizable, .resizable, .titled]
+    let windowStyleMask: NSWindow.StyleMask = [
+      .closable, .fullSizeContentView, .miniaturizable, .resizable, .titled,
+    ]
     /**
      CDXC:NativeWindowChrome 2026-05-07-08:17
      Persisted placement stores the outer NSWindow frame because that is the
@@ -919,17 +1118,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     window.onFirstResponderChanged = { [weak root] responder in
       root?.workspaceView.windowFirstResponderChanged(responder, reason: "windowMakeFirstResponder")
     }
+    window.onKeyDownDispatch = { [weak root] event in
+      root?.workspaceView.windowKeyDownDispatch(event)
+    }
     window.onKeyEquivalent = { [weak root] event in
       root?.handleHotkeyEquivalent(event) ?? false
     }
     window.title = "Zmux"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
+    window.isMovableByWindowBackground = false
     window.backgroundColor = zmuxReferenceSidebarChromeBackgroundColor
     window.contentView = root
     window.delegate = self
-    installAppTitlebarLabel(on: window)
-    installAttachToIdeTitlebarButton(on: window)
     window.makeKeyAndOrderFront(nil)
     self.window = window
     let zedOverlayController = ZedOverlayController(
@@ -1242,6 +1443,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       enabled: enabled,
       targetApp: targetApp
     )
+    (window?.contentView as? zmuxRootView)?.applyNativeTitlebarZedOverlay(
+      enabled: enabled,
+      hideTitlebarButton: hideTitlebarButton,
+      targetApp: targetApp
+    )
     /**
      CDXC:IDEAttachment 2026-05-01-13:52
      Settings can hide the native title-bar Attach/Detach IDE button without
@@ -1309,6 +1515,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       workspaceView?.createTerminal(command)
     case .createWebPane(let command):
       workspaceView?.createWebPane(command)
+    case .openFloatingEditor(let command):
+      workspaceView?.openFloatingEditor(command)
     case .closeTerminal(let command):
       workspaceView?.closeTerminal(sessionId: command.sessionId)
     case .closeWebPane(let command):
@@ -1321,6 +1529,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       workspaceView?.reloadWebPane(sessionId: command.sessionId)
     case .startT3CodeRuntime(let command):
       startT3CodeRuntime(command)
+    case .setT3CodeRuntimeSessionState(let command):
+      NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
+        runningSessionIds: command.runningSessionIds,
+        reason: "nativeHost")
     case .stopT3CodeRuntime:
       stopT3CodeRuntime(logPrefix: "nativeHost")
     case .startCodeServerRuntime(let command):
@@ -1341,6 +1553,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       workspaceView?.sendTerminalEnter(sessionId: command.sessionId)
     case .setActiveTerminalSet(let command):
       updateAppTitlebarTitle(command.appTitle)
+      (window?.contentView as? zmuxRootView)?.applyReactTitlebarProjectState(command)
       workspaceView?.setActiveTerminalSet(command)
     case .setSessionStatusIndicators(let command):
       sessionStatusIndicatorController?.apply(command)
@@ -1365,6 +1578,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     case .appendSessionTitleDebugLog(let command):
       Self.appendSessionTitleDebugLog(
         event: command.event, details: command.details, force: command.force == true)
+    case .appendSidebarRefreshDebugLog(let command):
+      Self.appendSidebarRefreshDebugLog(event: command.event, details: command.details)
     case .appendWorkspaceDockIndicatorDebugLog(let command):
       Self.appendWorkspaceDockIndicatorDebugLog(event: command.event, details: command.details)
     case .persistSharedSidebarStorage(let command):
@@ -1383,6 +1598,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       openGhosttyConfigFile()
     case .openAccessibilityPreferences:
       openAccessibilityPreferences()
+    case .requestMacOSNotificationPermission:
+      sessionAttentionNotificationController.requestPermissionFromSettings()
+    case .openMacOSNotificationSettings:
+      SessionAttentionNotificationController.openMacOSNotificationSettings()
     case .openExternalUrl(let command):
       openExternalUrl(command)
     case .openWorkspaceInFinder(let command):
@@ -1403,6 +1622,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       workspaceView?.showBrowserImportSettings(sessionId: command.sessionId)
     case .setSidebarSide(let command):
       (window?.contentView as? zmuxRootView)?.setSidebarSide(command.side)
+    case .setReactTitlebarHitRegions(let command):
+      (window?.contentView as? zmuxRootView)?.setReactTitlebarHitRegions(command.regions)
+    case .openActiveProjectEditorFromTitlebar:
+      break
+    case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
+      break
+    case .runSidebarCommandFromTitlebar:
+      break
     case .configureZedOverlay(let command):
       if let workspacePath = command.workspacePath {
         self.workspacePath = workspacePath
@@ -1483,7 +1710,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
    */
   @MainActor
   private func startT3CodeRuntime(_ command: StartT3CodeRuntime) {
-    NativeT3RuntimeLauncher.touchAppHeartbeat(reason: "nativeHost.startT3CodeRuntime")
+    /**
+     CDXC:T3Code 2026-05-10-22:07
+     Runtime start/reuse commands must not refresh the managed T3 keepalive:
+     sidebar restore loops can request a provider before a T3 card is actually
+     running. setT3CodeRuntimeSessionState owns the session heartbeat, and
+     createLaunch grants only the startup grace needed for a new provider.
+     */
     if let process = t3CodeRuntimeProcess, process.isRunning {
       /**
        CDXC:T3Code 2026-05-02-00:48
@@ -1696,27 +1929,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       codeServerRuntimeProcess = nil
       codeServerRuntimeStartedAt = nil
     }
-  }
-
-  /**
-   CDXC:T3Code 2026-05-02-02:31
-   Closing zmux should not kill T3 Code immediately because quick app restarts
-   should reuse the warm runtime. Keep a native-app heartbeat while zmux is
-   open; the managed T3 wrapper shuts itself down after five minutes without a
-   fresh heartbeat.
-   */
-  @MainActor
-  private func startT3RuntimeAppHeartbeat() {
-    NativeT3RuntimeLauncher.touchAppHeartbeat(reason: "applicationDidFinishLaunching")
-    t3RuntimeHeartbeatTimer?.invalidate()
-    let timer = Timer(
-      timeInterval: NativeT3RuntimeLauncher.appHeartbeatInterval,
-      repeats: true
-    ) { _ in
-      NativeT3RuntimeLauncher.touchAppHeartbeat(reason: "timer")
-    }
-    t3RuntimeHeartbeatTimer = timer
-    RunLoop.main.add(timer, forMode: .common)
   }
 
   @MainActor private func activateAppWindow() {
@@ -2331,43 +2543,42 @@ private struct NativeMainWindowChromeSettings {
 private final class NativeSettingsStore {
   private static let logger = Logger(subsystem: "com.madda.zmux.host", category: "settings")
   private static let defaultHotkeys: [String: String] = [
-    "createSession": "cmd+alt+n",
-    "focusDown": "cmd+alt+shift+down",
-    "focusGroup1": "cmd+alt+shift+1",
-    "focusGroup2": "cmd+alt+shift+2",
-    "focusGroup3": "cmd+alt+shift+3",
-    "focusGroup4": "cmd+alt+shift+4",
-    "focusLeft": "cmd+alt+shift+left",
-    "focusNextSession": "cmd+alt+]",
-    "focusPreviousSession": "cmd+alt+[",
-    "focusRight": "cmd+alt+shift+right",
-    "focusSessionSlot1": "cmd+alt+1",
-    "focusSessionSlot2": "cmd+alt+2",
-    "focusSessionSlot3": "cmd+alt+3",
-    "focusSessionSlot4": "cmd+alt+4",
-    "focusSessionSlot5": "cmd+alt+5",
-    "focusSessionSlot6": "cmd+alt+6",
-    "focusSessionSlot7": "cmd+alt+7",
-    "focusSessionSlot8": "cmd+alt+8",
-    "focusSessionSlot9": "cmd+alt+9",
-    "focusUp": "cmd+alt+shift+up",
-    "moveSidebar": "cmd+alt+b",
-    "openSettings": "cmd+alt+,",
-    "renameActiveSession": "cmd+alt+r",
-    "showFour": "cmd+ctrl+4",
-    "showNine": "cmd+ctrl+9",
-    "showOne": "cmd+ctrl+1",
-    "showSix": "cmd+ctrl+6",
-    "showThree": "cmd+ctrl+3",
-    "showTwo": "cmd+ctrl+2",
     /**
-     CDXC:Hotkeys 2026-05-10-12:31
-     Cmd+D and Cmd+Shift+D both increase visible splits to match common tmux
-     and terminal split-direction muscle memory. Split Less stays on the D key
-     family but avoids Cmd+W close-pane, Cmd+Alt+D Dock, and Cmd+Ctrl+D lookup
-     defaults.
+     CDXC:Hotkeys 2026-05-11-09:26
+     Default hotkeys prefer plain Cmd chords for common navigation and reserve
+     heavier modifiers only where plain Cmd is already used by session slots or
+     split-direction conventions.
      */
-    "splitLess": "cmd+ctrl+shift+d",
+    "createSession": "cmd+n",
+    "focusDown": "cmd+down",
+    "focusGroup1": "cmd+ctrl+1",
+    "focusGroup2": "cmd+ctrl+2",
+    "focusGroup3": "cmd+ctrl+3",
+    "focusGroup4": "cmd+ctrl+4",
+    "focusLeft": "cmd+left",
+    "focusNextGroup": "cmd+shift+]",
+    "focusNextSession": "cmd+]",
+    "focusPreviousGroup": "cmd+shift+[",
+    "focusPreviousSession": "cmd+[",
+    "focusRight": "cmd+right",
+    "focusSessionSlot1": "cmd+1",
+    "focusSessionSlot2": "cmd+2",
+    "focusSessionSlot3": "cmd+3",
+    "focusSessionSlot4": "cmd+4",
+    "focusSessionSlot5": "cmd+5",
+    "focusSessionSlot6": "cmd+6",
+    "focusSessionSlot7": "cmd+7",
+    "focusSessionSlot8": "cmd+8",
+    "focusSessionSlot9": "cmd+9",
+    "focusUp": "cmd+up",
+    "moveSidebar": "cmd+b",
+    "openSettings": "cmd+,",
+    "renameActiveSession": "cmd+r",
+    /**
+     CDXC:NativeSplits 2026-05-10-18:30
+     Cmd+D and Cmd+Shift+D now create real terminal panes in the sidebar state
+     rather than stepping a preset count.
+     */
     "splitMore": "cmd+d",
     "splitMoreDown": "cmd+shift+d",
   ]
@@ -2456,9 +2667,19 @@ private final class NativeSettingsStore {
     var hotkeys = Self.defaultHotkeys
     if let customHotkeys = settings["hotkeys"] as? [String: Any] {
       for (key, value) in customHotkeys {
-        if let text = value as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        {
-          hotkeys[key] = Self.normalizeHotkeyText(text)
+        guard Self.defaultHotkeys.keys.contains(key) else {
+          continue
+        }
+        if let text = value as? String {
+          /**
+           CDXC:Hotkeys 2026-05-11-09:06
+           An explicitly blank persisted hotkey disables that command. Missing
+           keys continue to fall back to defaults so new commands appear after
+           app updates without a migration step.
+           */
+          hotkeys[key] = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? ""
+            : Self.normalizeHotkeyText(text)
         }
       }
     }
@@ -2584,15 +2805,24 @@ private final class NativeSettingsStore {
 
     let appSupport = FileManager.default.urls(
       for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.madda.zmux.host"
+    let primaryURL = appSupport.appendingPathComponent("\(bundleIdentifier)/state/settings.json")
     /**
      CDXC:Distribution 2026-04-27-08:37
      The notarized brew app stores new native settings under its
      com.madda.zmux.host bundle identity, while still reading older local
      development paths so existing sidebar preferences survive the 1.0.0
      distribution rename.
+     CDXC:DevAppFlavor 2026-05-11-12:10
+     zmux-dev must not reuse the installed app's native chrome or overlay
+     settings. Non-production bundle ids write to their own Application Support
+     container and skip production migration candidates.
      */
+    guard bundleIdentifier == "com.madda.zmux.host" else {
+      return primaryURL
+    }
     let existingCandidates = [
-      appSupport.appendingPathComponent("com.madda.zmux.host/state/settings.json"),
+      primaryURL,
       appSupport.appendingPathComponent("dev.maddada.zmux/dev/state/settings.json"),
       appSupport.appendingPathComponent("com.zmux.host/state/settings.json"),
     ]
@@ -2648,6 +2878,13 @@ final class zmuxRootView: NSView {
   private static let logger = Logger(subsystem: "com.madda.zmux.host", category: "webview")
 
   private static let workspaceBarWidth: CGFloat = 54
+  /**
+   CDXC:ReactTitlebar 2026-05-11-08:03
+   The React titlebar should match normal compact macOS app chrome instead of
+   using a tall custom strip. Keep the native layout reservation at 30px so
+   AppKit traffic lights and web titlebar controls share a tighter height.
+   */
+  private static let reactTitlebarHeight: CGFloat = 30
   private static let sidebarMinWidth: CGFloat = 220
   private static let combinedSidebarMinWidthReduction: CGFloat = 70
   private static let sidebarMaxWidth: CGFloat = 520
@@ -2659,6 +2896,8 @@ final class zmuxRootView: NSView {
   var sidebarWebView: WKWebView { sidebarView }
   private let sidebarView: WKWebView
   private let modalHostView: WKWebView
+  private let titlebarChromeView: ReactTitlebarChromeView
+  private let titlebarChromeWebView: WKWebView
   private let scriptBridge: SidebarScriptBridge
   private let sidebarCommandRouter = SidebarCommandRouter()
   private let divider: PaneResizeHandleView
@@ -2747,6 +2986,10 @@ final class zmuxRootView: NSView {
     configuration.userContentController.add(scriptBridge, name: "zmuxNativeHostDiagnostics")
     let modalHostConfiguration = WKWebViewConfiguration()
     modalHostConfiguration.userContentController.add(scriptBridge, name: "zmuxAppModalHost")
+    let titlebarConfiguration = WKWebViewConfiguration()
+    titlebarConfiguration.userContentController.add(scriptBridge, name: "zmuxNativeHost")
+    titlebarConfiguration.userContentController.add(scriptBridge, name: "zmuxAppModalHost")
+    titlebarConfiguration.userContentController.add(scriptBridge, name: "zmuxNativeHostDiagnostics")
     let cwd =
       ProcessInfo.processInfo.environment["zmux_WORKSPACE_PATH"]
       ?? FileManager.default.currentDirectoryPath
@@ -2794,6 +3037,7 @@ final class zmuxRootView: NSView {
        */
       configuration.userContentController.addUserScript(bootstrapScript)
       modalHostConfiguration.userContentController.addUserScript(bootstrapScript)
+      titlebarConfiguration.userContentController.addUserScript(bootstrapScript)
     }
     configuration.userContentController.addUserScript(
       WKUserScript(
@@ -2801,8 +3045,16 @@ final class zmuxRootView: NSView {
         injectionTime: .atDocumentStart,
         forMainFrameOnly: true
       ))
+    titlebarConfiguration.userContentController.addUserScript(
+      WKUserScript(
+        source: Self.diagnosticsScript,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: true
+      ))
     self.sidebarView = WKWebView(frame: .zero, configuration: configuration)
     self.modalHostView = WKWebView(frame: .zero, configuration: modalHostConfiguration)
+    self.titlebarChromeWebView = WKWebView(frame: .zero, configuration: titlebarConfiguration)
+    self.titlebarChromeView = ReactTitlebarChromeView(webView: titlebarChromeWebView)
     self.divider = PaneResizeHandleView()
     super.init(frame: .zero)
     workspaceView.setSidebarSide(sidebarSide)
@@ -2827,6 +3079,7 @@ final class zmuxRootView: NSView {
     layer?.backgroundColor = zmuxReferenceSidebarChromeBackgroundColor.cgColor
     sidebarView.setValue(false, forKey: "drawsBackground")
     modalHostView.setValue(false, forKey: "drawsBackground")
+    titlebarChromeWebView.setValue(false, forKey: "drawsBackground")
     modalHostView.isHidden = true
     sidebarView.navigationDelegate = self
     addSubview(workspaceView)
@@ -2845,8 +3098,17 @@ final class zmuxRootView: NSView {
      terminal and sidebar chrome, and show it only while a modal is active.
      */
     addSubview(modalHostView)
+    /**
+     CDXC:ReactTitlebar 2026-05-09-17:11
+     Titlebar controls must be React-rendered while native AppKit keeps the
+     traffic lights. Mount one transparent full-window webview above the
+     workspace so future React dropdowns can open into the main workspace area;
+     native hit regions keep non-control pixels click-through or draggable.
+     */
+    addSubview(titlebarChromeView)
     loadSidebar()
     loadModalHost()
+    loadTitlebarChrome()
   }
 
   func postHostEvent(_ event: HostEvent) {
@@ -2855,8 +3117,7 @@ final class zmuxRootView: NSView {
     else {
       return
     }
-    sidebarView.evaluateJavaScript(
-      """
+    let script = """
       window.dispatchEvent(new CustomEvent('zmux-native-host-event', { detail: \(json) }));
       /**
        CDXC:NativeBridge 2026-04-29-22:03
@@ -2865,7 +3126,15 @@ final class zmuxRootView: NSView {
        failure.
        */
       undefined;
-      """)
+      """
+    sidebarView.evaluateJavaScript(script)
+    /**
+     CDXC:ReactTitlebar 2026-05-09-17:34
+     The React titlebar can request native process work for Git stats. Broadcast
+     host events to that webview too so processResult replies resolve in the
+     same bridge contract used by the sidebar.
+     */
+    titlebarChromeWebView.evaluateJavaScript(script)
   }
 
   private func handleSessionAttentionNotificationClick(_ sessionId: String) {
@@ -2905,12 +3174,196 @@ final class zmuxRootView: NSView {
       """)
   }
 
+  func applyNativeTitlebarZedOverlay(
+    enabled: Bool,
+    hideTitlebarButton: Bool,
+    targetApp: ZedOverlayTargetApp
+  ) {
+    /**
+     CDXC:ReactTitlebar 2026-05-09-17:11
+     Native Settings and attachment flows can change IDE attachment state
+     outside the titlebar webview. Push the authoritative state back into
+     React so the titlebar button mirrors the native overlay controller.
+     */
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: [
+        "enabled": enabled,
+        "hideTitlebarButton": hideTitlebarButton,
+        "targetApp": targetApp.rawValue,
+      ]),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    titlebarChromeWebView.evaluateJavaScript(
+      """
+      window.__zmux_TITLEBAR__?.setZedOverlay(\(json));
+      undefined;
+      """)
+  }
+
+  func applyReactTitlebarProjectState(_ command: SetActiveTerminalSet) {
+    /**
+     CDXC:ReactTitlebar 2026-05-11-00:22
+     The titlebar project controls are rendered in their own WKWebView, while
+     the sidebar remains authoritative for active project, project editor, and
+     diff state. Push only the compact project payload React needs instead of
+     letting the titlebar infer state by running separate Git or code-server
+     checks.
+     */
+    var payload: [String: Any] = [:]
+    if let activeProjectId = command.activeProjectId {
+      payload["projectId"] = activeProjectId
+    }
+    payload["projectIconDataUrl"] = command.activeProjectIconDataUrl ?? NSNull()
+    if let activeProjectName = command.activeProjectName {
+      payload["projectName"] = activeProjectName
+    }
+    if let activeProjectPath = command.activeProjectPath {
+      payload["projectPath"] = activeProjectPath
+    }
+    if let status = command.activeProjectEditorStatus {
+      payload["editorStatus"] = status
+    }
+    if let isOpen = command.activeProjectEditorIsOpen {
+      payload["editorIsOpen"] = isOpen
+    }
+    if let isSleeping = command.activeProjectEditorIsSleeping {
+      payload["editorIsSleeping"] = isSleeping
+    }
+    if let showFileCount = command.showProjectEditorDiffFileCount {
+      payload["showProjectEditorDiffFileCount"] = showFileCount
+    }
+    if let stats = command.activeProjectDiffStats {
+      payload["diffStats"] = [
+        "additions": stats.additions,
+        "deletions": stats.deletions,
+        "files": stats.files,
+        "isLoading": stats.isLoading,
+        "isRepo": stats.isRepo,
+      ]
+    }
+    if let sidebarActions = command.sidebarActions {
+      payload["sidebarActions"] = [
+        "commands": sidebarActions.commands?.map { command in
+          var item: [String: Any] = [
+            "actionType": command.actionType,
+            "closeTerminalOnExit": command.closeTerminalOnExit ?? false,
+            "commandId": command.commandId,
+            "isDefault": command.isDefault ?? false,
+            "isGlobal": command.isGlobal ?? false,
+            "name": command.name,
+            "playCompletionSound": command.playCompletionSound ?? false,
+          ]
+          if let commandText = command.command {
+            item["command"] = commandText
+          }
+          if let icon = command.icon {
+            item["icon"] = icon
+          }
+          if let iconColor = command.iconColor {
+            item["iconColor"] = iconColor
+          }
+          if let url = command.url {
+            item["url"] = url
+          }
+          return item
+        } ?? []
+      ]
+    }
+    if let openTargets = command.workspaceOpenTargets {
+      let availability = openTargets.availability
+      payload["workspaceOpenTargets"] = [
+        "availability": [
+          "availableTargetIds": availability?.availableTargetIds ?? [],
+          "checkedAtMs": availability?.checkedAtMs ?? 0,
+          "resolvedAppNames": availability?.resolvedAppNames ?? [:],
+          "resolvedCommands": availability?.resolvedCommands ?? [:],
+        ],
+        "customTargets": openTargets.customTargets?.map { target in
+          [
+            "args": target.args ?? [],
+            "command": target.command,
+            "id": target.id,
+            "label": target.label,
+          ] as [String: Any]
+        } ?? [],
+        "hiddenTargetIds": openTargets.hiddenTargetIds ?? [],
+      ]
+    }
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    titlebarChromeWebView.evaluateJavaScript(
+      """
+      window.__zmux_TITLEBAR__?.setActiveProjectState(\(json));
+      undefined;
+      """)
+  }
+
+  func setReactTitlebarHitRegions(_ regions: [ReactTitlebarHitRegion]) {
+    titlebarChromeView.setHitRegions(regions)
+  }
+
+  private func openActiveProjectEditorFromTitlebar() {
+    /**
+     CDXC:TitlebarOpenIn 2026-05-11-00:22
+     Titlebar Code and Embedded Editor clicks must enter the same sidebar-owned
+     project-editor flow as the project header. Forward the command into the
+     sidebar webview instead of reimplementing code-server startup in Swift.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__zmux_NATIVE_SIDEBAR__?.openActiveProjectEditorFromTitlebar?.();
+      undefined;
+      """)
+  }
+
+  private func runSidebarCommandFromTitlebar(_ command: RunSidebarCommandFromTitlebar) {
+    /**
+     CDXC:TitlebarActions 2026-05-11-02:46
+     The React titlebar can render the relocated Actions split button, but the
+     sidebar webview owns command execution state. Forward the command id into
+     that webview so existing action launches and run feedback stay unchanged.
+     */
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: command.commandId),
+      let commandIdJson = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    sidebarView.evaluateJavaScript(
+      """
+      window.__zmux_NATIVE_SIDEBAR__?.runSidebarCommandFromTitlebar?.(\(commandIdJson));
+      undefined;
+      """)
+  }
+
+  private func refreshWorkspaceOpenTargetAvailabilityFromTitlebar() {
+    /**
+     CDXC:TitlebarOpenIn 2026-05-11-03:13
+     The titlebar reload button lives in the React titlebar, but installed IDE
+     detection lives in the sidebar runtime beside settings persistence. Forward
+     the click so manual refresh uses the same detector as startup.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__zmux_NATIVE_SIDEBAR__?.refreshWorkspaceOpenTargetAvailabilityFromTitlebar?.();
+      undefined;
+      """)
+  }
+
   private func handleSidebarCommand(_ command: HostCommand) {
     switch command {
     case .createTerminal(let command):
       workspaceView.createTerminal(command)
     case .createWebPane(let command):
       workspaceView.createWebPane(command)
+    case .openFloatingEditor(let command):
+      workspaceView.openFloatingEditor(command)
     case .closeTerminal(let command):
       workspaceView.closeTerminal(sessionId: command.sessionId)
     case .closeWebPane(let command):
@@ -2923,6 +3376,10 @@ final class zmuxRootView: NSView {
       workspaceView.reloadWebPane(sessionId: command.sessionId)
     case .startT3CodeRuntime(let command):
       startT3CodeRuntime(command)
+    case .setT3CodeRuntimeSessionState(let command):
+      NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
+        runningSessionIds: command.runningSessionIds,
+        reason: "nativeSidebar")
     case .stopT3CodeRuntime:
       stopT3CodeRuntime(logPrefix: "nativeSidebar")
     case .startCodeServerRuntime(let command):
@@ -2943,6 +3400,7 @@ final class zmuxRootView: NSView {
       workspaceView.sendTerminalEnter(sessionId: command.sessionId)
     case .setActiveTerminalSet(let command):
       setAppTitlebarTitle(command.appTitle)
+      applyReactTitlebarProjectState(command)
       workspaceView.setActiveTerminalSet(command)
     case .setSessionStatusIndicators(let command):
       setSessionStatusIndicators(command)
@@ -2967,6 +3425,8 @@ final class zmuxRootView: NSView {
     case .appendSessionTitleDebugLog(let command):
       AppDelegate.appendSessionTitleDebugLog(
         event: command.event, details: command.details, force: command.force == true)
+    case .appendSidebarRefreshDebugLog(let command):
+      AppDelegate.appendSidebarRefreshDebugLog(event: command.event, details: command.details)
     case .appendWorkspaceDockIndicatorDebugLog(let command):
       AppDelegate.appendWorkspaceDockIndicatorDebugLog(
         event: command.event, details: command.details)
@@ -2996,6 +3456,10 @@ final class zmuxRootView: NSView {
        native app instead of showing another permission dialog.
        */
       openAccessibilityPreferences()
+    case .requestMacOSNotificationPermission:
+      sessionAttentionNotificationController.requestPermissionFromSettings()
+    case .openMacOSNotificationSettings:
+      SessionAttentionNotificationController.openMacOSNotificationSettings()
     case .openExternalUrl(let command):
       openExternalUrl(command)
     case .openWorkspaceInFinder(let command):
@@ -3028,6 +3492,20 @@ final class zmuxRootView: NSView {
       workspaceView.showBrowserImportSettings(sessionId: command.sessionId)
     case .setSidebarSide(let command):
       setSidebarSide(command.side)
+    case .setReactTitlebarHitRegions(let command):
+      /**
+       CDXC:ReactTitlebar 2026-05-09-17:11
+       React owns titlebar button geometry, but Swift owns window dragging and
+       workspace pass-through. Apply reported DOM hit regions at the native
+       overlay boundary instead of guessing from fixed button positions.
+       */
+      titlebarChromeView.setHitRegions(command.regions)
+    case .openActiveProjectEditorFromTitlebar:
+      openActiveProjectEditorFromTitlebar()
+    case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
+      refreshWorkspaceOpenTargetAvailabilityFromTitlebar()
+    case .runSidebarCommandFromTitlebar(let command):
+      runSidebarCommandFromTitlebar(command)
     case .configureZedOverlay(let command):
       /**
        CDXC:ZedOverlay 2026-04-26-03:29
@@ -3063,7 +3541,13 @@ final class zmuxRootView: NSView {
    the reference pane model instead of launching an external browser window.
    */
   private func startT3CodeRuntime(_ command: StartT3CodeRuntime) {
-    NativeT3RuntimeLauncher.touchAppHeartbeat(reason: "nativeSidebar.startT3CodeRuntime")
+    /**
+     CDXC:T3Code 2026-05-10-22:07
+     Sidebar runtime starts are not proof that a T3 card is shown and awake. Do
+     not refresh the managed provider keepalive here; otherwise a hidden
+     background t3code server can burn CPU indefinitely while the visible
+     sidebar contains only normal terminals.
+     */
     if let process = t3CodeRuntimeProcess, process.isRunning {
       /**
        CDXC:T3Code 2026-05-02-00:48
@@ -3517,6 +4001,7 @@ final class zmuxRootView: NSView {
     let sidebarWidth = min(max(self.sidebarWidth, minSidebarWidth), maxSidebarWidth)
     self.sidebarWidth = sidebarWidth
     let workspaceBarWidth = currentWorkspaceBarWidth()
+    let contentHeight = max(bounds.height - Self.reactTitlebarHeight, 1)
     let chromeWidth = workspaceBarWidth + sidebarWidth + Self.dividerWidth
     let chromeX: CGFloat = sidebarSide == .left ? 0 : max(bounds.width - chromeWidth, 0)
     let workspaceX: CGFloat = sidebarSide == .left ? chromeWidth : 0
@@ -3531,6 +4016,7 @@ final class zmuxRootView: NSView {
     NativeT3CodePaneReproLog.append("nativeSidebar.chrome.layout", [
       "bounds": Self.describeFrame(bounds),
       "chromeWidth": Double(chromeWidth),
+      "contentHeight": Double(contentHeight),
       "maxSidebarWidth": Double(maxSidebarWidth),
       "minSidebarWidth": Double(minSidebarWidth),
       "sidebarSide": sidebarSide.rawValue,
@@ -3560,21 +4046,23 @@ final class zmuxRootView: NSView {
       x: sidebarX,
       y: 0,
       width: workspaceBarWidth + sidebarWidth,
-      height: bounds.height
+      height: contentHeight
     )
     divider.frame = CGRect(
       x: dividerX,
       y: 0,
       width: Self.dividerWidth,
-      height: bounds.height
+      height: contentHeight
     )
     workspaceView.frame = CGRect(
       x: workspaceX,
       y: 0,
       width: workspaceWidth,
-      height: bounds.height
+      height: contentHeight
     )
-    modalHostView.frame = bounds
+    modalHostView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: contentHeight)
+    titlebarChromeView.frame = bounds
+    titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
   }
 
   private func resizeSidebar(by deltaX: CGFloat) {
@@ -4068,6 +4556,32 @@ final class zmuxRootView: NSView {
     )
   }
 
+  private func loadTitlebarChrome() {
+    let webAssets = Self.resolveWebAssets()
+    let builtTitlebarChrome = webAssets.appendingPathComponent("titlebar-host.html")
+    if FileManager.default.fileExists(atPath: builtTitlebarChrome.path) {
+      Self.logger.info("Loading React titlebar chrome from \(builtTitlebarChrome.path, privacy: .public)")
+      titlebarChromeWebView.loadFileURL(
+        builtTitlebarChrome,
+        allowingReadAccessTo: webAssets
+      )
+      return
+    }
+
+    /**
+     CDXC:ReactTitlebar 2026-05-09-17:11
+     Development builds may start before the titlebar bundle exists. Keep the
+     missing-asset behavior observable and blank instead of silently falling
+     back to native AppKit controls, because the requirement is React chrome.
+     */
+    Self.logger.error("Built React titlebar chrome not found at \(builtTitlebarChrome.path, privacy: .public)")
+    let repoRoot = Self.resolveRepoRoot()
+    titlebarChromeWebView.loadHTMLString(
+      "<!doctype html><html><body style=\"margin:0;background:transparent\"></body></html>",
+      baseURL: repoRoot
+    )
+  }
+
   private static func resolveWebAssets() -> URL {
     // CDXC:NativeSidebar 2026-04-27-06:19: Sidebar assets should be loaded
     // from the app bundle first because users normally launch the installed
@@ -4525,6 +5039,7 @@ final class zmuxRootView: NSView {
 
 final class zmuxFocusReportingWindow: NSWindow {
   var onFirstResponderChanged: ((NSResponder?) -> Void)?
+  var onKeyDownDispatch: ((NSEvent) -> Void)?
   var onKeyEquivalent: ((NSEvent) -> Bool)?
 
   /**
@@ -4541,6 +5056,20 @@ final class zmuxFocusReportingWindow: NSWindow {
       onFirstResponderChanged?(firstResponder)
     }
     return didBecomeFirstResponder
+  }
+
+  override func sendEvent(_ event: NSEvent) {
+    /**
+     CDXC:NativeTerminalFocus 2026-05-11-11:48
+     Keyboard-route repros need the AppKit dispatch target before Ghostty
+     handles the key. Report keyDown metadata from the window boundary so the
+     log can compare first responder, visible focus ring, and terminal surface
+     delivery without recording typed characters.
+     */
+    if event.type == .keyDown {
+      onKeyDownDispatch?(event)
+    }
+    super.sendEvent(event)
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -4649,6 +5178,102 @@ extension zmuxRootView: WKNavigationDelegate {
     Self.logger.error("Sidebar webview content process terminated")
     AppDelegate.appendNativeHostLifecycleLog(
       "sidebarWebContentProcessDidTerminate url=\(webView.url?.absoluteString ?? "<missing>")")
+  }
+}
+
+final class ReactTitlebarChromeView: NSView {
+  var titlebarHeight: CGFloat = 30
+  private let webView: WKWebView
+  private var hitRegions: [CGRect] = []
+  private var frameBeforeTitlebarMaximize: NSRect?
+
+  init(webView: WKWebView) {
+    self.webView = webView
+    super.init(frame: .zero)
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.clear.cgColor
+    webView.autoresizingMask = [.width, .height]
+    webView.frame = bounds
+    addSubview(webView)
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func layout() {
+    super.layout()
+    webView.frame = bounds
+  }
+
+  func setHitRegions(_ regions: [ReactTitlebarHitRegion]) {
+    hitRegions = regions.map {
+      CGRect(
+        x: CGFloat($0.x),
+        y: CGFloat($0.y),
+        width: CGFloat($0.width),
+        height: CGFloat($0.height)
+      )
+    }
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let webPoint = CGPoint(x: point.x, y: bounds.height - point.y)
+    if hitRegions.contains(where: { $0.contains(webPoint) }) {
+      return webView.hitTest(point)
+    }
+    if point.y >= bounds.height - titlebarHeight {
+      return self
+    }
+    return nil
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    if event.clickCount >= 2 {
+      toggleWindowMaximizedToVisibleScreen()
+      return
+    }
+    window?.performDrag(with: event)
+  }
+
+  override var mouseDownCanMoveWindow: Bool {
+    /**
+     CDXC:ReactTitlebar 2026-05-09-17:11
+     Blank React titlebar pixels remain a standard macOS window drag surface.
+     Only reported button/dropdown regions reach WKWebView; all other pixels
+     in the top chrome return this view and let AppKit move the window.
+     */
+    true
+  }
+
+  private func toggleWindowMaximizedToVisibleScreen() {
+    /**
+     CDXC:ReactTitlebar 2026-05-10-17:23
+     AppKit owns blank titlebar mouse gestures because React hit regions only
+     cover real controls. Double-clicking that draggable chrome should behave
+     like a windowed maximize: fill the current screen's visible frame without
+     entering macOS full-screen spaces.
+     */
+    guard let window, let screen = window.screen ?? NSScreen.main else {
+      return
+    }
+    let visibleFrame = screen.visibleFrame
+    if Self.framesApproximatelyEqual(window.frame, visibleFrame),
+      let restoreFrame = frameBeforeTitlebarMaximize
+    {
+      window.setFrame(restoreFrame, display: true, animate: true)
+      frameBeforeTitlebarMaximize = nil
+      return
+    }
+    frameBeforeTitlebarMaximize = window.frame
+    window.setFrame(visibleFrame, display: true, animate: true)
+  }
+
+  private static func framesApproximatelyEqual(_ lhs: NSRect, _ rhs: NSRect) -> Bool {
+    abs(lhs.minX - rhs.minX) < 1
+      && abs(lhs.minY - rhs.minY) < 1
+      && abs(lhs.width - rhs.width) < 1
+      && abs(lhs.height - rhs.height) < 1
   }
 }
 

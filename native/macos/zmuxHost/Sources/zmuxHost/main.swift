@@ -21,6 +21,20 @@ private func runBundledCli(arguments: [String]) -> Never {
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   process.arguments = ["node", cliScriptPath] + arguments
   process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+  var environment = ProcessInfo.processInfo.environment
+  /**
+   CDXC:DevAppFlavor 2026-05-11-12:10
+   LaunchServices does not preserve the shell environment that built zmux-dev.
+   Pass the bundle-derived dev home and bridge port into the bundled CLI so
+   `zmux-dev sessions` uses ~/.zmux-dev and the dev WebSocket bridge instead
+   of production state.
+   */
+  environment["ZMUX_HOME"] = ZmuxAppStorage.sharedRootDirectory.path
+  if Bundle.main.bundleIdentifier == "com.madda.zmux-dev.host" {
+    environment["ZMUX_APP_VARIANT"] = "dev"
+    environment["ZMUX_CLI_PORT"] = "58744"
+  }
+  process.environment = environment
   process.standardInput = FileHandle.standardInput
   process.standardOutput = FileHandle.standardOutput
   process.standardError = FileHandle.standardError

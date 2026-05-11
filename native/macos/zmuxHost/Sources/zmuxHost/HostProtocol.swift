@@ -3,12 +3,14 @@ import Foundation
 enum HostCommand: Decodable {
   case createTerminal(CreateTerminal)
   case createWebPane(CreateWebPane)
+  case openFloatingEditor(OpenFloatingEditor)
   case closeTerminal(SessionCommand)
   case closeWebPane(SessionCommand)
   case focusTerminal(SessionCommand)
   case focusWebPane(SessionCommand)
   case reloadWebPane(SessionCommand)
   case startT3CodeRuntime(StartT3CodeRuntime)
+  case setT3CodeRuntimeSessionState(SetT3CodeRuntimeSessionState)
   case stopT3CodeRuntime
   case startCodeServerRuntime(StartCodeServerRuntime)
   case stopCodeServerRuntime
@@ -30,6 +32,7 @@ enum HostCommand: Decodable {
   case appendTerminalFocusDebugLog(AppendTerminalFocusDebugLog)
   case appendRestoreDebugLog(AppendRestoreDebugLog)
   case appendSessionTitleDebugLog(AppendSessionTitleDebugLog)
+  case appendSidebarRefreshDebugLog(AppendSidebarRefreshDebugLog)
   case appendWorkspaceDockIndicatorDebugLog(AppendWorkspaceDockIndicatorDebugLog)
   case persistSharedSidebarStorage(PersistSharedSidebarStorage)
   case playSound(PlaySound)
@@ -38,6 +41,8 @@ enum HostCommand: Decodable {
   case applyGhosttyConfigSettings(ApplyGhosttyConfigSettings)
   case openGhosttyConfigFile
   case openAccessibilityPreferences
+  case requestMacOSNotificationPermission
+  case openMacOSNotificationSettings
   case openExternalUrl(OpenExternalUrl)
   case openWorkspaceInFinder(OpenWorkspaceInFinder)
   case openWorkspaceInIde(OpenWorkspaceInIde)
@@ -48,6 +53,10 @@ enum HostCommand: Decodable {
   case showBrowserProfilePicker(SessionCommand)
   case showBrowserImportSettings(SessionCommand)
   case setSidebarSide(SetSidebarSide)
+  case setReactTitlebarHitRegions(SetReactTitlebarHitRegions)
+  case openActiveProjectEditorFromTitlebar
+  case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
+  case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
   case configureZedOverlay(ConfigureZedOverlay)
   case openZedWorkspace(OpenZedWorkspace)
   case sidebarCliCommand(SidebarCliCommand)
@@ -59,12 +68,14 @@ enum HostCommand: Decodable {
   private enum CommandType: String, Decodable {
     case createTerminal
     case createWebPane
+    case openFloatingEditor
     case closeTerminal
     case closeWebPane
     case focusTerminal
     case focusWebPane
     case reloadWebPane
     case startT3CodeRuntime
+    case setT3CodeRuntimeSessionState
     case stopT3CodeRuntime
     case startCodeServerRuntime
     case stopCodeServerRuntime
@@ -86,6 +97,7 @@ enum HostCommand: Decodable {
     case appendTerminalFocusDebugLog
     case appendRestoreDebugLog
     case appendSessionTitleDebugLog
+    case appendSidebarRefreshDebugLog
     case appendWorkspaceDockIndicatorDebugLog
     case persistSharedSidebarStorage
     case playSound
@@ -94,6 +106,8 @@ enum HostCommand: Decodable {
     case applyGhosttyConfigSettings
     case openGhosttyConfigFile
     case openAccessibilityPreferences
+    case requestMacOSNotificationPermission
+    case openMacOSNotificationSettings
     case openExternalUrl
     case openWorkspaceInFinder
     case openWorkspaceInIde
@@ -104,6 +118,10 @@ enum HostCommand: Decodable {
     case showBrowserProfilePicker
     case showBrowserImportSettings
     case setSidebarSide
+    case setReactTitlebarHitRegions
+    case openActiveProjectEditorFromTitlebar
+    case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
+    case runSidebarCommandFromTitlebar
     case configureZedOverlay
     case openZedWorkspace
     case sidebarCliCommand
@@ -116,6 +134,8 @@ enum HostCommand: Decodable {
       self = .createTerminal(try CreateTerminal(from: decoder))
     case .createWebPane:
       self = .createWebPane(try CreateWebPane(from: decoder))
+    case .openFloatingEditor:
+      self = .openFloatingEditor(try OpenFloatingEditor(from: decoder))
     case .closeTerminal:
       self = .closeTerminal(try SessionCommand(from: decoder))
     case .closeWebPane:
@@ -128,6 +148,8 @@ enum HostCommand: Decodable {
       self = .reloadWebPane(try SessionCommand(from: decoder))
     case .startT3CodeRuntime:
       self = .startT3CodeRuntime(try StartT3CodeRuntime(from: decoder))
+    case .setT3CodeRuntimeSessionState:
+      self = .setT3CodeRuntimeSessionState(try SetT3CodeRuntimeSessionState(from: decoder))
     case .stopT3CodeRuntime:
       self = .stopT3CodeRuntime
     case .startCodeServerRuntime:
@@ -170,6 +192,8 @@ enum HostCommand: Decodable {
       self = .appendRestoreDebugLog(try AppendRestoreDebugLog(from: decoder))
     case .appendSessionTitleDebugLog:
       self = .appendSessionTitleDebugLog(try AppendSessionTitleDebugLog(from: decoder))
+    case .appendSidebarRefreshDebugLog:
+      self = .appendSidebarRefreshDebugLog(try AppendSidebarRefreshDebugLog(from: decoder))
     case .appendWorkspaceDockIndicatorDebugLog:
       self = .appendWorkspaceDockIndicatorDebugLog(
         try AppendWorkspaceDockIndicatorDebugLog(from: decoder))
@@ -187,6 +211,10 @@ enum HostCommand: Decodable {
       self = .openGhosttyConfigFile
     case .openAccessibilityPreferences:
       self = .openAccessibilityPreferences
+    case .requestMacOSNotificationPermission:
+      self = .requestMacOSNotificationPermission
+    case .openMacOSNotificationSettings:
+      self = .openMacOSNotificationSettings
     case .openExternalUrl:
       self = .openExternalUrl(try OpenExternalUrl(from: decoder))
     case .openWorkspaceInFinder:
@@ -207,6 +235,14 @@ enum HostCommand: Decodable {
       self = .showBrowserImportSettings(try SessionCommand(from: decoder))
     case .setSidebarSide:
       self = .setSidebarSide(try SetSidebarSide(from: decoder))
+    case .setReactTitlebarHitRegions:
+      self = .setReactTitlebarHitRegions(try SetReactTitlebarHitRegions(from: decoder))
+    case .openActiveProjectEditorFromTitlebar:
+      self = .openActiveProjectEditorFromTitlebar
+    case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
+      self = .refreshWorkspaceOpenTargetAvailabilityFromTitlebar
+    case .runSidebarCommandFromTitlebar:
+      self = .runSidebarCommandFromTitlebar(try RunSidebarCommandFromTitlebar(from: decoder))
     case .configureZedOverlay:
       self = .configureZedOverlay(try ConfigureZedOverlay(from: decoder))
     case .openZedWorkspace:
@@ -239,12 +275,36 @@ struct CreateWebPane: Decodable {
   let url: String
 }
 
+struct OpenFloatingEditor: Decodable {
+  let command: String?
+  let cwd: String?
+  let editorKind: String?
+  let env: [String: String]?
+  let filePath: String?
+  let language: String?
+  let originatingSessionId: String?
+  let requestId: String?
+  let statusFile: String?
+  let title: String?
+}
+
 struct SessionCommand: Decodable {
   let sessionId: String
 }
 
 struct StartT3CodeRuntime: Decodable {
   let cwd: String
+}
+
+struct SetT3CodeRuntimeSessionState: Decodable {
+  /**
+   CDXC:T3Code 2026-05-10-22:48
+   The React sidebar owns the definition of a running T3 session: its card is
+   included in the current session-sidebar projection and is not sleeping.
+   Native receives only those sidebar ids so the provider heartbeat follows the
+   session model instead of workspace-pane visibility.
+   */
+  let runningSessionIds: [String]
 }
 
 struct StartCodeServerRuntime: Decodable {
@@ -280,6 +340,14 @@ struct WriteTerminalText: Decodable {
 
 struct SetActiveTerminalSet: Decodable {
   let activeProjectEditorId: String?
+  let activeProjectDiffStats: TitlebarProjectDiffStats?
+  let activeProjectEditorIsOpen: Bool?
+  let activeProjectEditorIsSleeping: Bool?
+  let activeProjectEditorStatus: String?
+  let activeProjectId: String?
+  let activeProjectIconDataUrl: String?
+  let activeProjectName: String?
+  let activeProjectPath: String?
   let activeSessionIds: [String]
   /**
    CDXC:NativeWindowChrome 2026-05-10-14:19
@@ -292,14 +360,72 @@ struct SetActiveTerminalSet: Decodable {
   let backgroundColor: String?
   let focusRequestId: Int?
   let focusedSessionId: String?
+  let sleepingSessionIds: [String]?
   let layoutChanged: Bool?
   let layout: NativeTerminalLayout?
   let paneGap: Double?
+  /**
+   CDXC:PanePopOut 2026-05-11-09:35
+   The sidebar keeps popped-out sessions in the active layout and sends this
+   set so AppKit can move the live pane into a zmux-owned window while the
+   original split/tab slot renders an in-app reattach placeholder.
+   */
+  let poppedOutSessionIds: [String]?
   let sessionAgentIconColors: [String: String]?
   let sessionAgentIconDataUrls: [String: String]?
   let sessionActivities: [String: NativeTerminalActivity]?
+  let sessionFaviconDataUrls: [String: String]?
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
+  let showProjectEditorDiffFileCount: Bool?
+  let sidebarActions: TitlebarSidebarActions?
+  let workspaceOpenTargets: TitlebarWorkspaceOpenTargets?
+}
+
+struct TitlebarProjectDiffStats: Decodable {
+  let additions: Int
+  let deletions: Int
+  let files: Int
+  let isLoading: Bool
+  let isRepo: Bool
+}
+
+struct TitlebarWorkspaceOpenTargets: Decodable {
+  let availability: TitlebarWorkspaceOpenTargetAvailability?
+  let customTargets: [TitlebarCustomWorkspaceOpenTarget]?
+  let hiddenTargetIds: [String]?
+}
+
+struct TitlebarWorkspaceOpenTargetAvailability: Decodable {
+  let availableTargetIds: [String]?
+  let checkedAtMs: Double?
+  let resolvedAppNames: [String: String]?
+  let resolvedCommands: [String: String]?
+}
+
+struct TitlebarSidebarActions: Decodable {
+  let commands: [TitlebarSidebarCommand]?
+}
+
+struct TitlebarSidebarCommand: Decodable {
+  let actionType: String
+  let closeTerminalOnExit: Bool?
+  let command: String?
+  let commandId: String
+  let icon: String?
+  let iconColor: String?
+  let isDefault: Bool?
+  let isGlobal: Bool?
+  let name: String
+  let playCompletionSound: Bool?
+  let url: String?
+}
+
+struct TitlebarCustomWorkspaceOpenTarget: Decodable {
+  let args: [String]?
+  let command: String
+  let id: String
+  let label: String
 }
 
 struct SetSessionStatusIndicators: Decodable {
@@ -317,8 +443,9 @@ struct ShowSessionAttentionNotification: Decodable {
    The sidebar posts already-rate-limited attention notification requests with
    the native pane id. The native host must preserve that id in userInfo so a
    click can route back to the same session and activate it for typing.
-   */
+  */
   let body: String?
+  let iconDataUrl: String?
   let sessionId: String
   let title: String
 }
@@ -342,6 +469,7 @@ struct SetTerminalLayout: Decodable {
 
 enum NativeTerminalActivity: String, Decodable {
   case attention
+  case sleeping
   case working
 }
 
@@ -376,6 +504,11 @@ struct AppendSessionTitleDebugLog: Decodable {
 }
 
 struct AppendRestoreDebugLog: Decodable {
+  let details: String?
+  let event: String
+}
+
+struct AppendSidebarRefreshDebugLog: Decodable {
   let details: String?
   let event: String
 }
@@ -466,6 +599,28 @@ struct SetSidebarSide: Decodable {
   let side: SidebarSide
 }
 
+struct ReactTitlebarHitRegion: Decodable {
+  let x: Double
+  let y: Double
+  let width: Double
+  let height: Double
+}
+
+struct SetReactTitlebarHitRegions: Decodable {
+  /**
+   CDXC:ReactTitlebar 2026-05-09-17:11
+   React titlebar chrome must expose only its real interactive bounds to
+   AppKit. Native hit-testing uses these regions to keep blank titlebar space
+   draggable and workspace content clickable while React buttons/dropdowns own
+   their own events.
+   */
+  let regions: [ReactTitlebarHitRegion]
+}
+
+struct RunSidebarCommandFromTitlebar: Decodable {
+  let commandId: String
+}
+
 enum SidebarSide: String, Decodable {
   case left
   case right
@@ -493,6 +648,7 @@ struct SidebarCliCommand: Decodable {
 enum NativeTerminalLayout: Decodable {
   case leaf(sessionId: String)
   case split(direction: SplitDirection, ratio: Double?, children: [NativeTerminalLayout])
+  case tabs(activeSessionId: String?, sessionIds: [String])
 
   enum SplitDirection: String, Decodable {
     case horizontal
@@ -504,12 +660,15 @@ enum NativeTerminalLayout: Decodable {
     case direction
     case kind
     case ratio
+    case activeSessionId
     case sessionId
+    case sessionIds
   }
 
   private enum Kind: String, Decodable {
     case leaf
     case split
+    case tabs
   }
 
   init(from decoder: Decoder) throws {
@@ -523,6 +682,11 @@ enum NativeTerminalLayout: Decodable {
         ratio: try container.decodeIfPresent(Double.self, forKey: .ratio),
         children: try container.decode([NativeTerminalLayout].self, forKey: .children)
       )
+    case .tabs:
+      self = .tabs(
+        activeSessionId: try container.decodeIfPresent(String.self, forKey: .activeSessionId),
+        sessionIds: try container.decode([String].self, forKey: .sessionIds)
+      )
     }
   }
 }
@@ -535,7 +699,12 @@ enum HostEvent: Encodable {
   case browserFaviconChanged(sessionId: String, faviconDataUrl: String?)
   case browserUrlChanged(sessionId: String, url: String)
   case terminalTitleBarAction(sessionId: String, action: TerminalTitleBarAction)
-  case paneReorderRequested(sourceSessionId: String, targetSessionId: String)
+  case paneReorderRequested(sourceSessionId: String, targetSessionId: String, placement: PaneDropPlacement?)
+  case paneTabSelected(sessionId: String)
+  case paneTabReorderRequested(
+    sourceSessionId: String, targetSessionId: String, position: PaneTabReorderPosition)
+  case paneTabCloseRequested(sessionId: String, scope: PaneTabCloseScope)
+  case paneTabSleepRequested(sessionId: String, scope: PaneTabSleepScope)
   case terminalCwdChanged(sessionId: String, cwd: String)
   case terminalExited(sessionId: String, exitCode: Int?)
   case terminalFocused(sessionId: String)
@@ -557,6 +726,7 @@ enum HostEvent: Encodable {
     case message
     case protocolVersion
     case action
+    case placement
     case actionId
     case sessionId
     case stderr
@@ -574,7 +744,9 @@ enum HostEvent: Encodable {
     case ok
     case payloadJson
     case sessionPersistenceName
+    case scope
     case status
+    case position
     case sourceSessionId
     case targetSessionId
     case tmuxSessionName
@@ -619,10 +791,33 @@ enum HostEvent: Encodable {
       try container.encode("terminalTitleBarAction", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
       try container.encode(action, forKey: .action)
-    case .paneReorderRequested(let sourceSessionId, let targetSessionId):
+    case .paneReorderRequested(let sourceSessionId, let targetSessionId, let placement):
       try container.encode("paneReorderRequested", forKey: .type)
       try container.encode(sourceSessionId, forKey: .sourceSessionId)
       try container.encode(targetSessionId, forKey: .targetSessionId)
+      try container.encodeIfPresent(placement, forKey: .placement)
+    case .paneTabSelected(let sessionId):
+      try container.encode("paneTabSelected", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
+    case .paneTabReorderRequested(let sourceSessionId, let targetSessionId, let position):
+      /**
+       CDXC:PaneTabs 2026-05-11-01:43
+       Tab-bar reorder gestures use a dedicated host event instead of
+       paneReorderRequested so the sidebar can mutate tab order without creating
+       a split, pane grouping, or visibleSessionIds swap.
+       */
+      try container.encode("paneTabReorderRequested", forKey: .type)
+      try container.encode(sourceSessionId, forKey: .sourceSessionId)
+      try container.encode(targetSessionId, forKey: .targetSessionId)
+      try container.encode(position, forKey: .position)
+    case .paneTabCloseRequested(let sessionId, let scope):
+      try container.encode("paneTabCloseRequested", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
+      try container.encode(scope, forKey: .scope)
+    case .paneTabSleepRequested(let sessionId, let scope):
+      try container.encode("paneTabSleepRequested", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
+      try container.encode(scope, forKey: .scope)
     case .terminalCwdChanged(let sessionId, let cwd):
       try container.encode("terminalCwdChanged", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
@@ -696,10 +891,44 @@ enum HostEvent: Encodable {
   }
 }
 
-enum TerminalTitleBarAction: String, Codable {
+enum TerminalTitleBarAction: String, Codable, Hashable {
   case close
+  case delayedSend
   case fork
+  case newTerminal
+  case openBrowser
+  case popOut
   case reload
   case rename
+  case restorePopOut
   case sleep
+  case splitHorizontal
+  case splitVertical
+}
+
+enum PaneDropPlacement: String, Codable {
+  case bottom
+  case center
+  case left
+  case right
+  case top
+}
+
+enum PaneTabReorderPosition: String, Codable {
+  case after
+  case before
+}
+
+enum PaneTabCloseScope: String, Codable {
+  case close
+  case closeLeft
+  case closeOthers
+  case closeRight
+}
+
+enum PaneTabSleepScope: String, Codable {
+  case sleep
+  case sleepLeft
+  case sleepOthers
+  case sleepRight
 }

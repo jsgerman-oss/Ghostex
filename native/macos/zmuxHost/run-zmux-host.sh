@@ -8,7 +8,9 @@ ZMUX_APP_VARIANT="${ZMUX_APP_VARIANT:-prod}"
 if [[ "$ZMUX_APP_VARIANT" == "dev" ]]; then
 	# CDXC:DevAppFlavor 2026-04-28-02:01: Local development needs a separate
 	# zmux-dev app identity so iterative builds can run beside the release app;
-	# diagnostics stay in ~/.zmux-dev while workflow state is shared via ~/.zmux.
+	# CDXC:DevAppFlavor 2026-05-11-12:10: dev launches must keep settings,
+	# projects, sessions, hooks, browser profiles, and runtime state isolated
+	# from the installed app through the zmux-dev bundle and ~/.zmux-dev home.
 	APP_NAME="zmux-dev"
 	BUNDLE_ID="com.madda.zmux-dev.host"
 else

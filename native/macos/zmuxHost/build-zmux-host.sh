@@ -11,13 +11,16 @@ DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build}"
 ZMUX_APP_VARIANT="${ZMUX_APP_VARIANT:-prod}"
 if [[ "$ZMUX_APP_VARIANT" == "dev" ]]; then
 	# CDXC:DevAppFlavor 2026-04-28-02:01: The dev build must generate a
-	# distinct macOS app with its own bundle id and ~/.zmux-dev diagnostics
-	# root, while sharing ~/.zmux hooks, workspaces, and sessions.
+	# distinct macOS app with its own bundle id.
+	# CDXC:DevAppFlavor 2026-05-11-12:10: `bun start:dev` must not share
+	# settings, projects, sessions, hooks, browser profiles, or runtime state
+	# with the installed app, so both diagnostic and workflow homes use
+	# ~/.zmux-dev.
 	ZMUX_APP_NAME="${ZMUX_APP_NAME:-zmux-dev}"
 	ZMUX_APP_DISPLAY_NAME="${ZMUX_APP_DISPLAY_NAME:-zmux-dev}"
 	ZMUX_BUNDLE_ID="${ZMUX_BUNDLE_ID:-com.madda.zmux-dev.host}"
 	ZMUX_HOME_DIRECTORY_NAME="${ZMUX_HOME_DIRECTORY_NAME:-.zmux-dev}"
-	ZMUX_SHARED_HOME_DIRECTORY_NAME="${ZMUX_SHARED_HOME_DIRECTORY_NAME:-.zmux}"
+	ZMUX_SHARED_HOME_DIRECTORY_NAME="${ZMUX_SHARED_HOME_DIRECTORY_NAME:-.zmux-dev}"
 	ZMUX_SPARKLE_FEED_URL="${ZMUX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/zmux/main/appcast.xml}"
 	ZMUX_SPARKLE_PUBLIC_ED_KEY="${ZMUX_SPARKLE_PUBLIC_ED_KEY:-AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=}"
 else
@@ -102,6 +105,7 @@ fi
 
 mkdir -p "$WEB_DIR"
 cp "$REPO_ROOT/native/sidebar/index.html" "$WEB_DIR/index.html"
+cp "$REPO_ROOT/native/sidebar/floating-monaco-editor.html" "$WEB_DIR/floating-monaco-editor.html"
 rm -rf "$WEB_DIR/cli"
 mkdir -p "$WEB_DIR/cli"
 # CDXC:CliSessions 2026-05-10-03:28: Shells resolve the installed macOS
@@ -109,6 +113,11 @@ mkdir -p "$WEB_DIR/cli"
 # can proxy terminal argv such as `zmux --help` and `zmux sessions` before the
 # AppKit app starts.
 cp "$REPO_ROOT/scripts/zmux-cli.mjs" "$WEB_DIR/cli/zmux-cli.mjs"
+mkdir -p "$WEB_DIR/cli/node_modules"
+cp -R "$REPO_ROOT/node_modules/ws" "$WEB_DIR/cli/node_modules/ws"
+rm -rf "$WEB_DIR/monaco"
+mkdir -p "$WEB_DIR/monaco"
+cp -R "$REPO_ROOT/node_modules/monaco-editor/min/vs" "$WEB_DIR/monaco/vs"
 rm -rf "$WEB_DIR/sounds"
 mkdir -p "$WEB_DIR/sounds"
 # CDXC:NativeSound 2026-04-29-16:30: Bundle completion sound assets beside
@@ -130,18 +139,33 @@ bun build "$REPO_ROOT/native/sidebar/modal-host.tsx" \
 	--format iife \
 	--asset-naming "[name].[ext]" \
 	--outdir "$WEB_DIR"
+# CDXC:ReactTitlebar 2026-05-09-17:11: The macOS titlebar chrome is now a
+# React WKWebView bundle so future titlebar buttons and workspace dropdowns
+# share the same web UI/runtime rather than AppKit button implementations.
+bun build "$REPO_ROOT/native/sidebar/titlebar-host.tsx" \
+	--target browser \
+	--format iife \
+	--asset-naming "[name].[ext]" \
+	--outdir "$WEB_DIR"
 
 WEB_DIR="$WEB_DIR" node <<'JS'
-const { readFileSync, writeFileSync } = require("node:fs");
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 
 const webDir = process.env.WEB_DIR;
 const css = readFileSync(join(webDir, "native-sidebar.css"), "utf8");
 const js = readFileSync(join(webDir, "native-sidebar.js"), "utf8");
 const modalJs = readFileSync(join(webDir, "modal-host.js"), "utf8");
+// CDXC:ReactTitlebar 2026-05-11-00:22: The titlebar now imports shadcn/sidebar
+// CSS for its grouped Open In controls, so inline its generated stylesheet in
+// the isolated titlebar WKWebView instead of relying on the sidebar HTML.
+const titlebarCssPath = join(webDir, "titlebar-host.css");
+const titlebarCss = existsSync(titlebarCssPath) ? readFileSync(titlebarCssPath, "utf8") : "";
+const titlebarJs = readFileSync(join(webDir, "titlebar-host.js"), "utf8");
 // Inline script bodies must escape HTML script end tags that appear inside bundle strings.
 const escapedJs = js.replace(/<\/script/gi, "<\\/script");
 const escapedModalJs = modalJs.replace(/<\/script/gi, "<\\/script");
+const escapedTitlebarJs = titlebarJs.replace(/<\/script/gi, "<\\/script");
 writeFileSync(join(webDir, "index.html"), `<!doctype html>
 <html>
   <head>
@@ -200,6 +224,37 @@ ${escapedModalJs}
 }
 })();
 //# sourceURL=modal-host.js
+    </script>
+  </body>
+</html>
+`);
+writeFileSync(join(webDir, "titlebar-host.html"), `<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <style>
+${titlebarCss}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+(() => {
+try {
+${escapedTitlebarJs}
+} catch (error) {
+  window.__zmux_BOOT_ERROR__ = {
+    message: error && error.message ? String(error.message) : String(error),
+    stack: error && error.stack ? String(error.stack) : ""
+  };
+  throw error;
+}
+})();
+//# sourceURL=titlebar-host.js
     </script>
   </body>
 </html>
