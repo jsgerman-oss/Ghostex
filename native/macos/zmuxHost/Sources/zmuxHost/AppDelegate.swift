@@ -829,8 +829,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
 
   func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
     MainActor.assumeIsolated {
-      workspaceView?.subviews.compactMap { $0 as? Ghostty.SurfaceView }.first { $0.id == uuid }
+      /**
+       CDXC:NativePaneResize 2026-05-11-14:24
+       Pane surfaces now mount inside Muxy-style leaf containers instead of as
+       direct workspace children. Ghostty notification/raise callbacks still
+       resolve surfaces by UUID, so search the workspace view tree recursively
+       instead of only inspecting immediate subviews.
+       */
+      workspaceView.flatMap { Self.findGhosttySurface(forUUID: uuid, in: $0) }
     }
+  }
+
+  private static func findGhosttySurface(
+    forUUID uuid: UUID,
+    in rootView: NSView
+  ) -> Ghostty.SurfaceView? {
+    if let surfaceView = rootView as? Ghostty.SurfaceView, surfaceView.id == uuid {
+      return surfaceView
+    }
+    for subview in rootView.subviews {
+      if let match = findGhosttySurface(forUUID: uuid, in: subview) {
+        return match
+      }
+    }
+    return nil
   }
 
   func performGhosttyBindingMenuKeyEquivalent(with event: NSEvent) -> Bool {
