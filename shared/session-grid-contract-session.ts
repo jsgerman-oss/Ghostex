@@ -81,29 +81,21 @@ const WINDOWS_DEFAULT_POWERSHELL_TITLE_PATTERN =
 const AGENT_STATUS_WORD_TITLE_PATTERN =
   /^(?:[\s.:[\](){}!|/\\_-]*)(?:done|error|idle|thinking|working)(?:[\s.:[\](){}!|/\\_-]*)$/iu;
 const GHOST_PLACEHOLDER_SESSION_TITLE_PATTERN = /^👻(?:\s+Terminal Session)?$/u;
+const CODEX_SESSION_ID_TITLE_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
 export function clampVisibleSessionCount(value: number): VisibleSessionCount {
-  if (value <= 1) {
+  /**
+   * CDXC:NativeSplits 2026-05-10-18:30
+   * Split creation can surface five, seven, or eight panes after the user
+   * creates one more terminal from an exact visible set. Preserve every count
+   * from 1..9 instead of snapping through the old layout presets.
+   */
+  if (!Number.isFinite(value)) {
     return 1;
   }
 
-  if (value === 2) {
-    return 2;
-  }
-
-  if (value === 3) {
-    return 3;
-  }
-
-  if (value <= 4) {
-    return 4;
-  }
-
-  if (value <= 6) {
-    return 6;
-  }
-
-  return 9;
+  return Math.max(1, Math.min(9, Math.round(value))) as VisibleSessionCount;
 }
 
 export function clampTerminalViewMode(value: string | undefined): TerminalViewMode {
@@ -525,6 +517,7 @@ export function getSessionCardPrimaryTitle(
   if (
     !normalizedTitle ||
     /^Session \d+$/iu.test(normalizedTitle) ||
+    getCodexSessionIdFromTitle(normalizedTitle) !== undefined ||
     isGhostPlaceholderSessionTitle(normalizedTitle) ||
     isPathLikeTerminalTitle(normalizedTitle)
   ) {
@@ -583,6 +576,21 @@ function normalizePiTerminalTitle(title: string): string | undefined {
   return parts.slice(0, -1).join(" - ") || "π";
 }
 
+/**
+ * CDXC:CodexAgent 2026-05-11-07:35
+ * Recent Codex CLI builds can publish the underlying conversation UUID as the
+ * terminal title before a human title exists. Store that UUID as agent session
+ * identity, but keep it out of visible titles so unnamed Codex cards continue
+ * to render as `* Codex Session`.
+ */
+export function getCodexSessionIdFromTitle(title: string | undefined): string | undefined {
+  const normalizedTitle = normalizeTerminalTitle(title);
+  if (!normalizedTitle || !CODEX_SESSION_ID_TITLE_PATTERN.test(normalizedTitle)) {
+    return undefined;
+  }
+  return normalizedTitle.toLowerCase();
+}
+
 export function getVisibleTerminalTitle(title: string | undefined): string | undefined {
   const normalizedTitle = normalizeTerminalTitle(title);
   if (!normalizedTitle) {
@@ -623,6 +631,7 @@ function isIgnoredPlaceholderSessionTitle(title: string): boolean {
    */
   return (
     /^Session \d+$/iu.test(normalizedTitle) ||
+    getCodexSessionIdFromTitle(normalizedTitle) !== undefined ||
     isGhostPlaceholderSessionTitle(normalizedTitle) ||
     AGENT_STATUS_WORD_TITLE_PATTERN.test(normalizedTitle) ||
     IGNORED_PLACEHOLDER_SESSION_TITLES.has(normalizedTitle.toLowerCase()) ||

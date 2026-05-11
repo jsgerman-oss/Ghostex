@@ -13,14 +13,17 @@ import {
   createSessionInSimpleWorkspace,
   focusGroupInSimpleWorkspace,
   focusSessionInSimpleWorkspace,
+  moveSessionInPaneLayoutInSimpleWorkspace,
   moveSessionToGroupInSimpleWorkspace,
   normalizeSimpleGroupedSessionWorkspaceSnapshot,
   removeSessionInSimpleWorkspace,
+  reorderSessionInPaneTabGroupInSimpleWorkspace,
   setSessionFavoriteInSimpleWorkspace,
   setGroupSleepingInSimpleWorkspace,
   setSessionSleepingInSimpleWorkspace,
   setT3SessionMetadataInSimpleWorkspace,
   setVisibleCountInSimpleWorkspace,
+  selectPaneTabInSimpleWorkspace,
   swapVisibleSessionsInSimpleWorkspace,
   syncSessionOrderInSimpleWorkspace,
 } from "./simple-grouped-session-workspace-state";
@@ -210,6 +213,57 @@ describe("focusSessionInSimpleWorkspace", () => {
       sessionIdForDisplay(2),
       sessionIdForDisplay(1),
     ]);
+  });
+
+  test("should replace the focused pane layout slot when selecting a hidden sidebar session", () => {
+    const result = focusSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+                  { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      sessionIdForDisplay(2),
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(2),
+      sessionIdForDisplay(1),
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: sessionIdForDisplay(2) },
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
   });
 
   test("should preserve visible slot order when focusing an already visible session", () => {
@@ -889,6 +943,652 @@ describe("createSessionInSimpleWorkspace", () => {
       sessionIdForDisplay("01"),
     ]);
   });
+
+  test("should insert split-created sessions after the targeted visible pane with exact count", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(1),
+              fullscreenRestoreVisibleCount: undefined,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+              ],
+              viewMode: "grid",
+              visibleCount: 4,
+              visibleSessionIds: [
+                sessionIdForDisplay(0),
+                sessionIdForDisplay(1),
+                sessionIdForDisplay(2),
+                sessionIdForDisplay(3),
+              ],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 4,
+        nextSessionNumber: 5,
+      }),
+      undefined,
+      {
+        /**
+         * CDXC:NativeSplits 2026-05-10-18:30
+         * Cmd+D/title-bar split creates a real session and surfaces it next to
+         * the target pane, so four visible panes become exactly five panes.
+         */
+        visiblePlacement: { kind: "insertAfter", targetSessionId: sessionIdForDisplay(1) },
+      },
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.visibleCount).toBe(5);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      sessionIdForDisplay(1),
+      result.session?.sessionId,
+      sessionIdForDisplay(2),
+      sessionIdForDisplay(3),
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+        { kind: "leaf", sessionId: result.session?.sessionId },
+        { kind: "leaf", sessionId: sessionIdForDisplay(2) },
+        { kind: "leaf", sessionId: sessionIdForDisplay(3) },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(result.session?.sessionId);
+  });
+
+  test("should replace the targeted visible pane when replace placement targets it", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [
+                sessionIdForDisplay(0),
+                sessionIdForDisplay(1),
+                sessionIdForDisplay(2),
+              ],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      undefined,
+      {
+        visiblePlacement: { kind: "replace", targetSessionId: sessionIdForDisplay(1) },
+      },
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.visibleCount).toBe(3);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      result.session?.sessionId,
+      sessionIdForDisplay(2),
+    ]);
+  });
+
+  test("should append a title-bar terminal action to the clicked pane tab group", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(1),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  {
+                    activeSessionId: sessionIdForDisplay(1),
+                    kind: "tabs",
+                    sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+                  },
+                  { kind: "leaf", sessionId: sessionIdForDisplay(2) },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [
+                sessionIdForDisplay(0),
+                sessionIdForDisplay(1),
+                sessionIdForDisplay(2),
+              ],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      undefined,
+      {
+        /**
+         * CDXC:PaneTabs 2026-05-11-16:16
+         * Title-bar New Terminal must add a selected tab to the clicked pane's
+         * existing tab group. The target session remains in that group instead
+         * of being replaced and later reappearing as a separate split.
+         */
+        visiblePlacement: { kind: "appendToTabGroup", targetSessionId: sessionIdForDisplay(1) },
+      },
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      sessionIdForDisplay(1),
+      result.session?.sessionId,
+      sessionIdForDisplay(2),
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(result.session?.sessionId);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: result.session?.sessionId,
+          kind: "tabs",
+          sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1), result.session?.sessionId],
+        },
+        { kind: "leaf", sessionId: sessionIdForDisplay(2) },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should preserve split ratios when adding a terminal to the focused tab group", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(1),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  {
+                    activeSessionId: sessionIdForDisplay(1),
+                    kind: "tabs",
+                    sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+                  },
+                  { kind: "leaf", sessionId: sessionIdForDisplay(2) },
+                ],
+                direction: "vertical",
+                kind: "split",
+                ratio: 0.7,
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [
+                sessionIdForDisplay(0),
+                sessionIdForDisplay(1),
+                sessionIdForDisplay(2),
+              ],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      undefined,
+      {
+        /**
+         * CDXC:PaneTabs 2026-05-11-11:51
+         * Sidebar double-click and project-header terminal creation must add a
+         * focused tab to the active session's tab group without changing the
+         * surrounding split tree or user-adjusted pane ratio.
+         */
+        visiblePlacement: { kind: "appendToTabGroup", targetSessionId: sessionIdForDisplay(1) },
+      },
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(result.session?.sessionId);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: result.session?.sessionId,
+          kind: "tabs",
+          sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1), result.session?.sessionId],
+        },
+        { kind: "leaf", sessionId: sessionIdForDisplay(2) },
+      ],
+      direction: "vertical",
+      kind: "split",
+      ratio: 0.7,
+    });
+  });
+
+  test("should convert a single clicked pane into a tab group when adding a browser", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+              sessions: [createSessionRecord(1, 0)],
+              viewMode: "grid",
+              visibleCount: 1,
+              visibleSessionIds: [sessionIdForDisplay(0)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 1,
+        nextSessionNumber: 2,
+      }),
+      {
+        browser: { url: "https://example.com" },
+        kind: "browser",
+        title: "Browser",
+      },
+      {
+        /**
+         * CDXC:PaneTabs 2026-05-11-16:16
+         * Title-bar Open Browser uses the same clicked-pane tab placement as
+         * New Terminal. A one-session pane becomes a two-tab pane and the new
+         * browser tab becomes active.
+         */
+        visiblePlacement: { kind: "appendToTabGroup", targetSessionId: sessionIdForDisplay(0) },
+      },
+    );
+
+    expect(result.session).toEqual(expect.objectContaining({ kind: "browser" }));
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      result.session?.sessionId,
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: result.session?.sessionId,
+      kind: "tabs",
+      sessionIds: [sessionIdForDisplay(0), result.session?.sessionId],
+    });
+  });
+
+  test("should preserve the previously focused pane when global new session replaces a visible pane", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      undefined,
+      {
+        visiblePlacement: {
+          kind: "replaceNonFocused",
+          preserveSessionId: sessionIdForDisplay(0),
+        },
+      },
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      result.session?.sessionId,
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).not.toContain(
+      sessionIdForDisplay(1),
+    );
+  });
+
+  test("should persist a vertical split tree when Cmd+Shift+D creates a pane", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+                  { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      undefined,
+      {
+        visiblePlacement: {
+          kind: "insertAfter",
+          splitDirection: "vertical",
+          targetSessionId: sessionIdForDisplay(0),
+        },
+      },
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          children: [
+            { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+            { kind: "leaf", sessionId: result.session?.sessionId },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should append full-width terminal panes as a bottom row", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+                  { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      undefined,
+      {
+        /**
+         * CDXC:WorkspacePanes 2026-05-11-02:51
+         * The Settings-row secondary terminal action appends a full-width row,
+         * not a split inside the currently focused pane.
+         */
+        visiblePlacement: { kind: "appendFullWidth" },
+      },
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      sessionIdForDisplay(1),
+      result.session?.sessionId,
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          children: [
+            { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+            { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+          ],
+          direction: "horizontal",
+          kind: "split",
+        },
+        { kind: "leaf", sessionId: result.session?.sessionId },
+      ],
+      direction: "vertical",
+      kind: "split",
+      ratio: 0.85,
+    });
+  });
+
+  test("should group a dragged pane into the target pane tab group", () => {
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(0),
+            fullscreenRestoreVisibleCount: undefined,
+            paneLayout: {
+              children: [
+                { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+                { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+              ],
+              direction: "horizontal",
+              kind: "split",
+            },
+            sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+            viewMode: "grid",
+            visibleCount: 2,
+            visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 2,
+      nextSessionNumber: 3,
+    });
+
+    const result = moveSessionInPaneLayoutInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sessionIdForDisplay(1),
+      sessionIdForDisplay(0),
+      "center",
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: sessionIdForDisplay(1),
+      kind: "tabs",
+      sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+    });
+  });
+
+  test("should allow dragging an awake tab that was appended outside visibleSessionIds", () => {
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(0),
+            fullscreenRestoreVisibleCount: undefined,
+            paneLayout: { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+            sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+            viewMode: "grid",
+            visibleCount: 1,
+            visibleSessionIds: [sessionIdForDisplay(0)],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 2,
+      nextSessionNumber: 3,
+    });
+
+    const result = moveSessionInPaneLayoutInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sessionIdForDisplay(1),
+      sessionIdForDisplay(0),
+      "center",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      sessionIdForDisplay(1),
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: sessionIdForDisplay(1),
+      kind: "tabs",
+      sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+    });
+  });
+
+  test("should select the active session in an existing tab group", () => {
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(0),
+            fullscreenRestoreVisibleCount: undefined,
+            paneLayout: {
+              activeSessionId: sessionIdForDisplay(0),
+              kind: "tabs",
+              sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+            viewMode: "grid",
+            visibleCount: 2,
+            visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 2,
+      nextSessionNumber: 3,
+    });
+
+    const result = selectPaneTabInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sessionIdForDisplay(1),
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(sessionIdForDisplay(1));
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: sessionIdForDisplay(1),
+      kind: "tabs",
+      sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+    });
+  });
+
+  test("should reorder sessions inside an existing pane tab group", () => {
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(1),
+            fullscreenRestoreVisibleCount: undefined,
+            paneLayout: {
+              activeSessionId: sessionIdForDisplay(1),
+              kind: "tabs",
+              sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1), sessionIdForDisplay(2)],
+            },
+            sessions: [
+              createSessionRecord(1, 0),
+              createSessionRecord(2, 1),
+              createSessionRecord(3, 2),
+            ],
+            viewMode: "grid",
+            visibleCount: 3,
+            visibleSessionIds: [
+              sessionIdForDisplay(0),
+              sessionIdForDisplay(1),
+              sessionIdForDisplay(2),
+            ],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 3,
+      nextSessionNumber: 4,
+    });
+
+    const result = reorderSessionInPaneTabGroupInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sessionIdForDisplay(2),
+      sessionIdForDisplay(0),
+      "before",
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: sessionIdForDisplay(1),
+      kind: "tabs",
+      sessionIds: [sessionIdForDisplay(2), sessionIdForDisplay(0), sessionIdForDisplay(1)],
+    });
+  });
 });
 
 describe("setT3SessionMetadataInSimpleWorkspace", () => {
@@ -1147,11 +1847,73 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
     expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([sessionIdForDisplay(0)]);
   });
 
-  test("should fill an empty visible slot before replacing an existing pane", () => {
+  test("should preserve pane layout position while a session sleeps and wakes", () => {
+    const sleepingSessionId = sessionIdForDisplay(1);
+    const awakeSessionId = sessionIdForDisplay(0);
+    const slept = setSessionSleepingInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sleepingSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: awakeSessionId },
+                  { kind: "leaf", sessionId: sleepingSessionId },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [awakeSessionId, sleepingSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      sleepingSessionId,
+      true,
+    );
+
+    expect(slept.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([awakeSessionId]);
+    expect(slept.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: awakeSessionId },
+        { kind: "leaf", sessionId: sleepingSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+
+    const woke = setSessionSleepingInSimpleWorkspace(slept.snapshot, sleepingSessionId, false);
+    expect(woke.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      awakeSessionId,
+      sleepingSessionId,
+    ]);
+    expect(woke.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: awakeSessionId },
+        { kind: "leaf", sessionId: sleepingSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should restore a sleeping session into the focused pane instead of its old pane", () => {
     const sleepingSession = {
       ...createSessionRecord(2, 1),
       isSleeping: true,
     };
+    const awakeSessionId = sessionIdForDisplay(0);
     const sleepingSessionId = sessionIdForDisplay(1);
     const result = focusSessionInSimpleWorkspace(
       createWorkspaceSnapshot({
@@ -1160,12 +1922,20 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
           {
             groupId: DEFAULT_MAIN_GROUP_ID,
             snapshot: {
-              focusedSessionId: sessionIdForDisplay(0),
+              focusedSessionId: awakeSessionId,
               fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: awakeSessionId },
+                  { kind: "leaf", sessionId: sleepingSessionId },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
               sessions: [createSessionRecord(1, 0), sleepingSession],
               viewMode: "grid",
               visibleCount: 2,
-              visibleSessionIds: [sessionIdForDisplay(0)],
+              visibleSessionIds: [awakeSessionId],
             },
             title: "Main",
           },
@@ -1179,10 +1949,11 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
 
     expect(result.snapshot.groups[0]?.snapshot.sessions[1]?.isSleeping).toBe(false);
     expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(sleepingSessionId);
-    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
-      sessionIdForDisplay(0),
-      sleepingSessionId,
-    ]);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([sleepingSessionId]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      kind: "leaf",
+      sessionId: sleepingSessionId,
+    });
   });
 
   test("should fall back to another group when the active group loses its last awake session", () => {

@@ -5,6 +5,7 @@ import {
   getSessionCardPrimaryTitle,
   getVisiblePrimaryTitle,
   getVisibleTerminalTitle,
+  getCodexSessionIdFromTitle,
   isGhostPlaceholderSessionTitle,
 } from "./session-grid-contract-session";
 import { createSidebarSessionItems } from "./session-grid-contract-ui";
@@ -45,5 +46,23 @@ describe("createSidebarSessionItems", () => {
     expect(getVisiblePrimaryTitle("👻")).toBeUndefined();
     expect(getPreferredSessionTitle("Persisted Codex Name", "👻")).toBe("Persisted Codex Name");
     expect(getSessionCardPrimaryTitle({ agentName: "codex", title: "👻" })).toBe("Codex Session");
+  });
+
+  test("should treat Codex UUID terminal titles as session identity instead of display names", () => {
+    /**
+     * CDXC:CodexAgent 2026-05-11-07:35
+     * Codex can expose the durable conversation UUID as the terminal title. The
+     * UUID should be captured for restore metadata, not displayed as the card
+     * title or treated as a human session name.
+     */
+    const codexSessionId = "019dc83d-dd29-7b03-af60-389172520a68";
+
+    expect(getCodexSessionIdFromTitle(codexSessionId)).toBe(codexSessionId);
+    expect(getVisibleTerminalTitle(codexSessionId)).toBeUndefined();
+    expect(getVisiblePrimaryTitle(codexSessionId)).toBeUndefined();
+    expect(getSessionCardPrimaryTitle({ agentName: "codex", title: codexSessionId })).toBe(
+      "Codex Session",
+    );
+    expect(getPreferredSessionTitle("Codex Session", codexSessionId)).toBeUndefined();
   });
 });

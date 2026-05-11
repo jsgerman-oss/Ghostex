@@ -8,11 +8,38 @@ export const MAX_AGENT_MANAGER_ZOOM_PERCENT = 200;
 export const DEFAULT_MAIN_GROUP_ID = "group-1";
 export const DEFAULT_MAIN_GROUP_TITLE = "Main";
 
-export type VisibleSessionCount = 1 | 2 | 3 | 4 | 6 | 9;
+export type VisibleSessionCount = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 export type TerminalViewMode = "horizontal" | "vertical" | "grid";
 
 export type SessionGridDirection = "up" | "right" | "down" | "left";
+
+export type SessionPaneSplitDirection = "horizontal" | "vertical";
+
+/**
+ * CDXC:NativeSplits 2026-05-10-18:30
+ * Workspace panes persist as an explicit split/tab tree instead of deriving
+ * native geometry from visibleSessionIds counts. This lets Cmd+D and
+ * Cmd+Shift+D add the new terminal beside the targeted pane without the
+ * previous four-pane auto-grid reshuffle, and gives tab grouping a durable
+ * restart-safe place in the session snapshot.
+ */
+export type SessionPaneLayoutNode =
+  | {
+      kind: "leaf";
+      sessionId: string;
+    }
+  | {
+      activeSessionId?: string;
+      kind: "tabs";
+      sessionIds: string[];
+    }
+  | {
+      children: SessionPaneLayoutNode[];
+      direction: SessionPaneSplitDirection;
+      kind: "split";
+      ratio?: number;
+    };
 
 export type SidebarSessionActivityState = "idle" | "working" | "attention";
 export type SessionLifecycleState = "running" | "done" | "sleeping" | "error";
@@ -89,6 +116,13 @@ export type BaseSessionRecord = {
   titleSource?: SessionTitleSource;
   alias: string;
   isFavorite?: boolean;
+  /**
+   * CDXC:PanePopOut 2026-05-11-09:35
+   * Popped-out panes keep their terminal/browser/T3 runtime alive in a native
+   * zmux window while the original workspace slot stays visible as a reattach
+   * placeholder. This is presentation state, not sleep state.
+   */
+  isPoppedOut?: boolean;
   isSleeping?: boolean;
   slotIndex: number;
   row: number;
@@ -102,8 +136,12 @@ export type TerminalSessionRecord = BaseSessionRecord & {
    * CDXC:PiAgent 2026-05-08-09:42
    * Some agents need a durable conversation identity that is not the sidebar
    * title or terminal-provider session name. Pi restore/fork uses its session
-   * jsonl path/id, so store that metadata on the terminal record beside Codex's
-   * title-based identity.
+   * jsonl path/id, so store that metadata on the terminal record.
+   *
+   * CDXC:CodexAgent 2026-05-11-07:35
+   * Codex can publish its conversation UUID before a human title exists. Store
+   * that UUID here for restore while the display-title layer keeps UUID-looking
+   * titles rendered as unnamed `Codex Session` cards.
    */
   agentSessionId?: string;
   agentSessionPath?: string;
@@ -166,6 +204,7 @@ export type CreateSessionRecordOptions =
 export type SessionGridSnapshot = {
   focusedSessionId?: string;
   fullscreenRestoreVisibleCount?: VisibleSessionCount;
+  paneLayout?: SessionPaneLayoutNode;
   sessions: SessionRecord[];
   visibleCount: VisibleSessionCount;
   visibleSessionIds: string[];

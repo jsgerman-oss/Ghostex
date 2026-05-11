@@ -24,6 +24,14 @@ import {
   type zmuxHotkeySettings,
 } from "./zmux-hotkeys";
 import { GHOSTTY_THEME_OPTIONS } from "./ghostty-theme-options";
+import {
+  DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY,
+  normalizeCustomWorkspaceOpenTargets,
+  normalizeWorkspaceOpenTargetAvailability,
+  normalizeWorkspaceOpenTargetHiddenIds,
+  type CustomWorkspaceOpenTarget,
+  type WorkspaceOpenTargetAvailability,
+} from "./workspace-open-targets";
 
 export type GhosttyConfirmCloseSurface = "false" | "true" | "always";
 export type GhosttyCopyOnSelect = "false" | "true" | "clipboard";
@@ -34,6 +42,7 @@ export type SessionPersistenceProvider = "off" | "tmux" | "zmx" | "zellij";
 export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large";
 export type SidebarMode = "combined" | "separated";
 export type SidebarSide = "left" | "right";
+export type PromptEditorBackend = "monaco" | "zpet";
 export type ZedOverlayTargetApp = "zed" | "zed-preview" | "vscode" | "vscode-insiders";
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
@@ -92,10 +101,15 @@ export type zmuxSettings = {
   terminalClipboardPasteProtection: boolean;
   terminalMouseHideWhileTyping: boolean;
   terminalScrollbar: GhosttyScrollbar;
+  promptEditorBackend: PromptEditorBackend;
   richPromptEditingWithZapet: boolean;
+  useZpetForCtrlGPromptEditing: boolean;
   hotkeys: zmuxHotkeySettings;
   workspaceActivePaneBorderColor: string;
   workspaceBackgroundColor: string;
+  customWorkspaceOpenTargets: CustomWorkspaceOpenTarget[];
+  workspaceOpenTargetAvailability: WorkspaceOpenTargetAvailability;
+  workspaceOpenTargetHiddenIds: string[];
   workspacePaneGap: number;
   /**
    * CDXC:IDEAttachment 2026-05-06-12:49
@@ -164,6 +178,10 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    * macOS attention notifications are enabled by default so a background
    * session that transitions into attention can surface itself without relying
    * on persistent status badges or completion sounds.
+   *
+   * CDXC:SessionAttentionNotifications 2026-05-11-01:14
+   * Keep this default-on even after adding macOS permission prompts and test
+   * controls; users should opt out explicitly when they do not want banners.
    */
   showMacOSAttentionNotifications: true,
   /**
@@ -242,16 +260,31 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
   terminalClipboardPasteProtection: true,
   terminalMouseHideWhileTyping: false,
   terminalScrollbar: "system",
+  promptEditorBackend: "monaco",
   /**
    * CDXC:ZapetPromptEditing 2026-05-10-11:11
-   * Zapet is an opt-in rich prompt editing TUI. When enabled, zmux injects
-   * EDITOR=zapet into new app/agent terminal environments, and the native
-   * terminal startup keeps Zapet in charge after zsh profile files load.
+   * Keep the legacy setting keys for compatibility with older settings
+   * snapshots. New UI and launch behavior use promptEditorBackend.
    */
   richPromptEditingWithZapet: false,
+  useZpetForCtrlGPromptEditing: false,
   hotkeys: DEFAULT_zmux_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
   workspaceBackgroundColor: "#121212",
+  /**
+   * CDXC:TitlebarOpenIn 2026-05-11-00:22
+   * The titlebar Open In menu is configurable: built-in editor targets can be
+   * hidden and user-defined command targets can be appended without changing
+   * the t3code-derived default editor catalog.
+   */
+  customWorkspaceOpenTargets: [],
+  /**
+   * CDXC:TitlebarOpenIn 2026-05-11-02:03
+   * First launch starts with only zmux/Finder until the native sidebar performs
+   * its one startup installed-target scan and persists the detected IDE list.
+   */
+  workspaceOpenTargetAvailability: DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY,
+  workspaceOpenTargetHiddenIds: [],
   workspacePaneGap: 12,
   /**
    * CDXC:IDEAttachment 2026-05-06-12:49
@@ -353,6 +386,14 @@ export const GHOSTTY_SCROLLBAR_OPTIONS: ReadonlyArray<{
 }> = [
   { label: "System", value: "system" },
   { label: "Never", value: "never" },
+];
+
+export const PROMPT_EDITOR_BACKEND_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: PromptEditorBackend;
+}> = [
+  { label: "Monaco floating editor", value: "monaco" },
+  { label: "zpet TUI floating editor", value: "zpet" },
 ];
 
 export const GHOSTTY_THEME_SETTING_OPTIONS: ReadonlyArray<{
@@ -697,15 +738,20 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
     terminalScrollbar: normalizeGhosttyScrollbar(
       readString(source, "terminalScrollbar", DEFAULT_zmux_SETTINGS.terminalScrollbar),
     ),
+    promptEditorBackend: normalizePromptEditorBackend(source),
     /**
      * CDXC:ZapetPromptEditing 2026-05-10-11:11
-     * Older settings files should keep the feature disabled until users turn
-     * on Rich Prompt Editing with Zapet from Settings.
+     * Keep reading the old opt-in key so older snapshots round-trip cleanly.
      */
     richPromptEditingWithZapet: readBoolean(
       source,
       "richPromptEditingWithZapet",
       DEFAULT_zmux_SETTINGS.richPromptEditingWithZapet,
+    ),
+    useZpetForCtrlGPromptEditing: readBoolean(
+      source,
+      "useZpetForCtrlGPromptEditing",
+      readBoolean(source, "richPromptEditingWithZapet", false) === true,
     ),
     /**
      * CDXC:Hotkeys 2026-04-28-05:20
@@ -729,6 +775,21 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
     workspaceBackgroundColor:
       readString(source, "workspaceBackgroundColor", DEFAULT_zmux_SETTINGS.workspaceBackgroundColor)
         .trim() || DEFAULT_zmux_SETTINGS.workspaceBackgroundColor,
+    /**
+     * CDXC:TitlebarOpenIn 2026-05-11-00:22
+     * Settings owns which titlebar Open In targets are shown. Normalize on read
+     * so the React titlebar can trust the persisted custom commands and hidden
+     * built-in ids sent through native layout sync.
+     */
+    customWorkspaceOpenTargets: normalizeCustomWorkspaceOpenTargets(
+      source.customWorkspaceOpenTargets,
+    ),
+    workspaceOpenTargetAvailability: normalizeWorkspaceOpenTargetAvailability(
+      source.workspaceOpenTargetAvailability,
+    ),
+    workspaceOpenTargetHiddenIds: normalizeWorkspaceOpenTargetHiddenIds(
+      source.workspaceOpenTargetHiddenIds,
+    ),
     workspacePaneGap: clampNumber(
       readNumber(source, "workspacePaneGap", DEFAULT_zmux_SETTINGS.workspacePaneGap),
       0,
@@ -792,6 +853,20 @@ function normalizeSessionPersistenceProvider(
   value: string | undefined,
 ): SessionPersistenceProvider {
   return value === "tmux" || value === "zmx" || value === "zellij" ? value : "off";
+}
+
+function normalizePromptEditorBackend(source: Record<string, unknown>): PromptEditorBackend {
+  const backend = readString(source, "promptEditorBackend", "");
+  if (backend === "monaco" || backend === "zpet") {
+    return backend;
+  }
+  if (
+    readBoolean(source, "useZpetForCtrlGPromptEditing", false) ||
+    readBoolean(source, "richPromptEditingWithZapet", false)
+  ) {
+    return "zpet";
+  }
+  return DEFAULT_zmux_SETTINGS.promptEditorBackend;
 }
 
 function normalizeGhosttyTheme(value: string | undefined): string {

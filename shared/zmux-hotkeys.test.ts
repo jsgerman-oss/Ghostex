@@ -6,40 +6,56 @@ import {
 } from "./zmux-hotkeys";
 
 describe("normalizezmuxHotkeySettings", () => {
-  test("uses single-chord defaults for split count hotkeys", () => {
+  test("uses cmd-first navigation defaults", () => {
     /**
-     * CDXC:Hotkeys 2026-05-10-12:06
-     * View/split count defaults must be real single key equivalents so AppKit
-     * can dispatch them while Ghostty has focus. The previous prefix sequence
-     * looked strange in Settings and did not reliably reach the second key.
+     * CDXC:Hotkeys 2026-05-11-09:26
+     * Everyday navigation defaults should use plain Cmd where possible, with
+     * Ctrl reserved for direct group slots after Cmd+number is assigned to
+     * session slots.
      */
-    expect(DEFAULT_zmux_HOTKEYS.showOne).toBe("cmd+ctrl+1");
-    expect(DEFAULT_zmux_HOTKEYS.showTwo).toBe("cmd+ctrl+2");
-    expect(DEFAULT_zmux_HOTKEYS.showThree).toBe("cmd+ctrl+3");
+    expect(DEFAULT_zmux_HOTKEYS.createSession).toBe("cmd+n");
+    expect(DEFAULT_zmux_HOTKEYS.openSettings).toBe("cmd+,");
+    expect(DEFAULT_zmux_HOTKEYS.focusPreviousSession).toBe("cmd+[");
+    expect(DEFAULT_zmux_HOTKEYS.focusNextSession).toBe("cmd+]");
+    expect(DEFAULT_zmux_HOTKEYS.focusPreviousGroup).toBe("cmd+shift+[");
+    expect(DEFAULT_zmux_HOTKEYS.focusNextGroup).toBe("cmd+shift+]");
+    expect(DEFAULT_zmux_HOTKEYS.focusGroup1).toBe("cmd+ctrl+1");
+    expect(DEFAULT_zmux_HOTKEYS.focusSessionSlot1).toBe("cmd+1");
   });
 
-  test("uses direct split more and split less defaults", () => {
+  test("uses direct split creation defaults", () => {
     /**
-     * CDXC:Hotkeys 2026-05-10-12:31
-     * Cmd+D and Cmd+Shift+D both mean Split More, matching terminal sideways
-     * and downward split defaults. Split Less uses a separate non-close chord.
+     * CDXC:NativeSplits 2026-05-10-18:30
+     * Cmd+D and Cmd+Shift+D create real terminal splits in the native
+     * workspace.
      */
     expect(DEFAULT_zmux_HOTKEYS.splitMore).toBe("cmd+d");
     expect(DEFAULT_zmux_HOTKEYS.splitMoreDown).toBe("cmd+shift+d");
-    expect(DEFAULT_zmux_HOTKEYS.splitLess).toBe("cmd+ctrl+shift+d");
   });
 
-  test("preserves user-defined split count hotkeys without migration", () => {
+  test("drops retired visible-count hotkeys during normalization", () => {
     expect(
       normalizezmuxHotkeySettings({
         showOne: "cmd+alt+s 1",
         showTwo: "cmd+alt+s 2",
         showThree: "cmd+alt+s 3",
       }),
+    ).not.toHaveProperty("showOne");
+  });
+
+  test("keeps explicitly cleared hotkeys unassigned", () => {
+    /**
+     * CDXC:Hotkeys 2026-05-11-09:06
+     * Clearing a binding from Settings must persist as an unassigned command,
+     * while omitted settings continue to receive defaults.
+     */
+    expect(
+      normalizezmuxHotkeySettings({
+        splitMoreDown: "",
+      }),
     ).toMatchObject({
-      showOne: "cmd+alt+s 1",
-      showTwo: "cmd+alt+s 2",
-      showThree: "cmd+alt+s 3",
+      splitMore: "cmd+d",
+      splitMoreDown: "",
     });
   });
 });

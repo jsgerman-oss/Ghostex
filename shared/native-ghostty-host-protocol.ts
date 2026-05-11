@@ -1,9 +1,21 @@
 export const NATIVE_GHOSTTY_HOST_PROTOCOL_VERSION = 1;
 
+import type { SidebarProjectDiffStats } from "./project-diff-stats";
+import type { SidebarCommandButton } from "./sidebar-commands";
+import type {
+  CustomWorkspaceOpenTarget,
+  WorkspaceOpenTargetAvailability,
+} from "./workspace-open-targets";
+
 export type NativeTerminalLayout =
   | {
       kind: "leaf";
       sessionId: string;
+    }
+  | {
+      activeSessionId?: string;
+      kind: "tabs";
+      sessionIds: string[];
     }
   | {
       children: NativeTerminalLayout[];
@@ -12,7 +24,19 @@ export type NativeTerminalLayout =
       ratio?: number;
     };
 
-export type NativeTerminalTitleBarAction = "close" | "fork" | "reload" | "rename" | "sleep";
+export type NativeTerminalTitleBarAction =
+  | "close"
+  | "delayedSend"
+  | "fork"
+  | "newTerminal"
+  | "openBrowser"
+  | "popOut"
+  | "reload"
+  | "rename"
+  | "restorePopOut"
+  | "sleep"
+  | "splitHorizontal"
+  | "splitVertical";
 
 export type NativeGhosttyHostCommand =
   | {
@@ -37,6 +61,19 @@ export type NativeGhosttyHostCommand =
       type: "createWebPane";
       url: string;
     }
+    | {
+      command?: string;
+      cwd?: string;
+      editorKind?: "terminal" | "monaco";
+      env?: Record<string, string>;
+      filePath?: string;
+      language?: string;
+      originatingSessionId?: string;
+      requestId?: string;
+      statusFile?: string;
+      title?: string;
+      type: "openFloatingEditor";
+    }
   | {
       sessionId: string;
       type: "closeTerminal";
@@ -56,6 +93,16 @@ export type NativeGhosttyHostCommand =
   | {
       cwd: string;
       type: "startT3CodeRuntime";
+    }
+  | {
+      /**
+       * CDXC:T3Code 2026-05-10-22:48
+       * The sidebar owns T3 card visibility and sleep state. Send the native
+       * host the shown, non-sleeping T3 sessions so the managed provider
+       * keepalive follows "running in sidebar" instead of workspace pane focus.
+       */
+      runningSessionIds: string[];
+      type: "setT3CodeRuntimeSessionState";
     }
   | {
       type: "stopT3CodeRuntime";
@@ -106,6 +153,14 @@ export type NativeGhosttyHostCommand =
     }
   | {
       activeProjectEditorId?: string;
+      activeProjectDiffStats?: SidebarProjectDiffStats;
+      activeProjectEditorIsOpen?: boolean;
+      activeProjectEditorIsSleeping?: boolean;
+      activeProjectEditorStatus?: "idle" | "opening" | "running" | "error";
+      activeProjectId?: string;
+      activeProjectIconDataUrl?: string;
+      activeProjectName?: string;
+      activeProjectPath?: string;
       activeSessionIds: string[];
       /**
        * CDXC:NativeWindowChrome 2026-05-10-14:19
@@ -118,6 +173,7 @@ export type NativeGhosttyHostCommand =
       backgroundColor?: string;
       focusRequestId?: number;
       focusedSessionId?: string;
+      sleepingSessionIds?: string[];
       /**
        * CDXC:NativeGpu 2026-05-08-16:45
        * Sidebar status/title/icon updates must still reach native pane chrome,
@@ -127,17 +183,42 @@ export type NativeGhosttyHostCommand =
       layoutChanged?: boolean;
       layout?: NativeTerminalLayout;
       paneGap?: number;
-      sessionActivities?: Record<string, "attention" | "working">;
+      /**
+       * CDXC:PanePopOut 2026-05-11-09:35
+       * Layout sync keeps popped-out sessions in the split/tab tree while
+       * telling AppKit to render a placeholder in-app and move the live native
+       * surface into a zmux-owned window.
+       */
+      poppedOutSessionIds?: string[];
+      sessionActivities?: Record<string, "attention" | "sleeping" | "working">;
       sessionAgentIconColors?: Record<string, string>;
       sessionAgentIconDataUrls?: Record<string, string>;
+      sessionFaviconDataUrls?: Record<string, string>;
       sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;
+      showProjectEditorDiffFileCount?: boolean;
+      sidebarActions?: {
+        commands: SidebarCommandButton[];
+      };
       type: "setActiveTerminalSet";
+      workspaceOpenTargets?: {
+        availability: WorkspaceOpenTargetAvailability;
+        customTargets: CustomWorkspaceOpenTarget[];
+        hiddenTargetIds: string[];
+      };
     }
   | {
       sessionId: string;
       type: "setTerminalVisibility";
       visible: boolean;
+    }
+  | {
+      /**
+       * CDXC:SessionAttentionNotifications 2026-05-11-01:14
+       * Settings must be able to show the native notification permission prompt
+       * and open macOS Notification Settings without faking an attention event.
+       */
+      type: "requestMacOSNotificationPermission" | "openMacOSNotificationSettings";
     }
   | {
       /**
@@ -147,6 +228,7 @@ export type NativeGhosttyHostCommand =
        * focus routing.
        */
       body?: string;
+      iconDataUrl?: string;
       sessionId: string;
       title: string;
       type: "showSessionAttentionNotification";
@@ -204,6 +286,49 @@ export type NativeGhosttyHostEvent =
       message: string;
       sessionId: string;
       type: "terminalError";
+    }
+  | {
+      placement?: "bottom" | "center" | "left" | "right" | "top";
+      sourceSessionId: string;
+      targetSessionId: string;
+      type: "paneReorderRequested";
+    }
+  | {
+      sessionId: string;
+      type: "paneTabSelected";
+    }
+  | {
+      /**
+       * CDXC:PaneTabs 2026-05-11-01:43
+       * Native tab-bar drags report before/after target placement so the
+       * sidebar can reorder the containing paneLayout tab group without
+       * interpreting the gesture as a pane split/drop.
+       */
+      position: "after" | "before";
+      sourceSessionId: string;
+      targetSessionId: string;
+      type: "paneTabReorderRequested";
+    }
+  | {
+      /**
+       * CDXC:PaneTabs 2026-05-11-00:45
+       * Native tab context menus report a clicked tab plus a scoped close
+       * command. The sidebar resolves the tab group from paneLayout so bulk
+       * close actions never apply to every visible tab or another group.
+       */
+      scope: "close" | "closeLeft" | "closeOthers" | "closeRight";
+      sessionId: string;
+      type: "paneTabCloseRequested";
+    }
+  | {
+      /**
+       * CDXC:PaneTabs 2026-05-11-02:16
+       * Native tab sleep context-menu actions use tab-group scoped targets and
+       * keep sessions restorable through the normal wake path.
+       */
+      scope: "sleep" | "sleepLeft" | "sleepOthers" | "sleepRight";
+      sessionId: string;
+      type: "paneTabSleepRequested";
     }
   | {
       /**

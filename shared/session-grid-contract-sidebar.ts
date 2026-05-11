@@ -484,10 +484,30 @@ export type SidebarToExtensionMessage =
       type:
         | "applyRecommendedGhosttySettings"
         | "openAccessibilityPreferences"
+        | "requestMacOSNotificationPermission"
+        | "openMacOSNotificationSettings"
         | "openGhosttyConfigFile"
         | "openGhosttySettingsDocs"
         | "installZapet"
         | "resetGhosttySettingsToDefault";
+    }
+  | {
+      /**
+       * CDXC:SessionAttentionNotifications 2026-05-11-01:14
+       * Settings' test button should exercise the same native attention
+       * completion flow as a real agent task without mutating any session.
+       */
+      type: "testAgentTaskCompletion";
+    }
+  | {
+      /**
+       * CDXC:Settings 2026-05-11-02:06
+       * Settings sound dropdown preview buttons play only the selected sound,
+       * using the same native audio path as real completion alerts while
+       * avoiding notification side effects.
+       */
+      sound: CompletionSoundSetting;
+      type: "playCompletionSoundPreview";
     }
   | {
       type: "toggleCompletionBell";
@@ -525,6 +545,16 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "createSession";
+    }
+  | {
+      /**
+       * CDXC:PaneTabs 2026-05-11-11:51
+       * The combined sidebar Settings row has a legacy-named secondary terminal
+       * action. It targets the currently active project and creates the new
+       * terminal as the selected tab in the focused session's tab group so pane
+       * sizes and tab groupings remain unchanged.
+       */
+      type: "createFullWidthTerminalPane";
     }
   | {
       /**
@@ -741,6 +771,17 @@ export type SidebarToExtensionMessage =
   | {
       type: "copyAttachCommand";
       sessionId: string;
+    }
+  | {
+      /**
+       * CDXC:DelayedSend 2026-05-11-11:56
+       * Delayed Send schedules an Enter keypress for an already-staged terminal
+       * command. The sidebar/modal sends only the trusted session id and delay;
+       * native resolves the terminal and uses the existing Enter-key path.
+       */
+      delayMs: number;
+      sessionId: string;
+      type: "scheduleDelayedSend";
     }
   | {
       type: "forkSession";

@@ -8,6 +8,11 @@ export type WorkspaceDockIcon =
   | { kind: "image"; dataUrl: string }
   | { color?: string; icon: SidebarCommandIcon; kind: "tabler" };
 
+export type WorkspaceProjectIconSource = {
+  icon?: WorkspaceDockIcon;
+  iconDataUrl?: string;
+};
+
 export const DEFAULT_WORKSPACE_THEME_COLOR = "#2f6feb";
 export const WORKSPACE_THEME_COLOR_HISTORY_STORAGE_KEY = "zmux-workspace-theme-color-history";
 const MAX_WORKSPACE_THEME_COLOR_HISTORY = 8;
@@ -119,4 +124,20 @@ export function normalizeWorkspaceDockIconDataUrl(value: unknown): string | unde
     return undefined;
   }
   return /^data:image\/(?:png|svg\+xml);base64,/u.test(value) ? value : undefined;
+}
+
+/**
+ * CDXC:ProjectIcons 2026-05-11-01:50
+ * Project icons need one shared React/native source so macOS notifications and
+ * future React titlebar project chrome render the same user-selected image
+ * instead of each surface inventing separate icon lookup rules.
+ */
+export function resolveWorkspaceProjectIconDataUrl(
+  project: WorkspaceProjectIconSource | undefined,
+): string | undefined {
+  const icon = normalizeWorkspaceDockIcon(project?.icon);
+  if (icon?.kind === "image") {
+    return icon.dataUrl;
+  }
+  return normalizeWorkspaceDockIconDataUrl(project?.iconDataUrl);
 }

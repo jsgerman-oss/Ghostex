@@ -4,6 +4,7 @@ import {
   DEFAULT_zmux_SETTINGS,
   GHOSTTY_THEME_SETTING_OPTIONS,
   normalizezmuxSettings,
+  PROMPT_EDITOR_BACKEND_OPTIONS,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
   SIDEBAR_MODE_OPTIONS,
@@ -333,20 +334,39 @@ describe("normalizezmuxSettings", () => {
     });
   });
 
-  test("keeps Zapet rich prompt editing opt-in", () => {
+  test("defaults Ctrl+G prompt editing to Monaco and preserves legacy zpet opt-ins", () => {
     /**
-     * CDXC:ZapetPromptEditing 2026-05-10-11:11
-     * Rich Prompt Editing with Zapet must default off. Enabling it is an
-     * explicit user choice because it changes the EDITOR seen by launched
-     * agent/app terminal processes.
+     * CDXC:PromptEditorBackend 2026-05-11-14:38
+     * Monaco is the default floating editor backend. Legacy zpet opt-in keys
+     * still normalize to zpet so existing explicit zpet users are not moved.
      */
-    expect(DEFAULT_zmux_SETTINGS.richPromptEditingWithZapet).toBe(false);
+    expect(DEFAULT_zmux_SETTINGS.promptEditorBackend).toBe("monaco");
     expect(normalizezmuxSettings({})).toMatchObject({
+      promptEditorBackend: "monaco",
       richPromptEditingWithZapet: false,
+      useZpetForCtrlGPromptEditing: false,
+    });
+    expect(normalizezmuxSettings({ richPromptEditingWithZapet: false })).toMatchObject({
+      promptEditorBackend: "monaco",
     });
     expect(normalizezmuxSettings({ richPromptEditingWithZapet: true })).toMatchObject({
+      promptEditorBackend: "zpet",
       richPromptEditingWithZapet: true,
+      useZpetForCtrlGPromptEditing: true,
     });
+    expect(normalizezmuxSettings({ useZpetForCtrlGPromptEditing: true })).toMatchObject({
+      promptEditorBackend: "zpet",
+    });
+    expect(normalizezmuxSettings({ promptEditorBackend: "zpet" })).toMatchObject({
+      promptEditorBackend: "zpet",
+    });
+    expect(normalizezmuxSettings({ promptEditorBackend: "invalid" })).toMatchObject({
+      promptEditorBackend: "monaco",
+    });
+    expect(PROMPT_EDITOR_BACKEND_OPTIONS).toEqual([
+      { label: "Monaco floating editor", value: "monaco" },
+      { label: "zpet TUI floating editor", value: "zpet" },
+    ]);
   });
 
   test("keeps Ghostty typography settings in documented practical ranges", () => {

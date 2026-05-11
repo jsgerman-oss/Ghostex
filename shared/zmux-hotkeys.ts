@@ -1,27 +1,18 @@
-import type {
-  SessionGridDirection,
-  TerminalViewMode,
-  VisibleSessionCount,
-} from "./session-grid-contract-core";
+import type { SessionGridDirection, TerminalViewMode } from "./session-grid-contract-core";
 
 export type zmuxHotkeyActionId =
   | "createSession"
   | "openSettings"
   | "moveSidebar"
   | "renameActiveSession"
+  | "focusPreviousGroup"
+  | "focusNextGroup"
   | "focusPreviousSession"
   | "focusNextSession"
   | "focusUp"
   | "focusRight"
   | "focusDown"
   | "focusLeft"
-  | "showOne"
-  | "showTwo"
-  | "showThree"
-  | "showFour"
-  | "showSix"
-  | "showNine"
-  | "splitLess"
   | "splitMore"
   | "splitMoreDown"
   | `focusGroup${1 | 2 | 3 | 4}`
@@ -31,6 +22,7 @@ export type zmuxHotkeySettings = Partial<Record<zmuxHotkeyActionId, string>>;
 
 export type zmuxHotkeyAction =
   | { id: zmuxHotkeyActionId; kind: "createSession" }
+  | { id: zmuxHotkeyActionId; kind: "focusAdjacentGroup"; direction: -1 | 1 }
   | { id: zmuxHotkeyActionId; kind: "focusDirection"; direction: SessionGridDirection }
   | { id: zmuxHotkeyActionId; kind: "focusGroup"; groupIndex: number }
   | { id: zmuxHotkeyActionId; kind: "focusSessionSlot"; slotNumber: number }
@@ -38,8 +30,7 @@ export type zmuxHotkeyAction =
   | { id: zmuxHotkeyActionId; kind: "openSettings" }
   | { id: zmuxHotkeyActionId; kind: "renameActiveSession" }
   | { id: zmuxHotkeyActionId; kind: "setViewMode"; viewMode: TerminalViewMode }
-  | { id: zmuxHotkeyActionId; kind: "setVisibleCount"; visibleCount: VisibleSessionCount }
-  | { id: zmuxHotkeyActionId; kind: "adjustVisibleCount"; direction: -1 | 1 };
+  | { direction: "horizontal" | "vertical"; id: zmuxHotkeyActionId; kind: "splitFocusedPane" };
 
 export type zmuxHotkeyDefinition = {
   action: zmuxHotkeyAction;
@@ -58,43 +49,63 @@ export type zmuxHotkeyDefinition = {
 export const ZMUX_HOTKEY_DEFINITIONS: readonly zmuxHotkeyDefinition[] = [
   {
     action: { id: "createSession", kind: "createSession" },
-    defaultKey: "cmd+alt+n",
+    /**
+     * CDXC:Hotkeys 2026-05-11-09:26
+     * Default hotkeys should prefer plain Cmd chords so the app feels like a
+     * Mac-first terminal workspace instead of requiring Cmd+Option layers for
+     * everyday navigation.
+     */
+    defaultKey: "cmd+n",
     description: "Create a terminal session.",
     id: "createSession",
     title: "Create Session",
   },
   {
     action: { id: "openSettings", kind: "openSettings" },
-    defaultKey: "cmd+alt+,",
+    defaultKey: "cmd+,",
     description: "Open app settings.",
     id: "openSettings",
     title: "Open Settings",
   },
   {
     action: { id: "moveSidebar", kind: "moveSidebar" },
-    defaultKey: "cmd+alt+b",
+    defaultKey: "cmd+b",
     description: "Move the sidebar to the other side.",
     id: "moveSidebar",
     title: "Move Sidebar",
   },
   {
     action: { id: "renameActiveSession", kind: "renameActiveSession" },
-    defaultKey: "cmd+alt+r",
+    defaultKey: "cmd+r",
     description: "Rename the focused session.",
     id: "renameActiveSession",
     title: "Rename Active Session",
   },
   {
+    action: { direction: -1, id: "focusPreviousGroup", kind: "focusAdjacentGroup" },
+    defaultKey: "cmd+shift+[",
+    description: "Focus the previous group.",
+    id: "focusPreviousGroup",
+    title: "Previous Group",
+  },
+  {
+    action: { direction: 1, id: "focusNextGroup", kind: "focusAdjacentGroup" },
+    defaultKey: "cmd+shift+]",
+    description: "Focus the next group.",
+    id: "focusNextGroup",
+    title: "Next Group",
+  },
+  {
     action: { id: "focusPreviousSession", kind: "focusSessionSlot", slotNumber: -1 },
-    defaultKey: "cmd+alt+[",
-    description: "Focus the previous visible session.",
+    defaultKey: "cmd+[",
+    description: "Focus the previous visible sidebar session.",
     id: "focusPreviousSession",
     title: "Previous Session",
   },
   {
     action: { id: "focusNextSession", kind: "focusSessionSlot", slotNumber: 0 },
-    defaultKey: "cmd+alt+]",
-    description: "Focus the next visible session.",
+    defaultKey: "cmd+]",
+    description: "Focus the next visible sidebar session.",
     id: "focusNextSession",
     title: "Next Session",
   },
@@ -104,7 +115,7 @@ export const ZMUX_HOTKEY_DEFINITIONS: readonly zmuxHotkeyDefinition[] = [
       id: `focus${capitalize(direction)}` as zmuxHotkeyActionId,
       kind: "focusDirection" as const,
     },
-    defaultKey: `cmd+alt+shift+${direction}`,
+    defaultKey: `cmd+${direction}`,
     description: `Move focus ${direction}.`,
     id: `focus${capitalize(direction)}` as zmuxHotkeyActionId,
     title: `Focus ${capitalize(direction)}`,
@@ -115,7 +126,7 @@ export const ZMUX_HOTKEY_DEFINITIONS: readonly zmuxHotkeyDefinition[] = [
       id: `focusGroup${groupIndex}` as zmuxHotkeyActionId,
       kind: "focusGroup" as const,
     },
-    defaultKey: `cmd+alt+shift+${groupIndex}`,
+    defaultKey: `cmd+ctrl+${groupIndex}`,
     description: `Focus group ${groupIndex}.`,
     id: `focusGroup${groupIndex}` as zmuxHotkeyActionId,
     title: `Focus Group ${groupIndex}`,
@@ -126,68 +137,30 @@ export const ZMUX_HOTKEY_DEFINITIONS: readonly zmuxHotkeyDefinition[] = [
       kind: "focusSessionSlot" as const,
       slotNumber,
     },
-    defaultKey: `cmd+alt+${slotNumber}`,
+    defaultKey: `cmd+${slotNumber}`,
     description: `Focus session slot ${slotNumber}.`,
     id: `focusSessionSlot${slotNumber}` as zmuxHotkeyActionId,
     title: `Focus Session ${slotNumber}`,
   })),
-  ...[
-    ["showOne", 1],
-    ["showTwo", 2],
-    ["showThree", 3],
-    ["showFour", 4],
-    ["showSix", 6],
-    ["showNine", 9],
-  ].map(([id, visibleCount]) => ({
-    action: {
-      id: id as zmuxHotkeyActionId,
-      kind: "setVisibleCount" as const,
-      visibleCount: visibleCount as VisibleSessionCount,
-    },
-    /**
-     * CDXC:Hotkeys 2026-05-10-12:06
-     * Split-count hotkeys must be single chords because AppKit and embedded
-     * browser panes do not reliably keep multi-stroke prefixes alive across the
-     * native/WebKit boundary.
-     */
-    defaultKey: `cmd+ctrl+${visibleCount}`,
-    description: `Show ${visibleCount} split${visibleCount === 1 ? "" : "s"}.`,
-    id: id as zmuxHotkeyActionId,
-    title: `View ${visibleCount}`,
-  })),
   {
-    action: { direction: 1, id: "splitMore", kind: "adjustVisibleCount" },
+    action: { direction: "horizontal", id: "splitMore", kind: "splitFocusedPane" },
     /**
-     * CDXC:Hotkeys 2026-05-10-12:31
-     * Cmd+D and Cmd+Shift+D both increase visible splits to match common tmux
-     * and terminal split-direction muscle memory: sideways and downward split
-     * commands should both mean "split more" in zmux's count-based layout.
+     * CDXC:NativeSplits 2026-05-10-18:30
+     * Cmd+D creates a real terminal session beside the focused pane instead of
+     * only increasing the visible split count. This matches terminal split
+     * muscle memory and lets users immediately send work into the new pane.
      */
     defaultKey: "cmd+d",
-    description: "Show one more split.",
+    description: "Create a terminal beside the focused pane.",
     id: "splitMore",
-    title: "Split More Sideways",
+    title: "Split Sideways",
   },
   {
-    action: { direction: 1, id: "splitMoreDown", kind: "adjustVisibleCount" },
+    action: { direction: "vertical", id: "splitMoreDown", kind: "splitFocusedPane" },
     defaultKey: "cmd+shift+d",
-    description: "Show one more split.",
+    description: "Create a terminal below the focused pane.",
     id: "splitMoreDown",
-    title: "Split More Downwards",
-  },
-  {
-    action: { direction: -1, id: "splitLess", kind: "adjustVisibleCount" },
-    /**
-     * CDXC:Hotkeys 2026-05-10-12:31
-     * Split Less must not use Cmd+W because that closes the focused pane, and
-     * Cmd+Alt+D / Cmd+Ctrl+D collide with common macOS Dock and lookup
-     * shortcuts. Keep the command on the D key family with a lower-conflict
-     * modifier shape.
-     */
-    defaultKey: "cmd+ctrl+shift+d",
-    description: "Show one fewer split.",
-    id: "splitLess",
-    title: "Split Less",
+    title: "Split Downwards",
   },
 ];
 
@@ -200,10 +173,17 @@ export function normalizezmuxHotkeySettings(candidate: unknown): zmuxHotkeySetti
   const normalized: zmuxHotkeySettings = {};
   for (const definition of ZMUX_HOTKEY_DEFINITIONS) {
     const value = source[definition.id];
-    normalized[definition.id] =
-      typeof value === "string" && value.trim()
-        ? normalizeHotkeyText(value)
-        : definition.defaultKey;
+    if (typeof value === "string") {
+      /**
+       * CDXC:Hotkeys 2026-05-11-09:06
+       * Users can remove any hotkey from Settings. A missing setting still
+       * means "use the default", but an explicitly blank string means the
+       * command is intentionally unassigned.
+       */
+      normalized[definition.id] = value.trim() ? normalizeHotkeyText(value) : "";
+      continue;
+    }
+    normalized[definition.id] = definition.defaultKey;
   }
   return normalized;
 }

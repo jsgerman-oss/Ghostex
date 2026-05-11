@@ -226,6 +226,14 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
       : defaultTitle;
   const displayId = formatSessionDisplayId(session.displayId ?? sessionNumber - 1);
   const titleSource = normalizeSessionTitleSource(session, title);
+  /**
+   * CDXC:PanePopOut 2026-05-11-09:35
+   * Popped-out presentation survives snapshot normalization, but sleeping wins
+   * because slept terminals dispose their native surface and cannot remain in a
+   * live detached window.
+   */
+  const isPoppedOut =
+    session.isSleeping === true ? undefined : session.isPoppedOut === true || undefined;
 
   if (
     session.kind === "t3" &&
@@ -247,6 +255,7 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
         threadId: session.t3.threadId,
         workspaceRoot: session.t3.workspaceRoot,
       }),
+      isPoppedOut,
       title,
       titleSource,
     };
@@ -264,6 +273,7 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
         url: session.browser.url,
       },
       displayId,
+      isPoppedOut,
       kind: "browser",
       title,
       titleSource,
@@ -283,6 +293,7 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
       session.kind === "terminal" ? session.agentSessionPath : undefined,
     ),
     displayId,
+    isPoppedOut,
     kind: "terminal",
     terminalEngine: normalizeTerminalEngine(
       session.kind === "terminal" ? session.terminalEngine : undefined,
