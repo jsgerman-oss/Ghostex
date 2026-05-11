@@ -2860,6 +2860,10 @@ final class TerminalWorkspaceView: NSView {
      Match Muxy's divider behavior in AppKit: every split boundary gets one
      real rail view, and that rail alone owns cursor, mouseDown, mouseDragged,
      and mouseUp for resizing.
+     CDXC:NativePaneResize 2026-05-11-14:17
+     Resize rails are event chrome, not visual chrome. Keep them fully
+     transparent after diagnostics so the wider visible split line comes only
+     from pane layout gap, while this native rail still owns hover and drag.
      */
     while paneResizeHandleViews.count < paneResizeHits.count {
       let handleView = TerminalWorkspacePaneResizeHandleView()
@@ -2890,6 +2894,7 @@ final class TerminalWorkspaceView: NSView {
       handleView.frame = hit.rect
       handleView.isHidden = false
       handleView.layer?.zPosition = 210
+      handleView.layer?.backgroundColor = NSColor.clear.cgColor
       if handleView.superview == nil {
         addSubview(handleView)
       }
@@ -12500,19 +12505,13 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
      itself. This keeps cursor ownership on the same native object that can
      drag, and avoids a window-local resize monitor competing with sidebar
      resize.
-     CDXC:PaneTabs 2026-05-11-12:46
-     Narrow-pane tab-click repros need to see the real workspace-level hit
-     owner, not only title-bar diagnostics. Paint the actual topmost splitter
-     rail yellow at 30% opacity while this investigation is active, because it
-     wins hit testing before pane title bars and can make visible tabs inert.
+     CDXC:NativePaneResize 2026-05-11-14:17
+     The rail must be visually transparent in production. Muxy-style resizing is
+     represented by the real pane gap; this view only owns native hit testing,
+     cursor push/pop, and drag delivery.
      */
     splitDirection = direction.rawValue
-    layer?.backgroundColor = NSColor(
-      calibratedRed: 1,
-      green: 0.82,
-      blue: 0,
-      alpha: 0.30
-    ).cgColor
+    layer?.backgroundColor = NSColor.clear.cgColor
     if self.cursor !== cursor {
       let wasCursorPushed = isResizeCursorPushed
       if wasCursorPushed {
@@ -12548,9 +12547,8 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
     super.draw(dirtyRect)
     /**
      CDXC:NativePaneResize 2026-05-11-09:45
-     Splitter rails are normally visually transparent. The current yellow
-     diagnostic paint is temporary investigation chrome; the focused pane
-     border and workspace gap remain the intended production separation.
+     Splitter rails are visually transparent. The focused pane border and
+     workspace gap remain the intended production separation.
      */
   }
 
