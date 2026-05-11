@@ -1,15 +1,22 @@
 #!/usr/bin/env node
 import { execFile, spawn } from "node:child_process";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import WebSocket from "ws";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_PORT = 58743;
 const DEV_PORT = 58744;
-const ZMUX_HOME = path.join(homedir(), ".zmux");
+/**
+ * CDXC:DevAppFlavor 2026-05-11-12:10
+ * CLI-side logs, selector caches, and bridge metadata must follow the app
+ * variant. `bun start:dev` and the zmux-dev bundle use ~/.zmux-dev so CLI
+ * commands issued through that dev app do not touch the installed app's data.
+ */
+const ZMUX_HOME =
+  process.env.ZMUX_HOME?.trim() ||
+  path.join(homedir(), process.env.ZMUX_APP_VARIANT === "dev" ? ".zmux-dev" : ".zmux");
 const LOG_DIR = path.join(ZMUX_HOME, "logs");
 const CLI_DIR = path.join(ZMUX_HOME, "cli");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
@@ -28,6 +35,10 @@ const COMMANDS = new Map([
   ["sleep", sessionActionCommand("sleepSession", "slept", { sleeping: true })],
   ["wake", sessionActionCommand("sleepSession", "woke", { sleeping: false })],
   ["focus", focusSmartSessionCommand],
+  ["floating-editor", floatingEditorCommand],
+  ["fe", floatingEditorCommand],
+  ["floating-monaco-editor", floatingMonacoEditorCommand],
+  ["fme", floatingMonacoEditorCommand],
   ["state", bridgeAction("state")],
   ["dump-state", bridgeAction("dumpState")],
   ["create-session", bridgeAction("createSession", parseCreateSession)],
@@ -116,7 +127,7 @@ async function sendSidebarCliCommand(action, payload, flags = {}) {
         },
         Number(flags.timeout ?? 15_000),
       );
-      socket.on("message", (data) => {
+      addSocketMessageListener(socket, (data) => {
         const event = parseJson(String(data));
         if (event?.type !== "sidebarCliResult" || event.requestId !== requestId) {
           return;
@@ -135,18 +146,315 @@ async function sendSidebarCliCommand(action, payload, flags = {}) {
       );
     });
   } finally {
-    socket.close();
+    closeSocket(socket);
   }
 }
 
-function connectBridge(port) {
+async function connectBridge(port) {
+  const WebSocket = await webSocketConstructor();
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${port}`);
-    socket.once("open", () => resolve(socket));
-    socket.once("error", () => {
+    addSocketListener(socket, "open", () => resolve(socket), { once: true });
+    addSocketListener(socket, "error", () => {
       reject(new Error(`Could not connect to zmux bridge on port ${port}. Is zmux running?`));
+    }, { once: true });
+  });
+}
+
+async function webSocketConstructor() {
+  try {
+    return (await import("ws")).default;
+  } catch {
+    if (globalThis.WebSocket) {
+      return globalThis.WebSocket;
+    }
+    throw new Error("No WebSocket implementation is available for the zmux CLI.");
+  }
+}
+
+function addSocketListener(socket, eventName, handler, options = {}) {
+  if (typeof socket.addEventListener === "function") {
+    socket.addEventListener(eventName, handler, options);
+    return;
+  }
+  if (options.once && typeof socket.once === "function") {
+    socket.once(eventName, handler);
+    return;
+  }
+  socket.on(eventName, handler);
+}
+
+function addSocketMessageListener(socket, handler) {
+  if (typeof socket.addEventListener === "function") {
+    socket.addEventListener("message", (event) => handler(event.data));
+    return;
+  }
+  socket.on("message", handler);
+}
+
+async function floatingEditorCommand(args) {
+  const { flags, rest } = parseArgs(args);
+  const commandArgs = rest.filter((arg) => arg !== "");
+  if (commandArgs.length === 0) {
+    throw new Error("Usage: zmux floating-editor -- <editor> [args...]");
+  }
+
+  const port = bridgePortFromFlags(flags);
+  const timeoutMs = Number(flags.timeoutMs ?? 5_000);
+  const cwd = path.resolve(String(flags.cwd ?? process.cwd()));
+  const requestId = `floating-editor-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+  const workDir = await mkdtemp(path.join(tmpdir(), "zmux-floating-editor-"));
+  const statusFile = path.join(workDir, "status");
+  const wrapperPath = path.join(workDir, "run.zsh");
+  const logPath = floatingEditorLogPath();
+  const resolvedCommandArgs = [...commandArgs];
+  resolvedCommandArgs[0] = await resolveExecutable(commandArgs[0]);
+  await writeFile(wrapperPath, floatingEditorWrapperScript(resolvedCommandArgs, cwd, statusFile, logPath));
+
+  await appendFloatingEditorLog({
+    command: resolvedCommandArgs.join(" "),
+    cwd,
+    event: "cli.request",
+    originatingSessionId: process.env.ZMUX_NATIVE_SESSION_ID ?? "",
+    port,
+    requestId,
+    statusFile,
+  });
+
+  let socket;
+  try {
+    socket = await connectBridge(port);
+    socket.send(
+      JSON.stringify({
+        command: `/bin/zsh ${shellQuote(wrapperPath)}`,
+        cwd,
+        env: floatingEditorEnvironment(),
+        originatingSessionId: process.env.ZMUX_NATIVE_SESSION_ID || undefined,
+        requestId,
+        statusFile,
+        title: "Zapet",
+        type: "openFloatingEditor",
+      }),
+    );
+    await waitForStatus(statusFile, (status) => status.includes("started"), timeoutMs);
+    const status = await waitForStatus(
+      statusFile,
+      (nextStatus) =>
+        nextStatus.match(/^exit:(\d+)/m) ||
+        nextStatus.match(/^signal:/m) ||
+        nextStatus.match(/^cancelled$/m),
+      Number(flags.exitTimeoutMs ?? 0),
+    );
+    const exitMatch = status.match(/^exit:(\d+)/m);
+    if (exitMatch) {
+      process.exitCode = Number(exitMatch[1]);
+    } else {
+      process.exitCode = 1;
+    }
+  } catch (error) {
+    await appendFloatingEditorLog({
+      error: error instanceof Error ? error.message : String(error),
+      event: "cli.fallback_inline",
+      requestId,
+    });
+    await runEditorInline(commandArgs, cwd);
+  } finally {
+    closeSocket(socket);
+    if (flags.keepTemp !== true && flags.keepTemp !== "true") {
+      await rm(workDir, { force: true, recursive: true }).catch(() => undefined);
+    }
+  }
+}
+
+async function floatingMonacoEditorCommand(args) {
+  const { flags, rest } = parseArgs(args);
+  const filePath = rest.find((arg) => arg && arg.trim() !== "");
+  if (!filePath) {
+    throw new Error("Usage: zmux floating-monaco-editor <file>");
+  }
+
+  const port = bridgePortFromFlags(flags);
+  const timeoutMs = Number(flags.timeoutMs ?? 5_000);
+  const cwd = path.resolve(String(flags.cwd ?? process.cwd()));
+  const requestId = `floating-monaco-editor-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+  const workDir = await mkdtemp(path.join(tmpdir(), "zmux-floating-monaco-editor-"));
+  const statusFile = path.join(workDir, "status");
+  const resolvedFilePath = path.resolve(cwd, filePath);
+
+  await appendFloatingEditorLog({
+    cwd,
+    event: "cli.monaco_request",
+    filePath: resolvedFilePath,
+    originatingSessionId: process.env.ZMUX_NATIVE_SESSION_ID ?? "",
+    port,
+    requestId,
+    statusFile,
+  });
+
+  let socket;
+  try {
+    socket = await connectBridge(port);
+    socket.send(
+      JSON.stringify({
+        cwd,
+        editorKind: "monaco",
+        filePath: resolvedFilePath,
+        language: "markdown",
+        originatingSessionId: process.env.ZMUX_NATIVE_SESSION_ID || undefined,
+        requestId,
+        statusFile,
+        title: "Prompt Editor",
+        type: "openFloatingEditor",
+      }),
+    );
+    const status = await waitForStatus(
+      statusFile,
+      (nextStatus) => nextStatus.match(/^saved$/m) || nextStatus.match(/^cancelled$/m),
+      Number(flags.exitTimeoutMs ?? 0),
+    );
+    process.exitCode = status.match(/^saved$/m) ? 0 : 1;
+  } catch (error) {
+    await appendFloatingEditorLog({
+      error: error instanceof Error ? error.message : String(error),
+      event: "cli.monaco_fallback_inline",
+      filePath: resolvedFilePath,
+      requestId,
+    });
+    await runEditorInline(["vi", resolvedFilePath], cwd);
+  } finally {
+    closeSocket(socket);
+    if (flags.keepTemp !== true && flags.keepTemp !== "true") {
+      await rm(workDir, { force: true, recursive: true }).catch(() => undefined);
+    }
+  }
+}
+
+function closeSocket(socket) {
+  if (!socket) {
+    return;
+  }
+  if (typeof socket.terminate === "function") {
+    socket.terminate();
+    return;
+  }
+  socket.close();
+}
+
+function bridgePortFromFlags(flags) {
+  return Number(
+    flags.port ??
+      process.env.ZMUX_CLI_PORT ??
+      (process.env.ZMUX_APP_VARIANT === "dev" ? DEV_PORT : DEFAULT_PORT),
+  );
+}
+
+function floatingEditorEnvironment() {
+  const environment = {
+    HOME: process.env.HOME ?? homedir(),
+    LANG: process.env.LANG ?? "en_US.UTF-8",
+    PATH: process.env.PATH ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    SHELL: process.env.SHELL ?? "/bin/zsh",
+    TERM: process.env.TERM ?? "xterm-256color",
+    USER: process.env.USER ?? "",
+    ZMUX_FLOATING_EDITOR: "1",
+  };
+  if (process.env.ZMUX_APP_VARIANT) {
+    environment.ZMUX_APP_VARIANT = process.env.ZMUX_APP_VARIANT;
+  }
+  return environment;
+}
+
+function floatingEditorWrapperScript(commandArgs, cwd, statusFile, logPath) {
+  const command = commandArgs.map(shellQuote).join(" ");
+  return `#!/bin/zsh
+set +e
+mkdir -p ${shellQuote(path.dirname(statusFile))} ${shellQuote(path.dirname(logPath))} 2>/dev/null
+printf 'started\\n' > ${shellQuote(statusFile)}
+{
+  printf '[%s] child.start cwd=%s command=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" ${shellQuote(cwd)} ${shellQuote(command)}
+} >> ${shellQuote(logPath)} 2>/dev/null
+cd ${shellQuote(cwd)} || {
+  _zmux_status=$?
+  printf 'exit:%s\\n' "$_zmux_status" >> ${shellQuote(statusFile)}
+  exit "$_zmux_status"
+}
+${command}
+_zmux_status=$?
+{
+  printf '[%s] child.exit status=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$_zmux_status"
+} >> ${shellQuote(logPath)} 2>/dev/null
+printf 'exit:%s\\n' "$_zmux_status" >> ${shellQuote(statusFile)}
+exit "$_zmux_status"
+`;
+}
+
+async function resolveExecutable(command) {
+  if (command.includes("/")) {
+    return command;
+  }
+  const { stdout } = await execFileAsync("/bin/zsh", ["-lc", `command -v -- ${shellQuote(command)}`]);
+  return stdout.trim().split(/\r?\n/)[0] || command;
+}
+
+async function waitForStatus(statusFile, predicate, timeoutMs) {
+  const startedAt = Date.now();
+  while (true) {
+    const status = await readFile(statusFile, "utf8").catch(() => "");
+    if (predicate(status)) {
+      return status;
+    }
+    if (timeoutMs > 0 && Date.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out waiting for floating editor status at ${statusFile}.`);
+    }
+    await sleep(100);
+  }
+}
+
+async function runEditorInline(commandArgs, cwd) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(commandArgs[0], commandArgs.slice(1), {
+      cwd,
+      stdio: "inherit",
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+        return;
+      }
+      process.exitCode = code ?? 0;
+      resolve();
     });
   });
+}
+
+function floatingEditorLogPath() {
+  return path.join(homedir(), "Library", "Logs", "zmux", "floating-editor.log");
+}
+
+async function appendFloatingEditorLog(details) {
+  const logPath = floatingEditorLogPath();
+  await mkdir(path.dirname(logPath), { recursive: true });
+  await appendFile(
+    logPath,
+    `${JSON.stringify({
+      ...details,
+      source: "zmux-cli",
+      timestamp: new Date().toISOString(),
+    })}\n`,
+  );
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function screenshotCommand(args) {
@@ -626,6 +934,10 @@ function parseArgs(args) {
   const rest = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--") {
+      rest.push(...args.slice(index + 1));
+      break;
+    }
     if (arg.startsWith("-") && !arg.startsWith("--") && arg.length > 1) {
       for (const shortFlag of arg.slice(1)) {
         flags[shortFlag] = true;
@@ -713,7 +1025,7 @@ Session commands:
       session project directory.
 
   kill | k <alias|id|title|project:title|all>
-      Terminate one session or every listed terminal session.
+      Close one session or every listed terminal session.
 
   sleep <alias|id|title|project:title|all>
       Sleep one session or every listed terminal session.
@@ -723,6 +1035,12 @@ Session commands:
 
   focus <alias|id|title|project:title>
       Focus the selected session in the zmux app.
+
+  floating-editor | fe -- <editor> [args...]
+      Open an editor command in a draggable zmux floating terminal overlay.
+
+  floating-monaco-editor | fme <file>
+      Open a file in the draggable zmux floating Monaco editor overlay.
 
 Selector rules:
   Numeric aliases come from the last "zmux sessions" list and stay global

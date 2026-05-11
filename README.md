@@ -43,7 +43,7 @@ brew install --cask maddada/tap/zmux
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
 - The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
 - Rich Prompt Editing with Zapet can be enabled from Settings and installed from Homebrew inside the app.
-- Hotkeys use a recorder UI with direct split controls like Split More, Split Less, and single-chord split-count shortcuts.
+- Hotkeys use a recorder UI with direct split controls for creating real sideways and downward panes.
 - The installed `zmux` app also proxies terminal CLI commands such as `zmux sessions`.
 - The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
 - Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.

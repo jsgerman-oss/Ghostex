@@ -6,7 +6,10 @@ import { spawnSync } from "node:child_process";
  * CDXC:DevAppFlavor 2026-05-09-16:15
  * `bun run start:dev` is the local development start command. It must launch
  * the `zmux-dev` app identity so iterative repo runs do not replace or
- * terminate the installed release app at /Applications/zmux.app.
+ * stop the installed release app at /Applications/zmux.app.
+ * CDXC:DevAppFlavor 2026-05-11-12:10
+ * The dev identity must also keep settings, projects, sessions, hooks, browser
+ * profiles, and runtime state isolated from the installed app via ~/.zmux-dev.
  */
 const devEnv = {
   ...process.env,

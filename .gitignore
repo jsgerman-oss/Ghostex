@@ -33,3 +33,4 @@ native/macos/zmuxHost/zmux.xcodeproj/
 # or release metadata.
 .idea
 react-doctor.config.json
+.ignore
