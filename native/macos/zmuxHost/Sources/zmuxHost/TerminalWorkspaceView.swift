@@ -2229,6 +2229,7 @@ final class TerminalWorkspaceView: NSView {
       layoutSubtreeIfNeeded()
     }
     focusedSessionId = sessionId
+    orderTerminalPaneViewsToFront(sessions[sessionId])
     updateAllTerminalBorders()
     let targetWindow = poppedOutPaneControllers[sessionId]?.window ?? window
     poppedOutPaneControllers[sessionId]?.window?.makeKeyAndOrderFront(nil)
@@ -5607,6 +5608,17 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  private func orderTerminalPaneViewsToFront(_ optionalSession: TerminalSession?) {
+    guard let session = optionalSession else {
+      return
+    }
+    guard !poppedOutSessionIds.contains(session.sessionId) else {
+      return
+    }
+    mountTerminalPaneContainer(for: session)
+    orderPaneContainerToFront(session.containerView)
+  }
+
   /**
    CDXC:T3Code 2026-04-30-19:17
    The T3 Code pane is a native WKWebView, not React DOM inside the sidebar.
@@ -5621,15 +5633,25 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     mountWebPaneContainer(for: session)
-    guard session.containerView.superview === self else {
+    orderPaneContainerToFront(session.containerView)
+  }
+
+  /**
+   CDXC:NativePaneResize 2026-05-11-14:44
+   Muxy-style pane ownership raises the focused pane leaf, not terminal/web
+   children separately. Resize rails remain siblings and are re-raised after
+   pane focus so no active surface can sit above the drag target.
+   */
+  private func orderPaneContainerToFront(_ containerView: TerminalPaneLeafContainerView) {
+    guard containerView.superview === self else {
       return
     }
-    if subviews.last !== session.containerView {
-      session.containerView.removeFromSuperview()
-      addSubview(session.containerView, positioned: .above, relativeTo: nil)
+    if subviews.last !== containerView {
+      containerView.removeFromSuperview()
+      addSubview(containerView, positioned: .above, relativeTo: nil)
     }
-    session.containerView.alphaValue = 1
-    session.containerView.layer?.zPosition = 100
+    containerView.alphaValue = 1
+    containerView.layer?.zPosition = 100
     bringPaneResizeHandleViewsToFront()
   }
 
