@@ -394,13 +394,329 @@ private func nativeTerminalColorEnvironmentSnapshot(_ environment: [String: Stri
   return snapshot
 }
 
+final class ZmuxGhosttyApp {
+  let configPath: String?
+  private(set) var config: Ghostty.Config
+  private(set) var app: ghostty_app_t?
+
+  init(configPath: String?) {
+    self.configPath = configPath
+    self.config = Ghostty.Config(at: configPath)
+    /**
+     CDXC:NativeTerminals 2026-05-11-14:01
+     zmux follows Muxy's direct Ghostty embedding model: the host app owns
+     ghostty_app_t and runtime callbacks itself instead of routing terminal
+     lifecycle through Ghostty.App and Ghostty.SurfaceView wrapper ownership.
+     */
+    var runtimeConfig = ghostty_runtime_config_s()
+    runtimeConfig.userdata = Unmanaged.passUnretained(self).toOpaque()
+    runtimeConfig.supports_selection_clipboard = true
+    runtimeConfig.wakeup_cb = { userdata in
+      guard let userdata else { return }
+      let app = Unmanaged<ZmuxGhosttyApp>.fromOpaque(userdata).takeUnretainedValue()
+      DispatchQueue.main.async {
+        app.appTick()
+      }
+    }
+    runtimeConfig.action_cb = { app, target, action in
+      ZmuxGhosttyApp.handleAction(app: app, target: target, action: action)
+    }
+    runtimeConfig.read_clipboard_cb = { userdata, location, state in
+      ZmuxGhosttyApp.readClipboard(userdata: userdata, location: location, state: state)
+    }
+    runtimeConfig.confirm_read_clipboard_cb = { userdata, content, state, _ in
+      ZmuxGhosttyApp.confirmReadClipboard(userdata: userdata, content: content, state: state)
+    }
+    runtimeConfig.write_clipboard_cb = { _, location, content, len, _ in
+      ZmuxGhosttyApp.writeClipboard(location: location, content: content, len: UInt(len))
+    }
+    runtimeConfig.close_surface_cb = { userdata, _ in
+      ZmuxGhosttyApp.closeSurface(userdata: userdata)
+    }
+
+    if let rawConfig = config.config {
+      self.app = ghostty_app_new(&runtimeConfig, rawConfig)
+    }
+
+    if let app {
+      ghostty_app_set_focus(app, NSApp.isActive)
+    }
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(applicationDidBecomeActive),
+      name: NSApplication.didBecomeActiveNotification,
+      object: nil)
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(applicationDidResignActive),
+      name: NSApplication.didResignActiveNotification,
+      object: nil)
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(self)
+    if let app {
+      ghostty_app_free(app)
+    }
+  }
+
+  func appTick() {
+    guard let app else { return }
+    ghostty_app_tick(app)
+  }
+
+  func reloadConfig(soft: Bool = false) {
+    guard let app else { return }
+    if soft, let rawConfig = config.config {
+      ghostty_app_update_config(app, rawConfig)
+      return
+    }
+    let nextConfig = Ghostty.Config(at: configPath)
+    guard let rawConfig = nextConfig.config else { return }
+    ghostty_app_update_config(app, rawConfig)
+    config = nextConfig
+  }
+
+  func requestClose(surface: ghostty_surface_t) {
+    ghostty_surface_request_close(surface)
+  }
+
+  @objc private func applicationDidBecomeActive() {
+    guard let app else { return }
+    ghostty_app_set_focus(app, true)
+  }
+
+  @objc private func applicationDidResignActive() {
+    guard let app else { return }
+    ghostty_app_set_focus(app, false)
+  }
+
+  private static func handleAction(
+    app: ghostty_app_t?,
+    target: ghostty_target_s,
+    action: ghostty_action_s
+  ) -> Bool {
+    switch action.tag {
+    case GHOSTTY_ACTION_SET_TITLE:
+      surfaceView(from: target)?.setTerminalTitle(action.action.set_title.title)
+      return true
+    case GHOSTTY_ACTION_PWD:
+      return true
+    case GHOSTTY_ACTION_CELL_SIZE:
+      surfaceView(from: target)?.setCellSize(
+        width: action.action.cell_size.width,
+        height: action.action.cell_size.height)
+      return true
+    case GHOSTTY_ACTION_RING_BELL:
+      surfaceView(from: target)?.ringBell()
+      return true
+    case GHOSTTY_ACTION_START_SEARCH:
+      surfaceView(from: target)?.startSearch(action.action.start_search)
+      return true
+    case GHOSTTY_ACTION_END_SEARCH:
+      surfaceView(from: target)?.endSearch()
+      return true
+    case GHOSTTY_ACTION_SEARCH_TOTAL:
+      surfaceView(from: target)?.setSearchTotal(action.action.search_total.total)
+      return true
+    case GHOSTTY_ACTION_SEARCH_SELECTED:
+      surfaceView(from: target)?.setSearchSelected(action.action.search_selected.selected)
+      return true
+    case GHOSTTY_ACTION_OPEN_URL:
+      guard let urlPtr = action.action.open_url.url, action.action.open_url.len > 0 else {
+        return false
+      }
+      let length = Int(action.action.open_url.len)
+      let urlString = urlPtr.withMemoryRebound(to: UInt8.self, capacity: length) { rawPtr in
+        String(bytes: UnsafeBufferPointer(start: rawPtr, count: length), encoding: .utf8)
+      }
+      guard let urlString, let url = URL(string: urlString) else {
+        return false
+      }
+      NSWorkspace.shared.open(url)
+      return true
+    case GHOSTTY_ACTION_RELOAD_CONFIG:
+      guard let app, let userdata = ghostty_app_userdata(app) else { return false }
+      let ghosttyApp = Unmanaged<ZmuxGhosttyApp>.fromOpaque(userdata).takeUnretainedValue()
+      Task { @MainActor in
+        ghosttyApp.reloadConfig(soft: action.action.reload_config.soft)
+      }
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func surfaceView(from target: ghostty_target_s) -> ZmuxGhosttySurfaceView? {
+    guard target.tag == GHOSTTY_TARGET_SURFACE,
+      let surface = target.target.surface,
+      let userdata = ghostty_surface_userdata(surface)
+    else {
+      return nil
+    }
+    return Unmanaged<ZmuxGhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
+  }
+
+  private static func readClipboard(
+    userdata: UnsafeMutableRawPointer?,
+    location: ghostty_clipboard_e,
+    state: UnsafeMutableRawPointer?
+  ) -> Bool {
+    let text = NSPasteboard.general.string(forType: .string) ?? ""
+    text.withCString { ptr in
+      ghostty_surface_complete_clipboard_request(callbackSurface(from: userdata), ptr, state, false)
+    }
+    return true
+  }
+
+  private static func confirmReadClipboard(
+    userdata: UnsafeMutableRawPointer?,
+    content: UnsafePointer<CChar>?,
+    state: UnsafeMutableRawPointer?
+  ) {
+    guard let content else { return }
+    ghostty_surface_complete_clipboard_request(callbackSurface(from: userdata), content, state, true)
+  }
+
+  private static func writeClipboard(
+    location: ghostty_clipboard_e,
+    content: UnsafePointer<ghostty_clipboard_content_s>?,
+    len: UInt
+  ) {
+    guard let content, len > 0 else { return }
+    let buffer = UnsafeBufferPointer(start: content, count: Int(len))
+    for item in buffer {
+      guard let data = item.data, let mime = item.mime else { continue }
+      guard String(cString: mime).hasPrefix("text/plain") else { continue }
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(String(cString: data), forType: .string)
+      return
+    }
+  }
+
+  private static func closeSurface(userdata: UnsafeMutableRawPointer?) {
+    guard let userdata else { return }
+    let view = Unmanaged<ZmuxGhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
+    Task { @MainActor in
+      view.markProcessExited()
+    }
+  }
+
+  private static func callbackSurface(from userdata: UnsafeMutableRawPointer?) -> ghostty_surface_t? {
+    guard let userdata else { return nil }
+    return Unmanaged<ZmuxGhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue().surface
+  }
+}
+
+struct ZmuxGhosttySurfaceConfiguration {
+  var command: String?
+  var environmentVariables: [String: String] = [:]
+  var initialInput: String?
+  var waitAfterCommand = false
+  var workingDirectory: String?
+  var context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_SPLIT
+
+  func withCValue<T>(
+    view: ZmuxGhosttySurfaceView,
+    _ body: (inout ghostty_surface_config_s) throws -> T
+  ) rethrows -> T {
+    var config = ghostty_surface_config_new()
+    config.platform_tag = GHOSTTY_PLATFORM_MACOS
+    config.platform = ghostty_platform_u(
+      macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(view).toOpaque())
+    )
+    config.userdata = Unmanaged.passUnretained(view).toOpaque()
+    config.scale_factor = Double(view.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2)
+    config.context = context
+    config.wait_after_command = waitAfterCommand
+
+    return try workingDirectory.withCString { cwd in
+      config.working_directory = cwd
+      return try command.withCString { command in
+        config.command = command
+        return try initialInput.withCString { initialInput in
+          config.initial_input = initialInput
+          let keys = Array(environmentVariables.keys)
+          let values = Array(environmentVariables.values)
+          return try keys.withCStrings { keyCStrings in
+            try values.withCStrings { valueCStrings in
+              var envVars: [ghostty_env_var_s] = []
+              envVars.reserveCapacity(environmentVariables.count)
+              for index in 0..<environmentVariables.count {
+                envVars.append(ghostty_env_var_s(key: keyCStrings[index], value: valueCStrings[index]))
+              }
+              let envVarCount = envVars.count
+              return try envVars.withUnsafeMutableBufferPointer { buffer in
+                config.env_vars = buffer.baseAddress
+                config.env_var_count = envVarCount
+                return try body(&config)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+final class ZmuxGhosttySearchState: ObservableObject {
+  @Published var needle: String
+  @Published var selected: UInt?
+  @Published var total: UInt?
+
+  init(needle: String = "", selected: UInt? = nil, total: UInt? = nil) {
+    self.needle = needle
+    self.selected = selected
+    self.total = total
+  }
+}
+
+struct ZmuxGhosttySurfaceModel {
+  let surface: ghostty_surface_t
+
+  var foregroundPID: Int? {
+    let pid = ghostty_surface_foreground_pid(surface)
+    return pid > 0 ? Int(pid) : nil
+  }
+
+  var ttyName: String? {
+    let value = Ghostty.AllocatedString(ghostty_surface_tty_name(surface)).string
+    return value.isEmpty ? nil : value
+  }
+
+  func sendText(_ text: String) {
+    text.withCString { ptr in
+      ghostty_surface_text(surface, ptr, UInt(text.utf8.count))
+    }
+  }
+}
+
+private final class ZmuxGhosttySurfaceHostView: NSView {
+  let surfaceView: ZmuxGhosttySurfaceView
+
+  init(surfaceView: ZmuxGhosttySurfaceView) {
+    self.surfaceView = surfaceView
+    super.init(frame: .zero)
+    addSubview(surfaceView)
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func layout() {
+    super.layout()
+    surfaceView.frame = bounds
+  }
+}
+
 @MainActor
 final class TerminalWorkspaceView: NSView {
   private struct TerminalSession {
     let containerView: TerminalPaneLeafContainerView
     let sessionId: String
-    let view: Ghostty.SurfaceView
-    let scrollView: SurfaceScrollView
+    let view: ZmuxGhosttySurfaceView
+    let scrollView: ZmuxGhosttySurfaceHostView
     let searchBarView: TerminalSearchBarView
     let titleBarView: TerminalSessionTitleBarView
     let borderView: TerminalPaneBorderView
@@ -548,7 +864,7 @@ final class TerminalWorkspaceView: NSView {
   private static let floatingEditorFrameDefaultsKey = "zmux.floatingEditor.frame.v1"
   private static let defaultWorkspaceBackgroundColor = NSColor(
     calibratedRed: 0.071, green: 0.071, blue: 0.071, alpha: 1)
-  private let ghostty: Ghostty.App
+  private let ghostty: ZmuxGhosttyApp
   private let sendEvent: (HostEvent) -> Void
   private var sessions: [String: TerminalSession] = [:]
   private var webPaneSessions: [String: WebPaneSession] = [:]
@@ -645,7 +961,7 @@ final class TerminalWorkspaceView: NSView {
    Inactive terminal surfaces are moved offscreen, and sidebar/native id
    translation decides which native Ghostty session is active.
    */
-  init(ghostty: Ghostty.App, sendEvent: @escaping (HostEvent) -> Void) {
+  init(ghostty: ZmuxGhosttyApp, sendEvent: @escaping (HostEvent) -> Void) {
     self.ghostty = ghostty
     self.sendEvent = sendEvent
     super.init(frame: .zero)
@@ -705,7 +1021,7 @@ final class TerminalWorkspaceView: NSView {
 
     closeFloatingEditorOverlay(requestGhosttyClose: true, reason: "replaceFloatingEditor")
 
-    var config = Ghostty.SurfaceConfiguration()
+    var config = ZmuxGhosttySurfaceConfiguration()
     config.command = editorCommand
     config.environmentVariables = nativeGhosttyFloatingEditorEnvironment(command.env)
     config.waitAfterCommand = false
@@ -1206,7 +1522,7 @@ final class TerminalWorkspaceView: NSView {
     } else {
       sessionPersistenceName = nil
     }
-    var config = Ghostty.SurfaceConfiguration()
+    var config = ZmuxGhosttySurfaceConfiguration()
     config.workingDirectory = command.cwd
     config.environmentVariables = nativeGhosttyTerminalEnvironment(command.env, sessionId: command.sessionId)
     config.initialInput = sessionPersistenceProvider == nil ? command.initialInput : nil
@@ -1273,7 +1589,7 @@ final class TerminalWorkspaceView: NSView {
      scroll wrapper so scrollbar state, dragging, and scrollback positioning
      are driven by the terminal core instead of a separate overlay.
     */
-    let scrollView = SurfaceScrollView(contentSize: .zero, surfaceView: surfaceView)
+    let scrollView = ZmuxGhosttySurfaceHostView(surfaceView: surfaceView)
     scrollView.translatesAutoresizingMaskIntoConstraints = false
     let searchBarView = TerminalSearchBarView(surfaceView: surfaceView)
     searchBarView.translatesAutoresizingMaskIntoConstraints = false
@@ -8075,7 +8391,7 @@ private enum NativeTerminalProcessMonitor {
 }
 
 private final class FloatingEditorOverlayView: NSView {
-  let surfaceView: Ghostty.SurfaceView?
+  let surfaceView: ZmuxGhosttySurfaceView?
   let contentView: NSView
   let returnFocusSessionId: String?
   var closeHandler: (() -> Void)?
@@ -8090,10 +8406,10 @@ private final class FloatingEditorOverlayView: NSView {
   private let saveButton = NSButton(title: "Save", target: nil, action: nil)
   private let resizeHandleView = FloatingEditorResizeHandleView()
 
-  init(title: String, returnFocusSessionId: String?, surfaceView: Ghostty.SurfaceView) {
+  init(title: String, returnFocusSessionId: String?, surfaceView: ZmuxGhosttySurfaceView) {
     self.surfaceView = surfaceView
     self.returnFocusSessionId = returnFocusSessionId
-    self.contentView = SurfaceScrollView(contentSize: .zero, surfaceView: surfaceView)
+    self.contentView = ZmuxGhosttySurfaceHostView(surfaceView: surfaceView)
     super.init(frame: .zero)
     configure(title: title)
   }
@@ -8285,10 +8601,82 @@ private final class FloatingEditorResizeHandleView: NSView {
   }
 }
 
-private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
+final class ZmuxGhosttySurfaceView: NSView {
+  let id: UUID
   var zmuxSessionId: String?
   var onKeyDownProbe: ((ZmuxGhosttySurfaceView, NSEvent, String) -> Void)?
   var onTextInputProbe: ((ZmuxGhosttySurfaceView, Any, NSRange) -> Void)?
+  @Published private(set) var title = ""
+  @Published private(set) var bell = false
+  @Published var searchState: ZmuxGhosttySearchState? {
+    didSet {
+      searchNeedleCancellable = nil
+      if let searchState {
+        searchNeedleCancellable = searchState.$needle
+          .removeDuplicates()
+          .sink { [weak self] needle in
+            self?.performBindingAction("search:\(needle)")
+          }
+      } else if oldValue != nil {
+        performBindingAction("end_search")
+      }
+    }
+  }
+  @Published var cellSize: NSSize = .zero
+  @Published var surfaceSize: ghostty_surface_size_s?
+
+  private(set) var surface: ghostty_surface_t?
+  var surfaceModel: ZmuxGhosttySurfaceModel? {
+    surface.map(ZmuxGhosttySurfaceModel.init(surface:))
+  }
+  var focused = false
+  private var processExitedOverride = false
+  private var searchNeedleCancellable: AnyCancellable?
+  private var markedText = ""
+  private var markedTextRange = NSRange(location: NSNotFound, length: 0)
+  private var selectedTextRange = NSRange(location: NSNotFound, length: 0)
+
+  var processExited: Bool {
+    if processExitedOverride {
+      return true
+    }
+    guard let surface else { return true }
+    return ghostty_surface_process_exited(surface)
+  }
+
+  init(_ app: ghostty_app_t, baseConfig: ZmuxGhosttySurfaceConfiguration? = nil, uuid: UUID? = nil) {
+    self.id = uuid ?? UUID()
+    super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.black.cgColor
+    let surfaceConfig = baseConfig ?? ZmuxGhosttySurfaceConfiguration()
+    /**
+     CDXC:NativeTerminals 2026-05-11-14:01
+     Direct Ghostty surfaces use the Muxy ownership rule: the AppKit terminal
+     view is the userdata and platform nsview for ghostty_surface_new. Runtime
+     callbacks can therefore resolve actions to this view without wrapper
+     SurfaceView lookup or recursive AppDelegate search.
+     */
+    surface = surfaceConfig.withCValue(view: self) { config in
+      ghostty_surface_new(app, &config)
+    }
+    updateTrackingAreas()
+    registerForDraggedTypes([.fileURL, .string])
+    updateGhosttySurfaceSize()
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  deinit {
+    searchNeedleCancellable = nil
+    if let surface {
+      ghostty_surface_free(surface)
+    }
+  }
+
+  override var acceptsFirstResponder: Bool { true }
 
   /**
    CDXC:NativeTerminals 2026-04-29-08:57
@@ -8298,6 +8686,43 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
    */
   override func resetCursorRects() {
     addCursorRect(bounds, cursor: .arrow)
+  }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    updateGhosttySurfaceSize()
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    updateGhosttySurfaceSize()
+  }
+
+  override func viewDidChangeBackingProperties() {
+    super.viewDidChangeBackingProperties()
+    updateGhosttySurfaceSize()
+  }
+
+  override func becomeFirstResponder() -> Bool {
+    let result = super.becomeFirstResponder()
+    if result {
+      focused = true
+      if let surface {
+        ghostty_surface_set_focus(surface, true)
+      }
+    }
+    return result
+  }
+
+  override func resignFirstResponder() -> Bool {
+    let result = super.resignFirstResponder()
+    if result {
+      focused = false
+      if let surface {
+        ghostty_surface_set_focus(surface, false)
+      }
+    }
+    return result
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -8330,13 +8755,16 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
       searchState = nil
       return
     }
-    super.keyDown(with: event)
+    sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
     onKeyDownProbe?(self, event, "forwarded")
   }
 
-  override func insertText(_ insertString: Any, replacementRange: NSRange) {
-    onTextInputProbe?(self, insertString, replacementRange)
-    super.insertText(insertString, replacementRange: replacementRange)
+  override func keyUp(with event: NSEvent) {
+    sendKeyEvent(event, action: GHOSTTY_ACTION_RELEASE, includeText: false)
+  }
+
+  override func flagsChanged(with event: NSEvent) {
+    sendKeyEvent(event, action: GHOSTTY_ACTION_PRESS, includeText: false)
   }
 
   /**
@@ -8349,21 +8777,63 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
     if event.buttonNumber == 2 {
       return
     }
-    super.otherMouseDown(with: event)
+    sendMouseButton(event, action: GHOSTTY_MOUSE_PRESS, button: event.buttonNumber)
   }
 
   override func otherMouseUp(with event: NSEvent) {
     if event.buttonNumber == 2 {
       return
     }
-    super.otherMouseUp(with: event)
+    sendMouseButton(event, action: GHOSTTY_MOUSE_RELEASE, button: event.buttonNumber)
   }
 
   override func otherMouseDragged(with event: NSEvent) {
     if event.buttonNumber == 2 {
       return
     }
-    super.otherMouseDragged(with: event)
+    sendMousePosition(event)
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    window?.makeFirstResponder(self)
+    sendMousePosition(event)
+    sendMouseButton(event, action: GHOSTTY_MOUSE_PRESS, button: 0)
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    sendMousePosition(event)
+    sendMouseButton(event, action: GHOSTTY_MOUSE_RELEASE, button: 0)
+  }
+
+  override func rightMouseDown(with event: NSEvent) {
+    sendMousePosition(event)
+    sendMouseButton(event, action: GHOSTTY_MOUSE_PRESS, button: 1)
+  }
+
+  override func rightMouseUp(with event: NSEvent) {
+    sendMousePosition(event)
+    sendMouseButton(event, action: GHOSTTY_MOUSE_RELEASE, button: 1)
+  }
+
+  override func mouseDragged(with event: NSEvent) {
+    sendMousePosition(event)
+  }
+
+  override func rightMouseDragged(with event: NSEvent) {
+    sendMousePosition(event)
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    sendMousePosition(event)
+  }
+
+  override func scrollWheel(with event: NSEvent) {
+    guard let surface else { return }
+    var mods: ghostty_input_scroll_mods_t = 0
+    if event.hasPreciseScrollingDeltas {
+      mods |= 1
+    }
+    ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods)
   }
 
   /**
@@ -8382,7 +8852,7 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
     }
     switch event.charactersIgnoringModifiers?.lowercased() {
     case "f":
-      find(nil)
+      performBindingAction("start_search")
       return true
     case "g":
       if flags.contains(.shift) {
@@ -8428,12 +8898,228 @@ private final class ZmuxGhosttySurfaceView: Ghostty.SurfaceView {
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.commandEditingSequenceSent",
       details: ["label": label])
-    super.insertText(sequence, replacementRange: NSRange(location: NSNotFound, length: 0))
+    insertText(sequence, replacementRange: NSRange(location: NSNotFound, length: 0))
     return true
+  }
+
+  @discardableResult
+  func navigateSearchToNext() -> Bool {
+    performBindingAction("goto_next_match")
+  }
+
+  @discardableResult
+  func navigateSearchToPrevious() -> Bool {
+    performBindingAction("goto_previous_match")
+  }
+
+  func setTerminalTitle(_ titlePointer: UnsafePointer<CChar>?) {
+    guard let titlePointer else { return }
+    title = String(cString: titlePointer)
+  }
+
+  func ringBell() {
+    bell = true
+    DispatchQueue.main.async { [weak self] in
+      self?.bell = false
+    }
+  }
+
+  func setCellSize(width: UInt32, height: UInt32) {
+    cellSize = convertFromBacking(NSSize(width: Double(width), height: Double(height)))
+  }
+
+  func startSearch(_ action: ghostty_action_start_search_s) {
+    let needle = action.needle.map { String(cString: $0) } ?? ""
+    if let searchState {
+      if !needle.isEmpty {
+        searchState.needle = needle
+      }
+    } else {
+      searchState = ZmuxGhosttySearchState(needle: needle)
+    }
+    NotificationCenter.default.post(name: .ghosttySearchFocus, object: self)
+  }
+
+  func endSearch() {
+    searchState = nil
+  }
+
+  func setSearchTotal(_ total: Int) {
+    searchState?.total = total >= 0 ? UInt(total) : nil
+  }
+
+  func setSearchSelected(_ selected: Int) {
+    searchState?.selected = selected >= 0 ? UInt(selected) : nil
+  }
+
+  func markProcessExited() {
+    processExitedOverride = true
+  }
+
+  @discardableResult
+  private func performBindingAction(_ action: String) -> Bool {
+    guard let surface else { return false }
+    return ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8)))
+  }
+
+  private func updateGhosttySurfaceSize() {
+    guard let surface else { return }
+    let scale = Double(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2)
+    ghostty_surface_set_content_scale(surface, scale, scale)
+    let backingSize = convertToBacking(bounds).size
+    let width = max(UInt32(floor(backingSize.width)), 1)
+    let height = max(UInt32(floor(backingSize.height)), 1)
+    ghostty_surface_set_size(surface, width, height)
+    surfaceSize = ghostty_surface_size(surface)
+    if let screen = window?.screen,
+      let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32
+    {
+      ghostty_surface_set_display_id(surface, displayID)
+    }
+  }
+
+  private func sendKeyEvent(
+    _ event: NSEvent,
+    action: ghostty_input_action_e,
+    includeText: Bool = true
+  ) {
+    guard let surface else { return }
+    var keyEvent = ghostty_input_key_s()
+    keyEvent.action = action
+    keyEvent.keycode = UInt32(event.keyCode)
+    keyEvent.mods = mods(from: event)
+    keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+    keyEvent.composing = hasMarkedText()
+    keyEvent.unshifted_codepoint = unshiftedCodepoint(from: event)
+    if includeText, let text = event.characters, !text.isEmpty {
+      text.withCString { ptr in
+        keyEvent.text = ptr
+        _ = ghostty_surface_key(surface, keyEvent)
+      }
+    } else {
+      keyEvent.text = nil
+      _ = ghostty_surface_key(surface, keyEvent)
+    }
+  }
+
+  private func sendMousePosition(_ event: NSEvent) {
+    guard let surface else { return }
+    let point = ghosttyMousePoint(from: event)
+    ghostty_surface_mouse_pos(surface, point.x, point.y, mods(from: event))
+  }
+
+  private func sendMouseButton(
+    _ event: NSEvent,
+    action: ghostty_input_mouse_state_e,
+    button: Int
+  ) {
+    guard let surface else { return }
+    let ghosttyButton: ghostty_input_mouse_button_e =
+      button == 1 ? GHOSTTY_MOUSE_RIGHT : button == 2 ? GHOSTTY_MOUSE_MIDDLE : GHOSTTY_MOUSE_LEFT
+    _ = ghostty_surface_mouse_button(surface, action, ghosttyButton, mods(from: event))
+  }
+
+  private func ghosttyMousePoint(from event: NSEvent) -> NSPoint {
+    let local = convert(event.locationInWindow, from: nil)
+    return NSPoint(x: local.x, y: bounds.height - local.y)
+  }
+
+  private func mods(from event: NSEvent) -> ghostty_input_mods_e {
+    var mods = GHOSTTY_MODS_NONE.rawValue
+    let flags = event.modifierFlags
+    if flags.contains(.shift) { mods |= GHOSTTY_MODS_SHIFT.rawValue }
+    if flags.contains(.control) { mods |= GHOSTTY_MODS_CTRL.rawValue }
+    if flags.contains(.option) { mods |= GHOSTTY_MODS_ALT.rawValue }
+    if flags.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
+    if flags.contains(.capsLock) { mods |= GHOSTTY_MODS_CAPS.rawValue }
+    return ghostty_input_mods_e(rawValue: mods)
+  }
+
+  private func unshiftedCodepoint(from event: NSEvent) -> UInt32 {
+    guard let text = event.charactersIgnoringModifiers, let scalar = text.unicodeScalars.first else {
+      return 0
+    }
+    return scalar.value
   }
 
   private static let commandASequence = "\u{1B}[97;9u"
 
+}
+
+extension ZmuxGhosttySurfaceView: NSTextInputClient {
+  func insertText(_ string: Any, replacementRange: NSRange) {
+    onTextInputProbe?(self, string, replacementRange)
+    let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+    guard let surface, !text.isEmpty else { return }
+    markedText = ""
+    markedTextRange = NSRange(location: NSNotFound, length: 0)
+    text.withCString { ptr in
+      var keyEvent = ghostty_input_key_s()
+      keyEvent.action = GHOSTTY_ACTION_PRESS
+      keyEvent.keycode = 0
+      keyEvent.mods = GHOSTTY_MODS_NONE
+      keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+      keyEvent.composing = false
+      keyEvent.text = ptr
+      keyEvent.unshifted_codepoint = 0
+      _ = ghostty_surface_key(surface, keyEvent)
+    }
+  }
+
+  func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+    markedText = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+    markedTextRange =
+      markedText.isEmpty
+      ? NSRange(location: NSNotFound, length: 0)
+      : NSRange(location: 0, length: markedText.count)
+    selectedTextRange = selectedRange
+    guard let surface else { return }
+    if markedText.isEmpty {
+      ghostty_surface_preedit(surface, nil, 0)
+    } else {
+      markedText.withCString { ptr in
+        ghostty_surface_preedit(surface, ptr, UInt(markedText.utf8.count))
+      }
+    }
+  }
+
+  func unmarkText() {
+    markedText = ""
+    markedTextRange = NSRange(location: NSNotFound, length: 0)
+    if let surface {
+      ghostty_surface_preedit(surface, nil, 0)
+    }
+  }
+
+  func selectedRange() -> NSRange { selectedTextRange }
+
+  func markedRange() -> NSRange { markedTextRange }
+
+  func hasMarkedText() -> Bool { markedTextRange.location != NSNotFound }
+
+  func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+    nil
+  }
+
+  func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+    [.underlineStyle, .backgroundColor]
+  }
+
+  func characterIndex(for point: NSPoint) -> Int {
+    NSNotFound
+  }
+
+  func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+    guard let surface else { return .zero }
+    var x: Double = 0
+    var y: Double = 0
+    var width: Double = 0
+    var height: Double = 0
+    ghostty_surface_ime_point(surface, &x, &y, &width, &height)
+    let viewPoint = NSPoint(x: x, y: bounds.height - y)
+    let screenPoint = window?.convertPoint(toScreen: convert(viewPoint, to: nil)) ?? viewPoint
+    return NSRect(x: screenPoint.x, y: screenPoint.y - height, width: width, height: height)
+  }
 }
 
 private final class BrowserAddressTextFieldCell: NSTextFieldCell {
@@ -8606,8 +9292,8 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
     alpha: 0.42
   ).cgColor
 
-  private weak var surfaceView: Ghostty.SurfaceView?
-  private var searchState: Ghostty.SurfaceView.SearchState?
+  private weak var surfaceView: ZmuxGhosttySurfaceView?
+  private var searchState: ZmuxGhosttySearchState?
   private var cancellables = Set<AnyCancellable>()
   private let textField = TerminalSearchTextField()
   private let countLabel = NSTextField(labelWithString: "")
@@ -8615,7 +9301,7 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
   private let nextButton = NSButton()
   private let closeButton = NSButton()
 
-  init(surfaceView: Ghostty.SurfaceView) {
+  init(surfaceView: ZmuxGhosttySurfaceView) {
     self.surfaceView = surfaceView
     super.init(frame: .zero)
     isHidden = true
@@ -8675,7 +9361,7 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
     )
   }
 
-  func setSearchState(_ nextSearchState: Ghostty.SurfaceView.SearchState?) {
+  func setSearchState(_ nextSearchState: ZmuxGhosttySearchState?) {
     searchState = nextSearchState
     cancellables.removeAll()
     guard let nextSearchState else {

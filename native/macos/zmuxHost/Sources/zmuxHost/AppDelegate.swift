@@ -358,7 +358,7 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
   }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, GhosttyAppDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   static let logger = Logger(subsystem: "com.madda.zmux.host", category: "app")
   private static let logDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
@@ -368,7 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
     return formatter
   }()
   private static var createdLogDirectories = Set<String>()
-  nonisolated(unsafe) let ghostty: Ghostty.App
+  nonisolated(unsafe) let ghostty: ZmuxGhosttyApp
   let undoManager = UndoManager()
   private let ghosttyConfigSelection: GhosttyConfigSelection
 
@@ -413,7 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
      Ghostty load its normal default config files from the user's machine.
      */
     ghosttyConfigSelection = configSelection
-    ghostty = Ghostty.App(configPath: configSelection.path)
+    ghostty = ZmuxGhosttyApp(configPath: configSelection.path)
     /**
      CDXC:AutoUpdate 2026-05-02-06:51
      The native app should use Sparkle for the macOS appcast update flow, like
@@ -425,7 +425,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
       updaterDelegate: nil,
       userDriverDelegate: nil)
     super.init()
-    ghostty.delegate = self
     logGhosttyConfigStartup()
   }
 
@@ -825,34 +824,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, Ghos
 
   func windowDidMove(_ notification: Notification) {
     persistMainWindowChrome()
-  }
-
-  func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView? {
-    MainActor.assumeIsolated {
-      /**
-       CDXC:NativePaneResize 2026-05-11-14:24
-       Pane surfaces now mount inside Muxy-style leaf containers instead of as
-       direct workspace children. Ghostty notification/raise callbacks still
-       resolve surfaces by UUID, so search the workspace view tree recursively
-       instead of only inspecting immediate subviews.
-       */
-      workspaceView.flatMap { Self.findGhosttySurface(forUUID: uuid, in: $0) }
-    }
-  }
-
-  private static func findGhosttySurface(
-    forUUID uuid: UUID,
-    in rootView: NSView
-  ) -> Ghostty.SurfaceView? {
-    if let surfaceView = rootView as? Ghostty.SurfaceView, surfaceView.id == uuid {
-      return surfaceView
-    }
-    for subview in rootView.subviews {
-      if let match = findGhosttySurface(forUUID: uuid, in: subview) {
-        return match
-      }
-    }
-    return nil
   }
 
   func performGhosttyBindingMenuKeyEquivalent(with event: NSEvent) -> Bool {
@@ -2967,7 +2938,7 @@ final class zmuxRootView: NSView {
    resize handle should snap the sidebar back to the same 260px width.
    */
   init(
-    ghostty: Ghostty.App,
+    ghostty: ZmuxGhosttyApp,
     sendEvent: @escaping (HostEvent) -> Void,
     configureZedOverlay: @escaping (ConfigureZedOverlay) -> Void,
     syncGhosttyTerminalSettings: @escaping (SyncGhosttyTerminalSettings) -> Void,
