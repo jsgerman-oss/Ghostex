@@ -2,6 +2,7 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   createSessionAlias,
   createSessionRecord,
+  DEFAULT_TERMINAL_SESSION_TITLE,
   type SessionGridSnapshot,
 } from "./session-grid-contract";
 import {
@@ -102,8 +103,14 @@ describe("setSessionTitleInSnapshot", () => {
     );
 
     expect(result.changed).toBe(true);
+    /**
+     * CDXC:SessionTitles 2026-05-12-09:43
+     * Title mutation should update only the targeted primary title. Untouched
+     * sessions keep the shared default terminal title instead of reverting to a
+     * legacy alias-style title such as "Session 1".
+     */
     expect(result.snapshot.sessions.map((session) => session.title)).toEqual([
-      "Session 1",
+      DEFAULT_TERMINAL_SESSION_TITLE,
       "Claude: Fix Sidebar",
     ]);
     expect(result.snapshot.sessions.map((session) => session.alias)).toEqual([
