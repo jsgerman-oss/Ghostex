@@ -39,6 +39,16 @@ export type GhosttyCopyOnSelect = "false" | "true" | "clipboard";
 export type GhosttyScrollbar = "system" | "never";
 export type TerminalCursorStyle = "bar" | "block" | "underline";
 export type BrowserOpenMode = "chrome-canary" | "browser-pane";
+export type DefaultEditorCommand =
+  | "code"
+  | "code-insiders"
+  | "zed"
+  | "zeditor"
+  | "cursor"
+  | "windsurf"
+  | "codium"
+  | "subl"
+  | "other";
 export type SessionPersistenceProvider = "off" | "tmux" | "zmx" | "zellij";
 export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large";
 export type SidebarMode = "combined" | "separated";
@@ -62,6 +72,8 @@ export type zmuxSettings = {
   browserOpenMode: BrowserOpenMode;
   codeServerLinkVscodeUserConfig: boolean;
   codeServerUseVscodeInsidersUserConfig: boolean;
+  customDefaultEditorCommand: string;
+  defaultEditorCommand: DefaultEditorCommand;
   showProjectEditorDiffFileCount: boolean;
   completionBellEnabled: boolean;
   completionSound: CompletionSoundSetting;
@@ -153,6 +165,15 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    */
   codeServerLinkVscodeUserConfig: true,
   codeServerUseVscodeInsidersUserConfig: false,
+  /**
+   * CDXC:AgentsHub 2026-05-12-09:22
+   * Agents Hub file-edit actions should use one Settings-owned editor command.
+   * Start with VS Code because its `code <file>` command is the most common
+   * cross-project default, while Settings exposes Zed, Cursor, and custom
+   * commands for users who prefer a different editor.
+   */
+  customDefaultEditorCommand: "",
+  defaultEditorCommand: "code",
   /**
    * CDXC:EditorPanes 2026-05-10-16:12
    * Project editor rows should hide the changed-file count by default and show
@@ -331,6 +352,21 @@ export const BROWSER_OPEN_MODE_OPTIONS: ReadonlyArray<{
   { label: "Browser Panes", value: "browser-pane" },
 ];
 
+export const DEFAULT_EDITOR_COMMAND_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: DefaultEditorCommand;
+}> = [
+  { label: "VS Code (code)", value: "code" },
+  { label: "VS Code Insiders (code-insiders)", value: "code-insiders" },
+  { label: "Zed (zed)", value: "zed" },
+  { label: "Zed alternate (zeditor)", value: "zeditor" },
+  { label: "Cursor (cursor)", value: "cursor" },
+  { label: "Windsurf (windsurf)", value: "windsurf" },
+  { label: "VSCodium (codium)", value: "codium" },
+  { label: "Sublime Text (subl)", value: "subl" },
+  { label: "Other", value: "other" },
+];
+
 export const SESSION_PERSISTENCE_PROVIDER_OPTIONS: ReadonlyArray<{
   label: string;
   value: SessionPersistenceProvider;
@@ -484,6 +520,16 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       source,
       "codeServerUseVscodeInsidersUserConfig",
       DEFAULT_zmux_SETTINGS.codeServerUseVscodeInsidersUserConfig,
+    ),
+    defaultEditorCommand: normalizeDefaultEditorCommand(
+      readString(source, "defaultEditorCommand", DEFAULT_zmux_SETTINGS.defaultEditorCommand),
+    ),
+    customDefaultEditorCommand: normalizeCustomDefaultEditorCommand(
+      readString(
+        source,
+        "customDefaultEditorCommand",
+        DEFAULT_zmux_SETTINGS.customDefaultEditorCommand,
+      ),
     ),
     /**
      * CDXC:EditorPanes 2026-05-10-16:12
@@ -846,6 +892,30 @@ function normalizeTerminalCursorStyle(value: string | undefined): TerminalCursor
 
 function normalizeBrowserOpenMode(value: string | undefined): BrowserOpenMode {
   return value === "browser-pane" ? "browser-pane" : DEFAULT_zmux_SETTINGS.browserOpenMode;
+}
+
+function normalizeDefaultEditorCommand(value: string | undefined): DefaultEditorCommand {
+  return value === "code-insiders" ||
+    value === "zed" ||
+    value === "zeditor" ||
+    value === "cursor" ||
+    value === "windsurf" ||
+    value === "codium" ||
+    value === "subl" ||
+    value === "other"
+    ? value
+    : DEFAULT_zmux_SETTINGS.defaultEditorCommand;
+}
+
+function normalizeCustomDefaultEditorCommand(value: string | undefined): string {
+  return (value ?? "").trim().slice(0, 240);
+}
+
+export function getDefaultEditorCommandForSettings(settings: zmuxSettings): string {
+  const customCommand = settings.customDefaultEditorCommand.trim();
+  return settings.defaultEditorCommand === "other"
+    ? customCommand || DEFAULT_zmux_SETTINGS.defaultEditorCommand
+    : settings.defaultEditorCommand;
 }
 
 function normalizeSidebarMode(value: string | undefined): SidebarMode {

@@ -193,6 +193,7 @@ import {
 } from "../../shared/workspace-dock-icons";
 import {
   DEFAULT_zmux_SETTINGS,
+  getDefaultEditorCommandForSettings,
   getZedOverlayTargetAppLabel,
   normalizezmuxSettings,
   type SidebarSide,
@@ -10317,6 +10318,38 @@ async function createNativePluginsBrowserChat(): Promise<void> {
   createNativeBrowserSession(PLUGINS_BROWSER_CHAT_URL);
 }
 
+async function openAgentsHubFileInDefaultEditor(filePath: string): Promise<void> {
+  /**
+   * CDXC:AgentsHub 2026-05-12-09:24
+   * Agents Hub renders inside the modal host, but external edit still belongs
+   * to native so it can honor the user's configured editor command.
+   */
+  const normalizedFilePath = filePath.trim();
+  if (!normalizedFilePath) {
+    showNativeMessage("warning", "Choose an Agents Hub file first.");
+    return;
+  }
+
+  const editorCommand = getDefaultEditorCommandForSettings(settings).trim();
+  if (!editorCommand) {
+    showNativeMessage("warning", "Set a default editor command in Settings first.");
+    return;
+  }
+
+  const result = await runNativeProcess("/bin/zsh", [
+    "-lc",
+    `${editorCommand} ${quoteNativeShellArg(normalizedFilePath)}`,
+  ]);
+  if (result.exitCode !== 0) {
+    showNativeMessage(
+      "error",
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        `Unable to open ${normalizedFilePath} with ${editorCommand}.`,
+    );
+  }
+}
+
 async function createNativeBrowserChat(): Promise<void> {
   /**
    * CDXC:Chats 2026-05-08-11:07
@@ -11250,6 +11283,12 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "openPluginsBrowserChat":
       void createNativePluginsBrowserChat();
+      return;
+    case "openAgentsHubPathInFinder":
+      openNativeWorkspaceInFinder(message.path);
+      return;
+    case "openAgentsHubFileInDefaultEditor":
+      void openAgentsHubFileInDefaultEditor(message.filePath);
       return;
     case "openBrowserChat":
       void createNativeBrowserChat();

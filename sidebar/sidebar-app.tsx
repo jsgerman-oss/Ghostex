@@ -29,6 +29,7 @@ import {
   IconSearch,
   IconSettings,
   IconTerminal2,
+  IconUsersGroup,
   IconWorld,
   type TablerIcon,
 } from "@tabler/icons-react";
@@ -2106,6 +2107,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     vscode.postMessage({ type: "openPluginsBrowserChat" });
   };
 
+  const openReferenceAgentsHub = () => {
+    openAppModal({ modal: "agentsHub", type: "open" });
+  };
+
   const browserAccessSessionId = useMemo(() => {
     const orderedSessionIds = groupOrder.flatMap(
       (groupId) => authoritativeSessionIdsByGroup[groupId] ?? [],
@@ -2174,6 +2179,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
             isOverflowMenuOpen={isOverflowMenuOpen}
             isSessionSearchOpen={isSessionSearchOpen}
             onCloseSearch={closeSessionSearch}
+            onOpenAgentsHub={openReferenceAgentsHub}
             onCreateSession={createReferenceSession}
             onOpenPlugins={openReferencePlugins}
             onOpenPreviousSessions={openPreviousSessions}
@@ -2660,6 +2666,7 @@ function SidebarReferenceTopChrome({
   isSessionSearchOpen,
   onCloseSearch,
   onCreateSession,
+  onOpenAgentsHub,
   onOpenPlugins,
   onOpenPreviousSessions,
   onSearch,
@@ -2673,6 +2680,7 @@ function SidebarReferenceTopChrome({
   isSessionSearchOpen: boolean;
   onCloseSearch: () => void;
   onCreateSession: () => void;
+  onOpenAgentsHub: () => void;
   onOpenPlugins: () => void;
   onOpenPreviousSessions: () => void;
   onSearch: () => void;
@@ -2715,6 +2723,11 @@ function SidebarReferenceTopChrome({
           onToggleMenu={onToggleMenu}
         />
         <SidebarReferenceNavButton icon={IconGridDots} label="Plugins" onClick={onOpenPlugins} />
+        <SidebarReferenceNavButton
+          icon={IconUsersGroup}
+          label="Agents Hub"
+          onClick={onOpenAgentsHub}
+        />
         <SidebarReferenceSearchNavItem
           inputRef={searchInputRef}
           isOpen={isSessionSearchOpen}

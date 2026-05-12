@@ -577,6 +577,19 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
+       * CDXC:AgentsHub 2026-05-12-09:21
+       * Agents Hub runs in the full-window modal host, but profile/file actions
+       * still need native filesystem affordances from the sidebar bridge.
+       */
+      path: string;
+      type: "openAgentsHubPathInFinder";
+    }
+  | {
+      filePath: string;
+      type: "openAgentsHubFileInDefaultEditor";
+    }
+  | {
+      /**
        * CDXC:Chats 2026-05-08-11:53
        * The reference-style Chats section header has a hover-only browser
        * action beside New Chat. It creates a new projectless chat and opens a
