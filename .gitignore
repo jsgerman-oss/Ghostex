@@ -34,3 +34,8 @@ native/macos/zmuxHost/zmux.xcodeproj/
 .idea
 react-doctor.config.json
 .ignore
+.ignored/
+
+# CDXC:ReleaseDocs 2026-05-12-13:09: Local planning notes that should not be
+# published with product docs live under `.ignored/` instead of needing
+# per-file ignore rules.

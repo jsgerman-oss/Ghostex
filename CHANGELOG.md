@@ -18,9 +18,18 @@ macOS session attention banners and project editor diff-row alignment shipped
 after v2.3 so GitHub, Sparkle, and Homebrew metadata stay aligned without
 editing README. -->
 
+<!-- CDXC:Distribution 2026-05-12-13:09: Version-specific root changelog files
+are being retired. Their release summaries and artifact hashes must be kept in
+this canonical changelog so deleting the per-version markdown files does not
+drop shipped release metadata. -->
+
+This patch release adds session attention notifications and tightens project editor row alignment.
+
 - Added optional macOS attention banners for sessions that need attention, including Settings control, native notification permission handling, click-to-focus routing, and sidebar rate limiting.
 - Kept attention notifications separate from completion sounds so users can enable clickable system routing without audible alerts.
 - Improved project editor diff-row alignment in the reference sidebar and expanded Storybook fixture coverage for open editor rows with diff stats.
+
+SHA256: `61d2d71547b492eb732483d09193df3cb3de2b475f86f7916f75344d89daf220`
 
 ## 2.3.0 - 2026-05-10
 
@@ -31,6 +40,8 @@ project agent/terminal launcher separation, Combined New Session routing,
 project editor row preferences, sidebar collapse persistence, sidebar polish,
 and README updates shipped after v2.2 so GitHub, Sparkle, and Homebrew metadata
 stay aligned. -->
+
+This minor release improves the 2.x workspace with stronger hotkey editing, richer prompt editing, native runtime fixes, and more predictable sidebar behavior.
 
 - Added a shortcut recorder for hotkey settings so Command chords are captured directly instead of typed into text fields.
 - Updated split-count shortcuts to single-chord defaults and added direct Split More / Split Less actions for faster workspace layout control.
@@ -47,12 +58,16 @@ stay aligned. -->
 - Polished sidebar spacing and session-title truncation so reference layout controls and session cards scan more cleanly.
 - Updated README development setup and feature wording for the current Ghostty fork and 2.3 workflow.
 
+SHA256: `aabfea87f042ab59e1eb8aabd371226108df5a980edccbee80f58b26d7a80d70`
+
 ## 2.2.0 - 2026-05-09
 
 <!-- CDXC:Distribution 2026-05-09-22:23: Release notes for 2.2.0 must describe
 the unified settings surface, menu bar status indicators, editor-row
 diagnostics, dev startup split, and README updates shipped after v2.1 so
 GitHub, Sparkle, and Homebrew metadata stay aligned. -->
+
+This minor release tightens the new 2.x interface with the latest workspace, settings, and release workflow polish.
 
 - Added a unified tabbed Settings dialog that brings Settings, Agents, Actions, and Hotkeys into one configuration surface.
 - Added lazy `~/.zmux` folder usage stats and an Open zmux Folder action from Settings.
@@ -62,6 +77,8 @@ GitHub, Sparkle, and Homebrew metadata stay aligned. -->
 - Improved session card and Previous Sessions row chrome with hover close controls, clearer last-active placement, and refined editor diff labels.
 - Added a separate `start:dev` app startup path for `zmux-dev` so normal `bun s` keeps release-like behavior.
 - Updated README presentation and feature wording for the current Zmux positioning.
+
+SHA256: `73340ec06d57c3b16a585ee9c5566513c91fd5e0a6cba9477ae5982a122521c9`
 
 ## 2.1.0 - 2026-05-08
 
@@ -73,6 +90,10 @@ work, while also calling out the macOS app icon shipped after v2.0. -->
 - Continued the 2.x stability and performance focus across native sidebar sync, AppKit relayout avoidance, shared storage writes, diagnostic filtering, and workspace visibility.
 - Added the macOS application icon from agent-manager-x so Finder, Dock, app switcher, and signed release builds use the intended branded icon instead of a generic app icon.
 - Compiled the icon through Xcode's `AppIcon` asset catalog so signed and notarized release bundles carry the same icon metadata as local builds.
+
+SHA256: `6bbd2a95f1f585df20a2811c8f2cae492ad53492bc13814b4b085c5a906e9ced`
+
+Install with Homebrew: `brew install --cask maddada/tap/zmux`
 
 ## 2.0.0 - 2026-05-08
 
@@ -86,6 +107,10 @@ so README, GitHub, Sparkle, and Homebrew metadata describe the same release. -->
 - Improved restore and fork actions for native terminal title bars, including Codex and Claude fork command paths.
 - Fixed first-prompt auto-rename so meaningful terminal-synced titles are preserved instead of being overwritten by redundant generated rename commands.
 - Updated Storybook sidebar scenarios, interaction readiness, and fixtures so visual checks match current local settings and the redesigned sidebar behavior.
+
+SHA256: `da519a720e65a955ce182f0655ba36a6cb02c188aab441142dc2bf9747f70456`
+
+Install with Homebrew: `brew install --cask maddada/tap/zmux`
 
 ## 1.4.11 - 2026-05-08
 
