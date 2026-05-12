@@ -68,7 +68,13 @@ export function createEditorLayoutPlan(
 }
 
 function clampVisibleCount(value: number): number {
-  return Math.max(1, Math.min(9, Math.floor(value)));
+  /**
+   * CDXC:EditorLayout 2026-05-11-17:14
+   * Editor/workspace layout planning must accept every visible session count.
+   * The old fixed pane cap was removed from workspace panes, so this helper only
+   * normalizes invalid counts to a positive integer.
+   */
+  return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1;
 }
 
 function createGridRowLengths(visibleCount: number): number[] {

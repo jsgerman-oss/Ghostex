@@ -1,5 +1,4 @@
 import {
-  MAX_SESSION_COUNT,
   type SessionGridSnapshot,
   clampTerminalViewMode,
   clampVisibleSessionCount,
@@ -18,9 +17,7 @@ export function normalizeSessionGridSnapshot(
   const normalizedSnapshot = snapshot ?? createDefaultSessionGridSnapshot();
   const orderedSessions = getOrderedSessions({
     ...normalizedSnapshot,
-    sessions: normalizedSnapshot.sessions
-      .filter((session) => session.slotIndex < MAX_SESSION_COUNT)
-      .map((session) => normalizeSessionRecord(session)),
+    sessions: normalizedSnapshot.sessions.map((session) => normalizeSessionRecord(session)),
   });
   const sessionIds = new Set(orderedSessions.map((session) => session.sessionId));
   const visibleCount = clampVisibleSessionCount(normalizedSnapshot.visibleCount);

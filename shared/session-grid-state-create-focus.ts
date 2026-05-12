@@ -1,6 +1,5 @@
 import {
   type CreateSessionRecordOptions,
-  MAX_SESSION_COUNT,
   type SessionGridDirection,
   type SessionGridSnapshot,
   type SessionRecord,
@@ -25,9 +24,6 @@ export function createSessionInSnapshot(
 } {
   const normalizedSnapshot = normalizeSessionGridSnapshot(snapshot);
   const orderedSessions = getOrderedSessions(normalizedSnapshot);
-  if (orderedSessions.length >= MAX_SESSION_COUNT) {
-    return { snapshot: normalizedSnapshot };
-  }
 
   const session = createSessionRecord(sessionNumber, orderedSessions.length, options);
   const sessions = reindexSessionsInOrder([...orderedSessions, session]);

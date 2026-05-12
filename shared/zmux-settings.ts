@@ -61,10 +61,10 @@ const MIN_GHOSTTY_SCROLLBACK_LIMIT_MB = 1;
 const MAX_GHOSTTY_SCROLLBACK_LIMIT_MB = 200;
 
 /**
- * CDXC:Branding 2026-04-26-20:16
- * The app name must be written exactly as "zmux" in user-facing copy,
- * storage/protocol names, file paths, and code identifiers so the product is
- * not split across legacy mixed-case or alternate-spelling variants.
+ * CDXC:Branding 2026-05-12-07:35
+ * Public app copy uses Ghostex, and public terminal commands use `ghostex`
+ * with `gtx` as the short alias. The codebase can keep zmux in type names,
+ * storage/protocol keys, file paths, and implementation identifiers.
  */
 export type zmuxSettings = {
   actionCompletionSound: CompletionSoundSetting;
@@ -309,7 +309,13 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    */
   workspaceOpenTargetAvailability: DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY,
   workspaceOpenTargetHiddenIds: [],
-  workspacePaneGap: 12,
+  /**
+   * CDXC:WorkspaceLayout 2026-05-11-18:42
+   * Native split panes use the Pane Gap setting for every outside edge and
+   * internal split divider. Keep the default one pixel wider so the real
+   * draggable gap has enough visual weight on all sides.
+   */
+  workspacePaneGap: 13,
   /**
    * CDXC:IDEAttachment 2026-05-06-12:49
    * New installs should auto-sync the active zmux project to the attached IDE

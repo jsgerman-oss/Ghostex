@@ -82,10 +82,22 @@ describe("createSessionInSnapshot", () => {
         : undefined,
     ).toBe("ghostty-native");
   });
+
+  test("should create and normalize sessions beyond the old fixed pane cap", () => {
+    let snapshot = createDefaultSessionGridSnapshot();
+    for (let index = 1; index <= 12; index += 1) {
+      const result = createSessionInSnapshot(snapshot, index);
+      snapshot = result.snapshot;
+    }
+
+    expect(snapshot.sessions).toHaveLength(12);
+    expect(snapshot.sessions.at(-1)?.slotIndex).toBe(11);
+    expect(normalizeSessionGridSnapshot(snapshot).sessions).toHaveLength(12);
+  });
 });
 
 describe("normalizeSessionGridSnapshot", () => {
-  test("should clamp visible count and keep the focused session visible", () => {
+  test("should preserve unbounded visible count and keep the focused session visible", () => {
     const snapshot = normalizeSessionGridSnapshot({
       focusedSessionId: "session-3",
       fullscreenRestoreVisibleCount: 4,
@@ -96,12 +108,12 @@ describe("normalizeSessionGridSnapshot", () => {
         createSessionRecord(4, 3),
       ],
       viewMode: "vertical",
-      visibleCount: 99 as 9,
+      visibleCount: 99,
       visibleSessionIds: ["session-1", "session-2"],
     });
 
     expect(snapshot.viewMode).toBe("vertical");
-    expect(snapshot.visibleCount).toBe(9);
+    expect(snapshot.visibleCount).toBe(99);
     expect(snapshot.visibleSessionIds).toEqual([
       "session-1",
       "session-2",

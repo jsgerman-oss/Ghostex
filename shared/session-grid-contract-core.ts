@@ -1,5 +1,4 @@
 export const GRID_COLUMN_COUNT = 3;
-export const MAX_SESSION_COUNT = GRID_COLUMN_COUNT * GRID_COLUMN_COUNT;
 export const MAX_GROUP_COUNT = 20;
 export const MAX_SESSION_DISPLAY_ID_COUNT = 100;
 export const DEFAULT_AGENT_MANAGER_ZOOM_PERCENT = 100;
@@ -8,7 +7,7 @@ export const MAX_AGENT_MANAGER_ZOOM_PERCENT = 200;
 export const DEFAULT_MAIN_GROUP_ID = "group-1";
 export const DEFAULT_MAIN_GROUP_TITLE = "Main";
 
-export type VisibleSessionCount = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export type VisibleSessionCount = number;
 
 export type TerminalViewMode = "horizontal" | "vertical" | "grid";
 

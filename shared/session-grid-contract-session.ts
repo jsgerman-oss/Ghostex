@@ -4,7 +4,6 @@ import {
   DEFAULT_MAIN_GROUP_TITLE,
   GRID_COLUMN_COUNT,
   MAX_AGENT_MANAGER_ZOOM_PERCENT,
-  MAX_SESSION_COUNT,
   MAX_SESSION_DISPLAY_ID_COUNT,
   MIN_AGENT_MANAGER_ZOOM_PERCENT,
   type BaseSessionRecord,
@@ -86,16 +85,16 @@ const CODEX_SESSION_ID_TITLE_PATTERN =
 
 export function clampVisibleSessionCount(value: number): VisibleSessionCount {
   /**
-   * CDXC:NativeSplits 2026-05-10-18:30
-   * Split creation can surface five, seven, or eight panes after the user
-   * creates one more terminal from an exact visible set. Preserve every count
-   * from 1..9 instead of snapping through the old layout presets.
+   * CDXC:NativeSplits 2026-05-11-17:14
+   * Workspace visibility no longer has a fixed pane cap. Clamp only to a
+   * positive integer so tab groups and native pane layouts can keep every
+   * session the user opens.
    */
   if (!Number.isFinite(value)) {
     return 1;
   }
 
-  return Math.max(1, Math.min(9, Math.round(value))) as VisibleSessionCount;
+  return Math.max(1, Math.round(value));
 }
 
 export function clampTerminalViewMode(value: string | undefined): TerminalViewMode {
@@ -281,7 +280,7 @@ export function formatSessionDisplayId(displayId: number | string): string {
 }
 
 export function getSlotPosition(slotIndex: number): Pick<SessionRecord, "column" | "row"> {
-  const normalizedSlotIndex = Math.max(0, Math.min(MAX_SESSION_COUNT - 1, Math.floor(slotIndex)));
+  const normalizedSlotIndex = Math.max(0, Math.floor(slotIndex));
   return {
     column: normalizedSlotIndex % GRID_COLUMN_COUNT,
     row: Math.floor(normalizedSlotIndex / GRID_COLUMN_COUNT),
@@ -293,7 +292,7 @@ export function getSlotLabel(row: number, column: number): string {
 }
 
 export function getSessionShortcutLabel(slotIndex: number, platform: "default" | "mac"): string {
-  const shortcutNumber = Math.max(1, Math.min(MAX_SESSION_COUNT, Math.floor(slotIndex) + 1));
+  const shortcutNumber = Math.max(1, Math.floor(slotIndex) + 1);
   return platform === "mac" ? `⌘⌥${shortcutNumber}` : `⌃⌥${shortcutNumber}`;
 }
 

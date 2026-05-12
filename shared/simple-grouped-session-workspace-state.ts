@@ -3,7 +3,6 @@ import {
   DEFAULT_MAIN_GROUP_ID,
   DEFAULT_MAIN_GROUP_TITLE,
   MAX_GROUP_COUNT,
-  MAX_SESSION_COUNT,
   createDefaultGroupedSessionWorkspaceSnapshot,
   createDefaultSessionGridSnapshot,
   createSessionRecord,
@@ -1555,15 +1554,57 @@ function getNextPaneLayoutForCreatedSession(
    * leaf into the targeted split tree, while replacement commands swap the leaf
    * that was intentionally replaced. This keeps native geometry persistent
    * across app restart instead of rebuilding from visible-session counts.
+   *
+   * CDXC:PaneTabs 2026-05-11-18:13
+   * Seed creation from the persisted paneLayout inventory, not only the awake
+   * visible ids. Sleeping/offscreen tab members are still part of the user's
+   * tab group and must survive split, fork, restore, and debug creation.
    */
+  const currentPaneLayoutSessionIds = getPaneLayoutSessionIds(currentLayout);
+  const seededLayoutSessionIds = dedupeVisibleSessionIds([
+    ...currentVisibleSessionIds,
+    ...currentPaneLayoutSessionIds,
+  ]);
   const seededLayout =
-    normalizePaneLayout(currentLayout, currentVisibleSessionIds, currentVisibleSessionIds) ??
+    normalizePaneLayout(currentLayout, seededLayoutSessionIds, seededLayoutSessionIds) ??
     createPaneLayoutFromVisibleIds(currentVisibleSessionIds);
-  if (!placement || !seededLayout) {
+  if (!seededLayout) {
     return normalizePaneLayout(
       createPaneLayoutFromVisibleIds(nextVisibleSessionIds),
       nextVisibleSessionIds,
       nextVisibleSessionIds,
+      nextSessionId,
+    );
+  }
+
+  if (!placement) {
+    /**
+     * CDXC:PaneTabs 2026-05-11-18:13
+     * Fork, restore, debug, and legacy creation paths may not pass an explicit
+     * placement. They must still preserve the existing split/tab tree instead
+     * of rebuilding paneLayout from visibleSessionIds, which flattens every tab
+     * group into single-tab split panes.
+     */
+    const preservedLayoutSessionIds = dedupeVisibleSessionIds([
+      ...nextVisibleSessionIds,
+      ...currentPaneLayoutSessionIds,
+    ]).filter((sessionId) => sessionId !== nextSessionId);
+    const preservedLayout =
+      normalizePaneLayout(
+        currentLayout,
+        preservedLayoutSessionIds,
+        preservedLayoutSessionIds,
+        nextSessionId,
+      ) ?? seededLayout;
+    const nextPaneLayoutSessionIds = dedupeVisibleSessionIds([
+      ...nextVisibleSessionIds,
+      ...getPaneLayoutSessionIds(preservedLayout),
+      nextSessionId,
+    ]);
+    return normalizePaneLayout(
+      appendSessionToPaneLayout(preservedLayout, nextSessionId, "horizontal"),
+      nextPaneLayoutSessionIds,
+      nextPaneLayoutSessionIds,
       nextSessionId,
     );
   }
@@ -1574,9 +1615,8 @@ function getNextPaneLayoutForCreatedSession(
     const insertedLayout = targetSessionId
       ? insertSessionIntoPaneLayout(seededLayout, targetSessionId, nextSessionId, splitDirection)
       : undefined;
-    return normalizePaneLayout(
+    return normalizeCreatedPaneLayout(
       insertedLayout ?? appendSessionToPaneLayout(seededLayout, nextSessionId, splitDirection),
-      nextVisibleSessionIds,
       nextVisibleSessionIds,
       nextSessionId,
     );
@@ -1590,9 +1630,8 @@ function getNextPaneLayoutForCreatedSession(
      * existing pane tree in an 85/15 vertical split and append the new leaf as
      * a 15%-height bottom row instead of splitting the currently focused pane.
      */
-    return normalizePaneLayout(
+    return normalizeCreatedPaneLayout(
       appendFullWidthSessionToPaneLayout(seededLayout, nextSessionId),
-      nextVisibleSessionIds,
       nextVisibleSessionIds,
       nextSessionId,
     );
@@ -1605,15 +1644,19 @@ function getNextPaneLayoutForCreatedSession(
      * pane. Do not replace the target session: keeping the old and new sessions
      * in one paneLayout tabs node prevents native layout sync from appending the
      * still-awake old session as a separate split pane.
+     *
+     * CDXC:PaneTabs 2026-05-11-17:04
+     * Tab groups and visible panes no longer use a fixed pane cap. Keep the
+     * full tab inventory in paneLayout and visibleSessionIds so native sync
+     * never has to recover a trimmed awake session as a separate split.
      */
     const tabbedLayout = addSessionToPaneTabGroup(
       seededLayout,
       placement.targetSessionId,
       nextSessionId,
     );
-    return normalizePaneLayout(
+    return normalizeCreatedPaneLayout(
       tabbedLayout ?? createPaneLayoutFromVisibleIds(nextVisibleSessionIds),
-      nextVisibleSessionIds,
       nextVisibleSessionIds,
       nextSessionId,
     );
@@ -1625,13 +1668,36 @@ function getNextPaneLayoutForCreatedSession(
     const replacedLayout = targetSessionId
       ? replaceSessionInPaneLayout(seededLayout, targetSessionId, nextSessionId)
       : undefined;
-    return normalizePaneLayout(
+    return normalizeCreatedPaneLayout(
       replacedLayout ?? createPaneLayoutFromVisibleIds(nextVisibleSessionIds),
-      nextVisibleSessionIds,
       nextVisibleSessionIds,
       nextSessionId,
     );
   }
+}
+
+function normalizeCreatedPaneLayout(
+  layout: SessionPaneLayoutNode | undefined,
+  nextVisibleSessionIds: readonly string[],
+  nextSessionId: string,
+): SessionPaneLayoutNode | undefined {
+  /**
+   * CDXC:PaneTabs 2026-05-11-18:48
+   * Every explicit pane-creation placement must normalize against the newly
+   * visible ids plus the full paneLayout inventory. Otherwise split, full-row,
+   * tab, and replace actions can prune sleeping/offscreen tab members and make
+   * native sync rebuild the user's grouped tabs as separate panes.
+   */
+  const paneLayoutSessionIds = dedupeVisibleSessionIds([
+    ...nextVisibleSessionIds,
+    ...getPaneLayoutSessionIds(layout),
+  ]);
+  return normalizePaneLayout(
+    layout,
+    paneLayoutSessionIds,
+    paneLayoutSessionIds,
+    nextSessionId,
+  );
 }
 
 function createPaneLayoutFromVisibleIds(
@@ -2224,9 +2290,8 @@ function insertVisibleSessionAfterTarget(
     ? nextVisibleSessionIds.indexOf(targetSessionId)
     : nextVisibleSessionIds.length - 1;
   nextVisibleSessionIds.splice(Math.max(0, targetIndex + 1), 0, nextSessionId);
-  trimVisibleSessionIds(nextVisibleSessionIds, [nextSessionId, targetSessionId]);
   const visibleCount = clampSupportedVisibleCount(
-    Math.min(MAX_SESSION_COUNT, Math.max(1, nextVisibleSessionIds.length)),
+    Math.max(1, nextVisibleSessionIds.length),
   );
   return {
     visibleCount,
@@ -2269,7 +2334,7 @@ function replaceNonFocusedVisibleSession(
   const nextVisibleSessionIds = currentVisibleSessionIds.filter(
     (sessionId) => sessionId !== nextSessionId,
   );
-  const visibleCapacity = Math.min(currentVisibleCount, MAX_SESSION_COUNT, sessions.length);
+  const visibleCapacity = Math.min(currentVisibleCount, sessions.length);
   if (nextVisibleSessionIds.length < visibleCapacity) {
     nextVisibleSessionIds.push(nextSessionId);
     return {
@@ -2309,19 +2374,6 @@ function pickReplacementVisibleSessionIndex(
   return visibleSessionIds.length > 0 ? visibleSessionIds.length - 1 : -1;
 }
 
-function trimVisibleSessionIds(
-  visibleSessionIds: string[],
-  protectedSessionIds: readonly (string | undefined)[],
-): void {
-  const protectedSessionIdSet = new Set(protectedSessionIds.filter(Boolean));
-  while (visibleSessionIds.length > MAX_SESSION_COUNT) {
-    const removableIndex = findLastIndex(visibleSessionIds, (sessionId) => {
-      return !protectedSessionIdSet.has(sessionId);
-    });
-    visibleSessionIds.splice(removableIndex >= 0 ? removableIndex : visibleSessionIds.length - 1, 1);
-  }
-}
-
 function dedupeVisibleSessionIds(visibleSessionIds: readonly string[]): string[] {
   const nextVisibleSessionIds: string[] = [];
   for (const sessionId of visibleSessionIds) {
@@ -2330,15 +2382,6 @@ function dedupeVisibleSessionIds(visibleSessionIds: readonly string[]): string[]
     }
   }
   return nextVisibleSessionIds;
-}
-
-function findLastIndex<T>(values: readonly T[], predicate: (value: T) => boolean): number {
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    if (predicate(values[index]!)) {
-      return index;
-    }
-  }
-  return -1;
 }
 
 function getNormalizedVisibleIds(
@@ -2511,13 +2554,25 @@ function replaceFocusedSessionInPaneLayout(
     currentFocusedSessionId && currentVisibleSessionIds.includes(currentFocusedSessionId)
       ? currentFocusedSessionId
       : currentVisibleSessionIds[0];
+  const currentPaneLayoutSessionIds = getPaneLayoutSessionIds(currentLayout);
+  const seededLayoutSessionIds = dedupeVisibleSessionIds([
+    ...currentVisibleSessionIds,
+    ...currentPaneLayoutSessionIds,
+  ]);
+  /**
+   * CDXC:PaneFocus 2026-05-11-18:48
+   * Hidden-session clicks and sleeping-session wake replace the focused pane,
+   * but they must not discard other members of that pane's tab group. Seed and
+   * finalize replacement with paneLayout ids as well as visible ids so sidebar
+   * focus actions cannot flatten grouped tabs.
+   */
   const seededLayout =
     normalizePaneLayout(
       currentLayout,
-      currentVisibleSessionIds,
-      currentVisibleSessionIds,
+      seededLayoutSessionIds,
+      seededLayoutSessionIds,
       currentFocusedSessionId,
-    ) ?? createPaneLayoutFromVisibleIds(currentVisibleSessionIds);
+    ) ?? createPaneLayoutFromVisibleIds(seededLayoutSessionIds);
   const layoutWithoutRestoredSession = seededLayout
     ? removeSessionFromPaneLayout(seededLayout, nextFocusedSessionId)
     : undefined;
@@ -2529,11 +2584,15 @@ function replaceFocusedSessionInPaneLayout(
           nextFocusedSessionId,
         )
       : undefined;
+  const nextPaneLayoutSessionIds = dedupeVisibleSessionIds([
+    ...nextVisibleSessionIds,
+    ...getPaneLayoutSessionIds(replacedLayout),
+  ]);
 
   return normalizePaneLayout(
     replacedLayout ?? createPaneLayoutFromVisibleIds(nextVisibleSessionIds),
-    nextVisibleSessionIds,
-    nextVisibleSessionIds,
+    nextPaneLayoutSessionIds,
+    nextPaneLayoutSessionIds,
     nextFocusedSessionId,
   );
 }

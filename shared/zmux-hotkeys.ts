@@ -15,7 +15,7 @@ export type zmuxHotkeyActionId =
   | "focusLeft"
   | "splitMore"
   | "splitMoreDown"
-  | `focusGroup${1 | 2 | 3 | 4}`
+  | `focusGroup${1 | 2 | 3 | 4 | 5}`
   | `focusSessionSlot${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
 
 export type zmuxHotkeySettings = Partial<Record<zmuxHotkeyActionId, string>>;
@@ -120,7 +120,7 @@ export const ZMUX_HOTKEY_DEFINITIONS: readonly zmuxHotkeyDefinition[] = [
     id: `focus${capitalize(direction)}` as zmuxHotkeyActionId,
     title: `Focus ${capitalize(direction)}`,
   })),
-  ...[1, 2, 3, 4].map((groupIndex) => ({
+  ...[1, 2, 3, 4, 5].map((groupIndex) => ({
     action: {
       groupIndex,
       id: `focusGroup${groupIndex}` as zmuxHotkeyActionId,

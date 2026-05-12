@@ -20,6 +20,7 @@ describe("normalizezmuxHotkeySettings", () => {
     expect(DEFAULT_zmux_HOTKEYS.focusPreviousGroup).toBe("cmd+shift+[");
     expect(DEFAULT_zmux_HOTKEYS.focusNextGroup).toBe("cmd+shift+]");
     expect(DEFAULT_zmux_HOTKEYS.focusGroup1).toBe("cmd+ctrl+1");
+    expect(DEFAULT_zmux_HOTKEYS.focusGroup5).toBe("cmd+ctrl+5");
     expect(DEFAULT_zmux_HOTKEYS.focusSessionSlot1).toBe("cmd+1");
   });
 
