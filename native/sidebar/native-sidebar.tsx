@@ -220,6 +220,12 @@ import {
 import "../../sidebar/styles.css";
 
 type NativeSessionStatusIndicatorStatus = "attention" | "working" | "available";
+type NativePetOverlayActivityState = "attention" | "working";
+type NativePetOverlayActivity = {
+  id: string;
+  state: NativePetOverlayActivityState;
+  title: string;
+};
 type NativeTerminalTitleBarAction =
   | "close"
   | "delayedSend"
@@ -360,6 +366,12 @@ type NativeHostCommand =
        */
       size: zmuxSettings["sessionStatusIndicatorSize"];
       type: "setSessionStatusIndicators";
+    }
+  | {
+      activities: NativePetOverlayActivity[];
+      enabled: boolean;
+      selectedPetId: zmuxSettings["selectedPetId"];
+      type: "setPetOverlayState";
     }
   | { layout?: NativeTerminalLayout; type: "setTerminalLayout" }
   | { sessionId: string; type: "setTerminalVisibility"; visible: boolean }
@@ -4781,6 +4793,7 @@ function publish(): void {
   syncNativeT3RuntimeSessionState(sidebarMessage);
   syncNativeLayout({ force: didCreateNativeSession });
   syncNativeSessionStatusIndicators();
+  syncNativePetOverlayState();
 }
 
 function syncNativeT3RuntimeSessionState(sidebarMessage: SidebarHydrateMessage): void {
@@ -5063,6 +5076,7 @@ type NativeSessionStatusIndicatorCandidate = {
   projectId: string;
   sessionId: string;
   status: NativeSessionStatusIndicatorStatus;
+  title: string;
 };
 
 function createNativeSessionStatusIndicatorCandidates(): NativeSessionStatusIndicatorCandidate[] {
@@ -5096,6 +5110,7 @@ function createNativeSessionStatusIndicatorCandidates(): NativeSessionStatusIndi
           projectId: project.projectId,
           sessionId: session.sessionId,
           status,
+          title: getNativePetOverlaySessionTitle(session),
         });
         order += 1;
       }
@@ -5135,6 +5150,37 @@ function syncNativeSessionStatusIndicators(): void {
     size: settings.sessionStatusIndicatorSize,
     type: "setSessionStatusIndicators",
   });
+}
+
+function syncNativePetOverlayState(): void {
+  const activities = createNativeSessionStatusIndicatorCandidates()
+    .filter(
+      (candidate): candidate is NativeSessionStatusIndicatorCandidate & {
+        status: NativePetOverlayActivityState;
+      } => candidate.status === "attention" || candidate.status === "working",
+    )
+    .sort(compareNativeSessionStatusIndicatorCandidates)
+    .slice(0, 3)
+    .map((candidate) => ({
+      id: candidate.sessionId,
+      state: candidate.status,
+      title: candidate.title,
+    }));
+  postNative({
+    activities,
+    enabled: settings.petOverlayEnabled,
+    selectedPetId: settings.selectedPetId,
+    type: "setPetOverlayState",
+  });
+}
+
+function getNativePetOverlaySessionTitle(session: SidebarSessionItem): string {
+  const title =
+    session.primaryTitle?.trim() ||
+    session.terminalTitle?.trim() ||
+    session.alias.trim() ||
+    session.sessionNumber?.trim();
+  return title || "Untitled session";
 }
 
 function handleNativeSessionStatusIndicatorClicked(

@@ -32,6 +32,7 @@ import {
   type CustomWorkspaceOpenTarget,
   type WorkspaceOpenTargetAvailability,
 } from "./workspace-open-targets";
+import { DEFAULT_PET_ID, normalizePetId, type PetId } from "./pets";
 
 export type GhosttyConfirmCloseSurface = "false" | "true" | "always";
 export type GhosttyCopyOnSelect = "false" | "true" | "clipboard";
@@ -76,6 +77,8 @@ export type zmuxSettings = {
   showMacOSAttentionNotifications: boolean;
   hideFloatingSessionStatusIndicators: boolean;
   hideMenuBarSessionStatusIndicators: boolean;
+  petOverlayEnabled: boolean;
+  selectedPetId: PetId;
   sessionStatusIndicatorSize: SessionStatusIndicatorSize;
   sessionPersistenceProvider: SessionPersistenceProvider;
   sidebarMode: SidebarMode;
@@ -192,6 +195,8 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    */
   hideFloatingSessionStatusIndicators: true,
   hideMenuBarSessionStatusIndicators: false,
+  petOverlayEnabled: false,
+  selectedPetId: DEFAULT_PET_ID,
   /**
    * CDXC:SessionStatusIndicators 2026-05-07-18:20
    * The AppKit floating session indicator defaults to Medium, which is half of
@@ -564,6 +569,14 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       source,
       "hideMenuBarSessionStatusIndicators",
       DEFAULT_zmux_SETTINGS.hideMenuBarSessionStatusIndicators,
+    ),
+    petOverlayEnabled: readBoolean(
+      source,
+      "petOverlayEnabled",
+      DEFAULT_zmux_SETTINGS.petOverlayEnabled,
+    ),
+    selectedPetId: normalizePetId(
+      readString(source, "selectedPetId", DEFAULT_zmux_SETTINGS.selectedPetId),
     ),
     /**
      * CDXC:SessionStatusIndicators 2026-05-07-18:20

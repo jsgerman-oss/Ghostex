@@ -12,6 +12,7 @@ import {
   SIDEBAR_THEME_SETTING_OPTIONS,
   ZED_OVERLAY_TARGET_APP_OPTIONS,
 } from "./zmux-settings";
+import { DEFAULT_PET_ID } from "./pets";
 
 describe("normalizezmuxSettings", () => {
   test("defaults the Zed overlay settings", () => {
@@ -188,6 +189,24 @@ describe("normalizezmuxSettings", () => {
       { label: "Medium", value: "medium" },
       { label: "Small", value: "small" },
     ]);
+  });
+
+  test("keeps the pet overlay opt-in and normalizes selected pets", () => {
+    expect(DEFAULT_zmux_SETTINGS.petOverlayEnabled).toBe(false);
+    expect(DEFAULT_zmux_SETTINGS.selectedPetId).toBe(DEFAULT_PET_ID);
+    expect(normalizezmuxSettings({})).toMatchObject({
+      petOverlayEnabled: false,
+      selectedPetId: "codex",
+    });
+    expect(
+      normalizezmuxSettings({ petOverlayEnabled: true, selectedPetId: "dewey" }),
+    ).toMatchObject({
+      petOverlayEnabled: true,
+      selectedPetId: "dewey",
+    });
+    expect(normalizezmuxSettings({ selectedPetId: "not-a-pet" })).toMatchObject({
+      selectedPetId: "codex",
+    });
   });
 
   test("enables macOS attention notifications by default", () => {

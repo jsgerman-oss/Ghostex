@@ -47,7 +47,8 @@ if [[ -z "$GHOSTTY_ROOT" ]]; then
 	for candidate in \
 		"$REPO_ROOT/../ghostty" \
 		"$REPO_ROOT/../ghostty-zmux-survival" \
-		"$REPO_ROOT/../../_forks/ghostty"; do
+		"$REPO_ROOT/../../_forks/ghostty" \
+		"$HOME/dev/_active/ghostty"; do
 		if [[ -d "$candidate/macos/GhosttyKit.xcframework" ]]; then
 			GHOSTTY_ROOT="$(cd "$candidate" && pwd)"
 			break
@@ -147,6 +148,11 @@ bun build "$REPO_ROOT/native/sidebar/titlebar-host.tsx" \
 	--format iife \
 	--asset-naming "[name].[ext]" \
 	--outdir "$WEB_DIR"
+bun build "$REPO_ROOT/native/sidebar/pet-host.tsx" \
+	--target browser \
+	--format iife \
+	--asset-naming "[name].[ext]" \
+	--outdir "$WEB_DIR"
 
 WEB_DIR="$WEB_DIR" node <<'JS'
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");
@@ -162,10 +168,14 @@ const modalJs = readFileSync(join(webDir, "modal-host.js"), "utf8");
 const titlebarCssPath = join(webDir, "titlebar-host.css");
 const titlebarCss = existsSync(titlebarCssPath) ? readFileSync(titlebarCssPath, "utf8") : "";
 const titlebarJs = readFileSync(join(webDir, "titlebar-host.js"), "utf8");
+const petCssPath = join(webDir, "pet-host.css");
+const petCss = existsSync(petCssPath) ? readFileSync(petCssPath, "utf8") : "";
+const petJs = readFileSync(join(webDir, "pet-host.js"), "utf8");
 // Inline script bodies must escape HTML script end tags that appear inside bundle strings.
 const escapedJs = js.replace(/<\/script/gi, "<\\/script");
 const escapedModalJs = modalJs.replace(/<\/script/gi, "<\\/script");
 const escapedTitlebarJs = titlebarJs.replace(/<\/script/gi, "<\\/script");
+const escapedPetJs = petJs.replace(/<\/script/gi, "<\\/script");
 writeFileSync(join(webDir, "index.html"), `<!doctype html>
 <html>
   <head>
@@ -255,6 +265,37 @@ ${escapedTitlebarJs}
 }
 })();
 //# sourceURL=titlebar-host.js
+    </script>
+  </body>
+</html>
+`);
+writeFileSync(join(webDir, "pet-host.html"), `<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <style>
+${petCss}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+(() => {
+try {
+${escapedPetJs}
+} catch (error) {
+  window.__zmux_BOOT_ERROR__ = {
+    message: error && error.message ? String(error.message) : String(error),
+    stack: error && error.stack ? String(error.stack) : ""
+  };
+  throw error;
+}
+})();
+//# sourceURL=pet-host.js
     </script>
   </body>
 </html>
