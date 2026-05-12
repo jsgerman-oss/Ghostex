@@ -1,4 +1,4 @@
-> Note: App was renamed from zmux to Ghostex to better represent what it does.<br/>
+# App was renamed from zmux to Ghostex to better represent what it does.
 > This app is my attempt to bring the best parts of Codex App's amazing UX to Agent CLI users with real native Ghostty terminals.<br/>
 > Sorry for any inconvienence cause by the rename 🙏🏻
 
