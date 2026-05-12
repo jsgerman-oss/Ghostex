@@ -2739,7 +2739,7 @@ function SidebarReferenceTopChrome({
    * CDXC:SidebarReference 2026-05-08-09:11
    * Combined mode should visually match the provided app sidebar: native-style
    * window dots, disabled back/forward chrome, and large primary rows for New
-   * Session, Plugins, and Search.
+   * Session, Agents Hub, Plugins, and Search.
    *
    * CDXC:SidebarReference 2026-05-08-14:48
    * Combined mode needs the same overflow menu as separated mode, exposed as a
@@ -2750,6 +2750,10 @@ function SidebarReferenceTopChrome({
    * Actions moved out of the sidebar header into the native titlebar beside
    * Open In. Keep this top chrome focused on navigation/search so the action
    * menu has one home and one split-button UX.
+   *
+   * CDXC:AgentsHub 2026-05-12-09:59
+   * Agents Hub should appear above Plugins in the primary sidebar nav so agent
+   * configuration content is reached before plugin browsing.
    */
   return (
     <header className="reference-sidebar-top">
@@ -2767,12 +2771,12 @@ function SidebarReferenceTopChrome({
           onCreateSession={onCreateSession}
           onToggleMenu={onToggleMenu}
         />
-        <SidebarReferenceNavButton icon={IconGridDots} label="Plugins" onClick={onOpenPlugins} />
         <SidebarReferenceNavButton
           icon={IconUsersGroup}
           label="Agents Hub"
           onClick={onOpenAgentsHub}
         />
+        <SidebarReferenceNavButton icon={IconGridDots} label="Plugins" onClick={onOpenPlugins} />
         <SidebarReferenceSearchNavItem
           inputRef={searchInputRef}
           isOpen={isSessionSearchOpen}
