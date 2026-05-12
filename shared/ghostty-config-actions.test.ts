@@ -10,6 +10,9 @@ describe("mergeGhosttyConfigLines", () => {
      * CDXC:GhosttySettings 2026-04-30-01:48
      * Applying recommended settings must replace zmux-managed Ghostty keys but
      * retain user-owned settings such as keybinds.
+     * CDXC:Branding 2026-05-12-07:35
+     * The inserted marker is user-visible in Ghostty config, so it should use
+     * Ghostex even though the managed-key constants keep their zmux prefix.
      */
     expect(
       mergeGhosttyConfigLines(
@@ -25,7 +28,7 @@ describe("mergeGhosttyConfigLines", () => {
       [
         "keybind = cmd+t=new_tab",
         "window-padding-x = 4",
-        "# Applied by zmux:",
+        "# Applied by Ghostex:",
         "theme = GitHub Dark",
       ].join("\n"),
     );

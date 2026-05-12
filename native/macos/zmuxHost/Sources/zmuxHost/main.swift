@@ -10,10 +10,10 @@ private func terminalCliArguments() -> [String] {
 private func runBundledCli(arguments: [String]) -> Never {
   guard
     let cliScriptPath = Bundle.main.resourceURL?
-      .appendingPathComponent("Web/cli/zmux-cli.mjs").path,
+      .appendingPathComponent("Web/cli/ghostex-cli.mjs").path,
     FileManager.default.fileExists(atPath: cliScriptPath)
   else {
-    fputs("zmux CLI is missing from this app bundle. Rebuild or reinstall zmux.\n", stderr)
+    fputs("Ghostex CLI is missing from this app bundle. Rebuild or reinstall Ghostex.\n", stderr)
     exit(1)
   }
 
@@ -24,9 +24,9 @@ private func runBundledCli(arguments: [String]) -> Never {
   var environment = ProcessInfo.processInfo.environment
   /**
    CDXC:DevAppFlavor 2026-05-11-12:10
-   LaunchServices does not preserve the shell environment that built zmux-dev.
+   LaunchServices does not preserve the shell environment that built ghostex-dev.
    Pass the bundle-derived dev home and bridge port into the bundled CLI so
-   `zmux-dev sessions` uses ~/.zmux-dev and the dev WebSocket bridge instead
+   `ghostex-dev sessions` uses ~/.zmux-dev and the dev WebSocket bridge instead
    of production state.
    */
   environment["ZMUX_HOME"] = ZmuxAppStorage.sharedRootDirectory.path
@@ -43,7 +43,7 @@ private func runBundledCli(arguments: [String]) -> Never {
     process.waitUntilExit()
     exit(process.terminationStatus)
   } catch {
-    fputs("zmux CLI failed to start node: \(error.localizedDescription)\n", stderr)
+    fputs("Ghostex CLI failed to start node: \(error.localizedDescription)\n", stderr)
     exit(1)
   }
 }
@@ -52,11 +52,14 @@ let cliArguments = terminalCliArguments()
 if !cliArguments.isEmpty {
   /**
    CDXC:CliSessions 2026-05-10-03:28
-   The installed `zmux` executable is also what shells resolve from PATH. When
-   users run `zmux --help` or `zmux sessions`, treat argv as CLI intent and
-   proxy to the bundled Node CLI before AppKit, CEF, or Ghostty can launch the
-   GUI/browser path. LaunchServices `-psn_*` arguments are ignored above so Dock
-   and Finder launches still start the app normally.
+   The installed executable is also what shells resolve from PATH. When users
+   run a CLI command, treat argv as CLI intent and proxy to the bundled Node
+   CLI before AppKit, CEF, or Ghostty can launch the GUI/browser path.
+   CDXC:CliBranding 2026-05-12-07:35
+   Public CLI commands are `ghostex` and `gtx`; old `zmux` terminal commands
+   are intentionally not preserved as compatibility aliases.
+   LaunchServices `-psn_*` arguments are ignored above so Dock and Finder
+   launches still start the app normally.
    */
   runBundledCli(arguments: cliArguments)
 }
@@ -74,7 +77,7 @@ let preparedCEFApplication = ZmuxCEFPrepareApplication()
  Ghostty resolves bundled themes from global runtime state created during
  `ghostty_init`. Set the embedded app's resource directory first so named
  themes from the user's Ghostty config, such as GitHub Dark Default, load
- from zmux.app/Contents/Resources/ghostty.
+ from Ghostex.app/Contents/Resources/ghostty.
  */
 if let resourcesPath = Bundle.main.resourceURL?.appendingPathComponent("ghostty").path {
   setenv("GHOSTTY_RESOURCES_DIR", resourcesPath, 1)

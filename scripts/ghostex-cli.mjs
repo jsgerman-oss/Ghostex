@@ -11,8 +11,13 @@ const DEV_PORT = 58744;
 /**
  * CDXC:DevAppFlavor 2026-05-11-12:10
  * CLI-side logs, selector caches, and bridge metadata must follow the app
- * variant. `bun start:dev` and the zmux-dev bundle use ~/.zmux-dev so CLI
+ * variant. `bun start:dev` and the ghostex-dev bundle use ~/.zmux-dev so CLI
  * commands issued through that dev app do not touch the installed app's data.
+ *
+ * CDXC:CliBranding 2026-05-12-07:35
+ * Public CLI commands are `ghostex` and the shorter `gtx` alias. Internal
+ * ZMUX_* environment names and ~/.zmux storage remain unchanged because they
+ * are implementation state, not user-facing command names.
  */
 const ZMUX_HOME =
   process.env.ZMUX_HOME?.trim() ||
@@ -123,7 +128,7 @@ async function sendSidebarCliCommand(action, payload, flags = {}) {
     return await new Promise((resolve, reject) => {
       const timeout = setTimeout(
         () => {
-          reject(new Error(`Timed out waiting for zmux sidebar CLI result (${action}).`));
+          reject(new Error(`Timed out waiting for Ghostex sidebar CLI result (${action}).`));
         },
         Number(flags.timeout ?? 15_000),
       );
@@ -168,7 +173,7 @@ async function webSocketConstructor() {
     if (globalThis.WebSocket) {
       return globalThis.WebSocket;
     }
-    throw new Error("No WebSocket implementation is available for the zmux CLI.");
+    throw new Error("No WebSocket implementation is available for the Ghostex CLI.");
   }
 }
 
@@ -196,7 +201,7 @@ async function floatingEditorCommand(args) {
   const { flags, rest } = parseArgs(args);
   const commandArgs = rest.filter((arg) => arg !== "");
   if (commandArgs.length === 0) {
-    throw new Error("Usage: zmux floating-editor -- <editor> [args...]");
+    throw new Error("Usage: ghostex floating-editor -- <editor> [args...]");
   }
 
   const port = bridgePortFromFlags(flags);
@@ -272,7 +277,7 @@ async function floatingMonacoEditorCommand(args) {
   const { flags, rest } = parseArgs(args);
   const filePath = rest.find((arg) => arg && arg.trim() !== "");
   if (!filePath) {
-    throw new Error("Usage: zmux floating-monaco-editor <file>");
+    throw new Error("Usage: ghostex floating-monaco-editor <file>");
   }
 
   const port = bridgePortFromFlags(flags);
@@ -443,7 +448,7 @@ async function appendFloatingEditorLog(details) {
     logPath,
     `${JSON.stringify({
       ...details,
-      source: "zmux-cli",
+      source: "ghostex-cli",
       timestamp: new Date().toISOString(),
     })}\n`,
   );
@@ -496,7 +501,7 @@ async function bundleCommand(args) {
 async function captureScreenshot(output, flags = {}) {
   await mkdir(path.dirname(output), { recursive: true });
   if (flags.activate !== "false") {
-    await execFileAsync("osascript", ["-e", 'tell application "zmux" to activate']).catch(
+    await execFileAsync("osascript", ["-e", 'tell application "Ghostex" to activate']).catch(
       () => undefined,
     );
   }
@@ -596,7 +601,7 @@ async function focusSmartSessionCommand(args) {
 async function fetchSessionList(flags = {}, options = {}) {
   const result = await sendSidebarCliCommand("listSessions", {}, flags);
   if (result.ok === false) {
-    throw new Error(result.error ?? "Could not list zmux sessions.");
+    throw new Error(result.error ?? "Could not list Ghostex sessions.");
   }
   const sessions = Array.isArray(result.sessions) ? result.sessions : [];
   if (options.writeCache === true) {
@@ -631,7 +636,7 @@ async function resolveOneListedSession(selector, sessions) {
     return matches[0];
   }
   if (matches.length === 0) {
-    throw new Error(`No matching session found for "${selector}". Run "zmux sessions" to list sessions.`);
+    throw new Error(`No matching session found for "${selector}". Run "ghostex sessions" or "gtx sessions" to list sessions.`);
   }
   throw new Error(`Multiple sessions matched "${selector}":\n${formatSessionMatches(matches)}`);
 }
@@ -1006,11 +1011,13 @@ function helpCommand() {
 }
 
 function usage() {
-  return `zmux CLI
+  return `Ghostex CLI
 
 Usage:
-  bun scripts/zmux-cli.mjs <command> [args] [--flags]
-  bun scripts/zmux-cli.mjs --help | -h
+  ghostex <command> [args] [--flags]
+  gtx <command> [args] [--flags]
+  bun scripts/ghostex-cli.mjs <command> [args] [--flags]
+  bun scripts/ghostex-cli.mjs --help | -h
 
 Session commands:
   sessions | s | list-sessions | ls [--ungrouped|-u] [--json]
@@ -1034,16 +1041,16 @@ Session commands:
       Wake one session or every listed terminal session.
 
   focus <alias|id|title|project:title>
-      Focus the selected session in the zmux app.
+      Focus the selected session in Ghostex.
 
   floating-editor | fe -- <editor> [args...]
-      Open an editor command in a draggable zmux floating terminal overlay.
+      Open an editor command in a draggable Ghostex floating terminal overlay.
 
   floating-monaco-editor | fme <file>
-      Open a file in the draggable zmux floating Monaco editor overlay.
+      Open a file in the draggable Ghostex floating Monaco editor overlay.
 
 Selector rules:
-  Numeric aliases come from the last "zmux sessions" list and stay global
+  Numeric aliases come from the last "ghostex sessions" or "gtx sessions" list and stay global
   across grouped and --ungrouped output. Titles match exact first, then
   case-insensitive substring. Use project:title when a title is ambiguous.
 

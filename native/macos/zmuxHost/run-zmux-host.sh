@@ -7,14 +7,16 @@ CONFIGURATION="${CONFIGURATION:-Debug}"
 ZMUX_APP_VARIANT="${ZMUX_APP_VARIANT:-prod}"
 if [[ "$ZMUX_APP_VARIANT" == "dev" ]]; then
 	# CDXC:DevAppFlavor 2026-04-28-02:01: Local development needs a separate
-	# zmux-dev app identity so iterative builds can run beside the release app;
+	# ghostex-dev app identity so iterative builds can run beside the release app;
 	# CDXC:DevAppFlavor 2026-05-11-12:10: dev launches must keep settings,
 	# projects, sessions, hooks, browser profiles, and runtime state isolated
-	# from the installed app through the zmux-dev bundle and ~/.zmux-dev home.
-	APP_NAME="zmux-dev"
+	# from the installed app through the ghostex-dev bundle and ~/.zmux-dev home.
+	# CDXC:Branding 2026-05-12-07:35: Public dev builds use the Ghostex name
+	# while keeping the internal dev bundle id and ~/.zmux-dev storage split.
+	APP_NAME="Ghostex-dev"
 	BUNDLE_ID="com.madda.zmux-dev.host"
 else
-	APP_NAME="zmux"
+	APP_NAME="Ghostex"
 	BUNDLE_ID="com.madda.zmux.host"
 fi
 INSTALL_DIR="${INSTALL_DIR:-/Applications}"

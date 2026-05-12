@@ -16,16 +16,16 @@ if [[ "$ZMUX_APP_VARIANT" == "dev" ]]; then
 	# settings, projects, sessions, hooks, browser profiles, or runtime state
 	# with the installed app, so both diagnostic and workflow homes use
 	# ~/.zmux-dev.
-	ZMUX_APP_NAME="${ZMUX_APP_NAME:-zmux-dev}"
-	ZMUX_APP_DISPLAY_NAME="${ZMUX_APP_DISPLAY_NAME:-zmux-dev}"
+	ZMUX_APP_NAME="${ZMUX_APP_NAME:-Ghostex-dev}"
+	ZMUX_APP_DISPLAY_NAME="${ZMUX_APP_DISPLAY_NAME:-Ghostex Dev}"
 	ZMUX_BUNDLE_ID="${ZMUX_BUNDLE_ID:-com.madda.zmux-dev.host}"
 	ZMUX_HOME_DIRECTORY_NAME="${ZMUX_HOME_DIRECTORY_NAME:-.zmux-dev}"
 	ZMUX_SHARED_HOME_DIRECTORY_NAME="${ZMUX_SHARED_HOME_DIRECTORY_NAME:-.zmux-dev}"
 	ZMUX_SPARKLE_FEED_URL="${ZMUX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/zmux/main/appcast.xml}"
 	ZMUX_SPARKLE_PUBLIC_ED_KEY="${ZMUX_SPARKLE_PUBLIC_ED_KEY:-AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=}"
 else
-	ZMUX_APP_NAME="${ZMUX_APP_NAME:-zmux}"
-	ZMUX_APP_DISPLAY_NAME="${ZMUX_APP_DISPLAY_NAME:-zmux}"
+	ZMUX_APP_NAME="${ZMUX_APP_NAME:-Ghostex}"
+	ZMUX_APP_DISPLAY_NAME="${ZMUX_APP_DISPLAY_NAME:-Ghostex}"
 	ZMUX_BUNDLE_ID="${ZMUX_BUNDLE_ID:-com.madda.zmux.host}"
 	ZMUX_HOME_DIRECTORY_NAME="${ZMUX_HOME_DIRECTORY_NAME:-.zmux}"
 	ZMUX_SHARED_HOME_DIRECTORY_NAME="${ZMUX_SHARED_HOME_DIRECTORY_NAME:-.zmux}"
@@ -110,10 +110,13 @@ cp "$REPO_ROOT/native/sidebar/floating-monaco-editor.html" "$WEB_DIR/floating-mo
 rm -rf "$WEB_DIR/cli"
 mkdir -p "$WEB_DIR/cli"
 # CDXC:CliSessions 2026-05-10-03:28: Shells resolve the installed macOS
-# executable as `zmux`. Bundle the Node CLI beside the web assets so main.swift
-# can proxy terminal argv such as `zmux --help` and `zmux sessions` before the
-# AppKit app starts.
-cp "$REPO_ROOT/scripts/zmux-cli.mjs" "$WEB_DIR/cli/zmux-cli.mjs"
+# executable as a terminal command. Bundle the Node CLI beside the web assets
+# so main.swift can proxy command argv before the AppKit app starts.
+# CDXC:CliBranding 2026-05-12-07:35: Public CLI commands are now `ghostex`
+# and `gtx`; the bundled script filename follows that public CLI name while
+# internal ZMUX_* environment names and storage paths remain implementation
+# details.
+cp "$REPO_ROOT/scripts/ghostex-cli.mjs" "$WEB_DIR/cli/ghostex-cli.mjs"
 mkdir -p "$WEB_DIR/cli/node_modules"
 cp -R "$REPO_ROOT/node_modules/ws" "$WEB_DIR/cli/node_modules/ws"
 rm -rf "$WEB_DIR/monaco"
@@ -129,7 +132,7 @@ cp "$REPO_ROOT"/media/sounds/*.mp3 "$WEB_DIR/sounds/"
 # The native sidebar is loaded by WKWebView as a classic script, while
 # Storybook imports some sidebar components as ES modules. Force the packaged
 # native bundle to IIFE so exported Storybook symbols never leave top-level
-# `export` syntax in /Applications/zmux.app and blank the app at startup.
+# `export` syntax in /Applications/Ghostex.app and blank the app at startup.
 bun build "$REPO_ROOT/native/sidebar/native-sidebar.tsx" \
 	--target browser \
 	--format iife \

@@ -5,10 +5,20 @@
 ## The best parts of Ghostty & Codex App = Ghostex!<br />
 ### Fully-featured Native Agent CLIs Manager<br />Embedded Browser | Advanced Agents Support | Fast & Lower RAM <br /><br />
 
+<!--
+CDXC:Branding 2026-05-12-07:35
+The public product name is Ghostex. The repository folder, code identifiers,
+bundle ids, storage paths, and historical release assets can keep zmux as an
+internal implementation name, but user-facing app and CLI copy should say
+Ghostex. The public CLI commands are `ghostex` and the short alias `gtx`.
+-->
+
 #### Install on macOS using brew or dmg in releases page
 ###### (Looking for help with dev/testing for Windows & Linux ports)
 
 ```bash
+brew install --cask maddada/tap/ghostex
+# The existing cask name remains accepted too:
 brew install --cask maddada/tap/zmux
 ```
 <br />
@@ -25,7 +35,7 @@ brew install --cask maddada/tap/zmux
 
 ### Includes Chromium based embedded browser with Devtools, profiles, and MCP access:
 
-<img width="1000" alt="ZMUX sidebar with terminal and browser panes" src="media/readme/zmux-browser-pane.png" />
+<img width="1000" alt="Ghostex sidebar with terminal and browser panes" src="media/readme/zmux-browser-pane.png" />
 
 <br />
 
@@ -48,7 +58,7 @@ brew install --cask maddada/tap/zmux
 - The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
 - Rich Prompt Editing with Zapet can be enabled from Settings and installed from Homebrew inside the app.
 - Hotkeys use a recorder UI with direct split controls for creating real sideways and downward panes.
-- The installed `zmux` app also proxies terminal CLI commands such as `zmux sessions`.
+- The installed Ghostex app also proxies terminal CLI commands such as `ghostex sessions`; `gtx sessions` is the short alias.
 - The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
 - Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
 - Sidebar collapse state persists locally, and project editor rows can hide or show changed-file counts from Settings.
@@ -60,26 +70,26 @@ brew install --cask maddada/tap/zmux
 
 ## Other useful stuff:
 - Built in zmx/tmux/zellij support 
-  - Can continue via ssh then use zmux cli to attach. Beta but working well already with especially zmx.
+  - Can continue via ssh then use `ghostex` or `gtx` cli to attach. Beta but working well already with especially zmx.
 - Automations and cross agent messages (coming very soon)
 - Better worktrees support coming very soon - Want to nail the UX
 - Prompt to find any past thread in your history with just a few keywords
   - Very useful if you want to continue with an agent that already has context about a complex feature
 - Auto sync of the terminal title and status with UI
-- Allows up to 3x3 split and multiple groups per project each with different split
+- Allows multiple panes and multiple groups per project, each with different split/tab layouts
 
 ---
 
 ## Even more useful features:
 
-### Can be attached to your IDE: Shows a button on the attached IDE (Zed / VScode) to show zmux.
+### Can be attached to your IDE: Shows a button on the attached IDE (Zed / VScode) to show Ghostex.
 
 - Follows your IDE size/position.
-- Project in IDE & zmux is mirrored.
+- Project in IDE & Ghostex is mirrored.
 - Hotkey to hide/show.
-- Click on your IDE to hide zmux
+- Click on your IDE to hide Ghostex
 
-### Can also integrate with Chrome Canary as the default agentic browser (positions it inside zmux and adds it to the sidebar)
+### Can also integrate with Chrome Canary as the default agentic browser (positions it inside Ghostex and adds it to the sidebar)
 
 #### MCP setting to make Chrome Canary always used by your agent:
 

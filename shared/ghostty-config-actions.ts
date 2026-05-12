@@ -27,7 +27,7 @@ export const ZMUX_GHOSTTY_MANAGED_CONFIG_KEYS = [
 ] as const;
 
 export const ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES = [
-  '# Applied by zmux:',
+  '# Applied by Ghostex:',
   'theme = GitHub Dark',
   'background = #000000',
   'foreground = #ffffff',

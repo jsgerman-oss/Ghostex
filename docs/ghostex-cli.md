@@ -1,19 +1,23 @@
-# zmux CLI
+# Ghostex CLI
 
-`scripts/zmux-cli.mjs` is a local debugging CLI for driving a running zmux app from the terminal.
+<!-- CDXC:CliBranding 2026-05-12-07:35: Public CLI docs use `ghostex`
+and `gtx`; legacy `zmux` terminal commands are intentionally not documented
+as compatibility aliases. Internal storage paths can stay under ~/.zmux. -->
+
+`scripts/ghostex-cli.mjs` is a local debugging CLI for driving a running Ghostex app from the terminal.
 
 It connects to the native host WebSocket bridge on `127.0.0.1:58743`, forwards commands into the sidebar runtime, and returns JSON. The goal is to create repeatable repros without manually clicking the app.
 
 ```sh
 bun run cli -- state
 # or
-node scripts/zmux-cli.mjs state
+node scripts/ghostex-cli.mjs state
 ```
 
 ## Requirements
 
-- Start zmux first. The CLI talks to the running app; it does not launch it.
-- Rebuild/restart zmux after changing the native host or sidebar command handler.
+- Start Ghostex first. The CLI talks to the running app; it does not launch it.
+- Rebuild/restart Ghostex after changing the native host or sidebar command handler.
 - Use `--port <number>` if the native bridge port changes.
 
 ## Session Actions
@@ -39,6 +43,8 @@ bun run cli -- focus-session --session-number 2
 bun run cli -- focus-group group-2
 bun run cli -- switch-project --path /Users/madda/dev/_active/zmux
 bun run cli -- add-project /Users/madda/dev/_active/agent-tiler --name agent-tiler
+ghostex sessions
+gtx sessions
 ```
 
 ## Sidebar Buttons

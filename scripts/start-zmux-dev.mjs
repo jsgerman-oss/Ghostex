@@ -5,8 +5,11 @@ import { spawnSync } from "node:child_process";
 /**
  * CDXC:DevAppFlavor 2026-05-09-16:15
  * `bun run start:dev` is the local development start command. It must launch
- * the `zmux-dev` app identity so iterative repo runs do not replace or
- * stop the installed release app at /Applications/zmux.app.
+ * the `ghostex-dev` app identity so iterative repo runs do not replace or
+ * stop the installed release app at /Applications/Ghostex.app.
+ * CDXC:Branding 2026-05-12-07:35
+ * Public app surfaces use Ghostex while the internal ZMUX_APP_VARIANT and
+ * ~/.zmux-dev storage split remain unchanged implementation details.
  * CDXC:DevAppFlavor 2026-05-11-12:10
  * The dev identity must also keep settings, projects, sessions, hooks, browser
  * profiles, and runtime state isolated from the installed app via ~/.zmux-dev.

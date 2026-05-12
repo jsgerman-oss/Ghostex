@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased - 2026-05-12
+
+<!-- CDXC:Branding 2026-05-12-07:35: Public release notes must describe the
+Ghostex rename without rewriting historical zmux entries. Homebrew should
+accept both the new `ghostex` cask token and the existing `zmux` token, while
+the public CLI command changes to `ghostex` with `gtx` as the short alias. -->
+
+- Renamed the public app surface from Zmux to Ghostex while keeping internal repository, code, storage, bundle id, and historical asset names under `zmux`.
+- Changed the public CLI command to `ghostex`, with `gtx` as the short alias, and intentionally stopped documenting `zmux` as a CLI compatibility command.
+- Updated README install and CLI examples so both `brew install --cask maddada/tap/ghostex` and `brew install --cask maddada/tap/zmux` are presented as supported install commands.
+
 ## 2.3.2 - 2026-05-10
 
 <!-- CDXC:Distribution 2026-05-10-16:56: Release notes for 2.3.2 must include

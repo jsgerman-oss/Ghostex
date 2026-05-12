@@ -70,7 +70,7 @@ targets:
         # or Web Bluetooth flows. macOS TCC terminates apps that access
         # Bluetooth without this usage string, so every generated app plist must
         # include it before CEF browser panes are enabled.
-        NSBluetoothAlwaysUsageDescription: zmux uses Bluetooth only when a website in a Chromium browser pane requests browser features such as passkeys, security keys, or Bluetooth devices.
+        NSBluetoothAlwaysUsageDescription: Ghostex uses Bluetooth only when a website in a Chromium browser pane requests browser features such as passkeys, security keys, or Bluetooth devices.
     sources:
       - path: Sources/Shared
       - path: Sources/zmuxHost
@@ -128,9 +128,10 @@ targets:
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # CDXC:Branding 2026-04-26-04:18: The native app must be named
-        # "zmux" everywhere users see it, including the .app bundle,
-        # process/executable, menu title, and window title.
+        # CDXC:Branding 2026-05-12-07:35: The native app must present as
+        # Ghostex everywhere users see it, including the .app bundle, process
+        # executable, menu title, and window title. Internal target, bundle,
+        # storage, and protocol names can remain zmux implementation details.
         # CDXC:DevAppFlavor 2026-04-28-02:01: Dev scripts override these
         # generated app identifiers to build zmux-dev as a separate app that
         # keeps diagnostics in ~/.zmux-dev.
@@ -141,7 +142,7 @@ targets:
         EXECUTABLE_NAME: ${ZMUX_APP_NAME}
         INFOPLIST_KEY_CFBundleDisplayName: ${ZMUX_APP_DISPLAY_NAME}
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: zmux uses a local WebSocket bridge between the sidebar and native terminal host.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Ghostex uses a local WebSocket bridge between the sidebar and native terminal host.
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         OTHER_LDFLAGS:
           - "$(inherited)"
