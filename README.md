@@ -43,7 +43,7 @@ brew install --cask maddada/tap/zmux
 
 ## Best features:
 
-- Native swift macOS app for better performance
+- Native macOS app for better performance
 - Native Ghostty for best cpu/ram use and compatibility
 - Inspired by Codex App's UX
 - Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
