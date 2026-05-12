@@ -3125,11 +3125,11 @@ final class zmuxRootView: NSView {
      */
     addSubview(modalHostView)
     /**
-     CDXC:ReactTitlebar 2026-05-11-20:24
-     Titlebar controls remain React-rendered, but the transparent titlebar
-     WKWebView must not cover the workspace during normal operation. Root layout
-     bounds this view to the titlebar strip and only expands it to the currently
-     reported dropdown hit regions.
+     CDXC:ReactTitlebar 2026-05-12-09:58
+     Titlebar controls, tooltips, and dropdowns are React-rendered in one
+     transparent WKWebView so Radix portals have enough visual canvas. Native
+     hit-testing, not the view frame, decides which pixels are interactive so
+     workspace clicks still pass through below the fixed titlebar strip.
      */
     addSubview(titlebarChromeView)
     loadSidebar()
@@ -4037,6 +4037,44 @@ final class zmuxRootView: NSView {
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
   }
 
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard bounds.contains(point) else {
+      return nil
+    }
+    /**
+     CDXC:RootHitBoundaries 2026-05-12-10:55
+     Full-frame transparent WKWebViews are allowed for titlebar portals and
+     app modals, but pane chrome must still receive native AppKit clicks in the
+     workspace frame. Route root hit testing by the resolved layout bands so a
+     narrow right-side pane tab cannot be intercepted by sidebar/titlebar web
+     surfaces that visually pass through.
+     */
+    if let hitView = titlebarChromeView.hitTest(convert(point, to: titlebarChromeView)) {
+      return hitView
+    }
+    if !modalHostView.isHidden,
+      let hitView = modalHostView.hitTest(convert(point, to: modalHostView))
+    {
+      return hitView
+    }
+    if divider.frame.contains(point),
+      let hitView = divider.hitTest(convert(point, to: divider))
+    {
+      return hitView
+    }
+    if sidebarView.frame.contains(point),
+      let hitView = sidebarView.hitTest(convert(point, to: sidebarView))
+    {
+      return hitView
+    }
+    if workspaceView.frame.contains(point),
+      let hitView = workspaceView.hitTest(convert(point, to: workspaceView))
+    {
+      return hitView
+    }
+    return super.hitTest(point)
+  }
+
   private func rootLayoutFrames() -> RootLayoutFrames {
     let maxSidebarWidth = currentMaxSidebarWidth()
     let minSidebarWidth = currentSidebarMinWidth()
@@ -4103,21 +4141,14 @@ final class zmuxRootView: NSView {
       height: contentHeight
     )
     /**
-     CDXC:RootHitBoundaries 2026-05-11-20:24
-     Root click ownership is frame-first: sidebar, divider, workspace, and the
-     titlebar strip are non-overlapping base regions. Modal hosts may cover the
-     content area only while visible; titlebar React chrome may extend below the
-     strip only to the current dropdown hit-region height.
+     CDXC:RootHitBoundaries 2026-05-12-09:58
+     The titlebar WKWebView keeps a full-window visual frame so portaled
+     tooltips and dropdowns are not clipped. Its NSView hitTest remains the
+     click boundary: only reported React controls/menus and the fixed titlebar
+     drag strip consume events; all other workspace pixels pass through.
      */
     let modalHostFrame = CGRect(x: 0, y: 0, width: bounds.width, height: contentHeight)
-    let titlebarChromeHeight = min(
-      max(Self.reactTitlebarHeight, titlebarChromeView.requiredChromeHeight),
-      max(bounds.height, 0))
-    let titlebarChromeFrame = CGRect(
-      x: 0,
-      y: max(bounds.height - titlebarChromeHeight, 0),
-      width: bounds.width,
-      height: titlebarChromeHeight)
+    let titlebarChromeFrame = bounds
     return RootLayoutFrames(
       divider: dividerFrame,
       modalHost: modalHostFrame,
@@ -5278,12 +5309,6 @@ extension zmuxRootView: WKNavigationDelegate {
 
 final class ReactTitlebarChromeView: NSView {
   var titlebarHeight: CGFloat = 30
-  var requiredChromeHeight: CGFloat {
-    let maxRegionY = hitRegions.reduce(titlebarHeight) { partialResult, region in
-      max(partialResult, region.maxY + 8)
-    }
-    return max(titlebarHeight, ceil(maxRegionY))
-  }
   private let webView: WKWebView
   private var hitRegions: [CGRect] = []
   private var frameBeforeTitlebarMaximize: NSRect?
@@ -5317,10 +5342,11 @@ final class ReactTitlebarChromeView: NSView {
       )
     }
     /**
-     CDXC:ReactTitlebar 2026-05-11-20:24
-     DOM hit regions are measured from the top of the titlebar web document.
-     Root layout uses their maximum Y to size the transparent WKWebView only to
-     visible controls/dropdowns, avoiding a full-window click-through web layer.
+     CDXC:ReactTitlebar 2026-05-12-09:58
+     DOM hit regions are measured from the top of the full titlebar document.
+     The WKWebView may render full-window for unclipped portals, but native
+     hit-testing allows events through only when a point lands inside one of
+     these reported regions or inside the fixed blank titlebar drag strip.
      */
   }
 
