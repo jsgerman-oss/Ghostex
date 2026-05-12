@@ -683,7 +683,7 @@ class SurfaceMessageBus<T> {
  * native host does not provide a cwd, seed the demo workspace from HOME.
  */
 const initialWorkspacePath = window.__zmux_NATIVE_HOST__?.cwd || nativeFallbackHomeDirectory();
-const initialWorkspaceName = window.__zmux_NATIVE_HOST__?.workspaceName || "zmux";
+const initialWorkspaceName = window.__zmux_NATIVE_HOST__?.workspaceName || "Ghostex";
 const SETTINGS_STORAGE_KEY = "zmux-native-settings";
 const AGENTS_STORAGE_KEY = "zmux-native-agents";
 const AGENT_ORDER_STORAGE_KEY = "zmux-native-agent-order";
@@ -1742,7 +1742,7 @@ function revealSessionAsAdditionalNativePane(
   /**
    * CDXC:BrowserPanes 2026-05-02-17:48
    * Browser top-row split controls must create visible native panes, not
-   * background sidebar cards. Zmux's workspace state is the source of truth for
+   * background sidebar cards. Ghostex's workspace state is the source of truth for
    * the AppKit layout, so focus the new session and expand visibleCount before
    * the next native layout sync.
    */
@@ -2061,7 +2061,7 @@ async function requestZmuxFolderStats(): Promise<void> {
     if (result.exitCode !== 0) {
       postZmuxFolderStats({
         errorMessage:
-          result.stderr.trim() || result.stdout.trim() || "Could not read the zmux folder.",
+          result.stderr.trim() || result.stdout.trim() || "Could not read the Ghostex folder.",
         folderPath,
         folders: [],
         generatedAt: new Date().toISOString(),
@@ -2087,7 +2087,7 @@ async function requestZmuxFolderStats(): Promise<void> {
     });
   } catch (error) {
     postZmuxFolderStats({
-      errorMessage: error instanceof Error ? error.message : "Could not read the zmux folder.",
+      errorMessage: error instanceof Error ? error.message : "Could not read the Ghostex folder.",
       folderPath,
       folders: [],
       generatedAt: new Date().toISOString(),
@@ -2545,7 +2545,7 @@ function createNativeSessionAttentionNotificationContent(
     }) ?? DEFAULT_TERMINAL_SESSION_TITLE;
   return {
     body: [
-      `Project: ${project?.name.trim() || "zmux"}`,
+      `Project: ${project?.name.trim() || "Ghostex"}`,
       `Thread: ${threadName}`,
       `Agent: ${getNativeAttentionNotificationAgentLabel(agentName)}`,
     ].join("\n"),
@@ -2583,7 +2583,7 @@ function testNativeAgentTaskCompletion(): void {
   const testSessionId = focusedSessionId ?? "__zmux-settings-attention-test__";
   playNativeSessionCompletionSound(testSessionId, "settings-test");
   showNativeSessionAttentionNotification(testSessionId, "settings-test", {
-    body: "This is a test of the current zmux completion alert settings.",
+    body: "This is a test of the current Ghostex completion alert settings.",
     title: "Test agent task completion",
   });
 }
@@ -4042,12 +4042,15 @@ function nativeAppTitleForProject(project: NativeProject): string {
    * CDXC:NativeWindowChrome 2026-05-10-14:19
    * The native app title bar should name the active code project. Chat
    * workspaces are projectless conversation containers, so they keep the
-   * product title "Zmux" instead of exposing the generated chat folder name.
+   * product title "Ghostex" instead of exposing the generated chat folder name.
+   * CDXC:Branding 2026-05-12-07:35
+   * Public window and notification copy uses Ghostex while native sidebar
+   * storage, bridge events, and internal implementation names remain zmux.
    */
   if (project.isChat === true) {
-    return "Zmux";
+    return "Ghostex";
   }
-  return project.name.trim() || projectNameFromPath(project.path) || "Zmux";
+  return project.name.trim() || projectNameFromPath(project.path) || "Ghostex";
 }
 
 function findProject(projectId: string): NativeProject | undefined {
@@ -4270,7 +4273,7 @@ function buildChromeCanaryBrowserGroup(): SidebarSessionGroup {
     agentIcon: undefined,
     alias: "Chrome Canary",
     column: 0,
-    detail: "Place the running Canary window over zmux",
+    detail: "Place the running Canary window over Ghostex",
     isFocused: false,
     isFavorite: false,
     isReloading: false,
@@ -5324,8 +5327,8 @@ function createNativeAgentSessionEnvironment(args: {
      */
     const promptEditorCommand =
       settings.promptEditorBackend === "zpet"
-        ? "zmux floating-editor -- zpet"
-        : "zmux floating-monaco-editor";
+        ? "ghostex floating-editor -- zpet"
+        : "ghostex floating-monaco-editor";
     environment.EDITOR = promptEditorCommand;
     environment.VISUAL = promptEditorCommand;
     environment.ZMUX_PROMPT_EDITOR_BACKEND = settings.promptEditorBackend;
@@ -8861,6 +8864,25 @@ function forkNativeSession(sessionId: string): void {
   const sessionPersistenceProvider = forkCommand
     ? resolveTerminalSessionPersistenceProvider()
     : undefined;
+  const targetGroup = reference.project.workspace.groups.find((group) => group.groupId === groupId);
+  const visiblePlacement: VisibleSessionPlacement | undefined =
+    targetGroup?.snapshot.visibleSessionIds.includes(reference.sessionId) === true
+      ? { kind: "appendToTabGroup", targetSessionId: reference.sessionId }
+      : createFocusedTabGroupPlacement(groupId);
+  /**
+   * CDXC:PaneTabs 2026-05-11-18:13
+   * Forking from a title-bar or sidebar session is a tab creation action, not a
+   * layout rebuild. Attach the fork to the clicked session's existing tab group
+   * so fork cannot flatten grouped tabs into one-tab split panes.
+   */
+  appendPaneLayoutTraceDebugLog("forkSession.placementResolved", {
+    activeProjectId,
+    groupId,
+    projectId: reference.project.projectId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(reference.project.workspace, groupId),
+    targetSessionId: reference.sessionId,
+    visiblePlacement: summarizeVisiblePlacement(visiblePlacement),
+  });
   createTerminal(
     `${session.title || DEFAULT_TERMINAL_SESSION_TITLE} Fork`,
     forkCommand ? `${forkCommand}\r` : "",
@@ -8872,6 +8894,7 @@ function forkNativeSession(sessionId: string): void {
         session,
       ),
       sessionPersistenceProvider,
+      visiblePlacement,
     },
   );
 }
@@ -9226,7 +9249,7 @@ function promptFindPreviousSession(queryInput?: string): void {
     });
     showNativeMessage(
       "info",
-      "zmux could not find Codex for Find a session. Restore the Codex agent button.",
+      "Ghostex could not find Codex for Find a session. Restore the Codex agent button.",
     );
     return;
   }
@@ -9959,7 +9982,7 @@ async function readNativeT3OwnerBearerToken(): Promise<string | undefined> {
 }
 
 async function issueNativeT3PairingCredential(ownerBearerToken: string): Promise<string> {
-  const requestBody = JSON.stringify({ label: "zmux Remote Access" });
+  const requestBody = JSON.stringify({ label: "Ghostex Remote Access" });
   const result = await runNativeProcess(
     "/bin/sh",
     [
@@ -10389,7 +10412,7 @@ async function createNativeBrowserChat(): Promise<void> {
 
 function removeProject(projectId: string): void {
   if (projects.length <= 1) {
-    showNativeMessage("warning", "Keep at least one workspace in zmux.");
+    showNativeMessage("warning", "Keep at least one workspace in Ghostex.");
     return;
   }
   const projectIndex = projects.findIndex((project) => project.projectId === projectId);
@@ -13220,15 +13243,13 @@ function handleNativeTerminalTitleBarAction(
       if (session.kind === "terminal") {
         forkNativeSession(sessionId);
       } else if (session.kind === "browser") {
-        const nextSession = createNativeBrowserSession(session.browser.url, findSessionGroupId(sessionId));
-        if (nextSession) {
-          revealSessionAsAdditionalNativePane(nextSession.sessionId);
-        }
+        createNativeBrowserSession(session.browser.url, findSessionGroupId(sessionId), {
+          visiblePlacement: { kind: "appendToTabGroup", targetSessionId: sessionId },
+        });
       } else if (session.kind === "t3") {
-        const nextSession = createNativeT3Session(findSessionGroupId(sessionId));
-        if (nextSession) {
-          revealSessionAsAdditionalNativePane(nextSession.sessionId);
-        }
+        createNativeT3Session(findSessionGroupId(sessionId), {
+          visiblePlacement: { kind: "appendToTabGroup", targetSessionId: sessionId },
+        });
       }
       return;
     case "reload":

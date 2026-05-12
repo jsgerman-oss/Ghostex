@@ -129,7 +129,7 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     let content = UNMutableNotificationContent()
     let title = command.title.trimmingCharacters(in: .whitespacesAndNewlines)
     content.title = title.isEmpty ? "Session needs attention" : title
-    content.body = command.body ?? "A zmux session needs attention."
+    content.body = command.body ?? "A Ghostex session needs attention."
     content.categoryIdentifier = "zmux.session.attention"
     content.threadIdentifier = "zmux.session.attention.\(command.sessionId)"
     content.targetContentIdentifier = command.sessionId
@@ -258,9 +258,9 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       let alert = NSAlert()
-      alert.messageText = "Enable zmux Notifications"
+      alert.messageText = "Enable Ghostex Notifications"
       alert.informativeText =
-        "zmux can show a temporary macOS banner when an agent task needs attention. Completion sounds remain controlled by zmux Settings."
+        "Ghostex can show a temporary macOS banner when an agent task needs attention. Completion sounds remain controlled by Ghostex Settings."
       alert.alertStyle = .informational
       alert.addButton(withTitle: "Enable Notifications")
       alert.addButton(withTitle: "Cancel")
@@ -285,9 +285,9 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
   private func presentNotificationAlreadyEnabledDialog() {
     DispatchQueue.main.async {
       let alert = NSAlert()
-      alert.messageText = "zmux Notifications Are Enabled"
+      alert.messageText = "Ghostex Notifications Are Enabled"
       alert.informativeText =
-        "macOS already allows zmux to show notification banners. Use Test agent task completion to verify your current zmux sound and notification settings."
+        "macOS already allows Ghostex to show notification banners. Use Test agent task completion to verify your current Ghostex sound and notification settings."
       alert.alertStyle = .informational
       alert.addButton(withTitle: "OK")
       alert.runModal()
@@ -299,7 +299,7 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
       let alert = NSAlert()
       alert.messageText = "Enable Notifications in macOS Settings"
       alert.informativeText =
-        "macOS is not allowing zmux notification banners. Open Notification Settings and allow notifications for zmux."
+        "macOS is not allowing Ghostex notification banners. Open Notification Settings and allow notifications for Ghostex."
       alert.alertStyle = .warning
       alert.addButton(withTitle: "Open Settings")
       alert.addButton(withTitle: "Cancel")
@@ -899,7 +899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
       ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
       ?? ProcessInfo.processInfo.processName
-    return name.isEmpty ? "zmux" : name
+    return name.isEmpty ? "Ghostex" : name
   }
 
   @MainActor
@@ -1124,7 +1124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.onKeyEquivalent = { [weak root] event in
       root?.handleHotkeyEquivalent(event) ?? false
     }
-    window.title = "Zmux"
+    window.title = "Ghostex"
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isMovableByWindowBackground = false
@@ -1368,7 +1368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   private func normalizedAppTitlebarTitle(_ title: String?) -> String {
     let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return normalizedTitle.isEmpty ? "Zmux" : normalizedTitle
+    return normalizedTitle.isEmpty ? "Ghostex" : normalizedTitle
   }
 
   @MainActor private func installAttachToIdeTitlebarButton(on window: NSWindow) {
@@ -1376,7 +1376,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      CDXC:IDEAttachment 2026-04-27-00:54
      The attach action belongs at the center of the native title bar and
      should read as a text button, matching the rounded AppKit style of the
-     floating Show zmux/Show IDE buttons instead of using a blue link icon.
+     floating Show Ghostex/Show IDE buttons instead of using a blue link icon.
      Its label names the currently selected IDE in the shortest requested
      form and switches between Attach/Detach from the persisted
      attach-enabled state.
@@ -1497,7 +1497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
           activateOnCreate: true,
           cwd: FileManager.default.currentDirectoryPath,
           env: nil,
-          initialInput: "printf 'Failed to start zmux bridge: \(error.localizedDescription)\\n'\r",
+          initialInput: "printf 'Failed to start Ghostex bridge: \(error.localizedDescription)\\n'\r",
           sessionId: "bridge-error",
           sessionPersistenceName: nil,
           sessionPersistenceProvider: nil,
@@ -1936,7 +1936,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   @MainActor private func activateAppWindow() {
     /**
      CDXC:AgentManagerXBridge 2026-04-27-20:34
-     Agent Manager focus commands for zmux sessions should bring the native
+     Agent Manager focus commands for Ghostex sessions should bring the native
      workarea forward before selecting the requested Ghostty surface.
      */
     NSApp.activate(ignoringOtherApps: true)
@@ -1955,12 +1955,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      CDXC:AccessibilityPermissions 2026-05-08-13:08
      Accessibility permission must be requested only after the user explicitly
      enables IDE attachment in Settings. Startup should not ask because default
-     zmux sessions do not need Accessibility until attachment is active.
+     Ghostex sessions do not need Accessibility until attachment is active.
+     CDXC:Branding 2026-05-12-07:35
+     Public permission prompts use Ghostex while implementation identifiers
+     keep the zmux storage and bundle naming used by existing installs.
      */
     let alert = NSAlert()
     alert.messageText = "Accessibility Permissions Required"
     alert.informativeText =
-      "zmux uses Accessibility to attach to Zed, VS Code, or other supported IDE windows. Click OK to open System Settings and enable Accessibility for zmux. A restart may be required after granting permission."
+      "Ghostex uses Accessibility to attach to Zed, VS Code, or other supported IDE windows. Click OK to open System Settings and enable Accessibility for Ghostex. A restart may be required after granting permission."
     alert.alertStyle = .warning
     alert.addButton(withTitle: "OK")
     alert.addButton(withTitle: "Cancel")
@@ -2400,7 +2403,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .error:
       alert.alertStyle = .critical
     }
-    alert.messageText = "zmux"
+    alert.messageText = "Ghostex"
     alert.informativeText = command.message
     alert.addButton(withTitle: "OK")
     if let window {
@@ -2557,6 +2560,7 @@ private final class NativeSettingsStore {
     "focusGroup2": "cmd+ctrl+2",
     "focusGroup3": "cmd+ctrl+3",
     "focusGroup4": "cmd+ctrl+4",
+    "focusGroup5": "cmd+ctrl+5",
     "focusLeft": "cmd+left",
     "focusNextGroup": "cmd+shift+]",
     "focusNextSession": "cmd+]",
@@ -2879,6 +2883,14 @@ private final class NativeSettingsStore {
 final class zmuxRootView: NSView {
   private static let logger = Logger(subsystem: "com.madda.zmux.host", category: "webview")
 
+  private struct RootLayoutFrames {
+    var divider: CGRect
+    var modalHost: CGRect
+    var sidebar: CGRect
+    var titlebarChrome: CGRect
+    var workspace: CGRect
+  }
+
   private static let workspaceBarWidth: CGFloat = 54
   /**
    CDXC:ReactTitlebar 2026-05-11-08:03
@@ -3005,7 +3017,7 @@ final class zmuxRootView: NSView {
       "homeDir": FileManager.default.homeDirectoryForCurrentUser.path,
       "zmuxHomeDir": ZmuxAppStorage.sharedRootDirectory.path,
       "sharedSidebarStorage": ZmuxAppStorage.readSharedSidebarStorage(),
-      "workspaceName": workspaceName.isEmpty ? "zmux" : workspaceName,
+      "workspaceName": workspaceName.isEmpty ? "Ghostex" : workspaceName,
     ]
     let storedZedOverlay = nativeSettingsStore.readZedOverlay()
     if let enabled = storedZedOverlay.enabled {
@@ -3079,6 +3091,15 @@ final class zmuxRootView: NSView {
     divider.onDoubleClick = { [weak self] in
       self?.resetSidebarWidth()
     }
+    workspaceView.onSidebarResizeDrag = { [weak self] deltaX in
+      self?.resizeSidebar(by: deltaX)
+    }
+    workspaceView.onSidebarResizeDragEnded = { [weak self] in
+      self?.persistSidebarWidth()
+    }
+    workspaceView.onSidebarResizeDoubleClick = { [weak self] in
+      self?.resetSidebarWidth()
+    }
 
     wantsLayer = true
     layer?.backgroundColor = zmuxReferenceSidebarChromeBackgroundColor.cgColor
@@ -3104,11 +3125,11 @@ final class zmuxRootView: NSView {
      */
     addSubview(modalHostView)
     /**
-     CDXC:ReactTitlebar 2026-05-09-17:11
-     Titlebar controls must be React-rendered while native AppKit keeps the
-     traffic lights. Mount one transparent full-window webview above the
-     workspace so future React dropdowns can open into the main workspace area;
-     native hit regions keep non-control pixels click-through or draggable.
+     CDXC:ReactTitlebar 2026-05-11-20:24
+     Titlebar controls remain React-rendered, but the transparent titlebar
+     WKWebView must not cover the workspace during normal operation. Root layout
+     bounds this view to the titlebar strip and only expands it to the currently
+     reported dropdown hit regions.
      */
     addSubview(titlebarChromeView)
     loadSidebar()
@@ -3311,6 +3332,7 @@ final class zmuxRootView: NSView {
 
   func setReactTitlebarHitRegions(_ regions: [ReactTitlebarHitRegion]) {
     titlebarChromeView.setHitRegions(regions)
+    needsLayout = true
   }
 
   private func openActiveProjectEditorFromTitlebar() {
@@ -3501,12 +3523,14 @@ final class zmuxRootView: NSView {
       setSidebarSide(command.side)
     case .setReactTitlebarHitRegions(let command):
       /**
-       CDXC:ReactTitlebar 2026-05-09-17:11
+       CDXC:ReactTitlebar 2026-05-11-20:24
        React owns titlebar button geometry, but Swift owns window dragging and
        workspace pass-through. Apply reported DOM hit regions at the native
-       overlay boundary instead of guessing from fixed button positions.
+       overlay boundary and relayout so the native titlebar webview only covers
+       the titlebar strip plus any open dropdown bounds.
        */
       titlebarChromeView.setHitRegions(command.regions)
+      needsLayout = true
     case .openActiveProjectEditorFromTitlebar:
       openActiveProjectEditorFromTitlebar()
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
@@ -3967,7 +3991,7 @@ final class zmuxRootView: NSView {
     case .error:
       alert.alertStyle = .critical
     }
-    alert.messageText = "zmux"
+    alert.messageText = "Ghostex"
     alert.informativeText = command.message
     alert.addButton(withTitle: "OK")
     if let window {
@@ -4003,6 +4027,17 @@ final class zmuxRootView: NSView {
 
   override func layout() {
     super.layout()
+    let frames = rootLayoutFrames()
+    validateRootLayoutFrames(frames)
+    sidebarView.frame = frames.sidebar
+    divider.frame = frames.divider
+    workspaceView.frame = frames.workspace
+    modalHostView.frame = frames.modalHost
+    titlebarChromeView.frame = frames.titlebarChrome
+    titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
+  }
+
+  private func rootLayoutFrames() -> RootLayoutFrames {
     let maxSidebarWidth = currentMaxSidebarWidth()
     let minSidebarWidth = currentSidebarMinWidth()
     let sidebarWidth = min(max(self.sidebarWidth, minSidebarWidth), maxSidebarWidth)
@@ -4049,27 +4084,80 @@ final class zmuxRootView: NSView {
       dividerX = chromeX
     }
 
-    sidebarView.frame = CGRect(
+    let sidebarFrame = CGRect(
       x: sidebarX,
       y: 0,
       width: workspaceBarWidth + sidebarWidth,
       height: contentHeight
     )
-    divider.frame = CGRect(
+    let dividerFrame = CGRect(
       x: dividerX,
       y: 0,
       width: Self.dividerWidth,
       height: contentHeight
     )
-    workspaceView.frame = CGRect(
+    let workspaceFrame = CGRect(
       x: workspaceX,
       y: 0,
       width: workspaceWidth,
       height: contentHeight
     )
-    modalHostView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: contentHeight)
-    titlebarChromeView.frame = bounds
-    titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
+    /**
+     CDXC:RootHitBoundaries 2026-05-11-20:24
+     Root click ownership is frame-first: sidebar, divider, workspace, and the
+     titlebar strip are non-overlapping base regions. Modal hosts may cover the
+     content area only while visible; titlebar React chrome may extend below the
+     strip only to the current dropdown hit-region height.
+     */
+    let modalHostFrame = CGRect(x: 0, y: 0, width: bounds.width, height: contentHeight)
+    let titlebarChromeHeight = min(
+      max(Self.reactTitlebarHeight, titlebarChromeView.requiredChromeHeight),
+      max(bounds.height, 0))
+    let titlebarChromeFrame = CGRect(
+      x: 0,
+      y: max(bounds.height - titlebarChromeHeight, 0),
+      width: bounds.width,
+      height: titlebarChromeHeight)
+    return RootLayoutFrames(
+      divider: dividerFrame,
+      modalHost: modalHostFrame,
+      sidebar: sidebarFrame,
+      titlebarChrome: titlebarChromeFrame,
+      workspace: workspaceFrame)
+  }
+
+  private func validateRootLayoutFrames(_ frames: RootLayoutFrames) {
+    guard bounds.width > 0, bounds.height > 0 else {
+      return
+    }
+    let workspaceSidebarOverlap = frames.workspace.intersection(frames.sidebar)
+    let titlebarStrip = CGRect(
+      x: 0,
+      y: max(bounds.height - Self.reactTitlebarHeight, 0),
+      width: bounds.width,
+      height: min(Self.reactTitlebarHeight, max(bounds.height, 0)))
+    let workspaceTitlebarOverlap = frames.workspace.intersection(titlebarStrip)
+    guard workspaceSidebarOverlap.isNull || workspaceSidebarOverlap.isEmpty,
+      workspaceTitlebarOverlap.isNull || workspaceTitlebarOverlap.isEmpty
+    else {
+      /**
+       CDXC:RootHitBoundaries 2026-05-11-20:24
+       Unexpected base-region overlap means transparent chrome may steal clicks.
+       Log the frames instead of widening hit-test fallbacks so layout bugs stay
+       visible during click/drag reliability work.
+       */
+      NativeT3CodePaneReproLog.append("nativeRoot.layout.unexpectedOverlap", [
+        "bounds": Self.describeFrame(bounds),
+        "divider": Self.describeFrame(frames.divider),
+        "modalHost": Self.describeFrame(frames.modalHost),
+        "sidebar": Self.describeFrame(frames.sidebar),
+        "titlebarChrome": Self.describeFrame(frames.titlebarChrome),
+        "workspace": Self.describeFrame(frames.workspace),
+        "workspaceSidebarOverlap": Self.describeFrame(workspaceSidebarOverlap),
+        "workspaceTitlebarOverlap": Self.describeFrame(workspaceTitlebarOverlap),
+      ])
+      return
+    }
   }
 
   private func resizeSidebar(by deltaX: CGFloat) {
@@ -4335,7 +4423,7 @@ final class zmuxRootView: NSView {
     panel.allowsMultipleSelection = false
     panel.canCreateDirectories = true
     panel.prompt = "Add Project"
-    panel.message = "Choose a project folder to add to zmux."
+    panel.message = "Choose a project folder to add to Ghostex."
 
     let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
       guard response == .OK,
@@ -5190,6 +5278,12 @@ extension zmuxRootView: WKNavigationDelegate {
 
 final class ReactTitlebarChromeView: NSView {
   var titlebarHeight: CGFloat = 30
+  var requiredChromeHeight: CGFloat {
+    let maxRegionY = hitRegions.reduce(titlebarHeight) { partialResult, region in
+      max(partialResult, region.maxY + 8)
+    }
+    return max(titlebarHeight, ceil(maxRegionY))
+  }
   private let webView: WKWebView
   private var hitRegions: [CGRect] = []
   private var frameBeforeTitlebarMaximize: NSRect?
@@ -5222,20 +5316,33 @@ final class ReactTitlebarChromeView: NSView {
         height: CGFloat($0.height)
       )
     }
+    /**
+     CDXC:ReactTitlebar 2026-05-11-20:24
+     DOM hit regions are measured from the top of the titlebar web document.
+     Root layout uses their maximum Y to size the transparent WKWebView only to
+     visible controls/dropdowns, avoiding a full-window click-through web layer.
+     */
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
+    guard bounds.contains(point) else {
+      return nil
+    }
     let webPoint = CGPoint(x: point.x, y: bounds.height - point.y)
     if hitRegions.contains(where: { $0.contains(webPoint) }) {
       return webView.hitTest(point)
     }
-    if point.y >= bounds.height - titlebarHeight {
+    if isPointInFixedTitlebarStrip(point) {
       return self
     }
     return nil
   }
 
   override func mouseDown(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    guard isPointInFixedTitlebarStrip(point) else {
+      return
+    }
     if event.clickCount >= 2 {
       toggleWindowMaximizedToVisibleScreen()
       return
@@ -5245,12 +5352,21 @@ final class ReactTitlebarChromeView: NSView {
 
   override var mouseDownCanMoveWindow: Bool {
     /**
-     CDXC:ReactTitlebar 2026-05-09-17:11
-     Blank React titlebar pixels remain a standard macOS window drag surface.
-     Only reported button/dropdown regions reach WKWebView; all other pixels
-     in the top chrome return this view and let AppKit move the window.
+     CDXC:ReactTitlebar 2026-05-12-07:02
+     The React titlebar wrapper may extend below the fixed titlebar strip for
+     dropdown hit regions, so it must not globally advertise itself as movable
+     window background. Dragging and double-click maximize are allowed only by
+     mouseDown after revalidating the event is inside the fixed top strip.
      */
-    true
+    false
+  }
+
+  private func isPointInFixedTitlebarStrip(_ point: NSPoint) -> Bool {
+    guard bounds.contains(point), titlebarHeight > 0 else {
+      return false
+    }
+    let stripMinY = max(bounds.height - titlebarHeight, 0)
+    return point.y >= stripMinY
   }
 
   private func toggleWindowMaximizedToVisibleScreen() {

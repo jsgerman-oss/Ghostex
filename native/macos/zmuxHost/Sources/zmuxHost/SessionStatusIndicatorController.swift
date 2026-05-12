@@ -157,7 +157,7 @@ final class SessionStatusIndicatorController {
     }
     button.image = SessionStatusIndicatorView.image(for: items, sizeSetting: sizeSetting)
     button.image?.isTemplate = false
-    button.toolTip = "zmux session status"
+    button.toolTip = "Ghostex session status"
   }
 
   private static func defaultOrigin(size: NSSize) -> NSPoint {

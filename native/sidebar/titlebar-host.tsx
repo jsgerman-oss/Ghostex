@@ -617,7 +617,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     projectName:
       (typeof bootstrap.workspaceName === "string" && bootstrap.workspaceName) ||
       pathParts[pathParts.length - 1] ||
-      "zmux",
+      "Ghostex",
     projectPath,
     sidebarActions: {
       commands: [],

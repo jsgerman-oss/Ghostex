@@ -730,11 +730,14 @@ final class ZedOverlayController: NSObject {
     /**
      CDXC:ZedOverlay 2026-04-26-09:56
      The floating native button labels the destination of the next click:
-     visible zmux offers switching back to Zed, while hidden zmux offers
-     switching back to zmux.
+     visible Ghostex offers switching back to Zed, while hidden Ghostex offers
+     switching back to Ghostex.
+     CDXC:Branding 2026-05-12-07:35
+     Public overlay controls use Ghostex even though the attachment controller
+     keeps zmux-named internals for existing settings and diagnostics.
      */
     toggleButton?.title =
-      isWindowVisibleInAttachment ? "Show \(targetAppConfiguration().buttonName)" : "Show zmux"
+      isWindowVisibleInAttachment ? "Show \(targetAppConfiguration().buttonName)" : "Show Ghostex"
   }
 
   private func hideButton() {
@@ -795,13 +798,13 @@ final class ZedOverlayController: NSObject {
       }
       /**
        CDXC:IDEAttachment 2026-04-28-16:55
-       Accessibility permission must be framed narrowly for users: zmux uses
+       Accessibility permission must be framed narrowly for users: Ghostex uses
        it only to move/resize the integrated browser window and to read IDE
        window frames for attaching to Zed, VS Code, and other supported IDEs.
        CDXC:AccessibilityPermissions 2026-05-08-13:08
        The actual request dialog is owned by AppDelegate when Settings enables
        attachment, so attachment should only keep the native button hidden until
-       the same signed /Applications/zmux.app identity is allowed.
+       the same signed /Applications/Ghostex.app identity is allowed.
        */
       BrowserOverlayRestoreReproLog.append(
         "zedOverlay.readTargetWindowFrame.accessibilityDenied",
