@@ -182,24 +182,71 @@ function useCommandHotkeyOverlay(): boolean {
 
 function SidebarHotkeyOverlay({ hotkeys }: { hotkeys?: zmuxHotkeySettings }) {
   const normalizedHotkeys = normalizezmuxHotkeySettings(hotkeys);
-  const rows = ZMUX_HOTKEY_DEFINITIONS.flatMap((definition) => {
-    const hotkey = normalizeHotkeyText(normalizedHotkeys[definition.id] ?? "");
-    return hotkey ? [{ hotkey, title: definition.title }] : [];
-  });
+  const rows = getSidebarHotkeyOverlayRows(normalizedHotkeys);
 
   return (
-    <aside aria-label="Keyboard shortcuts" className="sidebar-hotkey-overlay">
-      <div className="sidebar-hotkey-overlay-title">Hotkeys</div>
-      <div className="sidebar-hotkey-overlay-grid">
-        {rows.map((row) => (
-          <div className="sidebar-hotkey-overlay-row" key={`${row.title}-${row.hotkey}`}>
-            <span className="sidebar-hotkey-overlay-action">{row.title}</span>
-            <kbd className="sidebar-hotkey-overlay-key">{formatSidebarHotkeyLabel(row.hotkey)}</kbd>
-          </div>
-        ))}
-      </div>
-    </aside>
+    <>
+      <div aria-hidden="true" className="sidebar-hotkey-overlay-backdrop" />
+      <aside aria-label="Keyboard shortcuts" className="sidebar-hotkey-overlay">
+        <div className="sidebar-hotkey-overlay-title">Hotkeys</div>
+        <div className="sidebar-hotkey-overlay-grid">
+          {rows.map((row) => (
+            <div className="sidebar-hotkey-overlay-row" key={`${row.title}-${row.hotkey}`}>
+              <span className="sidebar-hotkey-overlay-action">{row.title}</span>
+              <kbd className="sidebar-hotkey-overlay-key">{formatSidebarHotkeyLabel(row.hotkey)}</kbd>
+            </div>
+          ))}
+        </div>
+      </aside>
+    </>
   );
+}
+
+function getSidebarHotkeyOverlayRows(hotkeys: zmuxHotkeySettings) {
+  const rows: Array<{ hotkey: string; title: string }> = [];
+  for (const definition of ZMUX_HOTKEY_DEFINITIONS) {
+    if (definition.id === "focusGroup1") {
+      const hotkey = normalizeHotkeyText(hotkeys.focusGroup1 ?? "");
+      if (hotkey) {
+        rows.push({
+          hotkey: formatNumberedHotkeyExample(hotkey),
+          title: "Focus Group N",
+        });
+      }
+      continue;
+    }
+    if (definition.id === "focusSessionSlot1") {
+      const hotkey = normalizeHotkeyText(hotkeys.focusSessionSlot1 ?? "");
+      if (hotkey) {
+        rows.push({
+          hotkey: formatNumberedHotkeyExample(hotkey),
+          title: "Focus Session N",
+        });
+      }
+      continue;
+    }
+    if (
+      /^focusGroup[2-9]$/u.test(definition.id) ||
+      /^focusSessionSlot[2-9]$/u.test(definition.id)
+    ) {
+      continue;
+    }
+    const hotkey = normalizeHotkeyText(hotkeys[definition.id] ?? "");
+    if (hotkey) {
+      rows.push({ hotkey, title: definition.title });
+    }
+  }
+  return rows;
+}
+
+function formatNumberedHotkeyExample(hotkey: string): string {
+  /**
+   * CDXC:Hotkeys 2026-05-11-09:36
+   * The Cmd-hold overlay should not list every numbered session or group slot.
+   * Show one N-based example derived from slot 1 so user rebinds still explain
+   * the whole numbered family without crowding the cheat sheet.
+   */
+  return hotkey.replace(/(^|[+ ])1(?=$| )/u, "$1n");
 }
 
 function formatSidebarHotkeyLabel(hotkey: string): string {

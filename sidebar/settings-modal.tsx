@@ -305,12 +305,12 @@ export function SettingsModal({
       },
       {
         key: "zedOverlayEnabled",
-        subtitle: "Attach zmux as an overlay to the selected IDE.",
-        title: "Attach zmux to IDE",
+        subtitle: "Attach Ghostex as an overlay to the selected IDE.",
+        title: "Attach Ghostex to IDE",
       },
       {
         key: "zedOverlayHideTitlebarButton",
-        subtitle: "Hide the native Attach/Detach IDE button from the zmux title bar.",
+        subtitle: "Hide the native Attach/Detach IDE button from the Ghostex title bar.",
         title: "Hide title-bar attach button",
       },
       {
@@ -321,7 +321,7 @@ export function SettingsModal({
       },
       {
         key: "syncOpenProjectWithZed",
-        subtitle: "Open the active zmux project in the attached IDE after switching workspaces.",
+        subtitle: "Open the active Ghostex project in the attached IDE after switching workspaces.",
         title: "Sync active project with IDE",
       },
     ]),
@@ -449,12 +449,12 @@ export function SettingsModal({
       {
         key: "zmuxFolderStats",
         options: [
-          { label: "Open zmux folder", value: "openZmuxFolder" },
+          { label: "Open Ghostex folder", value: "openZmuxFolder" },
           { label: "Folder sizes", value: "folderSizes" },
           { label: "Disk usage", value: "diskUsage" },
         ],
-        subtitle: "Show ~/.zmux folder sizes and open the folder in Finder.",
-        title: "zmux folder",
+        subtitle: "Show ~/.zmux folder sizes and open the Ghostex storage folder in Finder.",
+        title: "Ghostex folder",
       },
     ]),
     terminal: getSettingsSectionSearch(settingsSearchQuery, "Terminal", [
@@ -520,7 +520,7 @@ export function SettingsModal({
         key: "sessionPersistenceProvider",
         options: SESSION_PERSISTENCE_PROVIDER_OPTIONS,
         subtitle:
-          "Enable only when you need ssh from other devices to continue zmux-created sessions.",
+          "Enable only when you need ssh from other devices to continue Ghostex-created sessions.",
         title: "Session Persistence (Beta)",
       },
       {
@@ -1195,7 +1195,7 @@ export function SettingsModal({
                   zmx-session-manager because it leaves Agent CLI tools
                   unaffected while minor issues remain. */
               <SelectField
-                description="Enable this feature only if you care about using ssh from other devices to continue working on sessions created using zmux. My favorite option is using zmx with zmx-session-manager because it doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
+                description="Enable this feature only if you care about using ssh from other devices to continue working on sessions created using Ghostex. My favorite option is using zmx with zmx-session-manager because it doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
                 label="Session Persistence (Beta)"
                 {...getSettingModificationProps("sessionPersistenceProvider")}
                 onChange={(value) =>
@@ -1509,8 +1509,8 @@ export function SettingsModal({
               {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayEnabled") ? (
               <ToggleField
                 checked={draft.zedOverlayEnabled}
-                description="Attach zmux as an overlay to the selected IDE."
-                label="Attach zmux to IDE"
+                description="Attach Ghostex as an overlay to the selected IDE."
+                label="Attach Ghostex to IDE"
                 {...getSettingModificationProps("zedOverlayEnabled")}
                 onChange={(checked) => updateDraft("zedOverlayEnabled", checked)}
               />
@@ -1518,7 +1518,7 @@ export function SettingsModal({
               {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayHideTitlebarButton") ? (
               <ToggleField
                 checked={draft.zedOverlayHideTitlebarButton}
-                description="Hide the native Attach/Detach IDE button from the zmux title bar."
+                description="Hide the native Attach/Detach IDE button from the Ghostex title bar."
                 label="Hide title-bar attach button"
                 {...getSettingModificationProps("zedOverlayHideTitlebarButton")}
                 onChange={(checked) => updateDraft("zedOverlayHideTitlebarButton", checked)}
@@ -1538,13 +1538,13 @@ export function SettingsModal({
               ) : null}
               {/* CDXC:IDEAttachment 2026-05-06-12:49: Project sync is a
                   separate default-on setting from attachment. When enabled,
-                  zmux opens the active project in the attached IDE after
+                  Ghostex opens the active project in the attached IDE after
                   workspace switches instead of waiting for a title-bar button
                   click. */}
               {shouldShowSetting(settingsSearch.ideAttachment, "syncOpenProjectWithZed") ? (
               <ToggleField
                 checked={draft.syncOpenProjectWithZed}
-                description="Open the active zmux project in the attached IDE after switching workspaces."
+                description="Open the active Ghostex project in the attached IDE after switching workspaces."
                 label="Sync active project with IDE"
                 {...getSettingModificationProps("syncOpenProjectWithZed")}
                 onChange={(checked) => updateDraft("syncOpenProjectWithZed", checked)}
@@ -1799,7 +1799,7 @@ function OpenTargetsSettingsTab({
                     <div className="truncate text-sm font-medium">{target.label}</div>
                     <div className="truncate text-xs text-muted-foreground">
                       {isAvailable
-                        ? target.commands?.join(", ") ?? (isEmbeddedEditor ? "zmux" : "macOS")
+                        ? target.commands?.join(", ") ?? (isEmbeddedEditor ? "Ghostex" : "macOS")
                         : "Not installed"}
                     </div>
                   </div>
@@ -2721,7 +2721,7 @@ function ActionSettingsEditor({
       <Field className="items-center justify-between" orientation="horizontal">
         <FieldContent>
           <FieldLabel className="text-sm" htmlFor={globalId}>
-            Show this action in every zmux project
+            Show this action in every Ghostex project
           </FieldLabel>
         </FieldContent>
         <Switch checked={isGlobal} id={globalId} onCheckedChange={setIsGlobal} />
@@ -3035,7 +3035,7 @@ function ZmuxFolderStatsSection({
     <SettingsSection title="Storage">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">zmux folder</div>
+          <div className="text-sm font-medium text-foreground">Ghostex folder</div>
           <div className="mt-1 truncate text-xs text-muted-foreground">
             {stats?.folderPath ?? "~/.zmux"}
           </div>
@@ -3446,7 +3446,7 @@ function getAccessibilityPermissionDescription(granted: boolean | undefined): st
     return "Allowed in macOS. IDE attachment can read and follow the selected IDE window.";
   }
   if (granted === false) {
-    return "Not allowed in macOS. Open Accessibility settings to add zmux.";
+    return "Not allowed in macOS. Open Accessibility settings to add Ghostex.";
   }
   return "Status is unavailable in this environment. Open macOS Accessibility settings if attachment cannot follow the IDE.";
 }

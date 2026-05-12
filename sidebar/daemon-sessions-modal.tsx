@@ -118,7 +118,7 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
           </button>
           <div className="confirm-modal-header confirm-modal-header-with-close">
             <div className="confirm-modal-title" id="daemon-sessions-modal-title">
-              Running zmux Sessions
+              Running Ghostex Sessions
             </div>
             {/* <div className="confirm-modal-description" id="daemon-sessions-modal-description"> */}
             {/* </div> */}
@@ -385,8 +385,8 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
                     {searchQuery.trim()
                       ? "No daemon sessions match that search."
                       : state.daemon
-                        ? "No zmux sessions are currently running."
-                        : "No zmux daemon is currently running."}
+                        ? "No Ghostex sessions are currently running."
+                        : "No Ghostex daemon is currently running."}
                   </div>
                 )}
               </>
@@ -400,7 +400,7 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
       </div>
       <ConfirmationModal
         confirmLabel="Kill Daemon"
-        description="This will close the shared zmux daemon and disconnect every daemon-managed terminal session across workspaces."
+        description="This will close the shared Ghostex daemon and disconnect every daemon-managed terminal session across workspaces."
         isOpen={isKillDaemonConfirmOpen}
         onCancel={() => setIsKillDaemonConfirmOpen(false)}
         onConfirm={() => {
@@ -411,7 +411,7 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
       />
       <ConfirmationModal
         confirmLabel="Kill Server"
-        description="This will stop the shared T3 Code server for this VS Code window. Existing T3 sessions will remain listed in zmux and can be started again later."
+        description="This will stop the shared T3 Code server for this VS Code window. Existing T3 sessions will remain listed in Ghostex and can be started again later."
         isOpen={isKillT3ServerConfirmOpen}
         onCancel={() => setIsKillT3ServerConfirmOpen(false)}
         onConfirm={() => {

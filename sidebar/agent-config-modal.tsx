@@ -87,7 +87,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
         <DialogHeader>
           <DialogTitle className="text-xl">Configure agent</DialogTitle>
           <DialogDescription className="text-sm">
-            Launches a new zmux session and runs this agent command in it.
+            Launches a new Ghostex session and runs this agent command in it.
           </DialogDescription>
         </DialogHeader>
         <FieldGroup className="gap-6">
