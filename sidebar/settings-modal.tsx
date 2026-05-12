@@ -317,11 +317,6 @@ export function SettingsModal({
         subtitle: "Display card shortcuts where available.",
         title: "Show hotkeys on cards",
       },
-      {
-        key: "showLastInteractionTimeOnSessionCards",
-        subtitle: "Choose Last Active as the default trailing card detail instead of Agent Icon.",
-        title: "Use Last Active instead of Agent Icon",
-      },
     ]),
     sidebar: getSettingsSectionSearch(settingsSearchQuery, "Sidebar", [
       {
@@ -997,20 +992,6 @@ export function SettingsModal({
                 label="Show hotkeys on cards"
                 {...getSettingModificationProps("showHotkeysOnSessionCards")}
                 onChange={(checked) => updateDraft("showHotkeysOnSessionCards", checked)}
-              />
-              ) : null}
-              {shouldShowSetting(settingsSearch.sessionCards, "showLastInteractionTimeOnSessionCards") ? (
-              /* CDXC:Sidebar-overflow-menu 2026-05-04-03:54
-                  Agent Icon/Last Active is a session-card display preference,
-                  so it belongs in Settings instead of the quick overflow menu. */
-              <ToggleField
-                checked={draft.showLastInteractionTimeOnSessionCards}
-                description="Use Last Active as the default trailing card detail instead of Agent Icon."
-                label="Use Last Active instead of Agent Icon"
-                {...getSettingModificationProps("showLastInteractionTimeOnSessionCards")}
-                onChange={(checked) =>
-                  updateDraft("showLastInteractionTimeOnSessionCards", checked)
-                }
               />
               ) : null}
             </SettingsSection>

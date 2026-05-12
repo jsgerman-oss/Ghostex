@@ -106,7 +106,6 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
       renameSessionOnDoubleClick: false,
       showCloseButtonOnSessionCards: DEFAULT_zmux_SETTINGS.showCloseButtonOnSessionCards,
       showHotkeysOnSessionCards: false,
-      showLastInteractionTimeOnSessionCards: false,
       theme: getInitialSidebarTheme(),
       viewMode: "grid",
       visibleCount: 1,

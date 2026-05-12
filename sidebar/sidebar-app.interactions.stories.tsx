@@ -207,7 +207,6 @@ export const ToolbarActions: Story = {
 export const ScrollEndRetention: Story = {
   args: {
     fixture: "scroll-end-retention",
-    showLastInteractionTimeOnSessionCards: true,
     theme: "plain-dark",
   },
   play: async ({ canvasElement, step }) => {
@@ -291,7 +290,6 @@ export const ActiveSortToggle: Story = {
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
     showHotkeysOnSessionCards: true,
-    showLastInteractionTimeOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvasElement, step }) => {
@@ -331,7 +329,6 @@ export const ActiveSortModeStillAllowsDragging: Story = {
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
     showHotkeysOnSessionCards: true,
-    showLastInteractionTimeOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvasElement, step }) => {
@@ -389,7 +386,6 @@ export const InlineSearchFiltersGroupsInPlace: Story = {
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
     showHotkeysOnSessionCards: true,
-    showLastInteractionTimeOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvas, canvasElement, step, userEvent }) => {
@@ -462,7 +458,6 @@ export const CombinedSearchKeepsPreviousSessionsBelowProjects: Story = {
     highlightedVisibleCount: 1,
     showCloseButtonOnSessionCards: false,
     showHotkeysOnSessionCards: false,
-    showLastInteractionTimeOnSessionCards: false,
     visibleCount: 1,
   },
   render: renderCombinedSidebarStory,
@@ -532,7 +527,6 @@ export const TypingAnywhereStartsSearchAndEscapePrefersModals: Story = {
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
     showHotkeysOnSessionCards: true,
-    showLastInteractionTimeOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvas, canvasElement, step, userEvent }) => {
@@ -596,7 +590,6 @@ export const InlineSearchKeyboardSelection: Story = {
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
     showHotkeysOnSessionCards: true,
-    showLastInteractionTimeOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvas, canvasElement, step, userEvent }) => {

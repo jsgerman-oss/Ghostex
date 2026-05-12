@@ -43,7 +43,6 @@ export function createSidebarHudState(
    */
   showCloseButtonOnSessionCards = true,
   showHotkeysOnSessionCards = false,
-  showLastInteractionTimeOnSessionCards = false,
   debuggingMode = false,
   completionBellEnabled = false,
   completionSound: CompletionSoundSetting = DEFAULT_COMPLETION_SOUND,
@@ -93,7 +92,6 @@ export function createSidebarHudState(
     renameSessionOnDoubleClick,
     showCloseButtonOnSessionCards,
     showHotkeysOnSessionCards,
-    showLastInteractionTimeOnSessionCards,
     theme,
     viewMode: snapshot.viewMode,
     visibleCount: snapshot.visibleCount,

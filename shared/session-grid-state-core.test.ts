@@ -14,6 +14,7 @@ import {
   getTerminalSessionSurfaceTitle,
   getSessionShortcutLabel,
   getVisiblePrimaryTitle,
+  getVisibleTerminalTitle,
   normalizeTerminalTitle,
 } from "./session-grid-contract";
 import { createSessionInSnapshot, normalizeSessionGridSnapshot } from "./session-grid-state";
@@ -302,9 +303,8 @@ describe("sidebar HUD state", () => {
       createDefaultSessionGridSnapshot(),
       "dark-green",
       95,
-      false,
-      false,
       true,
+      false,
       false,
       true,
       "glass",
@@ -328,7 +328,6 @@ describe("sidebar HUD state", () => {
     expect(hud.renameSessionOnDoubleClick).toBe(false);
     expect(hud.showCloseButtonOnSessionCards).toBe(true);
     expect(hud.showHotkeysOnSessionCards).toBe(false);
-    expect(hud.showLastInteractionTimeOnSessionCards).toBe(true);
     expect(hud.activeSessionsSortMode).toBe("lastActivity");
     expect(hud.isFocusModeActive).toBe(false);
   });
@@ -340,7 +339,6 @@ describe("sidebar HUD state", () => {
       100,
       false,
       false,
-      true,
       false,
       false,
       "ping",
@@ -364,7 +362,6 @@ describe("sidebar HUD state", () => {
       100,
       false,
       false,
-      true,
       false,
       false,
       "ping",

@@ -9,7 +9,6 @@ const modalSettings: zmuxSettings = {
   completionBellEnabled: true,
   showCloseButtonOnSessionCards: true,
   showHotkeysOnSessionCards: true,
-  showLastInteractionTimeOnSessionCards: false,
   showSidebarActions: true,
   showSidebarAgents: true,
   showSidebarGitButton: true,
