@@ -3483,6 +3483,39 @@ final class TerminalWorkspaceView: NSView {
     return fromLayout.filter { activeSessionIds.contains($0) }
   }
 
+  /**
+   CDXC:PaneTabs 2026-05-12-10:37
+   Hit testing needs the visible pane owner for each tab group, not every
+   active session inside the group. Inactive tab siblings are offscreen panes;
+   querying their title bars can classify a real second-tab click as right-side
+   pane chrome before the visible title bar gets the mouse stream.
+   */
+  private func orderedVisiblePaneOwnerSessionIds() -> [String] {
+    guard let terminalLayout else {
+      return orderedVisibleSessionIds()
+    }
+    return visiblePaneOwnerSessionIds(in: terminalLayout)
+  }
+
+  private func visiblePaneOwnerSessionIds(in node: NativeTerminalLayout) -> [String] {
+    switch node {
+    case .leaf(let sessionId):
+      return activeSessionIds.contains(sessionId) ? [sessionId] : []
+    case .tabs(let activeSessionId, let sessionIds):
+      let tabSessionIds = sessionIds.filter { activeSessionIds.contains($0) || sleepingSessionIds.contains($0) }
+      let activeTabSessionIds = tabSessionIds.filter { activeSessionIds.contains($0) }
+      guard !activeTabSessionIds.isEmpty else {
+        return []
+      }
+      return [
+        activeSessionId.flatMap { activeTabSessionIds.contains($0) ? $0 : nil }
+          ?? activeTabSessionIds[0]
+      ]
+    case .split(_, _, let children):
+      return children.flatMap { visiblePaneOwnerSessionIds(in: $0) }
+    }
+  }
+
   private func layoutTree(_ node: NativeTerminalLayout, in rect: CGRect, path: String) {
     switch node {
     case .leaf(let sessionId):
@@ -3945,7 +3978,7 @@ final class TerminalWorkspaceView: NSView {
     guard paneResizeHit(at: point) == nil else {
       return nil
     }
-    for sessionId in orderedVisibleSessionIds().reversed() {
+    for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
       if let session = sessions[sessionId],
         let hitView = paneTitleBarHitView(session.titleBarView, at: point)
       {
@@ -3983,7 +4016,7 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func paneContentHitView(at point: CGPoint) -> NSView? {
-    for sessionId in orderedVisibleSessionIds().reversed() {
+    for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
       if let session = sessions[sessionId] {
         let contentPoint = convert(point, to: session.scrollView)
         if session.scrollView.bounds.contains(contentPoint) {
@@ -5038,13 +5071,23 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func visiblePaneTitleBarViews() -> [(ownerSessionId: String, titleBarView: TerminalSessionTitleBarView)] {
-    let terminalTitleBars = sessions.values
-      .filter { !$0.containerView.isHidden && !$0.titleBarView.isHidden && $0.titleBarView.window != nil }
-      .map { (ownerSessionId: $0.sessionId, titleBarView: $0.titleBarView) }
-    let webPaneTitleBars = webPaneSessions.values
-      .filter { !$0.containerView.isHidden && !$0.titleBarView.isHidden && $0.titleBarView.window != nil }
-      .map { (ownerSessionId: $0.sessionId, titleBarView: $0.titleBarView) }
-    return terminalTitleBars + webPaneTitleBars
+    orderedVisiblePaneOwnerSessionIds().compactMap { sessionId in
+      if let session = sessions[sessionId],
+        !session.containerView.isHidden,
+        !session.titleBarView.isHidden,
+        session.titleBarView.window != nil
+      {
+        return (ownerSessionId: sessionId, titleBarView: session.titleBarView)
+      }
+      if let session = webPaneSessions[sessionId],
+        !session.containerView.isHidden,
+        !session.titleBarView.isHidden,
+        session.titleBarView.window != nil
+      {
+        return (ownerSessionId: sessionId, titleBarView: session.titleBarView)
+      }
+      return nil
+    }
   }
 
   private func updatePaneTabReorderTarget(_ target: PaneTabReorderDropTarget?) {
@@ -9727,17 +9770,6 @@ private func nativePaneTabsDebugFrame(_ frame: CGRect) -> [String: Double] {
   ]
 }
 
-private final class TerminalTitleBarDebugOverlayView: NSView {
-  override func hitTest(_ point: NSPoint) -> NSView? {
-    /**
-     CDXC:VisualOverlays 2026-05-11-20:24
-     Debug overlays show hit regions only. They must be click-through so turning
-     on diagnostics cannot change tab/button ownership.
-     */
-    nil
-  }
-}
-
 private final class TerminalTitleBarTabButton: NSButton {
   enum InlineAction {
     case close
@@ -9807,6 +9839,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   private var isFocusedPane = true
   private var isSleepingTab = false
   private var pendingMouseDownInlineAction: InlineAction?
+  private var hoverTrackingArea: NSTrackingArea?
   private var isTabHovered = false {
     didSet {
       guard oldValue != isTabHovered else { return }
@@ -9987,12 +10020,16 @@ private final class TerminalTitleBarTabButton: NSButton {
      of drawing both a leading moon and a gray indicator dot. Keep the marker in
      the same reserved right slot as working/attention so tab titles truncate
      before status UI consistently.
+
+     CDXC:PaneTabs 2026-05-12-12:52
+     Production pane tabs must not paint diagnostic hit-region colors. Keep
+     narrow-pane click verification in logs and AppKit receiver ownership, not
+     persistent magenta tab fills or outlines.
      */
     drawIdentityIconIfNeeded()
     drawTitle()
     if !isTabHovered {
       drawActivityIndicatorIfNeeded()
-      drawDebugHitBounds()
       return
     }
     /**
@@ -10006,15 +10043,60 @@ private final class TerminalTitleBarTabButton: NSButton {
      narrow right-side tab controls respond without workspace monitor routing.
      */
     drawInlineActionControl()
-    drawDebugHitBounds()
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
     true
   }
 
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let hoverTrackingArea {
+      removeTrackingArea(hoverTrackingArea)
+    }
+    /**
+     CDXC:PaneTabs 2026-05-12-10:13
+     Narrow panes can clip a tab while the visible fragment still owns Sleep
+     and Close controls. Give each native tab button its own tracking area so
+     hover chrome follows the actual AppKit button receiver instead of relying
+     on the parent title bar to rediscover the same clipped geometry.
+     */
+    let trackingArea = NSTrackingArea(
+      rect: .zero,
+      options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
+      owner: self,
+      userInfo: nil
+    )
+    hoverTrackingArea = trackingArea
+    addTrackingArea(trackingArea)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    updateLocalHover(for: convert(event.locationInWindow, from: nil))
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    updateLocalHover(for: convert(event.locationInWindow, from: nil))
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    if bounds.contains(point) {
+      updateLocalHover(for: point)
+      return
+    }
+    setTabHovered(false)
+    setHoveredInlineAction(nil)
+  }
+
+  private func updateLocalHover(for point: NSPoint) {
+    setTabHovered(bounds.contains(point))
+    setHoveredInlineAction(inlineAction(at: point))
+  }
+
   override func mouseDown(with event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
+    updateLocalHover(for: point)
     if let inlineAction = inlineAction(at: point) {
       /**
        CDXC:PaneTabs 2026-05-11-19:36
@@ -10212,21 +10294,6 @@ private final class TerminalTitleBarTabButton: NSButton {
     let baseAlpha: CGFloat = isActiveTab ? 0.98 : 0.82
     let sleepAlpha: CGFloat = isSleepingTab ? 0.48 : 1
     return NSColor(calibratedWhite: baseWhite, alpha: baseAlpha * sleepAlpha * (isFocusedPane ? 1 : 0.58))
-  }
-
-  private func drawDebugHitBounds() {
-    /**
-     CDXC:PaneTabs 2026-05-11-12:46
-     Magenta marks the exact native NSButton bounds for each pane tab. The
-     workspace-level repro compares this against green title-bar viewport and
-     yellow splitter rails to identify which AppKit view owns the blocked click.
-     */
-    NSColor(calibratedRed: 1, green: 0, blue: 0.95, alpha: 0.10).setFill()
-    bounds.fill()
-    NSColor(calibratedRed: 1, green: 0, blue: 0.95, alpha: 0.84).setStroke()
-    let path = NSBezierPath(rect: bounds.insetBy(dx: 0.5, dy: 0.5))
-    path.lineWidth = 1
-    path.stroke()
   }
 
   private func drawTitle() {
@@ -10554,9 +10621,6 @@ private final class TerminalSessionTitleBarView: NSView {
   private let activityIndicatorView = NSView(frame: .zero)
   private let tabClipView = NSView(frame: .zero)
   private let tabContentView = NSView(frame: .zero)
-  private let tabViewportDebugOverlayView = TerminalTitleBarDebugOverlayView(frame: .zero)
-  private let tabClickBlockerDebugOverlayView = TerminalTitleBarDebugOverlayView(frame: .zero)
-  private let doubleClickNewTerminalDebugOverlayView = TerminalTitleBarDebugOverlayView(frame: .zero)
   private let bottomBorderView = NSView(frame: .zero)
   private let actionMenuButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private var actionButtons: [(action: TerminalTitleBarAction, button: NSButton)]
@@ -10571,10 +10635,6 @@ private final class TerminalSessionTitleBarView: NSView {
   private var isFocusedPane = false
   private var layoutHiddenActions = Set<TerminalTitleBarAction>()
   private var collapsedActionMenuActions: [TerminalTitleBarAction] = []
-  private var pendingMouseDownTabInlineAction: (
-    action: TerminalTitleBarTabButton.InlineAction, sessionId: String
-  )?
-  private var pendingMouseDownTabSessionId: String?
   private var tabContentWidth: CGFloat = 0
   private var tabScrollOffsetX: CGFloat = 0
   private var tabViewportFrame: CGRect = .zero
@@ -10582,11 +10642,10 @@ private final class TerminalSessionTitleBarView: NSView {
   private var tabButtons: [TerminalTitleBarTabButton] = []
   private var tabItems: [TabItem] = []
   private var hoverTrackingArea: NSTrackingArea?
-  private var suppressCursorRectInvalidationDuringHitTest = false
   private var isPaneHovered = false {
     didSet {
       updateActionButtonVisibility()
-      if oldValue != isPaneHovered, let window, !suppressCursorRectInvalidationDuringHitTest {
+      if oldValue != isPaneHovered, let window {
         window.invalidateCursorRects(for: self)
       }
     }
@@ -10594,7 +10653,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private var isPointerInsideTitleBar = false {
     didSet {
       updateActionButtonVisibility()
-      if oldValue != isPointerInsideTitleBar, let window, !suppressCursorRectInvalidationDuringHitTest {
+      if oldValue != isPointerInsideTitleBar, let window {
         window.invalidateCursorRects(for: self)
       }
     }
@@ -10786,54 +10845,6 @@ private final class TerminalSessionTitleBarView: NSView {
     tabContentView.wantsLayer = true
     tabClipView.addSubview(tabContentView)
 
-    /**
-     CDXC:PaneTabs 2026-05-11-12:46
-     The narrow-pane tab-click repro needs to separate title-bar-owned tab
-     geometry from workspace-owned blockers. Green marks the tab viewport that
-     should accept selection/inline-control clicks; if clicks fail while green
-     and magenta are visible, the blocker is above the title bar.
-     */
-    tabViewportDebugOverlayView.wantsLayer = true
-    tabViewportDebugOverlayView.layer?.backgroundColor = NSColor(
-      calibratedRed: 0,
-      green: 1,
-      blue: 0.26,
-      alpha: 0.18
-    ).cgColor
-    tabViewportDebugOverlayView.isHidden = true
-
-    /**
-     CDXC:PaneTabs 2026-05-11-12:39
-     Narrow-pane tab repros need to distinguish the actual tab viewport from
-     right-side title-bar chrome that can appear to block tab clicks. Keep this
-     blue 30%-opacity overlay non-interactive and behind the existing red
-     double-click target so both diagnostic regions are visible at once.
-     */
-    tabClickBlockerDebugOverlayView.wantsLayer = true
-    tabClickBlockerDebugOverlayView.layer?.backgroundColor = NSColor(
-      calibratedRed: 0,
-      green: 0.34,
-      blue: 1,
-      alpha: 0.30
-    ).cgColor
-    tabClickBlockerDebugOverlayView.isHidden = true
-
-    /**
-     CDXC:PaneTabs 2026-05-11-12:23
-     Narrow native tab bars need a visible, real empty-titlebar target for the
-     user setting that double-clicks blank chrome to create a new terminal in
-     the same pane. Keep this diagnostic overlay non-interactive so the same
-     red 30%-opacity area is also the actual double-click hit target.
-     */
-    doubleClickNewTerminalDebugOverlayView.wantsLayer = true
-    doubleClickNewTerminalDebugOverlayView.layer?.backgroundColor = NSColor(
-      calibratedRed: 1,
-      green: 0,
-      blue: 0,
-      alpha: 0.30
-    ).cgColor
-    doubleClickNewTerminalDebugOverlayView.isHidden = true
-
     bottomBorderView.wantsLayer = true
     bottomBorderView.layer?.backgroundColor = Self.borderColor
 
@@ -10841,9 +10852,12 @@ private final class TerminalSessionTitleBarView: NSView {
     addSubview(titleLabel)
     addSubview(activityIndicatorView)
     addSubview(tabClipView)
-    addSubview(tabViewportDebugOverlayView)
-    addSubview(tabClickBlockerDebugOverlayView)
-    addSubview(doubleClickNewTerminalDebugOverlayView)
+    /**
+     CDXC:PaneTabs 2026-05-12-12:44
+     Pane title bars must not paint colored debug hit-region overlays in normal
+     app use. Narrow-pane click verification stays in logs and native hit-test
+     ownership, leaving the visible chrome to production tab/action styling.
+     */
     for item in actionButtons {
       item.button.target = self
       item.button.action = #selector(performTitleBarAction(_:))
@@ -10862,19 +10876,6 @@ private final class TerminalSessionTitleBarView: NSView {
   override func mouseDown(with event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
     isPointerInsideTitleBar = true
-    if let tabInlineAction = tabInlineAction(at: point) {
-      pendingMouseDownTabInlineAction = tabInlineAction
-      return
-    }
-    if let tabSessionId = tabSessionId(at: point) {
-      pendingMouseDownTabSessionId = tabSessionId
-      NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.mouseDown.tab", details: [
-        "hitPoint": nativePaneTabsDebugFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0)),
-        "tabSessionId": tabSessionId,
-      ])
-      onTabMouseDown?(event, tabSessionId)
-      return
-    }
     if event.clickCount >= 2, !tabItems.isEmpty, isEmptyTitleBarDoubleClickPoint(point) {
       /**
        CDXC:PaneTabs 2026-05-11-11:47
@@ -10901,50 +10902,6 @@ private final class TerminalSessionTitleBarView: NSView {
     onMouseDown?(event)
   }
 
-  override func mouseDragged(with event: NSEvent) {
-    if pendingMouseDownTabInlineAction != nil {
-      return
-    }
-    if let tabSessionId = pendingMouseDownTabSessionId {
-      onTabMouseDragged?(event, tabSessionId)
-      return
-    }
-  }
-
-  override func mouseUp(with event: NSEvent) {
-    if let pendingInlineAction = pendingMouseDownTabInlineAction {
-      pendingMouseDownTabInlineAction = nil
-      let point = convert(event.locationInWindow, from: nil)
-      guard let currentInlineAction = tabInlineAction(at: point),
-        currentInlineAction.action == pendingInlineAction.action,
-        currentInlineAction.sessionId == pendingInlineAction.sessionId
-      else {
-        return
-      }
-      switch pendingInlineAction.action {
-      case .close:
-        onTabCloseRequested?(pendingInlineAction.sessionId, .close)
-      case .sleep:
-        onTabSleepRequested?(pendingInlineAction.sessionId, .sleep)
-      }
-      return
-    }
-    if let tabSessionId = pendingMouseDownTabSessionId {
-      pendingMouseDownTabSessionId = nil
-      onTabMouseUp?(event, tabSessionId)
-      return
-    }
-  }
-
-  override func rightMouseDown(with event: NSEvent) {
-    let point = convert(event.locationInWindow, from: nil)
-    guard let tabSessionId = tabSessionId(at: point) else {
-      super.rightMouseDown(with: event)
-      return
-    }
-    showTabContextMenu(for: tabSessionId, event: event)
-  }
-
   override func scrollWheel(with event: NSEvent) {
     guard !tabItems.isEmpty, tabContentWidth > tabViewportFrame.width else {
       super.scrollWheel(with: event)
@@ -10960,80 +10917,6 @@ private final class TerminalSessionTitleBarView: NSView {
     let maxOffset = max(tabContentWidth - tabViewportFrame.width, 0)
     tabScrollOffsetX = min(max(tabScrollOffsetX - rawDelta, 0), maxOffset)
     needsLayout = true
-  }
-
-  private func showTabContextMenu(for sessionId: String, event: NSEvent) {
-    NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.contextMenu.opened", details: [
-      "sessionId": sessionId,
-      "windowNumber": event.window?.windowNumber ?? NSNull(),
-    ])
-    let menu = NSMenu()
-    /**
-     CDXC:PaneTabs 2026-05-11-02:16
-     Tab context menus group scoped sleep actions first and scoped close
-     actions second. Single-tab Sleep and Close stay out of this menu because
-     hovered tabs already expose direct inline buttons for those actions.
-     */
-    addTabSleepMenuItem("Sleep Right", scope: .sleepRight, sessionId: sessionId, to: menu)
-    addTabSleepMenuItem("Sleep Left", scope: .sleepLeft, sessionId: sessionId, to: menu)
-    addTabSleepMenuItem("Sleep Other Tabs", scope: .sleepOthers, sessionId: sessionId, to: menu)
-    menu.addItem(NSMenuItem.separator())
-    addTabCloseMenuItem("Close Right", scope: .closeRight, sessionId: sessionId, to: menu)
-    addTabCloseMenuItem("Close Left", scope: .closeLeft, sessionId: sessionId, to: menu)
-    addTabCloseMenuItem("Close Other Tabs", scope: .closeOthers, sessionId: sessionId, to: menu)
-    NSMenu.popUpContextMenu(menu, with: event, for: self)
-  }
-
-  private func addTabSleepMenuItem(
-    _ title: String,
-    scope: PaneTabSleepScope,
-    sessionId: String,
-    to menu: NSMenu
-  ) {
-    let item = NSMenuItem(
-      title: title,
-      action: #selector(performTitleBarTabSleepMenuItem(_:)),
-      keyEquivalent: "")
-    item.representedObject = ["scope": scope.rawValue, "sessionId": sessionId]
-    item.target = self
-    menu.addItem(item)
-  }
-
-  private func addTabCloseMenuItem(
-    _ title: String,
-    scope: PaneTabCloseScope,
-    sessionId: String,
-    to menu: NSMenu
-  ) {
-    let item = NSMenuItem(
-      title: title,
-      action: #selector(performTitleBarTabCloseMenuItem(_:)),
-      keyEquivalent: "")
-    item.representedObject = ["scope": scope.rawValue, "sessionId": sessionId]
-    item.target = self
-    menu.addItem(item)
-  }
-
-  @objc private func performTitleBarTabCloseMenuItem(_ sender: NSMenuItem) {
-    guard let payload = sender.representedObject as? [String: String],
-      let sessionId = payload["sessionId"],
-      let rawScope = payload["scope"],
-      let scope = PaneTabCloseScope(rawValue: rawScope)
-    else {
-      return
-    }
-    onTabCloseRequested?(sessionId, scope)
-  }
-
-  @objc private func performTitleBarTabSleepMenuItem(_ sender: NSMenuItem) {
-    guard let payload = sender.representedObject as? [String: String],
-      let sessionId = payload["sessionId"],
-      let rawScope = payload["scope"],
-      let scope = PaneTabSleepScope(rawValue: rawScope)
-    else {
-      return
-    }
-    onTabSleepRequested?(sessionId, scope)
   }
 
   func isDraggableHeaderPoint(_ point: NSPoint) -> Bool {
@@ -11058,53 +10941,21 @@ private final class TerminalSessionTitleBarView: NSView {
      otherwise title-bar focus and tab hit routing can disappear behind labels.
 
      CDXC:BrowserPanes 2026-05-03-11:06
-     Action buttons remain real AppKit buttons for drawing and Accessibility
-     activation. Pointer clicks are owned by TerminalSessionTitleBarView's
-     native mouseDown/mouseUp path so expanded hit targets, browser panes, and
-     popped-out windows all route through one local control hierarchy.
+     Action buttons remain real AppKit buttons for drawing, Accessibility, and
+     pointer dispatch across terminal, browser, editor, and popped-out panes.
 
-     CDXC:PaneTitleBarUX 2026-05-11-10:50
-     Collapsed pane actions keep a native AppKit menu button for drawing and
-     accessibility, but the title-bar hit router owns pointer dispatch so
-     narrow-pane clicks cannot fall through to tab focus.
+     CDXC:PaneTitleBarUX 2026-05-11-20:25
+     When right-side pane actions are visible, return the concrete NSButton for
+     its real frame. This keeps hamburger and action clicks on AppKit
+     target/action dispatch.
 
-     CDXC:PaneTitleBarUX 2026-05-11-11:55
-     Narrow-pane hamburger clicks must still open the pane-action menu when
-     AppKit routes the pointer stream to TerminalSessionTitleBarView instead
-     of the borderless NSButton. Keep hit testing and the title-bar mouse
-     dispatch keyed to the same frame. Check the hamburger before tabs so the
-     visible menu control wins any narrow-layout edge overlap, and emit repro
-     logs only through the Settings debugging-mode gate.
-
-    CDXC:PaneTitleBarUX 2026-05-11-12:23
-    Handle hamburger hit streams on TerminalSessionTitleBarView itself. This
-    keeps the menu opening path independent from AppKit's hover-dependent
-    borderless-button dispatch while still using the same visible frame.
-
-    CDXC:PaneTabs 2026-05-11-12:54
-    AppKit can call hitTest while updating structural regions. Do not let that
-    probe synchronously invalidate cursor rects through hover/action visibility
-    changes, because the window throws when structural-region passes recurse.
-
-    CDXC:PaneTabs 2026-05-11-19:36
-    Visible tab clicks should land on the TerminalTitleBarTabButton that drew
-    the tab, including its inline Sleep/Close controls. The title bar still
-    filters non-tab labels and right-side actions, but it no longer acts as a
-    monitor-style click router for tab buttons.
-
-    CDXC:PaneTitleBarUX 2026-05-11-20:04
-    Pane tabs, empty-titlebar double-clicks, and right-side pane actions must
-    use the local AppKit view hierarchy instead of a workspace event monitor.
-    Mark the title bar active during hit testing so hidden hover actions become
-    normal native hit targets before AppKit chooses the receiving view.
-
-    CDXC:PaneTitleBarUX 2026-05-11-20:25
-    When hit testing reveals right-side pane actions, return the concrete
-    NSButton for its real frame. This keeps hamburger and action clicks on
-    AppKit target/action dispatch even when the button appeared during the same
-    pointer event.
+     CDXC:PaneTabs 2026-05-12-11:59
+     Tab clicks must be owned by the native TerminalTitleBarTabButton that
+     paints the tab. Right-side pane actions remain higher-priority sibling
+     buttons; visible tab pixels return the actual tab button so AppKit delivers
+     the real mouseDown/mouseUp stream to that button, not to title-bar focus
+     handling or any monitor-style click router.
      */
-    setPointerInsideTitleBarDuringHitTest(true, reason: "titleBarHitTest")
     layoutSubtreeIfNeeded()
     if let collapsedActionMenuButton = collapsedActionMenuButton(at: point) {
       logCollapsedActionMenuEvent(
@@ -11114,19 +10965,9 @@ private final class TerminalSessionTitleBarView: NSView {
        CDXC:PaneTitleBarUX 2026-05-11-20:24
        Collapsed action-menu clicks belong to the actual NSButton frame.
        Returning the native button keeps the menu on button target/action
-       dispatch instead of using titlebar-level click synthesis.
+       dispatch instead of title-bar click synthesis.
        */
       return collapsedActionMenuButton
-    }
-    let tabSessionId = tabSessionId(at: point)
-    if let tabSessionId {
-      NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.hitTest.tab", details: [
-        "hitPoint": nativePaneTabsDebugFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0)),
-        "tabFrames": tabDebugFrames(),
-        "tabSessionId": tabSessionId,
-        "titleBarBounds": nativePaneTabsDebugFrame(bounds),
-      ])
-      return super.hitTest(point) ?? self
     }
     if let actionButton = actionButton(at: point) {
       /**
@@ -11137,35 +10978,27 @@ private final class TerminalSessionTitleBarView: NSView {
        */
       return actionButton
     }
+    if let tabButton = tabButton(at: point) {
+      return tabButton
+    }
+    if let hitView = super.hitTest(point), hitView !== self {
+      if hitView === faviconImageView
+        || hitView === titleLabel
+        || hitView === activityIndicatorView
+        || hitView === tabClipView
+        || hitView === tabContentView
+        || hitView === bottomBorderView
+        || actionSeparators.contains(where: { $0 === hitView })
+      {
+        return self
+      }
+      return hitView
+    }
     return self
   }
 
-  private func setPointerInsideTitleBarDuringHitTest(_ isInside: Bool, reason: String) {
-    guard isPointerInsideTitleBar != isInside else {
-      return
-    }
-    suppressCursorRectInvalidationDuringHitTest = true
-    isPointerInsideTitleBar = isInside
-    suppressCursorRectInvalidationDuringHitTest = false
-    NativePaneTabDragReproLog.append(event: "nativePaneTabs.titleBar.hitTestPointerState", details: [
-      "isPointerInsideTitleBar": isInside,
-      "reason": reason,
-      "suppressedCursorRectInvalidation": true,
-      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
-    ])
-  }
-
   func tabSessionId(at point: NSPoint) -> String? {
-    guard !tabClipView.isHidden, tabViewportFrame.contains(point) else {
-      return nil
-    }
-    let contentPoint = CGPoint(
-      x: point.x - tabViewportFrame.minX + tabScrollOffsetX,
-      y: point.y - tabViewportFrame.minY)
-    for button in tabButtons where !button.isHidden && button.frame.contains(contentPoint) {
-      return button.sessionId
-    }
-    return nil
+    tabButton(at: point)?.sessionId
   }
 
   func tabFrame(for sessionId: String) -> CGRect? {
@@ -11183,6 +11016,21 @@ private final class TerminalSessionTitleBarView: NSView {
   func tabInlineAction(at point: NSPoint) -> (
     action: TerminalTitleBarTabButton.InlineAction, sessionId: String
   )? {
+    guard let hit = tabButtonHit(at: point),
+      let action = hit.button.inlineAction(at: hit.localPoint)
+    else {
+      return nil
+    }
+    return (action, hit.button.sessionId)
+  }
+
+  private func tabButton(at point: NSPoint) -> TerminalTitleBarTabButton? {
+    tabButtonHit(at: point)?.button
+  }
+
+  private func tabButtonHit(at point: NSPoint) -> (
+    button: TerminalTitleBarTabButton, localPoint: NSPoint
+  )? {
     guard !tabClipView.isHidden, tabViewportFrame.contains(point) else {
       return nil
     }
@@ -11190,12 +11038,10 @@ private final class TerminalSessionTitleBarView: NSView {
       x: point.x - tabViewportFrame.minX + tabScrollOffsetX,
       y: point.y - tabViewportFrame.minY)
     for button in tabButtons where !button.isHidden && button.frame.contains(contentPoint) {
-      guard let action = button.inlineAction(
-        at: CGPoint(x: contentPoint.x - button.frame.minX, y: contentPoint.y - button.frame.minY))
-      else {
-        return nil
-      }
-      return (action, button.sessionId)
+      return (
+        button,
+        CGPoint(x: contentPoint.x - button.frame.minX, y: contentPoint.y - button.frame.minY)
+      )
     }
     return nil
   }
@@ -11633,14 +11479,12 @@ private final class TerminalSessionTitleBarView: NSView {
         to: tabViewportMaxX,
         centerY: centerY,
         height: buttonSize)
-      updateTitleBarTabDebugOverlays()
       bottomBorderView.frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
       window?.invalidateCursorRects(for: self)
       return
     }
 
     doubleClickNewTerminalFrame = .zero
-    updateTitleBarTabDebugOverlays()
     tabClipView.isHidden = true
     tabClipView.frame = .zero
     tabContentView.frame = .zero
@@ -11757,26 +11601,6 @@ private final class TerminalSessionTitleBarView: NSView {
       width: targetWidth,
       height: bounds.height)
     return max(minX, targetMinX - Self.tabViewportTrailingGap)
-  }
-
-  private func updateTitleBarTabDebugOverlays() {
-    tabViewportDebugOverlayView.frame = tabViewportFrame
-    tabViewportDebugOverlayView.isHidden = tabItems.isEmpty || tabViewportFrame.isEmpty
-    let blockerFrame: CGRect
-    if !tabItems.isEmpty, !tabViewportFrame.isEmpty, bounds.maxX > tabViewportFrame.maxX {
-      blockerFrame = CGRect(
-        x: tabViewportFrame.maxX,
-        y: 0,
-        width: bounds.maxX - tabViewportFrame.maxX,
-        height: bounds.height)
-    } else {
-      blockerFrame = .zero
-    }
-    tabClickBlockerDebugOverlayView.frame = blockerFrame
-    tabClickBlockerDebugOverlayView.isHidden = blockerFrame.isEmpty
-    doubleClickNewTerminalDebugOverlayView.frame = doubleClickNewTerminalFrame
-    doubleClickNewTerminalDebugOverlayView.isHidden =
-      doubleClickNewTerminalFrame.isEmpty || tabItems.isEmpty
   }
 
   private func layoutTabButtons(from minX: CGFloat, to maxX: CGFloat, centerY: CGFloat, height: CGFloat) {
@@ -11945,14 +11769,11 @@ private final class TerminalSessionTitleBarView: NSView {
       menu.addItem(item)
     }
     /**
-     CDXC:PaneTitleBarUX 2026-05-11-12:23
-     Collapsed hamburger clicks are routed through the title-bar hit target so
-     narrow panes do not depend on the borderless NSButton being visible or
-     hovered at mouse-down time. Anchor the NSMenu in this title-bar coordinate
-     space; using the button itself can fail when the hover state changes while
-     the click is being processed.
+     CDXC:PaneTitleBarUX 2026-05-12-10:58
+     Collapsed hamburger clicks are owned by the visible native NSButton.
+     Anchor the menu in title-bar coordinates only for placement; the click
+     itself reaches this path through normal AppKit target/action dispatch.
 
-     CDXC:PaneTitleBarUX 2026-05-11-20:04
      Present the collapsed pane-action menu with AppKit's native left-click menu
      popup from the titlebar view. Context-menu presentation is for right-click
      event streams and can ignore real left clicks, which made coordinate
@@ -12010,10 +11831,10 @@ private final class TerminalSessionTitleBarView: NSView {
     actionMenuButton.target = self
     actionMenuButton.action = #selector(performActionMenuButton(_:))
     /**
-     CDXC:PaneTitleBarUX 2026-05-11-20:34
-     The collapsed hamburger is now visible whenever layout reserves its frame,
-     so it can use AppKit's normal mouse-up button action. Opening the native
-     NSMenu on mouse-down lets the same click's mouse-up immediately dismiss it.
+     CDXC:PaneTitleBarUX 2026-05-12-10:58
+     The collapsed hamburger is visible whenever layout reserves its frame and
+     uses AppKit's normal mouse-up button action. Do not synthesize this through
+     title-bar mouse handling; the NSButton owns the click.
      */
     actionMenuButton.sendAction(on: [.leftMouseUp])
     actionMenuButton.image = NSImage(
@@ -12050,7 +11871,7 @@ private final class TerminalSessionTitleBarView: NSView {
       item.button.isHidden = !visible
       item.button.alphaValue = visible ? 1 : 0
       item.button.isEnabled = visible
-      if let window, !suppressCursorRectInvalidationDuringHitTest {
+      if let window {
         window.invalidateCursorRects(for: item.button)
       }
     }
@@ -12068,7 +11889,7 @@ private final class TerminalSessionTitleBarView: NSView {
     actionMenuButton.isHidden = !menuVisible
     actionMenuButton.alphaValue = menuVisible ? 1 : 0
     actionMenuButton.isEnabled = menuVisible
-    if let window, !suppressCursorRectInvalidationDuringHitTest {
+    if let window {
       window.invalidateCursorRects(for: actionMenuButton)
     }
   }
