@@ -7,6 +7,7 @@ import {
   IconFileDiff,
   IconFolderOpen,
   IconPlayerPlay,
+  IconRotateClockwise,
   IconSettings,
   IconTerminal2,
   IconWorld,
@@ -97,6 +98,7 @@ type NativeTitlebarCommand =
     }
   | { type: "openActiveProjectEditorFromTitlebar" }
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
+  | { type: "rotateActivePaneLayoutClockwiseFromTitlebar" }
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
   | {
       targetApp: ZedOverlayTargetApp;
@@ -396,6 +398,14 @@ function App() {
     postNative({ commandId: command.commandId, type: "runSidebarCommandFromTitlebar" });
   };
 
+  const rotatePanesClockwise = () => {
+    console.info("[zmux-titlebar] rotate panes clockwise clicked", {
+      projectId: projectState.projectId,
+      projectName: projectState.projectName,
+    });
+    postNative({ type: "rotateActivePaneLayoutClockwiseFromTitlebar" });
+  };
+
   return (
     <TooltipProvider delayDuration={300}>
       <div className="dark" ref={rootRef} style={styles.shell}>
@@ -440,6 +450,22 @@ function App() {
             </Tooltip>
           </div>
           <div style={styles.rightSlot}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Rotate panes clockwise"
+                  className="titlebar-session-button titlebar-rotate-button"
+                  data-titlebar-hit-region
+                  onClick={rotatePanesClockwise}
+                  type="button"
+                  variant="ghost"
+                >
+                  <IconRotateClockwise aria-hidden="true" size={16} stroke={1.8} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Rotate panes clockwise</TooltipContent>
+            </Tooltip>
+            <div aria-hidden="true" className="titlebar-section-separator" />
             <DropdownMenu onOpenChange={setActionsMenuOpen} open={actionsMenuOpen}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -866,7 +892,7 @@ const styles = {
     display: "flex",
     gap: 6,
     left: 78,
-    maxWidth: "min(620px, calc(100vw - 310px))",
+    maxWidth: "min(620px, calc(100vw - 350px))",
     minWidth: 0,
     position: "absolute",
     top: TITLEBAR_PROJECT_TOP,
@@ -972,6 +998,10 @@ styleElement.textContent = `
     outline-offset: 2px;
   }
   .titlebar-open-main-button {
+    width: 28px;
+    padding: 0;
+  }
+  .titlebar-rotate-button {
     width: 28px;
     padding: 0;
   }

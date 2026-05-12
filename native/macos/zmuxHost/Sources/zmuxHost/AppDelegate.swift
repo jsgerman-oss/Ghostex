@@ -1630,6 +1630,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       break
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
       break
+    case .rotateActivePaneLayoutClockwiseFromTitlebar:
+      break
     case .runSidebarCommandFromTitlebar:
       break
     case .configureZedOverlay(let command):
@@ -3369,6 +3371,15 @@ final class zmuxRootView: NSView {
       """)
   }
 
+  private func rotateActivePaneLayoutClockwiseFromTitlebar() {
+    print("[zmux-titlebar] forwarding rotate panes command to sidebar webview")
+    sidebarView.evaluateJavaScript(
+      """
+      window.__zmux_NATIVE_SIDEBAR__?.rotateActivePaneLayoutClockwiseFromTitlebar?.();
+      undefined;
+      """)
+  }
+
   private func refreshWorkspaceOpenTargetAvailabilityFromTitlebar() {
     /**
      CDXC:TitlebarOpenIn 2026-05-11-03:13
@@ -3535,6 +3546,8 @@ final class zmuxRootView: NSView {
       openActiveProjectEditorFromTitlebar()
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
       refreshWorkspaceOpenTargetAvailabilityFromTitlebar()
+    case .rotateActivePaneLayoutClockwiseFromTitlebar:
+      rotateActivePaneLayoutClockwiseFromTitlebar()
     case .runSidebarCommandFromTitlebar(let command):
       runSidebarCommandFromTitlebar(command)
     case .configureZedOverlay(let command):
@@ -5471,6 +5484,11 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
     do {
       let data = try JSONSerialization.data(withJSONObject: message.body)
       let command = try decoder.decode(HostCommand.self, from: data)
+      if (message.body as? [String: Any])?["type"] as? String
+        == "rotateActivePaneLayoutClockwiseFromTitlebar"
+      {
+        print("[zmux-titlebar] native bridge received rotateActivePaneLayoutClockwiseFromTitlebar")
+      }
       router.onCommand?(command)
     } catch {
       let body = message.body as? [String: Any]

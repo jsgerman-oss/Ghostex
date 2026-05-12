@@ -112,6 +112,7 @@ import {
   removeSessionInSimpleWorkspace,
   reorderSessionInPaneTabGroupInSimpleWorkspace,
   renameGroupInSimpleWorkspace,
+  rotatePaneLayoutClockwiseInSimpleWorkspace,
   selectPaneTabInSimpleWorkspace,
   setGroupSleepingInSimpleWorkspace,
   setBrowserSessionFaviconDataUrlInSimpleWorkspace,
@@ -647,6 +648,7 @@ declare global {
 	    __zmux_NATIVE_SIDEBAR__?: {
 	      openActiveProjectEditorFromTitlebar: () => void;
 	      refreshWorkspaceOpenTargetAvailabilityFromTitlebar: () => void;
+	      rotateActivePaneLayoutClockwiseFromTitlebar: () => void;
 	      runSidebarCommandFromTitlebar: (commandId: string) => void;
 	    };
     __zmux_NATIVE_CLI__?: {
@@ -10983,6 +10985,41 @@ function runSidebarCommandFromTitlebar(commandId: string): void {
   runNativeSidebarCommand(command);
 }
 
+function rotateActivePaneLayoutClockwiseFromTitlebar(): void {
+  const group = activeWorkspaceGroup();
+  appendPaneLayoutTraceDebugLog("titlebarRotate.request", {
+    groupId: group.groupId,
+    hasPaneLayout: group.snapshot.paneLayout !== undefined,
+    paneLayout: group.snapshot.paneLayout,
+    visibleSessionIds: group.snapshot.visibleSessionIds,
+  });
+  console.info("[zmux-native-sidebar] titlebar rotate panes clockwise", {
+    groupId: group.groupId,
+    hasPaneLayout: group.snapshot.paneLayout !== undefined,
+    visibleSessionIds: group.snapshot.visibleSessionIds,
+  });
+  const result = rotatePaneLayoutClockwiseInSimpleWorkspace(activeProject().workspace, group.groupId);
+  if (!result.changed) {
+    appendPaneLayoutTraceDebugLog("titlebarRotate.unchanged", {
+      groupId: group.groupId,
+      hasPaneLayout: group.snapshot.paneLayout !== undefined,
+      visibleSessionIds: group.snapshot.visibleSessionIds,
+    });
+    console.info("[zmux-native-sidebar] titlebar rotate panes unchanged", {
+      groupId: group.groupId,
+      hasPaneLayout: group.snapshot.paneLayout !== undefined,
+      visibleSessionIds: group.snapshot.visibleSessionIds,
+    });
+    return;
+  }
+  updateActiveProjectWorkspace(() => result.snapshot);
+  appendPaneLayoutTraceDebugLog("titlebarRotate.applied", {
+    groupId: group.groupId,
+    paneLayout: activeWorkspaceGroup().snapshot.paneLayout,
+  });
+  publish();
+}
+
 function closeProjectEditorForGroup(groupId: string): void {
   const reference = resolveSidebarGroupReference(groupId);
   const project = reference.project;
@@ -13304,6 +13341,7 @@ window.__zmux_NATIVE_SETTINGS__ = {
 window.__zmux_NATIVE_SIDEBAR__ = {
   openActiveProjectEditorFromTitlebar,
   refreshWorkspaceOpenTargetAvailabilityFromTitlebar,
+  rotateActivePaneLayoutClockwiseFromTitlebar,
   runSidebarCommandFromTitlebar,
 };
 

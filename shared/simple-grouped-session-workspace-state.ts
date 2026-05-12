@@ -1151,6 +1151,41 @@ export function reorderSessionInPaneTabGroupInSimpleWorkspace(
   };
 }
 
+export function rotatePaneLayoutClockwiseInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  groupId: string,
+): WorkspaceMutationResult {
+  const group = getGroupById(snapshot, groupId);
+  if (!group) {
+    return { changed: false, snapshot };
+  }
+  const sessionIds = group.snapshot.sessions.map((session) => session.sessionId);
+  const paneLayoutSessionIds = dedupeVisibleSessionIds([
+    ...group.snapshot.visibleSessionIds,
+    ...getPaneLayoutSessionIds(group.snapshot.paneLayout),
+  ]).filter((sessionId) => sessionIds.includes(sessionId));
+  const currentLayout = normalizePaneLayout(
+    group.snapshot.paneLayout ?? createPaneLayoutFromVisibleIds(group.snapshot.visibleSessionIds),
+    sessionIds,
+    paneLayoutSessionIds,
+    group.snapshot.focusedSessionId,
+  );
+  if (!currentLayout || currentLayout.kind !== "split") {
+    return { changed: false, snapshot };
+  }
+  const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
+    ...targetGroup,
+    snapshot: normalizeGroupSnapshot({
+      ...targetGroup.snapshot,
+      paneLayout: rotatePaneLayoutNodeClockwise(currentLayout),
+    }),
+  }));
+  return {
+    changed: !areSnapshotsEqual(snapshot, nextSnapshot),
+    snapshot: nextSnapshot,
+  };
+}
+
 export function syncGroupOrderInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   groupIds: readonly string[],
@@ -2230,6 +2265,27 @@ function flattenPaneLayoutSplit(
     child.kind === "split" && child.direction === node.direction ? child.children : [child],
   );
   return children.length === 1 ? children[0]! : { ...node, children };
+}
+
+function rotatePaneLayoutNodeClockwise(node: SessionPaneLayoutNode): SessionPaneLayoutNode {
+  if (node.kind !== "split") {
+    return node;
+  }
+  const rotatedChildren = node.children.map(rotatePaneLayoutNodeClockwise);
+  const shouldReverseChildren = node.direction === "vertical";
+  const children = shouldReverseChildren ? rotatedChildren.toReversed() : rotatedChildren;
+  const ratio =
+    node.ratio === undefined
+      ? undefined
+      : shouldReverseChildren
+        ? Math.max(0, Math.min(1, 1 - node.ratio))
+        : node.ratio;
+  return flattenPaneLayoutSplit({
+    children,
+    direction: node.direction === "horizontal" ? "vertical" : "horizontal",
+    kind: "split",
+    ...(ratio === undefined ? {} : { ratio }),
+  });
 }
 
 function paneLayoutContainsSession(

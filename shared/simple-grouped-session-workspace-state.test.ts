@@ -18,6 +18,7 @@ import {
   normalizeSimpleGroupedSessionWorkspaceSnapshot,
   removeSessionInSimpleWorkspace,
   reorderSessionInPaneTabGroupInSimpleWorkspace,
+  rotatePaneLayoutClockwiseInSimpleWorkspace,
   setSessionFavoriteInSimpleWorkspace,
   setGroupSleepingInSimpleWorkspace,
   setSessionSleepingInSimpleWorkspace,
@@ -2647,6 +2648,134 @@ describe("setGroupSleepingInSimpleWorkspace", () => {
     expect(result.snapshot.groups[1]?.snapshot.sessions[0]?.isSleeping).toBe(true);
     expect(result.snapshot.groups[1]?.snapshot.sessions[1]?.isSleeping).toBeUndefined();
     expect(result.snapshot.groups[1]?.snapshot.visibleSessionIds).toEqual([sessionIdForDisplay(2)]);
+  });
+});
+
+describe("rotatePaneLayoutClockwiseInSimpleWorkspace", () => {
+  test("should rotate automatic two-pane layout into two rows", () => {
+    const result = rotatePaneLayoutClockwiseInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+      ],
+      direction: "vertical",
+      kind: "split",
+    });
+  });
+
+  test("should rotate two columns into two rows", () => {
+    const result = rotatePaneLayoutClockwiseInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+                  { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+      ],
+      direction: "vertical",
+      kind: "split",
+    });
+  });
+
+  test("should rotate stacked panes clockwise into reversed columns", () => {
+    const result = rotatePaneLayoutClockwiseInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+                  { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+                ],
+                direction: "vertical",
+                kind: "split",
+                ratio: 0.25,
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+        { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+      ],
+      direction: "horizontal",
+      kind: "split",
+      ratio: 0.75,
+    });
   });
 });
 

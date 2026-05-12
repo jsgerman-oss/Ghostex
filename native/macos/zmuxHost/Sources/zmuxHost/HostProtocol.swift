@@ -57,6 +57,7 @@ enum HostCommand: Decodable {
   case setReactTitlebarHitRegions(SetReactTitlebarHitRegions)
   case openActiveProjectEditorFromTitlebar
   case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
+  case rotateActivePaneLayoutClockwiseFromTitlebar
   case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
   case configureZedOverlay(ConfigureZedOverlay)
   case openZedWorkspace(OpenZedWorkspace)
@@ -123,6 +124,7 @@ enum HostCommand: Decodable {
     case setReactTitlebarHitRegions
     case openActiveProjectEditorFromTitlebar
     case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
+    case rotateActivePaneLayoutClockwiseFromTitlebar
     case runSidebarCommandFromTitlebar
     case configureZedOverlay
     case openZedWorkspace
@@ -245,6 +247,8 @@ enum HostCommand: Decodable {
       self = .openActiveProjectEditorFromTitlebar
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
       self = .refreshWorkspaceOpenTargetAvailabilityFromTitlebar
+    case .rotateActivePaneLayoutClockwiseFromTitlebar:
+      self = .rotateActivePaneLayoutClockwiseFromTitlebar
     case .runSidebarCommandFromTitlebar:
       self = .runSidebarCommandFromTitlebar(try RunSidebarCommandFromTitlebar(from: decoder))
     case .configureZedOverlay:
