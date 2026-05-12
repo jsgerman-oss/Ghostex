@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
+import { AgentsHubModal } from "../../sidebar/agents-hub-modal";
 import { CommandConfigModal, type CommandConfigDraft } from "../../sidebar/command-config-modal";
 import { DaemonSessionsModal } from "../../sidebar/daemon-sessions-modal";
 import { DelayedSendModal } from "../../sidebar/delayed-send-modal";
@@ -33,6 +34,7 @@ import "../../sidebar/styles.css";
 
 type AppModalKind =
   | "agentConfig"
+  | "agentsHub"
   | "commandConfig"
   | "configureActions"
   | "configureAgents"
@@ -277,6 +279,11 @@ function AppModalHost() {
       />
       <DaemonSessionsModal
         isOpen={activeModal === "daemonSessions"}
+        onClose={closeModal}
+        vscode={vscode}
+      />
+      <AgentsHubModal
+        isOpen={activeModal === "agentsHub"}
         onClose={closeModal}
         vscode={vscode}
       />
@@ -738,6 +745,8 @@ function isModalRenderable({
       return false;
     case "agentConfig":
       return config.agentDraft !== undefined;
+    case "agentsHub":
+      return true;
     case "commandConfig":
       return config.commandDraft !== undefined;
     case "delayedSend":

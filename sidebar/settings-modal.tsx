@@ -64,6 +64,7 @@ import {
 import {
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_zmux_SETTINGS,
+  DEFAULT_EDITOR_COMMAND_OPTIONS,
   GHOSTTY_CONFIRM_CLOSE_SURFACE_OPTIONS,
   GHOSTTY_COPY_ON_SELECT_OPTIONS,
   GHOSTTY_SCROLLBAR_OPTIONS,
@@ -78,6 +79,7 @@ import {
   ZED_OVERLAY_TARGET_APP_OPTIONS,
   normalizezmuxSettings,
   type BrowserOpenMode,
+  type DefaultEditorCommand,
   type GhosttyConfirmCloseSurface,
   type GhosttyCopyOnSelect,
   type GhosttyScrollbar,
@@ -262,6 +264,21 @@ export function SettingsModal({
       },
     ]),
     editor: getSettingsSectionSearch(settingsSearchQuery, "Editor", [
+      {
+        key: "defaultEditorCommand",
+        options: DEFAULT_EDITOR_COMMAND_OPTIONS,
+        subtitle: "Choose the command used when opening files in an external editor.",
+        title: "Default editor command",
+      },
+      ...(draft.defaultEditorCommand === "other"
+        ? [
+            {
+              key: "customDefaultEditorCommand",
+              subtitle: "Write a custom editor command for the Other editor option.",
+              title: "Custom editor command",
+            },
+          ]
+        : []),
       {
         key: "codeServerLinkVscodeUserConfig",
         subtitle: "Use the VS Code settings from the local VS Code install.",
@@ -1395,6 +1412,29 @@ export function SettingsModal({
 
             {shouldShowSettingsSection(settingsSearch.editor) ? (
             <SettingsSection title="Editor">
+              {shouldShowSetting(settingsSearch.editor, "defaultEditorCommand") ? (
+              <SelectField
+                description="Choose the command used when opening files in an external editor."
+                label="Default editor command"
+                {...getSettingModificationProps("defaultEditorCommand")}
+                onChange={(value) =>
+                  updateDraft("defaultEditorCommand", value as DefaultEditorCommand)
+                }
+                options={DEFAULT_EDITOR_COMMAND_OPTIONS}
+                value={draft.defaultEditorCommand}
+              />
+              ) : null}
+              {draft.defaultEditorCommand === "other" &&
+              shouldShowSetting(settingsSearch.editor, "customDefaultEditorCommand") ? (
+              <TextField
+                description="Write the command exactly as it should be launched. The file path will be passed to it later."
+                label="Custom editor command"
+                {...getSettingModificationProps("customDefaultEditorCommand")}
+                onChange={(value) => updateDraft("customDefaultEditorCommand", value)}
+                placeholder="my-editor --reuse-window"
+                value={draft.customDefaultEditorCommand}
+              />
+              ) : null}
               {/* CDXC:EditorPanes 2026-05-06-15:00: Embedded code-server
                   panes pass --link-vscode-user-config by default so editor
                   sessions inherit local VS Code user settings. The Insiders

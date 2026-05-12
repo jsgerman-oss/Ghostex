@@ -47,7 +47,8 @@ if [[ -z "$GHOSTTY_ROOT" ]]; then
 	for candidate in \
 		"$REPO_ROOT/../ghostty" \
 		"$REPO_ROOT/../ghostty-zmux-survival" \
-		"$REPO_ROOT/../../_forks/ghostty"; do
+		"$REPO_ROOT/../../_forks/ghostty" \
+		"$HOME/dev/_active/ghostty"; do
 		if [[ -d "$candidate/macos/GhosttyKit.xcframework" ]]; then
 			GHOSTTY_ROOT="$(cd "$candidate" && pwd)"
 			break

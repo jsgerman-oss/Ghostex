@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import {
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_zmux_SETTINGS,
+  DEFAULT_EDITOR_COMMAND_OPTIONS,
+  getDefaultEditorCommandForSettings,
   GHOSTTY_THEME_SETTING_OPTIONS,
   normalizezmuxSettings,
   PROMPT_EDITOR_BACKEND_OPTIONS,
@@ -82,6 +84,50 @@ describe("normalizezmuxSettings", () => {
     });
     expect(normalizezmuxSettings({ showProjectEditorDiffFileCount: true })).toMatchObject({
       showProjectEditorDiffFileCount: true,
+    });
+  });
+
+  test("supports built-in and custom default editor commands", () => {
+    /**
+     * CDXC:AgentsHub 2026-05-12-09:22
+     * Agents Hub edit actions should have one normalized editor command
+     * setting, with common editor CLIs available without custom text.
+     */
+    expect(DEFAULT_zmux_SETTINGS.defaultEditorCommand).toBe("code");
+    expect(normalizezmuxSettings({})).toMatchObject({
+      customDefaultEditorCommand: "",
+      defaultEditorCommand: "code",
+    });
+    expect(normalizezmuxSettings({ defaultEditorCommand: "code-insiders" })).toMatchObject({
+      defaultEditorCommand: "code-insiders",
+    });
+    expect(normalizezmuxSettings({ defaultEditorCommand: "zed" })).toMatchObject({
+      defaultEditorCommand: "zed",
+    });
+    expect(normalizezmuxSettings({ defaultEditorCommand: "invalid" })).toMatchObject({
+      defaultEditorCommand: "code",
+    });
+    const customSettings = normalizezmuxSettings({
+      customDefaultEditorCommand: "  my-editor --reuse-window  ",
+      defaultEditorCommand: "other",
+    });
+    expect(customSettings).toMatchObject({
+      customDefaultEditorCommand: "my-editor --reuse-window",
+      defaultEditorCommand: "other",
+    });
+    expect(getDefaultEditorCommandForSettings(customSettings)).toBe("my-editor --reuse-window");
+    expect(
+      getDefaultEditorCommandForSettings(
+        normalizezmuxSettings({ customDefaultEditorCommand: "", defaultEditorCommand: "other" }),
+      ),
+    ).toBe("code");
+    expect(DEFAULT_EDITOR_COMMAND_OPTIONS).toContainEqual({
+      label: "VS Code Insiders (code-insiders)",
+      value: "code-insiders",
+    });
+    expect(DEFAULT_EDITOR_COMMAND_OPTIONS).toContainEqual({
+      label: "Other",
+      value: "other",
     });
   });
 
