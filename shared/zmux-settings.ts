@@ -82,7 +82,6 @@ export type zmuxSettings = {
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
-  showLastInteractionTimeOnSessionCards: boolean;
   showSidebarActions: boolean;
   showSidebarAgents: boolean;
   showSidebarGitButton: boolean;
@@ -193,7 +192,6 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    */
   showCloseButtonOnSessionCards: true,
   showHotkeysOnSessionCards: false,
-  showLastInteractionTimeOnSessionCards: false,
   showSidebarActions: true,
   showSidebarAgents: true,
   showSidebarGitButton: true,
@@ -569,11 +567,6 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       source,
       "showHotkeysOnSessionCards",
       DEFAULT_zmux_SETTINGS.showHotkeysOnSessionCards,
-    ),
-    showLastInteractionTimeOnSessionCards: readBoolean(
-      source,
-      "showLastInteractionTimeOnSessionCards",
-      DEFAULT_zmux_SETTINGS.showLastInteractionTimeOnSessionCards,
     ),
     showSidebarActions: readBoolean(
       source,

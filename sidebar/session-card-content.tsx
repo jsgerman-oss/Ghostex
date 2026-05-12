@@ -78,17 +78,14 @@ export function SessionCardContent({
       : undefined;
   /**
    * CDXC:SidebarSessions 2026-04-28-05:18
-   * Settings selects the default trailing mode. Agent Icon mode must keep
-   * the icon slot as the default display and reveal Last Active only on hover.
+   * Active session cards keep the icon slot as the default display and reveal
+   * Last Active only on hover. Previous-session rows can request time as their
+   * fixed trailing detail.
    *
    * CDXC:SidebarSessions 2026-05-07-14:57
    * Agentless terminal sessions use the terminal glyph as the default icon
    * slot, so new plain terminals have visible card identity before detection
    * assigns a real agent icon.
-   *
-   * CDXC:Sidebar-overflow-menu 2026-05-04-03:54
-   * Agent Icon/Last Active is a settings preference, not an overflow-menu
-   * shortcut, because it changes the default display behavior for all cards.
    *
    * CDXC:SidebarSessions 2026-05-08-11:01
    * Last Active uses one fixed visual color in session cards. Elapsed time can

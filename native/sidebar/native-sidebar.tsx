@@ -4622,7 +4622,6 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         settings.agentManagerZoomPercent,
         settings.showCloseButtonOnSessionCards,
         settings.showHotkeysOnSessionCards,
-        settings.showLastInteractionTimeOnSessionCards,
         settings.debuggingMode,
         settings.completionBellEnabled,
         settings.completionSound,
@@ -11388,12 +11387,6 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "moveSidebarToOtherSide":
       moveSidebarToOtherSide();
-      return;
-    case "toggleShowLastInteractionTimeOnSessionCards":
-      saveSettings({
-        ...settings,
-        showLastInteractionTimeOnSessionCards: !settings.showLastInteractionTimeOnSessionCards,
-      });
       return;
     case "cycleSessionPersistenceProvider":
       saveSettings({

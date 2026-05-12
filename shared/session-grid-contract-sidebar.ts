@@ -239,7 +239,6 @@ export type SidebarHudState = {
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
-  showLastInteractionTimeOnSessionCards: boolean;
   theme:
     | "plain-dark"
     | "plain-light"
@@ -511,9 +510,6 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "toggleCompletionBell";
-    }
-  | {
-      type: "toggleShowLastInteractionTimeOnSessionCards";
     }
   | {
       type: "cycleSessionPersistenceProvider";

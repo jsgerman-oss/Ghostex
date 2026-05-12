@@ -42,7 +42,6 @@ type SidebarStoryWorkspaceOptions = {
   scratchPadContent: string;
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
-  showLastInteractionTimeOnSessionCards: boolean;
   settings?: zmuxSettings;
   theme: SidebarHydrateMessage["hud"]["theme"];
 };
@@ -89,7 +88,6 @@ export function createSidebarStoryWorkspace(message: SidebarHydrateMessage): Sid
       scratchPadContent: message.scratchPadContent,
       showCloseButtonOnSessionCards: message.hud.showCloseButtonOnSessionCards,
       showHotkeysOnSessionCards: message.hud.showHotkeysOnSessionCards,
-      showLastInteractionTimeOnSessionCards: message.hud.showLastInteractionTimeOnSessionCards,
       settings: message.hud.settings,
       theme: message.hud.theme,
     },
@@ -190,7 +188,6 @@ export function createSidebarStoryMessage(
     workspace.options.agentManagerZoomPercent,
     workspace.options.showCloseButtonOnSessionCards,
     workspace.options.showHotkeysOnSessionCards,
-    workspace.options.showLastInteractionTimeOnSessionCards,
     workspace.options.debuggingMode,
     workspace.options.completionBellEnabled,
     workspace.options.completionSound,
@@ -286,16 +283,6 @@ export function reduceSidebarStoryWorkspace(
           ...workspace.options,
           activeSessionsSortMode:
             workspace.options.activeSessionsSortMode === "manual" ? "lastActivity" : "manual",
-        },
-      };
-
-    case "toggleShowLastInteractionTimeOnSessionCards":
-      return {
-        ...workspace,
-        options: {
-          ...workspace.options,
-          showLastInteractionTimeOnSessionCards:
-            !workspace.options.showLastInteractionTimeOnSessionCards,
         },
       };
 

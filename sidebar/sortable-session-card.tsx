@@ -154,14 +154,12 @@ export function SortableSessionCard({
     showCloseButton,
     showDebugSessionNumbers,
     showHotkeys,
-    showLastInteractionTime,
   } = useSidebarStore(
     useShallow((state) => ({
       renameSessionOnDoubleClick: state.hud.renameSessionOnDoubleClick,
       showCloseButton: state.hud.showCloseButtonOnSessionCards,
       showDebugSessionNumbers: state.hud.debuggingMode,
       showHotkeys: state.hud.showHotkeysOnSessionCards,
-      showLastInteractionTime: state.hud.showLastInteractionTimeOnSessionCards,
     })),
   );
   const [contextMenuPosition, setContextMenuPosition] = useState<ContextMenuPosition>();
@@ -337,12 +335,11 @@ export function SortableSessionCard({
       session.isReloading === true || session.isGeneratingFirstPromptTitle === true;
     const hasHeaderAgentIcon =
       Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner;
-    const defaultTrailingDisplay =
-      !showLastInteractionTime && hasHeaderAgentIcon
-        ? "icon"
-        : hasLastInteractionLabel
-          ? "time"
-          : "icon";
+    const defaultTrailingDisplay = hasHeaderAgentIcon
+      ? "icon"
+      : hasLastInteractionLabel
+        ? "time"
+        : "icon";
     const shouldKeepLoadingIconVisible = showHeaderLoadingSpinner && hasHeaderAgentIcon;
     const hoverTrailingDisplay = shouldKeepLoadingIconVisible
       ? "icon"
@@ -364,7 +361,6 @@ export function SortableSessionCard({
       primaryTitle: session.primaryTitle,
       sessionId: session.sessionId,
       showTerminalSessionIcon,
-      showLastInteractionTime,
       terminalTitle: session.terminalTitle,
     });
     if (lastAgentIconRenderDebugKeyRef.current === debugKey) {
@@ -391,7 +387,6 @@ export function SortableSessionCard({
       sessionActivity: session.activity,
       sessionId: session.sessionId,
       sessionKind: session.sessionKind,
-      showLastInteractionTime,
       terminalTitle: session.terminalTitle,
     });
 
@@ -439,7 +434,6 @@ export function SortableSessionCard({
     session.sessionKind,
     session.terminalTitle,
     showTerminalSessionIcon,
-    showLastInteractionTime,
     vscode,
   ]);
 
@@ -1143,7 +1137,6 @@ export function SortableSessionCard({
               showDebugSessionNumbers={showDebugSessionNumbers}
               showCloseButton={showCloseButton}
               showHotkeys={showHotkeys}
-              showLastInteractionTime={showLastInteractionTime}
             />
           </article>
           <div aria-hidden className="session-status-dot session-status-dot-inline" />
