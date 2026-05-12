@@ -121,8 +121,10 @@ import {
   type zmuxHotkeyActionId,
   type zmuxHotkeySettings,
 } from "../shared/zmux-hotkeys";
+import { PET_OPTIONS, type PetId } from "../shared/pets";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { HotkeyRecorderField } from "./hotkey-recorder-field";
+import { PetAvatar } from "./pet-avatar";
 import { SidebarCommandIconGlyph, SIDEBAR_COMMAND_ICON_OPTIONS } from "./sidebar-command-icon";
 import { useSidebarStore } from "./sidebar-store";
 import type { AgentConfigDraft } from "./agent-config-modal";
@@ -321,6 +323,19 @@ export function SettingsModal({
         key: "showLastInteractionTimeOnSessionCards",
         subtitle: "Choose Last Active as the default trailing card detail instead of Agent Icon.",
         title: "Use Last Active instead of Agent Icon",
+      },
+    ]),
+    pets: getSettingsSectionSearch(settingsSearchQuery, "Pets", [
+      {
+        key: "petOverlayEnabled",
+        subtitle: "Show the draggable animated pet in the native sidebar.",
+        title: "Wake Pet",
+      },
+      {
+        key: "selectedPetId",
+        options: PET_OPTIONS.map((option) => ({ label: option.displayName, value: option.id })),
+        subtitle: "Choose the pet sprite.",
+        title: "Pet",
       },
     ]),
     sidebar: getSettingsSectionSearch(settingsSearchQuery, "Sidebar", [
@@ -974,6 +989,27 @@ export function SettingsModal({
                 label="Double-click session cards to rename"
                 {...getSettingModificationProps("renameSessionOnDoubleClick")}
                 onChange={(checked) => updateDraft("renameSessionOnDoubleClick", checked)}
+              />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {shouldShowSettingsSection(settingsSearch.pets) ? (
+            <SettingsSection title="Pets">
+              {shouldShowSetting(settingsSearch.pets, "petOverlayEnabled") ? (
+              <ToggleField
+                checked={draft.petOverlayEnabled}
+                description="Show the draggable animated pet in the native sidebar."
+                label="Wake Pet"
+                {...getSettingModificationProps("petOverlayEnabled")}
+                onChange={(checked) => updateDraft("petOverlayEnabled", checked)}
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.pets, "selectedPetId") ? (
+              <PetPickerField
+                {...getSettingModificationProps("selectedPetId")}
+                onChange={(value) => updateDraft("selectedPetId", value)}
+                value={draft.selectedPetId}
               />
               ) : null}
             </SettingsSection>
@@ -3497,6 +3533,51 @@ function SelectField({
           </SelectGroup>
         </SelectContent>
       </Select>
+    </SettingRow>
+  );
+}
+
+function PetPickerField({
+  isModified,
+  onChange,
+  onResetToDefault,
+  value,
+}: {
+  onChange: (value: PetId) => void;
+  value: PetId;
+} & SettingModificationProps) {
+  const id = useId();
+  const selectedPet = PET_OPTIONS.find((option) => option.id === value) ?? PET_OPTIONS[0]!;
+  return (
+    <SettingRow
+      description="Choose the pet sprite."
+      htmlFor={id}
+      isModified={isModified}
+      label="Pet"
+      onResetToDefault={onResetToDefault}
+    >
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-muted/30">
+          <PetAvatar className="scale-[0.42]" petId={selectedPet.id} />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <Select onValueChange={(nextValue) => onChange(nextValue as PetId)} value={value}>
+            <SelectTrigger className="h-10 w-full px-3 text-sm" id={id}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {PET_OPTIONS.map((option) => (
+                  <SelectItem key={option.id} value={option.id}>
+                    {option.displayName}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <div className="truncate text-xs text-muted-foreground">{selectedPet.description}</div>
+        </div>
+      </div>
     </SettingRow>
   );
 }

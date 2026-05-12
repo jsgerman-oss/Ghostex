@@ -382,6 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var zedOverlayController: ZedOverlayController?
   private var browserOverlayController: BrowserOverlayController?
   private var sessionStatusIndicatorController: SessionStatusIndicatorController?
+  private var petOverlayController: PetOverlayController?
   private var hasPresentedAccessibilityPermissionDialog = false
   private var pendingZedOverlayConfiguration: ConfigureZedOverlay?
   private var hasUserDetachedZedOverlay = false
@@ -1044,6 +1045,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       self?.handleSessionStatusIndicatorClick(status)
     }
     self.sessionStatusIndicatorController = sessionStatusIndicatorController
+    let petOverlayController = PetOverlayController()
+    self.petOverlayController = petOverlayController
+    petOverlayController.load(webAssets: zmuxRootView.resolveWebAssets())
     let root = zmuxRootView(
       ghostty: ghostty,
       sendEvent: { [weak self] event in
@@ -1085,6 +1089,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       },
       setSessionStatusIndicators: { [weak sessionStatusIndicatorController] command in
         sessionStatusIndicatorController?.apply(command)
+      },
+      setPetOverlayState: { [weak petOverlayController] command in
+        petOverlayController?.apply(command)
       }
     )
     workspaceView = root.workspaceView
@@ -1550,6 +1557,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       workspaceView?.setActiveTerminalSet(command)
     case .setSessionStatusIndicators(let command):
       sessionStatusIndicatorController?.apply(command)
+    case .setPetOverlayState(let command):
+      petOverlayController?.apply(command)
     case .showSessionAttentionNotification(let command):
       sessionAttentionNotificationController.show(command)
     case .setTerminalLayout(let command):
@@ -2907,6 +2916,7 @@ final class zmuxRootView: NSView {
   private let showBrowserWindow: () -> Void
   private let setAppTitlebarTitle: (String?) -> Void
   private let setSessionStatusIndicators: (SetSessionStatusIndicators) -> Void
+  private let setPetOverlayState: (SetPetOverlayState) -> Void
   private let sendHostEvent: (HostEvent) -> Void
   private let nativeSettingsStore = NativeSettingsStore()
   private var isModalHostReady = false
@@ -2951,7 +2961,8 @@ final class zmuxRootView: NSView {
     openWorkspaceInIde: @escaping (OpenWorkspaceInIde) -> Void,
     showBrowserWindow: @escaping () -> Void,
     setAppTitlebarTitle: @escaping (String?) -> Void,
-    setSessionStatusIndicators: @escaping (SetSessionStatusIndicators) -> Void
+    setSessionStatusIndicators: @escaping (SetSessionStatusIndicators) -> Void,
+    setPetOverlayState: @escaping (SetPetOverlayState) -> Void
   ) {
     self.workspaceView = TerminalWorkspaceView(
       ghostty: ghostty,
@@ -2970,6 +2981,7 @@ final class zmuxRootView: NSView {
     self.showBrowserWindow = showBrowserWindow
     self.setAppTitlebarTitle = setAppTitlebarTitle
     self.setSessionStatusIndicators = setSessionStatusIndicators
+    self.setPetOverlayState = setPetOverlayState
     self.sendHostEvent = sendEvent
     self.sidebarWidth = nativeSettingsStore.readSidebarChrome().width ?? Self.defaultSidebarWidth
     self.sidebarSide = nativeSettingsStore.readSidebarSide()
@@ -3397,6 +3409,8 @@ final class zmuxRootView: NSView {
       workspaceView.setActiveTerminalSet(command)
     case .setSessionStatusIndicators(let command):
       setSessionStatusIndicators(command)
+    case .setPetOverlayState(let command):
+      setPetOverlayState(command)
     case .showSessionAttentionNotification(let command):
       sessionAttentionNotificationController.show(command)
     case .setTerminalLayout(let command):
@@ -4575,7 +4589,7 @@ final class zmuxRootView: NSView {
     )
   }
 
-  private static func resolveWebAssets() -> URL {
+  static func resolveWebAssets() -> URL {
     // CDXC:NativeSidebar 2026-04-27-06:19: Sidebar assets should be loaded
     // from the app bundle first because users normally launch the installed
     // app from /Applications, where FileManager.currentDirectoryPath is not

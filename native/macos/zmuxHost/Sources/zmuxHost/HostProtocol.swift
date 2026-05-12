@@ -22,6 +22,7 @@ enum HostCommand: Decodable {
   case sendTerminalEnter(SessionCommand)
   case setActiveTerminalSet(SetActiveTerminalSet)
   case setSessionStatusIndicators(SetSessionStatusIndicators)
+  case setPetOverlayState(SetPetOverlayState)
   case showSessionAttentionNotification(ShowSessionAttentionNotification)
   case setTerminalLayout(SetTerminalLayout)
   case setTerminalVisibility(SetTerminalVisibility)
@@ -87,6 +88,7 @@ enum HostCommand: Decodable {
     case sendTerminalEnter
     case setActiveTerminalSet
     case setSessionStatusIndicators
+    case setPetOverlayState
     case showSessionAttentionNotification
     case setTerminalLayout
     case setTerminalVisibility
@@ -172,6 +174,8 @@ enum HostCommand: Decodable {
       self = .setActiveTerminalSet(try SetActiveTerminalSet(from: decoder))
     case .setSessionStatusIndicators:
       self = .setSessionStatusIndicators(try SetSessionStatusIndicators(from: decoder))
+    case .setPetOverlayState:
+      self = .setPetOverlayState(try SetPetOverlayState(from: decoder))
     case .showSessionAttentionNotification:
       self = .showSessionAttentionNotification(try ShowSessionAttentionNotification(from: decoder))
     case .setTerminalLayout:
@@ -435,6 +439,23 @@ struct SetSessionStatusIndicators: Decodable {
   let hideFloatingIndicators: Bool
   let hideMenuBarIndicators: Bool
   let size: NativeSessionStatusIndicatorSize
+}
+
+struct SetPetOverlayState: Codable {
+  let activities: [PetOverlayActivity]
+  let enabled: Bool
+  let selectedPetId: String
+}
+
+struct PetOverlayActivity: Codable {
+  let id: String
+  let state: PetOverlayActivityState
+  let title: String
+}
+
+enum PetOverlayActivityState: String, Codable {
+  case attention
+  case working
 }
 
 struct ShowSessionAttentionNotification: Decodable {

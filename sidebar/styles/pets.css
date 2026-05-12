@@ -1,0 +1,103 @@
+.pet-avatar-root {
+  aspect-ratio: 192 / 208;
+  background-image: var(--pet-spritesheet-url);
+  background-repeat: no-repeat;
+  background-size: 800% 900%;
+  image-rendering: pixelated;
+  width: 7.04rem;
+}
+
+.pet-host-body {
+  background: transparent;
+  margin: 0;
+  overflow: hidden;
+}
+
+.pet-host-root {
+  align-items: center;
+  box-sizing: border-box;
+  cursor: grab;
+  display: flex;
+  height: 100vh;
+  justify-content: center;
+  padding: 0;
+  touch-action: none;
+  user-select: none;
+  width: 100vw;
+}
+
+.pet-host-root:active,
+.pet-host-shell[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.pet-host-shell {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  justify-content: flex-end;
+  padding: 0.35rem 0.4rem 0.3rem;
+  width: min(100vw, 19rem);
+}
+
+.pet-host-shell .pet-avatar-root {
+  width: 5.28rem;
+}
+
+.pet-thread-stack {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: min(100%, 17rem);
+}
+
+.pet-thread-bubble {
+  align-items: center;
+  background: rgba(16, 16, 16, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.85rem;
+  box-shadow: 0 0.6rem 1.6rem rgba(0, 0, 0, 0.24);
+  box-sizing: border-box;
+  color: #f4f4f5;
+  display: grid;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  grid-template-columns: 0.55rem minmax(0, 1fr) auto;
+  gap: 0.45rem;
+  min-height: 2.9rem;
+  padding: 0.46rem 0.62rem 0.5rem;
+  width: 100%;
+}
+
+.pet-thread-status {
+  border-radius: 999px;
+  height: 0.55rem;
+  width: 0.55rem;
+}
+
+.pet-thread-bubble[data-state="attention"] .pet-thread-status {
+  background: #22c55e;
+}
+
+.pet-thread-bubble[data-state="working"] .pet-thread-status {
+  background: #f59e0b;
+}
+
+.pet-thread-title {
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.12;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pet-thread-state {
+  color: rgba(244, 244, 245, 0.7);
+  font-size: 0.64rem;
+  font-weight: 600;
+  line-height: 1;
+  text-transform: uppercase;
+}
