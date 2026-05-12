@@ -1,7 +1,3 @@
-# App was renamed from zmux to Ghostex to better represent what it does.
-> This app is my attempt to bring the best parts of Codex App's amazing UX to Agent CLI users with real native Ghostty terminals.<br/>
-> Sorry for any inconvienence cause by the rename 🙏🏻
-
 ## The best parts of Ghostty & Codex App = Ghostex!<br />
 ### Fully-featured Native Agent CLIs Manager<br />Embedded Browser | Advanced Agents Support | Fast & Lower RAM <br /><br />
 
