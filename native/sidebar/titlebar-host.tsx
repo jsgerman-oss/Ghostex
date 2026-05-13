@@ -238,6 +238,12 @@ function App() {
      * Dropdown content is portaled outside the root node by Radix. Measure all
      * titlebar hit-region elements in the document so AppKit lets both the
      * grouped button and its open menu receive pointer events.
+     *
+     * CDXC:ReactTitlebar 2026-05-12-18:58
+     * Portaled menus can finish placement after the React open-state commit.
+     * Publish the measured rectangles after layout settles as well as during
+     * the commit so visible Configure menu items cannot fall through the
+     * native titlebar pass-through area before their own onClick handlers run.
      */
     const regions = Array.from(
       document.querySelectorAll<HTMLElement>("[data-titlebar-hit-region]"),
@@ -253,8 +259,25 @@ function App() {
     postNative({ regions, type: "setReactTitlebarHitRegions" });
   }, []);
 
-  useLayoutEffect(() => {
+  const publishSettledHitRegions = useCallback(() => {
     publishHitRegions();
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      publishHitRegions();
+      secondFrame = window.requestAnimationFrame(publishHitRegions);
+    });
+    const settledTimeout = window.setTimeout(publishHitRegions, 120);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== 0) {
+        window.cancelAnimationFrame(secondFrame);
+      }
+      window.clearTimeout(settledTimeout);
+    };
+  }, [publishHitRegions]);
+
+  useLayoutEffect(() => {
+    return publishSettledHitRegions();
   }, [
     activeTarget?.id,
     activeAction?.commandId,
@@ -263,7 +286,7 @@ function App() {
     openInMenuOpen,
     projectState.projectIconDataUrl,
     projectState.projectName,
-    publishHitRegions,
+    publishSettledHitRegions,
   ]);
 
   useEffect(() => {

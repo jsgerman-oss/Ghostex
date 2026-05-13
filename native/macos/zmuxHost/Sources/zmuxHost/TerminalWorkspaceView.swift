@@ -844,6 +844,12 @@ final class TerminalWorkspaceView: NSView {
     let targetSessionId: String
   }
 
+  private struct PaneHeaderDropTarget {
+    let feedbackSessionId: String
+    let placement: PaneDropPlacement
+    let targetSessionId: String
+  }
+
   private struct CEFNativeDragSourceRelease {
     let chromiumView: ZmuxCEFBrowserView
     let startWindowPoint: CGPoint
@@ -866,15 +872,16 @@ final class TerminalWorkspaceView: NSView {
   private static let paneResizeMinimumHeight: CGFloat = 160
   private static let paneResizeMinimumWidth: CGFloat = 220
   private static let paneResizeOuterEdgeExclusion: CGFloat = 8
+  private static let paneResizeRailWidth: CGFloat = 5
   /**
    CDXC:NativePaneResize 2026-05-11-10:40
    Pane split resizing must match native model: only the actual split rail owns
-   hover cursor and drag events. Do not use a window-local resize monitor,
-   because it can compete with the sidebar resize handle.
+   cursor and drag events. Do not use a window-local resize monitor, because it
+   can compete with the sidebar resize handle.
    CDXC:NativePaneResize 2026-05-11-17:53
    Split rails must be real AppKit divider siblings that occupy the visible
    pane gap, not transparent overlays extending across pane content. The drag
-   target is the divider line itself.
+   target is the divider rail itself.
    */
   private static let paneHeaderDragThreshold: CGFloat = 6
   private static let paneHeaderDragGhostMaxWidth: CGFloat = 230
@@ -1615,6 +1622,9 @@ final class TerminalWorkspaceView: NSView {
         text: text,
         replacementRange: replacementRange)
     }
+    surfaceView.onMouseDownFocus = { [weak self] surfaceView, event in
+      self?.focusTerminalFromContentMouseDown(surfaceView: surfaceView, event: event)
+    }
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.createTerminal.surfaceInit.completed",
       details: [
@@ -1642,13 +1652,6 @@ final class TerminalWorkspaceView: NSView {
         event,
         sessionId: command.sessionId,
         focusReason: "nativeTitleBarMouseDown")
-    }
-    titleBarView.resizeCursorForPoint = { [weak self, weak titleBarView] point in
-      guard let self, let titleBarView else {
-        return nil
-      }
-      let workspacePoint = self.convert(point, from: titleBarView)
-      return self.paneResizeCursor(at: workspacePoint)
     }
     titleBarView.onAction = { [weak self] action in
       guard let self else { return }
@@ -2106,13 +2109,6 @@ final class TerminalWorkspaceView: NSView {
         event,
         sessionId: command.sessionId,
         focusReason: "nativeWebTitleBarMouseDown")
-    }
-    titleBarView.resizeCursorForPoint = { [weak self, weak titleBarView] point in
-      guard let self, let titleBarView else {
-        return nil
-      }
-      let workspacePoint = self.convert(point, from: titleBarView)
-      return self.paneResizeCursor(at: workspacePoint)
     }
     titleBarView.onAction = { [weak self] action in
       guard let self else { return }
@@ -2614,6 +2610,37 @@ final class TerminalWorkspaceView: NSView {
         "visibleSessionIds": orderedVisibleSessionIds(),
         "windowIsKey": window?.isKeyWindow ?? false,
       ])
+  }
+
+  private func focusTerminalFromContentMouseDown(
+    surfaceView: ZmuxGhosttySurfaceView,
+    event: NSEvent
+  ) {
+    guard let clickedSessionId = surfaceView.zmuxSessionId else {
+      return
+    }
+    let responderSessionId =
+      event.window?.firstResponder.flatMap { sessionId(containing: $0) } ?? currentResponderSessionId()
+    let isSurfaceFirstResponder = event.window?.firstResponder === surfaceView
+    guard focusedSessionId != clickedSessionId || responderSessionId != clickedSessionId || !isSurfaceFirstResponder else {
+      return
+    }
+    /**
+     CDXC:NativeTerminalFocus 2026-05-13-07:41
+     Terminal content clicks must focus the clicked pane through the same native
+     AppKit path as titlebar clicks. Relying only on NSWindow first-responder
+     change notifications misses cases where AppKit keeps an old responder or
+     duplicate focus suppression leaves the visible pane border stale.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.terminalContent.focusMouseDown",
+      details: [
+        "focusedSessionIdBefore": nullableString(focusedSessionId),
+        "isSurfaceFirstResponder": isSurfaceFirstResponder,
+        "responderSessionIdBefore": nullableString(responderSessionId),
+        "sessionId": clickedSessionId,
+      ])
+    focusTerminal(sessionId: clickedSessionId, reason: "nativeTerminalContentMouseDown")
   }
 
   func windowFirstResponderChanged(_ responder: NSResponder?, reason: String) {
@@ -3173,7 +3200,6 @@ final class TerminalWorkspaceView: NSView {
 
   private func hidePaneResizeHandleViews() {
     for handleView in paneResizeHandleViews {
-      handleView.resetInteractionState()
       handleView.isHidden = true
       handleView.frame = .zero
     }
@@ -3192,11 +3218,10 @@ final class TerminalWorkspaceView: NSView {
      Match native divider behavior in AppKit: every split boundary gets one
      real rail view, and that rail alone owns cursor, mouseDown, mouseDragged,
      and mouseUp for resizing.
-     CDXC:NativePaneResize 2026-05-11-17:53
-     Divider views are not overlays. They occupy only the real split gap
-     reserved by layout and do not reorder above pane leaves; normal AppKit
-     sibling hit testing routes events to the divider because no pane covers
-     that gap.
+     CDXC:NativePaneResize 2026-05-13-07:23
+     Pane split rails now follow the stable sidebar divider model: each split
+     reserves one real five-pixel AppKit rail between pane containers, and that
+     rail alone owns cursor rects plus direct mouse drag delivery.
      */
     while paneResizeHandleViews.count < paneResizeHits.count {
       let handleView = TerminalWorkspacePaneResizeHandleView()
@@ -3211,26 +3236,23 @@ final class TerminalWorkspaceView: NSView {
 
     for (index, handleView) in paneResizeHandleViews.enumerated() {
       guard index < paneResizeHits.count else {
-        handleView.resetInteractionState()
         handleView.isHidden = true
         handleView.frame = .zero
         continue
       }
       let hit = paneResizeHits[index]
+      handleView.onMouseDown = { [weak self, hit] event in
+        _ = self?.beginPaneResize(hit: hit, event: event)
+      }
+      handleView.frame = paneResizeHandleFrame(for: hit)
       handleView.configure(
         direction: hit.direction,
         cursor: paneResizeCursor(for: hit.direction)
       )
-      handleView.onMouseDown = { [weak self, hit] event in
-        _ = self?.beginPaneResize(hit: hit, event: event)
-      }
-      handleView.frame = hit.rect
       handleView.isHidden = false
-      handleView.layer?.zPosition = 0
+      handleView.layer?.zPosition = 10_000
       handleView.layer?.backgroundColor = NSColor.clear.cgColor
-      if handleView.superview == nil {
-        addSubview(handleView)
-      }
+      addSubview(handleView, positioned: .above, relativeTo: nil)
       window?.invalidateCursorRects(for: handleView)
     }
   }
@@ -3543,11 +3565,16 @@ final class TerminalWorkspaceView: NSView {
       }
       /**
        CDXC:WorkspaceLayout 2026-04-28-06:01
-       Native split panes must use the same Pane Gap setting as the sidebar
-       control. Apply the gap as real AppKit layout space between split
-       siblings instead of hardcoded 1px child insets.
+       Native split panes must reserve real AppKit layout space between split
+       siblings instead of relying on terminal/content overlays.
+
+       CDXC:NativePaneResize 2026-05-13-07:23
+       Match the stable sidebar divider shape for internal pane dividers:
+       children are separated by a real five-pixel AppKit rail. The rail is the
+       native cursor and drag owner, so terminal/browser/titlebar views never
+       compete for the same hover strip.
        */
-      let gap = splitGap(forChildCount: visibleChildren.count)
+      let gap = splitDividerWidth(forChildCount: visibleChildren.count)
       let defaultRatios = defaultPaneResizeRatios(
         childCount: visibleChildren.count,
         firstRatio: ratio.map { CGFloat($0) })
@@ -3619,11 +3646,16 @@ final class TerminalWorkspaceView: NSView {
   private func splitGap(forChildCount childCount: Int) -> CGFloat {
     /**
      CDXC:NativePaneResize 2026-05-11-18:16
-     Internal split dividers must use the same visible gap as pane edges near
-     the sidebar. The earlier 16px minimum made split-to-split spacing look
-     larger than pane-to-sidebar spacing after moving to real divider siblings.
+     Grid layouts keep the Pane Gap setting between independent panes, matching
+     the outer workspace inset. Structured split layouts use
+     splitDividerWidth(forChildCount:) so internal rails match the stable native
+     sidebar divider: one real five-pixel AppKit cursor/drag owner.
      */
     childCount <= 1 ? 0 : paneGap
+  }
+
+  private func splitDividerWidth(forChildCount childCount: Int) -> CGFloat {
+    childCount <= 1 ? 0 : Self.paneResizeRailWidth
   }
 
   /**
@@ -3660,7 +3692,7 @@ final class TerminalWorkspaceView: NSView {
     rect: CGRect
   ) {
     guard childRects.count > 1 else { return }
-    let visualGap = splitGap(forChildCount: childRects.count)
+    let visualGap = splitDividerWidth(forChildCount: childRects.count)
     for boundaryIndex in 1..<childRects.count {
       let previous = childRects[boundaryIndex - 1]
       let next = childRects[boundaryIndex]
@@ -3877,18 +3909,25 @@ final class TerminalWorkspaceView: NSView {
     direction == .horizontal ? .resizeLeftRight : .resizeUpDown
   }
 
+  private func paneResizeHandleFrame(for hit: PaneResizeHit) -> CGRect {
+    /**
+     CDXC:NativePaneResize 2026-05-13-07:23
+     Pane split rails use the same ownership shape as the sidebar resize rail:
+     the real reserved divider rect is the complete native hit target and cursor
+     rect. Do not expand this frame over neighboring terminal/browser/titlebar
+     views, because overlap lets those views compete for cursor settling.
+     */
+    return hit.rect.intersection(bounds)
+  }
+
   override func resetCursorRects() {
     super.resetCursorRects()
     /**
-     CDXC:NativePaneResize 2026-05-11-18:08
-     Split divider cursors must settle on resize while the pointer is paused in
-     the real divider gap. Register cursor rects on the workspace as well as on
-     the divider view so AppKit's cursor-rect pass cannot fall back to a
-     neighboring pane's default cursor.
+     CDXC:NativePaneResize 2026-05-13-07:23
+     Pane split rails follow the sidebar divider model: the rail view owns its
+     cursor rect directly. The workspace advertises only sidebar-edge resizing
+     here so pane cursor ownership has a single AppKit owner.
      */
-    for hit in paneResizeHits {
-      addCursorRect(hit.rect, cursor: paneResizeCursor(for: hit.direction))
-    }
     if let sidebarResizeEdgeRect {
       addCursorRect(sidebarResizeEdgeRect, cursor: .resizeLeftRight)
     }
@@ -3927,13 +3966,23 @@ final class TerminalWorkspaceView: NSView {
    terminal line remains selectable and cannot start pane reordering.
 
    CDXC:NativePaneResize 2026-05-11-17:53
-   Split dividers are ordinary AppKit siblings in the reserved pane gap. Do not
-   prioritize them with overlay hit testing; normal hit testing should reach a
-   divider only when the pointer is actually inside the gap it occupies.
+   Split dividers are ordinary AppKit siblings in the reserved pane gap.
+
+   CDXC:NativePaneResize 2026-05-13-07:35
+   Pane resize rails are real AppKit divider siblings between pane containers.
+   This workspace has custom titlebar/content hit routing, so check the rail
+   view before pane chrome. Without this explicit native handoff, titlebar
+   routing can bypass the rail and make pane resize cursors/drags disappear.
    */
   override func hitTest(_ point: NSPoint) -> NSView? {
     if let floatingEditorHitView = floatingEditorHitView(at: point) {
       return floatingEditorHitView
+    }
+    if sidebarResizeEdgeRect?.contains(point) == true {
+      return self
+    }
+    if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
+      return paneResizeHandleHitView
     }
     guard !isProjectEditorInteractionSurfaceActive else {
       return super.hitTest(point)
@@ -3949,6 +3998,18 @@ final class TerminalWorkspaceView: NSView {
       }
       return titleBarHitView
     }
+    /**
+     CDXC:NativeTerminalFocus 2026-05-13-07:48
+     Terminal content clicks must resolve through the current visible pane-owner
+     layout before falling through to AppKit child z-order. Stale inactive-tab
+     surfaces and recently focused pane containers can otherwise overlap a
+     neighboring pane enough that clicking the left side of a pane focuses the
+     pane immediately to its left. Resize rails and title bars keep priority
+     above this content route.
+     */
+    if let contentHitView = paneContentHitView(at: point) {
+      return contentHitView
+    }
     let hitView = super.hitTest(point)
     if paneTitleBarAncestor(of: hitView) != nil {
       logPaneReorderProbe(
@@ -3960,6 +4021,23 @@ final class TerminalWorkspaceView: NSView {
       return paneContentHitView(at: point)
     }
     return hitView
+  }
+
+  private func paneResizeHandleHitView(at point: NSPoint) -> NSView? {
+    for handleView in paneResizeHandleViews.reversed() {
+      guard
+        !handleView.isHidden,
+        handleView.alphaValue > 0,
+        handleView.frame.contains(point)
+      else {
+        continue
+      }
+      let handlePoint = handleView.convert(point, from: self)
+      if let hitView = handleView.hitTest(handlePoint) {
+        return hitView
+      }
+    }
+    return nil
   }
 
   private func floatingEditorHitView(at point: NSPoint) -> NSView? {
@@ -4017,16 +4095,30 @@ final class TerminalWorkspaceView: NSView {
 
   private func paneContentHitView(at point: CGPoint) -> NSView? {
     for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
-      if let session = sessions[sessionId] {
+      if let session = sessions[sessionId],
+        !session.containerView.isHidden,
+        session.containerView.window != nil,
+        session.containerView.frame.contains(point)
+      {
+        if !session.searchBarView.isHidden {
+          let searchPoint = convert(point, to: session.searchBarView)
+          if session.searchBarView.bounds.contains(searchPoint) {
+            return session.searchBarView.hitTest(searchPoint) ?? session.searchBarView
+          }
+        }
         let contentPoint = convert(point, to: session.scrollView)
         if session.scrollView.bounds.contains(contentPoint) {
-          return session.scrollView.hitTest(contentPoint)
+          return session.scrollView.hitTest(contentPoint) ?? session.scrollView
         }
       }
-      if let session = webPaneSessions[sessionId] {
+      if let session = webPaneSessions[sessionId],
+        !session.containerView.isHidden,
+        session.containerView.window != nil,
+        session.containerView.frame.contains(point)
+      {
         let contentPoint = convert(point, to: session.hostView)
         if session.hostView.bounds.contains(contentPoint) {
-          return session.hostView.hitTest(contentPoint)
+          return session.hostView.hitTest(contentPoint) ?? session.hostView
         }
       }
     }
@@ -4827,8 +4919,7 @@ final class TerminalWorkspaceView: NSView {
       ])
       return
     }
-    guard let targetSessionId = paneSessionId(at: point), targetSessionId != drag.sourceSessionId
-    else {
+    guard let dropTarget = paneHeaderDropTarget(at: point, sourceSessionId: drag.sourceSessionId) else {
       TerminalFocusDebugLog.append(
         event: "nativePaneReorder.dropIgnored",
         details: [
@@ -4846,35 +4937,36 @@ final class TerminalWorkspaceView: NSView {
       }
       return
     }
-    let placement = paneDropPlacement(at: point, targetSessionId: targetSessionId)
     TerminalFocusDebugLog.append(
       event: "nativePaneReorder.dropRequested",
       details: [
-        "placement": placement.rawValue,
+        "placement": dropTarget.placement.rawValue,
         "point": describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0)),
         "sourceSessionId": drag.sourceSessionId,
-        "targetSessionId": targetSessionId,
+        "targetSessionId": dropTarget.targetSessionId,
       ])
     if drag.startedFromTab {
       NativePaneTabDragReproLog.append(event: "nativePaneTabDrag.dropRequested", details: [
-        "placement": placement.rawValue,
+        "feedbackSessionId": dropTarget.feedbackSessionId,
+        "placement": dropTarget.placement.rawValue,
         "point": describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0)),
         "sourceSessionId": drag.sourceSessionId,
-        "targetFrame": paneFrame(for: targetSessionId).map(describeFrame) ?? NSNull(),
-        "targetSessionId": targetSessionId,
+        "targetFrame": paneFrame(for: dropTarget.feedbackSessionId).map(describeFrame) ?? NSNull(),
+        "targetSessionId": dropTarget.targetSessionId,
         "windowNumber": event.window?.windowNumber ?? NSNull(),
       ])
     }
     sendEvent(
       .paneReorderRequested(
         sourceSessionId: drag.sourceSessionId,
-        targetSessionId: targetSessionId,
-        placement: placement))
+        targetSessionId: dropTarget.targetSessionId,
+        placement: dropTarget.placement))
     if drag.startedFromTab {
       NativePaneTabDragReproLog.append(event: "nativePaneTabs.hostEvent.sent.paneReorderRequested", details: [
-        "placement": placement.rawValue,
+        "feedbackSessionId": dropTarget.feedbackSessionId,
+        "placement": dropTarget.placement.rawValue,
         "sourceSessionId": drag.sourceSessionId,
-        "targetSessionId": targetSessionId,
+        "targetSessionId": dropTarget.targetSessionId,
       ])
     }
   }
@@ -4951,7 +5043,7 @@ final class TerminalWorkspaceView: NSView {
     let tabReorderTarget = paneTabReorderDropTarget(at: point, sourceSessionId: sourceSessionId)
     if let tabReorderTarget {
       updatePaneTabReorderTarget(tabReorderTarget)
-      updatePaneHeaderDropTarget(sourceSessionId: sourceSessionId, targetSessionId: nil, placement: nil)
+      updatePaneHeaderDropTarget(feedbackSessionId: nil, placement: nil)
       if var drag = paneHeaderDrag, drag.sourceSessionId == sourceSessionId {
         let targetChanged = drag.targetSessionId != tabReorderTarget.targetSessionId
         drag.targetSessionId = tabReorderTarget.targetSessionId
@@ -4969,7 +5061,7 @@ final class TerminalWorkspaceView: NSView {
     }
     if isPointInSourceTabStrip(point, sourceSessionId: sourceSessionId) {
       updatePaneTabReorderTarget(nil)
-      updatePaneHeaderDropTarget(sourceSessionId: sourceSessionId, targetSessionId: nil, placement: nil)
+      updatePaneHeaderDropTarget(feedbackSessionId: nil, placement: nil)
       if var drag = paneHeaderDrag, drag.sourceSessionId == sourceSessionId {
         let targetChanged = drag.targetSessionId != nil
         drag.targetSessionId = nil
@@ -4986,21 +5078,19 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     updatePaneTabReorderTarget(nil)
-    let targetSessionId = paneSessionId(at: point)
-    let placement = targetSessionId.map { paneDropPlacement(at: point, targetSessionId: $0) }
+    let dropTarget = paneHeaderDropTarget(at: point, sourceSessionId: sourceSessionId)
     updatePaneHeaderDropTarget(
-      sourceSessionId: sourceSessionId,
-      targetSessionId: targetSessionId,
-      placement: placement)
+      feedbackSessionId: dropTarget?.feedbackSessionId,
+      placement: dropTarget?.placement)
     if var drag = paneHeaderDrag, drag.sourceSessionId == sourceSessionId {
-      let nextTargetSessionId = targetSessionId == sourceSessionId ? nil : targetSessionId
+      let nextTargetSessionId = dropTarget?.targetSessionId
       let targetChanged = drag.targetSessionId != nextTargetSessionId
       drag.targetSessionId = nextTargetSessionId
       logPaneTabDragMoveIfNeeded(
         drag: &drag,
         eventTimestamp: eventTimestamp,
         ghostOrigin: ghostOrigin,
-        placement: targetSessionId == sourceSessionId ? nil : placement,
+        placement: dropTarget?.placement,
         point: point,
         targetChanged: targetChanged,
         targetSessionId: nextTargetSessionId)
@@ -5070,6 +5160,55 @@ final class TerminalWorkspaceView: NSView {
     return false
   }
 
+  private func paneHeaderDropTarget(
+    at point: CGPoint,
+    sourceSessionId: String
+  ) -> PaneHeaderDropTarget? {
+    guard let feedbackSessionId = paneSessionId(at: point) else {
+      return nil
+    }
+    let placement = paneDropPlacement(at: point, targetSessionId: feedbackSessionId)
+    if feedbackSessionId != sourceSessionId {
+      return PaneHeaderDropTarget(
+        feedbackSessionId: feedbackSessionId,
+        placement: placement,
+        targetSessionId: feedbackSessionId)
+    }
+    guard placement != .center,
+      let targetSessionId = samePaneSplitAnchorSessionId(
+        for: feedbackSessionId,
+        sourceSessionId: sourceSessionId,
+        placeAfterTarget: placement == .right || placement == .bottom)
+    else {
+      return nil
+    }
+    /**
+     CDXC:PaneTabs 2026-05-12-11:08
+     Dragging the active tab to the edge of its own multi-tab pane must show and
+     execute split drop targets. Use the visible active pane for feedback, but
+     send a remaining tab sibling as the mutation target so the sidebar can
+     remove the source tab first and still find the pane to split.
+     */
+    return PaneHeaderDropTarget(
+      feedbackSessionId: feedbackSessionId,
+      placement: placement,
+      targetSessionId: targetSessionId)
+  }
+
+  private func samePaneSplitAnchorSessionId(
+    for feedbackSessionId: String,
+    sourceSessionId: String,
+    placeAfterTarget: Bool
+  ) -> String? {
+    for (ownerSessionId, titleBarView) in visiblePaneTitleBarViews()
+    where ownerSessionId == feedbackSessionId && titleBarView.containsTab(sourceSessionId) {
+      return titleBarView.splitAnchorSessionId(
+        excluding: sourceSessionId,
+        placeAfterTarget: placeAfterTarget)
+    }
+    return nil
+  }
+
   private func visiblePaneTitleBarViews() -> [(ownerSessionId: String, titleBarView: TerminalSessionTitleBarView)] {
     orderedVisiblePaneOwnerSessionIds().compactMap { sessionId in
       if let session = sessions[sessionId],
@@ -5107,12 +5246,11 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func updatePaneHeaderDropTarget(
-    sourceSessionId: String,
-    targetSessionId: String?,
+    feedbackSessionId: String?,
     placement: PaneDropPlacement?
   ) {
-    guard let targetSessionId, targetSessionId != sourceSessionId,
-      let targetFrame = paneFrame(for: targetSessionId),
+    guard let feedbackSessionId,
+      let targetFrame = paneFrame(for: feedbackSessionId),
       let placement
     else {
       paneHeaderDragTargetView?.removeFromSuperview()
@@ -5244,13 +5382,24 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func paneSessionId(at point: CGPoint) -> String? {
-    for (sessionId, session) in sessions where activeSessionIds.contains(sessionId) {
-      if !session.containerView.isHidden && session.containerView.frame.contains(point) {
+    /**
+     CDXC:NativePaneHitTarget 2026-05-13-07:48
+     Pane hit ownership follows visible pane owners, not every active session.
+     Active tab siblings can remain alive offscreen and may have stale frames;
+     drag/drop feedback and content hit routing must ignore those inactive tab
+     surfaces so spatial hits resolve to the pane the user actually sees.
+     */
+    for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
+      if let session = sessions[sessionId],
+        !session.containerView.isHidden,
+        session.containerView.frame.contains(point)
+      {
         return sessionId
       }
-    }
-    for (sessionId, session) in webPaneSessions where activeSessionIds.contains(sessionId) {
-      if !session.containerView.isHidden && session.containerView.frame.contains(point) {
+      if let session = webPaneSessions[sessionId],
+        !session.containerView.isHidden,
+        session.containerView.frame.contains(point)
+      {
         return sessionId
       }
     }
@@ -7529,25 +7678,7 @@ final class TerminalWorkspaceView: NSView {
         ])
       return
     }
-    if lastEmittedFocusedSessionId == focusedSessionId {
-      if self.focusedSessionId != focusedSessionId {
-        /**
-         CDXC:NativeTerminalFocus 2026-05-09-15:30
-         Duplicate native focus events can still be diagnostically important
-         when local border state was changed by a later layout sync. Preserve a
-         breadcrumb without changing behavior so reproduction logs show whether
-         duplicate suppression left the active border stale.
-         */
-        TerminalFocusDebugLog.append(
-          event: "nativeFocusTrace.duplicateFocusWithStaleBorderState",
-          details: [
-            "emittedFocusedSessionId": focusedSessionId,
-            "lastEmittedFocusedSessionId": nullableString(lastEmittedFocusedSessionId),
-            "localFocusedSessionId": nullableString(self.focusedSessionId),
-            "reason": reason,
-            "responder": responderSnapshot(),
-          ])
-      }
+    if lastEmittedFocusedSessionId == focusedSessionId, self.focusedSessionId == focusedSessionId {
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.terminalFocused.duplicateSkipped",
         details: [
@@ -7555,6 +7686,24 @@ final class TerminalWorkspaceView: NSView {
           "sessionId": focusedSessionId,
         ])
       return
+    }
+    if lastEmittedFocusedSessionId == focusedSessionId, self.focusedSessionId != focusedSessionId {
+      /**
+       CDXC:NativeTerminalFocus 2026-05-13-07:41
+       A previous native focus emission can be followed by sidebar/layout sync
+       repainting the local focused pane back to an older session. In that stale
+       local state, the next matching responder focus is not a behavioral
+       duplicate; re-apply and re-emit it so the border and store converge.
+       */
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.duplicateFocusWithStaleBorderState",
+        details: [
+          "emittedFocusedSessionId": focusedSessionId,
+          "lastEmittedFocusedSessionId": nullableString(lastEmittedFocusedSessionId),
+          "localFocusedSessionId": nullableString(self.focusedSessionId),
+          "reason": reason,
+          "responder": responderSnapshot(),
+        ])
     }
     lastEmittedFocusedSessionId = focusedSessionId
     self.focusedSessionId = focusedSessionId
@@ -8556,6 +8705,7 @@ final class ZmuxGhosttySurfaceView: NSView {
   let id: UUID
   var zmuxSessionId: String?
   var onKeyDownProbe: ((ZmuxGhosttySurfaceView, NSEvent, String) -> Void)?
+  var onMouseDownFocus: ((ZmuxGhosttySurfaceView, NSEvent) -> Void)?
   var onTextInputProbe: ((ZmuxGhosttySurfaceView, Any, NSRange) -> Void)?
   @Published private(set) var title = ""
   @Published private(set) var bell = false
@@ -8634,9 +8784,14 @@ final class ZmuxGhosttySurfaceView: NSView {
    Embedded Ghostty terminals should use the default pointer cursor instead
    of advertising a text-selection I-beam at all times. Keep this scoped to
    zmux's SurfaceView subclass so Ghostty.app cursor behavior is unchanged.
+   CDXC:NativePaneResize 2026-05-13-07:23
+   Pane split rails are real AppKit divider bands with their own cursor rects.
+   Do not register a full terminal-surface arrow cursor rect, because AppKit can
+   re-apply that child cursor over a neighboring divider and make the pointer
+   settle back to default on split lines.
    */
   override func resetCursorRects() {
-    addCursorRect(bounds, cursor: .arrow)
+    super.resetCursorRects()
   }
 
   override func viewDidMoveToWindow() {
@@ -8746,6 +8901,7 @@ final class ZmuxGhosttySurfaceView: NSView {
   }
 
   override func mouseDown(with event: NSEvent) {
+    onMouseDownFocus?(self, event)
     window?.makeFirstResponder(self)
     sendMousePosition(event)
     sendMouseButton(event, action: GHOSTTY_MOUSE_PRESS, button: 0)
@@ -10666,7 +10822,6 @@ private final class TerminalSessionTitleBarView: NSView {
   var onTabSelected: ((String) -> Void)?
   var onTabCloseRequested: ((String, PaneTabCloseScope) -> Void)?
   var onTabSleepRequested: ((String, PaneTabSleepScope) -> Void)?
-  var resizeCursorForPoint: ((NSPoint) -> NSCursor?)?
 
   override var isFlipped: Bool {
     true
@@ -11050,6 +11205,22 @@ private final class TerminalSessionTitleBarView: NSView {
     tabItems.contains { $0.sessionId == sessionId }
   }
 
+  func splitAnchorSessionId(excluding sourceSessionId: String, placeAfterTarget: Bool) -> String? {
+    let siblingSessionIds = tabItems
+      .map(\.sessionId)
+      .filter { $0 != sourceSessionId }
+    guard !siblingSessionIds.isEmpty else {
+      return nil
+    }
+    /**
+     CDXC:PaneTabs 2026-05-12-11:08
+     A same-pane active-tab split is valid only when another tab remains behind.
+     Anchor before-edge splits to the first sibling and after-edge splits to the
+     last sibling so the resulting split order matches the hovered edge.
+     */
+    return placeAfterTarget ? siblingSessionIds.last : siblingSessionIds.first
+  }
+
   func isTabStripPoint(_ point: NSPoint) -> Bool {
     !tabClipView.isHidden && tabViewportFrame.contains(point)
   }
@@ -11265,33 +11436,16 @@ private final class TerminalSessionTitleBarView: NSView {
     }
     isPointerInsideTitleBar = false
     updateHoveredTab(for: nil)
-    if updateResizeCursorIfNeeded(at: point) {
-      return
-    }
-    NSCursor.arrow.set()
   }
 
   private func updateCursor(for event: NSEvent) {
-    let point = convert(event.locationInWindow, from: nil)
-    if updateResizeCursorIfNeeded(at: point) {
-      return
-    }
-    NSCursor.arrow.set()
-  }
-
-  private func updateResizeCursorIfNeeded(at point: NSPoint) -> Bool {
     /**
-     CDXC:NativePaneResize 2026-05-11-10:05
-     Title bars sit beside split rails and receive AppKit cursor update/exit
-     callbacks near the boundary. They must honor the workspace splitter cursor
-     hook before setting the default arrow, otherwise the cursor can settle back
-     to arrow while the pointer is paused over a draggable split line.
+     CDXC:NativePaneResize 2026-05-13-07:23
+     Pane title bars should not participate in split cursor arbitration. Split
+     rails are now real AppKit divider bands with their own cursor rects; avoid
+     explicitly setting the arrow from titlebar hover tracking so titlebars
+     cannot override the adjacent rail's resize cursor.
      */
-    guard let cursor = resizeCursorForPoint?(point) else {
-      return false
-    }
-    cursor.set()
-    return true
   }
 
   private func updateHoveredTab(for point: NSPoint?) {
@@ -11351,11 +11505,6 @@ private final class TerminalSessionTitleBarView: NSView {
      */
     var nextLayoutHiddenActions = Set<TerminalTitleBarAction>()
     let nonCloseActions = actionButtons.map(\.action).filter { $0 != .close }
-    let fullActionClusterWidth = Self.actionClusterWidth(
-      for: actionButtons.map(\.action),
-      buttonSize: buttonSize,
-      separatorGap: separatorGap,
-      separatorWidth: separatorWidth)
     /**
      CDXC:PaneTitleBarUX 2026-05-11-11:47
      Narrow tabbed panes must keep native tabs clickable and draggable. Action
@@ -11365,19 +11514,25 @@ private final class TerminalSessionTitleBarView: NSView {
      a one-tab viewport below the tab's own minimum interactive width, hide the
      menu too; tab selection plus inline Sleep/Close are the primary narrow-pane
      controls.
+
+     CDXC:PaneTitleBarUX 2026-05-12-19:06
+     Pane action chrome should always use the hamburger menu, independent of pane
+     width. Keep the full action-strip layout branch intact for future reuse, but
+     route current layouts through the compact menu so panes do not switch back
+     to the expanded icon cluster on wider widths.
      */
-    let shouldCollapseActionMenu =
-      !tabItems.isEmpty && !nonCloseActions.isEmpty
-      && bounds.width - insetX * 2 - fullActionClusterWidth < 296
+    let shouldCollapseActionMenu = !nonCloseActions.isEmpty
+    let minimumContentWidthForCollapsedControls =
+      tabItems.isEmpty ? 0 : Self.minimumVisibleTabViewportWidth
     let hasCloseAction = actionButtons.contains { $0.action == .close }
     let canReserveCloseActionInCollapsedLayout =
       hasCloseAction
       && bounds.width - insetX * 2 - buttonSize - Self.tabViewportTrailingGap
-        >= Self.minimumVisibleTabViewportWidth
+        >= minimumContentWidthForCollapsedControls
     let reservedCloseActionWidth = canReserveCloseActionInCollapsedLayout ? buttonSize : 0
     let canReserveCollapsedActionMenu =
       bounds.width - insetX * 2 - reservedCloseActionWidth - buttonSize - Self.tabViewportTrailingGap
-        >= Self.minimumVisibleTabViewportWidth
+        >= minimumContentWidthForCollapsedControls
     var separatorIndex = 0
     if shouldCollapseActionMenu {
       collapsedActionMenuActions = canReserveCollapsedActionMenu ? nonCloseActions : []
@@ -11758,7 +11913,19 @@ private final class TerminalSessionTitleBarView: NSView {
       return
     }
     let menu = NSMenu()
+    var previousActionGroup: Int?
     for action in actions {
+      let actionGroup = Self.actionGroup(for: action)
+      if let previousActionGroup, previousActionGroup != actionGroup {
+        /**
+         CDXC:PaneTitleBarUX 2026-05-12-19:06
+         The always-collapsed pane action menu must retain the visual grouping
+         from the former full button strip: create/open, split, session actions,
+         and pop-out controls remain separated even though they now live inside
+         one hamburger dropdown.
+         */
+        menu.addItem(NSMenuItem.separator())
+      }
       let item = NSMenuItem(
         title: Self.actionMenuTitle(for: action),
         action: #selector(performCollapsedActionMenuItem(_:)),
@@ -11767,6 +11934,7 @@ private final class TerminalSessionTitleBarView: NSView {
       item.representedObject = action.rawValue
       item.image = Self.actionMenuImage(for: action)
       menu.addItem(item)
+      previousActionGroup = actionGroup
     }
     /**
      CDXC:PaneTitleBarUX 2026-05-12-10:58
@@ -13065,8 +13233,6 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
   var onMouseDragged: ((NSEvent) -> Void)?
   var onMouseUp: ((NSEvent) -> Void)?
   private var cursor: NSCursor = .arrow
-  private var hoverTrackingArea: NSTrackingArea?
-  private var isDragging = false
   private var splitDirection = ""
 
   override var isOpaque: Bool {
@@ -13087,14 +13253,10 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
     fatalError("init(coder:) is not supported")
   }
 
-  override func viewWillMove(toWindow newWindow: NSWindow?) {
-    if newWindow == nil {
-      isDragging = false
-    }
-    super.viewWillMove(toWindow: newWindow)
-  }
-
-  func configure(direction: NativeTerminalLayout.SplitDirection, cursor: NSCursor) {
+  func configure(
+    direction: NativeTerminalLayout.SplitDirection,
+    cursor: NSCursor
+  ) {
     /**
      CDXC:NativePaneResize 2026-05-11-09:39
      The splitter rail owns cursor and drag for horizontal and vertical layout
@@ -13108,25 +13270,21 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
      The rail must be visually transparent in production. native-style resizing is
      represented by the real pane gap; this view only owns native hit testing,
      cursor setting, and drag delivery.
-     CDXC:NativePaneResize 2026-05-11-18:08
-     Cursor feedback must not use NSCursor.push/pop because adjacent pane chrome
-     can also set arrow during hover transitions. Use AppKit cursor rects plus
-     direct cursor.set() so the pointer settles on resize inside the divider.
+     CDXC:NativePaneResize 2026-05-13-07:23
+     Match the stable sidebar divider implementation for pane splits. Cursor
+     feedback comes from one AppKit cursor rect on this real five-pixel rail;
+     avoid hover tracking and NSCursor push/pop stacks, which can be unbalanced
+     by neighboring terminal/browser/titlebar views.
      */
     splitDirection = direction.rawValue
     layer?.backgroundColor = NSColor.clear.cgColor
     if self.cursor !== cursor {
       self.cursor = cursor
-      window?.invalidateCursorRects(for: self)
     }
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
     true
-  }
-
-  func resetInteractionState() {
-    isDragging = false
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
@@ -13135,6 +13293,11 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
 
   override func resetCursorRects() {
     super.resetCursorRects()
+    /**
+     CDXC:NativePaneResize 2026-05-13-07:23
+     Keep pane split cursor ownership as simple as the sidebar divider:
+     registering the rail bounds with AppKit is the complete hover behavior.
+     */
     addCursorRect(bounds, cursor: cursor)
   }
 
@@ -13145,46 +13308,6 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
      Splitter rails are visually transparent. The focused pane border and
      workspace gap remain the intended production separation.
      */
-  }
-
-  override func updateTrackingAreas() {
-    super.updateTrackingAreas()
-    if let hoverTrackingArea {
-      removeTrackingArea(hoverTrackingArea)
-    }
-    let trackingArea = NSTrackingArea(
-      rect: .zero,
-      options: [.activeInKeyWindow, .cursorUpdate, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved],
-      owner: self,
-      userInfo: nil
-    )
-    hoverTrackingArea = trackingArea
-    addTrackingArea(trackingArea)
-  }
-
-  override func cursorUpdate(with event: NSEvent) {
-    cursor.set()
-  }
-
-  override func mouseEntered(with event: NSEvent) {
-    cursor.set()
-  }
-
-  override func mouseMoved(with event: NSEvent) {
-    cursor.set()
-  }
-
-  override func mouseExited(with event: NSEvent) {
-    /**
-     CDXC:NativePaneResize 2026-05-11-10:40
-     Native divider advertises the resize cursor only while hovering the
-     divider. Keep the resize cursor during an active drag; otherwise let the
-     next AppKit cursor owner settle the pointer after exit.
-     */
-    guard !isDragging else {
-      cursor.set()
-      return
-    }
   }
 
   override func mouseDown(with event: NSEvent) {
@@ -13199,25 +13322,15 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
         height: 0)),
       "windowNumber": event.window?.windowNumber ?? NSNull(),
     ])
-    if event.clickCount < 2 {
-      isDragging = true
-    }
-    cursor.set()
     onMouseDown?(event)
   }
 
   override func mouseDragged(with event: NSEvent) {
-    isDragging = true
-    cursor.set()
     onMouseDragged?(event)
   }
 
   override func mouseUp(with event: NSEvent) {
     onMouseUp?(event)
-    isDragging = false
-    if bounds.contains(convert(event.locationInWindow, from: nil)) {
-      cursor.set()
-    }
   }
 }
 
