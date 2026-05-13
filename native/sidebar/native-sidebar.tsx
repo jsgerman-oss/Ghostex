@@ -219,7 +219,11 @@ import {
   getCompletionSoundFileName,
   type CompletionSoundSetting,
 } from "../../shared/completion-sound";
-import { getzmuxHotkeyActionById, type zmuxHotkeyActionId } from "../../shared/zmux-hotkeys";
+import {
+  getzmuxHotkeyActionById,
+  getzmuxHotkeyActionIdForKey,
+  type zmuxHotkeyActionId,
+} from "../../shared/zmux-hotkeys";
 import { getGhosttyTerminalConfigValues } from "../../shared/ghostty-terminal-settings";
 import {
   GHOSTTY_SETTINGS_DOCS_URL,
@@ -8867,18 +8871,16 @@ function getMatchingNativeHotkeyActionId(
   }
   const normalizedHotkeys = settings.hotkeys;
   const sequence = pendingHotkeyPrefix ? `${pendingHotkeyPrefix} ${hotkeyText}` : hotkeyText;
-  const matchedDefinition = Object.entries(normalizedHotkeys).find(
-    ([, value]) => value === sequence,
-  );
-  if (matchedDefinition) {
+  const matchedActionId = getzmuxHotkeyActionIdForKey(normalizedHotkeys, sequence);
+  if (matchedActionId) {
     logNativeHotkeyDebug("nativeHotkeys.match", {
-      actionId: matchedDefinition[0],
+      actionId: matchedActionId,
       hotkeyText,
       sequence,
       source,
     });
     pendingHotkeyPrefix = undefined;
-    return matchedDefinition[0] as zmuxHotkeyActionId;
+    return matchedActionId;
   }
 
   const hasPrefix = Object.values(normalizedHotkeys).some((value) =>
