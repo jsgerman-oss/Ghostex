@@ -13,8 +13,16 @@ import type { SidebarAgentIcon } from "../shared/sidebar-agents";
  * Sidebar card agent icons render as CSS masks. Native WKWebView can create
  * the span correctly while failing to paint a relative-file SVG mask, so agent
  * logos must be inline data URLs shared by masks and regular image sources.
+ *
+ * CDXC:AgentsHub 2026-05-13-08:08
+ * Hub profile chips reuse these same mask data URLs. Storybook may resolve
+ * text imports to data URLs, while the native Bun build reads raw SVG text, so
+ * keep both forms valid instead of using bundler-specific import query syntax.
  */
 function svgTextToDataUrl(svgText: string): string {
+  if (svgText.startsWith("data:image/svg+xml,")) {
+    return svgText;
+  }
   return `data:image/svg+xml,${encodeURIComponent(svgText)}`;
 }
 

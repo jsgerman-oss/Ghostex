@@ -22,14 +22,15 @@ import {
 } from "@/components/ui/tooltip";
 import { getDefaultEditorCommandForSettings } from "../shared/zmux-settings";
 import { cn } from "@/lib/utils";
+import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
+import type { SidebarAgentIcon } from "../shared/sidebar-agents";
 
 type AgentsHubTab = "mds" | "skills" | "hooks" | "configs";
 
 type AgentProfile = {
-  agent: "CC" | "CX" | "OC" | "PI";
-  badge: "M" | "1" | "W";
+  agentIcon: SidebarAgentIcon;
   filePath: string;
   label: string;
   profilePath: string;
@@ -81,8 +82,7 @@ declare global {
 }
 
 const mainClaude: AgentProfile = {
-  agent: "CC",
-  badge: "M",
+  agentIcon: "claude",
   filePath: "/Users/madda/.claude/CLAUDE.md",
   label: "Claude Code main",
   profilePath: "/Users/madda/.claude",
@@ -90,8 +90,7 @@ const mainClaude: AgentProfile = {
 };
 
 const personalClaude: AgentProfile = {
-  agent: "CC",
-  badge: "1",
+  agentIcon: "claude",
   filePath: "/Users/madda/.claude-profiles/personal/CLAUDE.md",
   label: "Claude Code personal",
   profilePath: "/Users/madda/.claude-profiles/personal",
@@ -99,8 +98,7 @@ const personalClaude: AgentProfile = {
 };
 
 const mainCodex: AgentProfile = {
-  agent: "CX",
-  badge: "M",
+  agentIcon: "codex",
   filePath: "/Users/madda/.codex/AGENTS.md",
   label: "Codex main",
   profilePath: "/Users/madda/.codex",
@@ -108,8 +106,7 @@ const mainCodex: AgentProfile = {
 };
 
 const personalCodex: AgentProfile = {
-  agent: "CX",
-  badge: "1",
+  agentIcon: "codex",
   filePath: "/Users/madda/.codex-profiles/personal/AGENTS.md",
   label: "Codex personal",
   profilePath: "/Users/madda/.codex-profiles/personal",
@@ -117,8 +114,7 @@ const personalCodex: AgentProfile = {
 };
 
 const workCodex: AgentProfile = {
-  agent: "CX",
-  badge: "W",
+  agentIcon: "codex",
   filePath: "/Users/madda/.codex-profiles/work/AGENTS.md",
   label: "Codex work",
   profilePath: "/Users/madda/.codex-profiles/work",
@@ -126,16 +122,14 @@ const workCodex: AgentProfile = {
 };
 
 const openCode: AgentProfile = {
-  agent: "OC",
-  badge: "M",
+  agentIcon: "opencode",
   filePath: "/Users/madda/.config/opencode/opencode.json",
   label: "OpenCode main",
   profilePath: "/Users/madda/.config/opencode",
 };
 
 const piAgent: AgentProfile = {
-  agent: "PI",
-  badge: "M",
+  agentIcon: "pi",
   filePath: "/Users/madda/.pi/agent/settings.json",
   label: "Pi agent",
   profilePath: "/Users/madda/.pi/agent",
@@ -311,10 +305,12 @@ const groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]> = {
 };
 
 export function AgentsHubModal({
+  initialTab,
   isOpen,
   onClose,
   vscode,
 }: {
+  initialTab?: AgentsHubTab;
   isOpen: boolean;
   onClose: () => void;
   vscode: WebviewApi;
@@ -337,7 +333,7 @@ export function AgentsHubModal({
           <DialogHeader className="agents-hub-header">
             <DialogTitle>Agents Hub</DialogTitle>
           </DialogHeader>
-          <AgentsHubSurface editorCommand={editorCommand} vscode={vscode} />
+          <AgentsHubSurface editorCommand={editorCommand} initialTab={initialTab} vscode={vscode} />
         </DialogContent>
       </Dialog>
     </TooltipProvider>
@@ -346,12 +342,14 @@ export function AgentsHubModal({
 
 function AgentsHubSurface({
   editorCommand,
+  initialTab = "mds",
   vscode,
 }: {
   editorCommand: string;
+  initialTab?: AgentsHubTab;
   vscode: WebviewApi;
 }) {
-  const [activeTab, setActiveTab] = useState<AgentsHubTab>("mds");
+  const [activeTab, setActiveTab] = useState<AgentsHubTab>(initialTab);
   const [query, setQuery] = useState("");
   const [selectedFileIds, setSelectedFileIds] = useState<Record<AgentsHubTab, string>>({
     configs: firstFileId("configs"),
@@ -516,34 +514,65 @@ function GroupList({
 function ProfileRow({ profiles, vscode }: { profiles: AgentProfile[]; vscode: WebviewApi }) {
   return (
     <div className="agents-hub-profile-row" aria-label="Profiles using this item">
-      {profiles.map((profile) => (
-        <Tooltip key={`${profile.agent}-${profile.badge}-${profile.profilePath}`}>
-          <TooltipTrigger asChild>
-            <button
-              aria-label={`Open ${profile.label} profile in Finder`}
-              className="agents-hub-agent-icon"
-              onClick={(event) => {
-                event.stopPropagation();
-                vscode.postMessage({
-                  path: profile.profilePath,
-                  type: "openAgentsHubPathInFinder",
-                });
-              }}
-              type="button"
-            >
-              <span className="agents-hub-agent-code">{profile.agent}</span>
-              <span className="agents-hub-agent-badge">{profile.badge}</span>
-            </button>
-          </TooltipTrigger>
-          <TooltipContent align="start">
-            {`${profile.label}\n${profile.filePath}${
-              profile.targetPath ? ` -> ${profile.targetPath}` : ""
-            }\nClick to open ${profile.profilePath} in Finder`}
-          </TooltipContent>
-        </Tooltip>
-      ))}
+      {profiles.map((profile) => {
+        const profileBadge = getAgentProfileBadge(profile.profilePath);
+
+        return (
+          <Tooltip key={`${profile.agentIcon}-${profile.profilePath}`}>
+            <TooltipTrigger asChild>
+              <button
+                aria-label={`Open ${profile.label} profile in Finder`}
+                className="agents-hub-agent-icon"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  vscode.postMessage({
+                    path: profile.profilePath,
+                    type: "openAgentsHubPathInFinder",
+                  });
+                }}
+                type="button"
+              >
+                <span
+                  aria-hidden="true"
+                  className="agents-hub-agent-logo"
+                  data-agent-icon={profile.agentIcon}
+                  style={{
+                    backgroundColor: AGENT_LOGO_COLORS[profile.agentIcon],
+                    maskImage: `url("${AGENT_LOGOS[profile.agentIcon]}")`,
+                    WebkitMaskImage: `url("${AGENT_LOGOS[profile.agentIcon]}")`,
+                  }}
+                />
+                {profileBadge ? (
+                  <span className="agents-hub-agent-badge">{profileBadge}</span>
+                ) : null}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent align="start">
+              {`${profile.label}\n${profile.filePath}${
+                profile.targetPath ? ` -> ${profile.targetPath}` : ""
+              }\nClick to open ${profile.profilePath} in Finder`}
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
     </div>
   );
+}
+
+function getAgentProfileBadge(profilePath: string): string | undefined {
+  /**
+   * CDXC:AgentsHub 2026-05-13-08:16
+   * Main agent profiles should show only the agent logo. Non-main profile chips
+   * derive their corner badge from the first alphanumeric character of the
+   * profile folder name, so `personal` maps to P and `work` maps to W without
+   * hard-coded per-agent badge labels.
+   */
+  if (!profilePath.includes("-profiles/")) {
+    return undefined;
+  }
+
+  const profileFolder = profilePath.split("/").filter(Boolean).at(-1)?.toLowerCase();
+  return profileFolder?.match(/[a-z0-9]/i)?.[0]?.toUpperCase();
 }
 
 function EditorPane({
