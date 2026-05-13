@@ -1027,9 +1027,6 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
   targetSessionId: string,
   placement: SessionPaneDropPlacement,
 ): WorkspaceMutationResult {
-  if (sourceSessionId === targetSessionId) {
-    return { changed: false, snapshot };
-  }
   const group = getGroupById(snapshot, groupId);
   if (!group) {
     return { changed: false, snapshot };
@@ -1049,6 +1046,17 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
   if (!currentLayout) {
     return { changed: false, snapshot };
   }
+  const isSameSessionSideDrop = sourceSessionId === targetSessionId && placement !== "center";
+  const resolvedTargetSessionId = isSameSessionSideDrop
+    ? getSamePaneSplitAnchorSessionId(
+        currentLayout,
+        sourceSessionId,
+        placement === "right" || placement === "bottom",
+      )
+    : targetSessionId;
+  if (!resolvedTargetSessionId || (sourceSessionId === targetSessionId && placement === "center")) {
+    return { changed: false, snapshot };
+  }
   const layoutWithoutSource = removeSessionFromPaneLayout(currentLayout, sourceSessionId);
   if (!layoutWithoutSource) {
     return { changed: false, snapshot };
@@ -1056,10 +1064,10 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
 
   const nextLayout =
     placement === "center"
-      ? addSessionToPaneTabGroup(layoutWithoutSource, targetSessionId, sourceSessionId)
+      ? addSessionToPaneTabGroup(layoutWithoutSource, resolvedTargetSessionId, sourceSessionId)
       : insertExistingSessionBesidePane(
           layoutWithoutSource,
-          targetSessionId,
+          resolvedTargetSessionId,
           sourceSessionId,
           placement === "left" || placement === "right" ? "horizontal" : "vertical",
           placement === "right" || placement === "bottom",
@@ -1073,7 +1081,7 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
       : moveVisibleSessionNearTarget(
           paneSessionIds,
           sourceSessionId,
-          targetSessionId,
+          resolvedTargetSessionId,
           placement === "right" || placement === "bottom",
         );
 
@@ -1083,6 +1091,12 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
    * drops create/update a tab group, while side drops move the dragged session
    * into a new split beside the target pane. visibleSessionIds keeps the set of
    * running sessions surfaced in the workspace; paneLayout owns grouping.
+   *
+   * CDXC:PaneTabs 2026-05-12-11:08
+   * Dragging the active tab to an edge of its own multi-tab pane must split
+   * that tab out. Resolve that same-session side drop to a remaining sibling
+   * before removing the source tab; single-tab panes still have no valid
+   * sibling anchor and remain a no-op.
    */
   const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
     ...targetGroup,
@@ -2083,6 +2097,40 @@ function insertExistingSessionBesidePaneNode(
     didInsert,
     node: flattenPaneLayoutSplit({ ...node, children }),
   };
+}
+
+function getSamePaneSplitAnchorSessionId(
+  layout: SessionPaneLayoutNode,
+  sourceSessionId: string,
+  placeAfterTarget: boolean,
+): string | undefined {
+  if (layout.kind === "leaf") {
+    return undefined;
+  }
+  if (layout.kind === "tabs") {
+    if (!layout.sessionIds.includes(sourceSessionId) || layout.sessionIds.length <= 1) {
+      return undefined;
+    }
+    const siblingSessionIds = layout.sessionIds.filter((sessionId) => sessionId !== sourceSessionId);
+    /**
+     * CDXC:PaneTabs 2026-05-12-11:08
+     * Same-pane side drops split the dragged tab beside the remaining tab group.
+     * Use the first remaining tab for left/top drops and the last remaining tab
+     * for right/bottom drops so visible order mirrors the requested edge.
+     */
+    return placeAfterTarget ? siblingSessionIds[siblingSessionIds.length - 1] : siblingSessionIds[0];
+  }
+  for (const child of layout.children) {
+    const anchorSessionId = getSamePaneSplitAnchorSessionId(
+      child,
+      sourceSessionId,
+      placeAfterTarget,
+    );
+    if (anchorSessionId) {
+      return anchorSessionId;
+    }
+  }
+  return undefined;
 }
 
 function reorderSessionInPaneTabGroupNode(

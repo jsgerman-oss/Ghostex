@@ -2047,6 +2047,104 @@ describe("createSessionInSimpleWorkspace", () => {
     });
   });
 
+  test("should split the active tab out of its own multi-tab pane", () => {
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(1),
+            fullscreenRestoreVisibleCount: undefined,
+            paneLayout: {
+              activeSessionId: sessionIdForDisplay(1),
+              kind: "tabs",
+              sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1), sessionIdForDisplay(2)],
+            },
+            sessions: [
+              createSessionRecord(1, 0),
+              createSessionRecord(2, 1),
+              createSessionRecord(3, 2),
+            ],
+            viewMode: "grid",
+            visibleCount: 3,
+            visibleSessionIds: [
+              sessionIdForDisplay(0),
+              sessionIdForDisplay(1),
+              sessionIdForDisplay(2),
+            ],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 3,
+      nextSessionNumber: 4,
+    });
+
+    const result = moveSessionInPaneLayoutInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sessionIdForDisplay(1),
+      sessionIdForDisplay(1),
+      "right",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      sessionIdForDisplay(2),
+      sessionIdForDisplay(1),
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: sessionIdForDisplay(0),
+          kind: "tabs",
+          sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(2)],
+        },
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should not split a single-tab pane onto itself", () => {
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(0),
+            fullscreenRestoreVisibleCount: undefined,
+            paneLayout: { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+            sessions: [createSessionRecord(1, 0)],
+            viewMode: "grid",
+            visibleCount: 1,
+            visibleSessionIds: [sessionIdForDisplay(0)],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 1,
+      nextSessionNumber: 2,
+    });
+
+    const result = moveSessionInPaneLayoutInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sessionIdForDisplay(0),
+      sessionIdForDisplay(0),
+      "right",
+    );
+
+    expect(result.changed).toBe(false);
+    expect(result.snapshot).toBe(workspace);
+  });
+
   test("should preserve hidden tab members when appending a full-width pane", () => {
     const sleepingSession = {
       ...createSessionRecord(2, 1),
