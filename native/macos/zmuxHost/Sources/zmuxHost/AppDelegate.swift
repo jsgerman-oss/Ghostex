@@ -2564,10 +2564,10 @@ private final class NativeSettingsStore {
     "focusGroup4": "cmd+ctrl+4",
     "focusGroup5": "cmd+ctrl+5",
     "focusLeft": "cmd+left",
-    "focusNextGroup": "cmd+shift+]",
-    "focusNextSession": "cmd+]",
-    "focusPreviousGroup": "cmd+shift+[",
-    "focusPreviousSession": "cmd+[",
+    "focusNextGroup": "cmd+]",
+    "focusNextSession": "cmd+tab",
+    "focusPreviousGroup": "cmd+[",
+    "focusPreviousSession": "cmd+shift+tab",
     "focusRight": "cmd+right",
     "focusSessionSlot1": "cmd+1",
     "focusSessionSlot2": "cmd+2",
@@ -2589,6 +2589,16 @@ private final class NativeSettingsStore {
      */
     "splitMore": "cmd+d",
     "splitMoreDown": "cmd+shift+d",
+  ]
+  fileprivate static let defaultHotkeyAliases: [String: [String]] = [
+    "focusNextSession": ["cmd+shift+]"],
+    "focusPreviousSession": ["cmd+shift+["],
+  ]
+  private static let retiredDefaultHotkeys: [String: [String]] = [
+    "focusNextGroup": ["cmd+shift+]"],
+    "focusNextSession": ["cmd+]"],
+    "focusPreviousGroup": ["cmd+shift+["],
+    "focusPreviousSession": ["cmd+["],
   ]
 
   /**
@@ -2679,6 +2689,7 @@ private final class NativeSettingsStore {
           continue
         }
         if let text = value as? String {
+          let normalizedText = Self.normalizeHotkeyText(text)
           /**
            CDXC:Hotkeys 2026-05-11-09:06
            An explicitly blank persisted hotkey disables that command. Missing
@@ -2687,11 +2698,20 @@ private final class NativeSettingsStore {
            */
           hotkeys[key] = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? ""
-            : Self.normalizeHotkeyText(text)
+            : Self.migrateRetiredDefaultHotkey(actionId: key, hotkeyText: normalizedText)
         }
       }
     }
     return hotkeys
+  }
+
+  private static func migrateRetiredDefaultHotkey(actionId: String, hotkeyText: String) -> String {
+    if retiredDefaultHotkeys[actionId]?.contains(hotkeyText) == true,
+      let defaultHotkey = defaultHotkeys[actionId]
+    {
+      return defaultHotkey
+    }
+    return hotkeyText
   }
 
   func persistSidebarWidth(_ width: CGFloat) {
@@ -3900,6 +3920,19 @@ final class zmuxRootView: NSView {
       pendingHotkeyPrefixExpiresAt = nil
       return match.key
     }
+    if let aliasMatch = matchedDefaultHotkeyAliasActionId(for: sequence, hotkeys: hotkeys) {
+      logNativeHotkeyDebug(
+        "nativeHotkeys.appKitAliasMatch",
+        [
+          "actionId": aliasMatch,
+          "configuredCount": String(hotkeys.count),
+          "hotkeyText": hotkeyText,
+          "sequence": sequence,
+        ])
+      pendingHotkeyPrefix = nil
+      pendingHotkeyPrefixExpiresAt = nil
+      return aliasMatch
+    }
     if hotkeys.values.contains(where: { $0.hasPrefix("\(hotkeyText) ") }) {
       logNativeHotkeyDebug(
         "nativeHotkeys.appKitPrefixStarted",
@@ -3921,6 +3954,21 @@ final class zmuxRootView: NSView {
       ])
     pendingHotkeyPrefix = nil
     pendingHotkeyPrefixExpiresAt = nil
+    return nil
+  }
+
+  private func matchedDefaultHotkeyAliasActionId(
+    for hotkeyText: String,
+    hotkeys: [String: String]
+  ) -> String? {
+    for (actionId, aliases) in NativeSettingsStore.defaultHotkeyAliases {
+      guard hotkeys[actionId] != "" else {
+        continue
+      }
+      if aliases.contains(hotkeyText) {
+        return actionId
+      }
+    }
     return nil
   }
 
@@ -3984,6 +4032,8 @@ final class zmuxRootView: NSView {
       return "down"
     case 123:
       return "left"
+    case 48:
+      return "tab"
     default:
       break
     }

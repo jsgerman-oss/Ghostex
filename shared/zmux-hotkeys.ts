@@ -34,9 +34,11 @@ export type zmuxHotkeyAction =
 
 export type zmuxHotkeyDefinition = {
   action: zmuxHotkeyAction;
+  alternateDefaultKeys?: readonly string[];
   defaultKey: string;
   description: string;
   id: zmuxHotkeyActionId;
+  retiredDefaultKeys?: readonly string[];
   title: string;
 };
 
@@ -83,31 +85,37 @@ export const ZMUX_HOTKEY_DEFINITIONS: readonly zmuxHotkeyDefinition[] = [
   },
   {
     action: { direction: -1, id: "focusPreviousGroup", kind: "focusAdjacentGroup" },
-    defaultKey: "cmd+shift+[",
+    defaultKey: "cmd+[",
     description: "Focus the previous group.",
     id: "focusPreviousGroup",
+    retiredDefaultKeys: ["cmd+shift+["],
     title: "Previous Group",
   },
   {
     action: { direction: 1, id: "focusNextGroup", kind: "focusAdjacentGroup" },
-    defaultKey: "cmd+shift+]",
+    defaultKey: "cmd+]",
     description: "Focus the next group.",
     id: "focusNextGroup",
+    retiredDefaultKeys: ["cmd+shift+]"],
     title: "Next Group",
   },
   {
     action: { id: "focusPreviousSession", kind: "focusSessionSlot", slotNumber: -1 },
-    defaultKey: "cmd+[",
-    description: "Focus the previous visible sidebar session.",
+    alternateDefaultKeys: ["cmd+shift+["],
+    defaultKey: "cmd+shift+tab",
+    description: "Focus the previous visible sidebar tab.",
     id: "focusPreviousSession",
-    title: "Previous Session",
+    retiredDefaultKeys: ["cmd+["],
+    title: "Previous Tab",
   },
   {
     action: { id: "focusNextSession", kind: "focusSessionSlot", slotNumber: 0 },
-    defaultKey: "cmd+]",
-    description: "Focus the next visible sidebar session.",
+    alternateDefaultKeys: ["cmd+shift+]"],
+    defaultKey: "cmd+tab",
+    description: "Focus the next visible sidebar tab.",
     id: "focusNextSession",
-    title: "Next Session",
+    retiredDefaultKeys: ["cmd+]"],
+    title: "Next Tab",
   },
   ...(["up", "right", "down", "left"] as const).map((direction) => ({
     action: {
@@ -180,7 +188,10 @@ export function normalizezmuxHotkeySettings(candidate: unknown): zmuxHotkeySetti
        * means "use the default", but an explicitly blank string means the
        * command is intentionally unassigned.
        */
-      normalized[definition.id] = value.trim() ? normalizeHotkeyText(value) : "";
+      const hotkeyText = value.trim() ? normalizeHotkeyText(value) : "";
+      normalized[definition.id] = definition.retiredDefaultKeys?.includes(hotkeyText)
+        ? definition.defaultKey
+        : hotkeyText;
       continue;
     }
     normalized[definition.id] = definition.defaultKey;
@@ -190,6 +201,20 @@ export function normalizezmuxHotkeySettings(candidate: unknown): zmuxHotkeySetti
 
 export function getzmuxHotkeyActionById(id: string): zmuxHotkeyAction | undefined {
   return ZMUX_HOTKEY_DEFINITIONS.find((definition) => definition.id === id)?.action;
+}
+
+export function getzmuxHotkeyActionIdForKey(
+  hotkeys: zmuxHotkeySettings,
+  hotkeyText: string,
+): zmuxHotkeyActionId | undefined {
+  const matchedDefinition = Object.entries(hotkeys).find(([, value]) => value === hotkeyText);
+  if (matchedDefinition) {
+    return matchedDefinition[0] as zmuxHotkeyActionId;
+  }
+  return ZMUX_HOTKEY_DEFINITIONS.find(
+    (definition) =>
+      definition.alternateDefaultKeys?.includes(hotkeyText) && hotkeys[definition.id] !== "",
+  )?.id;
 }
 
 export function normalizeHotkeyText(value: string): string {
