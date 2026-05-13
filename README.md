@@ -130,20 +130,13 @@ args = [ "chrome-devtools-mcp@latest", "--auto-connect", "--channel=canary" ]
 
 ## Dev Setup With The zmux Ghostty Fork
 
-<!--
-CDXC:NativeTerminals 2026-05-10-05:05
-Developers need the zmux Ghostty fork checked out beside zmux so the native
-macOS host can compile Ghostty.SurfaceView sources and link GhosttyKit from a
-stable sibling path without committing maintainer-local absolute paths.
--->
-
 Clone both repositories into the same parent directory and keep the Ghostty
 folder named `ghostty`:
 
 ```bash
-mkdir -p ~/dev/zmux-repos
-cd ~/dev/zmux-repos
-git clone https://github.com/maddada/zmux.git zmux
+mkdir -p ~/dev/ghostex-repos
+cd ~/dev/ghostex-repos
+git clone https://github.com/maddada/ghostex.git ghostex
 git clone https://github.com/maddada/ghostty.git ghostty
 ```
 
@@ -160,11 +153,11 @@ env DEVELOPER_DIR=/Library/Developer/CommandLineTools \
 Then build or run zmux:
 
 ```bash
-cd ../zmux
+cd ../ghostex
 bun run build
 ```
 
-If the Ghostty checkout is not beside `zmux` or is not named `ghostty`, set
+If the Ghostty checkout is not beside `ghostex` or is not named `ghostty`, set
 `GHOSTTY_ROOT` explicitly:
 
 ```bash
