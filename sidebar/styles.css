@@ -95,6 +95,64 @@
   border-radius: var(--settings-control-radius) !important;
 }
 
+/* CDXC:SettingsNavigation 2026-05-13-08:05: The Settings dialog needs enough
+   horizontal room for a main-tab section sidebar while Ghostty settings live
+   in their own second tab. Use scoped CSS so the native modal host and
+   Storybook share the same width without relying on newly generated utilities. */
+.zmux-settings-shadcn.settings-modal-dialog {
+  height: min(720px, calc(100vh - 2rem));
+  max-height: min(720px, calc(100vh - 2rem));
+  max-width: min(920px, calc(100vw - 2rem));
+  width: min(920px, calc(100vw - 2rem));
+}
+
+.zmux-settings-shadcn .settings-main-tab-layout {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.zmux-settings-shadcn .settings-section-sidebar {
+  align-content: start;
+  border-right: 1px solid var(--border);
+  display: grid;
+  gap: 0.25rem;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 0.75rem 1.25rem 1.25rem;
+}
+
+.zmux-settings-shadcn .settings-section-sidebar-button {
+  justify-content: flex-start !important;
+  min-height: 2rem;
+  padding-inline: 0.625rem !important;
+  text-align: left;
+  width: 100%;
+}
+
+.zmux-settings-shadcn .settings-section-anchor {
+  scroll-margin-top: 1rem;
+}
+
+@media (max-width: 720px) {
+  .zmux-settings-shadcn .settings-main-tab-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .zmux-settings-shadcn .settings-section-sidebar {
+    border-bottom: 1px solid var(--border);
+    border-right: 0;
+    display: flex;
+    overflow-x: auto;
+    padding: 0 1.25rem 0.75rem;
+  }
+
+  .zmux-settings-shadcn .settings-section-sidebar-button {
+    width: auto;
+  }
+}
+
 .zmux-settings-shadcn [data-slot="button"],
 .zmux-settings-shadcn [data-slot="card"],
 .zmux-settings-shadcn [data-slot="empty"],

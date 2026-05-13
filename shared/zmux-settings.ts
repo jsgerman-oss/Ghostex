@@ -82,9 +82,6 @@ export type zmuxSettings = {
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
-  showSidebarActions: boolean;
-  showSidebarAgents: boolean;
-  showSidebarGitButton: boolean;
   showMacOSAttentionNotifications: boolean;
   hideFloatingSessionStatusIndicators: boolean;
   hideMenuBarSessionStatusIndicators: boolean;
@@ -192,9 +189,6 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    */
   showCloseButtonOnSessionCards: true,
   showHotkeysOnSessionCards: false,
-  showSidebarActions: true,
-  showSidebarAgents: true,
-  showSidebarGitButton: true,
   /**
    * CDXC:SessionAttentionNotifications 2026-05-10-16:46
    * macOS attention notifications are enabled by default so a background
@@ -573,21 +567,6 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       source,
       "showHotkeysOnSessionCards",
       DEFAULT_zmux_SETTINGS.showHotkeysOnSessionCards,
-    ),
-    showSidebarActions: readBoolean(
-      source,
-      "showSidebarActions",
-      DEFAULT_zmux_SETTINGS.showSidebarActions,
-    ),
-    showSidebarAgents: readBoolean(
-      source,
-      "showSidebarAgents",
-      DEFAULT_zmux_SETTINGS.showSidebarAgents,
-    ),
-    showSidebarGitButton: readBoolean(
-      source,
-      "showSidebarGitButton",
-      DEFAULT_zmux_SETTINGS.showSidebarGitButton,
     ),
     /**
      * CDXC:SessionAttentionNotifications 2026-05-10-16:46

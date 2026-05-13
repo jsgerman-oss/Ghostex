@@ -4636,15 +4636,16 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         gitState,
         {
           /**
-           * CDXC:SidebarMode 2026-05-03-17:34
-           * Combined mode is for scanning project sessions, so the native
-           * sidebar suppresses Actions and the dedicated browser group while
-           * leaving Agents governed by the user's sidebar setting.
+           * CDXC:SidebarLayout 2026-05-13-08:11
+           * The current sidebar layout always owns Agents and Git visibility,
+           * and only suppresses Actions in Combined mode where project/session
+           * scanning is the primary workflow. The old section-visibility
+           * settings were removed because they duplicated layout structure.
            */
-          actions: !isCombinedSidebarMode && settings.showSidebarActions,
-          agents: settings.showSidebarAgents,
+          actions: !isCombinedSidebarMode,
+          agents: true,
           browsers: showChromeCanaryBrowserGroup,
-          git: settings.showSidebarGitButton,
+          git: true,
         },
         collapsedSections,
         activeSessionsSortMode,
