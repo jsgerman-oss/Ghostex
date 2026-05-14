@@ -545,6 +545,9 @@ final class ZmuxGhosttyApp {
     case GHOSTTY_ACTION_SEARCH_SELECTED:
       surfaceView(from: target)?.setSearchSelected(action.action.search_selected.selected)
       return true
+    case GHOSTTY_ACTION_SCROLLBAR:
+      surfaceView(from: target)?.setScrollbar(Ghostty.Action.Scrollbar(c: action.action.scrollbar))
+      return true
     case GHOSTTY_ACTION_OPEN_URL:
       guard let urlPtr = action.action.open_url.url, action.action.open_url.len > 0 else {
         return false
@@ -719,24 +722,149 @@ struct ZmuxGhosttySurfaceModel {
       ghostty_surface_text(surface, ptr, UInt(text.utf8.count))
     }
   }
+
+  @discardableResult
+  func perform(action: String) -> Bool {
+    action.withCString { ptr in
+      ghostty_surface_binding_action(surface, ptr, UInt(action.lengthOfBytes(using: .utf8)))
+    }
+  }
 }
 
 private final class ZmuxGhosttySurfaceHostView: NSView {
+  private let scrollView = NSScrollView()
+  private let documentView = NSView()
   let surfaceView: ZmuxGhosttySurfaceView
+  private var observers: [NSObjectProtocol] = []
+  private var isLiveScrolling = false
+  private var lastSentRow: Int?
 
   init(surfaceView: ZmuxGhosttySurfaceView) {
     self.surfaceView = surfaceView
     super.init(frame: .zero)
-    addSubview(surfaceView)
+    /**
+     CDXC:NativeTerminals 2026-05-14-09:24:
+     Direct Ghostty runtime still needs Ghostty's native scroll-container model.
+     Keep the terminal surface as the visible viewport renderer while an
+     NSScrollView owns scrollbar rendering, scrollback geometry, and drag-to-row
+     behavior. A plain host NSView removes the scrollbar and leaves wheel
+     scrolling dependent only on surface event delivery.
+     */
+    scrollView.hasVerticalScroller = surfaceView.scrollbarConfiguration != .never
+    scrollView.hasHorizontalScroller = false
+    scrollView.autohidesScrollers = false
+    scrollView.usesPredominantAxisScrolling = true
+    scrollView.scrollerStyle = .overlay
+    scrollView.drawsBackground = false
+    scrollView.contentView.clipsToBounds = false
+    scrollView.documentView = documentView
+    documentView.addSubview(surfaceView)
+    addSubview(scrollView)
+    scrollView.contentView.postsBoundsChangedNotifications = true
+    observers.append(NotificationCenter.default.addObserver(
+      forName: NSView.boundsDidChangeNotification,
+      object: scrollView.contentView,
+      queue: .main
+    ) { [weak self] _ in
+      self?.synchronizeSurfaceView()
+    })
+    observers.append(NotificationCenter.default.addObserver(
+      forName: NSScrollView.willStartLiveScrollNotification,
+      object: scrollView,
+      queue: .main
+    ) { [weak self] _ in
+      self?.isLiveScrolling = true
+    })
+    observers.append(NotificationCenter.default.addObserver(
+      forName: NSScrollView.didEndLiveScrollNotification,
+      object: scrollView,
+      queue: .main
+    ) { [weak self] _ in
+      self?.isLiveScrolling = false
+    })
+    observers.append(NotificationCenter.default.addObserver(
+      forName: NSScrollView.didLiveScrollNotification,
+      object: scrollView,
+      queue: .main
+    ) { [weak self] _ in
+      self?.handleLiveScroll()
+    })
+    observers.append(NotificationCenter.default.addObserver(
+      forName: NSScroller.preferredScrollerStyleDidChangeNotification,
+      object: nil,
+      queue: nil
+    ) { [weak self] _ in
+      self?.scrollView.scrollerStyle = .overlay
+    })
+    surfaceView.onScrollbarChange = { [weak self] in
+      self?.synchronizeScrollView()
+    }
   }
 
   required init?(coder: NSCoder) {
     fatalError("init(coder:) is not supported")
   }
 
+  deinit {
+    observers.forEach { NotificationCenter.default.removeObserver($0) }
+    surfaceView.onScrollbarChange = nil
+  }
+
+  override var safeAreaInsets: NSEdgeInsets { NSEdgeInsetsZero }
+
   override func layout() {
     super.layout()
-    surfaceView.frame = bounds
+    scrollView.frame = bounds
+    surfaceView.frame.size = scrollView.bounds.size
+    documentView.frame.size.width = scrollView.bounds.width
+    synchronizeScrollView()
+    synchronizeSurfaceView()
+  }
+
+  private func synchronizeSurfaceView() {
+    surfaceView.frame.origin = scrollView.contentView.documentVisibleRect.origin
+  }
+
+  private func synchronizeScrollView() {
+    documentView.frame.size.height = documentHeight()
+    if !isLiveScrolling {
+      let cellHeight = surfaceView.cellSize.height
+      if cellHeight > 0, let scrollbar = surfaceView.scrollbar {
+        let offsetRows = max(
+          CGFloat(scrollbar.total) - CGFloat(scrollbar.offset) - CGFloat(scrollbar.len),
+          0)
+        scrollView.contentView.scroll(to: CGPoint(x: 0, y: offsetRows * cellHeight))
+        lastSentRow = Int(scrollbar.offset)
+      }
+    }
+    scrollView.reflectScrolledClipView(scrollView.contentView)
+  }
+
+  private func handleLiveScroll() {
+    let cellHeight = surfaceView.cellSize.height
+    guard cellHeight > 0 else { return }
+    let visibleRect = scrollView.contentView.documentVisibleRect
+    let scrollOffset = documentView.frame.height - visibleRect.origin.y - visibleRect.height
+    let row = max(Int(scrollOffset / cellHeight), 0)
+    guard row != lastSentRow else { return }
+    lastSentRow = row
+    _ = surfaceView.surfaceModel?.perform(action: "scroll_to_row:\(row)")
+  }
+
+  private func documentHeight() -> CGFloat {
+    let contentHeight = scrollView.contentSize.height
+    let cellHeight = surfaceView.cellSize.height
+    if cellHeight > 0, let scrollbar = surfaceView.scrollbar {
+      let documentGridHeight = CGFloat(scrollbar.total) * cellHeight
+      let padding = contentHeight - (CGFloat(scrollbar.len) * cellHeight)
+      return documentGridHeight + padding
+    }
+    return contentHeight
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    guard NSScroller.preferredScrollerStyle == .legacy else { return }
+    scrollView.flashScrollers()
   }
 }
 
@@ -1143,6 +1271,7 @@ final class TerminalWorkspaceView: NSView {
     let surfaceView = withNativeGhosttyTerminalProcessEnvironment {
       ZmuxGhosttySurfaceView(app, baseConfig: config)
     }
+    surfaceView.scrollbarConfiguration = ghostty.config.scrollbar
     surfaceView.translatesAutoresizingMaskIntoConstraints = false
     let returnFocusSessionId =
       command.originatingSessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
@@ -1690,6 +1819,7 @@ final class TerminalWorkspaceView: NSView {
     let surfaceView = withNativeGhosttyTerminalProcessEnvironment {
       ZmuxGhosttySurfaceView(app, baseConfig: config)
     }
+    surfaceView.scrollbarConfiguration = ghostty.config.scrollbar
     surfaceView.zmuxSessionId = command.sessionId
     surfaceView.onKeyDownProbe = { [weak self] surfaceView, event, phase in
       self?.logSurfaceKeyDownProbe(surfaceView: surfaceView, event: event, phase: phase)
@@ -9656,6 +9786,7 @@ final class ZmuxGhosttySurfaceView: NSView {
   var onTextInputProbe: ((ZmuxGhosttySurfaceView, Any, NSRange) -> Void)?
   @Published private(set) var title = ""
   @Published private(set) var bell = false
+  var onScrollbarChange: (() -> Void)?
   @Published var searchState: ZmuxGhosttySearchState? {
     didSet {
       searchNeedleCancellable = nil
@@ -9674,6 +9805,8 @@ final class ZmuxGhosttySurfaceView: NSView {
   @Published var surfaceSize: ghostty_surface_size_s?
 
   private(set) var surface: ghostty_surface_t?
+  var scrollbar: Ghostty.Action.Scrollbar?
+  var scrollbarConfiguration: Ghostty.Config.Scrollbar = .system
   var surfaceModel: ZmuxGhosttySurfaceModel? {
     surface.map(ZmuxGhosttySurfaceModel.init(surface:))
   }
@@ -9883,11 +10016,24 @@ final class ZmuxGhosttySurfaceView: NSView {
 
   override func scrollWheel(with event: NSEvent) {
     guard let surface else { return }
-    var mods: ghostty_input_scroll_mods_t = 0
-    if event.hasPreciseScrollingDeltas {
-      mods |= 1
-    }
-    ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, mods)
+    let precision = event.hasPreciseScrollingDeltas
+    /**
+     CDXC:NativeTerminals 2026-05-14-09:24:
+     Direct Ghostty runtime must preserve Ghostty.SurfaceView's scroll feel.
+     Precise wheel devices use the same 2x delta multiplier and momentum bits
+     as Ghostty's AppKit surface so trackpad inertia and scrollback movement do
+     not regress when the terminal is embedded in zmux.
+     */
+    let multiplier = precision ? 2.0 : 1.0
+    let mods = Ghostty.Input.ScrollMods(
+      precision: precision,
+      momentum: Ghostty.Input.Momentum(event.momentumPhase)
+    ).cScrollMods
+    ghostty_surface_mouse_scroll(
+      surface,
+      event.scrollingDeltaX * multiplier,
+      event.scrollingDeltaY * multiplier,
+      mods)
   }
 
   /**
@@ -10004,6 +10150,11 @@ final class ZmuxGhosttySurfaceView: NSView {
 
   func setSearchSelected(_ selected: Int) {
     searchState?.selected = selected >= 0 ? UInt(selected) : nil
+  }
+
+  func setScrollbar(_ nextScrollbar: Ghostty.Action.Scrollbar) {
+    scrollbar = nextScrollbar
+    onScrollbarChange?()
   }
 
   func markProcessExited() {
