@@ -1047,7 +1047,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       self?.handleSessionStatusIndicatorClick(status)
     }
     self.sessionStatusIndicatorController = sessionStatusIndicatorController
-    let petOverlayController = PetOverlayController()
+    let petOverlayController = PetOverlayController { [weak self] projectId, sessionId in
+      Task { @MainActor in
+        self?.handlePetOverlayActivityClick(projectId: projectId, sessionId: sessionId)
+      }
+    }
     self.petOverlayController = petOverlayController
     petOverlayController.load(webAssets: zmuxRootView.resolveWebAssets())
     let root = zmuxRootView(
@@ -1211,6 +1215,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      settings do not fork green attention or orange working navigation behavior.
      */
     let event = HostEvent.sessionStatusIndicatorClicked(status: status)
+    window?.makeKeyAndOrderFront(nil)
+    bridge?.send(event)
+    (window?.contentView as? zmuxRootView)?.postHostEvent(event)
+  }
+
+  @MainActor
+  private func handlePetOverlayActivityClick(projectId: String, sessionId: String) {
+    /**
+     CDXC:PetOverlay 2026-05-14-10:23:
+     Clicking the message above the pet should open zmux and focus the exact
+     shown session. The overlay supplies project/session ids, then AppKit raises
+     the main window before the sidebar applies the usual focus mutation.
+     */
+    let event = HostEvent.petOverlayActivityClicked(projectId: projectId, sessionId: sessionId)
+    NSApp.activate(ignoringOtherApps: true)
     window?.makeKeyAndOrderFront(nil)
     bridge?.send(event)
     (window?.contentView as? zmuxRootView)?.postHostEvent(event)

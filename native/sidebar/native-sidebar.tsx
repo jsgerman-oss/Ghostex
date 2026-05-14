@@ -237,6 +237,7 @@ type NativeSessionStatusIndicatorStatus = "attention" | "working" | "available";
 type NativePetOverlayActivityState = "attention" | "working";
 type NativePetOverlayActivity = {
   id: string;
+  projectId: string;
   state: NativePetOverlayActivityState;
   title: string;
 };
@@ -612,6 +613,7 @@ type NativeHostEvent =
       type: "projectEditorBackRequested";
     }
   | { status: NativeSessionStatusIndicatorStatus; type: "sessionStatusIndicatorClicked" }
+  | { projectId: string; sessionId: string; type: "petOverlayActivityClicked" }
   | { sessionId: string; type: "sessionAttentionNotificationClicked" }
   | {
       projectId: string;
@@ -5789,9 +5791,17 @@ function syncNativePetOverlayState(): void {
     .slice(0, 3)
     .map((candidate) => ({
       id: candidate.sessionId,
+      projectId: candidate.projectId,
       state: candidate.status,
       title: candidate.title,
     }));
+  /**
+   * CDXC:PetOverlay 2026-05-14-10:23:
+   * The pet bubble is a concrete session shortcut, not another aggregate
+   * status badge. Send both project and session ids so a click can raise zmux
+   * and activate exactly the session named above the pet, even when it belongs
+   * to a background project.
+   */
   postNative({
     activities,
     enabled: settings.petOverlayEnabled,
@@ -5822,6 +5832,25 @@ function handleNativeSessionStatusIndicatorClicked(
     focusProject(target.projectId);
   }
   focusSidebarSession(target.sessionId);
+}
+
+function handleNativePetOverlayActivityClicked(projectId: string, sessionId: string): void {
+  /**
+   * CDXC:PetOverlay 2026-05-14-10:23:
+   * Clicking a pet message should behave like clicking the matching session
+   * card after zmux has been brought forward. Route through the normal session
+   * focus path so pane restoration, attention acknowledgement, and project
+   * switching stay in one implementation.
+   */
+  const project = findProject(projectId);
+  if (!project || !findSessionRecordInProject(project, sessionId)) {
+    return;
+  }
+  postNative({ type: "activateApp" });
+  if (activeProjectId !== project.projectId) {
+    focusProject(project.projectId);
+  }
+  focusSidebarSession(sessionId);
 }
 
 function handleNativeSessionAttentionNotificationClicked(sessionId: string): void {
@@ -13691,6 +13720,10 @@ window.addEventListener("zmux-native-host-event", (event) => {
   }
   if (hostEvent.type === "sessionStatusIndicatorClicked") {
     handleNativeSessionStatusIndicatorClicked(hostEvent.status);
+    return;
+  }
+  if (hostEvent.type === "petOverlayActivityClicked") {
+    handleNativePetOverlayActivityClicked(hostEvent.projectId, hostEvent.sessionId);
     return;
   }
   if (hostEvent.type === "sessionAttentionNotificationClicked") {

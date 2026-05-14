@@ -16,6 +16,7 @@ type PetOverlayActivityState = "attention" | "working";
 
 type PetOverlayActivity = {
   id: string;
+  projectId: string;
   state: PetOverlayActivityState;
   title: string;
 };
@@ -27,6 +28,7 @@ type PetOverlayState = {
 };
 
 type PetOverlayNativeMessage =
+  | { projectId: string; sessionId: string; type: "activateActivity" }
   | { screenX: number; screenY: number; type: "dragStart" }
   | { screenX: number; screenY: number; type: "dragMove" }
   | { type: "dragEnd" };
@@ -121,6 +123,24 @@ function PetHost() {
     postPetOverlayMessage({ type: "dragEnd" });
   };
 
+  const handleActivityClick = (activity: PetOverlayActivity) => {
+    postPetOverlayMessage({
+      projectId: activity.projectId,
+      sessionId: activity.id,
+      type: "activateActivity",
+    });
+  };
+
+  const stopActivityPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+  };
+
+  /**
+   * CDXC:PetOverlay 2026-05-14-10:23:
+   * The activity bubble above the pet opens zmux to the exact shown session
+   * when clicked. Do not render the words "working" or "attention" here; the
+   * yellow/green dot is the state label.
+   */
   return (
     <div
       className="pet-host-root"
@@ -135,11 +155,17 @@ function PetHost() {
         {visibleActivities.length > 0 ? (
           <div className="pet-thread-stack">
             {visibleActivities.map((activity) => (
-              <div className="pet-thread-bubble" data-state={activity.state} key={activity.id}>
+              <button
+                className="pet-thread-bubble"
+                data-state={activity.state}
+                key={`${activity.projectId}:${activity.id}`}
+                onClick={() => handleActivityClick(activity)}
+                onPointerDown={stopActivityPointerDown}
+                type="button"
+              >
                 <span className="pet-thread-status" aria-hidden="true" />
                 <span className="pet-thread-title">{activity.title}</span>
-                <span className="pet-thread-state">{activity.state}</span>
-              </div>
+              </button>
             ))}
           </div>
         ) : null}
@@ -210,6 +236,7 @@ function isPetOverlayActivity(value: unknown): value is PetOverlayActivity {
   const candidate = value as Partial<PetOverlayActivity>;
   return (
     typeof candidate.id === "string" &&
+    typeof candidate.projectId === "string" &&
     typeof candidate.title === "string" &&
     (candidate.state === "attention" || candidate.state === "working")
   );

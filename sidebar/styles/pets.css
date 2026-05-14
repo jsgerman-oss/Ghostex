@@ -55,19 +55,27 @@
 
 .pet-thread-bubble {
   align-items: center;
+  appearance: none;
   background: rgba(16, 16, 16, 0.9);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 0.85rem;
   box-shadow: 0 0.6rem 1.6rem rgba(0, 0, 0, 0.24);
   box-sizing: border-box;
   color: #f4f4f5;
+  cursor: pointer;
   display: grid;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  grid-template-columns: 0.55rem minmax(0, 1fr) auto;
+  grid-template-columns: 0.55rem minmax(0, 1fr);
   gap: 0.45rem;
   min-height: 2.9rem;
   padding: 0.46rem 0.62rem 0.5rem;
+  text-align: left;
   width: 100%;
+}
+
+.pet-thread-bubble:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, 0.9);
+  outline-offset: 2px;
 }
 
 .pet-thread-status {
@@ -92,12 +100,4 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.pet-thread-state {
-  color: rgba(244, 244, 245, 0.7);
-  font-size: 0.64rem;
-  font-weight: 600;
-  line-height: 1;
-  text-transform: uppercase;
 }

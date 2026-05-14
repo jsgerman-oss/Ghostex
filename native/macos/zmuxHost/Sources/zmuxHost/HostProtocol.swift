@@ -469,6 +469,7 @@ struct SetPetOverlayState: Codable {
 
 struct PetOverlayActivity: Codable {
   let id: String
+  let projectId: String
   let state: PetOverlayActivityState
   let title: String
 }
@@ -755,6 +756,7 @@ enum HostEvent: Encodable {
   case projectEditorBackRequested(projectId: String)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
+  case petOverlayActivityClicked(projectId: String, sessionId: String)
   case sessionAttentionNotificationClicked(sessionId: String)
   case t3ThreadReady(
     sessionId: String, projectId: String, threadId: String, serverOrigin: String, workspaceRoot: String)
@@ -909,9 +911,19 @@ enum HostEvent: Encodable {
        Floating AppKit status circles report only the clicked aggregate status
        back to the sidebar. The sidebar owns the live session graph, so it
        selects and focuses the correct matching session at click time.
-       */
+      */
       try container.encode("sessionStatusIndicatorClicked", forKey: .type)
       try container.encode(status, forKey: .status)
+    case .petOverlayActivityClicked(let projectId, let sessionId):
+      /**
+       CDXC:PetOverlay 2026-05-14-10:23:
+       Pet messages name one exact session. Carry the project id with the
+       session id so sidebar routing can activate that specific card instead
+       of cycling through an aggregate attention or working bucket.
+       */
+      try container.encode("petOverlayActivityClicked", forKey: .type)
+      try container.encode(projectId, forKey: .projectId)
+      try container.encode(sessionId, forKey: .sessionId)
     case .sessionAttentionNotificationClicked(let sessionId):
       /**
        CDXC:SessionAttentionNotifications 2026-05-10-16:46

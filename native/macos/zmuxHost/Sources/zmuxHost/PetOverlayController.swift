@@ -9,6 +9,7 @@ final class PetOverlayController: NSObject, WKNavigationDelegate, WKScriptMessag
   private static let panelWidth: CGFloat = 320
 
   private let encoder = JSONEncoder()
+  private let onActivityClick: (String, String) -> Void
   private let panel: NSPanel
   private let webView: WKWebView
   private var dragStartMouseLocation: NSPoint?
@@ -17,7 +18,7 @@ final class PetOverlayController: NSObject, WKNavigationDelegate, WKScriptMessag
   private var isLoaded = false
   private var latestState: SetPetOverlayState?
 
-  override init() {
+  init(onActivityClick: @escaping (String, String) -> Void) {
     let configuration = WKWebViewConfiguration()
     let webView = WKWebView(frame: .zero, configuration: configuration)
     let initialSize = Self.preferredSize(activityCount: 0)
@@ -27,6 +28,7 @@ final class PetOverlayController: NSObject, WKNavigationDelegate, WKScriptMessag
       backing: .buffered,
       defer: false
     )
+    self.onActivityClick = onActivityClick
     self.panel = panel
     self.webView = webView
     self.hasUserPositionedPanel = Self.readStoredOrigin() != nil
@@ -106,6 +108,20 @@ final class PetOverlayController: NSObject, WKNavigationDelegate, WKScriptMessag
     }
 
     switch type {
+    case "activateActivity":
+      guard
+        let projectId = body["projectId"] as? String,
+        let sessionId = body["sessionId"] as? String
+      else {
+        return
+      }
+      /**
+       CDXC:PetOverlay 2026-05-14-10:23:
+       The overlay webview owns hit-testing for the message bubble, while the
+       main app owns session focus. Forward exact ids through AppKit instead of
+       deriving a target from title text or status color.
+       */
+      onActivityClick(projectId, sessionId)
     case "dragStart":
       dragStartMouseLocation = NSEvent.mouseLocation
       dragStartPanelOrigin = panel.frame.origin
