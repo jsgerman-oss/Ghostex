@@ -1346,7 +1346,13 @@ enum NativeT3RuntimeLauncher {
     let process = Process()
     let pipe = Pipe()
     process.executableURL = URL(fileURLWithPath: "/bin/ps")
-    process.arguments = ["-p", String(pid), "-o", "etimes="]
+    /**
+     CDXC:T3Code 2026-05-14-10:23:
+     macOS ps does not support Linux's etimes field. Use etime and parse its
+     elapsed wall-clock format so startup-grace decisions can retain a still
+     booting t3code listener instead of killing it on every liveness probe.
+     */
+    process.arguments = ["-p", String(pid), "-o", "etime="]
     process.standardOutput = pipe
     process.standardError = FileHandle.nullDevice
     do {
@@ -1357,7 +1363,44 @@ enum NativeT3RuntimeLauncher {
     }
     let raw = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return Int(raw)
+    return parsePsElapsedSeconds(raw)
+  }
+
+  private static func parsePsElapsedSeconds(_ raw: String) -> Int? {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      return nil
+    }
+    let daySplit = trimmed.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+    let days: Int
+    let timePart: Substring
+    if daySplit.count == 2 {
+      guard let parsedDays = Int(daySplit[0]) else {
+        return nil
+      }
+      days = parsedDays
+      timePart = daySplit[1]
+    } else {
+      days = 0
+      timePart = Substring(trimmed)
+    }
+    let parts = timePart.split(separator: ":", omittingEmptySubsequences: false)
+    guard parts.count == 2 || parts.count == 3 else {
+      return nil
+    }
+    let secondsIndex = parts.count - 1
+    let minutesIndex = parts.count - 2
+    guard
+      let seconds = Int(parts[secondsIndex]),
+      let minutes = Int(parts[minutesIndex])
+    else {
+      return nil
+    }
+    let hours = parts.count == 3 ? Int(parts[0]) : 0
+    guard let hours else {
+      return nil
+    }
+    return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
   }
 
   private static func isAnyT3RuntimeCommand(_ command: String) -> Bool {
