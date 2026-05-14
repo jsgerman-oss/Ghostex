@@ -9,7 +9,6 @@ import {
   PROMPT_EDITOR_BACKEND_OPTIONS,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
-  SIDEBAR_MODE_OPTIONS,
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
   ZED_OVERLAY_TARGET_APP_OPTIONS,
@@ -130,29 +129,6 @@ describe("normalizezmuxSettings", () => {
       label: "Other",
       value: "other",
     });
-  });
-
-  test("defaults new installs to Combined sidebar mode and keeps Separated selectable", () => {
-    /**
-     * CDXC:SidebarMode 2026-05-03-10:42
-     * Combined mode is the first-install default so native zmux shows one
-     * group per project across all projects. Separated remains a valid setting
-     * so the previous per-project, multi-group sidebar behavior is preserved.
-     */
-    expect(DEFAULT_zmux_SETTINGS.sidebarMode).toBe("combined");
-    expect(normalizezmuxSettings({})).toMatchObject({
-      sidebarMode: "combined",
-    });
-    expect(normalizezmuxSettings({ sidebarMode: "separated" })).toMatchObject({
-      sidebarMode: "separated",
-    });
-    expect(normalizezmuxSettings({ sidebarMode: "invalid" })).toMatchObject({
-      sidebarMode: "combined",
-    });
-    expect(SIDEBAR_MODE_OPTIONS).toEqual([
-      { label: "Combined", value: "combined" },
-      { label: "Separated", value: "separated" },
-    ]);
   });
 
   test("keeps sidebar side as a selectable left or right setting", () => {

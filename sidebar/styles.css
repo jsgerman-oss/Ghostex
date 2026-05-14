@@ -95,15 +95,17 @@
   border-radius: var(--settings-control-radius) !important;
 }
 
-/* CDXC:SettingsNavigation 2026-05-13-08:05: The Settings dialog needs enough
-   horizontal room for a main-tab section sidebar while Ghostty settings live
-   in their own second tab. Use scoped CSS so the native modal host and
-   Storybook share the same width without relying on newly generated utilities. */
+/*
+ CDXC:SettingsNavigation 2026-05-13-08:05: The Settings dialog needs enough horizontal room for a main-tab section sidebar while Ghostty settings live in their own second tab.
+ Use scoped CSS so the native modal host and Storybook share the same width without relying on newly generated utilities.
+
+ CDXC:SettingsNavigation 2026-05-13-08:11: The modal should be 20% wider than the first section-sidebar layout and use a taller viewport so more settings remain visible without scrolling.
+*/
 .zmux-settings-shadcn.settings-modal-dialog {
-  height: min(720px, calc(100vh - 2rem));
-  max-height: min(720px, calc(100vh - 2rem));
-  max-width: min(920px, calc(100vw - 2rem));
-  width: min(920px, calc(100vw - 2rem));
+  height: min(860px, calc(100vh - 1rem));
+  max-height: min(860px, calc(100vh - 1rem));
+  max-width: min(1104px, calc(100vw - 1rem));
+  width: min(1104px, calc(100vw - 1rem));
 }
 
 .zmux-settings-shadcn .settings-main-tab-layout {

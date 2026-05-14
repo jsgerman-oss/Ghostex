@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
 import { AgentsHubModal } from "../../sidebar/agents-hub-modal";
 import { CommandConfigModal, type CommandConfigDraft } from "../../sidebar/command-config-modal";
@@ -44,6 +45,7 @@ type AppModalKind =
   | "hotkeys"
   | "openTargets"
   | "pinnedPrompts"
+  | "floatingPromptEditor"
   | "previousSessions"
   | "firstUserMessage"
   | "renameSession"
@@ -53,6 +55,7 @@ type AppModalKind =
   | "t3ThreadId";
 
 type T3BrowserAccessMessage = Extract<ExtensionToSidebarMessage, { type: "showT3BrowserAccess" }>;
+type AgentsHubCatalogMessage = Extract<ExtensionToSidebarMessage, { type: "agentsHubCatalog" }>;
 
 type AppModalHostMessage =
   | {
@@ -62,15 +65,22 @@ type AppModalHostMessage =
       initialTitle?: string;
       initialQuery?: string;
       message?: string;
+      filePath?: string;
+      initialFrame?: FloatingPromptEditorFrame;
+      initialText?: string;
       lockedActionType?: SidebarActionType;
+      language?: string;
       modal: AppModalKind;
+      requestId?: string;
       sessionId?: string;
+      statusFile?: string;
       threadId?: string;
       title?: string;
       type: "open";
     }
   | { type: "close" }
   | { details?: string; event: string; type: "debugLog" }
+  | { requestId: string; type: "floatingPromptEditorCloseAndSave" }
   | { modal: AppModalKind; type: "presented" }
   | { message: unknown; type: "sidebarState" };
 
@@ -92,6 +102,37 @@ type DelayedSendModalState = {
 type FindPreviousSessionModalState = {
   initialQuery?: string;
 };
+
+type FloatingPromptEditorFrame = {
+  height: number;
+  left: number;
+  top: number;
+  width: number;
+};
+
+type FloatingPromptEditorState = {
+  filePath: string;
+  initialFrame?: FloatingPromptEditorFrame;
+  initialText: string;
+  language: string;
+  requestId: string;
+  statusFile?: string;
+  title: string;
+};
+
+type FloatingPromptEditorDragMode = "move" | "resize";
+
+const floatingPromptEditorFrameMargin = 16;
+const floatingPromptEditorDefaultHeight = 320;
+const floatingPromptEditorDefaultWidth = 400;
+const floatingPromptEditorMaximumWidth = 700;
+/**
+ * CDXC:PromptEditor 2026-05-14-09:55:
+ * Users can shrink the floating prompt editor after expanding it. The minimum
+ * width must still leave room for both titlebar actions anchored to the live
+ * right edge, while the title and shortcut text truncate first.
+ */
+const floatingPromptEditorMinimumWidth = 220;
 
 type T3ThreadIdModalState = {
   currentThreadId: string;
@@ -125,6 +166,21 @@ declare global {
   }
 }
 
+type MonacoEditorInstance = {
+  dispose: () => void;
+  focus?: () => void;
+  getModel: () => unknown;
+  getValue: () => string;
+  layout: () => void;
+  onDidChangeModelContent: (listener: () => void) => { dispose: () => void };
+  setValue: (value: string) => void;
+};
+
+type MonacoAmdRequire = {
+  (dependencies: string[], onLoad: () => void, onError?: (error: unknown) => void): void;
+  config?: (config: Record<string, unknown>) => void;
+};
+
 const vscode: WebviewApi = {
   postMessage(message) {
     console.debug("[zmux-app-modal-host] sidebarCommand", message);
@@ -140,6 +196,430 @@ const vscode: WebviewApi = {
 
 function closeModal() {
   postAppModalHostMessage({ type: "close" }, "AppModals:close");
+}
+
+let modalHostMonacoLoadPromise: Promise<void> | undefined;
+
+function getModalHostMonacoRequire(): MonacoAmdRequire | undefined {
+  return (window as unknown as { require?: MonacoAmdRequire }).require;
+}
+
+function loadModalHostMonaco(): Promise<void> {
+  if (window.monaco) {
+    return Promise.resolve();
+  }
+  if (modalHostMonacoLoadPromise) {
+    return modalHostMonacoLoadPromise;
+  }
+  modalHostMonacoLoadPromise = new Promise((resolve, reject) => {
+    window.MonacoEnvironment = {
+      getWorkerUrl: () => "./monaco/vs/base/worker/workerMain.js",
+    };
+    const configureRequire = () => {
+      const amdRequire = getModalHostMonacoRequire();
+      if (!amdRequire) {
+        reject(new Error("Monaco AMD loader did not initialize."));
+        return;
+      }
+      amdRequire.config?.({ paths: { vs: "./monaco/vs" } });
+      amdRequire(["vs/editor/editor.main"], resolve, reject);
+    };
+    const existingLoader = document.querySelector<HTMLScriptElement>(
+      'script[data-zmux-monaco-loader="true"]',
+    );
+    if (existingLoader) {
+      existingLoader.addEventListener("load", configureRequire, { once: true });
+      existingLoader.addEventListener("error", () => reject(new Error("Monaco loader failed.")), {
+        once: true,
+      });
+      if (getModalHostMonacoRequire()) {
+        configureRequire();
+      }
+      return;
+    }
+    const script = document.createElement("script");
+    script.dataset.zmuxMonacoLoader = "true";
+    script.src = "./monaco/vs/loader.js";
+    script.addEventListener("load", configureRequire, { once: true });
+    script.addEventListener("error", () => reject(new Error("Monaco loader failed.")), {
+      once: true,
+    });
+    document.head.appendChild(script);
+  });
+  return modalHostMonacoLoadPromise;
+}
+
+function clampFloatingPromptEditorFrame(frame: FloatingPromptEditorFrame): FloatingPromptEditorFrame {
+  const margin = floatingPromptEditorFrameMargin;
+  const availableWidth = Math.max(240, window.innerWidth - margin * 2);
+  const maxWidth = Math.min(floatingPromptEditorMaximumWidth, availableWidth);
+  const minWidth = Math.min(floatingPromptEditorMinimumWidth, maxWidth);
+  const minHeight = Math.min(260, Math.max(180, window.innerHeight - margin * 2));
+  const width = Math.min(Math.max(frame.width, minWidth), maxWidth);
+  const height = Math.min(
+    Math.max(frame.height, minHeight),
+    Math.max(minHeight, window.innerHeight - margin * 2),
+  );
+  return {
+    height,
+    left: Math.min(Math.max(margin, frame.left), Math.max(margin, window.innerWidth - width - margin)),
+    top: Math.min(Math.max(margin, frame.top), Math.max(margin, window.innerHeight - height - margin)),
+    width,
+  };
+}
+
+function defaultFloatingPromptEditorFrame(): FloatingPromptEditorFrame {
+  const availableWidth = Math.max(240, window.innerWidth - floatingPromptEditorFrameMargin * 2);
+  const defaultHeight = Math.min(
+    floatingPromptEditorDefaultHeight,
+    Math.max(180, window.innerHeight - floatingPromptEditorFrameMargin * 2),
+  );
+  const defaultWidth = Math.min(
+    floatingPromptEditorDefaultWidth,
+    Math.max(floatingPromptEditorMinimumWidth, availableWidth),
+  );
+  return clampFloatingPromptEditorFrame({
+    height: defaultHeight,
+    left: Math.max(floatingPromptEditorFrameMargin, (window.innerWidth - defaultWidth) / 2),
+    top: Math.max(floatingPromptEditorFrameMargin, window.innerHeight - defaultHeight - floatingPromptEditorFrameMargin),
+    width: defaultWidth,
+  });
+}
+
+function FloatingPromptEditorModal({
+  closeAndSaveRequestId,
+  editor,
+  isOpen,
+}: {
+  closeAndSaveRequestId?: string;
+  editor?: FloatingPromptEditorState;
+  isOpen: boolean;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const editorRef = useRef<MonacoEditorInstance | null>(null);
+  const [frame, setFrame] = useState<FloatingPromptEditorFrame>(() => defaultFloatingPromptEditorFrame());
+  const [dragMode, setDragMode] = useState<FloatingPromptEditorDragMode>();
+  const [isCancelConfirming, setIsCancelConfirming] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const activePointerDragCleanupRef = useRef<(() => void) | undefined>(undefined);
+  const cancelConfirmTimeoutRef = useRef<number | undefined>(undefined);
+  const savedCloseAndSaveRequestIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!isOpen || !editor) {
+      editorRef.current?.dispose();
+      editorRef.current = null;
+      window.clearTimeout(cancelConfirmTimeoutRef.current);
+      cancelConfirmTimeoutRef.current = undefined;
+      activePointerDragCleanupRef.current?.();
+      activePointerDragCleanupRef.current = undefined;
+      setDragMode(undefined);
+      setIsCancelConfirming(false);
+      setIsSaving(false);
+      return;
+    }
+    setFrame(clampFloatingPromptEditorFrame(editor.initialFrame ?? defaultFloatingPromptEditorFrame()));
+    setIsCancelConfirming(false);
+  }, [editor?.requestId, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !editor || !containerRef.current) {
+      return;
+    }
+    let disposed = false;
+    loadModalHostMonaco()
+      .then(() => {
+        if (disposed || !containerRef.current || !window.monaco) {
+          return;
+        }
+        editorRef.current?.dispose();
+        /**
+         * CDXC:PromptEditor 2026-05-13-09:48
+         * Ctrl+G prompt editing is plain text entry, not code authoring.
+         * Disable Monaco's word/spelling-style suggestions, trigger
+         * completions, snippets, and parameter hints; force Markdown with
+         * wrapping because prompt text should read naturally in the default
+         * writing pane.
+         */
+        const monacoEditor = window.monaco.editor.create(containerRef.current, {
+          acceptSuggestionOnEnter: "off",
+          automaticLayout: true,
+          cursorBlinking: "smooth",
+          fontFamily:
+            "JetBrains Mono, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
+          fontLigatures: true,
+          fontSize: 14,
+          language: "markdown",
+          lineNumbersMinChars: 3,
+          minimap: { enabled: false },
+          padding: { bottom: 48, top: 12 },
+          parameterHints: { enabled: false },
+          quickSuggestions: false,
+          renderLineHighlight: "all",
+          scrollBeyondLastLine: false,
+          snippetSuggestions: "none",
+          suggestOnTriggerCharacters: false,
+          tabCompletion: "off",
+          theme: "vs-dark",
+          value: editor.initialText,
+          wordBasedSuggestions: "off",
+          wordWrap: "on",
+        }) as MonacoEditorInstance;
+        editorRef.current = monacoEditor;
+        monacoEditor.focus?.();
+      })
+      .catch((error) => {
+        postAppModalHostMessage(
+          {
+            area: "PromptEditor:monaco",
+            message: error instanceof Error ? error.message : String(error),
+            type: "logError",
+          },
+          "PromptEditor:monaco",
+        );
+      });
+    return () => {
+      disposed = true;
+      editorRef.current?.dispose();
+      editorRef.current = null;
+    };
+  }, [editor?.requestId, isOpen]);
+
+  useEffect(() => {
+    editorRef.current?.layout();
+  }, [frame.height, frame.width]);
+
+  useEffect(() => {
+    return () => {
+      activePointerDragCleanupRef.current?.();
+      activePointerDragCleanupRef.current = undefined;
+    };
+  }, []);
+
+  const save = () => {
+    if (!editor || isSaving) {
+      return;
+    }
+    setIsSaving(true);
+    postAppModalHostMessage(
+      {
+        filePath: editor.filePath,
+        requestId: editor.requestId,
+        statusFile: editor.statusFile,
+        text: editorRef.current?.getValue() ?? editor.initialText,
+        type: "floatingPromptEditorSave",
+      },
+      "PromptEditor:save",
+    );
+  };
+
+  const requestCancel = () => {
+    if (!editor) {
+      return;
+    }
+    if (!isCancelConfirming) {
+      setIsCancelConfirming(true);
+      window.clearTimeout(cancelConfirmTimeoutRef.current);
+      cancelConfirmTimeoutRef.current = window.setTimeout(() => {
+        setIsCancelConfirming(false);
+        cancelConfirmTimeoutRef.current = undefined;
+      }, 5000);
+      return;
+    }
+    window.clearTimeout(cancelConfirmTimeoutRef.current);
+    cancelConfirmTimeoutRef.current = undefined;
+    postAppModalHostMessage(
+      {
+        requestId: editor.requestId,
+        statusFile: editor.statusFile,
+        type: "floatingPromptEditorCancel",
+      },
+      "PromptEditor:cancel",
+    );
+  };
+
+  useEffect(() => {
+    if (!isOpen || !editor) {
+      return;
+    }
+    /**
+     * CDXC:PromptEditor 2026-05-13-15:53
+     * Inside the Ctrl+G floating prompt editor, Ctrl+G must save the live Monaco text instead of only opening the editor from the terminal. Escape mirrors the Cancel button: the first press turns Cancel into Confirm, and a second press within five seconds cancels the editor.
+     * Save and Cancel tooltips must name those keyboard paths so hover help matches the behavior.
+     */
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if (event.ctrlKey && !event.altKey && !event.metaKey && key === "g") {
+        event.preventDefault();
+        event.stopPropagation();
+        save();
+        return;
+      }
+      if (!event.ctrlKey && !event.altKey && !event.metaKey && key === "escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        requestCancel();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, { capture: true });
+    };
+  }, [editor?.requestId, isCancelConfirming, isOpen, isSaving]);
+
+  useEffect(() => {
+    if (
+      !isOpen ||
+      !editor ||
+      !closeAndSaveRequestId ||
+      closeAndSaveRequestId !== editor.requestId ||
+      savedCloseAndSaveRequestIdRef.current === closeAndSaveRequestId
+    ) {
+      return;
+    }
+    savedCloseAndSaveRequestIdRef.current = closeAndSaveRequestId;
+    save();
+  }, [closeAndSaveRequestId, editor?.requestId, isOpen]);
+
+  if (!isOpen || !editor) {
+    return null;
+  }
+
+  const beginPanelPointerDrag = (
+    event: ReactPointerEvent<HTMLElement>,
+    mode: FloatingPromptEditorDragMode,
+    getNextFrame: (
+      moveEvent: PointerEvent,
+      startFrame: FloatingPromptEditorFrame,
+      startX: number,
+      startY: number,
+    ) => FloatingPromptEditorFrame,
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+
+    /**
+     * CDXC:PromptEditor 2026-05-13-23:22:
+     * Floating prompt editor resize/move drags must not text-select Monaco
+     * gutter, editor rows, or empty editor chrome. Capture the pointer and
+     * suppress document selection until the drag finishes.
+     */
+    event.preventDefault();
+    event.stopPropagation();
+    activePointerDragCleanupRef.current?.();
+    const dragTarget = event.currentTarget;
+    dragTarget.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startFrame = frame;
+    const preventSelection = (selectionEvent: Event) => {
+      selectionEvent.preventDefault();
+    };
+    const handleMove = (moveEvent: PointerEvent) => {
+      moveEvent.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      setFrame(clampFloatingPromptEditorFrame(getNextFrame(moveEvent, startFrame, startX, startY)));
+    };
+    const cleanupDrag = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", cleanupDrag);
+      window.removeEventListener("pointercancel", cleanupDrag);
+      document.removeEventListener("selectstart", preventSelection, true);
+      document.removeEventListener("dragstart", preventSelection, true);
+      if (dragTarget.hasPointerCapture(event.pointerId)) {
+        dragTarget.releasePointerCapture(event.pointerId);
+      }
+      window.getSelection()?.removeAllRanges();
+      activePointerDragCleanupRef.current = undefined;
+      setDragMode(undefined);
+    };
+    activePointerDragCleanupRef.current = cleanupDrag;
+    setDragMode(mode);
+    window.getSelection()?.removeAllRanges();
+    document.addEventListener("selectstart", preventSelection, true);
+    document.addEventListener("dragstart", preventSelection, true);
+    window.addEventListener("pointermove", handleMove, { passive: false });
+    window.addEventListener("pointerup", cleanupDrag, { once: true });
+    window.addEventListener("pointercancel", cleanupDrag, { once: true });
+  };
+
+  const startMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    beginPanelPointerDrag(event, "move", (moveEvent, startFrame, startX, startY) => ({
+      ...startFrame,
+      left: startFrame.left + moveEvent.clientX - startX,
+      top: startFrame.top + moveEvent.clientY - startY,
+    }));
+  };
+
+  const startResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    beginPanelPointerDrag(event, "resize", (moveEvent, startFrame, startX, startY) => ({
+      ...startFrame,
+      height: startFrame.height + moveEvent.clientY - startY,
+      width: startFrame.width + moveEvent.clientX - startX,
+    }));
+  };
+
+  return (
+    <div className="floating-prompt-editor-root" data-drag-mode={dragMode}>
+      <section
+        aria-label="Prompt Editor"
+        className="floating-prompt-editor-panel"
+        onPointerDown={() => editorRef.current?.focus?.()}
+        style={{
+          height: `${frame.height}px`,
+          left: `${frame.left}px`,
+          top: `${frame.top}px`,
+          width: `${frame.width}px`,
+        }}
+      >
+        <div className="floating-prompt-editor-titlebar" onPointerDown={startMove}>
+          <div className="floating-prompt-editor-title">
+            {/*
+             * CDXC:PromptEditor 2026-05-14-09:55:
+             * The prompt editor titlebar must show the save shortcut beside
+             * the title while keeping actions permanently anchored to the
+             * current right edge during resize.
+             */}
+            <span className="floating-prompt-editor-title-text">{editor.title}</span>
+            <span className="floating-prompt-editor-title-shortcut">(Ctrl + G to save)</span>
+          </div>
+          <div className="floating-prompt-editor-actions">
+            <button
+              aria-label={isCancelConfirming ? "Confirm cancel prompt editor" : "Cancel prompt editor"}
+              aria-keyshortcuts="Escape"
+              className="floating-prompt-editor-cancel"
+              onClick={requestCancel}
+              onPointerDown={(event) => event.stopPropagation()}
+              title="press escape to cancel"
+              type="button"
+            >
+              {isCancelConfirming ? "Confirm" : "Cancel"}
+            </button>
+            <button
+              aria-keyshortcuts="Control+G"
+              aria-label="Save prompt editor"
+              className="floating-prompt-editor-save"
+              disabled={isSaving}
+              onClick={save}
+              onPointerDown={(event) => event.stopPropagation()}
+              title="press ctrl+g to save"
+              type="button"
+            >
+              {isSaving ? "Saving" : "Save"}
+            </button>
+          </div>
+        </div>
+        <div className="floating-prompt-editor-monaco" ref={containerRef} spellCheck={false} />
+        <div
+          aria-label="Resize prompt editor"
+          className="floating-prompt-editor-resize"
+          onPointerDown={startResize}
+          role="separator"
+        />
+      </section>
+    </div>
+  );
 }
 
 function isSettingsModalKind(modal: AppModalKind | undefined): boolean {
@@ -177,10 +657,13 @@ function getSettingsInitialTab(modal: AppModalKind | undefined): SettingsModalTa
 function AppModalHost() {
   const {
     activeModal,
+    agentsHubCatalog,
     config,
     delayedSend,
     findPreviousSession,
     firstUserMessage,
+    floatingPromptEditor,
+    floatingPromptEditorCloseAndSaveRequestId,
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
@@ -198,6 +681,7 @@ function AppModalHost() {
     delayedSend,
     findPreviousSession,
     firstUserMessage,
+    floatingPromptEditor,
     renameSession,
     settings,
     t3BrowserAccess,
@@ -271,6 +755,11 @@ function AppModalHost() {
         onClose={closeModal}
         vscode={vscode}
       />
+      <FloatingPromptEditorModal
+        closeAndSaveRequestId={floatingPromptEditorCloseAndSaveRequestId}
+        editor={floatingPromptEditor}
+        isOpen={activeModal === "floatingPromptEditor" && floatingPromptEditor !== undefined}
+      />
       <FirstUserMessageModal
         isOpen={activeModal === "firstUserMessage" && firstUserMessage !== undefined}
         message={firstUserMessage?.message ?? ""}
@@ -283,6 +772,7 @@ function AppModalHost() {
         vscode={vscode}
       />
       <AgentsHubModal
+        catalog={agentsHubCatalog}
         isOpen={activeModal === "agentsHub"}
         onClose={closeModal}
         vscode={vscode}
@@ -485,10 +975,14 @@ function AppModalHost() {
  */
 function useModalStateFromNative() {
   const [activeModal, setActiveModal] = useState<AppModalKind | undefined>();
+  const [agentsHubCatalog, setAgentsHubCatalog] = useState<AgentsHubCatalogMessage>();
   const [config, setConfig] = useState<ConfigModalState>({});
   const [delayedSend, setDelayedSend] = useState<DelayedSendModalState>();
   const [findPreviousSession, setFindPreviousSession] = useState<FindPreviousSessionModalState>();
   const [firstUserMessage, setFirstUserMessage] = useState<FirstUserMessageModalState>();
+  const [floatingPromptEditor, setFloatingPromptEditor] = useState<FloatingPromptEditorState>();
+  const [floatingPromptEditorCloseAndSaveRequestId, setFloatingPromptEditorCloseAndSaveRequestId] =
+    useState<string>();
   const [renameSession, setRenameSession] = useState<RenameSessionModalState>();
   const [t3BrowserAccess, setT3BrowserAccess] = useState<T3BrowserAccessMessage>();
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
@@ -527,6 +1021,7 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
           } else if (message.modal === "firstUserMessage") {
@@ -540,6 +1035,43 @@ function useModalStateFromNative() {
             setConfig({});
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
+            setFloatingPromptEditor(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
+          } else if (message.modal === "floatingPromptEditor") {
+            if (
+              typeof message.requestId !== "string" ||
+              typeof message.filePath !== "string" ||
+              typeof message.initialText !== "string"
+            ) {
+              throw new Error("Floating prompt editor request is missing required state.");
+            }
+            /**
+             * CDXC:PromptEditor 2026-05-13-09:48
+             * Ctrl+G Monaco prompt editing is rendered in the full-window
+             * modal host so it shares the same transparent WKWebView layer as
+             * app dialogs and can reliably receive click, drag, and resize
+             * input above native terminal panes.
+             *
+             * CDXC:PromptEditor 2026-05-13-10:22
+             * Prompt editor buffers are always Markdown, regardless of caller
+             * hints, so wrapped prose and Markdown tokenization stay consistent
+             * in the floating pane.
+             */
+            setFloatingPromptEditor({
+              filePath: message.filePath,
+              initialFrame: message.initialFrame,
+              initialText: message.initialText,
+              language: "markdown",
+              requestId: message.requestId,
+              statusFile: message.statusFile,
+              title: message.title || "Prompt Editor",
+            });
+            setConfig({});
+            setDelayedSend(undefined);
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -554,6 +1086,7 @@ function useModalStateFromNative() {
             setConfig({});
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -565,6 +1098,7 @@ function useModalStateFromNative() {
             setConfig({});
             setDelayedSend(undefined);
             setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -583,6 +1117,7 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3ThreadId(undefined);
           } else if (message.modal === "t3ThreadId") {
@@ -597,6 +1132,7 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
           } else if (message.modal === "commandConfig") {
@@ -610,6 +1146,7 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFirstUserMessage(undefined);
             setFindPreviousSession(undefined);
+            setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -621,6 +1158,7 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFirstUserMessage(undefined);
             setFindPreviousSession(undefined);
+            setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -629,12 +1167,16 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
           }
           if (message.modal === "settings") {
             setZmuxFolderStats(undefined);
+          }
+          if (message.modal !== "agentsHub") {
+            setAgentsHubCatalog(undefined);
           }
           setActiveModal(message.modal);
           return;
@@ -654,14 +1196,25 @@ function useModalStateFromNative() {
           setDelayedSend(undefined);
           setFindPreviousSession(undefined);
           setFirstUserMessage(undefined);
+          setFloatingPromptEditor(undefined);
           setRenameSession(undefined);
           setT3BrowserAccess(undefined);
           setT3ThreadId(undefined);
           setZmuxFolderStats(undefined);
+          setAgentsHubCatalog(undefined);
+          return;
+        }
+
+        if (message.type === "floatingPromptEditorCloseAndSave") {
+          setFloatingPromptEditorCloseAndSaveRequestId(message.requestId);
           return;
         }
 
         if (message.type === "sidebarState") {
+          if (isAgentsHubCatalogMessage(message.message)) {
+            setAgentsHubCatalog(message.message);
+            return;
+          }
           if (isZmuxFolderStatsMessage(message.message)) {
             setZmuxFolderStats(message.message);
             return;
@@ -683,10 +1236,13 @@ function useModalStateFromNative() {
 
   return {
     activeModal,
+    agentsHubCatalog,
     config,
     delayedSend,
     findPreviousSession,
     firstUserMessage,
+    floatingPromptEditor,
+    floatingPromptEditorCloseAndSaveRequestId,
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
@@ -700,6 +1256,15 @@ function isZmuxFolderStatsMessage(message: unknown): message is SidebarZmuxFolde
       typeof message === "object" &&
       "type" in message &&
       message.type === "zmuxFolderStats",
+  );
+}
+
+function isAgentsHubCatalogMessage(message: unknown): message is AgentsHubCatalogMessage {
+  return Boolean(
+    message &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === "agentsHubCatalog",
   );
 }
 
@@ -725,6 +1290,7 @@ function isModalRenderable({
   delayedSend,
   findPreviousSession,
   firstUserMessage,
+  floatingPromptEditor,
   renameSession,
   settings,
   t3BrowserAccess,
@@ -735,6 +1301,7 @@ function isModalRenderable({
   delayedSend: DelayedSendModalState | undefined;
   findPreviousSession: FindPreviousSessionModalState | undefined;
   firstUserMessage: FirstUserMessageModalState | undefined;
+  floatingPromptEditor: FloatingPromptEditorState | undefined;
   renameSession: RenameSessionModalState | undefined;
   settings: unknown;
   t3BrowserAccess: T3BrowserAccessMessage | undefined;
@@ -755,6 +1322,8 @@ function isModalRenderable({
       return findPreviousSession !== undefined;
     case "firstUserMessage":
       return firstUserMessage !== undefined;
+    case "floatingPromptEditor":
+      return floatingPromptEditor !== undefined;
     case "renameSession":
       return renameSession !== undefined;
     case "settings":

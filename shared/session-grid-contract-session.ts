@@ -37,6 +37,11 @@ import { normalizeT3SessionMetadata } from "./t3-session-metadata";
 const LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✶✻✽✸✹✺✷✴✦◇🤖🔔]+/u;
 const LEADING_TERMINAL_TITLE_PREFIX_PATTERN = /^(?:OC\s*\|\s*)+/iu;
 export const DEFAULT_TERMINAL_SESSION_TITLE = "Terminal Session";
+/**
+ * CDXC:CommandsPanel 2026-05-14-08:12:
+ * The bottom command pane must open at 27% of the workspace height by default so the main terminal area keeps more vertical room while command sessions remain visible.
+ */
+export const DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO = 0.27;
 const DEFAULT_TERMINAL_ENGINE: TerminalEngine = "ghostty-native";
 const IGNORED_GENERIC_TERMINAL_TITLES = new Set([
   "claude",
@@ -191,7 +196,7 @@ export function createDefaultSessionGridSnapshot(): SessionGridSnapshot {
 export function createDefaultCommandsPanelState() {
   return {
     activeSessionId: undefined,
-    heightRatio: 0.32,
+    heightRatio: DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO,
     isVisible: false,
     mode: "pinned" as const,
     paneLayout: undefined,

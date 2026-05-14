@@ -581,19 +581,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     },
   );
 
-  /**
-   * CDXC:SidebarMode 2026-05-03-10:42
-   * Combined mode is only active when the host sends persisted settings. That
-   * keeps legacy sidebar hydration on the existing Separated behavior while
-   * the native app can default new installs to Combined.
-   */
-  const isCombinedSidebarMode = settings?.sidebarMode === "combined";
-
   useLayoutEffect(() => {
     const autoCollapseGroupIds = getAutoCollapseGroupIds({
       browserGroupIds,
       groupsById,
-      isCombinedSidebarMode,
       workspaceGroupIds,
     });
     const nextSessionCountsByGroup = getSessionCountsByGroup({
@@ -630,18 +621,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * as soon as the host hydrates the added session so the user sees the
      * result of the action.
      */
-    if (isCombinedSidebarMode) {
-      if (
-        sessionCountIncreaseGroupIds.some((groupId) => groupsById[groupId]?.isChatCollection)
-      ) {
-        setIsReferenceChatsCollapsed(false);
-      }
+    if (sessionCountIncreaseGroupIds.some((groupId) => groupsById[groupId]?.isChatCollection)) {
+      setIsReferenceChatsCollapsed(false);
+    }
 
-      if (
-        sessionCountIncreaseGroupIds.some((groupId) => !groupsById[groupId]?.isChatCollection)
-      ) {
-        setIsReferenceProjectsCollapsed(false);
-      }
+    if (sessionCountIncreaseGroupIds.some((groupId) => !groupsById[groupId]?.isChatCollection)) {
+      setIsReferenceProjectsCollapsed(false);
     }
 
     previousSessionCountsByGroupRef.current = nextSessionCountsByGroup;
@@ -650,7 +635,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     browserGroupIds,
     groupOrder,
     groupsById,
-    isCombinedSidebarMode,
     workspaceGroupIds,
   ]);
 
@@ -1223,20 +1207,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   };
 
   const isManualActiveSessionsSort = activeSessionsSortMode === "manual";
-  const visibleBrowserGroupIds =
-    !isCombinedSidebarMode && sectionVisibility.browsers ? browserGroupIds : [];
+  const visibleBrowserGroupIds: string[] = [];
   const shouldShowActionsPanel = sectionVisibility.actions;
   /**
-   * CDXC:SidebarMode 2026-05-04-07:00
-   * Combined mode hides Actions but keeps the current-project header. The
-   * Agents section remains governed by the normal sidebar setting so agent
-   * sessions stay reachable while scanning all project groups.
+   * CDXC:SidebarLayout 2026-05-13-08:11
+   * The reference sidebar replaces the old visible Actions/Agents grids with
+   * primary navigation rows. Keep the underlying panels mounted but hidden so
+   * their modal/configuration flows remain available through the new entries.
    *
    * CDXC:SidebarReference 2026-05-08-01:10
-   * The ChatGPT-style sidebar reference replaces the visible Actions/Agents
-   * grids with primary navigation rows in Combined mode. Keep the underlying
-   * panels mounted but hidden so their modal/configuration flows remain
-   * available through the new Plugins and Automations entries.
+   * The ChatGPT-style sidebar reference owns the visible sidebar navigation.
    */
   const shouldShowAgentsPanel = sectionVisibility.agents;
 
@@ -1310,17 +1290,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   );
   const displayedReferenceChatGroupIds = useMemo(
     () =>
-      isCombinedSidebarMode
-        ? displayedWorkspaceGroupIds.filter((groupId) => groupsById[groupId]?.isChatCollection)
-        : [],
-    [displayedWorkspaceGroupIds, groupsById, isCombinedSidebarMode],
+      displayedWorkspaceGroupIds.filter((groupId) => groupsById[groupId]?.isChatCollection),
+    [displayedWorkspaceGroupIds, groupsById],
   );
   const displayedReferenceProjectGroupIds = useMemo(
     () =>
-      isCombinedSidebarMode
-        ? displayedWorkspaceGroupIds.filter((groupId) => !groupsById[groupId]?.isChatCollection)
-        : displayedWorkspaceGroupIds,
-    [displayedWorkspaceGroupIds, groupsById, isCombinedSidebarMode],
+      displayedWorkspaceGroupIds.filter((groupId) => !groupsById[groupId]?.isChatCollection),
+    [displayedWorkspaceGroupIds, groupsById],
   );
   const filteredPreviousSessions = useMemo(
     () =>
@@ -1345,8 +1321,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   useLayoutEffect(() => {
     if (
       didApplyStartupEmptyChatsCollapseRef.current ||
-      !hasAppliedHydrateRef.current ||
-      !isCombinedSidebarMode
+      !hasAppliedHydrateRef.current
     ) {
       return;
     }
@@ -1364,7 +1339,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
        */
       setIsReferenceChatsCollapsed(true);
     }
-  }, [authoritativeSessionIdsByGroup, displayedReferenceChatGroupIds, isCombinedSidebarMode]);
+  }, [authoritativeSessionIdsByGroup, displayedReferenceChatGroupIds]);
 
   useEffect(() => {
     /**
@@ -1397,8 +1372,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
    * Projects sections while it is visible so the empty placeholder has the
    * same visual role as the existing "No chats" group placeholder.
    */
-  const shouldHideReferenceSectionsForSearchEmptyState =
-    isCombinedSidebarMode && shouldShowSessionSearchEmptyState;
+  const shouldHideReferenceSectionsForSearchEmptyState = shouldShowSessionSearchEmptyState;
   const {
     hasOverflow: sessionGroupsHaveScrollableOverflow,
     showBottomGlow: showSessionGroupsBottomGlow,
@@ -2216,26 +2190,24 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   return (
     <TooltipProvider delayDuration={TOOLTIP_DELAY_MS}>
-      <div className="sidebar-reference-layout" data-reference-sidebar={String(isCombinedSidebarMode)}>
+      <div className="sidebar-reference-layout" data-reference-sidebar="true">
         {showCommandHotkeyOverlay ? <SidebarHotkeyOverlay hotkeys={settings?.hotkeys} /> : null}
-        {isCombinedSidebarMode ? (
-          <SidebarReferenceTopChrome
-            isOverflowMenuOpen={isOverflowMenuOpen}
-            isSessionSearchOpen={isSessionSearchOpen}
-            onCloseSearch={closeSessionSearch}
-            onOpenAgentsHub={openReferenceAgentsHub}
-            onCreateSession={createReferenceSession}
-            onOpenPlugins={openReferencePlugins}
-            onOpenPreviousSessions={openPreviousSessions}
-            onSearch={toggleSessionSearch}
-            onToggleMenu={toggleOverflowMenu}
-            projectHeader={projectHeader}
-            searchInputRef={searchInputRef}
-            sessionSearchQuery={sessionSearchQuery}
-            setSessionSearchQuery={setSessionSearchQuery}
-          />
-        ) : null}
-      {/* CDXC:SidebarMode 2026-05-04-07:00: Combined mode still shows the
+        <SidebarReferenceTopChrome
+          isOverflowMenuOpen={isOverflowMenuOpen}
+          isSessionSearchOpen={isSessionSearchOpen}
+          onCloseSearch={closeSessionSearch}
+          onOpenAgentsHub={openReferenceAgentsHub}
+          onCreateSession={createReferenceSession}
+          onOpenPlugins={openReferencePlugins}
+          onOpenPreviousSessions={openPreviousSessions}
+          onSearch={toggleSessionSearch}
+          onToggleMenu={toggleOverflowMenu}
+          projectHeader={projectHeader}
+          searchInputRef={searchInputRef}
+          sessionSearchQuery={sessionSearchQuery}
+          setSessionSearchQuery={setSessionSearchQuery}
+        />
+      {/* CDXC:SidebarLayout 2026-05-13-08:11: The reference sidebar shows the
           current-project header because empty project groups act as project
           selectors for subsequent agent/action launches. */}
       <SidebarProjectHeader projectHeader={projectHeader} />
@@ -2248,7 +2220,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         onDoubleClick={handleSidebarDoubleClick}
       >
         <div className="sidebar-top-panels">
-          {/* CDXC:SidebarMode 2026-05-03-19:46: Previous sessions, pinned
+          {/* CDXC:SidebarLayout 2026-05-13-08:11: Previous sessions, pinned
               prompts, search, and completion sound live only in the overflow
               menu now, so section titlebars do not render duplicate buttons. */}
           <CommandsPanel
@@ -2276,13 +2248,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         </div>
         <section className="session-groups-panel" ref={sessionGroupsPanelRef}>
           <div className="session-groups-top">
-            {isSessionSearchOpen && !isCombinedSidebarMode ? (
-              <SidebarSessionSearchField
-                inputRef={searchInputRef}
-                query={sessionSearchQuery}
-                setQuery={setSessionSearchQuery}
-              />
-            ) : null}
+            {null}
           </div>
           <div
             className="session-groups-scroll-shell"
@@ -2336,8 +2302,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                 onDragStart={handleDragStart}
                 sensors={sensors}
               >
-                {isCombinedSidebarMode &&
-                !shouldHideReferenceSectionsForSearchEmptyState &&
+                {!shouldHideReferenceSectionsForSearchEmptyState &&
                 displayedReferenceChatGroupIds.length > 0 ? (
                   <>
                     <SidebarReferenceSectionHeader
@@ -2385,7 +2350,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     </div>
                   </>
                 ) : null}
-                {isCombinedSidebarMode && !shouldHideReferenceSectionsForSearchEmptyState ? (
+                {!shouldHideReferenceSectionsForSearchEmptyState ? (
                   <SidebarReferenceSectionHeader
                     actionsAlwaysVisible={displayedReferenceProjectGroupIds.length === 0}
                     bulkActionLabel={
@@ -2431,9 +2396,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                 ) : null}
                 {!shouldHideReferenceSectionsForSearchEmptyState ? (
                   <div
-                    aria-hidden={isCombinedSidebarMode && isReferenceProjectsCollapsed}
+                    aria-hidden={isReferenceProjectsCollapsed}
                     className="group-list workspace-group-list reference-project-group-list reference-sidebar-collapsible-body"
-                    data-collapsed={String(isCombinedSidebarMode && isReferenceProjectsCollapsed)}
+                    data-collapsed={String(isReferenceProjectsCollapsed)}
                   >
                     {displayedReferenceProjectGroupIds.length > 0 ? (
                       displayedReferenceProjectGroupIds.map((groupId, groupIndex) => (
@@ -2457,19 +2422,15 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                               : undefined
                           }
                           sessionDropIndicatorGroupId={sessionDropIndicatorGroupId}
-                          sessionDraggingDisabled={isCombinedSidebarMode}
+                          sessionDraggingDisabled={true}
                           showHeaderActions={true}
-                          showSessionDropPositionIndicators={
-                            !isCombinedSidebarMode &&
-                            !isSessionSearchOpen &&
-                            isManualActiveSessionsSort
-                          }
+                          showSessionDropPositionIndicators={false}
                           vscode={vscode}
                         />
                       ))
-                    ) : isCombinedSidebarMode ? (
+                    ) : (
                       <div className="reference-sidebar-empty-state">No projects</div>
-                    ) : null}
+                    )}
                   </div>
                 ) : null}
               </DragDropProvider>
@@ -2487,44 +2448,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                   showDebugSessionNumbers={debuggingMode}
                   showHotkeys={showHotkeysOnSessionCards}
                 />
-              ) : null}
-              {!isCombinedSidebarMode && !isSessionSearchOpen ? (
-                <div className="group-list group-create-list">
-                  <div className="group group-create-shell" data-empty-space-blocking="true">
-                    <div className="group-head">
-                      <button
-                        aria-label="Create a new group"
-                        className="group-create-button"
-                        disabled={effectiveGroupIds.length >= MAX_GROUP_COUNT}
-                        onClick={() => {
-                          pendingCreateGroupRef.current = true;
-                          vscode.postMessage({ type: "createGroup" });
-                        }}
-                        type="button"
-                      >
-                        <span className="group-title-wrap">
-                          <span className="group-title-row">
-                            <span
-                              aria-hidden="true"
-                              className="group-collapse-button section-titlebar-toggle group-create-button-icon-shell"
-                            >
-                              <IconPlusFilled
-                                aria-hidden="true"
-                                className="group-create-button-icon"
-                                size={14}
-                              />
-                            </span>
-                            <span className="group-title-handle">
-                              <span className="group-title section-titlebar-label group-create-button-label">
-                                New Group
-                              </span>
-                            </span>
-                          </span>
-                        </span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
               ) : null}
               {shouldShowSessionSearchEmptyState ? (
                 <div
@@ -2549,7 +2472,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
             />
           </div>
         </section>
-        {isCombinedSidebarMode && recentProjects.length > 0 ? (
+        {recentProjects.length > 0 ? (
           <section
             aria-label="Recent Projects"
             className="recent-projects-drawer"
@@ -2694,9 +2617,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           </AppTooltip>
         ) : null}
       </div>
-      {isCombinedSidebarMode ? (
-        <SidebarReferenceSettingsButton onOpenSettings={openSidebarSettings} />
-      ) : null}
+      <SidebarReferenceSettingsButton
+        onCreateFullWidthTerminalPane={createFullWidthTerminalPane}
+        onOpenSettings={openSidebarSettings}
+      />
       </div>
     </TooltipProvider>
   );
@@ -2738,9 +2662,9 @@ function SidebarReferenceTopChrome({
    * Session, Agents Hub, Plugins, and Search.
    *
    * CDXC:SidebarReference 2026-05-08-14:48
-   * Combined mode needs the same overflow menu as separated mode, exposed as a
-   * small right-side control on the New Session row so global sidebar actions
-   * stay close to the primary create-session affordance without replacing it.
+   * Reference sidebar exposes the overflow menu as a small right-side control
+   * on the New Session row so global sidebar actions stay close to the primary
+   * create-session affordance without replacing it.
    *
    * CDXC:TitlebarActions 2026-05-11-02:46
    * Actions moved out of the sidebar header into the native titlebar beside
@@ -3036,14 +2960,30 @@ function SidebarReferenceSectionHeader({
 }
 
 function SidebarReferenceSettingsButton({
+  onCreateFullWidthTerminalPane,
   onOpenSettings,
 }: {
+  onCreateFullWidthTerminalPane: () => void;
   onOpenSettings: () => void;
 }) {
   return (
     <div className="reference-sidebar-settings-row">
       <div className="reference-sidebar-nav-item">
         <SidebarReferenceNavButton icon={IconSettings} label="Settings" onClick={onOpenSettings} />
+        <AppTooltip align="end" collisionPadding={4} content="Create terminal tab">
+          <button
+            aria-label="Create terminal tab"
+            className="reference-sidebar-hover-action reference-sidebar-settings-terminal-action"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onCreateFullWidthTerminalPane();
+            }}
+            type="button"
+          >
+            <IconTerminal2 aria-hidden="true" size={15} stroke={1.9} />
+          </button>
+        </AppTooltip>
       </div>
     </div>
   );
@@ -3259,10 +3199,10 @@ function renderFloatingOverflowMenu({
             >
               <div className="session-context-menu-group">
                 {/*
-                 * CDXC:SidebarMode 2026-05-03-17:34
+                 * CDXC:SidebarLayout 2026-05-13-08:11
                  * Pinned prompts and scratch pad are permanent overflow-menu
-                 * actions in both Combined and Separated modes so compact
-                 * secondary tools stay reachable from one consistent menu.
+                 * actions so compact secondary tools stay reachable from one
+                 * consistent menu in the reference sidebar.
                  *
                  * CDXC:Sidebar-overflow-menu 2026-05-04-03:09
                  * The overflow menu order must match the grouped desktop menu:

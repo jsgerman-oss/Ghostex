@@ -48,6 +48,7 @@
             : "markdown";
 
         const editor = monaco.editor.create(document.getElementById("editor"), {
+          acceptSuggestionOnEnter: "off",
           automaticLayout: true,
           cursorBlinking: "smooth",
           fontFamily:
@@ -63,10 +64,18 @@
             bottom: 48,
             top: 12,
           },
+          parameterHints: {
+            enabled: false,
+          },
+          quickSuggestions: false,
           renderLineHighlight: "all",
           scrollBeyondLastLine: false,
+          snippetSuggestions: "none",
+          suggestOnTriggerCharacters: false,
+          tabCompletion: "off",
           theme: "vs-dark",
           value: initialText,
+          wordBasedSuggestions: "off",
           wordWrap: "on",
         });
 

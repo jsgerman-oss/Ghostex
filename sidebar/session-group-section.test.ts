@@ -68,7 +68,7 @@ describe("shouldFocusGroupOnHeaderActivation", () => {
     ).toBe(false);
   });
 
-  test("keeps separated workspace group headers collapse-only", () => {
+  test("keeps non-project workspace group headers collapse-only", () => {
     expect(
       shouldFocusGroupOnHeaderActivation({
         hasProjectContext: false,

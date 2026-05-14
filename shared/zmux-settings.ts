@@ -51,7 +51,6 @@ export type DefaultEditorCommand =
   | "other";
 export type SessionPersistenceProvider = "off" | "tmux" | "zmx" | "zellij";
 export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large";
-export type SidebarMode = "combined" | "separated";
 export type SidebarSide = "left" | "right";
 export type PromptEditorBackend = "monaco" | "zpet";
 export type ZedOverlayTargetApp = "zed" | "zed-preview" | "vscode" | "vscode-insiders";
@@ -89,7 +88,6 @@ export type zmuxSettings = {
   selectedPetId: PetId;
   sessionStatusIndicatorSize: SessionStatusIndicatorSize;
   sessionPersistenceProvider: SessionPersistenceProvider;
-  sidebarMode: SidebarMode;
   sidebarSide: SidebarSide;
   sidebarTheme: SidebarThemeSetting;
   terminalCursorStyle: TerminalCursorStyle;
@@ -232,14 +230,6 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    */
   sessionPersistenceProvider: "off",
   /**
-   * CDXC:SidebarMode 2026-05-03-10:42
-   * New installs should start in Combined mode so the native sidebar presents
-   * one project group per project and can show sessions from every project at
-   * once. Separated remains an explicit mode for the previous per-project,
-   * multi-group behavior.
-   */
-  sidebarMode: "combined",
-  /**
    * CDXC:SidebarPlacement 2026-05-06-17:32
    * Sidebar side is a first-class setting so users can choose left or right
    * placement from Settings instead of relying only on the move-sidebar hotkey.
@@ -278,6 +268,10 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
   terminalClipboardPasteProtection: true,
   terminalMouseHideWhileTyping: false,
   terminalScrollbar: "system",
+  /**
+   * CDXC:PromptEditorBackend 2026-05-13-15:58
+   * Ctrl+G rich prompt editing defaults to the floating Monaco editor. Preserve explicit zpet choices, but keep new and invalid settings on Monaco.
+   */
   promptEditorBackend: "monaco",
   /**
    * CDXC:ZapetPromptEditing 2026-05-10-11:11
@@ -373,14 +367,6 @@ export const SESSION_PERSISTENCE_PROVIDER_OPTIONS: ReadonlyArray<{
   { label: "tmux", value: "tmux" },
   { label: "zmx", value: "zmx" },
   { label: "zellij", value: "zellij" },
-];
-
-export const SIDEBAR_MODE_OPTIONS: ReadonlyArray<{
-  label: string;
-  value: SidebarMode;
-}> = [
-  { label: "Combined", value: "combined" },
-  { label: "Separated", value: "separated" },
 ];
 
 export const SIDEBAR_SIDE_OPTIONS: ReadonlyArray<{
@@ -616,15 +602,6 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       ),
     ),
     sessionPersistenceProvider,
-    /**
-     * CDXC:SidebarMode 2026-05-03-10:42
-     * Persist only the two supported sidebar presentation modes. Unknown or
-     * missing values normalize to Combined because that is the first-install
-     * default requested for the native app.
-     */
-    sidebarMode: normalizeSidebarMode(
-      readString(source, "sidebarMode", DEFAULT_zmux_SETTINGS.sidebarMode),
-    ),
     /**
      * CDXC:SidebarPlacement 2026-05-06-17:32
      * Persist only the supported AppKit chrome sides. Unknown values normalize
@@ -894,10 +871,6 @@ export function getDefaultEditorCommandForSettings(settings: zmuxSettings): stri
   return settings.defaultEditorCommand === "other"
     ? customCommand || DEFAULT_zmux_SETTINGS.defaultEditorCommand
     : settings.defaultEditorCommand;
-}
-
-function normalizeSidebarMode(value: string | undefined): SidebarMode {
-  return value === "separated" ? "separated" : DEFAULT_zmux_SETTINGS.sidebarMode;
 }
 
 function normalizeSidebarSide(value: string | undefined): SidebarSide {

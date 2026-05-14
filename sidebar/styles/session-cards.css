@@ -102,8 +102,13 @@
  *
  * CDXC:EditorPanes 2026-05-09-17:03
  * When the close button is hidden, the code editor title should use the full
- * row width and clip only the flexible additions column, never the removed
- * lines at the right edge.
+ * row width and keep the line-count stats at natural width while the text
+ * label gives up space first.
+ *
+ * CDXC:EditorPanes 2026-05-14-09:44
+ * Very narrow sidebar widths must keep project editor git stats readable. The
+ * Code label is optional and should shrink or disappear before additions and
+ * deletions can overlap it.
  */
 .project-editor-session-head,
 .sidebar-reference-layout[data-reference-sidebar="true"] .project-editor-session-head {
@@ -112,7 +117,7 @@
 }
 
 .project-editor-session-head .session-alias-heading {
-  overflow: visible;
+  overflow: hidden;
   text-overflow: clip;
 }
 
@@ -257,6 +262,7 @@
 
 .project-editor-diff-label {
   align-items: center;
+  container: project-editor-diff-label / inline-size;
   display: flex;
   gap: calc(8px * var(--sidebar-density-scale));
   justify-self: start;
@@ -269,12 +275,16 @@
 
 .project-editor-diff-prefix {
   color: var(--app-foreground);
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-editor-diff-stats {
   display: inline-flex;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   font-size: calc(9px * var(--sidebar-density-scale));
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -282,16 +292,24 @@
   justify-content: flex-end;
   letter-spacing: 0.01em;
   line-height: 1.25;
-  margin-left: 0;
+  margin-left: auto;
   min-width: 0;
-  overflow: hidden;
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
+  overflow: visible;
+  position: static;
+  transform: none;
   transition:
     opacity 120ms ease,
     visibility 0s linear 0s;
+}
+
+@container project-editor-diff-label (max-width: 128px) {
+  .project-editor-diff-prefix {
+    display: none;
+  }
+
+  .project-editor-diff-stats {
+    margin-left: 0;
+  }
 }
 
 .project-editor-diff-files {
@@ -460,7 +478,13 @@
   color: inherit;
   text-align: left;
   display: grid;
-  cursor: pointer;
+  /*
+   * CDXC:SidebarSessions 2026-05-14-08:45:
+   * Sidebar session buttons should keep the platform default cursor on hover.
+   * They remain clickable, but the card-level hover affordance is the row
+   * highlight and focused state instead of the hand pointer.
+   */
+  cursor: default;
   isolation: isolate;
   overflow: hidden;
   position: relative;
@@ -657,29 +681,24 @@
 /**
  * CDXC:PreviousSessions 2026-05-09-17:44
  * The full Previous Sessions modal copies reference-sidebar session row chrome:
- * Last Active stays on the right, active-row fill is suppressed, and the
- * project label aligns to the title inset.
+ * active-row fill is suppressed, row height stays compact, and metadata uses
+ * the same right-side title row as Last Active.
  *
- * CDXC:PreviousSessions 2026-05-11-08:12
- * Project labels are rendered inside the history button, so the row must be
- * tall enough for a two-line layout. Negative-position labels are clipped by
- * the session button's overflow and overlap sidebar search rows.
- *
- * CDXC:PreviousSessions 2026-05-11-08:37
- * The project label is floating metadata, not part of the title flow. Keep the
- * session button at normal sidebar-row height and reserve only inter-row space
- * for the label so it never moves the title baseline.
+ * CDXC:PreviousSessions 2026-05-13-16:11:
+ * Project labels live in the row's right-side metadata, directly before Last
+ * Active. Keep the row at normal sidebar height while using the modal width
+ * and trailing slot to fit title, project, and timestamp on one line.
  */
 .previous-sessions-modal .group-sessions {
-  gap: 13px;
+  gap: 8px;
   overflow: visible;
-  padding-top: 11px;
+  padding-top: 0;
 }
 
 .session-search-previous-group .group-sessions {
-  gap: 13px;
+  gap: 8px;
   overflow: visible;
-  padding-top: 11px;
+  padding-top: 0;
 }
 
 .session-history-frame {
@@ -688,6 +707,14 @@
   --reference-session-trailing-slot-width: 44px;
   min-height: 34px;
   width: 100%;
+}
+
+.session-history-frame[data-has-project-label="true"] {
+  --reference-session-trailing-slot-width: 104px;
+}
+
+.previous-sessions-modal .session-history-frame[data-has-project-label="true"] {
+  --reference-session-trailing-slot-width: 142px;
 }
 
 .session-history-card,
@@ -734,7 +761,7 @@
 .previous-sessions-modal .session-history-card .session-head,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-history-card .session-head {
   gap: 6px;
-  grid-template-columns: minmax(0, 1fr) var(--reference-session-trailing-slot-width);
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--reference-session-trailing-slot-width));
   height: 20px;
 }
 
@@ -760,8 +787,10 @@
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-history-card
   .session-head-trailing {
-  display: grid;
-  justify-items: end;
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
   min-width: var(--reference-session-trailing-slot-width);
   overflow: visible;
   width: var(--reference-session-trailing-slot-width);
@@ -773,6 +802,7 @@
   .session-history-card
   .session-last-interaction-time {
   color: #4f5359;
+  flex: 0 0 auto;
   font-size: 13.55px;
   font-weight: 300 !important;
   letter-spacing: 0;
@@ -788,22 +818,19 @@
 .session-history-project-label,
 .previous-sessions-modal .session-history-project-label,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-history-project-label {
-  color: #4f5359;
-  font-size: 9.8px;
+  color: #7c828c;
+  flex: 1 1 auto;
+  font-size: 12.25px;
   font-weight: 300 !important;
-  left: var(--reference-session-title-inset);
   letter-spacing: 0;
-  line-height: 11px;
-  max-width: calc(
-    100% - var(--reference-session-title-inset) - var(--reference-session-trailing-slot-width) -
-      var(--reference-session-trailing-inset) - 6px
-  );
-  opacity: 0.72;
+  line-height: 20px;
+  max-width: 100%;
+  min-width: 0;
+  opacity: 1;
   overflow: hidden;
   pointer-events: none;
-  position: absolute;
+  text-align: right;
   text-overflow: ellipsis;
-  top: -11px;
   white-space: nowrap;
   z-index: 2;
 }

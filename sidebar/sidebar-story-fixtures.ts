@@ -137,16 +137,12 @@ function createCombinedStorySettings(
 ): zmuxSettings {
   /**
    * CDXC:StorybookSettings 2026-05-08-16:45
-   * Combined sidebar scenarios must inherit the user's current zmux settings
-   * snapshot when Storybook can read it. The app's visibility, theme, and
-   * card-chrome settings are part of the visual contract being checked, so the
-   * fixture should only force Combined mode to keep this scenario on the target
-   * surface.
+   * CDXC:SidebarLayout 2026-05-13-08:11
+   * Storybook sidebar scenarios inherit the user's current zmux settings
+   * snapshot when available. Combined/reference sidebar is now the only target
+   * surface, so the fixture no longer needs to force a mode setting.
    */
-  return normalizezmuxSettings({
-    ...(currentSettings ?? DEFAULT_zmux_SETTINGS),
-    sidebarMode: "combined",
-  });
+  return normalizezmuxSettings(currentSettings ?? DEFAULT_zmux_SETTINGS);
 }
 
 export function createSidebarStoryMessage(

@@ -199,11 +199,10 @@ export function shouldFocusGroupOnHeaderActivation({
   shouldSelectEmptyProject: boolean;
 }): boolean {
   /**
-   * CDXC:SidebarMode 2026-05-06-12:49
-   * Combined-mode project headers activate their project even when they also
-   * collapse or expand sessions. That activation drives the debounced attached
-   * IDE workspace sync, while Separated-mode group headers keep their existing
-   * collapse-only behavior.
+   * CDXC:SidebarLayout 2026-05-13-08:11
+   * Project headers activate their project even when they also collapse or
+   * expand sessions. That activation drives the debounced attached IDE
+   * workspace sync in the combined-only sidebar.
    */
   return shouldSelectEmptyProject || (hasProjectContext && !isActive);
 }
@@ -428,10 +427,10 @@ export function SessionGroupSection({
   const isChatCollection = group?.isChatCollection === true;
   const projectContext = group?.projectContext;
   /**
-   * CDXC:SidebarMode 2026-05-03-10:42
-   * Combined mode keeps project groups draggable while disabling session drag
-   * targets. That prevents session moves across project boundaries without
-   * taking away the requested project-group reordering.
+   * CDXC:SidebarLayout 2026-05-13-08:11
+   * Project groups stay draggable while session drag targets are disabled in
+   * the reference sidebar. That prevents session moves across project
+   * boundaries without taking away project-group reordering.
    */
   const areSessionDropTargetsDisabled = draggingDisabled || sessionDraggingDisabled;
   const debuggingMode = useSidebarStore((state) => state.hud.debuggingMode);
@@ -1063,10 +1062,10 @@ export function SessionGroupSection({
       })
     ) {
       /**
-       * CDXC:SidebarMode 2026-05-04-06:52
-       * Empty Combined-mode project groups are project selectors, and non-empty
-       * project headers also activate the project so the attached IDE follows
-       * the active zmux workspace before any later agent/action launch.
+       * CDXC:SidebarLayout 2026-05-13-08:11
+       * Empty project groups are project selectors, and non-empty project
+       * headers also activate the project so the attached IDE follows the
+       * active zmux workspace before any later agent/action launch.
        */
       requestFocusGroup();
     }

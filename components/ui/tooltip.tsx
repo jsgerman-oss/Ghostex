@@ -30,18 +30,22 @@ function TooltipTrigger({
 
 /**
  * CDXC:Tooltips 2026-05-08-16:05
- * App tooltips default below the hovered control and cap their width at
- * viewport width minus 30px. Preserve authored newlines and use Radix's
- * available-width variable plus collision padding so long copy wraps inside the
- * sidebar viewport instead of being clipped by the webview edge. Tooltips do
- * not render arrows; the app uses compact sidebar surfaces where arrows add
- * visual noise and reduce usable text space. Tooltip surfaces are click/hover
- * through because they are passive labels and should not block the dense
- * sidebar controls underneath.
+ * App tooltips default below the hovered control. Preserve authored newlines
+ * and use Radix's available-width variable so long copy wraps inside the
+ * sidebar viewport instead of being clipped by the webview edge.
+ *
+ * CDXC:Tooltips 2026-05-14-08:45
+ * Narrow sidebars need tooltip copy to use up to 90% of the sidebar width.
+ * Keep collision padding small and cap the surface with 90vw, because the
+ * sidebar webview viewport is the sidebar width. Tooltips do not render arrows;
+ * the app uses compact sidebar surfaces where arrows add visual noise and
+ * reduce usable text space. Tooltip surfaces are click/hover through because
+ * they are passive labels and should not block the dense sidebar controls
+ * underneath.
  */
 function TooltipContent({
   className,
-  collisionPadding = 50,
+  collisionPadding = 8,
   side = "bottom",
   sideOffset = 0,
   style,
@@ -62,7 +66,7 @@ function TooltipContent({
         )}
         style={{
           maxWidth:
-            "min(calc(100vw - 30px), var(--radix-tooltip-content-available-width, calc(100vw - 30px)))",
+            "min(90vw, var(--radix-tooltip-content-available-width, 90vw))",
           ...style,
         }}
         {...props}

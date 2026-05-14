@@ -8,6 +8,7 @@ import {
   type FocusEventHandler,
   type MouseEventHandler,
   type ReactElement,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./app-tooltip";
@@ -47,6 +48,7 @@ export type SessionCardContentProps = {
   showCloseButton: boolean;
   showHotkeys: boolean;
   showLastInteractionTime?: boolean;
+  trailingPrefix?: ReactNode;
 };
 
 export function SessionCardContent({
@@ -57,6 +59,7 @@ export function SessionCardContent({
   showCloseButton,
   showDebugSessionNumbers,
   showLastInteractionTime = false,
+  trailingPrefix,
 }: SessionCardContentProps) {
   const isGeneratingFirstPromptTitle = session.isGeneratingFirstPromptTitle === true;
   const { headingText } = getSessionCardTitleTooltip({
@@ -118,7 +121,11 @@ export function SessionCardContent({
    * competing indicators as a single hover state.
    */
   const canCloseFromCard = showCloseButton && Boolean(onClose);
-  const hasSessionHeadTrailing = Boolean(lastInteractionLabel) || hasHeaderAgentIcon || canCloseFromCard;
+  const hasSessionHeadTrailing =
+    Boolean(trailingPrefix) ||
+    Boolean(lastInteractionLabel) ||
+    hasHeaderAgentIcon ||
+    canCloseFromCard;
 
   return (
     <>
@@ -138,6 +145,7 @@ export function SessionCardContent({
             data-default-trailing-display={defaultTrailingDisplay}
             data-hover-trailing-display={hoverTrailingDisplay}
           >
+            {trailingPrefix}
             {lastInteractionLabel ? (
               <div className="session-last-interaction-time">{lastInteractionLabel}</div>
             ) : null}

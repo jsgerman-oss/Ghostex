@@ -1,6 +1,7 @@
 import {
   IconChevronDown,
   IconChevronRight,
+  IconDeviceFloppy,
   IconEdit,
   IconFile,
   IconSearch,
@@ -25,34 +26,13 @@ import { cn } from "@/lib/utils";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
-import type { SidebarAgentIcon } from "../shared/sidebar-agents";
-
-type AgentsHubTab = "mds" | "skills" | "hooks" | "configs";
-
-type AgentProfile = {
-  agentIcon: SidebarAgentIcon;
-  filePath: string;
-  label: string;
-  profilePath: string;
-  targetPath?: string;
-};
-
-type AgentsHubFile = {
-  content: string;
-  id: string;
-  language: string;
-  name: string;
-  path: string;
-};
-
-type AgentsHubGroup = {
-  description: string;
-  files: AgentsHubFile[];
-  id: string;
-  name: string;
-  path: string;
-  profiles: AgentProfile[];
-};
+import type {
+  AgentsHubCatalogMessage,
+  AgentsHubFile,
+  AgentsHubGroup,
+  AgentsHubProfile,
+  AgentsHubTab,
+} from "../shared/session-grid-contract";
 
 type MonacoAmdRequire = {
   (deps: string[], callback: () => void): void;
@@ -81,62 +61,6 @@ declare global {
   }
 }
 
-const mainClaude: AgentProfile = {
-  agentIcon: "claude",
-  filePath: "/Users/madda/.claude/CLAUDE.md",
-  label: "Claude Code main",
-  profilePath: "/Users/madda/.claude",
-  targetPath: "/Users/madda/.agents/main.md",
-};
-
-const personalClaude: AgentProfile = {
-  agentIcon: "claude",
-  filePath: "/Users/madda/.claude-profiles/personal/CLAUDE.md",
-  label: "Claude Code personal",
-  profilePath: "/Users/madda/.claude-profiles/personal",
-  targetPath: "/Users/madda/.agents/main.md",
-};
-
-const mainCodex: AgentProfile = {
-  agentIcon: "codex",
-  filePath: "/Users/madda/.codex/AGENTS.md",
-  label: "Codex main",
-  profilePath: "/Users/madda/.codex",
-  targetPath: "/Users/madda/.agents/main.md",
-};
-
-const personalCodex: AgentProfile = {
-  agentIcon: "codex",
-  filePath: "/Users/madda/.codex-profiles/personal/AGENTS.md",
-  label: "Codex personal",
-  profilePath: "/Users/madda/.codex-profiles/personal",
-  targetPath: "/Users/madda/.agents/main.md",
-};
-
-const workCodex: AgentProfile = {
-  agentIcon: "codex",
-  filePath: "/Users/madda/.codex-profiles/work/AGENTS.md",
-  label: "Codex work",
-  profilePath: "/Users/madda/.codex-profiles/work",
-  targetPath: "/Users/madda/.agents/main.md",
-};
-
-const openCode: AgentProfile = {
-  agentIcon: "opencode",
-  filePath: "/Users/madda/.config/opencode/opencode.json",
-  label: "OpenCode main",
-  profilePath: "/Users/madda/.config/opencode",
-};
-
-const piAgent: AgentProfile = {
-  agentIcon: "pi",
-  filePath: "/Users/madda/.pi/agent/settings.json",
-  label: "Pi agent",
-  profilePath: "/Users/madda/.pi/agent",
-};
-
-const linkedProfiles = [mainClaude, personalClaude, mainCodex, personalCodex, workCodex];
-
 const tabLabels: Record<AgentsHubTab, string> = {
   configs: "Configs & MCPs",
   hooks: "Hooks",
@@ -144,172 +68,21 @@ const tabLabels: Record<AgentsHubTab, string> = {
   skills: "Skills",
 };
 
-const groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]> = {
-  mds: [
-    {
-      description: "Shared instructions used by linked Claude and Codex profiles.",
-      files: [
-        {
-          content:
-            "# Main Agent Instructions\n\nThis shared markdown file is linked into Claude and Codex profiles.\n\nThe filesystem bridge will load the real contents here next.",
-          id: "md-main-file",
-          language: "markdown",
-          name: "main.md",
-          path: "/Users/madda/.agents/main.md",
-        },
-      ],
-      id: "md-main",
-      name: "main.md",
-      path: "/Users/madda/.agents/main.md",
-      profiles: linkedProfiles,
-    },
-  ],
-  skills: [
-    {
-      description: "Shared skill folder linked into agent profile skill directories.",
-      files: [
-        {
-          content:
-            "# madda-sync-skills\n\nSelected skill files will be loaded here and edited in Monaco.",
-          id: "skill-sync-md",
-          language: "markdown",
-          name: "SKILL.md",
-          path: "/Users/madda/agents/skills/madda-sync-skills/SKILL.md",
-        },
-        {
-          content: "#!/usr/bin/env bash\nset -euo pipefail\n\n# Sync script loads here.",
-          id: "skill-sync-script",
-          language: "shell",
-          name: "scripts/sync_skills.sh",
-          path: "/Users/madda/agents/skills/madda-sync-skills/scripts/sync_skills.sh",
-        },
-        {
-          content: "name: madda-sync-skills\ninstall: linked\n",
-          id: "skill-sync-agent",
-          language: "yaml",
-          name: "agents/openai.yaml",
-          path: "/Users/madda/agents/skills/madda-sync-skills/agents/openai.yaml",
-        },
-      ],
-      id: "skill-sync",
-      name: "madda-sync-skills",
-      path: "/Users/madda/agents/skills/madda-sync-skills",
-      profiles: linkedProfiles,
-    },
-  ],
-  hooks: [
-    {
-      description: "Shell, TypeScript, and config files linked into agent hook folders.",
-      files: [
-        {
-          content: "# Shared hooks\n\nHook documentation opens here.",
-          id: "hook-readme",
-          language: "markdown",
-          name: "README.md",
-          path: "/Users/madda/agents/hooks/README.md",
-        },
-        {
-          content: "export function notify(message: string) {\n  return message;\n}\n",
-          id: "hook-notification",
-          language: "typescript",
-          name: "notification.ts",
-          path: "/Users/madda/agents/hooks/notification.ts",
-        },
-      ],
-      id: "hooks-shared",
-      name: "shared hooks",
-      path: "/Users/madda/agents/hooks",
-      profiles: [...linkedProfiles, piAgent],
-    },
-  ],
-  configs: [
-    {
-      description: "Claude uses global and profile JSON settings.",
-      files: [
-        {
-          content: "{\n  \"mcpServers\": {}\n}\n",
-          id: "config-claude-json",
-          language: "json",
-          name: "~/.claude.json",
-          path: "/Users/madda/.claude.json",
-        },
-        {
-          content: "{\n  \"permissions\": {},\n  \"hooks\": {}\n}\n",
-          id: "config-claude-settings",
-          language: "json",
-          name: "~/.claude/settings.json",
-          path: "/Users/madda/.claude/settings.json",
-        },
-      ],
-      id: "config-claude",
-      name: "Claude configs",
-      path: "/Users/madda/.claude",
-      profiles: [mainClaude, personalClaude],
-    },
-    {
-      description: "Codex profile configuration is TOML per profile.",
-      files: [
-        {
-          content: "model = \"gpt-5.1-codex-max\"\n\n[mcp_servers]\n",
-          id: "config-codex-main",
-          language: "toml",
-          name: "~/.codex/config.toml",
-          path: "/Users/madda/.codex/config.toml",
-        },
-        {
-          content: "profile = \"personal\"\n\n[mcp_servers]\n",
-          id: "config-codex-personal",
-          language: "toml",
-          name: "~/.codex-profiles/personal/config.toml",
-          path: "/Users/madda/.codex-profiles/personal/config.toml",
-        },
-      ],
-      id: "config-codex",
-      name: "Codex configs",
-      path: "/Users/madda/.codex",
-      profiles: [mainCodex, personalCodex, workCodex],
-    },
-    {
-      description: "OpenCode config files live under ~/.config/opencode.",
-      files: [
-        {
-          content: "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"mcp\": {}\n}\n",
-          id: "config-opencode-json",
-          language: "json",
-          name: "opencode.json",
-          path: "/Users/madda/.config/opencode/opencode.json",
-        },
-      ],
-      id: "config-opencode",
-      name: "OpenCode configs",
-      path: "/Users/madda/.config/opencode",
-      profiles: [openCode],
-    },
-    {
-      description: "Pi agent settings and extension hooks live under ~/.pi/agent.",
-      files: [
-        {
-          content: "{\n  \"extensions\": []\n}\n",
-          id: "config-pi-settings",
-          language: "json",
-          name: "settings.json",
-          path: "/Users/madda/.pi/agent/settings.json",
-        },
-      ],
-      id: "config-pi",
-      name: "Pi configs",
-      path: "/Users/madda/.pi/agent",
-      profiles: [piAgent],
-    },
-  ],
+const emptyGroupsByTab: Record<AgentsHubTab, AgentsHubGroup[]> = {
+  configs: [],
+  hooks: [],
+  mds: [],
+  skills: [],
 };
 
 export function AgentsHubModal({
+  catalog,
   initialTab,
   isOpen,
   onClose,
   vscode,
 }: {
+  catalog?: AgentsHubCatalogMessage;
   initialTab?: AgentsHubTab;
   isOpen: boolean;
   onClose: () => void;
@@ -333,7 +106,13 @@ export function AgentsHubModal({
           <DialogHeader className="agents-hub-header">
             <DialogTitle>Agents Hub</DialogTitle>
           </DialogHeader>
-          <AgentsHubSurface editorCommand={editorCommand} initialTab={initialTab} vscode={vscode} />
+          <AgentsHubSurface
+            catalog={catalog}
+            editorCommand={editorCommand}
+            initialTab={initialTab}
+            isOpen={isOpen}
+            vscode={vscode}
+          />
         </DialogContent>
       </Dialog>
     </TooltipProvider>
@@ -341,27 +120,70 @@ export function AgentsHubModal({
 }
 
 function AgentsHubSurface({
+  catalog,
   editorCommand,
   initialTab = "mds",
+  isOpen,
   vscode,
 }: {
+  catalog?: AgentsHubCatalogMessage;
   editorCommand: string;
   initialTab?: AgentsHubTab;
+  isOpen: boolean;
   vscode: WebviewApi;
 }) {
+  const groupsByTab = catalog?.groupsByTab ?? emptyGroupsByTab;
   const [activeTab, setActiveTab] = useState<AgentsHubTab>(initialTab);
   const [query, setQuery] = useState("");
   const [selectedFileIds, setSelectedFileIds] = useState<Record<AgentsHubTab, string>>({
-    configs: firstFileId("configs"),
-    hooks: firstFileId("hooks"),
-    mds: firstFileId("mds"),
-    skills: firstFileId("skills"),
+    configs: firstFileId(emptyGroupsByTab, "configs"),
+    hooks: firstFileId(emptyGroupsByTab, "hooks"),
+    mds: firstFileId(emptyGroupsByTab, "mds"),
+    skills: firstFileId(emptyGroupsByTab, "skills"),
   });
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(
-    () => new Set(["skill-sync", "hooks-shared", "config-claude", "config-codex"]),
-  );
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
 
-  const activeFile = findFile(activeTab, selectedFileIds[activeTab]);
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    /**
+     * CDXC:AgentsHub 2026-05-14-08:29:
+     * The Hub catalog is filesystem-owned data. Request it from native on each open so profile-specific files, installed skills, and config files reflect the current machine without baking private file contents into the web bundle.
+     */
+    vscode.postMessage({ type: "requestAgentsHubCatalog" });
+  }, [isOpen, vscode]);
+
+  useEffect(() => {
+    setSelectedFileIds((current) => ({
+      configs: findFile(groupsByTab, "configs", current.configs)
+        ? current.configs
+        : firstFileId(groupsByTab, "configs"),
+      hooks: findFile(groupsByTab, "hooks", current.hooks)
+        ? current.hooks
+        : firstFileId(groupsByTab, "hooks"),
+      mds: findFile(groupsByTab, "mds", current.mds)
+        ? current.mds
+        : firstFileId(groupsByTab, "mds"),
+      skills: findFile(groupsByTab, "skills", current.skills)
+        ? current.skills
+        : firstFileId(groupsByTab, "skills"),
+    }));
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      for (const group of [
+        ...groupsByTab.configs,
+        ...groupsByTab.hooks,
+        ...groupsByTab.skills,
+      ]) {
+        next.add(group.id);
+      }
+      return next;
+    });
+  }, [groupsByTab]);
+
+  const activeFile = findFile(groupsByTab, activeTab, selectedFileIds[activeTab]);
 
   return (
     <Tabs
@@ -409,12 +231,22 @@ function AgentsHubSurface({
                       return next;
                     });
                   }}
+                  groupsByTab={groupsByTab}
                   query={query}
                   vscode={vscode}
                 />
               </ScrollArea>
             </aside>
-            <EditorPane editorCommand={editorCommand} file={activeFile} vscode={vscode} />
+            {activeFile ? (
+              <EditorPane editorCommand={editorCommand} file={activeFile} vscode={vscode} />
+            ) : (
+              <div className="agents-hub-editor-frame">
+                <div className="agents-hub-empty">
+                  <IconSearch data-icon="inline-start" />
+                  <span>{catalog ? "No files found." : "Loading agent files..."}</span>
+                </div>
+              </div>
+            )}
           </section>
         </TabsContent>
       ))}
@@ -426,6 +258,7 @@ function GroupList({
   activeFileId,
   activeTab,
   expandedIds,
+  groupsByTab,
   onSelectFile,
   onToggleExpanded,
   query,
@@ -434,12 +267,13 @@ function GroupList({
   activeFileId: string;
   activeTab: AgentsHubTab;
   expandedIds: Set<string>;
+  groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]>;
   onSelectFile: (fileId: string) => void;
   onToggleExpanded: (groupId: string) => void;
   query: string;
   vscode: WebviewApi;
 }) {
-  const groups = useFilteredGroups(activeTab, query);
+  const groups = useFilteredGroups(groupsByTab, activeTab, query);
   const expandable = activeTab !== "mds";
 
   if (groups.length === 0) {
@@ -511,7 +345,7 @@ function GroupList({
   );
 }
 
-function ProfileRow({ profiles, vscode }: { profiles: AgentProfile[]; vscode: WebviewApi }) {
+function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode: WebviewApi }) {
   return (
     <div className="agents-hub-profile-row" aria-label="Profiles using this item">
       {profiles.map((profile) => {
@@ -548,9 +382,9 @@ function ProfileRow({ profiles, vscode }: { profiles: AgentProfile[]; vscode: We
               </button>
             </TooltipTrigger>
             <TooltipContent align="start">
-              {`${profile.label}\n${profile.filePath}${
-                profile.targetPath ? ` -> ${profile.targetPath}` : ""
-              }\nClick to open ${profile.profilePath} in Finder`}
+              {`${profile.label}\n${profile.filePath}
+              \n\n${profile.targetPath ? ` \n      ->\n ${profile.targetPath}` : ""
+              }\n\nClick to open in Finder`}
             </TooltipContent>
           </Tooltip>
         );
@@ -590,11 +424,16 @@ function EditorPane({
   );
   const latestFileRef = useRef(file);
   const [fallbackValue, setFallbackValue] = useState(file.content);
+  const [savedValue, setSavedValue] = useState(file.content);
+  const [isSaving, setIsSaving] = useState(false);
   const [monacoAvailable, setMonacoAvailable] = useState(true);
+  const isDirty = fallbackValue !== savedValue;
 
   useEffect(() => {
     latestFileRef.current = file;
     setFallbackValue(file.content);
+    setSavedValue(file.content);
+    setIsSaving(false);
   }, [file]);
 
   useEffect(() => {
@@ -655,6 +494,27 @@ function EditorPane({
     editor.layout();
   }, [file.content, file.id, file.language]);
 
+  const handleSave = () => {
+    const value = editorRef.current?.getValue() ?? fallbackValue;
+    if (value === savedValue || isSaving) {
+      return;
+    }
+    /**
+     * CDXC:AgentsHub 2026-05-14-08:27:
+     * Users edit agent instruction/config files directly in the Hub modal, so the top-right Save action should stay disabled until the current editor text differs from the last saved file contents.
+     * Saving posts the active file path and editor value through the native sidebar bridge because the modal host cannot write local files itself.
+     */
+    setIsSaving(true);
+    vscode.postMessage({
+      content: value,
+      filePath: file.path,
+      type: "saveAgentsHubFile",
+    });
+    setSavedValue(value);
+    setFallbackValue(value);
+    setIsSaving(false);
+  };
+
   return (
     <div className="agents-hub-editor-frame">
       <div className="agents-hub-editor-toolbar">
@@ -663,7 +523,6 @@ function EditorPane({
           <span className="agents-hub-path">{file.path}</span>
         </div>
         <div className="agents-hub-editor-actions">
-          <span className="agents-hub-language">{file.language}</span>
           <Button
             onClick={() =>
               vscode.postMessage({
@@ -677,6 +536,16 @@ function EditorPane({
           >
             <IconEdit data-icon="inline-start" />
             {editorCommand}
+          </Button>
+          <Button
+            disabled={!isDirty || isSaving}
+            onClick={handleSave}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <IconDeviceFloppy data-icon="inline-start" />
+            Save
           </Button>
         </div>
       </div>
@@ -698,7 +567,11 @@ function EditorPane({
   );
 }
 
-function useFilteredGroups(tab: AgentsHubTab, query: string): AgentsHubGroup[] {
+function useFilteredGroups(
+  groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]>,
+  tab: AgentsHubTab,
+  query: string,
+): AgentsHubGroup[] {
   return useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     if (!normalizedQuery) {
@@ -712,21 +585,25 @@ function useFilteredGroups(tab: AgentsHubTab, query: string): AgentsHubGroup[] {
         .toLowerCase();
       return groupText.includes(normalizedQuery) || fileText.includes(normalizedQuery);
     });
-  }, [query, tab]);
+  }, [groupsByTab, query, tab]);
 }
 
-function findFile(tab: AgentsHubTab, fileId: string): AgentsHubFile {
+function findFile(
+  groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]>,
+  tab: AgentsHubTab,
+  fileId: string,
+): AgentsHubFile | undefined {
   for (const group of groupsByTab[tab]) {
     const file = group.files.find((candidate) => candidate.id === fileId);
     if (file) {
       return file;
     }
   }
-  return groupsByTab[tab][0]!.files[0]!;
+  return groupsByTab[tab][0]?.files[0];
 }
 
-function firstFileId(tab: AgentsHubTab): string {
-  return groupsByTab[tab][0]!.files[0]!.id;
+function firstFileId(groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]>, tab: AgentsHubTab): string {
+  return groupsByTab[tab][0]?.files[0]?.id ?? "";
 }
 
 function getMonacoRequire(): MonacoAmdRequire | undefined {

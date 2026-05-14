@@ -25,6 +25,203 @@
 }
 
 /**
+ * CDXC:PromptEditor 2026-05-13-09:48
+ * Ctrl+G prompt editing lives in the full-window app-modal WKWebView but
+ * behaves like a floating pane: only the editor surface captures pointer
+ * input, while native owns the file save/cancel status contract.
+ */
+.floating-prompt-editor-root {
+  inset: 0;
+  pointer-events: none;
+  position: fixed;
+  z-index: 1300;
+}
+
+.floating-prompt-editor-panel {
+  background: #151515;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 8px;
+  box-sizing: border-box;
+  box-shadow: 0 18px 42px rgb(0 0 0 / 36%);
+  color: #ececec;
+  display: grid;
+  grid-template-rows: 32px minmax(0, 1fr);
+  overflow: hidden;
+  pointer-events: auto;
+  position: absolute;
+}
+
+.floating-prompt-editor-titlebar {
+  align-items: center;
+  background: #242424;
+  box-sizing: border-box;
+  cursor: grab;
+  display: block;
+  height: 32px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 170px 0 12px;
+  position: relative;
+  user-select: none;
+  width: 100%;
+}
+
+.floating-prompt-editor-titlebar:active {
+  cursor: grabbing;
+}
+
+/*
+ * CDXC:PromptEditor 2026-05-13-10:22
+ * Ctrl+G prompt editing opens as a 400px wrapped Markdown pane. Titlebar actions
+ * live together on the top right: Cancel requires a second click within five
+ * seconds, while Save stays immediately available.
+ *
+ * CDXC:PromptEditor 2026-05-13-15:53
+ * The floating pane can resize up to 300px wider than the original 400px width.
+ * Keep the action buttons in a reserved right-side area so minimum-size panes
+ * truncate the title before they clip Cancel, Confirm, Saving, or Save.
+ *
+ * CDXC:PromptEditor 2026-05-13-23:22:
+ * During resize, the titlebar actions must remain anchored to the visible top
+ * right of the pane. Use a grid titlebar and border-box action buttons so the
+ * title truncates first instead of pushing Save outside the clipped panel.
+ *
+ * CDXC:PromptEditor 2026-05-14-09:55:
+ * The action buttons must stay visible after widening then narrowing the pane.
+ * Anchor them absolutely to the live titlebar right edge so no stale widened
+ * inline layout can leave Save and Cancel clipped offscreen; if the pane gets
+ * very narrow, shrink the two button boxes together instead of dropping one.
+ */
+.floating-prompt-editor-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+  min-width: 0;
+  overflow: hidden;
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 146px;
+}
+
+.floating-prompt-editor-cancel,
+.floating-prompt-editor-save {
+  align-items: center;
+  background: rgb(255 255 255 / 5%);
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: rgb(255 255 255 / 65%);
+  cursor: default;
+  display: inline-flex;
+  flex: 1 1 0;
+  font: 700 12px/1 system-ui, sans-serif;
+  height: 22px;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-prompt-editor-cancel {
+  flex-grow: 1.18;
+}
+
+.floating-prompt-editor-cancel:hover,
+.floating-prompt-editor-save:hover {
+  background: rgb(255 255 255 / 9%);
+  color: rgb(255 255 255 / 86%);
+}
+
+.floating-prompt-editor-title {
+  align-items: center;
+  display: flex;
+  font: 700 15px/1.2 system-ui, sans-serif;
+  gap: 7px;
+  height: 32px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-prompt-editor-title-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.floating-prompt-editor-title-shortcut {
+  color: rgb(255 255 255 / 48%);
+  flex: 0 1 auto;
+  font-weight: 400;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.floating-prompt-editor-monaco {
+  min-height: 0;
+}
+
+/*
+ * CDXC:PromptEditor 2026-05-13-23:22:
+ * Resize and move drags are pane-level gestures, not editor selections.
+ * Disable browser selection globally for the floating editor while a drag is
+ * active, and block Monaco pointer hits during resize so the gutter and blank
+ * editor area cannot become highlighted.
+ */
+.floating-prompt-editor-root[data-drag-mode] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.floating-prompt-editor-root[data-drag-mode="move"] {
+  cursor: grabbing;
+}
+
+.floating-prompt-editor-root[data-drag-mode="resize"] {
+  cursor: nwse-resize;
+}
+
+.floating-prompt-editor-root[data-drag-mode] * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+.floating-prompt-editor-root[data-drag-mode="resize"] .floating-prompt-editor-monaco,
+.floating-prompt-editor-root[data-drag-mode="resize"] .monaco-editor {
+  pointer-events: none;
+}
+
+.floating-prompt-editor-save:disabled {
+  color: rgb(255 255 255 / 56%);
+}
+
+.floating-prompt-editor-resize {
+  bottom: 0;
+  cursor: nwse-resize;
+  height: 24px;
+  position: absolute;
+  right: 0;
+  width: 24px;
+}
+
+.floating-prompt-editor-resize::before {
+  background:
+    linear-gradient(135deg, transparent 0 54%, rgb(255 255 255 / 34%) 55% 58%, transparent 59%),
+    linear-gradient(135deg, transparent 0 66%, rgb(255 255 255 / 34%) 67% 70%, transparent 71%);
+  content: "";
+  inset: 4px;
+  position: absolute;
+}
+
+/**
  * CDXC:AppModals 2026-04-26-15:47
  * Full-app modal overlays should preserve terminal readability behind dialogs:
  * no backdrop blur, and a 65% dark scrim so settings and configuration
@@ -359,6 +556,11 @@
    * Previous Sessions must read as an extension of the sidebar, not a separate
    * card surface. Use the same sidebar background token and reference row
    * variables that sidebar session buttons use.
+   *
+   * CDXC:PreviousSessions 2026-05-13-16:11:
+   * The modal needs more horizontal room now that each history row keeps the
+   * project name on the right before Last Active instead of floating it above
+   * the title.
    */
   --reference-session-agent-icon-size: 13px;
   --reference-session-icon-size: 15px;
@@ -368,11 +570,11 @@
   --reference-session-trailing-slot-width: 44px;
   background: var(--app-background);
   gap: 14px;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   max-height: 80vh;
-  max-width: min(300px, 100%);
+  max-width: min(420px, 100%);
   overflow: hidden;
-  width: min(300px, 100%);
+  width: min(420px, 100%);
 }
 
 .app-modal-host-body .previous-sessions-modal {
@@ -380,9 +582,13 @@
    * CDXC:PreviousSessions 2026-04-28-05:36
    * Previous Sessions is a scanning picker, not a management workspace. Keep
    * the full-window native modal slim enough to read like the sidebar version.
+   *
+   * CDXC:PreviousSessions 2026-05-13-16:11:
+   * Widen only enough to support right-side project metadata plus Last Active
+   * without turning the picker into a broad management dialog.
    */
-  max-width: min(300px, calc(100vw - 32px));
-  width: min(300px, calc(100vw - 32px));
+  max-width: min(420px, calc(100vw - 32px));
+  width: min(420px, calc(100vw - 32px));
 }
 
 .app-modal-host-body .pinned-prompts-modal,
@@ -843,11 +1049,15 @@
    * CDXC:PreviousSessions 2026-05-09-17:44
    * The prompt launcher is a normal visible sidebar-style button: content
    * width, right aligned, and never dimmed in its resting state.
+   *
+   * CDXC:PreviousSessions 2026-05-13-16:11:
+   * The prompt launcher should read as a primary light button in this dark
+   * modal: white background, dark text, and compact button padding.
    */
-  background: transparent;
-  border: none;
+  background: #f4f4f5;
+  border: 1px solid color-mix(in srgb, #ffffff 82%, transparent);
   border-radius: 8px;
-  color: var(--app-foreground);
+  color: #151515;
   cursor: pointer;
   display: inline-flex;
   font-size: 15.55px;
@@ -858,7 +1068,7 @@
   line-height: 14px;
   min-height: 34px;
   min-width: 0;
-  padding: 10px;
+  padding: 0 13px;
   text-align: left;
   text-transform: none;
   transition:
@@ -870,9 +1080,9 @@
 
 .previous-sessions-find-button:hover,
 .previous-sessions-find-button:focus-visible {
-  background: #202020;
-  border-color: transparent;
-  color: var(--app-foreground);
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #111111;
   outline: none;
 }
 

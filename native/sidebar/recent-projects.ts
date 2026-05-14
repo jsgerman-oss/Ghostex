@@ -7,11 +7,6 @@ export type RecentProjectState = {
   workspace: GroupedSessionWorkspaceSnapshot;
 };
 
-export type NormalizeStartupRecentProjectsResult<T extends RecentProjectState> = {
-  changed: boolean;
-  projects: T[];
-};
-
 export function countRecentProjectSessions(
   project: Pick<RecentProjectState, "workspace">,
 ): number {
@@ -19,44 +14,6 @@ export function countRecentProjectSessions(
     (projectTotal, group) => projectTotal + group.snapshot.sessions.length,
     0,
   );
-}
-
-export function hasRecentProjectSessions(project: Pick<RecentProjectState, "workspace">): boolean {
-  return countRecentProjectSessions(project) > 0;
-}
-
-export function normalizeStartupRecentProjects<T extends RecentProjectState>(
-  projects: readonly T[],
-  recentClosedAt: string,
-): NormalizeStartupRecentProjectsResult<T> {
-  /**
-   * CDXC:RecentProjects 2026-05-04-14:25
-   * On app startup, Combined sidebar should auto-move only non-chat projects
-   * with no stored sessions into Recent Projects. Sleeping sessions are still
-   * stored sessions, so they keep the project in the main sidebar.
-   */
-  let changed = false;
-  const normalizedProjects = projects.map((project) => {
-    if (
-      project.isChat === true ||
-      project.isRecentProject === true ||
-      hasRecentProjectSessions(project)
-    ) {
-      return project;
-    }
-
-    changed = true;
-    return {
-      ...project,
-      isRecentProject: true,
-      recentClosedAt: project.recentClosedAt || recentClosedAt,
-    };
-  });
-
-  return {
-    changed,
-    projects: normalizedProjects,
-  };
 }
 
 export function compareRecentProjectsByClosedAt(

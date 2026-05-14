@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import {
   compareRecentProjectsByClosedAt,
   countRecentProjectSessions,
-  normalizeStartupRecentProjects,
 } from "./recent-projects";
 import {
   createDefaultGroupedSessionWorkspaceSnapshot,
@@ -10,28 +9,12 @@ import {
 import { createSessionInSimpleWorkspace } from "../../shared/simple-grouped-session-workspace-state";
 
 describe("recent projects", () => {
-  test("moves only empty non-chat startup projects into recent projects", () => {
-    const startedAt = "2026-05-04T10:25:00.000Z";
-    const { projects, changed } = normalizeStartupRecentProjects(
-      [
-        {
-          isChat: false,
-          workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
-        },
-        {
-          isChat: true,
-          workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
-        },
-      ],
-      startedAt,
-    );
+  test("counts empty projects without treating them as preserved sessions", () => {
+    const project = {
+      workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+    };
 
-    expect(changed).toBe(true);
-    expect(projects[0]).toMatchObject({
-      isRecentProject: true,
-      recentClosedAt: startedAt,
-    });
-    expect(projects[1]?.isRecentProject).toBeUndefined();
+    expect(countRecentProjectSessions(project)).toBe(0);
   });
 
   test("counts sleeping sessions so startup keeps the project visible", () => {
@@ -52,19 +35,7 @@ describe("recent projects", () => {
       })),
     };
 
-    const { projects, changed } = normalizeStartupRecentProjects(
-      [
-        {
-          isChat: false,
-          workspace,
-        },
-      ],
-      "2026-05-04T10:25:00.000Z",
-    );
-
-    expect(countRecentProjectSessions(projects[0]!)).toBe(1);
-    expect(changed).toBe(false);
-    expect(projects[0]?.isRecentProject).toBeUndefined();
+    expect(countRecentProjectSessions({ workspace })).toBe(1);
   });
 
   test("sorts recent projects by last closed time descending", () => {

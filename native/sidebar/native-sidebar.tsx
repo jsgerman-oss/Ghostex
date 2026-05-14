@@ -49,6 +49,7 @@ import {
   createSessionRecord,
   createTimestampedSessionId,
   createSidebarHudState,
+  DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO,
   DEFAULT_TERMINAL_SESSION_TITLE,
   createSidebarSessionItems,
   getCodexSessionIdFromTitle,
@@ -60,6 +61,7 @@ import {
   getVisibleTerminalTitle,
   resolveSidebarTheme,
   type ExtensionToSidebarMessage,
+  type AgentsHubCatalogMessage,
   type GroupedSessionWorkspaceSnapshot,
   type SessionRecord,
   type SessionGridSnapshot,
@@ -185,7 +187,6 @@ import {
 import {
   compareRecentProjectsByClosedAt,
   countRecentProjectSessions,
-  normalizeStartupRecentProjects,
 } from "./recent-projects";
 import {
   DEFAULT_WORKSPACE_THEME_COLOR,
@@ -291,7 +292,13 @@ type NativeHostCommand =
        * The sidebar is authoritative for whether a T3 card is shown and awake.
        * Native uses this set to keep the managed t3code server alive while a
        * T3 session is running, independent of which workspace pane is focused.
+       *
+       * CDXC:T3Code 2026-05-14-09:34:
+       * Awake T3 cards in the sidebar also need a workspace root on this state
+       * message so native can restart the background t3code provider when the
+       * server has exited but the user still has T3 sessions shown.
        */
+      runtimeCwd?: string;
       runningSessionIds: string[];
       type: "setT3CodeRuntimeSessionState";
     }
@@ -528,7 +535,6 @@ export type WorkspaceBarProject = {
 export type WorkspaceBarStateMessage = {
   activeProjectId: string;
   projects: WorkspaceBarProject[];
-  sidebarMode: zmuxSettings["sidebarMode"];
   type: "workspaceBarState";
 };
 
@@ -600,6 +606,10 @@ type NativeHostEvent =
       projectId: string;
       status: Exclude<ProjectEditorLoadStatus, "idle">;
       type: "projectEditorLoadState";
+    }
+  | {
+      projectId: string;
+      type: "projectEditorBackRequested";
     }
   | { status: NativeSessionStatusIndicatorStatus; type: "sessionStatusIndicatorClicked" }
   | { sessionId: string; type: "sessionAttentionNotificationClicked" }
@@ -830,6 +840,7 @@ const pendingProjectDiffRefreshProjectIds = new Set<string>();
 let lastNativeLayoutSyncKey: string | undefined;
 let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
+let lastNativeFocusedSidebarSessionId: string | undefined;
 let lastNativeT3RuntimeSessionStateKey: string | undefined;
 let nativeSplitLayoutHint: NativeSplitLayoutHint | undefined;
 let lastPersistedProjectsPayloadJson: string | undefined;
@@ -866,11 +877,16 @@ type NativeProject = {
   isRecentProject?: boolean;
   name: string;
   path: string;
+  projectEditor?: NativeProjectEditorRestoreState;
   projectId: string;
   recentClosedAt?: string;
   theme?: SidebarTheme;
   themeColor?: string;
   workspace: GroupedSessionWorkspaceSnapshot;
+};
+
+type NativeProjectEditorRestoreState = {
+  isOpen: boolean;
 };
 
 type NativeCliSessionSelector = {
@@ -1134,7 +1150,7 @@ window.__zmux_NATIVE_MODAL_BRIDGE__ = {
 window.__zmux_NATIVE_HOTKEYS__ = {
   handleNativeHotkey(actionId) {
     logNativeHotkeyDebug("nativeHotkeys.bridgeActionReceived", { actionId });
-    runNativeHotkeyAction(actionId);
+    runNativeHotkeyAction(actionId, "native");
   },
 };
 
@@ -1161,7 +1177,7 @@ document.addEventListener(
     }
     event.preventDefault();
     event.stopPropagation();
-    runNativeHotkeyAction(actionId);
+    runNativeHotkeyAction(actionId, "dom");
   },
   true,
 );
@@ -2198,7 +2214,7 @@ function readStoredSettings(): zmuxSettings {
       sharedSettingsJson || localStorage.getItem(SETTINGS_STORAGE_KEY) || "null",
     );
     const storedSettings = normalizezmuxSettings(
-      normalizeStoredSettingsSidebarSide(normalizeStoredSettingsSidebarMode(storedSettingsSource)),
+      normalizeStoredSettingsSidebarSide(storedSettingsSource),
     );
     if (!sharedSettingsJson) {
       persistSharedSettingsSnapshot(storedSettings);
@@ -2249,29 +2265,6 @@ function readLegacyStoredSidebarSide(): SidebarSide | undefined {
   return localStorage.getItem(LEGACY_SIDEBAR_SIDE_STORAGE_KEY) === "right"
     ? "right"
     : undefined;
-}
-
-function normalizeStoredSettingsSidebarMode(candidate: unknown): unknown {
-  if (
-    !candidate ||
-    typeof candidate !== "object" ||
-    Array.isArray(candidate) ||
-    "sidebarMode" in candidate
-  ) {
-    return candidate;
-  }
-
-  /**
-   * CDXC:SidebarMode 2026-05-03-10:42
-   * Combined is the default for first installs with no settings object. Existing
-   * installs that already persisted settings before sidebarMode existed should
-   * remain on the previous Separated presentation until the user changes the
-   * new settings dropdown.
-   */
-  return {
-    ...candidate,
-    sidebarMode: "separated",
-  };
 }
 
 function saveSettings(nextSettings: zmuxSettings): void {
@@ -2768,24 +2761,19 @@ function readStoredProjects(): { activeProjectId: string; projects: NativeProjec
         ? candidate.activeProjectId
         : projects[0]!.projectId;
     /**
-     * CDXC:RecentProjects 2026-05-04-14:25
-     * Combined-mode installs keep the sidebar clean by moving only empty
-     * non-chat startup projects into the bottom Recent Projects drawer. Stored
-     * sleeping sessions still count, so restart does not hide parked work.
+     * CDXC:RecentProjects 2026-05-14-08:08:
+     * Startup must preserve each stored project's explicit Recent Projects status. Projects with zero sessions should stay in the main Combined project list unless the user closed that project into Recent Projects.
      */
-    const startupRecentProjects =
-      settings.sidebarMode === "combined"
-        ? normalizeStartupRecentProjects(projects, new Date().toISOString())
-        : { changed: false, projects };
     const activeProjectId = resolveStartupActiveProjectId(
-      startupRecentProjects.projects,
+      projects,
       restoredActiveProjectId,
-      settings.sidebarMode === "combined",
+      true,
     );
     const startupProjects = normalizeStartupTerminalSleepState(
-      startupRecentProjects.projects,
+      projects,
       activeProjectId,
     );
+    restoreProjectEditorSurfaceStates(startupProjects, activeProjectId);
     if (candidateProjects.length > 0) {
       persistSharedProjectsSnapshot(activeProjectId, startupProjects);
     }
@@ -2935,6 +2923,7 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
       isRecentProject: project.isRecentProject === true,
       name: project.name?.trim() || projectNameFromPath(path),
       path,
+      projectEditor: normalizeStoredProjectEditorRestoreState(project.projectEditor),
       projectId,
       recentClosedAt:
         typeof project.recentClosedAt === "string" &&
@@ -2946,6 +2935,46 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
       workspace: normalizeSimpleGroupedSessionWorkspaceSnapshot(project.workspace),
     },
   ];
+}
+
+function normalizeStoredProjectEditorRestoreState(
+  candidate: unknown,
+): NativeProjectEditorRestoreState | undefined {
+  if (!candidate || typeof candidate !== "object") {
+    return undefined;
+  }
+  const source = candidate as Partial<NativeProjectEditorRestoreState>;
+  return source.isOpen === true ? { isOpen: true } : undefined;
+}
+
+function restoreProjectEditorSurfaceStates(
+  startupProjects: readonly NativeProject[],
+  startupActiveProjectId: string,
+): void {
+  projectEditorSurfaceByProjectId.clear();
+  for (const project of startupProjects) {
+    if (
+      project.projectEditor?.isOpen !== true ||
+      project.isChat === true ||
+      project.isRecentProject === true
+    ) {
+      continue;
+    }
+    const isActiveProject = project.projectId === startupActiveProjectId;
+    /**
+     * CDXC:EditorPanes 2026-05-14-13:22:
+     * If embedded Code was open when zmux quit, restart must bring that Code row
+     * back in the sidebar. Hydrate project-editor surface state from the durable
+     * project snapshot; the active project recreates its Code pane immediately,
+     * while background projects stay sleeping until the user focuses them.
+     */
+    projectEditorSurfaceByProjectId.set(project.projectId, {
+      errorMessage: undefined,
+      isOpen: true,
+      isSleeping: !isActiveProject,
+      status: isActiveProject ? "opening" : "idle",
+    });
+  }
 }
 
 function normalizeStoredCommandsPanelState(candidate: unknown): CommandsPanelState {
@@ -2997,8 +3026,17 @@ function normalizeCommandsPanelMode(mode: unknown): CommandsPanelMode {
 }
 
 function normalizeCommandsPanelHeightRatio(heightRatio: unknown): number {
-  const numericHeightRatio = typeof heightRatio === "number" ? heightRatio : 0.32;
-  return Math.max(0.18, Math.min(0.55, Number.isFinite(numericHeightRatio) ? numericHeightRatio : 0.32));
+  const numericHeightRatio =
+    typeof heightRatio === "number" ? heightRatio : DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO;
+  return Math.max(
+    0.18,
+    Math.min(
+      0.55,
+      Number.isFinite(numericHeightRatio)
+        ? numericHeightRatio
+        : DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO,
+    ),
+  );
 }
 
 function createInitialProject(): NativeProject {
@@ -3963,12 +4001,13 @@ function createNativeSidebarCommandButtons(): SidebarCommandButton[] {
     switch (command.commandId) {
       case "dev":
         /**
-         * CDXC:DevAppFlavor 2026-05-09-16:17
-         * The default Dev command should use the short local `bun s` path so
-         * sidebar-launched repo sessions start zmux-dev instead of replacing
-         * the installed release app.
+         * CDXC:DevAppFlavor 2026-05-14-10:11
+         * The default Dev command is exposed in the native titlebar Actions
+         * split button. It must run the dev app variant directly; `bun s` maps
+         * to the prod start script, which quits the running Ghostex app before
+         * rebuilding and makes a titlebar terminal action look like a crash.
          */
-        return { ...command, command: "bun s" };
+        return { ...command, command: "bun run start:dev" };
       case "build":
         return { ...command, command: "bun run build" };
       case "test":
@@ -4036,10 +4075,10 @@ function scheduleSyncOpenProjectWithZed(reason: string): void {
   const scheduledProject = activeProject();
   /**
    * CDXC:IDEAttachment 2026-05-06-12:49
-   * Switching zmux workspaces in Separated or Combined sidebar mode syncs the
-   * selected project into the attached IDE after a 2s trailing debounce. Rapid
-   * workspace activations coalesce into one editor-open request for the final
-   * active project, and the user can disable this separately from attachment.
+   * Switching zmux workspaces syncs the selected project into the attached IDE
+   * after a 2s trailing debounce. Rapid workspace activations coalesce into one
+   * editor-open request for the final active project, and the user can disable
+   * this separately from attachment.
    */
   pendingZedProjectSyncTimeout = window.setTimeout(() => {
     pendingZedProjectSyncTimeout = undefined;
@@ -4424,8 +4463,13 @@ function activeCommandPanelContainsSession(sessionId: string): boolean {
   return commandPanelContainsSession(activeProject(), sessionId);
 }
 
+/**
+ * CDXC:CommandsPanel 2026-05-14-09:41
+ * Command-pane terminals should identify as `Command Terminal` unless a
+ * configured command supplies a more specific session title.
+ */
 function createCommandTerminal(
-  title = DEFAULT_TERMINAL_SESSION_TITLE,
+  title = "Command Terminal",
   initialInput = "",
   options: { focusAfterCreate?: boolean; commandId?: string } = {},
 ): TerminalSessionRecord | undefined {
@@ -4860,10 +4904,10 @@ function createCombinedSidebarGroups(): SidebarSessionGroup[] {
    * same chat collection but opens a browser pane there because the user asked
    * for skills.sh in Chats instead of in the active project.
    *
-   * CDXC:SidebarMode 2026-05-03-10:42
-   * Non-chat projects still render as one draggable group per project. The
-   * underlying separated workspace groups stay intact, so switching back to
-   * Separated restores the existing group layout.
+   * CDXC:SidebarLayout 2026-05-13-08:11
+   * Non-chat projects render as one draggable group per project. The project
+   * internals can still have multiple terminal groups, but the sidebar no
+   * longer exposes a per-project separated presentation.
    */
   const orderedProjects = orderNativeProjectsForSidebar(projects);
   const chatProjects = orderedProjects.filter((project) => project.isChat === true);
@@ -4980,6 +5024,36 @@ function createSidebarProjectEditorState(
     projectId: project.projectId,
     status: surfaceState?.status ?? "idle",
   };
+}
+
+function setProjectEditorPersistedOpen(
+  projectId: string,
+  isOpen: boolean,
+  reason: string,
+): void {
+  let didChange = false;
+  projects = projects.map((project) => {
+    if (project.projectId !== projectId) {
+      return project;
+    }
+    if (isOpen) {
+      if (project.projectEditor?.isOpen === true) {
+        return project;
+      }
+      didChange = true;
+      return { ...project, projectEditor: { isOpen: true } };
+    }
+    if (!project.projectEditor) {
+      return project;
+    }
+    didChange = true;
+    const { projectEditor: _removedProjectEditor, ...projectWithoutEditor } = project;
+    return projectWithoutEditor;
+  });
+
+  if (didChange) {
+    writeStoredProjects(reason);
+  }
 }
 
 function createProjectedSidebarSessionsForGroup(group: SessionGroupRecord): SidebarSessionItem[] {
@@ -5125,16 +5199,6 @@ function getNativeSidebarCommandSessionIndicators(
 function buildSidebarMessage(): SidebarHydrateMessage {
   const project = activeProject();
   const snapshot = activeSnapshot();
-  const isCombinedSidebarMode = settings.sidebarMode === "combined";
-  /**
-   * CDXC:BrowserPanes 2026-05-02-06:35
-   * Browser-pane mode hides the dedicated Chrome Canary Browsers section
-   * because browser actions become ordinary workspace session cards. Canary
-   * remains visible only while the Chrome Canary integration is selected.
-   */
-  const showChromeCanaryBrowserGroup =
-    !isCombinedSidebarMode && settings.browserOpenMode === "chrome-canary" && isChromeCanaryRunning;
-  const browserGroups = showChromeCanaryBrowserGroup ? [buildChromeCanaryBrowserGroup()] : [];
   /**
    * CDXC:NativeSidebar 2026-04-27-17:03
    * Native sidebar editor checks must stay aligned with the shipped UX. Keep
@@ -5142,9 +5206,7 @@ function buildSidebarMessage(): SidebarHydrateMessage {
    * passing them to shared sidebar HUD creation.
    */
   return {
-    groups: isCombinedSidebarMode
-      ? createCombinedSidebarGroups()
-      : browserGroups.concat(createProjectedSidebarGroupsForProject(project)),
+    groups: createCombinedSidebarGroups(),
     hud: {
       ...createSidebarHudState(
         snapshot,
@@ -5162,14 +5224,13 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         {
           /**
            * CDXC:SidebarLayout 2026-05-13-08:11
-           * The current sidebar layout always owns Agents and Git visibility,
-           * and only suppresses Actions in Combined mode where project/session
-           * scanning is the primary workflow. The old section-visibility
-           * settings were removed because they duplicated layout structure.
+           * Combined is now the only supported sidebar layout. The old Actions
+           * and browser groups stay hidden, while Agents and Git remain owned
+           * by the reference sidebar chrome.
            */
-          actions: !isCombinedSidebarMode,
+          actions: false,
           agents: true,
-          browsers: showChromeCanaryBrowserGroup,
+          browsers: false,
           git: true,
         },
         collapsedSections,
@@ -5179,10 +5240,10 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         getNativeSidebarCommandSessionIndicators(commands),
       ),
       /**
-       * CDXC:SidebarMode 2026-05-04-07:00
-       * Combined mode still needs the top current-project header so users can
-       * see which project receives new agent/action launches after selecting a
-       * project group with no sessions.
+       * CDXC:SidebarLayout 2026-05-13-08:11
+       * The reference sidebar keeps the top current-project header so users
+       * can see which project receives new agent/action launches after
+       * selecting a project group with no sessions.
        */
       projectHeader: {
         directory: project.path,
@@ -5190,7 +5251,7 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         projectId: project.projectId,
       },
       customThemeColor: normalizeWorkspaceThemeColor(project.themeColor),
-      recentProjects: isCombinedSidebarMode ? createSidebarRecentProjects() : [],
+      recentProjects: createSidebarRecentProjects(),
       settings,
     },
     pinnedPrompts,
@@ -5334,8 +5395,14 @@ function syncNativeT3RuntimeSessionState(sidebarMessage: SidebarHydrateMessage):
    * present in the current session sidebar projection and the card is not
    * sleeping. This deliberately decouples provider lifetime from AppKit pane
    * visibility so split focus changes do not stop an awake T3 session.
+   *
+   * CDXC:T3Code 2026-05-14-09:34:
+   * The same visible-session projection must carry a concrete cwd for native
+   * liveness repair. If t3code was terminated while sidebar T3 cards remain
+   * awake, native should relaunch the provider in the background instead of
+   * leaving those cards in a manual kill-and-recreate retry state.
    */
-  const runningSessionIds = sidebarMessage.groups
+  const runningSessions = sidebarMessage.groups
     .flatMap((group) => group.sessions)
     .filter(
       (session) =>
@@ -5343,18 +5410,30 @@ function syncNativeT3RuntimeSessionState(sidebarMessage: SidebarHydrateMessage):
         session.isSleeping !== true &&
         session.isRunning !== false &&
         session.lifecycleState !== "sleeping",
-    )
-    .map((session) => session.sessionId)
-    .sort();
-  const nextKey = JSON.stringify(runningSessionIds);
+    );
+  const runningSessionIds = runningSessions.map((session) => session.sessionId).sort();
+  const runtimeCwd = runningSessions
+    .map((session) => resolveNativeT3RuntimeCwdForSidebarSession(session.sessionId))
+    .find((cwd): cwd is string => Boolean(cwd));
+  const nextKey = JSON.stringify({ runningSessionIds, runtimeCwd });
   if (nextKey === lastNativeT3RuntimeSessionStateKey) {
     return;
   }
   lastNativeT3RuntimeSessionStateKey = nextKey;
   postNative({
+    runtimeCwd,
     runningSessionIds,
     type: "setT3CodeRuntimeSessionState",
   });
+}
+
+function resolveNativeT3RuntimeCwdForSidebarSession(sessionId: string): string | undefined {
+  const reference = resolveSidebarSessionReference(sessionId);
+  const session = findSessionRecordInProject(reference.project, reference.sessionId);
+  if (session?.kind !== "t3") {
+    return undefined;
+  }
+  return session.t3.workspaceRoot || reference.project.path;
 }
 
 function ensureVisibleNativeSessions(reason: string): boolean {
@@ -5554,14 +5633,11 @@ function createWorkspaceBarState(): WorkspaceBarStateMessage {
    * dock snapshots continuously.
    */
   /**
-   * CDXC:RecentProjects 2026-05-04-14:25
-   * Recent Projects are hidden from Combined-mode native/status surfaces while
-   * Separated mode keeps the historical full workspace rail behavior.
+   * CDXC:SidebarLayout 2026-05-13-08:11
+   * Combined is the only supported sidebar layout, so recent projects live in
+   * the reference drawer instead of the removed workspace rail/status surface.
    */
-  const visibleProjects =
-    settings.sidebarMode === "combined"
-      ? projects.filter((project) => project.isRecentProject !== true)
-      : projects;
+  const visibleProjects = projects.filter((project) => project.isRecentProject !== true);
 
   return {
     activeProjectId,
@@ -5577,7 +5653,6 @@ function createWorkspaceBarState(): WorkspaceBarStateMessage {
       themeColor: project.themeColor,
       title: project.name,
     })),
-    sidebarMode: settings.sidebarMode,
     type: "workspaceBarState",
   };
 }
@@ -7265,6 +7340,26 @@ function openCommandsPanelForActiveProject(): void {
   });
 }
 
+function toggleFocusedCommandsPanelForActiveProject(): void {
+  const project = activeProject();
+  const focusedSessionId = lastNativeFocusedSidebarSessionId;
+  /**
+   * CDXC:CommandsPanel 2026-05-14-14:37:
+   * F12 is the command-panel shortcut. When keyboard focus is already inside
+   * the visible command panel, pressing F12 should collapse that panel instead
+   * of re-focusing the same command terminal.
+   */
+  if (
+    project.commandsPanel.isVisible &&
+    focusedSessionId &&
+    commandPanelContainsSession(project, focusedSessionId)
+  ) {
+    hideCommandsPanelForActiveProject();
+    return;
+  }
+  openCommandsPanelForActiveProject();
+}
+
 function hideCommandsPanelForActiveProject(): void {
   updateActiveProjectCommandsPanel((panel) => ({
     ...panel,
@@ -8711,11 +8806,30 @@ function focusTerminal(sessionId: string): void {
     });
     return;
   }
-  activateWorkspaceSurfaceForProject(reference.project.projectId);
+  const shouldKeepProjectEditorOpen =
+    projectEditorSurfaceByProjectId.get(reference.project.projectId)?.isOpen === true;
+  /**
+   * CDXC:ProjectEditorCompanion 2026-05-14-09:19:
+   * Session-card clicks inside an active embedded VS Code project should select
+   * the left native companion pane, not close the editor surface. Keep the
+   * project-editor state open and always send the native focus command, even if
+   * the clicked session is already the focused sidebar session, so a locally
+   * closed companion pane can be restored.
+   * CDXC:ProjectEditorCompanion 2026-05-14-09:40:
+   * While VS Code is open, the direct native focus command is the companion
+   * retargeting path. Do not enqueue the layout focus request too, because that
+   * adds a second native focus/layout pass and can visibly refresh the editor
+   * embed even though only the left companion session changed.
+   */
+  if (!shouldKeepProjectEditorOpen) {
+    activateWorkspaceSurfaceForProject(reference.project.projectId);
+  }
   updateActiveProjectWorkspace(
     (workspace) => focusSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
   );
-  queueNativeLayoutFocusRequest(reference.sessionId, "focusTerminal");
+  if (!shouldKeepProjectEditorOpen) {
+    queueNativeLayoutFocusRequest(reference.sessionId, "focusTerminal");
+  }
   const sessionRecord = findSessionRecord(reference.sessionId);
   if (sessionRecord?.kind === "t3" || sessionRecord?.kind === "browser") {
     if (!nativeSessionIdBySidebarSessionId.has(reference.sessionId)) {
@@ -8795,7 +8909,7 @@ function focusSidebarSession(sessionId: string): void {
   focusTerminal(sessionId);
 }
 
-function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
+function runNativeHotkeyAction(actionId: zmuxHotkeyActionId, source: "dom" | "native"): void {
   const action = getzmuxHotkeyActionById(actionId);
   if (!action) {
     logNativeHotkeyDebug("nativeHotkeys.actionMissing", { actionId });
@@ -8840,6 +8954,10 @@ function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
       moveSidebarToOtherSide();
       return;
     case "openCommandsPanel":
+      if (source === "native") {
+        toggleFocusedCommandsPanelForActiveProject();
+        return;
+      }
       openCommandsPanelForActiveProject();
       return;
     case "openSettings":
@@ -9078,9 +9196,6 @@ function focusAdjacentNativeHotkeySession(direction: -1 | 1): void {
 }
 
 function getVisibleNativeHotkeySidebarSessionsForNavigation(): SidebarSessionItem[] {
-  if (settings.sidebarMode !== "combined") {
-    return getVisualNativeHotkeySessionsForActiveGroup();
-  }
   return createCombinedSidebarGroups().flatMap((group) =>
     isNativeHotkeySidebarGroupExpanded(group.groupId) ? group.sessions : [],
   );
@@ -11036,6 +11151,295 @@ async function openAgentsHubFileInDefaultEditor(filePath: string): Promise<void>
   }
 }
 
+async function saveAgentsHubFile(filePath: string, content: string): Promise<void> {
+  /**
+   * CDXC:AgentsHub 2026-05-14-08:27:
+   * The Agents Hub modal now edits real file buffers in-place and exposes a Save button only after the editor becomes dirty.
+   * Write the exact current editor text to the requested path through the native process bridge so saving corrects the file contents directly instead of opening a secondary editor or maintaining a separate draft store.
+   */
+  const normalizedFilePath = filePath.trim();
+  if (!normalizedFilePath) {
+    showNativeMessage("warning", "Choose an Agents Hub file first.");
+    return;
+  }
+
+  const result = await runNativeProcess(
+    "/usr/bin/python3",
+    [
+      "-c",
+      [
+        "import base64, os, sys, tempfile",
+        "file_path = sys.argv[1]",
+        "content = base64.b64decode(os.environ['ZMUX_AGENTS_HUB_FILE_B64'])",
+        "directory = os.path.dirname(file_path)",
+        "if directory:",
+        "    os.makedirs(directory, exist_ok=True)",
+        "fd, temp_path = tempfile.mkstemp(prefix=os.path.basename(file_path) + '.', suffix='.tmp', dir=directory or '.')",
+        "try:",
+        "    with os.fdopen(fd, 'wb') as handle:",
+        "        handle.write(content)",
+        "    os.replace(temp_path, file_path)",
+        "except Exception:",
+        "    try:",
+        "        os.unlink(temp_path)",
+        "    except OSError:",
+        "        pass",
+        "    raise",
+      ].join("\n"),
+      normalizedFilePath,
+    ],
+    {
+      env: {
+        ZMUX_AGENTS_HUB_FILE_B64: encodeUtf8Base64(content),
+      },
+    },
+  );
+
+  if (result.exitCode !== 0) {
+    showNativeMessage(
+      "error",
+      result.stderr.trim() || result.stdout.trim() || `Unable to save ${normalizedFilePath}.`,
+    );
+    return;
+  }
+
+  showNativeMessage("info", `Saved ${normalizedFilePath}.`);
+}
+
+function encodeUtf8Base64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function requestAgentsHubCatalog(): Promise<void> {
+  /**
+   * CDXC:AgentsHub 2026-05-14-08:29:
+   * Agents Hub's file tree is machine-local state. Build it in native by scanning the user's real Claude, Codex, shared agent, OpenCode, and Pi profile folders, including profile plugin caches and shared skill/hook directories, while pruning session/history/todo/runtime noise.
+   */
+  const result = await runNativeProcess("/bin/zsh", [
+    "-lc",
+    `/usr/bin/python3 - <<'ZMUX_AGENTS_HUB_CATALOG'\n${getAgentsHubCatalogPythonScript()}\nZMUX_AGENTS_HUB_CATALOG`,
+  ]);
+  if (result.exitCode !== 0) {
+    showNativeMessage(
+      "error",
+      result.stderr.trim() || result.stdout.trim() || "Unable to load Agents Hub files.",
+    );
+    return;
+  }
+
+  try {
+    const message = JSON.parse(result.stdout) as AgentsHubCatalogMessage;
+    postAppModalHost({ message, type: "sidebarState" });
+  } catch (error) {
+    showNativeMessage(
+      "error",
+      error instanceof Error ? error.message : "Unable to parse Agents Hub file catalog.",
+    );
+  }
+}
+
+function getAgentsHubCatalogPythonScript(): string {
+  return String.raw`
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from datetime import datetime, timezone
+
+home = Path.home()
+max_file_bytes = 128 * 1024
+groups_by_tab = {"mds": [], "skills": [], "hooks": [], "configs": []}
+seen_files = set()
+
+def p(*parts):
+    return home.joinpath(*parts)
+
+def profile(icon, label, profile_path, file_path, target_path=None):
+    item = {"agentIcon": icon, "filePath": str(file_path), "label": label, "profilePath": str(profile_path)}
+    if target_path is not None:
+        item["targetPath"] = str(target_path)
+    return item
+
+main_target = p(".agents", "main.md")
+profiles = []
+main_claude = profile("claude", "Claude Code main", p(".claude"), p(".claude", "CLAUDE.md"), main_target)
+profiles.append(main_claude)
+for path in sorted(p(".claude-profiles").glob("*")):
+    if path.is_dir() and not path.name.startswith(".") and (path / "CLAUDE.md").is_file():
+        profiles.append(profile("claude", f"Claude Code {path.name}", path, path / "CLAUDE.md", main_target))
+main_codex = profile("codex", "Codex main", p(".codex"), p(".codex", "AGENTS.md"), main_target)
+profiles.append(main_codex)
+for path in sorted(p(".codex-profiles").glob("*")):
+    if path.is_dir() and not path.name.startswith(".") and ((path / "AGENTS.md").is_file() or (path / "config.toml").is_file()):
+        profiles.append(profile("codex", f"Codex {path.name}", path, path / "AGENTS.md", main_target))
+open_code = profile("opencode", "OpenCode main", p(".config", "opencode"), p(".config", "opencode", "opencode.json"))
+pi_agent = profile("pi", "Pi agent", p(".pi", "agent"), p(".pi", "agent", "settings.json"))
+linked_profiles = profiles[:]
+
+def is_relative_to(path, root):
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+def profiles_for(path):
+    if is_relative_to(path, p(".agents")) or is_relative_to(path, home / "agents"):
+        if is_relative_to(path, home / "agents" / "hooks"):
+            return [*linked_profiles, pi_agent]
+        return linked_profiles
+    for item in profiles:
+        if is_relative_to(path, Path(item["profilePath"])):
+            return [item]
+    if is_relative_to(path, Path(open_code["profilePath"])):
+        return [open_code]
+    if is_relative_to(path, Path(pi_agent["profilePath"])):
+        return [pi_agent]
+    return []
+
+def language_for(path):
+    if path.name.endswith((".yaml", ".yml")):
+        return "yaml"
+    if path.suffix in (".json", ".jsonl"):
+        return "json"
+    if path.suffix == ".toml":
+        return "toml"
+    if path.suffix == ".sh":
+        return "shell"
+    if path.suffix == ".py":
+        return "python"
+    if path.suffix in (".ts", ".tsx"):
+        return "typescript"
+    if path.suffix in (".js", ".mjs", ".cjs"):
+        return "javascript"
+    if path.suffix == ".md":
+        return "markdown"
+    return "plaintext"
+
+def file_id(path):
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in str(path))
+    return "-".join(part for part in slug.split("-") if part)[:180]
+
+def read_file(path):
+    try:
+        if not path.is_file() or path.stat().st_size > max_file_bytes:
+            return None
+        return path.read_text("utf-8")
+    except Exception:
+        return None
+
+def file_item(path, root=None):
+    resolved = path.resolve()
+    key = str(resolved)
+    if key in seen_files:
+        return None
+    content = read_file(resolved)
+    if content is None:
+        return None
+    seen_files.add(key)
+    name = str(resolved.relative_to(root)) if root and is_relative_to(resolved, root) else resolved.name
+    return {"content": content, "id": file_id(resolved), "language": language_for(resolved), "name": name, "path": str(resolved)}
+
+def add_group(tab, group_id, name, path, description, files, group_profiles=None):
+    resolved_files = [item for candidate in files if (item := file_item(candidate, path))]
+    if not resolved_files:
+        return
+    groups_by_tab[tab].append({
+        "description": description,
+        "files": resolved_files,
+        "id": group_id,
+        "name": name,
+        "path": str(path),
+        "profiles": group_profiles if group_profiles is not None else profiles_for(path),
+    })
+
+def existing(paths):
+    return [path for path in paths if path.is_file()]
+
+def walk_files(root, max_depth, predicate):
+    if not root.exists():
+        return []
+    ignored_dirs = {".git", "node_modules", "dist", "build", "out", "coverage", ".cache", "cache", "__pycache__", "sessions", "projects", "todos", "telemetry", "usage-data", "ambient-suggestions", "memories_2026-04-24", "logs", "tmp", ".tmp"}
+    files = []
+    for current, dirs, names in os.walk(root):
+        current_path = Path(current)
+        depth = len(current_path.relative_to(root).parts)
+        dirs[:] = [name for name in dirs if name not in ignored_dirs and depth < max_depth]
+        for name in names:
+            candidate = current_path / name
+            if predicate(candidate):
+                files.append(candidate)
+    return sorted(files)
+
+text_suffixes = {".md", ".json", ".jsonl", ".toml", ".yaml", ".yml", ".sh", ".ts", ".js", ".mjs", ".py", ".txt"}
+
+add_group("mds", "md-shared-agents", "Shared agent markdown", p(".agents"), "Shared instructions and best-practice markdown linked by agent profiles.", walk_files(p(".agents"), 1, lambda path: path.suffix == ".md"), linked_profiles)
+add_group("mds", "md-claude-profiles", "Claude profile instructions", p(".claude-profiles"), "CLAUDE.md files owned by Claude profiles.", existing([Path(item["filePath"]) for item in profiles if item["agentIcon"] == "claude"]), [item for item in profiles if item["agentIcon"] == "claude"])
+add_group("mds", "md-codex-profiles", "Codex profile instructions", p(".codex-profiles"), "AGENTS.md files owned by Codex profiles.", existing([Path(item["filePath"]) for item in profiles if item["agentIcon"] == "codex"]), [item for item in profiles if item["agentIcon"] == "codex"])
+
+shared_skills_root = home / "agents" / "skills"
+for skill_dir in sorted([path for path in shared_skills_root.iterdir() if path.is_dir()] if shared_skills_root.exists() else []):
+    if skill_dir.name.startswith(".") and skill_dir.name != ".system":
+        continue
+    if skill_dir.name == ".system":
+        for system_skill in sorted([path for path in skill_dir.iterdir() if path.is_dir()]):
+            add_group("skills", f"skill-shared-{file_id(system_skill)}", system_skill.name, system_skill, "System skill installed in the shared agent skill folder.", walk_files(system_skill, 3, lambda path: path.name == "SKILL.md" or path.suffix in {".json", ".yaml", ".yml", ".sh", ".py", ".js", ".ts"}), linked_profiles)
+        continue
+    add_group("skills", f"skill-shared-{file_id(skill_dir)}", skill_dir.name, skill_dir, "Shared skill installed under ~/agents/skills.", walk_files(skill_dir, 3, lambda path: path.name == "SKILL.md" or path.suffix in {".json", ".yaml", ".yml", ".sh", ".py", ".js", ".ts"}), linked_profiles)
+
+for plugins_root in [p(".codex-profiles"), p(".claude-profiles")]:
+    for profile_dir in sorted([path for path in plugins_root.glob("*") if path.is_dir() and not path.name.startswith(".")]):
+        cache_root = profile_dir / "plugins" / "cache"
+        if not cache_root.exists():
+            continue
+        plugin_files = walk_files(cache_root, 7, lambda path: path.name == "SKILL.md" or str(path).endswith("/.codex-plugin/plugin.json") or str(path).endswith("/.claude-plugin/plugin.json"))
+        roots = {}
+        for path in plugin_files:
+            parts = path.parts
+            if "skills" in parts and path.name == "SKILL.md":
+                skill_index = parts.index("skills")
+                root = Path(*parts[: skill_index + 2])
+            else:
+                marker = ".codex-plugin" if ".codex-plugin" in parts else ".claude-plugin"
+                marker_index = parts.index(marker)
+                root = Path(*parts[:marker_index])
+            roots.setdefault(root, []).append(path)
+        for root, files in sorted(roots.items()):
+            rel_name = str(root.relative_to(cache_root))
+            add_group("skills", f"skill-profile-{file_id(root)}", rel_name, root, "Skill or plugin manifest installed inside an agent profile plugin cache.", files, profiles_for(root))
+
+hooks_root = home / "agents" / "hooks"
+add_group("hooks", "hooks-shared", "Shared hooks", hooks_root, "Shared hook scripts and documentation used by agent profiles.", walk_files(hooks_root, 3, lambda path: path.suffix in text_suffixes), [*linked_profiles, pi_agent])
+add_group("hooks", "hooks-codex-profiles", "Codex profile hooks", p(".codex-profiles"), "hooks.json files owned by Codex profiles.", walk_files(p(".codex-profiles"), 2, lambda path: path.name == "hooks.json"), [item for item in profiles if item["agentIcon"] == "codex"])
+add_group("hooks", "hooks-pi-agent", "Pi extensions", p(".pi", "agent"), "Pi agent extension hooks and settings-adjacent TypeScript files.", walk_files(p(".pi", "agent", "extensions"), 2, lambda path: path.suffix in {".ts", ".js", ".json"}), [pi_agent])
+
+add_group("configs", "config-shared-agents", "Shared agent config", p(".agents"), "Shared agent lock and setup files.", walk_files(p(".agents"), 1, lambda path: path.name.endswith(".json")), linked_profiles)
+add_group("configs", "config-claude-main", "Claude main configs", p(".claude"), "Global Claude Code settings and MCP configuration.", existing([p(".claude.json"), p(".claude", "settings.json"), p(".claude", "settings.local.json")]), [main_claude])
+for item in [profile_item for profile_item in profiles if profile_item["agentIcon"] == "claude" and "-profiles" in profile_item["profilePath"]]:
+    root = Path(item["profilePath"])
+    files = existing([root / ".claude.json", root / "settings.json", root / "settings.local.json", root / "policy-limits.json", root / "stats-cache.json", root / "plugins" / "installed_plugins.json", root / "plugins" / "known_marketplaces.json", root / "plugins" / "blocklist.json"])
+    add_group("configs", f"config-claude-{file_id(root)}", f"Claude {root.name} configs", root, "Claude profile-owned config and plugin registry files.", files, [item])
+add_group("configs", "config-codex-main", "Codex main configs", p(".codex"), "Global Codex TOML and hook configuration.", existing([p(".codex", "config.toml"), p(".codex", "hooks.json")]), [main_codex])
+for item in [profile_item for profile_item in profiles if profile_item["agentIcon"] == "codex" and "-profiles" in profile_item["profilePath"]]:
+    root = Path(item["profilePath"])
+    files = existing([root / "config.toml", root / "hooks.json", root / ".codex-global-state.json", root / "browser" / "config.toml", root / "plugins" / "installed_plugins.json", root / "plugins" / "known_marketplaces.json", root / "plugins" / "blocklist.json"])
+    add_group("configs", f"config-codex-{file_id(root)}", f"Codex {root.name} configs", root, "Codex profile-owned config, hook, browser, and plugin registry files.", files, [item])
+add_group("configs", "config-opencode", "OpenCode configs", Path(open_code["profilePath"]), "OpenCode JSON, package, and plugin files.", walk_files(Path(open_code["profilePath"]), 2, lambda path: path.name in {"opencode.json", "tui.json", "package.json"} or (path.parent.name == "plugin" and path.suffix == ".js")), [open_code])
+add_group("configs", "config-pi", "Pi configs", Path(pi_agent["profilePath"]), "Pi agent settings and local extension files.", walk_files(Path(pi_agent["profilePath"]), 2, lambda path: path.suffix in {".json", ".ts", ".js"} and path.name != "auth.json"), [pi_agent])
+
+for tab in groups_by_tab:
+    groups_by_tab[tab].sort(key=lambda group: group["name"].lower())
+
+print(json.dumps({"generatedAt": datetime.now(timezone.utc).isoformat(), "groupsByTab": groups_by_tab, "type": "agentsHubCatalog"}))
+`;
+}
+
 async function createNativeBrowserChat(): Promise<void> {
   /**
    * CDXC:Chats 2026-05-08-11:07
@@ -11561,6 +11965,24 @@ function wakeProjectEditorSurface(project: NativeProject): void {
   });
 }
 
+function restoreActiveProjectEditorAtStartup(): boolean {
+  const project = activeProject();
+  const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
+  if (
+    project.isChat === true ||
+    project.isRecentProject === true ||
+    surfaceState?.isOpen !== true ||
+    surfaceState.isSleeping === true
+  ) {
+    return false;
+  }
+
+  wakeProjectEditorSurface(project);
+  postNative({ projectId: project.projectId, type: "focusProjectEditorPane" });
+  void refreshProjectDiffStats(project.projectId);
+  return true;
+}
+
 function openProjectEditorForGroup(groupId: string): void {
   const reference = resolveSidebarGroupReference(groupId);
   const project = reference.project;
@@ -11593,6 +12015,7 @@ function openProjectEditorForGroup(groupId: string): void {
       isOpen: true,
       isSleeping: false,
     });
+    setProjectEditorPersistedOpen(project.projectId, true, "focusProjectEditor");
     postNative({ projectId: project.projectId, type: "focusProjectEditorPane" });
     void refreshProjectDiffStats(project.projectId);
     publish();
@@ -11611,6 +12034,7 @@ function openProjectEditorForGroup(groupId: string): void {
     isSleeping: false,
     status: "opening",
   });
+  setProjectEditorPersistedOpen(project.projectId, true, "openProjectEditor");
   scheduleProjectEditorOpenTimeout(project.projectId);
   wakeProjectEditorSurface(project);
   postNative({ projectId: project.projectId, type: "focusProjectEditorPane" });
@@ -11702,6 +12126,7 @@ function closeProjectEditorForGroup(groupId: string): void {
   cancelProjectEditorSleepTimer(project.projectId);
   cancelProjectEditorOpenTimer(project.projectId);
   projectEditorSurfaceByProjectId.delete(project.projectId);
+  setProjectEditorPersistedOpen(project.projectId, false, "closeProjectEditor");
   postNative({ projectId: project.projectId, type: "closeProjectEditorPane" });
   stopCodeServerRuntimeIfEveryEditorSleeping();
   publish();
@@ -11716,7 +12141,32 @@ function activateWorkspaceSurfaceForProject(projectId: string): void {
     ...surfaceState,
     isOpen: false,
   });
+  setProjectEditorPersistedOpen(projectId, false, "activateWorkspaceSurface");
   scheduleProjectEditorSleep(projectId);
+}
+
+function handleProjectEditorBackRequested(projectId: string): void {
+  const project = findProject(projectId);
+  if (!project) {
+    return;
+  }
+  /**
+   * CDXC:ProjectEditorCompanion 2026-05-14-09:19:
+   * The native companion Back control is a workarea-mode change, not a request
+   * to destroy the project editor. Mark the editor no longer open and let the
+   * existing sleep timer retire Chromium later, matching the normal agents-view
+   * transition instead of adding a separate fallback close path.
+   */
+  if (activeProjectId !== projectId) {
+    activeProjectId = projectId;
+    writeStoredProjects("projectEditorBackRequested");
+  }
+  activateWorkspaceSurfaceForProject(projectId);
+  const focusedSessionId = activeSnapshot().focusedSessionId;
+  if (focusedSessionId) {
+    queueNativeLayoutFocusRequest(focusedSessionId, "projectEditorBackRequested");
+  }
+  publish();
 }
 
 function disposeProjectEditorSurface(projectId: string): void {
@@ -11725,6 +12175,7 @@ function disposeProjectEditorSurface(projectId: string): void {
   projectEditorSurfaceByProjectId.delete(projectId);
   projectDiffStatsByProjectId.delete(projectId);
   pendingProjectDiffRefreshProjectIds.delete(projectId);
+  setProjectEditorPersistedOpen(projectId, false, "disposeProjectEditor");
   postNative({ projectId, type: "closeProjectEditorPane" });
   if (projectEditorSurfaceByProjectId.size === 0) {
     postNative({ type: "stopCodeServerRuntime" });
@@ -12022,6 +12473,12 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "openAgentsHubFileInDefaultEditor":
       void openAgentsHubFileInDefaultEditor(message.filePath);
       return;
+    case "requestAgentsHubCatalog":
+      void requestAgentsHubCatalog();
+      return;
+    case "saveAgentsHubFile":
+      void saveAgentsHubFile(message.filePath, message.content);
+      return;
     case "openBrowserChat":
       void createNativeBrowserChat();
       return;
@@ -12193,10 +12650,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "copyWorkspaceProjectPathForGroup": {
       const groupReference = resolveSidebarGroupReference(message.groupId);
       /*
-       * CDXC:SidebarMode 2026-05-04-07:00
-       * Combined-mode project groups need to copy the owning project's path
-       * from the group context menu, so resolve the group id server-side
-       * instead of trusting client-provided path text.
+       * CDXC:SidebarLayout 2026-05-13-08:11
+       * Project groups need to copy the owning project's path from the group
+       * context menu, so resolve the group id server-side instead of trusting
+       * client-provided path text.
        */
       void navigator.clipboard?.writeText(groupReference.project.path).catch(() => undefined);
       return;
@@ -12382,10 +12839,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
          * drag persistence. Reorder only concrete project groups from Combined
          * mode so chats stay under one stable top header.
          *
-         * CDXC:SidebarMode 2026-05-03-10:42
-         * Combined-mode group dragging reorders projects, not the separated
-         * groups inside one project. Session drag is disabled in the React
-         * view, so this path cannot move sessions across projects.
+         * CDXC:SidebarLayout 2026-05-13-08:11
+         * Group dragging reorders projects. Session drag is disabled in the
+         * React view, so this path cannot move sessions across projects.
          */
         reorderProjects(combinedProjectIds);
         return;
@@ -13230,7 +13686,7 @@ window.addEventListener("zmux-native-host-event", (event) => {
     logNativeHotkeyDebug("nativeHotkeys.hostEventReceived", {
       actionId: hostEvent.actionId,
     });
-    runNativeHotkeyAction(hostEvent.actionId);
+    runNativeHotkeyAction(hostEvent.actionId, "native");
     return;
   }
   if (hostEvent.type === "sessionStatusIndicatorClicked") {
@@ -13245,6 +13701,10 @@ window.addEventListener("zmux-native-host-event", (event) => {
   }
   if (hostEvent.type === "projectEditorLoadState") {
     setProjectEditorLoadState(hostEvent.projectId, hostEvent.status, hostEvent.message);
+    return;
+  }
+  if (hostEvent.type === "projectEditorBackRequested") {
+    handleProjectEditorBackRequested(hostEvent.projectId);
     return;
   }
   if (hostEvent.type === "commandsPanelHeightRatioChanged") {
@@ -13393,6 +13853,7 @@ window.addEventListener("zmux-native-host-event", (event) => {
      * sidebar card instead of only drawing the AppKit border.
     */
     const previousFocusedSessionId = activeSnapshot().focusedSessionId;
+    lastNativeFocusedSidebarSessionId = sidebarSessionId;
     /**
      * CDXC:NativeTerminalFocus 2026-05-09-15:30
      * When a pane click fails to move the active border, the sidebar log must
@@ -14098,7 +14559,13 @@ function handleNativeTerminalTitleBarAction(
   if (session.kind === "terminal" && session.surface === "commands") {
     switch (action) {
       case "newTerminal":
-        createCommandTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", { focusAfterCreate: true });
+        /**
+         * CDXC:CommandsPanel 2026-05-14-09:41
+         * Command-pane tab chrome creates command-surface terminals. Use the
+         * command title so double-clicks and native tab-bar add buttons do not
+         * create workspace-style `Terminal Session` tabs in the Commands panel.
+         */
+        createCommandTerminal("Command Terminal", "", { focusAfterCreate: true });
         return;
       case "pinCommandsPanel":
         setCommandsPanelModeForActiveProject("pinned");
@@ -14267,31 +14734,18 @@ type WorkspaceDockDragState = {
 };
 
 function NativeSidebarRoot() {
-  const [workspaceDockState, setWorkspaceDockState] = useState(createWorkspaceBarState);
-
   useEffect(() => {
     document.body.classList.add("native-sidebar-body");
-    const handleState = (event: Event) => {
-      setWorkspaceDockState((event as CustomEvent<WorkspaceBarStateMessage>).detail);
-    };
-    window.addEventListener(WORKSPACE_DOCK_STATE_EVENT, handleState);
     return () => {
       document.body.classList.remove("native-sidebar-body");
-      window.removeEventListener(WORKSPACE_DOCK_STATE_EVENT, handleState);
     };
   }, []);
 
   return (
-    <div className="native-sidebar-shell" data-sidebar-mode={workspaceDockState.sidebarMode}>
-      {/*
-       * CDXC:SidebarMode 2026-05-03-19:19
-       * Combined mode already shows every project as a draggable sidebar
-       * group, so the separate workspace rail is redundant and should be
-       * hidden until the user returns to Separated mode.
-       */}
-      {workspaceDockState.sidebarMode === "combined" ? null : (
-        <WorkspaceDock state={workspaceDockState} />
-      )}
+    <div className="native-sidebar-shell" data-sidebar-mode="combined">
+      {/* CDXC:SidebarLayout 2026-05-13-08:11
+          Combined is the only supported sidebar layout, so projects render as
+          sidebar groups and the old workspace rail is not mounted. */}
       <main className="native-sidebar-main">
         <SidebarApp messageSource={sidebarBus} vscode={vscode} />
       </main>
@@ -15009,7 +15463,9 @@ if (rootElement && !isStorybookPreview) {
     startFirstPromptAutoRenameMonitor();
     void refreshGitState();
     void refreshVisibleProjectDiffStats();
-    if (activeSnapshot().sessions.length === 0) {
+    if (restoreActiveProjectEditorAtStartup()) {
+      publish();
+    } else if (activeSnapshot().sessions.length === 0) {
       createTerminal(DEFAULT_TERMINAL_SESSION_TITLE);
     } else {
       publish();

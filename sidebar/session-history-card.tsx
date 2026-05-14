@@ -43,6 +43,12 @@ export function SessionHistoryCard({
     showSessionDetails: true,
   });
   const projectLabel = getSessionHistoryProjectLabel(session);
+  /**
+   * CDXC:PreviousSessions 2026-05-13-16:11:
+   * Previous Sessions rows place project metadata on the right, directly
+   * before Last Active, so the title column stays dedicated to the session
+   * title while project context remains visible during scanning.
+   */
 
   return (
     <OverflowTooltipText
@@ -54,6 +60,7 @@ export function SessionHistoryCard({
       <div
         className="session-frame session-history-frame"
         data-focused="false"
+        data-has-project-label={String(Boolean(projectLabel))}
         data-running="false"
         data-restorable={String(session.isRestorable)}
         data-visible="false"
@@ -126,11 +133,6 @@ export function SessionHistoryCard({
           role={session.isRestorable ? "button" : undefined}
           tabIndex={session.isRestorable ? 0 : -1}
         >
-          {projectLabel ? (
-            <div className="session-history-project-label" aria-hidden="true">
-              {projectLabel}
-            </div>
-          ) : null}
           <button
             aria-label={`Delete ${displayTitle} from previous sessions`}
             className="previous-session-delete-button"
@@ -151,6 +153,13 @@ export function SessionHistoryCard({
             showCloseButton={false}
             showHotkeys={showHotkeys}
             showLastInteractionTime={true}
+            trailingPrefix={
+              projectLabel ? (
+                <div className="session-history-project-label" aria-hidden="true">
+                  {projectLabel}
+                </div>
+              ) : null
+            }
           />
         </article>
       </div>

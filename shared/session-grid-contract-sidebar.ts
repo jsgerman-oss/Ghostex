@@ -37,6 +37,39 @@ export type SidebarSectionCollapseState = {
 
 export type SidebarActiveSessionsSortMode = "manual" | "lastActivity";
 
+export type AgentsHubTab = "mds" | "skills" | "hooks" | "configs";
+
+export type AgentsHubProfile = {
+  agentIcon: SidebarAgentIcon;
+  filePath: string;
+  label: string;
+  profilePath: string;
+  targetPath?: string;
+};
+
+export type AgentsHubFile = {
+  content: string;
+  id: string;
+  language: string;
+  name: string;
+  path: string;
+};
+
+export type AgentsHubGroup = {
+  description: string;
+  files: AgentsHubFile[];
+  id: string;
+  name: string;
+  path: string;
+  profiles: AgentsHubProfile[];
+};
+
+export type AgentsHubCatalogMessage = {
+  generatedAt: string;
+  groupsByTab: Record<AgentsHubTab, AgentsHubGroup[]>;
+  type: "agentsHubCatalog";
+};
+
 export function createDefaultSidebarSectionVisibility(): SidebarSectionVisibility {
   return {
     actions: true,
@@ -439,6 +472,7 @@ export type SidebarShowT3ThreadIdModalMessage = {
 export type ExtensionToSidebarMessage =
   | SidebarHydrateMessage
   | SidebarSessionStateMessage
+  | AgentsHubCatalogMessage
   | SidebarSessionPresentationChangedMessage
   | SidebarPlayCompletionSoundMessage
   | SidebarOrderSyncResultMessage
@@ -583,6 +617,24 @@ export type SidebarToExtensionMessage =
   | {
       filePath: string;
       type: "openAgentsHubFileInDefaultEditor";
+    }
+  | {
+      /**
+       * CDXC:AgentsHub 2026-05-14-08:29:
+       * Agents Hub must show the real files installed on the user's machine, including files owned by Claude/Codex profiles and plugin caches.
+       * The modal host requests a fresh native filesystem catalog whenever the Hub opens instead of relying on a bundled placeholder list.
+       */
+      type: "requestAgentsHubCatalog";
+    }
+  | {
+      /**
+       * CDXC:AgentsHub 2026-05-14-08:27:
+       * The Hub modal edits real agent instruction/config files and enables Save only after text changes.
+       * Persist the current editor buffer through the native sidebar command contract so the modal host keeps using the same filesystem bridge as the external-editor action.
+       */
+      content: string;
+      filePath: string;
+      type: "saveAgentsHubFile";
     }
   | {
       /**

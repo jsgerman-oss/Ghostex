@@ -73,7 +73,6 @@ import {
   type PromptEditorBackend,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
-  SIDEBAR_MODE_OPTIONS,
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
   ZED_OVERLAY_TARGET_APP_OPTIONS,
@@ -85,7 +84,6 @@ import {
   type GhosttyScrollbar,
   type SessionPersistenceProvider,
   type SessionStatusIndicatorSize,
-  type SidebarMode,
   type SidebarSide,
   type TerminalCursorStyle,
   type ZedOverlayTargetApp,
@@ -136,6 +134,52 @@ import type { WebviewApi } from "./webview-api";
 const NUMERIC_SETTINGS_DEBOUNCE_MS = 180;
 const GHOSTTY_THEME_UNMANAGED_VALUE = "__zmux_ghostty_theme_unmanaged__";
 const MODIFIED_SETTING_TOOLTIP = "Modified Setting.\n \nClick to Reset to Default";
+const HOTKEY_SETTINGS_SECTIONS: readonly HotkeySettingsSectionDefinition[] = [
+  {
+    id: "general",
+    ids: ["createSession", "openSettings", "moveSidebar", "renameActiveSession"],
+    title: "General",
+  },
+  {
+    id: "navigation",
+    ids: [
+      "focusPreviousGroup",
+      "focusNextGroup",
+      "focusPreviousSession",
+      "focusNextSession",
+      "focusUp",
+      "focusRight",
+      "focusDown",
+      "focusLeft",
+    ],
+    title: "Navigation",
+  },
+  {
+    id: "groups",
+    ids: ["focusGroup1", "focusGroup2", "focusGroup3", "focusGroup4", "focusGroup5"],
+    title: "Groups",
+  },
+  {
+    id: "sessionSlots",
+    ids: [
+      "focusSessionSlot1",
+      "focusSessionSlot2",
+      "focusSessionSlot3",
+      "focusSessionSlot4",
+      "focusSessionSlot5",
+      "focusSessionSlot6",
+      "focusSessionSlot7",
+      "focusSessionSlot8",
+      "focusSessionSlot9",
+    ],
+    title: "Session Slots",
+  },
+  {
+    id: "splits",
+    ids: ["splitMore", "splitMoreDown"],
+    title: "Splits",
+  },
+];
 
 type SettingSearchDefinition = {
   key: string;
@@ -173,6 +217,21 @@ type MainSettingsSectionId =
   | "ideAttachment"
   | "sounds"
   | "storage";
+
+type GhosttySettingsSectionId = "terminal" | "terminalBehavior" | "terminalScrolling";
+
+type HotkeySettingsSectionId =
+  | "general"
+  | "navigation"
+  | "groups"
+  | "sessionSlots"
+  | "splits";
+
+type HotkeySettingsSectionDefinition = {
+  ids: readonly zmuxHotkeyActionId[];
+  id: HotkeySettingsSectionId;
+  title: string;
+};
 
 let rememberedSettingsModalTab: SettingsModalTab | undefined;
 
@@ -244,6 +303,8 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [draft, setDraft] = useState<zmuxSettings>(normalizezmuxSettings(settings));
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
+  const [ghosttySearchQuery, setGhosttySearchQuery] = useState("");
+  const [hotkeysSearchQuery, setHotkeysSearchQuery] = useState("");
   const [activeTab, setActiveTabState] = useState<SettingsModalTab>(() =>
     getInitialSettingsModalTab(initialTab),
   );
@@ -251,6 +312,9 @@ export function SettingsModal({
   const pendingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const browserSectionRef = useRef<HTMLDivElement>(null);
   const editorSectionRef = useRef<HTMLDivElement>(null);
+  const ghosttyBehaviorSectionRef = useRef<HTMLDivElement>(null);
+  const ghosttyScrollingSectionRef = useRef<HTMLDivElement>(null);
+  const ghosttyTerminalSectionRef = useRef<HTMLDivElement>(null);
   const ideAttachmentSectionRef = useRef<HTMLDivElement>(null);
   const petsSectionRef = useRef<HTMLDivElement>(null);
   const sessionCardsSectionRef = useRef<HTMLDivElement>(null);
@@ -266,7 +330,7 @@ export function SettingsModal({
     setActiveTabState(nextTab);
   };
 
-  const scrollMainSettingsSectionIntoView = (sectionRef: RefObject<HTMLDivElement | null>) => {
+  const scrollSettingsSectionIntoView = (sectionRef: RefObject<HTMLDivElement | null>) => {
     sectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
@@ -387,12 +451,6 @@ export function SettingsModal({
         title: "Side",
       },
       {
-        key: "sidebarMode",
-        options: SIDEBAR_MODE_OPTIONS,
-        subtitle: "Choose how project sessions are grouped.",
-        title: "Mode",
-      },
-      {
         key: "sidebarTheme",
         options: SIDEBAR_THEME_SETTING_OPTIONS,
         subtitle: "Choose the sidebar color scheme.",
@@ -471,7 +529,7 @@ export function SettingsModal({
         title: "Ghostex folder",
       },
     ]),
-    terminal: getSettingsSectionSearch(settingsSearchQuery, "Terminal", [
+    terminal: getSettingsSectionSearch(ghosttySearchQuery, "Terminal", [
       {
         key: "ghosttySettingsActions",
         options: [
@@ -545,7 +603,7 @@ export function SettingsModal({
         title: "Ctrl+G prompt editor",
       },
     ]),
-    terminalBehavior: getSettingsSectionSearch(settingsSearchQuery, "Terminal Behavior", [
+    terminalBehavior: getSettingsSectionSearch(ghosttySearchQuery, "Terminal Behavior", [
       {
         key: "terminalScrollbackLimitMb",
         subtitle: "Set scrollback memory per terminal surface.",
@@ -585,7 +643,7 @@ export function SettingsModal({
         title: "Scrollbar",
       },
     ]),
-    terminalScrolling: getSettingsSectionSearch(settingsSearchQuery, "Terminal Scrolling", [
+    terminalScrolling: getSettingsSectionSearch(ghosttySearchQuery, "Terminal Scrolling", [
       {
         key: "terminalMouseScrollMultiplierPrecision",
         subtitle: "Trackpads and high-resolution scroll wheels. Ghostty default is 1.",
@@ -632,6 +690,13 @@ export function SettingsModal({
     title: string;
   }> = [
     { id: "sidebar", ref: sidebarSectionRef, searchResult: settingsSearch.sidebar, title: "Sidebar" },
+    { id: "browser", ref: browserSectionRef, searchResult: settingsSearch.browser, title: "Browser" },
+    {
+      id: "ideAttachment",
+      ref: ideAttachmentSectionRef,
+      searchResult: settingsSearch.ideAttachment,
+      title: "IDE Attachment",
+    },
     { id: "pets", ref: petsSectionRef, searchResult: settingsSearch.pets, title: "Pets" },
     {
       id: "sessionCards",
@@ -645,34 +710,55 @@ export function SettingsModal({
       searchResult: settingsSearch.workspace,
       title: "Workspace",
     },
-    { id: "browser", ref: browserSectionRef, searchResult: settingsSearch.browser, title: "Browser" },
     { id: "editor", ref: editorSectionRef, searchResult: settingsSearch.editor, title: "Editor" },
-    {
-      id: "ideAttachment",
-      ref: ideAttachmentSectionRef,
-      searchResult: settingsSearch.ideAttachment,
-      title: "IDE Attachment",
-    },
     { id: "sounds", ref: soundsSectionRef, searchResult: settingsSearch.sounds, title: "Sounds" },
     { id: "storage", ref: storageSectionRef, searchResult: settingsSearch.storage, title: "Storage" },
+  ];
+  const ghosttySettingsSectionNavigation: Array<{
+    id: GhosttySettingsSectionId;
+    ref: RefObject<HTMLDivElement | null>;
+    searchResult: SettingsSectionSearchResult;
+    title: string;
+  }> = [
+    {
+      id: "terminal",
+      ref: ghosttyTerminalSectionRef,
+      searchResult: settingsSearch.terminal,
+      title: "Terminal",
+    },
+    {
+      id: "terminalBehavior",
+      ref: ghosttyBehaviorSectionRef,
+      searchResult: settingsSearch.terminalBehavior,
+      title: "Terminal Behavior",
+    },
+    {
+      id: "terminalScrolling",
+      ref: ghosttyScrollingSectionRef,
+      searchResult: settingsSearch.terminalScrolling,
+      title: "Terminal Scrolling",
+    },
   ];
   const hasVisibleMainSettings = mainSettingsSectionNavigation.some((section) =>
     hasVisibleSettingsSearchResult(section.searchResult),
   );
-  const hasVisibleGhosttySettings = [
-    settingsSearch.terminal,
-    settingsSearch.terminalBehavior,
-    settingsSearch.terminalScrolling,
-  ].some(hasVisibleSettingsSearchResult);
+  const hasVisibleGhosttySettings = ghosttySettingsSectionNavigation.some((section) =>
+    hasVisibleSettingsSearchResult(section.searchResult),
+  );
 
   useEffect(() => {
     if (!isOpen) {
       hasRequestedStorageStatsRef.current = false;
       return;
     }
+    /**
+     * CDXC:SettingsTabs 2026-05-13-16:05
+     * Saving a control in Ghostty, Hotkeys, Agents, Actions, or Open In updates
+     * the incoming settings prop. That prop sync must not reset the selected
+     * tab; tab changes are owned by explicit navigation and initial open state.
+     */
     setDraft(normalizezmuxSettings(settings));
-    setActiveTab(initialTab);
-  }, [initialTab, isOpen, settings]);
+  }, [isOpen, settings]);
 
   useEffect(() => {
     if (
@@ -889,18 +975,41 @@ export function SettingsModal({
             <TabsList className="mt-3 w-full">
               <TabsTrigger value="settings">Settings</TabsTrigger>
               <TabsTrigger value="ghostty">Ghostty</TabsTrigger>
+              <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
               <TabsTrigger value="agents">Agents</TabsTrigger>
               <TabsTrigger value="actions">Actions</TabsTrigger>
               <TabsTrigger value="openTargets">Open In</TabsTrigger>
-              <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
             </TabsList>
-            {activeTab === "settings" || activeTab === "ghostty" ? (
+            {activeTab === "settings" || activeTab === "ghostty" || activeTab === "hotkeys" ? (
               <Input
-                aria-label="Search settings"
+                aria-label={
+                  activeTab === "hotkeys"
+                    ? "Search hotkeys"
+                    : activeTab === "ghostty"
+                      ? "Search Ghostty settings"
+                      : "Search settings"
+                }
                 className="mt-3 h-10 px-3 text-sm"
-                onChange={(event) => setSettingsSearchQuery(event.currentTarget.value)}
-                placeholder="Search settings"
-                value={settingsSearchQuery}
+                onChange={(event) => {
+                  const nextQuery = event.currentTarget.value;
+                  if (activeTab === "hotkeys") {
+                    setHotkeysSearchQuery(nextQuery);
+                    return;
+                  }
+                  if (activeTab === "ghostty") {
+                    setGhosttySearchQuery(nextQuery);
+                    return;
+                  }
+                  setSettingsSearchQuery(nextQuery);
+                }}
+                placeholder={activeTab === "hotkeys" ? "Search hotkeys" : "Search settings"}
+                value={
+                  activeTab === "hotkeys"
+                    ? hotkeysSearchQuery
+                    : activeTab === "ghostty"
+                      ? ghosttySearchQuery
+                      : settingsSearchQuery
+                }
               />
             ) : null}
           </DialogHeader>
@@ -925,7 +1034,7 @@ export function SettingsModal({
                   <Button
                     className="settings-section-sidebar-button"
                     key={section.id}
-                    onClick={() => scrollMainSettingsSectionIntoView(section.ref)}
+                    onClick={() => scrollSettingsSectionIntoView(section.ref)}
                     type="button"
                     variant="ghost"
                   >
@@ -960,20 +1069,6 @@ export function SettingsModal({
                 onChange={(value) => updateDraft("sidebarSide", value as SidebarSide)}
                 options={SIDEBAR_SIDE_OPTIONS}
                 value={draft.sidebarSide}
-              />
-              ) : null}
-              {/* CDXC:SidebarMode 2026-05-03-10:42: Combined mode is a
-                  sidebar-wide presentation choice, not a section visibility
-                  toggle. Keep it above the per-section controls so users can
-                  switch back to the previous separated multi-group behavior. */}
-              {shouldShowSetting(settingsSearch.sidebar, "sidebarMode") ? (
-              <SelectField
-                description="Choose how project sessions are grouped."
-                label="Mode"
-                {...getSettingModificationProps("sidebarMode")}
-                onChange={(value) => updateDraft("sidebarMode", value as SidebarMode)}
-                options={SIDEBAR_MODE_OPTIONS}
-                value={draft.sidebarMode}
               />
               ) : null}
               {shouldShowSetting(settingsSearch.sidebar, "sidebarTheme") ? (
@@ -1047,6 +1142,91 @@ export function SettingsModal({
                 label="Double-click session cards to rename"
                 {...getSettingModificationProps("renameSessionOnDoubleClick")}
                 onChange={(checked) => updateDraft("renameSessionOnDoubleClick", checked)}
+              />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {shouldShowSettingsSection(settingsSearch.browser) ? (
+            <SettingsSection sectionRef={browserSectionRef} title="Browser">
+              {/* CDXC:BrowserPanes 2026-05-02-06:35: Users can keep the
+                  existing Chrome Canary native-window integration or route
+                  browser actions into workspace browser panes that behave like
+                  normal session cards inside sidebar groups. */}
+              {shouldShowSetting(settingsSearch.browser, "browserOpenMode") ? (
+              <SelectField
+                description="Choose where browser actions open URLs."
+                label="Open URLs With"
+                {...getSettingModificationProps("browserOpenMode")}
+                onChange={(value) => updateDraft("browserOpenMode", value as BrowserOpenMode)}
+                options={BROWSER_OPEN_MODE_OPTIONS}
+                value={draft.browserOpenMode}
+              />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {shouldShowSettingsSection(settingsSearch.ideAttachment) ? (
+            <SettingsSection sectionRef={ideAttachmentSectionRef} title="IDE Attachment">
+              {/* CDXC:AccessibilityPermissions 2026-05-08-13:08: Settings must
+                  show the current macOS Accessibility status and provide a
+                  one-click path to the matching System Settings pane without
+                  presenting the permission dialog unless attachment is enabled. */}
+              {shouldShowSetting(settingsSearch.ideAttachment, "accessibilityPermission") ? (
+              <ActionButtonField
+                description={getAccessibilityPermissionDescription(accessibilityPermissionGranted)}
+                label="Accessibility Permission"
+                onClick={() => onOpenAccessibilityPreferences?.()}
+              >
+                {getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
+              </ActionButtonField>
+              ) : null}
+              {/* CDXC:IDEAttachment 2026-04-26-22:38: Settings select the IDE
+                  that the workspace header link button attaches to. The
+                  persisted keys remain zedOverlay* so existing installs keep
+                  their saved attach state and target. */}
+              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayEnabled") ? (
+              <ToggleField
+                checked={draft.zedOverlayEnabled}
+                description="Attach Ghostex as an overlay to the selected IDE."
+                label="Attach Ghostex to IDE"
+                {...getSettingModificationProps("zedOverlayEnabled")}
+                onChange={(checked) => updateDraft("zedOverlayEnabled", checked)}
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayHideTitlebarButton") ? (
+              <ToggleField
+                checked={draft.zedOverlayHideTitlebarButton}
+                description="Hide the native Attach/Detach IDE button from the Ghostex title bar."
+                label="Hide title-bar attach button"
+                {...getSettingModificationProps("zedOverlayHideTitlebarButton")}
+                onChange={(checked) => updateDraft("zedOverlayHideTitlebarButton", checked)}
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayTargetApp") ? (
+              <SelectField
+                description="Select which IDE should receive the overlay."
+                label="Target IDE"
+                {...getSettingModificationProps("zedOverlayTargetApp")}
+                onChange={(value) =>
+                  updateDraft("zedOverlayTargetApp", value as ZedOverlayTargetApp)
+                }
+                options={ZED_OVERLAY_TARGET_APP_OPTIONS}
+                value={draft.zedOverlayTargetApp}
+              />
+              ) : null}
+              {/* CDXC:IDEAttachment 2026-05-06-12:49: Project sync is a
+                  separate default-on setting from attachment. When enabled,
+                  Ghostex opens the active project in the attached IDE after
+                  workspace switches instead of waiting for a title-bar button
+                  click. */}
+              {shouldShowSetting(settingsSearch.ideAttachment, "syncOpenProjectWithZed") ? (
+              <ToggleField
+                checked={draft.syncOpenProjectWithZed}
+                description="Open the active Ghostex project in the attached IDE after switching workspaces."
+                label="Sync active project with IDE"
+                {...getSettingModificationProps("syncOpenProjectWithZed")}
+                onChange={(checked) => updateDraft("syncOpenProjectWithZed", checked)}
               />
               ) : null}
             </SettingsSection>
@@ -1141,25 +1321,6 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.browser) ? (
-            <SettingsSection sectionRef={browserSectionRef} title="Browser">
-              {/* CDXC:BrowserPanes 2026-05-02-06:35: Users can keep the
-                  existing Chrome Canary native-window integration or route
-                  browser actions into workspace browser panes that behave like
-                  normal session cards inside sidebar groups. */}
-              {shouldShowSetting(settingsSearch.browser, "browserOpenMode") ? (
-              <SelectField
-                description="Choose where browser actions open URLs."
-                label="Open URLs With"
-                {...getSettingModificationProps("browserOpenMode")}
-                onChange={(value) => updateDraft("browserOpenMode", value as BrowserOpenMode)}
-                options={BROWSER_OPEN_MODE_OPTIONS}
-                value={draft.browserOpenMode}
-              />
-              ) : null}
-            </SettingsSection>
-            ) : null}
-
             {shouldShowSettingsSection(settingsSearch.editor) ? (
             <SettingsSection sectionRef={editorSectionRef} title="Editor">
               {shouldShowSetting(settingsSearch.editor, "defaultEditorCommand") ? (
@@ -1215,72 +1376,6 @@ export function SettingsModal({
                 label="Show editor file count"
                 {...getSettingModificationProps("showProjectEditorDiffFileCount")}
                 onChange={(checked) => updateDraft("showProjectEditorDiffFileCount", checked)}
-              />
-              ) : null}
-            </SettingsSection>
-            ) : null}
-
-            {shouldShowSettingsSection(settingsSearch.ideAttachment) ? (
-            <SettingsSection sectionRef={ideAttachmentSectionRef} title="IDE Attachment">
-              {/* CDXC:AccessibilityPermissions 2026-05-08-13:08: Settings must
-                  show the current macOS Accessibility status and provide a
-                  one-click path to the matching System Settings pane without
-                  presenting the permission dialog unless attachment is enabled. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "accessibilityPermission") ? (
-              <ActionButtonField
-                description={getAccessibilityPermissionDescription(accessibilityPermissionGranted)}
-                label="Accessibility Permission"
-                onClick={() => onOpenAccessibilityPreferences?.()}
-              >
-                {getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
-              </ActionButtonField>
-              ) : null}
-              {/* CDXC:IDEAttachment 2026-04-26-22:38: Settings select the IDE
-                  that the workspace header link button attaches to. The
-                  persisted keys remain zedOverlay* so existing installs keep
-                  their saved attach state and target. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayEnabled") ? (
-              <ToggleField
-                checked={draft.zedOverlayEnabled}
-                description="Attach Ghostex as an overlay to the selected IDE."
-                label="Attach Ghostex to IDE"
-                {...getSettingModificationProps("zedOverlayEnabled")}
-                onChange={(checked) => updateDraft("zedOverlayEnabled", checked)}
-              />
-              ) : null}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayHideTitlebarButton") ? (
-              <ToggleField
-                checked={draft.zedOverlayHideTitlebarButton}
-                description="Hide the native Attach/Detach IDE button from the Ghostex title bar."
-                label="Hide title-bar attach button"
-                {...getSettingModificationProps("zedOverlayHideTitlebarButton")}
-                onChange={(checked) => updateDraft("zedOverlayHideTitlebarButton", checked)}
-              />
-              ) : null}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayTargetApp") ? (
-              <SelectField
-                description="Select which IDE should receive the overlay."
-                label="Target IDE"
-                {...getSettingModificationProps("zedOverlayTargetApp")}
-                onChange={(value) =>
-                  updateDraft("zedOverlayTargetApp", value as ZedOverlayTargetApp)
-                }
-                options={ZED_OVERLAY_TARGET_APP_OPTIONS}
-                value={draft.zedOverlayTargetApp}
-              />
-              ) : null}
-              {/* CDXC:IDEAttachment 2026-05-06-12:49: Project sync is a
-                  separate default-on setting from attachment. When enabled,
-                  Ghostex opens the active project in the attached IDE after
-                  workspace switches instead of waiting for a title-bar button
-                  click. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "syncOpenProjectWithZed") ? (
-              <ToggleField
-                checked={draft.syncOpenProjectWithZed}
-                description="Open the active Ghostex project in the attached IDE after switching workspaces."
-                label="Sync active project with IDE"
-                {...getSettingModificationProps("syncOpenProjectWithZed")}
-                onChange={(checked) => updateDraft("syncOpenProjectWithZed", checked)}
               />
               ) : null}
             </SettingsSection>
@@ -1389,10 +1484,30 @@ export function SettingsModal({
           </div>
           </TabsContent>
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="ghostty">
+            {/* CDXC:SettingsNavigation 2026-05-13-16:05
+                Ghostty settings use their own section sidebar and independent
+                search query so tab switches do not carry stale Settings search
+                terms into terminal configuration. */}
+            <div className="settings-main-tab-layout">
+              <aside aria-label="Ghostty settings sections" className="settings-section-sidebar">
+                {ghosttySettingsSectionNavigation
+                  .filter((section) => shouldShowSettingsSection(section.searchResult))
+                  .map((section) => (
+                    <Button
+                      className="settings-section-sidebar-button"
+                      key={section.id}
+                      onClick={() => scrollSettingsSectionIntoView(section.ref)}
+                      type="button"
+                      variant="ghost"
+                    >
+                      {section.title}
+                    </Button>
+                  ))}
+              </aside>
             <ScrollArea className="h-full min-h-0">
               <div className="flex flex-col gap-6 px-5 pb-5">
                 {shouldShowSettingsSection(settingsSearch.terminal) ? (
-                  <SettingsSection title="Terminal">
+                  <SettingsSection sectionRef={ghosttyTerminalSectionRef} title="Terminal">
                     {/* CDXC:TerminalSettings 2026-04-26-18:36: Terminal settings in
                         zmux edit the shared Ghostty config file, so users must see
                         that external Ghostty windows receive the same values and can
@@ -1571,7 +1686,7 @@ export function SettingsModal({
                 ) : null}
 
                 {shouldShowSettingsSection(settingsSearch.terminalBehavior) ? (
-                  <SettingsSection title="Terminal Behavior">
+                  <SettingsSection sectionRef={ghosttyBehaviorSectionRef} title="Terminal Behavior">
                     {/* CDXC:TerminalBehaviorSettings 2026-04-29-09:32: Expose the
                         Ghostty settings users commonly tune: scrollback memory,
                         copy-on-select, close confirmation, clipboard safety,
@@ -1684,7 +1799,7 @@ export function SettingsModal({
                 ) : null}
 
                 {shouldShowSettingsSection(settingsSearch.terminalScrolling) ? (
-                  <SettingsSection title="Terminal Scrolling">
+                  <SettingsSection sectionRef={ghosttyScrollingSectionRef} title="Terminal Scrolling">
                     {/* CDXC:TerminalScrollSettings 2026-04-29-08:56: Ghostty
                         scroll speed is controlled by mouse-scroll-multiplier.
                         Precision and discrete devices need separate controls because
@@ -1755,6 +1870,7 @@ export function SettingsModal({
                 ) : null}
               </div>
             </ScrollArea>
+            </div>
           </TabsContent>
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="agents">
             <AgentsSettingsTab vscode={vscode} />
@@ -1771,6 +1887,7 @@ export function SettingsModal({
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="hotkeys">
             <HotkeysSettingsTab
               hotkeys={draft.hotkeys}
+              searchQuery={hotkeysSearchQuery}
               onChange={(hotkeys) => updateDraft("hotkeys", hotkeys)}
             />
           </TabsContent>
@@ -2849,15 +2966,69 @@ function ActionSettingsEditor({
 function HotkeysSettingsTab({
   hotkeys,
   onChange,
+  searchQuery,
 }: {
   hotkeys?: zmuxHotkeySettings;
   onChange: (hotkeys: zmuxHotkeySettings) => void;
+  searchQuery: string;
 }) {
   const normalizedHotkeys = normalizezmuxHotkeySettings(hotkeys);
+  const generalSectionRef = useRef<HTMLDivElement>(null);
+  const groupsSectionRef = useRef<HTMLDivElement>(null);
+  const navigationSectionRef = useRef<HTMLDivElement>(null);
+  const sessionSlotsSectionRef = useRef<HTMLDivElement>(null);
+  const splitsSectionRef = useRef<HTMLDivElement>(null);
   const duplicateIds = useMemo(
     () => getDuplicateHotkeyIds(normalizedHotkeys),
     [normalizedHotkeys],
   );
+  const definitionsById = useMemo(
+    () => new Map(ZMUX_HOTKEY_DEFINITIONS.map((definition) => [definition.id, definition])),
+    [],
+  );
+  /**
+   * CDXC:Hotkeys 2026-05-13-16:05
+   * Hotkey settings are split by workflow and searched independently from the
+   * Settings/Ghostty tabs. Section nav should jump to matching groups while
+   * search still filters individual bindings inside each group.
+   */
+  const sectionSearches = useMemo(
+    () =>
+      Object.fromEntries(
+        HOTKEY_SETTINGS_SECTIONS.map((section) => [
+          section.id,
+          getSettingsSectionSearch(
+            searchQuery,
+            section.title,
+            section.ids.flatMap((id) => {
+              const definition = definitionsById.get(id);
+              return definition
+                ? [
+                    {
+                      key: definition.id,
+                      options: [{ label: definition.defaultKey, value: definition.defaultKey }],
+                      subtitle: definition.description,
+                      title: definition.title,
+                    },
+                  ]
+                : [];
+            }),
+          ),
+        ]),
+      ) as Record<HotkeySettingsSectionId, SettingsSectionSearchResult>,
+    [definitionsById, searchQuery],
+  );
+  const sectionRefs: Record<HotkeySettingsSectionId, RefObject<HTMLDivElement | null>> = {
+    general: generalSectionRef,
+    groups: groupsSectionRef,
+    navigation: navigationSectionRef,
+    sessionSlots: sessionSlotsSectionRef,
+    splits: splitsSectionRef,
+  };
+  const visibleSections = HOTKEY_SETTINGS_SECTIONS.filter((section) =>
+    shouldShowSettingsSection(sectionSearches[section.id]),
+  );
+  const hasVisibleHotkeys = visibleSections.length > 0;
 
   const updateHotkey = (id: zmuxHotkeyActionId, value: string) => {
     onChange(
@@ -2873,37 +3044,72 @@ function HotkeysSettingsTab({
   };
 
   return (
-    <ScrollArea className="h-full min-h-0">
-      <div className="flex flex-col gap-6 px-5 pb-5">
-        <SettingsSection title="Hotkeys">
-          {ZMUX_HOTKEY_DEFINITIONS.map((definition) => {
-            const value = normalizedHotkeys[definition.id] ?? definition.defaultKey;
-            const isDuplicate = duplicateIds.has(definition.id);
-            return (
-              <Field className="gap-2.5" data-invalid={isDuplicate} key={definition.id}>
-                <FieldContent>
-                  <FieldLabel className="text-sm" htmlFor={`hotkey-${definition.id}`}>
-                    {definition.title}
-                  </FieldLabel>
-                  <FieldDescription className="text-sm">{definition.description}</FieldDescription>
-                </FieldContent>
-                <HotkeyRecorderField
-                  ariaInvalid={isDuplicate}
-                  id={`hotkey-${definition.id}`}
-                  hotkey={value}
-                  onChange={(nextHotkey) => updateHotkey(definition.id, nextHotkey)}
-                />
-              </Field>
-            );
-          })}
+    <div className="settings-main-tab-layout">
+      <aside aria-label="Hotkey sections" className="settings-section-sidebar">
+        {visibleSections.map((section) => (
+          <Button
+            className="settings-section-sidebar-button"
+            key={section.id}
+            onClick={() => sectionRefs[section.id].current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            type="button"
+            variant="ghost"
+          >
+            {section.title}
+          </Button>
+        ))}
+      </aside>
+      <ScrollArea className="h-full min-h-0">
+        <div className="flex flex-col gap-6 px-5 pb-5">
+          {visibleSections.map((section) => (
+            <SettingsSection
+              key={section.id}
+              sectionRef={sectionRefs[section.id]}
+              title={section.title}
+            >
+              {section.ids.flatMap((id) => {
+                const definition = definitionsById.get(id);
+                if (
+                  !definition ||
+                  !shouldShowSetting(sectionSearches[section.id], definition.id)
+                ) {
+                  return [];
+                }
+                const value = normalizedHotkeys[definition.id] ?? definition.defaultKey;
+                const isDuplicate = duplicateIds.has(definition.id);
+                return [
+                  <Field className="gap-2.5" data-invalid={isDuplicate} key={definition.id}>
+                    <FieldContent>
+                      <FieldLabel className="text-sm" htmlFor={`hotkey-${definition.id}`}>
+                        {definition.title}
+                      </FieldLabel>
+                      <FieldDescription className="text-sm">
+                        {definition.description}
+                      </FieldDescription>
+                    </FieldContent>
+                    <HotkeyRecorderField
+                      ariaInvalid={isDuplicate}
+                      id={`hotkey-${definition.id}`}
+                      hotkey={value}
+                      onChange={(nextHotkey) => updateHotkey(definition.id, nextHotkey)}
+                    />
+                  </Field>,
+                ];
+              })}
+            </SettingsSection>
+          ))}
+          {!hasVisibleHotkeys ? (
+            <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+              No hotkeys match your search.
+            </div>
+          ) : null}
           <div className="flex justify-end">
             <Button onClick={resetHotkeys} type="button" variant="outline">
               Reset Hotkeys
             </Button>
           </div>
-        </SettingsSection>
-      </div>
-    </ScrollArea>
+        </div>
+      </ScrollArea>
+    </div>
   );
 }
 
@@ -3349,7 +3555,13 @@ function getSettingsSectionSearch(
       { name: "subtitle", weight: 0.25 },
       { name: "options", weight: 0.2 },
     ],
-    threshold: 0.38,
+    /**
+     * CDXC:SettingsSearch 2026-05-13-16:05
+     * Search should be useful without feeling random. A lower Fuse threshold
+     * keeps section/settings/hotkey results close to the user's query instead
+     * of surfacing weak fuzzy matches from unrelated settings.
+     */
+    threshold: 0.24,
   });
   const results = fuse.search(trimmedQuery);
   const sectionMatches = results.some((result) => result.item.id === "__section");

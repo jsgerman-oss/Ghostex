@@ -7,18 +7,12 @@ type AutoCollapseGroup = {
 export function getAutoCollapseGroupIds({
   browserGroupIds,
   groupsById,
-  isCombinedSidebarMode,
   workspaceGroupIds,
 }: {
   browserGroupIds: readonly string[];
   groupsById: Readonly<Record<string, AutoCollapseGroup | undefined>>;
-  isCombinedSidebarMode: boolean;
   workspaceGroupIds: readonly string[];
 }): string[] {
-  if (!isCombinedSidebarMode) {
-    return [...browserGroupIds];
-  }
-
   /**
    * CDXC:ProjectGroups 2026-05-06-18:42
    * Empty project groups must stay expandable because their body now contains

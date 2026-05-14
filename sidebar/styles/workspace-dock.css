@@ -19,10 +19,9 @@ body.native-sidebar-body #root {
 
 .native-sidebar-shell[data-sidebar-mode="combined"] {
   /*
-   * CDXC:SidebarMode 2026-05-03-19:48
-   * Combined mode hides the workspace rail. Without collapsing the shell grid
-   * to one column, CSS Grid auto-places the sidebar into the old 54px rail
-   * track and clips project groups to a narrow strip.
+   * CDXC:SidebarLayout 2026-05-13-08:11
+   * Combined is the only supported sidebar layout. Keep the shell grid at one
+   * column so project groups receive the full sidebar width.
    */
   grid-template-columns: minmax(0, 1fr);
 }

@@ -649,6 +649,7 @@ function App() {
               </TooltipTrigger>
               <TooltipContent>Open embedded editor</TooltipContent>
             </Tooltip>
+            <div aria-hidden="true" className="titlebar-terminal-separator titlebar-section-separator" />
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -977,6 +978,10 @@ styleElement.textContent = `
    * rules, remove the manual installed-target refresh button, and preserve the
    * 20px centered control height so the compact 30px titlebar keeps top/bottom
    * breathing room.
+   *
+   * CDXC:ReactTitlebar 2026-05-14-09:52
+   * The top-right Commands panel terminal icon needs its own left divider so it
+   * reads as a separate titlebar destination from the embedded editor button.
    */
   .titlebar-session-button {
     height: ${TITLEBAR_CONTROL_HEIGHT}px;

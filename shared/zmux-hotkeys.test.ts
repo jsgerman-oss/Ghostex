@@ -15,6 +15,11 @@ describe("normalizezmuxHotkeySettings", () => {
      * session slots.
      */
     expect(DEFAULT_zmux_HOTKEYS.createSession).toBe("cmd+n");
+    /**
+     * CDXC:Hotkeys 2026-05-14-08:09:
+     * The Commands panel must remain bound to bare F12 so terminal-focused AppKit dispatch and sidebar-focused DOM dispatch agree on the same user shortcut.
+     */
+    expect(DEFAULT_zmux_HOTKEYS.openCommandsPanel).toBe("f12");
     expect(DEFAULT_zmux_HOTKEYS.openSettings).toBe("cmd+,");
     expect(DEFAULT_zmux_HOTKEYS.focusPreviousSession).toBe("cmd+shift+tab");
     expect(DEFAULT_zmux_HOTKEYS.focusNextSession).toBe("cmd+tab");

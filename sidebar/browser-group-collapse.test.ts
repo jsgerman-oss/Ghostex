@@ -39,23 +39,9 @@ describe("getAutoCollapseGroupIds", () => {
           "combined-chats": {},
           "project-zmux": { projectContext: {} },
         },
-        isCombinedSidebarMode: true,
         workspaceGroupIds: ["combined-chats", "project-zmux"],
       }),
     ).toEqual(["browser-tabs", "combined-chats"]);
-  });
-
-  test("only auto-collapses browser groups outside combined mode", () => {
-    expect(
-      getAutoCollapseGroupIds({
-        browserGroupIds: ["browser-tabs"],
-        groupsById: {
-          "group-1": {},
-        },
-        isCombinedSidebarMode: false,
-        workspaceGroupIds: ["group-1"],
-      }),
-    ).toEqual(["browser-tabs"]);
   });
 });
 
