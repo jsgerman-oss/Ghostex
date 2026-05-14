@@ -25,6 +25,7 @@ int ZmuxCEFRemoteDebuggingPort(void);
 @property(nonatomic, copy, nullable) void (^faviconURLChangedHandler)(NSString* faviconURL);
 @property(nonatomic, copy, nullable) void (^navigationStateChangedHandler)(BOOL canGoBack, BOOL canGoForward, BOOL isLoading);
 @property(nonatomic, copy, nullable) void (^consoleMessageHandler)(NSString* message, NSString* source, NSInteger line);
+@property(nonatomic, copy, nullable) NSString* trustedClipboardOrigin;
 
 - (instancetype)initWithFrame:(NSRect)frameRect
                    initialURL:(NSString*)initialURL

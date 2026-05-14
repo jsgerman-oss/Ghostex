@@ -24,6 +24,7 @@
 #include "include/cef_display_handler.h"
 #include "include/cef_life_span_handler.h"
 #include "include/cef_load_handler.h"
+#include "include/cef_permission_handler.h"
 #include "include/cef_request_context.h"
 #include "include/wrapper/cef_helpers.h"
 #include "include/wrapper/cef_library_loader.h"
@@ -277,7 +278,8 @@ class ZmuxCEFBrowserClient : public CefClient,
                              public CefDisplayHandler,
                              public CefLoadHandler,
                              public CefLifeSpanHandler,
-                             public CefContextMenuHandler {
+                             public CefContextMenuHandler,
+                             public CefPermissionHandler {
  public:
   explicit ZmuxCEFBrowserClient(ZmuxCEFBrowserView* owner) : owner_(owner) {}
 
@@ -285,6 +287,7 @@ class ZmuxCEFBrowserClient : public CefClient,
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
+  CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return this; }
 
   void OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString& title) override;
   void OnAddressChange(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& url) override;
@@ -320,6 +323,11 @@ class ZmuxCEFBrowserClient : public CefClient,
                             CefRefPtr<CefContextMenuParams> params,
                             int command_id,
                             CefContextMenuHandler::EventFlags event_flags) override;
+  bool OnShowPermissionPrompt(CefRefPtr<CefBrowser> browser,
+                              uint64_t prompt_id,
+                              const CefString& requesting_origin,
+                              uint32_t requested_permissions,
+                              CefRefPtr<CefPermissionPromptCallback> callback) override;
 
   void MarkClosingFromZmux();
   void ToggleRemoteDevTools(CefRefPtr<CefBrowser> browser);
@@ -346,6 +354,36 @@ class ZmuxCEFBrowserClient : public CefClient,
 static NSString* StringFromCefString(const CefString& value) {
   std::string stringValue = value.ToString();
   return [NSString stringWithUTF8String:stringValue.c_str()] ?: @"";
+}
+
+static NSString* ZmuxCEFNormalizedOrigin(NSString* value) {
+  NSURLComponents* components = [NSURLComponents componentsWithString:value ?: @""];
+  NSString* scheme = components.scheme.lowercaseString;
+  NSString* host = components.host.lowercaseString;
+  if (scheme.length == 0 || host.length == 0) {
+    return nil;
+  }
+
+  NSNumber* port = components.port;
+  NSInteger normalizedPort = port != nil ? port.integerValue : -1;
+  if (normalizedPort < 0) {
+    if ([scheme isEqualToString:@"http"]) {
+      normalizedPort = 80;
+    } else if ([scheme isEqualToString:@"https"]) {
+      normalizedPort = 443;
+    }
+  }
+
+  if (normalizedPort >= 0) {
+    return [NSString stringWithFormat:@"%@://%@:%ld", scheme, host, (long)normalizedPort];
+  }
+  return [NSString stringWithFormat:@"%@://%@", scheme, host];
+}
+
+static bool ZmuxCEFOriginsMatch(NSString* lhs, NSString* rhs) {
+  NSString* leftOrigin = ZmuxCEFNormalizedOrigin(lhs);
+  NSString* rightOrigin = ZmuxCEFNormalizedOrigin(rhs);
+  return leftOrigin.length > 0 && [leftOrigin isEqualToString:rightOrigin];
 }
 
 @interface ZmuxCEFBrowserView () {
@@ -387,6 +425,31 @@ static NSString* StringFromCefString(const CefString& value) {
 
 - (BOOL)acceptsFirstResponder {
   return YES;
+}
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+  return YES;
+}
+
+- (NSView *)hitTest:(NSPoint)point {
+  /*
+  CDXC:EditorPanes 2026-05-14-08:50:
+  The embedded VS Code CEF view must own secondary-click hit testing so VS Code can open its in-editor context menus.
+  Route wrapper hits into the native CEF child view instead of letting AppKit treat the wrapper as the event target.
+  */
+  if (!NSPointInRect(point, self.bounds)) {
+    return nil;
+  }
+
+  if (cefView_ && !cefView_.hidden && cefView_.alphaValue > 0.0) {
+    NSPoint cefPoint = [self convertPoint:point toView:cefView_];
+    NSView *hitView = [cefView_ hitTest:cefPoint];
+    if (hitView) {
+      return hitView;
+    }
+  }
+
+  return [super hitTest:point];
 }
 
 - (BOOL)becomeFirstResponder {
@@ -449,6 +512,15 @@ static NSString* StringFromCefString(const CefString& value) {
 
   CefBrowserSettings browserSettings;
   browserSettings.background_color = CefColorSetARGB(255, 22, 22, 22);
+  if (self.trustedClipboardOrigin.length > 0) {
+    /*
+    CDXC:EditorClipboard 2026-05-14-10:08:
+    Embedded VS Code runs in CEF Alloy, whose default permission handling ignores browser clipboard prompts.
+    Project editor panes must grant JavaScript clipboard access only for their owned code-server origin so Explorer file copy can read/write VS Code's browser clipboard without enabling clipboard access for arbitrary Chromium browser panes.
+    */
+    browserSettings.javascript_access_clipboard = STATE_ENABLED;
+    browserSettings.javascript_dom_paste = STATE_ENABLED;
+  }
 
   CefRefPtr<CefRequestContext> requestContext = ZmuxCEFRequestContextForProfile(profileIdentifier_);
 
@@ -723,6 +795,25 @@ bool ZmuxCEFBrowserClient::OnContextMenuCommand(CefRefPtr<CefBrowser> browser,
     return true;
   }
   return false;
+}
+
+bool ZmuxCEFBrowserClient::OnShowPermissionPrompt(CefRefPtr<CefBrowser> browser,
+                                                  uint64_t prompt_id,
+                                                  const CefString& requesting_origin,
+                                                  uint32_t requested_permissions,
+                                                  CefRefPtr<CefPermissionPromptCallback> callback) {
+  constexpr uint32_t clipboardPermission = static_cast<uint32_t>(CEF_PERMISSION_TYPE_CLIPBOARD);
+  if ((requested_permissions & clipboardPermission) == 0) {
+    return false;
+  }
+
+  ZmuxCEFBrowserView* owner = owner_;
+  NSString* trustedOrigin = owner.trustedClipboardOrigin;
+  NSString* requestingOrigin = StringFromCefString(requesting_origin);
+  uint32_t unsupportedPermissions = requested_permissions & ~clipboardPermission;
+  bool shouldAccept = unsupportedPermissions == 0 && ZmuxCEFOriginsMatch(requestingOrigin, trustedOrigin);
+  callback->Continue(shouldAccept ? CEF_PERMISSION_RESULT_ACCEPT : CEF_PERMISSION_RESULT_DENY);
+  return true;
 }
 
 void ZmuxCEFBrowserClient::ToggleRemoteDevTools(CefRefPtr<CefBrowser> browser) {

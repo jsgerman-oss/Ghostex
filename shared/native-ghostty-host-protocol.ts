@@ -104,7 +104,13 @@ export type NativeGhosttyHostCommand =
        * The sidebar owns T3 card visibility and sleep state. Send the native
        * host the shown, non-sleeping T3 sessions so the managed provider
        * keepalive follows "running in sidebar" instead of workspace pane focus.
+       *
+       * CDXC:T3Code 2026-05-14-09:34:
+       * Include the cwd for an awake T3 card so native can relaunch the
+       * background t3code provider when the localhost server disappeared while
+       * the sidebar still shows T3 sessions.
        */
+      runtimeCwd?: string;
       runningSessionIds: string[];
       type: "setT3CodeRuntimeSessionState";
     }
@@ -343,6 +349,16 @@ export type NativeGhosttyHostEvent =
       scope: "sleep" | "sleepLeft" | "sleepOthers" | "sleepRight";
       sessionId: string;
       type: "paneTabSleepRequested";
+    }
+  | {
+      /**
+       * CDXC:ProjectEditorCompanion 2026-05-14-09:19:
+       * The native embedded-editor companion Back button returns to the normal
+       * agents workarea and reports that mode change to the sidebar so later
+       * layout syncs do not reopen the project editor.
+       */
+      projectId: string;
+      type: "projectEditorBackRequested";
     }
   | {
       /**

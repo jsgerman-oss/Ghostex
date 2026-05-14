@@ -315,7 +315,13 @@ struct SetT3CodeRuntimeSessionState: Decodable {
    included in the current session-sidebar projection and is not sleeping.
    Native receives only those sidebar ids so the provider heartbeat follows the
    session model instead of workspace-pane visibility.
+
+   CDXC:T3Code 2026-05-14-09:34:
+   Native also needs one awake T3 workspace root on the same state update so it
+   can restart the managed t3code provider in the background when the server is
+   no longer live but T3 session cards remain visible in the sidebar.
    */
+  let runtimeCwd: String?
   let runningSessionIds: [String]
 }
 
@@ -746,6 +752,7 @@ enum HostEvent: Encodable {
   case terminalBell(sessionId: String)
   case commandsPanelHeightRatioChanged(heightRatio: Double)
   case terminalError(sessionId: String, message: String)
+  case projectEditorBackRequested(projectId: String)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
   case sessionAttentionNotificationClicked(sessionId: String)
@@ -876,6 +883,15 @@ enum HostEvent: Encodable {
       try container.encode("terminalError", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
       try container.encode(message, forKey: .message)
+    case .projectEditorBackRequested(let projectId):
+      /**
+       CDXC:ProjectEditorCompanion 2026-05-14-09:19:
+       The native editor companion Back button returns to the agents workarea
+       immediately in AppKit, then notifies the sidebar so its project-editor
+       open state stops reactivating VS Code on the next layout sync.
+       */
+      try container.encode("projectEditorBackRequested", forKey: .type)
+      try container.encode(projectId, forKey: .projectId)
     case .projectEditorLoadState(let projectId, let status, let message):
       /**
        CDXC:EditorPanes 2026-05-09-17:24

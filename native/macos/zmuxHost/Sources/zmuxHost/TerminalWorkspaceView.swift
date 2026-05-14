@@ -832,6 +832,20 @@ final class TerminalWorkspaceView: NSView {
     let startY: CGFloat
   }
 
+  private struct ProjectEditorCompanionResizeDrag {
+    let startWidth: CGFloat
+    let startX: CGFloat
+    let workspaceBounds: CGRect
+  }
+
+  private struct ProjectEditorCompanionLayout {
+    let companionFrame: CGRect
+    let contentFrame: CGRect
+    let editorFrame: CGRect
+    let resizeHandleFrame: CGRect
+    let sessionId: String
+  }
+
   private struct PaneHeaderDrag {
     var isDragging: Bool
     var lastLoggedMoveAt: TimeInterval
@@ -881,6 +895,18 @@ final class TerminalWorkspaceView: NSView {
   private static let paneResizeMinimumWidth: CGFloat = 220
   private static let paneResizeOuterEdgeExclusion: CGFloat = 8
   private static let paneResizeRailWidth: CGFloat = 5
+  /**
+   CDXC:CommandsPanel 2026-05-14-08:12:
+   The native command pane default must match the shared 27% sidebar model so first layout, resize reset, and persisted height normalization agree.
+   */
+  private static let defaultCommandsPanelHeightRatio: CGFloat = 0.27
+  /**
+   CDXC:ProjectEditorCompanion 2026-05-14-09:19:
+   Embedded VS Code should open with the currently active terminal or T3 Code session visible as a simple left companion pane at 25% of the workarea.
+   Keep this state native because the editor surface, terminal surface, and resize rail are AppKit/CEF/Ghostty views outside the React sidebar DOM.
+   */
+  private static let defaultProjectEditorCompanionWidthRatio: CGFloat = 0.25
+  private static let projectEditorMinimumWidth: CGFloat = 360
   private static let floatingCommandsPanelMargin: CGFloat = 25
   /**
    CDXC:NativePaneResize 2026-05-11-10:40
@@ -922,7 +948,7 @@ final class TerminalWorkspaceView: NSView {
   private var activeSessionIds = Set<String>()
   private var commandsPanelActiveSessionIds = Set<String>()
   private var commandsPanelFocusedSessionId: String?
-  private var commandsPanelHeightRatio: CGFloat = 0.32
+  private var commandsPanelHeightRatio: CGFloat = TerminalWorkspaceView.defaultCommandsPanelHeightRatio
   private var commandsPanelIsVisible = false
   private var commandsPanelLayout: NativeTerminalLayout?
   private var commandsPanelMode: String = "pinned"
@@ -954,6 +980,12 @@ final class TerminalWorkspaceView: NSView {
   private let commandsPanelChromeView = CommandsPanelChromeView()
   private let commandsPanelCollapsedRightMarginView = NSView(frame: .zero)
   private let commandsPanelResizeHandleView = TerminalWorkspacePaneResizeHandleView()
+  private var projectEditorCompanionSessionId: String?
+  private var projectEditorCompanionIsVisible = false
+  private var projectEditorCompanionWidthRatio = TerminalWorkspaceView.defaultProjectEditorCompanionWidthRatio
+  private var projectEditorCompanionResizeDrag: ProjectEditorCompanionResizeDrag?
+  private var projectEditorCompanionResizeWorkspaceBounds: CGRect = .zero
+  private let projectEditorCompanionResizeHandleView = TerminalWorkspacePaneResizeHandleView()
   private var paneResizeHandleViews: [TerminalWorkspacePaneResizeHandleView] = []
   private var paneHeaderDrag: PaneHeaderDrag?
   private var paneHeaderDragGhostView: TerminalPaneHeaderDragGhostView?
@@ -1030,6 +1062,16 @@ final class TerminalWorkspaceView: NSView {
     }
     commandsPanelResizeHandleView.onMouseUp = { [weak self] event in
       _ = self?.endCommandsPanelResize(with: event)
+    }
+    projectEditorCompanionResizeHandleView.configure(direction: .horizontal, cursor: .resizeLeftRight)
+    projectEditorCompanionResizeHandleView.onMouseDown = { [weak self] event in
+      _ = self?.beginProjectEditorCompanionResize(with: event)
+    }
+    projectEditorCompanionResizeHandleView.onMouseDragged = { [weak self] event in
+      _ = self?.continueProjectEditorCompanionResize(with: event)
+    }
+    projectEditorCompanionResizeHandleView.onMouseUp = { [weak self] event in
+      _ = self?.endProjectEditorCompanionResize(with: event)
     }
   }
 
@@ -2313,6 +2355,9 @@ final class TerminalWorkspaceView: NSView {
       ])
       return
     }
+    if activateProjectEditorCompanionPane(sessionId: sessionId, focus: true, reason: reason) {
+      return
+    }
     let view = session.browserContentView
     let hadActiveProjectEditor = activeProjectEditorId != nil
     activeProjectEditorId = nil
@@ -2396,6 +2441,7 @@ final class TerminalWorkspaceView: NSView {
       frame: .zero,
       initialURL: "about:blank",
       profileIdentifier: "default")
+    chromiumView.trustedClipboardOrigin = NativeCodeServerRuntimeLauncher.origin
     chromiumView.translatesAutoresizingMaskIntoConstraints = true
     let hostView = WebPaneHostView(
       browserView: chromiumView,
@@ -2443,13 +2489,33 @@ final class TerminalWorkspaceView: NSView {
      Editor panes are full-workspace project surfaces. Focusing one hides every
      terminal/browser split view and brings the project's Chromium code-server
      view forward without changing the saved terminal split layout.
+     CDXC:ProjectEditorCompanion 2026-05-14-09:19:
+     The editor is no longer a completely empty workarea takeover. When a project
+     editor becomes active, keep the current sidebar-focused terminal or T3 Code
+     session mounted in the left companion pane unless the user already closed
+     that companion for this editor visit.
    */
+    let didSwitchProjectEditor = activeProjectEditorId != projectId
     activeProjectEditorId = projectId
-    focusedSessionId = nil
+    if didSwitchProjectEditor || projectEditorCompanionSessionId == nil {
+      openDefaultProjectEditorCompanionPane(reason: reason)
+    }
     hideSplitSessionSurfacesForActiveEditor()
+    let companionLayout = projectEditorCompanionLayout(in: bounds)
+    projectEditorCompanionResizeWorkspaceBounds = bounds
     session.hostView.isHidden = false
-    layoutProjectEditorPane(session)
+    layoutProjectEditorPane(session, in: companionLayout?.editorFrame ?? bounds)
     orderProjectEditorPaneToFront(session)
+    syncProjectEditorCompanionPane(layout: companionLayout)
+    /**
+     CDXC:EditorPanes 2026-05-13-23:13
+     VS Code drag/drop inside the embedded CEF editor depends on zmux's native
+     drag hover/release bridge being armed as soon as the project editor becomes
+     the visible interaction surface. Focus can happen before the next AppKit
+     layout pass, so install the CEF drag monitor directly after the Chromium
+     host is visible and ordered.
+     */
+    syncCEFNativeDragSourceReleaseMonitor(reason: "focusProjectEditorPane")
     _ = window?.makeFirstResponder(session.chromiumView)
     needsLayout = true
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.focus.applied", [
@@ -2472,8 +2538,12 @@ final class TerminalWorkspaceView: NSView {
     session.hostView.removeFromSuperview()
     if activeProjectEditorId == projectId {
       activeProjectEditorId = nil
+      projectEditorCompanionSessionId = nil
+      projectEditorCompanionIsVisible = false
+      projectEditorCompanionResizeDrag = nil
       needsLayout = true
     }
+    syncCEFNativeDragSourceReleaseMonitor(reason: "closeProjectEditorPane")
   }
 
   func closeFocusedSession(reason: String) -> Bool {
@@ -2606,14 +2676,30 @@ final class TerminalWorkspaceView: NSView {
       ])
       return
     }
-    let hadActiveProjectEditor = activeProjectEditorId != nil
-    activeProjectEditorId = nil
-    if hadActiveProjectEditor {
-      needsLayout = true
-      layoutSubtreeIfNeeded()
-    }
     let isCommandPanelSession = commandsPanelActiveSessionIds.contains(sessionId)
+    if !isCommandPanelSession,
+      activateProjectEditorCompanionPane(sessionId: sessionId, focus: true, reason: reason)
+    {
+      return
+    }
+    if !isCommandPanelSession {
+      let hadActiveProjectEditor = activeProjectEditorId != nil
+      activeProjectEditorId = nil
+      if hadActiveProjectEditor {
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+      }
+    }
     if isCommandPanelSession {
+      /**
+       CDXC:CommandsPanel 2026-05-14-09:31:
+       Command-pane tabs and titlebar actions are an overlay surface, including
+       while embedded VS Code is the active workspace view. Focusing a command
+       terminal updates only commandsPanelFocusedSessionId and must not clear
+       activeProjectEditorId, otherwise clicking Pin, Close, Sleep, or another
+       command tab switches the workspace out of Code before the control action
+       reaches the sidebar.
+       */
       commandsPanelFocusedSessionId = sessionId
     } else {
       focusedSessionId = sessionId
@@ -3009,6 +3095,7 @@ final class TerminalWorkspaceView: NSView {
     focusedSessionId = command.focusedSessionId
     terminalLayout = nextLayout
     paneGap = nextPaneGap
+    syncProjectEditorCompanionSelectionFromSidebar(reason: "setActiveTerminalSet")
     /**
      CDXC:WorkspaceLayout 2026-04-28-06:08
      The terminal workspace background is user-configurable from Settings.
@@ -3226,6 +3313,14 @@ final class TerminalWorkspaceView: NSView {
   override func layout() {
     super.layout()
     defer {
+      /**
+       CDXC:EditorPanes 2026-05-13-23:13
+       The active VS Code editor layout branch returns before the normal
+       terminal/browser pane layout path. Keep CEF drag/drop monitor sync in a
+       layout defer so the bridge is installed for the project editor and
+       uninstalled when no Chromium interaction surface remains visible.
+       */
+      syncCEFNativeDragSourceReleaseMonitor(reason: "layout")
       layoutFloatingEditorOverlay()
     }
     paneResizeHits.removeAll()
@@ -3282,9 +3377,12 @@ final class TerminalWorkspaceView: NSView {
         "windowNumber": window?.windowNumber ?? NSNull(),
       ])
       hideSplitSessionSurfacesForActiveEditor()
+      let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
+      projectEditorCompanionResizeWorkspaceBounds = workspaceBounds
       editorSession.hostView.isHidden = false
-      layoutProjectEditorPane(editorSession, in: workspaceBounds)
+      layoutProjectEditorPane(editorSession, in: companionLayout?.editorFrame ?? workspaceBounds)
       orderProjectEditorPaneToFront(editorSession)
+      syncProjectEditorCompanionPane(layout: companionLayout)
       if shouldShowCommandsPanel {
         syncCommandsPanelChrome(
           in: resolvedCommandPanelBounds,
@@ -3302,6 +3400,7 @@ final class TerminalWorkspaceView: NSView {
       }
       return
     }
+    hideProjectEditorCompanionChrome()
     let visibleSessionIds = orderedVisibleSessionIds()
     guard !visibleSessionIds.isEmpty || shouldShowCommandsPanel else {
       hideCommandsPanelResizeHandle()
@@ -3334,7 +3433,6 @@ final class TerminalWorkspaceView: NSView {
     }
     updateOuterBottomPaneBorderCorner()
     syncPaneResizeHandleViews()
-    syncCEFNativeDragSourceReleaseMonitor(reason: "layout")
     window?.invalidateCursorRects(for: self)
   }
 
@@ -3596,6 +3694,308 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  private func openDefaultProjectEditorCompanionPane(reason: String) {
+    guard let sessionId = preferredProjectEditorCompanionSessionId() else {
+      projectEditorCompanionSessionId = nil
+      projectEditorCompanionIsVisible = false
+      return
+    }
+    projectEditorCompanionSessionId = sessionId
+    projectEditorCompanionIsVisible = true
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companion.default", [
+      "reason": reason,
+      "sessionId": sessionId,
+    ])
+  }
+
+  private func syncProjectEditorCompanionSelectionFromSidebar(reason: String) {
+    guard activeProjectEditorId != nil else {
+      return
+    }
+    if projectEditorCompanionIsVisible {
+      guard let sessionId = preferredProjectEditorCompanionSessionId() else {
+        projectEditorCompanionSessionId = nil
+        projectEditorCompanionIsVisible = false
+        return
+      }
+      projectEditorCompanionSessionId = sessionId
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companion.sync", [
+        "reason": reason,
+        "sessionId": sessionId,
+      ])
+      return
+    }
+    if projectEditorCompanionSessionId == nil {
+      openDefaultProjectEditorCompanionPane(reason: reason)
+    }
+  }
+
+  private func preferredProjectEditorCompanionSessionId() -> String? {
+    let candidates = [
+      focusedSessionId,
+      projectEditorCompanionSessionId,
+    ].compactMap { $0 }
+    for candidate in candidates where isProjectEditorCompanionEligibleSession(candidate) {
+      return candidate
+    }
+    return orderedVisibleSessionIds().first(where: isProjectEditorCompanionEligibleSession)
+  }
+
+  private func isProjectEditorCompanionEligibleSession(_ sessionId: String) -> Bool {
+    activeSessionIds.contains(sessionId)
+      && !commandsPanelActiveSessionIds.contains(sessionId)
+      && !sleepingSessionIds.contains(sessionId)
+      && !poppedOutSessionIds.contains(sessionId)
+      && (sessions[sessionId] != nil || webPaneSessions[sessionId] != nil)
+  }
+
+  @discardableResult
+  private func activateProjectEditorCompanionPane(
+    sessionId: String,
+    focus: Bool,
+    reason: String
+  ) -> Bool {
+    guard activeProjectEditorId != nil, isProjectEditorCompanionEligibleSession(sessionId) else {
+      return false
+    }
+    /**
+     CDXC:ProjectEditorCompanion 2026-05-14-09:19:
+     Sidebar session clicks while VS Code is active should restore or retarget
+     the left companion pane instead of returning to the normal agents workarea.
+     This includes clicks on the already-focused sidebar session, because the
+     user may have closed the companion pane locally and wants that same session
+     visible again.
+     */
+    projectEditorCompanionSessionId = sessionId
+    projectEditorCompanionIsVisible = true
+    focusedSessionId = sessionId
+    needsLayout = true
+    layoutSubtreeIfNeeded()
+    updateAllTerminalBorders()
+
+    guard focus else {
+      return true
+    }
+    let targetResponder: NSResponder?
+    if let session = sessions[sessionId] {
+      targetResponder = session.view
+    } else if let session = webPaneSessions[sessionId] {
+      targetResponder = session.browserContentView
+    } else {
+      targetResponder = nil
+    }
+    if let targetResponder {
+      _ = window?.makeFirstResponder(targetResponder)
+    }
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companion.focus", [
+      "reason": reason,
+      "sessionId": sessionId,
+    ])
+    sendEvent(.terminalFocused(sessionId: sessionId))
+    return true
+  }
+
+  private func projectEditorCompanionLayout(in workspaceBounds: CGRect) -> ProjectEditorCompanionLayout? {
+    guard
+      projectEditorCompanionIsVisible,
+      let sessionId = projectEditorCompanionSessionId,
+      isProjectEditorCompanionEligibleSession(sessionId),
+      workspaceBounds.width > Self.paneResizeRailWidth + 1,
+      workspaceBounds.height > Self.terminalTitleBarHeight + 1
+    else {
+      return nil
+    }
+    let companionWidth = clampedProjectEditorCompanionWidth(
+      workspaceBounds.width * projectEditorCompanionWidthRatio,
+      in: workspaceBounds)
+    guard companionWidth > 1 else {
+      return nil
+    }
+    let railWidth = min(Self.paneResizeRailWidth, max(workspaceBounds.width - companionWidth, 0))
+    let companionFrame = CGRect(
+      x: workspaceBounds.minX,
+      y: workspaceBounds.minY,
+      width: companionWidth,
+      height: workspaceBounds.height)
+    let resizeHandleFrame = CGRect(
+      x: companionFrame.maxX,
+      y: workspaceBounds.minY,
+      width: railWidth,
+      height: workspaceBounds.height)
+    let editorFrame = CGRect(
+      x: resizeHandleFrame.maxX,
+      y: workspaceBounds.minY,
+      width: max(0, workspaceBounds.maxX - resizeHandleFrame.maxX),
+      height: workspaceBounds.height)
+    /**
+     CDXC:ProjectEditorCompanion 2026-05-14-09:47:
+     Companion Back and Close controls belong in the existing session titlebar
+     row beside the pane hamburger. Do not reserve a separate header strip above
+     the terminal content; that strip was visually detached from the actual
+     clickable titlebar surface.
+     */
+    let contentFrame = companionFrame
+    return ProjectEditorCompanionLayout(
+      companionFrame: companionFrame,
+      contentFrame: contentFrame,
+      editorFrame: editorFrame,
+      resizeHandleFrame: resizeHandleFrame,
+      sessionId: sessionId)
+  }
+
+  private func syncProjectEditorCompanionPane(layout: ProjectEditorCompanionLayout?) {
+    guard let layout else {
+      hideProjectEditorCompanionChrome()
+      return
+    }
+    syncProjectEditorCompanionTitleBarControls(activeSessionId: layout.sessionId)
+    setPaneTabs([], activeSessionId: layout.sessionId, on: layout.sessionId)
+    setFrame(layout.contentFrame, for: layout.sessionId)
+
+    projectEditorCompanionResizeHandleView.frame = layout.resizeHandleFrame
+    projectEditorCompanionResizeHandleView.configure(direction: .horizontal, cursor: .resizeLeftRight)
+    projectEditorCompanionResizeHandleView.isHidden = false
+    projectEditorCompanionResizeHandleView.layer?.zPosition = 10_600
+    addSubview(projectEditorCompanionResizeHandleView, positioned: .above, relativeTo: nil)
+    window?.invalidateCursorRects(for: projectEditorCompanionResizeHandleView)
+  }
+
+  private func syncProjectEditorCompanionTitleBarControls(activeSessionId: String?) {
+    /**
+     CDXC:ProjectEditorCompanion 2026-05-14-09:47:
+     The companion pane's Back and Close buttons must live inside the selected
+     session titlebar, immediately left of the pane hamburger, so hover and
+     click handling use the same AppKit button path as existing titlebar
+     actions. Clear the controls from every non-companion titlebar when the
+     companion is hidden or retargeted.
+     */
+    for session in sessions.values {
+      configureProjectEditorCompanionTitleBarControls(
+        on: session.titleBarView,
+        sessionId: session.sessionId,
+        activeSessionId: activeSessionId)
+    }
+    for session in webPaneSessions.values {
+      configureProjectEditorCompanionTitleBarControls(
+        on: session.titleBarView,
+        sessionId: session.sessionId,
+        activeSessionId: activeSessionId)
+    }
+  }
+
+  private func configureProjectEditorCompanionTitleBarControls(
+    on titleBarView: TerminalSessionTitleBarView,
+    sessionId: String,
+    activeSessionId: String?
+  ) {
+    guard activeSessionId == sessionId else {
+      titleBarView.setProjectEditorCompanionControls(onBack: nil, onClose: nil)
+      return
+    }
+    titleBarView.setProjectEditorCompanionControls(
+      onBack: { [weak self] in
+        self?.returnFromProjectEditorCompanionPane()
+      },
+      onClose: { [weak self] in
+        self?.closeProjectEditorCompanionPane()
+      })
+  }
+
+  private func hideProjectEditorCompanionChrome() {
+    projectEditorCompanionResizeDrag = nil
+    syncProjectEditorCompanionTitleBarControls(activeSessionId: nil)
+    projectEditorCompanionResizeHandleView.isHidden = true
+    projectEditorCompanionResizeHandleView.frame = .zero
+  }
+
+  private func clampedProjectEditorCompanionWidth(_ value: CGFloat, in workspaceBounds: CGRect) -> CGFloat {
+    let railWidth = Self.paneResizeRailWidth
+    let availableWidth = max(workspaceBounds.width - railWidth, 0)
+    guard availableWidth > 0 else {
+      return 0
+    }
+    let minimumWidth = min(Self.paneResizeMinimumWidth, availableWidth)
+    let maximumWidth = max(
+      minimumWidth,
+      availableWidth - min(Self.projectEditorMinimumWidth, availableWidth * 0.5))
+    return min(max(value, minimumWidth), maximumWidth)
+  }
+
+  private func closeProjectEditorCompanionPane() {
+    projectEditorCompanionIsVisible = false
+    projectEditorCompanionResizeDrag = nil
+    needsLayout = true
+    layoutSubtreeIfNeeded()
+  }
+
+  private func returnFromProjectEditorCompanionPane() {
+    guard let projectId = activeProjectEditorId else {
+      return
+    }
+    let returnFocusSessionId = projectEditorCompanionSessionId ?? focusedSessionId
+    activeProjectEditorId = nil
+    projectEditorCompanionIsVisible = false
+    projectEditorCompanionResizeDrag = nil
+    needsLayout = true
+    layoutSubtreeIfNeeded()
+    sendEvent(.projectEditorBackRequested(projectId: projectId))
+    if let returnFocusSessionId, let session = sessions[returnFocusSessionId] {
+      _ = window?.makeFirstResponder(session.view)
+    } else if let returnFocusSessionId, let session = webPaneSessions[returnFocusSessionId] {
+      _ = window?.makeFirstResponder(session.browserContentView)
+    }
+  }
+
+  @discardableResult
+  private func beginProjectEditorCompanionResize(with event: NSEvent) -> Bool {
+    let workspaceBounds = projectEditorCompanionResizeWorkspaceBounds
+    guard let layout = projectEditorCompanionLayout(in: workspaceBounds) else {
+      return false
+    }
+    if event.clickCount >= 2 {
+      projectEditorCompanionResizeDrag = nil
+      projectEditorCompanionWidthRatio = Self.defaultProjectEditorCompanionWidthRatio
+      needsLayout = true
+      layoutSubtreeIfNeeded()
+      NSCursor.resizeLeftRight.set()
+      return true
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    projectEditorCompanionResizeDrag = ProjectEditorCompanionResizeDrag(
+      startWidth: layout.companionFrame.width,
+      startX: point.x,
+      workspaceBounds: workspaceBounds)
+    NSCursor.resizeLeftRight.set()
+    return true
+  }
+
+  @discardableResult
+  private func continueProjectEditorCompanionResize(with event: NSEvent) -> Bool {
+    guard let drag = projectEditorCompanionResizeDrag else {
+      return false
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    let nextWidth = clampedProjectEditorCompanionWidth(
+      drag.startWidth + point.x - drag.startX,
+      in: drag.workspaceBounds)
+    projectEditorCompanionWidthRatio = nextWidth / max(drag.workspaceBounds.width, 1)
+    NSCursor.resizeLeftRight.set()
+    needsLayout = true
+    layoutSubtreeIfNeeded()
+    return true
+  }
+
+  @discardableResult
+  private func endProjectEditorCompanionResize(with event: NSEvent) -> Bool {
+    guard projectEditorCompanionResizeDrag != nil else {
+      return false
+    }
+    _ = continueProjectEditorCompanionResize(with: event)
+    projectEditorCompanionResizeDrag = nil
+    NSCursor.resizeLeftRight.set()
+    return true
+  }
+
   private func keepCommandsPanelAboveWorkspacePanes() {
     guard commandsPanelIsVisible, !commandsPanelActiveSessionIds.isEmpty else {
       return
@@ -3646,7 +4046,7 @@ final class TerminalWorkspaceView: NSView {
       addSubview(session.hostView)
       return
     }
-    guard subviews.last !== session.hostView else {
+    guard shouldRaiseProjectEditorHost(session.hostView) else {
       return
     }
     /**
@@ -3654,9 +4054,62 @@ final class TerminalWorkspaceView: NSView {
      Reordering the active VS Code host by remove/add invalidates AppKit
      layout. Only move it when another workspace surface is actually above it;
      doing this on every layout pass creates a self-sustaining layout loop.
+     CDXC:ProjectEditorCompanion 2026-05-14-09:19:
+     The companion pane chrome, resize rail, and left session pane are expected
+     above or beside the editor. Do not remove/re-add the Chromium host for
+     those non-overlapping AppKit siblings, because that visibly refreshes the
+     VS Code embed during sidebar session switches.
+     CDXC:ProjectEditorCompanion 2026-05-14-09:40:
+     Switching the sidebar-selected companion session must leave the VS Code
+     CEF host mounted and ordered in place. Only raise the editor when a real
+     overlapping workspace surface sits above it.
      */
     session.hostView.removeFromSuperview()
     addSubview(session.hostView, positioned: .above, relativeTo: nil)
+  }
+
+  private func shouldRaiseProjectEditorHost(_ hostView: NSView) -> Bool {
+    guard let hostIndex = subviews.firstIndex(of: hostView) else {
+      return true
+    }
+    let hostFrame = hostView.frame
+    for view in subviews[(hostIndex + 1)...] {
+      guard !isExpectedProjectEditorOverlayView(view) else {
+        continue
+      }
+      guard !view.isHidden, view.alphaValue > 0, view.frame.intersects(hostFrame) else {
+        continue
+      }
+      return true
+    }
+    return false
+  }
+
+  private func isExpectedProjectEditorOverlayView(_ view: NSView) -> Bool {
+    if view === projectEditorCompanionResizeHandleView
+      || view === commandsPanelChromeView
+      || view === commandsPanelResizeHandleView
+      || view === commandsPanelCollapsedRightMarginView
+      || paneResizeHandleViews.contains(where: { $0 === view })
+    {
+      return true
+    }
+    if let floatingEditorOverlayView, view === floatingEditorOverlayView {
+      return true
+    }
+    if let companionSessionId = projectEditorCompanionSessionId {
+      if sessions[companionSessionId]?.containerView === view
+        || webPaneSessions[companionSessionId]?.containerView === view
+      {
+        return true
+      }
+    }
+    for sessionId in commandsPanelActiveSessionIds {
+      if sessions[sessionId]?.containerView === view {
+        return true
+      }
+    }
+    return false
   }
 
   private func hideSplitSessionSurfacesForActiveEditor() {
@@ -3697,11 +4150,20 @@ final class TerminalWorkspaceView: NSView {
           "url": url,
         ])
         if !isReady {
+          /**
+           CDXC:EditorPanes 2026-05-13-08:44
+           The editor pane must not navigate Chromium to the fixed localhost
+           code-server URL until the runtime listener is responsive. Loading a
+           dead 127.0.0.1 target exposes Chromium's connection-refused page when
+           the titlebar or project-header editor button is clicked; keep the
+           pane in zmux's project-scoped startup error state instead.
+           */
           self.sendEvent(
             .projectEditorLoadState(
               projectId: projectId,
               status: "error",
               message: "VS Code did not finish loading within 10 seconds."))
+          return
         }
         session.chromiumView.loadURLString(url)
         session.hostView.refreshHostedWebView(reason: reason)
@@ -3965,8 +4427,14 @@ final class TerminalWorkspaceView: NSView {
    CDXC:NativePaneResize 2026-05-02-16:44
    Native Ghostty and WKWebView panes sit above the React workspace DOM, so
    split resizing must be owned by AppKit. The workspace view records cursor
-   and mouse bands around split boundaries, clamps panes to terminal-usable
-   dimensions, and double-click equalizes split groups.
+   and mouse bands around split boundaries and clamps panes to terminal-usable
+   dimensions.
+
+   CDXC:NativePaneResize 2026-05-14-07:04
+   Double-clicking a split handle should restore that split to its layout-defined
+   original ratio. Command panes use a 0.85 vertical split so resetting the top
+   drag line returns the command pane to its intended original size instead of
+   equalizing it with the main workarea.
    */
   private func defaultPaneResizeRatios(childCount: Int, firstRatio: CGFloat?) -> [CGFloat] {
     guard childCount > 0 else { return [] }
@@ -4276,6 +4744,13 @@ final class TerminalWorkspaceView: NSView {
    This workspace has custom titlebar/content hit routing, so check the rail
    view before pane chrome. Without this explicit native handoff, titlebar
    routing can bypass the rail and make pane resize cursors/drags disappear.
+
+   CDXC:CommandsPanel 2026-05-14-09:31:
+   The command pane remains interactive while the embedded VS Code CEF editor is
+   active. Route visible command-pane and companion pane titlebar/content hits
+   before yielding the rest of the workspace to the editor surface, because
+   AppKit's default subview hit order can hand floating command-pane clicks to
+   Chromium even when native command chrome is visually above it.
    */
   override func hitTest(_ point: NSPoint) -> NSView? {
     if let floatingEditorHitView = floatingEditorHitView(at: point) {
@@ -4286,9 +4761,6 @@ final class TerminalWorkspaceView: NSView {
     }
     if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
       return paneResizeHandleHitView
-    }
-    guard !isProjectEditorInteractionSurfaceActive else {
-      return super.hitTest(point)
     }
     if let titleBarHitView = paneTitleBarHitView(at: point) {
       if isPaneBottomEdgeProbePoint(point) {
@@ -4301,6 +4773,12 @@ final class TerminalWorkspaceView: NSView {
       }
       return titleBarHitView
     }
+    if let contentHitView = paneContentHitView(at: point) {
+      return contentHitView
+    }
+    guard !isProjectEditorInteractionSurfaceActive else {
+      return super.hitTest(point)
+    }
     /**
      CDXC:NativeTerminalFocus 2026-05-13-07:48
      Terminal content clicks must resolve through the current visible pane-owner
@@ -4310,9 +4788,6 @@ final class TerminalWorkspaceView: NSView {
      pane immediately to its left. Resize rails and title bars keep priority
      above this content route.
      */
-    if let contentHitView = paneContentHitView(at: point) {
-      return contentHitView
-    }
     let hitView = super.hitTest(point)
     if paneTitleBarAncestor(of: hitView) != nil {
       logPaneReorderProbe(
@@ -4327,6 +4802,16 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func paneResizeHandleHitView(at point: NSPoint) -> NSView? {
+    if
+      !projectEditorCompanionResizeHandleView.isHidden,
+      projectEditorCompanionResizeHandleView.alphaValue > 0,
+      projectEditorCompanionResizeHandleView.frame.contains(point)
+    {
+      let handlePoint = projectEditorCompanionResizeHandleView.convert(point, from: self)
+      if let hitView = projectEditorCompanionResizeHandleView.hitTest(handlePoint) {
+        return hitView
+      }
+    }
     if
       !commandsPanelResizeHandleView.isHidden,
       commandsPanelResizeHandleView.alphaValue > 0,
@@ -4521,7 +5006,7 @@ final class TerminalWorkspaceView: NSView {
     let point = convert(event.locationInWindow, from: nil)
 
     if event.clickCount >= 2 {
-      equalizePaneResizeRatios()
+      resetPaneResizeRatios(for: hit)
       paneResizeCursor(for: hit.direction).set()
       return true
     }
@@ -4632,11 +5117,29 @@ final class TerminalWorkspaceView: NSView {
 
   @discardableResult
   private func beginCommandsPanelResize(with event: NSEvent) -> Bool {
+    if event.clickCount >= 2 {
+      resetCommandsPanelHeightRatio()
+      NSCursor.resizeUpDown.set()
+      return true
+    }
     let point = convert(event.locationInWindow, from: nil)
     let startHeight = clampedCommandsPanelHeight(bounds.height * commandsPanelHeightRatio)
     commandsPanelResizeDrag = CommandsPanelResizeDrag(startHeight: startHeight, startY: point.y)
     NSCursor.resizeUpDown.set()
     return true
+  }
+
+  private func resetCommandsPanelHeightRatio() {
+    /**
+     CDXC:CommandsPanel 2026-05-14-07:18:
+     Double-clicking the command pane's top resize rail must restore the pane to its original/default height, not start a drag resize.
+     Emit the existing height-ratio event after updating native layout so persisted sidebar state and AppKit geometry stay on the same path as ordinary resize drags.
+     */
+    commandsPanelResizeDrag = nil
+    commandsPanelHeightRatio = Self.defaultCommandsPanelHeightRatio
+    needsLayout = true
+    layoutSubtreeIfNeeded()
+    sendEvent(.commandsPanelHeightRatioChanged(heightRatio: Double(commandsPanelHeightRatio)))
   }
 
   @discardableResult
@@ -5060,35 +5563,17 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
-  private func equalizePaneResizeRatios() {
+  private func resetPaneResizeRatios(for hit: PaneResizeHit) {
     /**
-     CDXC:NativePaneResize 2026-05-10-18:30
-     Double-clicking any split handle is a global "make the visible split areas
-     equal" command. Equalize every split group in the persisted layout tree,
-     so three columns become 33/33/33 instead of preserving a nested 50/25/25
-     ratio from the old auto-grid split shape.
+     CDXC:NativePaneResize 2026-05-14-07:04
+     A double-click reset is local to the clicked divider. Removing only that
+     path's live resize override lets layoutTree rebuild the split from its
+     persisted default ratio while preserving independent user sizing in nested
+     splits.
      */
-    equalizePaneResizeRatios(in: terminalLayout, path: "root")
+    paneResizeRatiosByPath.removeValue(forKey: hit.path)
     needsLayout = true
     layoutSubtreeIfNeeded()
-  }
-
-  private func equalizePaneResizeRatios(
-    in node: NativeTerminalLayout?,
-    path: String
-  ) {
-    guard let node else { return }
-    switch node {
-    case .leaf:
-      return
-    case .tabs:
-      return
-    case .split(_, _, let children):
-      paneResizeRatiosByPath[path] = Array(repeating: 1, count: children.count)
-      for (index, child) in children.enumerated() {
-        equalizePaneResizeRatios(in: child, path: "\(path).\(index)")
-      }
-    }
   }
 
   /**
@@ -5734,6 +6219,28 @@ final class TerminalWorkspaceView: NSView {
     }
     if let session = webPaneSessions[sessionId] {
       return session.containerView.frame
+    }
+    return nil
+  }
+
+  func promptEditorSourcePaneFrame(originatingSessionId: String?) -> CGRect? {
+    /**
+     CDXC:PromptEditor 2026-05-13-09:48
+     Ctrl+G prompt editing should open visually near the pane that launched it.
+     Resolve the explicit originating native session first, then the currently
+     focused pane, so the modal-host editor can appear below that terminal when
+     there is enough workspace space.
+     */
+    let candidates = [
+      originatingSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+      focusedSessionId,
+    ]
+    for candidate in candidates {
+      guard let sessionId = candidate, !sessionId.isEmpty, let frame = paneFrame(for: sessionId)
+      else {
+        continue
+      }
+      return frame
     }
     return nil
   }
@@ -8205,7 +8712,7 @@ final class TerminalWorkspaceView: NSView {
 
   private static func clampedCommandsPanelHeightRatio(_ value: Double?) -> CGFloat {
     guard let value, value.isFinite else {
-      return 0.32
+      return defaultCommandsPanelHeightRatio
     }
     return CGFloat(min(0.55, max(0.18, value)))
   }
@@ -9512,6 +10019,17 @@ final class ZmuxGhosttySurfaceView: NSView {
   private func updateGhosttySurfaceSize() {
     guard let surface else { return }
     let scale = Double(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2)
+    /**
+     CDXC:SessionRestore 2026-05-14-10:09
+     Restored Ghostty panes can be created before AppKit has attached their
+     backing layer to a Retina window. Keep the layer contents scale in sync
+     with the scale sent to Ghostty so restored surfaces do not render a 1x
+     texture that AppKit composites as oversized terminal text.
+     */
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    layer?.contentsScale = CGFloat(scale)
+    CATransaction.commit()
     ghostty_surface_set_content_scale(surface, scale, scale)
     let backingSize = convertToBacking(bounds).size
     let width = max(UInt32(floor(backingSize.width)), 1)
@@ -10262,6 +10780,9 @@ private final class TerminalTitleBarActionButton: NSButton {
   override var isEnabled: Bool {
     didSet { updateActionChrome() }
   }
+  var chromeCornerRadius: CGFloat = 0 {
+    didSet { needsLayout = true }
+  }
 
   override var mouseDownCanMoveWindow: Bool {
     false
@@ -10305,7 +10826,7 @@ private final class TerminalTitleBarActionButton: NSButton {
 
   override func layout() {
     super.layout()
-    layer?.cornerRadius = 0
+    layer?.cornerRadius = chromeCornerRadius
   }
 
   override func updateTrackingAreas() {
@@ -10407,11 +10928,22 @@ private final class TerminalTitleBarTabButton: NSButton {
   private static let activityIndicatorSize: CGFloat = 8
   private static let activityIndicatorTrailingPadding: CGFloat = 9
   private static let titleLeadingPadding: CGFloat = 8
-  private static let identityIconSize: CGFloat = 12
+  private static let commandIdentityIconSize: CGFloat = 12
+  private static let workspaceIdentityIconSize: CGFloat = 14
   private static let identityIconGap: CGFloat = 5
   private static let titleInlineActionGap: CGFloat = 4
-  private static let titleFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
-  private static let titleTextHeight: CGFloat = 18
+  private static let workspaceInlineActionCornerRadius: CGFloat = 6
+  /**
+   CDXC:PaneTabs 2026-05-14-09:23:
+   Non-command pane tab titles should be larger and lighter than the previous shared 11pt semibold style. Keep command pane tab titles on the old font so command pane chrome does not shift.
+
+   CDXC:PaneTabs 2026-05-14-10:10:
+   Non-command pane tabs should make the title font and session identity icon bigger again while command pane tabs keep their existing compact typography and icon sizing.
+   */
+  private static let commandTitleFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
+  private static let workspaceTitleFont = NSFont.systemFont(ofSize: 13, weight: .regular)
+  private static let commandTitleTextHeight: CGFloat = 18
+  private static let workspaceTitleTextHeight: CGFloat = 20
   private static let titleVerticalOffset: CGFloat = 2
   private static let commandTitleVerticalOffset: CGFloat = 2
   /**
@@ -10474,7 +11006,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     layer?.masksToBounds = true
     bezelStyle = .texturedRounded
     isBordered = false
-    font = Self.titleFont
+    font = titleFont
     lineBreakMode = .byTruncatingTail
     imagePosition = .noImage
   }
@@ -10506,7 +11038,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     }
     chromeRole = role
     layer?.cornerRadius = 0
-    font = Self.titleFont
+    font = titleFont
     updateChrome()
   }
 
@@ -10682,6 +11214,9 @@ private final class TerminalTitleBarTabButton: NSButton {
      Inline Sleep/Close hit testing belongs to the tab button that paints those
      controls. Keeping pointer ownership in the AppKit button hierarchy makes
      narrow right-side tab controls respond without workspace monitor routing.
+
+     CDXC:PaneTabs 2026-05-14-10:10:
+     Non-command pane tabs should round their inline Sleep and Close controls instead of drawing square segmented buttons. Preserve command pane tab controls as-is.
      */
     drawInlineActionControl()
     drawCommandSeparatorIfNeeded()
@@ -10941,12 +11476,13 @@ private final class TerminalTitleBarTabButton: NSButton {
   private func drawTitle() {
     let titleLeadingInset = titleLeadingInsetForIdentity()
     let reservedTrailingWidth = titleTrailingReservedWidth()
-    let titleFont = Self.titleFont
+    let resolvedTitleFont = titleFont
+    let resolvedTitleTextHeight = titleTextHeight
     let titleRect = CGRect(
       x: titleLeadingInset,
-      y: floor((bounds.height - Self.titleTextHeight) / 2) + titleVerticalOffset,
+      y: floor((bounds.height - resolvedTitleTextHeight) / 2) + titleVerticalOffset,
       width: max(bounds.width - titleLeadingInset - reservedTrailingWidth, 0),
-      height: Self.titleTextHeight)
+      height: resolvedTitleTextHeight)
     guard titleRect.width > 0 else {
       return
     }
@@ -10955,11 +11491,19 @@ private final class TerminalTitleBarTabButton: NSButton {
     paragraphStyle.alignment = .left
     paragraphStyle.lineBreakMode = .byTruncatingTail
     let attributes: [NSAttributedString.Key: Any] = [
-      .font: titleFont,
+      .font: resolvedTitleFont,
       .foregroundColor: titleColor,
       .paragraphStyle: paragraphStyle,
     ]
     (title as NSString).draw(in: titleRect, withAttributes: attributes)
+  }
+
+  private var titleFont: NSFont {
+    chromeRole == .commands ? Self.commandTitleFont : Self.workspaceTitleFont
+  }
+
+  private var titleTextHeight: CGFloat {
+    chromeRole == .commands ? Self.commandTitleTextHeight : Self.workspaceTitleTextHeight
   }
 
   private var titleVerticalOffset: CGFloat {
@@ -10982,7 +11526,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     guard hasIdentityIcon else {
       return Self.titleLeadingPadding
     }
-    return Self.titleLeadingPadding + Self.identityIconSize + Self.identityIconGap
+    return Self.titleLeadingPadding + identityIconSize + Self.identityIconGap
   }
 
   private var hasIdentityIcon: Bool {
@@ -10992,9 +11536,13 @@ private final class TerminalTitleBarTabButton: NSButton {
   private var identityIconFrame: CGRect {
     CGRect(
       x: Self.titleLeadingPadding,
-      y: floor((bounds.height - Self.identityIconSize) / 2),
-      width: Self.identityIconSize,
-      height: Self.identityIconSize)
+      y: floor((bounds.height - identityIconSize) / 2),
+      width: identityIconSize,
+      height: identityIconSize)
+  }
+
+  private var identityIconSize: CGFloat {
+    chromeRole == .commands ? Self.commandIdentityIconSize : Self.workspaceIdentityIconSize
   }
 
   private func drawIdentityIconIfNeeded() {
@@ -11084,10 +11632,11 @@ private final class TerminalTitleBarTabButton: NSButton {
       return
     }
     let controlFrame = inlineActionControlFrame
+    let cornerRadius = chromeRole == .commands ? CGFloat(0) : Self.workspaceInlineActionCornerRadius
     let controlPath = CGPath(
       roundedRect: controlFrame,
-      cornerWidth: 0,
-      cornerHeight: 0,
+      cornerWidth: cornerRadius,
+      cornerHeight: cornerRadius,
       transform: nil)
 
     context.saveGState()
@@ -11286,15 +11835,28 @@ private final class TerminalSessionTitleBarView: NSView {
   private static let minimumDoubleClickNewTerminalTargetWidth: CGFloat = 24
   private static let commandActionTrailingInset: CGFloat = 8
   private static let tabViewportTrailingGap: CGFloat = 4
+  private static let workspaceTabAddButtonGap: CGFloat = 2
+  private static let commandTabAddButtonGap: CGFloat = 0
+  /**
+   CDXC:PaneTabs 2026-05-14-09:23:
+   Non-command pane tabs need 2px more vertical reach above and below the old tab strip. Command pane tabs keep their existing full command-titlebar height.
+
+   CDXC:PaneTabs 2026-05-14-10:10:
+   Non-command pane tabs need another 2px of height above and below so the larger title and identity icon have more room without changing command pane tab height.
+   */
+  private static let workspaceTabButtonHeight: CGFloat = 36
 
   private let faviconImageView = NSImageView(frame: .zero)
   private let titleLabel = NSTextField(labelWithString: "")
   private let activityIndicatorView = NSView(frame: .zero)
   private let tabClipView = NSView(frame: .zero)
   private let tabContentView = NSView(frame: .zero)
+  private let tabAddButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private let commandCollapsedTrailingBackgroundView = NSView(frame: .zero)
   private let bottomBorderView = NSView(frame: .zero)
   private let actionMenuButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
+  private let projectEditorCompanionBackButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
+  private let projectEditorCompanionCloseButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private var actionButtons: [(action: TerminalTitleBarAction, button: NSButton)]
   private var actionSeparators: [NSView] = []
   private var activeTabSessionId: String?
@@ -11308,6 +11870,9 @@ private final class TerminalSessionTitleBarView: NSView {
   private var isFocusedPane = false
   private var layoutHiddenActions = Set<TerminalTitleBarAction>()
   private var collapsedActionMenuActions: [TerminalTitleBarAction] = []
+  private var projectEditorCompanionBackAction: (() -> Void)?
+  private var projectEditorCompanionCloseAction: (() -> Void)?
+  private var showsProjectEditorCompanionControls = false
   private var tabContentWidth: CGFloat = 0
   private var tabScrollOffsetX: CGFloat = 0
   private var tabViewportFrame: CGRect = .zero
@@ -11531,6 +12096,7 @@ private final class TerminalSessionTitleBarView: NSView {
     tabClipView.isHidden = true
     tabContentView.wantsLayer = true
     tabClipView.addSubview(tabContentView)
+    configureTabAddButton()
 
     commandCollapsedTrailingBackgroundView.wantsLayer = true
     commandCollapsedTrailingBackgroundView.layer?.backgroundColor =
@@ -11544,6 +12110,7 @@ private final class TerminalSessionTitleBarView: NSView {
     addSubview(titleLabel)
     addSubview(activityIndicatorView)
     addSubview(tabClipView)
+    addSubview(tabAddButton)
     addSubview(commandCollapsedTrailingBackgroundView, positioned: .below, relativeTo: tabClipView)
     /**
      CDXC:PaneTabs 2026-05-12-12:44
@@ -11557,6 +12124,21 @@ private final class TerminalSessionTitleBarView: NSView {
       addSubview(item.button)
     }
     configureActionMenuButton()
+    configureProjectEditorCompanionButton(
+      projectEditorCompanionBackButton,
+      systemSymbolName: "chevron.left",
+      fallbackTitle: "<",
+      tooltip: "Back to Agents View",
+      action: #selector(performProjectEditorCompanionBackButton(_:)))
+    configureProjectEditorCompanionButton(
+      projectEditorCompanionCloseButton,
+      systemSymbolName: "xmark",
+      fallbackTitle: "X",
+      tooltip: "Close Session Pane",
+      action: #selector(performProjectEditorCompanionCloseButton(_:)))
+    addSubview(projectEditorCompanionBackButton)
+    addSubview(projectEditorCompanionCloseButton)
+    hideProjectEditorCompanionButtons()
     syncActionSeparators()
     addSubview(bottomBorderView)
     updateActionButtonVisibility()
@@ -11662,6 +12244,16 @@ private final class TerminalSessionTitleBarView: NSView {
      handling or any monitor-style click router.
      */
     layoutSubtreeIfNeeded()
+    if let projectEditorCompanionButton = projectEditorCompanionButton(at: point) {
+      /**
+       CDXC:ProjectEditorCompanion 2026-05-14-09:47:
+       Companion Back and Close live inside the session titlebar and must be
+       returned as concrete NSButton hits, just like the hamburger. This keeps
+       hover background and click dispatch on the visible controls instead of
+       a detached overlay strip.
+       */
+      return projectEditorCompanionButton
+    }
     if let collapsedActionMenuButton = collapsedActionMenuButton(at: point) {
       logCollapsedActionMenuEvent(
         "nativePaneActionMenu.titleBar.hitTest",
@@ -11682,6 +12274,9 @@ private final class TerminalSessionTitleBarView: NSView {
        use performTitleBarAction(_:).
        */
       return actionButton
+    }
+    if let addButton = tabAddButton(at: point) {
+      return addButton
     }
     if let tabButton = tabButton(at: point) {
       return tabButton
@@ -11893,6 +12488,20 @@ private final class TerminalSessionTitleBarView: NSView {
     return actionMenuButton
   }
 
+  private func projectEditorCompanionButton(at point: NSPoint) -> TerminalTitleBarActionButton? {
+    guard showsProjectEditorCompanionControls else {
+      return nil
+    }
+    for button in [projectEditorCompanionBackButton, projectEditorCompanionCloseButton]
+    where button.frame.contains(point)
+      && !button.isHidden
+      && button.isEnabled
+      && button.alphaValue > 0 {
+      return button
+    }
+    return nil
+  }
+
   private func actionButton(at point: NSPoint) -> NSButton? {
     actionButtonItem(at: point)?.button
   }
@@ -11907,6 +12516,17 @@ private final class TerminalSessionTitleBarView: NSView {
       return item
     }
     return nil
+  }
+
+  private func tabAddButton(at point: NSPoint) -> NSButton? {
+    guard tabAddButton.frame.contains(point),
+      !tabAddButton.isHidden,
+      tabAddButton.isEnabled,
+      tabAddButton.alphaValue > 0
+    else {
+      return nil
+    }
+    return tabAddButton
   }
 
   private func isEmptyTitleBarDoubleClickPoint(_ point: NSPoint) -> Bool {
@@ -11926,10 +12546,16 @@ private final class TerminalSessionTitleBarView: NSView {
     if doubleClickNewTerminalFrame.contains(point) {
       return true
     }
+    if tabAddButton(at: point) != nil {
+      return false
+    }
     if tabInlineAction(at: point) != nil || tabSessionId(at: point) != nil {
       return false
     }
     if isCollapsedActionMenuPoint(point) || actionButtonAction(at: point) != nil {
+      return false
+    }
+    if projectEditorCompanionButton(at: point) != nil {
       return false
     }
     return bounds.contains(point)
@@ -12022,6 +12648,7 @@ private final class TerminalSessionTitleBarView: NSView {
     let isCommandChrome = chromeRole == .commands
     let insetX: CGFloat = isCommandChrome ? 0 : 8
     let buttonSize: CGFloat = isCommandChrome ? bounds.height : 28
+    let tabButtonHeight: CGFloat = isCommandChrome ? buttonSize : Self.workspaceTabButtonHeight
     let buttonGap: CGFloat = 0
     let separatorGap: CGFloat = 6
     let separatorWidth: CGFloat = 1
@@ -12030,6 +12657,10 @@ private final class TerminalSessionTitleBarView: NSView {
     let indicatorGap: CGFloat = 6
     let tabViewportTrailingGap = isCommandChrome ? CGFloat(0) : Self.tabViewportTrailingGap
     let centerY = isCommandChrome ? 0 : floor((bounds.height - buttonSize) / 2)
+    let tabCenterY = isCommandChrome ? centerY : floor((bounds.height - tabButtonHeight) / 2)
+    let tabAddButtonGap =
+      isCommandChrome ? Self.commandTabAddButtonGap : Self.workspaceTabAddButtonGap
+    let tabAddButtonSize = tabButtonHeight
     let separatorY = floor((bounds.height - separatorHeight) / 2)
     let isCollapsedCommandPanelBar =
       isCommandChrome && actionButtons.map(\.action) == [.expandCommandsPanel]
@@ -12170,6 +12801,12 @@ private final class TerminalSessionTitleBarView: NSView {
         }
       }
     }
+    layoutProjectEditorCompanionButtons(
+      trailingX: &trailingX,
+      centerY: centerY,
+      buttonSize: buttonSize,
+      buttonGap: buttonGap,
+      insetX: insetX)
     if layoutHiddenActions != nextLayoutHiddenActions {
       layoutHiddenActions = nextLayoutHiddenActions
       updateActionButtonVisibility()
@@ -12183,14 +12820,28 @@ private final class TerminalSessionTitleBarView: NSView {
       activityIndicatorView.isHidden = true
       activityIndicatorView.frame = .zero
       tabClipView.isHidden = false
-      let tabViewportMaxX = reserveDoubleClickNewTerminalTarget(
-        from: insetX,
-        to: max(insetX, trailingX - tabViewportTrailingGap))
+      let tabAreaMaxX = max(insetX, trailingX - tabViewportTrailingGap)
+      let canShowTabAddButton =
+        tabAreaMaxX - insetX
+          >= Self.minimumVisibleTabViewportWidthWithDoubleClickTarget + tabAddButtonGap + tabAddButtonSize
+      let tabViewportMaxX =
+        canShowTabAddButton
+        ? max(insetX, tabAreaMaxX - tabAddButtonGap - tabAddButtonSize)
+        : reserveDoubleClickNewTerminalTarget(from: insetX, to: tabAreaMaxX)
+      if canShowTabAddButton {
+        doubleClickNewTerminalFrame = .zero
+      }
       layoutTabButtons(
         from: insetX,
         to: tabViewportMaxX,
-        centerY: centerY,
-        height: buttonSize)
+        centerY: tabCenterY,
+        height: tabButtonHeight)
+      layoutTabAddButton(
+        maxX: tabAreaMaxX,
+        centerY: tabCenterY,
+        size: tabAddButtonSize,
+        gap: tabAddButtonGap,
+        isVisible: canShowTabAddButton)
       if isCollapsedCommandPanelBar {
         commandCollapsedTrailingBackgroundView.isHidden = false
         commandCollapsedTrailingBackgroundView.frame = CGRect(
@@ -12216,6 +12867,7 @@ private final class TerminalSessionTitleBarView: NSView {
     tabViewportFrame = .zero
     tabContentWidth = 0
     tabScrollOffsetX = 0
+    hideTabAddButton()
     for button in tabButtons {
       button.frame = .zero
     }
@@ -12382,11 +13034,70 @@ private final class TerminalSessionTitleBarView: NSView {
     }
   }
 
+  private func layoutTabAddButton(
+    maxX: CGFloat,
+    centerY: CGFloat,
+    size: CGFloat,
+    gap: CGFloat,
+    isVisible: Bool
+  ) {
+    guard isVisible, !tabViewportFrame.isEmpty, size > 0 else {
+      hideTabAddButton()
+      return
+    }
+    let visibleContentWidth = min(
+      tabViewportFrame.width,
+      max(0, tabContentWidth - tabScrollOffsetX)
+    )
+    let visibleLastTabMaxX = tabViewportFrame.minX + visibleContentWidth
+    let preferredX = visibleLastTabMaxX + gap
+    let buttonX = min(maxX - size, max(tabViewportFrame.minX, preferredX))
+    guard buttonX >= bounds.minX, buttonX + size <= bounds.maxX else {
+      hideTabAddButton()
+      return
+    }
+    /*
+     CDXC:PaneTabs 2026-05-14-10:10:
+     The non-command tab-strip add button is part of the tab control run and should be rounded with the inline tab controls. Command pane tab add controls keep the previous square chrome.
+     */
+    tabAddButton.chromeCornerRadius = chromeRole == .commands ? 0 : min(8, size / 2)
+    tabAddButton.frame = CGRect(x: buttonX, y: centerY, width: size, height: size)
+    tabAddButton.isHidden = false
+    tabAddButton.alphaValue = 1
+    tabAddButton.isEnabled = true
+  }
+
+  private func hideTabAddButton() {
+    tabAddButton.frame = .zero
+    tabAddButton.isHidden = true
+    tabAddButton.alphaValue = 0
+    tabAddButton.isEnabled = false
+  }
+
   func setTitle(_ title: String) {
     if titleLabel.stringValue != title {
       titleLabel.stringValue = title
       needsLayout = true
     }
+  }
+
+  func setProjectEditorCompanionControls(onBack: (() -> Void)?, onClose: (() -> Void)?) {
+    projectEditorCompanionBackAction = onBack
+    projectEditorCompanionCloseAction = onClose
+    let shouldShowControls = onBack != nil && onClose != nil
+    guard showsProjectEditorCompanionControls != shouldShowControls else {
+      return
+    }
+    /**
+     CDXC:ProjectEditorCompanion 2026-05-14-09:47:
+     The embedded-editor companion controls are titlebar-local actions, not
+     normal pane lifecycle actions. Show them only on the selected companion
+     session so Back, Close, and the hamburger share one row and one AppKit
+     button/hover implementation.
+     */
+    showsProjectEditorCompanionControls = shouldShowControls
+    updateProjectEditorCompanionButtonVisibility()
+    needsLayout = true
   }
 
   func setActions(_ actions: [TerminalTitleBarAction]) {
@@ -12467,6 +13178,27 @@ private final class TerminalSessionTitleBarView: NSView {
       return
     }
     onAction?(item.action)
+  }
+
+  @objc private func performProjectEditorCompanionBackButton(_ sender: NSButton) {
+    guard sender === projectEditorCompanionBackButton, showsProjectEditorCompanionControls else {
+      return
+    }
+    projectEditorCompanionBackAction?()
+  }
+
+  @objc private func performProjectEditorCompanionCloseButton(_ sender: NSButton) {
+    guard sender === projectEditorCompanionCloseButton, showsProjectEditorCompanionControls else {
+      return
+    }
+    projectEditorCompanionCloseAction?()
+  }
+
+  @objc private func performTabAddButton(_ sender: NSButton) {
+    guard sender === tabAddButton, !tabAddButton.isHidden, tabAddButton.isEnabled else {
+      return
+    }
+    onAction?(.newTerminal)
   }
 
   @objc private func performActionMenuButton(_ sender: NSButton) {
@@ -12564,6 +13296,30 @@ private final class TerminalSessionTitleBarView: NSView {
     NativePaneTabDragReproLog.append(event: event, details: payload)
   }
 
+  private func configureTabAddButton() {
+    tabAddButton.bezelStyle = .texturedRounded
+    tabAddButton.isBordered = false
+    tabAddButton.imagePosition = .imageOnly
+    tabAddButton.toolTip = "New Terminal"
+    tabAddButton.target = self
+    tabAddButton.action = #selector(performTabAddButton(_:))
+    /**
+     CDXC:PaneTabs 2026-05-14-09:41
+     Every native terminal tab bar needs a visible local add control immediately
+     after the tab run. Dispatch through the same `.newTerminal` action as the
+     empty-tab-bar double-click so the sidebar can choose workspace versus
+     command-surface terminal creation from the source session.
+     */
+    tabAddButton.sendAction(on: [.leftMouseDown])
+    if let image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Terminal") {
+      tabAddButton.image = image
+    } else {
+      tabAddButton.title = "+"
+      tabAddButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    }
+    hideTabAddButton()
+  }
+
   private func configureActionMenuButton() {
     actionMenuButton.bezelStyle = .texturedRounded
     actionMenuButton.isBordered = false
@@ -12584,6 +13340,34 @@ private final class TerminalSessionTitleBarView: NSView {
     actionMenuButton.isHidden = true
     actionMenuButton.alphaValue = 0
     addSubview(actionMenuButton)
+  }
+
+  private func configureProjectEditorCompanionButton(
+    _ button: TerminalTitleBarActionButton,
+    systemSymbolName: String,
+    fallbackTitle: String,
+    tooltip: String,
+    action: Selector
+  ) {
+    button.bezelStyle = .texturedRounded
+    button.isBordered = false
+    button.imagePosition = .imageOnly
+    button.toolTip = tooltip
+    button.target = self
+    button.action = action
+    /**
+     CDXC:ProjectEditorCompanion 2026-05-14-09:47:
+     Back and Close are placed beside the titlebar hamburger and dispatch on
+     left mouse-down, matching existing pane action buttons so a focus change
+     during the click cannot swallow the action.
+     */
+    button.sendAction(on: [.leftMouseDown])
+    if let image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: tooltip) {
+      button.image = image
+    } else {
+      button.title = fallbackTitle
+      button.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+    }
   }
 
   private func syncActionSeparators() {
@@ -12630,8 +13414,58 @@ private final class TerminalSessionTitleBarView: NSView {
     actionMenuButton.isHidden = !menuVisible
     actionMenuButton.alphaValue = menuVisible ? 1 : 0
     actionMenuButton.isEnabled = menuVisible
+    updateProjectEditorCompanionButtonVisibility()
     if let window {
       window.invalidateCursorRects(for: actionMenuButton)
+    }
+  }
+
+  private func layoutProjectEditorCompanionButtons(
+    trailingX: inout CGFloat,
+    centerY: CGFloat,
+    buttonSize: CGFloat,
+    buttonGap: CGFloat,
+    insetX: CGFloat
+  ) {
+    guard showsProjectEditorCompanionControls else {
+      hideProjectEditorCompanionButtons()
+      return
+    }
+    for button in [projectEditorCompanionCloseButton, projectEditorCompanionBackButton] {
+      guard trailingX - buttonSize >= insetX else {
+        button.frame = .zero
+        continue
+      }
+      trailingX -= buttonSize
+      let buttonX = max(0, trailingX)
+      button.frame = CGRect(
+        x: buttonX,
+        y: centerY,
+        width: min(buttonSize, bounds.width - buttonX),
+        height: buttonSize)
+      trailingX -= buttonGap
+    }
+    updateProjectEditorCompanionButtonVisibility()
+  }
+
+  private func updateProjectEditorCompanionButtonVisibility() {
+    let visible = showsProjectEditorCompanionControls
+    for button in [projectEditorCompanionBackButton, projectEditorCompanionCloseButton] {
+      button.isHidden = !visible || button.frame.isEmpty
+      button.alphaValue = visible && !button.frame.isEmpty ? 1 : 0
+      button.isEnabled = visible && !button.frame.isEmpty
+      if let window {
+        window.invalidateCursorRects(for: button)
+      }
+    }
+  }
+
+  private func hideProjectEditorCompanionButtons() {
+    for button in [projectEditorCompanionBackButton, projectEditorCompanionCloseButton] {
+      button.frame = .zero
+      button.isHidden = true
+      button.alphaValue = 0
+      button.isEnabled = false
     }
   }
 
@@ -14123,10 +14957,15 @@ final class TerminalPaneBorderView: NSView {
   }
 
   private func currentBorderWidth() -> CGFloat {
+    /*
+     CDXC:NativePaneChrome 2026-05-14-07:12:
+     The dev build must compile after command chrome adds a distinct inactive border width.
+     Keep the branch as an explicit return because Swift block methods do not implicitly return ternary expressions.
+     */
     if state == .none && hidesInactiveCommandBorder {
       return 0
     }
-    state == .none && chromeRole == .commands
+    return state == .none && chromeRole == .commands
       ? Self.inactiveCommandBorderWidth
       : Self.activeBorderWidth
   }

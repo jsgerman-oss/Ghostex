@@ -396,6 +396,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private let nativeSettingsStore = NativeSettingsStore()
   private let updaterController: SPUStandardUpdaterController
   private var t3CodeRuntimeProcess: Process?
+  private var t3RuntimeVisibleSessionCwd: String?
+  private var t3RuntimeLivenessTimer: Timer?
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
   private lazy var sessionAttentionNotificationController =
@@ -1516,9 +1518,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .createWebPane(let command):
       workspaceView?.createWebPane(command)
     case .openFloatingEditor(let command):
-      workspaceView?.openFloatingEditor(command)
+      if let root = window?.contentView as? zmuxRootView {
+        root.openFloatingEditor(command)
+      } else {
+        workspaceView?.openFloatingEditor(command)
+      }
     case .closeTerminal(let command):
-      workspaceView?.closeTerminal(sessionId: command.sessionId)
+      if let root = window?.contentView as? zmuxRootView {
+        root.closeTerminal(sessionId: command.sessionId)
+      } else {
+        workspaceView?.closeTerminal(sessionId: command.sessionId)
+      }
     case .closeWebPane(let command):
       workspaceView?.closeWebPane(sessionId: command.sessionId)
     case .focusTerminal(let command):
@@ -1530,9 +1540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .startT3CodeRuntime(let command):
       startT3CodeRuntime(command)
     case .setT3CodeRuntimeSessionState(let command):
-      NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
-        runningSessionIds: command.runningSessionIds,
-        reason: "nativeHost")
+      setT3CodeRuntimeSessionState(command, reason: "nativeHost")
     case .stopT3CodeRuntime:
       stopT3CodeRuntime(logPrefix: "nativeHost")
     case .startCodeServerRuntime(let command):
@@ -1706,6 +1714,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .sidebarCliCommand(let command):
       runSidebarCliCommand(command)
     }
+  }
+
+  /**
+   CDXC:T3Code 2026-05-14-09:34:
+   While the sidebar still shows awake T3 sessions, native must treat the
+   managed t3code provider as required background infrastructure. Refresh the
+   heartbeat and actively repair missing or unresponsive localhost runtime
+   state so restored T3 cards do not strand users in a manual retry flow.
+   */
+  @MainActor
+  private func setT3CodeRuntimeSessionState(_ command: SetT3CodeRuntimeSessionState, reason: String) {
+    NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
+      runningSessionIds: command.runningSessionIds,
+      reason: reason)
+    let runtimeCwd = command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !command.runningSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
+      t3RuntimeVisibleSessionCwd = nil
+      t3RuntimeLivenessTimer?.invalidate()
+      t3RuntimeLivenessTimer = nil
+      return
+    }
+
+    t3RuntimeVisibleSessionCwd = runtimeCwd
+    ensureT3CodeRuntimeForRunningSessions(reason: reason)
+    if t3RuntimeLivenessTimer == nil {
+      let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
+        MainActor.assumeIsolated {
+          self?.ensureT3CodeRuntimeForRunningSessions(reason: "livenessTimer")
+        }
+      }
+      t3RuntimeLivenessTimer = timer
+      RunLoop.main.add(timer, forMode: .common)
+    }
+  }
+
+  @MainActor
+  private func ensureT3CodeRuntimeForRunningSessions(reason: String) {
+    guard let runtimeCwd = t3RuntimeVisibleSessionCwd else {
+      return
+    }
+    guard !NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
+      return
+    }
+    NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.runningSessions.autoStart", [
+      "cwd": runtimeCwd,
+      "reason": reason,
+    ])
+    startT3CodeRuntime(StartT3CodeRuntime(cwd: runtimeCwd))
   }
 
   /**
@@ -2494,14 +2550,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       process.standardInput = FileHandle.nullDevice
       process.standardOutput = stdoutPipe
       process.standardError = stderrPipe
+      let outputLock = NSLock()
+      var stdoutData = Data()
+      var stderrData = Data()
+      let stdoutHandle = stdoutPipe.fileHandleForReading
+      let stderrHandle = stderrPipe.fileHandleForReading
+      /**
+       CDXC:AgentsHub 2026-05-14-08:43
+       Agents Hub catalog discovery can return megabytes of real profile, skill,
+       hook, and config metadata. Drain process output while the command is
+       running so large stdout/stderr payloads cannot fill the pipe and block
+       the scanner before native posts processResult back to the webview.
+       */
+      stdoutHandle.readabilityHandler = { handle in
+        let data = handle.availableData
+        if data.isEmpty {
+          return
+        }
+        outputLock.lock()
+        stdoutData.append(data)
+        outputLock.unlock()
+      }
+      stderrHandle.readabilityHandler = { handle in
+        let data = handle.availableData
+        if data.isEmpty {
+          return
+        }
+        outputLock.lock()
+        stderrData.append(data)
+        outputLock.unlock()
+      }
 
       do {
         try process.run()
         process.waitUntilExit()
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        stdoutHandle.readabilityHandler = nil
+        stderrHandle.readabilityHandler = nil
+        let remainingStdoutData = stdoutHandle.readDataToEndOfFile()
+        let remainingStderrData = stderrHandle.readDataToEndOfFile()
+        outputLock.lock()
+        stdoutData.append(remainingStdoutData)
+        stderrData.append(remainingStderrData)
         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        outputLock.unlock()
         await MainActor.run {
           sendEvent(
             .processResult(
@@ -2512,6 +2604,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             ))
         }
       } catch {
+        stdoutHandle.readabilityHandler = nil
+        stderrHandle.readabilityHandler = nil
         await MainActor.run {
           sendEvent(
             .processResult(
@@ -2534,11 +2628,6 @@ private struct NativeZedOverlaySettings {
 
 private struct NativeSidebarChromeSettings {
   let width: CGFloat?
-}
-
-private enum NativeSidebarMode: String {
-  case combined
-  case separated
 }
 
 private struct NativeMainWindowChromeSettings {
@@ -2582,6 +2671,12 @@ private final class NativeSettingsStore {
     "focusSessionSlot9": "cmd+9",
     "focusUp": "cmd+up",
     "moveSidebar": "cmd+b",
+    /**
+     CDXC:Hotkeys 2026-05-14-08:09:
+     F12 is the default Commands panel shortcut in shared sidebar settings, and terminal focus reaches AppKit before the sidebar DOM can observe that bare function key.
+     Keep the native defaults in sync so AppKit matches and dispatches openCommandsPanel instead of filtering the action out of persisted hotkeys.
+     */
+    "openCommandsPanel": "f12",
     "openSettings": "cmd+,",
     "renameActiveSession": "cmd+r",
     /**
@@ -2653,16 +2748,6 @@ private final class NativeSettingsStore {
       return NativeSidebarChromeSettings(width: nil)
     }
     return NativeSidebarChromeSettings(width: Self.readCGFloat(settings["sidebarWidth"]))
-  }
-
-  func readSidebarMode() -> NativeSidebarMode {
-    guard let settings = readSharedSidebarSettingsDictionary() else {
-      return .combined
-    }
-    if let mode = settings["sidebarMode"] as? String {
-      return NativeSidebarMode(rawValue: mode) ?? .combined
-    }
-    return .separated
   }
 
   func readSidebarSide() -> SidebarSide {
@@ -2915,6 +3000,13 @@ final class zmuxRootView: NSView {
     var workspace: CGRect
   }
 
+  private struct ActiveFloatingPromptEditor {
+    let filePath: String
+    let originatingSessionId: String?
+    let requestId: String
+    let statusFile: String?
+  }
+
   private static let workspaceBarWidth: CGFloat = 54
   /**
    CDXC:ReactTitlebar 2026-05-11-08:03
@@ -2958,9 +3050,12 @@ final class zmuxRootView: NSView {
   private var isModalHostReady = false
   private var pendingModalHostOpenMessage: [String: Any]?
   private var latestModalHostSidebarState: [String: Any]?
+  private var activeFloatingPromptEditor: ActiveFloatingPromptEditor?
   private var pendingHotkeyPrefix: String?
   private var pendingHotkeyPrefixExpiresAt: Date?
   private var t3CodeRuntimeProcess: Process?
+  private var t3RuntimeVisibleSessionCwd: String?
+  private var t3RuntimeLivenessTimer: Timer?
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
   private lazy var sessionAttentionNotificationController =
@@ -3159,6 +3254,186 @@ final class zmuxRootView: NSView {
     loadSidebar()
     loadModalHost()
     loadTitlebarChrome()
+  }
+
+  func openFloatingEditor(_ command: OpenFloatingEditor) {
+    guard command.editorKind == "monaco" else {
+      workspaceView.openFloatingEditor(command)
+      return
+    }
+    openFloatingPromptEditor(command)
+  }
+
+  func closeTerminal(sessionId: String) {
+    if activeFloatingPromptEditor?.originatingSessionId == sessionId {
+      /**
+       CDXC:PromptEditor 2026-05-13-09:48
+       Closing the terminal that launched Ctrl+G prompt editing should close
+       the floating prompt editor and persist the current Monaco buffer first.
+       Ask the modal-host editor for its live text instead of marking the
+       status cancelled, because the source terminal going away is not a user
+       discard action.
+       */
+      dispatchModalHostMessage([
+        "requestId": activeFloatingPromptEditor?.requestId ?? "",
+        "type": "floatingPromptEditorCloseAndSave",
+      ])
+    }
+    workspaceView.closeTerminal(sessionId: sessionId)
+  }
+
+  private func openFloatingPromptEditor(_ command: OpenFloatingEditor) {
+    let requestId = command.requestId ?? "floating-monaco-editor-\(UUID().uuidString)"
+    guard let filePath = command.filePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !filePath.isEmpty
+    else {
+      writeFloatingPromptEditorStatusFile(command.statusFile, status: "cancelled")
+      return
+    }
+    let initialText = (try? String(contentsOfFile: filePath, encoding: .utf8)) ?? ""
+    let language = "markdown"
+    if let activeFloatingPromptEditor {
+      writeFloatingPromptEditorStatusFile(activeFloatingPromptEditor.statusFile, status: "cancelled")
+    }
+    activeFloatingPromptEditor = ActiveFloatingPromptEditor(
+      filePath: filePath,
+      originatingSessionId: command.originatingSessionId,
+      requestId: requestId,
+      statusFile: command.statusFile
+    )
+    /**
+     CDXC:PromptEditor 2026-05-13-09:48
+     Monaco prompt editing uses the same full-window modal WKWebView as other
+     app dialogs. Native still owns reading the requested temp file, status
+     writes, and final save/cancel semantics so the CLI bridge contract remains
+     independent from React rendering.
+
+     CDXC:PromptEditor 2026-05-13-10:22
+     Ctrl+G prompt editing is always Markdown and opens as a narrow wrapped
+     writing pane. Ignore caller language hints so the modal host consistently
+     uses Markdown tokenization and text wrapping for prompt composition.
+     */
+    dispatchModalHostOpenMessage([
+      "filePath": filePath,
+      "initialFrame": floatingPromptEditorInitialFrame(
+        originatingSessionId: command.originatingSessionId),
+      "initialText": initialText,
+      "language": language,
+      "modal": "floatingPromptEditor",
+      "requestId": requestId,
+      "statusFile": command.statusFile ?? "",
+      "title": command.title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        ? command.title!
+        : "Prompt Editor",
+      "type": "open",
+    ])
+  }
+
+  private func dispatchModalHostOpenMessage(_ message: [String: Any]) {
+    guard isModalHostReady else {
+      pendingModalHostOpenMessage = message
+      return
+    }
+    dispatchModalHostMessage(message)
+  }
+
+  private func floatingPromptEditorInitialFrame(originatingSessionId: String?) -> [String: CGFloat] {
+    let margin: CGFloat = 16
+    let maxWidth = min(CGFloat(400), max(240, bounds.width - margin * 2))
+    let maxHeight = max(260, bounds.height - margin * 2)
+    let width = maxWidth
+    let height = min(CGFloat(320), maxHeight)
+    var x = max(margin, (bounds.width - width) / 2)
+    var y = margin
+
+    if let sourceFrame = workspaceView.promptEditorSourcePaneFrame(
+      originatingSessionId: originatingSessionId)
+    {
+      let sourceFrameInRoot = workspaceView.convert(sourceFrame, to: self)
+      /**
+       CDXC:PromptEditor 2026-05-13-15:58
+       Ctrl+G Monaco prompt editing should open below the pane that launched it and horizontally centered to that pane when there is room. If the lower workspace does not fit the 320px editor, keep the pane aligned to the bottom of the window instead of moving it above the source pane.
+       */
+      let belowY = sourceFrameInRoot.minY - margin - height
+      x = min(
+        max(margin, sourceFrameInRoot.midX - width / 2),
+        max(margin, bounds.width - width - margin)
+      )
+      if belowY >= margin {
+        y = belowY
+      }
+    }
+
+    return [
+      "height": height,
+      "left": x,
+      "top": max(margin, bounds.height - y - height),
+      "width": width,
+    ]
+  }
+
+  private func saveFloatingPromptEditor(message: [String: Any]) {
+    guard let requestId = message["requestId"] as? String,
+      let active = activeFloatingPromptEditor,
+      active.requestId == requestId
+    else {
+      return
+    }
+    let text = message["text"] as? String ?? ""
+    do {
+      try text.write(toFile: active.filePath, atomically: true, encoding: .utf8)
+      writeFloatingPromptEditorStatusFile(active.statusFile, status: "saved")
+      finishFloatingPromptEditor(reason: "saved")
+    } catch {
+      AppDelegate.appendAppModalErrorLog(
+        area: "PromptEditor:save",
+        message: "Failed to save prompt editor file \(active.filePath): \(error.localizedDescription)",
+        stack: nil
+      )
+    }
+  }
+
+  private func cancelFloatingPromptEditor(message: [String: Any]) {
+    guard let requestId = message["requestId"] as? String,
+      let active = activeFloatingPromptEditor,
+      active.requestId == requestId
+    else {
+      return
+    }
+    writeFloatingPromptEditorStatusFile(active.statusFile, status: "cancelled")
+    finishFloatingPromptEditor(reason: "cancelled")
+  }
+
+  private func finishFloatingPromptEditor(reason: String) {
+    let returnFocusSessionId = activeFloatingPromptEditor?.originatingSessionId
+    activeFloatingPromptEditor = nil
+    dispatchModalHostMessage(["type": "close"])
+    modalHostView.isHidden = true
+    if let returnFocusSessionId {
+      workspaceView.focusTerminal(sessionId: returnFocusSessionId, reason: "floatingPromptEditor.\(reason)")
+    }
+  }
+
+  private func writeFloatingPromptEditorStatusFile(_ statusFile: String?, status: String) {
+    guard let statusFile = statusFile?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !statusFile.isEmpty
+    else {
+      return
+    }
+    do {
+      let url = URL(fileURLWithPath: statusFile)
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      try "\(status)\n".write(to: url, atomically: true, encoding: .utf8)
+    } catch {
+      AppDelegate.appendAppModalErrorLog(
+        area: "PromptEditor:status",
+        message: "Failed to write prompt editor status \(status): \(error.localizedDescription)",
+        stack: nil
+      )
+    }
   }
 
   func postHostEvent(_ event: HostEvent) {
@@ -3431,9 +3706,9 @@ final class zmuxRootView: NSView {
     case .createWebPane(let command):
       workspaceView.createWebPane(command)
     case .openFloatingEditor(let command):
-      workspaceView.openFloatingEditor(command)
+      openFloatingEditor(command)
     case .closeTerminal(let command):
-      workspaceView.closeTerminal(sessionId: command.sessionId)
+      closeTerminal(sessionId: command.sessionId)
     case .closeWebPane(let command):
       workspaceView.closeWebPane(sessionId: command.sessionId)
     case .focusTerminal(let command):
@@ -3445,9 +3720,7 @@ final class zmuxRootView: NSView {
     case .startT3CodeRuntime(let command):
       startT3CodeRuntime(command)
     case .setT3CodeRuntimeSessionState(let command):
-      NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
-        runningSessionIds: command.runningSessionIds,
-        reason: "nativeSidebar")
+      setT3CodeRuntimeSessionState(command, reason: "nativeSidebar")
     case .stopT3CodeRuntime:
       stopT3CodeRuntime(logPrefix: "nativeSidebar")
     case .startCodeServerRuntime(let command):
@@ -3608,6 +3881,50 @@ final class zmuxRootView: NSView {
        */
       break
     }
+  }
+
+  /**
+   CDXC:T3Code 2026-05-14-09:34:
+   The native sidebar can show T3 cards whose provider process was killed when
+   the main app closed or while the app was backgrounded. Use the sidebar's
+   running-session state as the source of truth and relaunch the provider in
+   the background whenever those cards remain awake but localhost is not live.
+   */
+  private func setT3CodeRuntimeSessionState(_ command: SetT3CodeRuntimeSessionState, reason: String) {
+    NativeT3RuntimeLauncher.setRunningSessionHeartbeat(
+      runningSessionIds: command.runningSessionIds,
+      reason: reason)
+    let runtimeCwd = command.runtimeCwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !command.runningSessionIds.isEmpty, let runtimeCwd, !runtimeCwd.isEmpty else {
+      t3RuntimeVisibleSessionCwd = nil
+      t3RuntimeLivenessTimer?.invalidate()
+      t3RuntimeLivenessTimer = nil
+      return
+    }
+
+    t3RuntimeVisibleSessionCwd = runtimeCwd
+    ensureT3CodeRuntimeForRunningSessions(reason: reason)
+    if t3RuntimeLivenessTimer == nil {
+      let timer = Timer(timeInterval: 10.0, repeats: true) { [weak self] _ in
+        self?.ensureT3CodeRuntimeForRunningSessions(reason: "livenessTimer")
+      }
+      t3RuntimeLivenessTimer = timer
+      RunLoop.main.add(timer, forMode: .common)
+    }
+  }
+
+  private func ensureT3CodeRuntimeForRunningSessions(reason: String) {
+    guard let runtimeCwd = t3RuntimeVisibleSessionCwd else {
+      return
+    }
+    guard !NativeT3RuntimeLauncher.hasResponsiveManagedRuntimeListener() else {
+      return
+    }
+    NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.runningSessions.autoStart", [
+      "cwd": runtimeCwd,
+      "reason": reason,
+    ])
+    startT3CodeRuntime(StartT3CodeRuntime(cwd: runtimeCwd))
   }
 
   /**
@@ -4318,19 +4635,15 @@ final class zmuxRootView: NSView {
 
   private func currentSidebarMinWidth() -> CGFloat {
     /**
-     CDXC:SidebarMode 2026-05-03-19:46
-     Combined mode removes the workspace rail and duplicate compact controls,
-     so the native resize floor can be 70px narrower than Separated mode while
-     Separated keeps the original rail-aware minimum.
+     CDXC:SidebarLayout 2026-05-13-08:11
+     Combined is the only supported sidebar layout, so the native resize floor
+     permanently uses the rail-free width that used to belong to combined mode.
      */
-    if nativeSettingsStore.readSidebarMode() == .combined {
-      return Self.sidebarMinWidth - Self.combinedSidebarMinWidthReduction
-    }
-    return Self.sidebarMinWidth
+    return Self.sidebarMinWidth - Self.combinedSidebarMinWidthReduction
   }
 
   private func currentWorkspaceBarWidth() -> CGFloat {
-    nativeSettingsStore.readSidebarMode() == .combined ? 0 : Self.workspaceBarWidth
+    0
   }
 
   private func persistSidebarWidth() {
@@ -4370,6 +4683,10 @@ final class zmuxRootView: NSView {
       let errorMessage = message["message"] as? String ?? String(describing: message)
       let stack = message["stack"] as? String
       AppDelegate.appendAppModalErrorLog(area: area, message: errorMessage, stack: stack)
+    case "floatingPromptEditorSave":
+      saveFloatingPromptEditor(message: message)
+    case "floatingPromptEditorCancel":
+      cancelFloatingPromptEditor(message: message)
     case "ready":
       AppDelegate.appendAgentDetectionDebugLog(
         event: "nativeBridge.appModal.ready",
@@ -4659,20 +4976,60 @@ final class zmuxRootView: NSView {
       process.standardInput = FileHandle.nullDevice
       process.standardOutput = stdoutPipe
       process.standardError = stderrPipe
+      let outputLock = NSLock()
+      var stdoutData = Data()
+      var stderrData = Data()
+      let stdoutHandle = stdoutPipe.fileHandleForReading
+      let stderrHandle = stderrPipe.fileHandleForReading
+      /**
+       CDXC:AgentsHub 2026-05-14-08:43
+       Agents Hub catalog discovery can return megabytes of real profile, skill,
+       hook, and config metadata. Drain process output while the command is
+       running so large stdout/stderr payloads cannot fill the pipe and block
+       the scanner before native posts processResult back to the webview.
+       */
+      stdoutHandle.readabilityHandler = { handle in
+        let data = handle.availableData
+        if data.isEmpty {
+          return
+        }
+        outputLock.lock()
+        stdoutData.append(data)
+        outputLock.unlock()
+      }
+      stderrHandle.readabilityHandler = { handle in
+        let data = handle.availableData
+        if data.isEmpty {
+          return
+        }
+        outputLock.lock()
+        stderrData.append(data)
+        outputLock.unlock()
+      }
 
       let result: HostEvent
       do {
         try process.run()
         process.waitUntilExit()
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        stdoutHandle.readabilityHandler = nil
+        stderrHandle.readabilityHandler = nil
+        let remainingStdoutData = stdoutHandle.readDataToEndOfFile()
+        let remainingStderrData = stderrHandle.readDataToEndOfFile()
+        outputLock.lock()
+        stdoutData.append(remainingStdoutData)
+        stderrData.append(remainingStderrData)
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        outputLock.unlock()
         result = .processResult(
           requestId: command.requestId,
           exitCode: process.terminationStatus,
-          stdout: String(data: stdoutData, encoding: .utf8) ?? "",
-          stderr: String(data: stderrData, encoding: .utf8) ?? ""
+          stdout: stdout,
+          stderr: stderr
         )
       } catch {
+        stdoutHandle.readabilityHandler = nil
+        stderrHandle.readabilityHandler = nil
         result = .processResult(
           requestId: command.requestId,
           exitCode: 127,
