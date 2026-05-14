@@ -288,7 +288,7 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
   useZpetForCtrlGPromptEditing: false,
   hotkeys: DEFAULT_zmux_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
-  workspaceBackgroundColor: "#121212",
+  workspaceBackgroundColor: "#0e0e0e",
   /**
    * CDXC:TitlebarOpenIn 2026-05-11-00:22
    * The titlebar Open In menu is configurable: built-in editor targets can be

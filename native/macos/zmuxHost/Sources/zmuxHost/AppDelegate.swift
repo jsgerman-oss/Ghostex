@@ -1632,6 +1632,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       break
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
       break
+    case .toggleCommandsPanelFromTitlebar:
+      break
     case .runSidebarCommandFromTitlebar:
       break
     case .configureZedOverlay(let command):
@@ -3380,6 +3382,14 @@ final class zmuxRootView: NSView {
       """)
   }
 
+  private func toggleCommandsPanelFromTitlebar() {
+    sidebarView.evaluateJavaScript(
+      """
+      window.__zmux_NATIVE_SIDEBAR__?.toggleCommandsPanelFromTitlebar?.();
+      undefined;
+      """)
+  }
+
   private func refreshWorkspaceOpenTargetAvailabilityFromTitlebar() {
     /**
      CDXC:TitlebarOpenIn 2026-05-11-03:13
@@ -3548,6 +3558,8 @@ final class zmuxRootView: NSView {
       refreshWorkspaceOpenTargetAvailabilityFromTitlebar()
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
       rotateActivePaneLayoutClockwiseFromTitlebar()
+    case .toggleCommandsPanelFromTitlebar:
+      toggleCommandsPanelFromTitlebar()
     case .runSidebarCommandFromTitlebar(let command):
       runSidebarCommandFromTitlebar(command)
     case .configureZedOverlay(let command):
@@ -3971,7 +3983,7 @@ final class zmuxRootView: NSView {
 
   private static func isHotkeyCandidate(_ event: NSEvent) -> Bool {
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-    return !flags.isDisjoint(with: [.command, .control, .option, .shift])
+    return !flags.isDisjoint(with: [.command, .control, .option, .shift]) || event.keyCode == 111
   }
 
   private static func normalizedHotkeyKey(_ event: NSEvent) -> String? {
@@ -3984,6 +3996,8 @@ final class zmuxRootView: NSView {
       return "down"
     case 123:
       return "left"
+    case 111:
+      return "f12"
     default:
       break
     }
@@ -5207,6 +5221,9 @@ final class zmuxFocusReportingWindow: NSWindow {
      */
     if event.type == .keyDown {
       onKeyDownDispatch?(event)
+      if onKeyEquivalent?(event) == true {
+        return
+      }
     }
     super.sendEvent(event)
   }

@@ -26,17 +26,21 @@ export type NativeTerminalLayout =
 
 export type NativeTerminalTitleBarAction =
   | "close"
+  | "closeCommandsPanel"
   | "delayedSend"
+  | "expandCommandsPanel"
   | "fork"
   | "newTerminal"
   | "openBrowser"
+  | "pinCommandsPanel"
   | "popOut"
   | "reload"
   | "rename"
   | "restorePopOut"
   | "sleep"
   | "splitHorizontal"
-  | "splitVertical";
+  | "splitVertical"
+  | "unpinCommandsPanel";
 
 export type NativeGhosttyHostCommand =
   | {
@@ -162,6 +166,12 @@ export type NativeGhosttyHostCommand =
       activeProjectName?: string;
       activeProjectPath?: string;
       activeSessionIds: string[];
+      commandsPanelActiveSessionIds?: string[];
+      commandsPanelFocusedSessionId?: string;
+      commandsPanelHeightRatio?: number;
+      commandsPanelIsVisible?: boolean;
+      commandsPanelLayout?: NativeTerminalLayout;
+      commandsPanelMode?: "floating" | "pinned";
       /**
        * CDXC:NativeWindowChrome 2026-05-10-14:19
        * Native host commands carry the outer app title separately from pane
@@ -277,6 +287,10 @@ export type NativeGhosttyHostEvent =
   | {
       sessionId: string;
       type: "terminalBell";
+    }
+  | {
+      heightRatio: number;
+      type: "commandsPanelHeightRatioChanged";
     }
   | {
       sessionId: string;

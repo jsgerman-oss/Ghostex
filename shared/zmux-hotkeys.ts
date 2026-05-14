@@ -4,6 +4,7 @@ export type zmuxHotkeyActionId =
   | "createSession"
   | "openSettings"
   | "moveSidebar"
+  | "openCommandsPanel"
   | "renameActiveSession"
   | "focusPreviousGroup"
   | "focusNextGroup"
@@ -27,6 +28,7 @@ export type zmuxHotkeyAction =
   | { id: zmuxHotkeyActionId; kind: "focusGroup"; groupIndex: number }
   | { id: zmuxHotkeyActionId; kind: "focusSessionSlot"; slotNumber: number }
   | { id: zmuxHotkeyActionId; kind: "moveSidebar" }
+  | { id: zmuxHotkeyActionId; kind: "openCommandsPanel" }
   | { id: zmuxHotkeyActionId; kind: "openSettings" }
   | { id: zmuxHotkeyActionId; kind: "renameActiveSession" }
   | { id: zmuxHotkeyActionId; kind: "setViewMode"; viewMode: TerminalViewMode }
@@ -59,6 +61,13 @@ export const ZMUX_HOTKEY_DEFINITIONS: readonly zmuxHotkeyDefinition[] = [
     description: "Create a terminal session.",
     id: "createSession",
     title: "Create Session",
+  },
+  {
+    action: { id: "openCommandsPanel", kind: "openCommandsPanel" },
+    defaultKey: "f12",
+    description: "Open the project command terminal panel.",
+    id: "openCommandsPanel",
+    title: "Open Commands Panel",
   },
   {
     action: { id: "openSettings", kind: "openSettings" },

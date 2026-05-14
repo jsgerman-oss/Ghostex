@@ -58,6 +58,7 @@ enum HostCommand: Decodable {
   case openActiveProjectEditorFromTitlebar
   case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
   case rotateActivePaneLayoutClockwiseFromTitlebar
+  case toggleCommandsPanelFromTitlebar
   case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
   case configureZedOverlay(ConfigureZedOverlay)
   case openZedWorkspace(OpenZedWorkspace)
@@ -125,6 +126,7 @@ enum HostCommand: Decodable {
     case openActiveProjectEditorFromTitlebar
     case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
     case rotateActivePaneLayoutClockwiseFromTitlebar
+    case toggleCommandsPanelFromTitlebar
     case runSidebarCommandFromTitlebar
     case configureZedOverlay
     case openZedWorkspace
@@ -249,6 +251,8 @@ enum HostCommand: Decodable {
       self = .refreshWorkspaceOpenTargetAvailabilityFromTitlebar
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
       self = .rotateActivePaneLayoutClockwiseFromTitlebar
+    case .toggleCommandsPanelFromTitlebar:
+      self = .toggleCommandsPanelFromTitlebar
     case .runSidebarCommandFromTitlebar:
       self = .runSidebarCommandFromTitlebar(try RunSidebarCommandFromTitlebar(from: decoder))
     case .configureZedOverlay:
@@ -366,6 +370,12 @@ struct SetActiveTerminalSet: Decodable {
   let appTitle: String?
   let attentionSessionIds: [String]?
   let backgroundColor: String?
+  let commandsPanelActiveSessionIds: [String]?
+  let commandsPanelFocusedSessionId: String?
+  let commandsPanelHeightRatio: Double?
+  let commandsPanelIsVisible: Bool?
+  let commandsPanelLayout: NativeTerminalLayout?
+  let commandsPanelMode: String?
   let focusRequestId: Int?
   let focusedSessionId: String?
   let sleepingSessionIds: [String]?
@@ -734,6 +744,7 @@ enum HostEvent: Encodable {
   case terminalExited(sessionId: String, exitCode: Int?)
   case terminalFocused(sessionId: String)
   case terminalBell(sessionId: String)
+  case commandsPanelHeightRatioChanged(heightRatio: Double)
   case terminalError(sessionId: String, message: String)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
@@ -748,6 +759,7 @@ enum HostEvent: Encodable {
     case exitCode
     case cwd
     case foregroundPid
+    case heightRatio
     case message
     case protocolVersion
     case action
@@ -857,6 +869,9 @@ enum HostEvent: Encodable {
     case .terminalBell(let sessionId):
       try container.encode("terminalBell", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
+    case .commandsPanelHeightRatioChanged(let heightRatio):
+      try container.encode("commandsPanelHeightRatioChanged", forKey: .type)
+      try container.encode(heightRatio, forKey: .heightRatio)
     case .terminalError(let sessionId, let message):
       try container.encode("terminalError", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
@@ -918,10 +933,13 @@ enum HostEvent: Encodable {
 
 enum TerminalTitleBarAction: String, Codable, Hashable {
   case close
+  case closeCommandsPanel
   case delayedSend
+  case expandCommandsPanel
   case fork
   case newTerminal
   case openBrowser
+  case pinCommandsPanel
   case popOut
   case reload
   case rename
@@ -929,6 +947,7 @@ enum TerminalTitleBarAction: String, Codable, Hashable {
   case sleep
   case splitHorizontal
   case splitVertical
+  case unpinCommandsPanel
 }
 
 enum PaneDropPlacement: String, Codable {

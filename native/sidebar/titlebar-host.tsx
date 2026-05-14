@@ -99,6 +99,7 @@ type NativeTitlebarCommand =
   | { type: "openActiveProjectEditorFromTitlebar" }
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
   | { type: "rotateActivePaneLayoutClockwiseFromTitlebar" }
+  | { type: "toggleCommandsPanelFromTitlebar" }
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
   | {
       targetApp: ZedOverlayTargetApp;
@@ -429,6 +430,10 @@ function App() {
     postNative({ type: "rotateActivePaneLayoutClockwiseFromTitlebar" });
   };
 
+  const toggleCommandsPanel = () => {
+    postNative({ type: "toggleCommandsPanelFromTitlebar" });
+  };
+
   return (
     <TooltipProvider delayDuration={300}>
       <div className="dark" ref={rootRef} style={styles.shell}>
@@ -643,6 +648,21 @@ function App() {
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Open embedded editor</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label="Toggle Commands panel"
+                  className="titlebar-session-button titlebar-command-panel-button"
+                  data-titlebar-hit-region
+                  onClick={toggleCommandsPanel}
+                  type="button"
+                  variant="ghost"
+                >
+                  <IconTerminal2 aria-hidden="true" size={16} stroke={1.8} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Toggle Commands panel</TooltipContent>
             </Tooltip>
           </div>
         </div>
@@ -1025,6 +1045,10 @@ styleElement.textContent = `
     padding: 0;
   }
   .titlebar-rotate-button {
+    width: 28px;
+    padding: 0;
+  }
+  .titlebar-command-panel-button {
     width: 28px;
     padding: 0;
   }

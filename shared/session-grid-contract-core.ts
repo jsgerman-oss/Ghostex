@@ -90,6 +90,8 @@ export type SidebarThemeSetting =
 export type SidebarThemeVariant = "light" | "dark";
 
 export type SessionKind = "browser" | "terminal" | "t3";
+export type TerminalSurface = "workspace" | "commands";
+export type CommandsPanelMode = "floating" | "pinned";
 export type TerminalEngine = "ghostty-native";
 export type TerminalSessionPersistenceProvider = "tmux" | "zmx" | "zellij";
 
@@ -147,6 +149,7 @@ export type TerminalSessionRecord = BaseSessionRecord & {
   kind: "terminal";
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
+  surface?: TerminalSurface;
   terminalEngine: TerminalEngine;
   /** @deprecated use sessionPersistenceName for tmux, zmx, and zellij providers. */
   tmuxSessionName?: string;
@@ -184,6 +187,7 @@ export type CreateSessionRecordOptions =
       sessionId?: string;
       sessionPersistenceName?: string;
       sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
+      surface?: TerminalSurface;
       terminalEngine?: TerminalEngine;
       /** @deprecated use sessionPersistenceName for tmux, zmx, and zellij providers. */
       tmuxSessionName?: string;
@@ -208,6 +212,15 @@ export type SessionGridSnapshot = {
   visibleCount: VisibleSessionCount;
   visibleSessionIds: string[];
   viewMode: TerminalViewMode;
+};
+
+export type CommandsPanelState = {
+  activeSessionId?: string;
+  heightRatio: number;
+  isVisible: boolean;
+  mode: CommandsPanelMode;
+  paneLayout?: SessionPaneLayoutNode;
+  sessions: TerminalSessionRecord[];
 };
 
 export type SessionGroupRecord = {

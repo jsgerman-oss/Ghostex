@@ -16,6 +16,7 @@ import {
   type SidebarThemeSetting,
   type SidebarThemeVariant,
   type TerminalEngine,
+  type TerminalSurface,
   type TerminalSessionPersistenceProvider,
   type TerminalSessionRecord,
   type T3SessionRecord,
@@ -184,6 +185,17 @@ export function createDefaultSessionGridSnapshot(): SessionGridSnapshot {
     visibleCount: 1,
     visibleSessionIds: [],
     viewMode: "grid",
+  };
+}
+
+export function createDefaultCommandsPanelState() {
+  return {
+    activeSessionId: undefined,
+    heightRatio: 0.32,
+    isVisible: false,
+    mode: "pinned" as const,
+    paneLayout: undefined,
+    sessions: [],
   };
 }
 
@@ -403,6 +415,7 @@ export function createSessionRecord(
     sessionPersistenceProvider: normalizeTerminalSessionPersistenceProvider(
       options?.sessionPersistenceProvider,
     ),
+    surface: normalizeTerminalSurface(options?.surface),
     title,
     titleSource,
   };
@@ -455,6 +468,10 @@ export function normalizeTerminalSessionPersistenceProvider(
 
 export function normalizeTerminalEngine(value: string | undefined): TerminalEngine {
   return DEFAULT_TERMINAL_ENGINE;
+}
+
+export function normalizeTerminalSurface(value: TerminalSurface | undefined): TerminalSurface {
+  return value === "commands" ? "commands" : "workspace";
 }
 
 export function isPersistentTerminalEngine(value: TerminalEngine): boolean {

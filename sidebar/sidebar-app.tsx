@@ -2118,10 +2118,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   const createFullWidthTerminalPane = () => {
     /**
-     * CDXC:PaneTabs 2026-05-11-11:51
-     * Header-level terminal shortcuts create focused tabs in the active
-     * session's tab group. Keep this legacy message path for the Settings-row
-     * hover action, but do not describe or request full-width pane placement.
+     * CDXC:CommandsPanel 2026-05-13-17:02
+     * The Settings-row terminal shortcut keeps the legacy message name, but the
+     * native host now uses it as a Commands panel toggle.
      */
     setIsOverflowMenuOpen(false);
     setIsPinnedPromptsOpen(false);
@@ -2696,10 +2695,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         ) : null}
       </div>
       {isCombinedSidebarMode ? (
-        <SidebarReferenceSettingsButton
-          onCreateFullWidthTerminalPane={createFullWidthTerminalPane}
-          onOpenSettings={openSidebarSettings}
-        />
+        <SidebarReferenceSettingsButton onOpenSettings={openSidebarSettings} />
       ) : null}
       </div>
     </TooltipProvider>
@@ -3040,30 +3036,14 @@ function SidebarReferenceSectionHeader({
 }
 
 function SidebarReferenceSettingsButton({
-  onCreateFullWidthTerminalPane,
   onOpenSettings,
 }: {
-  onCreateFullWidthTerminalPane: () => void;
   onOpenSettings: () => void;
 }) {
   return (
     <div className="reference-sidebar-settings-row">
       <div className="reference-sidebar-nav-item">
         <SidebarReferenceNavButton icon={IconSettings} label="Settings" onClick={onOpenSettings} />
-        <AppTooltip align="end" collisionPadding={4} content="Create terminal tab">
-          <button
-            aria-label="Create terminal tab"
-            className="reference-sidebar-hover-action reference-sidebar-settings-terminal-action"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onCreateFullWidthTerminalPane();
-            }}
-            type="button"
-          >
-            <IconTerminal2 aria-hidden="true" size={15} stroke={1.9} />
-          </button>
-        </AppTooltip>
       </div>
     </div>
   );

@@ -11,6 +11,7 @@ import {
   normalizeTerminalSessionAgentName,
   normalizeTerminalSessionPersistenceProvider,
   normalizeTerminalEngine,
+  normalizeTerminalSurface,
   type SessionGridDirection,
   type SessionGridSnapshot,
   type SessionRecord,
@@ -306,6 +307,7 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
     sessionPersistenceProvider: normalizeTerminalSessionPersistenceProvider(
       session.kind === "terminal" ? session.sessionPersistenceProvider : undefined,
     ),
+    surface: normalizeTerminalSurface(session.kind === "terminal" ? session.surface : undefined),
     title,
     titleSource,
   };
