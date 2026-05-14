@@ -8,14 +8,14 @@ panel work, native pane/runtime stability, pet overlay routing, terminal
 scrollbar restoration, and arm64 public release metadata. -->
 
 <!-- CDXC:Branding 2026-05-12-07:35: Public release notes must describe the
-Ghostex rename without rewriting historical zmux entries. Homebrew should
-accept both the new `ghostex` cask token and the existing `zmux` token, while
-the public CLI command changes to `ghostex` with `gtx` as the short alias. -->
+Ghostex rename without rewriting historical zmux entries. Homebrew should use
+the `ghostex` cask token as the public install command, while the public CLI
+command changes to `ghostex` with `gtx` as the short alias. -->
 
 - Added dual-architecture release pipeline support for separate Apple Silicon and Intel DMGs, separate Sparkle feeds, and an architecture-aware Homebrew cask.
 - Renamed the public app surface from Zmux to Ghostex while keeping internal repository, code, storage, bundle id, and historical asset names under `zmux`.
 - Changed the public CLI command to `ghostex`, with `gtx` as the short alias, and intentionally stopped documenting `zmux` as a CLI compatibility command.
-- Updated README install and CLI examples so both `brew install --cask maddada/tap/ghostex` and `brew install --cask maddada/tap/zmux` are presented as supported install commands.
+- Updated README install and CLI examples so `brew install --cask maddada/tap/ghostex` is the public install command.
 - Updated the reference sidebar workflows with a combined-only layout, improved command panel behavior, searchable settings sections, refined hotkey navigation, and cleaner Previous Sessions rows.
 - Improved Agents Hub so it loads the real local catalog, supports in-place saving, and avoids bundling private placeholder profile data.
 - Added floating Monaco prompt editing with resize/move behavior, save/cancel status handling, and safer terminal-close persistence.

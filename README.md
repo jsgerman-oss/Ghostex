@@ -14,8 +14,6 @@ Ghostex. The public CLI commands are `ghostex` and the short alias `gtx`.
 
 ```bash
 brew install --cask maddada/tap/ghostex
-# The existing cask name remains accepted too:
-brew install --cask maddada/tap/zmux
 ```
 <br />
 
