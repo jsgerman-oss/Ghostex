@@ -44,12 +44,16 @@ import {
 import {
   clampVisibleSessionCount,
   createAgentSessionDefaultTitle,
+  createDefaultCommandsPanelState,
   createDefaultGroupedSessionWorkspaceSnapshot,
+  createSessionRecord,
+  createTimestampedSessionId,
   createSidebarHudState,
   DEFAULT_TERMINAL_SESSION_TITLE,
   createSidebarSessionItems,
   getCodexSessionIdFromTitle,
   getSessionCardPrimaryTitle,
+  getSlotPosition,
   isGhostPlaceholderSessionTitle,
   normalizeTerminalTitle,
   getVisiblePrimaryTitle,
@@ -82,9 +86,12 @@ import {
   type SessionGroupRecord,
   type SessionPaneLayoutNode,
   type BrowserSessionRecord,
+  type CommandsPanelMode,
+  type CommandsPanelState,
 } from "../../shared/session-grid-contract";
 import { createDisplaySessionLayout } from "../../shared/active-sessions-sort";
 import { focusDirectionInSnapshot } from "../../shared/session-grid-state-create-focus";
+import { normalizeSessionRecord } from "../../shared/session-grid-state-helpers";
 import {
   createDefaultSidebarGitState,
   type SidebarGitAction,
@@ -230,17 +237,21 @@ type NativePetOverlayActivity = {
 };
 type NativeTerminalTitleBarAction =
   | "close"
+  | "closeCommandsPanel"
   | "delayedSend"
+  | "expandCommandsPanel"
   | "fork"
   | "newTerminal"
   | "openBrowser"
+  | "pinCommandsPanel"
   | "popOut"
   | "reload"
   | "rename"
   | "restorePopOut"
   | "sleep"
   | "splitHorizontal"
-  | "splitVertical";
+  | "splitVertical"
+  | "unpinCommandsPanel";
 type ProjectEditorLoadStatus = "idle" | "opening" | "running" | "error";
 
 type NativeHostCommand =
@@ -301,6 +312,12 @@ type NativeHostCommand =
   | { sessionId: string; type: "sendTerminalEnter" }
   | {
 	      activeSessionIds: string[];
+      commandsPanelActiveSessionIds?: string[];
+      commandsPanelFocusedSessionId?: string;
+      commandsPanelHeightRatio?: number;
+      commandsPanelIsVisible?: boolean;
+      commandsPanelLayout?: NativeTerminalLayout;
+      commandsPanelMode?: "floating" | "pinned";
 	      activeProjectDiffStats?: SidebarProjectDiffStats;
 	      activeProjectEditorIsOpen?: boolean;
 	      activeProjectEditorIsSleeping?: boolean;
@@ -572,6 +589,7 @@ type NativeHostEvent =
   | { exitCode?: number; sessionId: string; type: "terminalExited" }
   | { sessionId: string; type: "terminalFocused" }
   | { sessionId: string; type: "terminalBell" }
+  | { heightRatio: number; type: "commandsPanelHeightRatioChanged" }
   | { message: string; sessionId: string; type: "terminalError" }
   | {
       message?: string;
@@ -649,6 +667,7 @@ declare global {
 	      openActiveProjectEditorFromTitlebar: () => void;
 	      refreshWorkspaceOpenTargetAvailabilityFromTitlebar: () => void;
 	      rotateActivePaneLayoutClockwiseFromTitlebar: () => void;
+	      toggleCommandsPanelFromTitlebar: () => void;
 	      runSidebarCommandFromTitlebar: (commandId: string) => void;
 	    };
     __zmux_NATIVE_CLI__?: {
@@ -836,6 +855,7 @@ const pendingGitCommitRequests = new Map<
 >();
 
 type NativeProject = {
+  commandsPanel: CommandsPanelState;
   icon?: WorkspaceDockIcon;
   iconDataUrl?: string;
   isChat?: boolean;
@@ -2906,6 +2926,7 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
     {
       icon: normalizeWorkspaceDockIcon(project.icon) ?? normalizeLegacyWorkspaceDockIcon(project),
       iconDataUrl: normalizeWorkspaceDockIconDataUrl(project.iconDataUrl),
+      commandsPanel: normalizeStoredCommandsPanelState(project.commandsPanel),
       isChat: project.isChat === true,
       isRecentProject: project.isRecentProject === true,
       name: project.name?.trim() || projectNameFromPath(path),
@@ -2923,8 +2944,62 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
   ];
 }
 
+function normalizeStoredCommandsPanelState(candidate: unknown): CommandsPanelState {
+  const defaults = createDefaultCommandsPanelState();
+  if (!candidate || typeof candidate !== "object") {
+    return defaults;
+  }
+  const source = candidate as Partial<CommandsPanelState>;
+  const sessions = Array.isArray(source.sessions)
+    ? source.sessions
+        .map((session, index) =>
+          normalizeSessionRecord({
+            ...session,
+            kind: "terminal",
+            surface: "commands",
+            slotIndex: index,
+          } as TerminalSessionRecord),
+        )
+        .filter((session): session is TerminalSessionRecord => session.kind === "terminal")
+        .map((session, index) => {
+          const position = getSlotPosition(index);
+          return {
+            ...session,
+            column: position.column,
+            row: position.row,
+            slotIndex: index,
+            surface: "commands" as const,
+          };
+        })
+    : [];
+  const sessionIds = new Set(sessions.map((session) => session.sessionId));
+  const activeSessionId =
+    source.activeSessionId && sessionIds.has(source.activeSessionId)
+      ? source.activeSessionId
+      : sessions[0]?.sessionId;
+  const paneLayout = normalizeCommandPaneLayout(source.paneLayout, sessionIds, activeSessionId);
+  return {
+    activeSessionId,
+    heightRatio: normalizeCommandsPanelHeightRatio(source.heightRatio),
+    isVisible: source.isVisible === true,
+    mode: normalizeCommandsPanelMode(source.mode),
+    ...(paneLayout ? { paneLayout } : {}),
+    sessions,
+  };
+}
+
+function normalizeCommandsPanelMode(mode: unknown): CommandsPanelMode {
+  return mode === "floating" ? "floating" : "pinned";
+}
+
+function normalizeCommandsPanelHeightRatio(heightRatio: unknown): number {
+  const numericHeightRatio = typeof heightRatio === "number" ? heightRatio : 0.32;
+  return Math.max(0.18, Math.min(0.55, Number.isFinite(numericHeightRatio) ? numericHeightRatio : 0.32));
+}
+
 function createInitialProject(): NativeProject {
   return {
+    commandsPanel: createDefaultCommandsPanelState(),
     isChat: false,
     name: initialWorkspaceName,
     path: initialWorkspacePath,
@@ -2965,6 +3040,12 @@ function summarizeNativeProject(project: NativeProject) {
       title: group.title,
       visibleSessionIds: group.snapshot.visibleSessionIds,
     })),
+    commandsPanel: {
+      activeSessionId: project.commandsPanel.activeSessionId,
+      isVisible: project.commandsPanel.isVisible,
+      mode: project.commandsPanel.mode,
+      sessionCount: project.commandsPanel.sessions.length,
+    },
     isChat: project.isChat === true,
     isRecentProject: project.isRecentProject === true,
     name: project.name,
@@ -3780,6 +3861,7 @@ function activatePreviousSessionProject(previousSession: SidebarPreviousSessionI
   projects = [
     ...projects,
     {
+      commandsPanel: createDefaultCommandsPanelState(),
       isChat: false,
       name: previousSession.projectName?.trim() || projectNameFromPath(projectPath),
       path: projectPath,
@@ -4069,6 +4151,27 @@ function updateProjectWorkspace(
   writeStoredProjects("updateProjectWorkspace");
 }
 
+function updateProjectCommandsPanel(
+  projectId: string,
+  updater: (commandsPanel: CommandsPanelState) => CommandsPanelState,
+): void {
+  projects = projects.map((project) =>
+    project.projectId === projectId
+      ? {
+          ...project,
+          commandsPanel: normalizeStoredCommandsPanelState(updater(project.commandsPanel)),
+        }
+      : project,
+  );
+  writeStoredProjects("updateProjectCommandsPanel");
+}
+
+function updateActiveProjectCommandsPanel(
+  updater: (commandsPanel: CommandsPanelState) => CommandsPanelState,
+): void {
+  updateProjectCommandsPanel(activeProject().projectId, updater);
+}
+
 function updateActiveProjectWorkspace(
   updater: (workspace: GroupedSessionWorkspaceSnapshot) => GroupedSessionWorkspaceSnapshot,
 ): void {
@@ -4078,6 +4181,12 @@ function updateActiveProjectWorkspace(
 
 function findSessionRecord(sessionId: string): SessionRecord | undefined {
   const reference = resolveSidebarSessionReference(sessionId);
+  const commandSession = reference.project.commandsPanel.sessions.find(
+    (candidate) => candidate.sessionId === reference.sessionId,
+  );
+  if (commandSession) {
+    return commandSession;
+  }
   for (const group of reference.project.workspace.groups) {
     const session = group.snapshot.sessions.find(
       (candidate) => candidate.sessionId === reference.sessionId,
@@ -4093,6 +4202,12 @@ function findSessionRecordInProject(
   project: NativeProject,
   sessionId: string,
 ): SessionRecord | undefined {
+  const commandSession = project.commandsPanel.sessions.find(
+    (session) => session.sessionId === sessionId,
+  );
+  if (commandSession) {
+    return commandSession;
+  }
   for (const group of project.workspace.groups) {
     const session = group.snapshot.sessions.find((candidate) => candidate.sessionId === sessionId);
     if (session) {
@@ -4138,6 +4253,16 @@ function resolveSidebarGroupReference(groupId: string): {
 }
 
 function setTerminalSessionAgentName(sessionId: string, agentName: string | undefined): void {
+  if (activeCommandPanelContainsSession(sessionId)) {
+    const nextAgentName = agentName?.replace(/\s+/g, " ").trim() || undefined;
+    updateActiveProjectCommandsPanel((panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === sessionId ? { ...session, agentName: nextAgentName } : session,
+      ),
+    }));
+    return;
+  }
   updateActiveProjectWorkspace(
     (workspace) =>
       setTerminalSessionAgentNameInSimpleWorkspace(workspace, sessionId, agentName).snapshot,
@@ -4148,6 +4273,21 @@ function setTerminalSessionAgentSessionMetadata(
   sessionId: string,
   metadata: { agentSessionId?: string; agentSessionPath?: string },
 ): void {
+  if (activeCommandPanelContainsSession(sessionId)) {
+    updateActiveProjectCommandsPanel((panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === sessionId
+          ? {
+              ...session,
+              agentSessionId: metadata.agentSessionId?.trim() || undefined,
+              agentSessionPath: metadata.agentSessionPath?.trim() || undefined,
+            }
+          : session,
+      ),
+    }));
+    return;
+  }
   updateActiveProjectWorkspace(
     (workspace) =>
       setTerminalSessionAgentSessionMetadataInSimpleWorkspace(workspace, sessionId, metadata)
@@ -4159,6 +4299,17 @@ function setTerminalSessionPersistenceName(
   sessionId: string,
   sessionPersistenceName: string | undefined,
 ): void {
+  if (activeCommandPanelContainsSession(sessionId)) {
+    updateActiveProjectCommandsPanel((panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === sessionId
+          ? { ...session, sessionPersistenceName: sessionPersistenceName?.trim() || undefined }
+          : session,
+      ),
+    }));
+    return;
+  }
   updateActiveProjectWorkspace(
     (workspace) =>
       setTerminalSessionPersistenceNameInSimpleWorkspace(
@@ -4174,6 +4325,15 @@ function setTerminalSessionPersistenceProvider(
   sessionId: string,
   sessionPersistenceProvider: TerminalSessionPersistenceProvider | undefined,
 ): void {
+  if (activeCommandPanelContainsSession(sessionId)) {
+    updateActiveProjectCommandsPanel((panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === sessionId ? { ...session, sessionPersistenceProvider } : session,
+      ),
+    }));
+    return;
+  }
   updateActiveProjectWorkspace(
     (workspace) =>
       setTerminalSessionPersistenceProviderInSimpleWorkspace(
@@ -4250,6 +4410,367 @@ function activeWorkspaceGroup(): SessionGroupRecord {
 
 function activeSnapshot(): SessionGridSnapshot {
   return activeWorkspaceGroup().snapshot;
+}
+
+function commandPanelContainsSession(project: NativeProject, sessionId: string): boolean {
+  return project.commandsPanel.sessions.some((session) => session.sessionId === sessionId);
+}
+
+function activeCommandPanelContainsSession(sessionId: string): boolean {
+  return commandPanelContainsSession(activeProject(), sessionId);
+}
+
+function createCommandTerminal(
+  title = DEFAULT_TERMINAL_SESSION_TITLE,
+  initialInput = "",
+  options: { focusAfterCreate?: boolean; commandId?: string } = {},
+): TerminalSessionRecord | undefined {
+  const project = activeProject();
+  activateWorkspaceSurfaceForProject(project.projectId);
+  const sessionId = createTimestampedSessionId([
+    ...project.commandsPanel.sessions.map((session) => session.sessionId),
+    ...project.workspace.groups.flatMap((group) =>
+      group.snapshot.sessions.map((session) => session.sessionId),
+    ),
+  ]);
+  const session = normalizeSessionRecord(
+    createSessionRecord(project.commandsPanel.sessions.length + 1, project.commandsPanel.sessions.length, {
+      displayId: sessionId,
+      kind: "terminal",
+      sessionId,
+      surface: "commands",
+      terminalEngine: "ghostty-native",
+      title,
+    }),
+  ) as TerminalSessionRecord;
+  const nativeSessionId = rememberNativeSessionMapping(project.projectId, session.sessionId);
+  const sessionStateFilePath = createNativeSessionStateFilePath(project.projectId, session.sessionId);
+  const sessionPersistenceProvider = activeSessionPersistenceProviderFromSettings();
+  const sessionPersistenceName = sessionPersistenceProvider ? undefined : undefined;
+  const commandSession = {
+    ...session,
+    sessionPersistenceName,
+    sessionPersistenceProvider,
+    surface: "commands" as const,
+  };
+  updateActiveProjectCommandsPanel((panel) => addSessionToCommandsPanel(panel, commandSession));
+  terminalStateById.set(commandSession.sessionId, {
+    activity: initialInput.trim() ? "working" : "idle",
+    lifecycleState: "running",
+    sessionPersistenceName,
+    sessionPersistenceProvider,
+    sessionStateFilePath,
+    terminalTitle: title,
+  });
+  postNative({
+    activateOnCreate: false,
+    cwd: project.path,
+    env: createNativeAgentSessionEnvironment({
+      project,
+      sessionId: commandSession.sessionId,
+      sessionStateFilePath,
+    }),
+    initialInput,
+    sessionId: nativeSessionId,
+    sessionPersistenceName,
+    sessionPersistenceProvider,
+    title,
+    type: "createTerminal",
+  });
+  publish();
+  if (options.focusAfterCreate !== false) {
+    postNative({ sessionId: nativeSessionId, type: "focusTerminal" });
+  }
+  return commandSession;
+}
+
+function addSessionToCommandsPanel(
+  panel: CommandsPanelState,
+  session: TerminalSessionRecord,
+): CommandsPanelState {
+  const sessions = [...panel.sessions, session].map((candidate, index) => {
+    const position = getSlotPosition(index);
+    return {
+      ...candidate,
+      column: position.column,
+      row: position.row,
+      slotIndex: index,
+      surface: "commands" as const,
+    };
+  });
+  const paneLayout = appendCommandSessionToPaneLayout(panel.paneLayout, session.sessionId);
+  return normalizeStoredCommandsPanelState({
+    ...panel,
+    activeSessionId: session.sessionId,
+    isVisible: true,
+    mode: panel.mode ?? "pinned",
+    paneLayout,
+    sessions,
+  });
+}
+
+function appendCommandSessionToPaneLayout(
+  layout: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): SessionPaneLayoutNode {
+  if (!layout) {
+    return { kind: "leaf", sessionId };
+  }
+  if (layout.kind === "leaf") {
+    return {
+      activeSessionId: sessionId,
+      kind: "tabs",
+      sessionIds: layout.sessionId === sessionId ? [sessionId] : [layout.sessionId, sessionId],
+    };
+  }
+  if (layout.kind === "tabs") {
+    return {
+      ...layout,
+      activeSessionId: sessionId,
+      sessionIds: [...layout.sessionIds.filter((id) => id !== sessionId), sessionId],
+    };
+  }
+  return {
+    ...layout,
+    children: [...layout.children, { kind: "leaf", sessionId }],
+  };
+}
+
+function normalizeCommandPaneLayout(
+  layout: SessionPaneLayoutNode | undefined,
+  allowedSessionIds: ReadonlySet<string>,
+  activeSessionId?: string,
+): SessionPaneLayoutNode | undefined {
+  if (!layout) {
+    const firstSessionId = allowedSessionIds.values().next().value as string | undefined;
+    return firstSessionId ? { kind: "leaf", sessionId: firstSessionId } : undefined;
+  }
+  if (layout.kind === "leaf") {
+    return allowedSessionIds.has(layout.sessionId) ? layout : undefined;
+  }
+  if (layout.kind === "tabs") {
+    const sessionIds = layout.sessionIds.filter((sessionId, index, ids) =>
+      allowedSessionIds.has(sessionId) && ids.indexOf(sessionId) === index,
+    );
+    if (sessionIds.length === 0) {
+      return undefined;
+    }
+    if (sessionIds.length === 1) {
+      return { kind: "leaf", sessionId: sessionIds[0]! };
+    }
+    return {
+      activeSessionId:
+        layout.activeSessionId && sessionIds.includes(layout.activeSessionId)
+          ? layout.activeSessionId
+          : activeSessionId && sessionIds.includes(activeSessionId)
+            ? activeSessionId
+            : sessionIds[0],
+      kind: "tabs",
+      sessionIds,
+    };
+  }
+  const children = layout.children
+    .map((child) => normalizeCommandPaneLayout(child, allowedSessionIds, activeSessionId))
+    .filter((child): child is SessionPaneLayoutNode => child !== undefined);
+  if (children.length === 0) {
+    return undefined;
+  }
+  if (children.length === 1) {
+    return children[0];
+  }
+  return { ...layout, children };
+}
+
+function removeCommandSessionFromPaneLayout(
+  layout: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): SessionPaneLayoutNode | undefined {
+  if (!layout) {
+    return undefined;
+  }
+  if (layout.kind === "leaf") {
+    return layout.sessionId === sessionId ? undefined : layout;
+  }
+  if (layout.kind === "tabs") {
+    const sessionIds = layout.sessionIds.filter((id) => id !== sessionId);
+    if (sessionIds.length === 0) {
+      return undefined;
+    }
+    if (sessionIds.length === 1) {
+      return { kind: "leaf", sessionId: sessionIds[0]! };
+    }
+    return {
+      ...layout,
+      activeSessionId:
+        layout.activeSessionId && sessionIds.includes(layout.activeSessionId)
+          ? layout.activeSessionId
+          : sessionIds[0],
+      sessionIds,
+    };
+  }
+  const children = layout.children
+    .map((child) => removeCommandSessionFromPaneLayout(child, sessionId))
+    .filter((child): child is SessionPaneLayoutNode => child !== undefined);
+  if (children.length === 0) {
+    return undefined;
+  }
+  if (children.length === 1) {
+    return children[0];
+  }
+  return { ...layout, children };
+}
+
+function setActiveCommandSessionInPaneLayout(
+  layout: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): SessionPaneLayoutNode | undefined {
+  if (!layout) {
+    return undefined;
+  }
+  if (layout.kind === "tabs") {
+    return layout.sessionIds.includes(sessionId) ? { ...layout, activeSessionId: sessionId } : layout;
+  }
+  if (layout.kind === "split") {
+    return {
+      ...layout,
+      children: layout.children.map((child) => setActiveCommandSessionInPaneLayout(child, sessionId) ?? child),
+    };
+  }
+  return layout;
+}
+
+function commandPaneLayoutContainsSession(
+  node: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): boolean {
+  if (!node) {
+    return false;
+  }
+  if (node.kind === "leaf") {
+    return node.sessionId === sessionId;
+  }
+  if (node.kind === "tabs") {
+    return node.sessionIds.includes(sessionId);
+  }
+  return node.children.some((child) => commandPaneLayoutContainsSession(child, sessionId));
+}
+
+function addCommandSessionToPaneTabGroup(
+  layout: SessionPaneLayoutNode,
+  targetSessionId: string,
+  sourceSessionId: string,
+): SessionPaneLayoutNode | undefined {
+  if (layout.kind === "leaf") {
+    return layout.sessionId === targetSessionId
+      ? {
+          activeSessionId: sourceSessionId,
+          kind: "tabs",
+          sessionIds: [targetSessionId, sourceSessionId],
+        }
+      : undefined;
+  }
+  if (layout.kind === "tabs") {
+    if (!layout.sessionIds.includes(targetSessionId)) {
+      return undefined;
+    }
+    return {
+      ...layout,
+      activeSessionId: sourceSessionId,
+      sessionIds: [...layout.sessionIds.filter((sessionId) => sessionId !== sourceSessionId), sourceSessionId],
+    };
+  }
+  let didAdd = false;
+  const children = layout.children.map((child) => {
+    if (didAdd) {
+      return child;
+    }
+    const nextChild = addCommandSessionToPaneTabGroup(child, targetSessionId, sourceSessionId);
+    if (!nextChild) {
+      return child;
+    }
+    didAdd = true;
+    return nextChild;
+  });
+  return didAdd ? { ...layout, children } : undefined;
+}
+
+function insertCommandSessionBesidePane(
+  layout: SessionPaneLayoutNode,
+  targetSessionId: string,
+  sourceSessionId: string,
+  placeAfterTarget: boolean,
+): SessionPaneLayoutNode | undefined {
+  const sourceLeaf: SessionPaneLayoutNode = { kind: "leaf", sessionId: sourceSessionId };
+  if (layout.kind === "leaf" || layout.kind === "tabs") {
+    if (!commandPaneLayoutContainsSession(layout, targetSessionId)) {
+      return undefined;
+    }
+    return {
+      children: placeAfterTarget ? [layout, sourceLeaf] : [sourceLeaf, layout],
+      direction: "horizontal",
+      kind: "split",
+    };
+  }
+  const children: SessionPaneLayoutNode[] = [];
+  let didInsert = false;
+  for (const child of layout.children) {
+    if (!didInsert && commandPaneLayoutContainsSession(child, targetSessionId)) {
+      if (layout.direction === "horizontal") {
+        children.push(...(placeAfterTarget ? [child, sourceLeaf] : [sourceLeaf, child]));
+        didInsert = true;
+      } else {
+        const nextChild = insertCommandSessionBesidePane(
+          child,
+          targetSessionId,
+          sourceSessionId,
+          placeAfterTarget,
+        );
+        children.push(nextChild ?? child);
+        didInsert = Boolean(nextChild);
+      }
+    } else {
+      children.push(child);
+    }
+  }
+  return didInsert ? { ...layout, children } : undefined;
+}
+
+function reorderCommandSessionInPaneTabGroup(
+  layout: SessionPaneLayoutNode | undefined,
+  sourceSessionId: string,
+  targetSessionId: string,
+  position: SessionPaneTabReorderPosition,
+): SessionPaneLayoutNode | undefined {
+  if (!layout || layout.kind === "leaf") {
+    return undefined;
+  }
+  if (layout.kind === "tabs") {
+    if (!layout.sessionIds.includes(sourceSessionId) || !layout.sessionIds.includes(targetSessionId)) {
+      return undefined;
+    }
+    const sessionIds = layout.sessionIds.filter((sessionId) => sessionId !== sourceSessionId);
+    const targetIndex = sessionIds.indexOf(targetSessionId);
+    sessionIds.splice(position === "before" ? targetIndex : targetIndex + 1, 0, sourceSessionId);
+    return { ...layout, sessionIds };
+  }
+  let didReorder = false;
+  const children = layout.children.map((child) => {
+    if (didReorder) {
+      return child;
+    }
+    const nextChild = reorderCommandSessionInPaneTabGroup(
+      child,
+      sourceSessionId,
+      targetSessionId,
+      position,
+    );
+    if (!nextChild) {
+      return child;
+    }
+    didReorder = true;
+    return nextChild;
+  });
+  return didReorder ? { ...layout, children } : undefined;
 }
 
 function replaceActiveSnapshot(snapshot: SessionGridSnapshot): void {
@@ -4852,6 +5373,15 @@ function ensureVisibleNativeSessions(reason: string): boolean {
    * live sessions that no longer consume a separate split pane.
    */
   for (const project of projects) {
+    if (project.projectId === activeProjectId && project.commandsPanel.sessions.length > 0) {
+      for (const session of project.commandsPanel.sessions) {
+        if (terminalStateById.has(session.sessionId)) {
+          continue;
+        }
+        restoreNativeTerminalSession(project, session, reason);
+        didCreateNativeSession = true;
+      }
+    }
     for (const group of project.workspace.groups) {
       for (const session of group.snapshot.sessions) {
         const isAwakeInActiveWorkspaceGroup =
@@ -4912,21 +5442,32 @@ function restoreNativeTerminalSession(
     session.sessionPersistenceProvider !== sessionPersistenceProvider ||
     session.sessionPersistenceName !== sessionPersistenceName
   ) {
-    updateProjectWorkspace(
-      project.projectId,
-      (workspace) => {
-        const providerUpdate = setTerminalSessionPersistenceProviderInSimpleWorkspace(
-          workspace,
-          session.sessionId,
-          sessionPersistenceProvider,
-        ).snapshot;
-        return setTerminalSessionPersistenceNameInSimpleWorkspace(
-          providerUpdate,
-          session.sessionId,
-          sessionPersistenceName,
-        ).snapshot;
-      },
-    );
+    if (session.surface === "commands") {
+      updateProjectCommandsPanel(project.projectId, (panel) => ({
+        ...panel,
+        sessions: panel.sessions.map((candidate) =>
+          candidate.sessionId === session.sessionId
+            ? { ...candidate, sessionPersistenceName, sessionPersistenceProvider }
+            : candidate,
+        ),
+      }));
+    } else {
+      updateProjectWorkspace(
+        project.projectId,
+        (workspace) => {
+          const providerUpdate = setTerminalSessionPersistenceProviderInSimpleWorkspace(
+            workspace,
+            session.sessionId,
+            sessionPersistenceProvider,
+          ).snapshot;
+          return setTerminalSessionPersistenceNameInSimpleWorkspace(
+            providerUpdate,
+            session.sessionId,
+            sessionPersistenceName,
+          ).snapshot;
+        },
+      );
+    }
   }
   terminalStateById.set(session.sessionId, {
     activity: "idle",
@@ -6701,17 +7242,58 @@ function createNativeSessionInCurrentContext(): void {
   });
 }
 
+function openCommandsPanelForActiveProject(): void {
+  updateActiveProjectCommandsPanel((panel) => ({
+    ...panel,
+    isVisible: true,
+    mode: panel.mode ?? "pinned",
+  }));
+  const activeCommandSessionId = activeProject().commandsPanel.activeSessionId;
+  if (!activeCommandSessionId) {
+    createCommandTerminal("Command Terminal", "", { focusAfterCreate: true });
+    return;
+  }
+  queueNativeLayoutFocusRequest(activeCommandSessionId, "openCommandsPanel");
+  publish();
+  postNative({
+    sessionId: nativeSessionIdForProjectSidebarSession(activeProjectId, activeCommandSessionId),
+    type: "focusTerminal",
+  });
+}
+
+function hideCommandsPanelForActiveProject(): void {
+  updateActiveProjectCommandsPanel((panel) => ({
+    ...panel,
+    isVisible: false,
+  }));
+  publish();
+}
+
+function toggleCommandsPanelForActiveProject(): void {
+  if (activeProject().commandsPanel.isVisible) {
+    hideCommandsPanelForActiveProject();
+    return;
+  }
+  openCommandsPanelForActiveProject();
+}
+
+function setCommandsPanelModeForActiveProject(mode: CommandsPanelMode): void {
+  updateActiveProjectCommandsPanel((panel) => ({
+    ...panel,
+    isVisible: true,
+    mode,
+  }));
+  publish();
+}
+
 function createFullWidthTerminalPaneInCurrentProject(): void {
   /**
-   * CDXC:PaneTabs 2026-05-11-11:51
-   * The legacy-named Settings-row terminal shortcut now follows the same
-   * focused-tab placement as project-header terminal creation. The user expects
-   * any header-level terminal shortcut to keep split sizes and tab groupings
-   * unchanged while focusing the newly created terminal tab.
+   * CDXC:CommandsPanel 2026-05-13-17:02
+   * Legacy sidebar messages still route to the Commands panel shortcut: click
+   * once to reveal/focus the project command surface,
+   * click again to hide it without killing command terminals.
    */
-  createTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", undefined, undefined, {
-    visiblePlacement: createFocusedTabGroupPlacement(),
-  });
+  toggleCommandsPanelForActiveProject();
 }
 
 function splitFocusedNativePane(direction: "horizontal" | "vertical"): void {
@@ -7400,12 +7982,23 @@ function syncSessionTitleFromNativeTerminalTitle(
     return didCaptureCodexSessionId;
   }
 
-  updateActiveProjectWorkspace(
-    (workspace) =>
-      setSessionTitleInSimpleWorkspace(workspace, sessionId, visibleTitle, {
-        titleSource: "terminal-auto",
-      }).snapshot,
-  );
+  if (session.kind === "terminal" && session.surface === "commands") {
+    updateActiveProjectCommandsPanel((panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((candidate) =>
+        candidate.sessionId === sessionId
+          ? { ...candidate, title: visibleTitle, titleSource: "terminal-auto" }
+          : candidate,
+      ),
+    }));
+  } else {
+    updateActiveProjectWorkspace(
+      (workspace) =>
+        setSessionTitleInSimpleWorkspace(workspace, sessionId, visibleTitle, {
+          titleSource: "terminal-auto",
+        }).snapshot,
+    );
+  }
   appendSessionTitleDebugLog("nativeSidebar.sessionRenameApplied", {
     agentName: terminalState.agentName,
     previousSessionTitle: session.title,
@@ -8017,6 +8610,35 @@ function getNativePromptPreview(prompt: string | undefined): string | undefined 
 function closeTerminal(sessionId: string): void {
   const reference = resolveSidebarSessionReference(sessionId);
   const sessionRecord = findSessionRecordInProject(reference.project, reference.sessionId);
+  if (sessionRecord?.kind === "terminal" && sessionRecord.surface === "commands") {
+    const nativeSessionId = forgetNativeSessionMappingForProject(
+      reference.project.projectId,
+      reference.sessionId,
+    );
+    clearNativeSidebarCommandSessionBySessionId(reference.sessionId);
+    updateProjectCommandsPanel(reference.project.projectId, (panel) => {
+      const sessions = panel.sessions.filter((session) => session.sessionId !== reference.sessionId);
+      const paneLayout = removeCommandSessionFromPaneLayout(panel.paneLayout, reference.sessionId);
+      return {
+        ...panel,
+        activeSessionId:
+          panel.activeSessionId === reference.sessionId
+            ? sessions[0]?.sessionId
+            : panel.activeSessionId,
+        paneLayout,
+        sessions,
+      };
+    });
+    terminalStateById.delete(reference.sessionId);
+    titleDerivedActivityBySessionId.delete(reference.sessionId);
+    nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
+    nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
+    nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
+    clearDelayedSendTimer(reference.sessionId);
+    postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
+    publish();
+    return;
+  }
   appendSidebarRefreshDebugLog("nativeSidebar.closeSession.before", {
     project: summarizeSidebarRefreshProject(reference.project),
     requestedSessionId: sessionId,
@@ -8060,6 +8682,30 @@ function focusTerminal(sessionId: string): void {
   const reference = resolveSidebarSessionReference(sessionId);
   if (activeProjectId !== reference.project.projectId) {
     focusProject(reference.project.projectId);
+  }
+  if (commandPanelContainsSession(reference.project, reference.sessionId)) {
+    updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+      ...panel,
+      activeSessionId: reference.sessionId,
+      isVisible: true,
+      paneLayout: setActiveCommandSessionInPaneLayout(panel.paneLayout, reference.sessionId),
+    }));
+    queueNativeLayoutFocusRequest(reference.sessionId, "focusCommandTerminal");
+    if (!terminalStateById.has(reference.sessionId)) {
+      const session = findTerminalSessionInProject(reference.project, reference.sessionId);
+      if (session) {
+        restoreNativeTerminalSession(reference.project, session, "focus-command-session");
+      }
+    }
+    publish();
+    postNative({
+      sessionId: nativeSessionIdForProjectSidebarSession(
+        reference.project.projectId,
+        reference.sessionId,
+      ),
+      type: "focusTerminal",
+    });
+    return;
   }
   activateWorkspaceSurfaceForProject(reference.project.projectId);
   updateActiveProjectWorkspace(
@@ -8188,6 +8834,9 @@ function runNativeHotkeyAction(actionId: zmuxHotkeyActionId): void {
       return;
     case "moveSidebar":
       moveSidebarToOtherSide();
+      return;
+    case "openCommandsPanel":
+      openCommandsPanelForActiveProject();
       return;
     case "openSettings":
       openAppModal({ modal: "settings", type: "open" });
@@ -8558,6 +9207,12 @@ function findTerminalSessionInProject(
   project: NativeProject,
   sessionId: string,
 ): TerminalSessionRecord | undefined {
+  const commandSession = project.commandsPanel.sessions.find(
+    (candidate) => candidate.sessionId === sessionId,
+  );
+  if (commandSession) {
+    return commandSession;
+  }
   for (const group of project.workspace.groups) {
     const session = group.snapshot.sessions.find(
       (candidate) => candidate.sessionId === sessionId,
@@ -9499,9 +10154,9 @@ function runNativeSidebarCommand(
   }
 
   if (command.closeTerminalOnExit) {
-    const session = createTerminal(sessionTitle, "", undefined, undefined, {
+    const session = createCommandTerminal(sessionTitle, "", {
       focusAfterCreate: false,
-      initialPresentation: "background",
+      commandId: command.commandId,
     });
     if (!session) {
       return undefined;
@@ -9525,9 +10180,9 @@ function runNativeSidebarCommand(
 
   const session =
     reusableSession ??
-    createTerminal(sessionTitle, "", undefined, undefined, {
+    createCommandTerminal(sessionTitle, "", {
       focusAfterCreate: false,
-      initialPresentation: "background",
+      commandId: command.commandId,
     });
   if (!session) {
     return undefined;
@@ -10228,6 +10883,7 @@ function closeAllNativeSessions(): void {
   sidebarCommandCommandIdBySessionId.clear();
   projects = projects.map((project) => ({
     ...project,
+    commandsPanel: createDefaultCommandsPanelState(),
     workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
   }));
   previousSessions = [];
@@ -10247,6 +10903,7 @@ function addProject(path: string, name = projectNameFromPath(path)): void {
     projects = [
       ...projects,
       {
+        commandsPanel: createDefaultCommandsPanelState(),
         name: name.trim() || projectNameFromPath(normalizedPath),
         path: normalizedPath,
         projectId,
@@ -10288,6 +10945,7 @@ async function createNativeChat(title = "chat"): Promise<void> {
     projects = orderNativeProjectsForSidebar([
       ...projects,
       {
+        commandsPanel: createDefaultCommandsPanelState(),
         isChat: true,
         name: nativeChatTitleFromDate(createdAt),
         path: chatPath,
@@ -10329,6 +10987,7 @@ async function createNativePluginsBrowserChat(): Promise<void> {
     projects = orderNativeProjectsForSidebar([
       ...projects,
       {
+        commandsPanel: createDefaultCommandsPanelState(),
         isChat: true,
         name: "Plugins",
         path: chatPath,
@@ -10399,6 +11058,7 @@ async function createNativeBrowserChat(): Promise<void> {
     projects = orderNativeProjectsForSidebar([
       ...projects,
       {
+        commandsPanel: createDefaultCommandsPanelState(),
         isChat: true,
         name: "Browser",
         path: chatPath,
@@ -11067,6 +11727,16 @@ function disposeProjectEditorSurface(projectId: string): void {
   if (projectEditorSurfaceByProjectId.size === 0) {
     postNative({ type: "stopCodeServerRuntime" });
   }
+}
+
+function toggleCommandsPanelFromTitlebar(): void {
+  /**
+   * CDXC:CommandsPanel 2026-05-13-22:54
+   * The Commands panel launcher lives in the native titlebar. Keep the actual
+   * panel state transition in the sidebar model so the bottom pane, command
+   * terminals, persistence, and native layout sync all use one owner.
+   */
+  toggleCommandsPanelForActiveProject();
 }
 
 function reorderProjects(projectIds: string[]): void {
@@ -12028,6 +12698,11 @@ function createNativeLayoutSyncKey(command: NativeSetActiveTerminalSetCommand): 
     normalizeNativeLayoutSyncValue({
       activeProjectEditorId: command.activeProjectEditorId,
       activeSessionIds: command.activeSessionIds,
+      commandsPanelActiveSessionIds: command.commandsPanelActiveSessionIds,
+      commandsPanelHeightRatio: command.commandsPanelHeightRatio,
+      commandsPanelIsVisible: command.commandsPanelIsVisible,
+      commandsPanelLayout: command.commandsPanelLayout,
+      commandsPanelMode: command.commandsPanelMode,
       layout: command.layout,
       paneGap: command.paneGap,
     }),
@@ -12059,6 +12734,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     ]),
   );
   const snapshot = activeSnapshot();
+  const commandsPanel = currentProject.commandsPanel;
   const visibleSessionRecordsById = new Map(
     snapshot.sessions.map((session) => [session.sessionId, session]),
   );
@@ -12078,6 +12754,14 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const awakeVisibleSessions = visibleSessions.filter((session) => session.isSleeping !== true);
   const visibleSessionIds = awakeVisibleSessions
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
+  const commandPanelSessions = commandsPanel.sessions;
+  const commandPanelVisibleSessions = commandPanelSessions;
+  const commandPanelActiveSessions = commandPanelVisibleSessions.filter(
+    (session) => session.isSleeping !== true,
+  );
+  const commandPanelActiveSessionIds = commandPanelActiveSessions.map((session) =>
+    nativeSessionIdForSidebarSession(session.sessionId),
+  );
   const sleepingSessionIds = visibleSessions
     .filter((session) => session.isSleeping === true)
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
@@ -12097,7 +12781,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const sessionTitleBarActions: Record<string, NativeTerminalTitleBarAction[]> = {};
   const sessionTitles: Record<string, string> = {};
   const poppedOutSessionIds: string[] = [];
-  for (const session of visibleSessions) {
+  for (const session of [...visibleSessions, ...commandPanelVisibleSessions]) {
     const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
     sessionTitles[nativeSessionId] = session.title;
     /**
@@ -12129,7 +12813,15 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     if (session.isSleeping === true) {
       continue;
     }
-    sessionTitleBarActions[nativeSessionId] = getNativePaneTitleBarActions(session);
+    sessionTitleBarActions[nativeSessionId] =
+      session.kind === "terminal" && session.surface === "commands"
+        ? commandsPanel.isVisible
+          ? [
+              commandsPanel.mode === "pinned" ? "unpinCommandsPanel" : "pinCommandsPanel",
+              "closeCommandsPanel",
+            ]
+          : ["expandCommandsPanel"]
+        : getNativePaneTitleBarActions(session);
     if (session.kind !== "terminal") {
       continue;
     }
@@ -12147,13 +12839,28 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     clampVisibleSessionCount(visibleSessions.length),
     getActiveNativeSplitLayoutHint(snapshot),
   );
+  const commandPanelLayout = buildLayout(
+    commandsPanel.paneLayout,
+    commandPanelVisibleSessions.map((session) => session.sessionId),
+    commandPanelVisibleSessions.map((session) => nativeSessionIdForSidebarSession(session.sessionId)),
+    new Set(commandPanelActiveSessions.map((session) => session.sessionId)),
+    new Set(commandPanelActiveSessionIds),
+    clampVisibleSessionCount(Math.max(1, commandPanelVisibleSessions.length)),
+  );
   const focusedNativeSessionId = snapshot.focusedSessionId
     ? nativeSessionIdForSidebarSession(snapshot.focusedSessionId)
     : undefined;
+  const commandsPanelFocusedNativeSessionId = commandsPanel.activeSessionId
+    ? nativeSessionIdForSidebarSession(commandsPanel.activeSessionId)
+    : undefined;
   const shouldConsumeFocusRequest =
     pendingNativeLayoutFocusRequest !== undefined &&
-    pendingNativeLayoutFocusRequest.sessionId === snapshot.focusedSessionId &&
-    visibleSessions.some((session) => session.sessionId === pendingNativeLayoutFocusRequest?.sessionId);
+    ((pendingNativeLayoutFocusRequest.sessionId === snapshot.focusedSessionId &&
+      visibleSessions.some((session) => session.sessionId === pendingNativeLayoutFocusRequest?.sessionId)) ||
+      (pendingNativeLayoutFocusRequest.sessionId === commandsPanel.activeSessionId &&
+        commandPanelVisibleSessions.some(
+          (session) => session.sessionId === pendingNativeLayoutFocusRequest?.sessionId,
+        )));
   const focusRequestId = shouldConsumeFocusRequest
     ? pendingNativeLayoutFocusRequest?.requestId
     : undefined;
@@ -12178,6 +12885,12 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
    */
   const command: NativeSetActiveTerminalSetCommand = {
     activeSessionIds: visibleSessionIds,
+    commandsPanelActiveSessionIds: commandPanelActiveSessionIds,
+    commandsPanelFocusedSessionId: commandsPanelFocusedNativeSessionId,
+    commandsPanelHeightRatio: commandsPanel.heightRatio,
+    commandsPanelIsVisible: commandsPanel.isVisible,
+    commandsPanelLayout: commandPanelLayout,
+    commandsPanelMode: commandsPanel.mode,
     /**
      * CDXC:ReactTitlebar 2026-05-11-00:22
      * The native React titlebar mirrors the active project header: project
@@ -12532,6 +13245,14 @@ window.addEventListener("zmux-native-host-event", (event) => {
     setProjectEditorLoadState(hostEvent.projectId, hostEvent.status, hostEvent.message);
     return;
   }
+  if (hostEvent.type === "commandsPanelHeightRatioChanged") {
+    updateActiveProjectCommandsPanel((panel) => ({
+      ...panel,
+      heightRatio: hostEvent.heightRatio,
+    }));
+    publish();
+    return;
+  }
   if (hostEvent.type === "paneTabSelected") {
     handleNativePaneTabSelected(sidebarSessionIdForNativeSession(hostEvent.sessionId));
     return;
@@ -12691,6 +13412,17 @@ window.addEventListener("zmux-native-host-event", (event) => {
       previousFocusedSessionId,
       targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(activeProject().workspace),
     });
+    if (activeCommandPanelContainsSession(sidebarSessionId)) {
+      updateActiveProjectCommandsPanel((panel) => ({
+        ...panel,
+        activeSessionId: sidebarSessionId,
+        isVisible: true,
+        paneLayout: setActiveCommandSessionInPaneLayout(panel.paneLayout, sidebarSessionId),
+      }));
+      acknowledgeNativeTerminalAttention(sidebarSessionId, "native-focus");
+      publish();
+      return;
+    }
     if (previousFocusedSessionId === sidebarSessionId) {
       const acknowledgedAttention = acknowledgeNativeTerminalAttention(
         sidebarSessionId,
@@ -12897,6 +13629,10 @@ function handleNativePaneReorderRequested(
   targetSessionId: string,
   placement?: SessionPaneDropPlacement,
 ): void {
+  if (activeCommandPanelContainsSession(sourceSessionId) || activeCommandPanelContainsSession(targetSessionId)) {
+    handleCommandPanelPaneReorderRequested(sourceSessionId, targetSessionId, placement);
+    return;
+  }
   if (sourceSessionId === targetSessionId) {
     return;
   }
@@ -12987,6 +13723,17 @@ function handleNativePaneReorderRequested(
 }
 
 function handleNativePaneTabSelected(sessionId: string): void {
+  if (activeCommandPanelContainsSession(sessionId)) {
+    updateActiveProjectCommandsPanel((panel) => ({
+      ...panel,
+      activeSessionId: sessionId,
+      isVisible: true,
+      paneLayout: setActiveCommandSessionInPaneLayout(panel.paneLayout, sessionId),
+    }));
+    queueNativeLayoutFocusRequest(sessionId, "commandPaneTabSelected");
+    publish();
+    return;
+  }
   const group = activeWorkspaceGroup();
   const selectedSessionBefore = findSessionRecord(sessionId);
   const wasSleeping = selectedSessionBefore?.isSleeping === true;
@@ -13046,6 +13793,13 @@ function handleNativePaneTabCloseRequested(
   sessionId: string,
   scope: NativePaneTabCloseScope,
 ): void {
+  if (activeCommandPanelContainsSession(sessionId)) {
+    const sessionIds = getCommandPaneTabSessionIds(sessionId, scope);
+    for (const commandSessionId of sessionIds) {
+      closeTerminal(commandSessionId);
+    }
+    return;
+  }
   const sessionIds = getPaneTabCloseSessionIds(sessionId, scope);
   if (sessionIds.length === 0) {
     appendTerminalFocusDebugLog("nativePaneTabClose.missingTargets", {
@@ -13096,6 +13850,10 @@ function handleNativePaneTabReorderRequested(
   targetSessionId: string,
   position: SessionPaneTabReorderPosition,
 ): void {
+  if (activeCommandPanelContainsSession(sourceSessionId) || activeCommandPanelContainsSession(targetSessionId)) {
+    handleCommandPanelPaneTabReorderRequested(sourceSessionId, targetSessionId, position);
+    return;
+  }
   const group = activeWorkspaceGroup();
   const result = reorderSessionInPaneTabGroupInSimpleWorkspace(
     activeProject().workspace,
@@ -13130,6 +13888,91 @@ function handleNativePaneTabReorderRequested(
   publish();
 }
 
+function handleCommandPanelPaneReorderRequested(
+  sourceSessionId: string,
+  targetSessionId: string,
+  placement?: SessionPaneDropPlacement,
+): void {
+  if (
+    !placement ||
+    (placement !== "center" && placement !== "left" && placement !== "right") ||
+    !activeCommandPanelContainsSession(sourceSessionId) ||
+    !activeCommandPanelContainsSession(targetSessionId)
+  ) {
+    return;
+  }
+  let changed = false;
+  updateActiveProjectCommandsPanel((panel) => {
+    const layout =
+      panel.paneLayout ??
+      normalizeCommandPaneLayout(
+        undefined,
+        new Set(panel.sessions.map((session) => session.sessionId)),
+        panel.activeSessionId,
+      );
+    if (!layout || (sourceSessionId === targetSessionId && placement === "center")) {
+      return panel;
+    }
+    const layoutWithoutSource = removeCommandSessionFromPaneLayout(layout, sourceSessionId);
+    if (!layoutWithoutSource) {
+      return panel;
+    }
+    const nextLayout =
+      placement === "center"
+        ? addCommandSessionToPaneTabGroup(layoutWithoutSource, targetSessionId, sourceSessionId)
+        : insertCommandSessionBesidePane(
+            layoutWithoutSource,
+            targetSessionId,
+            sourceSessionId,
+            placement === "right",
+          );
+    if (!nextLayout) {
+      return panel;
+    }
+    changed = true;
+    return {
+      ...panel,
+      activeSessionId: sourceSessionId,
+      isVisible: true,
+      paneLayout: nextLayout,
+    };
+  });
+  if (changed) {
+    publish();
+  }
+}
+
+function handleCommandPanelPaneTabReorderRequested(
+  sourceSessionId: string,
+  targetSessionId: string,
+  position: SessionPaneTabReorderPosition,
+): void {
+  if (
+    sourceSessionId === targetSessionId ||
+    !activeCommandPanelContainsSession(sourceSessionId) ||
+    !activeCommandPanelContainsSession(targetSessionId)
+  ) {
+    return;
+  }
+  let changed = false;
+  updateActiveProjectCommandsPanel((panel) => {
+    const nextLayout = reorderCommandSessionInPaneTabGroup(
+      panel.paneLayout,
+      sourceSessionId,
+      targetSessionId,
+      position,
+    );
+    if (!nextLayout) {
+      return panel;
+    }
+    changed = true;
+    return { ...panel, paneLayout: nextLayout };
+  });
+  if (changed) {
+    publish();
+  }
+}
+
 function getPaneTabCloseSessionIds(
   sessionId: string,
   scope: NativePaneTabCloseScope,
@@ -13160,6 +14003,30 @@ function getPaneTabCloseSessionIds(
       return tabSessionIds.slice(tabIndex + 1);
   }
   return [];
+}
+
+function getCommandPaneTabSessionIds(
+  sessionId: string,
+  scope: NativePaneTabCloseScope,
+): string[] {
+  const tabSessionIds = findPaneTabGroupSessionIds(activeProject().commandsPanel.paneLayout, sessionId);
+  if (!tabSessionIds) {
+    return scope === "close" && activeCommandPanelContainsSession(sessionId) ? [sessionId] : [];
+  }
+  const tabIndex = tabSessionIds.indexOf(sessionId);
+  if (tabIndex < 0) {
+    return [];
+  }
+  switch (scope) {
+    case "close":
+      return [sessionId];
+    case "closeLeft":
+      return tabSessionIds.slice(0, tabIndex);
+    case "closeOthers":
+      return tabSessionIds.filter((tabSessionId) => tabSessionId !== sessionId);
+    case "closeRight":
+      return tabSessionIds.slice(tabIndex + 1);
+  }
 }
 
 function getPaneTabSleepSessionIds(
@@ -13225,6 +14092,27 @@ function handleNativeTerminalTitleBarAction(
   const session = findSessionRecord(sessionId);
   if (!session) {
     return;
+  }
+  if (session.kind === "terminal" && session.surface === "commands") {
+    switch (action) {
+      case "newTerminal":
+        createCommandTerminal(DEFAULT_TERMINAL_SESSION_TITLE, "", { focusAfterCreate: true });
+        return;
+      case "pinCommandsPanel":
+        setCommandsPanelModeForActiveProject("pinned");
+        return;
+      case "unpinCommandsPanel":
+        setCommandsPanelModeForActiveProject("floating");
+        return;
+      case "closeCommandsPanel":
+        hideCommandsPanelForActiveProject();
+        return;
+      case "expandCommandsPanel":
+        openCommandsPanelForActiveProject();
+        return;
+      default:
+        return;
+    }
   }
   /**
    * CDXC:NativeTerminals 2026-04-28-13:20
@@ -13305,6 +14193,11 @@ function handleNativeTerminalTitleBarAction(
         setNativeSessionSleeping(sessionId, true);
       }
       return;
+    case "pinCommandsPanel":
+    case "unpinCommandsPanel":
+    case "closeCommandsPanel":
+    case "expandCommandsPanel":
+      return;
     case "close":
       closeTerminal(sessionId);
       return;
@@ -13343,6 +14236,7 @@ window.__zmux_NATIVE_SIDEBAR__ = {
   openActiveProjectEditorFromTitlebar,
   refreshWorkspaceOpenTargetAvailabilityFromTitlebar,
   rotateActivePaneLayoutClockwiseFromTitlebar,
+  toggleCommandsPanelFromTitlebar,
   runSidebarCommandFromTitlebar,
 };
 

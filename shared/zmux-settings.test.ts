@@ -272,7 +272,7 @@ describe("normalizezmuxSettings", () => {
   });
 
   test("keeps the workspace background color setting", () => {
-    expect(DEFAULT_zmux_SETTINGS.workspaceBackgroundColor).toBe("#121212");
+    expect(DEFAULT_zmux_SETTINGS.workspaceBackgroundColor).toBe("#0e0e0e");
     expect(normalizezmuxSettings({ workspaceBackgroundColor: "#202020" })).toMatchObject({
       workspaceBackgroundColor: "#202020",
     });

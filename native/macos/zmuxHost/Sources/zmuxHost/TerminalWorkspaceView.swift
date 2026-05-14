@@ -827,6 +827,11 @@ final class TerminalWorkspaceView: NSView {
     var lastWindowX: CGFloat
   }
 
+  private struct CommandsPanelResizeDrag {
+    let startHeight: CGFloat
+    let startY: CGFloat
+  }
+
   private struct PaneHeaderDrag {
     var isDragging: Bool
     var lastLoggedMoveAt: TimeInterval
@@ -861,6 +866,9 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private static let terminalTitleBarHeight: CGFloat = 33
+  private static let commandPanelTitleBarHeight: CGFloat = 26
+  private static let collapsedCommandsPanelLeftMargin: CGFloat = 4
+  private static let collapsedCommandsPanelRightMargin: CGFloat = 8
   /**
    CDXC:NativePaneResize 2026-05-11-18:42
    The native fallback pane gap must match the shared default used by sidebar
@@ -873,6 +881,7 @@ final class TerminalWorkspaceView: NSView {
   private static let paneResizeMinimumWidth: CGFloat = 220
   private static let paneResizeOuterEdgeExclusion: CGFloat = 8
   private static let paneResizeRailWidth: CGFloat = 5
+  private static let floatingCommandsPanelMargin: CGFloat = 25
   /**
    CDXC:NativePaneResize 2026-05-11-10:40
    Pane split resizing must match native model: only the actual split rail owns
@@ -894,7 +903,10 @@ final class TerminalWorkspaceView: NSView {
   private static let floatingEditorMinimumWidth: CGFloat = 420
   private static let floatingEditorFrameDefaultsKey = "zmux.floatingEditor.frame.v1"
   private static let defaultWorkspaceBackgroundColor = NSColor(
-    calibratedRed: 0.071, green: 0.071, blue: 0.071, alpha: 1)
+    calibratedRed: 14.0 / 255.0,
+    green: 14.0 / 255.0,
+    blue: 14.0 / 255.0,
+    alpha: 1)
   private let ghostty: ZmuxGhosttyApp
   private let sendEvent: (HostEvent) -> Void
   var onSidebarResizeDrag: ((CGFloat) -> Void)?
@@ -908,6 +920,12 @@ final class TerminalWorkspaceView: NSView {
   private var pendingAuthenticatedWebPaneLoadSessionIds = Set<String>()
   private var t3ThreadRouteRetryAttemptsBySessionId = [String: Int]()
   private var activeSessionIds = Set<String>()
+  private var commandsPanelActiveSessionIds = Set<String>()
+  private var commandsPanelFocusedSessionId: String?
+  private var commandsPanelHeightRatio: CGFloat = 0.32
+  private var commandsPanelIsVisible = false
+  private var commandsPanelLayout: NativeTerminalLayout?
+  private var commandsPanelMode: String = "pinned"
   private var attentionSessionIds = Set<String>()
   private var poppedOutSessionIds = Set<String>()
   private var poppedOutPaneControllers: [String: PoppedOutPaneWindowController] = [:]
@@ -932,6 +950,10 @@ final class TerminalWorkspaceView: NSView {
   private var paneResizeRatiosByPath: [String: [CGFloat]] = [:]
   private var paneResizeDrag: PaneResizeDrag?
   private var sidebarResizeDrag: SidebarResizeDrag?
+  private var commandsPanelResizeDrag: CommandsPanelResizeDrag?
+  private let commandsPanelChromeView = CommandsPanelChromeView()
+  private let commandsPanelCollapsedRightMarginView = NSView(frame: .zero)
+  private let commandsPanelResizeHandleView = TerminalWorkspacePaneResizeHandleView()
   private var paneResizeHandleViews: [TerminalWorkspacePaneResizeHandleView] = []
   private var paneHeaderDrag: PaneHeaderDrag?
   private var paneHeaderDragGhostView: TerminalPaneHeaderDragGhostView?
@@ -995,6 +1017,20 @@ final class TerminalWorkspaceView: NSView {
     super.init(frame: .zero)
     wantsLayer = true
     layer?.backgroundColor = Self.defaultWorkspaceBackgroundColor.cgColor
+    commandsPanelChromeView.isHidden = true
+    commandsPanelCollapsedRightMarginView.wantsLayer = true
+    commandsPanelCollapsedRightMarginView.layer?.backgroundColor = NSColor.black.cgColor
+    commandsPanelCollapsedRightMarginView.isHidden = true
+    commandsPanelResizeHandleView.configure(direction: .vertical, cursor: .resizeUpDown)
+    commandsPanelResizeHandleView.onMouseDown = { [weak self] event in
+      _ = self?.beginCommandsPanelResize(with: event)
+    }
+    commandsPanelResizeHandleView.onMouseDragged = { [weak self] event in
+      _ = self?.continueCommandsPanelResize(with: event)
+    }
+    commandsPanelResizeHandleView.onMouseUp = { [weak self] event in
+      _ = self?.endCommandsPanelResize(with: event)
+    }
   }
 
   required init?(coder: NSCoder) {
@@ -2576,7 +2612,12 @@ final class TerminalWorkspaceView: NSView {
       needsLayout = true
       layoutSubtreeIfNeeded()
     }
-    focusedSessionId = sessionId
+    let isCommandPanelSession = commandsPanelActiveSessionIds.contains(sessionId)
+    if isCommandPanelSession {
+      commandsPanelFocusedSessionId = sessionId
+    } else {
+      focusedSessionId = sessionId
+    }
     orderTerminalPaneViewsToFront(sessions[sessionId])
     updateAllTerminalBorders()
     let targetWindow = poppedOutPaneControllers[sessionId]?.window ?? window
@@ -2610,6 +2651,9 @@ final class TerminalWorkspaceView: NSView {
         "visibleSessionIds": orderedVisibleSessionIds(),
         "windowIsKey": window?.isKeyWindow ?? false,
       ])
+    if isCommandPanelSession {
+      emitFocusedSessionSelectionIfNeeded(sessionId: sessionId, reason: reason)
+    }
   }
 
   private func focusTerminalFromContentMouseDown(
@@ -2622,7 +2666,13 @@ final class TerminalWorkspaceView: NSView {
     let responderSessionId =
       event.window?.firstResponder.flatMap { sessionId(containing: $0) } ?? currentResponderSessionId()
     let isSurfaceFirstResponder = event.window?.firstResponder === surfaceView
-    guard focusedSessionId != clickedSessionId || responderSessionId != clickedSessionId || !isSurfaceFirstResponder else {
+    let localFocusedSessionId = commandsPanelActiveSessionIds.contains(clickedSessionId)
+      ? commandsPanelFocusedSessionId
+      : focusedSessionId
+    guard localFocusedSessionId != clickedSessionId
+      || responderSessionId != clickedSessionId
+      || !isSurfaceFirstResponder
+    else {
       return
     }
     /**
@@ -2636,6 +2686,7 @@ final class TerminalWorkspaceView: NSView {
       event: "nativeWorkspace.terminalContent.focusMouseDown",
       details: [
         "focusedSessionIdBefore": nullableString(focusedSessionId),
+        "commandsPanelFocusedSessionIdBefore": nullableString(commandsPanelFocusedSessionId),
         "isSurfaceFirstResponder": isSurfaceFirstResponder,
         "responderSessionIdBefore": nullableString(responderSessionId),
         "sessionId": clickedSessionId,
@@ -2895,6 +2946,7 @@ final class TerminalWorkspaceView: NSView {
   func setActiveTerminalSet(_ command: SetActiveTerminalSet) {
     let responderBefore = responderSnapshot()
     let nextActiveSessionIds = Set(command.activeSessionIds)
+    let nextCommandsPanelActiveSessionIds = Set(command.commandsPanelActiveSessionIds ?? [])
     let nextActiveProjectEditorId = command.activeProjectEditorId
     let nextPoppedOutSessionIds = Set(command.poppedOutSessionIds ?? []).intersection(nextActiveSessionIds)
     let nextPaneGap = Self.clampedPaneGap(command.paneGap)
@@ -2938,6 +2990,12 @@ final class TerminalWorkspaceView: NSView {
         ])
     }
     activeSessionIds = nextActiveSessionIds
+    commandsPanelActiveSessionIds = nextCommandsPanelActiveSessionIds
+    commandsPanelFocusedSessionId = command.commandsPanelFocusedSessionId
+    commandsPanelHeightRatio = Self.clampedCommandsPanelHeightRatio(command.commandsPanelHeightRatio)
+    commandsPanelIsVisible = command.commandsPanelIsVisible == true
+    commandsPanelLayout = command.commandsPanelLayout
+    commandsPanelMode = command.commandsPanelMode ?? "pinned"
     attentionSessionIds = Set(command.attentionSessionIds ?? [])
     poppedOutSessionIds = nextPoppedOutSessionIds
     sleepingSessionIds = Set(command.sleepingSessionIds ?? [])
@@ -2960,6 +3018,11 @@ final class TerminalWorkspaceView: NSView {
     applyWorkspaceBackgroundColor(command.backgroundColor)
     let isProjectEditorActive = activeProjectEditorId != nil
     for session in sessions.values {
+      let isCommandActive = commandsPanelActiveSessionIds.contains(session.sessionId)
+      let chromeRole: TerminalPaneChromeRole = isCommandActive ? .commands : .workspace
+      session.titleBarView.setChromeRole(chromeRole)
+      session.borderView.setChromeRole(chromeRole)
+      session.borderView.setHidesInactiveCommandBorder(isCommandActive && commandsPanelMode == "pinned")
       if let title = sessionTitles[session.sessionId] {
         session.titleBarView.setTitle(
           normalizedTerminalSessionTitle(title, sessionId: session.sessionId)
@@ -2973,7 +3036,7 @@ final class TerminalWorkspaceView: NSView {
         colorHex: sessionAgentIconColors[session.sessionId])
       if shouldRelayout {
         let isPoppedOut = poppedOutSessionIds.contains(session.sessionId)
-        let isActive = !isProjectEditorActive && activeSessionIds.contains(session.sessionId)
+        let isActive = (!isProjectEditorActive && activeSessionIds.contains(session.sessionId)) || isCommandActive
         session.containerView.isHidden = !isActive || isPoppedOut
         session.scrollView.isHidden = false
         session.searchBarView.isHidden = !isActive || session.view.searchState == nil
@@ -3105,8 +3168,12 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     lastAppliedLayoutFocusRequestId = focusRequestId
-    if let focusedSessionId = command.focusedSessionId,
-      activeSessionIds.contains(focusedSessionId)
+    let requestedFocusSessionId =
+      command.focusedSessionId.flatMap { activeSessionIds.contains($0) ? $0 : nil }
+      ?? command.commandsPanelFocusedSessionId.flatMap {
+        commandsPanelActiveSessionIds.contains($0) ? $0 : nil
+      }
+    if let focusedSessionId = requestedFocusSessionId
     {
       if shouldPreserveNonTerminalFirstResponder() {
         /**
@@ -3133,8 +3200,10 @@ final class TerminalWorkspaceView: NSView {
         event: "nativeWorkspace.setActiveTerminalSet.focusSkipped",
         details: [
           "activeSessionIds": Array(activeSessionIds).sorted(),
+          "commandsPanelActiveSessionIds": Array(commandsPanelActiveSessionIds).sorted(),
           "focusRequestId": focusRequestId,
           "focusedSessionId": nullableString(command.focusedSessionId),
+          "commandsPanelFocusedSessionId": nullableString(command.commandsPanelFocusedSessionId),
           "reason": "focusedSessionNotActive",
         ])
     }
@@ -3160,6 +3229,43 @@ final class TerminalWorkspaceView: NSView {
       layoutFloatingEditorOverlay()
     }
     paneResizeHits.removeAll()
+    let commandSessionIds = orderedVisibleCommandSessionIds()
+    let hasCommandsPanelSessions = !commandSessionIds.isEmpty
+    let shouldShowExpandedCommandsPanel = commandsPanelIsVisible && hasCommandsPanelSessions
+    let shouldShowCollapsedCommandsPanel = !commandsPanelIsVisible && hasCommandsPanelSessions
+    let shouldShowCommandsPanel = shouldShowExpandedCommandsPanel || shouldShowCollapsedCommandsPanel
+    let shouldReserveCommandsPanelSpace =
+      shouldShowCollapsedCommandsPanel || (shouldShowExpandedCommandsPanel && commandsPanelMode == "pinned")
+    let commandPanelHeight = shouldShowExpandedCommandsPanel
+      ? clampedCommandsPanelHeight(bounds.height * commandsPanelHeightRatio)
+      : shouldShowCollapsedCommandsPanel ? collapsedCommandsPanelHeight() : 0
+    let shouldFloatCommandsPanel = shouldShowExpandedCommandsPanel && commandsPanelMode == "floating"
+    let floatingCommandsPanelMargin = shouldFloatCommandsPanel ? Self.floatingCommandsPanelMargin : 0
+    let commandPanelResolvedHeight = min(
+      max(0, bounds.height - floatingCommandsPanelMargin * 2),
+      commandPanelHeight)
+    let collapsedCommandsPanelLeftMargin =
+      shouldShowCollapsedCommandsPanel ? Self.collapsedCommandsPanelLeftMargin : 0
+    let collapsedCommandsPanelRightMargin =
+      shouldShowCollapsedCommandsPanel ? Self.collapsedCommandsPanelRightMargin : 0
+    let resolvedCommandPanelBounds: CGRect = shouldShowCommandsPanel
+      ? CGRect(
+          x: bounds.minX + floatingCommandsPanelMargin + collapsedCommandsPanelLeftMargin,
+          y: bounds.minY + floatingCommandsPanelMargin,
+          width: max(
+            0,
+            bounds.width - floatingCommandsPanelMargin * 2 - collapsedCommandsPanelLeftMargin
+              - collapsedCommandsPanelRightMargin),
+          height: commandPanelResolvedHeight)
+      : .zero
+    let workspaceBounds =
+      shouldReserveCommandsPanelSpace
+      ? CGRect(
+          x: bounds.minX,
+          y: resolvedCommandPanelBounds.maxY,
+          width: bounds.width,
+          height: max(0, bounds.height - resolvedCommandPanelBounds.height))
+      : bounds
     if let activeProjectEditorId,
       let editorSession = projectEditorPaneSessions[activeProjectEditorId]
     {
@@ -3177,20 +3283,54 @@ final class TerminalWorkspaceView: NSView {
       ])
       hideSplitSessionSurfacesForActiveEditor()
       editorSession.hostView.isHidden = false
-      layoutProjectEditorPane(editorSession)
+      layoutProjectEditorPane(editorSession, in: workspaceBounds)
       orderProjectEditorPaneToFront(editorSession)
+      if shouldShowCommandsPanel {
+        syncCommandsPanelChrome(
+          in: resolvedCommandPanelBounds,
+          isExpanded: shouldShowExpandedCommandsPanel,
+          isFloating: shouldShowExpandedCommandsPanel && commandsPanelMode == "floating")
+        layoutCommandsPanel(commandSessionIds, in: resolvedCommandPanelBounds)
+        syncCommandsPanelResizeHandle(
+          in: resolvedCommandPanelBounds,
+          isExpanded: shouldShowExpandedCommandsPanel)
+        syncPaneResizeHandleViews()
+      } else {
+        hideCommandsPanelChrome()
+        hideCommandsPanelResizeHandle()
+        hidePaneResizeHandleViews()
+      }
       return
     }
     let visibleSessionIds = orderedVisibleSessionIds()
-    guard !visibleSessionIds.isEmpty else {
+    guard !visibleSessionIds.isEmpty || shouldShowCommandsPanel else {
+      hideCommandsPanelResizeHandle()
       hidePaneResizeHandleViews()
       discardCursorRects()
       return
     }
-    if let terminalLayout {
-      layoutTree(terminalLayout, in: layoutBounds(forVisibleCount: visibleSessionIds.count), path: "root")
+    if !visibleSessionIds.isEmpty {
+      if let terminalLayout {
+        layoutTree(
+          terminalLayout,
+          in: layoutBounds(forVisibleCount: visibleSessionIds.count, in: workspaceBounds),
+          path: "root")
+      } else {
+        layoutGrid(visibleSessionIds, in: layoutBounds(forVisibleCount: visibleSessionIds.count, in: workspaceBounds))
+      }
+    }
+    if shouldShowCommandsPanel {
+      syncCommandsPanelChrome(
+        in: resolvedCommandPanelBounds,
+        isExpanded: shouldShowExpandedCommandsPanel,
+        isFloating: shouldShowExpandedCommandsPanel && commandsPanelMode == "floating")
+      layoutCommandsPanel(commandSessionIds, in: resolvedCommandPanelBounds)
+      syncCommandsPanelResizeHandle(
+        in: resolvedCommandPanelBounds,
+        isExpanded: shouldShowExpandedCommandsPanel)
     } else {
-      layoutGrid(visibleSessionIds, in: layoutBounds(forVisibleCount: visibleSessionIds.count))
+      hideCommandsPanelChrome()
+      hideCommandsPanelResizeHandle()
     }
     updateOuterBottomPaneBorderCorner()
     syncPaneResizeHandleViews()
@@ -3203,6 +3343,75 @@ final class TerminalWorkspaceView: NSView {
       handleView.isHidden = true
       handleView.frame = .zero
     }
+  }
+
+  private func hideCommandsPanelResizeHandle() {
+    commandsPanelResizeDrag = nil
+    commandsPanelResizeHandleView.isHidden = true
+    commandsPanelResizeHandleView.frame = .zero
+  }
+
+  private func hideCommandsPanelChrome() {
+    commandsPanelChromeView.isHidden = true
+    commandsPanelChromeView.frame = .zero
+    commandsPanelCollapsedRightMarginView.isHidden = true
+    commandsPanelCollapsedRightMarginView.frame = .zero
+  }
+
+  private func syncCommandsPanelChrome(in commandPanelBounds: CGRect, isExpanded: Bool, isFloating: Bool) {
+    commandsPanelChromeView.frame = commandPanelBounds
+    commandsPanelChromeView.isHidden = false
+    commandsPanelChromeView.layer?.zPosition = isFloating ? 250 : 0
+    if commandsPanelChromeView.superview !== self {
+      addSubview(commandsPanelChromeView, positioned: .below, relativeTo: nil)
+    }
+    if let firstCommandSessionId = orderedVisibleCommandSessionIds().first,
+      let firstCommandSession = sessions[firstCommandSessionId],
+      firstCommandSession.containerView.superview === self
+    {
+      addSubview(commandsPanelChromeView, positioned: .below, relativeTo: firstCommandSession.containerView)
+    } else {
+      addSubview(commandsPanelChromeView, positioned: .below, relativeTo: nil)
+    }
+    syncCommandsPanelCollapsedRightMargin(from: commandPanelBounds, isExpanded: isExpanded)
+  }
+
+  private func syncCommandsPanelCollapsedRightMargin(from commandPanelBounds: CGRect, isExpanded: Bool) {
+    guard !isExpanded, commandPanelBounds.maxX < bounds.maxX else {
+      commandsPanelCollapsedRightMarginView.isHidden = true
+      commandsPanelCollapsedRightMarginView.frame = .zero
+      return
+    }
+    commandsPanelCollapsedRightMarginView.frame = CGRect(
+      x: commandPanelBounds.maxX,
+      y: commandPanelBounds.minY,
+      width: max(0, bounds.maxX - commandPanelBounds.maxX),
+      height: commandPanelBounds.height)
+    commandsPanelCollapsedRightMarginView.isHidden = false
+    commandsPanelCollapsedRightMarginView.layer?.zPosition = commandsPanelChromeView.layer?.zPosition ?? 0
+    if commandsPanelCollapsedRightMarginView.superview !== self {
+      addSubview(commandsPanelCollapsedRightMarginView, positioned: .below, relativeTo: nil)
+    }
+    addSubview(commandsPanelCollapsedRightMarginView, positioned: .below, relativeTo: commandsPanelChromeView)
+  }
+
+  private func syncCommandsPanelResizeHandle(in commandPanelBounds: CGRect, isExpanded: Bool) {
+    guard isExpanded else {
+      hideCommandsPanelResizeHandle()
+      return
+    }
+    let railHeight = max(Self.paneResizeRailWidth, 12)
+    commandsPanelResizeHandleView.frame = CGRect(
+      x: commandPanelBounds.minX,
+      y: max(bounds.minY, commandPanelBounds.maxY - railHeight / 2),
+      width: commandPanelBounds.width,
+      height: min(railHeight, bounds.height)
+    )
+    commandsPanelResizeHandleView.configure(direction: .vertical, cursor: .resizeUpDown)
+    commandsPanelResizeHandleView.isHidden = false
+    commandsPanelResizeHandleView.layer?.zPosition = 10_500
+    addSubview(commandsPanelResizeHandleView, positioned: .above, relativeTo: nil)
+    window?.invalidateCursorRects(for: commandsPanelResizeHandleView)
   }
 
   private func syncPaneResizeHandleViews() {
@@ -3336,11 +3545,65 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func layoutBounds(forVisibleCount visibleCount: Int) -> CGRect {
-    let inset = visibleCount <= 1 ? Self.singlePaneInset : paneGap
-    return bounds.insetBy(dx: inset, dy: inset)
+    layoutBounds(forVisibleCount: visibleCount, in: bounds)
   }
 
-  private func layoutProjectEditorPane(_ session: ProjectEditorPaneSession) {
+  private func layoutBounds(forVisibleCount visibleCount: Int, in rect: CGRect) -> CGRect {
+    let inset = visibleCount <= 1 ? Self.singlePaneInset : paneGap
+    return rect.insetBy(dx: inset, dy: inset)
+  }
+
+  private func layoutCommandsPanel(_ sessionIds: [String], in rect: CGRect) {
+    guard !sessionIds.isEmpty else {
+      return
+    }
+    let panelBounds = rect.insetBy(dx: commandPanelOuterInset(), dy: commandPanelOuterInset())
+    if let commandsPanelLayout {
+      layoutTree(commandsPanelLayout, in: panelBounds, path: "commands")
+    } else {
+      layoutGrid(sessionIds, in: panelBounds)
+    }
+    orderCommandsPanelToFront(sessionIds)
+  }
+
+  private func clampedCommandsPanelHeight(_ value: CGFloat) -> CGFloat {
+    guard bounds.height > 0 else {
+      return 0
+    }
+    let minimumHeight = min(Self.paneResizeMinimumHeight, bounds.height)
+    let maximumHeight = max(minimumHeight, bounds.height * 0.55)
+    return min(max(value, minimumHeight), maximumHeight)
+  }
+
+  private func collapsedCommandsPanelHeight() -> CGFloat {
+    Self.commandPanelTitleBarHeight + commandPanelOuterInset() * 2
+  }
+
+  private func commandPanelOuterInset() -> CGFloat {
+    2 / max(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2, 1)
+  }
+
+  private func orderCommandsPanelToFront(_ sessionIds: [String]) {
+    for sessionId in sessionIds {
+      guard let session = sessions[sessionId], session.containerView.superview === self else {
+        continue
+      }
+      addSubview(session.containerView, positioned: .above, relativeTo: nil)
+      session.containerView.layer?.zPosition = commandsPanelIsVisible ? 300 : 100
+    }
+    if commandsPanelChromeView.superview === self, commandsPanelIsVisible {
+      commandsPanelChromeView.layer?.zPosition = commandsPanelMode == "floating" ? 250 : 0
+    }
+  }
+
+  private func keepCommandsPanelAboveWorkspacePanes() {
+    guard commandsPanelIsVisible, !commandsPanelActiveSessionIds.isEmpty else {
+      return
+    }
+    orderCommandsPanelToFront(orderedVisibleCommandSessionIds())
+  }
+
+  private func layoutProjectEditorPane(_ session: ProjectEditorPaneSession, in rect: CGRect? = nil) {
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.start", [
       "hostFrameBefore": describeFrame(session.hostView.frame),
       "projectId": session.projectId,
@@ -3348,7 +3611,7 @@ final class TerminalWorkspaceView: NSView {
       "workspaceBounds": describeFrame(bounds),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
-    let nextFrame = bounds
+    let nextFrame = rect ?? bounds
     /**
      CDXC:EditorPanes 2026-05-08-13:37
      Sidebar resize must not synchronously refresh or display the hosted VS
@@ -3400,6 +3663,9 @@ final class TerminalWorkspaceView: NSView {
     paneResizeDrag = nil
     resetPaneHeaderInteractionState()
     for session in sessions.values {
+      if commandsPanelActiveSessionIds.contains(session.sessionId) {
+        continue
+      }
       moveOffscreen(session.containerView)
     }
     for session in webPaneSessions.values {
@@ -3505,6 +3771,18 @@ final class TerminalWorkspaceView: NSView {
     return fromLayout.filter { activeSessionIds.contains($0) }
   }
 
+  private func orderedVisibleCommandSessionIds() -> [String] {
+    let fromLayout = commandsPanelLayout.map(leafSessionIds) ?? Array(sessions.keys)
+    return fromLayout.filter { commandsPanelActiveSessionIds.contains($0) }
+  }
+
+  private func orderedVisibleCommandPaneOwnerSessionIds() -> [String] {
+    guard let commandsPanelLayout else {
+      return orderedVisibleCommandSessionIds()
+    }
+    return visibleCommandPaneOwnerSessionIds(in: commandsPanelLayout)
+  }
+
   /**
    CDXC:PaneTabs 2026-05-12-10:37
    Hit testing needs the visible pane owner for each tab group, not every
@@ -3538,14 +3816,39 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  private func visibleCommandPaneOwnerSessionIds(in node: NativeTerminalLayout) -> [String] {
+    switch node {
+    case .leaf(let sessionId):
+      return commandsPanelActiveSessionIds.contains(sessionId) ? [sessionId] : []
+    case .tabs(let activeSessionId, let sessionIds):
+      let tabSessionIds = sessionIds.filter {
+        commandsPanelActiveSessionIds.contains($0) || sleepingSessionIds.contains($0)
+      }
+      let activeTabSessionIds = tabSessionIds.filter { commandsPanelActiveSessionIds.contains($0) }
+      guard !activeTabSessionIds.isEmpty else {
+        return []
+      }
+      return [
+        activeSessionId.flatMap { activeTabSessionIds.contains($0) ? $0 : nil }
+          ?? activeTabSessionIds[0]
+      ]
+    case .split(_, _, let children):
+      return children.flatMap { visibleCommandPaneOwnerSessionIds(in: $0) }
+    }
+  }
+
+  private func isPaneSessionVisible(_ sessionId: String) -> Bool {
+    activeSessionIds.contains(sessionId) || commandsPanelActiveSessionIds.contains(sessionId)
+  }
+
   private func layoutTree(_ node: NativeTerminalLayout, in rect: CGRect, path: String) {
     switch node {
     case .leaf(let sessionId):
       setPaneTabs([sessionId], activeSessionId: sessionId, on: sessionId)
       setFrame(rect, for: sessionId)
     case .tabs(let activeSessionId, let sessionIds):
-      let tabSessionIds = sessionIds.filter { activeSessionIds.contains($0) || sleepingSessionIds.contains($0) }
-      let activeTabSessionIds = tabSessionIds.filter { activeSessionIds.contains($0) }
+      let tabSessionIds = sessionIds.filter { isPaneSessionVisible($0) || sleepingSessionIds.contains($0) }
+      let activeTabSessionIds = tabSessionIds.filter { isPaneSessionVisible($0) }
       guard !activeTabSessionIds.isEmpty else { return }
       let selectedSessionId =
         activeSessionId.flatMap { activeTabSessionIds.contains($0) ? $0 : nil } ?? activeTabSessionIds[0]
@@ -3556,7 +3859,7 @@ final class TerminalWorkspaceView: NSView {
       setFrame(rect, for: selectedSessionId)
     case .split(let direction, let ratio, let children):
       let visibleChildren = children.filter {
-        !leafSessionIds($0).allSatisfy { !activeSessionIds.contains($0) }
+        !leafSessionIds($0).allSatisfy { !isPaneSessionVisible($0) }
       }
       guard !visibleChildren.isEmpty else { return }
       if visibleChildren.count == 1 {
@@ -4024,6 +4327,16 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func paneResizeHandleHitView(at point: NSPoint) -> NSView? {
+    if
+      !commandsPanelResizeHandleView.isHidden,
+      commandsPanelResizeHandleView.alphaValue > 0,
+      commandsPanelResizeHandleView.frame.contains(point)
+    {
+      let handlePoint = commandsPanelResizeHandleView.convert(point, from: self)
+      if let hitView = commandsPanelResizeHandleView.hitTest(handlePoint) {
+        return hitView
+      }
+    }
     for handleView in paneResizeHandleViews.reversed() {
       guard
         !handleView.isHidden,
@@ -4055,6 +4368,13 @@ final class TerminalWorkspaceView: NSView {
   private func paneTitleBarHitView(at point: CGPoint) -> NSView? {
     guard paneResizeHit(at: point) == nil else {
       return nil
+    }
+    for sessionId in orderedVisibleCommandPaneOwnerSessionIds().reversed() {
+      if let session = sessions[sessionId],
+        let hitView = paneTitleBarHitView(session.titleBarView, at: point)
+      {
+        return hitView
+      }
     }
     for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
       if let session = sessions[sessionId],
@@ -4094,22 +4414,18 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func paneContentHitView(at point: CGPoint) -> NSView? {
+    for sessionId in orderedVisibleCommandPaneOwnerSessionIds().reversed() {
+      if let session = sessions[sessionId],
+        let hitView = terminalPaneContentHitView(session, at: point)
+      {
+        return hitView
+      }
+    }
     for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
       if let session = sessions[sessionId],
-        !session.containerView.isHidden,
-        session.containerView.window != nil,
-        session.containerView.frame.contains(point)
+        let hitView = terminalPaneContentHitView(session, at: point)
       {
-        if !session.searchBarView.isHidden {
-          let searchPoint = convert(point, to: session.searchBarView)
-          if session.searchBarView.bounds.contains(searchPoint) {
-            return session.searchBarView.hitTest(searchPoint) ?? session.searchBarView
-          }
-        }
-        let contentPoint = convert(point, to: session.scrollView)
-        if session.scrollView.bounds.contains(contentPoint) {
-          return session.scrollView.hitTest(contentPoint) ?? session.scrollView
-        }
+        return hitView
       }
       if let session = webPaneSessions[sessionId],
         !session.containerView.isHidden,
@@ -4121,6 +4437,26 @@ final class TerminalWorkspaceView: NSView {
           return session.hostView.hitTest(contentPoint) ?? session.hostView
         }
       }
+    }
+    return nil
+  }
+
+  private func terminalPaneContentHitView(_ session: TerminalSession, at point: CGPoint) -> NSView? {
+    guard !session.containerView.isHidden,
+      session.containerView.window != nil,
+      session.containerView.frame.contains(point)
+    else {
+      return nil
+    }
+    if !session.searchBarView.isHidden {
+      let searchPoint = convert(point, to: session.searchBarView)
+      if session.searchBarView.bounds.contains(searchPoint) {
+        return session.searchBarView.hitTest(searchPoint) ?? session.searchBarView
+      }
+    }
+    let contentPoint = convert(point, to: session.scrollView)
+    if session.scrollView.bounds.contains(contentPoint) {
+      return session.scrollView.hitTest(contentPoint) ?? session.scrollView
     }
     return nil
   }
@@ -4291,6 +4627,41 @@ final class TerminalWorkspaceView: NSView {
     if sidebarResizeEdgeRect?.contains(point) == true {
       NSCursor.resizeLeftRight.set()
     }
+    return true
+  }
+
+  @discardableResult
+  private func beginCommandsPanelResize(with event: NSEvent) -> Bool {
+    let point = convert(event.locationInWindow, from: nil)
+    let startHeight = clampedCommandsPanelHeight(bounds.height * commandsPanelHeightRatio)
+    commandsPanelResizeDrag = CommandsPanelResizeDrag(startHeight: startHeight, startY: point.y)
+    NSCursor.resizeUpDown.set()
+    return true
+  }
+
+  @discardableResult
+  private func continueCommandsPanelResize(with event: NSEvent) -> Bool {
+    guard let drag = commandsPanelResizeDrag else {
+      return false
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    let nextHeight = clampedCommandsPanelHeight(drag.startHeight + point.y - drag.startY)
+    commandsPanelHeightRatio = Self.clampedCommandsPanelHeightRatio(Double(nextHeight / max(bounds.height, 1)))
+    NSCursor.resizeUpDown.set()
+    needsLayout = true
+    layoutSubtreeIfNeeded()
+    return true
+  }
+
+  @discardableResult
+  private func endCommandsPanelResize(with event: NSEvent) -> Bool {
+    guard commandsPanelResizeDrag != nil else {
+      return false
+    }
+    _ = continueCommandsPanelResize(with: event)
+    commandsPanelResizeDrag = nil
+    sendEvent(.commandsPanelHeightRatioChanged(heightRatio: Double(commandsPanelHeightRatio)))
+    NSCursor.resizeUpDown.set()
     return true
   }
 
@@ -4774,6 +5145,14 @@ final class TerminalWorkspaceView: NSView {
         "sessionId": sessionId,
         "titleBarFrame": describeFrame(paneTitleBarFrame(for: sessionId) ?? .zero),
       ])
+    if commandsPanelActiveSessionIds.contains(sessionId), !commandsPanelIsVisible {
+      NativePaneTabDragReproLog.append(event: "nativeCommandsPanel.collapsedTitleBar.expandRequested", details: [
+        "hitPoint": nativePaneTabsDebugFrame(CGRect(x: startPoint.x, y: startPoint.y, width: 0, height: 0)),
+        "sessionId": sessionId,
+      ])
+      sendEvent(.paneTabSelected(sessionId: sessionId))
+      return
+    }
     focusSession(sessionId: sessionId, reason: focusReason)
   }
 
@@ -5759,7 +6138,7 @@ final class TerminalWorkspaceView: NSView {
 
   private func setPoppedOutPlaceholderFrame(_ rect: CGRect, for sessionId: String) {
     let title = normalizedTerminalSessionTitle(sessionTitles[sessionId], sessionId: sessionId)
-    let titleBarHeight = min(Self.terminalTitleBarHeight, max(rect.height, 0))
+    let titleBarHeight = min(titleBarHeight(for: sessionId), max(rect.height, 0))
     let titleBarRect = CGRect(
       x: rect.minX,
       y: rect.maxY - titleBarHeight,
@@ -5840,7 +6219,7 @@ final class TerminalWorkspaceView: NSView {
      bar that the reference workspace renders in React. The AppKit surface is
      therefore laid out below native chrome instead of covering the full pane.
      */
-    let titleBarHeight = min(Self.terminalTitleBarHeight, max(rect.height, 0))
+    let titleBarHeight = min(titleBarHeight(for: sessionId), max(rect.height, 0))
     mountTerminalPaneContainer(for: session)
     session.containerView.frame = rect
     session.containerView.isHidden = false
@@ -5866,6 +6245,15 @@ final class TerminalWorkspaceView: NSView {
     session.titleBarView.frame = titleBarRect
     session.titleBarView.needsLayout = true
     session.titleBarView.layoutSubtreeIfNeeded()
+    if commandsPanelActiveSessionIds.contains(sessionId) && !commandsPanelIsVisible {
+      session.scrollView.frame = .zero
+      session.scrollView.isHidden = true
+      session.searchBarView.frame = .zero
+      session.searchBarView.isHidden = true
+      session.borderView.frame = session.containerView.bounds
+      updateTerminalBorder(for: sessionId)
+      return
+    }
     session.scrollView.frame = availableTerminalRect
     session.scrollView.needsLayout = true
     session.scrollView.layoutSubtreeIfNeeded()
@@ -5878,6 +6266,12 @@ final class TerminalWorkspaceView: NSView {
       availableTerminalRect: availableTerminalRect,
       terminalRect: terminalRect)
     updateTerminalBorder(for: sessionId)
+  }
+
+  private func titleBarHeight(for sessionId: String) -> CGFloat {
+    commandsPanelActiveSessionIds.contains(sessionId)
+      ? Self.commandPanelTitleBarHeight
+      : Self.terminalTitleBarHeight
   }
 
   private func movePaneSessionOffscreen(_ sessionId: String) {
@@ -6069,6 +6463,7 @@ final class TerminalWorkspaceView: NSView {
     }
     containerView.alphaValue = 1
     containerView.layer?.zPosition = 100
+    keepCommandsPanelAboveWorkspacePanes()
   }
 
   private func scheduleWebPaneReload(sessionId: String, url: URL, remainingAttempts: Int) {
@@ -7419,7 +7814,8 @@ final class TerminalWorkspaceView: NSView {
     guard let session = sessions[sessionId] else {
       return
     }
-    let isActive = activeSessionIds.contains(sessionId)
+    let isCommandActive = commandsPanelActiveSessionIds.contains(sessionId)
+    let isActive = activeSessionIds.contains(sessionId) || isCommandActive
     setHidden(!isActive, for: session.titleBarView)
     setHidden(!isActive || session.view.searchState == nil, for: session.searchBarView)
     setHidden(!isActive, for: session.borderView)
@@ -7431,7 +7827,8 @@ final class TerminalWorkspaceView: NSView {
       faviconDataUrls: sessionFaviconDataUrls,
       agentIconDataUrls: sessionAgentIconDataUrls,
       agentIconColors: sessionAgentIconColors)
-    session.titleBarView.setFocusedPane(focusedSessionId == sessionId)
+    let isCommandFocused = isCommandActive && commandPanelFocusedResponderSessionId() == sessionId
+    session.titleBarView.setFocusedPane(focusedSessionId == sessionId || isCommandFocused)
     session.borderView.setState(
       isFocused: shouldShowFocusedPaneBorder(for: sessionId),
       isAttention: attentionSessionIds.contains(sessionId)
@@ -7446,7 +7843,27 @@ final class TerminalWorkspaceView: NSView {
      failure, so keep the selected-pane border enabled and fix resize event
      ownership instead of hiding focus chrome.
      */
-    focusedSessionId == sessionId && orderedVisibleSessionIds().count > 1
+    let isCommandPanelSession = commandsPanelActiveSessionIds.contains(sessionId)
+    if isCommandPanelSession {
+      return commandsPanelFocusedSessionId == sessionId
+        && commandPanelFocusedResponderSessionId() == sessionId
+    }
+    return !commandPanelOwnsResponder()
+      && focusedSessionId == sessionId
+      && orderedVisibleSessionIds().count > 1
+  }
+
+  private func commandPanelOwnsResponder() -> Bool {
+    commandPanelFocusedResponderSessionId() != nil
+  }
+
+  private func commandPanelFocusedResponderSessionId() -> String? {
+    guard let responderSessionId = currentResponderSessionId(),
+      commandsPanelActiveSessionIds.contains(responderSessionId)
+    else {
+      return nil
+    }
+    return responderSessionId
   }
 
   private func keyboardRouteDebugPayload(
@@ -7668,17 +8085,27 @@ final class TerminalWorkspaceView: NSView {
         ])
       return
     }
-    guard activeSessionIds.contains(focusedSessionId) else {
+    guard activeSessionIds.contains(focusedSessionId)
+      || commandsPanelActiveSessionIds.contains(focusedSessionId)
+    else {
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.focusedInactiveSessionIgnored",
         details: [
           "activeSessionIds": Array(activeSessionIds).sorted(),
+          "commandsPanelActiveSessionIds": Array(commandsPanelActiveSessionIds).sorted(),
           "reason": reason,
           "sessionId": focusedSessionId,
         ])
       return
     }
-    if lastEmittedFocusedSessionId == focusedSessionId, self.focusedSessionId == focusedSessionId {
+    emitFocusedSessionSelectionIfNeeded(sessionId: focusedSessionId, reason: reason)
+  }
+
+  private func emitFocusedSessionSelectionIfNeeded(sessionId focusedSessionId: String, reason: String) {
+    let localFocusedSessionId = commandsPanelActiveSessionIds.contains(focusedSessionId)
+      ? commandsPanelFocusedSessionId
+      : self.focusedSessionId
+    if lastEmittedFocusedSessionId == focusedSessionId, localFocusedSessionId == focusedSessionId {
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.terminalFocused.duplicateSkipped",
         details: [
@@ -7687,7 +8114,7 @@ final class TerminalWorkspaceView: NSView {
         ])
       return
     }
-    if lastEmittedFocusedSessionId == focusedSessionId, self.focusedSessionId != focusedSessionId {
+    if lastEmittedFocusedSessionId == focusedSessionId, localFocusedSessionId != focusedSessionId {
       /**
        CDXC:NativeTerminalFocus 2026-05-13-07:41
        A previous native focus emission can be followed by sidebar/layout sync
@@ -7700,13 +8127,17 @@ final class TerminalWorkspaceView: NSView {
         details: [
           "emittedFocusedSessionId": focusedSessionId,
           "lastEmittedFocusedSessionId": nullableString(lastEmittedFocusedSessionId),
-          "localFocusedSessionId": nullableString(self.focusedSessionId),
+          "localFocusedSessionId": nullableString(localFocusedSessionId),
           "reason": reason,
           "responder": responderSnapshot(),
         ])
     }
     lastEmittedFocusedSessionId = focusedSessionId
-    self.focusedSessionId = focusedSessionId
+    if commandsPanelActiveSessionIds.contains(focusedSessionId) {
+      commandsPanelFocusedSessionId = focusedSessionId
+    } else {
+      self.focusedSessionId = focusedSessionId
+    }
     updateAllTerminalBorders()
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.terminalFocused.emitted",
@@ -7718,6 +8149,8 @@ final class TerminalWorkspaceView: NSView {
       event: "nativeFocusTrace.terminalFocusedEmitted",
       details: [
         "activeSessionIds": Array(activeSessionIds).sorted(),
+        "commandsPanelActiveSessionIds": Array(commandsPanelActiveSessionIds).sorted(),
+        "commandsPanelFocusedSessionId": nullableString(commandsPanelFocusedSessionId),
         "focusedSessionId": focusedSessionId,
         "reason": reason,
         "responder": responderSnapshot(),
@@ -7768,6 +8201,13 @@ final class TerminalWorkspaceView: NSView {
       return defaultPaneGap
     }
     return CGFloat(min(48, max(0, value)))
+  }
+
+  private static func clampedCommandsPanelHeightRatio(_ value: Double?) -> CGFloat {
+    guard let value, value.isFinite else {
+      return 0.32
+    }
+    return CGFloat(min(0.55, max(0.18, value)))
   }
 
   private static func workspaceBackgroundColor(_ value: String?) -> NSColor {
@@ -9815,7 +10255,6 @@ private final class TerminalTitleBarActionButton: NSButton {
   private var isPointerInside = false {
     didSet { updateActionChrome() }
   }
-
   override var isHighlighted: Bool {
     didSet { updateActionChrome() }
   }
@@ -9866,7 +10305,7 @@ private final class TerminalTitleBarActionButton: NSButton {
 
   override func layout() {
     super.layout()
-    layer?.cornerRadius = min(5, min(bounds.width, bounds.height) / 3)
+    layer?.cornerRadius = 0
   }
 
   override func updateTrackingAreas() {
@@ -9926,6 +10365,11 @@ private func nativePaneTabsDebugFrame(_ frame: CGRect) -> [String: Double] {
   ]
 }
 
+fileprivate enum TerminalPaneChromeRole {
+  case commands
+  case workspace
+}
+
 private final class TerminalTitleBarTabButton: NSButton {
   enum InlineAction {
     case close
@@ -9955,6 +10399,10 @@ private final class TerminalTitleBarTabButton: NSButton {
     alpha: 1
   ).cgColor
   private static let sleepingIconColor = NSColor(calibratedWhite: 0.86, alpha: 0.42)
+  private static let commandTabSeparatorColor = NSColor(calibratedWhite: 1, alpha: 0.10).cgColor
+  private static let workspaceTabBaseRed: CGFloat = 0x05 / 255
+  private static let workspaceTabBaseGreen: CGFloat = 0x06 / 255
+  private static let workspaceTabBaseBlue: CGFloat = 0x08 / 255
   private static let sleepingIconSize: CGFloat = 9
   private static let activityIndicatorSize: CGFloat = 8
   private static let activityIndicatorTrailingPadding: CGFloat = 9
@@ -9962,9 +10410,10 @@ private final class TerminalTitleBarTabButton: NSButton {
   private static let identityIconSize: CGFloat = 12
   private static let identityIconGap: CGFloat = 5
   private static let titleInlineActionGap: CGFloat = 4
+  private static let titleFont = NSFont.systemFont(ofSize: 11, weight: .semibold)
   private static let titleTextHeight: CGFloat = 18
-  private static let titleVerticalOffset: CGFloat = 0
-
+  private static let titleVerticalOffset: CGFloat = 2
+  private static let commandTitleVerticalOffset: CGFloat = 2
   /**
    CDXC:PaneTabs 2026-05-10-18:30
    Pane tabs are native title-bar controls because Ghostty and WKWebView panes
@@ -9993,7 +10442,9 @@ private final class TerminalTitleBarTabButton: NSButton {
   private var identityFaviconDataUrl: String?
   private var identityFaviconImage: NSImage?
   private var isFocusedPane = true
+  private var chromeRole: TerminalPaneChromeRole = .workspace
   private var isSleepingTab = false
+  private var showsCommandTrailingSeparator = false
   private var pendingMouseDownInlineAction: InlineAction?
   private var hoverTrackingArea: NSTrackingArea?
   private var isTabHovered = false {
@@ -10019,11 +10470,11 @@ private final class TerminalTitleBarTabButton: NSButton {
 
   private func configure() {
     wantsLayer = true
-    layer?.cornerRadius = 5
+    layer?.cornerRadius = 0
     layer?.masksToBounds = true
     bezelStyle = .texturedRounded
     isBordered = false
-    font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+    font = Self.titleFont
     lineBreakMode = .byTruncatingTail
     imagePosition = .noImage
   }
@@ -10049,14 +10500,47 @@ private final class TerminalTitleBarTabButton: NSButton {
     updateChrome()
   }
 
+  fileprivate func setChromeRole(_ role: TerminalPaneChromeRole) {
+    guard chromeRole != role else {
+      return
+    }
+    chromeRole = role
+    layer?.cornerRadius = 0
+    font = Self.titleFont
+    updateChrome()
+  }
+
+  fileprivate func setShowsCommandTrailingSeparator(_ showsSeparator: Bool) {
+    guard showsCommandTrailingSeparator != showsSeparator else {
+      return
+    }
+    showsCommandTrailingSeparator = showsSeparator
+    needsDisplay = true
+  }
+
   private func updateChrome() {
     contentTintColor = titleColor
-    layer?.backgroundColor = (
-      isActiveTab
-        ? NSColor(calibratedWhite: 1, alpha: isFocusedPane ? (isSleepingTab ? 0.075 : 0.13) : 0.05)
-        : NSColor(calibratedWhite: 1, alpha: isFocusedPane ? (isSleepingTab ? 0.032 : 0.06) : 0.024)
-    ).cgColor
+    layer?.backgroundColor = tabBackgroundColor().cgColor
     needsDisplay = true
+  }
+
+  private func tabBackgroundColor() -> NSColor {
+    let overlayAlpha =
+      isActiveTab
+      ? (isFocusedPane ? (isSleepingTab ? CGFloat(0.075) : CGFloat(0.13)) : CGFloat(0.05))
+      : (isFocusedPane ? (isSleepingTab ? CGFloat(0.032) : CGFloat(0.06)) : CGFloat(0.024))
+    guard chromeRole == .commands else {
+      return NSColor(calibratedWhite: 1, alpha: overlayAlpha)
+    }
+    return Self.compositedWorkspaceTabColor(overlayAlpha: overlayAlpha)
+  }
+
+  private static func compositedWorkspaceTabColor(overlayAlpha: CGFloat) -> NSColor {
+    NSColor(
+      calibratedRed: workspaceTabBaseRed + (1 - workspaceTabBaseRed) * overlayAlpha,
+      green: workspaceTabBaseGreen + (1 - workspaceTabBaseGreen) * overlayAlpha,
+      blue: workspaceTabBaseBlue + (1 - workspaceTabBaseBlue) * overlayAlpha,
+      alpha: 1)
   }
 
   func setTabHovered(_ hovered: Bool) {
@@ -10186,6 +10670,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     drawTitle()
     if !isTabHovered {
       drawActivityIndicatorIfNeeded()
+      drawCommandSeparatorIfNeeded()
       return
     }
     /**
@@ -10199,6 +10684,7 @@ private final class TerminalTitleBarTabButton: NSButton {
      narrow right-side tab controls respond without workspace monitor routing.
      */
     drawInlineActionControl()
+    drawCommandSeparatorIfNeeded()
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -10455,9 +10941,10 @@ private final class TerminalTitleBarTabButton: NSButton {
   private func drawTitle() {
     let titleLeadingInset = titleLeadingInsetForIdentity()
     let reservedTrailingWidth = titleTrailingReservedWidth()
+    let titleFont = Self.titleFont
     let titleRect = CGRect(
       x: titleLeadingInset,
-      y: floor((bounds.height - Self.titleTextHeight) / 2) + Self.titleVerticalOffset,
+      y: floor((bounds.height - Self.titleTextHeight) / 2) + titleVerticalOffset,
       width: max(bounds.width - titleLeadingInset - reservedTrailingWidth, 0),
       height: Self.titleTextHeight)
     guard titleRect.width > 0 else {
@@ -10468,11 +10955,27 @@ private final class TerminalTitleBarTabButton: NSButton {
     paragraphStyle.alignment = .left
     paragraphStyle.lineBreakMode = .byTruncatingTail
     let attributes: [NSAttributedString.Key: Any] = [
-      .font: font ?? NSFont.systemFont(ofSize: 11, weight: .semibold),
+      .font: titleFont,
       .foregroundColor: titleColor,
       .paragraphStyle: paragraphStyle,
     ]
     (title as NSString).draw(in: titleRect, withAttributes: attributes)
+  }
+
+  private var titleVerticalOffset: CGFloat {
+    chromeRole == .commands ? Self.commandTitleVerticalOffset : Self.titleVerticalOffset
+  }
+
+  private func drawCommandSeparatorIfNeeded() {
+    guard chromeRole == .commands, showsCommandTrailingSeparator,
+      let context = NSGraphicsContext.current?.cgContext
+    else {
+      return
+    }
+    context.saveGState()
+    context.setFillColor(Self.commandTabSeparatorColor)
+    context.fill(CGRect(x: bounds.maxX - 1, y: 0, width: 1, height: max(bounds.height, 1)))
+    context.restoreGState()
   }
 
   private func titleLeadingInsetForIdentity() -> CGFloat {
@@ -10528,12 +11031,11 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   private var activityIndicatorFrame: CGRect {
-    let size = Self.activityIndicatorSize
     return CGRect(
-      x: bounds.maxX - Self.activityIndicatorTrailingPadding - size,
-      y: floor((bounds.height - size) / 2),
-      width: size,
-      height: size)
+      x: bounds.maxX - Self.activityIndicatorTrailingPadding - Self.activityIndicatorSize,
+      y: floor((bounds.height - Self.activityIndicatorSize) / 2),
+      width: Self.activityIndicatorSize,
+      height: Self.activityIndicatorSize)
   }
 
   private func drawActivityIndicatorIfNeeded() {
@@ -10584,8 +11086,8 @@ private final class TerminalTitleBarTabButton: NSButton {
     let controlFrame = inlineActionControlFrame
     let controlPath = CGPath(
       roundedRect: controlFrame,
-      cornerWidth: 5,
-      cornerHeight: 5,
+      cornerWidth: 0,
+      cornerHeight: 0,
       transform: nil)
 
     context.saveGState()
@@ -10747,6 +11249,18 @@ private final class TerminalSessionTitleBarView: NSView {
     blue: 0x08 / 255,
     alpha: 0.96
   ).cgColor
+  private static let commandBackgroundColor = NSColor(
+    calibratedWhite: 0.0,
+    alpha: 1.0
+  ).cgColor
+  private static let commandCollapsedTrailingBackgroundColor = NSColor(
+    calibratedWhite: 0.0,
+    alpha: 1.0
+  )
+  private static let commandBorderColor = NSColor(
+    calibratedWhite: 0.54,
+    alpha: 0.24
+  ).cgColor
   private static let titleColor = NSColor(
     calibratedRed: 0xE1 / 255,
     green: 0xE1 / 255,
@@ -10770,6 +11284,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private static let minimumVisibleTabViewportWidthWithDoubleClickTarget: CGFloat = 56
   private static let preferredDoubleClickNewTerminalTargetWidth: CGFloat = 34
   private static let minimumDoubleClickNewTerminalTargetWidth: CGFloat = 24
+  private static let commandActionTrailingInset: CGFloat = 8
   private static let tabViewportTrailingGap: CGFloat = 4
 
   private let faviconImageView = NSImageView(frame: .zero)
@@ -10777,6 +11292,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private let activityIndicatorView = NSView(frame: .zero)
   private let tabClipView = NSView(frame: .zero)
   private let tabContentView = NSView(frame: .zero)
+  private let commandCollapsedTrailingBackgroundView = NSView(frame: .zero)
   private let bottomBorderView = NSView(frame: .zero)
   private let actionMenuButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private var actionButtons: [(action: TerminalTitleBarAction, button: NSButton)]
@@ -10787,6 +11303,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private var agentIconDataUrl: String?
   private var agentIconImage: NSImage?
   private var activity: NativeTerminalActivity?
+  private var chromeRole: TerminalPaneChromeRole = .workspace
   private var faviconImage: NSImage?
   private var isFocusedPane = false
   private var layoutHiddenActions = Set<TerminalTitleBarAction>()
@@ -10903,12 +11420,27 @@ private final class TerminalSessionTitleBarView: NSView {
       button.sessionId = tab.sessionId
       button.title = tab.title
       button.toolTip = tab.title
+      button.setChromeRole(chromeRole)
       button.setActive(tab.sessionId == activeSessionId)
       button.setSleeping(tab.isSleeping)
     }
     updateTabGroupFocusAppearance()
     needsLayout = true
     window?.invalidateCursorRects(for: self)
+  }
+
+  fileprivate func setChromeRole(_ role: TerminalPaneChromeRole) {
+    guard chromeRole != role else {
+      return
+    }
+    chromeRole = role
+    layer?.backgroundColor = backgroundColor(for: role)
+    bottomBorderView.layer?.backgroundColor = borderColor(for: role)
+    titleLabel.textColor = titleColor(for: role)
+    for button in tabButtons {
+      button.setChromeRole(role)
+    }
+    needsDisplay = true
   }
 
   func setTabActivities(_ activities: [String: NativeTerminalActivity]) {
@@ -11000,6 +11532,11 @@ private final class TerminalSessionTitleBarView: NSView {
     tabContentView.wantsLayer = true
     tabClipView.addSubview(tabContentView)
 
+    commandCollapsedTrailingBackgroundView.wantsLayer = true
+    commandCollapsedTrailingBackgroundView.layer?.backgroundColor =
+      Self.commandCollapsedTrailingBackgroundColor.cgColor
+    commandCollapsedTrailingBackgroundView.isHidden = true
+
     bottomBorderView.wantsLayer = true
     bottomBorderView.layer?.backgroundColor = Self.borderColor
 
@@ -11007,6 +11544,7 @@ private final class TerminalSessionTitleBarView: NSView {
     addSubview(titleLabel)
     addSubview(activityIndicatorView)
     addSubview(tabClipView)
+    addSubview(commandCollapsedTrailingBackgroundView, positioned: .below, relativeTo: tabClipView)
     /**
      CDXC:PaneTabs 2026-05-12-12:44
      Pane title bars must not paint colored debug hit-region overlays in normal
@@ -11055,6 +11593,18 @@ private final class TerminalSessionTitleBarView: NSView {
       return
     }
     onMouseDown?(event)
+  }
+
+  private func backgroundColor(for role: TerminalPaneChromeRole) -> CGColor {
+    role == .commands ? Self.commandBackgroundColor : Self.backgroundColor
+  }
+
+  private func borderColor(for role: TerminalPaneChromeRole) -> CGColor {
+    role == .commands ? Self.commandBorderColor : Self.borderColor
+  }
+
+  private func titleColor(for role: TerminalPaneChromeRole) -> NSColor {
+    Self.titleColor
   }
 
   override func scrollWheel(with event: NSEvent) {
@@ -11469,17 +12019,23 @@ private final class TerminalSessionTitleBarView: NSView {
 
   override func layout() {
     super.layout()
-    let insetX: CGFloat = 8
-    let buttonSize: CGFloat = 28
+    let isCommandChrome = chromeRole == .commands
+    let insetX: CGFloat = isCommandChrome ? 0 : 8
+    let buttonSize: CGFloat = isCommandChrome ? bounds.height : 28
     let buttonGap: CGFloat = 0
     let separatorGap: CGFloat = 6
     let separatorWidth: CGFloat = 1
-    let separatorHeight: CGFloat = 14
+    let separatorHeight: CGFloat = isCommandChrome ? 10 : 14
     let indicatorSize: CGFloat = 8
     let indicatorGap: CGFloat = 6
-    let centerY = floor((bounds.height - buttonSize) / 2)
+    let tabViewportTrailingGap = isCommandChrome ? CGFloat(0) : Self.tabViewportTrailingGap
+    let centerY = isCommandChrome ? 0 : floor((bounds.height - buttonSize) / 2)
     let separatorY = floor((bounds.height - separatorHeight) / 2)
-    var trailingX = bounds.width - insetX
+    let isCollapsedCommandPanelBar =
+      isCommandChrome && actionButtons.map(\.action) == [.expandCommandsPanel]
+    let actionTrailingInset =
+      isCommandChrome && !isCollapsedCommandPanelBar ? Self.commandActionTrailingInset : insetX
+    var trailingX = bounds.width - actionTrailingInset
 
     /**
      CDXC:NativeTerminals 2026-04-28-05:18
@@ -11521,17 +12077,18 @@ private final class TerminalSessionTitleBarView: NSView {
      route current layouts through the compact menu so panes do not switch back
      to the expanded icon cluster on wider widths.
      */
-    let shouldCollapseActionMenu = !nonCloseActions.isEmpty
+    let shouldCollapseActionMenu =
+      !Self.isCommandsPanelChromeActionSet(actionButtons.map(\.action)) && !nonCloseActions.isEmpty
     let minimumContentWidthForCollapsedControls =
       tabItems.isEmpty ? 0 : Self.minimumVisibleTabViewportWidth
     let hasCloseAction = actionButtons.contains { $0.action == .close }
     let canReserveCloseActionInCollapsedLayout =
       hasCloseAction
-      && bounds.width - insetX * 2 - buttonSize - Self.tabViewportTrailingGap
+      && bounds.width - insetX * 2 - buttonSize - tabViewportTrailingGap
         >= minimumContentWidthForCollapsedControls
     let reservedCloseActionWidth = canReserveCloseActionInCollapsedLayout ? buttonSize : 0
     let canReserveCollapsedActionMenu =
-      bounds.width - insetX * 2 - reservedCloseActionWidth - buttonSize - Self.tabViewportTrailingGap
+      bounds.width - insetX * 2 - reservedCloseActionWidth - buttonSize - tabViewportTrailingGap
         >= minimumContentWidthForCollapsedControls
     var separatorIndex = 0
     if shouldCollapseActionMenu {
@@ -11628,17 +12185,30 @@ private final class TerminalSessionTitleBarView: NSView {
       tabClipView.isHidden = false
       let tabViewportMaxX = reserveDoubleClickNewTerminalTarget(
         from: insetX,
-        to: max(insetX, trailingX - Self.tabViewportTrailingGap))
+        to: max(insetX, trailingX - tabViewportTrailingGap))
       layoutTabButtons(
         from: insetX,
         to: tabViewportMaxX,
         centerY: centerY,
         height: buttonSize)
+      if isCollapsedCommandPanelBar {
+        commandCollapsedTrailingBackgroundView.isHidden = false
+        commandCollapsedTrailingBackgroundView.frame = CGRect(
+          x: tabViewportFrame.maxX,
+          y: 0,
+          width: max(0, bounds.width - tabViewportFrame.maxX),
+          height: bounds.height)
+      } else {
+        commandCollapsedTrailingBackgroundView.isHidden = true
+        commandCollapsedTrailingBackgroundView.frame = .zero
+      }
       bottomBorderView.frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
       window?.invalidateCursorRects(for: self)
       return
     }
 
+    commandCollapsedTrailingBackgroundView.isHidden = true
+    commandCollapsedTrailingBackgroundView.frame = .zero
     doubleClickNewTerminalFrame = .zero
     tabClipView.isHidden = true
     tabClipView.frame = .zero
@@ -11709,9 +12279,10 @@ private final class TerminalSessionTitleBarView: NSView {
         .font: titleLabel.font ?? NSFont.systemFont(ofSize: 12, weight: .bold)
       ]).width
     )
+    let titleLabelVerticalOffset: CGFloat = chromeRole == .commands ? 0 : 2
     titleLabel.frame = CGRect(
       x: titleX,
-      y: floor((bounds.height - 16) / 2),
+      y: floor((bounds.height - 16) / 2) + titleLabelVerticalOffset,
       width: maxTitleWidth,
       height: 16
     )
@@ -11783,9 +12354,10 @@ private final class TerminalSessionTitleBarView: NSView {
      Sleep/Close hit areas to stay inside the pane so activation and lifecycle
      controls remain usable without horizontal scrolling.
      */
-    let gap: CGFloat = 2
-    let maxTabWidth: CGFloat = 175
-    let minTabWidth: CGFloat = 80
+    let isCommandChrome = chromeRole == .commands
+    let gap: CGFloat = isCommandChrome ? 0 : 2
+    let maxTabWidth: CGFloat = isCommandChrome ? 160 : 175
+    let minTabWidth: CGFloat = isCommandChrome ? 72 : 80
     let tabCount = max(tabButtons.count, 1)
     let totalGap = gap * CGFloat(max(tabCount - 1, 0))
     let fittedWidth = (availableWidth - totalGap) / CGFloat(tabCount)
@@ -11803,8 +12375,9 @@ private final class TerminalSessionTitleBarView: NSView {
       width: tabContentWidth,
       height: height)
     var nextX: CGFloat = 0
-    for button in tabButtons {
+    for (index, button) in tabButtons.enumerated() {
       button.frame = CGRect(x: nextX, y: 0, width: tabWidth, height: height)
+      button.setShowsCommandTrailingSeparator(isCommandChrome && index < tabButtons.count - 1)
       nextX += tabWidth + gap
     }
   }
@@ -12086,6 +12659,16 @@ private final class TerminalSessionTitleBarView: NSView {
     return count
   }
 
+  private static func isCommandsPanelChromeActionSet(_ actions: [TerminalTitleBarAction]) -> Bool {
+    if actions == [.expandCommandsPanel] {
+      return true
+    }
+    guard actions.count == 2, actions.contains(.closeCommandsPanel) else {
+      return false
+    }
+    return actions.contains(.pinCommandsPanel) || actions.contains(.unpinCommandsPanel)
+  }
+
   private static func actionClusterWidth(
     for actions: [TerminalTitleBarAction],
     buttonSize: CGFloat,
@@ -12109,6 +12692,8 @@ private final class TerminalSessionTitleBarView: NSView {
       return 2
     case .popOut, .restorePopOut:
       return 3
+    case .pinCommandsPanel, .unpinCommandsPanel, .closeCommandsPanel, .expandCommandsPanel:
+      return 3
     case .close, .sleep:
       return 4
     }
@@ -12120,6 +12705,10 @@ private final class TerminalSessionTitleBarView: NSView {
       return makeActionButton(systemSymbolName: "terminal", fallbackTitle: "T", tooltip: "New Terminal")
     case .openBrowser:
       return makeActionButton(systemSymbolName: "globe", fallbackTitle: "B", tooltip: "Open Browser Pane")
+    case .pinCommandsPanel:
+      return makeActionButton(systemSymbolName: "pin", fallbackTitle: "P", tooltip: "Pin Commands Panel")
+    case .unpinCommandsPanel:
+      return makeActionButton(systemSymbolName: "pin.slash", fallbackTitle: "U", tooltip: "Unpin Commands Panel")
     case .popOut:
       return makeActionButton(systemSymbolName: "arrow.up.right.square", fallbackTitle: "P", tooltip: "Pop Out Pane")
     case .restorePopOut:
@@ -12140,6 +12729,10 @@ private final class TerminalSessionTitleBarView: NSView {
       return makeActionButton(systemSymbolName: "moon", fallbackTitle: "S", tooltip: "Sleep Session")
     case .close:
       return makeActionButton(systemSymbolName: "xmark", fallbackTitle: "X", tooltip: "Close Session")
+    case .closeCommandsPanel:
+      return makeActionButton(systemSymbolName: "chevron.down", fallbackTitle: "v", tooltip: "Minimize Commands Panel")
+    case .expandCommandsPanel:
+      return makeActionButton(systemSymbolName: "chevron.up", fallbackTitle: "^", tooltip: "Expand Commands Panel")
     }
   }
 
@@ -12149,6 +12742,10 @@ private final class TerminalSessionTitleBarView: NSView {
       return "New Terminal"
     case .openBrowser:
       return "Open Browser Pane"
+    case .pinCommandsPanel:
+      return "Pin Commands Panel"
+    case .unpinCommandsPanel:
+      return "Unpin Commands Panel"
     case .popOut:
       return "Pop Out Pane"
     case .restorePopOut:
@@ -12169,6 +12766,10 @@ private final class TerminalSessionTitleBarView: NSView {
       return "Sleep Session"
     case .close:
       return "Close Session"
+    case .closeCommandsPanel:
+      return "Minimize Commands Panel"
+    case .expandCommandsPanel:
+      return "Expand Commands Panel"
     }
   }
 
@@ -12179,6 +12780,10 @@ private final class TerminalSessionTitleBarView: NSView {
       symbolName = "terminal"
     case .openBrowser:
       symbolName = "globe"
+    case .pinCommandsPanel:
+      symbolName = "pin"
+    case .unpinCommandsPanel:
+      symbolName = "pin.slash"
     case .popOut:
       symbolName = "arrow.up.right.square"
     case .restorePopOut:
@@ -12199,6 +12804,10 @@ private final class TerminalSessionTitleBarView: NSView {
       symbolName = "moon"
     case .close:
       symbolName = "xmark"
+    case .closeCommandsPanel:
+      symbolName = "chevron.down"
+    case .expandCommandsPanel:
+      symbolName = "chevron.up"
     }
     return NSImage(systemSymbolName: symbolName, accessibilityDescription: actionMenuTitle(for: action))
   }
@@ -13228,6 +13837,31 @@ private final class TerminalPaneLeafContainerView: NSView {
   }
 }
 
+private final class CommandsPanelChromeView: NSView {
+  private static let backgroundColor = NSColor(
+    calibratedWhite: 0.0,
+    alpha: 1.0
+  )
+
+  override var isOpaque: Bool {
+    false
+  }
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.backgroundColor = Self.backgroundColor.cgColor
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
+  }
+}
+
 private final class TerminalWorkspacePaneResizeHandleView: NSView {
   var onMouseDown: ((NSEvent) -> Void)?
   var onMouseDragged: ((NSEvent) -> Void)?
@@ -13347,6 +13981,12 @@ final class TerminalPaneBorderView: NSView {
     blue: 0x73 / 255,
     alpha: 0.95
   ).cgColor
+  private static let commandBorderColor = NSColor(
+    calibratedRed: 0x11 / 255,
+    green: 0x11 / 255,
+    blue: 0x11 / 255,
+    alpha: 1
+  ).cgColor
   private static let attentionBorderColor = NSColor(
     calibratedRed: 0x65 / 255,
     green: 0xE5 / 255,
@@ -13354,8 +13994,11 @@ final class TerminalPaneBorderView: NSView {
     alpha: 1
   ).cgColor
   private static let roundedBottomCornerRadius: CGFloat = 12
-  private static let borderWidth: CGFloat = 2
+  private static let activeBorderWidth: CGFloat = 2
+  private static let inactiveCommandBorderWidth: CGFloat = 2
 
+  private var chromeRole: TerminalPaneChromeRole = .workspace
+  private var hidesInactiveCommandBorder = false
   private var roundedBottomCorner: TerminalPaneRoundedBottomCorner = .none
   private var state: BorderState = .none
 
@@ -13392,7 +14035,7 @@ final class TerminalPaneBorderView: NSView {
 
     let path = borderPath(in: bounds)
     borderColor.setStroke()
-    path.lineWidth = Self.borderWidth
+    path.lineWidth = currentBorderWidth()
     path.stroke()
   }
 
@@ -13409,6 +14052,30 @@ final class TerminalPaneBorderView: NSView {
       return
     }
     roundedBottomCorner = corner
+    needsDisplay = true
+  }
+
+  fileprivate func setChromeRole(_ role: TerminalPaneChromeRole) {
+    guard chromeRole != role else {
+      return
+    }
+    chromeRole = role
+    switch state {
+    case .attention:
+      layer?.shadowColor = Self.attentionBorderColor
+    case .focused:
+      layer?.shadowColor = Self.focusedBorderColor
+    case .none:
+      layer?.shadowColor = nil
+    }
+    needsDisplay = true
+  }
+
+  fileprivate func setHidesInactiveCommandBorder(_ hides: Bool) {
+    guard hidesInactiveCommandBorder != hides else {
+      return
+    }
+    hidesInactiveCommandBorder = hides
     needsDisplay = true
   }
 
@@ -13432,6 +14099,7 @@ final class TerminalPaneBorderView: NSView {
       layer?.shadowColor = Self.focusedBorderColor
       layer?.shadowOpacity = 0.18
     case .none:
+      layer?.shadowColor = nil
       layer?.shadowOpacity = 0
     }
     needsDisplay = true
@@ -13444,12 +14112,27 @@ final class TerminalPaneBorderView: NSView {
     case .focused:
       return NSColor(cgColor: Self.focusedBorderColor)
     case .none:
+      if hidesInactiveCommandBorder {
+        return nil
+      }
+      if chromeRole == .commands {
+        return NSColor(cgColor: Self.commandBorderColor)
+      }
       return nil
     }
   }
 
+  private func currentBorderWidth() -> CGFloat {
+    if state == .none && hidesInactiveCommandBorder {
+      return 0
+    }
+    state == .none && chromeRole == .commands
+      ? Self.inactiveCommandBorderWidth
+      : Self.activeBorderWidth
+  }
+
   private func borderPath(in bounds: CGRect) -> NSBezierPath {
-    let inset = Self.borderWidth / 2
+    let inset = currentBorderWidth() / 2
     let rect = bounds.insetBy(dx: inset, dy: inset)
     let radius = roundedBottomCorner == .none
       ? 0
