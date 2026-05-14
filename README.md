@@ -45,6 +45,7 @@ brew install --cask maddada/tap/zmux
 
 - Native macOS app for better performance
 - Native Ghostty for best cpu/ram use and compatibility
+- Native terminal panes preserve Ghostty-style scrollback, scrollbars, and trackpad momentum inside the app.
 - Inspired by Codex App's UX
 - Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
 - Auto sleep unused terminals to save ram (auto-restore when clicked)

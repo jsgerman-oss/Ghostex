@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased - 2026-05-14
+## 2.5.0 - 2026-05-14
 
-<!-- CDXC:Distribution 2026-05-14-18:52: Unreleased notes must cover the
-Ghostex rename, reference sidebar workflow updates, command panel work, native
-pane/runtime stability, pet overlay routing, and dual-architecture release
-pipeline work until a signed public release is published. -->
+<!-- CDXC:Distribution 2026-05-14-19:06: Release notes for 2.5.0 must use the
+Ghostex public name and cover the rename, reference sidebar workflows, command
+panel work, native pane/runtime stability, pet overlay routing, terminal
+scrollbar restoration, and arm64 public release metadata. -->
 
 <!-- CDXC:Branding 2026-05-12-07:35: Public release notes must describe the
 Ghostex rename without rewriting historical zmux entries. Homebrew should
@@ -20,6 +20,7 @@ the public CLI command changes to `ghostex` with `gtx` as the short alias. -->
 - Improved Agents Hub so it loads the real local catalog, supports in-place saving, and avoids bundling private placeholder profile data.
 - Added floating Monaco prompt editing with resize/move behavior, save/cancel status handling, and safer terminal-close persistence.
 - Improved native pane chrome, focus/resize hit ownership, project editor routing, commands panel tab controls, and embedded browser pane handling.
+- Restored direct native terminal scrollbar behavior so embedded Ghostty surfaces keep scrollback geometry, scrollbar rendering, and precise trackpad momentum.
 - Improved T3/code-server runtime stability, including runtime liveness repair and correct macOS elapsed-time parsing for startup grace decisions.
 - Added a floating pet overlay with clickable activity bubbles that bring Ghostex forward and focus the exact session shown above the pet.
 - Added release handover docs and updated the release workflow so future agents keep GitHub Releases, Sparkle, and Homebrew aligned for both architectures.
