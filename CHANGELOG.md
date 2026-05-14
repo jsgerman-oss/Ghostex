@@ -1,15 +1,28 @@
 # Changelog
 
-## Unreleased - 2026-05-12
+## 2.5.0 - 2026-05-14
+
+<!-- CDXC:Distribution 2026-05-14-18:52: Release notes for 2.5.0 must cover
+the Ghostex rename, reference sidebar workflow updates, command panel work,
+native pane/runtime stability, pet overlay routing, and dual-architecture
+macOS publishing so GitHub, Sparkle, and Homebrew describe the same release. -->
 
 <!-- CDXC:Branding 2026-05-12-07:35: Public release notes must describe the
 Ghostex rename without rewriting historical zmux entries. Homebrew should
 accept both the new `ghostex` cask token and the existing `zmux` token, while
 the public CLI command changes to `ghostex` with `gtx` as the short alias. -->
 
+- Added native Apple Silicon and Intel release publishing with separate signed, notarized DMGs, separate Sparkle feeds, and an architecture-aware Homebrew cask.
 - Renamed the public app surface from Zmux to Ghostex while keeping internal repository, code, storage, bundle id, and historical asset names under `zmux`.
 - Changed the public CLI command to `ghostex`, with `gtx` as the short alias, and intentionally stopped documenting `zmux` as a CLI compatibility command.
 - Updated README install and CLI examples so both `brew install --cask maddada/tap/ghostex` and `brew install --cask maddada/tap/zmux` are presented as supported install commands.
+- Updated the reference sidebar workflows with a combined-only layout, improved command panel behavior, searchable settings sections, refined hotkey navigation, and cleaner Previous Sessions rows.
+- Improved Agents Hub so it loads the real local catalog, supports in-place saving, and avoids bundling private placeholder profile data.
+- Added floating Monaco prompt editing with resize/move behavior, save/cancel status handling, and safer terminal-close persistence.
+- Improved native pane chrome, focus/resize hit ownership, project editor routing, commands panel tab controls, and embedded browser pane handling.
+- Improved T3/code-server runtime stability, including runtime liveness repair and correct macOS elapsed-time parsing for startup grace decisions.
+- Added a floating pet overlay with clickable activity bubbles that bring Ghostex forward and focus the exact session shown above the pet.
+- Added release handover docs and updated the release workflow so future agents keep GitHub Releases, Sparkle, and Homebrew aligned for both architectures.
 
 ## 2.3.2 - 2026-05-10
 
