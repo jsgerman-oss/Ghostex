@@ -7,7 +7,20 @@ CONFIGURATION="${CONFIGURATION:-Debug}"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 WEB_DIR="$SCRIPT_DIR/Web"
 GHOSTTY_ROOT="${GHOSTTY_ROOT:-}"
-DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build}"
+ZMUX_MACOS_ARCH="${ZMUX_MACOS_ARCH:-$(uname -m)}"
+case "$ZMUX_MACOS_ARCH" in
+	arm64 | aarch64)
+		ZMUX_MACOS_ARCH="arm64"
+		;;
+	x86_64 | x64 | amd64)
+		ZMUX_MACOS_ARCH="x86_64"
+		;;
+	*)
+		echo "Unsupported ZMUX_MACOS_ARCH: $ZMUX_MACOS_ARCH" >&2
+		exit 1
+		;;
+esac
+DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build/$ZMUX_MACOS_ARCH}"
 ZMUX_APP_VARIANT="${ZMUX_APP_VARIANT:-prod}"
 if [[ "$ZMUX_APP_VARIANT" == "dev" ]]; then
 	# CDXC:DevAppFlavor 2026-04-28-02:01: The dev build must generate a
@@ -79,7 +92,7 @@ Build it first:
   env DEVELOPER_DIR=/Library/Developer/CommandLineTools \\
     SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \\
     GHOSTTY_METAL_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \\
-    zig build -Demit-xcframework -Dxcframework-target=native -Demit-macos-app=false
+    zig build -Demit-xcframework -Dxcframework-target=universal -Demit-macos-app=false
 EOF
 	exit 1
 fi
@@ -89,9 +102,12 @@ if [[ -z "$CEF_ROOT" ]]; then
 	# Browser panes render through embedded Chromium, so the native host build
 	# vendors CEF and its helper binary before Xcode resolves ObjC++ headers and
 	# link paths. This is a build dependency, not a package-manager install.
-	CEF_ROOT="$("$SCRIPT_DIR/vendor-cef.sh")"
+	# CDXC:MacRelease 2026-05-14-18:37: Dual-architecture public releases must
+	# vendor CEF for the requested target architecture so Intel builds are real
+	# x86_64 apps and do not depend on the Apple Silicon host architecture.
+	CEF_ROOT="$(ZMUX_MACOS_ARCH="$ZMUX_MACOS_ARCH" "$SCRIPT_DIR/vendor-cef.sh")"
 else
-	CEF_ROOT="$CEF_ROOT" "$SCRIPT_DIR/vendor-cef.sh" >/dev/null
+	CEF_ROOT="$CEF_ROOT" ZMUX_MACOS_ARCH="$ZMUX_MACOS_ARCH" "$SCRIPT_DIR/vendor-cef.sh" >/dev/null
 fi
 
 if ! command -v xcodegen >/dev/null 2>&1; then
@@ -314,6 +330,7 @@ export ZMUX_APP_DISPLAY_NAME
 export ZMUX_BUNDLE_ID
 export ZMUX_HOME_DIRECTORY_NAME
 export ZMUX_SHARED_HOME_DIRECTORY_NAME
+export ZMUX_MACOS_ARCH
 export CEF_ROOT
 mkdir -p "$SCRIPT_DIR/build"
 xcodegen generate --spec "$SCRIPT_DIR/project.yml"
@@ -335,6 +352,8 @@ xcodebuild \
 	-scheme zmux \
 	-configuration "$CONFIGURATION" \
 	-derivedDataPath "$DERIVED_DATA" \
+	ARCHS="$ZMUX_MACOS_ARCH" \
+	ONLY_ACTIVE_ARCH=NO \
 	build
 
 APP_PATH="$(
@@ -343,6 +362,8 @@ APP_PATH="$(
 		-scheme zmux \
 		-configuration "$CONFIGURATION" \
 		-derivedDataPath "$DERIVED_DATA" \
+		ARCHS="$ZMUX_MACOS_ARCH" \
+		ONLY_ACTIVE_ARCH=NO \
 		-showBuildSettings 2>/dev/null |
 		awk -F' = ' '/BUILT_PRODUCTS_DIR/ { print $2; exit }'
 )/$ZMUX_APP_NAME.app"
@@ -350,7 +371,7 @@ APP_PATH="$(
 copy_cef_runtime() {
 	local app_path="$1"
 	local frameworks_dir="$app_path/Contents/Frameworks"
-	local helper_source="$SCRIPT_DIR/build/cef/zmux-cef-helper"
+	local helper_source="$SCRIPT_DIR/build/cef-$ZMUX_MACOS_ARCH/zmux-cef-helper"
 	local helper_version="${MARKETING_VERSION:-1}"
 	mkdir -p "$frameworks_dir"
 	rsync -a --delete "$CEF_ROOT/Release/Chromium Embedded Framework.framework" "$frameworks_dir/"
@@ -398,6 +419,9 @@ EOF_HELPER
 copy_cef_runtime "$APP_PATH"
 
 "$SCRIPT_DIR/codesign-zmux-host.sh" "$APP_PATH"
+
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
+printf '%s\n' "$APP_PATH" >"/tmp/zmux-$APP_VERSION-$ZMUX_MACOS_ARCH-app-path"
 
 cat <<EOF
 

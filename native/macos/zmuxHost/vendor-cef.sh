@@ -4,17 +4,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CEF_VERSION="${ZMUX_CEF_VERSION:-147.0.10+gd58e84d}"
 CHROMIUM_VERSION="${ZMUX_CHROMIUM_VERSION:-147.0.7727.118}"
-EXPECTED_VERSION="${CEF_VERSION}+chromium-${CHROMIUM_VERSION}"
-CEF_ROOT="${CEF_ROOT:-$SCRIPT_DIR/Vendor/cef}"
 CMAKE_BIN="${CMAKE_BIN:-cmake}"
-ARCH_NAME="$(uname -m)"
-if [[ "$ARCH_NAME" == "arm64" ]]; then
-	CEF_ARCH="macosarm64"
-	CMAKE_ARCH="arm64"
-else
-	CEF_ARCH="macosx64"
-	CMAKE_ARCH="x86_64"
-fi
+ZMUX_MACOS_ARCH="${ZMUX_MACOS_ARCH:-$(uname -m)}"
+case "$ZMUX_MACOS_ARCH" in
+	arm64 | aarch64)
+		CEF_ARCH="macosarm64"
+		CMAKE_ARCH="arm64"
+		CLANG_ARCH="arm64"
+		;;
+	x86_64 | x64 | amd64)
+		CEF_ARCH="macosx64"
+		CMAKE_ARCH="x86_64"
+		CLANG_ARCH="x86_64"
+		;;
+	*)
+		echo "Unsupported ZMUX_MACOS_ARCH: $ZMUX_MACOS_ARCH" >&2
+		exit 1
+		;;
+esac
+EXPECTED_VERSION="${CEF_VERSION}+chromium-${CHROMIUM_VERSION}+${CMAKE_ARCH}"
+CEF_ROOT="${CEF_ROOT:-$SCRIPT_DIR/Vendor/cef-$CMAKE_ARCH}"
 
 ensure_cmake() {
 	if command -v "$CMAKE_BIN" >/dev/null 2>&1; then
@@ -71,14 +80,23 @@ build_cef_wrapper_and_helper() {
 			make -j8 libcef_dll_wrapper >&2
 		)
 	fi
+	lipo -archs "$CEF_ROOT/Release/Chromium Embedded Framework.framework/Chromium Embedded Framework" | grep -Fx "$CMAKE_ARCH" >&2
 
-	local helper_build="$SCRIPT_DIR/build/cef"
+	local helper_build="$SCRIPT_DIR/build/cef-$CMAKE_ARCH"
 	local helper="$helper_build/zmux-cef-helper"
 	if [[ -x "$helper" ]]; then
-		return
+		if lipo -archs "$helper" | grep -Fx "$CMAKE_ARCH" >&2; then
+			return
+		fi
+		rm -f "$helper" "$helper_build/ZmuxCEFProcessHelper.o"
 	fi
 	mkdir -p "$helper_build"
+	# CDXC:MacRelease 2026-05-14-18:37: Public releases now ship separate
+	# Apple Silicon and Intel DMGs. CEF vendoring must use the requested target
+	# architecture, not the builder machine architecture, so release automation
+	# can produce both app bundles from the same checkout.
 	xcrun --sdk macosx clang++ \
+		-arch "$CLANG_ARCH" \
 		-mmacosx-version-min=13.0 \
 		-std=c++20 \
 		-ObjC++ \
@@ -87,6 +105,7 @@ build_cef_wrapper_and_helper() {
 		-c "$SCRIPT_DIR/CEF/ZmuxCEFProcessHelper.cc" \
 		-o "$helper_build/ZmuxCEFProcessHelper.o"
 	xcrun --sdk macosx clang++ \
+		-arch "$CLANG_ARCH" \
 		-mmacosx-version-min=13.0 \
 		-std=c++20 \
 		"$helper_build/ZmuxCEFProcessHelper.o" \
@@ -101,6 +120,7 @@ build_cef_wrapper_and_helper() {
 		-change "@executable_path/../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
 		"@executable_path/../../../../Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
 		"$helper"
+	lipo -archs "$helper" | grep -Fx "$CMAKE_ARCH" >&2
 }
 
 download_cef
