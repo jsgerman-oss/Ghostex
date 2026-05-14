@@ -34,7 +34,7 @@ if [[ "$ZMUX_APP_VARIANT" == "dev" ]]; then
 	ZMUX_BUNDLE_ID="${ZMUX_BUNDLE_ID:-com.madda.zmux-dev.host}"
 	ZMUX_HOME_DIRECTORY_NAME="${ZMUX_HOME_DIRECTORY_NAME:-.zmux-dev}"
 	ZMUX_SHARED_HOME_DIRECTORY_NAME="${ZMUX_SHARED_HOME_DIRECTORY_NAME:-.zmux-dev}"
-	ZMUX_SPARKLE_FEED_URL="${ZMUX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/zmux/main/appcast.xml}"
+	ZMUX_SPARKLE_FEED_URL="${ZMUX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/Ghostex/main/appcast.xml}"
 	ZMUX_SPARKLE_PUBLIC_ED_KEY="${ZMUX_SPARKLE_PUBLIC_ED_KEY:-AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=}"
 else
 	ZMUX_APP_NAME="${ZMUX_APP_NAME:-Ghostex}"
@@ -42,7 +42,10 @@ else
 	ZMUX_BUNDLE_ID="${ZMUX_BUNDLE_ID:-com.madda.zmux.host}"
 	ZMUX_HOME_DIRECTORY_NAME="${ZMUX_HOME_DIRECTORY_NAME:-.zmux}"
 	ZMUX_SHARED_HOME_DIRECTORY_NAME="${ZMUX_SHARED_HOME_DIRECTORY_NAME:-.zmux}"
-	ZMUX_SPARKLE_FEED_URL="${ZMUX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/zmux/main/appcast.xml}"
+	# CDXC:Distribution 2026-05-14-19:06: Ghostex is the public app name.
+	# Release builds should publish and self-update from the Ghostex GitHub
+	# repository while old zmux repository URLs can continue to redirect.
+	ZMUX_SPARKLE_FEED_URL="${ZMUX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/Ghostex/main/appcast.xml}"
 	ZMUX_SPARKLE_PUBLIC_ED_KEY="${ZMUX_SPARKLE_PUBLIC_ED_KEY:-AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=}"
 fi
 
