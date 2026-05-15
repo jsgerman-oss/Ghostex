@@ -13539,20 +13539,26 @@ private final class TerminalSessionTitleBarView: NSView {
     /**
      CDXC:PaneTabs 2026-05-11-01:09
      Native pane tabs should always be visible, including single-pane layouts.
-     Use consistent tab widths up to 175px, shrink evenly down to 80px when
-     space is tight, then keep 80px tabs inside a clipped strip that scrolls
+     Use consistent tab widths up to the configured maximum, shrink evenly down
+     to the configured minimum when space is tight, then keep minimum-width
+     tabs inside a clipped strip that scrolls
      horizontally from either vertical or horizontal wheel gestures.
 
      CDXC:PaneTabs 2026-05-11-11:47
      A single-tab pane should fit the visible viewport instead of forcing an
-     80px scrollable tab. Narrow panes need the active terminal tab's inline
+     oversized scrollable tab. Narrow panes need the active terminal tab's inline
      Close hit area to stay inside the pane so activation and close controls
      remain usable without horizontal scrolling.
+
+     CDXC:PaneTabs 2026-05-15-15:08:
+     Workspace pane tabs need a 170px minimum width instead of the earlier
+     roughly 80px compressed width, so multi-tab groups remain readable and use
+     the existing horizontal scroll strip when the pane is too narrow.
      */
     let isCommandChrome = chromeRole == .commands
     let gap: CGFloat = isCommandChrome ? 0 : 2
     let maxTabWidth: CGFloat = isCommandChrome ? 160 : 175
-    let minTabWidth: CGFloat = isCommandChrome ? 72 : 80
+    let minTabWidth: CGFloat = isCommandChrome ? 72 : 170
     let tabCount = max(tabButtons.count, 1)
     let totalGap = gap * CGFloat(max(tabCount - 1, 0))
     let fittedWidth = (availableWidth - totalGap) / CGFloat(tabCount)
