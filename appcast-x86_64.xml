@@ -1,9 +1,20 @@
-<?xml version="1.0" standalone="yes"?>
-<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+<?xml version="1.0" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Ghostex Intel Updates</title>
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex Intel macOS releases.</description>
+        <item>
+            <title>3.0.0</title>
+            <pubDate>Fri, 15 May 2026 20:25:07 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.0.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>30000</sparkle:version>
+            <sparkle:shortVersionString>3.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink sparkle:edSignature="RSiuLy8MKwEJmNsDZIUWW/pFsNSmUthy79h8ClwCKzg0how/dhoue6KgxvEG38HTrq7CwDEjoCUTA+PosM0KAA==" sparkle:length="984">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-3.0.0-x86_64.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.0.0/ghostex-3.0.0-x86_64.dmg" length="201813741" type="application/octet-stream" sparkle:edSignature="TtES5GscRh8jbIMfmc6K88AcJf6w0h6XuztacppvZljkntFw7jQqe8AQ6F/3N7aX9m4O8hcjHhCBujFT2FKqAA=="></enclosure>
+        </item>
         <item>
             <title>2.7.0</title>
             <pubDate>Fri, 15 May 2026 15:19:13 +0400</pubDate>
@@ -12,7 +23,7 @@
             <sparkle:shortVersionString>2.7.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:releaseNotesLink sparkle:edSignature="rhhGbVDG48NZMv29iIzwmJLDBvsB1L1Zpz2q4szKFkXvRoomdIo6EdMq8S26BlNM3U5lacSFuz0RgWH08KfMDA==" sparkle:length="865">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.7.0-x86_64.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.7.0/ghostex-2.7.0-x86_64.dmg" length="202213130" type="application/octet-stream" sparkle:edSignature="0xCSHo0AEqn4+lk1gDpLOA7zE9PzLI7S2izhMZ6vdl3EZ+8Zvzg+M64JFSzjbbzjIXX46/HNcxFDhX/PkzlUDQ=="/>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.7.0/ghostex-2.7.0-x86_64.dmg" length="202213130" type="application/octet-stream" sparkle:edSignature="0xCSHo0AEqn4+lk1gDpLOA7zE9PzLI7S2izhMZ6vdl3EZ+8Zvzg+M64JFSzjbbzjIXX46/HNcxFDhX/PkzlUDQ=="></enclosure>
         </item>
         <item>
             <title>2.6.0</title>
@@ -22,7 +33,7 @@
             <sparkle:shortVersionString>2.6.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:releaseNotesLink sparkle:edSignature="3TuCYSgPF93wyCEPl+BrFhqyuC+8rFwpDO9C35JQB3c5S6toCxnelL5Epzvk/+J4oVrO0R0dsUg1ZfZso+/wAw==" sparkle:length="1818">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.6.0-x86_64.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.6.0/ghostex-2.6.0-x86_64.dmg" length="201005760" type="application/octet-stream" sparkle:edSignature="5hf+0WrokkfYRx0l5th3BivrpS1+uuvWkARYMWTIiIM6TyXMVnH1O7w48t/1IMii/7PpAqzQ2tRkh4xp/yVGDQ=="/>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.6.0/ghostex-2.6.0-x86_64.dmg" length="201005760" type="application/octet-stream" sparkle:edSignature="5hf+0WrokkfYRx0l5th3BivrpS1+uuvWkARYMWTIiIM6TyXMVnH1O7w48t/1IMii/7PpAqzQ2tRkh4xp/yVGDQ=="></enclosure>
         </item>
         <item>
             <title>2.5.1</title>
@@ -32,7 +43,7 @@
             <sparkle:shortVersionString>2.5.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:releaseNotesLink sparkle:edSignature="vt/g6eZ3JeHGMdaNdbjvjSPZU8v1AZ+2haWU1vpQxXlNHKzyrAtdOXyps/CTlx9hjtsZ5R581XOcS5V/tBQ0DQ==" sparkle:length="1593">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.5.1-x86_64.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.5.1/ghostex-2.5.1-x86_64.dmg" length="198189859" type="application/octet-stream" sparkle:edSignature="6WLZxemSaKcd2kH8E35gRKx0uPqbYUsNJW9b4N6lxSf+uVKnKO1D01IG1ExN4VSssiOMh/AATF0eQ0dbEQiUBA=="/>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.5.1/ghostex-2.5.1-x86_64.dmg" length="198189859" type="application/octet-stream" sparkle:edSignature="6WLZxemSaKcd2kH8E35gRKx0uPqbYUsNJW9b4N6lxSf+uVKnKO1D01IG1ExN4VSssiOMh/AATF0eQ0dbEQiUBA=="></enclosure>
         </item>
         <item>
             <title>2.5.0</title>
@@ -42,11 +53,10 @@
             <sparkle:shortVersionString>2.5.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:releaseNotesLink sparkle:edSignature="W5H+FR3cp8MpQTB+5tB07hEoXOAez3r31DbxIoWUK+6I0igKyi4PtHtezNcx3NRhH08Suol5FVq3XiXOPlgLAw==" sparkle:length="316">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.5.0-x86_64.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.5/ghostex-2.5.0-x86_64.dmg" length="201504594" type="application/octet-stream" sparkle:edSignature="7wUojuBf5c8TC6Ztx5nIgl7CL1QdYdh+uCOsuNNWiAI1LwqANb9CTkmmae/lpcV2lUDrjc7CZQTgO5q2hcaYAQ=="/>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.5/ghostex-2.5.0-x86_64.dmg" length="201504594" type="application/octet-stream" sparkle:edSignature="7wUojuBf5c8TC6Ztx5nIgl7CL1QdYdh+uCOsuNNWiAI1LwqANb9CTkmmae/lpcV2lUDrjc7CZQTgO5q2hcaYAQ=="></enclosure>
         </item>
     </channel>
-</rss>
-<!-- sparkle-signatures:
-edSignature: Dalo/VQLhsjuiPJqjubZMES6nbEtb0xopHnO3BDQEcPXbBtcrJUUPCVaO1t14Ob4d8ciqXwpCIh0LAoo8FkJCQ==
-length: 4416
+</rss><!-- sparkle-signatures:
+edSignature: e4SbbzrPTUS+a2bYl1p7SVoLdRIhAk9aykmaN1ZY15BcVtV3tFagjfGoS/IegHuOiHqRkWs9wY/IQwPDIx9zAw==
+length: 5720
 -->
