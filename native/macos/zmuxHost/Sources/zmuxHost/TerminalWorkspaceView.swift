@@ -4895,6 +4895,12 @@ final class TerminalWorkspaceView: NSView {
    before yielding the rest of the workspace to the editor surface, because
    AppKit's default subview hit order can hand floating command-pane clicks to
    Chromium even when native command chrome is visually above it.
+
+   CDXC:ProjectEditorCompanion 2026-05-15-09:01:
+   Project-editor hit logs showed editor-region points falling through to
+   `super.hitTest` and resolving to the companion terminal surface. When VS Code
+   is active, use explicit command, companion, and editor frame routing so stale
+   or overlapping terminal subviews cannot steal clicks from the editor frame.
   */
   override func hitTest(_ point: NSPoint) -> NSView? {
     if let floatingEditorHitView = floatingEditorHitView(at: point) {
@@ -4904,11 +4910,10 @@ final class TerminalWorkspaceView: NSView {
         hitView: floatingEditorHitView)
       return floatingEditorHitView
     }
+    if isProjectEditorInteractionSurfaceActive {
+      return projectEditorInteractionHitView(at: point)
+    }
     if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.resizeHandle",
-        at: point,
-        hitView: paneResizeHandleHitView)
       return paneResizeHandleHitView
     }
     if let titleBarHitView = paneTitleBarHitView(at: point) {
@@ -4920,26 +4925,10 @@ final class TerminalWorkspaceView: NSView {
             "returnedHitView": String(describing: type(of: titleBarHitView)),
           ])
       }
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.titleBar",
-        at: point,
-        hitView: titleBarHitView)
       return titleBarHitView
     }
     if let contentHitView = paneContentHitView(at: point) {
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.content",
-        at: point,
-        hitView: contentHitView)
       return contentHitView
-    }
-    guard !isProjectEditorInteractionSurfaceActive else {
-      let hitView = super.hitTest(point)
-      logProjectEditorHitTestDecision(
-        event: "nativeWorkspace.projectEditor.hitTest.super",
-        at: point,
-        hitView: hitView)
-      return hitView
     }
     /**
      CDXC:NativeTerminalFocus 2026-05-13-07:48
@@ -4963,6 +4952,165 @@ final class TerminalWorkspaceView: NSView {
     return hitView
   }
 
+  private func projectEditorInteractionHitView(at point: NSPoint) -> NSView? {
+    if let paneResizeHandleHitView = projectEditorResizeHandleHitView(at: point) {
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.resizeHandle",
+        at: point,
+        hitView: paneResizeHandleHitView)
+      return paneResizeHandleHitView
+    }
+    if let commandTitleBarHitView = commandPaneTitleBarHitView(at: point) {
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.commandTitleBar",
+        at: point,
+        hitView: commandTitleBarHitView)
+      return commandTitleBarHitView
+    }
+    if let commandContentHitView = commandPaneContentHitView(at: point) {
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.commandContent",
+        at: point,
+        hitView: commandContentHitView)
+      return commandContentHitView
+    }
+
+    let workspaceBounds = projectEditorHitTestWorkspaceBounds()
+    let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
+    if let companionLayout {
+      if companionLayout.companionFrame.contains(point) {
+        if let companionHitView = projectEditorCompanionHitView(layout: companionLayout, at: point) {
+          logProjectEditorHitTestDecision(
+            event: "nativeWorkspace.projectEditor.hitTest.companion",
+            at: point,
+            hitView: companionHitView)
+          return companionHitView
+        }
+        let hitView = projectEditorCompanionFallbackHitView(sessionId: companionLayout.sessionId)
+        logProjectEditorHitTestDecision(
+          event: "nativeWorkspace.projectEditor.hitTest.companionFallback",
+          at: point,
+          hitView: hitView)
+        return hitView
+      }
+      if companionLayout.editorFrame.contains(point) {
+        let editorHitView = activeProjectEditorHitView(at: point)
+        logProjectEditorHitTestDecision(
+          event: "nativeWorkspace.projectEditor.hitTest.editor",
+          at: point,
+          hitView: editorHitView)
+        return editorHitView
+      }
+    } else if workspaceBounds.contains(point) {
+      let editorHitView = activeProjectEditorHitView(at: point)
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.editor",
+        at: point,
+        hitView: editorHitView)
+      return editorHitView
+    }
+
+    let hitView = super.hitTest(point)
+    logProjectEditorHitTestDecision(
+      event: "nativeWorkspace.projectEditor.hitTest.super",
+      at: point,
+      hitView: hitView)
+    return hitView
+  }
+
+  private func projectEditorResizeHandleHitView(at point: NSPoint) -> NSView? {
+    if
+      !projectEditorCompanionResizeHandleView.isHidden,
+      projectEditorCompanionResizeHandleView.alphaValue > 0,
+      projectEditorCompanionResizeHandleView.frame.contains(point)
+    {
+      let handlePoint = projectEditorCompanionResizeHandleView.convert(point, from: self)
+      if let hitView = projectEditorCompanionResizeHandleView.hitTest(handlePoint) {
+        return hitView
+      }
+    }
+    if
+      !commandsPanelResizeHandleView.isHidden,
+      commandsPanelResizeHandleView.alphaValue > 0,
+      commandsPanelResizeHandleView.frame.contains(point)
+    {
+      let handlePoint = commandsPanelResizeHandleView.convert(point, from: self)
+      if let hitView = commandsPanelResizeHandleView.hitTest(handlePoint) {
+        return hitView
+      }
+    }
+    return nil
+  }
+
+  private func commandPaneTitleBarHitView(at point: CGPoint) -> NSView? {
+    for sessionId in orderedVisibleCommandPaneOwnerSessionIds().reversed() {
+      if let session = sessions[sessionId],
+        let hitView = paneTitleBarHitView(session.titleBarView, at: point)
+      {
+        return hitView
+      }
+    }
+    return nil
+  }
+
+  private func commandPaneContentHitView(at point: CGPoint) -> NSView? {
+    for sessionId in orderedVisibleCommandPaneOwnerSessionIds().reversed() {
+      if let session = sessions[sessionId],
+        let hitView = terminalPaneContentHitView(session, at: point)
+      {
+        return hitView
+      }
+    }
+    return nil
+  }
+
+  private func projectEditorCompanionHitView(
+    layout: ProjectEditorCompanionLayout,
+    at point: CGPoint
+  ) -> NSView? {
+    let sessionId = layout.sessionId
+    if let session = sessions[sessionId] {
+      return paneTitleBarHitView(session.titleBarView, at: point)
+        ?? terminalPaneContentHitView(session, at: point)
+    }
+    if let session = webPaneSessions[sessionId] {
+      return paneTitleBarHitView(session.titleBarView, at: point)
+        ?? webPaneContentHitView(session, at: point)
+    }
+    return nil
+  }
+
+  private func projectEditorCompanionFallbackHitView(sessionId: String) -> NSView? {
+    if let session = sessions[sessionId], !session.containerView.isHidden {
+      return session.containerView
+    }
+    if let session = webPaneSessions[sessionId], !session.containerView.isHidden {
+      return session.containerView
+    }
+    return nil
+  }
+
+  private func activeProjectEditorHitView(at point: CGPoint) -> NSView? {
+    let activeSession =
+      activeProjectEditorId.flatMap { projectEditorPaneSessions[$0] }
+      ?? visibleProjectEditorInteractionSessionIds.compactMap { projectEditorPaneSessions[$0] }.first
+    guard let activeSession, !activeSession.hostView.isHidden else {
+      return nil
+    }
+    let editorPoint = convert(point, to: activeSession.hostView)
+    guard activeSession.hostView.bounds.contains(editorPoint) else {
+      return activeSession.hostView
+    }
+    return activeSession.hostView.hitTest(editorPoint) ?? activeSession.hostView
+  }
+
+  private func projectEditorHitTestWorkspaceBounds() -> CGRect {
+    projectEditorCompanionResizeWorkspaceBounds.width > 1
+      && projectEditorCompanionResizeWorkspaceBounds.height > 1
+      ? projectEditorCompanionResizeWorkspaceBounds
+      : bounds
+  }
+
   /**
    CDXC:ProjectEditorCompanion 2026-05-15-05:34:
    Clicks near the left edge of the embedded VS Code surface can be stolen by
@@ -4980,11 +5128,7 @@ final class TerminalWorkspaceView: NSView {
     guard NativeDebugLogging.isEnabled, isProjectEditorInteractionSurfaceActive else {
       return
     }
-    let workspaceBounds =
-      projectEditorCompanionResizeWorkspaceBounds.width > 1
-        && projectEditorCompanionResizeWorkspaceBounds.height > 1
-      ? projectEditorCompanionResizeWorkspaceBounds
-      : bounds
+    let workspaceBounds = projectEditorHitTestWorkspaceBounds()
     let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
     var payload = details
     payload["activeProjectEditorId"] = nullableString(activeProjectEditorId)
@@ -5135,14 +5279,9 @@ final class TerminalWorkspaceView: NSView {
         return hitView
       }
       if let session = webPaneSessions[sessionId],
-        !session.containerView.isHidden,
-        session.containerView.window != nil,
-        session.containerView.frame.contains(point)
+        let hitView = webPaneContentHitView(session, at: point)
       {
-        let contentPoint = convert(point, to: session.hostView)
-        if session.hostView.bounds.contains(contentPoint) {
-          return session.hostView.hitTest(contentPoint) ?? session.hostView
-        }
+        return hitView
       }
     }
     return nil
@@ -5164,6 +5303,20 @@ final class TerminalWorkspaceView: NSView {
     let contentPoint = convert(point, to: session.scrollView)
     if session.scrollView.bounds.contains(contentPoint) {
       return session.scrollView.hitTest(contentPoint) ?? session.scrollView
+    }
+    return nil
+  }
+
+  private func webPaneContentHitView(_ session: WebPaneSession, at point: CGPoint) -> NSView? {
+    guard !session.containerView.isHidden,
+      session.containerView.window != nil,
+      session.containerView.frame.contains(point)
+    else {
+      return nil
+    }
+    let contentPoint = convert(point, to: session.hostView)
+    if session.hostView.bounds.contains(contentPoint) {
+      return session.hostView.hitTest(contentPoint) ?? session.hostView
     }
     return nil
   }
@@ -5948,13 +6101,13 @@ final class TerminalWorkspaceView: NSView {
         details: [
           "point": describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0)),
           "sourceSessionId": drag.sourceSessionId,
-          "targetSessionId": paneSessionId(at: point) ?? NSNull(),
+          "targetSessionId": paneSessionId(at: point, sourceSessionId: drag.sourceSessionId) ?? NSNull(),
         ])
       if drag.startedFromTab {
         NativePaneTabDragReproLog.append(event: "nativePaneTabDrag.dropIgnored", details: [
           "point": describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0)),
           "sourceSessionId": drag.sourceSessionId,
-          "targetSessionId": paneSessionId(at: point) ?? NSNull(),
+          "targetSessionId": paneSessionId(at: point, sourceSessionId: drag.sourceSessionId) ?? NSNull(),
           "windowNumber": event.window?.windowNumber ?? NSNull(),
         ])
       }
@@ -6019,6 +6172,28 @@ final class TerminalWorkspaceView: NSView {
     }
     if localY >= 1 - edgeBand {
       return .top
+    }
+    return .center
+  }
+
+  private func commandPaneDropPlacement(at point: CGPoint, targetSessionId: String) -> PaneDropPlacement {
+    /**
+     CDXC:CommandsPanel 2026-05-15-08:59
+     Command-terminal tab dragging should support the same horizontal edge
+     split intent as workspace tabs. The command panel does not have vertical
+     split behavior, so classify only left and right edge bands and keep the
+     rest of the command pane as a center tab-group drop.
+     */
+    guard let frame = paneBorderFrame(for: targetSessionId), frame.width > 1 else {
+      return .center
+    }
+    let localX = (point.x - frame.minX) / frame.width
+    let edgeBand: CGFloat = 0.24
+    if localX <= edgeBand {
+      return .left
+    }
+    if localX >= 1 - edgeBand {
+      return .right
     }
     return .center
   }
@@ -6156,7 +6331,7 @@ final class TerminalWorkspaceView: NSView {
     at point: CGPoint,
     sourceSessionId: String
   ) -> PaneTabReorderDropTarget? {
-    for (ownerSessionId, titleBarView) in visiblePaneTitleBarViews() {
+    for (ownerSessionId, titleBarView) in visiblePaneTitleBarViews(for: sourceSessionId) {
       let titleBarPoint = convert(point, to: titleBarView)
       guard let target = titleBarView.tabReorderTarget(
         at: titleBarPoint,
@@ -6174,7 +6349,7 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func isPointInSourceTabStrip(_ point: CGPoint, sourceSessionId: String) -> Bool {
-    for (_, titleBarView) in visiblePaneTitleBarViews() {
+    for (_, titleBarView) in visiblePaneTitleBarViews(for: sourceSessionId) {
       let titleBarPoint = convert(point, to: titleBarView)
       if titleBarView.containsTab(sourceSessionId) && titleBarView.isTabStripPoint(titleBarPoint) {
         return true
@@ -6187,10 +6362,12 @@ final class TerminalWorkspaceView: NSView {
     at point: CGPoint,
     sourceSessionId: String
   ) -> PaneHeaderDropTarget? {
-    guard let feedbackSessionId = paneSessionId(at: point) else {
+    guard let feedbackSessionId = paneSessionId(at: point, sourceSessionId: sourceSessionId) else {
       return nil
     }
-    let placement = paneDropPlacement(at: point, targetSessionId: feedbackSessionId)
+    let placement = commandsPanelActiveSessionIds.contains(sourceSessionId)
+      ? commandPaneDropPlacement(at: point, targetSessionId: feedbackSessionId)
+      : paneDropPlacement(at: point, targetSessionId: feedbackSessionId)
     if feedbackSessionId != sourceSessionId {
       return PaneHeaderDropTarget(
         feedbackSessionId: feedbackSessionId,
@@ -6223,7 +6400,7 @@ final class TerminalWorkspaceView: NSView {
     sourceSessionId: String,
     placeAfterTarget: Bool
   ) -> String? {
-    for (ownerSessionId, titleBarView) in visiblePaneTitleBarViews()
+    for (ownerSessionId, titleBarView) in visiblePaneTitleBarViews(for: sourceSessionId)
     where ownerSessionId == feedbackSessionId && titleBarView.containsTab(sourceSessionId) {
       return titleBarView.splitAnchorSessionId(
         excluding: sourceSessionId,
@@ -6232,8 +6409,17 @@ final class TerminalWorkspaceView: NSView {
     return nil
   }
 
-  private func visiblePaneTitleBarViews() -> [(ownerSessionId: String, titleBarView: TerminalSessionTitleBarView)] {
-    orderedVisiblePaneOwnerSessionIds().compactMap { sessionId in
+  private func visiblePaneTitleBarViews(
+    for sourceSessionId: String? = nil
+  ) -> [(ownerSessionId: String, titleBarView: TerminalSessionTitleBarView)] {
+    /**
+     CDXC:CommandsPanel 2026-05-15-08:59
+     Command-terminal tabs use the same AppKit tab controls as workspace panes,
+     but their visible pane owners live in the command-panel layout tree. Route
+     command-tab drag hit testing through command-panel owners so left/right
+     edge drops and tab reorders do not accidentally target workspace panes.
+     */
+    visiblePaneOwnerSessionIds(for: sourceSessionId).compactMap { sessionId in
       if let session = sessions[sessionId],
         !session.containerView.isHidden,
         !session.titleBarView.isHidden,
@@ -6250,6 +6436,15 @@ final class TerminalWorkspaceView: NSView {
       }
       return nil
     }
+  }
+
+  private func visiblePaneOwnerSessionIds(for sourceSessionId: String?) -> [String] {
+    guard let sourceSessionId,
+      commandsPanelActiveSessionIds.contains(sourceSessionId)
+    else {
+      return orderedVisiblePaneOwnerSessionIds()
+    }
+    return orderedVisibleCommandPaneOwnerSessionIds()
   }
 
   private func updatePaneTabReorderTarget(_ target: PaneTabReorderDropTarget?) {
@@ -6426,15 +6621,19 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
-  private func paneSessionId(at point: CGPoint) -> String? {
+  private func paneSessionId(at point: CGPoint, sourceSessionId: String? = nil) -> String? {
     /**
      CDXC:NativePaneHitTarget 2026-05-13-07:48
      Pane hit ownership follows visible pane owners, not every active session.
      Active tab siblings can remain alive offscreen and may have stale frames;
      drag/drop feedback and content hit routing must ignore those inactive tab
      surfaces so spatial hits resolve to the pane the user actually sees.
+     CDXC:CommandsPanel 2026-05-15-08:59
+     Command-tab drags must resolve their target inside the command panel, not
+     the workspace split behind it. Use command-panel pane owners whenever the
+     dragged source session belongs to the command surface.
      */
-    for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
+    for sessionId in visiblePaneOwnerSessionIds(for: sourceSessionId).reversed() {
       if let session = sessions[sessionId],
         !session.containerView.isHidden,
         session.containerView.frame.contains(point)

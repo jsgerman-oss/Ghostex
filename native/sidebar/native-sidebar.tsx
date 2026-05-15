@@ -4833,6 +4833,41 @@ function insertCommandSessionBesidePane(
   return didInsert ? { ...layout, children } : undefined;
 }
 
+function getCommandSamePaneSplitAnchorSessionId(
+  layout: SessionPaneLayoutNode,
+  sourceSessionId: string,
+  placeAfterTarget: boolean,
+): string | undefined {
+  if (layout.kind === "leaf") {
+    return undefined;
+  }
+  if (layout.kind === "tabs") {
+    if (!layout.sessionIds.includes(sourceSessionId) || layout.sessionIds.length <= 1) {
+      return undefined;
+    }
+    const siblingSessionIds = layout.sessionIds.filter((sessionId) => sessionId !== sourceSessionId);
+    /**
+     * CDXC:CommandsPanel 2026-05-15-08:59
+     * Dragging a command-terminal tab to the left or right edge of its own
+     * command pane should split that tab out like workspace pane tabs. Resolve
+     * the drop to a remaining sibling before removing the dragged source so the
+     * command pane still has an anchor to split beside.
+     */
+    return placeAfterTarget ? siblingSessionIds[siblingSessionIds.length - 1] : siblingSessionIds[0];
+  }
+  for (const child of layout.children) {
+    const anchorSessionId = getCommandSamePaneSplitAnchorSessionId(
+      child,
+      sourceSessionId,
+      placeAfterTarget,
+    );
+    if (anchorSessionId) {
+      return anchorSessionId;
+    }
+  }
+  return undefined;
+}
+
 function reorderCommandSessionInPaneTabGroup(
   layout: SessionPaneLayoutNode | undefined,
   sourceSessionId: string,
@@ -14541,16 +14576,23 @@ function handleCommandPanelPaneReorderRequested(
     if (!layout || (sourceSessionId === targetSessionId && placement === "center")) {
       return panel;
     }
+    const isSameSessionSideDrop = sourceSessionId === targetSessionId && placement !== "center";
+    const resolvedTargetSessionId = isSameSessionSideDrop
+      ? getCommandSamePaneSplitAnchorSessionId(layout, sourceSessionId, placement === "right")
+      : targetSessionId;
+    if (!resolvedTargetSessionId) {
+      return panel;
+    }
     const layoutWithoutSource = removeCommandSessionFromPaneLayout(layout, sourceSessionId);
     if (!layoutWithoutSource) {
       return panel;
     }
     const nextLayout =
       placement === "center"
-        ? addCommandSessionToPaneTabGroup(layoutWithoutSource, targetSessionId, sourceSessionId)
+        ? addCommandSessionToPaneTabGroup(layoutWithoutSource, resolvedTargetSessionId, sourceSessionId)
         : insertCommandSessionBesidePane(
             layoutWithoutSource,
-            targetSessionId,
+            resolvedTargetSessionId,
             sourceSessionId,
             placement === "right",
           );
