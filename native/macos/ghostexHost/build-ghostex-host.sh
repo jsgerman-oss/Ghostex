@@ -388,9 +388,13 @@ if [[ -d "$STALE_APP_PATH/Contents/Frameworks" ]]; then
 	# layout does not satisfy Xcode's generic framework validator. Incremental
 	# builds must remove only the generated CEF payload before xcodebuild, then
 	# copy and sign the runtime again after the app bundle is produced.
+	# CDXC:Distribution 2026-05-15-15:16: Ghostex release builds must also
+	# remove pre-rename zmux CEF helper bundles from incremental DerivedData
+	# outputs so notarized DMGs do not ship obsolete helper app names.
 	rm -rf \
 		"$STALE_APP_PATH/Contents/Frameworks/Chromium Embedded Framework.framework" \
-		"$STALE_APP_PATH"/Contents/Frameworks/ghostex\ Helper*.app
+		"$STALE_APP_PATH"/Contents/Frameworks/ghostex\ Helper*.app \
+		"$STALE_APP_PATH"/Contents/Frameworks/zmux\ Helper*.app
 fi
 
 xcodebuild \

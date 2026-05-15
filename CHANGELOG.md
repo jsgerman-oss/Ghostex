@@ -8,7 +8,7 @@ describe the same Ghostex rename cleanup, built-in agent additions, safer
 directional hotkeys, searchable action icons, project-header stats, titlebar
 modes, and pane actions. -->
 
-- Completed the Ghostex public naming cleanup across release, app, and Homebrew surfaces.
+- Completed the Ghostex public naming cleanup across release, app, Homebrew, and generated CEF helper surfaces.
 - Added Factory Droid and Grok Build as built-in agent options with bundled icons, sidebar labels, and session metadata support.
 - Changed directional pane focus defaults to `Cmd+Alt+Arrow` so normal `Cmd+Arrow` text-editing behavior is not stolen by workspace navigation.
 - Added a searchable action icon picker in Settings so custom sidebar actions can choose icons faster and keep accessible labels visible.
