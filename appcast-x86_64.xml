@@ -5,6 +5,16 @@
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex Intel macOS releases.</description>
         <item>
+            <title>2.5.1</title>
+            <pubDate>Fri, 15 May 2026 08:51:50 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v2.5.1</sparkle:fullReleaseNotesLink>
+            <sparkle:version>20501</sparkle:version>
+            <sparkle:shortVersionString>2.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink sparkle:edSignature="vt/g6eZ3JeHGMdaNdbjvjSPZU8v1AZ+2haWU1vpQxXlNHKzyrAtdOXyps/CTlx9hjtsZ5R581XOcS5V/tBQ0DQ==" sparkle:length="1593">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.5.1-x86_64.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.5.1/ghostex-2.5.1-x86_64.dmg" length="198189859" type="application/octet-stream" sparkle:edSignature="6WLZxemSaKcd2kH8E35gRKx0uPqbYUsNJW9b4N6lxSf+uVKnKO1D01IG1ExN4VSssiOMh/AATF0eQ0dbEQiUBA=="/>
+        </item>
+        <item>
             <title>2.5.0</title>
             <pubDate>Fri, 15 May 2026 01:06:33 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v2.5</sparkle:fullReleaseNotesLink>
@@ -15,7 +25,8 @@
             <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.5/ghostex-2.5.0-x86_64.dmg" length="201504594" type="application/octet-stream" sparkle:edSignature="7wUojuBf5c8TC6Ztx5nIgl7CL1QdYdh+uCOsuNNWiAI1LwqANb9CTkmmae/lpcV2lUDrjc7CZQTgO5q2hcaYAQ=="/>
         </item>
     </channel>
-</rss><!-- sparkle-signatures:
-edSignature: czHKzI3JuAc9GsouTHKif6w+nEACgnmny7nlT1o36d0l5a16iYj08euw7U5mQfS8V4EfqNqhVKwFifLdoW3fBA==
-length: 1368
+</rss>
+<!-- sparkle-signatures:
+edSignature: plHDgF6e6cXyjKr6hZaejA1rbxYIInLVl7LiXxY1WsH0RNTmNvjeHjACe1VNJNXr5Ifmnva8XV5eifcayo72Cg==
+length: 2385
 -->
