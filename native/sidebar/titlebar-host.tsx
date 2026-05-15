@@ -788,6 +788,12 @@ function TitlebarModeSwitcher({
         button's shared-layout motion background. Avoid a clipped segmented
         track because it changes the motion shape and makes the spring look
         unlike the referenced component.
+
+        CDXC:ModeSwitcher 2026-05-15-14:54:
+        The active pill must visibly travel from the previously active mode to
+        the newly selected mode. Keep tab overflow visible so Framer Motion's
+        shared-layout element is not clipped to the destination button, which
+        would make Agents-to-Tasks look like a direct jump.
       */}
       {modes.map((mode) => {
         const isActive = mode.value === activeMode;
@@ -1158,7 +1164,7 @@ styleElement.textContent = `
     justify-content: center;
     letter-spacing: 0;
     min-width: 70px;
-    overflow: hidden;
+    overflow: visible;
     padding: 0 10px;
     position: relative;
     white-space: nowrap;
