@@ -8,6 +8,7 @@ import {
   IconFolderOpen,
   IconPlayerPlay,
   IconRotateClockwise,
+  IconRobot,
   IconSettings,
   IconTerminal2,
   IconWorld,
@@ -82,6 +83,7 @@ type TitlebarProjectState = {
   projectId?: string;
   projectName: string;
   projectPath: string;
+  petOverlayEnabled: boolean;
   sidebarActions: TitlebarSidebarActionsSettings;
   showProjectEditorDiffFileCount: boolean;
   workspaceOpenTargets: TitlebarOpenTargetsSettings;
@@ -99,6 +101,7 @@ type NativeTitlebarCommand =
   | { type: "openActiveProjectEditorFromTitlebar" }
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
   | { type: "rotateActivePaneLayoutClockwiseFromTitlebar" }
+  | { type: "togglePetOverlayFromTitlebar" }
   | { type: "toggleCommandsPanelFromTitlebar" }
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
   | {
@@ -311,6 +314,7 @@ function App() {
           ...current,
           ...state,
           diffStats: state.diffStats ?? current.diffStats,
+          petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
           sidebarActions: state.sidebarActions ?? current.sidebarActions,
           workspaceOpenTargets: state.workspaceOpenTargets ?? current.workspaceOpenTargets,
         }));
@@ -432,6 +436,10 @@ function App() {
 
   const toggleCommandsPanel = () => {
     postNative({ type: "toggleCommandsPanelFromTitlebar" });
+  };
+
+  const togglePetOverlay = () => {
+    postNative({ type: "togglePetOverlayFromTitlebar" });
   };
 
   return (
@@ -653,6 +661,28 @@ function App() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
+                  aria-label={projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}
+                  className="titlebar-session-button titlebar-pet-button"
+                  data-awake={String(projectState.petOverlayEnabled)}
+                  data-titlebar-hit-region
+                  onClick={togglePetOverlay}
+                  type="button"
+                  variant="ghost"
+                >
+                  {/*
+                   * CDXC:PetOverlay 2026-05-15-00:36:
+                   * The top-right titlebar pet control uses a robot icon and
+                   * mirrors the persisted overlay setting: normal chrome color
+                   * when the pet is awake, dimmed when the overlay is off.
+                   */}
+                  <IconRobot aria-hidden="true" size={16} stroke={1.8} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
                   aria-label="Toggle Commands panel"
                   className="titlebar-session-button titlebar-command-panel-button"
                   data-titlebar-hit-region
@@ -689,6 +719,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       pathParts[pathParts.length - 1] ||
       "Ghostex",
     projectPath,
+    petOverlayEnabled: settings.petOverlayEnabled,
     sidebarActions: {
       commands: [],
     },
@@ -1056,6 +1087,13 @@ styleElement.textContent = `
   .titlebar-command-panel-button {
     width: 28px;
     padding: 0;
+  }
+  .titlebar-pet-button {
+    padding: 0;
+    width: 28px;
+  }
+  .titlebar-pet-button[data-awake="false"] {
+    color: color-mix(in srgb, rgb(244 244 245) 42%, transparent);
   }
   .titlebar-open-chevron-button {
     width: 18px;

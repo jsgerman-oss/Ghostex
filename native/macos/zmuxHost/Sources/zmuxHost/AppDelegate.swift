@@ -1659,6 +1659,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       break
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
       break
+    case .togglePetOverlayFromTitlebar:
+      break
     case .toggleCommandsPanelFromTitlebar:
       break
     case .runSidebarCommandFromTitlebar:
@@ -3229,15 +3231,6 @@ final class zmuxRootView: NSView {
     divider.onDoubleClick = { [weak self] in
       self?.resetSidebarWidth()
     }
-    workspaceView.onSidebarResizeDrag = { [weak self] deltaX in
-      self?.resizeSidebar(by: deltaX)
-    }
-    workspaceView.onSidebarResizeDragEnded = { [weak self] in
-      self?.persistSidebarWidth()
-    }
-    workspaceView.onSidebarResizeDoubleClick = { [weak self] in
-      self?.resetSidebarWidth()
-    }
 
     wantsLayer = true
     layer?.backgroundColor = zmuxReferenceSidebarChromeBackgroundColor.cgColor
@@ -3578,6 +3571,9 @@ final class zmuxRootView: NSView {
     if let showFileCount = command.showProjectEditorDiffFileCount {
       payload["showProjectEditorDiffFileCount"] = showFileCount
     }
+    if let petOverlayEnabled = command.petOverlayEnabled {
+      payload["petOverlayEnabled"] = petOverlayEnabled
+    }
     if let stats = command.activeProjectDiffStats {
       payload["diffStats"] = [
         "additions": stats.additions,
@@ -3700,6 +3696,20 @@ final class zmuxRootView: NSView {
     sidebarView.evaluateJavaScript(
       """
       window.__zmux_NATIVE_SIDEBAR__?.toggleCommandsPanelFromTitlebar?.();
+      undefined;
+      """)
+  }
+
+  private func togglePetOverlayFromTitlebar() {
+    /**
+     CDXC:PetOverlay 2026-05-15-00:36:
+     The React titlebar can request pet wake/sleep, but the sidebar webview
+     remains the settings owner. Forward the action there instead of editing
+     shared settings directly in AppKit.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__zmux_NATIVE_SIDEBAR__?.togglePetOverlayFromTitlebar?.();
       undefined;
       """)
   }
@@ -3870,6 +3880,8 @@ final class zmuxRootView: NSView {
       refreshWorkspaceOpenTargetAvailabilityFromTitlebar()
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
       rotateActivePaneLayoutClockwiseFromTitlebar()
+    case .togglePetOverlayFromTitlebar:
+      togglePetOverlayFromTitlebar()
     case .toggleCommandsPanelFromTitlebar:
       toggleCommandsPanelFromTitlebar()
     case .runSidebarCommandFromTitlebar(let command):
@@ -4506,6 +4518,9 @@ final class zmuxRootView: NSView {
     let chromeX: CGFloat = sidebarSide == .left ? 0 : max(bounds.width - chromeWidth, 0)
     let workspaceX: CGFloat = sidebarSide == .left ? chromeWidth : 0
     let workspaceWidth = max(bounds.width - chromeWidth, 1)
+    let sidebarResizeEdgeExtension = min(
+      max(workspaceView.sidebarResizeEdgeExtensionWidth, 0),
+      workspaceWidth)
     /**
      CDXC:EditorPanes 2026-05-08-13:02
      Resizing the sidebar while a VS Code editor pane is visible can crash the
@@ -4531,15 +4546,21 @@ final class zmuxRootView: NSView {
      sidebars keep the handle on their right edge; right-side sidebars put the
      same handle on their left edge so dragging grows/shrinks the visible
      sidebar boundary instead of the outside window edge.
+
+     CDXC:SidebarResizeRails 2026-05-15-03:59:
+     The sidebar/workspace boundary must have one native resize owner. Extend the
+     existing root divider over the adjacent workspace edge gap so split-pane
+     layouts do not show a second sidebar rail with separate drag handling.
      */
     let sidebarX: CGFloat
     let dividerX: CGFloat
+    let dividerWidth = Self.dividerWidth + sidebarResizeEdgeExtension
     if sidebarSide == .left {
       sidebarX = chromeX
       dividerX = chromeX + workspaceBarWidth + sidebarWidth
     } else {
       sidebarX = chromeX + Self.dividerWidth
-      dividerX = chromeX
+      dividerX = chromeX - sidebarResizeEdgeExtension
     }
 
     let sidebarFrame = CGRect(
@@ -4551,7 +4572,7 @@ final class zmuxRootView: NSView {
     let dividerFrame = CGRect(
       x: dividerX,
       y: 0,
-      width: Self.dividerWidth,
+      width: dividerWidth,
       height: contentHeight
     )
     let workspaceFrame = CGRect(

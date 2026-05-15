@@ -6,7 +6,8 @@ import WebKit
 final class PetOverlayController: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
   private static let defaultScreenMargin: CGFloat = 18
   private static let storageKey = "zmux.petOverlayOrigin"
-  private static let panelWidth: CGFloat = 320
+  private static let activityPanelWidth: CGFloat = 320
+  private static let spritePanelSize = NSSize(width: 104, height: 108)
 
   private let encoder = JSONEncoder()
   private let onActivityClick: (String, String) -> Void
@@ -182,7 +183,16 @@ final class PetOverlayController: NSObject, WKNavigationDelegate, WKScriptMessag
 
   private static func preferredSize(activityCount: Int) -> NSSize {
     let visibleActivityCount = min(max(activityCount, 0), 3)
-    return NSSize(width: panelWidth, height: CGFloat(126 + visibleActivityCount * 54))
+    /**
+     CDXC:PetOverlay 2026-05-15-00:36:
+     When the pet has no activity bubbles, the native panel should fit the
+     sprite-sized React shell instead of keeping the wider bubble hit area.
+     Activity bubbles still need the wider panel so their titles remain usable.
+     */
+    if visibleActivityCount == 0 {
+      return spritePanelSize
+    }
+    return NSSize(width: activityPanelWidth, height: CGFloat(126 + visibleActivityCount * 54))
   }
 
   private static func defaultOrigin(size: NSSize) -> NSPoint {

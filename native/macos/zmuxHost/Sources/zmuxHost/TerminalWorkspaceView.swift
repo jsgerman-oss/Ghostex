@@ -951,10 +951,6 @@ final class TerminalWorkspaceView: NSView {
     let startRatios: [CGFloat]
   }
 
-  private struct SidebarResizeDrag {
-    var lastWindowX: CGFloat
-  }
-
   private struct CommandsPanelResizeDrag {
     let startHeight: CGFloat
     let startY: CGFloat
@@ -1007,7 +1003,19 @@ final class TerminalWorkspaceView: NSView {
     var lastHoverLogEventTime: TimeInterval
   }
 
-  private static let terminalTitleBarHeight: CGFloat = 33
+  /**
+   CDXC:PaneTabs 2026-05-15-12:00:
+   Workspace pane tabs are 36pt tall, so the non-command titlebar must use the
+   same height. Keeping the bar at 33pt centers tabs outside their owning chrome
+   and makes the tab strip background/border visibly miss the tab edges.
+   */
+  private static let terminalTitleBarHeight: CGFloat = 36
+  /**
+   CDXC:PaneTabs 2026-05-15-08:29:
+   Command pane tabs must match the visible command tab bar height exactly.
+   Keep the command titlebar height as the single source of truth for command
+   tab button layout and collapsed command-panel sizing.
+   */
   private static let commandPanelTitleBarHeight: CGFloat = 26
   private static let collapsedCommandsPanelLeftMargin: CGFloat = 4
   private static let collapsedCommandsPanelRightMargin: CGFloat = 8
@@ -1063,9 +1071,6 @@ final class TerminalWorkspaceView: NSView {
     alpha: 1)
   private let ghostty: ZmuxGhosttyApp
   private let sendEvent: (HostEvent) -> Void
-  var onSidebarResizeDrag: ((CGFloat) -> Void)?
-  var onSidebarResizeDragEnded: (() -> Void)?
-  var onSidebarResizeDoubleClick: (() -> Void)?
   private var sessions: [String: TerminalSession] = [:]
   private var webPaneSessions: [String: WebPaneSession] = [:]
   private var projectEditorPaneSessions: [String: ProjectEditorPaneSession] = [:]
@@ -1103,7 +1108,6 @@ final class TerminalWorkspaceView: NSView {
   private var paneResizeHits: [PaneResizeHit] = []
   private var paneResizeRatiosByPath: [String: [CGFloat]] = [:]
   private var paneResizeDrag: PaneResizeDrag?
-  private var sidebarResizeDrag: SidebarResizeDrag?
   private var commandsPanelResizeDrag: CommandsPanelResizeDrag?
   private let commandsPanelChromeView = CommandsPanelChromeView()
   private let commandsPanelCollapsedRightMarginView = NSView(frame: .zero)
@@ -3167,6 +3171,7 @@ final class TerminalWorkspaceView: NSView {
     let nextPoppedOutSessionIds = Set(command.poppedOutSessionIds ?? []).intersection(nextActiveSessionIds)
     let nextPaneGap = Self.clampedPaneGap(command.paneGap)
     let nextLayout = command.layout
+    let previousSidebarResizeEdgeExtensionWidth = sidebarResizeEdgeExtensionWidth
     let shouldRelayout =
       command.layoutChanged
       ?? (nativeLayoutSignature(
@@ -3225,6 +3230,15 @@ final class TerminalWorkspaceView: NSView {
     focusedSessionId = command.focusedSessionId
     terminalLayout = nextLayout
     paneGap = nextPaneGap
+    if abs(sidebarResizeEdgeExtensionWidth - previousSidebarResizeEdgeExtensionWidth) > 0.5 {
+      /**
+       CDXC:SidebarResizeRails 2026-05-15-03:59:
+       The root sidebar divider owns the workspace edge gap. Active-pane and
+       pane-gap changes happen inside TerminalWorkspaceView, so ask the parent
+       root view to refresh the divider frame whenever that covered width changes.
+       */
+      superview?.needsLayout = true
+    }
     syncProjectEditorCompanionSelectionFromSidebar(reason: "setActiveTerminalSet")
     /**
      CDXC:WorkspaceLayout 2026-04-28-06:08
@@ -3785,7 +3799,9 @@ final class TerminalWorkspaceView: NSView {
     guard !sessionIds.isEmpty else {
       return
     }
-    let panelBounds = rect.insetBy(dx: commandPanelOuterInset(), dy: commandPanelOuterInset())
+    let panelBounds = rect.insetBy(
+      dx: commandPanelOuterInset(),
+      dy: commandPanelVerticalOuterInset())
     if let commandsPanelLayout {
       layoutTree(commandsPanelLayout, in: panelBounds, path: "commands")
     } else {
@@ -3804,11 +3820,21 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func collapsedCommandsPanelHeight() -> CGFloat {
-    Self.commandPanelTitleBarHeight + commandPanelOuterInset() * 2
+    Self.commandPanelTitleBarHeight + commandPanelVerticalOuterInset() * 2
   }
 
   private func commandPanelOuterInset() -> CGFloat {
     2 / max(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2, 1)
+  }
+
+  private func commandPanelVerticalOuterInset() -> CGFloat {
+    /**
+     CDXC:PaneTabs 2026-05-15-08:29:
+     The command panel keeps a horizontal inset for its side chrome, but vertical
+     inset makes the visible tab bar taller than the command tabs. Use zero
+     vertical inset so command tabs and their owning bar share one height.
+     */
+    0
   }
 
   private func orderCommandsPanelToFront(_ sessionIds: [String]) {
@@ -4821,30 +4847,18 @@ final class TerminalWorkspaceView: NSView {
     return hit.rect.intersection(bounds)
   }
 
-  override func resetCursorRects() {
-    super.resetCursorRects()
+  var sidebarResizeEdgeExtensionWidth: CGFloat {
     /**
-     CDXC:NativePaneResize 2026-05-13-07:23
-     Pane split rails follow the sidebar divider model: the rail view owns its
-     cursor rect directly. The workspace advertises only sidebar-edge resizing
-     here so pane cursor ownership has a single AppKit owner.
+     CDXC:SidebarResizeRails 2026-05-15-03:59:
+     The sidebar/workspace boundary has one AppKit resize owner: zmuxRootView's
+     root divider. Expose the workspace edge gap width so the root divider can
+     cover that visible gap without TerminalWorkspaceView installing a second
+     cursor or drag target beside split panes.
      */
-    if let sidebarResizeEdgeRect {
-      addCursorRect(sidebarResizeEdgeRect, cursor: .resizeLeftRight)
-    }
-  }
-
-  private var sidebarResizeEdgeRect: CGRect? {
     guard paneGap > 0, !orderedVisibleSessionIds().isEmpty else {
-      return nil
+      return 0
     }
-    let width = min(paneGap, bounds.width)
-    switch sidebarSide {
-    case .left:
-      return CGRect(x: 0, y: 0, width: width, height: bounds.height)
-    case .right:
-      return CGRect(x: max(bounds.width - width, 0), y: 0, width: width, height: bounds.height)
-    }
+    return paneGap
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -4881,15 +4895,20 @@ final class TerminalWorkspaceView: NSView {
    before yielding the rest of the workspace to the editor surface, because
    AppKit's default subview hit order can hand floating command-pane clicks to
    Chromium even when native command chrome is visually above it.
-   */
+  */
   override func hitTest(_ point: NSPoint) -> NSView? {
     if let floatingEditorHitView = floatingEditorHitView(at: point) {
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.floatingEditor",
+        at: point,
+        hitView: floatingEditorHitView)
       return floatingEditorHitView
     }
-    if sidebarResizeEdgeRect?.contains(point) == true {
-      return self
-    }
     if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.resizeHandle",
+        at: point,
+        hitView: paneResizeHandleHitView)
       return paneResizeHandleHitView
     }
     if let titleBarHitView = paneTitleBarHitView(at: point) {
@@ -4901,13 +4920,26 @@ final class TerminalWorkspaceView: NSView {
             "returnedHitView": String(describing: type(of: titleBarHitView)),
           ])
       }
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.titleBar",
+        at: point,
+        hitView: titleBarHitView)
       return titleBarHitView
     }
     if let contentHitView = paneContentHitView(at: point) {
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.content",
+        at: point,
+        hitView: contentHitView)
       return contentHitView
     }
     guard !isProjectEditorInteractionSurfaceActive else {
-      return super.hitTest(point)
+      let hitView = super.hitTest(point)
+      logProjectEditorHitTestDecision(
+        event: "nativeWorkspace.projectEditor.hitTest.super",
+        at: point,
+        hitView: hitView)
+      return hitView
     }
     /**
      CDXC:NativeTerminalFocus 2026-05-13-07:48
@@ -4929,6 +4961,66 @@ final class TerminalWorkspaceView: NSView {
       return paneContentHitView(at: point)
     }
     return hitView
+  }
+
+  /**
+   CDXC:ProjectEditorCompanion 2026-05-15-05:34:
+   Clicks near the left edge of the embedded VS Code surface can be stolen by
+   native pane hit routing before CEF sees them. While confirming the root
+   cause, project-editor hit-test logs must record the click point, companion
+   and editor frames, returned AppKit view, and resolved session id so a click
+   in the editor frame can be correlated with an unexpected terminal focus.
+   */
+  private func logProjectEditorHitTestDecision(
+    event: String,
+    at point: CGPoint,
+    hitView: NSView?,
+    details: [String: Any] = [:]
+  ) {
+    guard NativeDebugLogging.isEnabled, isProjectEditorInteractionSurfaceActive else {
+      return
+    }
+    let workspaceBounds =
+      projectEditorCompanionResizeWorkspaceBounds.width > 1
+        && projectEditorCompanionResizeWorkspaceBounds.height > 1
+      ? projectEditorCompanionResizeWorkspaceBounds
+      : bounds
+    let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
+    var payload = details
+    payload["activeProjectEditorId"] = nullableString(activeProjectEditorId)
+    payload["companionContentFrame"] = companionLayout.map { describeFrame($0.contentFrame) } ?? NSNull()
+    payload["companionFrame"] = companionLayout.map { describeFrame($0.companionFrame) } ?? NSNull()
+    payload["companionSessionId"] = nullableString(projectEditorCompanionSessionId)
+    payload["editorFrame"] = companionLayout.map { describeFrame($0.editorFrame) } ?? NSNull()
+    payload["focusedSessionId"] = nullableString(focusedSessionId)
+    payload["hitSessionId"] = nullableString(hitView.flatMap { sessionId(containing: $0) })
+    payload["hitView"] = hitView.map { String(describing: type(of: $0)) } ?? NSNull()
+    payload["point"] = describeFrame(CGRect(x: point.x, y: point.y, width: 0, height: 0))
+    payload["pointRegion"] = projectEditorHitTestPointRegion(point, layout: companionLayout)
+    payload["resizeHandleFrame"] = companionLayout.map { describeFrame($0.resizeHandleFrame) } ?? NSNull()
+    payload["visibleCommandPaneOwnerSessionIds"] = orderedVisibleCommandPaneOwnerSessionIds()
+    payload["visiblePaneOwnerSessionIds"] = orderedVisiblePaneOwnerSessionIds()
+    payload["workspaceBounds"] = describeFrame(workspaceBounds)
+    TerminalFocusDebugLog.append(event: event, details: payload)
+  }
+
+  private func projectEditorHitTestPointRegion(
+    _ point: CGPoint,
+    layout: ProjectEditorCompanionLayout?
+  ) -> String {
+    guard let layout else {
+      return "noCompanionLayout"
+    }
+    if layout.resizeHandleFrame.contains(point) {
+      return "companionResizeHandle"
+    }
+    if layout.companionFrame.contains(point) {
+      return "companion"
+    }
+    if layout.editorFrame.contains(point) {
+      return "editor"
+    }
+    return "outside"
   }
 
   private func paneResizeHandleHitView(at point: NSPoint) -> NSView? {
@@ -5081,39 +5173,10 @@ final class TerminalWorkspaceView: NSView {
       super.mouseDown(with: event)
       return
     }
-    if beginSidebarResize(with: event) {
-      return
-    }
     guard beginPaneResize(with: event) else {
       super.mouseDown(with: event)
       return
     }
-  }
-
-  @discardableResult
-  private func beginSidebarResize(with event: NSEvent) -> Bool {
-    guard onSidebarResizeDrag != nil || onSidebarResizeDoubleClick != nil else {
-      return false
-    }
-    let point = convert(event.locationInWindow, from: nil)
-    guard sidebarResizeEdgeRect?.contains(point) == true else {
-      return false
-    }
-    /**
-     CDXC:NativePaneResize 2026-05-11-18:31
-     The workspace edge gap adjacent to the sidebar belongs to sidebar chrome,
-     not pane split resizing. Dragging the outside line of the leftmost or
-     rightmost pane stack should grow/shrink the sidebar before any pane
-     divider can claim that mouse stream.
-     */
-    if event.clickCount >= 2 {
-      onSidebarResizeDoubleClick?()
-      NSCursor.resizeLeftRight.set()
-      return true
-    }
-    sidebarResizeDrag = SidebarResizeDrag(lastWindowX: event.locationInWindow.x)
-    NSCursor.resizeLeftRight.set()
-    return true
   }
 
   @discardableResult
@@ -5164,27 +5227,10 @@ final class TerminalWorkspaceView: NSView {
       super.mouseDragged(with: event)
       return
     }
-    if continueSidebarResize(with: event) {
-      return
-    }
     guard continuePaneResize(with: event) else {
       super.mouseDragged(with: event)
       return
     }
-  }
-
-  @discardableResult
-  private func continueSidebarResize(with event: NSEvent) -> Bool {
-    guard var drag = sidebarResizeDrag else {
-      return false
-    }
-    let currentWindowX = event.locationInWindow.x
-    let deltaX = currentWindowX - drag.lastWindowX
-    drag.lastWindowX = currentWindowX
-    sidebarResizeDrag = drag
-    NSCursor.resizeLeftRight.set()
-    onSidebarResizeDrag?(deltaX)
-    return true
   }
 
   @discardableResult
@@ -5220,29 +5266,12 @@ final class TerminalWorkspaceView: NSView {
       super.mouseUp(with: event)
       return
     }
-    if endSidebarResize(with: event) {
-      return
-    }
     if endPaneResize(with: event) {
       return
     }
     paneHeaderDrag = nil
     endPaneHeaderDragFeedback()
     super.mouseUp(with: event)
-  }
-
-  @discardableResult
-  private func endSidebarResize(with event: NSEvent) -> Bool {
-    guard sidebarResizeDrag != nil else {
-      return false
-    }
-    sidebarResizeDrag = nil
-    onSidebarResizeDragEnded?()
-    let point = convert(event.locationInWindow, from: nil)
-    if sidebarResizeEdgeRect?.contains(point) == true {
-      NSCursor.resizeLeftRight.set()
-    }
-    return true
   }
 
   @discardableResult
@@ -8479,6 +8508,12 @@ final class TerminalWorkspaceView: NSView {
      resize misses from the focused pane side. That test did not change the
      failure, so keep the selected-pane border enabled and fix resize event
      ownership instead of hiding focus chrome.
+
+     CDXC:NativePaneChrome 2026-05-15-08:08:
+     Single-pane workspaces should not draw an active pane border, even when
+     that pane is a tab group with multiple active sessions. Gate workspace
+     focus chrome on visible pane owners so the border appears only for real
+     split layouts where focus needs spatial disambiguation.
      */
     let isCommandPanelSession = commandsPanelActiveSessionIds.contains(sessionId)
     if isCommandPanelSession {
@@ -8487,7 +8522,7 @@ final class TerminalWorkspaceView: NSView {
     }
     return !commandPanelOwnsResponder()
       && focusedSessionId == sessionId
-      && orderedVisibleSessionIds().count > 1
+      && orderedVisiblePaneOwnerSessionIds().count > 1
   }
 
   private func commandPanelOwnsResponder() -> Bool {

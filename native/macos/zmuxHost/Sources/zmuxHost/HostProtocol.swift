@@ -58,6 +58,7 @@ enum HostCommand: Decodable {
   case openActiveProjectEditorFromTitlebar
   case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
   case rotateActivePaneLayoutClockwiseFromTitlebar
+  case togglePetOverlayFromTitlebar
   case toggleCommandsPanelFromTitlebar
   case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
   case configureZedOverlay(ConfigureZedOverlay)
@@ -126,6 +127,7 @@ enum HostCommand: Decodable {
     case openActiveProjectEditorFromTitlebar
     case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
     case rotateActivePaneLayoutClockwiseFromTitlebar
+    case togglePetOverlayFromTitlebar
     case toggleCommandsPanelFromTitlebar
     case runSidebarCommandFromTitlebar
     case configureZedOverlay
@@ -251,6 +253,8 @@ enum HostCommand: Decodable {
       self = .refreshWorkspaceOpenTargetAvailabilityFromTitlebar
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
       self = .rotateActivePaneLayoutClockwiseFromTitlebar
+    case .togglePetOverlayFromTitlebar:
+      self = .togglePetOverlayFromTitlebar
     case .toggleCommandsPanelFromTitlebar:
       self = .toggleCommandsPanelFromTitlebar
     case .runSidebarCommandFromTitlebar:
@@ -388,6 +392,7 @@ struct SetActiveTerminalSet: Decodable {
   let layoutChanged: Bool?
   let layout: NativeTerminalLayout?
   let paneGap: Double?
+  let petOverlayEnabled: Bool?
   /**
    CDXC:PanePopOut 2026-05-11-09:35
    The sidebar keeps popped-out sessions in the active layout and sends this

@@ -360,6 +360,7 @@ type NativeHostCommand =
       sessionActivities?: Record<string, "attention" | "sleeping" | "working">;
 	      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
 	      sessionTitles?: Record<string, string>;
+	      petOverlayEnabled?: boolean;
 	      showProjectEditorDiffFileCount?: boolean;
 	      sidebarActions?: {
 	        commands: SidebarCommandButton[];
@@ -683,6 +684,7 @@ declare global {
 	      openActiveProjectEditorFromTitlebar: () => void;
 	      refreshWorkspaceOpenTargetAvailabilityFromTitlebar: () => void;
 	      rotateActivePaneLayoutClockwiseFromTitlebar: () => void;
+	      togglePetOverlayFromTitlebar: () => void;
 	      toggleCommandsPanelFromTitlebar: () => void;
 	      runSidebarCommandFromTitlebar: (commandId: string) => void;
 	    };
@@ -843,6 +845,7 @@ let lastNativeLayoutSyncKey: string | undefined;
 let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
 let lastNativeFocusedSidebarSessionId: string | undefined;
+const lastFocusedWorkspaceTerminalByProjectId = new Map<string, string>();
 let lastNativeT3RuntimeSessionStateKey: string | undefined;
 let nativeSplitLayoutHint: NativeSplitLayoutHint | undefined;
 let lastPersistedProjectsPayloadJson: string | undefined;
@@ -1697,7 +1700,9 @@ function createNativeBrowserSession(
   },
 ): BrowserSessionRecord | undefined {
   const project = activeProject();
-  activateWorkspaceSurfaceForProject(project.projectId);
+  if (!shouldKeepProjectEditorOpenForNewSession(project.projectId)) {
+    activateWorkspaceSurfaceForProject(project.projectId);
+  }
   const normalizedUrl = normalizeBrowserPaneUrl(url);
   const targetWorkspace = groupId
     ? focusGroupInSimpleWorkspace(project.workspace, groupId).snapshot
@@ -4465,6 +4470,47 @@ function activeCommandPanelContainsSession(sessionId: string): boolean {
   return commandPanelContainsSession(activeProject(), sessionId);
 }
 
+function rememberFocusedWorkspaceTerminal(project: NativeProject, sessionId: string, reason: string): void {
+  const session = findSessionRecordInProject(project, sessionId);
+  if (session?.kind !== "terminal" || session.surface === "commands") {
+    return;
+  }
+  /**
+   * CDXC:CommandsPanel 2026-05-15-03:21:
+   * Focusing the Commands panel by F12 or by clicking a command terminal must
+   * preserve the workspace terminal the user was typing in. The minimized
+   * Commands panel should hand keyboard focus back to that terminal, so users
+   * can collapse it by any command-pane control and keep typing immediately.
+   */
+  lastFocusedWorkspaceTerminalByProjectId.set(project.projectId, sessionId);
+  appendTerminalFocusDebugLog("nativeFocusTrace.commandsPanelWorkspaceTerminalRemembered", {
+    projectId: project.projectId,
+    reason,
+    sessionId,
+  });
+}
+
+function rememberActiveProjectWorkspaceTerminalBeforeCommandsPanel(reason: string): void {
+  const project = activeProject();
+  const workspace = project.workspace;
+  const group =
+    workspace.groups.find((candidate) => candidate.groupId === workspace.activeGroupId) ??
+    workspace.groups[0];
+  const sessionId = group?.snapshot.focusedSessionId;
+  if (sessionId) {
+    rememberFocusedWorkspaceTerminal(project, sessionId, reason);
+  }
+}
+
+function rememberedWorkspaceTerminalForCommandsPanel(project: NativeProject): string | undefined {
+  const sessionId = lastFocusedWorkspaceTerminalByProjectId.get(project.projectId);
+  if (!sessionId) {
+    return undefined;
+  }
+  const session = findSessionRecordInProject(project, sessionId);
+  return session?.kind === "terminal" && session.surface !== "commands" ? sessionId : undefined;
+}
+
 /**
  * CDXC:CommandsPanel 2026-05-14-09:41
  * Command-pane terminals should identify as `Command Terminal` unless a
@@ -4476,7 +4522,9 @@ function createCommandTerminal(
   options: { focusAfterCreate?: boolean; commandId?: string } = {},
 ): TerminalSessionRecord | undefined {
   const project = activeProject();
-  activateWorkspaceSurfaceForProject(project.projectId);
+  if (!shouldKeepProjectEditorOpenForNewSession(project.projectId)) {
+    activateWorkspaceSurfaceForProject(project.projectId);
+  }
   const sessionId = createTimestampedSessionId([
     ...project.commandsPanel.sessions.map((session) => session.sessionId),
     ...project.workspace.groups.flatMap((group) =>
@@ -7036,7 +7084,9 @@ function createTerminal(
   },
 ): TerminalSessionRecord | undefined {
   const project = activeProject();
-  activateWorkspaceSurfaceForProject(project.projectId);
+  if (!shouldKeepProjectEditorOpenForNewSession(project.projectId)) {
+    activateWorkspaceSurfaceForProject(project.projectId);
+  }
   if (project.isChat === true) {
     const existingChatSession = findFirstTerminalSessionInProject(project);
     if (existingChatSession) {
@@ -7351,6 +7401,7 @@ function createNativeSessionInCurrentContext(): void {
 }
 
 function openCommandsPanelForActiveProject(): void {
+  rememberActiveProjectWorkspaceTerminalBeforeCommandsPanel("openCommandsPanel");
   updateActiveProjectCommandsPanel((panel) => ({
     ...panel,
     isVisible: true,
@@ -7390,10 +7441,15 @@ function toggleFocusedCommandsPanelForActiveProject(): void {
 }
 
 function hideCommandsPanelForActiveProject(): void {
+  const restoreSessionId = rememberedWorkspaceTerminalForCommandsPanel(activeProject());
   updateActiveProjectCommandsPanel((panel) => ({
     ...panel,
     isVisible: false,
   }));
+  if (restoreSessionId) {
+    focusTerminal(restoreSessionId);
+    return;
+  }
   publish();
 }
 
@@ -7454,7 +7510,9 @@ function createNativeT3Session(
   },
 ): T3SessionRecord | undefined {
   const project = activeProject();
-  activateWorkspaceSurfaceForProject(project.projectId);
+  if (!shouldKeepProjectEditorOpenForNewSession(project.projectId)) {
+    activateWorkspaceSurfaceForProject(project.projectId);
+  }
   const targetWorkspace = groupId
     ? focusGroupInSimpleWorkspace(project.workspace, groupId).snapshot
     : project.workspace;
@@ -9623,8 +9681,36 @@ function restartNativeSession(sessionId: string): void {
     focusProject(reference.project.projectId);
   }
   const sessionPersistenceProvider = resolveTerminalSessionPersistenceProvider();
-  closeTerminal(reference.sessionId);
-  createTerminal(
+  if (reference.project.isChat === true) {
+    closeTerminal(reference.sessionId);
+    createTerminal(
+      session.title || DEFAULT_TERMINAL_SESSION_TITLE,
+      initialInput,
+      groupId,
+      session.agentName,
+      {
+        sessionPersistenceName: sessionPersistenceNameForProvider(
+          sessionPersistenceProvider,
+          session,
+        ),
+        sessionPersistenceProvider,
+      },
+    );
+    return;
+  }
+  const nativeSessionId = forgetNativeSessionMappingForProject(
+    reference.project.projectId,
+    reference.sessionId,
+  );
+  /**
+   * CDXC:SessionRestore 2026-05-15-03:23:
+   * Reload Session must replace the clicked terminal in its existing pane/tab
+   * slot. Create the replacement while the original session is still present
+   * so paneLayout can swap the target leaf/tab member instead of appending the
+   * reloaded terminal as a new split pane after close removes the placement
+   * anchor.
+   */
+  const replacementSession = createTerminal(
     session.title || DEFAULT_TERMINAL_SESSION_TITLE,
     initialInput,
     groupId,
@@ -9635,8 +9721,26 @@ function restartNativeSession(sessionId: string): void {
         session,
       ),
       sessionPersistenceProvider,
+      visiblePlacement: { kind: "replace", targetSessionId: reference.sessionId },
     },
   );
+  if (!replacementSession) {
+    rememberNativeSessionMapping(reference.project.projectId, reference.sessionId);
+    return;
+  }
+  clearNativeSidebarCommandSessionBySessionId(reference.sessionId);
+  terminalStateById.delete(reference.sessionId);
+  titleDerivedActivityBySessionId.delete(reference.sessionId);
+  nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
+  nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
+  nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
+  clearDelayedSendTimer(reference.sessionId);
+  updateProjectWorkspace(
+    reference.project.projectId,
+    (workspace) => removeSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
+  );
+  postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
+  publish();
 }
 
 function forkNativeSession(sessionId: string): void {
@@ -12174,6 +12278,18 @@ function activateWorkspaceSurfaceForProject(projectId: string): void {
   scheduleProjectEditorSleep(projectId);
 }
 
+function shouldKeepProjectEditorOpenForNewSession(projectId: string): boolean {
+  /**
+   * CDXC:ProjectEditorCompanion 2026-05-15-01:39:
+   * Creating a new terminal/browser/T3/command session from the sidebar while
+   * embedded VS Code is open should behave like selecting an existing session:
+   * keep the editor surface open and let the native focus command retarget the
+   * left companion pane. Do not call activateWorkspaceSurfaceForProject here,
+   * because that method intentionally returns the workarea to the agents view.
+   */
+  return projectEditorSurfaceByProjectId.get(projectId)?.isOpen === true;
+}
+
 function handleProjectEditorBackRequested(projectId: string): void {
   const project = findProject(projectId);
   if (!project) {
@@ -12219,6 +12335,19 @@ function toggleCommandsPanelFromTitlebar(): void {
    * terminals, persistence, and native layout sync all use one owner.
    */
   toggleCommandsPanelForActiveProject();
+}
+
+function togglePetOverlayFromTitlebar(): void {
+  /**
+   * CDXC:PetOverlay 2026-05-15-00:36:
+   * The titlebar robot button is a direct pet-awake toggle. Persist it through
+   * the same settings owner as the modal so the overlay, titlebar state, and
+   * shared settings snapshot stay synchronized.
+   */
+  saveSettings({
+    ...settings,
+    petOverlayEnabled: !settings.petOverlayEnabled,
+  });
 }
 
 function reorderProjects(projectIds: string[]): void {
@@ -13421,6 +13550,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     },
     sessionTitleBarActions,
     sessionTitles,
+    petOverlayEnabled: settings.petOverlayEnabled,
     showProjectEditorDiffFileCount: settings.showProjectEditorDiffFileCount,
     type: "setActiveTerminalSet",
     workspaceOpenTargets: {
@@ -13909,6 +14039,7 @@ window.addEventListener("zmux-native-host-event", (event) => {
       targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(activeProject().workspace),
     });
     if (activeCommandPanelContainsSession(sidebarSessionId)) {
+      rememberActiveProjectWorkspaceTerminalBeforeCommandsPanel("nativeCommandPanelFocus");
       updateActiveProjectCommandsPanel((panel) => ({
         ...panel,
         activeSessionId: sidebarSessionId,
@@ -13919,6 +14050,7 @@ window.addEventListener("zmux-native-host-event", (event) => {
       publish();
       return;
     }
+    rememberFocusedWorkspaceTerminal(activeProject(), sidebarSessionId, "nativeWorkspaceFocus");
     if (previousFocusedSessionId === sidebarSessionId) {
       const acknowledgedAttention = acknowledgeNativeTerminalAttention(
         sidebarSessionId,
@@ -14738,6 +14870,7 @@ window.__zmux_NATIVE_SIDEBAR__ = {
   openActiveProjectEditorFromTitlebar,
   refreshWorkspaceOpenTargetAvailabilityFromTitlebar,
   rotateActivePaneLayoutClockwiseFromTitlebar,
+  togglePetOverlayFromTitlebar,
   toggleCommandsPanelFromTitlebar,
   runSidebarCommandFromTitlebar,
 };
