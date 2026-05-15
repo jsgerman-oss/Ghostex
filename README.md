@@ -7,10 +7,16 @@ The public product name is Ghostex. The repository folder, code identifiers,
 bundle ids, storage paths, and historical release assets can keep zmux as an
 internal implementation name, but user-facing app and CLI copy should say
 Ghostex. The public CLI commands are `ghostex` and the short alias `gtx`.
+
+CDXC:Distribution 2026-05-15-03:43
+The public Homebrew command stays the same for Apple Silicon and Intel Macs.
+The `ghostex` cask selects the correct arm64 or x86_64 DMG automatically.
 -->
 
 #### Install on macOS using brew or dmg in releases page
 ###### (Looking for help with dev/testing for Windows & Linux ports)
+
+The same Homebrew command installs the correct Apple Silicon or Intel Mac build automatically.
 
 ```bash
 brew install --cask maddada/tap/ghostex
