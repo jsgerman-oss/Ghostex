@@ -4,6 +4,7 @@
  * project, code, git, and runtime glyphs without exposing the full icon pack.
  */
 export const SIDEBAR_COMMAND_ICON_IDS = [
+  "playerPlay",
   "api",
   "archive",
   "bell",
@@ -46,7 +47,6 @@ export const SIDEBAR_COMMAND_ICON_IDS = [
   "messageCircle",
   "package",
   "pencilCode",
-  "playerPlay",
   "refresh",
   "robot",
   "route",
@@ -67,6 +67,14 @@ export const SIDEBAR_COMMAND_ICON_IDS = [
 
 export type SidebarCommandIcon = (typeof SIDEBAR_COMMAND_ICON_IDS)[number];
 
+/**
+ * CDXC:SidebarActions 2026-05-15-04:46:
+ * Action configuration no longer exposes a "No icon" choice because action
+ * rows always render a glyph. Use Play as the canonical default so new and
+ * legacy actions have an explicit user-facing icon instead of type-derived
+ * placeholder behavior.
+ */
+export const DEFAULT_SIDEBAR_COMMAND_ICON: SidebarCommandIcon = "playerPlay";
 export const DEFAULT_SIDEBAR_COMMAND_ICON_COLOR = "#d6e0f3";
 
 export function isSidebarCommandIcon(value: unknown): value is SidebarCommandIcon {

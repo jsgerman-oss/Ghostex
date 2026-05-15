@@ -49,9 +49,7 @@ import {
   IconPencil,
   IconPlayerPlay,
   IconPlus,
-  IconTerminal2,
   IconTrash,
-  IconWorld,
 } from "@tabler/icons-react";
 import { COMPLETION_SOUND_OPTIONS, type CompletionSoundSetting } from "../shared/completion-sound";
 import { ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES } from "../shared/ghostty-config-actions";
@@ -109,6 +107,7 @@ import {
   type SidebarCommandButton,
 } from "../shared/sidebar-commands";
 import {
+  DEFAULT_SIDEBAR_COMMAND_ICON,
   DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
   normalizeSidebarCommandIconColor,
   type SidebarCommandIcon,
@@ -2722,7 +2721,9 @@ function ActionSettingsEditor({
   const [actionType, setActionType] = useState<SidebarActionType>(draft.actionType);
   const [closeTerminalOnExit, setCloseTerminalOnExit] = useState(draft.closeTerminalOnExit);
   const [command, setCommand] = useState(draft.command ?? "");
-  const [icon, setIcon] = useState<SidebarCommandIcon | undefined>(draft.icon);
+  const [icon, setIcon] = useState<SidebarCommandIcon>(
+    draft.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
+  );
   const [iconColor, setIconColor] = useState(draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
   const [iconColorText, setIconColorText] = useState(
     draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
@@ -2747,8 +2748,7 @@ function ActionSettingsEditor({
   const isActionTypeLocked = lockedActionType !== undefined;
   const targetValue = actionType === "browser" ? url.trim() : command.trim();
   const trimmedName = name.trim();
-  const isSaveDisabled =
-    targetValue.length === 0 || (trimmedName.length === 0 && icon === undefined);
+  const isSaveDisabled = targetValue.length === 0;
 
   const commitIconColorText = () => {
     const normalizedColor = normalizeSidebarCommandIconColor(iconColorText);
@@ -2766,7 +2766,7 @@ function ActionSettingsEditor({
     command: actionType === "terminal" ? command.trim() : undefined,
     commandId: draft.commandId,
     icon,
-    iconColor: icon ? iconColor : undefined,
+    iconColor,
     isGlobal,
     name: trimmedName,
     playCompletionSound: actionType === "terminal" ? playCompletionSound : false,
@@ -2827,20 +2827,19 @@ function ActionSettingsEditor({
         </FieldContent>
         <Select
           onValueChange={(value) => {
-            setIcon(value === "__none__" ? undefined : (value as SidebarCommandIcon));
-            if (value !== "__none__" && !normalizeSidebarCommandIconColor(iconColorText)) {
+            setIcon(value as SidebarCommandIcon);
+            if (!normalizeSidebarCommandIconColor(iconColorText)) {
               setIconColor(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
               setIconColorText(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
             }
           }}
-          value={icon ?? "__none__"}
+          value={icon}
         >
           <SelectTrigger className="h-10 w-full px-3 text-sm" id={iconId}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="max-h-72" showScrollButtons={false}>
             <SelectGroup>
-              <SelectItem value="__none__">No icon</SelectItem>
               {SIDEBAR_COMMAND_ICON_OPTIONS.map((option) => (
                 <SelectItem key={option.icon} value={option.icon}>
                   {option.label}
@@ -2850,7 +2849,7 @@ function ActionSettingsEditor({
           </SelectContent>
         </Select>
       </Field>
-      <Field className="gap-2.5" data-disabled={icon === undefined}>
+      <Field className="gap-2.5">
         <FieldContent>
           <FieldLabel className="text-sm" htmlFor={iconColorTextId}>
             Icon Color
@@ -2860,7 +2859,6 @@ function ActionSettingsEditor({
           <Input
             aria-label="Icon color picker"
             className="h-10 cursor-pointer rounded-xl p-1"
-            disabled={icon === undefined}
             id={iconColorId}
             onChange={(event) => {
               setIconColor(event.currentTarget.value);
@@ -2870,7 +2868,6 @@ function ActionSettingsEditor({
             value={iconColor}
           />
           <Input
-            disabled={icon === undefined}
             id={iconColorTextId}
             className="h-10 px-3 text-sm"
             onBlur={commitIconColorText}
@@ -3132,20 +3129,12 @@ function SettingsAgentIcon({ agent }: { agent: SidebarAgentButton }) {
 }
 
 function SettingsActionIcon({ command }: { command: SidebarCommandButton }) {
-  if (command.icon) {
-    return (
-      <SidebarCommandIconGlyph
-        color={command.iconColor}
-        icon={command.icon}
-        stroke={1.8}
-      />
-    );
-  }
-
-  return command.actionType === "browser" ? (
-    <IconWorld aria-hidden="true" />
-  ) : (
-    <IconTerminal2 aria-hidden="true" />
+  return (
+    <SidebarCommandIconGlyph
+      color={command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR}
+      icon={command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON}
+      stroke={1.8}
+    />
   );
 }
 
@@ -3184,8 +3173,8 @@ function createSettingsCommandDraft(actionType: SidebarActionType): CommandConfi
     closeTerminalOnExit: false,
     command: actionType === "terminal" ? "" : undefined,
     commandId: undefined,
-    icon: undefined,
-    iconColor: undefined,
+    icon: DEFAULT_SIDEBAR_COMMAND_ICON,
+    iconColor: DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
     isGlobal: false,
     name: "",
     playCompletionSound: actionType === "terminal",
@@ -3199,8 +3188,8 @@ function createSettingsCommandDraftFromButton(command: SidebarCommandButton): Co
     closeTerminalOnExit: command.closeTerminalOnExit,
     command: command.command,
     commandId: command.commandId,
-    icon: command.icon,
-    iconColor: command.iconColor,
+    icon: command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
+    iconColor: command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
     isGlobal: command.isGlobal === true,
     name: command.name,
     playCompletionSound: command.playCompletionSound,

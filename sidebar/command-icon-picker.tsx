@@ -1,6 +1,7 @@
 import { IconChevronDown } from "@tabler/icons-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
+  DEFAULT_SIDEBAR_COMMAND_ICON,
   DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
   getSidebarCommandIconLabel,
   normalizeSidebarCommandIconColor,
@@ -11,7 +12,7 @@ import { SIDEBAR_COMMAND_ICON_OPTIONS, SidebarCommandIconGlyph } from "./sidebar
 export type CommandIconPickerProps = {
   icon?: SidebarCommandIcon;
   iconColor: string;
-  onIconChange: (icon: SidebarCommandIcon | undefined) => void;
+  onIconChange: (icon: SidebarCommandIcon) => void;
   onIconColorChange: (iconColor: string) => void;
 };
 
@@ -28,7 +29,7 @@ export function CommandIconPicker({
   const listboxId = useId();
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const isColorDisabled = icon === undefined;
+  const selectedIcon = icon ?? DEFAULT_SIDEBAR_COMMAND_ICON;
 
   const filteredOptions = useMemo(() => {
     const trimmedQuery = query.trim().toLowerCase();
@@ -111,21 +112,15 @@ export function CommandIconPicker({
             type="button"
           >
             <span className="command-icon-picker-trigger-value">
-              {icon ? (
-                <>
-                  <span aria-hidden="true" className="command-button-icon-shell">
-                    <SidebarCommandIconGlyph
-                      className="command-button-leading-icon"
-                      color={iconColor}
-                      icon={icon}
-                      size={16}
-                    />
-                  </span>
-                  <span>{getSidebarCommandIconLabel(icon)}</span>
-                </>
-              ) : (
-                <span className="command-icon-picker-none-label">No icon</span>
-              )}
+              <span aria-hidden="true" className="command-button-icon-shell">
+                <SidebarCommandIconGlyph
+                  className="command-button-leading-icon"
+                  color={iconColor}
+                  icon={selectedIcon}
+                  size={16}
+                />
+              </span>
+              <span>{getSidebarCommandIconLabel(selectedIcon)}</span>
             </span>
             <IconChevronDown
               aria-hidden="true"
@@ -155,24 +150,11 @@ export function CommandIconPicker({
                 id={listboxId}
                 role="listbox"
               >
-                <button
-                  aria-selected={icon === undefined}
-                  className="command-icon-picker-option"
-                  data-selected={String(icon === undefined)}
-                  onClick={() => {
-                    onIconChange(undefined);
-                    setIsOpen(false);
-                  }}
-                  role="option"
-                  type="button"
-                >
-                  <span className="command-icon-picker-option-copy">No icon</span>
-                </button>
                 {filteredOptions.map((option) => (
                   <button
-                    aria-selected={icon === option.icon}
+                    aria-selected={selectedIcon === option.icon}
                     className="command-icon-picker-option"
-                    data-selected={String(icon === option.icon)}
+                    data-selected={String(selectedIcon === option.icon)}
                     key={option.icon}
                     onClick={() => {
                       onIconChange(option.icon);
@@ -188,7 +170,11 @@ export function CommandIconPicker({
                     <span aria-hidden="true" className="command-button-icon-shell">
                       <SidebarCommandIconGlyph
                         className="command-button-leading-icon"
-                        color={icon === option.icon ? iconColor : DEFAULT_SIDEBAR_COMMAND_ICON_COLOR}
+                        color={
+                          selectedIcon === option.icon
+                            ? iconColor
+                            : DEFAULT_SIDEBAR_COMMAND_ICON_COLOR
+                        }
                         icon={option.icon}
                         size={16}
                       />
@@ -210,7 +196,6 @@ export function CommandIconPicker({
           <input
             aria-label="Icon color"
             className="command-icon-color-swatch"
-            disabled={isColorDisabled}
             onChange={(event) => {
               onIconColorChange(event.currentTarget.value);
               setColorText(event.currentTarget.value);
@@ -220,7 +205,6 @@ export function CommandIconPicker({
           />
           <input
             className="group-title-input command-config-input command-icon-color-text"
-            disabled={isColorDisabled}
             inputMode="text"
             onBlur={commitColorText}
             onChange={(event) => setColorText(event.currentTarget.value)}

@@ -15,6 +15,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { DEFAULT_BROWSER_ACTION_URL, type SidebarActionType } from "../shared/sidebar-commands";
 import {
+  DEFAULT_SIDEBAR_COMMAND_ICON,
   DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
   type SidebarCommandIcon,
 } from "../shared/sidebar-command-icons";
@@ -65,7 +66,9 @@ export function CommandConfigModal({
   const [actionType, setActionType] = useState<SidebarActionType>(draft.actionType);
   const [closeTerminalOnExit, setCloseTerminalOnExit] = useState(draft.closeTerminalOnExit);
   const [command, setCommand] = useState(draft.command ?? "");
-  const [icon, setIcon] = useState<SidebarCommandIcon | undefined>(draft.icon);
+  const [icon, setIcon] = useState<SidebarCommandIcon>(
+    draft.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
+  );
   const [iconColor, setIconColor] = useState(draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
   const [isGlobal, setIsGlobal] = useState(draft.isGlobal === true);
   const [name, setName] = useState(draft.name);
@@ -88,7 +91,7 @@ export function CommandConfigModal({
     setActionType(lockedActionType ?? draft.actionType);
     setCloseTerminalOnExit(draft.closeTerminalOnExit);
     setCommand(draft.command ?? "");
-    setIcon(draft.icon);
+    setIcon(draft.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON);
     setIconColor(draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
     setIsGlobal(draft.isGlobal === true);
     setName(draft.name);
@@ -126,8 +129,7 @@ export function CommandConfigModal({
 
   const targetValue = actionType === "browser" ? url.trim() : command.trim();
   const trimmedName = name.trim();
-  const isSaveDisabled =
-    targetValue.length === 0 || (trimmedName.length === 0 && icon === undefined);
+  const isSaveDisabled = targetValue.length === 0;
   const description =
     actionType === "browser"
       ? "This action opens the URL in a VS Code browser tab. The tab is detected and shown in the Browsers group."
@@ -283,7 +285,7 @@ export function CommandConfigModal({
                   command: actionType === "terminal" ? command.trim() : undefined,
                   commandId: draft.commandId,
                   icon,
-                  iconColor: icon ? iconColor : undefined,
+                  iconColor,
                   isGlobal,
                   name: trimmedName,
                   playCompletionSound: actionType === "terminal" ? playCompletionSound : false,
@@ -309,7 +311,7 @@ export function CommandConfigModal({
                 command: actionType === "terminal" ? command.trim() : undefined,
                 commandId: draft.commandId,
                 icon,
-                iconColor: icon ? iconColor : undefined,
+                iconColor,
                 isGlobal,
                 name: trimmedName,
                 playCompletionSound: actionType === "terminal" ? playCompletionSound : false,

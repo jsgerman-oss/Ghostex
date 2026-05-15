@@ -10,7 +10,6 @@ import {
   IconPlayerStopFilled,
   IconPlus,
   IconTrash,
-  IconWorldFilled,
 } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
 import {
@@ -27,7 +26,11 @@ import type {
   SidebarCommandButton,
   SidebarCommandRunMode,
 } from "../shared/sidebar-commands";
-import { getSidebarCommandIconLabel } from "../shared/sidebar-command-icons";
+import {
+  DEFAULT_SIDEBAR_COMMAND_ICON,
+  DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
+  getSidebarCommandIconLabel,
+} from "../shared/sidebar-command-icons";
 import type {
   SidebarCommandSessionIndicator,
   SidebarProjectWorktree,
@@ -154,8 +157,8 @@ function createCommandDraft(actionType: SidebarActionType): CommandConfigDraft {
     closeTerminalOnExit: false,
     command: actionType === "browser" ? undefined : "",
     commandId: undefined,
-    icon: undefined,
-    iconColor: undefined,
+    icon: DEFAULT_SIDEBAR_COMMAND_ICON,
+    iconColor: DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
     isGlobal: false,
     name: "",
     playCompletionSound: actionType === "browser" ? false : true,
@@ -297,8 +300,8 @@ export function CommandsPanel({
       closeTerminalOnExit: command.closeTerminalOnExit,
       command: command.command,
       commandId: command.commandId,
-      icon: command.icon,
-      iconColor: command.iconColor,
+      icon: command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
+      iconColor: command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
       isGlobal: command.isGlobal === true,
       name: command.name,
       playCompletionSound: command.playCompletionSound,
@@ -1090,7 +1093,7 @@ function SortableCommandButton({
           data-default={String(command.isDefault)}
           data-dragging={String(Boolean(sortable.isDragging))}
           data-empty-space-blocking="true"
-          data-has-icon={String(command.icon !== undefined || runStatus === "running")}
+          data-has-icon="true"
           data-icon-only={String(isIconOnly)}
           data-has-session-indicator={String(commandSessionIndicator !== undefined)}
           data-loading={String(runStatus === "running")}
@@ -1150,25 +1153,15 @@ type ActionButtonIconProps = {
 };
 
 function ActionButtonIcon({ command }: ActionButtonIconProps) {
-  if (command.icon) {
-    return (
-      <SidebarCommandIconGlyph
-        className="command-button-kind-icon command-button-leading-icon"
-        color={command.iconColor}
-        icon={command.icon}
-        size={15}
-        stroke={1.8}
-      />
-    );
-  }
-
-  const className = "command-button-kind-icon";
-
-  if (command.actionType === "browser") {
-    return <IconWorldFilled aria-hidden="true" className={className} size={15} stroke={1.8} />;
-  }
-
-  return <IconPlayerPlayFilled aria-hidden="true" className={className} size={15} stroke={1.8} />;
+  return (
+    <SidebarCommandIconGlyph
+      className="command-button-kind-icon command-button-leading-icon"
+      color={command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR}
+      icon={command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON}
+      size={15}
+      stroke={1.8}
+    />
+  );
 }
 
 function moveCommandId(

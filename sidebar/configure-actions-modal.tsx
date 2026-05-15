@@ -1,4 +1,4 @@
-import { IconPlus, IconTerminal2, IconWorld, IconX } from "@tabler/icons-react";
+import { IconPlus, IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
 import { useEffect, useState } from "react";
 import {
@@ -6,6 +6,10 @@ import {
   type SidebarActionType,
   type SidebarCommandButton,
 } from "../shared/sidebar-commands";
+import {
+  DEFAULT_SIDEBAR_COMMAND_ICON,
+  DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
+} from "../shared/sidebar-command-icons";
 import { SidebarCommandIconGlyph } from "./sidebar-command-icon";
 import { CommandConfigModal, type CommandConfigDraft } from "./command-config-modal";
 import { useSidebarStore } from "./sidebar-store";
@@ -188,26 +192,13 @@ export function ConfigureActionsModal({ isOpen, onClose, vscode }: ConfigureActi
 }
 
 function ConfigureActionIcon({ command }: { command: SidebarCommandButton }) {
-  if (command.icon) {
-    return (
-      <SidebarCommandIconGlyph
-        color={command.iconColor}
-        icon={command.icon}
-        size={16}
-        stroke={1.8}
-      />
-    );
-  }
-
-  /**
-   * CDXC:SidebarBrowserIcon 2026-05-07-19:44
-   * Browser actions use IconWorld to match the sidebar's browser session and
-   * group affordances.
-   */
-  return command.actionType === "browser" ? (
-    <IconWorld aria-hidden="true" size={16} stroke={1.8} />
-  ) : (
-    <IconTerminal2 aria-hidden="true" size={16} stroke={1.8} />
+  return (
+    <SidebarCommandIconGlyph
+      color={command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR}
+      icon={command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON}
+      size={16}
+      stroke={1.8}
+    />
   );
 }
 
@@ -246,8 +237,8 @@ function createCommandDraft(actionType: SidebarActionType): CommandConfigDraft {
     closeTerminalOnExit: false,
     command: actionType === "terminal" ? "" : undefined,
     commandId: undefined,
-    icon: undefined,
-    iconColor: undefined,
+    icon: DEFAULT_SIDEBAR_COMMAND_ICON,
+    iconColor: DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
     isGlobal: false,
     name: "",
     playCompletionSound: actionType === "terminal",
@@ -261,8 +252,8 @@ function createCommandDraftFromButton(command: SidebarCommandButton): CommandCon
     closeTerminalOnExit: command.closeTerminalOnExit,
     command: command.command,
     commandId: command.commandId,
-    icon: command.icon,
-    iconColor: command.iconColor,
+    icon: command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
+    iconColor: command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
     isGlobal: command.isGlobal === true,
     name: command.name,
     playCompletionSound: command.playCompletionSound,
