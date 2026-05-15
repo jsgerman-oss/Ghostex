@@ -2,7 +2,9 @@ import browserLogo from "../src/assets/browser.svg" with { type: "text" };
 import claudeLogo from "../src/assets/claude.svg" with { type: "text" };
 import codexLogo from "../src/assets/codex.svg" with { type: "text" };
 import copilotLogo from "../src/assets/copilot.svg" with { type: "text" };
+import factoryDroidLogo from "../src/assets/factory-droid.svg" with { type: "text" };
 import geminiLogo from "../src/assets/gemini.svg" with { type: "text" };
+import grokBuildLogo from "../src/assets/grok-build.svg" with { type: "text" };
 import opencodeLogo from "../src/assets/opencode.svg" with { type: "text" };
 import piLogo from "../src/assets/pi.svg" with { type: "text" };
 import t3Logo from "../src/assets/t3.svg" with { type: "text" };
@@ -31,7 +33,9 @@ export const AGENT_LOGOS: Record<SidebarAgentIcon, string> = {
   claude: svgTextToDataUrl(claudeLogo),
   codex: svgTextToDataUrl(codexLogo),
   copilot: svgTextToDataUrl(copilotLogo),
+  "factory-droid": svgTextToDataUrl(factoryDroidLogo),
   gemini: svgTextToDataUrl(geminiLogo),
+  "grok-build": svgTextToDataUrl(grokBuildLogo),
   opencode: svgTextToDataUrl(opencodeLogo),
   pi: svgTextToDataUrl(piLogo),
   t3: svgTextToDataUrl(t3Logo),
@@ -49,7 +53,9 @@ export const AGENT_LOGO_COLORS: Record<SidebarAgentIcon, string> = {
   claude: "#d97757",
   codex: "#ffffff",
   copilot: "#ffffff",
+  "factory-droid": "#ff7a1a",
   gemini: "#8b9aff",
+  "grok-build": "#ffffff",
   opencode: "#6d96c0",
   pi: "#c8ff62",
   t3: "#ff6af3",

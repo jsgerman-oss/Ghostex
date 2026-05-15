@@ -58,6 +58,20 @@ describe("createSidebarAgentButtons", () => {
         isDefault: true,
         name: "Gemini",
       },
+      {
+        agentId: "droid",
+        command: "droid",
+        icon: "factory-droid",
+        isDefault: true,
+        name: "Factory Droid",
+      },
+      {
+        agentId: "grok",
+        command: "grok",
+        icon: "grok-build",
+        isDefault: true,
+        name: "Grok Build",
+      },
     ]);
   });
 
@@ -111,6 +125,20 @@ describe("createSidebarAgentButtons", () => {
         icon: "gemini",
         isDefault: true,
         name: "Gemini",
+      },
+      {
+        agentId: "droid",
+        command: "droid",
+        icon: "factory-droid",
+        isDefault: true,
+        name: "Factory Droid",
+      },
+      {
+        agentId: "grok",
+        command: "grok",
+        icon: "grok-build",
+        isDefault: true,
+        name: "Grok Build",
       },
     ]);
   });
@@ -183,6 +211,20 @@ describe("createSidebarAgentButtons", () => {
         name: "Gemini",
       },
       {
+        agentId: "droid",
+        command: "droid",
+        icon: "factory-droid",
+        isDefault: true,
+        name: "Factory Droid",
+      },
+      {
+        agentId: "grok",
+        command: "grok",
+        icon: "grok-build",
+        isDefault: true,
+        name: "Grok Build",
+      },
+      {
         agentId: "cursor",
         command: "cursor-agent",
         icon: undefined,
@@ -247,6 +289,20 @@ describe("createSidebarAgentButtons", () => {
         isDefault: true,
         name: "Gemini",
       },
+      {
+        agentId: "droid",
+        command: "droid",
+        icon: "factory-droid",
+        isDefault: true,
+        name: "Factory Droid",
+      },
+      {
+        agentId: "grok",
+        command: "grok",
+        icon: "grok-build",
+        isDefault: true,
+        name: "Grok Build",
+      },
     ]);
   });
 
@@ -310,6 +366,20 @@ describe("createSidebarAgentButtons", () => {
         icon: "gemini",
         isDefault: true,
         name: "Gemini",
+      },
+      {
+        agentId: "droid",
+        command: "droid",
+        icon: "factory-droid",
+        isDefault: true,
+        name: "Factory Droid",
+      },
+      {
+        agentId: "grok",
+        command: "grok",
+        icon: "grok-build",
+        isDefault: true,
+        name: "Grok Build",
       },
       {
         agentId: "custom-codex-fast",
@@ -391,6 +461,20 @@ describe("createSidebarAgentButtons", () => {
         icon: "opencode",
         isDefault: true,
         name: "OpenCode",
+      },
+      {
+        agentId: "droid",
+        command: "droid",
+        icon: "factory-droid",
+        isDefault: true,
+        name: "Factory Droid",
+      },
+      {
+        agentId: "grok",
+        command: "grok",
+        icon: "grok-build",
+        isDefault: true,
+        name: "Grok Build",
       },
     ]);
   });

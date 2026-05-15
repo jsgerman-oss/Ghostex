@@ -53,6 +53,30 @@ export const DEFAULT_SIDEBAR_AGENTS = [
     icon: "gemini",
     name: "Gemini",
   },
+  /**
+   * CDXC:SidebarAgents 2026-05-15-12:41:
+   * Factory Droid is a built-in launch engine that belongs at the bottom of
+   * the default agent list. Launch it through Factory's `droid` CLI command
+   * while keeping the display label explicit enough to distinguish the vendor.
+   */
+  {
+    agentId: "droid",
+    command: "droid",
+    icon: "factory-droid",
+    name: "Factory Droid",
+  },
+  /**
+   * CDXC:SidebarAgents 2026-05-15-12:45:
+   * Grok Build is a built-in launch engine at the end of the default list.
+   * xAI's current setup docs install Grok Build and launch the interactive CLI
+   * with `grok`, so use that executable while keeping the product name visible.
+   */
+  {
+    agentId: "grok",
+    command: "grok",
+    icon: "grok-build",
+    name: "Grok Build",
+  },
 ] as const;
 
 export type DefaultSidebarAgent = (typeof DEFAULT_SIDEBAR_AGENTS)[number];
