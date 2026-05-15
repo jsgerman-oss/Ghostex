@@ -248,30 +248,22 @@ export function createDefaultGroupedSessionWorkspaceSnapshot(): GroupedSessionWo
  * CDXC:Session-identity 2026-04-26-20:54
  * New workspace sessions use one opaque, timestamped ID for sessionId,
  * displayId, and the generated alias so daemon state, socket routing, and
- * sidebar labels do not reuse numeric identities from closed sessions. The
- * ID embeds local YYMMDD-HHmmss creation time plus a 3-character base36 suffix.
+ * sidebar labels do not reuse numeric identities from closed sessions.
+ *
+ * CDXC:Session-identity 2026-05-15-17:33
+ * Session IDs and provider-backed default names should stay short enough to
+ * read in tmux, zmx, zellij, pane overlays, and sidebar metadata. Generate
+ * `g-MMDD-HHMMSS` as the canonical identity anywhere a new session ID is used.
  */
 export function createTimestampedSessionId(
   usedSessionIds: Iterable<string>,
   now = new Date(),
-  random = Math.random,
+  _random = Math.random,
 ): string {
   const usedSessionIdSet = new Set(usedSessionIds);
 
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const suffix = Math.floor(random() * 36 ** 3)
-      .toString(36)
-      .padStart(3, "0")
-      .slice(-3);
-    const sessionId = `s-${formatSessionIdTimestamp(now)}-${suffix}`;
-    if (!usedSessionIdSet.has(sessionId)) {
-      return sessionId;
-    }
-  }
-
-  for (let index = 0; index < 36 ** 3; index += 1) {
-    const suffix = index.toString(36).padStart(3, "0");
-    const sessionId = `s-${formatSessionIdTimestamp(now)}-${suffix}`;
+  for (let secondOffset = 0; secondOffset < 24 * 60 * 60; secondOffset += 1) {
+    const sessionId = `g-${formatSessionIdTimestamp(addSeconds(now, secondOffset))}`;
     if (!usedSessionIdSet.has(sessionId)) {
       return sessionId;
     }
@@ -283,7 +275,7 @@ export function createTimestampedSessionId(
 export function formatSessionDisplayId(displayId: number | string): string {
   if (typeof displayId === "string") {
     const trimmedDisplayId = displayId.trim();
-    if (/^s-[a-z0-9-]+$/i.test(trimmedDisplayId)) {
+    if (/^(?:g|s)-[a-z0-9-]+$/i.test(trimmedDisplayId)) {
       return trimmedDisplayId;
     }
 
@@ -545,7 +537,7 @@ export function getSessionCardPrimaryTitle(
    * Session cards still need a human placeholder while resume/persistence code
    * treats placeholders and Ghostty cwd titles as not persisted. Show the
    * neutral or agent-aware placeholder with the card's unsynced marker instead
-   * of falling through to opaque ids such as `s-260427-090032-rma`.
+   * of falling through to opaque ids such as `g-0427-090032`.
    */
   if (
     !normalizedTitle ||
@@ -570,6 +562,26 @@ export function getSessionCardPrimaryTitle(
 export function isGhostPlaceholderSessionTitle(title: string): boolean {
   const normalizedTitle = title.trim().replace(/\s+/g, " ");
   return GHOST_PLACEHOLDER_SESSION_TITLE_PATTERN.test(normalizedTitle);
+}
+
+const SESSION_RENAME_UNSUPPORTED_GLYPH_PATTERN =
+  /[^\p{L}\p{N} !"#$%&'()*+,\-.\/:;<=>?@[\\\]^_`{|}~]/gu;
+
+/**
+ * CDXC:SidebarRename 2026-05-15-16:15
+ * Direct Rename submissions from pasted modal text must store a plain session
+ * name: keep letters, numbers, spaces, and simple ASCII punctuation; drop
+ * decorative glyphs such as bullet and mathematical asterisk symbols; trim the
+ * result; remove line breaks; and collapse repeated whitespace to one space.
+ */
+export function normalizeSessionRenameTitle(title: string | undefined): string | undefined {
+  const normalizedTitle = title
+    ?.normalize("NFKC")
+    .replace(/\s+/gu, " ")
+    .replace(SESSION_RENAME_UNSUPPORTED_GLYPH_PATTERN, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return normalizedTitle || undefined;
 }
 
 export function normalizeTerminalTitle(title: string | undefined): string | undefined {
@@ -721,15 +733,18 @@ function formatSessionSurfaceTitle(
 }
 
 function formatSessionIdTimestamp(value: Date): string {
-  const year = String(value.getFullYear() % 100).padStart(2, "0");
   const month = String(value.getMonth() + 1).padStart(2, "0");
   const day = String(value.getDate()).padStart(2, "0");
   const hour = String(value.getHours()).padStart(2, "0");
   const minute = String(value.getMinutes()).padStart(2, "0");
   const second = String(value.getSeconds()).padStart(2, "0");
-  return `${year}${month}${day}-${hour}${minute}${second}`;
+  return `${month}${day}-${hour}${minute}${second}`;
+}
+
+function addSeconds(value: Date, seconds: number): Date {
+  return new Date(value.getTime() + seconds * 1000);
 }
 
 function isTimestampedSessionId(sessionId: string): boolean {
-  return /^s-\d{6}-\d{6}-[a-z0-9]{3}$/i.test(sessionId);
+  return /^g-\d{4}-\d{6}$/i.test(sessionId) || /^s-\d{6}-\d{6}-[a-z0-9]{3}$/i.test(sessionId);
 }

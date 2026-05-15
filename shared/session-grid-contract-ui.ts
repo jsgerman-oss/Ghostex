@@ -91,7 +91,11 @@ export function createSidebarHudState(
     createSessionOnSidebarDoubleClick,
     renameSessionOnDoubleClick,
     showCloseButtonOnSessionCards,
-    showHotkeysOnSessionCards,
+    /*
+     * CDXC:SidebarSessions 2026-05-15-19:46:
+     * The Settings modal no longer exposes card-shortcut visibility. Keep HUD payloads in non-hotkey mode so older persisted settings cannot leave cards showing shortcuts with no setting to turn them off.
+     */
+    showHotkeysOnSessionCards: false,
     theme,
     viewMode: snapshot.viewMode,
     visibleCount: snapshot.visibleCount,

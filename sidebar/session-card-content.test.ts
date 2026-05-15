@@ -139,8 +139,8 @@ describe("getSessionCardTitleTooltip", () => {
             "when using zmx/tmux/zellij as the persistence provider, keep the sidebar title readable",
           isPrimaryTitleTerminalTitle: true,
           primaryTitle: "when using zmx/tmux/zellij as the persistence...",
-          sessionNumber: "s-260515-092521-c2a",
-          sessionPersistenceName: "ghostex-terminal-session-5-092521-c2a",
+          sessionNumber: "g-0515-092521",
+          sessionPersistenceName: "g-0515-092521",
           sessionPersistenceProvider: "zmx",
           terminalTitle: undefined,
         },
@@ -149,7 +149,7 @@ describe("getSessionCardTitleTooltip", () => {
     ).toEqual({
       headingText: "when using zmx/tmux/zellij as the persistence...",
       tooltip:
-        "when using zmx/tmux/zellij as the persistence provider, keep the sidebar title readable\n\nzmx session: ghostex-terminal-session-5-092521-c2a\n\nSession number: s-260515-092521-c2a",
+        "when using zmx/tmux/zellij as the persistence provider, keep the sidebar title readable\n\nzmx session: g-0515-092521\n\nSession number: g-0515-092521",
       tooltipWhen: "always",
     });
   });
@@ -342,14 +342,14 @@ describe("formatSessionHeadingText", () => {
   test("should append the unsynced marker when showing placeholder session titles", () => {
     expect(
       formatSessionHeadingText({
-        alias: "s-260427-090032-rma",
+        alias: "g-0427-090032",
         isPrimaryTitleTerminalTitle: false,
         primaryTitle: "Terminal Session",
       }),
     ).toBe("∗ Terminal Session");
     expect(
       formatSessionHeadingText({
-        alias: "s-260427-090032-rma",
+        alias: "g-0427-090032",
         isPrimaryTitleTerminalTitle: false,
         primaryTitle: "Codex Session",
       }),
@@ -359,7 +359,7 @@ describe("formatSessionHeadingText", () => {
   test("should swap ghost placeholder titles to the existing unsynced marker", () => {
     expect(
       formatSessionHeadingText({
-        alias: "s-260427-090032-rma",
+        alias: "g-0427-090032",
         isPrimaryTitleTerminalTitle: true,
         primaryTitle: "👻 Terminal Session",
         terminalTitle: "👻 Terminal Session",

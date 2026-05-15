@@ -240,5 +240,5 @@ export function findNextAvailableDisplayId(
 }
 
 function isValidSessionDisplayId(displayId: string): boolean {
-  return /^\d{2}$/.test(displayId) || /^s-[a-z0-9-]+$/i.test(displayId);
+  return /^\d{2}$/.test(displayId) || /^(?:g|s)-[a-z0-9-]+$/i.test(displayId);
 }

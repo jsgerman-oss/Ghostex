@@ -104,7 +104,7 @@ export function reorderGroupSessions(
 }
 
 function createCanonicalSessionId(displayId: string | number | undefined): string {
-  if (typeof displayId === "string" && /^s-[a-z0-9-]+$/i.test(displayId.trim())) {
+  if (typeof displayId === "string" && /^(?:g|s)-[a-z0-9-]+$/i.test(displayId.trim())) {
     return displayId.trim();
   }
 

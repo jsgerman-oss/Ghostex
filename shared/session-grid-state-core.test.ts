@@ -15,6 +15,7 @@ import {
   getSessionShortcutLabel,
   getVisiblePrimaryTitle,
   getVisibleTerminalTitle,
+  normalizeSessionRenameTitle,
   normalizeTerminalTitle,
 } from "./session-grid-contract";
 import { createSessionInSnapshot, normalizeSessionGridSnapshot } from "./session-grid-state";
@@ -426,6 +427,16 @@ describe("agent manager zoom settings", () => {
 });
 
 describe("visible primary titles", () => {
+  test("should normalize direct rename modal submissions into plain session titles", () => {
+    expect(normalizeSessionRenameTitle(" \n • Build   ∗ logs\t#1!!! \n ")).toBe(
+      "Build logs #1!!!",
+    );
+    expect(normalizeSessionRenameTitle("  Fix: API_retry (v2) / auth + tests  ")).toBe(
+      "Fix: API_retry (v2) / auth + tests",
+    );
+    expect(normalizeSessionRenameTitle(" • ∗ \n ")).toBeUndefined();
+  });
+
   test("should strip leading progress markers from terminal titles for supported agents", () => {
     expect(normalizeTerminalTitle("  ⠸ OpenAI Codex  ")).toBe("OpenAI Codex");
     expect(normalizeTerminalTitle("✳ Claude Code")).toBe("Claude Code");

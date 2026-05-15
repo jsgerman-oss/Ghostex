@@ -163,20 +163,20 @@ const sessionIdForDisplay = (displayId: number | string): string => {
 };
 
 describe("createTimestampedSessionId", () => {
-  test("should include two-digit creation time and a three-character base36 suffix", () => {
+  test("should use a compact ghostex month-day creation timestamp", () => {
     const sessionId = createTimestampedSessionId([], new Date(2026, 3, 26, 20, 54, 12), () => 0.5);
 
-    expect(sessionId).toBe("s-260426-205412-i00");
+    expect(sessionId).toBe("g-0426-205412");
   });
 
-  test("should avoid active or archived session ids before accepting a suffix", () => {
+  test("should avoid active or archived session ids while preserving the compact shape", () => {
     const sessionId = createTimestampedSessionId(
-      ["s-260426-205412-000"],
+      ["g-0426-205412"],
       new Date(2026, 3, 26, 20, 54, 12),
       () => 0,
     );
 
-    expect(sessionId).toBe("s-260426-205412-001");
+    expect(sessionId).toBe("g-0426-205413");
   });
 });
 
@@ -994,8 +994,8 @@ describe("createSessionInSimpleWorkspace", () => {
     const firstSessionId = firstResult.session?.sessionId;
     const secondSessionId = secondResult.session?.sessionId;
 
-    expect(firstSessionId).toMatch(/^s-\d{6}-\d{6}-[a-z0-9]{3}$/);
-    expect(secondSessionId).toMatch(/^s-\d{6}-\d{6}-[a-z0-9]{3}$/);
+    expect(firstSessionId).toMatch(/^g-\d{4}-\d{6}$/);
+    expect(secondSessionId).toMatch(/^g-\d{4}-\d{6}$/);
     expect(secondResult.snapshot.groups[0]?.snapshot.visibleCount).toBe(2);
     expect(secondResult.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
       firstSessionId,
@@ -1031,7 +1031,7 @@ describe("createSessionInSimpleWorkspace", () => {
       }),
     );
 
-    expect(result.session?.sessionId).toMatch(/^s-\d{6}-\d{6}-[a-z0-9]{3}$/);
+    expect(result.session?.sessionId).toMatch(/^g-\d{4}-\d{6}$/);
     expect(result.session?.displayId).toBe(result.session?.sessionId);
     expect(result.session?.alias).toBe(result.session?.sessionId);
   });
@@ -1067,7 +1067,7 @@ describe("createSessionInSimpleWorkspace", () => {
       },
     );
 
-    expect(result.session?.sessionId).toMatch(/^s-\d{6}-\d{6}-[a-z0-9]{3}$/);
+    expect(result.session?.sessionId).toMatch(/^g-\d{4}-\d{6}$/);
     expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(sessionIdForDisplay("00"));
     expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
       sessionIdForDisplay("00"),
@@ -2535,7 +2535,7 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
     });
   });
 
-  test("should restore a sleeping session into the focused pane instead of its old pane", () => {
+  test("should restore a sleeping session into the focused pane tab group instead of its old pane", () => {
     const sleepingSession = {
       ...createSessionRecord(2, 1),
       isSleeping: true,
@@ -2576,10 +2576,87 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
 
     expect(result.snapshot.groups[0]?.snapshot.sessions[1]?.isSleeping).toBe(false);
     expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(sleepingSessionId);
-    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([sleepingSessionId]);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      awakeSessionId,
+      sleepingSessionId,
+    ]);
     expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
-      kind: "leaf",
-      sessionId: sleepingSessionId,
+      activeSessionId: sleepingSessionId,
+      kind: "tabs",
+      sessionIds: [awakeSessionId, sleepingSessionId],
+    });
+  });
+
+  test("should wake a sleeping session into the currently active split pane tab group", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const activeSessionId = sessionIdForDisplay(1);
+    const sleepingSessionId = sessionIdForDisplay(2);
+    const activeSiblingSessionId = sessionIdForDisplay(3);
+    const sleepingSession = {
+      ...createSessionRecord(3, 2),
+      isSleeping: true,
+    };
+
+    const result = focusSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: activeSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: leftSessionId },
+                  {
+                    activeSessionId,
+                    kind: "tabs",
+                    sessionIds: [activeSessionId, activeSiblingSessionId],
+                  },
+                  { kind: "leaf", sessionId: sleepingSessionId },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                sleepingSession,
+                createSessionRecord(4, 3),
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [leftSessionId, activeSessionId, activeSiblingSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 4,
+        nextSessionNumber: 5,
+      }),
+      sleepingSessionId,
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(sleepingSessionId);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      leftSessionId,
+      activeSessionId,
+      sleepingSessionId,
+      activeSiblingSessionId,
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: sleepingSessionId,
+          kind: "tabs",
+          sessionIds: [activeSessionId, activeSiblingSessionId, sleepingSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
     });
   });
 

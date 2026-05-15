@@ -2643,12 +2643,27 @@ function getNextVisibleIdsForRestoredSleepingSession(
    * restart can recover the last surfaced split/tab shape. A normal sidebar
    * click is different: waking a sleeping card should put it in the pane the
    * user is looking at, not resurrect an old hidden placement.
+   *
+   * CDXC:SessionSleep 2026-05-15-19:26:
+   * Waking a sleeping sidebar session while split panes are open must add the
+   * restored terminal as the active tab in the pane that already owns the
+   * current active tab. Do not replace that pane or append a separate split,
+   * because command/workspace pane layouts should keep their existing split
+   * count when a parked terminal wakes.
    */
-  return replaceVisibleSessionTarget(
+  const stableVisibleSessionIds = getStableVisibleIds(
+    sessions,
     visibleCount,
-    getStableVisibleIds(sessions, visibleCount, currentVisibleSessionIds),
+    currentVisibleSessionIds,
+  );
+  const targetSessionId =
+    currentFocusedSessionId && stableVisibleSessionIds.includes(currentFocusedSessionId)
+      ? currentFocusedSessionId
+      : stableVisibleSessionIds[0];
+  return insertVisibleSessionAfterTarget(
+    stableVisibleSessionIds,
     nextFocusedSessionId,
-    currentFocusedSessionId ?? currentVisibleSessionIds[0] ?? nextFocusedSessionId,
+    targetSessionId,
   ).visibleSessionIds;
 }
 
@@ -2685,12 +2700,43 @@ function getNextPaneLayoutForRestoredSleepingSession(
   nextFocusedSessionId: string,
   currentFocusedSessionId: string | undefined,
 ): SessionPaneLayoutNode | undefined {
-  return replaceFocusedSessionInPaneLayout(
-    currentLayout,
-    currentVisibleSessionIds,
-    nextVisibleSessionIds,
+  const targetSessionId =
+    currentFocusedSessionId && currentVisibleSessionIds.includes(currentFocusedSessionId)
+      ? currentFocusedSessionId
+      : currentVisibleSessionIds[0];
+  const currentPaneLayoutSessionIds = getPaneLayoutSessionIds(currentLayout);
+  const seededLayoutSessionIds = dedupeVisibleSessionIds([
+    ...currentVisibleSessionIds,
+    ...currentPaneLayoutSessionIds,
+  ]);
+  const seededLayout =
+    normalizePaneLayout(
+      currentLayout,
+      seededLayoutSessionIds,
+      seededLayoutSessionIds,
+      currentFocusedSessionId,
+    ) ?? createPaneLayoutFromVisibleIds(seededLayoutSessionIds);
+  const layoutWithoutRestoredSession = seededLayout
+    ? removeSessionFromPaneLayout(seededLayout, nextFocusedSessionId)
+    : undefined;
+  const tabbedLayout =
+    targetSessionId && layoutWithoutRestoredSession
+      ? addSessionToPaneTabGroup(
+          layoutWithoutRestoredSession,
+          targetSessionId,
+          nextFocusedSessionId,
+        )
+      : undefined;
+  const nextPaneLayoutSessionIds = dedupeVisibleSessionIds([
+    ...nextVisibleSessionIds,
+    ...getPaneLayoutSessionIds(tabbedLayout),
+  ]);
+
+  return normalizePaneLayout(
+    tabbedLayout ?? createPaneLayoutFromVisibleIds(nextVisibleSessionIds),
+    nextPaneLayoutSessionIds,
+    nextPaneLayoutSessionIds,
     nextFocusedSessionId,
-    currentFocusedSessionId,
   );
 }
 

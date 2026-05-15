@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Textarea } from "@/components/ui/textarea";
+import { normalizeSessionRenameTitle } from "../shared/session-grid-contract";
 
 const SESSION_RENAME_GENERATE_NAME_THRESHOLD = 70;
 
@@ -71,6 +72,7 @@ export function SessionRenameModal({
   }
 
   const trimmedTitle = title.trim();
+  const directRenameTitle = normalizeSessionRenameTitle(title);
   /**
    * CDXC:SidebarRename 2026-05-09-17:25
    * Long pasted rename text must stay in the input so the user can edit or
@@ -80,7 +82,9 @@ export function SessionRenameModal({
    */
   const canGenerateTitle = trimmedTitle.length > SESSION_RENAME_GENERATE_NAME_THRESHOLD;
   const confirmTitle = (nextTitle: string, shouldGenerateTitle: boolean) => {
-    const normalizedTitle = nextTitle.trim();
+    const normalizedTitle = shouldGenerateTitle
+      ? nextTitle.trim()
+      : normalizeSessionRenameTitle(nextTitle);
     if (!normalizedTitle) {
       return;
     }
@@ -157,7 +161,7 @@ export function SessionRenameModal({
               Cancel
             </Button>
             <Button
-              disabled={!trimmedTitle}
+              disabled={!directRenameTitle}
               onClick={() => confirmTitle(title, false)}
               type="button"
               variant="secondary"
