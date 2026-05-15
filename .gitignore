@@ -14,6 +14,7 @@ AGENTS.md
 .agents/skills/ghostex-release-to-brew/SKILL.md
 storybook-static/
 native/macos/ghostexHost/Web/
+native/macos/zmuxHost/Web/
 native/macos/ghostexHost/Vendor/
 native/macos/ghostexHost/build/
 native/macos/ghostexHost/ghostexHost.xcodeproj/
@@ -31,6 +32,10 @@ native/macos/ghostexHost/ghostex.xcodeproj/
 # CDXC:RepoSafety 2026-05-10-10:21: Fresh workspace state records local window
 # layout for this developer machine and should not be published with ghostex source
 # or release metadata.
+# CDXC:RepoSafety 2026-05-15-15:03: The pre-rename zmuxHost Web bundle path can
+# still receive generated sidebar assets from stale local tooling. Keep it
+# ignored like the current ghostexHost Web directory so generated JS/CSS bundles
+# never enter release commits.
 .idea
 react-doctor.config.json
 .ignore
