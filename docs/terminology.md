@@ -1,9 +1,9 @@
-# zmux terminology
+# ghostex terminology
 
 <!-- CDXC:Terminology 2026-04-27-06:58: Keep the core session vocabulary
 stable for sidebar, native host, and future agent-manager-x integration. -->
 
-This document defines the main terms used across zmux. Use these names in code,
+This document defines the main terms used across ghostex. Use these names in code,
 logs, UI labels, and integration payloads unless an external API already owns a
 different term.
 
@@ -27,7 +27,7 @@ Workspace rail counts live under `project.sessionCounts`:
 - `project.sessionCounts.working`: Orange top-right count for live sessions whose session-card `activity` is `working`.
 - `project.sessionCounts.done`: Green top-right count for completed sessions.
 
-Do not use `active` for the orange count. In zmux, `active` means the selectedr current object, such as `activeProjectId`, an active group, an active modal,r an active editor/window.
+Do not use `active` for the orange count. In ghostex, `active` means the selectedr current object, such as `activeProjectId`, an active group, an active modal,r an active editor/window.
 
 ## Selection and focus terms
 

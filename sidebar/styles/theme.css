@@ -25,10 +25,10 @@
 body:not([data-sidebar-theme]),
 body[data-sidebar-theme="dark-blue"],
 body[data-sidebar-theme="light-blue"],
-.zmux-root[data-sidebar-theme="dark-blue"],
-.zmux-root[data-sidebar-theme="light-blue"],
-.zmux-settings-shadcn[data-sidebar-theme="dark-blue"],
-.zmux-settings-shadcn[data-sidebar-theme="light-blue"] {
+.ghostex-root[data-sidebar-theme="dark-blue"],
+.ghostex-root[data-sidebar-theme="light-blue"],
+.ghostex-settings-shadcn[data-sidebar-theme="dark-blue"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-blue"] {
   --session-visible-surface: linear-gradient(
     160deg,
     color-mix(in srgb, var(--app-card-active) 92%, transparent),
@@ -58,8 +58,8 @@ body[data-sidebar-theme="light-blue"],
 }
 
 body[data-sidebar-theme="plain-dark"],
-.zmux-root[data-sidebar-theme="plain-dark"],
-.zmux-settings-shadcn[data-sidebar-theme="plain-dark"] {
+.ghostex-root[data-sidebar-theme="plain-dark"],
+.ghostex-settings-shadcn[data-sidebar-theme="plain-dark"] {
   color-scheme: dark;
   --app-background: #111111;
   --app-foreground: #e3e3e3;
@@ -79,8 +79,8 @@ body[data-sidebar-theme="plain-dark"],
 }
 
 body[data-sidebar-theme="plain-light"],
-.zmux-root[data-sidebar-theme="plain-light"],
-.zmux-settings-shadcn[data-sidebar-theme="plain-light"] {
+.ghostex-root[data-sidebar-theme="plain-light"],
+.ghostex-settings-shadcn[data-sidebar-theme="plain-light"] {
   color-scheme: light;
   --app-background: #f3f3f3;
   --app-foreground: #262626;
@@ -102,8 +102,8 @@ body[data-sidebar-theme="plain-light"],
 }
 
 body[data-sidebar-theme="dark-green"],
-.zmux-root[data-sidebar-theme="dark-green"],
-.zmux-settings-shadcn[data-sidebar-theme="dark-green"] {
+.ghostex-root[data-sidebar-theme="dark-green"],
+.ghostex-settings-shadcn[data-sidebar-theme="dark-green"] {
   color-scheme: dark;
   --app-background: #0b120d;
   --app-foreground: #d8e3db;
@@ -123,8 +123,8 @@ body[data-sidebar-theme="dark-green"],
 }
 
 body[data-sidebar-theme="dark-blue"],
-.zmux-root[data-sidebar-theme="dark-blue"],
-.zmux-settings-shadcn[data-sidebar-theme="dark-blue"] {
+.ghostex-root[data-sidebar-theme="dark-blue"],
+.ghostex-settings-shadcn[data-sidebar-theme="dark-blue"] {
   color-scheme: dark;
   --app-background: #0c1117;
   --app-foreground: #dce6f8;
@@ -144,8 +144,8 @@ body[data-sidebar-theme="dark-blue"],
 }
 
 body[data-sidebar-theme="dark-red"],
-.zmux-root[data-sidebar-theme="dark-red"],
-.zmux-settings-shadcn[data-sidebar-theme="dark-red"] {
+.ghostex-root[data-sidebar-theme="dark-red"],
+.ghostex-settings-shadcn[data-sidebar-theme="dark-red"] {
   color-scheme: dark;
   --app-background: #140c0e;
   --app-foreground: #f1dde1;
@@ -165,8 +165,8 @@ body[data-sidebar-theme="dark-red"],
 }
 
 body[data-sidebar-theme="dark-pink"],
-.zmux-root[data-sidebar-theme="dark-pink"],
-.zmux-settings-shadcn[data-sidebar-theme="dark-pink"] {
+.ghostex-root[data-sidebar-theme="dark-pink"],
+.ghostex-settings-shadcn[data-sidebar-theme="dark-pink"] {
   color-scheme: dark;
   --app-background: #160d13;
   --app-foreground: #f4deeb;
@@ -186,8 +186,8 @@ body[data-sidebar-theme="dark-pink"],
 }
 
 body[data-sidebar-theme="dark-orange"],
-.zmux-root[data-sidebar-theme="dark-orange"],
-.zmux-settings-shadcn[data-sidebar-theme="dark-orange"] {
+.ghostex-root[data-sidebar-theme="dark-orange"],
+.ghostex-settings-shadcn[data-sidebar-theme="dark-orange"] {
   color-scheme: dark;
   --app-background: #171008;
   --app-foreground: #f0dfcf;
@@ -207,8 +207,8 @@ body[data-sidebar-theme="dark-orange"],
 }
 
 body[data-sidebar-theme="light-blue"],
-.zmux-root[data-sidebar-theme="light-blue"],
-.zmux-settings-shadcn[data-sidebar-theme="light-blue"] {
+.ghostex-root[data-sidebar-theme="light-blue"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-blue"] {
   color-scheme: light;
   --app-background: #eef4fb;
   --app-foreground: #203042;
@@ -230,8 +230,8 @@ body[data-sidebar-theme="light-blue"],
 }
 
 body[data-sidebar-theme="light-green"],
-.zmux-root[data-sidebar-theme="light-green"],
-.zmux-settings-shadcn[data-sidebar-theme="light-green"] {
+.ghostex-root[data-sidebar-theme="light-green"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-green"] {
   color-scheme: light;
   --app-background: #eef7f0;
   --app-foreground: #203127;
@@ -253,8 +253,8 @@ body[data-sidebar-theme="light-green"],
 }
 
 body[data-sidebar-theme="light-pink"],
-.zmux-root[data-sidebar-theme="light-pink"],
-.zmux-settings-shadcn[data-sidebar-theme="light-pink"] {
+.ghostex-root[data-sidebar-theme="light-pink"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-pink"] {
   color-scheme: light;
   --app-background: #fbf0f6;
   --app-foreground: #3a2431;
@@ -276,8 +276,8 @@ body[data-sidebar-theme="light-pink"],
 }
 
 body[data-sidebar-theme="light-orange"],
-.zmux-root[data-sidebar-theme="light-orange"],
-.zmux-settings-shadcn[data-sidebar-theme="light-orange"] {
+.ghostex-root[data-sidebar-theme="light-orange"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-orange"] {
   color-scheme: light;
   --app-background: #fbf3ea;
   --app-foreground: #402c1a;
@@ -306,7 +306,7 @@ body[data-sidebar-theme="light-orange"],
  * project's validated custom color.
  */
 body[data-sidebar-custom-theme="true"],
-.zmux-root[data-sidebar-custom-theme="true"],
+.ghostex-root[data-sidebar-custom-theme="true"],
 .stack[data-sidebar-custom-theme="true"] {
   --app-button-background: var(--workspace-sidebar-theme-color);
   --app-button-foreground: var(--workspace-sidebar-theme-foreground);
@@ -369,7 +369,7 @@ body[data-sidebar-custom-theme="true"]:is(
     [data-sidebar-theme="plain-dark"],
     [data-sidebar-theme^="dark-"]
   ),
-.zmux-root[data-sidebar-custom-theme="true"]:is(
+.ghostex-root[data-sidebar-custom-theme="true"]:is(
     [data-sidebar-theme="plain-dark"],
     [data-sidebar-theme^="dark-"]
   ),
@@ -400,7 +400,7 @@ body[data-sidebar-custom-theme="true"]:is(
     [data-sidebar-theme="plain-light"],
     [data-sidebar-theme^="light-"]
   ),
-.zmux-root[data-sidebar-custom-theme="true"]:is(
+.ghostex-root[data-sidebar-custom-theme="true"]:is(
     [data-sidebar-theme="plain-light"],
     [data-sidebar-theme^="light-"]
   ),
@@ -444,7 +444,7 @@ body {
 body {
   overflow: hidden;
   padding: calc(12px * var(--sidebar-density-scale));
-  zoom: var(--zmux-agent-manager-zoom, 100%);
+  zoom: var(--ghostex-agent-manager-zoom, 100%);
   font-family: var(
     --vscode-font-family,
     -apple-system,

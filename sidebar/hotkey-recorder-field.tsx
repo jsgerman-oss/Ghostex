@@ -3,7 +3,7 @@ import { useHotkeyRecorder } from "@tanstack/react-hotkeys";
 import { IconX } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { normalizeHotkeyText } from "../shared/zmux-hotkeys";
+import { normalizeHotkeyText } from "../shared/ghostex-hotkeys";
 
 export type HotkeyRecorderFieldProps = {
   ariaInvalid?: boolean;

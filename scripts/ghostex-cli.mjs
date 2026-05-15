@@ -11,19 +11,19 @@ const DEV_PORT = 58744;
 /**
  * CDXC:DevAppFlavor 2026-05-11-12:10
  * CLI-side logs, selector caches, and bridge metadata must follow the app
- * variant. `bun start:dev` and the ghostex-dev bundle use ~/.zmux-dev so CLI
+ * variant. `bun start:dev` and the ghostex-dev bundle use ~/.ghostex-dev so CLI
  * commands issued through that dev app do not touch the installed app's data.
  *
  * CDXC:CliBranding 2026-05-12-07:35
  * Public CLI commands are `ghostex` and the shorter `gtx` alias. Internal
- * ZMUX_* environment names and ~/.zmux storage remain unchanged because they
+ * GHOSTEX_* environment names and ~/.ghostex storage remain unchanged because they
  * are implementation state, not user-facing command names.
  */
-const ZMUX_HOME =
-  process.env.ZMUX_HOME?.trim() ||
-  path.join(homedir(), process.env.ZMUX_APP_VARIANT === "dev" ? ".zmux-dev" : ".zmux");
-const LOG_DIR = path.join(ZMUX_HOME, "logs");
-const CLI_DIR = path.join(ZMUX_HOME, "cli");
+const GHOSTEX_HOME =
+  process.env.GHOSTEX_HOME?.trim() ||
+  path.join(homedir(), process.env.GHOSTEX_APP_VARIANT === "dev" ? ".ghostex-dev" : ".ghostex");
+const LOG_DIR = path.join(GHOSTEX_HOME, "logs");
+const CLI_DIR = path.join(GHOSTEX_HOME, "cli");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
 
 const COMMANDS = new Map([
@@ -119,8 +119,8 @@ function bridgeAction(action, parser = () => ({}), options = {}) {
 async function sendSidebarCliCommand(action, payload, flags = {}) {
   const port = Number(
     flags.port ??
-      process.env.ZMUX_CLI_PORT ??
-      (process.env.ZMUX_APP_VARIANT === "dev" ? DEV_PORT : DEFAULT_PORT),
+      process.env.GHOSTEX_CLI_PORT ??
+      (process.env.GHOSTEX_APP_VARIANT === "dev" ? DEV_PORT : DEFAULT_PORT),
   );
   const requestId = `cli-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const socket = await connectBridge(port);
@@ -161,7 +161,7 @@ async function connectBridge(port) {
     const socket = new WebSocket(`ws://127.0.0.1:${port}`);
     addSocketListener(socket, "open", () => resolve(socket), { once: true });
     addSocketListener(socket, "error", () => {
-      reject(new Error(`Could not connect to zmux bridge on port ${port}. Is zmux running?`));
+      reject(new Error(`Could not connect to ghostex bridge on port ${port}. Is ghostex running?`));
     }, { once: true });
   });
 }
@@ -210,7 +210,7 @@ async function floatingEditorCommand(args) {
   const requestId = `floating-editor-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 8)}`;
-  const workDir = await mkdtemp(path.join(tmpdir(), "zmux-floating-editor-"));
+  const workDir = await mkdtemp(path.join(tmpdir(), "ghostex-floating-editor-"));
   const statusFile = path.join(workDir, "status");
   const wrapperPath = path.join(workDir, "run.zsh");
   const logPath = floatingEditorLogPath();
@@ -222,7 +222,7 @@ async function floatingEditorCommand(args) {
     command: resolvedCommandArgs.join(" "),
     cwd,
     event: "cli.request",
-    originatingSessionId: process.env.ZMUX_NATIVE_SESSION_ID ?? "",
+    originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID ?? "",
     port,
     requestId,
     statusFile,
@@ -236,7 +236,7 @@ async function floatingEditorCommand(args) {
         command: `/bin/zsh ${shellQuote(wrapperPath)}`,
         cwd,
         env: floatingEditorEnvironment(),
-        originatingSessionId: process.env.ZMUX_NATIVE_SESSION_ID || undefined,
+        originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID || undefined,
         requestId,
         statusFile,
         title: "Zapet",
@@ -286,7 +286,7 @@ async function floatingMonacoEditorCommand(args) {
   const requestId = `floating-monaco-editor-${Date.now().toString(36)}-${Math.random()
     .toString(36)
     .slice(2, 8)}`;
-  const workDir = await mkdtemp(path.join(tmpdir(), "zmux-floating-monaco-editor-"));
+  const workDir = await mkdtemp(path.join(tmpdir(), "ghostex-floating-monaco-editor-"));
   const statusFile = path.join(workDir, "status");
   const resolvedFilePath = path.resolve(cwd, filePath);
 
@@ -294,7 +294,7 @@ async function floatingMonacoEditorCommand(args) {
     cwd,
     event: "cli.monaco_request",
     filePath: resolvedFilePath,
-    originatingSessionId: process.env.ZMUX_NATIVE_SESSION_ID ?? "",
+    originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID ?? "",
     port,
     requestId,
     statusFile,
@@ -309,7 +309,7 @@ async function floatingMonacoEditorCommand(args) {
         editorKind: "monaco",
         filePath: resolvedFilePath,
         language: "markdown",
-        originatingSessionId: process.env.ZMUX_NATIVE_SESSION_ID || undefined,
+        originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID || undefined,
         requestId,
         statusFile,
         title: "Prompt Editor",
@@ -352,8 +352,8 @@ function closeSocket(socket) {
 function bridgePortFromFlags(flags) {
   return Number(
     flags.port ??
-      process.env.ZMUX_CLI_PORT ??
-      (process.env.ZMUX_APP_VARIANT === "dev" ? DEV_PORT : DEFAULT_PORT),
+      process.env.GHOSTEX_CLI_PORT ??
+      (process.env.GHOSTEX_APP_VARIANT === "dev" ? DEV_PORT : DEFAULT_PORT),
   );
 }
 
@@ -365,10 +365,10 @@ function floatingEditorEnvironment() {
     SHELL: process.env.SHELL ?? "/bin/zsh",
     TERM: process.env.TERM ?? "xterm-256color",
     USER: process.env.USER ?? "",
-    ZMUX_FLOATING_EDITOR: "1",
+    GHOSTEX_FLOATING_EDITOR: "1",
   };
-  if (process.env.ZMUX_APP_VARIANT) {
-    environment.ZMUX_APP_VARIANT = process.env.ZMUX_APP_VARIANT;
+  if (process.env.GHOSTEX_APP_VARIANT) {
+    environment.GHOSTEX_APP_VARIANT = process.env.GHOSTEX_APP_VARIANT;
   }
   return environment;
 }
@@ -383,17 +383,17 @@ printf 'started\\n' > ${shellQuote(statusFile)}
   printf '[%s] child.start cwd=%s command=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" ${shellQuote(cwd)} ${shellQuote(command)}
 } >> ${shellQuote(logPath)} 2>/dev/null
 cd ${shellQuote(cwd)} || {
-  _zmux_status=$?
-  printf 'exit:%s\\n' "$_zmux_status" >> ${shellQuote(statusFile)}
-  exit "$_zmux_status"
+  _ghostex_status=$?
+  printf 'exit:%s\\n' "$_ghostex_status" >> ${shellQuote(statusFile)}
+  exit "$_ghostex_status"
 }
 ${command}
-_zmux_status=$?
+_ghostex_status=$?
 {
-  printf '[%s] child.exit status=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$_zmux_status"
+  printf '[%s] child.exit status=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$_ghostex_status"
 } >> ${shellQuote(logPath)} 2>/dev/null
-printf 'exit:%s\\n' "$_zmux_status" >> ${shellQuote(statusFile)}
-exit "$_zmux_status"
+printf 'exit:%s\\n' "$_ghostex_status" >> ${shellQuote(statusFile)}
+exit "$_ghostex_status"
 `;
 }
 
@@ -438,7 +438,7 @@ async function runEditorInline(commandArgs, cwd) {
 }
 
 function floatingEditorLogPath() {
-  return path.join(homedir(), "Library", "Logs", "zmux", "floating-editor.log");
+  return path.join(homedir(), "Library", "Logs", "ghostex", "floating-editor.log");
 }
 
 async function appendFloatingEditorLog(details) {
@@ -618,7 +618,7 @@ async function writeSessionAliasCache(cache) {
   /**
    * CDXC:CliSessions 2026-05-07-21:22
    * The human sessions CLI uses global aliases from the last printed live list
-   * so follow-up commands such as `zmux a 2` and `zmux k 4` target the rows the
+   * so follow-up commands such as `ghostex a 2` and `ghostex k 4` target the rows the
    * user just saw, independent of grouped or ungrouped table formatting.
    */
   await mkdir(CLI_DIR, { recursive: true });

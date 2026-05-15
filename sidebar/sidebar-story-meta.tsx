@@ -142,14 +142,14 @@ function useCurrentSidebarSettings(): SidebarStoryCurrentSettings | undefined {
 
   useEffect(() => {
     let isMounted = true;
-    void fetch("/__zmux-current-sidebar-settings", { cache: "no-store" })
+    void fetch("/__ghostex-current-sidebar-settings", { cache: "no-store" })
       .then((response) => response.json())
       .then((payload: unknown) => {
         if (isMounted && payload && typeof payload === "object" && !Array.isArray(payload)) {
           /**
            * CDXC:StorybookSettings 2026-05-08-16:45
            * Storybook must render sidebar scenarios with the same persisted
-           * native settings snapshot as the running zmux app. This keeps local
+           * native settings snapshot as the running ghostex app. This keeps local
            * visual checks honest for width, combined-mode visibility, theme,
            * and session-card chrome preferences.
            */

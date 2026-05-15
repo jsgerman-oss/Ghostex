@@ -52,16 +52,16 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { COMPLETION_SOUND_OPTIONS, type CompletionSoundSetting } from "../shared/completion-sound";
-import { ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES } from "../shared/ghostty-config-actions";
+import { GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES } from "../shared/ghostty-config-actions";
 import {
   resolveSidebarTheme,
-  type SidebarZmuxFolderStatsMessage,
+  type SidebarGhostexFolderStatsMessage,
   type SidebarTheme,
   type SidebarThemeVariant,
 } from "../shared/session-grid-contract";
 import {
   BROWSER_OPEN_MODE_OPTIONS,
-  DEFAULT_zmux_SETTINGS,
+  DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
   GHOSTTY_CONFIRM_CLOSE_SURFACE_OPTIONS,
   GHOSTTY_COPY_ON_SELECT_OPTIONS,
@@ -74,7 +74,7 @@ import {
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
   ZED_OVERLAY_TARGET_APP_OPTIONS,
-  normalizezmuxSettings,
+  normalizeghostexSettings,
   type BrowserOpenMode,
   type DefaultEditorCommand,
   type GhosttyConfirmCloseSurface,
@@ -85,8 +85,8 @@ import {
   type SidebarSide,
   type TerminalCursorStyle,
   type ZedOverlayTargetApp,
-  type zmuxSettings,
-} from "../shared/zmux-settings";
+  type ghostexSettings,
+} from "../shared/ghostex-settings";
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
   CUSTOM_WORKSPACE_OPEN_TARGET_ID_PREFIX,
@@ -113,13 +113,13 @@ import {
   type SidebarCommandIcon,
 } from "../shared/sidebar-command-icons";
 import {
-  DEFAULT_zmux_HOTKEYS,
-  ZMUX_HOTKEY_DEFINITIONS,
+  DEFAULT_ghostex_HOTKEYS,
+  GHOSTEX_HOTKEY_DEFINITIONS,
   normalizeHotkeyText,
-  normalizezmuxHotkeySettings,
-  type zmuxHotkeyActionId,
-  type zmuxHotkeySettings,
-} from "../shared/zmux-hotkeys";
+  normalizeghostexHotkeySettings,
+  type ghostexHotkeyActionId,
+  type ghostexHotkeySettings,
+} from "../shared/ghostex-hotkeys";
 import { PET_OPTIONS, type PetId } from "../shared/pets";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { HotkeyRecorderField } from "./hotkey-recorder-field";
@@ -131,7 +131,7 @@ import type { CommandConfigDraft } from "./command-config-modal";
 import type { WebviewApi } from "./webview-api";
 
 const NUMERIC_SETTINGS_DEBOUNCE_MS = 180;
-const GHOSTTY_THEME_UNMANAGED_VALUE = "__zmux_ghostty_theme_unmanaged__";
+const GHOSTTY_THEME_UNMANAGED_VALUE = "__ghostex_ghostty_theme_unmanaged__";
 const MODIFIED_SETTING_TOOLTIP = "Modified Setting.\n \nClick to Reset to Default";
 const HOTKEY_SETTINGS_SECTIONS: readonly HotkeySettingsSectionDefinition[] = [
   {
@@ -227,7 +227,7 @@ type HotkeySettingsSectionId =
   | "splits";
 
 type HotkeySettingsSectionDefinition = {
-  ids: readonly zmuxHotkeyActionId[];
+  ids: readonly ghostexHotkeyActionId[];
   id: HotkeySettingsSectionId;
   title: string;
 };
@@ -261,22 +261,22 @@ export type SettingsModalProps = {
   accessibilityPermissionGranted?: boolean;
   initialTab?: SettingsModalTab;
   isOpen: boolean;
-  onChange: (settings: zmuxSettings) => void;
+  onChange: (settings: ghostexSettings) => void;
   onClose: () => void;
   onOpenAccessibilityPreferences?: () => void;
   onOpenMacOSNotificationSettings?: () => void;
-  onOpenZmuxFolder?: () => void;
+  onOpenGhostexFolder?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
   onInstallZapet?: () => void;
   onPlayCompletionSound?: (sound: CompletionSoundSetting) => void;
   onRequestMacOSNotificationPermission?: () => void;
-  onRequestZmuxFolderStats?: () => void;
+  onRequestGhostexFolderStats?: () => void;
   onTestAgentTaskCompletion?: () => void;
-  settings?: zmuxSettings;
+  settings?: ghostexSettings;
   theme?: SidebarTheme;
   vscode?: WebviewApi;
-  zmuxFolderStats?: SidebarZmuxFolderStatsMessage;
-  zmuxFolderStatsLoading?: boolean;
+  ghostexFolderStats?: SidebarGhostexFolderStatsMessage;
+  ghostexFolderStatsLoading?: boolean;
 };
 
 export function SettingsModal({
@@ -287,27 +287,27 @@ export function SettingsModal({
   onClose,
   onOpenAccessibilityPreferences,
   onOpenMacOSNotificationSettings,
-  onOpenZmuxFolder,
+  onOpenGhostexFolder,
   onGhosttySettingsAction,
   onInstallZapet,
   onPlayCompletionSound,
   onRequestMacOSNotificationPermission,
-  onRequestZmuxFolderStats,
+  onRequestGhostexFolderStats,
   onTestAgentTaskCompletion,
   settings,
   theme = "dark-blue",
   vscode,
-  zmuxFolderStats,
-  zmuxFolderStatsLoading = false,
+  ghostexFolderStats,
+  ghostexFolderStatsLoading = false,
 }: SettingsModalProps) {
-  const [draft, setDraft] = useState<zmuxSettings>(normalizezmuxSettings(settings));
+  const [draft, setDraft] = useState<ghostexSettings>(normalizeghostexSettings(settings));
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
   const [ghosttySearchQuery, setGhosttySearchQuery] = useState("");
   const [hotkeysSearchQuery, setHotkeysSearchQuery] = useState("");
   const [activeTab, setActiveTabState] = useState<SettingsModalTab>(() =>
     getInitialSettingsModalTab(initialTab),
   );
-  const pendingSettingsRef = useRef<zmuxSettings | undefined>(undefined);
+  const pendingSettingsRef = useRef<ghostexSettings | undefined>(undefined);
   const pendingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const browserSectionRef = useRef<HTMLDivElement>(null);
   const editorSectionRef = useRef<HTMLDivElement>(null);
@@ -523,13 +523,13 @@ export function SettingsModal({
     ]),
     storage: getSettingsSectionSearch(settingsSearchQuery, "Storage", [
       {
-        key: "zmuxFolderStats",
+        key: "ghostexFolderStats",
         options: [
-          { label: "Open Ghostex folder", value: "openZmuxFolder" },
+          { label: "Open Ghostex folder", value: "openGhostexFolder" },
           { label: "Folder sizes", value: "folderSizes" },
           { label: "Disk usage", value: "diskUsage" },
         ],
-        subtitle: "Show ~/.zmux folder sizes and open the Ghostex storage folder in Finder.",
+        subtitle: "Show ~/.ghostex folder sizes and open the Ghostex storage folder in Finder.",
         title: "Ghostex folder",
       },
     ]),
@@ -761,16 +761,16 @@ export function SettingsModal({
      * the incoming settings prop. That prop sync must not reset the selected
      * tab; tab changes are owned by explicit navigation and initial open state.
      */
-    setDraft(normalizezmuxSettings(settings));
+    setDraft(normalizeghostexSettings(settings));
   }, [isOpen, settings]);
 
   useEffect(() => {
     if (
       !isOpen ||
       activeTab !== "settings" ||
-      zmuxFolderStats ||
-      zmuxFolderStatsLoading ||
-      !onRequestZmuxFolderStats ||
+      ghostexFolderStats ||
+      ghostexFolderStatsLoading ||
+      !onRequestGhostexFolderStats ||
       hasRequestedStorageStatsRef.current
     ) {
       return;
@@ -782,7 +782,7 @@ export function SettingsModal({
 
     const requestStats = () => {
       hasRequestedStorageStatsRef.current = true;
-      onRequestZmuxFolderStats();
+      onRequestGhostexFolderStats();
     };
 
     /**
@@ -804,10 +804,10 @@ export function SettingsModal({
   }, [
     activeTab,
     isOpen,
-    onRequestZmuxFolderStats,
+    onRequestGhostexFolderStats,
     settingsSearchQuery,
-    zmuxFolderStats,
-    zmuxFolderStatsLoading,
+    ghostexFolderStats,
+    ghostexFolderStatsLoading,
   ]);
 
   useEffect(() => {
@@ -834,8 +834,8 @@ export function SettingsModal({
     }
   };
 
-  const applySettings = (nextSettings: zmuxSettings) => {
-    const normalizedSettings = normalizezmuxSettings(nextSettings);
+  const applySettings = (nextSettings: ghostexSettings) => {
+    const normalizedSettings = normalizeghostexSettings(nextSettings);
     clearPendingSettings();
     pendingSettingsRef.current = undefined;
     setDraft(normalizedSettings);
@@ -848,8 +848,8 @@ export function SettingsModal({
    * persists through a short trailing debounce to avoid flooding settings writes.
    * Number boxes keep local edit text so partial values can be typed cleanly.
    */
-  const applySettingsDebounced = (nextSettings: zmuxSettings) => {
-    const normalizedSettings = normalizezmuxSettings(nextSettings);
+  const applySettingsDebounced = (nextSettings: ghostexSettings) => {
+    const normalizedSettings = normalizeghostexSettings(nextSettings);
     pendingSettingsRef.current = normalizedSettings;
     setDraft(normalizedSettings);
     clearPendingSettings();
@@ -868,29 +868,29 @@ export function SettingsModal({
    * The settings dialog keeps local state only for responsive controls, then
    * posts every normalized change instead of waiting for Save/Cancel actions.
    */
-  const updateDraft = <Key extends keyof zmuxSettings>(key: Key, value: zmuxSettings[Key]) => {
+  const updateDraft = <Key extends keyof ghostexSettings>(key: Key, value: ghostexSettings[Key]) => {
     applySettings({ ...(pendingSettingsRef.current ?? draft), [key]: value });
   };
-  const updateDraftDebounced = <Key extends keyof zmuxSettings>(
+  const updateDraftDebounced = <Key extends keyof ghostexSettings>(
     key: Key,
-    value: zmuxSettings[Key],
+    value: ghostexSettings[Key],
   ) => {
     applySettingsDebounced({ ...(pendingSettingsRef.current ?? draft), [key]: value });
   };
 
-  const resetSettings = () => applySettings(DEFAULT_zmux_SETTINGS);
-  const resetSetting = <Key extends keyof zmuxSettings>(key: Key) => {
+  const resetSettings = () => applySettings(DEFAULT_ghostex_SETTINGS);
+  const resetSetting = <Key extends keyof ghostexSettings>(key: Key) => {
     applySettings({
       ...(pendingSettingsRef.current ?? draft),
-      [key]: DEFAULT_zmux_SETTINGS[key],
+      [key]: DEFAULT_ghostex_SETTINGS[key],
     });
   };
-  const getSettingModificationProps = <Key extends keyof zmuxSettings>(
+  const getSettingModificationProps = <Key extends keyof ghostexSettings>(
     key: Key,
   ): Required<SettingModificationProps> => ({
     isModified: !Object.is(
       (pendingSettingsRef.current ?? draft)[key],
-      DEFAULT_zmux_SETTINGS[key],
+      DEFAULT_ghostex_SETTINGS[key],
     ),
     onResetToDefault: () => resetSetting(key),
   });
@@ -898,8 +898,8 @@ export function SettingsModal({
   const applyRecommendedGhosttySettings = () => {
     /**
      * CDXC:GhosttySettings 2026-04-30-01:48
-     * The recommended Ghostty button must update both the visible zmux controls
-     * and the real Ghostty config keys that are not modeled in zmux settings.
+     * The recommended Ghostty button must update both the visible ghostex controls
+     * and the real Ghostty config keys that are not modeled in ghostex settings.
      */
     applySettings({
       ...draft,
@@ -919,22 +919,22 @@ export function SettingsModal({
     /**
      * CDXC:GhosttySettings 2026-04-30-01:48
      * Resetting Ghostty defaults should also move the visible terminal
-     * controls back to zmux defaults, then remove managed keys from the real
+     * controls back to ghostex defaults, then remove managed keys from the real
      * Ghostty config so Ghostty's own defaults take effect.
      */
     applySettings({
       ...draft,
-      terminalCursorStyle: DEFAULT_zmux_SETTINGS.terminalCursorStyle,
-      terminalFontFamily: DEFAULT_zmux_SETTINGS.terminalFontFamily,
-      terminalFontSize: DEFAULT_zmux_SETTINGS.terminalFontSize,
-      terminalFontWeight: DEFAULT_zmux_SETTINGS.terminalFontWeight,
-      terminalLetterSpacing: DEFAULT_zmux_SETTINGS.terminalLetterSpacing,
-      terminalLineHeight: DEFAULT_zmux_SETTINGS.terminalLineHeight,
+      terminalCursorStyle: DEFAULT_ghostex_SETTINGS.terminalCursorStyle,
+      terminalFontFamily: DEFAULT_ghostex_SETTINGS.terminalFontFamily,
+      terminalFontSize: DEFAULT_ghostex_SETTINGS.terminalFontSize,
+      terminalFontWeight: DEFAULT_ghostex_SETTINGS.terminalFontWeight,
+      terminalLetterSpacing: DEFAULT_ghostex_SETTINGS.terminalLetterSpacing,
+      terminalLineHeight: DEFAULT_ghostex_SETTINGS.terminalLineHeight,
       terminalMouseScrollMultiplierDiscrete:
-        DEFAULT_zmux_SETTINGS.terminalMouseScrollMultiplierDiscrete,
+        DEFAULT_ghostex_SETTINGS.terminalMouseScrollMultiplierDiscrete,
       terminalMouseScrollMultiplierPrecision:
-        DEFAULT_zmux_SETTINGS.terminalMouseScrollMultiplierPrecision,
-      terminalScrollToBottomWhenTyping: DEFAULT_zmux_SETTINGS.terminalScrollToBottomWhenTyping,
+        DEFAULT_ghostex_SETTINGS.terminalMouseScrollMultiplierPrecision,
+      terminalScrollToBottomWhenTyping: DEFAULT_ghostex_SETTINGS.terminalScrollToBottomWhenTyping,
     });
     onGhosttySettingsAction?.("resetGhosttySettingsToDefault");
   };
@@ -951,7 +951,7 @@ export function SettingsModal({
     >
       <DialogContent
         className={cn(
-          "zmux-settings-shadcn settings-modal-dialog flex flex-col gap-0 overflow-hidden p-0 font-sans",
+          "ghostex-settings-shadcn settings-modal-dialog flex flex-col gap-0 overflow-hidden p-0 font-sans",
           isModalDarkTheme && "dark",
         )}
         data-sidebar-theme={modalTheme}
@@ -1052,7 +1052,7 @@ export function SettingsModal({
               /**
                * CDXC:AccessibilityPermissions 2026-05-08-13:08
                * Settings should expose missing macOS Accessibility status
-               * without implying zmux needs the permission at startup. IDE
+               * without implying ghostex needs the permission at startup. IDE
                * attachment is the feature that asks for it when enabled.
                */
               <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-foreground">
@@ -1435,7 +1435,7 @@ export function SettingsModal({
               {/* CDXC:SessionAttentionNotifications 2026-05-11-01:14:
                   The Settings test button must run the real completion alert
                   path while the adjacent macOS button handles denied or muted
-                  system notification permission outside zmux settings. */}
+                  system notification permission outside ghostex settings. */}
               {shouldShowSetting(settingsSearch.sounds, "attentionNotificationActions") ? (
               <ActionButtonPairField
                 actions={[
@@ -1467,10 +1467,10 @@ export function SettingsModal({
 
             {shouldShowSettingsSection(settingsSearch.storage) ? (
               <div ref={storageSectionRef}>
-                <ZmuxFolderStatsSection
-                  isLoading={zmuxFolderStatsLoading}
-                  onOpenZmuxFolder={onOpenZmuxFolder}
-                  stats={zmuxFolderStats}
+                <GhostexFolderStatsSection
+                  isLoading={ghostexFolderStatsLoading}
+                  onOpenGhostexFolder={onOpenGhostexFolder}
+                  stats={ghostexFolderStats}
                 />
               </div>
             ) : null}
@@ -1522,14 +1522,14 @@ export function SettingsModal({
                 {shouldShowSettingsSection(settingsSearch.terminal) ? (
                   <SettingsSection sectionRef={ghosttyTerminalSectionRef} title="Terminal">
                     {/* CDXC:TerminalSettings 2026-04-26-18:36: Terminal settings in
-                        zmux edit the shared Ghostty config file, so users must see
+                        ghostex edit the shared Ghostty config file, so users must see
                         that external Ghostty windows receive the same values and can
                         reload them with Ghostty's normal config shortcut. */}
                     {shouldShowSetting(settingsSearch.terminal, "ghosttySettingsActions") ? (
                       <>
                         <div className="rounded-lg border border-destructive/45 bg-destructive/10 px-4 py-3 text-sm leading-6 text-foreground">
                           Whatever you set here also applies to your external Ghostty terminal
-                          because this Ghostty terminal uses the same settings file. zmux reloads
+                          because this Ghostty terminal uses the same settings file. ghostex reloads
                           its embedded Ghostty terminal about 3 seconds after you stop changing
                           these controls; external Ghostty windows may still need Cmd+Shift+, to
                           reload.
@@ -1661,7 +1661,7 @@ export function SettingsModal({
                          CDXC:SessionPersistence 2026-05-08-14:04
                           Label the setting as beta and explain that users should
                           enable it only when they care about ssh from other devices
-                          continuing sessions created through zmux. Recommend zmx with
+                          continuing sessions created through ghostex. Recommend zmx with
                           zmx-session-manager because it leaves Agent CLI tools
                           unaffected while minor issues remain. */
                       <SelectField
@@ -1705,7 +1705,7 @@ export function SettingsModal({
                         copy-on-select, close confirmation, clipboard safety,
                         pointer hiding, and native scrollbar visibility. These
                         controls write documented Ghostty config keys instead of
-                        intercepting terminal behavior inside zmux. */}
+                        intercepting terminal behavior inside ghostex. */}
                     {shouldShowSetting(
                       settingsSearch.terminalBehavior,
                       "terminalScrollbackLimitMb",
@@ -1943,8 +1943,8 @@ function OpenTargetsSettingsTab({
   onChange,
   settings,
 }: {
-  onChange: (settings: zmuxSettings) => void;
-  settings: zmuxSettings;
+  onChange: (settings: ghostexSettings) => void;
+  settings: ghostexSettings;
 }) {
   const [editorState, setEditorState] = useState<SettingsOpenTargetEditorState>();
   const hiddenIds = new Set(settings.workspaceOpenTargetHiddenIds);
@@ -2979,11 +2979,11 @@ function HotkeysSettingsTab({
   onChange,
   searchQuery,
 }: {
-  hotkeys?: zmuxHotkeySettings;
-  onChange: (hotkeys: zmuxHotkeySettings) => void;
+  hotkeys?: ghostexHotkeySettings;
+  onChange: (hotkeys: ghostexHotkeySettings) => void;
   searchQuery: string;
 }) {
-  const normalizedHotkeys = normalizezmuxHotkeySettings(hotkeys);
+  const normalizedHotkeys = normalizeghostexHotkeySettings(hotkeys);
   const generalSectionRef = useRef<HTMLDivElement>(null);
   const groupsSectionRef = useRef<HTMLDivElement>(null);
   const navigationSectionRef = useRef<HTMLDivElement>(null);
@@ -2994,7 +2994,7 @@ function HotkeysSettingsTab({
     [normalizedHotkeys],
   );
   const definitionsById = useMemo(
-    () => new Map(ZMUX_HOTKEY_DEFINITIONS.map((definition) => [definition.id, definition])),
+    () => new Map(GHOSTEX_HOTKEY_DEFINITIONS.map((definition) => [definition.id, definition])),
     [],
   );
   /**
@@ -3041,9 +3041,9 @@ function HotkeysSettingsTab({
   );
   const hasVisibleHotkeys = visibleSections.length > 0;
 
-  const updateHotkey = (id: zmuxHotkeyActionId, value: string) => {
+  const updateHotkey = (id: ghostexHotkeyActionId, value: string) => {
     onChange(
-      normalizezmuxHotkeySettings({
+      normalizeghostexHotkeySettings({
         ...normalizedHotkeys,
         [id]: normalizeHotkeyText(value),
       }),
@@ -3051,7 +3051,7 @@ function HotkeysSettingsTab({
   };
 
   const resetHotkeys = () => {
-    onChange(normalizezmuxHotkeySettings(DEFAULT_zmux_HOTKEYS));
+    onChange(normalizeghostexHotkeySettings(DEFAULT_ghostex_HOTKEYS));
   };
 
   return (
@@ -3211,9 +3211,9 @@ function createSettingsCommandDraftFromButton(command: SidebarCommandButton): Co
   };
 }
 
-function getDuplicateHotkeyIds(hotkeys: zmuxHotkeySettings): Set<zmuxHotkeyActionId> {
-  const idsByHotkey = new Map<string, zmuxHotkeyActionId[]>();
-  for (const definition of ZMUX_HOTKEY_DEFINITIONS) {
+function getDuplicateHotkeyIds(hotkeys: ghostexHotkeySettings): Set<ghostexHotkeyActionId> {
+  const idsByHotkey = new Map<string, ghostexHotkeyActionId[]>();
+  for (const definition of GHOSTEX_HOTKEY_DEFINITIONS) {
     const hotkey = normalizeHotkeyText(hotkeys[definition.id] ?? definition.defaultKey);
     if (!hotkey) {
       continue;
@@ -3332,14 +3332,14 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function ZmuxFolderStatsSection({
+function GhostexFolderStatsSection({
   isLoading,
-  onOpenZmuxFolder,
+  onOpenGhostexFolder,
   stats,
 }: {
   isLoading: boolean;
-  onOpenZmuxFolder?: () => void;
-  stats?: SidebarZmuxFolderStatsMessage;
+  onOpenGhostexFolder?: () => void;
+  stats?: SidebarGhostexFolderStatsMessage;
 }) {
   const folders = stats?.folders ?? [];
   return (
@@ -3348,13 +3348,13 @@ function ZmuxFolderStatsSection({
         <div className="min-w-0">
           <div className="text-sm font-medium text-foreground">Ghostex folder</div>
           <div className="mt-1 truncate text-xs text-muted-foreground">
-            {stats?.folderPath ?? "~/.zmux"}
+            {stats?.folderPath ?? "~/.ghostex"}
           </div>
         </div>
         <Button
           className="h-9 shrink-0 gap-2 px-3 text-sm"
-          disabled={!onOpenZmuxFolder}
-          onClick={onOpenZmuxFolder}
+          disabled={!onOpenGhostexFolder}
+          onClick={onOpenGhostexFolder}
           type="button"
           variant="outline"
         >
@@ -3445,7 +3445,7 @@ function GhosttySettingsActions({
           </Button>
         </TooltipTrigger>
         <TooltipContent className="whitespace-pre-line text-left" sideOffset={6}>
-          {ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES.join("\n")}
+          {GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES.join("\n")}
         </TooltipContent>
       </Tooltip>
       <Button className="h-10 px-4 text-sm" onClick={onOpenDocs} type="button" variant="outline">
@@ -3613,7 +3613,7 @@ function SettingsSection({
       >
       {/* CDXC:Settings 2026-04-26-12:31: The target settings examples stack the
           text above controls. Keeping rows vertical avoids squeezing labels in
-          the narrow zmux sidebar modal. */}
+          the narrow ghostex sidebar modal. */}
       {/* CDXC:Settings 2026-04-26-21:00: Settings sections need extra space
           above each header, while adjacent settings should separate by rhythm
           instead of divider lines. */}
@@ -4138,7 +4138,7 @@ function ToggleField({
  * Every changed settings control needs a small, low-emphasis asterisk to the
  * left of its label. Position it absolutely so modified-state indication does
  * not reflow setting titles, while the tooltip action still resets only that
- * setting to DEFAULT_zmux_SETTINGS.
+ * setting to DEFAULT_ghostex_SETTINGS.
  */
 function SettingRow({
   children,

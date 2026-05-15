@@ -144,7 +144,7 @@ export function CommandConfigModal({
       }}
       open={isOpen}
     >
-      <DialogContent className="zmux-settings-shadcn dark command-config-modal-shadcn">
+      <DialogContent className="ghostex-settings-shadcn dark command-config-modal-shadcn">
         <DialogHeader>
           <DialogTitle className="text-xl">Configure action</DialogTitle>
           <DialogDescription className="text-sm">{description}</DialogDescription>
@@ -264,7 +264,7 @@ export function CommandConfigModal({
           <Field className="items-center justify-between" orientation="horizontal">
             <FieldContent>
               <FieldLabel className="text-sm" htmlFor={globalCheckboxId}>
-                Show this action in every zmux project
+                Show this action in every ghostex project
               </FieldLabel>
             </FieldContent>
             <Switch

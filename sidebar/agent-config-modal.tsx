@@ -83,7 +83,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
       }}
       open={isOpen}
     >
-      <DialogContent className="zmux-settings-shadcn dark command-config-modal-shadcn">
+      <DialogContent className="ghostex-settings-shadcn dark command-config-modal-shadcn">
         <DialogHeader>
           <DialogTitle className="text-xl">Configure agent</DialogTitle>
           <DialogDescription className="text-sm">

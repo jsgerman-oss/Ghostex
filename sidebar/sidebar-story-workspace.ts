@@ -14,7 +14,7 @@ import {
 } from "../shared/session-grid-contract";
 import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import type { SidebarCommandButton } from "../shared/sidebar-commands";
-import type { zmuxSettings } from "../shared/zmux-settings";
+import type { ghostexSettings } from "../shared/ghostex-settings";
 import {
   createGroupInWorkspace,
   createGroupFromSessionInWorkspace,
@@ -42,7 +42,7 @@ type SidebarStoryWorkspaceOptions = {
   scratchPadContent: string;
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
-  settings?: zmuxSettings;
+  settings?: ghostexSettings;
   theme: SidebarHydrateMessage["hud"]["theme"];
 };
 

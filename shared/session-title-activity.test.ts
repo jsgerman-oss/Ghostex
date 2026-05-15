@@ -3,14 +3,14 @@ import { getTitleDerivedSessionActivityFromTransition } from "./session-title-ac
 
 describe("Pi title-derived activity", () => {
   test("should detect manual Pi launches and Pi spinner titles", () => {
-    const idle = getTitleDerivedSessionActivityFromTransition(undefined, "π - zmux");
+    const idle = getTitleDerivedSessionActivityFromTransition(undefined, "π - ghostex");
     expect(idle?.agentName).toBe("pi");
     expect(idle?.activity).toBe("idle");
 
     vi.spyOn(Date, "now").mockReturnValue(1_000);
     const working = getTitleDerivedSessionActivityFromTransition(
-      "π - zmux",
-      "⠸ π - Restore Pi support - zmux",
+      "π - ghostex",
+      "⠸ π - Restore Pi support - ghostex",
       idle,
     );
 

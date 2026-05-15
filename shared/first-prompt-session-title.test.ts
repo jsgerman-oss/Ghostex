@@ -53,7 +53,7 @@ describe("Pi first-prompt auto naming", () => {
     expect(
       explainFirstPromptAutoRenameDecision({
         agentName: "pi",
-        currentTitle: "π - zmux",
+        currentTitle: "π - ghostex",
         prompt: "Implement first-class Pi restore support",
       }),
     ).toMatchObject({

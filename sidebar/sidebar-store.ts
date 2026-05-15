@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { createDefaultSidebarAgentButtons } from "../shared/sidebar-agents";
 import { createDefaultSidebarCommandButtons } from "../shared/sidebar-commands";
 import { DEFAULT_COMPLETION_SOUND, getCompletionSoundLabel } from "../shared/completion-sound";
-import { DEFAULT_zmux_SETTINGS } from "../shared/zmux-settings";
+import { DEFAULT_ghostex_SETTINGS } from "../shared/ghostex-settings";
 import { createDefaultSidebarGitState } from "../shared/sidebar-git";
 import {
   createDefaultSidebarSectionCollapseState,
@@ -101,10 +101,10 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
       pendingAgentIds: [],
       recentProjects: [],
       sectionVisibility: createDefaultSidebarSectionVisibility(),
-      settings: DEFAULT_zmux_SETTINGS,
+      settings: DEFAULT_ghostex_SETTINGS,
       createSessionOnSidebarDoubleClick: false,
       renameSessionOnDoubleClick: false,
-      showCloseButtonOnSessionCards: DEFAULT_zmux_SETTINGS.showCloseButtonOnSessionCards,
+      showCloseButtonOnSessionCards: DEFAULT_ghostex_SETTINGS.showCloseButtonOnSessionCards,
       showHotkeysOnSessionCards: false,
       theme: getInitialSidebarTheme(),
       viewMode: "grid",

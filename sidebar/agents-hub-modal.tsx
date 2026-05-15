@@ -21,7 +21,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getDefaultEditorCommandForSettings } from "../shared/zmux-settings";
+import { getDefaultEditorCommandForSettings } from "../shared/ghostex-settings";
 import { cn } from "@/lib/utils";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { useSidebarStore } from "./sidebar-store";
@@ -94,7 +94,7 @@ export function AgentsHubModal({
   return (
     <TooltipProvider>
       <Dialog open={isOpen} onOpenChange={(open) => (!open ? onClose() : undefined)}>
-        <DialogContent className="agents-hub-dialog zmux-settings-shadcn" showCloseButton={false}>
+        <DialogContent className="agents-hub-dialog ghostex-settings-shadcn" showCloseButton={false}>
           <button
             aria-label="Close Agents Hub"
             className="agents-hub-close"

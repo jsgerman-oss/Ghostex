@@ -10,7 +10,7 @@ import type { SidebarSessionActivityState } from "./session-grid-contract";
 const CLAUDE_CODE_IDLE_MARKERS = ["✳", "*"] as const;
 /**
  * CDXC:Claude-session-status 2026-04-25-08:29
- * Claude Code terminal titles drive zmux working/done indicators. Claude uses
+ * Claude Code terminal titles drive ghostex working/done indicators. Claude uses
  * braille glyphs such as `⠐` while working; keep star-glyph support scoped here
  * for title variants while `✳` remains the idle/done marker.
  * CDXC:Terminology 2026-05-09-15:53
@@ -346,7 +346,7 @@ function getPiTitleState(
   const hasPiWorkingMarker = getCodexWorkingMarker(normalizedTitle) !== undefined;
   /**
    * CDXC:PiAgent 2026-05-08-09:42
-   * Pi sets terminal titles as `π - <session> - <cwd>` and the zmux Pi
+   * Pi sets terminal titles as `π - <session> - <cwd>` and the ghostex Pi
    * extension reuses Codex's slow braille spinner frames. Detect manual `pi`
    * launches from that title prefix so blank terminals become Pi sessions
    * without requiring launch through the sidebar button.

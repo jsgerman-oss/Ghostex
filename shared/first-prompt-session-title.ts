@@ -2,7 +2,7 @@ import { getVisiblePrimaryTitle, normalizeTerminalTitle } from "./session-grid-c
 
 /**
  * CDXC:NativeOnlyCleanup 2026-05-05-02:22
- * Native zmux owns active terminal/session behavior. Keep first-prompt
+ * Native ghostex owns active terminal/session behavior. Keep first-prompt
  * title helpers in shared code so the retired VS Code extension tree can be
  * removed without changing native Ghostty session naming.
  */

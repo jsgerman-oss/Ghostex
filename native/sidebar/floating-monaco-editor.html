@@ -39,12 +39,12 @@
 
       require(["vs/editor/editor.main"], function () {
         const initialText =
-          typeof window.__ZMUX_MONACO_INITIAL_TEXT__ === "string"
-            ? window.__ZMUX_MONACO_INITIAL_TEXT__
+          typeof window.__GHOSTEX_MONACO_INITIAL_TEXT__ === "string"
+            ? window.__GHOSTEX_MONACO_INITIAL_TEXT__
             : "";
         const language =
-          typeof window.__ZMUX_MONACO_LANGUAGE__ === "string" && window.__ZMUX_MONACO_LANGUAGE__
-            ? window.__ZMUX_MONACO_LANGUAGE__
+          typeof window.__GHOSTEX_MONACO_LANGUAGE__ === "string" && window.__GHOSTEX_MONACO_LANGUAGE__
+            ? window.__GHOSTEX_MONACO_LANGUAGE__
             : "markdown";
 
         const editor = monaco.editor.create(document.getElementById("editor"), {
@@ -79,7 +79,7 @@
           wordWrap: "on",
         });
 
-        window.zmuxMonacoGetValue = function () {
+        window.ghostexMonacoGetValue = function () {
           return editor.getValue();
         };
 

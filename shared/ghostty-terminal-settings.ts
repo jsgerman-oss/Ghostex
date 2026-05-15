@@ -1,4 +1,4 @@
-import type { zmuxSettings } from "./zmux-settings";
+import type { ghostexSettings } from "./ghostex-settings";
 
 export type GhosttyTerminalConfigValues = {
   adjustCellHeightPercent: number;
@@ -21,18 +21,18 @@ export type GhosttyTerminalConfigValues = {
 
 /**
  * CDXC:TerminalSettings 2026-04-26-19:02
- * Ghostty does not expose a CSS-style font-weight setting. zmux maps the
+ * Ghostty does not expose a CSS-style font-weight setting. ghostex maps the
  * weight slider to the documented variable-font `font-variation = wght=...`
  * key, and writes line height through adjust-cell-height.
  *
  * CDXC:TerminalScrollSettings 2026-04-29-08:56
- * Mouse wheel speed is a native Ghostty setting, not a zmux event transform.
+ * Mouse wheel speed is a native Ghostty setting, not a ghostex event transform.
  * Emit precision and discrete mouse-scroll-multiplier values so Ghostty starts
  * in the requested scroll mode and external Ghostty windows share the setting.
  *
  * CDXC:TerminalBehaviorSettings 2026-04-29-09:32
  * High-use Ghostty preferences are mapped one-to-one into documented Ghostty
- * config keys. Scrollback is stored in MB in zmux settings but written as
+ * config keys. Scrollback is stored in MB in ghostex settings but written as
  * bytes because Ghostty's scrollback-limit key is byte-based.
  *
  * CDXC:TerminalTypographySettings 2026-04-29-09:32
@@ -42,7 +42,7 @@ export type GhosttyTerminalConfigValues = {
  * default.
  */
 export function getGhosttyTerminalConfigValues(
-  settings: zmuxSettings,
+  settings: ghostexSettings,
 ): GhosttyTerminalConfigValues {
   return {
     adjustCellHeightPercent: settings.terminalLineHeight - 1,

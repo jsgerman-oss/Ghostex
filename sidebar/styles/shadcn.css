@@ -90,7 +90,7 @@
   --sidebar-ring: var(--ring);
 }
 
-.zmux-settings-shadcn {
+.ghostex-settings-shadcn {
   /* CDXC:SettingsControls 2026-05-07-18:03
      Settings controls should stay visually shadcn-native instead of inheriting
      sidebar action-button colors. Switch and Slider read --primary for their
@@ -120,11 +120,11 @@
   letter-spacing: 0;
 }
 
-.zmux-settings-shadcn[data-sidebar-theme="plain-light"],
-.zmux-settings-shadcn[data-sidebar-theme="light-blue"],
-.zmux-settings-shadcn[data-sidebar-theme="light-green"],
-.zmux-settings-shadcn[data-sidebar-theme="light-pink"],
-.zmux-settings-shadcn[data-sidebar-theme="light-orange"] {
+.ghostex-settings-shadcn[data-sidebar-theme="plain-light"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-blue"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-green"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-pink"],
+.ghostex-settings-shadcn[data-sidebar-theme="light-orange"] {
   color-scheme: light;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);

@@ -4,7 +4,7 @@
 - Native Sparkle updates for macOS releases.
 - Version 2.0 refreshes the whole UI around a simplified Codex-style workspace with cleaner top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, and updated screenshots.
 - Version 2.0 includes broad stability and performance work across native sidebar sync, AppKit relayouts, shared storage writes, diagnostic logging, and workspace visibility.
-- `zmux sessions`, `zmux attach`, `zmux kill`, `zmux sleep`, `zmux wake`, and `zmux focus` manage live terminal sessions from a shell.
+- `ghostex sessions`, `ghostex attach`, `ghostex kill`, `ghostex sleep`, `ghostex wake`, and `ghostex focus` manage live terminal sessions from a shell.
 - Simplified Codex-style sidebar layout with refined project groups, search, scroll glow, modal, and session-card styling.
 - Native terminal title bars expose improved restore and fork actions, including Codex and Claude fork command support.
 - First-prompt auto-renaming preserves meaningful terminal-synced titles instead of sending redundant generated rename commands.

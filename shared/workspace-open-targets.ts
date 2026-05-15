@@ -1,4 +1,4 @@
-import type { ZedOverlayTargetApp } from "./zmux-settings";
+import type { ZedOverlayTargetApp } from "./ghostex-settings";
 
 export type WorkspaceOpenTargetLaunchStyle = "direct-path" | "goto" | "line-column";
 
@@ -67,7 +67,7 @@ export const DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY: WorkspaceOpenTargetAvai
  * CDXC:TitlebarOpenIn 2026-05-11-00:22
  * The titlebar Open In menu should start with the embedded project editor, then
  * mirror t3code's editor command catalog so installed local IDEs appear without
- * maintaining a second, smaller zmux-only list.
+ * maintaining a second, smaller ghostex-only list.
  */
 export const BUILT_IN_WORKSPACE_OPEN_TARGETS: readonly WorkspaceOpenTargetDefinition[] = [
   {

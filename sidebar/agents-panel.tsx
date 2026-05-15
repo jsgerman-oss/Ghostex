@@ -25,7 +25,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import type { SidebarCommandButton } from "../shared/sidebar-commands";
-import { getZedOverlayTargetAppLabel, type ZedOverlayTargetApp } from "../shared/zmux-settings";
+import { getZedOverlayTargetAppLabel, type ZedOverlayTargetApp } from "../shared/ghostex-settings";
 import { AGENT_LOGOS } from "./agent-logos";
 import { VisualStudioCodeIcon } from "./brand-icons";
 import { getSidebarButtonGridColumnCount } from "./button-grid";
@@ -46,8 +46,8 @@ const CONTEXT_MENU_HEIGHT_PX = 166;
 const QUICK_ACTION_MENU_MARGIN_PX = 12;
 const QUICK_ACTION_MENU_WIDTH_PX = 220;
 const REORDER_SYNC_TIMEOUT_MS = 3_000;
-const PRIMARY_COMMAND_STORAGE_KEY = "zmux-sidebar-primary-command";
-const PRIMARY_OPEN_IN_STORAGE_KEY = "zmux-sidebar-primary-open-in";
+const PRIMARY_COMMAND_STORAGE_KEY = "ghostex-sidebar-primary-command";
+const PRIMARY_OPEN_IN_STORAGE_KEY = "ghostex-sidebar-primary-open-in";
 
 type OpenInQuickActionTarget = "finder" | Extract<ZedOverlayTargetApp, "vscode" | "zed">;
 

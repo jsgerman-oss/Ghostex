@@ -4,8 +4,8 @@ import "../sidebar/styles.css";
 const preview: Preview = {
   parameters: {
     backgrounds: {
-      default: "zmux dark",
-      values: [{ name: "zmux dark", value: "#050505" }],
+      default: "ghostex dark",
+      values: [{ name: "ghostex dark", value: "#050505" }],
     },
     controls: {
       matchers: {

@@ -48,13 +48,13 @@ panel work, native pane/runtime stability, pet overlay routing, terminal
 scrollbar restoration, and arm64 public release metadata. -->
 
 <!-- CDXC:Branding 2026-05-12-07:35: Public release notes must describe the
-Ghostex rename without rewriting historical zmux entries. Homebrew should use
+Ghostex rename without rewriting historical ghostex entries. Homebrew should use
 the `ghostex` cask token as the public install command, while the public CLI
 command changes to `ghostex` with `gtx` as the short alias. -->
 
 - Added dual-architecture release pipeline support for separate Apple Silicon and Intel DMGs, separate Sparkle feeds, and an architecture-aware Homebrew cask.
-- Renamed the public app surface from Zmux to Ghostex while keeping internal repository, code, storage, bundle id, and historical asset names under `zmux`.
-- Changed the public CLI command to `ghostex`, with `gtx` as the short alias, and intentionally stopped documenting `zmux` as a CLI compatibility command.
+- Renamed the public app surface from Ghostex to Ghostex while keeping internal repository, code, storage, bundle id, and historical asset names under `ghostex`.
+- Changed the public CLI command to `ghostex`, with `gtx` as the short alias, and intentionally stopped documenting `ghostex` as a CLI compatibility command.
 - Updated README install and CLI examples so `brew install --cask maddada/tap/ghostex` is the public install command.
 - Updated the reference sidebar workflows with a combined-only layout, improved command panel behavior, searchable settings sections, refined hotkey navigation, and cleaner Previous Sessions rows.
 - Improved Agents Hub so it loads the real local catalog, supports in-place saving, and avoids bundling private placeholder profile data.
@@ -100,10 +100,10 @@ This minor release improves the 2.x workspace with stronger hotkey editing, rich
 - Added a shortcut recorder for hotkey settings so Command chords are captured directly instead of typed into text fields.
 - Updated split-count shortcuts to single-chord defaults and added direct Split More / Split Less actions for faster workspace layout control.
 - Added opt-in Rich Prompt Editing with Zapet, including Settings UI, native install routing, environment injection, and zsh startup shims that keep Zapet in charge after shell profiles load.
-- Added installed-app CLI proxying so terminal commands such as `zmux --help` and `zmux sessions` run the bundled Node CLI before the macOS app starts.
+- Added installed-app CLI proxying so terminal commands such as `ghostex --help` and `ghostex sessions` run the bundled Node CLI before the macOS app starts.
 - Improved native command execution by normalizing GUI-launched process `PATH` values so background commands can find common developer tools.
 - Improved terminal search keyboard behavior, centering, and neutral styling for embedded Ghostty panes.
-- Added active-project names to the macOS title bar while keeping chat workspaces labeled as Zmux.
+- Added active-project names to the macOS title bar while keeping chat workspaces labeled as Ghostex.
 - Added focused native pane-reorder diagnostics and rejected stale title-bar hits so bottom-edge terminal selection does not become pane dragging.
 - Changed provider-backed terminal recreation so reload, wake, restore, and previous-session restore follow the current Settings provider while attach-command inspection still uses stored provider metadata.
 - Separated project agent launching from plain terminal creation so project headers have distinct agent and terminal controls.
@@ -124,13 +124,13 @@ GitHub, Sparkle, and Homebrew metadata stay aligned. -->
 This minor release tightens the new 2.x interface with the latest workspace, settings, and release workflow polish.
 
 - Added a unified tabbed Settings dialog that brings Settings, Agents, Actions, and Hotkeys into one configuration surface.
-- Added lazy `~/.zmux` folder usage stats and an Open zmux Folder action from Settings.
+- Added lazy `~/.ghostex` folder usage stats and an Open ghostex Folder action from Settings.
 - Added menu bar session status indicators while making floating desktop indicators independently optional.
 - Renamed orange agent status from running to working so agent activity is distinct from live runtime state.
 - Improved project editor rows so opening and error states stay visible, show diagnostics, and can be retried instead of disappearing.
 - Improved session card and Previous Sessions row chrome with hover close controls, clearer last-active placement, and refined editor diff labels.
-- Added a separate `start:dev` app startup path for `zmux-dev` so normal `bun s` keeps release-like behavior.
-- Updated README presentation and feature wording for the current Zmux positioning.
+- Added a separate `start:dev` app startup path for `ghostex-dev` so normal `bun s` keeps release-like behavior.
+- Updated README presentation and feature wording for the current Ghostex positioning.
 
 SHA256: `73340ec06d57c3b16a585ee9c5566513c91fd5e0a6cba9477ae5982a122521c9`
 
@@ -140,14 +140,14 @@ SHA256: `73340ec06d57c3b16a585ee9c5566513c91fd5e0a6cba9477ae5982a122521c9`
 the 2.x messaging focused on the full UI refresh plus stability/performance
 work, while also calling out the macOS app icon shipped after v2.0. -->
 
-- Continued the 2.x UI refresh messaging: zmux now presents the redesigned simplified Codex-style workspace, refreshed project groups, action controls, tooltips, session cards, settings surfaces, and updated screenshots.
+- Continued the 2.x UI refresh messaging: ghostex now presents the redesigned simplified Codex-style workspace, refreshed project groups, action controls, tooltips, session cards, settings surfaces, and updated screenshots.
 - Continued the 2.x stability and performance focus across native sidebar sync, AppKit relayout avoidance, shared storage writes, diagnostic filtering, and workspace visibility.
 - Added the macOS application icon from agent-manager-x so Finder, Dock, app switcher, and signed release builds use the intended branded icon instead of a generic app icon.
 - Compiled the icon through Xcode's `AppIcon` asset catalog so signed and notarized release bundles carry the same icon metadata as local builds.
 
 SHA256: `6bbd2a95f1f585df20a2811c8f2cae492ad53492bc13814b4b085c5a906e9ced`
 
-Install with Homebrew: `brew install --cask maddada/tap/zmux`
+Install with Homebrew: `brew install --cask maddada/tap/ghostex`
 
 ## 2.0.0 - 2026-05-08
 
@@ -155,7 +155,7 @@ Install with Homebrew: `brew install --cask maddada/tap/zmux`
 the full UI refresh plus stability and performance work shipped since v1.4.11
 so README, GitHub, Sparkle, and Homebrew metadata describe the same release. -->
 
-- Changed the whole zmux UI around the simplified Codex-style workspace: refreshed top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, icons, and README screenshots.
+- Changed the whole ghostex UI around the simplified Codex-style workspace: refreshed top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, icons, and README screenshots.
 - Improved workspace stability and performance by suppressing byte-identical native storage writes, skipping metadata-only AppKit relayouts, reducing high-frequency native diagnostics, and filtering noisy T3/focus logs.
 - Added native workspace visibility helpers and tests so sidebar/native sync can avoid unnecessary workspace work while preserving visible pane behavior.
 - Improved restore and fork actions for native terminal title bars, including Codex and Claude fork command paths.
@@ -164,7 +164,7 @@ so README, GitHub, Sparkle, and Homebrew metadata describe the same release. -->
 
 SHA256: `da519a720e65a955ce182f0655ba36a6cb02c188aab441142dc2bf9747f70456`
 
-Install with Homebrew: `brew install --cask maddada/tap/zmux`
+Install with Homebrew: `brew install --cask maddada/tap/ghostex`
 
 ## 1.4.11 - 2026-05-08
 
@@ -185,10 +185,10 @@ metadata describe the same shipped behavior. -->
 all commits after v1.4.9 so README, GitHub, Sparkle, and Homebrew release
 metadata describe the same shipped behavior. -->
 
-- Added human-facing `zmux` CLI session commands for listing, attaching, resuming, killing, sleeping, waking, and focusing running terminal sessions.
+- Added human-facing `ghostex` CLI session commands for listing, attaching, resuming, killing, sleeping, waking, and focusing running terminal sessions.
 - Added provider-backed attach metadata so tmux, zmx, and zellij sessions keep their stored provider, show sidebar badges, and expose copyable attach commands.
 - Added a Settings control for floating session status indicator size, plus updated indicator drawing, tooltip wrapping, and settings-control polish.
-- Fixed main window chrome restore so zmux reopens at the prior size, position, and display while avoiding offscreen IDE-attachment coordinates.
+- Fixed main window chrome restore so ghostex reopens at the prior size, position, and display while avoiding offscreen IDE-attachment coordinates.
 - Fixed Find Previous Session routing so the footer button opens the prompt even with an empty modal search field and logs the modal/native bridge path.
 - Improved session title sync by rejecting Ghostty ghost placeholder titles and protecting trusted restored titles from automatic rename overwrite.
 
@@ -266,7 +266,7 @@ all commits after v1.4.4 so README, GitHub, Sparkle, and Homebrew release
 metadata describe the same shipped behavior. -->
 
 - Added native title-bar split controls for primary Actions and Open In commands while keeping empty title-bar space draggable.
-- Added React-rendered title-bar dropdown menus for configured zmux actions and Open In targets, reusing the existing sidebar command and selected-IDE state.
+- Added React-rendered title-bar dropdown menus for configured ghostex actions and Open In targets, reusing the existing sidebar command and selected-IDE state.
 - Improved terminal focus sync so passive layout/status updates no longer steal focus from the terminal or modal the user is actively typing in.
 - Improved embedded Ghostty terminal color handling by removing inherited color-disabling environment keys at the native surface boundary.
 - Added optional CEF prototype scaffolding for future Chromium browser panes while keeping the default WKWebView build path buildable without the Chromium SDK.
@@ -277,7 +277,7 @@ metadata describe the same shipped behavior. -->
 all commits after v1.4.3 so README, GitHub, Sparkle, and Homebrew release
 metadata describe the same shipped behavior. -->
 
-- Added Combined sidebar mode so native zmux can show one project group per project across all projects, while preserving Separated mode for the previous per-project layout.
+- Added Combined sidebar mode so native ghostex can show one project group per project across all projects, while preserving Separated mode for the previous per-project layout.
 - Added a Recent Projects drawer with fuzzy project/path search and startup cleanup for empty combined-mode projects.
 - Added project context actions for opening project config, setting project theme, copying the project path, opening the folder in Finder, opening it in the selected IDE, and closing projects into Recent Projects.
 - Improved native T3 Code runtime handling so fresh supervised runtimes are retained during startup/auth races, with explicit stop still available for recovery.
@@ -339,12 +339,12 @@ metadata describe the same shipped behavior. -->
 all commits after v1.2.0 so README, GitHub, and Homebrew release metadata
 describe the same shipped behavior. -->
 
-- Added Ghostty config actions and a recommended Ghostty config that includes zmux-managed color, cursor, font, scroll, and split-opacity settings.
-- Added a cyan Ghostty palette default to improve terminal color readability with the recommended zmux-managed config.
+- Added Ghostty config actions and a recommended Ghostty config that includes ghostex-managed color, cursor, font, scroll, and split-opacity settings.
+- Added a cyan Ghostty palette default to improve terminal color readability with the recommended ghostex-managed config.
 - Added a local agent release skill for repeatable split commits, release notes, GitHub releases, and Homebrew cask publishing.
 - Added Generate Name diagnostics across the sidebar, bridge, and controller paths so silent session-name failures are easier to trace.
 - Fixed terminal title bars so long titles are measured from raw text and use available pane width before truncating.
-- Improved attached IDE refocus timing so zmux resurfaces faster when the IDE is already active or when activation retries succeed quickly.
+- Improved attached IDE refocus timing so ghostex resurfaces faster when the IDE is already active or when activation retries succeed quickly.
 - Hid bare agent status words such as `Working`, `Done`, `Idle`, `Thinking`, and `Error` from visible terminal titles.
 
 ## 1.2.0 - 2026-04-29
@@ -384,7 +384,7 @@ the same user-facing feature set. -->
 - Added configurable app hotkeys, including native AppKit handling while terminal panes have focus.
 - Added saved first-message metadata for agent sessions and a copyable "View 1st Message" modal in active and previous session flows.
 - Added terminal workspace background color settings and native pane-gap/background rendering.
-- Added automatic Zed workspace syncing after zmux workspace switches, controlled by a setting.
+- Added automatic Zed workspace syncing after ghostex workspace switches, controlled by a setting.
 - Added native main-window size persistence between launches.
 - Added native terminal search bar rendering and focus preservation improvements for modal workflows.
 - Improved sidebar sessions to default to last-activity ordering and keep agent-icon mode blank for iconless sessions until hover.
@@ -402,7 +402,7 @@ metadata describe the same shipped behavior. -->
 - Added native terminal title bars with rename, fork, reload, sleep, and close actions.
 - Added visible native Ghostty scrollbars and disabled middle-click paste in embedded terminals.
 - Added workspace configuration for dock name, theme, Tabler icon, and uploaded image.
-- Added `zmux-dev` build/run flavor with separate diagnostics storage and shared workspace/session state.
+- Added `ghostex-dev` build/run flavor with separate diagnostics storage and shared workspace/session state.
 - Added shared sidebar storage files for projects, previous sessions, and settings outside WKWebView localStorage.
 - Added managed native sidebar action sessions with command run indicators and close-on-exit behavior.
 - Improved first-prompt auto-title logic so meaningful existing titles are not overwritten.

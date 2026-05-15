@@ -1,10 +1,10 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SettingsModal } from "./settings-modal";
-import { DEFAULT_zmux_SETTINGS, type zmuxSettings } from "../shared/zmux-settings";
+import { DEFAULT_ghostex_SETTINGS, type ghostexSettings } from "../shared/ghostex-settings";
 
-const modalSettings: zmuxSettings = {
-  ...DEFAULT_zmux_SETTINGS,
+const modalSettings: ghostexSettings = {
+  ...DEFAULT_ghostex_SETTINGS,
   agentManagerZoomPercent: 95,
   completionBellEnabled: true,
   showCloseButtonOnSessionCards: true,
@@ -18,9 +18,9 @@ const modalSettings: zmuxSettings = {
 function SettingsModalStory({
   initialSettings = modalSettings,
 }: {
-  initialSettings?: zmuxSettings;
+  initialSettings?: ghostexSettings;
 }) {
-  const [settings, setSettings] = useState<zmuxSettings>(initialSettings);
+  const [settings, setSettings] = useState<ghostexSettings>(initialSettings);
 
   return (
     <div

@@ -438,10 +438,10 @@ describe("visible primary titles", () => {
     expect(normalizeTerminalTitle("🔔 Copilot fix")).toBe("Copilot fix");
     expect(normalizeTerminalTitle("OC | Review repository")).toBe("Review repository");
     expect(normalizeTerminalTitle("⠸ OC | Review repository")).toBe("Review repository");
-    expect(normalizeTerminalTitle("π - Implement Pi restore - zmux")).toBe(
+    expect(normalizeTerminalTitle("π - Implement Pi restore - ghostex")).toBe(
       "Implement Pi restore",
     );
-    expect(normalizeTerminalTitle("⠸ π - Implement Pi restore - zmux")).toBe(
+    expect(normalizeTerminalTitle("⠸ π - Implement Pi restore - ghostex")).toBe(
       "Implement Pi restore",
     );
   });
@@ -478,8 +478,8 @@ describe("visible primary titles", () => {
     expect(getPreferredSessionTitle("Bug Fix", undefined)).toBe("Bug Fix");
   });
 
-  test("should ignore generic zmux terminal titles when choosing a visible session title", () => {
-    expect(getPreferredSessionTitle("Session 1", "zmux")).toBeUndefined();
+  test("should ignore generic ghostex terminal titles when choosing a visible session title", () => {
+    expect(getPreferredSessionTitle("Session 1", "ghostex")).toBeUndefined();
   });
 
   test("should ignore placeholder and path-like terminal titles when choosing persisted titles", () => {
@@ -492,7 +492,7 @@ describe("visible primary titles", () => {
     expect(getPreferredSessionTitle("Session 1", "Codex")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Codex CLI")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "OpenAI Codex")).toBeUndefined();
-    expect(getPreferredSessionTitle("Session 1", "π - zmux")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "π - ghostex")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Claude")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Claude Code")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "  ⠸ Codex  ")).toBeUndefined();

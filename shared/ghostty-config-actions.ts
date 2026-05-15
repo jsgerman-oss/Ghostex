@@ -2,11 +2,11 @@ export const GHOSTTY_SETTINGS_DOCS_URL = 'https://ghostty.org/docs/config/refere
 
 /**
  * CDXC:GhosttySettings 2026-04-30-01:48
- * Settings users need one-click Ghostty defaults, zmux recommended settings,
+ * Settings users need one-click Ghostty defaults, ghostex recommended settings,
  * docs, and direct config-file access. Keep the managed key list explicit so
- * reset removes only the keys zmux owns while preserving unrelated user config.
+ * reset removes only the keys ghostex owns while preserving unrelated user config.
  */
-export const ZMUX_GHOSTTY_MANAGED_CONFIG_KEYS = [
+export const GHOSTEX_GHOSTTY_MANAGED_CONFIG_KEYS = [
   'adjust-cell-height',
   'adjust-cell-width',
   'background',
@@ -26,7 +26,7 @@ export const ZMUX_GHOSTTY_MANAGED_CONFIG_KEYS = [
   'unfocused-split-opacity',
 ] as const;
 
-export const ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES = [
+export const GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES = [
   '# Applied by Ghostex:',
   'theme = GitHub Dark',
   'background = #000000',
@@ -53,7 +53,7 @@ export const ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES = [
 export function mergeGhosttyConfigLines(
   config: string,
   managedLines: readonly string[],
-  managedKeys: readonly string[] = ZMUX_GHOSTTY_MANAGED_CONFIG_KEYS
+  managedKeys: readonly string[] = GHOSTEX_GHOSTTY_MANAGED_CONFIG_KEYS
 ): string {
   const managedKeySet = new Set(managedKeys);
   const retainedLines = config.split(/\r?\n/u).filter((line) => !managedKeySet.has(readGhosttyConfigKey(line)));

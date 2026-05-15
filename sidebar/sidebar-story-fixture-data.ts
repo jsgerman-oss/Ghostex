@@ -613,21 +613,21 @@ const COMBINED_HEADER_ALIGNMENT_GROUPS: SidebarStoryGroup[] = [
     title: "/",
   },
   {
-    groupId: "combined-project-zmux",
+    groupId: "combined-project-ghostex",
     isActive: false,
     kind: "workspace",
-    projectContext: createStoryOpenProjectEditorContext("combined-project-zmux"),
+    projectContext: createStoryOpenProjectEditorContext("combined-project-ghostex"),
     sessions: [
       createStorySession({
         alias: "Terminal Session",
         agentIcon: "codex",
         detail: "OpenAI Codex",
         lastInteractionAt: secondsAgo(45),
-        sessionId: "combined-zmux-terminal",
+        sessionId: "combined-ghostex-terminal",
         shortcutLabel: "⌘⌥1",
       }),
     ],
-    title: "zmux",
+    title: "ghostex",
   },
   {
     groupId: "combined-project-agent-manager",
@@ -664,17 +664,17 @@ const COMBINED_SPARSE_REFERENCE_GROUPS: SidebarStoryGroup[] = [
     title: "Chats",
   },
   {
-    groupId: "combined-sparse-project-zmux",
+    groupId: "combined-sparse-project-ghostex",
     isActive: false,
     kind: "workspace",
-    projectContext: createStoryProjectContext("combined-sparse-project-zmux"),
+    projectContext: createStoryProjectContext("combined-sparse-project-ghostex"),
     sessions: [
       createStorySession({
         alias: "Sidebar and settings integration",
         agentIcon: "codex",
         detail: "OpenAI Codex",
         lastInteractionAt: new Date(Date.now() - 9 * 60 * 60 * 1000).toISOString(),
-        sessionId: "combined-sparse-zmux-session",
+        sessionId: "combined-sparse-ghostex-session",
         shortcutLabel: "⌘⌥2",
       }),
       /**
@@ -700,7 +700,7 @@ const COMBINED_SPARSE_REFERENCE_GROUPS: SidebarStoryGroup[] = [
         shortcutLabel: "⌘⌥4",
       }),
     ],
-    title: "zmux",
+    title: "ghostex",
   },
   {
     groupId: "combined-sparse-project-release-manager",

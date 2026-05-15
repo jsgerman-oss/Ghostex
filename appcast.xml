@@ -43,35 +43,35 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <item>
             <title>2.3.2</title>
             <pubDate>Sun, 10 May 2026 16:59:14 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v2.3.2</sparkle:fullReleaseNotesLink>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/ghostex/releases/tag/v2.3.2</sparkle:fullReleaseNotesLink>
             <sparkle:version>20302</sparkle:version>
             <sparkle:shortVersionString>2.3.2</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink sparkle:edSignature="EUA0m2bW1Jv/dhzovLo+OdHEsYT/hlBF9EBbqKD6lWYXwoNtO7OWR1P+duhHUuGn9HkFjlY1RkY3Qq9Rw5r1Cw==" sparkle:length="720">https://raw.githubusercontent.com/maddada/zmux/main/zmux-2.3.2.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/zmux/releases/download/v2.3.2/zmux-2.3.2.dmg" length="174530441" type="application/octet-stream" sparkle:edSignature="ieQ7W8T+iqNbckcSpa3y1exkwijSYCGbFtcOCW5xtSJyPE+2nn4opNp24FW9NEvVIFqaqhfCgSRqavC3fLilBA=="/>
+            <sparkle:releaseNotesLink sparkle:edSignature="EUA0m2bW1Jv/dhzovLo+OdHEsYT/hlBF9EBbqKD6lWYXwoNtO7OWR1P+duhHUuGn9HkFjlY1RkY3Qq9Rw5r1Cw==" sparkle:length="720">https://raw.githubusercontent.com/maddada/ghostex/main/ghostex-2.3.2.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/maddada/ghostex/releases/download/v2.3.2/ghostex-2.3.2.dmg" length="174530441" type="application/octet-stream" sparkle:edSignature="ieQ7W8T+iqNbckcSpa3y1exkwijSYCGbFtcOCW5xtSJyPE+2nn4opNp24FW9NEvVIFqaqhfCgSRqavC3fLilBA=="/>
         </item>
         <item>
             <title>2.3.0</title>
             <pubDate>Sun, 10 May 2026 16:35:16 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v2.3</sparkle:fullReleaseNotesLink>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/ghostex/releases/tag/v2.3</sparkle:fullReleaseNotesLink>
             <sparkle:version>20300</sparkle:version>
             <sparkle:shortVersionString>2.3.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink sparkle:edSignature="4Itl0tuc4XL7n3r91+w7QCq053749pmdQYLqUXJFZWkDOH2vufAzDk1AfoCZ7v05ZW0cmxncbHsagdvXUCh4Ag==" sparkle:length="1205">https://raw.githubusercontent.com/maddada/zmux/main/zmux-2.3.0.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/zmux/releases/download/v2.3/zmux-2.3.0.dmg" length="174540491" type="application/octet-stream" sparkle:edSignature="xlPugF/Qrtt3sZeo+4ZZPTMHTLgqqCXmD2iH/aSjnwbvb+MMVZRoRctDAoc1lfkXNYNFVLGhPtfxtSR4u1mnCw=="/>
+            <sparkle:releaseNotesLink sparkle:edSignature="4Itl0tuc4XL7n3r91+w7QCq053749pmdQYLqUXJFZWkDOH2vufAzDk1AfoCZ7v05ZW0cmxncbHsagdvXUCh4Ag==" sparkle:length="1205">https://raw.githubusercontent.com/maddada/ghostex/main/ghostex-2.3.0.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/maddada/ghostex/releases/download/v2.3/ghostex-2.3.0.dmg" length="174540491" type="application/octet-stream" sparkle:edSignature="xlPugF/Qrtt3sZeo+4ZZPTMHTLgqqCXmD2iH/aSjnwbvb+MMVZRoRctDAoc1lfkXNYNFVLGhPtfxtSR4u1mnCw=="/>
         </item>
         <item>
             <title>2.2.0</title>
             <pubDate>Sat, 09 May 2026 22:30:49 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v2.2</sparkle:fullReleaseNotesLink>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/ghostex/releases/tag/v2.2</sparkle:fullReleaseNotesLink>
             <sparkle:version>20200</sparkle:version>
             <sparkle:shortVersionString>2.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink sparkle:edSignature="zJ5+/QwdY+mblKOO51dosw3lMMovtaTWw5cAwKl+798sCugNdOlGSMTugJGnt3Iy+YqILb7dWLcX4l9RHiA2Dg==" sparkle:length="896">https://raw.githubusercontent.com/maddada/zmux/main/zmux-2.2.0.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/zmux/releases/download/v2.2/zmux-2.2.0.dmg" length="173652232" type="application/octet-stream" sparkle:edSignature="2Ywq+x5j5zrg/tyDeEcbz1clI0qN9oqmAwqyaYbLB/yeigosMZR/JE7Acn5iPUoVz8taoOh8WQEpCdjnfjakCw=="/>
+            <sparkle:releaseNotesLink sparkle:edSignature="zJ5+/QwdY+mblKOO51dosw3lMMovtaTWw5cAwKl+798sCugNdOlGSMTugJGnt3Iy+YqILb7dWLcX4l9RHiA2Dg==" sparkle:length="896">https://raw.githubusercontent.com/maddada/ghostex/main/ghostex-2.2.0.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/maddada/ghostex/releases/download/v2.2/ghostex-2.2.0.dmg" length="173652232" type="application/octet-stream" sparkle:edSignature="2Ywq+x5j5zrg/tyDeEcbz1clI0qN9oqmAwqyaYbLB/yeigosMZR/JE7Acn5iPUoVz8taoOh8WQEpCdjnfjakCw=="/>
         </item>
     </channel>
 </rss>

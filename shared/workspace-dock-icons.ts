@@ -14,7 +14,7 @@ export type WorkspaceProjectIconSource = {
 };
 
 export const DEFAULT_WORKSPACE_THEME_COLOR = "#2f6feb";
-export const WORKSPACE_THEME_COLOR_HISTORY_STORAGE_KEY = "zmux-workspace-theme-color-history";
+export const WORKSPACE_THEME_COLOR_HISTORY_STORAGE_KEY = "ghostex-workspace-theme-color-history";
 const MAX_WORKSPACE_THEME_COLOR_HISTORY = 8;
 
 /**

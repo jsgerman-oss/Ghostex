@@ -51,7 +51,7 @@ const IGNORED_GENERIC_TERMINAL_TITLES = new Set([
   "openai codex",
   "pi",
   "π",
-  "zmux",
+  "ghostex",
 ]);
 const IGNORED_PLACEHOLDER_SESSION_TITLES = new Set([
   DEFAULT_TERMINAL_SESSION_TITLE.toLowerCase(),
@@ -265,7 +265,7 @@ export function createTimestampedSessionId(
     }
   }
 
-  throw new Error("Unable to allocate a unique zmux session ID for this timestamp.");
+  throw new Error("Unable to allocate a unique ghostex session ID for this timestamp.");
 }
 
 export function formatSessionDisplayId(displayId: number | string): string {

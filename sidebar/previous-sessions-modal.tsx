@@ -250,7 +250,7 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
               className="previous-sessions-find-button"
               onClick={() => {
                 const normalizedQuery = searchQuery.trim();
-                console.debug("[zmux-previous-sessions] promptFindPreviousSession.click", {
+                console.debug("[ghostex-previous-sessions] promptFindPreviousSession.click", {
                   hasQuery: Boolean(normalizedQuery),
                   queryLength: normalizedQuery.length,
                 });

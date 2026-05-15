@@ -110,11 +110,11 @@ import { filterRecentProjects } from "./recent-project-search";
 import { isEmptySidebarDoubleClick } from "./empty-sidebar-double-click";
 import { closeAppModal, openAppModal } from "./app-modal-host-bridge";
 import {
-  ZMUX_HOTKEY_DEFINITIONS,
+  GHOSTEX_HOTKEY_DEFINITIONS,
   normalizeHotkeyText,
-  normalizezmuxHotkeySettings,
-  type zmuxHotkeySettings,
-} from "../shared/zmux-hotkeys";
+  normalizeghostexHotkeySettings,
+  type ghostexHotkeySettings,
+} from "../shared/ghostex-hotkeys";
 
 export type SidebarAppProps = {
   messageSource?: Pick<Window, "addEventListener" | "removeEventListener">;
@@ -177,8 +177,8 @@ function useCommandHotkeyOverlay(): boolean {
   return isVisible;
 }
 
-function SidebarHotkeyOverlay({ hotkeys }: { hotkeys?: zmuxHotkeySettings }) {
-  const normalizedHotkeys = normalizezmuxHotkeySettings(hotkeys);
+function SidebarHotkeyOverlay({ hotkeys }: { hotkeys?: ghostexHotkeySettings }) {
+  const normalizedHotkeys = normalizeghostexHotkeySettings(hotkeys);
   const rows = getSidebarHotkeyOverlayRows(normalizedHotkeys);
 
   return (
@@ -199,9 +199,9 @@ function SidebarHotkeyOverlay({ hotkeys }: { hotkeys?: zmuxHotkeySettings }) {
   );
 }
 
-function getSidebarHotkeyOverlayRows(hotkeys: zmuxHotkeySettings) {
+function getSidebarHotkeyOverlayRows(hotkeys: ghostexHotkeySettings) {
   const rows: Array<{ hotkey: string; title: string }> = [];
-  for (const definition of ZMUX_HOTKEY_DEFINITIONS) {
+  for (const definition of GHOSTEX_HOTKEY_DEFINITIONS) {
     if (definition.id === "focusGroup1") {
       const hotkey = normalizeHotkeyText(hotkeys.focusGroup1 ?? "");
       if (hotkey) {
@@ -322,7 +322,7 @@ const SIDEBAR_STARTUP_INTERACTION_BLOCK_MS = 1500;
 const SIDEBAR_STARTUP_REPRO_WINDOW_MS = 15_000;
 const SIDEBAR_POINTER_DRAG_REORDER_THRESHOLD_PX = 8;
 const SIDEBAR_SECTION_COLLAPSE_PERSIST_DEBOUNCE_MS = 200;
-const SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY = "zmux-sidebar-ui-collapse-state";
+const SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY = "ghostex-sidebar-ui-collapse-state";
 const BROWSER_AUTO_COLLAPSE_SUPPRESSION_MS = 1_200;
 const MIN_SESSION_SEARCH_QUERY_LENGTH = 2;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
@@ -1082,10 +1082,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   }, [customThemeColor, theme]);
 
   useEffect(() => {
-    document.body.style.setProperty("--zmux-agent-manager-zoom", `${agentManagerZoomPercent}%`);
+    document.body.style.setProperty("--ghostex-agent-manager-zoom", `${agentManagerZoomPercent}%`);
 
     return () => {
-      document.body.style.removeProperty("--zmux-agent-manager-zoom");
+      document.body.style.removeProperty("--ghostex-agent-manager-zoom");
     };
   }, [agentManagerZoomPercent]);
 
@@ -1341,7 +1341,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * CDXC:SidebarReference 2026-05-10-15:51
      * Combined section headers, Recent Projects, and per-group collapse state are
      * UI navigation state. Persist them in the sidebar webview so restarting
-     * zmux keeps collapsed items collapsed and expanded items expanded.
+     * ghostex keeps collapsed items collapsed and expanded items expanded.
      */
     writeSidebarUiCollapseState({
       collapsedGroupsById,

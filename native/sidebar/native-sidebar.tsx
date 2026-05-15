@@ -78,7 +78,7 @@ import {
   type SidebarSessionItem,
   type SidebarTheme,
   type SidebarToExtensionMessage,
-  type SidebarZmuxFolderStatsMessage,
+  type SidebarGhostexFolderStatsMessage,
   type TerminalSessionPersistenceProvider,
   type TerminalSessionRecord,
   type T3SessionRecord,
@@ -201,14 +201,14 @@ import {
   type WorkspaceDockIcon,
 } from "../../shared/workspace-dock-icons";
 import {
-  DEFAULT_zmux_SETTINGS,
+  DEFAULT_ghostex_SETTINGS,
   getDefaultEditorCommandForSettings,
   getZedOverlayTargetAppLabel,
-  normalizezmuxSettings,
+  normalizeghostexSettings,
   type SidebarSide,
   type ZedOverlayTargetApp,
-  type zmuxSettings,
-} from "../../shared/zmux-settings";
+  type ghostexSettings,
+} from "../../shared/ghostex-settings";
 import {
   ALWAYS_AVAILABLE_WORKSPACE_OPEN_TARGET_IDS,
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
@@ -221,15 +221,15 @@ import {
   type CompletionSoundSetting,
 } from "../../shared/completion-sound";
 import {
-  getzmuxHotkeyActionById,
-  getzmuxHotkeyActionIdForKey,
-  type zmuxHotkeyActionId,
-} from "../../shared/zmux-hotkeys";
+  getghostexHotkeyActionById,
+  getghostexHotkeyActionIdForKey,
+  type ghostexHotkeyActionId,
+} from "../../shared/ghostex-hotkeys";
 import { getGhosttyTerminalConfigValues } from "../../shared/ghostty-terminal-settings";
 import {
   GHOSTTY_SETTINGS_DOCS_URL,
-  ZMUX_GHOSTTY_MANAGED_CONFIG_KEYS,
-  ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES,
+  GHOSTEX_GHOSTTY_MANAGED_CONFIG_KEYS,
+  GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES,
 } from "../../shared/ghostty-config-actions";
 import "../../sidebar/styles.css";
 
@@ -367,7 +367,7 @@ type NativeHostCommand =
 	      };
 	      type: "setActiveTerminalSet";
 	      workspaceOpenTargets?: {
-	        availability: zmuxSettings["workspaceOpenTargetAvailability"];
+	        availability: ghostexSettings["workspaceOpenTargetAvailability"];
 	        customTargets: CustomWorkspaceOpenTarget[];
 	        hiddenTargetIds: string[];
 	      };
@@ -396,13 +396,13 @@ type NativeHostCommand =
        * counts message so each sidebar publish resizes the floating chrome from
        * the same authoritative settings snapshot.
        */
-      size: zmuxSettings["sessionStatusIndicatorSize"];
+      size: ghostexSettings["sessionStatusIndicatorSize"];
       type: "setSessionStatusIndicators";
     }
   | {
       activities: NativePetOverlayActivity[];
       enabled: boolean;
-      selectedPetId: zmuxSettings["selectedPetId"];
+      selectedPetId: ghostexSettings["selectedPetId"];
       type: "setPetOverlayState";
     }
   | { layout?: NativeTerminalLayout; type: "setTerminalLayout" }
@@ -626,7 +626,7 @@ type NativeHostEvent =
     }
   | { sessionId: string; threadId: string; title?: string; type: "t3ThreadChanged" }
   | { exitCode: number; requestId: string; stderr: string; stdout: string; type: "processResult" }
-  | { actionId: zmuxHotkeyActionId; type: "nativeHotkey" }
+  | { actionId: ghostexHotkeyActionId; type: "nativeHotkey" }
   | { protocolVersion: 1; type: "hostReady" };
 
 type NativeProcessResult = Extract<NativeHostEvent, { type: "processResult" }>;
@@ -640,7 +640,7 @@ type NativeBootstrap = {
     projects?: string;
     settings?: string;
   };
-  zmuxHomeDir?: string;
+  ghostexHomeDir?: string;
   workspaceName?: string;
   zedOverlayEnabled?: boolean;
   zedOverlayHideTitlebarButton?: boolean;
@@ -649,24 +649,24 @@ type NativeBootstrap = {
 
 declare global {
   interface Window {
-    __zmux_NATIVE_HOST__?: NativeBootstrap;
+    __ghostex_NATIVE_HOST__?: NativeBootstrap;
     webkit?: {
       messageHandlers?: {
-        zmuxAppModalHost?: {
+        ghostexAppModalHost?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxNativeHost?: {
+        ghostexNativeHost?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxWorkspaceBar?: {
+        ghostexWorkspaceBar?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxNativeHostDiagnostics?: {
+        ghostexNativeHostDiagnostics?: {
           postMessage: (message: unknown) => void;
         };
       };
     };
-    __zmux_NATIVE_WORKSPACE_BAR__?: {
+    __ghostex_NATIVE_WORKSPACE_BAR__?: {
       addProject: (path: string, name?: string) => void;
       focusProject: (projectId: string) => void;
       getState: () => WorkspaceBarStateMessage;
@@ -676,11 +676,11 @@ declare global {
       setProjectTheme: (projectId: string, theme: SidebarTheme) => void;
       setProjectThemeColor: (projectId: string, themeColor: string) => void;
     };
-	    __zmux_NATIVE_SETTINGS__?: {
+	    __ghostex_NATIVE_SETTINGS__?: {
 	      attachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
 	      detachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
 	    };
-	    __zmux_NATIVE_SIDEBAR__?: {
+	    __ghostex_NATIVE_SIDEBAR__?: {
 	      openActiveProjectEditorFromTitlebar: () => void;
 	      refreshWorkspaceOpenTargetAvailabilityFromTitlebar: () => void;
 	      rotateActivePaneLayoutClockwiseFromTitlebar: () => void;
@@ -688,14 +688,14 @@ declare global {
 	      toggleCommandsPanelFromTitlebar: () => void;
 	      runSidebarCommandFromTitlebar: (commandId: string) => void;
 	    };
-    __zmux_NATIVE_CLI__?: {
+    __ghostex_NATIVE_CLI__?: {
       handleCommand: (action: string, payload: Record<string, unknown>) => Promise<unknown>;
     };
-    __zmux_NATIVE_MODAL_BRIDGE__?: {
+    __ghostex_NATIVE_MODAL_BRIDGE__?: {
       handleSidebarMessage: (message: SidebarToExtensionMessage) => void;
     };
-    __zmux_NATIVE_HOTKEYS__?: {
-      handleNativeHotkey: (actionId: zmuxHotkeyActionId) => void;
+    __ghostex_NATIVE_HOTKEYS__?: {
+      handleNativeHotkey: (actionId: ghostexHotkeyActionId) => void;
     };
   }
 }
@@ -721,25 +721,25 @@ class SurfaceMessageBus<T> {
  * Public source must not expose a maintainer's local checkout path. When the
  * native host does not provide a cwd, seed the demo workspace from HOME.
  */
-const initialWorkspacePath = window.__zmux_NATIVE_HOST__?.cwd || nativeFallbackHomeDirectory();
-const initialWorkspaceName = window.__zmux_NATIVE_HOST__?.workspaceName || "Ghostex";
-const SETTINGS_STORAGE_KEY = "zmux-native-settings";
-const AGENTS_STORAGE_KEY = "zmux-native-agents";
-const AGENT_ORDER_STORAGE_KEY = "zmux-native-agent-order";
-const COMMANDS_STORAGE_KEY = "zmux-native-commands";
-const COMMAND_ORDER_STORAGE_KEY = "zmux-native-command-order";
-const DELETED_DEFAULT_COMMANDS_STORAGE_KEY = "zmux-native-deleted-default-commands";
-const PROJECTS_STORAGE_KEY = "zmux-native-projects";
-const SCRATCH_PAD_STORAGE_KEY = "zmux-native-scratch-pad";
-const PINNED_PROMPTS_STORAGE_KEY = "zmux-native-pinned-prompts";
-const COLLAPSED_SECTIONS_STORAGE_KEY = "zmux-native-collapsed-sections";
-const ACTIVE_SESSIONS_SORT_MODE_STORAGE_KEY = "zmux-native-active-sessions-sort-mode";
-const PREVIOUS_SESSIONS_STORAGE_KEY = "zmux-native-previous-sessions";
-const LEGACY_SIDEBAR_SIDE_STORAGE_KEY = "zmux-native-sidebar-side";
-const GIT_PRIMARY_ACTION_STORAGE_KEY = "zmux-native-git-primary-action";
-const GIT_CONFIRM_COMMIT_STORAGE_KEY = "zmux-native-git-confirm-commit";
-const GIT_GENERATE_COMMIT_BODY_STORAGE_KEY = "zmux-native-git-generate-commit-body";
-const WORKSPACE_DOCK_STATE_EVENT = "zmux-workspace-dock-state";
+const initialWorkspacePath = window.__ghostex_NATIVE_HOST__?.cwd || nativeFallbackHomeDirectory();
+const initialWorkspaceName = window.__ghostex_NATIVE_HOST__?.workspaceName || "Ghostex";
+const SETTINGS_STORAGE_KEY = "ghostex-native-settings";
+const AGENTS_STORAGE_KEY = "ghostex-native-agents";
+const AGENT_ORDER_STORAGE_KEY = "ghostex-native-agent-order";
+const COMMANDS_STORAGE_KEY = "ghostex-native-commands";
+const COMMAND_ORDER_STORAGE_KEY = "ghostex-native-command-order";
+const DELETED_DEFAULT_COMMANDS_STORAGE_KEY = "ghostex-native-deleted-default-commands";
+const PROJECTS_STORAGE_KEY = "ghostex-native-projects";
+const SCRATCH_PAD_STORAGE_KEY = "ghostex-native-scratch-pad";
+const PINNED_PROMPTS_STORAGE_KEY = "ghostex-native-pinned-prompts";
+const COLLAPSED_SECTIONS_STORAGE_KEY = "ghostex-native-collapsed-sections";
+const ACTIVE_SESSIONS_SORT_MODE_STORAGE_KEY = "ghostex-native-active-sessions-sort-mode";
+const PREVIOUS_SESSIONS_STORAGE_KEY = "ghostex-native-previous-sessions";
+const LEGACY_SIDEBAR_SIDE_STORAGE_KEY = "ghostex-native-sidebar-side";
+const GIT_PRIMARY_ACTION_STORAGE_KEY = "ghostex-native-git-primary-action";
+const GIT_CONFIRM_COMMIT_STORAGE_KEY = "ghostex-native-git-confirm-commit";
+const GIT_GENERATE_COMMIT_BODY_STORAGE_KEY = "ghostex-native-git-generate-commit-body";
+const WORKSPACE_DOCK_STATE_EVENT = "ghostex-workspace-dock-state";
 const CHROME_CANARY_PROCESS_NAME = "Google Chrome Canary";
 const CHROME_CANARY_RUNNING_POLL_MS = 2_000;
 const CHROME_CANARY_BROWSER_GROUP_ID = "browser-chrome-canary";
@@ -752,7 +752,7 @@ const NATIVE_T3_REMOTE_ACCESS_AUTH_RETRY_MS = 500;
 /**
  * CDXC:T3Code 2026-05-04-04:41
  * T3 can emit a thread-change event before the sidebar summary title has caught
- * up. Keep new zmux T3 cards responsive by creating them immediately, then
+ * up. Keep new ghostex T3 cards responsive by creating them immediately, then
  * retry the snapshot-backed title sync a few times so the card title converges
  * to the title visible inside T3.
  */
@@ -762,15 +762,15 @@ const SYNC_OPEN_PROJECT_WITH_ZED_DEBOUNCE_MS = 2_000;
 /**
  * CDXC:SessionTitleSync 2026-04-26-09:52
  * Codex needs the staged `/rename <title>` text to settle in the prompt before
- * zmux submits Enter. A one-second delay matches the requested native behavior;
+ * ghostex submits Enter. A one-second delay matches the requested native behavior;
  * the later native Enter command handles submission separately from text input.
  */
 const AUTO_SUBMIT_STAGED_RENAME_DELAY_MS = 1_000;
 const DELAYED_SEND_MAX_DELAY_MS = 2_147_483_647;
 const NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS = 7_000;
 const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
-const zmux_AGENT_NOTIFY_HOOK_PATH = `${nativeZmuxHomeDirectory()}/hooks/agent-shell-notify.sh`;
-const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/zmux.ts`;
+const ghostex_AGENT_NOTIFY_HOOK_PATH = `${nativeGhostexHomeDirectory()}/hooks/agent-shell-notify.sh`;
+const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/ghostex.ts`;
 const FIND_PREVIOUS_SESSION_AGENT_ID = "codex";
 const FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS = 1_500;
 /**
@@ -793,7 +793,7 @@ const WORKSPACE_DOCK_THEME_OPTIONS: ReadonlyArray<{ label: string; value: Sideba
 ];
 /**
  * CDXC:SessionTitleSync 2026-04-26-09:23
- * Native first-prompt title generation must match zmux's Codex `/rename`
+ * Native first-prompt title generation must match ghostex's Codex `/rename`
  * path, including the 39-character generated title cap and 250-character
  * prompt sample used before asking Codex for a short session name.
  */
@@ -920,7 +920,7 @@ type NativeCliSessionListItem = {
   title: string;
 };
 
-type AgentManagerXMuxSource = "zmux";
+type AgentManagerXMuxSource = "ghostex";
 
 type AgentManagerXWorkspaceSession = {
   agent: string;
@@ -956,7 +956,7 @@ type AgentManagerXSessionCommandMessage = {
   workspaceId: string;
 };
 
-const AGENT_MANAGER_X_BRIDGE_URL = "ws://127.0.0.1:47652/zmux";
+const AGENT_MANAGER_X_BRIDGE_URL = "ws://127.0.0.1:47652/ghostex";
 const AGENT_MANAGER_X_RECONNECT_INITIAL_DELAY_MS = 1000;
 const AGENT_MANAGER_X_RECONNECT_MAX_DELAY_MS = 5000;
 
@@ -1111,7 +1111,7 @@ const nativeT3ThreadChangeInFlightBySessionId = new Set<string>();
 /**
  * CDXC:AgentManagerXBridge 2026-04-27-20:34
  * Agent Manager X reads live mux sessions from a localhost WebSocket. The
- * packaged zmux app owns native sidebar state, so it must publish snapshots
+ * packaged ghostex app owns native sidebar state, so it must publish snapshots
  * directly instead of relying on the VS Code extension bridge path.
  */
 const agentManagerXBridgeClient = new AgentManagerXNativeBridgeClient();
@@ -1146,13 +1146,13 @@ const vscode = {
   },
 };
 
-window.__zmux_NATIVE_MODAL_BRIDGE__ = {
+window.__ghostex_NATIVE_MODAL_BRIDGE__ = {
   handleSidebarMessage(message) {
     handleSidebarMessage(message);
   },
 };
 
-window.__zmux_NATIVE_HOTKEYS__ = {
+window.__ghostex_NATIVE_HOTKEYS__ = {
   handleNativeHotkey(actionId) {
     logNativeHotkeyDebug("nativeHotkeys.bridgeActionReceived", { actionId });
     runNativeHotkeyAction(actionId, "native");
@@ -1197,7 +1197,7 @@ function logNativeHotkeyDebug(event: string, details: Record<string, unknown>): 
   if (!isNativeSidebarDebugLoggingEnabled()) {
     return;
   }
-  console.debug("[zmux-native-hotkeys]", event, details);
+  console.debug("[ghostex-native-hotkeys]", event, details);
   appendTerminalFocusDebugLog(event, details);
 }
 
@@ -1222,7 +1222,7 @@ function postNative(command: NativeHostCommand): void {
       visibleSessionIds: snapshot?.visibleSessionIds,
     });
   }
-  window.webkit?.messageHandlers?.zmuxNativeHost?.postMessage(command);
+  window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage(command);
 }
 
 function postAppModalHost(message: unknown): void {
@@ -1233,7 +1233,7 @@ function showNativeMessage(level: "info" | "warning" | "error", message: string)
   postNative({ level, message, type: "showMessage" });
 }
 
-function postZmuxFolderStats(message: SidebarZmuxFolderStatsMessage): void {
+function postGhostexFolderStats(message: SidebarGhostexFolderStatsMessage): void {
   sidebarBus.post(message);
   postAppModalHost({ message, type: "sidebarState" });
 }
@@ -1307,7 +1307,7 @@ function appendTerminalFocusDebugLog(event: string, details?: unknown): void {
   if (!shouldPersistNativeSidebarDiagnostic(event)) {
     return;
   }
-  window.webkit?.messageHandlers?.zmuxNativeHost?.postMessage({
+  window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage({
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event,
     type: "appendTerminalFocusDebugLog",
@@ -1662,7 +1662,7 @@ function openChromeCanaryBrowserWindow(url: string): void {
    * CDXC:BrowserOverlay 2026-04-26-05:14
    * Browser-type actions should not use the user's default browser. They launch
    * Chrome Canary through the native host so Swift can place that browser
-   * window above the currently attached zmux window.
+   * window above the currently attached ghostex window.
    */
   postNative({ type: "openBrowserWindow", url });
 }
@@ -1812,8 +1812,8 @@ function applyRecommendedGhosttySettings(): void {
    * the native host so the app updates the same file embedded Ghostty reads.
    */
   postNative({
-    lines: [...ZMUX_RECOMMENDED_GHOSTTY_CONFIG_LINES],
-    managedKeys: [...ZMUX_GHOSTTY_MANAGED_CONFIG_KEYS],
+    lines: [...GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES],
+    managedKeys: [...GHOSTEX_GHOSTTY_MANAGED_CONFIG_KEYS],
     reloadImmediately: true,
     type: "applyGhosttyConfigSettings",
   });
@@ -1822,7 +1822,7 @@ function applyRecommendedGhosttySettings(): void {
 function resetGhosttySettingsToDefault(): void {
   postNative({
     lines: [],
-    managedKeys: [...ZMUX_GHOSTTY_MANAGED_CONFIG_KEYS],
+    managedKeys: [...GHOSTEX_GHOSTTY_MANAGED_CONFIG_KEYS],
     reloadImmediately: true,
     type: "applyGhosttyConfigSettings",
   });
@@ -1867,8 +1867,8 @@ function showNativeBrowserWindow(): void {
   /**
    * CDXC:BrowserOverlay 2026-04-26-07:37
    * When Chrome Canary is already running, the sidebar Browsers section exposes
-   * one " Chrome Canary" control for every zmux session. The control asks
-   * Swift to raise and resize the existing Canary window above the zmux
+   * one " Chrome Canary" control for every ghostex session. The control asks
+   * Swift to raise and resize the existing Canary window above the ghostex
    * workarea, without opening a replacement URL or using a browser fallback.
    */
   postNative({ type: "showBrowserWindow" });
@@ -1933,7 +1933,7 @@ async function refreshWorkspaceOpenTargetAvailabilityFromTitlebar(): Promise<voi
 }
 
 function applyWorkspaceOpenTargetAvailability(
-  nextAvailability: zmuxSettings["workspaceOpenTargetAvailability"],
+  nextAvailability: ghostexSettings["workspaceOpenTargetAvailability"],
   forceSave: boolean,
 ): void {
   if (
@@ -1949,7 +1949,7 @@ function applyWorkspaceOpenTargetAvailability(
 }
 
 async function detectWorkspaceOpenTargetAvailability(): Promise<
-  zmuxSettings["workspaceOpenTargetAvailability"]
+  ghostexSettings["workspaceOpenTargetAvailability"]
 > {
   /**
    * CDXC:TitlebarOpenIn 2026-05-11-02:03
@@ -2001,12 +2001,12 @@ function createWorkspaceOpenTargetDetectionScript(): string {
   const appChecks = BUILT_IN_WORKSPACE_OPEN_TARGETS.flatMap((target) =>
     (target.macOSAppNames ?? []).map(
       (appName) =>
-        `if zmux_app_exists ${shellQuote(appName)}; then printf 'app\\t%s\\t%s\\n' ${shellQuote(target.id)} ${shellQuote(appName)}; fi`,
+        `if ghostex_app_exists ${shellQuote(appName)}; then printf 'app\\t%s\\t%s\\n' ${shellQuote(target.id)} ${shellQuote(appName)}; fi`,
     ),
   );
   return [
     "set +e",
-    "zmux_app_exists() {",
+    "ghostex_app_exists() {",
     "  local app_name=\"$1\"",
     "  local app_bundle=\"${app_name}.app\"",
     "  local base",
@@ -2023,8 +2023,8 @@ function createWorkspaceOpenTargetDetectionScript(): string {
 }
 
 function workspaceOpenTargetAvailabilityEquals(
-  left: zmuxSettings["workspaceOpenTargetAvailability"],
-  right: zmuxSettings["workspaceOpenTargetAvailability"],
+  left: ghostexSettings["workspaceOpenTargetAvailability"],
+  right: ghostexSettings["workspaceOpenTargetAvailability"],
 ): boolean {
   return (
     arraySetEquals(left.availableTargetIds, right.availableTargetIds) &&
@@ -2087,12 +2087,12 @@ async function runGh(
   return result;
 }
 
-async function requestZmuxFolderStats(): Promise<void> {
-  const folderPath = nativeZmuxHomeDirectory();
+async function requestGhostexFolderStats(): Promise<void> {
+  const folderPath = nativeGhostexHomeDirectory();
   /**
    * CDXC:SettingsStorage 2026-05-09-15:25
    * The settings storage card is lazy. When it becomes visible, run one native
-   * background `du` scan over the trusted zmux home and publish only immediate
+   * background `du` scan over the trusted ghostex home and publish only immediate
    * child folder totals so the modal can identify large folders without
    * blocking initial Settings rendering.
    */
@@ -2108,14 +2108,14 @@ async function requestZmuxFolderStats(): Promise<void> {
       folderPath,
     ]);
     if (result.exitCode !== 0) {
-      postZmuxFolderStats({
+      postGhostexFolderStats({
         errorMessage:
           result.stderr.trim() || result.stdout.trim() || "Could not read the Ghostex folder.",
         folderPath,
         folders: [],
         generatedAt: new Date().toISOString(),
         totalBytes: 0,
-        type: "zmuxFolderStats",
+        type: "ghostexFolderStats",
       });
       return;
     }
@@ -2127,28 +2127,28 @@ async function requestZmuxFolderStats(): Promise<void> {
       .sort(
         (left, right) => right.sizeBytes - left.sizeBytes || left.name.localeCompare(right.name),
       );
-    postZmuxFolderStats({
+    postGhostexFolderStats({
       folderPath,
       folders,
       generatedAt: new Date().toISOString(),
       totalBytes: folders.reduce((total, folder) => total + folder.sizeBytes, 0),
-      type: "zmuxFolderStats",
+      type: "ghostexFolderStats",
     });
   } catch (error) {
-    postZmuxFolderStats({
+    postGhostexFolderStats({
       errorMessage: error instanceof Error ? error.message : "Could not read the Ghostex folder.",
       folderPath,
       folders: [],
       generatedAt: new Date().toISOString(),
       totalBytes: 0,
-      type: "zmuxFolderStats",
+      type: "ghostexFolderStats",
     });
   }
 }
 
 function parseDuFolderStatLine(
   line: string,
-): SidebarZmuxFolderStatsMessage["folders"][number] | undefined {
+): SidebarGhostexFolderStatsMessage["folders"][number] | undefined {
   const match = /^(\d+)\s+(.+)$/u.exec(line.trim());
   if (!match) {
     return undefined;
@@ -2214,20 +2214,20 @@ function startFirstPromptAutoRenameMonitor(): void {
   }, FIRST_PROMPT_AUTO_RENAME_POLL_MS);
 }
 
-function readStoredSettings(): zmuxSettings {
+function readStoredSettings(): ghostexSettings {
   try {
-    const sharedSettingsJson = window.__zmux_NATIVE_HOST__?.sharedSidebarStorage?.settings;
+    const sharedSettingsJson = window.__ghostex_NATIVE_HOST__?.sharedSidebarStorage?.settings;
     const storedSettingsSource = JSON.parse(
       sharedSettingsJson || localStorage.getItem(SETTINGS_STORAGE_KEY) || "null",
     );
-    const storedSettings = normalizezmuxSettings(
+    const storedSettings = normalizeghostexSettings(
       normalizeStoredSettingsSidebarSide(storedSettingsSource),
     );
     if (!sharedSettingsJson) {
       persistSharedSettingsSnapshot(storedSettings);
     }
-    const bootstrap = window.__zmux_NATIVE_HOST__;
-    return normalizezmuxSettings({
+    const bootstrap = window.__ghostex_NATIVE_HOST__;
+    return normalizeghostexSettings({
       ...storedSettings,
       ...(bootstrap?.zedOverlayEnabled === undefined
         ? {}
@@ -2240,7 +2240,7 @@ function readStoredSettings(): zmuxSettings {
         : { zedOverlayHideTitlebarButton: bootstrap.zedOverlayHideTitlebarButton }),
     });
   } catch {
-    return DEFAULT_zmux_SETTINGS;
+    return DEFAULT_ghostex_SETTINGS;
   }
 }
 
@@ -2258,7 +2258,7 @@ function normalizeStoredSettingsSidebarSide(candidate: unknown): unknown {
 
   /**
    * CDXC:SidebarPlacement 2026-05-06-17:32
-   * Sidebar placement now lives in zmux settings. Migrate the old hotkey-only
+   * Sidebar placement now lives in ghostex settings. Migrate the old hotkey-only
    * localStorage side value into the settings snapshot so right-side users do
    * not get moved back to the left after upgrading.
    */
@@ -2274,9 +2274,9 @@ function readLegacyStoredSidebarSide(): SidebarSide | undefined {
     : undefined;
 }
 
-function saveSettings(nextSettings: zmuxSettings): void {
+function saveSettings(nextSettings: ghostexSettings): void {
   const previousSettings = settings;
-  settings = normalizezmuxSettings(nextSettings);
+  settings = normalizeghostexSettings(nextSettings);
   if (!settings.zedOverlayEnabled || !settings.syncOpenProjectWithZed) {
     clearPendingZedProjectSync();
   }
@@ -2311,8 +2311,8 @@ function syncNativeSidebarSide(
 }
 
 function syncCodeServerRuntimeSettings(
-  nextSettings: zmuxSettings,
-  previousSettings: zmuxSettings,
+  nextSettings: ghostexSettings,
+  previousSettings: ghostexSettings,
 ): void {
   const codeServerSettingsChanged =
     previousSettings.codeServerLinkVscodeUserConfig !== nextSettings.codeServerLinkVscodeUserConfig ||
@@ -2343,8 +2343,8 @@ function syncCodeServerRuntimeSettings(
 }
 
 function nextSessionPersistenceProvider(
-  provider: zmuxSettings["sessionPersistenceProvider"],
-): zmuxSettings["sessionPersistenceProvider"] {
+  provider: ghostexSettings["sessionPersistenceProvider"],
+): ghostexSettings["sessionPersistenceProvider"] {
   /**
    * CDXC:SessionPersistence 2026-05-06-03:43
    * The overflow menu is the quick persistence-mode control. Cycle zellij in
@@ -2403,12 +2403,12 @@ function resolveTerminalAttachProvider(
 }
 
 function syncGhosttyTerminalSettings(
-  nextSettings: zmuxSettings,
-  previousSettings?: zmuxSettings,
+  nextSettings: ghostexSettings,
+  previousSettings?: ghostexSettings,
 ): void {
   /**
    * CDXC:TerminalSettings 2026-04-26-19:02
-   * Native zmux settings are stored in sidebar localStorage, so terminal
+   * Native ghostex settings are stored in sidebar localStorage, so terminal
    * typography must also be posted to AppDelegate to update the shared Ghostty
    * config file used by external Ghostty windows.
    *
@@ -2444,14 +2444,14 @@ function syncGhosttyTerminalSettings(
   });
 }
 
-function saveSettingsFromNative(nextSettings: zmuxSettings): void {
+function saveSettingsFromNative(nextSettings: ghostexSettings): void {
   /**
    * CDXC:ZedOverlay 2026-04-26-10:54
    * Native Detach has already persisted and applied the disabled Zed attach
    * state. Mirror that state into sidebar localStorage and React state without
    * posting a duplicate configure command back to the native host.
   */
-  settings = normalizezmuxSettings(nextSettings);
+  settings = normalizeghostexSettings(nextSettings);
   if (!settings.zedOverlayEnabled || !settings.syncOpenProjectWithZed) {
     clearPendingZedProjectSync();
   }
@@ -2459,7 +2459,7 @@ function saveSettingsFromNative(nextSettings: zmuxSettings): void {
   publish();
 }
 
-function persistSharedSettingsSnapshot(nextSettings: zmuxSettings): void {
+function persistSharedSettingsSnapshot(nextSettings: ghostexSettings): void {
   const payloadJson = JSON.stringify(nextSettings);
   localStorage.setItem(SETTINGS_STORAGE_KEY, payloadJson);
   postNative({ key: "settings", payloadJson, type: "persistSharedSidebarStorage" });
@@ -2585,7 +2585,7 @@ function testNativeAgentTaskCompletion(): void {
    * completionSound is played by the normal native sound bridge.
    */
   const focusedSessionId = activeSnapshot().focusedSessionId;
-  const testSessionId = focusedSessionId ?? "__zmux-settings-attention-test__";
+  const testSessionId = focusedSessionId ?? "__ghostex-settings-attention-test__";
   playNativeSessionCompletionSound(testSessionId, "settings-test");
   showNativeSessionAttentionNotification(testSessionId, "settings-test", {
     body: "This is a test of the current Ghostex completion alert settings.",
@@ -2620,8 +2620,8 @@ function consumeNativeAttentionNotificationBudget(sessionId: string): boolean {
 }
 
 function previewNativeSoundSettingChange(
-  previousSettings: zmuxSettings,
-  nextSettings: zmuxSettings,
+  previousSettings: ghostexSettings,
+  nextSettings: ghostexSettings,
 ): void {
   /**
    * CDXC:Settings 2026-04-29-16:30
@@ -2733,7 +2733,7 @@ function refreshCommands(): void {
 function readStoredProjects(): { activeProjectId: string; projects: NativeProject[] } {
   const fallbackProject = createInitialProject();
   try {
-    const sharedProjectsJson = window.__zmux_NATIVE_HOST__?.sharedSidebarStorage?.projects;
+    const sharedProjectsJson = window.__ghostex_NATIVE_HOST__?.sharedSidebarStorage?.projects;
     const candidate = JSON.parse(
       sharedProjectsJson || localStorage.getItem(PROJECTS_STORAGE_KEY) || "null",
     );
@@ -2848,7 +2848,7 @@ function writeStoredProjects(reason: string): void {
   persistSharedProjectsSnapshot(activeProjectId, projects);
   /**
    * CDXC:WorkspaceRestore 2026-05-08-16:41
-   * zmux-dev and default zmux must share workspace/session state. Persist the
+   * ghostex-dev and default ghostex must share workspace/session state. Persist the
    * canonical project snapshot to the native shared state file, but do not log
    * successful writes. Workspace snapshots contain the full project/session tree
    * and can be rewritten often during normal session activity; only persistence
@@ -2872,7 +2872,7 @@ function persistSharedProjectsSnapshot(
    * Suppress byte-identical snapshots here so idle status/layout publishes
    * cannot keep WindowServer and filesystem work active.
    */
-  const sharedProjectsJson = window.__zmux_NATIVE_HOST__?.sharedSidebarStorage?.projects;
+  const sharedProjectsJson = window.__ghostex_NATIVE_HOST__?.sharedSidebarStorage?.projects;
   const localProjectsJson = localStorage.getItem(PROJECTS_STORAGE_KEY);
   if (payloadJson === sharedProjectsJson) {
     if (payloadJson !== localProjectsJson) {
@@ -2949,7 +2949,7 @@ function restoreProjectEditorSurfaceStates(
     const isActiveProject = project.projectId === startupActiveProjectId;
     /**
      * CDXC:EditorPanes 2026-05-14-13:22:
-     * If embedded Code was open when zmux quit, restart must bring that Code row
+     * If embedded Code was open when ghostex quit, restart must bring that Code row
      * back in the sidebar. Hydrate project-editor surface state from the durable
      * project snapshot; the active project recreates its Code pane immediately,
      * while background projects stay sleeping until the user focuses them.
@@ -3032,7 +3032,7 @@ function createInitialProject(): NativeProject {
     name: initialWorkspaceName,
     path: initialWorkspacePath,
     projectId: createProjectId(initialWorkspacePath),
-    theme: resolveSidebarTheme(DEFAULT_zmux_SETTINGS.sidebarTheme, "dark"),
+    theme: resolveSidebarTheme(DEFAULT_ghostex_SETTINGS.sidebarTheme, "dark"),
     workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
   };
 }
@@ -3417,7 +3417,7 @@ function createGitCommitDraft(action: SidebarGitAction): { body?: string; subjec
   const subject = `Update ${project.name}`;
   return {
     body: gitGenerateCommitBody
-      ? `Native zmux commit from ${project.path}.\n\nAdditions: ${gitState.additions}\nDeletions: ${gitState.deletions}`
+      ? `Native ghostex commit from ${project.path}.\n\nAdditions: ${gitState.additions}\nDeletions: ${gitState.deletions}`
       : undefined,
     subject,
   };
@@ -3567,7 +3567,7 @@ async function openOrCreatePullRequest(): Promise<void> {
 function readPreviousSessions(): SidebarPreviousSessionItem[] {
   try {
     const sharedPreviousSessionsJson =
-      window.__zmux_NATIVE_HOST__?.sharedSidebarStorage?.previousSessions;
+      window.__ghostex_NATIVE_HOST__?.sharedSidebarStorage?.previousSessions;
     const candidate = JSON.parse(
       sharedPreviousSessionsJson || localStorage.getItem(PREVIOUS_SESSIONS_STORAGE_KEY) || "null",
     );
@@ -4061,7 +4061,7 @@ function scheduleSyncOpenProjectWithZed(reason: string): void {
   const scheduledProject = activeProject();
   /**
    * CDXC:IDEAttachment 2026-05-06-12:49
-   * Switching zmux workspaces syncs the selected project into the attached IDE
+   * Switching ghostex workspaces syncs the selected project into the attached IDE
    * after a 2s trailing debounce. Rapid workspace activations coalesce into one
    * editor-open request for the final active project, and the user can disable
    * this separately from attachment.
@@ -4114,7 +4114,7 @@ function nativeChatTitleFromDate(date: Date): string {
 }
 
 function nativeChatsRootDirectory(): string {
-  return `${nativeHomeDirectory()}/zmux/chats`;
+  return `${nativeHomeDirectory()}/ghostex/chats`;
 }
 
 function createNativeChatDirectoryPath(title: string, date = new Date()): string {
@@ -4158,7 +4158,7 @@ function nativeAppTitleForProject(project: NativeProject): string {
    * product title "Ghostex" instead of exposing the generated chat folder name.
    * CDXC:Branding 2026-05-12-07:35
    * Public window and notification copy uses Ghostex while native sidebar
-   * storage, bridge events, and internal implementation names remain zmux.
+   * storage, bridge events, and internal implementation names remain ghostex.
    */
   if (project.isChat === true) {
     return "Ghostex";
@@ -5378,7 +5378,7 @@ function createAgentManagerXWorkspaceSnapshots(): AgentManagerXWorkspaceSnapshot
 
     return {
       sessions,
-      source: "zmux",
+      source: "ghostex",
       type: "workspaceSnapshot",
       updatedAt,
       workspaceFaviconDataUrl: project.iconDataUrl,
@@ -5422,9 +5422,9 @@ function handleAgentManagerXSessionCommand(rawData: unknown): void {
   if (message.type === "focusSession") {
     /**
      * CDXC:AgentManagerXBridge 2026-04-27-20:34
-     * Clicking a zmux session in Agent Manager must raise the native zmux
+     * Clicking a ghostex session in Agent Manager must raise the native ghostex
      * workarea before focusing the terminal, because Agent Manager no longer
-     * opens an editor window for zmux-owned sessions.
+     * opens an editor window for ghostex-owned sessions.
      */
     postNative({ type: "activateApp" });
     focusSidebarSession(message.sessionId);
@@ -5504,7 +5504,7 @@ function ensureVisibleNativeSessions(reason: string): boolean {
   let didCreateNativeSession = false;
   /**
    * CDXC:SessionRestore 2026-04-29-09:16
-   * Native zmux recreates terminal processes for awake sessions in the active
+   * Native ghostex recreates terminal processes for awake sessions in the active
    * workspace group. Sleeping terminals remain parked until focus/wake asks for
    * their resume; this hot publish path must not emit per-session diagnostics.
    *
@@ -5772,7 +5772,7 @@ type NativeSessionStatusIndicatorCandidate = {
 function createNativeSessionStatusIndicatorCandidates(): NativeSessionStatusIndicatorCandidate[] {
   /**
    * CDXC:SessionStatusIndicators 2026-05-05-19:47
-   * Floating AppKit circles summarize every open zmux project session, not only
+   * Floating AppKit circles summarize every open ghostex project session, not only
    * the active group's visible panes. Working means activity=`working`, while
    * available covers idle live sessions and other non-attention sessions.
    * CDXC:SessionStatusIndicators 2026-05-09-15:48
@@ -5860,7 +5860,7 @@ function syncNativePetOverlayState(): void {
   /**
    * CDXC:PetOverlay 2026-05-14-10:23:
    * The pet bubble is a concrete session shortcut, not another aggregate
-   * status badge. Send both project and session ids so a click can raise zmux
+   * status badge. Send both project and session ids so a click can raise ghostex
    * and activate exactly the session named above the pet, even when it belongs
    * to a background project.
    */
@@ -5900,7 +5900,7 @@ function handleNativePetOverlayActivityClicked(projectId: string, sessionId: str
   /**
    * CDXC:PetOverlay 2026-05-14-10:23:
    * Clicking a pet message should behave like clicking the matching session
-   * card after zmux has been brought forward. Route through the normal session
+   * card after ghostex has been brought forward. Route through the normal session
    * focus path so pane restoration, attention acknowledgement, and project
    * switching stay in one implementation.
    */
@@ -5989,7 +5989,7 @@ function postWorkspaceBarState(): void {
 function createNativeSessionStateFilePath(projectId: string, sessionId: string): string {
   const safeProjectId = sanitizeNativePathPart(projectId);
   const safeSessionId = sanitizeNativePathPart(sessionId);
-  return `${nativeZmuxHomeDirectory()}/session-state/${safeProjectId}/${safeSessionId}.env`;
+  return `${nativeGhostexHomeDirectory()}/session-state/${safeProjectId}/${safeSessionId}.env`;
 }
 
 function createNativeAgentSessionEnvironment(args: {
@@ -6007,7 +6007,7 @@ function createNativeAgentSessionEnvironment(args: {
    *
    * CDXC:SessionTitleSync 2026-04-26-20:27
    * First-prompt hooks may be installed by either the old VSmux pipeline or the
-   * native zmux pipeline. Provide both VSMUX_* and ZMUX_* environment keys so
+   * native ghostex pipeline. Provide both VSMUX_* and GHOSTEX_* environment keys so
    * the hook can write one canonical session-state file.
    *
    * CDXC:PiAgent 2026-05-08-09:42
@@ -6021,16 +6021,16 @@ function createNativeAgentSessionEnvironment(args: {
     VSMUX_SESSION_STATE_FILE: args.sessionStateFilePath,
     VSMUX_WORKSPACE_ID: args.project.projectId,
     VSMUX_WORKSPACE_ROOT: args.project.path,
-    ZMUX_AGENT: args.agentName ?? "",
-    ZMUX_SESSION_ID: args.sessionId,
-    ZMUX_SESSION_STATE_FILE: args.sessionStateFilePath,
-    ZMUX_WORKSPACE_ID: args.project.projectId,
-    ZMUX_WORKSPACE_ROOT: args.project.path,
-    zmux_AGENT: args.agentName ?? "",
-    zmux_SESSION_ID: args.sessionId,
-    zmux_SESSION_STATE_FILE: args.sessionStateFilePath,
-    zmux_WORKSPACE_ID: args.project.projectId,
-    zmux_WORKSPACE_ROOT: args.project.path,
+    GHOSTEX_AGENT: args.agentName ?? "",
+    GHOSTEX_SESSION_ID: args.sessionId,
+    GHOSTEX_SESSION_STATE_FILE: args.sessionStateFilePath,
+    GHOSTEX_WORKSPACE_ID: args.project.projectId,
+    GHOSTEX_WORKSPACE_ROOT: args.project.path,
+    ghostex_AGENT: args.agentName ?? "",
+    ghostex_SESSION_ID: args.sessionId,
+    ghostex_SESSION_STATE_FILE: args.sessionStateFilePath,
+    ghostex_WORKSPACE_ID: args.project.projectId,
+    ghostex_WORKSPACE_ROOT: args.project.path,
   };
   if (settings.promptEditorBackend === "monaco" || settings.promptEditorBackend === "zpet") {
     /**
@@ -6045,9 +6045,9 @@ function createNativeAgentSessionEnvironment(args: {
         : "ghostex floating-monaco-editor";
     environment.EDITOR = promptEditorCommand;
     environment.VISUAL = promptEditorCommand;
-    environment.ZMUX_PROMPT_EDITOR_BACKEND = settings.promptEditorBackend;
-    environment.ZMUX_PROMPT_EDITING_ENABLED = "1";
-    environment.ZMUX_RICH_PROMPT_EDITING_WITH_ZAPET =
+    environment.GHOSTEX_PROMPT_EDITOR_BACKEND = settings.promptEditorBackend;
+    environment.GHOSTEX_PROMPT_EDITING_ENABLED = "1";
+    environment.GHOSTEX_RICH_PROMPT_EDITING_WITH_ZAPET =
       settings.promptEditorBackend === "zpet" ? "1" : "0";
   }
   return environment;
@@ -6055,7 +6055,7 @@ function createNativeAgentSessionEnvironment(args: {
 
 function nativeHomeDirectory(): string {
   return (
-    window.__zmux_NATIVE_HOST__?.homeDir?.trim() ||
+    window.__ghostex_NATIVE_HOST__?.homeDir?.trim() ||
     inferHomeDirectoryFromPath(initialWorkspacePath) ||
     nativeFallbackHomeDirectory()
   );
@@ -6072,18 +6072,18 @@ function codeServerVscodeUserConfigDirectory(): string {
   return `${nativeHomeDirectory()}/Library/Application Support/${appName}/User`;
 }
 
-function nativeZmuxHomeDirectory(): string {
+function nativeGhostexHomeDirectory(): string {
   /**
    * CDXC:DevAppFlavor 2026-04-28-02:01
-   * The native host supplies the app-specific zmux home used for hooks and
+   * The native host supplies the app-specific ghostex home used for hooks and
    * per-session state.
    * CDXC:DevAppFlavor 2026-05-11-12:10
-   * `bun start:dev` must not read or write the installed app's ~/.zmux data,
-   * so zmux-dev receives ~/.zmux-dev here while production keeps ~/.zmux.
+   * `bun start:dev` must not read or write the installed app's ~/.ghostex data,
+   * so ghostex-dev receives ~/.ghostex-dev here while production keeps ~/.ghostex.
    */
   return (
-    window.__zmux_NATIVE_HOST__?.zmuxHomeDir?.trim() ||
-    `${nativeHomeDirectory()}/.zmux`
+    window.__ghostex_NATIVE_HOST__?.ghostexHomeDir?.trim() ||
+    `${nativeHomeDirectory()}/.ghostex`
   );
 }
 
@@ -6104,21 +6104,21 @@ async function ensureNativeAgentFirstPromptHooks(): Promise<void> {
   /**
    * CDXC:SessionTitleSync 2026-04-26-09:23
    * The native app is outside VS Code, so it cannot rely on extension activation
-   * to install agent UserPromptSubmit hooks. Install a small zmux-owned hook
+   * to install agent UserPromptSubmit hooks. Install a small ghostex-owned hook
    * beside existing Codex and Claude hooks; it writes the first prompt into the
    * session state file that the native sidebar polls before sending Codex
    * `/rename <title>` or Claude's bare `/rename`.
    *
    * CDXC:SessionTitleSync 2026-05-05-04:27
-   * Codex terminals launched from zmux can run with CODEX_HOME pointed at a
+   * Codex terminals launched from ghostex can run with CODEX_HOME pointed at a
    * profile directory such as ~/.codex-profiles/personal. Install the native
    * first-prompt hook into every existing Codex profile as well as ~/.codex so
    * prompt capture follows the Codex home that the terminal actually uses.
    *
    * CDXC:PiAgent 2026-05-08-09:42
-   * Pi can be launched manually in a blank terminal, so zmux installs its Pi
+   * Pi can be launched manually in a blank terminal, so ghostex installs its Pi
    * extension into Pi's global auto-discovery directory instead of relying only
-   * on zmux-created launch commands to pass an extension flag.
+   * on ghostex-created launch commands to pass an extension flag.
    */
   const command = buildEnsureNativeAgentHooksCommand();
   const result = await runNativeProcess("/bin/zsh", ["-lc", command]);
@@ -6136,32 +6136,32 @@ async function ensureNativeAgentFirstPromptHooks(): Promise<void> {
     codexHooksPaths: installedCodexHooksPaths.length
       ? installedCodexHooksPaths
       : [`${nativeHomeDirectory()}/.codex/hooks.json`],
-    notifyHookPath: zmux_AGENT_NOTIFY_HOOK_PATH,
+    notifyHookPath: ghostex_AGENT_NOTIFY_HOOK_PATH,
     piExtensionPath: NATIVE_PI_EXTENSION_PATH,
   });
 }
 
 function buildEnsureNativeAgentHooksCommand(): string {
-  const notifyHookPath = zmux_AGENT_NOTIFY_HOOK_PATH;
+  const notifyHookPath = ghostex_AGENT_NOTIFY_HOOK_PATH;
   const piExtensionPath = NATIVE_PI_EXTENSION_PATH;
   const homeDirectory = nativeHomeDirectory();
   const claudeSettingsPath = `${nativeHomeDirectory()}/.claude/settings.json`;
   return [
     "set -e",
     `mkdir -p ${quoteNativeShellArg(dirnameNativePath(notifyHookPath))} ${quoteNativeShellArg(dirnameNativePath(claudeSettingsPath))} ${quoteNativeShellArg(dirnameNativePath(piExtensionPath))}`,
-    `cat > ${quoteNativeShellArg(notifyHookPath)} <<'zmux_NOTIFY_HOOK'`,
+    `cat > ${quoteNativeShellArg(notifyHookPath)} <<'ghostex_NOTIFY_HOOK'`,
     getNativeCodexNotifyHookScript(),
-    "zmux_NOTIFY_HOOK",
+    "ghostex_NOTIFY_HOOK",
     `chmod 755 ${quoteNativeShellArg(notifyHookPath)}`,
-    `cat > ${quoteNativeShellArg(piExtensionPath)} <<'zmux_PI_EXTENSION'`,
+    `cat > ${quoteNativeShellArg(piExtensionPath)} <<'ghostex_PI_EXTENSION'`,
     getNativePiExtensionScript(),
-    "zmux_PI_EXTENSION",
-    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'zmux_CODEX_HOOK_MERGE_ALL'`,
+    "ghostex_PI_EXTENSION",
+    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_CODEX_HOOK_MERGE_ALL'`,
     getNativeCodexHookMergeAllScript(),
-    "zmux_CODEX_HOOK_MERGE_ALL",
-    `/usr/bin/python3 - ${quoteNativeShellArg(claudeSettingsPath)} ${quoteNativeShellArg(notifyHookPath)} claude <<'zmux_CLAUDE_HOOK_MERGE'`,
+    "ghostex_CODEX_HOOK_MERGE_ALL",
+    `/usr/bin/python3 - ${quoteNativeShellArg(claudeSettingsPath)} ${quoteNativeShellArg(notifyHookPath)} claude <<'ghostex_CLAUDE_HOOK_MERGE'`,
     getNativeAgentHookMergeScript(),
-    "zmux_CLAUDE_HOOK_MERGE",
+    "ghostex_CLAUDE_HOOK_MERGE",
   ].join("\n");
 }
 
@@ -6173,7 +6173,7 @@ else
   INPUT="$(cat)"
 fi
 
-SESSION_STATE_FILE="\${VSMUX_SESSION_STATE_FILE:-\${ZMUX_SESSION_STATE_FILE:-$zmux_SESSION_STATE_FILE}}"
+SESSION_STATE_FILE="\${VSMUX_SESSION_STATE_FILE:-\${GHOSTEX_SESSION_STATE_FILE:-$ghostex_SESSION_STATE_FILE}}"
 if [ -z "$SESSION_STATE_FILE" ]; then
   printf '{"continue":true}'
   exit 0
@@ -6217,7 +6217,7 @@ if state.get("autoTitleFromFirstPrompt") in {"1", "true", "TRUE", "True"}:
 
 payload_agent = payload.get("agent")
 state["status"] = state.get("status") or "idle"
-state["agent"] = state.get("agent") or (payload_agent if isinstance(payload_agent, str) else "") or os.environ.get("VSMUX_AGENT") or os.environ.get("ZMUX_AGENT") or os.environ.get("zmux_AGENT") or "codex"
+state["agent"] = state.get("agent") or (payload_agent if isinstance(payload_agent, str) else "") or os.environ.get("VSMUX_AGENT") or os.environ.get("GHOSTEX_AGENT") or os.environ.get("ghostex_AGENT") or "codex"
 state["firstUserMessageBase64"] = state.get("firstUserMessageBase64") or base64.b64encode(prompt.encode("utf-8")).decode("ascii")
 if state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
     path = pathlib.Path(state_path)
@@ -6295,7 +6295,7 @@ groups = hooks.get("UserPromptSubmit")
 if not isinstance(groups, list):
     groups = []
 
-def is_zmux_command(hook):
+def is_ghostex_command(hook):
     return isinstance(hook, dict) and hook.get("command") == command
 
 matcher = "*" if agent_name == "claude" else None
@@ -6304,7 +6304,7 @@ for group in groups:
     if not isinstance(group, dict):
         continue
     group_hooks = group.get("hooks")
-    if isinstance(group_hooks, list) and any(is_zmux_command(hook) for hook in group_hooks):
+    if isinstance(group_hooks, list) and any(is_ghostex_command(hook) for hook in group_hooks):
         hooks["UserPromptSubmit"] = groups
         hooks_path.parent.mkdir(parents=True, exist_ok=True)
         with open(hooks_path, "w", encoding="utf-8") as handle:
@@ -6354,8 +6354,8 @@ const STATE_KEYS = [
 function getStateFile(): string | undefined {
   return (
     process.env.VSMUX_SESSION_STATE_FILE ||
-    process.env.ZMUX_SESSION_STATE_FILE ||
-    process.env.zmux_SESSION_STATE_FILE
+    process.env.GHOSTEX_SESSION_STATE_FILE ||
+    process.env.ghostex_SESSION_STATE_FILE
   );
 }
 
@@ -6514,7 +6514,7 @@ def load_hooks_data(hooks_path):
         data["hooks"] = hooks
     return data, hooks
 
-def is_zmux_command(hook):
+def is_ghostex_command(hook):
     return isinstance(hook, dict) and hook.get("command") == command
 
 def merge_hook(hooks_path):
@@ -6527,7 +6527,7 @@ def merge_hook(hooks_path):
         if not isinstance(group, dict):
             continue
         group_hooks = group.get("hooks")
-        if isinstance(group_hooks, list) and any(is_zmux_command(hook) for hook in group_hooks):
+        if isinstance(group_hooks, list) and any(is_ghostex_command(hook) for hook in group_hooks):
             hooks["UserPromptSubmit"] = groups
             hooks_path.parent.mkdir(parents=True, exist_ok=True)
             with open(hooks_path, "w", encoding="utf-8") as handle:
@@ -6819,7 +6819,7 @@ function buildNativeCodexForkCommand(session: TerminalSessionRecord): string | u
   /**
    * CDXC:CodexAgent 2026-05-08-16:22
    * Codex title-bar Fork must launch `codex fork <session-id>` instead of a
-   * blank terminal. The CLI fork subcommand accepts UUIDs, while zmux's stored
+   * blank terminal. The CLI fork subcommand accepts UUIDs, while ghostex's stored
    * Codex identity is the trusted thread title used for resume, so resolve the
    * latest matching thread name from Codex session indexes at launch time.
    */
@@ -7543,7 +7543,7 @@ function createNativeT3Session(
    * CDXC:T3Code 2026-04-30-02:24
    * Native T3 Code buttons must create T3 pane records, matching the reference
    * app's special T3 path. Do not launch `npx --yes t3` in a terminal because
-   * the CLI opens its own browser instead of becoming an embedded zmux pane.
+   * the CLI opens its own browser instead of becoming an embedded ghostex pane.
    */
   const result = createSessionInSimpleWorkspace(
     targetWorkspace,
@@ -7649,7 +7649,7 @@ function findNativeT3SessionBoundToThread(
   /**
    * CDXC:T3Code 2026-05-04-03:06
    * Native T3 sidebar cards are durable bindings to one T3 thread. When the
-   * embedded T3 UI navigates to a different thread, zmux must first look for an
+   * embedded T3 UI navigates to a different thread, ghostex must first look for an
    * existing card bound to that thread instead of replacing the current card's
    * stored thread metadata.
    */
@@ -7686,7 +7686,7 @@ function createNativeT3SessionForBoundThread(
    * Opening a different T3 thread from inside an embedded pane should create a
    * sibling T3 pane/card linked to the new thread. This preserves the original
    * sidebar card as a stable shortcut to its bound thread while keeping multiple
-   * T3 threads visible in zmux at the same time.
+   * T3 threads visible in ghostex at the same time.
    */
   const groupId = project.workspace.groups.find((group) =>
     group.snapshot.sessions.some((session) => session.sessionId === sourceSession.sessionId),
@@ -7816,7 +7816,7 @@ function scheduleNativeT3SessionTitleSync(
 ): void {
   /**
    * CDXC:T3Code 2026-05-04-04:41
-   * Binding a newly opened T3 thread and naming its zmux sidebar card are
+   * Binding a newly opened T3 thread and naming its ghostex sidebar card are
    * separate concerns. If T3 has not projected the thread title yet, retry the
    * snapshot lookup for the bound session without changing its thread binding.
    */
@@ -7981,7 +7981,7 @@ async function handleNativeT3ThreadChanged(
 ): Promise<void> {
   /**
    * CDXC:T3Code 2026-05-04-03:06
-   * T3's in-app navigation changes the web route inside one WKWebView. zmux keeps
+   * T3's in-app navigation changes the web route inside one WKWebView. ghostex keeps
    * card identity stable by focusing/creating the card for the navigated thread,
    * then re-routing the source WKWebView back to its bound thread without taking
    * focus back from the user's selected target thread.
@@ -8252,7 +8252,7 @@ function getNativeTerminalTitleSessionSyncDecision(args: {
   agentName?: string;
   previousTerminalTitle?: string;
   session: SessionRecord;
-  sessionPersistenceProvider?: zmuxSettings["sessionPersistenceProvider"];
+  sessionPersistenceProvider?: ghostexSettings["sessionPersistenceProvider"];
   visibleTitle: string;
 }): { reason: string; shouldSync: boolean } {
   if (args.session.kind !== "terminal") {
@@ -8268,7 +8268,7 @@ function getNativeTerminalTitleSessionSyncDecision(args: {
   /**
    * CDXC:SessionTitleSync 2026-04-27-17:45
    * Terminal-title events are auto-captured unless they came through explicit
-   * zmux UI rename or first-prompt generation paths. Valid agent terminal titles
+   * ghostex UI rename or first-prompt generation paths. Valid agent terminal titles
    * may still replace user/generated titles so in-agent `/rename` remains useful,
    * while command names, paths, placeholders, and mojibake stay blocked.
    */
@@ -8549,9 +8549,9 @@ async function clearNativeFirstPromptAutoRenamePendingPrompt(
    * and the sidebar repeatedly flashes the "generating title" state.
    */
   const command = [
-    `/usr/bin/python3 - ${quoteNativeShellArg(sessionStateFilePath)} ${quoteNativeShellArg(failedPrompt)} <<'ZMUX_CLEAR_PENDING_PROMPT'`,
+    `/usr/bin/python3 - ${quoteNativeShellArg(sessionStateFilePath)} ${quoteNativeShellArg(failedPrompt)} <<'GHOSTEX_CLEAR_PENDING_PROMPT'`,
     getClearNativeFirstPromptPendingPromptScript(),
-    "ZMUX_CLEAR_PENDING_PROMPT",
+    "GHOSTEX_CLEAR_PENDING_PROMPT",
   ].join("\n");
   const result = await runNativeProcess("/bin/zsh", ["-lc", command]);
   if (result.exitCode !== 0) {
@@ -8664,7 +8664,7 @@ function normalizeNativeIsoTimestamp(value: string): string | undefined {
 async function generateNativeSessionTitleFromPrompt(cwd: string, prompt: string): Promise<string> {
   const sourceText = prompt.slice(0, GENERATED_SESSION_TITLE_SOURCE_MAX_LENGTH);
   const generationPrompt = buildNativeSessionTitlePrompt(sourceText);
-  const delimiter = `zmux_SESSION_TITLE_${Date.now().toString(36)}`;
+  const delimiter = `ghostex_SESSION_TITLE_${Date.now().toString(36)}`;
   const command = [
     /**
      * CDXC:SessionTitleSync 2026-04-26-20:27
@@ -8766,7 +8766,7 @@ async function sendNativeFirstPromptRenameCommand(
   /**
    * CDXC:SessionTitleSync 2026-04-26-10:04
    * Auto rename must submit the staged `/rename <title>` through Ghostty's
-   * Return-key path, matching zmux. Writing "\r" as terminal text creates a
+   * Return-key path, matching ghostex. Writing "\r" as terminal text creates a
    * visible newline in Codex instead of accepting the command.
    */
   postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
@@ -9010,8 +9010,8 @@ function focusSidebarSession(sessionId: string): void {
   focusTerminal(sessionId);
 }
 
-function runNativeHotkeyAction(actionId: zmuxHotkeyActionId, source: "dom" | "native"): void {
-  const action = getzmuxHotkeyActionById(actionId);
+function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | "native"): void {
+  const action = getghostexHotkeyActionById(actionId);
   if (!action) {
     logNativeHotkeyDebug("nativeHotkeys.actionMissing", { actionId });
     return;
@@ -9083,14 +9083,14 @@ function getMatchingNativeHotkeyActionId(
   hotkeyText: string | undefined,
   now: number,
   source: "dom" | "native",
-): zmuxHotkeyActionId | undefined {
+): ghostexHotkeyActionId | undefined {
   if (!hotkeyText) {
     pendingHotkeyPrefix = undefined;
     return undefined;
   }
   const normalizedHotkeys = settings.hotkeys;
   const sequence = pendingHotkeyPrefix ? `${pendingHotkeyPrefix} ${hotkeyText}` : hotkeyText;
-  const matchedActionId = getzmuxHotkeyActionIdForKey(normalizedHotkeys, sequence);
+  const matchedActionId = getghostexHotkeyActionIdForKey(normalizedHotkeys, sequence);
   if (matchedActionId) {
     logNativeHotkeyDebug("nativeHotkeys.match", {
       actionId: matchedActionId,
@@ -9563,7 +9563,7 @@ async function renameNativeSidebarTerminalSession(
   if (!agentName?.trim()) {
     /**
      * CDXC:SidebarRename 2026-05-11-12:37
-     * Plain terminal sessions can be renamed in zmux without an Agent CLI.
+     * Plain terminal sessions can be renamed in ghostex without an Agent CLI.
      * Do not stage `/rename <title>` into those shells; only agent-backed
      * terminals should receive an in-terminal rename command.
      */
@@ -9713,7 +9713,7 @@ function restartNativeSession(sessionId: string): void {
   }
   /**
    * CDXC:SessionRestore 2026-04-27-08:04
-   * Right-click Full reload follows agent-tiler semantics in native zmux:
+   * Right-click Full reload follows agent-tiler semantics in native ghostex:
    * recreate the terminal as the same agent type, then immediately send the
    * agent-specific resume command instead of opening a fresh shell.
    */
@@ -10175,7 +10175,7 @@ function runCliAgent(agentId: string, groupId?: string): SessionRecord | undefin
 
 /**
  * CDXC:PreviousSessions 2026-04-28-05:12
- * Native zmux must mirror the reference Prompt to Find Session workflow:
+ * Native ghostex must mirror the reference Prompt to Find Session workflow:
  * receive the modal's remembered-topic query, launch a terminal Codex session,
  * rename that helper session, then stage the local-session search prompt.
  */
@@ -10284,7 +10284,7 @@ function getNativeSidebarCommandExecutionText(command: string, closeOnExit: bool
     return command;
   }
 
-  return `${command}; __zmux_exit=$?; exit $__zmux_exit`;
+  return `${command}; __ghostex_exit=$?; exit $__ghostex_exit`;
 }
 
 function createNativeSidebarCommandRunId(commandId: string): string {
@@ -10856,7 +10856,7 @@ function resolveOrCreateNativeBrowserAccessT3Session(
 async function requestNativeT3SessionBrowserAccess(preferredSessionId?: string): Promise<void> {
   /**
    * CDXC:T3RemoteAccess 2026-05-02-01:18
-   * Native zmux cannot delegate Remote Access to the extension controller. It
+   * Native ghostex cannot delegate Remote Access to the extension controller. It
    * must reuse the managed desktop T3 runtime, issue a one-time pairing link,
    * and send the QR payload through the shared sidebar modal contract.
    */
@@ -10908,12 +10908,12 @@ async function waitForNativeT3OwnerBearerToken(): Promise<string> {
 }
 
 async function readNativeT3OwnerBearerToken(): Promise<string | undefined> {
-  const zmuxHomeDir = window.__zmux_NATIVE_HOST__?.zmuxHomeDir;
-  if (!zmuxHomeDir) {
+  const ghostexHomeDir = window.__ghostex_NATIVE_HOST__?.ghostexHomeDir;
+  if (!ghostexHomeDir) {
     return undefined;
   }
 
-  const authStatePath = `${zmuxHomeDir.replace(/\/+$/, "")}/t3-runtime/auth-state.json`;
+  const authStatePath = `${ghostexHomeDir.replace(/\/+$/, "")}/t3-runtime/auth-state.json`;
   const result = await runNativeProcess("/bin/cat", [authStatePath]);
   if (result.exitCode !== 0) {
     return undefined;
@@ -11215,7 +11215,7 @@ async function createNativeChat(title = "chat"): Promise<void> {
   /**
    * CDXC:Chats 2026-05-04-09:30
    * A chat is not tied to an existing code project. Starting one must create a
-   * real folder under ~/zmux/chats/<date>-title and then launch a normal empty
+   * real folder under ~/ghostex/chats/<date>-title and then launch a normal empty
    * terminal in that directory so the user can choose any agent from the shell.
    */
   const createdAt = new Date();
@@ -11343,7 +11343,7 @@ async function saveAgentsHubFile(filePath: string, content: string): Promise<voi
       [
         "import base64, os, sys, tempfile",
         "file_path = sys.argv[1]",
-        "content = base64.b64decode(os.environ['ZMUX_AGENTS_HUB_FILE_B64'])",
+        "content = base64.b64decode(os.environ['GHOSTEX_AGENTS_HUB_FILE_B64'])",
         "directory = os.path.dirname(file_path)",
         "if directory:",
         "    os.makedirs(directory, exist_ok=True)",
@@ -11363,7 +11363,7 @@ async function saveAgentsHubFile(filePath: string, content: string): Promise<voi
     ],
     {
       env: {
-        ZMUX_AGENTS_HUB_FILE_B64: encodeUtf8Base64(content),
+        GHOSTEX_AGENTS_HUB_FILE_B64: encodeUtf8Base64(content),
       },
     },
   );
@@ -11395,7 +11395,7 @@ async function requestAgentsHubCatalog(): Promise<void> {
    */
   const result = await runNativeProcess("/bin/zsh", [
     "-lc",
-    `/usr/bin/python3 - <<'ZMUX_AGENTS_HUB_CATALOG'\n${getAgentsHubCatalogPythonScript()}\nZMUX_AGENTS_HUB_CATALOG`,
+    `/usr/bin/python3 - <<'GHOSTEX_AGENTS_HUB_CATALOG'\n${getAgentsHubCatalogPythonScript()}\nGHOSTEX_AGENTS_HUB_CATALOG`,
   ]);
   if (result.exitCode !== 0) {
     showNativeMessage(
@@ -12253,7 +12253,7 @@ function rotateActivePaneLayoutClockwiseFromTitlebar(): void {
     paneLayout: group.snapshot.paneLayout,
     visibleSessionIds: group.snapshot.visibleSessionIds,
   });
-  console.info("[zmux-native-sidebar] titlebar rotate panes clockwise", {
+  console.info("[ghostex-native-sidebar] titlebar rotate panes clockwise", {
     groupId: group.groupId,
     hasPaneLayout: group.snapshot.paneLayout !== undefined,
     visibleSessionIds: group.snapshot.visibleSessionIds,
@@ -12265,7 +12265,7 @@ function rotateActivePaneLayoutClockwiseFromTitlebar(): void {
       hasPaneLayout: group.snapshot.paneLayout !== undefined,
       visibleSessionIds: group.snapshot.visibleSessionIds,
     });
-    console.info("[zmux-native-sidebar] titlebar rotate panes unchanged", {
+    console.info("[ghostex-native-sidebar] titlebar rotate panes unchanged", {
       groupId: group.groupId,
       hasPaneLayout: group.snapshot.paneLayout !== undefined,
       visibleSessionIds: group.snapshot.visibleSessionIds,
@@ -12734,7 +12734,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "openWorkspaceWelcome":
-      openNativeExternalUrl("https://github.com/maddada/zmux");
+      openNativeExternalUrl("https://github.com/maddada/ghostex");
       return;
     case "pickWorkspaceFolder":
       postNative({ type: "pickWorkspaceFolder" });
@@ -12742,11 +12742,11 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "openSettings":
       publish();
       return;
-    case "requestZmuxFolderStats":
-      void requestZmuxFolderStats();
+    case "requestGhostexFolderStats":
+      void requestGhostexFolderStats();
       return;
-    case "openZmuxFolder":
-      openNativeWorkspaceInFinder(nativeZmuxHomeDirectory());
+    case "openGhostexFolder":
+      openNativeWorkspaceInFinder(nativeGhostexHomeDirectory());
       return;
     case "refreshDaemonSessions":
       refreshDaemonSessionsState();
@@ -13148,7 +13148,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       if (message.event.startsWith("scratchPadFocus.")) {
         appendTerminalFocusDebugLog(message.event, message.details);
       }
-      console.debug("[zmux-native-sidebar]", message.event, message.details);
+      console.debug("[ghostex-native-sidebar]", message.event, message.details);
       return;
     case "runSidebarAgent": {
       const agent = agents.find((candidate) => candidate.agentId === message.agentId);
@@ -13860,7 +13860,7 @@ function createNativeLayoutItems(
   return items;
 }
 
-window.addEventListener("zmux-native-host-event", (event) => {
+window.addEventListener("ghostex-native-host-event", (event) => {
   const hostEvent = (event as CustomEvent<NativeHostEvent>).detail;
   if (!hostEvent || hostEvent.type === "hostReady") {
     return;
@@ -14885,7 +14885,7 @@ function handleNativeTerminalTitleBarAction(
   }
 }
 
-window.__zmux_NATIVE_WORKSPACE_BAR__ = {
+window.__ghostex_NATIVE_WORKSPACE_BAR__ = {
   addProject,
   focusProject,
   getState: createWorkspaceBarState,
@@ -14896,7 +14896,7 @@ window.__zmux_NATIVE_WORKSPACE_BAR__ = {
   setProjectThemeColor,
 };
 
-window.__zmux_NATIVE_SETTINGS__ = {
+window.__ghostex_NATIVE_SETTINGS__ = {
   attachZedOverlay(targetApp) {
     saveSettingsFromNative({
       ...settings,
@@ -14913,7 +14913,7 @@ window.__zmux_NATIVE_SETTINGS__ = {
   },
 };
 
-window.__zmux_NATIVE_SIDEBAR__ = {
+window.__ghostex_NATIVE_SIDEBAR__ = {
   openActiveProjectEditorFromTitlebar,
   refreshWorkspaceOpenTargetAvailabilityFromTitlebar,
   rotateActivePaneLayoutClockwiseFromTitlebar,
@@ -14922,7 +14922,7 @@ window.__zmux_NATIVE_SIDEBAR__ = {
   runSidebarCommandFromTitlebar,
 };
 
-window.__zmux_NATIVE_CLI__ = {
+window.__ghostex_NATIVE_CLI__ = {
   handleCommand(action, payload) {
     return handleNativeCliCommand(action, payload);
   },

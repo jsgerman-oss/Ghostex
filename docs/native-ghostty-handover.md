@@ -19,7 +19,7 @@ The sidebar/control UI can remain web-based, but terminal rendering must be nati
 ## Target Shape
 
 ```text
-zmux.app
+ghostex.app
   Swift/AppKit native host
     WKWebView
       React sidebar / dock / controls
@@ -58,7 +58,7 @@ Ghostty already has an embedded runtime. `src/apprt/embedded.zig` says this mode
 Create a native Swift/AppKit host under this repo, for example:
 
 ```text
-native/macos/zmuxHost
+native/macos/ghostexHost
 ```
 
 Use AppKit as the primary shell. SwiftUI may be used for small auxiliary views, but the main workspace should be AppKit because we need precise child `NSView` layout and focus behavior.
@@ -69,11 +69,11 @@ Core native objects:
 - `WKWebView`: sidebar/control surface
 - `NSView`: native terminal workspace container
 - `Ghostty.App`: global Ghostty runtime
-- `Ghostty.SurfaceView`: one terminal view per zmux terminal session
+- `Ghostty.SurfaceView`: one terminal view per ghostex terminal session
 
 ## Layout Model
 
-Keep zmux as the source of truth for session/group/sidebar state, but native AppKit should own terminal geometry.
+Keep ghostex as the source of truth for session/group/sidebar state, but native AppKit should own terminal geometry.
 
 The bridge should send a layout tree to the native host:
 
@@ -101,7 +101,7 @@ Nested split support can come next, using either:
 - custom `NSView` layout code, or
 - nested `NSSplitView`s
 
-Prefer a small custom layout container if we want layout to exactly match zmux's existing grouping/nesting semantics.
+Prefer a small custom layout container if we want layout to exactly match ghostex's existing grouping/nesting semantics.
 
 ## Bridge Contract
 
@@ -216,9 +216,9 @@ React should not mount terminal renderers. The workspace web area should either 
 
 ## Migration Steps
 
-1. Create `native/macos/zmuxHost`.
+1. Create `native/macos/ghostexHost`.
 2. Link the host against Ghostty from `$GHOSTTY_ROOT`.
-3. Prove one embedded `Ghostty.SurfaceView` renders in a zmux-owned `NSWindow`.
+3. Prove one embedded `Ghostty.SurfaceView` renders in a ghostex-owned `NSWindow`.
 4. Add a `WKWebView` sidebar next to the terminal workspace.
 5. Load the existing sidebar/control React bundle in the `WKWebView`.
 6. Add a local bridge between the web UI/Bun backend and Swift host.
@@ -226,7 +226,7 @@ React should not mount terminal renderers. The workspace web area should either 
 8. Implement native workspace layout for one/two/grid panes.
 9. Wire sidebar session cards/actions/agents to native terminal sessions.
 10. Delete web terminal engines and dependencies.
-11. Package `zmux.app` with Ghostty libraries/frameworks/resources.
+11. Package `ghostex.app` with Ghostty libraries/frameworks/resources.
 
 ## Code To Remove Or Stop Using
 
@@ -274,7 +274,7 @@ No xterm/wterm/restty fallback.
 
 ## Risks
 
-- Ghostty's macOS Swift files may assume they are running inside Ghostty.app. Refactor only what is necessary to make `Ghostty.App` and `Ghostty.SurfaceView` reusable from zmux.
+- Ghostty's macOS Swift files may assume they are running inside Ghostty.app. Refactor only what is necessary to make `Ghostty.App` and `Ghostty.SurfaceView` reusable from ghostex.
 - Linking/bundling `GhosttyKit` cleanly may take time.
 - React/native geometry sync can get messy if React tries to own the terminal workspace. Prefer native host ownership for terminal pane geometry.
 - AppKit focus and `WKWebView` focus need careful handling so sidebar shortcuts do not steal terminal input.
@@ -291,6 +291,6 @@ No xterm/wterm/restty fallback.
 
 ## Desired End State
 
-zmux is a native macOS app where the sidebar and controls are web UI, but every terminal pane is a real embedded Ghostty terminal.
+ghostex is a native macOS app where the sidebar and controls are web UI, but every terminal pane is a real embedded Ghostty terminal.
 
 The user should be able to tile many Ghostty terminals side by side, control them from the sidebar, launch agents/actions into them, resize/reorder/focus them, and never touch a web terminal renderer.

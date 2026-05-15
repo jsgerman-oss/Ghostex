@@ -37,9 +37,9 @@ describe("getAutoCollapseGroupIds", () => {
         browserGroupIds: ["browser-tabs"],
         groupsById: {
           "combined-chats": {},
-          "project-zmux": { projectContext: {} },
+          "project-ghostex": { projectContext: {} },
         },
-        workspaceGroupIds: ["combined-chats", "project-zmux"],
+        workspaceGroupIds: ["combined-chats", "project-ghostex"],
       }),
     ).toEqual(["browser-tabs", "combined-chats"]);
   });
@@ -123,39 +123,39 @@ describe("reconcileCollapsedGroupsById", () => {
   test("should auto-collapse empty combined project and chats groups", () => {
     expect(
       reconcileCollapsedGroupsById({
-        autoCollapseGroupIds: ["combined-chats", "project-zmux"],
+        autoCollapseGroupIds: ["combined-chats", "project-ghostex"],
         browserGroupIds: [],
-        groupIds: ["combined-chats", "project-zmux"],
+        groupIds: ["combined-chats", "project-ghostex"],
         previousSessionCountsByGroup: {},
         previousCollapsedGroupsById: {},
         sessionIdsByGroup: {
           "combined-chats": [],
-          "project-zmux": [],
+          "project-ghostex": [],
         },
       }),
     ).toEqual({
       "combined-chats": true,
-      "project-zmux": true,
+      "project-ghostex": true,
     });
   });
 
   test("should expand a collapsed combined group when a session is created", () => {
     expect(
       reconcileCollapsedGroupsById({
-        autoCollapseGroupIds: ["combined-chats", "project-zmux"],
+        autoCollapseGroupIds: ["combined-chats", "project-ghostex"],
         browserGroupIds: [],
-        groupIds: ["combined-chats", "project-zmux"],
+        groupIds: ["combined-chats", "project-ghostex"],
         previousSessionCountsByGroup: {
           "combined-chats": 0,
-          "project-zmux": 0,
+          "project-ghostex": 0,
         },
         previousCollapsedGroupsById: {
           "combined-chats": true,
-          "project-zmux": true,
+          "project-ghostex": true,
         },
         sessionIdsByGroup: {
           "combined-chats": ["chat-session-1"],
-          "project-zmux": ["session-1"],
+          "project-ghostex": ["session-1"],
         },
       }),
     ).toEqual({});
@@ -172,19 +172,19 @@ describe("reconcileCollapsedGroupsById", () => {
       reconcileCollapsedGroupsById({
         autoCollapseGroupIds: ["combined-chats"],
         browserGroupIds: [],
-        expandOnSessionCountIncreaseGroupIds: ["combined-chats", "project-zmux"],
-        groupIds: ["combined-chats", "project-zmux"],
+        expandOnSessionCountIncreaseGroupIds: ["combined-chats", "project-ghostex"],
+        groupIds: ["combined-chats", "project-ghostex"],
         previousSessionCountsByGroup: {
           "combined-chats": 1,
-          "project-zmux": 1,
+          "project-ghostex": 1,
         },
         previousCollapsedGroupsById: {
           "combined-chats": true,
-          "project-zmux": true,
+          "project-ghostex": true,
         },
         sessionIdsByGroup: {
           "combined-chats": ["chat-session-1"],
-          "project-zmux": ["session-1", "session-2"],
+          "project-ghostex": ["session-1", "session-2"],
         },
       }),
     ).toEqual({

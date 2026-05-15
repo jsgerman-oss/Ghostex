@@ -9,16 +9,16 @@ declare global {
   interface Window {
     webkit?: {
       messageHandlers?: {
-        zmuxAppModalHost?: {
+        ghostexAppModalHost?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxNativeHost?: {
+        ghostexNativeHost?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxNativeHostDiagnostics?: {
+        ghostexNativeHostDiagnostics?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxWorkspaceBar?: {
+        ghostexWorkspaceBar?: {
           postMessage: (message: unknown) => void;
         };
       };
@@ -30,7 +30,7 @@ declare global {
  * CDXC:AppModals 2026-04-27-14:25
  * Modal-host errors must be persisted even when debugging mode is disabled.
  * Send every captured exception to the native host so it can append a timestamped
- * area-tagged line under ~/.zmux/logs for post-failure diagnosis.
+ * area-tagged line under ~/.ghostex/logs for post-failure diagnosis.
  */
 export function logAppModalError(area: string, error: unknown): void {
   const payload: AppModalErrorLogPayload = {
@@ -41,7 +41,7 @@ export function logAppModalError(area: string, error: unknown): void {
   };
 
   try {
-    window.webkit?.messageHandlers?.zmuxAppModalHost?.postMessage(payload);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage(payload);
   } catch (loggingError) {
     console.error("[AppModals] failed to persist modal error", loggingError, payload);
   }

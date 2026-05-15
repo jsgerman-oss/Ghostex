@@ -9,7 +9,7 @@ import type {
 } from "./sidebar-commands";
 import type { SidebarGitAction, SidebarGitState } from "./sidebar-git";
 import type { SidebarProjectDiffStats } from "./project-diff-stats";
-import type { ZedOverlayTargetApp, zmuxSettings } from "./zmux-settings";
+import type { ZedOverlayTargetApp, ghostexSettings } from "./ghostex-settings";
 import type { SidebarPinnedPrompt } from "./sidebar-pinned-prompts";
 import type {
   SessionLifecycleState,
@@ -267,7 +267,7 @@ export type SidebarHudState = {
   recentProjects: SidebarRecentProject[];
   projectWorktrees?: SidebarProjectWorktree[];
   sectionVisibility: SidebarSectionVisibility;
-  settings?: zmuxSettings;
+  settings?: ghostexSettings;
   createSessionOnSidebarDoubleClick: boolean;
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
@@ -424,7 +424,7 @@ export type SidebarShowT3BrowserAccessMessage = {
   type: "showT3BrowserAccess";
 };
 
-export type SidebarZmuxFolderStat = {
+export type SidebarGhostexFolderStat = {
   name: string;
   path: string;
   sizeBytes: number;
@@ -432,18 +432,18 @@ export type SidebarZmuxFolderStat = {
 
 /**
  * CDXC:SettingsStorage 2026-05-09-15:25
- * Settings exposes ~/.zmux disk usage only after the user scrolls to the
+ * Settings exposes ~/.ghostex disk usage only after the user scrolls to the
  * bottom of the modal. The native sidebar sends per-folder byte counts back as
  * a sidebar message so the full-window modal can render stats without owning
  * filesystem access or accepting client-provided paths.
  */
-export type SidebarZmuxFolderStatsMessage = {
+export type SidebarGhostexFolderStatsMessage = {
   errorMessage?: string;
   folderPath: string;
-  folders: SidebarZmuxFolderStat[];
+  folders: SidebarGhostexFolderStat[];
   generatedAt: string;
   totalBytes: number;
-  type: "zmuxFolderStats";
+  type: "ghostexFolderStats";
 };
 
 /**
@@ -481,7 +481,7 @@ export type ExtensionToSidebarMessage =
   | SidebarDaemonSessionsStateMessage
   | SidebarPromptGitCommitMessage
   | SidebarShowT3BrowserAccessMessage
-  | SidebarZmuxFolderStatsMessage
+  | SidebarGhostexFolderStatsMessage
   | SidebarShowSessionRenameModalMessage
   | SidebarShowFindPreviousSessionModalMessage
   | SidebarShowT3ThreadIdModalMessage;
@@ -493,20 +493,20 @@ export type SidebarToExtensionMessage =
   | {
       /**
        * CDXC:SettingsStorage 2026-05-09-15:25
-       * The settings modal can request ~/.zmux folder stats lazily, but native
+       * The settings modal can request ~/.ghostex folder stats lazily, but native
        * resolves the folder path itself and never trusts a path from React.
        */
-      type: "requestZmuxFolderStats" | "openZmuxFolder";
+      type: "requestGhostexFolderStats" | "openGhostexFolder";
     }
   | {
-      settings: zmuxSettings;
+      settings: ghostexSettings;
       type: "updateSettings";
     }
   | {
       /**
        * CDXC:GhosttySettings 2026-04-30-01:48
        * The settings modal exposes Ghostty-specific actions that are not plain
-       * zmux preference changes: reset managed config keys, apply the
+       * ghostex preference changes: reset managed config keys, apply the
        * recommended config block, open docs, and open the platform config file.
        *
        * CDXC:AccessibilityPermissions 2026-05-08-13:08

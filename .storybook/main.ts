@@ -26,12 +26,12 @@ const config: StorybookConfig = {
     config.plugins = [
       ...existingPlugins,
       {
-        name: "zmux-current-sidebar-settings",
+        name: "ghostex-current-sidebar-settings",
         configureServer(server) {
-          server.middlewares.use("/__zmux-current-sidebar-settings", (_request, response) => {
+          server.middlewares.use("/__ghostex-current-sidebar-settings", (_request, response) => {
             const settingsPath = path.join(
               os.homedir(),
-              ".zmux",
+              ".ghostex",
               "state",
               "native-sidebar-settings.json",
             );
@@ -39,7 +39,7 @@ const config: StorybookConfig = {
             try {
               /**
                * CDXC:StorybookSettings 2026-05-08-16:45
-               * Local sidebar scenarios must reproduce the user's running zmux
+               * Local sidebar scenarios must reproduce the user's running ghostex
                * chrome before visual regression checks. Storybook serves the
                * shared native settings snapshot read-only so fixtures can use
                * the same sidebar mode, width, theme, and visibility settings

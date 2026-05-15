@@ -2,7 +2,7 @@
 
 Ghostex is the public app and Homebrew cask name for this release.
 
-- Renamed the public app surface to Ghostex while keeping internal zmux storage and bundle identifiers compatible.
+- Renamed the public app surface to Ghostex while keeping internal ghostex storage and bundle identifiers compatible.
 - Updated the reference sidebar with combined project workflows, command panel controls, searchable settings sections, and cleaner Previous Sessions rows.
 - Improved Agents Hub with real local catalog loading and in-place file saving.
 - Added floating Monaco prompt editing with resize, move, save, and cancel handling.

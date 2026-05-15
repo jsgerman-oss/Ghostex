@@ -1,8 +1,8 @@
 # Ghostex CLI
 
 <!-- CDXC:CliBranding 2026-05-12-07:35: Public CLI docs use `ghostex`
-and `gtx`; legacy `zmux` terminal commands are intentionally not documented
-as compatibility aliases. Internal storage paths can stay under ~/.zmux. -->
+and `gtx`; legacy `ghostex` terminal commands are intentionally not documented
+as compatibility aliases. Internal storage paths can stay under ~/.ghostex. -->
 
 `scripts/ghostex-cli.mjs` is a local debugging CLI for driving a running Ghostex app from the terminal.
 
@@ -41,7 +41,7 @@ bun run cli -- focus-session s-260427-063318-da1
 bun run cli -- focus-session --index 0
 bun run cli -- focus-session --session-number 2
 bun run cli -- focus-group group-2
-bun run cli -- switch-project --path /Users/madda/dev/_active/zmux
+bun run cli -- switch-project --path /Users/madda/dev/_active/ghostex
 bun run cli -- add-project /Users/madda/dev/_active/agent-tiler --name agent-tiler
 ghostex sessions
 gtx sessions
@@ -97,10 +97,10 @@ These commands exit nonzero when the assertion fails.
 ## Evidence Capture
 
 ```sh
-bun run cli -- screenshot ~/.zmux/cli/current.png
+bun run cli -- screenshot ~/.ghostex/cli/current.png
 bun run cli -- logs --file agent-detection-debug.log --lines 200
 bun run cli -- logs --file agent-detection-debug.log --grep sidebarCardProjection --json
-bun run cli -- bundle ~/.zmux/cli/repro-agent-icon --lines 500
+bun run cli -- bundle ~/.ghostex/cli/repro-agent-icon --lines 500
 ```
 
 `bundle` writes:
@@ -114,7 +114,7 @@ bun run cli -- bundle ~/.zmux/cli/repro-agent-icon --lines 500
 ```sh
 bun run cli -- create-agent codex
 bun run cli -- wait-for --index 0 --agent-icon codex --agent-name codex --timeout-ms 8000
-bun run cli -- screenshot ~/.zmux/cli/codex-agent-card.png
+bun run cli -- screenshot ~/.ghostex/cli/codex-agent-card.png
 bun run cli -- logs --file agent-detection-debug.log --lines 120
 ```
 

@@ -10,7 +10,7 @@ describe("workspace open targets", () => {
   test("keeps embedded editor first in the built-in catalog", () => {
     /**
      * CDXC:TitlebarOpenIn 2026-05-11-00:22
-     * The titlebar Open In dropdown must lead with zmux's embedded editor
+     * The titlebar Open In dropdown must lead with ghostex's embedded editor
      * before external IDE targets so the primary code-server flow is always
      * the first visible option.
      */

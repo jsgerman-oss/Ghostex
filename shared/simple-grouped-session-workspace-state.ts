@@ -686,7 +686,7 @@ export function setTerminalSessionAgentNameInSimpleWorkspace(
   const nextAgentName = agentName?.replace(/\s+/g, " ").trim() || undefined;
   /**
    * CDXC:AgentDetection 2026-04-26-21:31
-   * zmux native keeps project/session state in one persistence model:
+   * ghostex native keeps project/session state in one persistence model:
    * localStorage-backed workspace snapshots. Agent identity belongs on the
    * terminal session record, not in a parallel per-session file, so restores
    * and sidebar cards read the same canonical session model.

@@ -18,7 +18,7 @@ import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
 import type {
   ExtensionToSidebarMessage,
-  SidebarZmuxFolderStatsMessage,
+  SidebarGhostexFolderStatsMessage,
 } from "../../shared/session-grid-contract";
 import {
   getWorkspaceThemeForeground,
@@ -149,16 +149,16 @@ declare global {
   interface Window {
     webkit?: {
       messageHandlers?: {
-        zmuxAppModalHost?: {
+        ghostexAppModalHost?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxNativeHost?: {
+        ghostexNativeHost?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxNativeHostDiagnostics?: {
+        ghostexNativeHostDiagnostics?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxWorkspaceBar?: {
+        ghostexWorkspaceBar?: {
           postMessage: (message: unknown) => void;
         };
       };
@@ -183,7 +183,7 @@ type MonacoAmdRequire = {
 
 const vscode: WebviewApi = {
   postMessage(message) {
-    console.debug("[zmux-app-modal-host] sidebarCommand", message);
+    console.debug("[ghostex-app-modal-host] sidebarCommand", message);
     /**
      * CDXC:PreviousSessions 2026-05-07-16:02
      * Previous-session search crosses the full-window modal host before the
@@ -225,7 +225,7 @@ function loadModalHostMonaco(): Promise<void> {
       amdRequire(["vs/editor/editor.main"], resolve, reject);
     };
     const existingLoader = document.querySelector<HTMLScriptElement>(
-      'script[data-zmux-monaco-loader="true"]',
+      'script[data-ghostex-monaco-loader="true"]',
     );
     if (existingLoader) {
       existingLoader.addEventListener("load", configureRequire, { once: true });
@@ -238,7 +238,7 @@ function loadModalHostMonaco(): Promise<void> {
       return;
     }
     const script = document.createElement("script");
-    script.dataset.zmuxMonacoLoader = "true";
+    script.dataset.ghostexMonacoLoader = "true";
     script.src = "./monaco/vs/loader.js";
     script.addEventListener("load", configureRequire, { once: true });
     script.addEventListener("error", () => reject(new Error("Monaco loader failed.")), {
@@ -667,9 +667,9 @@ function AppModalHost() {
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
-    zmuxFolderStats,
+    ghostexFolderStats,
   } = useModalStateFromNative();
-  const [zmuxFolderStatsLoading, setZmuxFolderStatsLoading] = useState(false);
+  const [ghostexFolderStatsLoading, setGhostexFolderStatsLoading] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
   const customThemeColor = useSidebarStore((state) => state.hud.customThemeColor);
   const theme = useSidebarStore((state) => state.hud.theme);
@@ -709,15 +709,15 @@ function AppModalHost() {
 
   useEffect(() => {
     if (activeModal !== "settings") {
-      setZmuxFolderStatsLoading(false);
+      setGhostexFolderStatsLoading(false);
     }
   }, [activeModal]);
 
   useEffect(() => {
-    if (zmuxFolderStats) {
-      setZmuxFolderStatsLoading(false);
+    if (ghostexFolderStats) {
+      setGhostexFolderStatsLoading(false);
     }
-  }, [zmuxFolderStats]);
+  }, [ghostexFolderStats]);
 
   useEffect(() => {
     document.body.dataset.sidebarTheme = theme;
@@ -782,7 +782,7 @@ function AppModalHost() {
         isOpen={activeModal === "findPreviousSession"}
         onCancel={closeModal}
         onConfirm={(query) => {
-          console.debug("[zmux-app-modal-host] findPreviousSession.confirm", {
+          console.debug("[ghostex-app-modal-host] findPreviousSession.confirm", {
             queryLength: query.trim().length,
           });
           vscode.postMessage({
@@ -833,7 +833,7 @@ function AppModalHost() {
         }}
       />
       <SettingsModal
-        accessibilityPermissionGranted={window.__zmux_NATIVE_HOST__?.accessibilityPermissionGranted}
+        accessibilityPermissionGranted={window.__ghostex_NATIVE_HOST__?.accessibilityPermissionGranted}
         initialTab={settingsInitialTab}
         isOpen={isSettingsRenderable}
         onChange={(nextSettings) => {
@@ -863,15 +863,15 @@ function AppModalHost() {
         onOpenMacOSNotificationSettings={() => {
           vscode.postMessage({ type: "openMacOSNotificationSettings" });
         }}
-        onOpenZmuxFolder={() => {
-          vscode.postMessage({ type: "openZmuxFolder" });
+        onOpenGhostexFolder={() => {
+          vscode.postMessage({ type: "openGhostexFolder" });
         }}
         onRequestMacOSNotificationPermission={() => {
           vscode.postMessage({ type: "requestMacOSNotificationPermission" });
         }}
-        onRequestZmuxFolderStats={() => {
-          setZmuxFolderStatsLoading(true);
-          vscode.postMessage({ type: "requestZmuxFolderStats" });
+        onRequestGhostexFolderStats={() => {
+          setGhostexFolderStatsLoading(true);
+          vscode.postMessage({ type: "requestGhostexFolderStats" });
         }}
         onTestAgentTaskCompletion={() => {
           vscode.postMessage({ type: "testAgentTaskCompletion" });
@@ -879,8 +879,8 @@ function AppModalHost() {
         onClose={closeModal}
         settings={settings}
         vscode={vscode}
-        zmuxFolderStats={zmuxFolderStats}
-        zmuxFolderStatsLoading={zmuxFolderStatsLoading}
+        ghostexFolderStats={ghostexFolderStats}
+        ghostexFolderStatsLoading={ghostexFolderStatsLoading}
       />
       <T3ThreadIdModal
         currentThreadId={t3ThreadId?.currentThreadId ?? ""}
@@ -986,7 +986,7 @@ function useModalStateFromNative() {
   const [renameSession, setRenameSession] = useState<RenameSessionModalState>();
   const [t3BrowserAccess, setT3BrowserAccess] = useState<T3BrowserAccessMessage>();
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
-  const [zmuxFolderStats, setZmuxFolderStats] = useState<SidebarZmuxFolderStatsMessage>();
+  const [ghostexFolderStats, setGhostexFolderStats] = useState<SidebarGhostexFolderStatsMessage>();
 
   useEffect(() => {
     const handleMessage = (event: Event) => {
@@ -1109,7 +1109,7 @@ function useModalStateFromNative() {
             /**
              * CDXC:T3RemoteAccess 2026-05-02-00:57
              * The Remote Access QR dialog must be owned by the full-window app
-             * modal host so the QR code centers over zmux instead of rendering
+             * modal host so the QR code centers over ghostex instead of rendering
              * inside the narrow sidebar webview.
              */
             setT3BrowserAccess(message.access);
@@ -1173,7 +1173,7 @@ function useModalStateFromNative() {
             setT3ThreadId(undefined);
           }
           if (message.modal === "settings") {
-            setZmuxFolderStats(undefined);
+            setGhostexFolderStats(undefined);
           }
           if (message.modal !== "agentsHub") {
             setAgentsHubCatalog(undefined);
@@ -1200,7 +1200,7 @@ function useModalStateFromNative() {
           setRenameSession(undefined);
           setT3BrowserAccess(undefined);
           setT3ThreadId(undefined);
-          setZmuxFolderStats(undefined);
+          setGhostexFolderStats(undefined);
           setAgentsHubCatalog(undefined);
           return;
         }
@@ -1215,8 +1215,8 @@ function useModalStateFromNative() {
             setAgentsHubCatalog(message.message);
             return;
           }
-          if (isZmuxFolderStatsMessage(message.message)) {
-            setZmuxFolderStats(message.message);
+          if (isGhostexFolderStatsMessage(message.message)) {
+            setGhostexFolderStats(message.message);
             return;
           }
           applySidebarStateMessage(message.message);
@@ -1227,10 +1227,10 @@ function useModalStateFromNative() {
       }
     };
 
-    window.addEventListener("zmux-app-modal-host-message", handleMessage);
+    window.addEventListener("ghostex-app-modal-host-message", handleMessage);
     postAppModalHostMessage({ type: "ready" }, "AppModals:ready");
     return () => {
-      window.removeEventListener("zmux-app-modal-host-message", handleMessage);
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
     };
   }, []);
 
@@ -1246,16 +1246,16 @@ function useModalStateFromNative() {
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
-    zmuxFolderStats,
+    ghostexFolderStats,
   };
 }
 
-function isZmuxFolderStatsMessage(message: unknown): message is SidebarZmuxFolderStatsMessage {
+function isGhostexFolderStatsMessage(message: unknown): message is SidebarGhostexFolderStatsMessage {
   return Boolean(
     message &&
       typeof message === "object" &&
       "type" in message &&
-      message.type === "zmuxFolderStats",
+      message.type === "ghostexFolderStats",
   );
 }
 

@@ -309,7 +309,7 @@ export const ActiveSortToggle: Story = {
        * Storybook renders the sidebar with the currently applied app settings,
        * so the sort menu may not expose every mode in every local config. This
        * story keeps coverage on the visible session ordering contract without
-       * forcing a menu state that can differ from the user's active zmux setup.
+       * forcing a menu state that can differ from the user's active ghostex setup.
        */
       await expectSessionMembership(storyRoot, "group-1", ["session-1", "session-2", "session-3"]);
       await expectSessionMembership(storyRoot, "group-2", ["session-4", "session-5"]);
@@ -709,7 +709,7 @@ export const EmptySidebarDoubleClickEnabled: Story = {
        * Storybook can report child controls for synthetic coordinates, so this
        * story supplies the same empty-space element list the app receives when
        * a user double-clicks blank sidebar chrome. Storybook must not force
-       * creation against the user's currently applied zmux sidebar settings.
+       * creation against the user's currently applied ghostex sidebar settings.
        */
       storyDocument.elementsFromPoint = () => [sidebarRoot];
 

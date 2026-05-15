@@ -4,7 +4,7 @@
 <!--
 CDXC:Branding 2026-05-12-07:35
 The public product name is Ghostex. The repository folder, code identifiers,
-bundle ids, storage paths, and historical release assets can keep zmux as an
+bundle ids, storage paths, and historical release assets can keep ghostex as an
 internal implementation name, but user-facing app and CLI copy should say
 Ghostex. The public CLI commands are `ghostex` and the short alias `gtx`.
 
@@ -35,7 +35,7 @@ brew install --cask maddada/tap/ghostex
 
 ### Includes Chromium based embedded browser with Devtools, profiles, and MCP access:
 
-<img width="1000" alt="Ghostex sidebar with terminal and browser panes" src="media/readme/zmux-browser-pane.png" />
+<img width="1000" alt="Ghostex sidebar with terminal and browser panes" src="media/readme/ghostex-browser-pane.png" />
 
 <br />
 
@@ -145,7 +145,7 @@ args = [ "chrome-devtools-mcp@latest", "--auto-connect", "--channel=canary" ]
 ```
 
 
-## Dev Setup With The zmux Ghostty Fork
+## Dev Setup With The ghostex Ghostty Fork
 
 Clone both repositories into the same parent directory and keep the Ghostty
 folder named `ghostty`:
@@ -167,7 +167,7 @@ env DEVELOPER_DIR=/Library/Developer/CommandLineTools \
   zig build -Demit-xcframework -Dxcframework-target=native -Demit-macos-app=false
 ```
 
-Then build or run zmux:
+Then build or run ghostex:
 
 ```bash
 cd ../ghostex

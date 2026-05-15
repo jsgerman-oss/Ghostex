@@ -12,7 +12,7 @@ export type T3ThreadIdModalProps = {
 /**
  * CDXC:T3Sessions 2026-04-28-16:18
  * T3 thread binding edits must stay in the React modal system rather than
- * using VS Code's input box. This keeps native zmux and extension-triggered
+ * using VS Code's input box. This keeps native ghostex and extension-triggered
  * prompts visually consistent.
  */
 export function T3ThreadIdModal({

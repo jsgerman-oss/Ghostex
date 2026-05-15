@@ -1,12 +1,12 @@
 import { describe, expect, test } from "vitest";
-import { DEFAULT_zmux_SETTINGS } from "./zmux-settings";
+import { DEFAULT_ghostex_SETTINGS } from "./ghostex-settings";
 import { getGhosttyTerminalConfigValues } from "./ghostty-terminal-settings";
 
 describe("getGhosttyTerminalConfigValues", () => {
-  test("maps zmux terminal settings to documented Ghostty config values", () => {
+  test("maps ghostex terminal settings to documented Ghostty config values", () => {
     expect(
       getGhosttyTerminalConfigValues({
-        ...DEFAULT_zmux_SETTINGS,
+        ...DEFAULT_ghostex_SETTINGS,
         terminalFontFamily: "JetBrains Mono",
         terminalFontSize: 13,
         terminalFontWeight: 650,
@@ -47,12 +47,12 @@ describe("getGhosttyTerminalConfigValues", () => {
   test("leaves Ghostty font weight unmanaged at the default slider value", () => {
     /**
      * CDXC:TerminalTypographySettings 2026-04-29-09:32
-     * A 400 weight is the UI's normal-weight default, so zmux does not write a
+     * A 400 weight is the UI's normal-weight default, so ghostex does not write a
      * font-variation wght value unless the user moves the slider away from it.
      */
     expect(
       getGhosttyTerminalConfigValues({
-        ...DEFAULT_zmux_SETTINGS,
+        ...DEFAULT_ghostex_SETTINGS,
         terminalFontWeight: 400,
       }).fontVariationWeight,
     ).toBeNull();

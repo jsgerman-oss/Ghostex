@@ -2,8 +2,8 @@
 
 ## Goal
 
-Browser-type actions in zmux should open in Google Chrome Canary and place the
-Canary window over the current zmux workarea. The workspace switcher rail and
+Browser-type actions in ghostex should open in Google Chrome Canary and place the
+Canary window over the current ghostex workarea. The workspace switcher rail and
 sidebar must remain visible so the user can still see and switch project/session
 context while the browser is open.
 
@@ -15,25 +15,25 @@ browser implementation.
 - Clicking a sidebar action whose `actionType` is `browser` opens its URL in
   Google Chrome Canary.
 - The Chrome Canary window is resized and moved to cover only the native
-  terminal/workarea pane of the zmux window.
-- The zmux sidebar and workspace bar stay visible.
+  terminal/workarea pane of the ghostex window.
+- The ghostex sidebar and workspace bar stay visible.
 - Chrome Canary becomes the foreground app when opened so it can appear above
-  zmux.
-- Clicking the attached Zed window tucks both zmux and the tracked Chrome Canary
+  ghostex.
+- Clicking the attached Zed window tucks both ghostex and the tracked Chrome Canary
   window far offscreen.
-- Clicking the native zmux button restores zmux, focuses zmux, and restores the
+- Clicking the native ghostex button restores ghostex, focuses ghostex, and restores the
   Chrome Canary window if it had been tucked away.
-- Clicking away to unrelated apps no longer moves zmux offscreen; it only hides
-  the native Zed overlay button and drops zmux to normal window ordering.
+- Clicking away to unrelated apps no longer moves ghostex offscreen; it only hides
+  the native Zed overlay button and drops ghostex to normal window ordering.
 
 ## Important Files
 
 ```text
 native/sidebar/native-sidebar.tsx
-native/macos/zmuxHost/Sources/zmuxHost/HostProtocol.swift
-native/macos/zmuxHost/Sources/zmuxHost/AppDelegate.swift
-native/macos/zmuxHost/Sources/zmuxHost/BrowserOverlayController.swift
-native/macos/zmuxHost/Sources/zmuxHost/ZedOverlayController.swift
+native/macos/ghostexHost/Sources/ghostexHost/HostProtocol.swift
+native/macos/ghostexHost/Sources/ghostexHost/AppDelegate.swift
+native/macos/ghostexHost/Sources/ghostexHost/BrowserOverlayController.swift
+native/macos/ghostexHost/Sources/ghostexHost/ZedOverlayController.swift
 ```
 
 ## Command Flow
@@ -50,7 +50,7 @@ normal external URL behavior stays separate from the Chrome Canary overlay.
 
 `HostProtocol.swift` decodes `openBrowserWindow` into `OpenBrowserWindow`.
 
-`zmuxRootView` forwards that command to `AppDelegate`, because the browser
+`ghostexRootView` forwards that command to `AppDelegate`, because the browser
 overlay needs access to native window controllers rather than staying inside the
 sidebar webview router.
 
@@ -63,7 +63,7 @@ Key responsibilities:
 - Find Google Chrome Canary by bundle id `com.google.Chrome.canary`.
 - Open URLs using `NSWorkspace.shared.open(_:withApplicationAt:configuration:)`.
 - Use Accessibility APIs to find Canary's focused/front window.
-- Resize/move the Canary window to the supplied zmux workarea frame.
+- Resize/move the Canary window to the supplied ghostex workarea frame.
 - Track the active Canary window so it can be moved offscreen and restored.
 
 The controller takes:
@@ -75,7 +75,7 @@ setCompanionBrowserActive: (Bool) -> Void
 ```
 
 The workarea frame provider is important. It points at
-`zmuxRootView.workspaceScreenFrame()`, which converts `workspaceView.bounds`
+`ghostexRootView.workspaceScreenFrame()`, which converts `workspaceView.bounds`
 into screen coordinates. This keeps Canary over the terminal/workarea only,
 instead of covering the workspace rail and sidebar.
 
@@ -83,11 +83,11 @@ instead of covering the workspace rail and sidebar.
 
 `ZedOverlayController` treats Chrome Canary as a companion app while browser
 overlay mode is active. This prevents the normal activation logic from treating
-Chrome as an unrelated app and hiding zmux immediately.
+Chrome as an unrelated app and hiding ghostex immediately.
 
-When Chrome opens, zmux is temporarily set to normal window level so Canary can
+When Chrome opens, ghostex is temporarily set to normal window level so Canary can
 actually appear above it. A normal Chrome app window cannot reliably sit above a
-floating-level zmux window otherwise.
+floating-level ghostex window otherwise.
 
 The callbacks from `ZedOverlayController` into `BrowserOverlayController` are:
 
@@ -96,7 +96,7 @@ didHideAttachment -> moveBrowserOffscreen()
 didShowAttachment -> restoreBrowserIfNeeded()
 ```
 
-This keeps zmux and Canary moving together when the user tucks or restores the
+This keeps ghostex and Canary moving together when the user tucks or restores the
 attached UI from the native Zed overlay button.
 
 ## Offscreen Strategy
@@ -105,12 +105,12 @@ Hidden windows are moved far to the bottom-left of the union of all visible
 screens. The current padding is `1024` points.
 
 Do not use minimize for this feature. The requirement is to preserve window
-state and size while making the windows visually unavailable until the zmux
+state and size while making the windows visually unavailable until the ghostex
 button restores them.
 
 ## Accessibility Requirements
 
-This feature depends on macOS Accessibility permission for zmux.
+This feature depends on macOS Accessibility permission for ghostex.
 
 Accessibility is used to:
 
@@ -119,7 +119,7 @@ Accessibility is used to:
 - raise Chrome Canary windows
 
 If the button or browser positioning stops working, first verify that the built
-`/Applications/zmux.app` has Accessibility permission and is signed with the
+`/Applications/ghostex.app` has Accessibility permission and is signed with the
 stable Developer ID certificate already configured in the native Xcode project.
 
 ## Build And Check

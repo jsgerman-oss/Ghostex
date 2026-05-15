@@ -203,7 +203,7 @@ export type NativeGhosttyHostCommand =
        * CDXC:PanePopOut 2026-05-11-09:35
        * Layout sync keeps popped-out sessions in the split/tab tree while
        * telling AppKit to render a placeholder in-app and move the live native
-       * surface into a zmux-owned window.
+       * surface into a ghostex-owned window.
        */
       poppedOutSessionIds?: string[];
       sessionActivities?: Record<string, "attention" | "sleeping" | "working">;

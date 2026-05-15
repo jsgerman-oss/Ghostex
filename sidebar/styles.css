@@ -75,7 +75,7 @@ button,
    and Switch also render buttons with data-slot attributes; resetting all of
    them strips their shadcn backgrounds and makes dropdowns blend into the
    settings modal. */
-.zmux-settings-shadcn button[data-slot="button"] {
+.ghostex-settings-shadcn button[data-slot="button"] {
   background: revert-layer;
   border: revert-layer;
   border-radius: revert-layer;
@@ -85,7 +85,7 @@ button,
   transition: revert-layer;
 }
 
-.zmux-settings-shadcn button[data-slot="button"]:disabled {
+.ghostex-settings-shadcn button[data-slot="button"]:disabled {
   cursor: revert-layer;
   opacity: revert-layer;
 }
@@ -94,7 +94,7 @@ button,
    use the sidebar reference button radius across cards and controls, with the
    modal surface pinned to #0e0e0e so Settings, Agents, Actions, and Hotkeys
    read as one product surface. */
-.zmux-settings-shadcn {
+.ghostex-settings-shadcn {
   --background: #0e0e0e;
   --card: #0e0e0e;
   --popover: #0e0e0e;
@@ -102,7 +102,7 @@ button,
   --settings-control-radius: 7px;
 }
 
-.zmux-settings-shadcn[data-slot="dialog-content"] {
+.ghostex-settings-shadcn[data-slot="dialog-content"] {
   background-color: #0e0e0e !important;
   border-radius: var(--settings-control-radius) !important;
 }
@@ -113,21 +113,21 @@ button,
 
  CDXC:SettingsNavigation 2026-05-13-08:11: The modal should be 20% wider than the first section-sidebar layout and use a taller viewport so more settings remain visible without scrolling.
 */
-.zmux-settings-shadcn.settings-modal-dialog {
+.ghostex-settings-shadcn.settings-modal-dialog {
   height: min(860px, calc(100vh - 1rem));
   max-height: min(860px, calc(100vh - 1rem));
   max-width: min(1104px, calc(100vw - 1rem));
   width: min(1104px, calc(100vw - 1rem));
 }
 
-.zmux-settings-shadcn .settings-main-tab-layout {
+.ghostex-settings-shadcn .settings-main-tab-layout {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
 
-.zmux-settings-shadcn .settings-section-sidebar {
+.ghostex-settings-shadcn .settings-section-sidebar {
   align-content: start;
   border-right: 1px solid var(--border);
   display: grid;
@@ -137,7 +137,7 @@ button,
   padding: 0 0.75rem 1.25rem 1.25rem;
 }
 
-.zmux-settings-shadcn .settings-section-sidebar-button {
+.ghostex-settings-shadcn .settings-section-sidebar-button {
   justify-content: flex-start !important;
   min-height: 2rem;
   padding-inline: 0.625rem !important;
@@ -145,16 +145,16 @@ button,
   width: 100%;
 }
 
-.zmux-settings-shadcn .settings-section-anchor {
+.ghostex-settings-shadcn .settings-section-anchor {
   scroll-margin-top: 1rem;
 }
 
 @media (max-width: 720px) {
-  .zmux-settings-shadcn .settings-main-tab-layout {
+  .ghostex-settings-shadcn .settings-main-tab-layout {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .zmux-settings-shadcn .settings-section-sidebar {
+  .ghostex-settings-shadcn .settings-section-sidebar {
     border-bottom: 1px solid var(--border);
     border-right: 0;
     display: flex;
@@ -162,33 +162,33 @@ button,
     padding: 0 1.25rem 0.75rem;
   }
 
-  .zmux-settings-shadcn .settings-section-sidebar-button {
+  .ghostex-settings-shadcn .settings-section-sidebar-button {
     width: auto;
   }
 }
 
-.zmux-settings-shadcn [data-slot="button"],
-.zmux-settings-shadcn [data-slot="card"],
-.zmux-settings-shadcn [data-slot="empty"],
-.zmux-settings-shadcn [data-slot="input"],
-.zmux-settings-shadcn [data-slot="select-content"],
-.zmux-settings-shadcn [data-slot="select-item"],
-.zmux-settings-shadcn [data-slot="select-trigger"],
-.zmux-settings-shadcn [data-slot="tabs-list"],
-.zmux-settings-shadcn [data-slot="tabs-trigger"],
-.zmux-settings-shadcn [data-slot="textarea"],
-.zmux-settings-shadcn .settings-management-edit-button,
-.zmux-settings-shadcn .settings-management-icon,
-.zmux-settings-shadcn .settings-management-row,
-.zmux-settings-shadcn .settings-section-title-pill {
+.ghostex-settings-shadcn [data-slot="button"],
+.ghostex-settings-shadcn [data-slot="card"],
+.ghostex-settings-shadcn [data-slot="empty"],
+.ghostex-settings-shadcn [data-slot="input"],
+.ghostex-settings-shadcn [data-slot="select-content"],
+.ghostex-settings-shadcn [data-slot="select-item"],
+.ghostex-settings-shadcn [data-slot="select-trigger"],
+.ghostex-settings-shadcn [data-slot="tabs-list"],
+.ghostex-settings-shadcn [data-slot="tabs-trigger"],
+.ghostex-settings-shadcn [data-slot="textarea"],
+.ghostex-settings-shadcn .settings-management-edit-button,
+.ghostex-settings-shadcn .settings-management-icon,
+.ghostex-settings-shadcn .settings-management-row,
+.ghostex-settings-shadcn .settings-section-title-pill {
   border-radius: var(--settings-control-radius) !important;
 }
 
-.zmux-settings-shadcn .settings-section-with-actions {
+.ghostex-settings-shadcn .settings-section-with-actions {
   padding-top: 2.75rem;
 }
 
-.zmux-settings-shadcn .settings-section-header-actions {
+.ghostex-settings-shadcn .settings-section-header-actions {
   align-items: center;
   background: #0e0e0e;
   display: flex;
@@ -207,7 +207,7 @@ button,
    gray IconAsterisk to the left of the label. Absolute positioning keeps the
    marker from changing label layout or pushing controls around, and the 3px
    right shift keeps the heavier glyph visually close to the setting label. */
-.zmux-settings-shadcn .settings-modified-reset-button {
+.ghostex-settings-shadcn .settings-modified-reset-button {
   background: transparent !important;
   border-color: transparent !important;
   border-radius: 0 !important;
@@ -222,13 +222,13 @@ button,
   width: 0.875rem;
 }
 
-.zmux-settings-shadcn .settings-modified-reset-button svg {
+.ghostex-settings-shadcn .settings-modified-reset-button svg {
   height: 0.625rem;
   width: 0.625rem;
 }
 
-.zmux-settings-shadcn .settings-modified-reset-button:hover,
-.zmux-settings-shadcn .settings-modified-reset-button:focus-visible {
+.ghostex-settings-shadcn .settings-modified-reset-button:hover,
+.ghostex-settings-shadcn .settings-modified-reset-button:focus-visible {
   background: transparent !important;
   color: var(--foreground);
 }
@@ -237,7 +237,7 @@ button,
    must size to the full title in the native app as well as Storybook. A
    scoped CSS class avoids shadcn CardHeader/container internals under-measuring
    the text and clipping labels like "Sidebar". */
-.zmux-settings-shadcn .settings-section-title-pill {
+.ghostex-settings-shadcn .settings-section-title-pill {
   align-items: center !important;
   background: #0e0e0e !important;
   border: 1px solid var(--border) !important;
@@ -253,7 +253,7 @@ button,
   width: max-content !important;
 }
 
-.zmux-settings-shadcn .settings-section-title-pill-text {
+.ghostex-settings-shadcn .settings-section-title-pill-text {
   display: block;
   font-size: 1.125rem;
   line-height: 1;

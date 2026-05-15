@@ -82,8 +82,8 @@ describe("filterPreviousSessions", () => {
         alias: "Duplicate title",
         closedAt: "2026-03-24T10:00:00.000Z",
         historyId: "history-old",
-        projectName: "zmux",
-        projectPath: "/Users/madda/dev/_active/zmux",
+        projectName: "ghostex",
+        projectPath: "/Users/madda/dev/_active/ghostex",
       }),
       createPreviousSession({
         alias: "Other project duplicate title",
@@ -97,8 +97,8 @@ describe("filterPreviousSessions", () => {
         alias: "Duplicate title",
         closedAt: "2026-03-24T12:00:00.000Z",
         historyId: "history-new",
-        projectName: "zmux",
-        projectPath: "/Users/madda/dev/_active/zmux",
+        projectName: "ghostex",
+        projectPath: "/Users/madda/dev/_active/ghostex",
       }),
     ];
 

@@ -120,7 +120,7 @@ export type BaseSessionRecord = {
   /**
    * CDXC:PanePopOut 2026-05-11-09:35
    * Popped-out panes keep their terminal/browser/T3 runtime alive in a native
-   * zmux window while the original workspace slot stays visible as a reattach
+   * ghostex window while the original workspace slot stays visible as a reattach
    * placeholder. This is presentation state, not sleep state.
    */
   isPoppedOut?: boolean;

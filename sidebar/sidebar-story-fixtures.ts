@@ -2,7 +2,7 @@ import { DEFAULT_COMPLETION_SOUND, getCompletionSoundLabel } from "../shared/com
 import { createDefaultSidebarAgentButtons } from "../shared/sidebar-agents";
 import { createDefaultSidebarCommandButtons } from "../shared/sidebar-commands";
 import { createDefaultSidebarGitState } from "../shared/sidebar-git";
-import { DEFAULT_zmux_SETTINGS, normalizezmuxSettings, type zmuxSettings } from "../shared/zmux-settings";
+import { DEFAULT_ghostex_SETTINGS, normalizeghostexSettings, type ghostexSettings } from "../shared/ghostex-settings";
 import type {
   SidebarHydrateMessage,
   SidebarHudState,
@@ -52,7 +52,7 @@ export type SidebarStoryArgs = {
   visibleCount: VisibleSessionCount;
 };
 
-export type SidebarStoryCurrentSettings = zmuxSettings & {
+export type SidebarStoryCurrentSettings = ghostexSettings & {
   sidebarWidth?: number;
 };
 
@@ -134,15 +134,15 @@ function isCombinedReferenceFixture(fixture: SidebarStoryFixture): boolean {
 
 function createCombinedStorySettings(
   currentSettings: SidebarStoryCurrentSettings | undefined,
-): zmuxSettings {
+): ghostexSettings {
   /**
    * CDXC:StorybookSettings 2026-05-08-16:45
    * CDXC:SidebarLayout 2026-05-13-08:11
-   * Storybook sidebar scenarios inherit the user's current zmux settings
+   * Storybook sidebar scenarios inherit the user's current ghostex settings
    * snapshot when available. Combined/reference sidebar is now the only target
    * surface, so the fixture no longer needs to force a mode setting.
    */
-  return normalizezmuxSettings(currentSettings ?? DEFAULT_zmux_SETTINGS);
+  return normalizeghostexSettings(currentSettings ?? DEFAULT_ghostex_SETTINGS);
 }
 
 export function createSidebarStoryMessage(
@@ -223,8 +223,8 @@ export function createSidebarStoryMessage(
     isCombinedReferenceFixture(args.fixture)
   ) {
     hud.projectHeader = {
-      directory: "/Users/story/dev/zmux",
-      name: "zmux",
+      directory: "/Users/story/dev/ghostex",
+      name: "ghostex",
     };
   }
 

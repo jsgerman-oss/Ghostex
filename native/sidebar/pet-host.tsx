@@ -10,7 +10,7 @@ import { DEFAULT_PET_ID, normalizePetId, type PetId } from "../../shared/pets";
 import { PetAvatar, type PetAnimationState } from "../../sidebar/pet-avatar";
 import "../../sidebar/styles.css";
 
-const PET_OVERLAY_STATE_EVENT = "zmux-pet-overlay-state";
+const PET_OVERLAY_STATE_EVENT = "ghostex-pet-overlay-state";
 
 type PetOverlayActivityState = "attention" | "working";
 
@@ -36,7 +36,7 @@ type PetOverlayNativeMessage =
 type PetOverlayWebkitWindow = Window & {
   webkit?: {
     messageHandlers?: {
-      zmuxPetOverlay?: {
+      ghostexPetOverlay?: {
         postMessage: (message: PetOverlayNativeMessage) => void;
       };
     };
@@ -45,7 +45,7 @@ type PetOverlayWebkitWindow = Window & {
 
 declare global {
   interface Window {
-    __zmuxPetOverlayState?: PetOverlayState;
+    __ghostexPetOverlayState?: PetOverlayState;
   }
 }
 
@@ -56,7 +56,7 @@ const INITIAL_STATE: PetOverlayState = {
 };
 
 function PetHost() {
-  const [state, setState] = useState<PetOverlayState>(() => normalizeState(window.__zmuxPetOverlayState));
+  const [state, setState] = useState<PetOverlayState>(() => normalizeState(window.__ghostexPetOverlayState));
   const [isHovering, setIsHovering] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const dragPointerIdRef = useRef<number | undefined>(undefined);
@@ -137,7 +137,7 @@ function PetHost() {
 
   /**
    * CDXC:PetOverlay 2026-05-14-10:23:
-   * The activity bubble above the pet opens zmux to the exact shown session
+   * The activity bubble above the pet opens ghostex to the exact shown session
    * when clicked. Do not render the words "working" or "attention" here; the
    * yellow/green dot is the state label.
    */
@@ -197,7 +197,7 @@ function getAnimationState({
 }
 
 function postPetOverlayMessage(message: PetOverlayNativeMessage): void {
-  (window as PetOverlayWebkitWindow).webkit?.messageHandlers?.zmuxPetOverlay?.postMessage(message);
+  (window as PetOverlayWebkitWindow).webkit?.messageHandlers?.ghostexPetOverlay?.postMessage(message);
 }
 
 function useReducedMotion(): boolean {

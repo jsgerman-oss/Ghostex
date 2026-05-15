@@ -4,7 +4,7 @@ type CompletionSoundLogger = (event: string, details?: unknown) => void;
 
 declare global {
   interface Window {
-    __zmux_SOUND_URLS__?: Partial<Record<CompletionSoundSetting, string>>;
+    __ghostex_SOUND_URLS__?: Partial<Record<CompletionSoundSetting, string>>;
     webkitAudioContext?: typeof AudioContext;
   }
 }
@@ -76,7 +76,7 @@ export async function playCompletionSound(
   const audio = getAudio(sound);
   if (!audio) {
     log?.("completionSound.missingAudio", {
-      hasSoundUrl: Boolean(window.__zmux_SOUND_URLS__?.[sound]),
+      hasSoundUrl: Boolean(window.__ghostex_SOUND_URLS__?.[sound]),
       sound,
     });
     return;
@@ -118,7 +118,7 @@ function getAudio(sound: CompletionSoundSetting): HTMLAudioElement | undefined {
     return existingAudio;
   }
 
-  const url = window.__zmux_SOUND_URLS__?.[sound];
+  const url = window.__ghostex_SOUND_URLS__?.[sound];
   if (!url) {
     return undefined;
   }
@@ -139,7 +139,7 @@ async function getDecodedBuffer(
     return existingPromise;
   }
 
-  const url = window.__zmux_SOUND_URLS__?.[sound];
+  const url = window.__ghostex_SOUND_URLS__?.[sound];
   if (!url) {
     log?.("completionSound.missingAudio", {
       hasSoundUrl: false,

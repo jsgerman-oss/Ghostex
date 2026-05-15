@@ -66,16 +66,16 @@ declare global {
   interface Window {
     webkit?: {
       messageHandlers?: {
-        zmuxAppModalHost?: {
+        ghostexAppModalHost?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxNativeHost?: {
+        ghostexNativeHost?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxNativeHostDiagnostics?: {
+        ghostexNativeHostDiagnostics?: {
           postMessage: (message: unknown) => void;
         };
-        zmuxWorkspaceBar?: {
+        ghostexWorkspaceBar?: {
           postMessage: (message: unknown) => void;
         };
       };
@@ -98,7 +98,7 @@ export function closeAppModal(area = "AppModals:close"): void {
 }
 
 export function postAppModalHostMessage(message: unknown, area: string): void {
-  const modalHost = window.webkit?.messageHandlers?.zmuxAppModalHost;
+  const modalHost = window.webkit?.messageHandlers?.ghostexAppModalHost;
   if (!modalHost) {
     const error = new Error("Native full-window modal host is unavailable.");
     logAppModalError(area, error);

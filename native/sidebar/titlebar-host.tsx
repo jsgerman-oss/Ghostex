@@ -42,7 +42,7 @@ import {
 import type { SidebarProjectDiffStats } from "../../shared/project-diff-stats";
 import { createDefaultSidebarProjectDiffStats } from "../../shared/project-diff-stats";
 import type { SidebarCommandButton } from "../../shared/sidebar-commands";
-import { normalizezmuxSettings, type ZedOverlayTargetApp } from "../../shared/zmux-settings";
+import { normalizeghostexSettings, type ZedOverlayTargetApp } from "../../shared/ghostex-settings";
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
   type CustomWorkspaceOpenTarget,
@@ -135,7 +135,7 @@ type ResolvedOpenTarget =
 
 declare global {
   interface Window {
-    __zmux_TITLEBAR__?: {
+    __ghostex_TITLEBAR__?: {
       setActiveProjectState: (state: Partial<TitlebarProjectState>) => void;
       setZedOverlay?: (state: {
         enabled: boolean;
@@ -146,8 +146,8 @@ declare global {
   }
 }
 
-const LAST_OPEN_TARGET_STORAGE_KEY = "zmux.titlebar.lastOpenTargetId";
-const LAST_ACTION_COMMAND_STORAGE_PREFIX = "zmux.titlebar.lastActionCommandByProject:";
+const LAST_OPEN_TARGET_STORAGE_KEY = "ghostex.titlebar.lastOpenTargetId";
+const LAST_ACTION_COMMAND_STORAGE_PREFIX = "ghostex.titlebar.lastActionCommandByProject:";
 const PROJECT_EDITOR_DISPLAY_MAX_FILES = 999;
 const PROJECT_EDITOR_DISPLAY_MAX_LINES = 999;
 const TITLEBAR_HEIGHT = 30;
@@ -174,7 +174,7 @@ const pendingProcessResults = new Map<
 >();
 
 function postNative(command: NativeTitlebarCommand): void {
-  window.webkit?.messageHandlers?.zmuxNativeHost?.postMessage(command);
+  window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage(command);
 }
 
 function runNativeProcess(
@@ -203,7 +203,7 @@ function runNativeProcess(
 }
 
 function App() {
-  const bootstrap = window.__zmux_NATIVE_HOST__ ?? {};
+  const bootstrap = window.__ghostex_NATIVE_HOST__ ?? {};
   const [projectState, setProjectState] = useState<TitlebarProjectState>(() =>
     createInitialProjectState(bootstrap),
   );
@@ -308,7 +308,7 @@ function App() {
   );
 
   useEffect(() => {
-    window.__zmux_TITLEBAR__ = {
+    window.__ghostex_TITLEBAR__ = {
       setActiveProjectState: (state) => {
         setProjectState((current) => ({
           ...current,
@@ -321,7 +321,7 @@ function App() {
       },
     };
     return () => {
-      delete window.__zmux_TITLEBAR__;
+      delete window.__ghostex_TITLEBAR__;
     };
   }, []);
 
@@ -343,8 +343,8 @@ function App() {
       pendingProcessResults.delete(hostEvent.requestId);
       pending.resolve(hostEvent);
     };
-    window.addEventListener("zmux-native-host-event", handleHostEvent);
-    return () => window.removeEventListener("zmux-native-host-event", handleHostEvent);
+    window.addEventListener("ghostex-native-host-event", handleHostEvent);
+    return () => window.removeEventListener("ghostex-native-host-event", handleHostEvent);
   }, []);
 
   const copyProjectPath = () => {
@@ -427,7 +427,7 @@ function App() {
   };
 
   const rotatePanesClockwise = () => {
-    console.info("[zmux-titlebar] rotate panes clockwise clicked", {
+    console.info("[ghostex-titlebar] rotate panes clockwise clicked", {
       projectId: projectState.projectId,
       projectName: projectState.projectName,
     });
@@ -565,7 +565,7 @@ function App() {
                 <DropdownMenuItem
                   className="titlebar-open-menu-item"
                   onClick={() =>
-                    window.webkit?.messageHandlers?.zmuxAppModalHost?.postMessage({
+                    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
                       modal: "configureActions",
                       type: "open",
                     })
@@ -629,7 +629,7 @@ function App() {
                 <DropdownMenuItem
                   className="titlebar-open-menu-item"
                   onClick={() =>
-                    window.webkit?.messageHandlers?.zmuxAppModalHost?.postMessage({
+                    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
                       modal: "openTargets",
                       type: "open",
                     })
@@ -708,7 +708,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
   const sharedSettingsJson = isRecord(bootstrap.sharedSidebarStorage)
     ? bootstrap.sharedSidebarStorage.settings
     : undefined;
-  const settings = normalizezmuxSettings(parseSharedSettings(sharedSettingsJson));
+  const settings = normalizeghostexSettings(parseSharedSettings(sharedSettingsJson));
   return {
     diffStats: createDefaultSidebarProjectDiffStats(false),
     editorIsOpen: false,

@@ -36,10 +36,10 @@ describe("buildSessionTitleTooltip", () => {
       buildSessionTitleTooltip({
         debugSessionNumberTooltip: "Session number: 02",
         headingText: "Browser ignore",
-        secondaryText: "https://example.com\nzmx session: zmux-session-1",
+        secondaryText: "https://example.com\nzmx session: ghostex-session-1",
       }),
     ).toBe(
-      "Browser ignore\n\nhttps://example.com\n\nzmx session: zmux-session-1\n\nSession number: 02",
+      "Browser ignore\n\nhttps://example.com\n\nzmx session: ghostex-session-1\n\nSession number: 02",
     );
   });
 
@@ -206,7 +206,7 @@ describe("getSessionCardTitleTooltip", () => {
           isPrimaryTitleTerminalTitle: true,
           primaryTitle: "Fix restore",
           sessionNumber: undefined,
-          sessionPersistenceName: "zmux-session-1",
+          sessionPersistenceName: "ghostex-session-1",
           sessionPersistenceProvider: "zmx",
           terminalTitle: undefined,
         },
@@ -214,7 +214,7 @@ describe("getSessionCardTitleTooltip", () => {
       }),
     ).toEqual({
       headingText: "Fix restore",
-      tooltip: "Fix restore\n\nzmx session: zmux-session-1",
+      tooltip: "Fix restore\n\nzmx session: ghostex-session-1",
       tooltipWhen: "always",
     });
   });
@@ -229,10 +229,10 @@ describe("getSessionCardTitleTooltip", () => {
           detail: "OpenAI Codex",
           isPrimaryTitleTerminalTitle: true,
           primaryTitle: "Fix restore",
-          projectName: "zmux",
-          projectPath: "/Users/madda/dev/_active/zmux",
+          projectName: "ghostex",
+          projectPath: "/Users/madda/dev/_active/ghostex",
           sessionNumber: undefined,
-          sessionPersistenceName: "zmux-session-1",
+          sessionPersistenceName: "ghostex-session-1",
           sessionPersistenceProvider: "zmx",
           terminalTitle: undefined,
         },
@@ -242,7 +242,7 @@ describe("getSessionCardTitleTooltip", () => {
     ).toEqual({
       headingText: "Fix restore",
       tooltip:
-        "Fix restore\n\nAgent: Codex\n\nProject: zmux (/Users/madda/dev/_active/zmux)\n\nProvider: zmx\n\nzmx session: zmux-session-1",
+        "Fix restore\n\nAgent: Codex\n\nProject: ghostex (/Users/madda/dev/_active/ghostex)\n\nProvider: zmx\n\nzmx session: ghostex-session-1",
       tooltipWhen: "always",
     });
   });
@@ -277,7 +277,7 @@ describe("SessionFloatingAgentIcon", () => {
     const markup = renderToStaticMarkup(
       createElement(SessionFloatingAgentIcon, {
         agentIcon: "codex",
-        sessionPersistenceName: "zmux-session-1",
+        sessionPersistenceName: "ghostex-session-1",
         sessionPersistenceProvider: "zmx",
       }),
     );

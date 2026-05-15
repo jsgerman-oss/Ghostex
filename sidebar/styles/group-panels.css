@@ -368,13 +368,13 @@
 body[data-sidebar-theme="plain-dark"]
   .sidebar-project-header-icon-shell[data-icon-variant="favicon"]
   .sidebar-project-header-icon-image,
-.zmux-root[data-sidebar-theme="plain-dark"]
+.ghostex-root[data-sidebar-theme="plain-dark"]
   .sidebar-project-header-icon-shell[data-icon-variant="favicon"]
   .sidebar-project-header-icon-image,
 body[data-sidebar-theme^="dark-"]
   .sidebar-project-header-icon-shell[data-icon-variant="favicon"]
   .sidebar-project-header-icon-image,
-.zmux-root[data-sidebar-theme^="dark-"]
+.ghostex-root[data-sidebar-theme^="dark-"]
   .sidebar-project-header-icon-shell[data-icon-variant="favicon"]
   .sidebar-project-header-icon-image {
   filter: drop-shadow(0 0 calc(1px * var(--sidebar-density-scale)) rgba(188, 224, 255, 0.96))
@@ -388,13 +388,13 @@ body[data-sidebar-theme^="dark-"]
 body[data-sidebar-theme="plain-light"]
   .sidebar-project-header-icon-shell[data-icon-variant="favicon"]
   .sidebar-project-header-icon-image,
-.zmux-root[data-sidebar-theme="plain-light"]
+.ghostex-root[data-sidebar-theme="plain-light"]
   .sidebar-project-header-icon-shell[data-icon-variant="favicon"]
   .sidebar-project-header-icon-image,
 body[data-sidebar-theme^="light-"]
   .sidebar-project-header-icon-shell[data-icon-variant="favicon"]
   .sidebar-project-header-icon-image,
-.zmux-root[data-sidebar-theme^="light-"]
+.ghostex-root[data-sidebar-theme^="light-"]
   .sidebar-project-header-icon-shell[data-icon-variant="favicon"]
   .sidebar-project-header-icon-image {
   filter: drop-shadow(

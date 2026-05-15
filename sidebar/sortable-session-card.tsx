@@ -37,7 +37,7 @@ import {
   getSidebarSessionLifecycleState,
   type SidebarSessionItem,
 } from "../shared/session-grid-contract";
-import { DEFAULT_zmux_SETTINGS } from "../shared/zmux-settings";
+import { DEFAULT_ghostex_SETTINGS } from "../shared/ghostex-settings";
 import {
   getSessionCardTitleTooltip,
   OverflowTooltipText,
@@ -164,7 +164,7 @@ export function SortableSessionCard({
       showHotkeys: state.hud.showHotkeysOnSessionCards,
       showLastActiveTime:
         !(state.hud.settings?.hideLastActiveTimeOnSessionCards ??
-          DEFAULT_zmux_SETTINGS.hideLastActiveTimeOnSessionCards),
+          DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards),
     })),
   );
   const [contextMenuPosition, setContextMenuPosition] = useState<ContextMenuPosition>();
@@ -1219,7 +1219,7 @@ function supportsResumeCommandCopy(session: SidebarSessionItem): boolean {
 function supportsFork(session: SidebarSessionItem): boolean {
   /**
    * CDXC:PiAgent 2026-05-08-09:42
-   * Pi exposes a real `--fork <session>` CLI path once zmux has captured the
+   * Pi exposes a real `--fork <session>` CLI path once ghostex has captured the
    * Pi session id/path, so Pi cards should show the same one-click Fork action
    * as Codex in the session context menu.
    */

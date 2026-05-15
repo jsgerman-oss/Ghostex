@@ -24,7 +24,7 @@ const ignoredDirectoryNames = new Set([
  * CDXC:T3Code 2026-05-02-01:05
  * `bun run start` and its short alias `bun s` launch the normal native app
  * against the local t3code-embed fork, so the fork's server and web assets must
- * be current before zmux opens a T3 pane. Fingerprint source files outside
+ * be current before ghostex opens a T3 pane. Fingerprint source files outside
  * generated output and rebuild only when that fingerprint changes, preserving
  * fast no-op starts while preventing stale web/server contract mismatches.
  *
@@ -70,7 +70,7 @@ async function main() {
 
 function resolveT3CodeRoot() {
   const override =
-    process.env.VSMUX_T3CODE_REPO_ROOT?.trim() || process.env.zmux_T3CODE_REPO_ROOT?.trim();
+    process.env.VSMUX_T3CODE_REPO_ROOT?.trim() || process.env.ghostex_T3CODE_REPO_ROOT?.trim();
   if (override) {
     return override;
   }

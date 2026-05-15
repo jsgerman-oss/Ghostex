@@ -43,7 +43,7 @@ import {
 } from "../shared/session-grid-contract";
 import type { SidebarProjectDiffStats } from "../shared/project-diff-stats";
 import type { SidebarAgentButton } from "../shared/sidebar-agents";
-import { DEFAULT_zmux_SETTINGS } from "../shared/zmux-settings";
+import { DEFAULT_ghostex_SETTINGS } from "../shared/ghostex-settings";
 import { ConfirmationModal } from "./confirmation-modal";
 import {
   createGroupDropData,
@@ -73,7 +73,7 @@ const CONTEXT_MENU_ITEM_HEIGHT_PX = 34;
 const CONTEXT_MENU_VERTICAL_PADDING_PX = 12;
 const GROUP_CONTROL_MENU_MARGIN_PX = 12;
 const GROUP_AGENT_MENU_WIDTH_PX = 220;
-const PROJECT_AGENT_LAUNCHER_STORAGE_KEY = "zmux-sidebar-project-terminal-launcher";
+const PROJECT_AGENT_LAUNCHER_STORAGE_KEY = "ghostex-sidebar-project-terminal-launcher";
 const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
@@ -438,7 +438,7 @@ export function SessionGroupSection({
   const showProjectEditorDiffFileCount = useSidebarStore(
     (state) =>
       state.hud.settings?.showProjectEditorDiffFileCount ??
-      DEFAULT_zmux_SETTINGS.showProjectEditorDiffFileCount,
+      DEFAULT_ghostex_SETTINGS.showProjectEditorDiffFileCount,
   );
   const postGroupDebugLog = useEffectEvent((event: string, details: Record<string, unknown>) => {
     if (!debuggingMode) {
@@ -1065,7 +1065,7 @@ export function SessionGroupSection({
        * CDXC:SidebarLayout 2026-05-13-08:11
        * Empty project groups are project selectors, and non-empty project
        * headers also activate the project so the attached IDE follows the
-       * active zmux workspace before any later agent/action launch.
+       * active ghostex workspace before any later agent/action launch.
        */
       requestFocusGroup();
     }

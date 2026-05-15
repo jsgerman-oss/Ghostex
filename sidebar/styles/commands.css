@@ -629,18 +629,18 @@ body[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="codex"
 body[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="opencode"],
 body[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="t3"],
 body[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="browser"],
-.zmux-root[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="codex"],
-.zmux-root[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="opencode"],
-.zmux-root[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="t3"],
-.zmux-root[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="browser"],
+.ghostex-root[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="codex"],
+.ghostex-root[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="opencode"],
+.ghostex-root[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="t3"],
+.ghostex-root[data-sidebar-theme="plain-dark"] .agent-button-icon[data-agent-icon="browser"],
 body[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="codex"],
 body[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="opencode"],
 body[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="t3"],
 body[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="browser"],
-.zmux-root[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="codex"],
-.zmux-root[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="opencode"],
-.zmux-root[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="t3"],
-.zmux-root[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="browser"] {
+.ghostex-root[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="codex"],
+.ghostex-root[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="opencode"],
+.ghostex-root[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="t3"],
+.ghostex-root[data-sidebar-theme^="dark-"] .agent-button-icon[data-agent-icon="browser"] {
   filter: brightness(0) invert(1);
 }
 
