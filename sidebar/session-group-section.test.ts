@@ -3,6 +3,8 @@ import {
   formatProjectEditorDiffStatsLabel,
   getEmptyBrowserGroupExpandTooltip,
   shouldFocusGroupOnHeaderActivation,
+  shouldInitializeEmptyProjectTerminalOnHeaderActivation,
+  shouldShowProjectEditorDiffStats,
 } from "./session-group-section";
 
 describe("getEmptyBrowserGroupExpandTooltip", () => {
@@ -38,14 +40,14 @@ describe("getEmptyBrowserGroupExpandTooltip", () => {
 });
 
 describe("shouldFocusGroupOnHeaderActivation", () => {
-  test("focuses empty combined project headers", () => {
+  test("keeps empty combined project headers out of the focus-only path", () => {
     expect(
       shouldFocusGroupOnHeaderActivation({
         hasProjectContext: true,
         isActive: false,
-        shouldSelectEmptyProject: true,
+        shouldInitializeEmptyProjectTerminal: true,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("focuses inactive combined project headers with sessions", () => {
@@ -53,7 +55,7 @@ describe("shouldFocusGroupOnHeaderActivation", () => {
       shouldFocusGroupOnHeaderActivation({
         hasProjectContext: true,
         isActive: false,
-        shouldSelectEmptyProject: false,
+        shouldInitializeEmptyProjectTerminal: false,
       }),
     ).toBe(true);
   });
@@ -63,7 +65,7 @@ describe("shouldFocusGroupOnHeaderActivation", () => {
       shouldFocusGroupOnHeaderActivation({
         hasProjectContext: true,
         isActive: true,
-        shouldSelectEmptyProject: false,
+        shouldInitializeEmptyProjectTerminal: false,
       }),
     ).toBe(false);
   });
@@ -73,7 +75,33 @@ describe("shouldFocusGroupOnHeaderActivation", () => {
       shouldFocusGroupOnHeaderActivation({
         hasProjectContext: false,
         isActive: false,
-        shouldSelectEmptyProject: false,
+        shouldInitializeEmptyProjectTerminal: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldInitializeEmptyProjectTerminalOnHeaderActivation", () => {
+  test("creates the first terminal from an empty project header", () => {
+    expect(
+      shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+        hasProjectContext: true,
+        sessionCount: 0,
+      }),
+    ).toBe(true);
+  });
+
+  test("does not create terminals from non-project or non-empty headers", () => {
+    expect(
+      shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+        hasProjectContext: false,
+        sessionCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+        hasProjectContext: true,
+        sessionCount: 1,
       }),
     ).toBe(false);
   });
@@ -117,5 +145,43 @@ describe("formatProjectEditorDiffStatsLabel", () => {
         true,
       ),
     ).toBe("99 +999 -999");
+  });
+});
+
+describe("shouldShowProjectEditorDiffStats", () => {
+  test("hides the project git status when additions and deletions are both zero", () => {
+    expect(
+      shouldShowProjectEditorDiffStats({
+        additions: 0,
+        deletions: 0,
+        files: 0,
+        isLoading: false,
+        isRepo: true,
+      }),
+    ).toBe(false);
+  });
+
+  test("shows the project git status when additions are nonzero", () => {
+    expect(
+      shouldShowProjectEditorDiffStats({
+        additions: 1,
+        deletions: 0,
+        files: 1,
+        isLoading: false,
+        isRepo: true,
+      }),
+    ).toBe(true);
+  });
+
+  test("shows the project git status when deletions are nonzero", () => {
+    expect(
+      shouldShowProjectEditorDiffStats({
+        additions: 0,
+        deletions: 1,
+        files: 1,
+        isLoading: false,
+        isRepo: true,
+      }),
+    ).toBe(true);
   });
 });

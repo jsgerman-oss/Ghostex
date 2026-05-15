@@ -9,7 +9,7 @@ import {
   IconCube,
   IconFolderOpen,
   IconPlayerPlay,
-  IconRobot,
+  IconRobotFace,
   IconSettings,
   IconTerminal2,
   IconUsersGroup,
@@ -79,6 +79,7 @@ type TitlebarSidebarActionsSettings = {
 };
 
 type TitlebarProjectState = {
+  activeMode: TitlebarMode;
   diffStats: SidebarProjectDiffStats;
   editorIsOpen: boolean;
   editorIsSleeping: boolean;
@@ -94,6 +95,8 @@ type TitlebarProjectState = {
 };
 
 type NativeTitlebarCommand =
+  | { details?: string; event: string; force?: boolean; type: "appendSessionTitleDebugLog" }
+  | { details?: string; event: string; type: "appendTerminalFocusDebugLog" }
   | {
       args: string[];
       cwd?: string;
@@ -182,6 +185,41 @@ function postNative(command: NativeTitlebarCommand): void {
   window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage(command);
 }
 
+function appendTitlebarActionCrashDebugLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:TitlebarActions 2026-05-15-17:23:
+   * Terminal action button crashes need a breadcrumb from the isolated React
+   * titlebar before the native-sidebar command runner receives the click.
+   * Persist this trace outside the normal debug-toggle filter so a repro that
+   * exits the app still leaves the selected action id and project context.
+   */
+  postNative({
+    details: details === undefined ? undefined : JSON.stringify(details),
+    event,
+    type: "appendTerminalFocusDebugLog",
+  });
+}
+
+function appendTitlebarCodeLagDebugLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:ModeSwitcher 2026-05-15-18:39:
+   * Titlebar Code-click lag needs forced, low-volume breadcrumbs before the
+   * sidebar/native bridge can become busy. Record the isolated titlebar click
+   * boundary in the persistent diagnostics log so a repro can be correlated
+   * with sidebar project-editor wake and native CEF focus events.
+   */
+  postNative({
+    details: JSON.stringify({
+      details,
+      performanceNowMs: performance.now(),
+      wallTimeMs: Date.now(),
+    }),
+    event,
+    force: true,
+    type: "appendSessionTitleDebugLog",
+  });
+}
+
 function runNativeProcess(
   executable: string,
   args: string[],
@@ -220,9 +258,28 @@ function App() {
   const [projectTitleTooltipOpen, setProjectTitleTooltipOpen] = useState(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
-  const [activeMode, setActiveMode] = useState<TitlebarMode>("agents");
+  const [optimisticMode, setOptimisticMode] = useState<TitlebarMode>();
   const copyTooltipTimeoutRef = useRef<number | undefined>(undefined);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const activeMode = optimisticMode ?? projectState.activeMode;
+
+  useEffect(() => {
+    const suppressTitlebarWebviewContextMenu = (event: MouseEvent) => {
+      /**
+       * CDXC:TitlebarContextMenu 2026-05-15-18:21:
+       * Right-clicking titlebar buttons, menus, labels, or project text must
+       * not expose WKWebView's native Reload menu. The titlebar has no editable
+       * text fields, so suppress the webview default for the whole isolated
+       * titlebar document while leaving React click/keyboard behavior intact.
+       */
+      event.preventDefault();
+    };
+
+    document.addEventListener("contextmenu", suppressTitlebarWebviewContextMenu, true);
+    return () => {
+      document.removeEventListener("contextmenu", suppressTitlebarWebviewContextMenu, true);
+    };
+  }, []);
 
   const allTargets = useMemo(
     () => createConfiguredOpenTargets(projectState.workspaceOpenTargets),
@@ -316,6 +373,10 @@ function App() {
         setProjectState((current) => ({
           ...current,
           ...state,
+          activeMode:
+            state.activeMode === undefined
+              ? current.activeMode
+              : normalizeTitlebarMode(state.activeMode),
           diffStats: state.diffStats ?? current.diffStats,
           petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
           sidebarActions: state.sidebarActions ?? current.sidebarActions,
@@ -330,8 +391,11 @@ function App() {
 
   useEffect(() => {
     setSelectedActionCommandId(readLastActionCommandId(projectState));
-    setActiveMode("agents");
   }, [projectState.projectId, projectState.projectPath]);
+
+  useEffect(() => {
+    setOptimisticMode(undefined);
+  }, [projectState.activeMode, projectState.projectId, projectState.projectPath]);
 
   useEffect(() => {
     const handleHostEvent = (event: Event) => {
@@ -423,35 +487,57 @@ function App() {
 
   const runSidebarAction = (command: SidebarCommandButton | undefined) => {
     if (!command) {
+      appendTitlebarActionCrashDebugLog("nativeSidebar.actionCrashTrace.titlebarMissingAction", {
+        projectId: projectState.projectId,
+        projectPath: projectState.projectPath,
+      });
       return;
     }
+    appendTitlebarActionCrashDebugLog("nativeSidebar.actionCrashTrace.titlebarClick", {
+      actionType: command.actionType,
+      closeTerminalOnExit: command.closeTerminalOnExit,
+      commandId: command.commandId,
+      hasCommand: Boolean(command.command?.trim()),
+      hasUrl: Boolean(command.url?.trim()),
+      projectId: projectState.projectId,
+      projectPath: projectState.projectPath,
+    });
     setSelectedActionCommandId(command.commandId);
     persistLastActionCommandId(projectState, command.commandId);
     postNative({ commandId: command.commandId, type: "runSidebarCommandFromTitlebar" });
   };
 
   const openAgentsMode = () => {
-    setActiveMode("agents");
+    setOptimisticMode("agents");
     postNative({ type: "openAgentsModeFromTitlebar" });
   };
 
   const openCodeMode = () => {
-    setActiveMode("code");
+    appendTitlebarCodeLagDebugLog("titlebarCodeLag.titlebarClickStart", {
+      activeMode: projectState.activeMode,
+      editorIsOpen: projectState.editorIsOpen,
+      editorIsSleeping: projectState.editorIsSleeping,
+      editorStatus: projectState.editorStatus,
+      optimisticMode,
+      projectId: projectState.projectId,
+      projectPath: projectState.projectPath,
+    });
+    setOptimisticMode("code");
     postNative({ type: "openActiveProjectEditorFromTitlebar" });
+    appendTitlebarCodeLagDebugLog("titlebarCodeLag.titlebarClickPostedNative", {
+      projectId: projectState.projectId,
+      projectPath: projectState.projectPath,
+    });
   };
 
   const openGitMode = () => {
-    setActiveMode("git");
+    setOptimisticMode("git");
     postNative({ type: "openGitHubProjectFromTitlebar" });
   };
 
   const openTasksMode = () => {
-    setActiveMode("tasks");
+    setOptimisticMode("tasks");
     postNative({ type: "openTasksPlaceholderFromTitlebar" });
-  };
-
-  const toggleCommandsPanel = () => {
-    postNative({ type: "toggleCommandsPanelFromTitlebar" });
   };
 
   const togglePetOverlay = () => {
@@ -559,11 +645,12 @@ function App() {
                 >
                   {/*
                    * CDXC:PetOverlay 2026-05-15-14:20:
-                   * The top bar should expose the pet wake/sleep control
-                   * without the Rotate Panes button; pane rotation now lives in
-                   * the per-pane overflow menu below Split Downwards.
+                   * The top bar should expose the pet wake/sleep control as a
+                   * robot head without the Rotate Panes button; pane rotation
+                   * now lives in the per-pane overflow menu below Split
+                   * Downwards.
                    */}
-                  <IconRobot aria-hidden="true" size={16} stroke={1.8} />
+                  <IconRobotFace aria-hidden="true" size={16} stroke={1.8} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}</TooltipContent>
@@ -707,22 +794,6 @@ function App() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <div aria-hidden="true" className="titlebar-section-separator" />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label="Toggle Commands panel"
-                  className="titlebar-session-button titlebar-command-panel-button"
-                  data-titlebar-hit-region
-                  onClick={toggleCommandsPanel}
-                  type="button"
-                  variant="ghost"
-                >
-                  <IconTerminal2 aria-hidden="true" size={16} stroke={1.8} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Toggle Commands panel</TooltipContent>
-            </Tooltip>
           </div>
         </div>
       </div>
@@ -738,6 +809,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     : undefined;
   const settings = normalizeghostexSettings(parseSharedSettings(sharedSettingsJson));
   return {
+    activeMode: resolveInitialTitlebarMode(bootstrap),
     diffStats: createDefaultSidebarProjectDiffStats(false),
     editorIsOpen: false,
     editorIsSleeping: false,
@@ -758,6 +830,61 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       hiddenTargetIds: settings.workspaceOpenTargetHiddenIds,
     },
   };
+}
+
+function normalizeTitlebarMode(candidate: unknown): TitlebarMode {
+  /**
+   * CDXC:ModeSwitcher 2026-05-15-18:20:
+   * The top titlebar mode must mirror the workarea mode restored by the sidebar
+   * at launch and after each mode transition. Treat the sidebar/native payload
+   * as authoritative so a restored Code, Git, or Project pane cannot leave the
+   * segmented control highlighted on Agents.
+   *
+   * CDXC:ModeSwitcher 2026-05-15-18:30:
+   * User clicks still need optimistic local mode selection so the shared-layout
+   * pill animates immediately while slow Code/Git/Project surfaces load. Clear
+   * that optimistic value when sidebar state arrives so startup restore and
+   * failed transitions remain synchronized with the real visible workarea.
+   */
+  return candidate === "code" || candidate === "git" || candidate === "tasks"
+    ? candidate
+    : "agents";
+}
+
+function resolveInitialTitlebarMode(bootstrap: Record<string, unknown>): TitlebarMode {
+  const explicitMode = normalizeTitlebarMode(bootstrap.activeMode);
+  if (explicitMode !== "agents") {
+    return explicitMode;
+  }
+  const sharedProjectsJson = isRecord(bootstrap.sharedSidebarStorage)
+    ? bootstrap.sharedSidebarStorage.projects
+    : undefined;
+  if (typeof sharedProjectsJson !== "string") {
+    return "agents";
+  }
+  try {
+    const candidate = JSON.parse(sharedProjectsJson);
+    const projects = Array.isArray(candidate?.projects) ? candidate.projects : [];
+    const activeProjectId =
+      typeof candidate?.activeProjectId === "string" ? candidate.activeProjectId : undefined;
+    const activeProject =
+      projects.find(
+        (project: unknown) =>
+          isRecord(project) &&
+          typeof project.projectId === "string" &&
+          project.projectId === activeProjectId,
+      ) ?? projects[0];
+    if (
+      isRecord(activeProject) &&
+      isRecord(activeProject.projectEditor) &&
+      activeProject.projectEditor.isOpen === true
+    ) {
+      return "code";
+    }
+  } catch {
+    return "agents";
+  }
+  return "agents";
 }
 
 function TitlebarModeSwitcher({
@@ -1071,9 +1198,10 @@ styleElement.textContent = `
    * 20px centered control height so the compact 30px titlebar keeps top/bottom
    * breathing room.
    *
-   * CDXC:ReactTitlebar 2026-05-14-09:52
-   * The top-right Commands panel terminal icon needs its own left divider so it
-   * reads as a separate titlebar destination from the embedded editor button.
+   * CDXC:ReactTitlebar 2026-05-15-19:41
+   * The top-right titlebar should not duplicate the Commands pane entry point.
+   * Remove the corner terminal icon and its left separator so Commands access
+   * lives in the sidebar footer instead of competing with project actions.
    */
   .titlebar-session-button {
     height: ${TITLEBAR_CONTROL_HEIGHT}px;

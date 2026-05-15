@@ -423,11 +423,10 @@ export function SettingsModal({
         subtitle: "Reveal the close control when hovering a card.",
         title: "Show close button on hover",
       },
-      {
-        key: "showHotkeysOnSessionCards",
-        subtitle: "Display card shortcuts where available.",
-        title: "Show hotkeys on cards",
-      },
+      /*
+       * CDXC:SidebarSessions 2026-05-15-19:46:
+       * Settings must not expose the card-hotkey visibility row; session-card shortcut visibility is no longer configurable from the modal.
+       */
       {
         key: "hideLastActiveTimeOnSessionCards",
         subtitle: "Hide Last Active timestamps from session-card title rows.",
@@ -695,12 +694,6 @@ export function SettingsModal({
   }> = [
     { id: "sidebar", ref: sidebarSectionRef, searchResult: settingsSearch.sidebar, title: "Sidebar" },
     { id: "browser", ref: browserSectionRef, searchResult: settingsSearch.browser, title: "Browser" },
-    {
-      id: "ideAttachment",
-      ref: ideAttachmentSectionRef,
-      searchResult: settingsSearch.ideAttachment,
-      title: "IDE Attachment",
-    },
     { id: "pets", ref: petsSectionRef, searchResult: settingsSearch.pets, title: "Pets" },
     {
       id: "sessionCards",
@@ -716,6 +709,16 @@ export function SettingsModal({
     },
     { id: "editor", ref: editorSectionRef, searchResult: settingsSearch.editor, title: "Editor" },
     { id: "sounds", ref: soundsSectionRef, searchResult: settingsSearch.sounds, title: "Sounds" },
+    /*
+     * CDXC:IDEAttachment 2026-05-15-19:50:
+     * The main Settings tab should place IDE Attachment immediately above Storage so attachment controls stay near the low-frequency system/storage controls instead of interrupting the primary sidebar workflow settings.
+     */
+    {
+      id: "ideAttachment",
+      ref: ideAttachmentSectionRef,
+      searchResult: settingsSearch.ideAttachment,
+      title: "IDE Attachment",
+    },
     { id: "storage", ref: storageSectionRef, searchResult: settingsSearch.storage, title: "Storage" },
   ];
   const ghosttySettingsSectionNavigation: Array<{
@@ -1158,80 +1161,6 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.ideAttachment) ? (
-            <SettingsSection sectionRef={ideAttachmentSectionRef} title="IDE Attachment">
-              {/* CDXC:AccessibilityPermissions 2026-05-08-13:08: Settings must
-                  show the current macOS Accessibility status and provide a
-                  one-click path to the matching System Settings pane without
-                  presenting the permission dialog unless attachment is enabled. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "accessibilityPermission") ? (
-              <div className="flex flex-col gap-2">
-                {/* CDXC:AccessibilityPermissions 2026-05-15-13:23: Missing macOS Accessibility status belongs next to the Accessibility Permission setting, not as a top-of-modal warning. Keep it gray so it reads as contextual status instead of a global amber alert. */}
-                <ActionButtonField
-                  description={getAccessibilityPermissionDescription(accessibilityPermissionGranted)}
-                  label="Accessibility Permission"
-                  onClick={() => onOpenAccessibilityPreferences?.()}
-                >
-                  {getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
-                </ActionButtonField>
-                {accessibilityPermissionGranted === false ? (
-                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                    Accessibility is off. IDE attachment won't work until it is allowed in macOS.
-                  </div>
-                ) : null}
-              </div>
-              ) : null}
-              {/* CDXC:IDEAttachment 2026-04-26-22:38: Settings select the IDE
-                  that the workspace header link button attaches to. The
-                  persisted keys remain zedOverlay* so existing installs keep
-                  their saved attach state and target. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayEnabled") ? (
-              <ToggleField
-                checked={draft.zedOverlayEnabled}
-                description="Attach Ghostex as an overlay to the selected IDE."
-                label="Attach Ghostex to IDE"
-                {...getSettingModificationProps("zedOverlayEnabled")}
-                onChange={(checked) => updateDraft("zedOverlayEnabled", checked)}
-              />
-              ) : null}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayHideTitlebarButton") ? (
-              <ToggleField
-                checked={draft.zedOverlayHideTitlebarButton}
-                description="Hide the native Attach/Detach IDE button from the Ghostex title bar."
-                label="Hide title-bar attach button"
-                {...getSettingModificationProps("zedOverlayHideTitlebarButton")}
-                onChange={(checked) => updateDraft("zedOverlayHideTitlebarButton", checked)}
-              />
-              ) : null}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayTargetApp") ? (
-              <SelectField
-                description="Select which IDE should receive the overlay."
-                label="Target IDE"
-                {...getSettingModificationProps("zedOverlayTargetApp")}
-                onChange={(value) =>
-                  updateDraft("zedOverlayTargetApp", value as ZedOverlayTargetApp)
-                }
-                options={ZED_OVERLAY_TARGET_APP_OPTIONS}
-                value={draft.zedOverlayTargetApp}
-              />
-              ) : null}
-              {/* CDXC:IDEAttachment 2026-05-06-12:49: Project sync is a
-                  separate default-on setting from attachment. When enabled,
-                  Ghostex opens the active project in the attached IDE after
-                  workspace switches instead of waiting for a title-bar button
-                  click. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "syncOpenProjectWithZed") ? (
-              <ToggleField
-                checked={draft.syncOpenProjectWithZed}
-                description="Open the active Ghostex project in the attached IDE after switching workspaces."
-                label="Sync active project with IDE"
-                {...getSettingModificationProps("syncOpenProjectWithZed")}
-                onChange={(checked) => updateDraft("syncOpenProjectWithZed", checked)}
-              />
-              ) : null}
-            </SettingsSection>
-            ) : null}
-
             {shouldShowSettingsSection(settingsSearch.pets) ? (
             <SettingsSection sectionRef={petsSectionRef} title="Pets">
               {shouldShowSetting(settingsSearch.pets, "petOverlayEnabled") ? (
@@ -1262,15 +1191,6 @@ export function SettingsModal({
                 label="Show close button on hover"
                 {...getSettingModificationProps("showCloseButtonOnSessionCards")}
                 onChange={(checked) => updateDraft("showCloseButtonOnSessionCards", checked)}
-              />
-              ) : null}
-              {shouldShowSetting(settingsSearch.sessionCards, "showHotkeysOnSessionCards") ? (
-              <ToggleField
-                checked={draft.showHotkeysOnSessionCards}
-                description="Display card shortcuts where available."
-                label="Show hotkeys on cards"
-                {...getSettingModificationProps("showHotkeysOnSessionCards")}
-                onChange={(checked) => updateDraft("showHotkeysOnSessionCards", checked)}
               />
               ) : null}
               {shouldShowSetting(settingsSearch.sessionCards, "hideLastActiveTimeOnSessionCards") ? (
@@ -1456,6 +1376,80 @@ export function SettingsModal({
                 onChange={(value) => updateDraft("actionCompletionSound", value)}
                 onPlay={onPlayCompletionSound}
                 value={draft.actionCompletionSound}
+              />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {shouldShowSettingsSection(settingsSearch.ideAttachment) ? (
+            <SettingsSection sectionRef={ideAttachmentSectionRef} title="IDE Attachment">
+              {/* CDXC:AccessibilityPermissions 2026-05-08-13:08: Settings must
+                  show the current macOS Accessibility status and provide a
+                  one-click path to the matching System Settings pane without
+                  presenting the permission dialog unless attachment is enabled. */}
+              {shouldShowSetting(settingsSearch.ideAttachment, "accessibilityPermission") ? (
+              <div className="flex flex-col gap-2">
+                {/* CDXC:AccessibilityPermissions 2026-05-15-13:23: Missing macOS Accessibility status belongs next to the Accessibility Permission setting, not as a top-of-modal warning. Keep it gray so it reads as contextual status instead of a global amber alert. */}
+                <ActionButtonField
+                  description={getAccessibilityPermissionDescription(accessibilityPermissionGranted)}
+                  label="Accessibility Permission"
+                  onClick={() => onOpenAccessibilityPreferences?.()}
+                >
+                  {getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
+                </ActionButtonField>
+                {accessibilityPermissionGranted === false ? (
+                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                    Accessibility is off. IDE attachment won't work until it is allowed in macOS.
+                  </div>
+                ) : null}
+              </div>
+              ) : null}
+              {/* CDXC:IDEAttachment 2026-04-26-22:38: Settings select the IDE
+                  that the workspace header link button attaches to. The
+                  persisted keys remain zedOverlay* so existing installs keep
+                  their saved attach state and target. */}
+              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayEnabled") ? (
+              <ToggleField
+                checked={draft.zedOverlayEnabled}
+                description="Attach Ghostex as an overlay to the selected IDE."
+                label="Attach Ghostex to IDE"
+                {...getSettingModificationProps("zedOverlayEnabled")}
+                onChange={(checked) => updateDraft("zedOverlayEnabled", checked)}
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayHideTitlebarButton") ? (
+              <ToggleField
+                checked={draft.zedOverlayHideTitlebarButton}
+                description="Hide the native Attach/Detach IDE button from the Ghostex title bar."
+                label="Hide title-bar attach button"
+                {...getSettingModificationProps("zedOverlayHideTitlebarButton")}
+                onChange={(checked) => updateDraft("zedOverlayHideTitlebarButton", checked)}
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayTargetApp") ? (
+              <SelectField
+                description="Select which IDE should receive the overlay."
+                label="Target IDE"
+                {...getSettingModificationProps("zedOverlayTargetApp")}
+                onChange={(value) =>
+                  updateDraft("zedOverlayTargetApp", value as ZedOverlayTargetApp)
+                }
+                options={ZED_OVERLAY_TARGET_APP_OPTIONS}
+                value={draft.zedOverlayTargetApp}
+              />
+              ) : null}
+              {/* CDXC:IDEAttachment 2026-05-06-12:49: Project sync is a
+                  separate default-on setting from attachment. When enabled,
+                  Ghostex opens the active project in the attached IDE after
+                  workspace switches instead of waiting for a title-bar button
+                  click. */}
+              {shouldShowSetting(settingsSearch.ideAttachment, "syncOpenProjectWithZed") ? (
+              <ToggleField
+                checked={draft.syncOpenProjectWithZed}
+                description="Open the active Ghostex project in the attached IDE after switching workspaces."
+                label="Sync active project with IDE"
+                {...getSettingModificationProps("syncOpenProjectWithZed")}
+                onChange={(checked) => updateDraft("syncOpenProjectWithZed", checked)}
               />
               ) : null}
             </SettingsSection>

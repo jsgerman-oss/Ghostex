@@ -78,6 +78,22 @@ const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
 const TOUCH_GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const PROJECT_EDITOR_DISPLAY_MAX_FILES = 99;
+const NESTED_CONTEXT_MENU_INTERACTIVE_SELECTOR =
+  "button, input, textarea, select, a[href], [role='button'], [role='menuitem'], [contenteditable='true'], .group-header-actions";
+
+function isNestedInteractiveContextMenuTarget(event: ReactMouseEvent<HTMLElement>): boolean {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  const interactiveTarget = target.closest(NESTED_CONTEXT_MENU_INTERACTIVE_SELECTOR);
+  return (
+    interactiveTarget instanceof HTMLElement &&
+    interactiveTarget !== event.currentTarget &&
+    event.currentTarget.contains(interactiveTarget)
+  );
+}
 const PROJECT_EDITOR_DISPLAY_MAX_LINES = 999;
 const PROJECT_CONTEXT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: SidebarTheme }> = [
   { label: "Dark Gray", value: "plain-dark" },
@@ -190,19 +206,38 @@ export function getEmptyBrowserGroupExpandTooltip({
 export function shouldFocusGroupOnHeaderActivation({
   hasProjectContext,
   isActive,
-  shouldSelectEmptyProject,
+  shouldInitializeEmptyProjectTerminal,
 }: {
   hasProjectContext: boolean;
   isActive: boolean;
-  shouldSelectEmptyProject: boolean;
+  shouldInitializeEmptyProjectTerminal: boolean;
 }): boolean {
   /**
    * CDXC:SidebarLayout 2026-05-13-08:11
    * Project headers activate their project even when they also collapse or
    * expand sessions. That activation drives the debounced attached IDE
    * workspace sync in the combined-only sidebar.
+   *
+   * CDXC:ProjectHeaders 2026-05-15-16:06
+   * Empty project headers now create the first terminal directly, so they
+   * should not take the focus-only activation branch before terminal creation.
    */
-  return shouldSelectEmptyProject || (hasProjectContext && !isActive);
+  return hasProjectContext && !isActive && !shouldInitializeEmptyProjectTerminal;
+}
+
+export function shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+  hasProjectContext,
+  sessionCount,
+}: {
+  hasProjectContext: boolean;
+  sessionCount: number;
+}): boolean {
+  /**
+   * CDXC:ProjectHeaders 2026-05-15-16:06
+   * Clicking an empty project header should initialize that project with one
+   * blank terminal instead of only selecting an empty workspace shell.
+   */
+  return hasProjectContext && sessionCount === 0;
 }
 
 export function formatProjectEditorDiffStatsLabel(
@@ -223,6 +258,16 @@ export function formatProjectEditorDiffStatsLabel(
   ]
     .filter((part): part is string => part !== undefined)
     .join(" ");
+}
+
+export function shouldShowProjectEditorDiffStats(stats: SidebarProjectDiffStats): boolean {
+  /**
+   * CDXC:ProjectDiffStats 2026-05-15-19:36:
+   * Project headers should stay quiet when git reports no added or removed
+   * lines. Hide the adjacent status text for +0 -0, but keep showing it as
+   * soon as either additions or deletions is nonzero.
+   */
+  return stats.additions > 0 || stats.deletions > 0;
 }
 
 function formatProjectEditorFilesCount(files: number): string {
@@ -478,7 +523,11 @@ export function SessionGroupSection({
     sessions: groupSessions,
   });
   const emptyStateLabel = isBrowserGroup ? "No browsers" : isChatCollection ? "No chats" : "No sessions";
-  const shouldSelectEmptyProject = Boolean(projectContext && actualSessionCount === 0);
+  const shouldInitializeEmptyProjectTerminal =
+    shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+      hasProjectContext: Boolean(projectContext),
+      sessionCount: actualSessionCount,
+    });
   /**
    * CDXC:ProjectGroups 2026-05-15-14:33:
    * Project groups remain expandable even with no sessions because the body can
@@ -491,13 +540,13 @@ export function SessionGroupSection({
     (actualSessionCount > 0 || Boolean(projectContext)) && emptyBrowserExpandTooltip === undefined;
   const groupTitleActionLabel =
     emptyBrowserExpandTooltip ??
-    (shouldSelectEmptyProject
-      ? `Select ${group.title}`
+    (shouldInitializeEmptyProjectTerminal
+      ? `Create terminal in ${group.title}`
       : canToggleCollapsed
         ? `${isCollapsed ? "Expand" : "Collapse"} ${group.title}`
         : group.title);
   const shouldSuppressProjectCollapseTooltip =
-    Boolean(projectContext) && canToggleCollapsed && !shouldSelectEmptyProject;
+    Boolean(projectContext) && canToggleCollapsed && !shouldInitializeEmptyProjectTerminal;
   const createBrowserPaneTooltip = "Create Browser Pane";
   const agentSelectorTooltip = "Select Agent";
   const createProjectTerminalTooltip = "Create Terminal";
@@ -907,18 +956,24 @@ export function SessionGroupSection({
   };
 
   const toggleCollapsedOrSelectEmptyProject = () => {
+    if (shouldInitializeEmptyProjectTerminal) {
+      requestCreateProjectTerminal();
+      return;
+    }
+
     if (
       shouldFocusGroupOnHeaderActivation({
         hasProjectContext: Boolean(projectContext),
         isActive: group.isActive,
-        shouldSelectEmptyProject,
+        shouldInitializeEmptyProjectTerminal,
       })
     ) {
       /**
        * CDXC:SidebarLayout 2026-05-13-08:11
-       * Empty project groups are project selectors, and non-empty project
-       * headers also activate the project so the attached IDE follows the
-       * active ghostex workspace before any later agent/action launch.
+       * Non-empty project headers activate the project so the attached IDE
+       * follows the active ghostex workspace before any later agent/action
+       * launch. Empty project headers return earlier to create their first
+       * terminal.
        */
       requestFocusGroup();
     }
@@ -949,7 +1004,7 @@ export function SessionGroupSection({
         data-dragging={String(Boolean(sortable.isDragging))}
         data-drop-target={String(isGroupDropTarget)}
         data-empty-space-blocking="true"
-        data-empty-project={String(shouldSelectEmptyProject)}
+        data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
         data-project-group={String(Boolean(projectContext))}
         data-chat-collection={String(isChatCollection)}
         data-session-connector={String(showSessionGroupConnector)}
@@ -963,6 +1018,19 @@ export function SessionGroupSection({
           requestFocusGroup();
         }}
         onContextMenu={(event: ReactMouseEvent<HTMLElement>) => {
+          if (isNestedInteractiveContextMenuTarget(event)) {
+            /**
+             * CDXC:SidebarContextMenu 2026-05-15-17:53:
+             * Header buttons without their own context menu should not open the
+             * surrounding project/group context menu on right-click. Suppress
+             * nested interactive targets while preserving right-click menus on
+             * the row surface itself.
+             */
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+
           if (isBrowserGroup || isChatCollection || (!showHeaderActions && !projectContext)) {
             return;
           }
@@ -1037,12 +1105,12 @@ export function SessionGroupSection({
                   <AppTooltip content={groupTitleActionLabel}>
                     <button
                       aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
-                      aria-disabled={!canToggleCollapsed && !shouldSelectEmptyProject}
+                      aria-disabled={!canToggleCollapsed && !shouldInitializeEmptyProjectTerminal}
                       aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                       aria-label={groupTitleActionLabel}
                       className="group-collapse-button section-titlebar-toggle"
                       data-collapsed={String(isCollapsed)}
-                      data-empty-project={String(shouldSelectEmptyProject)}
+                      data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
                       data-has-idle-icon={String(canToggleCollapsed)}
                       data-static-icon={String(!canToggleCollapsed)}
                       onClick={(event) => {
@@ -1078,12 +1146,12 @@ export function SessionGroupSection({
                 ) : (
                   <button
                     aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
-                    aria-disabled={!canToggleCollapsed && !shouldSelectEmptyProject}
+                    aria-disabled={!canToggleCollapsed && !shouldInitializeEmptyProjectTerminal}
                     aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                     aria-label={groupTitleActionLabel}
                     className="group-collapse-button section-titlebar-toggle"
                     data-collapsed={String(isCollapsed)}
-                    data-empty-project={String(shouldSelectEmptyProject)}
+                    data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
                     data-has-idle-icon={String(canToggleCollapsed)}
                     data-static-icon={String(!canToggleCollapsed)}
                     onClick={(event) => {
@@ -1126,13 +1194,13 @@ export function SessionGroupSection({
                       aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
                       aria-disabled={
                         emptyBrowserExpandTooltip !== undefined ||
-                        (!canToggleCollapsed && !shouldSelectEmptyProject)
+                        (!canToggleCollapsed && !shouldInitializeEmptyProjectTerminal)
                       }
                       aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                       aria-label={groupTitleActionLabel}
                       className="group-title-button"
                       data-empty-browser-group={String(emptyBrowserExpandTooltip !== undefined)}
-                      data-empty-project={String(shouldSelectEmptyProject)}
+                      data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -1148,13 +1216,13 @@ export function SessionGroupSection({
                         aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
                         aria-disabled={
                           emptyBrowserExpandTooltip !== undefined ||
-                          (!canToggleCollapsed && !shouldSelectEmptyProject)
+                          (!canToggleCollapsed && !shouldInitializeEmptyProjectTerminal)
                         }
                         aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                         aria-label={groupTitleActionLabel}
                         className="group-title-button"
                         data-empty-browser-group={String(emptyBrowserExpandTooltip !== undefined)}
-                        data-empty-project={String(shouldSelectEmptyProject)}
+                        data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
@@ -1185,7 +1253,9 @@ export function SessionGroupSection({
                     ) : null}
                   </div>
                 ) : null}
-                {projectContext && !shouldShowCollapsedProjectCounts ? (
+                {projectContext &&
+                !shouldShowCollapsedProjectCounts &&
+                shouldShowProjectEditorDiffStats(projectContext.editor.diffStats) ? (
                   <ProjectHeaderDiffStats
                     showFileCount={showProjectEditorDiffFileCount}
                     stats={projectContext.editor.diffStats}
@@ -1397,7 +1467,7 @@ export function SessionGroupSection({
                   vscode={vscode}
                 />
               ))
-            ) : shouldSelectEmptyProject ? null : (
+            ) : shouldInitializeEmptyProjectTerminal ? null : (
               <div
                 className="group-empty-drop-target"
                 data-drop-position={emptyGroupDropTarget.isDropTarget ? "start" : undefined}

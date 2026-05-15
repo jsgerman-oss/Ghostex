@@ -953,17 +953,36 @@ export function SortableSessionCard({
   );
   const contextMenuDividerCount = Math.max(0, contextMenuSections.length - 1);
 
-  const requestFocusSession = () => {
+  const requestFocusSession = (
+    event?: ReactKeyboardEvent<HTMLElement> | ReactMouseEvent<HTMLElement>,
+  ) => {
     const shouldAcknowledgeAttention = session.activity === "attention";
+    /**
+     * CDXC:SidebarSessionFocus 2026-05-15-20:01:
+     * Intermittent sidebar-card clicks can select an existing session through a
+     * newly synthesized native split. Persist the DOM click metadata, card
+     * focus state, group id, and local-focus decision so a later repro can be
+     * matched against native paneLayout resolution instead of guessing which
+     * card action fired.
+     */
     vscode.postMessage({
       details: {
         activity: session.activity,
+        button: event && "button" in event ? event.button : undefined,
+        clientX: event && "clientX" in event ? event.clientX : undefined,
+        clientY: event && "clientY" in event ? event.clientY : undefined,
+        clickDetail: event && "detail" in event ? event.detail : undefined,
+        index,
         groupId,
         isFocused: session.isFocused,
         isSleeping: session.isSleeping,
         isVisible: session.isVisible,
+        localFocusWillRun: !session.isFocused,
+        metaKey: event?.metaKey ?? false,
         requestedAt: Date.now(),
         sessionId: session.sessionId,
+        sessionKind: session.sessionKind,
+        shiftKey: event?.shiftKey ?? false,
       },
       event: "repro.sidebarSessionFocusRequested",
       type: "sidebarDebugLog",
@@ -1108,7 +1127,7 @@ export function SortableSessionCard({
                 return;
               }
 
-              requestFocusSession();
+              requestFocusSession(event);
             }}
             onDoubleClick={(event) => {
               if (isBrowserSession || !renameSessionOnDoubleClick) {

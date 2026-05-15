@@ -2,9 +2,6 @@ import { IconChecklist } from "@tabler/icons-react";
 import { createRoot } from "react-dom/client";
 
 function TasksPlaceholderApp() {
-  const params = new URLSearchParams(window.location.search);
-  const projectName = params.get("projectName")?.trim() || "Project";
-
   return (
     <main className="tasks-placeholder-shell">
       {/*
@@ -14,18 +11,29 @@ function TasksPlaceholderApp() {
 
         CDXC:ProjectMode 2026-05-15-15:35:
         The placeholder should be centered and user-facing as Project, with coming-soon copy that promises automations, todos, docs, and related project workspace features.
+
+        CDXC:ProjectMode 2026-05-15-15:53:
+        The empty Project surface should feel like a deliberate product state, not a stretched row. Center the icon, title, and copy vertically with compact planned-feature text so wide panes keep a polished focal point.
+
+        CDXC:ProjectMode 2026-05-15-17:51:
+        The coming-soon surface should omit the project name and Project heading, use a neutral gray icon treatment, and widen the subtitle by 100px so the remaining text block feels balanced.
+
+        CDXC:ProjectMode 2026-05-15-18:31:
+        The subtitle width should be 200px narrower than the previous wide setting so the coming-soon copy wraps into a more compact centered block.
+
+        CDXC:ProjectMode 2026-05-15-18:37:
+        The gap below the icon should be 25px tighter, so reduce the combined icon-bottom and status-top margins without using negative spacing.
       */}
-      <section className="tasks-placeholder-panel" aria-labelledby="tasks-placeholder-title">
+      <section className="tasks-placeholder-panel" aria-labelledby="tasks-placeholder-status">
         <div className="tasks-placeholder-icon" aria-hidden="true">
-          <IconChecklist size={28} stroke={1.8} />
+          <IconChecklist size={34} stroke={1.7} />
         </div>
-        <div>
-          <p className="tasks-placeholder-kicker">{projectName}</p>
-          <h1 id="tasks-placeholder-title">Project</h1>
-          <p className="tasks-placeholder-copy">
-            Coming soon: automations, todos, docs, and more for this project.
-          </p>
-        </div>
+        <p className="tasks-placeholder-status" id="tasks-placeholder-status">
+          Coming soon
+        </p>
+        <p className="tasks-placeholder-copy">
+          Automations, todos, docs, and more will live here for this project.
+        </p>
       </section>
     </main>
   );
@@ -44,8 +52,8 @@ styleElement.textContent = `
     margin: 0;
     min-height: 100vh;
     background:
-      linear-gradient(180deg, rgba(39, 39, 42, 0.44), rgba(16, 17, 18, 0) 44%),
-      #101112;
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 42%),
+      linear-gradient(135deg, #121416 0%, #0e0f10 52%, #111314 100%);
   }
 
   .tasks-placeholder-shell {
@@ -53,49 +61,74 @@ styleElement.textContent = `
     display: flex;
     justify-content: center;
     min-height: 100vh;
-    padding: 32px;
+    padding: 48px;
   }
 
   .tasks-placeholder-panel {
     align-items: center;
+    color: #f7f7f8;
     display: flex;
-    gap: 18px;
-    max-width: 560px;
+    flex-direction: column;
+    max-width: 520px;
+    text-align: center;
   }
 
   .tasks-placeholder-icon {
     align-items: center;
-    background: #1f2937;
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 8px;
-    color: #a7f3d0;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+      #202327;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 18px;
+    box-shadow:
+      0 18px 44px rgba(0, 0, 0, 0.34),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    color: rgba(247, 247, 248, 0.76);
     display: inline-flex;
     flex: 0 0 auto;
-    height: 56px;
+    height: 76px;
     justify-content: center;
-    width: 56px;
+    margin-bottom: 0;
+    width: 76px;
   }
 
-  .tasks-placeholder-kicker {
-    color: rgba(244, 244, 245, 0.62);
-    font-size: 13px;
-    font-weight: 650;
+  .tasks-placeholder-status {
+    color: rgba(247, 247, 248, 0.88);
+    font-size: 20px;
+    font-weight: 700;
     letter-spacing: 0;
-    margin: 0 0 6px;
-  }
-
-  h1 {
-    font-size: 34px;
-    letter-spacing: 0;
-    line-height: 1.05;
-    margin: 0;
+    line-height: 1.25;
+    margin: 19px 0 0;
   }
 
   .tasks-placeholder-copy {
-    color: rgba(244, 244, 245, 0.7);
-    font-size: 15px;
-    line-height: 1.5;
-    margin: 10px 0 0;
+    color: rgba(247, 247, 248, 0.62);
+    font-size: 17px;
+    line-height: 1.55;
+    margin: 8px 0 0;
+    max-width: 340px;
+  }
+
+  @media (max-width: 560px) {
+    .tasks-placeholder-shell {
+      padding: 32px 24px;
+    }
+
+    .tasks-placeholder-icon {
+      border-radius: 16px;
+      height: 68px;
+      margin-bottom: 20px;
+      width: 68px;
+    }
+
+    .tasks-placeholder-status {
+      font-size: 18px;
+      margin-top: 18px;
+    }
+
+    .tasks-placeholder-copy {
+      font-size: 16px;
+    }
   }
 `;
 document.head.append(styleElement);
