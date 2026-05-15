@@ -2057,7 +2057,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   const openWorkspaceWelcome = () => {
     setIsOverflowMenuOpen(false);
-    vscode.postMessage({ type: "openWorkspaceWelcome" });
+    /**
+     * CDXC:TipsAndTricks 2026-05-15-16:11:
+     * The overflow-menu Tips & Tricks action opens the native full-window
+     * shadcn modal directly so it matches Settings instead of routing to an
+     * external project page.
+     */
+    openAppModal({ modal: "tipsAndTricks", type: "open" });
   };
 
   const pickWorkspaceFolder = () => {
@@ -2486,22 +2492,29 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
               className="recent-projects-drawer-body"
               data-collapsed={String(!isRecentProjectsOpen)}
             >
-                <label className="recent-projects-search">
-                  <IconSearch
-                    aria-hidden="true"
-                    className="recent-projects-search-icon"
-                    size={16}
-                    stroke={1.9}
-                  />
-                  <input
-                    autoComplete="off"
-                    onChange={(event) => setRecentProjectsQuery(event.currentTarget.value)}
-                    placeholder="Search projects"
-                    type="text"
-                    value={recentProjectsQuery}
-                  />
-                </label>
-                <div className="recent-projects-list">
+              {/*
+               * CDXC:SidebarSearch 2026-05-15-18:13:
+               * Recent Projects search must reuse the same shell, input, and
+               * icon classes as Search sessions so both boxes stay identical
+               * in typography, border, radius, padding, and icon placement.
+               */}
+              <label className="session-search-input-shell recent-projects-search">
+                <IconSearch
+                  aria-hidden="true"
+                  className="session-search-input-icon recent-projects-search-icon"
+                  size={16}
+                  stroke={1.9}
+                />
+                <input
+                  autoComplete="off"
+                  className="group-title-input session-search-input"
+                  onChange={(event) => setRecentProjectsQuery(event.currentTarget.value)}
+                  placeholder="Search projects"
+                  type="text"
+                  value={recentProjectsQuery}
+                />
+              </label>
+              <div className="recent-projects-list">
                   {filteredRecentProjects.length > 0 ? (
                     filteredRecentProjects.map((project) => (
                       <AppTooltip content={project.path} key={project.projectId}>
@@ -2934,7 +2947,14 @@ function SidebarReferenceSettingsButton({
     <div className="reference-sidebar-settings-row">
       <div className="reference-sidebar-nav-item">
         <SidebarReferenceNavButton icon={IconSettings} label="Settings" onClick={onOpenSettings} />
-        <AppTooltip align="end" collisionPadding={4} content="Create terminal tab">
+        {/*
+          CDXC:CommandsPane 2026-05-15-19:41:
+          The sidebar footer terminal action is the Commands pane entry point
+          after removing the duplicate terminal icon from the native titlebar.
+          Its hover label should name that destination instead of describing the
+          underlying terminal-tab creation detail.
+        */}
+        <AppTooltip align="end" collisionPadding={4} content="Show Commands Pane">
           <button
             aria-label="Create terminal tab"
             className="reference-sidebar-hover-action reference-sidebar-settings-terminal-action"

@@ -59,6 +59,18 @@ button,
   cursor: default !important;
 }
 
+/*
+ * CDXC:SidebarCursor 2026-05-15-19:57:
+ * Sidebar search boxes should use the default arrow cursor for now, matching
+ * app-modal text fields while the macOS WKWebView/native cursor flicker root
+ * cause remains unresolved. Keep this scoped to search inputs so other sidebar
+ * text-editing controls can keep their existing behavior.
+ */
+.session-search-input,
+.recent-projects-search input {
+  cursor: default !important;
+}
+
 * {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -118,6 +130,155 @@ button,
   max-height: min(860px, calc(100vh - 1rem));
   max-width: min(1104px, calc(100vw - 1rem));
   width: min(1104px, calc(100vw - 1rem));
+}
+
+/*
+ CDXC:TipsAndTricks 2026-05-15-16:11:
+ The Tips & Tricks guide should share the Settings modal footprint and shadcn
+ surface while using the copied welcome-page flow from VSmux. Keep the layout
+ scoped so it can open from both the sidebar overflow menu and first launch
+ without inheriting narrow sidebar modal dimensions.
+
+ CDXC:TipsAndTricks 2026-05-15-19:19:
+ Tip body text should be one pixel larger than the original shadcn card text
+ size so the guide reads more comfortably inside the Settings-sized modal.
+*/
+.ghostex-settings-shadcn.tips-and-tricks-modal-dialog {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-header {
+  border-bottom: 1px solid var(--border);
+  padding: 1.25rem 1.25rem 0.75rem;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-progress {
+  display: grid;
+  gap: 0.5rem;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  margin-top: 0.75rem;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-progress-dot {
+  background: var(--muted);
+  border-radius: 999px;
+  height: 0.25rem;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-progress-dot[data-active="true"] {
+  background: var(--primary);
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-hero {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 1.25rem;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-hero-icon-shell {
+  align-items: center;
+  background: var(--primary);
+  border-radius: var(--settings-control-radius);
+  color: var(--primary-foreground);
+  display: inline-flex;
+  height: 3.625rem;
+  justify-content: center;
+  width: 3.625rem;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-hero-copy {
+  display: grid;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-kicker {
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-title {
+  color: var(--foreground);
+  font-size: 1.375rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.1;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-body-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-callout {
+  background: var(--card);
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-snippet {
+  background: color-mix(in srgb, var(--background) 82%, var(--foreground) 6%);
+  border: 1px solid var(--border);
+  border-radius: var(--settings-control-radius);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  margin: 0;
+  overflow-x: auto;
+  padding: 0.75rem;
+  white-space: pre;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-list {
+  display: grid;
+  gap: 0.625rem;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-list-card {
+  background: var(--card);
+  gap: 0;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-list-card-content {
+  align-items: flex-start;
+  display: grid;
+  font-size: 0.9375rem;
+  gap: 0.75rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  line-height: 1.5;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-list-icon {
+  align-items: center;
+  background: var(--muted);
+  border-radius: var(--settings-control-radius);
+  color: var(--foreground);
+  display: inline-flex;
+  height: 1.5rem;
+  justify-content: center;
+  width: 1.5rem;
+}
+
+.ghostex-settings-shadcn .tips-and-tricks-footer {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 0.625rem;
+  justify-content: flex-end;
+  padding: 0.875rem 1.25rem 1.25rem;
 }
 
 .ghostex-settings-shadcn .settings-main-tab-layout {

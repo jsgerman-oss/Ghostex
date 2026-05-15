@@ -42,6 +42,12 @@ function TooltipTrigger({
  * reduce usable text space. Tooltip surfaces are click/hover through because
  * they are passive labels and should not block the dense sidebar controls
  * underneath.
+ *
+ * CDXC:Tooltips 2026-05-15-19:19:
+ * Previous Sessions runs inside the full-window app modal host, and row title
+ * tooltips must appear above the modal panel rather than behind its z-indexed
+ * root. Keep the shared portaled tooltip layer above app modals so modal-host
+ * and sidebar tooltips use the same stacking contract.
  */
 function TooltipContent({
   className,
@@ -67,6 +73,7 @@ function TooltipContent({
         style={{
           maxWidth:
             "min(90vw, var(--radix-tooltip-content-available-width, 90vw))",
+          zIndex: "var(--ghostex-tooltip-z-index, 1400)",
           ...style,
         }}
         {...props}

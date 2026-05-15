@@ -15,6 +15,7 @@ import { SettingsModal, type SettingsModalTab } from "../../sidebar/settings-mod
 import { SessionRenameModal } from "../../sidebar/session-rename-modal";
 import { T3BrowserAccessModal } from "../../sidebar/t3-browser-access-modal";
 import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
+import { TipsAndTricksModal } from "../../sidebar/tips-and-tricks-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
 import type {
   ExtensionToSidebarMessage,
@@ -52,7 +53,8 @@ type AppModalKind =
   | "scratchPad"
   | "settings"
   | "t3BrowserAccess"
-  | "t3ThreadId";
+  | "t3ThreadId"
+  | "tipsAndTricks";
 
 type T3BrowserAccessMessage = Extract<ExtensionToSidebarMessage, { type: "showT3BrowserAccess" }>;
 type AgentsHubCatalogMessage = Extract<ExtensionToSidebarMessage, { type: "agentsHubCatalog" }>;
@@ -143,6 +145,17 @@ type T3ThreadIdModalState = {
   currentThreadId: string;
   sessionId: string;
 };
+
+const APP_MODAL_CONTEXT_MENU_EDITABLE_SELECTOR =
+  "input, textarea, select, [contenteditable='true'], [role='textbox'], .monaco-editor";
+
+function isEditableAppModalContextMenuTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return target.closest(APP_MODAL_CONTEXT_MENU_EDITABLE_SELECTOR) !== null;
+}
 
 type ConfigModalState = {
   agentDraft?: AgentConfigDraft;
@@ -345,6 +358,11 @@ function FloatingPromptEditorModal({
          * completions, snippets, and parameter hints; force Markdown with
          * wrapping because prompt text should read naturally in the default
          * writing pane.
+         *
+         * CDXC:PromptEditor 2026-05-15-20:09:
+         * Prompt writing should not behave like code navigation. Disable
+         * Monaco occurrence highlights so moving the caret onto a word does not
+         * mark every matching word in the rich prompt editor.
          */
         const monacoEditor = window.monaco.editor.create(containerRef.current, {
           acceptSuggestionOnEnter: "off",
@@ -357,6 +375,7 @@ function FloatingPromptEditorModal({
           language: "markdown",
           lineNumbersMinChars: 3,
           minimap: { enabled: false },
+          occurrencesHighlight: "off",
           padding: { bottom: 48, top: 12 },
           parameterHints: { enabled: false },
           quickSuggestions: false,
@@ -740,6 +759,32 @@ function AppModalHost() {
   }, [activeModal]);
 
   useEffect(() => {
+    if (!activeModal) {
+      return;
+    }
+
+    const suppressModalWebviewContextMenu = (event: MouseEvent) => {
+      if (isEditableAppModalContextMenuTarget(event.target)) {
+        return;
+      }
+
+      /**
+       * CDXC:AppModalContextMenu 2026-05-15-18:15:
+       * Right-clicking modal backdrops, blank modal chrome, or modal buttons
+       * must not expose WKWebView's native Reload menu. Suppress the webview
+       * default while a modal is active, but keep text fields and Monaco editor
+       * surfaces eligible for their normal editing context menus.
+       */
+      event.preventDefault();
+    };
+
+    document.addEventListener("contextmenu", suppressModalWebviewContextMenu, true);
+    return () => {
+      document.removeEventListener("contextmenu", suppressModalWebviewContextMenu, true);
+    };
+  }, [activeModal]);
+
+  useEffect(() => {
     if (ghostexFolderStats) {
       setGhostexFolderStatsLoading(false);
     }
@@ -907,6 +952,12 @@ function AppModalHost() {
         vscode={vscode}
         ghostexFolderStats={ghostexFolderStats}
         ghostexFolderStatsLoading={ghostexFolderStatsLoading}
+      />
+      <TipsAndTricksModal
+        isOpen={activeModal === "tipsAndTricks"}
+        onClose={closeModal}
+        settings={settings}
+        theme={theme}
       />
       <T3ThreadIdModal
         currentThreadId={t3ThreadId?.currentThreadId ?? ""}
@@ -1366,6 +1417,7 @@ function isModalRenderable({
     case "pinnedPrompts":
     case "previousSessions":
     case "scratchPad":
+    case "tipsAndTricks":
       return true;
   }
 }

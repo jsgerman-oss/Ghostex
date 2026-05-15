@@ -60,6 +60,13 @@
           minimap: {
             enabled: false,
           },
+          /*
+           * CDXC:PromptEditor 2026-05-15-20:09:
+           * The standalone Ctrl+G Monaco prompt editor shares the rich prompt
+           * writing behavior: caret placement on a word must not highlight
+           * every matching word as if this were code navigation.
+           */
+          occurrencesHighlight: "off",
           padding: {
             bottom: 48,
             top: 12,

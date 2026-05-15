@@ -25,7 +25,8 @@ export type AppModalKind =
   | "scratchPad"
   | "settings"
   | "t3BrowserAccess"
-  | "t3ThreadId";
+  | "t3ThreadId"
+  | "tipsAndTricks";
 
 export type OpenAppModalMessage =
   | {

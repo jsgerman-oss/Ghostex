@@ -25,6 +25,24 @@
 }
 
 /**
+ * CDXC:AppModalCursor 2026-05-15-19:54:
+ * Until the macOS WKWebView-over-native cursor flicker has a root fix, every
+ * text-editing surface inside app modals should keep the default arrow cursor.
+ * This includes legacy inputs, shadcn inputs, textareas, contenteditable boxes,
+ * role=textbox controls, and Monaco/rich prompt editor internals.
+ */
+.app-modal-host-body input:not([type="button"]):not([type="submit"]):not([type="reset"]),
+.app-modal-host-body textarea,
+.app-modal-host-body [contenteditable="true"],
+.app-modal-host-body [role="textbox"],
+.app-modal-host-body .monaco-editor,
+.app-modal-host-body .monaco-editor *,
+.app-modal-host-body .floating-prompt-editor-monaco,
+.app-modal-host-body .floating-prompt-editor-monaco * {
+  cursor: default !important;
+}
+
+/**
  * CDXC:PromptEditor 2026-05-13-09:48
  * Ctrl+G prompt editing lives in the full-window app-modal WKWebView but
  * behaves like a floating pane: only the editor surface captures pointer
