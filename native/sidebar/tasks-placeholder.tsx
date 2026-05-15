@@ -9,8 +9,11 @@ function TasksPlaceholderApp() {
     <main className="tasks-placeholder-shell">
       {/*
         CDXC:ModeSwitcher 2026-05-15-12:38:
-        Tasks mode is a placeholder React page until the actual task workflow is specified.
+        The tasks-backed Project mode is a placeholder React page until the actual project workflow is specified.
         Keep the page intentionally sparse and project-scoped so the titlebar mode switcher has a real in-workarea destination without implying unfinished task behavior.
+
+        CDXC:ProjectMode 2026-05-15-15:35:
+        The placeholder should be centered and user-facing as Project, with coming-soon copy that promises automations, todos, docs, and related project workspace features.
       */}
       <section className="tasks-placeholder-panel" aria-labelledby="tasks-placeholder-title">
         <div className="tasks-placeholder-icon" aria-hidden="true">
@@ -18,8 +21,10 @@ function TasksPlaceholderApp() {
         </div>
         <div>
           <p className="tasks-placeholder-kicker">{projectName}</p>
-          <h1 id="tasks-placeholder-title">Tasks</h1>
-          <p className="tasks-placeholder-copy">Task mode placeholder.</p>
+          <h1 id="tasks-placeholder-title">Project</h1>
+          <p className="tasks-placeholder-copy">
+            Coming soon: automations, todos, docs, and more for this project.
+          </p>
         </div>
       </section>
     </main>
@@ -46,6 +51,7 @@ styleElement.textContent = `
   .tasks-placeholder-shell {
     align-items: center;
     display: flex;
+    justify-content: center;
     min-height: 100vh;
     padding: 32px;
   }

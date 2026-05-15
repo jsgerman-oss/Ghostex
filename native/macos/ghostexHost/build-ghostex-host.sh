@@ -170,9 +170,9 @@ bun build "$REPO_ROOT/native/sidebar/titlebar-host.tsx" \
 	--format iife \
 	--asset-naming "[name].[ext]" \
 	--outdir "$WEB_DIR"
-# CDXC:ModeSwitcher 2026-05-15-12:38: Bundle Tasks mode as a first-party React
-# page so the titlebar switcher can open a placeholder workarea surface without
-# depending on remote assets or an external browser.
+# CDXC:ModeSwitcher 2026-05-15-12:38: Bundle the tasks-backed Project mode as
+# a first-party React page so the titlebar switcher can open a placeholder
+# workarea surface without depending on remote assets or an external browser.
 bun build "$REPO_ROOT/native/sidebar/tasks-placeholder.tsx" \
 	--target browser \
 	--format iife \

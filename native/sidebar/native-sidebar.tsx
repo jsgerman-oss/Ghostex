@@ -1764,10 +1764,11 @@ function createNativeBrowserSession(
    * section, matching the requested pane-based workflow.
    *
    * CDXC:ModeSwitcher 2026-05-15-14:42:
-   * Mode-switcher Git and Tasks surfaces use project-editor CEF panes instead
-   * of normal browser sessions. Keep this browser-session helper available for
-   * explicit browser actions only so those actions can still request workspace
-   * placement without changing the mode-switcher surface contract.
+   * Mode-switcher Git and tasks-backed Project surfaces use project-editor CEF
+   * panes instead of normal browser sessions. Keep this browser-session helper
+   * available for explicit browser actions only so those actions can still
+   * request workspace placement without changing the mode-switcher surface
+   * contract.
    */
   const result = createSessionInSimpleWorkspace(
     targetWorkspace,
@@ -12443,7 +12444,7 @@ function projectEditorErrorMessageForMode(mode: ProjectEditorSurfaceMode): strin
     return "GitHub did not finish loading within 10 seconds.";
   }
   if (mode === "tasks") {
-    return "Tasks did not finish loading within 10 seconds.";
+    return "Project did not finish loading within 10 seconds.";
   }
   return "VS Code did not finish loading within 10 seconds.";
 }
@@ -12453,9 +12454,22 @@ function projectEditorLoadFailureMessageForMode(mode: ProjectEditorSurfaceMode):
     return "GitHub failed to load.";
   }
   if (mode === "tasks") {
-    return "Tasks failed to load.";
+    return "Project failed to load.";
   }
   return "VS Code failed to load.";
+}
+
+function projectEditorSurfaceTitleForMode(
+  project: NativeProject,
+  mode: ProjectEditorSurfaceMode,
+): string {
+  if (mode === "git") {
+    return "GitHub";
+  }
+  if (mode === "tasks") {
+    return "Project";
+  }
+  return projectEditorTitle(project);
 }
 
 function cancelProjectEditorOpenTimer(projectId: string): void {
@@ -12623,7 +12637,7 @@ function wakeProjectEditorSurface(project: NativeProject, mode?: ProjectEditorSu
     mode: nextMode,
     nativeEditorId,
     status: hasAwakeProjectEditorMode(project.projectId, nextMode) ? "running" : "opening",
-    title: nextMode === "git" ? "GitHub" : nextMode === "tasks" ? "Tasks" : projectEditorTitle(project),
+    title: projectEditorSurfaceTitleForMode(project, nextMode),
     url,
   });
   if (hasAwakeProjectEditorMode(project.projectId, nextMode)) {
@@ -12642,7 +12656,7 @@ function wakeProjectEditorSurface(project: NativeProject, mode?: ProjectEditorSu
   }
   postNative({
     projectId: nativeEditorId,
-    title: nextMode === "git" ? "GitHub" : nextMode === "tasks" ? "Tasks" : projectEditorTitle(project),
+    title: projectEditorSurfaceTitleForMode(project, nextMode),
     type: "createProjectEditorPane",
     url: url!,
   });
@@ -12802,9 +12816,9 @@ function openProjectGitEditorSurface(project: NativeProject, githubUrl: string):
    * instead of the Code-style side-pane layout the mode switcher promises.
    *
    * CDXC:ModeSwitcher 2026-05-15-14:42:
-   * Code, Git, and Tasks modes must keep separate native project-editor CEF
-   * panes. Native receives mode-scoped editor IDs so switching modes changes
-   * the visible pane without reloading the other pages.
+   * Code, Git, and tasks-backed Project modes must keep separate native
+   * project-editor CEF panes. Native receives mode-scoped editor IDs so
+   * switching modes changes the visible pane without reloading the other pages.
    */
   cancelProjectEditorSleepTimer(project.projectId);
   const isAwakeGitPane = hasAwakeProjectEditorMode(project.projectId, "git");
@@ -12865,10 +12879,15 @@ function openProjectTasksEditorSurface(project: NativeProject, tasksUrl: string)
 
   /**
    * CDXC:ModeSwitcher 2026-05-15-14:42:
-   * Tasks mode follows Git mode's project-editor behavior: keep the sessions
-   * companion pane on the left, load the placeholder React page in a dedicated
-   * Tasks CEF pane on the right, and preserve that pane across Code/Git/Tasks
+   * The tasks-backed Project mode follows Git mode's project-editor behavior:
+   * keep the sessions companion pane on the left, load the coming-soon
+   * placeholder React page in a dedicated Project CEF pane on the right, and
+   * preserve that pane across Code/Git/Project
    * mode switches instead of creating a normal browser session or reloading.
+   *
+   * CDXC:ProjectMode 2026-05-15-15:35:
+   * User-facing names for this surface are Project, even though the internal
+   * mode key remains "tasks" to preserve existing native editor IDs.
    */
   cancelProjectEditorSleepTimer(project.projectId);
   const isAwakeTasksPane = hasAwakeProjectEditorMode(project.projectId, "tasks");
@@ -12884,13 +12903,13 @@ function openProjectTasksEditorSurface(project: NativeProject, tasksUrl: string)
     mode: "tasks",
     nativeEditorId,
     status: isAwakeTasksPane ? "running" : "opening",
-    title: "Tasks",
+    title: "Project",
     url: tasksUrl,
   });
   rememberAwakeProjectEditorMode(project.projectId, "tasks");
   postNative({
     projectId: nativeEditorId,
-    title: "Tasks",
+    title: "Project",
     type: "createProjectEditorPane",
     url: tasksUrl,
   });
@@ -12943,10 +12962,10 @@ function openTasksPlaceholderFromTitlebar(): void {
   }
   /**
    * CDXC:ModeSwitcher 2026-05-15-14:42:
-   * Tasks mode is intentionally a bundled placeholder React page until the task
-   * product requirements are defined. Open it through its dedicated project-
-   * editor CEF pane so the sessions companion and page state survive mode
-   * switches.
+   * Project mode is intentionally a bundled placeholder React page until the
+   * full project product requirements are defined. Open it through the
+   * tasks-backed project-editor CEF pane so the sessions companion and page
+   * state survive mode switches.
    */
   const url = new URL("tasks-placeholder.html", window.location.href);
   url.searchParams.set("projectName", project.name);

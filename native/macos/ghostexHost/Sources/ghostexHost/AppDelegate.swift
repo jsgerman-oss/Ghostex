@@ -3961,9 +3961,9 @@ final class ghostexRootView: NSView {
   private func openTasksPlaceholderFromTitlebar() {
     /**
      CDXC:ModeSwitcher 2026-05-15-12:38:
-     Tasks mode is currently a bundled placeholder React page. Let the sidebar
-     owner open it as a project workarea surface so it keeps the sessions list
-     visible like Code mode.
+     Project mode is currently a bundled placeholder React page backed by the
+     existing tasks bridge. Let the sidebar owner open it as a project workarea
+     surface so it keeps the sessions list visible like Code mode.
      */
     sidebarView.evaluateJavaScript(
       """

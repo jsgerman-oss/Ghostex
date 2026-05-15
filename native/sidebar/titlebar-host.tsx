@@ -531,8 +531,14 @@ function App() {
                   value: "git",
                 },
                 {
+                  /**
+                   * CDXC:ProjectMode 2026-05-15-15:35:
+                   * The existing tasks-backed mode is labeled Project because
+                   * its coming-soon surface is a broader project workspace for
+                   * automations, todos, docs, and more.
+                   */
                   icon: <IconChecklist aria-hidden="true" size={14} stroke={1.8} />,
-                  label: "Tasks",
+                  label: "Project",
                   onSelect: openTasksMode,
                   value: "tasks",
                 },

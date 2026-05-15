@@ -2657,10 +2657,10 @@ final class TerminalWorkspaceView: NSView {
      session mounted in the left companion pane unless the user already closed
      that companion for this editor visit.
      CDXC:ModeSwitcher 2026-05-15-14:42:
-     Code, Git, and Tasks modes use separate mode-scoped project-editor pane
-     IDs for the same project. Focusing one pane must hide every other
-     project-editor host immediately so mode switches keep each CEF tab alive
-     without showing stale content from the previously active mode.
+     Code, Git, and tasks-backed Project modes use separate mode-scoped
+     project-editor pane IDs for the same project. Focusing one pane must hide
+     every other project-editor host immediately so mode switches keep each CEF
+     tab alive without showing stale content from the previously active mode.
    */
     let didSwitchProjectEditor = activeProjectEditorId != projectId
     activeProjectEditorId = projectId
@@ -4069,10 +4069,14 @@ final class TerminalWorkspaceView: NSView {
       height: workspaceBounds.height)
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-     Companion Back and Close controls belong in the existing session titlebar
+     Companion controls belong in the existing session titlebar
      row beside the pane hamburger. Do not reserve a separate header strip above
      the terminal content; that strip was visually detached from the actual
      clickable titlebar surface.
+
+     CDXC:ProjectEditorCompanion 2026-05-15-15:29:
+     The companion titlebar control group contains Close only; the former Back
+     to Agents View button is not reserved in the code/git companion layout.
      */
     let contentFrame = companionFrame
     return ProjectEditorCompanionLayout(
@@ -4103,11 +4107,16 @@ final class TerminalWorkspaceView: NSView {
   private func syncProjectEditorCompanionTitleBarControls(activeSessionId: String?) {
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-     The companion pane's Back and Close buttons must live inside the selected
-     session titlebar, immediately left of the pane hamburger, so hover and
-     click handling use the same AppKit button path as existing titlebar
-     actions. Clear the controls from every non-companion titlebar when the
-     companion is hidden or retargeted.
+     The companion pane's local controls must live inside the selected session
+     titlebar, immediately left of the pane hamburger, so hover and click
+     handling use the same AppKit button path as existing titlebar actions.
+     Clear the controls from every non-companion titlebar when the companion is
+     hidden or retargeted.
+
+     CDXC:ProjectEditorCompanion 2026-05-15-15:29:
+     Code/git view companion panes should no longer show the Back to Agents View
+     button. Keep only the close control in the selected companion titlebar so
+     the left pane can be dismissed without offering a workarea-mode switch.
      */
     for session in sessions.values {
       configureProjectEditorCompanionTitleBarControls(
@@ -4129,13 +4138,10 @@ final class TerminalWorkspaceView: NSView {
     activeSessionId: String?
   ) {
     guard activeSessionId == sessionId else {
-      titleBarView.setProjectEditorCompanionControls(onBack: nil, onClose: nil)
+      titleBarView.setProjectEditorCompanionControls(onClose: nil)
       return
     }
     titleBarView.setProjectEditorCompanionControls(
-      onBack: { [weak self] in
-        self?.returnFromProjectEditorCompanionPane()
-      },
       onClose: { [weak self] in
         self?.closeProjectEditorCompanionPane()
       })
@@ -4166,24 +4172,6 @@ final class TerminalWorkspaceView: NSView {
     projectEditorCompanionResizeDrag = nil
     needsLayout = true
     layoutSubtreeIfNeeded()
-  }
-
-  private func returnFromProjectEditorCompanionPane() {
-    guard let projectId = activeProjectEditorId else {
-      return
-    }
-    let returnFocusSessionId = projectEditorCompanionSessionId ?? focusedSessionId
-    activeProjectEditorId = nil
-    projectEditorCompanionIsVisible = false
-    projectEditorCompanionResizeDrag = nil
-    needsLayout = true
-    layoutSubtreeIfNeeded()
-    sendEvent(.projectEditorBackRequested(projectId: projectId))
-    if let returnFocusSessionId, let session = sessions[returnFocusSessionId] {
-      _ = window?.makeFirstResponder(session.view)
-    } else if let returnFocusSessionId, let session = webPaneSessions[returnFocusSessionId] {
-      _ = window?.makeFirstResponder(session.browserContentView)
-    }
   }
 
   @discardableResult
@@ -4388,11 +4376,12 @@ final class TerminalWorkspaceView: NSView {
     guard url.hasPrefix(NativeCodeServerRuntimeLauncher.origin) else {
       /**
        CDXC:ModeSwitcher 2026-05-15-14:42:
-       Git and Tasks modes reuse the project-editor Chromium surface so they
-       can keep the Code-style left companion session pane while loading
-       non-code-server content on the right. Only VS Code URLs should wait for
-       the local code-server runtime; other project-editor destinations must
-       navigate directly instead of failing on a localhost readiness check.
+       Git and tasks-backed Project modes reuse the project-editor Chromium
+       surface so they can keep the Code-style left companion session pane while
+       loading non-code-server content on the right. Only VS Code URLs should
+       wait for the local code-server runtime; other project-editor
+       destinations must navigate directly instead of failing on a localhost
+       readiness check.
        */
       guard let session = projectEditorPaneSessions[projectId], session.url == url else {
         return
@@ -12359,7 +12348,6 @@ private final class TerminalSessionTitleBarView: NSView {
   private let commandCollapsedTrailingBackgroundView = NSView(frame: .zero)
   private let bottomBorderView = NSView(frame: .zero)
   private let actionMenuButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
-  private let projectEditorCompanionBackButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private let projectEditorCompanionCloseButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private var actionButtons: [(action: TerminalTitleBarAction, button: NSButton)]
   private var actionSeparators: [NSView] = []
@@ -12374,7 +12362,6 @@ private final class TerminalSessionTitleBarView: NSView {
   private var isFocusedPane = false
   private var layoutHiddenActions = Set<TerminalTitleBarAction>()
   private var collapsedActionMenuActions: [TerminalTitleBarAction] = []
-  private var projectEditorCompanionBackAction: (() -> Void)?
   private var projectEditorCompanionCloseAction: (() -> Void)?
   private var showsProjectEditorCompanionControls = false
   private var tabContentWidth: CGFloat = 0
@@ -12657,18 +12644,11 @@ private final class TerminalSessionTitleBarView: NSView {
     }
     configureActionMenuButton()
     configureProjectEditorCompanionButton(
-      projectEditorCompanionBackButton,
-      systemSymbolName: "chevron.left",
-      fallbackTitle: "<",
-      tooltip: "Back to Agents View",
-      action: #selector(performProjectEditorCompanionBackButton(_:)))
-    configureProjectEditorCompanionButton(
       projectEditorCompanionCloseButton,
       systemSymbolName: "xmark",
       fallbackTitle: "X",
       tooltip: "Close Session Pane",
       action: #selector(performProjectEditorCompanionCloseButton(_:)))
-    addSubview(projectEditorCompanionBackButton)
     addSubview(projectEditorCompanionCloseButton)
     hideProjectEditorCompanionButtons()
     syncActionSeparators()
@@ -12779,10 +12759,15 @@ private final class TerminalSessionTitleBarView: NSView {
     if let projectEditorCompanionButton = projectEditorCompanionButton(at: point) {
       /**
        CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-       Companion Back and Close live inside the session titlebar and must be
-       returned as concrete NSButton hits, just like the hamburger. This keeps
-       hover background and click dispatch on the visible controls instead of
-       a detached overlay strip.
+       Companion controls live inside the session titlebar and must be returned
+       as concrete NSButton hits, just like the hamburger. This keeps hover
+       background and click dispatch on the visible controls instead of a
+       detached overlay strip.
+
+       CDXC:ProjectEditorCompanion 2026-05-15-15:29:
+       Only the companion Close button remains in this titlebar control group.
+       It still returns as a concrete native button hit so AppKit owns hover and
+       click dispatch beside the hamburger.
        */
       return projectEditorCompanionButton
     }
@@ -13024,7 +13009,7 @@ private final class TerminalSessionTitleBarView: NSView {
     guard showsProjectEditorCompanionControls else {
       return nil
     }
-    for button in [projectEditorCompanionBackButton, projectEditorCompanionCloseButton]
+    for button in [projectEditorCompanionCloseButton]
     where button.frame.contains(point)
       && !button.isHidden
       && button.isEnabled
@@ -13727,10 +13712,9 @@ private final class TerminalSessionTitleBarView: NSView {
     }
   }
 
-  func setProjectEditorCompanionControls(onBack: (() -> Void)?, onClose: (() -> Void)?) {
-    projectEditorCompanionBackAction = onBack
+  func setProjectEditorCompanionControls(onClose: (() -> Void)?) {
     projectEditorCompanionCloseAction = onClose
-    let shouldShowControls = onBack != nil && onClose != nil
+    let shouldShowControls = onClose != nil
     guard showsProjectEditorCompanionControls != shouldShowControls else {
       return
     }
@@ -13738,8 +13722,13 @@ private final class TerminalSessionTitleBarView: NSView {
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
      The embedded-editor companion controls are titlebar-local actions, not
      normal pane lifecycle actions. Show them only on the selected companion
-     session so Back, Close, and the hamburger share one row and one AppKit
+     session so Close and the hamburger share one row and one AppKit
      button/hover implementation.
+
+     CDXC:ProjectEditorCompanion 2026-05-15-15:29:
+     The selected companion titlebar now exposes Close as the only companion
+     action. Removing Back to Agents View from this group keeps the code/git
+     companion pane chrome focused on pane dismissal.
      */
     showsProjectEditorCompanionControls = shouldShowControls
     updateProjectEditorCompanionButtonVisibility()
@@ -13824,13 +13813,6 @@ private final class TerminalSessionTitleBarView: NSView {
       return
     }
     onAction?(item.action)
-  }
-
-  @objc private func performProjectEditorCompanionBackButton(_ sender: NSButton) {
-    guard sender === projectEditorCompanionBackButton, showsProjectEditorCompanionControls else {
-      return
-    }
-    projectEditorCompanionBackAction?()
   }
 
   @objc private func performProjectEditorCompanionCloseButton(_ sender: NSButton) {
@@ -14003,9 +13985,13 @@ private final class TerminalSessionTitleBarView: NSView {
     button.action = action
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-     Back and Close are placed beside the titlebar hamburger and dispatch on
-     left mouse-down, matching existing pane action buttons so a focus change
+     Companion controls are placed beside the titlebar hamburger and dispatch
+     on left mouse-down, matching existing pane action buttons so a focus change
      during the click cannot swallow the action.
+
+     CDXC:ProjectEditorCompanion 2026-05-15-15:29:
+     Close is the only companion-specific button configured here; the Back to
+     Agents View control is intentionally absent from code/git companion panes.
      */
     button.sendAction(on: [.leftMouseDown])
     if let image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: tooltip) {
@@ -14077,7 +14063,7 @@ private final class TerminalSessionTitleBarView: NSView {
       hideProjectEditorCompanionButtons()
       return
     }
-    for button in [projectEditorCompanionCloseButton, projectEditorCompanionBackButton] {
+    for button in [projectEditorCompanionCloseButton] {
       guard trailingX - buttonSize >= insetX else {
         button.frame = .zero
         continue
@@ -14096,7 +14082,7 @@ private final class TerminalSessionTitleBarView: NSView {
 
   private func updateProjectEditorCompanionButtonVisibility() {
     let visible = showsProjectEditorCompanionControls
-    for button in [projectEditorCompanionBackButton, projectEditorCompanionCloseButton] {
+    for button in [projectEditorCompanionCloseButton] {
       button.isHidden = !visible || button.frame.isEmpty
       button.alphaValue = visible && !button.frame.isEmpty ? 1 : 0
       button.isEnabled = visible && !button.frame.isEmpty
@@ -14107,7 +14093,7 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func hideProjectEditorCompanionButtons() {
-    for button in [projectEditorCompanionBackButton, projectEditorCompanionCloseButton] {
+    for button in [projectEditorCompanionCloseButton] {
       button.frame = .zero
       button.isHidden = true
       button.alphaValue = 0
