@@ -54,7 +54,7 @@ brew install --cask maddada/tap/ghostex
 - Inspired by Codex App's UX
 - Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
 - Auto sleep unused terminals to save ram (auto-restore when clicked)
-- Auto session naming for Codex/Claude/Pi/Gemini/Copilot/Factory Droid/Grok Build cli sessions (more soon)
+- Auto session naming for Codex/Claude/Pi Agent/Gemini/Copilot/Factory Droid/Grok Build cli sessions (more soon)
 - Reopening the app always resumes your agent cli sessions
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
 - The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
@@ -62,16 +62,20 @@ brew install --cask maddada/tap/ghostex
 - Hotkeys use a recorder UI with direct split controls for creating real sideways and downward panes, and directional pane focus uses `Cmd+Alt+Arrow` so normal text navigation stays intact.
 - The installed Ghostex app also proxies terminal CLI commands such as `ghostex sessions`; `gtx sessions` is the short alias.
 - The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
-- The native titlebar includes Agents, Code, Git, and Tasks modes for switching workspace surfaces without crowding the sidebar.
+- The native titlebar includes Agents, Code, Git, and Project modes for switching workspace surfaces without crowding the sidebar, with a visible active-pill transition between modes.
 - Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
 - The reference sidebar includes a combined-only project layout, searchable settings sections, improved command panel controls, and cleaner Previous Sessions rows.
 - Sidebar action buttons always use explicit configurable icons, with a searchable icon picker and a sensible Play default for new actions.
+- Default agent picker order keeps the daily launch engines together: T3 Code, Codex, Claude, Pi Agent, OpenCode, Gemini, Copilot, Factory Droid, and Grok Build.
 - Project headers show git diff stats directly, keeping project groups compact while still exposing changed-file context.
 - Pane overflow actions include Rotate Panes and Merge All Tabs for reorganizing split workspaces in place.
 - Workspace pane tabs keep readable widths and scroll horizontally when groups become too narrow.
 - Agents Hub loads real local agent files, supports in-place saving, and can open profile/config paths from the app.
 - Agents Hub profile tooltips show structured profile labels, source paths, target paths, and Finder actions for easier local agent configuration review.
 - Floating prompt editing uses a resizable Monaco pane with save/cancel handling from Ctrl+G.
+- Generated session titles avoid ellipses so sidebar cards can truncate visually while hover tooltips keep the full title.
+- Persistence-backed tmux, zmx, and zellij sessions keep agent icons clean while still exposing provider metadata for attach commands and tooltips.
+- Reference-sidebar primary labels keep descenders visible in compact 34px rows.
 - The floating pet overlay shows active session messages and can focus the exact session when clicked.
 - The titlebar pet button toggles the floating pet overlay without opening Settings.
 - Sidebar collapse state persists locally, project editor rows can hide or show changed-file counts from Settings, and active session cards can hide Last Active timestamps.

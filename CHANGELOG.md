@@ -10,13 +10,21 @@ modes, and pane actions. -->
 
 - Completed the Ghostex public naming cleanup across release, app, Homebrew, and generated CEF helper surfaces.
 - Added Factory Droid and Grok Build as built-in agent options with bundled icons, sidebar labels, and session metadata support.
+- Updated the default agent picker order to T3 Code, Codex, Claude, Pi Agent, OpenCode, Gemini, Copilot, Factory Droid, and Grok Build.
+- Renamed the default Pi launch option to Pi Agent while keeping `pi` as the command.
 - Changed directional pane focus defaults to `Cmd+Alt+Arrow` so normal `Cmd+Arrow` text-editing behavior is not stolen by workspace navigation.
 - Added a searchable action icon picker in Settings so custom sidebar actions can choose icons faster and keep accessible labels visible.
 - Moved project git diff stats into project headers and removed the separate code-editor sidebar row so project groups scan more compactly.
-- Added titlebar modes for Agents, Code, Git, and Tasks so project/editor surfaces can be reached from the native titlebar without crowding the sidebar.
+- Added titlebar modes for Agents, Code, Git, and Project so project/editor surfaces can be reached from the native titlebar without crowding the sidebar.
+- Renamed the tasks-backed titlebar surface to Project while keeping its placeholder bundled locally and preserving existing internal mode IDs.
+- Removed the Back to Agents View button from code/git companion panes so the companion titlebar only exposes pane dismissal.
+- Kept the titlebar mode switcher's active pill animation visible while moving between distant modes.
 - Moved Rotate Panes into the pane overflow menu, added Merge All Tabs, and improved command-panel tab creation in clicked tab groups.
 - Kept workspace pane tabs readable with a wider minimum tab width while preserving horizontal scrolling in narrow multi-tab panes.
 - Improved prompt editor hit routing, collapsed command-panel sizing, previous-session restore targeting, favorite backfill, and semantic Last Active tracking.
+- Preserved full generated session titles in stored titles and hover tooltips even when live terminal titles report an ellipsized prefix.
+- Hid tmux, zmx, and zellij persistence-provider letters from session-card agent icons while keeping provider metadata available for attach commands and tooltips.
+- Fixed reference-sidebar primary labels so descenders remain visible in New Session, Agents Hub, Plugins, Search, Settings, and Recent Projects rows.
 - Added Tasks placeholder bundling and Git/browser mode helpers for the new native workspace modes.
 - Ignored legacy pre-rename generated web assets so old `zmuxHost` build output does not appear as source work.
 
