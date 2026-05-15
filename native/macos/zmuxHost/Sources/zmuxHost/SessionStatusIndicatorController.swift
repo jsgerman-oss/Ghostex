@@ -9,6 +9,7 @@ final class SessionStatusIndicatorController {
   private let indicatorView: SessionStatusIndicatorView
   private let menuBarStatusItem: NSStatusItem
   private let menuBarClickTarget: MenuBarSessionStatusIndicatorTarget
+  private let onActivationRequest: (String) -> Void
   private var hasUserPositionedPanel = false
 
   /**
@@ -18,7 +19,10 @@ final class SessionStatusIndicatorController {
    primary display, and support direct drag repositioning without webview hit
    testing.
    */
-  init(onClick: @escaping (NativeSessionStatusIndicatorStatus) -> Void) {
+  init(
+    onActivationRequest: @escaping (String) -> Void,
+    onClick: @escaping (NativeSessionStatusIndicatorStatus) -> Void
+  ) {
     /**
      CDXC:SessionStatusIndicators 2026-05-09-15:48
      The menu bar indicator must be a second presentation of the floating
@@ -28,12 +32,14 @@ final class SessionStatusIndicatorController {
      */
     let view = SessionStatusIndicatorView(
       onClick: { status in
+        onActivationRequest("floatingStatusIndicatorClick.\(status.rawValue)")
         NSApp.activate(ignoringOtherApps: true)
         onClick(status)
       },
       onDrag: {})
     let menuBarStatusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menuBarClickTarget = MenuBarSessionStatusIndicatorTarget(onClick: { status in
+      onActivationRequest("menuBarStatusIndicatorClick.\(status.rawValue)")
       NSApp.activate(ignoringOtherApps: true)
       onClick(status)
     })
@@ -46,6 +52,7 @@ final class SessionStatusIndicatorController {
     self.indicatorView = view
     self.menuBarStatusItem = menuBarStatusItem
     self.menuBarClickTarget = menuBarClickTarget
+    self.onActivationRequest = onActivationRequest
     self.panel = panel
     panel.backgroundColor = .clear
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]

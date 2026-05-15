@@ -878,6 +878,7 @@ final class TerminalWorkspaceView: NSView {
     let searchBarView: TerminalSearchBarView
     let titleBarView: TerminalSessionTitleBarView
     let borderView: TerminalPaneBorderView
+    let persistenceLabelView: TerminalPanePersistenceLabelView
     var foregroundPid: Int?
     var sessionPersistenceName: String?
     var sessionPersistenceProvider: NativeSessionPersistenceProvider?
@@ -1008,8 +1009,18 @@ final class TerminalWorkspaceView: NSView {
    Workspace pane tabs are 36pt tall, so the non-command titlebar must use the
    same height. Keeping the bar at 33pt centers tabs outside their owning chrome
    and makes the tab strip background/border visibly miss the tab edges.
+
+   CDXC:PaneTabs 2026-05-15-09:27:
+   The non-command tab bar needs to be taller than the tabs while preserving the
+   existing 36pt tab controls. Use a 40pt bar so the tab strip has 2pt vertical
+   breathing room above and below the unchanged tab buttons.
+
+   CDXC:PaneTabs 2026-05-15-09:30:
+   The non-command tab controls still render about 3px taller than the visible
+   bar in the native host. Keep the tabs at 36pt and raise only the owning bar
+   by 3pt so the bar catches up to the rendered tab extent.
    */
-  private static let terminalTitleBarHeight: CGFloat = 36
+  private static let terminalTitleBarHeight: CGFloat = 42
   /**
    CDXC:PaneTabs 2026-05-15-08:29:
    Command pane tabs must match the visible command tab bar height exactly.
@@ -1858,6 +1869,7 @@ final class TerminalWorkspaceView: NSView {
     let titleBarView = TerminalSessionTitleBarView(
       title: normalizedTerminalSessionTitle(command.title, sessionId: command.sessionId)
     )
+    titleBarView.setDebugContext(ownerSessionId: command.sessionId, paneKind: "terminal")
     titleBarView.translatesAutoresizingMaskIntoConstraints = false
     titleBarView.onMouseDown = { [weak self] event in
       self?.handlePaneTitleBarMouseDown(
@@ -1891,6 +1903,9 @@ final class TerminalWorkspaceView: NSView {
     }
     let borderView = TerminalPaneBorderView()
     borderView.translatesAutoresizingMaskIntoConstraints = false
+    let persistenceLabelView = TerminalPanePersistenceLabelView()
+    persistenceLabelView.translatesAutoresizingMaskIntoConstraints = false
+    persistenceLabelView.setProvider(sessionPersistenceProvider, sessionName: sessionPersistenceName)
     let containerView = TerminalPaneLeafContainerView()
     containerView.translatesAutoresizingMaskIntoConstraints = true
 
@@ -1902,6 +1917,7 @@ final class TerminalWorkspaceView: NSView {
       searchBarView: searchBarView,
       titleBarView: titleBarView,
       borderView: borderView,
+      persistenceLabelView: persistenceLabelView,
       foregroundPid: nil,
       sessionPersistenceName: sessionPersistenceName,
       sessionPersistenceProvider: sessionPersistenceProvider,
@@ -2050,6 +2066,7 @@ final class TerminalWorkspaceView: NSView {
      users can find the same session by task-oriented name instead of opaque id.
      */
     sessions[sessionId]?.sessionPersistenceName = nextSessionName
+    sessions[sessionId]?.persistenceLabelView.setProvider(provider, sessionName: nextSessionName)
     NativeSessionPersistenceMode.renameTmuxSession(
       from: currentSessionName,
       sessionId: sessionId,
@@ -2315,6 +2332,7 @@ final class TerminalWorkspaceView: NSView {
       title: normalizedTerminalSessionTitle(command.title, sessionId: command.sessionId),
       actions: TerminalSessionTitleBarView.webPaneCreationActions
     )
+    titleBarView.setDebugContext(ownerSessionId: command.sessionId, paneKind: "web")
     titleBarView.translatesAutoresizingMaskIntoConstraints = false
     titleBarView.onMouseDown = { [weak self] event in
       self?.handlePaneTitleBarMouseDown(
@@ -3253,6 +3271,7 @@ final class TerminalWorkspaceView: NSView {
       let chromeRole: TerminalPaneChromeRole = isCommandActive ? .commands : .workspace
       session.titleBarView.setChromeRole(chromeRole)
       session.borderView.setChromeRole(chromeRole)
+      session.persistenceLabelView.setSuppressed(isCommandActive && !commandsPanelIsVisible)
       session.borderView.setHidesInactiveCommandBorder(isCommandActive && commandsPanelMode == "pinned")
       if let title = sessionTitles[session.sessionId] {
         session.titleBarView.setTitle(
@@ -3723,6 +3742,7 @@ final class TerminalWorkspaceView: NSView {
     mount(session.titleBarView, in: session.containerView)
     mount(session.scrollView, in: session.containerView)
     mount(session.searchBarView, in: session.containerView)
+    mount(session.persistenceLabelView, in: session.containerView)
     mount(session.borderView, in: session.containerView)
   }
 
@@ -4270,7 +4290,16 @@ final class TerminalWorkspaceView: NSView {
 
   private func hideSplitSessionSurfacesForActiveEditor() {
     paneResizeDrag = nil
-    resetPaneHeaderInteractionState()
+    /**
+     CDXC:CommandsPanel 2026-05-15-10:00
+     Command-pane tab drags remain valid while a project editor is active,
+     because command terminals float above the editor and keep their own
+     interactive titlebar. Do not let the editor layout branch clear an
+     in-flight command-tab drag before mouse-up can commit the split/drop.
+     */
+    if paneHeaderDrag.map({ commandsPanelActiveSessionIds.contains($0.sourceSessionId) }) != true {
+      resetPaneHeaderInteractionState()
+    }
     for session in sessions.values {
       if commandsPanelActiveSessionIds.contains(session.sessionId) {
         continue
@@ -6765,6 +6794,8 @@ final class TerminalWorkspaceView: NSView {
     let popOutTitleBarView = TerminalSessionTitleBarView(
       title: title,
       actions: poppedOutPaneTitleBarActions(sessionId: sessionId))
+    let popOutPaneKind = sessions[sessionId] != nil ? "poppedOutTerminal" : "poppedOutWeb"
+    popOutTitleBarView.setDebugContext(ownerSessionId: sessionId, paneKind: popOutPaneKind)
     /**
      CDXC:PanePopOut 2026-05-11-18:54
      Popped-out panes are their own focused pane surface and do not receive the
@@ -6790,6 +6821,7 @@ final class TerminalWorkspaceView: NSView {
       contentView = PoppedOutTerminalPaneContentView(
         scrollView: session.scrollView,
         searchBarView: session.searchBarView,
+        persistenceLabelView: session.persistenceLabelView,
         titleBarView: popOutTitleBarView,
         titleBarHeight: Self.terminalTitleBarHeight)
       firstResponder = session.view
@@ -7115,6 +7147,8 @@ final class TerminalWorkspaceView: NSView {
       session.scrollView.isHidden = true
       session.searchBarView.frame = .zero
       session.searchBarView.isHidden = true
+      session.persistenceLabelView.setSuppressed(true)
+      session.persistenceLabelView.frame = .zero
       session.borderView.frame = session.containerView.bounds
       updateTerminalBorder(for: sessionId)
       return
@@ -7123,6 +7157,10 @@ final class TerminalWorkspaceView: NSView {
     session.scrollView.needsLayout = true
     session.scrollView.layoutSubtreeIfNeeded()
     session.searchBarView.frame = searchBarFrame(in: terminalRect)
+    session.persistenceLabelView.setSuppressed(false)
+    session.persistenceLabelView.frame = persistenceLabelFrame(
+      in: terminalRect,
+      labelView: session.persistenceLabelView)
     session.borderView.frame = session.containerView.bounds
     logTerminalResizeIfNeeded(
       session: session,
@@ -7131,6 +7169,24 @@ final class TerminalWorkspaceView: NSView {
       availableTerminalRect: availableTerminalRect,
       terminalRect: terminalRect)
     updateTerminalBorder(for: sessionId)
+  }
+
+  private func persistenceLabelFrame(
+    in terminalRect: CGRect,
+    labelView: TerminalPanePersistenceLabelView
+  ) -> CGRect {
+    guard !labelView.isHidden, terminalRect.width > 24, terminalRect.height > 18 else {
+      return .zero
+    }
+    let labelSize = labelView.fittingSize
+    let labelWidth = min(ceil(labelSize.width), max(terminalRect.width - 20, 0))
+    let labelHeight = min(max(ceil(labelSize.height), 14), max(terminalRect.height - 12, 0))
+    return CGRect(
+      x: max(10, terminalRect.maxX - labelWidth - 10),
+      y: max(6, terminalRect.maxY - labelHeight - 6),
+      width: labelWidth,
+      height: labelHeight
+    )
   }
 
   private func titleBarHeight(for sessionId: String) -> CGFloat {
@@ -7176,6 +7232,7 @@ final class TerminalWorkspaceView: NSView {
         title: normalizedTerminalSessionTitle(sessionTitles[sessionId], sessionId: sessionId))
     }
     if let session = sessions[ownerSessionId] {
+      session.titleBarView.setDebugContext(ownerSessionId: ownerSessionId, paneKind: "terminal")
       session.titleBarView.setTabs(items, activeSessionId: activeSessionId)
       session.titleBarView.setTabActivities(sessionActivities)
       session.titleBarView.setTabIdentityIcons(
@@ -7184,6 +7241,7 @@ final class TerminalWorkspaceView: NSView {
         agentIconColors: sessionAgentIconColors)
     }
     if let session = webPaneSessions[ownerSessionId] {
+      session.titleBarView.setDebugContext(ownerSessionId: ownerSessionId, paneKind: "web")
       session.titleBarView.setTabs(items, activeSessionId: activeSessionId)
       session.titleBarView.setTabActivities(sessionActivities)
       session.titleBarView.setTabIdentityIcons(
@@ -8796,6 +8854,27 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  func activationDebugSnapshot() -> [String: Any] {
+    /**
+     CDXC:FocusStealDiagnostics 2026-05-15-10:54:
+     App activation can steal focus without changing the selected terminal session.
+     Expose a compact workspace snapshot for native lifecycle logs so later repros can compare selected session, first responder, visible panes, and Ghostty focused flags at the exact app activation boundary.
+     */
+    return [
+      "activeProjectEditorId": nullableString(activeProjectEditorId),
+      "activeSessionIds": Array(activeSessionIds).sorted(),
+      "commandsPanelFocusedSessionId": nullableString(commandsPanelFocusedSessionId),
+      "focusedSessionId": nullableString(focusedSessionId),
+      "focusedSurfaceSessionIds": focusedSurfaceSessionIds(),
+      "lastEmittedFocusedSessionId": nullableString(lastEmittedFocusedSessionId),
+      "responder": responderSnapshot(),
+      "responderSessionId": nullableString(currentResponderSessionId()),
+      "visibleSessionIds": orderedVisibleSessionIds(),
+      "windowIsKey": window?.isKeyWindow ?? false,
+      "windowNumber": window?.windowNumber ?? 0,
+    ]
+  }
+
   private func focusSurfaceStateSnapshot() -> [[String: Any]] {
     sessions.keys.sorted().compactMap { sessionId in
       guard let session = sessions[sessionId] else {
@@ -9430,10 +9509,12 @@ private enum NativeSessionPersistenceMode {
     initialInput: String?,
     sessionName: String
   ) -> String {
+    let noticeCommand = persistenceNoticeShellCommand(provider: .tmux, sessionName: sessionName)
     let script = """
       tmux_session=\(shellQuote(sessionName))
       tmux_cwd=\(shellQuote(cwd))
       tmux_initial_input=\(shellQuote(initialInput ?? ""))
+      tmux_notice_command=\(shellQuote(noticeCommand))
       tmux_created=0
       if ! command -v tmux >/dev/null 2>&1; then
         printf '%s\\n' 'tmux mode is enabled, but tmux was not found on PATH.'
@@ -9445,6 +9526,10 @@ private enum NativeSessionPersistenceMode {
       fi
       tmux set-option -t "$tmux_session" set-titles on >/dev/null
       tmux set-option -t "$tmux_session" set-titles-string '#T' >/dev/null
+      if [ "$tmux_created" = "1" ]; then
+        tmux send-keys -t "$tmux_session" -l "$tmux_notice_command"
+        tmux send-keys -t "$tmux_session" Enter
+      fi
       if [ "$tmux_created" = "1" ] && [ -n "$tmux_initial_input" ]; then
         # CDXC:TmuxMode 2026-05-05-06:31: Target the active pane by session
         # name so user tmux base-index settings do not break first launch.
@@ -9463,6 +9548,12 @@ private enum NativeSessionPersistenceMode {
      Initial agent commands belong only to a newly created tmux pane. Do not use
      Ghostty initialInput in tmux mode, because app restart should attach to the
      running tmux pane without injecting a second resume command.
+
+     CDXC:SessionPersistence 2026-05-15-09:36
+     New provider-backed sessions must announce their persistence manager at the
+     top of the terminal before any agent launch text runs. tmux receives the
+     notice through send-keys in the same newly created pane as the first agent
+     command, while restart attach remains read-only.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
@@ -9472,10 +9563,14 @@ private enum NativeSessionPersistenceMode {
     initialInput: String?,
     sessionName: String
   ) -> String {
+    let initialCommand = shellCommandWithPersistenceNotice(
+      provider: .zmx,
+      sessionName: sessionName,
+      initialInput: initialInput)
     let script = """
       zmx_session=\(shellQuote(sessionName))
       zmx_cwd=\(shellQuote(cwd))
-      zmx_initial_command=\(shellQuote(shellCommand(fromInitialInput: initialInput)))
+      zmx_initial_command=\(shellQuote(initialCommand))
       unset ZMX_SESSION ZMX_SESSION_PREFIX
       if ! command -v zmx >/dev/null 2>&1; then
         printf '%s\\n' 'session persistence is set to zmx, but zmx was not found on PATH.'
@@ -9511,6 +9606,11 @@ private enum NativeSessionPersistenceMode {
      rewrites app-managed names. Clear only those client/session variables so
      persistence still uses the user's zmx socket directory but attaches the
      exact sidebar session name.
+
+     CDXC:SessionPersistence 2026-05-15-09:36
+     A newly created zmx agent session must print a plain-language persistence
+     notice before the agent command runs. Keep empty zmx terminals on direct
+     attach so they stay normal shells without zmx task wrapper output.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
@@ -9520,7 +9620,10 @@ private enum NativeSessionPersistenceMode {
     initialInput: String?,
     sessionName: String
   ) -> String {
-    let initialCommand = shellCommand(fromInitialInput: initialInput)
+    let initialCommand = shellCommandWithPersistenceNotice(
+      provider: .zellij,
+      sessionName: sessionName,
+      initialInput: initialInput)
     let layout = zellijLayout(cwd: cwd, initialCommand: initialCommand)
     let script = """
       zellij_session=\(shellQuote(sessionName))
@@ -9553,6 +9656,11 @@ private enum NativeSessionPersistenceMode {
      generated layout to a real temporary file, then launch
      `zellij --session <name> --new-session-with-layout <file>` so new sessions
      are created under the same name that restart attach will later target.
+
+     CDXC:SessionPersistence 2026-05-15-09:36
+     Zellij first-run layouts should render the same persistence notice before
+     the initial agent command. Existing zellij sessions still attach directly
+     so restarts never replay notice text or agent input.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
@@ -9693,6 +9801,25 @@ private enum NativeSessionPersistenceMode {
       .replacingOccurrences(of: "\r", with: "\n")
       .trimmingCharacters(in: .whitespacesAndNewlines)
     return normalized
+  }
+
+  private static func shellCommandWithPersistenceNotice(
+    provider: NativeSessionPersistenceProvider,
+    sessionName: String,
+    initialInput: String?
+  ) -> String {
+    let command = shellCommand(fromInitialInput: initialInput)
+    guard !command.isEmpty else {
+      return ""
+    }
+    return "\(persistenceNoticeShellCommand(provider: provider, sessionName: sessionName))\n\(command)"
+  }
+
+  private static func persistenceNoticeShellCommand(
+    provider: NativeSessionPersistenceProvider,
+    sessionName: String
+  ) -> String {
+    "printf '%s\\n' \(shellQuote("This session is using \(provider.rawValue) persistence: \(sessionName)"))"
   }
 
   private static func shellQuote(_ value: String) -> String {
@@ -12264,6 +12391,9 @@ private final class TerminalSessionTitleBarView: NSView {
   private var doubleClickNewTerminalFrame: CGRect = .zero
   private var tabButtons: [TerminalTitleBarTabButton] = []
   private var tabItems: [TabItem] = []
+  private var debugOwnerSessionId: String?
+  private var debugPaneKind = "unknown"
+  private var lastLoggedPaneTabGeometrySignature: String?
   private var hoverTrackingArea: NSTrackingArea?
   private var isPaneHovered = false {
     didSet {
@@ -12315,6 +12445,22 @@ private final class TerminalSessionTitleBarView: NSView {
 
   var displayFavicon: NSImage? {
     faviconImage
+  }
+
+  func setDebugContext(ownerSessionId: String, paneKind: String) {
+    guard debugOwnerSessionId != ownerSessionId || debugPaneKind != paneKind else {
+      return
+    }
+    /**
+     CDXC:PaneTabs 2026-05-15-09:37
+     Native pane-tab geometry logs need stable owner metadata because a tab
+     group can contain sessions whose selected tab differs from the title-bar
+     view that owns the AppKit frames. Reset the dedupe signature when ownership
+     changes so the next layout writes a fresh repro snapshot.
+     */
+    debugOwnerSessionId = ownerSessionId
+    debugPaneKind = paneKind
+    lastLoggedPaneTabGeometrySignature = nil
   }
 
   func setPaneHovered(_ isHovered: Bool) {
@@ -13227,6 +13373,17 @@ private final class TerminalSessionTitleBarView: NSView {
         size: tabAddButtonSize,
         gap: tabAddButtonGap,
         isVisible: canShowTabAddButton)
+      logPaneTabLayoutGeometryIfNeeded(
+        canShowTabAddButton: canShowTabAddButton,
+        tabAreaMaxX: tabAreaMaxX,
+        tabViewportMaxX: tabViewportMaxX,
+        tabButtonHeight: tabButtonHeight,
+        tabAddButtonSize: tabAddButtonSize,
+        tabAddButtonGap: tabAddButtonGap,
+        centerY: centerY,
+        tabCenterY: tabCenterY,
+        buttonSize: buttonSize,
+        insetX: insetX)
       if isCollapsedCommandPanelBar {
         commandCollapsedTrailingBackgroundView.isHidden = false
         commandCollapsedTrailingBackgroundView.frame = CGRect(
@@ -13443,13 +13600,110 @@ private final class TerminalSessionTitleBarView: NSView {
     }
     /*
      CDXC:PaneTabs 2026-05-14-10:10:
-     The non-command tab-strip add button is part of the tab control run and should be rounded with the inline tab controls. Command pane tab add controls keep the previous square chrome.
+     Earlier non-command tab-strip add button styling treated the add control as part of the inline tab-control run.
+
+     CDXC:PaneTabs 2026-05-15-09:31:
+     The non-command tab-strip add button should use square chrome like the command pane add control, while keeping its existing tab-strip placement and hit target.
      */
-    tabAddButton.chromeCornerRadius = chromeRole == .commands ? 0 : min(8, size / 2)
+    tabAddButton.chromeCornerRadius = 0
     tabAddButton.frame = CGRect(x: buttonX, y: centerY, width: size, height: size)
     tabAddButton.isHidden = false
     tabAddButton.alphaValue = 1
     tabAddButton.isEnabled = true
+  }
+
+  private func logPaneTabLayoutGeometryIfNeeded(
+    canShowTabAddButton: Bool,
+    tabAreaMaxX: CGFloat,
+    tabViewportMaxX: CGFloat,
+    tabButtonHeight: CGFloat,
+    tabAddButtonSize: CGFloat,
+    tabAddButtonGap: CGFloat,
+    centerY: CGFloat,
+    tabCenterY: CGFloat,
+    buttonSize: CGFloat,
+    insetX: CGFloat
+  ) {
+    guard !tabItems.isEmpty else {
+      return
+    }
+    let tabClipExceedsTitleBar =
+      tabClipView.frame.minY < -0.5 || tabClipView.frame.maxY > bounds.height + 0.5
+    let tabAddButtonExceedsTitleBar =
+      !tabAddButton.isHidden
+      && (tabAddButton.frame.minY < -0.5 || tabAddButton.frame.maxY > bounds.height + 0.5)
+    let titleBarShorterThanTabs = bounds.height + 0.5 < tabButtonHeight
+    let signature = [
+      debugOwnerSessionId ?? "",
+      debugPaneKind,
+      chromeRoleLogValue(),
+      String(tabItems.count),
+      String(canShowTabAddButton),
+      String(format: "%.2f", bounds.width),
+      String(format: "%.2f", bounds.height),
+      String(format: "%.2f", tabClipView.frame.minY),
+      String(format: "%.2f", tabClipView.frame.height),
+      String(format: "%.2f", tabAddButton.frame.minY),
+      String(format: "%.2f", tabAddButton.frame.height),
+      String(format: "%.2f", tabViewportFrame.width),
+      String(format: "%.2f", actionMenuButton.frame.width),
+      String(tabClipExceedsTitleBar),
+      String(tabAddButtonExceedsTitleBar),
+      String(titleBarShorterThanTabs),
+    ].joined(separator: "|")
+    guard signature != lastLoggedPaneTabGeometrySignature else {
+      return
+    }
+    /*
+     CDXC:PaneTabs 2026-05-15-09:37:
+     Debug mode should capture the actual AppKit frames that decide whether
+     workspace tabs extend outside their title bar. Log only changed geometry
+     signatures, including anomaly flags, so reproductions show whether the fix
+     should change constants, layout math, or view ownership.
+     */
+    lastLoggedPaneTabGeometrySignature = signature
+    NativePaneTabDragReproLog.append(event: "nativePaneTabs.geometry.layout", details: [
+      "activeTabSessionId": activeTabSessionId ?? NSNull(),
+      "addButtonFrame": nativePaneTabsDebugFrame(tabAddButton.frame),
+      "buttonSize": Double(buttonSize),
+      "canShowTabAddButton": canShowTabAddButton,
+      "centerY": Double(centerY),
+      "chromeRole": chromeRoleLogValue(),
+      "debugPaneKind": debugPaneKind,
+      "doubleClickFrame": nativePaneTabsDebugFrame(doubleClickNewTerminalFrame),
+      "insetX": Double(insetX),
+      "ownerSessionId": debugOwnerSessionId ?? NSNull(),
+      "tabAddButtonExceedsTitleBar": tabAddButtonExceedsTitleBar,
+      "tabAddButtonGap": Double(tabAddButtonGap),
+      "tabAddButtonHidden": tabAddButton.isHidden,
+      "tabAddButtonSize": Double(tabAddButtonSize),
+      "tabAreaMaxX": Double(tabAreaMaxX),
+      "tabButtonCount": tabButtons.count,
+      "tabButtonFrames": tabButtons.map { nativePaneTabsDebugFrame($0.frame) },
+      "tabButtonHeight": Double(tabButtonHeight),
+      "tabCenterY": Double(tabCenterY),
+      "tabClipExceedsTitleBar": tabClipExceedsTitleBar,
+      "tabClipFrame": nativePaneTabsDebugFrame(tabClipView.frame),
+      "tabContentFrame": nativePaneTabsDebugFrame(tabContentView.frame),
+      "tabContentWidth": Double(tabContentWidth),
+      "tabItems": tabItems.map(\.sessionId),
+      "tabScrollOffsetX": Double(tabScrollOffsetX),
+      "tabViewportFrame": nativePaneTabsDebugFrame(tabViewportFrame),
+      "tabViewportMaxX": Double(tabViewportMaxX),
+      "titleBarBounds": nativePaneTabsDebugFrame(bounds),
+      "titleBarFrame": nativePaneTabsDebugFrame(frame),
+      "titleBarShorterThanTabs": titleBarShorterThanTabs,
+      "verticalSlack": Double(bounds.height - tabButtonHeight),
+    ])
+  }
+
+  private func chromeRoleLogValue() -> String {
+    switch chromeRole {
+    case .commands:
+      return "commands"
+    case .workspace:
+      return "workspace"
+    }
   }
 
   private func hideTabAddButton() {
@@ -14864,17 +15118,20 @@ private final class PoppedOutPaneWindowController: NSWindowController, NSWindowD
 private final class PoppedOutTerminalPaneContentView: NSView {
   private let scrollView: NSView
   private let searchBarView: NSView
+  private let persistenceLabelView: NSView
   private let titleBarView: NSView
   private let titleBarHeight: CGFloat
 
   init(
     scrollView: NSView,
     searchBarView: NSView,
+    persistenceLabelView: NSView,
     titleBarView: NSView,
     titleBarHeight: CGFloat
   ) {
     self.scrollView = scrollView
     self.searchBarView = searchBarView
+    self.persistenceLabelView = persistenceLabelView
     self.titleBarView = titleBarView
     self.titleBarHeight = titleBarHeight
     super.init(frame: .zero)
@@ -14882,6 +15139,7 @@ private final class PoppedOutTerminalPaneContentView: NSView {
     layer?.backgroundColor = NSColor(calibratedRed: 0.071, green: 0.071, blue: 0.071, alpha: 1).cgColor
     addSubview(scrollView)
     addSubview(searchBarView)
+    addSubview(persistenceLabelView)
     addSubview(titleBarView)
   }
 
@@ -14907,6 +15165,16 @@ private final class PoppedOutTerminalPaneContentView: NSView {
       y: max(12, bounds.height - titleHeight - 48),
       width: min(320, max(bounds.width - 24, 1)),
       height: 36)
+    let labelSize = persistenceLabelView.fittingSize
+    let labelWidth = min(ceil(labelSize.width), max(bounds.width - 20, 0))
+    let labelHeight = min(max(ceil(labelSize.height), 14), max(bounds.height - titleHeight - 12, 0))
+    persistenceLabelView.frame = persistenceLabelView.isHidden
+      ? .zero
+      : CGRect(
+        x: max(10, bounds.maxX - labelWidth - 10),
+        y: max(6, bounds.height - titleHeight - labelHeight - 6),
+        width: labelWidth,
+        height: labelHeight)
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
@@ -15053,6 +15321,89 @@ private final class TerminalPaneLeafContainerView: NSView {
 
   required init?(coder: NSCoder) {
     fatalError("init(coder:) is not supported")
+  }
+}
+
+private final class TerminalPanePersistenceLabelView: NSTextField {
+  private static let labelFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+  private var isSuppressedByPaneState = false
+
+  override var fittingSize: NSSize {
+    guard !stringValue.isEmpty else {
+      return .zero
+    }
+    let size = (stringValue as NSString).size(withAttributes: [.font: Self.labelFont])
+    return NSSize(width: ceil(size.width) + 10, height: 16)
+  }
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    isBezeled = false
+    drawsBackground = false
+    isEditable = false
+    isSelectable = false
+    isHidden = true
+    lineBreakMode = .byTruncatingTail
+    font = Self.labelFont
+    textColor = NSColor(calibratedWhite: 0.86, alpha: 0.24)
+    alignment = .left
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
+  }
+
+  func setProvider(_ provider: NativeSessionPersistenceProvider?, sessionName: String?) {
+    let nextTitle: String
+    if let provider, let sessionName = sessionName?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !sessionName.isEmpty
+    {
+      nextTitle = "\(provider.rawValue) - \(sessionName)"
+    } else {
+      nextTitle = ""
+    }
+    guard stringValue != nextTitle else {
+      return
+    }
+    /*
+     CDXC:SessionPersistence 2026-05-15-09:36:
+     Provider-backed terminal panes should keep their durable attach identity visible in the pane itself. Render `provider - session` as a dim bottom-left overlay so tmux, zmx, and zellij sessions are identifiable without opening sidebar card details.
+
+     CDXC:SessionPersistence 2026-05-15-09:48:
+     The persistence label should stay quieter than terminal content and pane chrome. Use low opacity so it remains available as context without competing with command output.
+
+     CDXC:SessionPersistence 2026-05-15-09:53:
+     The provider/session context should sit in the bottom-right corner, away from common left-aligned shell prompts and command output.
+
+     CDXC:SessionPersistence 2026-05-15-09:58:
+     Move the provider/session context to the top-right corner so it stays visible without sitting beside prompt input at the bottom of the terminal body.
+     */
+    stringValue = nextTitle
+    updateVisibility()
+    needsLayout = true
+    superview?.needsLayout = true
+  }
+
+  func setSuppressed(_ isSuppressed: Bool) {
+    guard isSuppressedByPaneState != isSuppressed else {
+      return
+    }
+    /*
+     CDXC:SessionPersistence 2026-05-15-09:44:
+     Minimized command panes only show command-tab chrome, not terminal body metadata. Suppress the dim provider/session overlay explicitly while the command pane is collapsed so reused AppKit frames cannot leave stale `zmx - session` text visible.
+     */
+    isSuppressedByPaneState = isSuppressed
+    updateVisibility()
+    needsLayout = true
+    superview?.needsLayout = true
+  }
+
+  private func updateVisibility() {
+    isHidden = isSuppressedByPaneState || stringValue.isEmpty
   }
 }
 

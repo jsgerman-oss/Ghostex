@@ -77,6 +77,12 @@ enum NativePaneTabDragReproLog {
    file that covers the window monitor, title-bar hit testing, tab button mouse
    handlers, and host-event sends. Gate the file behind Settings debugging mode
    so normal tab use never writes persistent logs.
+
+   CDXC:PaneTabs 2026-05-15-09:37
+   Pane-tab height regressions need the same log stream as click and drag
+   diagnostics so one repro captures both geometry and event ownership. Layout
+   callers should dedupe snapshots before writing because AppKit can relayout
+   title bars repeatedly during one visible resize.
    */
   static func append(event: String, details: [String: Any] = [:]) {
     guard NativeDebugLogging.isEnabled else {

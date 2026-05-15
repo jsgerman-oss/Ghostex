@@ -391,6 +391,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var pendingGhosttyConfigReloadTimer: Timer?
   private var isFlushingCEFBeforeTerminate = false
   private var didFlushCEFBeforeTerminate = false
+  private var workspaceActivationObserver: NSObjectProtocol?
+  private var lastNativeActivationRequest: NativeActivationRequest?
   private weak var attachToIdeTitlebarButton: NSButton?
   private weak var appTitlebarLabel: NSTextField?
   private let nativeSettingsStore = NativeSettingsStore()
@@ -406,6 +408,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self?.handleSessionAttentionNotificationClick(sessionId)
       }
     }
+
+  private struct NativeActivationRequest {
+    let reason: String
+    let sessionId: String?
+    let timestamp: Date
+  }
 
   override init() {
     let configSelection = Self.preferredGhosttyConfig()
@@ -433,6 +441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
+    installWorkspaceActivationObserver()
     Self.appendNativeHostLifecycleLog(
       "applicationDidFinishLaunching pid=\(ProcessInfo.processInfo.processIdentifier) workspacePath=\(workspacePath)"
     )
@@ -454,6 +463,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    if let workspaceActivationObserver {
+      NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
+    }
     persistMainWindowChrome()
     Self.appendNativeHostLifecycleLog(
       "applicationWillTerminate pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false)"
@@ -496,8 +508,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      zmux" from "the overlay activation branch made the wrong ordering call."
      */
     Self.appendNativeHostLifecycleLog(
-      "applicationWillBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>")"
+      "applicationWillBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
+    logNativeActivationLifecycleEvent("nativeHost.activation.willBecomeActive")
     BrowserOverlayRestoreReproLog.append(
       "appDelegate.applicationWillBecomeActive",
       [
@@ -509,8 +522,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func applicationDidBecomeActive(_ notification: Notification) {
     Self.appendNativeHostLifecycleLog(
-      "applicationDidBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>")"
+      "applicationDidBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
+    logNativeActivationLifecycleEvent("nativeHost.activation.didBecomeActive")
     BrowserOverlayRestoreReproLog.append(
       "appDelegate.applicationDidBecomeActive",
       [
@@ -522,6 +536,113 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         "windowLevel": window?.level.rawValue as Any,
         "windowVisible": window?.isVisible as Any,
       ])
+  }
+
+  @MainActor
+  private func installWorkspaceActivationObserver() {
+    /**
+     CDXC:FocusStealDiagnostics 2026-05-15-10:54:
+     Focus-steal reports can happen after a session already exists, so creation logs are insufficient.
+     Record system-wide app activation transitions and the latest internal zmux activation request so a later repro can separate explicit zmux activation from an external macOS/frontmost-app transition.
+     */
+    workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didActivateApplicationNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] notification in
+      guard let self else {
+        return
+      }
+      let application =
+        notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+      let isSelf = application?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+      let details: [String: Any] = [
+        "activatedBundleIdentifier": application?.bundleIdentifier ?? NSNull(),
+        "activatedName": application?.localizedName ?? NSNull(),
+        "activatedPid": application.map { Int($0.processIdentifier) } ?? NSNull(),
+        "frontmostApplication": NSWorkspace.shared.frontmostApplication?.localizedName ?? NSNull(),
+        "isSelf": isSelf,
+        "lastActivationRequest": self.lastNativeActivationRequestPayload(),
+        "workspace": self.workspaceView?.activationDebugSnapshot() ?? NSNull(),
+      ]
+      TerminalFocusDebugLog.append(event: "nativeHost.workspaceApplicationActivated", details: details)
+      Self.appendNativeHostLifecycleLog(
+        "workspaceApplicationActivated app=\(application?.localizedName ?? "<missing>") pid=\(application.map { String($0.processIdentifier) } ?? "<missing>") isSelf=\(isSelf) lastActivationRequest=\(self.describeLastNativeActivationRequest()) workspace=\(self.describeWorkspaceActivationSnapshot())"
+      )
+    }
+  }
+
+  @MainActor
+  private func recordNativeActivationRequest(reason: String, sessionId: String? = nil) {
+    lastNativeActivationRequest = NativeActivationRequest(
+      reason: reason,
+      sessionId: sessionId,
+      timestamp: Date()
+    )
+    /**
+     CDXC:FocusStealDiagnostics 2026-05-15-10:54:
+     Any code path that intentionally raises Ghostex should leave an activation breadcrumb before calling NSApp.activate or makeKeyAndOrderFront.
+     The next activation notification can then prove whether zmux stole focus by request or was activated by something outside the native host.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeHost.activation.request",
+      details: [
+        "frontmostApplication": NSWorkspace.shared.frontmostApplication?.localizedName ?? NSNull(),
+        "reason": reason,
+        "sessionId": sessionId ?? NSNull(),
+        "windowIsKey": window?.isKeyWindow ?? false,
+        "windowIsVisible": window?.isVisible ?? false,
+        "workspace": workspaceView?.activationDebugSnapshot() ?? NSNull(),
+      ])
+    Self.appendNativeHostLifecycleLog(
+      "activationRequest reason=\(reason) sessionId=\(sessionId ?? "<none>") windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") workspace=\(describeWorkspaceActivationSnapshot())"
+    )
+  }
+
+  @MainActor
+  private func logNativeActivationLifecycleEvent(_ event: String) {
+    TerminalFocusDebugLog.append(
+      event: event,
+      details: [
+        "frontmostApplication": NSWorkspace.shared.frontmostApplication?.localizedName ?? NSNull(),
+        "lastActivationRequest": lastNativeActivationRequestPayload(),
+        "windowIsKey": window?.isKeyWindow ?? false,
+        "windowIsVisible": window?.isVisible ?? false,
+        "workspace": workspaceView?.activationDebugSnapshot() ?? NSNull(),
+      ])
+  }
+
+  @MainActor
+  private func describeLastNativeActivationRequest() -> String {
+    guard let lastNativeActivationRequest else {
+      return "<none>"
+    }
+    let ageMs = Int(Date().timeIntervalSince(lastNativeActivationRequest.timestamp) * 1000)
+    let sessionText = lastNativeActivationRequest.sessionId ?? "<none>"
+    return "\(lastNativeActivationRequest.reason) sessionId=\(sessionText) ageMs=\(ageMs)"
+  }
+
+  @MainActor
+  private func lastNativeActivationRequestPayload() -> Any {
+    guard let lastNativeActivationRequest else {
+      return NSNull()
+    }
+    return [
+      "ageMs": Int(Date().timeIntervalSince(lastNativeActivationRequest.timestamp) * 1000),
+      "reason": lastNativeActivationRequest.reason,
+      "sessionId": lastNativeActivationRequest.sessionId ?? NSNull(),
+    ]
+  }
+
+  @MainActor
+  private func describeWorkspaceActivationSnapshot() -> String {
+    guard let snapshot = workspaceView?.activationDebugSnapshot() else {
+      return "<missing>"
+    }
+    let focused = snapshot["focusedSessionId"] as? String ?? "<none>"
+    let responder = snapshot["responderSessionId"] as? String ?? "<none>"
+    let projectEditor = snapshot["activeProjectEditorId"] as? String ?? "<none>"
+    return "focused=\(focused) responder=\(responder) activeProjectEditor=\(projectEditor)"
   }
 
   private struct GhosttyConfigSelection {
@@ -996,6 +1117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     guard let root = window?.contentView as? zmuxRootView else {
       return
     }
+    recordNativeActivationRequest(reason: "mainMenu.openSettings")
     NSApp.activate(ignoringOtherApps: true)
     /**
      CDXC:MacMenuBar 2026-05-02-06:36
@@ -1043,9 +1165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   @MainActor
   private func makeWindow() {
-    let sessionStatusIndicatorController = SessionStatusIndicatorController { [weak self] status in
-      self?.handleSessionStatusIndicatorClick(status)
-    }
+    let sessionStatusIndicatorController = SessionStatusIndicatorController(
+      onActivationRequest: { [weak self] reason in
+        self?.recordNativeActivationRequest(reason: reason)
+      },
+      onClick: { [weak self] status in
+        self?.handleSessionStatusIndicatorClick(status)
+      })
     self.sessionStatusIndicatorController = sessionStatusIndicatorController
     let petOverlayController = PetOverlayController { [weak self] projectId, sessionId in
       Task { @MainActor in
@@ -1200,6 +1326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         targetApp: initialZedOverlayConfiguration.targetApp
       )
     }
+    recordNativeActivationRequest(reason: "startup.makeWindow")
     NSApp.activate(ignoringOtherApps: true)
   }
 
@@ -1229,6 +1356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      the main window before the sidebar applies the usual focus mutation.
      */
     let event = HostEvent.petOverlayActivityClicked(projectId: projectId, sessionId: sessionId)
+    recordNativeActivationRequest(reason: "petOverlayActivityClick", sessionId: sessionId)
     NSApp.activate(ignoringOtherApps: true)
     window?.makeKeyAndOrderFront(nil)
     bridge?.send(event)
@@ -1244,6 +1372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      first responder for immediate typing.
      */
     let event = HostEvent.sessionAttentionNotificationClicked(sessionId: sessionId)
+    recordNativeActivationRequest(reason: "sessionAttentionNotificationClick", sessionId: sessionId)
     NSApp.activate(ignoringOtherApps: true)
     window?.makeKeyAndOrderFront(nil)
     bridge?.send(event)
@@ -2020,6 +2149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      Agent Manager focus commands for Ghostex sessions should bring the native
      workarea forward before selecting the requested Ghostty surface.
      */
+    recordNativeActivationRequest(reason: "agentManager.activateAppWindow")
     NSApp.activate(ignoringOtherApps: true)
     window?.makeKeyAndOrderFront(nil)
   }
@@ -2029,6 +2159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       return
     }
     hasPresentedAccessibilityPermissionDialog = true
+    recordNativeActivationRequest(reason: "accessibilityPermissionDialog")
     NSApp.activate(ignoringOtherApps: true)
     window?.makeKeyAndOrderFront(nil)
 

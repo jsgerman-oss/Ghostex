@@ -125,6 +125,14 @@ static NSString* ZmuxCEFHomeDirectoryName(void) {
   return @".zmux";
 }
 
+static NSString* ZmuxCEFSharedHomeDirectoryName(void) {
+  NSString* value = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"ZMUXSharedHomeDirectoryName"];
+  if ([value isKindOfClass:[NSString class]] && value.length > 0) {
+    return value;
+  }
+  return @".zmux";
+}
+
 static NSString* ZmuxCEFStorageDirectory(void) {
   NSString* root = [NSHomeDirectory() stringByAppendingPathComponent:ZmuxCEFHomeDirectoryName()];
   NSString* path = [root stringByAppendingPathComponent:@"cef"];
@@ -133,6 +141,111 @@ static NSString* ZmuxCEFStorageDirectory(void) {
                                              attributes:nil
                                                   error:nil];
   return path;
+}
+
+static bool ZmuxCEFNativeDebugLoggingEnabled(void) {
+  static bool hasCachedValue = false;
+  static bool cachedValue = false;
+  static NSTimeInterval cachedValueReadAt = 0;
+  NSTimeInterval now = [[NSProcessInfo processInfo] systemUptime];
+  if (hasCachedValue && now - cachedValueReadAt < 0.25) {
+    return cachedValue;
+  }
+
+  NSString* settingsPath = [[[NSHomeDirectory() stringByAppendingPathComponent:ZmuxCEFSharedHomeDirectoryName()]
+    stringByAppendingPathComponent:@"state"]
+    stringByAppendingPathComponent:@"native-sidebar-settings.json"];
+  NSData* data = [NSData dataWithContentsOfFile:settingsPath];
+  bool isEnabled = false;
+  if (data) {
+    NSError* error = nil;
+    id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    if (!error && [json isKindOfClass:[NSDictionary class]]) {
+      id value = [(NSDictionary*)json objectForKey:@"debuggingMode"];
+      if ([value respondsToSelector:@selector(boolValue)]) {
+        isEnabled = [value boolValue];
+      }
+    }
+  }
+
+  cachedValue = isEnabled;
+  cachedValueReadAt = now;
+  hasCachedValue = true;
+  return cachedValue;
+}
+
+static NSDateFormatter* ZmuxCEFDiagnosticLogDateFormatter(void) {
+  static NSDateFormatter* formatter = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    formatter = [[NSDateFormatter alloc] init];
+    formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS ZZZZ";
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.timeZone = [NSTimeZone localTimeZone];
+  });
+  return formatter;
+}
+
+static NSDictionary* ZmuxCEFDescribeRect(NSRect rect) {
+  return @{
+    @"height": @(rect.size.height),
+    @"maxX": @(NSMaxX(rect)),
+    @"maxY": @(NSMaxY(rect)),
+    @"minX": @(NSMinX(rect)),
+    @"minY": @(NSMinY(rect)),
+    @"width": @(rect.size.width),
+    @"x": @(rect.origin.x),
+    @"y": @(rect.origin.y),
+  };
+}
+
+static id ZmuxCEFDescribeBoundsInWindow(NSView* view) {
+  if (!view || !view.window) {
+    return [NSNull null];
+  }
+  return ZmuxCEFDescribeRect([view convertRect:view.bounds toView:nil]);
+}
+
+static id ZmuxCEFDescribeFrameInWindow(NSView* view) {
+  if (!view || !view.window || !view.superview) {
+    return [NSNull null];
+  }
+  return ZmuxCEFDescribeRect([view.superview convertRect:view.frame toView:nil]);
+}
+
+static void ZmuxCEFAppendDiagnosticLog(NSString* event, NSDictionary* details) {
+  if (!ZmuxCEFNativeDebugLoggingEnabled()) {
+    return;
+  }
+  NSMutableDictionary* payload = [NSMutableDictionary dictionaryWithDictionary:details ? details : @{}];
+  [payload setObject:event forKey:@"event"];
+  NSError* serializationError = nil;
+  NSData* jsonData = [NSJSONSerialization dataWithJSONObject:payload
+                                                     options:NSJSONWritingSortedKeys
+                                                       error:&serializationError];
+  NSString* json = serializationError || !jsonData
+    ? @"{\"event\":\"serializationFailed\"}"
+    : [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+  NSString* line = [NSString stringWithFormat:@"[%@] %@\n",
+    [ZmuxCEFDiagnosticLogDateFormatter() stringFromDate:[NSDate date]],
+    json ?: @"{\"event\":\"serializationFailed\"}"];
+
+  NSString* logsDirectory = [[NSHomeDirectory() stringByAppendingPathComponent:ZmuxCEFHomeDirectoryName()]
+    stringByAppendingPathComponent:@"logs"];
+  NSString* logPath = [logsDirectory stringByAppendingPathComponent:@"native-t3-code-pane-repro.log"];
+  [[NSFileManager defaultManager] createDirectoryAtPath:logsDirectory
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+  NSFileHandle* handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
+  NSData* lineData = [line dataUsingEncoding:NSUTF8StringEncoding];
+  if (handle) {
+    [handle seekToEndOfFile];
+    [handle writeData:lineData];
+    [handle closeFile];
+    return;
+  }
+  [lineData writeToFile:logPath atomically:YES];
 }
 
 static CefRefPtr<CefRequestContext> ZmuxCEFRequestContextForProfile(NSString* profileIdentifier) {
@@ -399,6 +512,7 @@ static bool ZmuxCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   BOOL canGoForward_;
   BOOL isLoading_;
   BOOL didCreateBrowser_;
+  NSUInteger layoutPass_;
 }
 @end
 
@@ -468,7 +582,55 @@ static bool ZmuxCEFOriginsMatch(NSString* lhs, NSString* rhs) {
 
 - (void)layout {
   [super layout];
-  cefView_.frame = self.bounds;
+  if (!cefView_) {
+    return;
+  }
+  if (!ZmuxCEFNativeDebugLoggingEnabled()) {
+    cefView_.frame = self.bounds;
+    return;
+  }
+
+  NSRect cefFrameBefore = cefView_.frame;
+  NSRect cefBoundsBefore = cefView_.bounds;
+  id cefFrameInWindowBefore = ZmuxCEFDescribeFrameInWindow(cefView_);
+  id cefBoundsInWindowBefore = ZmuxCEFDescribeBoundsInWindow(cefView_);
+  NSRect targetFrame = self.bounds;
+  cefView_.frame = targetFrame;
+  layoutPass_ += 1;
+  NSString* cefClass = NSStringFromClass([cefView_ class]);
+  NSString* wrapperClass = NSStringFromClass([self class]);
+  id currentURL = currentURLString_ ? currentURLString_ : (id)[NSNull null];
+  id pageTitle = pageTitle_ ? pageTitle_ : (id)[NSNull null];
+  /*
+  CDXC:ChromiumBrowserPanes 2026-05-15-09:51:
+  Browser panes can visually drift upward while their native host frame remains pinned during split resize.
+  Log the wrapper and CEF child NSView geometry at the CEF boundary so the repro can distinguish upstream pane-host movement from internal CEF child-view coordinate drift without changing resize behavior.
+  */
+  ZmuxCEFAppendDiagnosticLog(@"nativeWorkspace.chromiumBrowserPane.cef.layout", @{
+    @"cefBoundsAfter": ZmuxCEFDescribeRect(cefView_.bounds),
+    @"cefBoundsBefore": ZmuxCEFDescribeRect(cefBoundsBefore),
+    @"cefBoundsInWindowAfter": ZmuxCEFDescribeBoundsInWindow(cefView_),
+    @"cefBoundsInWindowBefore": cefBoundsInWindowBefore,
+    @"cefClass": cefClass ? cefClass : @"",
+    @"cefFrameAfter": ZmuxCEFDescribeRect(cefView_.frame),
+    @"cefFrameBefore": ZmuxCEFDescribeRect(cefFrameBefore),
+    @"cefFrameInWindowAfter": ZmuxCEFDescribeFrameInWindow(cefView_),
+    @"cefFrameInWindowBefore": cefFrameInWindowBefore,
+    @"cefHidden": @(cefView_.hidden),
+    @"cefWantsLayer": @(cefView_.wantsLayer),
+    @"currentURL": currentURL,
+    @"layoutPass": @(layoutPass_),
+    @"pageTitle": pageTitle,
+    @"targetFrame": ZmuxCEFDescribeRect(targetFrame),
+    @"wrapperBounds": ZmuxCEFDescribeRect(self.bounds),
+    @"wrapperBoundsInWindow": ZmuxCEFDescribeBoundsInWindow(self),
+    @"wrapperClass": wrapperClass ? wrapperClass : @"",
+    @"wrapperFlipped": @([self isFlipped]),
+    @"wrapperFrame": ZmuxCEFDescribeRect(self.frame),
+    @"wrapperFrameInWindow": ZmuxCEFDescribeFrameInWindow(self),
+    @"wrapperWantsLayer": @(self.wantsLayer),
+    @"windowNumber": self.window ? @(self.window.windowNumber) : (id)[NSNull null],
+  });
 }
 
 - (NSString*)currentURLString {
