@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.7.0 - 2026-05-15
+
+<!-- CDXC:Distribution 2026-05-15-15:08: Release notes for 2.7.0 must cover
+all user-facing commits after v2.6.0 so GitHub, Sparkle, and Homebrew metadata
+describe the same Ghostex rename cleanup, built-in agent additions, safer
+directional hotkeys, searchable action icons, project-header stats, titlebar
+modes, and pane actions. -->
+
+- Completed the Ghostex public naming cleanup across release, app, and Homebrew surfaces.
+- Added Factory Droid and Grok Build as built-in agent options with bundled icons, sidebar labels, and session metadata support.
+- Changed directional pane focus defaults to `Cmd+Alt+Arrow` so normal `Cmd+Arrow` text-editing behavior is not stolen by workspace navigation.
+- Added a searchable action icon picker in Settings so custom sidebar actions can choose icons faster and keep accessible labels visible.
+- Moved project git diff stats into project headers and removed the separate code-editor sidebar row so project groups scan more compactly.
+- Added titlebar modes for Agents, Code, Git, and Tasks so project/editor surfaces can be reached from the native titlebar without crowding the sidebar.
+- Moved Rotate Panes into the pane overflow menu, added Merge All Tabs, and improved command-panel tab creation in clicked tab groups.
+- Kept workspace pane tabs readable with a wider minimum tab width while preserving horizontal scrolling in narrow multi-tab panes.
+- Improved prompt editor hit routing, collapsed command-panel sizing, previous-session restore targeting, favorite backfill, and semantic Last Active tracking.
+- Added Tasks placeholder bundling and Git/browser mode helpers for the new native workspace modes.
+- Ignored legacy pre-rename generated web assets so old `zmuxHost` build output does not appear as source work.
+
 ## 2.6.0 - 2026-05-15
 
 <!-- CDXC:Distribution 2026-05-15-10:42: Release notes for 2.6.0 must cover
