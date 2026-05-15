@@ -5,6 +5,16 @@
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex Intel macOS releases.</description>
         <item>
+            <title>2.6.0</title>
+            <pubDate>Fri, 15 May 2026 10:51:24 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v2.6.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>20600</sparkle:version>
+            <sparkle:shortVersionString>2.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink sparkle:edSignature="3TuCYSgPF93wyCEPl+BrFhqyuC+8rFwpDO9C35JQB3c5S6toCxnelL5Epzvk/+J4oVrO0R0dsUg1ZfZso+/wAw==" sparkle:length="1818">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.6.0-x86_64.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.6.0/ghostex-2.6.0-x86_64.dmg" length="201005760" type="application/octet-stream" sparkle:edSignature="5hf+0WrokkfYRx0l5th3BivrpS1+uuvWkARYMWTIiIM6TyXMVnH1O7w48t/1IMii/7PpAqzQ2tRkh4xp/yVGDQ=="/>
+        </item>
+        <item>
             <title>2.5.1</title>
             <pubDate>Fri, 15 May 2026 08:51:50 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v2.5.1</sparkle:fullReleaseNotesLink>
@@ -27,6 +37,6 @@
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: plHDgF6e6cXyjKr6hZaejA1rbxYIInLVl7LiXxY1WsH0RNTmNvjeHjACe1VNJNXr5Ifmnva8XV5eifcayo72Cg==
-length: 2385
+edSignature: b1cVylvr+v+zmuOKTLsL57HLtIfUHe+zuTgYMfeQJi+pOkDt+samC+j+j539pk8o9G2RzjeDP6A/5CYGCQktCg==
+length: 3401
 -->

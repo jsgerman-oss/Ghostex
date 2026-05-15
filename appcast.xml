@@ -8,6 +8,17 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex macOS releases.</description>
         <item>
+            <title>2.6.0</title>
+            <pubDate>Fri, 15 May 2026 10:51:22 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v2.6.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>20600</sparkle:version>
+            <sparkle:shortVersionString>2.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <sparkle:releaseNotesLink sparkle:edSignature="3TuCYSgPF93wyCEPl+BrFhqyuC+8rFwpDO9C35JQB3c5S6toCxnelL5Epzvk/+J4oVrO0R0dsUg1ZfZso+/wAw==" sparkle:length="1818">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.6.0-arm64.md</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.6.0/ghostex-2.6.0-arm64.dmg" length="189022386" type="application/octet-stream" sparkle:edSignature="6lDc8regOThfLplDDU1hEWwpXgIVW1rTc9WFg0YAVwn7PUorg+p9WwdcFSE2DhbQk4JzquffJPPLvT+/Ba1bDw=="/>
+        </item>
+        <item>
             <title>2.5.1</title>
             <pubDate>Fri, 15 May 2026 08:51:49 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v2.5.1</sparkle:fullReleaseNotesLink>
@@ -62,20 +73,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:releaseNotesLink sparkle:edSignature="zJ5+/QwdY+mblKOO51dosw3lMMovtaTWw5cAwKl+798sCugNdOlGSMTugJGnt3Iy+YqILb7dWLcX4l9RHiA2Dg==" sparkle:length="896">https://raw.githubusercontent.com/maddada/zmux/main/zmux-2.2.0.md</sparkle:releaseNotesLink>
             <enclosure url="https://github.com/maddada/zmux/releases/download/v2.2/zmux-2.2.0.dmg" length="173652232" type="application/octet-stream" sparkle:edSignature="2Ywq+x5j5zrg/tyDeEcbz1clI0qN9oqmAwqyaYbLB/yeigosMZR/JE7Acn5iPUoVz8taoOh8WQEpCdjnfjakCw=="/>
         </item>
-        <item>
-            <title>2.1.0</title>
-            <pubDate>Fri, 08 May 2026 18:09:20 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/zmux/releases/tag/v2.1</sparkle:fullReleaseNotesLink>
-            <sparkle:version>20100</sparkle:version>
-            <sparkle:shortVersionString>2.1.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink sparkle:edSignature="fx4XV8e2oeFttzvTmnQGPgC0NIhFKi0qEOp6V9Umy+14TzMxlgDUdNuxEU6EQWCfs8v3g4ZZBlrHv9r83CfmBw==" sparkle:length="817">https://raw.githubusercontent.com/maddada/zmux/main/zmux-2.1.0.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/zmux/releases/download/v2.1/zmux-2.1.0.dmg" length="173470544" type="application/octet-stream" sparkle:edSignature="ZVPrnb7LK+QEb/kmMe6lx8Xyq+2utSfDIYKcpFHNc8B+ja9bCTldFvoCm5m1IH/jg5PID4T5CgddPH8XXl8bAg=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: pPILpS+M5LRPatcfqP3HXrjJIY75aD07IMS6lrUoPjRv5WUkqbD3PJjjB4kKsn7ZZR8Hrkgz4WXsTjCa4F6YDA==
-length: 7031
+edSignature: snm9ElpianevBUFWk8bpxNulPslk44v/+PLYmqV1Sq6DwczR4fxGVDypB31zfKQr5jFUrtOb/r/nCzk4eBSODw==
+length: 7063
 -->
