@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vite-plus/test";
 import type { SidebarPreviousSessionItem } from "../shared/session-grid-contract";
-import { filterPreviousSessions } from "./previous-session-search";
+import {
+  filterPreviousSessions,
+  filterPreviousSessionsModalItems,
+} from "./previous-session-search";
 
 describe("filterPreviousSessions", () => {
   test("should fuzzy match aliases and secondary session text", () => {
@@ -102,6 +105,48 @@ describe("filterPreviousSessions", () => {
     expect(filterPreviousSessions(previousSessions, "")).toMatchObject([
       { historyId: "history-other-project" },
       { historyId: "history-new" },
+    ]);
+  });
+});
+
+describe("filterPreviousSessionsModalItems", () => {
+  test("should hide browser page history from the previous sessions modal", () => {
+    const previousSessions = [
+      createPreviousSession({
+        alias: "Agent plan",
+        historyId: "history-agent",
+        sessionKind: "terminal",
+      }),
+      createPreviousSession({
+        agentIcon: "browser",
+        alias: "Example Domain",
+        historyId: "history-browser-icon",
+      }),
+      createPreviousSession({
+        alias: "Browser pane",
+        historyId: "history-browser-kind",
+        sessionKind: "browser",
+      }),
+      createPreviousSession({
+        alias: "Stored browser pane",
+        historyId: "history-browser-record",
+        sessionRecord: {
+          alias: "Stored browser pane",
+          browser: { url: "https://example.com" },
+          column: 0,
+          createdAt: "2026-03-24T09:00:00.000Z",
+          displayId: "B1",
+          kind: "browser",
+          row: 0,
+          sessionId: "browser-record",
+          slotIndex: 0,
+          title: "Example Domain",
+        },
+      }),
+    ];
+
+    expect(filterPreviousSessionsModalItems(previousSessions)).toMatchObject([
+      { historyId: "history-agent" },
     ]);
   });
 });

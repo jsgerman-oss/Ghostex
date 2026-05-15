@@ -705,6 +705,7 @@
   --reference-session-title-inset: 36px;
   --reference-session-trailing-inset: 10px;
   --reference-session-trailing-slot-width: 44px;
+  --session-history-time-slot-width: 34px;
   min-height: 34px;
   width: 100%;
 }
@@ -715,6 +716,7 @@
 
 .previous-sessions-modal .session-history-frame[data-has-project-label="true"] {
   --reference-session-trailing-slot-width: 142px;
+  --session-history-time-slot-width: 44px;
 }
 
 .session-history-card,
@@ -767,6 +769,12 @@
    * timestamp, and hover X control vertically centered in the whole button.
    * Center the shared title row inside the fixed-height button instead of
    * depending on top/bottom padding offsets that drift visually.
+   *
+   * CDXC:PreviousSessions 2026-05-15-09:57
+   * The project label must stay anchored at a consistent distance from the
+   * right edge regardless of whether Last Active renders as 3m, 14h, or wider
+   * text. Give Last Active a fixed grid column and right-align the timestamp
+   * inside it so only the time text varies, not the project label position.
    */
   align-items: center;
   gap: 6px;
@@ -798,8 +806,9 @@
   .session-history-card
   .session-head-trailing {
   align-items: center;
-  display: flex;
+  display: grid;
   gap: 8px;
+  grid-template-columns: minmax(0, 1fr) var(--session-history-time-slot-width);
   justify-content: flex-end;
   min-width: var(--reference-session-trailing-slot-width);
   overflow: visible;
@@ -815,14 +824,16 @@
   flex: 0 0 auto;
   font-size: 13.55px;
   font-weight: 300 !important;
+  grid-column: 2;
+  justify-content: flex-end;
   letter-spacing: 0;
   line-height: 20px;
-  min-width: max-content;
+  min-width: 0;
   opacity: 1;
   overflow: visible;
   position: static;
   text-align: right;
-  width: max-content;
+  width: var(--session-history-time-slot-width);
 }
 
 .session-history-project-label,
@@ -832,6 +843,7 @@
   flex: 1 1 auto;
   font-size: 12.25px;
   font-weight: 300 !important;
+  grid-column: 1;
   letter-spacing: 0;
   line-height: 20px;
   max-width: 100%;
@@ -989,6 +1001,58 @@
   align-items: center;
   gap: calc(8px * var(--sidebar-density-scale));
   min-width: 0;
+}
+
+/*
+ * CDXC:SidebarSessions 2026-05-15-09:22
+ * Hiding Last Active makes active session-card titles the primary scan target.
+ * Let those titles use the full card width; the close button can still appear
+ * as a hover overlay, while Previous Sessions and project-editor rows keep
+ * their own right-side metadata layouts.
+ */
+.session-frame:not(.session-history-frame):not(.project-editor-session-frame)
+  .session-head[data-title-full-width="true"] {
+  gap: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.session-frame:not(.session-history-frame):not(.project-editor-session-frame)
+  .session-head[data-title-full-width="true"]
+  .session-alias-heading {
+  box-sizing: border-box;
+}
+
+/*
+ * CDXC:SidebarSessions 2026-05-15-10:02
+ * Full-width hidden-time titles still need to yield the right edge when a
+ * status dot or hover close button is visible. Add state-scoped padding so
+ * titles truncate before those controls instead of painting underneath them.
+ */
+.session-frame:not(.session-history-frame):not(.project-editor-session-frame):is(
+    [data-activity="working"],
+    [data-activity="attention"],
+    [data-lifecycle-state="error"]
+  )
+  .session-head[data-title-full-width="true"]
+  .session-alias-heading {
+  padding-inline-end: calc(22px * var(--sidebar-density-scale));
+}
+
+.session-frame:not(.session-history-frame):not(.project-editor-session-frame):has(
+    .session-card-close-button
+  ):is(:hover, :focus-within)
+  .session-head[data-title-full-width="true"]
+  .session-alias-heading {
+  padding-inline-end: calc(30px * var(--sidebar-density-scale));
+}
+
+.session-frame:not(.session-history-frame):not(.project-editor-session-frame)
+  .session-head[data-title-full-width="true"]
+  .session-head-trailing {
+  inset-inline-end: 0;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 /*
@@ -1290,6 +1354,16 @@
 .session-floating-agent-icon[data-agent-icon="opencode"],
 .session-header-agent-icon[data-agent-icon="opencode"] {
   --session-agent-icon-color: #6d96c0;
+}
+
+.session-floating-agent-icon[data-agent-icon="copilot"],
+.session-header-agent-icon[data-agent-icon="copilot"] {
+  --session-agent-icon-color: #ffffff;
+}
+
+.session-floating-agent-icon[data-agent-icon="pi"],
+.session-header-agent-icon[data-agent-icon="pi"] {
+  --session-agent-icon-color: #c8ff62;
 }
 
 .session-floating-agent-icon[data-favorite="true"],
@@ -1889,6 +1963,24 @@
   transition: opacity 90ms ease;
   translate: 0 -50%;
   width: var(--reference-session-icon-size);
+}
+
+/*
+ * CDXC:SidebarReference 2026-05-15-09:13
+ * The sidebar session dropdown/list needs every row with an agent identity to
+ * show its brand-colored leading icon while scanning sessions. Keep active,
+ * visible, hover, and favorite states stronger, but do not hide inactive agent
+ * colors by default.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session[data-has-agent-icon="true"])
+  .session-floating-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session[data-has-agent-icon="true"])
+  .session-floating-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session[data-has-agent-icon="true"])
+  .session-floating-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session[data-has-agent-icon="true"])
+  .session-persistence-provider-badge[data-slot="floating"] {
+  opacity: 0.48;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-visible="true"]

@@ -71,8 +71,11 @@ export function SessionCardContent({
   const hasLastInteractionTime = showLastActiveTime && Boolean(session.lastInteractionAt);
   const showHeaderLoadingSpinner = session.isReloading === true || isGeneratingFirstPromptTitle;
   const showTerminalSessionIcon = !hideHeaderAgentIcon && shouldShowTerminalSessionIcon(session);
+  const shouldAllowFullWidthTitle =
+    !showLastActiveTime && !showLastInteractionTime && !trailingPrefix;
   const hasHeaderAgentIcon =
     !hideHeaderAgentIcon &&
+    !shouldAllowFullWidthTitle &&
     (Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
   useRelativeTimeTick(hasLastInteractionTime);
   const lastInteractionLabel =
@@ -101,6 +104,11 @@ export function SessionCardContent({
    * Gate only this timestamp label; trailing prefixes such as project metadata
    * and separate project-editor git diff stats remain outside this visibility
    * control.
+   *
+   * CDXC:SidebarSessions 2026-05-15-09:22
+   * When Last Active is hidden for active session cards, the title owns the
+   * full card width. Do not keep the header agent icon's trailing column in
+   * that mode; the leading floating icon still carries session identity.
    */
   const defaultTrailingDisplay = !showLastInteractionTime
     ? "icon"
@@ -137,7 +145,7 @@ export function SessionCardContent({
 
   return (
     <>
-      <div className="session-head">
+      <div className="session-head" data-title-full-width={String(shouldAllowFullWidthTitle)}>
         {/**
          * CDXC:PreviousSessions 2026-05-09-17:44
          * Previous Sessions rows use this shared sidebar title row but must not

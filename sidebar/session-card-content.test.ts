@@ -478,10 +478,10 @@ describe("SessionCardContent", () => {
       }),
     );
 
-    expect(markup).toContain('data-default-trailing-display="icon"');
-    expect(markup).toContain('data-hover-trailing-display="icon"');
+    expect(markup).toContain('data-title-full-width="true"');
+    expect(markup).not.toContain("session-head-trailing");
     expect(markup).not.toContain("session-last-interaction-time");
-    expect(markup).toContain("session-header-agent-icon");
+    expect(markup).not.toContain("session-header-agent-icon");
   });
 
   test("should allow previous-session rows to reserve the trailing slot for last active", () => {

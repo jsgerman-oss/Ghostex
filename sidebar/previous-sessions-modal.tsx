@@ -1,7 +1,11 @@
 import { IconStar, IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { filterPreviousSessions, groupPreviousSessionsByDay } from "./previous-session-search";
+import {
+  filterPreviousSessions,
+  filterPreviousSessionsModalItems,
+  groupPreviousSessionsByDay,
+} from "./previous-session-search";
 import { SessionHistoryCard } from "./session-history-card";
 import { useSidebarStore } from "./sidebar-store";
 import {
@@ -27,9 +31,13 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingSelectionRef = useRef<{ end: number; start: number } | undefined>(undefined);
+  const modalPreviousSessions = useMemo(
+    () => filterPreviousSessionsModalItems(previousSessions),
+    [previousSessions],
+  );
   const filteredSessions = useMemo(
-    () => filterPreviousSessions(previousSessions, searchQuery, { favoritesOnly }),
-    [favoritesOnly, previousSessions, searchQuery],
+    () => filterPreviousSessions(modalPreviousSessions, searchQuery, { favoritesOnly }),
+    [favoritesOnly, modalPreviousSessions, searchQuery],
   );
   const groupedSessions = useMemo(
     () => groupPreviousSessionsByDay(filteredSessions),

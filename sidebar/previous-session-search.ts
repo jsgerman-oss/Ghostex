@@ -52,6 +52,18 @@ export function filterPreviousSessions(
   return filterSidebarSessionItems(dedupedSessions, query);
 }
 
+export function filterPreviousSessionsModalItems(
+  previousSessions: readonly SidebarPreviousSessionItem[],
+): SidebarPreviousSessionItem[] {
+  /**
+   * CDXC:PreviousSessions 2026-05-15-09:57
+   * The Previous Sessions modal is an agent-session restore surface. Browser
+   * page history can still exist in shared storage for compatibility, but the
+   * modal must hide web pages so the list only presents agent sessions.
+   */
+  return previousSessions.filter((session) => !isPreviousSessionWebPage(session));
+}
+
 export function groupPreviousSessionsByDay(
   previousSessions: readonly SidebarPreviousSessionItem[],
 ): PreviousSessionsModalDayGroup[] {
@@ -188,6 +200,14 @@ function dedupePreviousSessionsByProjectAndTitle(
   return [...dedupedByKey.values()]
     .sort((left, right) => left.itemIndex - right.itemIndex)
     .map((entry) => entry.item);
+}
+
+function isPreviousSessionWebPage(session: SidebarPreviousSessionItem): boolean {
+  return (
+    session.sessionKind === "browser" ||
+    session.sessionRecord?.kind === "browser" ||
+    session.agentIcon === "browser"
+  );
 }
 
 function createPreviousSessionDedupeKey(session: SidebarPreviousSessionItem): string {
