@@ -701,46 +701,16 @@ function SessionPersistenceProviderBadge({
   sessionPersistenceProvider?: SidebarSessionItem["sessionPersistenceProvider"];
   slot: "floating" | "header";
 }) {
-  const label = getSessionPersistenceProviderBadgeLabel(sessionPersistenceProvider);
-  if (!label) {
-    return null;
-  }
   /**
-   * CDXC:SessionPersistence 2026-05-07-20:32
-   * Provider-backed cards show a tiny low-opacity provider letter centered on
-   * the existing agent icon. The badge stays subtle while the tooltip and
-   * context menu expose the exact tmux/zmx/zellij attach identity.
-   *
-   * CDXC:SessionPersistence 2026-05-07-21:00
-   * The visible badge is keyed by provider, not by native-confirmed session
-   * name, so a newly mounted provider-backed card shows its t/z/j identity
-   * immediately while attach copying still waits for the durable name.
+   * CDXC:SessionPersistence 2026-05-15-15:32:
+   * Persistence-backed sessions should keep the agent icon clean; do not render
+   * tmux/zmx/zellij provider letters over floating or header icons even when
+   * provider metadata is stored for attach commands and tooltips.
    */
-  return (
-    <span
-      aria-hidden="true"
-      className="session-persistence-provider-badge"
-      data-provider={sessionPersistenceProvider}
-      data-slot={slot}
-    >
-      {label}
-    </span>
-  );
-}
-
-function getSessionPersistenceProviderBadgeLabel(
-  provider: SidebarSessionItem["sessionPersistenceProvider"],
-): string | undefined {
-  switch (provider) {
-    case "tmux":
-      return "t";
-    case "zmx":
-      return "z";
-    case "zellij":
-      return "j";
-    default:
-      return undefined;
-  }
+  void sessionPersistenceName;
+  void sessionPersistenceProvider;
+  void slot;
+  return null;
 }
 
 function getSessionDetailsTooltipLines(

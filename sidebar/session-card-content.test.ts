@@ -300,7 +300,7 @@ describe("SessionFloatingAgentIcon", () => {
     expect(markup).not.toContain("data-icon-variant");
   });
 
-  test("should render a subtle persistence provider badge when a provider session is stored", () => {
+  test("should not render a persistence provider badge when a provider session is stored", () => {
     const markup = renderToStaticMarkup(
       createElement(SessionFloatingAgentIcon, {
         agentIcon: "codex",
@@ -309,12 +309,12 @@ describe("SessionFloatingAgentIcon", () => {
       }),
     );
 
-    expect(markup).toContain("session-persistence-provider-badge");
-    expect(markup).toContain('data-provider="zmx"');
-    expect(markup).toContain(">z</span>");
+    expect(markup).not.toContain("session-persistence-provider-badge");
+    expect(markup).not.toContain('data-provider="zmx"');
+    expect(markup).not.toContain(">z</span>");
   });
 
-  test("should render the persistence badge as soon as the provider is known", () => {
+  test("should not render a persistence provider badge when only the provider is known", () => {
     const markup = renderToStaticMarkup(
       createElement(SessionFloatingAgentIcon, {
         agentIcon: "codex",
@@ -322,9 +322,9 @@ describe("SessionFloatingAgentIcon", () => {
       }),
     );
 
-    expect(markup).toContain("session-persistence-provider-badge");
-    expect(markup).toContain('data-provider="tmux"');
-    expect(markup).toContain(">t</span>");
+    expect(markup).not.toContain("session-persistence-provider-badge");
+    expect(markup).not.toContain('data-provider="tmux"');
+    expect(markup).not.toContain(">t</span>");
   });
 });
 
