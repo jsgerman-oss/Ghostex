@@ -346,6 +346,10 @@ function GroupList({
 }
 
 function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode: WebviewApi }) {
+  /**
+   * CDXC:AgentsHub 2026-05-15-15:41:
+   * Profile icon tooltips must keep the same profile label, instruction file path, optional resolved target path, and Finder action as the original tooltip, but render them as organized sections instead of a loose preformatted text block so dense path content remains scannable.
+   */
   return (
     <div className="agents-hub-profile-row" aria-label="Profiles using this item">
       {profiles.map((profile) => {
@@ -382,9 +386,21 @@ function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode
               </button>
             </TooltipTrigger>
             <TooltipContent align="start">
-              {`${profile.label}\n${profile.filePath}
-              \n\n${profile.targetPath ? ` \n      ->\n ${profile.targetPath}` : ""
-              }\n\nClick to open in Finder`}
+              <div className="agents-hub-profile-tooltip">
+                <div className="agents-hub-profile-tooltip-main">
+                  <div className="agents-hub-profile-tooltip-title">{profile.label}</div>
+                  <div className="agents-hub-profile-tooltip-path">{profile.filePath}</div>
+                </div>
+                {profile.targetPath ? (
+                  <div className="agents-hub-profile-tooltip-target">
+                    <div aria-hidden="true" className="agents-hub-profile-tooltip-arrow">
+                      -&gt;
+                    </div>
+                    <div className="agents-hub-profile-tooltip-path">{profile.targetPath}</div>
+                  </div>
+                ) : null}
+                <div className="agents-hub-profile-tooltip-action">Click to open in Finder</div>
+              </div>
             </TooltipContent>
           </Tooltip>
         );

@@ -287,6 +287,63 @@
   white-space: pre-line;
 }
 
+.agents-hub-profile-tooltip {
+  display: grid;
+  gap: 0.625rem;
+  max-width: min(30rem, calc(100vw - 2rem));
+  min-width: min(17.5rem, calc(100vw - 2rem));
+  white-space: normal;
+}
+
+.agents-hub-profile-tooltip-main {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.agents-hub-profile-tooltip-title {
+  color: #ffffff;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.agents-hub-profile-tooltip-path {
+  color: color-mix(in srgb, #ffffff 82%, transparent);
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.agents-hub-profile-tooltip-target {
+  align-items: start;
+  border-top: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding-top: 0.625rem;
+}
+
+.agents-hub-profile-tooltip-arrow {
+  color: color-mix(in srgb, #ffffff 58%, transparent);
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.agents-hub-profile-tooltip-action {
+  border-top: 1px solid color-mix(in srgb, #ffffff 14%, transparent);
+  color: #ffffff;
+  font-size: 0.75rem;
+  font-weight: 650;
+  line-height: 1.25;
+  padding-top: 0.625rem;
+}
+
 .agents-hub-file-list {
   /*
    * CDXC:AgentsHub 2026-05-13-02:33
