@@ -4,6 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_PATH="$SCRIPT_DIR/zmux.xcodeproj"
 CONFIGURATION="${CONFIGURATION:-Debug}"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+ZMUX_MACOS_ARCH="${ZMUX_MACOS_ARCH:-$(uname -m)}"
+case "$ZMUX_MACOS_ARCH" in
+	arm64 | aarch64)
+		ZMUX_MACOS_ARCH="arm64"
+		;;
+	x86_64 | x64 | amd64)
+		ZMUX_MACOS_ARCH="x86_64"
+		;;
+	*)
+		echo "Unsupported ZMUX_MACOS_ARCH: $ZMUX_MACOS_ARCH" >&2
+		exit 1
+		;;
+esac
 ZMUX_APP_VARIANT="${ZMUX_APP_VARIANT:-prod}"
 if [[ "$ZMUX_APP_VARIANT" == "dev" ]]; then
 	# CDXC:DevAppFlavor 2026-04-28-02:01: Local development needs a separate
@@ -21,8 +35,8 @@ else
 fi
 INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 INSTALLED_APP="$INSTALL_DIR/$APP_NAME.app"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build}"
+# CDXC:LocalStart 2026-05-15-07:53: `bun run start` must launch the architecture-specific app product that `build-zmux-host.sh` just produced. Keep the DerivedData default aligned with the build script so arm64 local starts do not copy an older app from build/, while Intel release/dev validation can still set ZMUX_MACOS_ARCH=x86_64 and resolve build/x86_64.
+DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build/$ZMUX_MACOS_ARCH}"
 
 "$SCRIPT_DIR/build-zmux-host.sh"
 
@@ -32,6 +46,8 @@ APP_PATH="$(
 		-scheme zmux \
 		-configuration "$CONFIGURATION" \
 		-derivedDataPath "$DERIVED_DATA" \
+		ARCHS="$ZMUX_MACOS_ARCH" \
+		ONLY_ACTIVE_ARCH=NO \
 		-showBuildSettings 2>/dev/null |
 	awk -F' = ' '/BUILT_PRODUCTS_DIR/ { print $2; exit }'
 )/$APP_NAME.app"
