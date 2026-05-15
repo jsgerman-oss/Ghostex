@@ -35,10 +35,10 @@
 
 .group[data-project-group="true"][data-collapsed="false"] {
   /*
-   * CDXC:ProjectGroups 2026-05-06-18:42
-   * Project groups keep title/editor controls visually connected to their
-   * session stack. The editor launcher moved into the header on 2026-05-08, so
-   * expanded projects still use tighter header-to-session spacing.
+   * CDXC:ProjectGroups 2026-05-15-14:33:
+   * Project groups no longer render sidebar Code editor rows or project-header
+   * Code reveal buttons, but expanded projects still use tighter
+   * header-to-session spacing.
    */
   gap: calc(5px * var(--sidebar-density-scale));
 }
@@ -288,6 +288,82 @@
 
 .group-title-row:has(.group-collapsed-status-counts) .group-title-spacer {
   flex: 0 0 auto;
+}
+
+.group-project-diff-stats {
+  /*
+   * CDXC:ProjectDiffStats 2026-05-15-13:58:
+   * Project git line deltas moved from the former sidebar Code launcher to the
+   * project row.
+   * Keep them low-opacity so project names remain the primary scan target.
+   *
+   * CDXC:ProjectDiffStats 2026-05-15-14:26:
+   * Project git stats should sit in the same right-side visual slot as session
+   * Last Active timestamps. Match that timestamp scale and fully collapse the
+   * hidden project action cluster so no empty gap remains at the row edge.
+   *
+   * CDXC:ProjectDiffStats 2026-05-15-14:45:
+   * When project header controls appear on hover/focus, git stats must leave
+   * layout entirely instead of only fading out. Otherwise their invisible width
+   * can overlap the revealed browser/terminal/agent buttons.
+   */
+  align-items: center;
+  display: inline-flex;
+  flex: none;
+  font-size: calc(9px * var(--sidebar-density-scale));
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  gap: calc(7px * var(--sidebar-density-scale));
+  justify-content: flex-end;
+  letter-spacing: 0;
+  line-height: 1.2;
+  margin-left: auto;
+  min-height: calc(14px * var(--sidebar-density-scale));
+  opacity: 0.32;
+  overflow: visible;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    visibility 0s linear 0s;
+  visibility: visible;
+  white-space: nowrap;
+}
+
+.group-title-row:has(.group-project-diff-stats)
+  .group-header-actions:not([data-open="true"]) {
+  display: none;
+}
+
+.group-head:hover .group-title-row:has(.group-project-diff-stats) .group-header-actions,
+.group-head:has(:focus-visible)
+  .group-title-row:has(.group-project-diff-stats)
+  .group-header-actions {
+  display: inline-flex;
+}
+
+.group-project-diff-files {
+  color: color-mix(in srgb, #8ec7ff 84%, var(--app-foreground) 16%);
+  flex: none;
+}
+
+.group-project-diff-stat {
+  flex: none;
+}
+
+.group-project-diff-stat-additions {
+  color: color-mix(in srgb, #9ee6b2 84%, var(--app-foreground) 16%);
+}
+
+.group-project-diff-stat-deletions {
+  color: color-mix(in srgb, #ffaaa6 84%, var(--app-foreground) 16%);
+}
+
+.group-head:hover .group-project-diff-stats,
+.group-head:has(:focus-visible) .group-project-diff-stats,
+.group-title-row:has(.group-header-actions[data-open="true"]) .group-project-diff-stats {
+  display: none;
+  opacity: 0;
+  visibility: hidden;
 }
 
 .group-title-row:has(.group-collapsed-status-counts)
@@ -555,25 +631,6 @@
 .group-add-icon {
   display: block;
   flex: none;
-}
-
-.group-code-editor-icon {
-  display: block;
-  flex: none;
-  filter: grayscale(1) saturate(0);
-  height: 14px;
-  opacity: 0.62;
-  width: 14px;
-}
-
-/*
- * CDXC:EditorPanes 2026-05-10-15:56
- * The project-header VS Code icon is a compact action glyph, not a session
- * status indicator, so it stays monochrome even when the editor pane is open.
- */
-.group-code-editor-button[data-open="true"] .group-code-editor-icon {
-  filter: grayscale(1) saturate(0);
-  opacity: 0.62;
 }
 
 .group-collapsed-summary {
@@ -1123,6 +1180,14 @@
   min-height: 32px;
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"] .group-project-diff-stats {
+  font-size: 13.55px;
+  font-weight: 300 !important;
+  gap: 8px;
+  letter-spacing: 0;
+  line-height: 20px;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-collapse-button {
   color: #a6adb6;
   height: 16px;
@@ -1194,20 +1259,6 @@
   border-radius: 7px;
   transition: none;
   width: 22px;
-}
-
-.sidebar-reference-layout[data-reference-sidebar="true"] .group-code-editor-icon {
-  filter: grayscale(1) saturate(0);
-  height: 14px;
-  opacity: 0.55;
-  width: 14px;
-}
-
-.sidebar-reference-layout[data-reference-sidebar="true"]
-  .group-code-editor-button[data-open="true"]
-  .group-code-editor-icon {
-  filter: grayscale(1) saturate(0);
-  opacity: 0.55;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-split-button {
@@ -1315,9 +1366,6 @@
   overflow: visible;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"]
-  .group[data-session-connector="true"]
-  .project-editor-session-frame,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-session-connector="true"] .session-frame {
   margin-left: 0;
   width: 100%;

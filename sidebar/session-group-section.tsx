@@ -57,7 +57,6 @@ import { useSidebarStore } from "./sidebar-store";
 import { SortableSessionCard } from "./sortable-session-card";
 import { useCollapsibleHeight } from "./use-collapsible-height";
 import type { WebviewApi } from "./webview-api";
-import { VisualStudioCodeIcon } from "./brand-icons";
 import { openAppModal } from "./app-modal-host-bridge";
 import {
   DEFAULT_WORKSPACE_THEME_COLOR,
@@ -78,7 +77,6 @@ const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
 const TOUCH_GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
-type ProjectEditorButtonStatus = "idle" | "opening" | "running" | "error";
 const PROJECT_EDITOR_DISPLAY_MAX_FILES = 99;
 const PROJECT_EDITOR_DISPLAY_MAX_LINES = 999;
 const PROJECT_CONTEXT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: SidebarTheme }> = [
@@ -207,18 +205,18 @@ export function shouldFocusGroupOnHeaderActivation({
   return shouldSelectEmptyProject || (hasProjectContext && !isActive);
 }
 
-export function formatProjectEditorButtonLabel(
+export function formatProjectEditorDiffStatsLabel(
   stats: SidebarProjectDiffStats,
   showFileCount = false,
 ): string {
   /**
-   * CDXC:EditorPanes 2026-05-10-16:12
-   * Project editor diff labels avoid brackets and bullet separators. The row
-   * shows added/removed line counts by default, and only includes the changed
-   * file count when the user enables that Settings toggle.
+   * CDXC:ProjectDiffStats 2026-05-15-13:58:
+   * Project git additions/deletions belong beside the project name, not inside
+   * the former sidebar Code launcher. Keep the compact stat formatter shared
+   * so the header label and tests preserve the existing capped numeric
+   * behavior.
    */
   return [
-    "Code",
     showFileCount ? formatProjectEditorFilesCount(stats.files) : undefined,
     `+${formatProjectEditorLineCount(stats.additions)}`,
     `-${formatProjectEditorLineCount(stats.deletions)}`,
@@ -235,82 +233,30 @@ function formatProjectEditorLineCount(lines: number): string {
   return String(Math.min(PROJECT_EDITOR_DISPLAY_MAX_LINES, Math.max(0, lines)));
 }
 
-function formatProjectEditorStatusLabel(
-  stats: SidebarProjectDiffStats,
-  status: ProjectEditorButtonStatus,
-  errorMessage: string | undefined,
-  showFileCount: boolean,
-): string {
-  if (status === "opening") {
-    return "Code opening";
-  }
-  if (status === "error") {
-    return `Code error: ${errorMessage ?? "VS Code failed to load."}`;
-  }
-  return formatProjectEditorButtonLabel(stats, showFileCount);
-}
-
-function ProjectEditorDiffLabel({
-  errorMessage,
+function ProjectHeaderDiffStats({
   showFileCount,
   stats,
-  status,
 }: {
-  errorMessage?: string;
   showFileCount: boolean;
   stats: SidebarProjectDiffStats;
-  status: ProjectEditorButtonStatus;
 }) {
-  /**
-   * CDXC:EditorPanes 2026-05-10-16:12
-   * Visible project editor diff counts align to the right edge without
-   * brackets or bullet separators. Files stay hidden unless Settings enables
-   * them, while added/removed lines keep semantic green/red colors.
-   *
-   * CDXC:EditorPanes 2026-05-09-17:24
-   * Startup and crash states stay in the same session-card row instead of
-   * disappearing. Opening/error labels make the row clickable for retry and
-   * expose startup diagnostics after the native ten-second timeout.
-  */
-  if (status === "opening") {
-    return (
-      <span className="project-editor-status-label project-editor-status-opening">
-        Code opening
-      </span>
-    );
-  }
-  if (status === "error") {
-    return (
-      <span className="project-editor-status-label project-editor-status-error">
-        <span className="project-editor-status-prefix">Code error</span>
-        {errorMessage ? (
-          <>
-            <span aria-hidden="true" className="project-editor-diff-divider">
-              |
-            </span>
-            <span className="project-editor-status-message">{errorMessage}</span>
-          </>
-        ) : null}
-      </span>
-    );
-  }
   return (
-    <span className="project-editor-diff-label">
-      <span className="project-editor-diff-prefix">Code</span>
-      <span className="project-editor-diff-stats">
-        {showFileCount ? (
-          <span className="project-editor-diff-files">
-            {formatProjectEditorFilesCount(stats.files)}
-          </span>
-        ) : null}
-        <span className="project-editor-diff-stat project-editor-diff-stat-additions">
-          +{formatProjectEditorLineCount(stats.additions)}
+    <div
+      aria-label={`Git changes: ${formatProjectEditorDiffStatsLabel(stats, showFileCount)}`}
+      className="group-project-diff-stats"
+    >
+      {showFileCount ? (
+        <span className="group-project-diff-files">
+          {formatProjectEditorFilesCount(stats.files)}
         </span>
-        <span className="project-editor-diff-stat project-editor-diff-stat-deletions">
-          -{formatProjectEditorLineCount(stats.deletions)}
-        </span>
+      ) : null}
+      <span className="group-project-diff-stat group-project-diff-stat-additions">
+        +{formatProjectEditorLineCount(stats.additions)}
       </span>
-    </span>
+      <span className="group-project-diff-stat group-project-diff-stat-deletions">
+        -{formatProjectEditorLineCount(stats.deletions)}
+      </span>
+    </div>
   );
 }
 
@@ -402,7 +348,6 @@ export function SessionGroupSection({
   const [draftTitle, setDraftTitle] = useState(group?.title ?? "");
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [isProjectEditorButtonShown, setIsProjectEditorButtonShown] = useState(false);
   const [openControlMenu, setOpenControlMenu] = useState<GroupControlMenu>();
   const [primaryProjectAgentLauncherId, setPrimaryProjectAgentLauncherId] = useState(
     readPrimaryProjectAgentLauncherId,
@@ -514,29 +459,6 @@ export function SessionGroupSection({
     Boolean(projectContext) &&
     isCollapsed &&
     (sessionSummary.attentionCount > 0 || sessionSummary.workingCount > 0);
-  const projectEditorStatus: ProjectEditorButtonStatus =
-    projectContext?.editor.status ??
-    (projectContext?.editor.isOpen === true ? "running" : "idle");
-  const displayedProjectEditorStatus: ProjectEditorButtonStatus =
-    projectEditorStatus === "idle" && isProjectEditorButtonShown ? "opening" : projectEditorStatus;
-  const projectEditorErrorMessage =
-    projectContext?.editor.errorMessage?.trim() || "VS Code failed to load.";
-  const projectEditorActivity =
-    displayedProjectEditorStatus === "error"
-      ? "attention"
-      : displayedProjectEditorStatus === "opening"
-        ? "working"
-        : "idle";
-  const projectEditorLifecycleState =
-    displayedProjectEditorStatus === "error" ? "error" : "running";
-  /**
-   * CDXC:EditorPanes 2026-05-09-17:24
-   * The project editor row represents a started editor attempt. Keep it visible
-   * while VS Code is opening, after load errors, and when running even if the
-   * focused workspace surface switches to a terminal.
-   */
-  const shouldShowProjectEditorRow =
-    displayedProjectEditorStatus !== "idle" || isProjectEditorButtonShown;
   const collapsedSummaryLabel = getCollapsedSummaryLabel(collapsedIndicatorActivity);
   const sessionsRegionId = `${group.groupId}-sessions`;
   const groupHeaderAnchorStyle = {
@@ -553,15 +475,15 @@ export function SessionGroupSection({
     sessionDropIndicatorGroupId === groupId;
   const showSessionGroupConnector = shouldShowSessionGroupConnector({
     groupKind: group.kind,
-    hasProjectEditor: Boolean(projectContext),
     sessions: groupSessions,
   });
   const emptyStateLabel = isBrowserGroup ? "No browsers" : isChatCollection ? "No chats" : "No sessions";
   const shouldSelectEmptyProject = Boolean(projectContext && actualSessionCount === 0);
   /**
-   * CDXC:ProjectGroups 2026-05-06-18:42
-   * Project groups remain expandable even with no sessions because the header
-   * owns the editor launcher and the body can later receive project sessions.
+   * CDXC:ProjectGroups 2026-05-15-14:33:
+   * Project groups remain expandable even with no sessions because the body can
+   * later receive project sessions. The sidebar no longer exposes an embedded
+   * Code editor row or a project-header Code reveal button.
    * Browser groups still block empty expansion, and non-project empty groups
    * keep the old static header behavior.
    */
@@ -577,7 +499,6 @@ export function SessionGroupSection({
   const shouldSuppressProjectCollapseTooltip =
     Boolean(projectContext) && canToggleCollapsed && !shouldSelectEmptyProject;
   const createBrowserPaneTooltip = "Create Browser Pane";
-  const revealCodeEditorTooltip = "Show Code Editor";
   const agentSelectorTooltip = "Select Agent";
   const createProjectTerminalTooltip = "Create Terminal";
   const createSessionTooltip = isBrowserGroup
@@ -639,7 +560,6 @@ export function SessionGroupSection({
   useEffect(() => {
     setContextMenuPosition(undefined);
     setOpenControlMenu(undefined);
-    setIsProjectEditorButtonShown(false);
   }, [group.groupId, group.title]);
 
   useEffect(() => {
@@ -831,33 +751,6 @@ export function SessionGroupSection({
     });
   };
 
-  const openProjectEditorFromHeader = () => {
-    if (!projectContext) {
-      return;
-    }
-
-    /**
-     * CDXC:EditorPanes 2026-05-08-13:34
-     * The project header VS Code icon is an open command, not a two-step
-     * reveal-only control. Keep the session-style row visible after the click,
-     * but immediately start and focus the embedded project editor so the
-     * button's behavior matches its visible VS Code affordance.
-     */
-    setIsProjectEditorButtonShown(true);
-    refreshProjectDiffStats();
-    openProjectEditor();
-  };
-
-  const handleProjectEditorKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Enter" && event.key !== " ") {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopPropagation();
-    openProjectEditor();
-  };
-
   const requestCloseGroup = () => {
     if (!canClose) {
       return;
@@ -935,46 +828,6 @@ export function SessionGroupSection({
       groupId: group.groupId,
       type: "openWorkspaceProjectInFinderForGroup",
     });
-  };
-
-  const openProjectEditor = () => {
-    if (!projectContext) {
-      return;
-    }
-    vscode.postMessage({
-      groupId: group.groupId,
-      type: "openWorkspaceProjectEditorForGroup",
-    });
-  };
-
-  const closeProjectEditor = () => {
-    if (!projectContext) {
-      return;
-    }
-    /**
-     * CDXC:EditorPanes 2026-05-06-18:55
-     * Middle-clicking the project editor card closes that project-owned editor
-     * surface. It is not a session card, so send a group-scoped editor command
-     * instead of reusing closeSession.
-     */
-    vscode.postMessage({
-      groupId: group.groupId,
-      type: "closeWorkspaceProjectEditorForGroup",
-    });
-  };
-
-  const hideProjectEditorButton = () => {
-    if (!projectContext) {
-      return;
-    }
-
-    /**
-     * CDXC:EditorPanes 2026-05-08-13:00
-     * The revealed VS Code session-style row is closeable. Closing it hides the
-     * row and closes the project-owned embedded editor surface when present.
-     */
-    setIsProjectEditorButtonShown(false);
-    closeProjectEditor();
   };
 
   const refreshProjectDiffStats = () => {
@@ -1130,6 +983,7 @@ export function SessionGroupSection({
           className="group-head"
           data-collapsible="true"
           onClick={handleGroupHeaderClick}
+          onMouseEnter={refreshProjectDiffStats}
           style={groupHeaderStyle}
         >
           <div className="group-title-wrap">
@@ -1331,6 +1185,12 @@ export function SessionGroupSection({
                     ) : null}
                   </div>
                 ) : null}
+                {projectContext && !shouldShowCollapsedProjectCounts ? (
+                  <ProjectHeaderDiffStats
+                    showFileCount={showProjectEditorDiffFileCount}
+                    stats={projectContext.editor.diffStats}
+                  />
+                ) : null}
                 {/*
                  * CDXC:SidebarGroups 2026-04-28-02:41
                  * Browser section headers should stay visually quiet: do not
@@ -1349,23 +1209,17 @@ export function SessionGroupSection({
                     {projectContext ? (
                       /**
                        * CDXC:ProjectGroups 2026-05-10-14:18
-                       * Project headers expose the same compact control family
-                       * on every project row: a project-scoped split selector,
-                       * browser pane creation, code editor reveal, a separate
+                       * Project headers expose a compact control family on
+                       * every project row: browser pane creation, a separate
                        * terminal button, and an agent-only split launcher.
                        * Terminal creation is not an
                        * agent dropdown option so terminal and agent launches
                        * stay visually and behaviorally distinct.
                        *
-                       * CDXC:ProjectGroups 2026-05-11-10:47
-                       * The terminal button appears before the agent split
-                       * button on project header rows, matching the requested
-                       * visible order of browser, editor, terminal, then agent.
-                       *
-                       * CDXC:EditorPanes 2026-05-08-12:46
-                       * The VS Code header icon is a reveal control, not the
-                       * editor launcher itself. Clicking it shows the
-                       * session-style project editor button below the header.
+                       * CDXC:ProjectGroups 2026-05-15-14:33:
+                       * The sidebar no longer shows the Code editor row or a
+                       * project-header Show Code Editor button. Embedded Code
+                       * remains reachable through the native titlebar.
                        *
                        * CDXC:ProjectGroups 2026-05-08-15:28
                        * Top-level project row icon buttons need Radix
@@ -1389,24 +1243,6 @@ export function SessionGroupSection({
                               className="group-add-icon"
                               size={14}
                               stroke={2}
-                            />
-                          </button>
-                        </AppTooltip>
-                        <AppTooltip content={revealCodeEditorTooltip}>
-                          <button
-                            aria-label={`Open code editor for ${group.title}`}
-                            className="group-add-button group-code-editor-button"
-                            data-open={String(projectContext.editor.isOpen)}
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              openProjectEditorFromHeader();
-                            }}
-                            type="button"
-                          >
-                            <VisualStudioCodeIcon
-                              aria-hidden="true"
-                              className="group-code-editor-icon"
                             />
                           </button>
                         </AppTooltip>
@@ -1544,99 +1380,6 @@ export function SessionGroupSection({
                   type="button"
                 />
               </>
-            ) : null}
-            {projectContext && shouldShowProjectEditorRow ? (
-              /*
-               * CDXC:EditorPanes 2026-05-08-12:46
-               * After reveal, the code editor affordance should read like the
-               * other session buttons in the group rather than a permanent
-               * header control. It remains project-scoped and opens the
-               * embedded editor.
-               *
-               * CDXC:EditorPanes 2026-05-08-12:52
-               * Match session cards by reusing the exact
-               * session-frame/session-head DOM classes. Keep only the
-               * project-scoped command handling custom.
-               *
-               * CDXC:EditorPanes 2026-05-08-13:00
-               * The revealed VS Code row belongs inside the project group list
-               * before normal sessions and has its own close control.
-               *
-               * CDXC:EditorPanes 2026-05-10-16:20
-               * The project editor row has no hover tooltip; the visible Code
-               * label and right-aligned diff stats are self-explanatory here.
-               */
-              <div
-                className="session-frame project-editor-session-frame"
-                data-activity={projectEditorActivity}
-                data-focused={String(projectContext.editor.isOpen)}
-                data-group-connector={String(showSessionGroupConnector)}
-                data-lifecycle-state={projectEditorLifecycleState}
-                data-running="true"
-                data-sleeping={String(projectContext.editor.isSleeping)}
-                data-visible={String(projectContext.editor.isOpen)}
-              >
-                <VisualStudioCodeIcon
-                  aria-hidden="true"
-                  className="session-floating-agent-tabler-icon project-editor-floating-icon"
-                />
-                <article
-                  aria-label={`Open code editor for ${group.title}: ${formatProjectEditorStatusLabel(
-                    projectContext.editor.diffStats,
-                    displayedProjectEditorStatus,
-                    projectEditorErrorMessage,
-                    showProjectEditorDiffFileCount,
-                  )}`}
-                  aria-pressed={projectContext.editor.isOpen}
-                  className="session project-editor-card-button"
-                  data-focused={String(projectContext.editor.isOpen)}
-                  data-load-status={displayedProjectEditorStatus}
-                  data-placement="session"
-                  data-sleeping={String(projectContext.editor.isSleeping)}
-                  data-visible={String(projectContext.editor.isOpen)}
-                  onAuxClick={(event) => {
-                    if (event.button !== 1) {
-                      return;
-                    }
-
-                    event.preventDefault();
-                    event.stopPropagation();
-                    hideProjectEditorButton();
-                  }}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    openProjectEditor();
-                  }}
-                  onKeyDown={handleProjectEditorKeyDown}
-                  onMouseEnter={refreshProjectDiffStats}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <div className="session-head project-editor-session-head">
-                    <div className="session-alias-heading">
-                      <ProjectEditorDiffLabel
-                        errorMessage={projectEditorErrorMessage}
-                        showFileCount={showProjectEditorDiffFileCount}
-                        stats={projectContext.editor.diffStats}
-                        status={displayedProjectEditorStatus}
-                      />
-                    </div>
-                  </div>
-                </article>
-                <button
-                  aria-label={`Close code editor button for ${group.title}`}
-                  className="close-button project-editor-close-button"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    hideProjectEditorButton();
-                  }}
-                  type="button"
-                >
-                  <IconX aria-hidden="true" size={14} stroke={1.8} />
-                </button>
-              </div>
             ) : null}
             {orderedSessionIds.length > 0 ? (
               orderedSessionIds.map((sessionId, sessionIndex) => (

@@ -31,20 +31,18 @@ describe("shouldShowSessionGroupConnector", () => {
     ).toBe(true);
   });
 
-  test("should show the connector for empty project groups with an editor card", () => {
+  test("should not show the connector for empty project groups without sidebar editor rows", () => {
     /**
-     * CDXC:ProjectGroups 2026-05-06-19:01
-     * The editor card is project body content. Empty project groups still need
-     * the same left connector rail and collapse affordance as projects that
-     * already contain terminal/browser sessions.
+     * CDXC:ProjectGroups 2026-05-15-14:33:
+     * Empty project groups no longer have a sidebar Code editor row, so they
+     * should not keep a connector rail only for hidden editor content.
      */
     expect(
       shouldShowSessionGroupConnector({
         groupKind: "workspace",
-        hasProjectEditor: true,
         sessions: [],
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("should not show the connector when a non-project group is empty", () => {

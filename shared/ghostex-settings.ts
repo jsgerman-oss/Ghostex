@@ -175,10 +175,10 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   customDefaultEditorCommand: "",
   defaultEditorCommand: "code",
   /**
-   * CDXC:EditorPanes 2026-05-10-16:12
-   * Project editor rows should hide the changed-file count by default and show
-   * only added/removed line counts. Users can opt back into the file number
-   * from Settings when they want the full diff summary.
+   * CDXC:ProjectDiffStats 2026-05-15-14:33:
+   * Project-header git stats should hide the changed-file count by default and
+   * show only added/removed line counts. Users can opt back into the file
+   * number from Settings when they want the full diff summary.
    */
   showProjectEditorDiffFileCount: false,
   completionBellEnabled: false,
@@ -198,7 +198,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * Session-card Last Active timestamps stay visible by default for existing
    * users, but Settings owns an explicit hide toggle for quieter title rows.
    * This setting applies only to session-card timestamps and must not affect
-   * project editor git diff stats.
+   * project-header git diff stats.
    */
   hideLastActiveTimeOnSessionCards: false,
   /**
@@ -530,8 +530,8 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       ),
     ),
     /**
-     * CDXC:EditorPanes 2026-05-10-16:12
-     * Missing or invalid older settings must keep the project editor row in
+     * CDXC:ProjectDiffStats 2026-05-15-14:33:
+     * Missing or invalid older settings must keep project-header git stats in
      * the quieter default that hides the changed-file count.
      */
     showProjectEditorDiffFileCount: readBoolean(
@@ -572,7 +572,7 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
      * CDXC:SidebarSessions 2026-05-15-08:57
      * Older settings files should preserve the current session-card timestamp
      * behavior. Explicit true hides only the Last Active label, not the code
-     * editor row's separate git additions/deletions summary.
+     * project header's separate git additions/deletions summary.
      */
     hideLastActiveTimeOnSessionCards: readBoolean(
       source,

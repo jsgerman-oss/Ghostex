@@ -27,7 +27,9 @@ const AGENT_SECONDARY_LABELS: Record<SidebarAgentIcon, readonly string[]> = {
   claude: ["claude", "claude code"],
   codex: ["codex", "codex cli", "openai codex"],
   copilot: ["copilot", "github copilot"],
+  "factory-droid": ["droid", "factory droid"],
   gemini: ["gemini"],
+  "grok-build": ["grok", "grok build"],
   opencode: ["open code", "opencode"],
   pi: ["pi", "π"],
   t3: ["t3", "t3 code"],
@@ -102,7 +104,7 @@ export function SessionCardContent({
    * CDXC:SidebarSessions 2026-05-15-08:57
    * Users can hide active session-card Last Active timestamps from Settings.
    * Gate only this timestamp label; trailing prefixes such as project metadata
-   * and separate project-editor git diff stats remain outside this visibility
+   * and separate project-header git diff stats remain outside this visibility
    * control.
    *
    * CDXC:SidebarSessions 2026-05-15-09:22
@@ -234,6 +236,7 @@ export function getSessionCardTitleTooltip({
     | "agentIcon"
     | "alias"
     | "detail"
+    | "firstUserMessage"
     | "kind"
     | "isPrimaryTitleTerminalTitle"
     | "primaryTitle"
@@ -273,6 +276,10 @@ export function getSessionCardTitleTooltip({
     terminalTitle: session.terminalTitle,
     alias: session.alias,
   });
+  const fullTooltipHeadingText = getFullSessionTooltipHeadingText({
+    firstUserMessage: session.firstUserMessage,
+    headingText: tooltipHeadingText,
+  });
   /**
    * CDXC:PreviousSessions 2026-05-08-16:07
    * Previous-session search cards need scannable restore context in their
@@ -292,7 +299,7 @@ export function getSessionCardTitleTooltip({
       : undefined;
   const titleTooltip = buildSessionTitleTooltip({
     debugSessionNumberTooltip,
-    headingText: tooltipHeadingText,
+    headingText: fullTooltipHeadingText,
     secondaryText: tooltipMetadata,
   });
   const titleTooltipOptions = getSessionTitleTooltipOptions({
@@ -305,6 +312,45 @@ export function getSessionCardTitleTooltip({
     headingText,
     ...titleTooltipOptions,
   };
+}
+
+function getFullSessionTooltipHeadingText({
+  firstUserMessage,
+  headingText,
+}: {
+  firstUserMessage?: string;
+  headingText: string;
+}): string {
+  /**
+   * CDXC:SessionTooltips 2026-05-15-15:57:
+   * Active and Previous session-card tooltips must show the full human title line when the visible session title has already been shortened with an ellipsis. First-prompt auto titles can preserve only the shortened card label, so use the saved first user message as the full tooltip heading only when it clearly starts with the displayed truncated prefix.
+   */
+  const normalizedFirstUserMessage = firstUserMessage?.trim().replace(/\s+/g, " ");
+  if (!normalizedFirstUserMessage) {
+    return headingText;
+  }
+
+  const unsyncedLabelSuffix = ` ${UNSYNCED_TITLE_LABEL}`;
+  const headingWithoutUnsyncedLabel = headingText.endsWith(unsyncedLabelSuffix)
+    ? headingText.slice(0, -unsyncedLabelSuffix.length)
+    : headingText;
+  const normalizedHeading = headingWithoutUnsyncedLabel.trim();
+  const truncatedPrefix = normalizedHeading.replace(/(?:\.\.\.|…)$/u, "").trim();
+  if (
+    truncatedPrefix.length > 0 &&
+    truncatedPrefix.length < normalizedFirstUserMessage.length &&
+    truncatedPrefix !== normalizedHeading &&
+    normalizedFirstUserMessage.toLowerCase().startsWith(truncatedPrefix.toLowerCase())
+  ) {
+    const fullHeading = normalizedHeading.startsWith(TERMINAL_TITLE_MARKER)
+      ? `${TERMINAL_TITLE_MARKER} ${normalizedFirstUserMessage}`
+      : normalizedFirstUserMessage;
+    return headingText.endsWith(unsyncedLabelSuffix)
+      ? `${fullHeading} ${UNSYNCED_TITLE_LABEL}`
+      : fullHeading;
+  }
+
+  return headingText;
 }
 
 export function formatSessionHeadingText({

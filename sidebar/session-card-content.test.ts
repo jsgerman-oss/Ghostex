@@ -127,6 +127,33 @@ describe("getSessionCardTitleTooltip", () => {
     });
   });
 
+  test("should expand ellipsized first-prompt titles in the tooltip heading", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "Session 1",
+          detail: "OpenAI Codex",
+          firstUserMessage:
+            "when using zmx/tmux/zellij as the persistence provider, keep the sidebar title readable",
+          isPrimaryTitleTerminalTitle: true,
+          primaryTitle: "when using zmx/tmux/zellij as the persistence...",
+          sessionNumber: "s-260515-092521-c2a",
+          sessionPersistenceName: "ghostex-terminal-session-5-092521-c2a",
+          sessionPersistenceProvider: "zmx",
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: true,
+      }),
+    ).toEqual({
+      headingText: "when using zmx/tmux/zellij as the persistence...",
+      tooltip:
+        "when using zmx/tmux/zellij as the persistence provider, keep the sidebar title readable\n\nzmx session: ghostex-terminal-session-5-092521-c2a\n\nSession number: s-260515-092521-c2a",
+      tooltipWhen: "always",
+    });
+  });
+
   test("should stop showing the unsynced marker once the terminal title matches", () => {
     expect(
       getSessionCardTitleTooltip({

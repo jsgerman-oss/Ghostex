@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
-  formatProjectEditorButtonLabel,
+  formatProjectEditorDiffStatsLabel,
   getEmptyBrowserGroupExpandTooltip,
   shouldFocusGroupOnHeaderActivation,
 } from "./session-group-section";
@@ -79,34 +79,34 @@ describe("shouldFocusGroupOnHeaderActivation", () => {
   });
 });
 
-describe("formatProjectEditorButtonLabel", () => {
-  test("formats the compact code-prefixed changed-lines summary by default", () => {
+describe("formatProjectEditorDiffStatsLabel", () => {
+  test("formats the compact changed-lines summary by default", () => {
     expect(
-      formatProjectEditorButtonLabel({
+      formatProjectEditorDiffStatsLabel({
         additions: 9,
         deletions: 11,
         files: 1,
         isLoading: false,
         isRepo: true,
       }),
-    ).toBe("Code +9 -11");
+    ).toBe("+9 -11");
   });
 
-  test("caps the compact project editor diff counts for stable sidebar width", () => {
+  test("caps the compact project diff counts for stable sidebar width", () => {
     expect(
-      formatProjectEditorButtonLabel({
+      formatProjectEditorDiffStatsLabel({
         additions: 1200,
         deletions: 1001,
         files: 120,
         isLoading: false,
         isRepo: true,
       }),
-    ).toBe("Code +999 -999");
+    ).toBe("+999 -999");
   });
 
   test("includes the capped file count when enabled", () => {
     expect(
-      formatProjectEditorButtonLabel(
+      formatProjectEditorDiffStatsLabel(
         {
           additions: 1200,
           deletions: 1001,
@@ -116,6 +116,6 @@ describe("formatProjectEditorButtonLabel", () => {
         },
         true,
       ),
-    ).toBe("Code 99 +999 -999");
+    ).toBe("99 +999 -999");
   });
 });

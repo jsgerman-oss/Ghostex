@@ -14,13 +14,14 @@ function createStoryProjectContext(projectId: string): NonNullable<SidebarStoryG
   return {
     canRemoveProject: true,
     /**
-     * CDXC:EditorPanes 2026-05-06-14:21
-     * Sidebar stories model the project editor launcher as project context so
-     * visual fixtures keep matching production expanded project cards.
+     * CDXC:ProjectDiffStats 2026-05-15-14:33:
+     * Sidebar stories keep project editor state in project context because the
+     * project header still renders git diff stats from that shared editor
+     * contract even though the sidebar Code row is no longer visible.
      *
      * CDXC:EditorPanes 2026-05-09-17:24
      * Project editor fixture state includes load status because Storybook must
-     * exercise the same visibility contract used for opening/error rows.
+     * exercise the same host state the titlebar and native editor page consume.
      */
     editor: {
       diffStats: createDefaultSidebarProjectDiffStats(),
@@ -40,10 +41,10 @@ function createStoryOpenProjectEditorContext(
   return {
     ...projectContext,
     /**
-     * CDXC:EditorPanes 2026-05-10-16:20
+     * CDXC:EditorPanes 2026-05-15-13:58:
      * The Combined header-alignment Storybook fixture keeps the project editor
-     * row visible with nonzero diff stats so its right-edge alignment can be
-     * verified against normal session Last Active timestamps.
+     * row visible with nonzero diff stats so the project-header placement can
+     * be verified while the Code row remains a stable label.
      */
     editor: {
       ...projectContext.editor,

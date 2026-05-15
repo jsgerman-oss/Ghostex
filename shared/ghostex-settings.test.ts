@@ -72,11 +72,11 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
-  test("hides project editor file counts by default", () => {
+  test("hides project-header git file counts by default", () => {
     /**
-     * CDXC:EditorPanes 2026-05-10-16:12
-     * Project editor rows default to showing added/removed line counts only;
-     * the changed-file number is an explicit Settings preference.
+     * CDXC:ProjectDiffStats 2026-05-15-14:33:
+     * Project-header git stats default to showing added/removed line counts
+     * only; the changed-file number is an explicit Settings preference.
      */
     expect(DEFAULT_ghostex_SETTINGS.showProjectEditorDiffFileCount).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
@@ -91,7 +91,7 @@ describe("normalizeghostexSettings", () => {
     /**
      * CDXC:SidebarSessions 2026-05-15-08:57
      * Last Active timestamps on session cards stay visible by default. Users
-     * can hide that timestamp without affecting the project editor row's
+     * can hide that timestamp without affecting the project header's
      * independent git additions/deletions stats.
      */
     expect(DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards).toBe(false);
