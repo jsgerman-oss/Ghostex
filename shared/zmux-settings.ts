@@ -81,6 +81,7 @@ export type zmuxSettings = {
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
+  hideLastActiveTimeOnSessionCards: boolean;
   showMacOSAttentionNotifications: boolean;
   hideFloatingSessionStatusIndicators: boolean;
   hideMenuBarSessionStatusIndicators: boolean;
@@ -187,6 +188,14 @@ export const DEFAULT_zmux_SETTINGS: zmuxSettings = {
    */
   showCloseButtonOnSessionCards: true,
   showHotkeysOnSessionCards: false,
+  /**
+   * CDXC:SidebarSessions 2026-05-15-08:57
+   * Session-card Last Active timestamps stay visible by default for existing
+   * users, but Settings owns an explicit hide toggle for quieter title rows.
+   * This setting applies only to session-card timestamps and must not affect
+   * project editor git diff stats.
+   */
+  hideLastActiveTimeOnSessionCards: false,
   /**
    * CDXC:SessionAttentionNotifications 2026-05-10-16:46
    * macOS attention notifications are enabled by default so a background
@@ -553,6 +562,17 @@ export function normalizezmuxSettings(candidate: unknown): zmuxSettings {
       source,
       "showHotkeysOnSessionCards",
       DEFAULT_zmux_SETTINGS.showHotkeysOnSessionCards,
+    ),
+    /**
+     * CDXC:SidebarSessions 2026-05-15-08:57
+     * Older settings files should preserve the current session-card timestamp
+     * behavior. Explicit true hides only the Last Active label, not the code
+     * editor row's separate git additions/deletions summary.
+     */
+    hideLastActiveTimeOnSessionCards: readBoolean(
+      source,
+      "hideLastActiveTimeOnSessionCards",
+      DEFAULT_zmux_SETTINGS.hideLastActiveTimeOnSessionCards,
     ),
     /**
      * CDXC:SessionAttentionNotifications 2026-05-10-16:46

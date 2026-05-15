@@ -428,6 +428,11 @@ export function SettingsModal({
         subtitle: "Display card shortcuts where available.",
         title: "Show hotkeys on cards",
       },
+      {
+        key: "hideLastActiveTimeOnSessionCards",
+        subtitle: "Hide Last Active timestamps from session-card title rows.",
+        title: "Hide last active time",
+      },
     ]),
     pets: getSettingsSectionSearch(settingsSearchQuery, "Pets", [
       {
@@ -1270,6 +1275,15 @@ export function SettingsModal({
                 label="Show hotkeys on cards"
                 {...getSettingModificationProps("showHotkeysOnSessionCards")}
                 onChange={(checked) => updateDraft("showHotkeysOnSessionCards", checked)}
+              />
+              ) : null}
+              {shouldShowSetting(settingsSearch.sessionCards, "hideLastActiveTimeOnSessionCards") ? (
+              <ToggleField
+                checked={draft.hideLastActiveTimeOnSessionCards}
+                description="Hide Last Active timestamps from session-card title rows."
+                label="Hide last active time"
+                {...getSettingModificationProps("hideLastActiveTimeOnSessionCards")}
+                onChange={(checked) => updateDraft("hideLastActiveTimeOnSessionCards", checked)}
               />
               ) : null}
             </SettingsSection>

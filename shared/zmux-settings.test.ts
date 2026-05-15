@@ -87,6 +87,22 @@ describe("normalizezmuxSettings", () => {
     });
   });
 
+  test("keeps session-card last active timestamps visible unless explicitly hidden", () => {
+    /**
+     * CDXC:SidebarSessions 2026-05-15-08:57
+     * Last Active timestamps on session cards stay visible by default. Users
+     * can hide that timestamp without affecting the project editor row's
+     * independent git additions/deletions stats.
+     */
+    expect(DEFAULT_zmux_SETTINGS.hideLastActiveTimeOnSessionCards).toBe(false);
+    expect(normalizezmuxSettings({})).toMatchObject({
+      hideLastActiveTimeOnSessionCards: false,
+    });
+    expect(normalizezmuxSettings({ hideLastActiveTimeOnSessionCards: true })).toMatchObject({
+      hideLastActiveTimeOnSessionCards: true,
+    });
+  });
+
   test("supports built-in and custom default editor commands", () => {
     /**
      * CDXC:AgentsHub 2026-05-12-09:22

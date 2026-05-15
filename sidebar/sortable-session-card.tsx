@@ -37,6 +37,7 @@ import {
   getSidebarSessionLifecycleState,
   type SidebarSessionItem,
 } from "../shared/session-grid-contract";
+import { DEFAULT_zmux_SETTINGS } from "../shared/zmux-settings";
 import {
   getSessionCardTitleTooltip,
   OverflowTooltipText,
@@ -154,12 +155,16 @@ export function SortableSessionCard({
     showCloseButton,
     showDebugSessionNumbers,
     showHotkeys,
+    showLastActiveTime,
   } = useSidebarStore(
     useShallow((state) => ({
       renameSessionOnDoubleClick: state.hud.renameSessionOnDoubleClick,
       showCloseButton: state.hud.showCloseButtonOnSessionCards,
       showDebugSessionNumbers: state.hud.debuggingMode,
       showHotkeys: state.hud.showHotkeysOnSessionCards,
+      showLastActiveTime:
+        !(state.hud.settings?.hideLastActiveTimeOnSessionCards ??
+          DEFAULT_zmux_SETTINGS.hideLastActiveTimeOnSessionCards),
     })),
   );
   const [contextMenuPosition, setContextMenuPosition] = useState<ContextMenuPosition>();
@@ -330,7 +335,7 @@ export function SortableSessionCard({
       return;
     }
 
-    const hasLastInteractionLabel = Boolean(session.lastInteractionAt);
+    const hasLastInteractionLabel = showLastActiveTime && Boolean(session.lastInteractionAt);
     const showHeaderLoadingSpinner =
       session.isReloading === true || session.isGeneratingFirstPromptTitle === true;
     const hasHeaderAgentIcon =
@@ -433,6 +438,7 @@ export function SortableSessionCard({
     session.sessionId,
     session.sessionKind,
     session.terminalTitle,
+    showLastActiveTime,
     showTerminalSessionIcon,
     vscode,
   ]);
@@ -1137,6 +1143,7 @@ export function SortableSessionCard({
               showDebugSessionNumbers={showDebugSessionNumbers}
               showCloseButton={showCloseButton}
               showHotkeys={showHotkeys}
+              showLastActiveTime={showLastActiveTime}
             />
           </article>
           <div aria-hidden className="session-status-dot session-status-dot-inline" />

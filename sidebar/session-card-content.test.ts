@@ -454,6 +454,36 @@ describe("SessionCardContent", () => {
     expect(markup).toContain("session-header-agent-tabler-icon");
   });
 
+  test("should hide the last active label when session-card timestamps are disabled", () => {
+    const markup = renderToStaticMarkup(
+      createElement(SessionCardContent, {
+        session: {
+          activity: "idle",
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "00",
+          column: 0,
+          isFocused: false,
+          isRunning: true,
+          isVisible: true,
+          lastInteractionAt: "2026-04-18T10:00:00.000Z",
+          row: 0,
+          sessionId: "session-1",
+          shortcutLabel: "1",
+        },
+        showCloseButton: false,
+        showDebugSessionNumbers: false,
+        showHotkeys: false,
+        showLastActiveTime: false,
+      }),
+    );
+
+    expect(markup).toContain('data-default-trailing-display="icon"');
+    expect(markup).toContain('data-hover-trailing-display="icon"');
+    expect(markup).not.toContain("session-last-interaction-time");
+    expect(markup).toContain("session-header-agent-icon");
+  });
+
   test("should allow previous-session rows to reserve the trailing slot for last active", () => {
     const markup = renderToStaticMarkup(
       createElement(SessionCardContent, {

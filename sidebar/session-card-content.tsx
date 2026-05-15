@@ -47,6 +47,7 @@ export type SessionCardContentProps = {
   showDebugSessionNumbers: boolean;
   showCloseButton: boolean;
   showHotkeys: boolean;
+  showLastActiveTime?: boolean;
   showLastInteractionTime?: boolean;
   trailingPrefix?: ReactNode;
 };
@@ -58,6 +59,7 @@ export function SessionCardContent({
   session,
   showCloseButton,
   showDebugSessionNumbers,
+  showLastActiveTime = true,
   showLastInteractionTime = false,
   trailingPrefix,
 }: SessionCardContentProps) {
@@ -66,7 +68,7 @@ export function SessionCardContent({
     session,
     showDebugSessionNumbers,
   });
-  const hasLastInteractionTime = Boolean(session.lastInteractionAt);
+  const hasLastInteractionTime = showLastActiveTime && Boolean(session.lastInteractionAt);
   const showHeaderLoadingSpinner = session.isReloading === true || isGeneratingFirstPromptTitle;
   const showTerminalSessionIcon = !hideHeaderAgentIcon && shouldShowTerminalSessionIcon(session);
   const hasHeaderAgentIcon =
@@ -93,6 +95,12 @@ export function SessionCardContent({
    * CDXC:SidebarSessions 2026-05-08-11:01
    * Last Active uses one fixed visual color in session cards. Elapsed time can
    * change the text label, but must not recolor the timestamp by age.
+   *
+   * CDXC:SidebarSessions 2026-05-15-08:57
+   * Users can hide active session-card Last Active timestamps from Settings.
+   * Gate only this timestamp label; trailing prefixes such as project metadata
+   * and separate project-editor git diff stats remain outside this visibility
+   * control.
    */
   const defaultTrailingDisplay = !showLastInteractionTime
     ? "icon"
