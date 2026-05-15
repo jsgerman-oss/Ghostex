@@ -66,10 +66,15 @@ brew install --cask maddada/tap/ghostex
 - The reference sidebar includes a combined-only project layout, searchable settings sections, improved command panel controls, and cleaner Previous Sessions rows.
 - Sidebar action buttons always use explicit configurable icons, with a sensible Play default for new actions.
 - Agents Hub loads real local agent files, supports in-place saving, and can open profile/config paths from the app.
+- Agents Hub profile tooltips show structured profile labels, source paths, target paths, and Finder actions for easier local agent configuration review.
 - Floating prompt editing uses a resizable Monaco pane with save/cancel handling from Ctrl+G.
 - The floating pet overlay shows active session messages and can focus the exact session when clicked.
 - The titlebar pet button toggles the floating pet overlay without opening Settings.
-- Sidebar collapse state persists locally, and project editor rows can hide or show changed-file counts from Settings.
+- Sidebar collapse state persists locally, project editor rows can hide or show changed-file counts from Settings, and active session cards can hide Last Active timestamps.
+- Previous Sessions focuses on agent-session restore by hiding browser page history from the modal.
+- Next Tab and Previous Tab follow the same sorted and collapsed session order visible in the sidebar.
+- Provider-backed tmux, zmx, and zellij terminal panes show their persistence context in-pane and announce it when a new persisted session starts.
+- Native diagnostics capture app activation, pane-tab geometry, and browser-pane layout details for focus and resize troubleshooting.
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Embedded T3code
 - Integrations for all the popular Agent CLI 
