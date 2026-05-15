@@ -5,6 +5,13 @@
  * the desktop bootstrap fd required by the T3 pane.
  */
 export const DEFAULT_SIDEBAR_AGENTS = [
+  /**
+   * CDXC:SidebarAgents 2026-05-15-15:25:
+   * The default model picker should present the first built-in launch engines
+   * in the user-facing order T3 Code, Codex, Claude, Pi Agent, OpenCode,
+   * Gemini, Copilot, Factory Droid, and Grok Build so the top of the menu
+   * matches the expected daily-selection flow.
+   */
   {
     agentId: "t3",
     command: "npx --yes t3",
@@ -17,29 +24,25 @@ export const DEFAULT_SIDEBAR_AGENTS = [
     icon: "codex",
     name: "Codex",
   },
-  /**
-   * CDXC:PiAgent 2026-05-08-09:42
-   * Pi is a first-class default agent so the configure-agent modal, sidebar
-   * launch buttons, automatic icon selection, and restore commands can share
-   * the same default-agent registry used by Codex.
-   */
-  {
-    agentId: "pi",
-    command: "pi",
-    icon: "pi",
-    name: "Pi",
-  },
-  {
-    agentId: "copilot",
-    command: "copilot",
-    icon: "copilot",
-    name: "Copilot",
-  },
   {
     agentId: "claude",
     command: "claude",
     icon: "claude",
     name: "Claude",
+  },
+  /**
+   * CDXC:PiAgent 2026-05-15-15:25:
+   * Pi is a first-class default agent so the configure-agent modal, sidebar
+   * launch buttons, automatic icon selection, and restore commands can share
+   * the same default-agent registry used by Codex. The model picker labels the
+   * Pi CLI as Pi Agent to distinguish the launch engine from the shorter
+   * executable name while keeping `pi` as the command.
+   */
+  {
+    agentId: "pi",
+    command: "pi",
+    icon: "pi",
+    name: "Pi Agent",
   },
   {
     agentId: "opencode",
@@ -52,6 +55,12 @@ export const DEFAULT_SIDEBAR_AGENTS = [
     command: "gemini -y",
     icon: "gemini",
     name: "Gemini",
+  },
+  {
+    agentId: "copilot",
+    command: "copilot",
+    icon: "copilot",
+    name: "Copilot",
   },
   /**
    * CDXC:SidebarAgents 2026-05-15-12:41:
@@ -285,7 +294,8 @@ function getDefaultSidebarAgentName(agentId: string, storedName: string): string
   const normalizedStoredName = storedName.trim().toLowerCase();
   if (
     (agentId === "codex" && normalizedStoredName === "codex cli") ||
-    (agentId === "claude" && normalizedStoredName === "claude code")
+    (agentId === "claude" && normalizedStoredName === "claude code") ||
+    (agentId === "pi" && normalizedStoredName === "pi")
   ) {
     return defaultName;
   }
