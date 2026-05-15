@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { execFile, spawn } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -24,6 +25,7 @@ const GHOSTEX_HOME =
   path.join(homedir(), process.env.GHOSTEX_APP_VARIANT === "dev" ? ".ghostex-dev" : ".ghostex");
 const LOG_DIR = path.join(GHOSTEX_HOME, "logs");
 const CLI_DIR = path.join(GHOSTEX_HOME, "cli");
+const BRIDGE_TOKEN_PATH = path.join(CLI_DIR, "bridge-token");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
 
 const COMMANDS = new Map([
@@ -123,6 +125,7 @@ async function sendSidebarCliCommand(action, payload, flags = {}) {
       (process.env.GHOSTEX_APP_VARIANT === "dev" ? DEV_PORT : DEFAULT_PORT),
   );
   const requestId = `cli-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const authToken = await readBridgeAuthToken(flags);
   const socket = await connectBridge(port);
   try {
     return await new Promise((resolve, reject) => {
@@ -144,6 +147,7 @@ async function sendSidebarCliCommand(action, payload, flags = {}) {
       socket.send(
         JSON.stringify({
           action,
+          authToken,
           payloadJson: JSON.stringify(payload),
           requestId,
           type: "sidebarCliCommand",
@@ -156,25 +160,26 @@ async function sendSidebarCliCommand(action, payload, flags = {}) {
 }
 
 async function connectBridge(port) {
-  const WebSocket = await webSocketConstructor();
+  /**
+   * CDXC:CliBridgeTransport 2026-05-15-20:03:
+   * Native listens on a loopback-only newline JSON TCP bridge because the
+   * Network.framework WebSocket listener failed before binding on macOS, which
+   * made Ctrl+G rich prompt editing fall back to inline vi. Keep the CLI API
+   * shaped like the previous socket wrapper so command handlers stay focused on
+   * HostCommand payloads instead of transport details.
+   */
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
-    addSocketListener(socket, "open", () => resolve(socket), { once: true });
-    addSocketListener(socket, "error", () => {
+    const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
+      socket.setEncoding("utf8");
+      socket.send = (message) => {
+        socket.write(`${message}\n`);
+      };
+      resolve(socket);
+    });
+    socket.once("error", () => {
       reject(new Error(`Could not connect to ghostex bridge on port ${port}. Is ghostex running?`));
-    }, { once: true });
+    });
   });
-}
-
-async function webSocketConstructor() {
-  try {
-    return (await import("ws")).default;
-  } catch {
-    if (globalThis.WebSocket) {
-      return globalThis.WebSocket;
-    }
-    throw new Error("No WebSocket implementation is available for the Ghostex CLI.");
-  }
 }
 
 function addSocketListener(socket, eventName, handler, options = {}) {
@@ -194,7 +199,19 @@ function addSocketMessageListener(socket, handler) {
     socket.addEventListener("message", (event) => handler(event.data));
     return;
   }
-  socket.on("message", handler);
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += String(chunk);
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex >= 0) {
+      const line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) {
+        handler(line);
+      }
+      newlineIndex = buffer.indexOf("\n");
+    }
+  });
 }
 
 async function floatingEditorCommand(args) {
@@ -230,9 +247,11 @@ async function floatingEditorCommand(args) {
 
   let socket;
   try {
+    const authToken = await readBridgeAuthToken(flags);
     socket = await connectBridge(port);
     socket.send(
       JSON.stringify({
+        authToken,
         command: `/bin/zsh ${shellQuote(wrapperPath)}`,
         cwd,
         env: floatingEditorEnvironment(),
@@ -302,9 +321,11 @@ async function floatingMonacoEditorCommand(args) {
 
   let socket;
   try {
+    const authToken = await readBridgeAuthToken(flags);
     socket = await connectBridge(port);
     socket.send(
       JSON.stringify({
+        authToken,
         cwd,
         editorKind: "monaco",
         filePath: resolvedFilePath,
@@ -342,6 +363,10 @@ function closeSocket(socket) {
   if (!socket) {
     return;
   }
+  if (typeof socket.destroy === "function") {
+    socket.destroy();
+    return;
+  }
   if (typeof socket.terminate === "function") {
     socket.terminate();
     return;
@@ -355,6 +380,27 @@ function bridgePortFromFlags(flags) {
       process.env.GHOSTEX_CLI_PORT ??
       (process.env.GHOSTEX_APP_VARIANT === "dev" ? DEV_PORT : DEFAULT_PORT),
   );
+}
+
+async function readBridgeAuthToken(flags = {}) {
+  /**
+   * CDXC:CliBridgeSecurity 2026-05-15-18:25
+   * The native host rejects unauthenticated loopback WebSocket commands because
+   * arbitrary browser pages can also connect to 127.0.0.1. CLI commands read the
+   * per-launch token that the app writes under ~/.ghostex[-dev]/cli.
+   */
+  const explicitToken = String(flags.token ?? flags.bridgeToken ?? process.env.GHOSTEX_BRIDGE_TOKEN ?? "")
+    .trim();
+  if (explicitToken) {
+    return explicitToken;
+  }
+  const token = (await readFile(BRIDGE_TOKEN_PATH, "utf8").catch(() => "")).trim();
+  if (!token) {
+    throw new Error(
+      `Could not read Ghostex bridge token at ${BRIDGE_TOKEN_PATH}. Is Ghostex running?`,
+    );
+  }
+  return token;
 }
 
 function floatingEditorEnvironment() {

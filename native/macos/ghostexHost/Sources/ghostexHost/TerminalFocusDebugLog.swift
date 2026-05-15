@@ -39,8 +39,15 @@ enum TerminalFocusDebugLog {
    state only when debugging mode is enabled, with routine focus/layout/hotkey
    events suppressed so normal terminal use cannot generate oversized logs.
    */
-  static func append(event: String, details: [String: Any] = [:]) {
-    guard NativeDebugLogging.isEnabled, !noisyEvents.contains(event) else {
+  static func append(event: String, details: [String: Any] = [:], force: Bool = false) {
+    /**
+     CDXC:SidebarSessionFocus 2026-05-15-20:01:
+     Forced terminal-focus entries are reserved for low-volume session-card
+     focus repro breadcrumbs. They must persist even when Debugging Mode was
+     not enabled before the unexpected split appeared, while routine focus
+     events still use the normal debug toggle and noisy-event suppression.
+     */
+    guard force || (NativeDebugLogging.isEnabled && !noisyEvents.contains(event)) else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory

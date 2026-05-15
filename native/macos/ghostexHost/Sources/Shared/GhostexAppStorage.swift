@@ -58,6 +58,14 @@ enum GhostexAppStorage {
     diagnosticsRootDirectory.appendingPathComponent("logs", isDirectory: true)
   }
 
+  static var cliDirectory: URL {
+    sharedRootDirectory.appendingPathComponent("cli", isDirectory: true)
+  }
+
+  static var cliBridgeTokenURL: URL {
+    cliDirectory.appendingPathComponent("bridge-token")
+  }
+
   static var sharedSidebarSettingsURL: URL {
     sharedStateDirectory.appendingPathComponent("native-sidebar-settings.json")
   }

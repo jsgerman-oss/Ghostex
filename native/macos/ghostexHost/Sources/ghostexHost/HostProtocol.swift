@@ -317,6 +317,7 @@ struct OpenFloatingEditor: Decodable {
 }
 
 struct SessionCommand: Decodable {
+  let preservePersistenceSession: Bool?
   let sessionId: String
 }
 
@@ -375,6 +376,7 @@ struct WriteTerminalText: Decodable {
 struct SetActiveTerminalSet: Decodable {
   let activeProjectEditorId: String?
   let activeProjectDiffStats: TitlebarProjectDiffStats?
+  let activeProjectMode: String?
   let activeProjectEditorIsOpen: Bool?
   let activeProjectEditorIsSleeping: Bool?
   let activeProjectEditorStatus: String?
@@ -554,6 +556,7 @@ struct AppendAgentDetectionDebugLog: Decodable {
 struct AppendTerminalFocusDebugLog: Decodable {
   let details: String?
   let event: String
+  let force: Bool?
 }
 
 struct AppendSessionTitleDebugLog: Decodable {

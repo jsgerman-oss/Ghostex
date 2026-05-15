@@ -183,6 +183,12 @@ enum NativeCodeServerRuntimeLauncher {
    shared localhost VS Code runtime. Native owns launch, storage directories,
    auth disabling, and localhost binding so each project can attach a clean
    Chromium view without browser chrome or split-pane participation.
+
+   CDXC:EditorPanes 2026-05-15-18:53:
+   Reconnecting/page-not-found repros must prove whether the shared code-server
+   process exited, the localhost listener disappeared, or CEF navigated to an
+   error page. Keep launch arguments, runtime paths, and bounded process output
+   in the same native-t3-code-pane-repro log the user will send after reproducing.
    */
   static func createLaunch(
     cwd: String,

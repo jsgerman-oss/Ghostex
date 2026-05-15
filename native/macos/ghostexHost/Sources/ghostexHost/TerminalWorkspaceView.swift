@@ -1791,6 +1791,8 @@ final class TerminalWorkspaceView: NSView {
     let sessionPersistenceName: String?
     if let sessionPersistenceProvider {
       sessionPersistenceName =
+        NativeSessionPersistenceMode.compactSessionName(command.sessionId)
+        ??
         NativeSessionPersistenceMode.normalizedSessionName(
           command.sessionPersistenceName ?? command.tmuxSessionName,
           provider: sessionPersistenceProvider)
@@ -1910,6 +1912,9 @@ final class TerminalWorkspaceView: NSView {
     }
     titleBarView.onTabSleepRequested = { [weak self] tabSessionId, scope in
       self?.sendEvent(.paneTabSleepRequested(sessionId: tabSessionId, scope: scope))
+    }
+    titleBarView.onTabActionRequested = { [weak self] tabSessionId, action in
+      self?.handlePaneTabActionRequested(sessionId: tabSessionId, action: action)
     }
     let borderView = TerminalPaneBorderView()
     borderView.translatesAutoresizingMaskIntoConstraints = false
@@ -2086,11 +2091,20 @@ final class TerminalWorkspaceView: NSView {
     return nextSessionName
   }
 
-  func closeTerminal(sessionId: String) {
-    closeTerminal(sessionId: sessionId, requestGhosttyClose: true, reason: "closeTerminal")
+  func closeTerminal(sessionId: String, preservePersistenceSession: Bool = false) {
+    closeTerminal(
+      sessionId: sessionId,
+      requestGhosttyClose: true,
+      preservePersistenceSession: preservePersistenceSession,
+      reason: "closeTerminal")
   }
 
-  private func closeTerminal(sessionId: String, requestGhosttyClose: Bool, reason: String) {
+  private func closeTerminal(
+    sessionId: String,
+    requestGhosttyClose: Bool,
+    preservePersistenceSession: Bool = false,
+    reason: String
+  ) {
     guard let session = sessions.removeValue(forKey: sessionId) else {
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.closeTerminal.missing",
@@ -2108,6 +2122,7 @@ final class TerminalWorkspaceView: NSView {
         "activeSessionIds": Array(activeSessionIds).sorted(),
         "hasSurface": session.view.surface != nil,
         "processExited": processExited,
+        "preservePersistenceSession": preservePersistenceSession,
         "reason": reason,
         "requestGhosttyClose": requestGhosttyClose,
         "sessionId": sessionId,
@@ -2130,6 +2145,13 @@ final class TerminalWorkspaceView: NSView {
     if requestGhosttyClose, !processExited, let surface = session.view.surface {
       ghostty.requestClose(surface: surface)
     }
+    if requestGhosttyClose, !preservePersistenceSession {
+      NativeSessionPersistenceMode.killSession(
+        provider: session.sessionPersistenceProvider,
+        sessionName: session.sessionPersistenceName,
+        reason: reason,
+        sessionId: sessionId)
+    }
     NativeTerminalProcessMonitor.terminateSessionProcesses(
       ttyName: session.view.surfaceModel?.ttyName ?? session.ttyName,
       foregroundPid: session.view.surfaceModel?.foregroundPID ?? session.foregroundPid,
@@ -2149,6 +2171,7 @@ final class TerminalWorkspaceView: NSView {
         "activeSessionIds": Array(activeSessionIds).sorted(),
         "focusedSessionId": nullableString(focusedSessionId),
         "processExited": processExited,
+        "preservePersistenceSession": preservePersistenceSession,
         "reason": reason,
         "sessionId": sessionId,
         "visibleSessionIds": orderedVisibleSessionIds(),
@@ -2373,6 +2396,9 @@ final class TerminalWorkspaceView: NSView {
     }
     titleBarView.onTabSleepRequested = { [weak self] tabSessionId, scope in
       self?.sendEvent(.paneTabSleepRequested(sessionId: tabSessionId, scope: scope))
+    }
+    titleBarView.onTabActionRequested = { [weak self] tabSessionId, action in
+      self?.handlePaneTabActionRequested(sessionId: tabSessionId, action: action)
     }
     let borderView = TerminalPaneBorderView()
     borderView.translatesAutoresizingMaskIntoConstraints = false
@@ -3995,7 +4021,33 @@ final class TerminalWorkspaceView: NSView {
     focus: Bool,
     reason: String
   ) -> Bool {
-    guard activeProjectEditorId != nil, isProjectEditorCompanionEligibleSession(sessionId) else {
+    let isEligible = isProjectEditorCompanionEligibleSession(sessionId)
+    if activeProjectEditorId != nil || reason == "sidebarFocusCommand" {
+      /**
+       CDXC:SidebarSessionFocus 2026-05-15-17:25:
+       The sidebar focus miss reproduces inside Code mode's companion-pane path.
+       Log eligibility before returning so a repro shows whether focus never
+       entered the companion branch or entered it but AppKit kept WebKit as first
+       responder.
+       */
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.projectEditorCompanionFocusAttempt",
+        details: [
+          "activeProjectEditorId": nullableString(activeProjectEditorId),
+          "activeSessionIds": Array(activeSessionIds).sorted(),
+          "focus": focus,
+          "isEligible": isEligible,
+          "knownTerminalSession": sessions[sessionId] != nil,
+          "knownWebPaneSession": webPaneSessions[sessionId] != nil,
+          "poppedOutSessionIds": Array(poppedOutSessionIds).sorted(),
+          "reason": reason,
+          "requestedSessionId": sessionId,
+          "responderBeforeEligibility": responderSnapshot(),
+          "sleepingSessionIds": Array(sleepingSessionIds).sorted(),
+          "visibleSessionIds": orderedVisibleSessionIds(),
+        ])
+    }
+    guard activeProjectEditorId != nil, isEligible else {
       return false
     }
     /**
@@ -4024,8 +4076,31 @@ final class TerminalWorkspaceView: NSView {
     } else {
       targetResponder = nil
     }
+    let responderBeforeFocus = responderSnapshot()
+    let makeFirstResponderResult: Bool
     if let targetResponder {
-      _ = window?.makeFirstResponder(targetResponder)
+      makeFirstResponderResult = window?.makeFirstResponder(targetResponder) ?? false
+    } else {
+      makeFirstResponderResult = false
+    }
+    let responderAfterFocus = responderSnapshot()
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.projectEditorCompanionFocusResult",
+      details: [
+        "activeProjectEditorId": nullableString(activeProjectEditorId),
+        "activeSessionIds": Array(activeSessionIds).sorted(),
+        "focusedSessionId": nullableString(focusedSessionId),
+        "makeFirstResponderResult": makeFirstResponderResult,
+        "reason": reason,
+        "requestedSessionId": sessionId,
+        "responderAfterFocus": responderAfterFocus,
+        "responderBeforeFocus": responderBeforeFocus,
+        "targetResponderClass": targetResponder.map { String(describing: type(of: $0)) } ?? "nil",
+        "visibleSessionIds": orderedVisibleSessionIds(),
+        "windowIsKey": window?.isKeyWindow ?? false,
+      ])
+    if reason == "sidebarFocusCommand" {
+      scheduleDelayedProjectEditorCompanionClick(sessionId: sessionId)
     }
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companion.focus", [
       "reason": reason,
@@ -4033,6 +4108,111 @@ final class TerminalWorkspaceView: NSView {
     ])
     sendEvent(.terminalFocused(sessionId: sessionId))
     return true
+  }
+
+  private func scheduleDelayedProjectEditorCompanionClick(sessionId: String) {
+    /**
+     CDXC:SidebarSessionFocus 2026-05-15-17:41:
+     WebKit can keep the sidebar as first responder after a sidebar card click
+     even when the immediate companion-pane focus call succeeds. For
+     sidebar-originated Code-mode session switches, replay the native equivalent
+     of clicking the selected companion pane after the sidebar click has fully
+     settled so typing lands in the terminal or web pane without a manual second
+     click.
+     Send the synthetic mouse event through the NSWindow event path so normal
+     hit-testing reaches the focused terminal or web pane child view instead of
+     calling the companion container directly.
+     */
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(180)) { [weak self] in
+      self?.performDelayedProjectEditorCompanionClick(sessionId: sessionId)
+    }
+  }
+
+  private func performDelayedProjectEditorCompanionClick(sessionId: String) {
+    guard
+      activeProjectEditorId != nil,
+      projectEditorCompanionIsVisible,
+      projectEditorCompanionSessionId == sessionId,
+      let targetView = projectEditorCompanionFocusTargetView(sessionId: sessionId),
+      let targetWindow = targetView.window
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.projectEditorCompanionDelayedClickSkipped",
+        details: [
+          "activeProjectEditorId": nullableString(activeProjectEditorId),
+          "companionSessionId": nullableString(projectEditorCompanionSessionId),
+          "companionVisible": projectEditorCompanionIsVisible,
+          "hasTargetView": projectEditorCompanionFocusTargetView(sessionId: sessionId) != nil,
+          "requestedSessionId": sessionId,
+          "responder": responderSnapshot(),
+        ])
+      return
+    }
+
+    let windowPoint = targetView.convert(
+      CGPoint(x: targetView.bounds.midX, y: targetView.bounds.midY),
+      to: nil)
+    let responderBeforeClick = responderSnapshot()
+    let makeFirstResponderResult = targetWindow.makeFirstResponder(targetView)
+    if let mouseDown = syntheticCompanionMouseEvent(
+      type: .leftMouseDown,
+      location: windowPoint,
+      window: targetWindow,
+      clickCount: 1)
+    {
+      targetWindow.sendEvent(mouseDown)
+    }
+    if let mouseUp = syntheticCompanionMouseEvent(
+      type: .leftMouseUp,
+      location: windowPoint,
+      window: targetWindow,
+      clickCount: 1)
+    {
+      targetWindow.sendEvent(mouseUp)
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.projectEditorCompanionDelayedClickApplied",
+      details: [
+        "focusedSessionId": nullableString(focusedSessionId),
+        "makeFirstResponderResult": makeFirstResponderResult,
+        "requestedSessionId": sessionId,
+        "responderAfterClick": responderSnapshot(),
+        "responderBeforeClick": responderBeforeClick,
+        "targetFrame": describeFrame(targetView.frame),
+        "targetViewClass": String(describing: type(of: targetView)),
+        "windowIsKey": targetWindow.isKeyWindow,
+        "windowPointX": Double(windowPoint.x),
+        "windowPointY": Double(windowPoint.y),
+      ])
+  }
+
+  private func projectEditorCompanionFocusTargetView(sessionId: String) -> NSView? {
+    if let session = sessions[sessionId] {
+      return session.view
+    }
+    if let session = webPaneSessions[sessionId] {
+      return session.browserContentView
+    }
+    return nil
+  }
+
+  private func syntheticCompanionMouseEvent(
+    type: NSEvent.EventType,
+    location: CGPoint,
+    window: NSWindow,
+    clickCount: Int
+  ) -> NSEvent? {
+    NSEvent.mouseEvent(
+      with: type,
+      location: location,
+      modifierFlags: [],
+      timestamp: ProcessInfo.processInfo.systemUptime,
+      windowNumber: window.windowNumber,
+      context: nil,
+      eventNumber: 0,
+      clickCount: clickCount,
+      pressure: 1
+    )
   }
 
   private func projectEditorCompanionLayout(in workspaceBounds: CGRect) -> ProjectEditorCompanionLayout? {
@@ -4231,6 +4411,31 @@ final class TerminalWorkspaceView: NSView {
     orderCommandsPanelToFront(orderedVisibleCommandSessionIds())
   }
 
+  private func chromiumBackingPixelAlignedFrame(_ rect: CGRect) -> CGRect {
+    guard rect.width.isFinite, rect.height.isFinite, rect.width > 0, rect.height > 0 else {
+      return rect
+    }
+    let scale = max(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1, 1)
+    func align(_ value: CGFloat) -> CGFloat {
+      (value * scale).rounded() / scale
+    }
+    let minX = align(rect.minX)
+    let maxX = align(rect.maxX)
+    let minY = align(rect.minY)
+    let maxY = align(rect.maxY)
+    /**
+     CDXC:ChromiumBrowserPanes 2026-05-15-18:35:
+     The 18:29 bottom command-pane height repro showed native CEF frames staying aligned while Chromium's hosted compositor layer grew taller than the render widget after fractional AppKit y/height changes.
+     Keep Chromium-hosted pane edges on backing-pixel boundaries so AppKit and CEF receive stable screen geometry during vertical splitter drags instead of subpixel pane origins.
+     */
+    return CGRect(
+      x: minX,
+      y: minY,
+      width: max(0, maxX - minX),
+      height: max(0, maxY - minY)
+    )
+  }
+
   private func layoutProjectEditorPane(_ session: ProjectEditorPaneSession, in rect: CGRect? = nil) {
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.start", [
       "hostFrameBefore": describeFrame(session.hostView.frame),
@@ -4239,7 +4444,7 @@ final class TerminalWorkspaceView: NSView {
       "workspaceBounds": describeFrame(bounds),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
-    let nextFrame = rect ?? bounds
+    let nextFrame = chromiumBackingPixelAlignedFrame(rect ?? bounds)
     /**
      CDXC:EditorPanes 2026-05-08-13:37
      Sidebar resize must not synchronously refresh or display the hosted VS
@@ -4249,7 +4454,7 @@ final class TerminalWorkspaceView: NSView {
      this layout method, because that self-invalidates and can loop when the
      project editor is the active workspace surface.
      */
-    if !rectsMatch(session.hostView.frame, nextFrame) {
+    if session.hostView.frame != nextFrame {
       session.hostView.frame = nextFrame
     }
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.end", [
@@ -4442,6 +4647,46 @@ final class TerminalWorkspaceView: NSView {
         isLoading: isLoading,
         reason: "chromiumNavigationStateChanged")
     }
+    chromiumView.loadEventHandler = { [weak self, weak chromiumView] event, url, httpStatusCode, errorCode, errorText in
+      guard let self else {
+        return
+      }
+      let session = self.projectEditorPaneSessions[projectId]
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.loadEvent", [
+        "activeProjectEditorId": self.activeProjectEditorId ?? NSNull(),
+        "currentUrl": chromiumView?.currentURLString ?? NSNull(),
+        "errorCode": errorCode,
+        "errorText": errorText,
+        "event": event,
+        "expectedUrl": session?.url ?? NSNull(),
+        "hostFrame": session.map { self.describeFrame($0.hostView.frame) } ?? NSNull(),
+        "httpStatusCode": httpStatusCode,
+        "isActive": self.activeProjectEditorId == projectId,
+        "isLoading": chromiumView?.isLoading ?? false,
+        "projectId": projectId,
+        "reason": reason,
+        "title": session?.title ?? NSNull(),
+        "url": url,
+        "windowNumber": self.window?.windowNumber ?? NSNull(),
+      ])
+    }
+    chromiumView.consoleMessageHandler = { [weak self] message, source, line in
+      guard let self else {
+        return
+      }
+      let session = self.projectEditorPaneSessions[projectId]
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.console", [
+        "activeProjectEditorId": self.activeProjectEditorId ?? NSNull(),
+        "expectedUrl": session?.url ?? NSNull(),
+        "line": line,
+        "message": message,
+        "projectId": projectId,
+        "reason": reason,
+        "source": source,
+        "title": session?.title ?? NSNull(),
+        "windowNumber": self.window?.windowNumber ?? NSNull(),
+      ])
+    }
     /**
      CDXC:EditorPanes 2026-05-07-05:18
      VS Code view movement depends on browser drag/drop retargeting for live
@@ -4455,6 +4700,12 @@ final class TerminalWorkspaceView: NSView {
      the existing code-server readiness wait continues in parallel. The loader is
      dismissed from CEF navigation state after the real editor URL finishes, so
      it never adds startup delay or waits on a separate timer.
+
+     CDXC:EditorPanes 2026-05-15-18:53:
+     When the embedded code editor shows "reconnecting", refreshes to page not
+     found, then recovers after switching away and back, diagnostics need the
+     CEF load lifecycle and VS Code console stream tagged by project editor ID.
+     Log those signals without adding fallback reloads or masking the failure.
      */
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.chromiumCallbacksConfigured", [
       "projectId": projectId,
@@ -7012,6 +7263,19 @@ final class TerminalWorkspaceView: NSView {
     return actions
   }
 
+  private func handlePaneTabActionRequested(sessionId: String, action: TerminalTitleBarAction) {
+    if sessions[sessionId] != nil {
+      focusTerminal(sessionId: sessionId, reason: "nativeTabContextMenuAction")
+    } else if webPaneSessions[sessionId] != nil {
+      focusWebPane(sessionId: sessionId, reason: "nativeTabContextMenuAction")
+    }
+    applyOptimisticPanePopOutAction(
+      sessionId: sessionId,
+      action: action,
+      reason: "nativeTabContextMenuAction")
+    sendEvent(.terminalTitleBarAction(sessionId: sessionId, action: action))
+  }
+
   private func applyOptimisticPanePopOutAction(
     sessionId: String,
     action: TerminalTitleBarAction,
@@ -7298,6 +7562,7 @@ final class TerminalWorkspaceView: NSView {
   ) {
     let items = sessionIds.map { sessionId in
       TerminalSessionTitleBarView.TabItem(
+        actions: sessionTitleBarActions[sessionId] ?? [],
         isSleeping: sleepingSessionIds.contains(sessionId),
         sessionId: sessionId,
         title: normalizedTerminalSessionTitle(sessionTitles[sessionId], sessionId: sessionId))
@@ -7335,21 +7600,22 @@ final class TerminalWorkspaceView: NSView {
     } else {
       resolvedRect = rect
     }
-    let titleBarHeight = min(Self.terminalTitleBarHeight, max(resolvedRect.height, 0))
+    let paneRect = session.chromiumView == nil ? resolvedRect : chromiumBackingPixelAlignedFrame(resolvedRect)
+    let titleBarHeight = min(Self.terminalTitleBarHeight, max(paneRect.height, 0))
     mountWebPaneContainer(for: session)
-    session.containerView.frame = resolvedRect
+    session.containerView.frame = paneRect
     session.containerView.isHidden = false
     let titleBarRect = CGRect(
       x: 0,
-      y: resolvedRect.height - titleBarHeight,
-      width: resolvedRect.width,
+      y: paneRect.height - titleBarHeight,
+      width: paneRect.width,
       height: titleBarHeight
     )
     let contentRect = CGRect(
       x: 0,
       y: 0,
-      width: resolvedRect.width,
-      height: max(resolvedRect.height - titleBarHeight, 1)
+      width: paneRect.width,
+      height: max(paneRect.height - titleBarHeight, 1)
     )
     session.titleBarView.frame = titleBarRect
     session.titleBarView.needsLayout = true
@@ -9575,6 +9841,117 @@ private enum NativeSessionPersistenceMode {
     }
   }
 
+  static func killSession(
+    provider: NativeSessionPersistenceProvider?,
+    sessionName: String?,
+    reason: String,
+    sessionId: String
+  ) {
+    guard let provider,
+      let sessionName = normalizedSessionName(sessionName, provider: provider)
+    else {
+      return
+    }
+    let script = killCommand(provider: provider, sessionName: sessionName)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    process.arguments = ["-lc", script]
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    process.terminationHandler = { terminatedProcess in
+      let stdout = stringFromPipe(terminatedProcess.standardOutput as? Pipe)
+      let stderr = stringFromPipe(terminatedProcess.standardError as? Pipe)
+      let eventName =
+        terminatedProcess.terminationStatus == 0
+        ? "nativeWorkspace.persistenceSessionKill.completed"
+        : "nativeWorkspace.persistenceSessionKill.failed"
+      DispatchQueue.main.async {
+        TerminalFocusDebugLog.append(
+          event: eventName,
+          details: [
+            "provider": provider.rawValue,
+            "reason": reason,
+            "sessionId": sessionId,
+            "sessionName": sessionName,
+            "stderr": stderr,
+            "stdout": stdout,
+            "terminationStatus": Int(terminatedProcess.terminationStatus),
+          ])
+      }
+    }
+    do {
+      try process.run()
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.persistenceSessionKill.started",
+        details: [
+          "provider": provider.rawValue,
+          "reason": reason,
+          "sessionId": sessionId,
+          "sessionName": sessionName,
+        ])
+    } catch {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.persistenceSessionKill.launchFailed",
+        details: [
+          "error": error.localizedDescription,
+          "provider": provider.rawValue,
+          "reason": reason,
+          "sessionId": sessionId,
+          "sessionName": sessionName,
+        ])
+    }
+  }
+
+  private static func killCommand(
+    provider: NativeSessionPersistenceProvider,
+    sessionName: String
+  ) -> String {
+    /**
+     CDXC:SessionPersistence 2026-05-15-18:40:
+     An explicit Ghostex sidebar close owns the full provider-backed session
+     lifetime. Kill the named tmux/zmx/zellij session instead of merely closing
+     the attached Ghostty client, while sleep/reload paths opt into preserving
+     the provider session for later reattach.
+     */
+    let quotedName = shellQuote(sessionName)
+    switch provider {
+    case .tmux:
+      return """
+        if ! command -v tmux >/dev/null 2>&1; then
+          printf '%s\\n' 'session persistence is set to tmux, but tmux was not found on PATH.' >&2
+          exit 127
+        fi
+        exec tmux kill-session -t \(quotedName)
+        """
+    case .zmx:
+      return """
+        unset ZMX_SESSION ZMX_SESSION_PREFIX
+        if ! command -v zmx >/dev/null 2>&1; then
+          printf '%s\\n' 'session persistence is set to zmx, but zmx was not found on PATH.' >&2
+          exit 127
+        fi
+        exec zmx kill \(quotedName) --force
+        """
+    case .zellij:
+      return """
+        if ! command -v zellij >/dev/null 2>&1; then
+          printf '%s\\n' 'session persistence is set to zellij, but zellij was not found on PATH.' >&2
+          exit 127
+        fi
+        exec zellij delete-session --force \(quotedName)
+        """
+    }
+  }
+
+  private static func stringFromPipe(_ pipe: Pipe?) -> String {
+    guard let pipe else {
+      return ""
+    }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    return String(data: data, encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  }
+
   private static func tmuxAttachCommand(
     cwd: String,
     initialInput: String?,
@@ -9781,6 +10158,10 @@ private enum NativeSessionPersistenceMode {
     sessionId: String,
     title: String?
   ) -> String {
+    if let compactName = compactSessionName(sessionId) {
+      return compactName
+    }
+
     guard provider == .zellij else {
       return sessionName(sessionId: sessionId, title: title)
     }
@@ -9798,6 +10179,10 @@ private enum NativeSessionPersistenceMode {
   }
 
   static func sessionName(sessionId: String, title: String?) -> String {
+    if let compactName = compactSessionName(sessionId) {
+      return compactName
+    }
+
     let identitySlug = slug(sessionId) ?? "session"
     let identitySuffix = String(identitySlug.suffix(12))
     let titleSlug = slug(title) ?? "terminal"
@@ -9805,6 +10190,37 @@ private enum NativeSessionPersistenceMode {
       in: CharacterSet(charactersIn: "-_"))
     let visibleTitleSlug = limitedTitleSlug.isEmpty ? "terminal" : limitedTitleSlug
     return "ghostex-\(visibleTitleSlug)-\(identitySuffix)"
+  }
+
+  static func compactSessionName(_ sessionId: String) -> String? {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    /**
+     CDXC:SessionPersistence 2026-05-15-17:33
+     New sidebar session IDs already use the durable `g-MMDD-HHMMSS` identity.
+     Reuse that exact value for default tmux, zmx, and zellij session names so
+     provider attach targets, overlays, and persisted metadata stay short and
+     consistent everywhere the session ID is exposed.
+
+     CDXC:SessionPersistence 2026-05-15-17:49
+     Native terminal surfaces receive project-scoped bridge IDs such as
+     `project-id:g-0515-195810`, while the sidebar exposes `g-0515-195810` as
+     the session number. Extract the trailing sidebar ID before provider-name
+     generation so zmx/tmux/zellij labels match the visible session number.
+
+     CDXC:SessionPersistence 2026-05-15-17:49
+     The compact sidebar ID must outrank any stale title-derived provider name
+     passed from restored sidebar state. This keeps the actual provider attach
+     target and the visible Session number unified for new native surfaces.
+     */
+    let compactPattern = #"g-\d{4}-\d{6}$"#
+    guard let range = trimmed.range(of: compactPattern, options: .regularExpression) else {
+      return nil
+    }
+    let compactName = String(trimmed[range])
+    guard trimmed == compactName || trimmed.hasSuffix(":\(compactName)") else {
+      return nil
+    }
+    return compactName
   }
 
   static func normalizedSessionName(
@@ -11537,6 +11953,8 @@ private final class TerminalTitleBarTabButton: NSButton {
   var onTabMouseUp: ((NSEvent, String) -> Void)?
   var onTabCloseRequested: ((String, PaneTabCloseScope) -> Void)?
   var onTabSleepRequested: ((String, PaneTabSleepScope) -> Void)?
+  var onTabActionRequested: ((String, TerminalTitleBarAction) -> Void)?
+  private var contextMenuActions: [TerminalTitleBarAction] = []
   private var activity: NativeTerminalActivity?
   private var hoveredInlineAction: InlineAction? {
     didSet {
@@ -11667,6 +12085,10 @@ private final class TerminalTitleBarTabButton: NSButton {
     }
     activity = nextActivity
     needsDisplay = true
+  }
+
+  func setContextMenuActions(_ actions: [TerminalTitleBarAction]) {
+    contextMenuActions = actions
   }
 
   func setIdentityIconDataUrl(
@@ -11949,6 +12371,13 @@ private final class TerminalTitleBarTabButton: NSButton {
      Keep the direct clicked-tab command above scoped Sleep Right/Left/Other
      options so users can sleep the intended tab without hunting through the
      broader tab-group actions.
+
+     CDXC:PaneTabs 2026-05-15-15:43:
+     Tab right-click menus should start with the primary session actions from
+     the collapsed pane menu: Rename Session, Delayed Send, Fork Session,
+     Reload Session, and Pop Out Pane. Keep those actions in one unseparated
+     block, then place the separator before Sleep so the sleep/close tab-scope
+     commands remain visually grouped below the moved actions.
      */
     NativePaneTabDragReproLog.append(event: "nativePaneTabs.contextMenu.opened", details: [
       "buttonBounds": nativePaneTabsDebugFrame(bounds),
@@ -11957,9 +12386,15 @@ private final class TerminalTitleBarTabButton: NSButton {
       "windowNumber": event.window?.windowNumber ?? NSNull(),
     ])
     let menu = NSMenu()
+    let primaryActions = primaryTabContextMenuActions()
+    for action in primaryActions {
+      addTabActionMenuItem(action, to: menu)
+    }
+    if !primaryActions.isEmpty {
+      menu.addItem(NSMenuItem.separator())
+    }
     if !isSleepingTab {
       addTabSleepMenuItem("Sleep", scope: .sleep, to: menu)
-      menu.addItem(NSMenuItem.separator())
     }
     addTabSleepMenuItem("Sleep Right", scope: .sleepRight, to: menu)
     addTabSleepMenuItem("Sleep Left", scope: .sleepLeft, to: menu)
@@ -11969,6 +12404,23 @@ private final class TerminalTitleBarTabButton: NSButton {
     addTabCloseMenuItem("Close Left", scope: .closeLeft, to: menu)
     addTabCloseMenuItem("Close Other Tabs", scope: .closeOthers, to: menu)
     NSMenu.popUpContextMenu(menu, with: event, for: self)
+  }
+
+  private func primaryTabContextMenuActions() -> [TerminalTitleBarAction] {
+    let popOutAction: TerminalTitleBarAction =
+      contextMenuActions.contains(.restorePopOut) ? .restorePopOut : .popOut
+    return [.rename, .delayedSend, .fork, .reload, popOutAction].filter { contextMenuActions.contains($0) }
+  }
+
+  private func addTabActionMenuItem(_ action: TerminalTitleBarAction, to menu: NSMenu) {
+    let item = NSMenuItem(
+      title: TerminalSessionTitleBarView.actionMenuTitle(for: action),
+      action: #selector(performTabActionMenuItem(_:)),
+      keyEquivalent: "")
+    item.representedObject = action.rawValue
+    item.target = self
+    item.image = TerminalSessionTitleBarView.actionMenuImage(for: action)
+    menu.addItem(item)
   }
 
   private func addTabSleepMenuItem(_ title: String, scope: PaneTabSleepScope, to menu: NSMenu) {
@@ -12001,6 +12453,15 @@ private final class TerminalTitleBarTabButton: NSButton {
       return
     }
     onTabSleepRequested?(sessionId, scope)
+  }
+
+  @objc private func performTabActionMenuItem(_ sender: NSMenuItem) {
+    guard let rawAction = sender.representedObject as? String,
+      let action = TerminalTitleBarAction(rawValue: rawAction)
+    else {
+      return
+    }
+    onTabActionRequested?(sessionId, action)
   }
 
   private var closeButtonFrame: CGRect {
@@ -12268,6 +12729,7 @@ private final class TerminalTitleBarTabButton: NSButton {
 
 private final class TerminalSessionTitleBarView: NSView {
   struct TabItem: Equatable {
+    let actions: [TerminalTitleBarAction]
     let isSleeping: Bool
     let sessionId: String
     let title: String
@@ -12330,12 +12792,30 @@ private final class TerminalSessionTitleBarView: NSView {
   private static let tabViewportTrailingGap: CGFloat = 4
   private static let workspaceTabAddButtonGap: CGFloat = 2
   private static let commandTabAddButtonGap: CGFloat = 0
+  private static let verticalWheelTabScrollMultiplier: CGFloat = 18
+  private static let minimumDiscreteVerticalWheelTabScrollDelta: CGFloat = 96
+  private static let activeTabRevealScrollMargin: CGFloat = 12
   /**
    CDXC:PaneTabs 2026-05-14-09:23:
    Non-command pane tabs need 2px more vertical reach above and below the old tab strip. Command pane tabs keep their existing full command-titlebar height.
 
    CDXC:PaneTabs 2026-05-14-10:10:
    Non-command pane tabs need another 2px of height above and below so the larger title and identity icon have more room without changing command pane tab height.
+
+   CDXC:PaneTabs 2026-05-15-19:40:
+   Vertical wheel gestures over the horizontal tab strip should move through tabs much faster than raw AppKit deltas, while direct horizontal wheel gestures keep their native precision.
+
+   CDXC:PaneTabs 2026-05-15-19:50:
+   The first vertical-wheel multiplier was still too slow in normal use. Boost precise vertical gestures harder and give non-precision wheel ticks a meaningful minimum horizontal step so tabs move several visible chunks per wheel action instead of creeping by raw AppKit delta size.
+
+   CDXC:PaneTabs 2026-05-15-19:40:
+   Any detected active-tab change should automatically scroll the tab strip enough to reveal the active session's tab after the next native layout pass computes tab widths.
+
+   CDXC:PaneTabs 2026-05-15-19:53:
+   Active-tab reveal must be no-op when the newly active tab is already fully visible. Only adjust the horizontal offset when activation leaves the selected tab clipped or offscreen.
+
+   CDXC:PaneTabs 2026-05-15-20:04:
+   When activation reveals a clipped right-side tab, scroll past exact edge alignment and clamp to the real maximum offset. This avoids cases where the selected session tab technically crosses the viewport boundary but does not visibly settle all the way into view.
    */
   private static let workspaceTabButtonHeight: CGFloat = 36
 
@@ -12367,6 +12847,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private var tabContentWidth: CGFloat = 0
   private var tabScrollOffsetX: CGFloat = 0
   private var tabViewportFrame: CGRect = .zero
+  private var shouldScrollActiveTabIntoViewAfterLayout = false
   private var doubleClickNewTerminalFrame: CGRect = .zero
   private var tabButtons: [TerminalTitleBarTabButton] = []
   private var tabItems: [TabItem] = []
@@ -12398,6 +12879,7 @@ private final class TerminalSessionTitleBarView: NSView {
   var onTabSelected: ((String) -> Void)?
   var onTabCloseRequested: ((String, PaneTabCloseScope) -> Void)?
   var onTabSleepRequested: ((String, PaneTabSleepScope) -> Void)?
+  var onTabActionRequested: ((String, TerminalTitleBarAction) -> Void)?
 
   override var isFlipped: Bool {
     true
@@ -12462,11 +12944,16 @@ private final class TerminalSessionTitleBarView: NSView {
 
   func setTabs(_ tabs: [TabItem], activeSessionId: String) {
     let nextTabs = tabs
-    guard tabItems != nextTabs || activeTabSessionId != activeSessionId else {
+    let nextActiveTabSessionId = nextTabs.isEmpty ? nil : activeSessionId
+    guard tabItems != nextTabs || activeTabSessionId != nextActiveTabSessionId else {
       return
     }
+    let activeTabChanged = activeTabSessionId != nextActiveTabSessionId
     tabItems = nextTabs
-    activeTabSessionId = nextTabs.isEmpty ? nil : activeSessionId
+    activeTabSessionId = nextActiveTabSessionId
+    if activeTabChanged {
+      shouldScrollActiveTabIntoViewAfterLayout = true
+    }
     while tabButtons.count > nextTabs.count {
       tabButtons.removeLast().removeFromSuperview()
     }
@@ -12487,6 +12974,9 @@ private final class TerminalSessionTitleBarView: NSView {
       button.onTabSleepRequested = { [weak self] sessionId, scope in
         self?.onTabSleepRequested?(sessionId, scope)
       }
+      button.onTabActionRequested = { [weak self] sessionId, action in
+        self?.onTabActionRequested?(sessionId, action)
+      }
       tabButtons.append(button)
       tabContentView.addSubview(button)
     }
@@ -12498,6 +12988,7 @@ private final class TerminalSessionTitleBarView: NSView {
       button.setChromeRole(chromeRole)
       button.setActive(tab.sessionId == activeSessionId)
       button.setSleeping(tab.isSleeping)
+      button.setContextMenuActions(tab.actions)
     }
     updateTabGroupFocusAppearance()
     needsLayout = true
@@ -12711,11 +13202,27 @@ private final class TerminalSessionTitleBarView: NSView {
       super.scrollWheel(with: event)
       return
     }
-    let rawDelta = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
-      ? event.scrollingDeltaX : event.scrollingDeltaY
+    let isVerticalWheelGesture = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
+    let rawDelta =
+      isVerticalWheelGesture
+      ? amplifiedVerticalWheelTabDelta(for: event)
+      : event.scrollingDeltaX
     let maxOffset = max(tabContentWidth - tabViewportFrame.width, 0)
     tabScrollOffsetX = min(max(tabScrollOffsetX - rawDelta, 0), maxOffset)
     needsLayout = true
+  }
+
+  private func amplifiedVerticalWheelTabDelta(for event: NSEvent) -> CGFloat {
+    let scaledDelta = event.scrollingDeltaY * Self.verticalWheelTabScrollMultiplier
+    guard !event.hasPreciseScrollingDeltas, scaledDelta != 0 else {
+      return scaledDelta
+    }
+    guard abs(scaledDelta) < Self.minimumDiscreteVerticalWheelTabScrollDelta else {
+      return scaledDelta
+    }
+    return scaledDelta < 0
+      ? -Self.minimumDiscreteVerticalWheelTabScrollDelta
+      : Self.minimumDiscreteVerticalWheelTabScrollDelta
   }
 
   func isDraggableHeaderPoint(_ point: NSPoint) -> Bool {
@@ -13554,6 +14061,10 @@ private final class TerminalSessionTitleBarView: NSView {
     tabContentWidth = tabWidth * CGFloat(tabCount) + totalGap
     tabViewportFrame = CGRect(x: minX, y: centerY, width: availableWidth, height: height)
     tabScrollOffsetX = min(max(tabScrollOffsetX, 0), max(tabContentWidth - availableWidth, 0))
+    if shouldScrollActiveTabIntoViewAfterLayout {
+      scrollActiveTabIntoView(tabWidth: tabWidth, gap: gap, availableWidth: availableWidth)
+      shouldScrollActiveTabIntoViewAfterLayout = false
+    }
     tabClipView.frame = tabViewportFrame
     tabContentView.frame = CGRect(
       x: -tabScrollOffsetX,
@@ -13566,6 +14077,31 @@ private final class TerminalSessionTitleBarView: NSView {
       button.setShowsCommandTrailingSeparator(isCommandChrome && index < tabButtons.count - 1)
       nextX += tabWidth + gap
     }
+  }
+
+  private func scrollActiveTabIntoView(tabWidth: CGFloat, gap: CGFloat, availableWidth: CGFloat) {
+    guard let activeTabSessionId,
+      let activeIndex = tabItems.firstIndex(where: { $0.sessionId == activeTabSessionId }),
+      availableWidth > 0,
+      tabContentWidth > availableWidth
+    else {
+      return
+    }
+    let activeTabMinX = CGFloat(activeIndex) * (tabWidth + gap)
+    let activeTabMaxX = activeTabMinX + tabWidth
+    let visibleMinX = tabScrollOffsetX
+    let visibleMaxX = tabScrollOffsetX + availableWidth
+    let maxOffset = max(tabContentWidth - availableWidth, 0)
+    guard activeTabMinX < visibleMinX || activeTabMaxX > visibleMaxX else {
+      return
+    }
+    let nextOffset: CGFloat
+    if activeTabMinX < visibleMinX {
+      nextOffset = activeTabMinX - Self.activeTabRevealScrollMargin
+    } else {
+      nextOffset = activeTabMaxX - availableWidth + Self.activeTabRevealScrollMargin
+    }
+    tabScrollOffsetX = min(max(nextOffset, 0), maxOffset)
   }
 
   private func layoutTabAddButton(
@@ -13834,7 +14370,13 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func showCollapsedActionMenu(from _: NSButton, source: String) {
-    let actions = collapsedActionMenuActions.filter { $0 != .close }
+    /**
+     CDXC:PaneTitleBarUX 2026-05-15-17:54:
+     The collapsed pane hamburger menu must not include New Terminal. Terminal
+     creation remains available from the tab-bar plus button, so the menu starts
+     with Open Browser Pane and keeps the remaining pane/session actions.
+     */
+    let actions = collapsedActionMenuActions.filter { $0 != .close && $0 != .newTerminal }
     logCollapsedActionMenuEvent(
       "nativePaneActionMenu.openRequested",
       point: actionMenuButton.frame.origin,
@@ -14206,7 +14748,7 @@ private final class TerminalSessionTitleBarView: NSView {
     }
   }
 
-  private static func actionMenuTitle(for action: TerminalTitleBarAction) -> String {
+  fileprivate static func actionMenuTitle(for action: TerminalTitleBarAction) -> String {
     switch action {
     case .newTerminal:
       return "New Terminal"
@@ -14247,7 +14789,7 @@ private final class TerminalSessionTitleBarView: NSView {
     }
   }
 
-  private static func actionMenuImage(for action: TerminalTitleBarAction) -> NSImage? {
+  fileprivate static func actionMenuImage(for action: TerminalTitleBarAction) -> NSImage? {
     let symbolName: String
     switch action {
     case .newTerminal:
@@ -14603,9 +15145,7 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     } else {
       webFrame = bounds
     }
-    if browserView.frame != webFrame {
-      browserView.frame = webFrame
-    }
+    browserView.frame = webFrame
     layoutInitialLoadingOverlay(webFrame: webFrame)
   }
 
@@ -14670,8 +15210,9 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       )
       layoutBrowserToolbar()
     }
-    browserView.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - toolbarHeight))
-    layoutInitialLoadingOverlay(webFrame: browserView.frame)
+    let webFrame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - toolbarHeight))
+    browserView.frame = webFrame
+    layoutInitialLoadingOverlay(webFrame: webFrame)
     updateBrowserToolbarState()
     needsLayout = true
     needsDisplay = true

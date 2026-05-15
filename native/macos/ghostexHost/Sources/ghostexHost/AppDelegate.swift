@@ -1,7 +1,9 @@
 import AppKit
 import ApplicationServices
+import CoreImage
 import GhosttyKit
 import OSLog
+import Security
 import Sparkle
 import UniformTypeIdentifiers
 import UserNotifications
@@ -394,6 +396,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var workspaceActivationObserver: NSObjectProtocol?
   private var appHotkeyEventMonitor: Any?
   private var lastNativeActivationRequest: NativeActivationRequest?
+  private var lastNativeInputEventPayload: [String: Any]?
+  private var lastNativeInputEventRecordedAt: Date?
   private weak var attachToIdeTitlebarButton: NSButton?
   private weak var appTitlebarLabel: NSTextField?
   private let nativeSettingsStore = NativeSettingsStore()
@@ -514,7 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      ghostex" from "the overlay activation branch made the wrong ordering call."
      */
     Self.appendNativeHostLifecycleLog(
-      "applicationWillBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) workspace=\(describeWorkspaceActivationSnapshot())"
+      "applicationWillBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
     logNativeActivationLifecycleEvent("nativeHost.activation.willBecomeActive")
     BrowserOverlayRestoreReproLog.append(
@@ -528,7 +532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func applicationDidBecomeActive(_ notification: Notification) {
     Self.appendNativeHostLifecycleLog(
-      "applicationDidBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) workspace=\(describeWorkspaceActivationSnapshot())"
+      "applicationDidBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
     logNativeActivationLifecycleEvent("nativeHost.activation.didBecomeActive")
     BrowserOverlayRestoreReproLog.append(
@@ -542,6 +546,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         "windowLevel": window?.level.rawValue as Any,
         "windowVisible": window?.isVisible as Any,
       ])
+  }
+
+  func applicationDidResignActive(_ notification: Notification) {
+    /**
+     CDXC:FocusStealDiagnostics 2026-05-15-20:09:
+     Focus-steal reports need both sides of the activation boundary. Log when Ghostex resigns active so the next self-activation can be compared against the exact workspace, responder, and recent input that existed before macOS brought another app or Ghostex forward.
+     */
+    Self.appendNativeHostLifecycleLog(
+      "applicationDidResignActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
+    )
+    logNativeActivationLifecycleEvent("nativeHost.activation.didResignActive")
   }
 
   @MainActor
@@ -569,11 +584,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         "frontmostApplication": NSWorkspace.shared.frontmostApplication?.localizedName ?? NSNull(),
         "isSelf": isSelf,
         "lastActivationRequest": self.lastNativeActivationRequestPayload(),
+        "recentInput": self.recentNativeInputEventPayload(),
         "workspace": self.workspaceView?.activationDebugSnapshot() ?? NSNull(),
       ]
       TerminalFocusDebugLog.append(event: "nativeHost.workspaceApplicationActivated", details: details)
       Self.appendNativeHostLifecycleLog(
-        "workspaceApplicationActivated app=\(application?.localizedName ?? "<missing>") pid=\(application.map { String($0.processIdentifier) } ?? "<missing>") isSelf=\(isSelf) lastActivationRequest=\(self.describeLastNativeActivationRequest()) workspace=\(self.describeWorkspaceActivationSnapshot())"
+        "workspaceApplicationActivated app=\(application?.localizedName ?? "<missing>") pid=\(application.map { String($0.processIdentifier) } ?? "<missing>") isSelf=\(isSelf) lastActivationRequest=\(self.describeLastNativeActivationRequest()) recentInput=\(self.describeRecentNativeInputEvent()) workspace=\(self.describeWorkspaceActivationSnapshot())"
       )
     }
   }
@@ -598,10 +614,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         "sessionId": sessionId ?? NSNull(),
         "windowIsKey": window?.isKeyWindow ?? false,
         "windowIsVisible": window?.isVisible ?? false,
+        "recentInput": recentNativeInputEventPayload(),
         "workspace": workspaceView?.activationDebugSnapshot() ?? NSNull(),
       ])
     Self.appendNativeHostLifecycleLog(
-      "activationRequest reason=\(reason) sessionId=\(sessionId ?? "<none>") windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") workspace=\(describeWorkspaceActivationSnapshot())"
+      "activationRequest reason=\(reason) sessionId=\(sessionId ?? "<none>") windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
   }
 
@@ -612,10 +629,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       details: [
         "frontmostApplication": NSWorkspace.shared.frontmostApplication?.localizedName ?? NSNull(),
         "lastActivationRequest": lastNativeActivationRequestPayload(),
+        "recentInput": recentNativeInputEventPayload(),
         "windowIsKey": window?.isKeyWindow ?? false,
         "windowIsVisible": window?.isVisible ?? false,
         "workspace": workspaceView?.activationDebugSnapshot() ?? NSNull(),
       ])
+  }
+
+  @MainActor
+  private func logNativeActivationBoundaryInputEvent(_ event: NSEvent, phase: String) {
+    let now = Date()
+    let eventType = Self.nativeEventTypeName(event.type)
+    let eventAgeMs = Int((ProcessInfo.processInfo.systemUptime - event.timestamp) * 1000)
+    let eventWindow = event.window ?? window
+    let hitView = Self.hitViewDescription(for: event, in: eventWindow)
+    let payload: [String: Any] = [
+      "appIsActive": NSApp.isActive,
+      "buttonNumber": event.buttonNumber,
+      "clickCount": event.clickCount,
+      "eventAgeMs": eventAgeMs,
+      "eventNumber": event.eventNumber,
+      "eventTimestamp": event.timestamp,
+      "eventType": eventType,
+      "frontmostApplication": NSWorkspace.shared.frontmostApplication?.localizedName ?? NSNull(),
+      "hitView": hitView,
+      "isSyntheticLikely": event.eventNumber == 0,
+      "lastActivationRequest": lastNativeActivationRequestPayload(),
+      "locationInWindowX": Double(event.locationInWindow.x),
+      "locationInWindowY": Double(event.locationInWindow.y),
+      "modifierFlags": Self.nativeEventModifierNames(event.modifierFlags),
+      "phase": phase,
+      "workspace": workspaceView?.activationDebugSnapshot() ?? NSNull(),
+      "windowIsKey": eventWindow?.isKeyWindow ?? false,
+      "windowIsMain": eventWindow?.isMainWindow ?? false,
+      "windowIsVisible": eventWindow?.isVisible ?? false,
+      "windowNumber": eventWindow?.windowNumber ?? 0,
+    ]
+    lastNativeInputEventPayload = [
+      "eventAgeMs": eventAgeMs,
+      "eventNumber": event.eventNumber,
+      "eventType": eventType,
+      "hitView": hitView,
+      "isSyntheticLikely": event.eventNumber == 0,
+      "phase": phase,
+      "windowIsKey": eventWindow?.isKeyWindow ?? false,
+      "windowNumber": eventWindow?.windowNumber ?? 0,
+    ]
+    lastNativeInputEventRecordedAt = now
+    /**
+     CDXC:FocusStealDiagnostics 2026-05-15-20:09:
+     App activation logs showed Ghostex becoming frontmost without a fresh internal activation request. Persist the AppKit input event at the window boundary, including synthetic-event detection and hit view, so the next repro can distinguish a real click into Ghostex from a delayed synthetic companion click or an external macOS/window-ordering activation.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeHost.activationBoundary.inputEvent",
+      details: payload,
+      force: true)
+    Self.appendNativeHostLifecycleLog(
+      "activationBoundaryInput phase=\(phase) type=\(eventType) eventNumber=\(event.eventNumber) syntheticLikely=\(event.eventNumber == 0) appActive=\(NSApp.isActive) keyWindow=\(eventWindow?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") eventAgeMs=\(eventAgeMs) hitView=\(hitView)"
+    )
   }
 
   @MainActor
@@ -649,6 +720,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let responder = snapshot["responderSessionId"] as? String ?? "<none>"
     let projectEditor = snapshot["activeProjectEditorId"] as? String ?? "<none>"
     return "focused=\(focused) responder=\(responder) activeProjectEditor=\(projectEditor)"
+  }
+
+  @MainActor
+  private func recentNativeInputEventPayload() -> Any {
+    guard var payload = lastNativeInputEventPayload else {
+      return NSNull()
+    }
+    if let lastNativeInputEventRecordedAt {
+      payload["recordedAgeMs"] = Int(Date().timeIntervalSince(lastNativeInputEventRecordedAt) * 1000)
+    }
+    return payload
+  }
+
+  @MainActor
+  private func describeRecentNativeInputEvent() -> String {
+    guard let payload = recentNativeInputEventPayload() as? [String: Any] else {
+      return "<none>"
+    }
+    let type = payload["eventType"] as? String ?? "<unknown>"
+    let phase = payload["phase"] as? String ?? "<unknown>"
+    let eventNumber = payload["eventNumber"].map { "\($0)" } ?? "<unknown>"
+    let recordedAgeMs = payload["recordedAgeMs"].map { "\($0)" } ?? "<unknown>"
+    let hitView = payload["hitView"] as? String ?? "<unknown>"
+    return "\(type) phase=\(phase) eventNumber=\(eventNumber) ageMs=\(recordedAgeMs) hitView=\(hitView)"
+  }
+
+  private static func hitViewDescription(for event: NSEvent, in window: NSWindow?) -> String {
+    guard let contentView = window?.contentView else {
+      return "<none>"
+    }
+    let contentPoint = contentView.convert(event.locationInWindow, from: nil)
+    guard let hitView = contentView.hitTest(contentPoint) else {
+      return "<none>"
+    }
+    return String(describing: type(of: hitView))
+  }
+
+  private static func nativeEventTypeName(_ eventType: NSEvent.EventType) -> String {
+    switch eventType {
+    case .leftMouseDown: return "leftMouseDown"
+    case .leftMouseUp: return "leftMouseUp"
+    case .rightMouseDown: return "rightMouseDown"
+    case .rightMouseUp: return "rightMouseUp"
+    case .otherMouseDown: return "otherMouseDown"
+    case .otherMouseUp: return "otherMouseUp"
+    case .keyDown: return "keyDown"
+    default: return "\(eventType.rawValue)"
+    }
+  }
+
+  private static func nativeEventModifierNames(_ flags: NSEvent.ModifierFlags) -> [String] {
+    let normalizedFlags = flags.intersection(.deviceIndependentFlagsMask)
+    var names: [String] = []
+    if normalizedFlags.contains(.capsLock) { names.append("capsLock") }
+    if normalizedFlags.contains(.shift) { names.append("shift") }
+    if normalizedFlags.contains(.control) { names.append("control") }
+    if normalizedFlags.contains(.option) { names.append("option") }
+    if normalizedFlags.contains(.command) { names.append("command") }
+    if normalizedFlags.contains(.numericPad) { names.append("numericPad") }
+    if normalizedFlags.contains(.help) { names.append("help") }
+    if normalizedFlags.contains(.function) { names.append("function") }
+    return names
   }
 
   private struct GhosttyConfigSelection {
@@ -803,13 +936,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     appendLogLine(message, to: logURL, logsDirectory: logsDirectory, label: "agent detection debug")
   }
 
-  fileprivate static func appendTerminalFocusDebugLog(event: String, details: String?) {
+  fileprivate static func appendTerminalFocusDebugLog(
+    event: String, details: String?, force: Bool = false
+  ) {
     TerminalFocusDebugLog.append(
       event: event,
       details: [
         "details": nullableLogString(details),
         "source": "native-sidebar",
-      ])
+      ],
+      force: force)
   }
 
   fileprivate static func appendRestoreDebugLog(event: String, details: String?) {
@@ -954,6 +1090,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func windowDidMove(_ notification: Notification) {
     persistMainWindowChrome()
+  }
+
+  func windowDidBecomeKey(_ notification: Notification) {
+    /**
+     CDXC:FocusStealDiagnostics 2026-05-15-20:09:
+     App active and key-window transitions can differ during focus-steal repros. Log key/main window changes independently from application activation so the next incident shows whether Ghostex became frontmost before, after, or without the main terminal window becoming key.
+     */
+    Self.appendNativeHostLifecycleLog(
+      "windowDidBecomeKey windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) mainWindow=\(window?.isMainWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
+    )
+    logNativeActivationLifecycleEvent("nativeHost.window.didBecomeKey")
+  }
+
+  func windowDidResignKey(_ notification: Notification) {
+    Self.appendNativeHostLifecycleLog(
+      "windowDidResignKey windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) mainWindow=\(window?.isMainWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
+    )
+    logNativeActivationLifecycleEvent("nativeHost.window.didResignKey")
+  }
+
+  func windowDidBecomeMain(_ notification: Notification) {
+    Self.appendNativeHostLifecycleLog(
+      "windowDidBecomeMain windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) mainWindow=\(window?.isMainWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
+    )
+    logNativeActivationLifecycleEvent("nativeHost.window.didBecomeMain")
+  }
+
+  func windowDidResignMain(_ notification: Notification) {
+    Self.appendNativeHostLifecycleLog(
+      "windowDidResignMain windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) mainWindow=\(window?.isMainWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
+    )
+    logNativeActivationLifecycleEvent("nativeHost.window.didResignMain")
   }
 
   func performGhosttyBindingMenuKeyEquivalent(with event: NSEvent) -> Bool {
@@ -1290,6 +1458,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     window.onKeyEquivalent = { [weak root] event in
       root?.handleHotkeyEquivalent(event) ?? false
+    }
+    window.onActivationBoundaryEvent = { [weak self] event, phase in
+      self?.logNativeActivationBoundaryInputEvent(event, phase: phase)
     }
     window.title = "Ghostex"
     window.titleVisibility = .hidden
@@ -1671,12 +1842,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       let bridgePort: UInt16 = Bundle.main.bundleIdentifier == "com.madda.ghostex-dev.host"
         ? 58744
         : 58743
-      let bridge = try NativeHostBridge(port: bridgePort) { [weak self] command in
+      let bridgeAuthToken = try Self.prepareBridgeAuthToken()
+      let bridge = try NativeHostBridge(port: bridgePort, authToken: bridgeAuthToken) { [weak self] command in
         self?.handle(command)
       }
       self.bridge = bridge
       bridge.start()
+      Self.appendNativeHostLifecycleLog("nativeHostBridge.started port=\(bridgePort)")
     } catch {
+      /**
+       CDXC:CliBridgeTransport 2026-05-15-20:03:
+       Ctrl+G prompt editing depends on the native CLI bridge. Persist bridge
+       startup failures in lifecycle logs instead of only writing into the
+       hidden bridge-error terminal so a missing listener can be diagnosed from
+       logs after the prompt editor fails to appear.
+       */
+      Self.appendNativeHostLifecycleLog("nativeHostBridge.failed error=\(error.localizedDescription)")
       workspaceView?.createTerminal(
         CreateTerminal(
           activateOnCreate: true,
@@ -1691,6 +1872,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
           tmuxSessionName: nil
         ))
     }
+  }
+
+  private static func prepareBridgeAuthToken() throws -> String {
+    /**
+     CDXC:CliBridgeSecurity 2026-05-15-18:25
+     CLI automation still needs a localhost bridge, but browser pages can also
+     attempt loopback WebSocket connections. Rotate a per-launch token into the
+     app's private CLI directory so trusted local CLI commands can authenticate
+     without exposing privileged HostCommand execution to arbitrary web content.
+     */
+    let token = try makeBridgeAuthToken()
+    let fileManager = FileManager.default
+    try fileManager.createDirectory(
+      at: GhostexAppStorage.cliDirectory,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: 0o700]
+    )
+    try? fileManager.setAttributes(
+      [.posixPermissions: 0o700],
+      ofItemAtPath: GhostexAppStorage.cliDirectory.path
+    )
+    if fileManager.fileExists(atPath: GhostexAppStorage.cliBridgeTokenURL.path) {
+      try fileManager.removeItem(at: GhostexAppStorage.cliBridgeTokenURL)
+    }
+    guard
+      fileManager.createFile(
+        atPath: GhostexAppStorage.cliBridgeTokenURL.path,
+        contents: Data("\(token)\n".utf8),
+        attributes: [.posixPermissions: 0o600]
+      )
+    else {
+      throw NSError(
+        domain: "GhostexBridgeAuth",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Failed to write bridge token."])
+    }
+    return token
+  }
+
+  private static func makeBridgeAuthToken() throws -> String {
+    var bytes = [UInt8](repeating: 0, count: 32)
+    let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+    guard status == errSecSuccess else {
+      throw NSError(
+        domain: "GhostexBridgeAuth",
+        code: Int(status),
+        userInfo: [NSLocalizedDescriptionKey: "Failed to create bridge token."])
+    }
+    return Data(bytes).base64EncodedString()
   }
 
   @MainActor
@@ -1708,9 +1938,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       }
     case .closeTerminal(let command):
       if let root = window?.contentView as? ghostexRootView {
-        root.closeTerminal(sessionId: command.sessionId)
+        root.closeTerminal(
+          sessionId: command.sessionId,
+          preservePersistenceSession: command.preservePersistenceSession == true)
       } else {
-        workspaceView?.closeTerminal(sessionId: command.sessionId)
+        workspaceView?.closeTerminal(
+          sessionId: command.sessionId,
+          preservePersistenceSession: command.preservePersistenceSession == true)
       }
     case .closeWebPane(let command):
       workspaceView?.closeWebPane(sessionId: command.sessionId)
@@ -1765,7 +1999,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .appendAgentDetectionDebugLog(let command):
       Self.appendAgentDetectionDebugLog(event: command.event, details: command.details)
     case .appendTerminalFocusDebugLog(let command):
-      Self.appendTerminalFocusDebugLog(event: command.event, details: command.details)
+      Self.appendTerminalFocusDebugLog(
+        event: command.event, details: command.details, force: command.force == true)
     case .appendRestoreDebugLog(let command):
       Self.appendRestoreDebugLog(event: command.event, details: command.details)
     case .appendSessionTitleDebugLog(let command):
@@ -2120,6 +2355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       NativeT3CodePaneReproLog.append("nativeHost.codeServerRuntime.start.reused", [
         "cwd": command.cwd,
         "pid": process.processIdentifier,
+        "startedAt": codeServerRuntimeStartedAt?.timeIntervalSince1970 ?? NSNull(),
       ])
       return
     }
@@ -2146,18 +2382,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       let process = launch.process
       try process.run()
       codeServerRuntimeProcess = process
-      codeServerRuntimeStartedAt = Date()
+      let startedAt = Date()
+      codeServerRuntimeStartedAt = startedAt
       NativeT3CodePaneReproLog.append("nativeHost.codeServerRuntime.start.spawned", [
         "args": process.arguments ?? [],
         "cwd": command.cwd,
         "executable": process.executableURL?.path ?? NSNull(),
         "pid": process.processIdentifier,
       ])
-      process.terminationHandler = { [outputCapture = launch.outputCapture] terminatedProcess in
+      process.terminationHandler = { [outputCapture = launch.outputCapture, startedAt] terminatedProcess in
         var details = outputCapture.finish()
+        details["cwd"] = command.cwd
         details["pid"] = terminatedProcess.processIdentifier
         details["reason"] = terminatedProcess.terminationReason.rawValue
         details["status"] = terminatedProcess.terminationStatus
+        details["uptimeSeconds"] = Date().timeIntervalSince(startedAt)
         NativeT3CodePaneReproLog.append("nativeHost.codeServerRuntime.exit", details)
       }
     } catch {
@@ -3263,6 +3502,11 @@ final class ghostexRootView: NSView {
   private static let dividerWidth: CGFloat = 6
   private static let defaultSidebarWidth: CGFloat = 260
   private static let sidebarResetWidth: CGFloat = 260
+  private static let startupOverlayVisibleDuration: TimeInterval = 2.0
+  private static let startupOverlayFadeDuration: TimeInterval = 1.0
+  private static let startupOverlayIconOpacity: CGFloat = 0.14
+  private static let startupOverlayIconSize: CGFloat = 132
+  private static let floatingPromptEditorFrameDefaultsKey = "ghostex.floatingPromptEditor.frame.v1"
 
   let workspaceView: TerminalWorkspaceView
   var sidebarWebView: WKWebView { sidebarView }
@@ -3270,6 +3514,8 @@ final class ghostexRootView: NSView {
   private let modalHostView: AppModalHostWebView
   private let titlebarChromeView: ReactTitlebarChromeView
   private let titlebarChromeWebView: WKWebView
+  private let startupOverlayView = NSView(frame: .zero)
+  private let startupOverlayIconView = NSImageView(frame: .zero)
   private let scriptBridge: SidebarScriptBridge
   private let sidebarCommandRouter = SidebarCommandRouter()
   private let divider: PaneResizeHandleView
@@ -3484,9 +3730,78 @@ final class ghostexRootView: NSView {
      workspace clicks still pass through below the fixed titlebar strip.
      */
     addSubview(titlebarChromeView)
+    installStartupOverlay()
     loadSidebar()
     loadModalHost()
     loadTitlebarChrome()
+  }
+
+  private func installStartupOverlay() {
+    /**
+     CDXC:StartupOverlay 2026-05-15-18:46:
+     Startup restores can reorder many sidebar sessions while native panes are
+     still reconnecting. Cover the whole app content with the same #0e0e0e
+     chrome color, then fade the mask out instead of applying opacity to the
+     sidebar itself.
+
+     CDXC:StartupOverlay 2026-05-15-19:05:
+     The configured overlay view must also be inserted above the React titlebar
+     WKWebView. Without adding it to the root hierarchy, the timer runs but no
+     full-app mask can draw over startup churn.
+
+     CDXC:StartupOverlay 2026-05-15-19:13:
+     The mask should hold for two seconds, not three, and show the app icon in
+     the center as a low-opacity grayscale watermark. Keep the icon inside the
+     overlay view so removing the overlay also removes every startup mask hit
+     target after the fade completes.
+     */
+    startupOverlayView.wantsLayer = true
+    startupOverlayView.layer?.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor.cgColor
+    startupOverlayView.alphaValue = 1
+    startupOverlayIconView.image = grayscaleStartupOverlayIconImage()
+    startupOverlayIconView.imageScaling = .scaleProportionallyUpOrDown
+    startupOverlayIconView.alphaValue = Self.startupOverlayIconOpacity
+    startupOverlayIconView.wantsLayer = true
+    startupOverlayView.addSubview(startupOverlayIconView)
+    addSubview(startupOverlayView, positioned: .above, relativeTo: titlebarChromeView)
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.startupOverlayVisibleDuration) {
+      [weak self] in
+      self?.fadeOutStartupOverlay()
+    }
+  }
+
+  private func fadeOutStartupOverlay() {
+    guard startupOverlayView.superview === self, startupOverlayView.alphaValue > 0 else {
+      return
+    }
+
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = Self.startupOverlayFadeDuration
+      startupOverlayView.animator().alphaValue = 0
+    } completionHandler: { [weak self] in
+      self?.startupOverlayView.removeFromSuperview()
+    }
+  }
+
+  private func grayscaleStartupOverlayIconImage() -> NSImage {
+    guard let sourceImage = NSApp.applicationIconImage else {
+      return NSImage(size: NSSize(width: Self.startupOverlayIconSize, height: Self.startupOverlayIconSize))
+    }
+    guard let tiffData = sourceImage.tiffRepresentation,
+      let inputImage = CIImage(data: tiffData),
+      let filter = CIFilter(name: "CIPhotoEffectMono")
+    else {
+      return sourceImage
+    }
+
+    filter.setValue(inputImage, forKey: kCIInputImageKey)
+    guard let outputImage = filter.outputImage else {
+      return sourceImage
+    }
+
+    let image = NSImage(size: sourceImage.size)
+    image.addRepresentation(NSCIImageRep(ciImage: outputImage))
+    return image
   }
 
   func openFloatingEditor(_ command: OpenFloatingEditor) {
@@ -3497,7 +3812,7 @@ final class ghostexRootView: NSView {
     openFloatingPromptEditor(command)
   }
 
-  func closeTerminal(sessionId: String) {
+  func closeTerminal(sessionId: String, preservePersistenceSession: Bool = false) {
     if activeFloatingPromptEditor?.originatingSessionId == sessionId {
       /**
        CDXC:PromptEditor 2026-05-13-09:48
@@ -3512,7 +3827,9 @@ final class ghostexRootView: NSView {
         "type": "floatingPromptEditorCloseAndSave",
       ])
     }
-    workspaceView.closeTerminal(sessionId: sessionId)
+    workspaceView.closeTerminal(
+      sessionId: sessionId,
+      preservePersistenceSession: preservePersistenceSession)
   }
 
   private func openFloatingPromptEditor(_ command: OpenFloatingEditor) {
@@ -3573,6 +3890,16 @@ final class ghostexRootView: NSView {
 
   private func floatingPromptEditorInitialFrame(originatingSessionId: String?) -> [String: CGFloat] {
     let margin: CGFloat = 16
+    if let storedFrame = storedFloatingPromptEditorFrame() {
+      /**
+       CDXC:PromptEditor 2026-05-15-19:27:
+       The rich prompt editor is a global writing tool, not project-local UI.
+       Reopen it at the last user-sized and user-positioned frame across
+       projects and app restarts, clamped to the current window so saved frames
+       from other displays or window sizes stay reachable.
+       */
+      return clampedFloatingPromptEditorFrame(storedFrame)
+    }
     let maxWidth = min(CGFloat(400), max(240, bounds.width - margin * 2))
     let maxHeight = max(260, bounds.height - margin * 2)
     let width = maxWidth
@@ -3606,6 +3933,54 @@ final class ghostexRootView: NSView {
     ]
   }
 
+  private func storedFloatingPromptEditorFrame() -> [String: CGFloat]? {
+    guard let stored = UserDefaults.standard.string(forKey: Self.floatingPromptEditorFrameDefaultsKey) else {
+      return nil
+    }
+    let frame = NSRectFromString(stored)
+    guard frame.width > 1, frame.height > 1 else {
+      return nil
+    }
+    return [
+      "height": frame.height,
+      "left": frame.minX,
+      "top": frame.minY,
+      "width": frame.width,
+    ]
+  }
+
+  private func persistFloatingPromptEditorFrame(_ frame: [String: CGFloat]) {
+    let clampedFrame = clampedFloatingPromptEditorFrame(frame)
+    guard let left = clampedFrame["left"],
+      let top = clampedFrame["top"],
+      let width = clampedFrame["width"],
+      let height = clampedFrame["height"]
+    else {
+      return
+    }
+    let storedFrame = CGRect(x: left, y: top, width: width, height: height)
+    UserDefaults.standard.set(NSStringFromRect(storedFrame), forKey: Self.floatingPromptEditorFrameDefaultsKey)
+  }
+
+  private func clampedFloatingPromptEditorFrame(_ frame: [String: CGFloat]) -> [String: CGFloat] {
+    let margin: CGFloat = 16
+    let availableWidth = max(CGFloat(240), bounds.width - margin * 2)
+    let maxWidth = min(CGFloat(700), availableWidth)
+    let minWidth = min(CGFloat(180), maxWidth)
+    let minHeight = min(CGFloat(260), max(CGFloat(180), bounds.height - margin * 2))
+    let width = min(max(frame["width"] ?? 400, minWidth), maxWidth)
+    let height = min(
+      max(frame["height"] ?? 320, minHeight),
+      max(minHeight, bounds.height - margin * 2)
+    )
+    return [
+      "height": height,
+      "left": min(max(margin, frame["left"] ?? margin), max(margin, bounds.width - width - margin)),
+      "top": min(max(margin, frame["top"] ?? margin), max(margin, bounds.height - height - margin)),
+      "width": width,
+    ]
+  }
+
   private func updateFloatingPromptEditorHitRegion(frame: [String: CGFloat]) {
     guard let left = frame["left"],
       let top = frame["top"],
@@ -3634,7 +4009,9 @@ final class ghostexRootView: NSView {
       "top": Self.cgFloatValue(frame["top"]),
       "width": Self.cgFloatValue(frame["width"]),
     ].compactMapValues { $0 }
-    updateFloatingPromptEditorHitRegion(frame: hitRegion)
+    let clampedFrame = clampedFloatingPromptEditorFrame(hitRegion)
+    persistFloatingPromptEditorFrame(clampedFrame)
+    updateFloatingPromptEditorHitRegion(frame: clampedFrame)
   }
 
   private static func cgFloatValue(_ value: Any?) -> CGFloat? {
@@ -3754,10 +4131,15 @@ final class ghostexRootView: NSView {
     sendHostEvent(event)
   }
 
+  private func javaScriptStringLiteral(_ value: String) -> String? {
+    guard let data = try? JSONEncoder().encode(value) else {
+      return nil
+    }
+    return String(data: data, encoding: .utf8)
+  }
+
   func applyNativeZedOverlayDetached(targetApp: ZedOverlayTargetApp) {
-    guard let data = try? JSONSerialization.data(withJSONObject: targetApp.rawValue),
-      let json = String(data: data, encoding: .utf8)
-    else {
+    guard let json = javaScriptStringLiteral(targetApp.rawValue) else {
       return
     }
     sidebarView.evaluateJavaScript(
@@ -3767,9 +4149,7 @@ final class ghostexRootView: NSView {
   }
 
   func applyNativeZedOverlayAttached(targetApp: ZedOverlayTargetApp) {
-    guard let data = try? JSONSerialization.data(withJSONObject: targetApp.rawValue),
-      let json = String(data: data, encoding: .utf8)
-    else {
+    guard let json = javaScriptStringLiteral(targetApp.rawValue) else {
       return
     }
     sidebarView.evaluateJavaScript(
@@ -3814,8 +4194,15 @@ final class ghostexRootView: NSView {
      diff state. Push only the compact project payload React needs instead of
      letting the titlebar infer state by running separate Git or code-server
      checks.
+     CDXC:ModeSwitcher 2026-05-15-18:20:
+     The titlebar's selected Agents/Code/Git/Project segment must come from
+     the same sidebar layout sync that restores the visible workspace surface,
+     so a launch directly into Code mode cannot leave Agents highlighted.
      */
     var payload: [String: Any] = [:]
+    if let activeProjectMode = command.activeProjectMode {
+      payload["activeMode"] = activeProjectMode
+    }
     if let activeProjectId = command.activeProjectId {
       payload["projectId"] = activeProjectId
     }
@@ -3922,12 +4309,32 @@ final class ghostexRootView: NSView {
      Titlebar Code and Embedded Editor clicks must enter the same sidebar-owned
      project-editor flow as the project header. Forward the command into the
      sidebar webview instead of reimplementing code-server startup in Swift.
+
+     CDXC:ModeSwitcher 2026-05-15-18:39:
+     Code-tab lag reports need a native bridge timestamp before and after the
+     sidebar JavaScript hop, so the repro log can distinguish titlebar click
+     handling from sidebar work and AppKit/CEF project-editor creation.
      */
+    AppDelegate.appendSessionTitleDebugLog(
+      event: "titlebarCodeLag.swiftForwardStart",
+      details: AppDelegate.jsonObjectString([
+        "timeInterval": "\(Date().timeIntervalSince1970)"
+      ]),
+      force: true)
     sidebarView.evaluateJavaScript(
       """
       window.__ghostex_NATIVE_SIDEBAR__?.openActiveProjectEditorFromTitlebar?.();
       undefined;
-      """)
+      """
+    ) { _, error in
+      AppDelegate.appendSessionTitleDebugLog(
+        event: "titlebarCodeLag.swiftForwardCompleted",
+        details: AppDelegate.jsonObjectString([
+          "error": error?.localizedDescription ?? "",
+          "timeInterval": "\(Date().timeIntervalSince1970)",
+        ]),
+        force: true)
+    }
   }
 
   private func openAgentsModeFromTitlebar() {
@@ -3978,11 +4385,15 @@ final class ghostexRootView: NSView {
      The React titlebar can render the relocated Actions split button, but the
      sidebar webview owns command execution state. Forward the command id into
      that webview so existing action launches and run feedback stay unchanged.
+
+     CDXC:TitlebarActions 2026-05-15-18:05
+     Titlebar action clicks must not pass a bare Swift String to
+     JSONSerialization because Foundation raises an Objective-C exception for
+     invalid top-level JSON types before the sidebar can receive the command.
+     Encode command ids as JSON string literals so terminal actions reach the
+     command-pane runner.
      */
-    guard
-      let data = try? JSONSerialization.data(withJSONObject: command.commandId),
-      let commandIdJson = String(data: data, encoding: .utf8)
-    else {
+    guard let commandIdJson = javaScriptStringLiteral(command.commandId) else {
       return
     }
     sidebarView.evaluateJavaScript(
@@ -4046,13 +4457,15 @@ final class ghostexRootView: NSView {
     case .openFloatingEditor(let command):
       openFloatingEditor(command)
     case .closeTerminal(let command):
-      closeTerminal(sessionId: command.sessionId)
+      closeTerminal(
+        sessionId: command.sessionId,
+        preservePersistenceSession: command.preservePersistenceSession == true)
     case .closeWebPane(let command):
       workspaceView.closeWebPane(sessionId: command.sessionId)
     case .focusTerminal(let command):
-      workspaceView.focusTerminal(sessionId: command.sessionId)
+      focusWorkspaceSessionAfterSidebarActivation(sessionId: command.sessionId, kind: .terminal)
     case .focusWebPane(let command):
-      workspaceView.focusWebPane(sessionId: command.sessionId)
+      focusWorkspaceSessionAfterSidebarActivation(sessionId: command.sessionId, kind: .webPane)
     case .reloadWebPane(let command):
       workspaceView.reloadWebPane(sessionId: command.sessionId)
     case .startT3CodeRuntime(let command):
@@ -4062,12 +4475,34 @@ final class ghostexRootView: NSView {
     case .stopT3CodeRuntime:
       stopT3CodeRuntime(logPrefix: "nativeSidebar")
     case .startCodeServerRuntime(let command):
+      AppDelegate.appendSessionTitleDebugLog(
+        event: "titlebarCodeLag.swiftStartCodeServerRuntimeReceived",
+        details: AppDelegate.jsonObjectString([
+          "cwd": command.cwd,
+          "timeInterval": "\(Date().timeIntervalSince1970)",
+        ]),
+        force: true)
       startCodeServerRuntime(command)
     case .stopCodeServerRuntime:
       stopCodeServerRuntime(logPrefix: "nativeSidebar")
     case .createProjectEditorPane(let command):
+      AppDelegate.appendSessionTitleDebugLog(
+        event: "titlebarCodeLag.swiftCreateProjectEditorPaneReceived",
+        details: AppDelegate.jsonObjectString([
+          "projectId": command.projectId,
+          "timeInterval": "\(Date().timeIntervalSince1970)",
+          "title": command.title,
+        ]),
+        force: true)
       workspaceView.createProjectEditorPane(command)
     case .focusProjectEditorPane(let command):
+      AppDelegate.appendSessionTitleDebugLog(
+        event: "titlebarCodeLag.swiftFocusProjectEditorPaneReceived",
+        details: AppDelegate.jsonObjectString([
+          "projectId": command.projectId,
+          "timeInterval": "\(Date().timeIntervalSince1970)",
+        ]),
+        force: true)
       workspaceView.focusProjectEditorPane(projectId: command.projectId)
     case .closeProjectEditorPane(let command):
       workspaceView.closeProjectEditorPane(projectId: command.projectId)
@@ -4100,7 +4535,8 @@ final class ghostexRootView: NSView {
     case .appendAgentDetectionDebugLog(let command):
       AppDelegate.appendAgentDetectionDebugLog(event: command.event, details: command.details)
     case .appendTerminalFocusDebugLog(let command):
-      AppDelegate.appendTerminalFocusDebugLog(event: command.event, details: command.details)
+      AppDelegate.appendTerminalFocusDebugLog(
+        event: command.event, details: command.details, force: command.force == true)
     case .appendRestoreDebugLog(let command):
       AppDelegate.appendRestoreDebugLog(event: command.event, details: command.details)
     case .appendSessionTitleDebugLog(let command):
@@ -4227,6 +4663,102 @@ final class ghostexRootView: NSView {
        */
       break
     }
+  }
+
+  private enum SidebarWorkspaceFocusKind {
+    case terminal
+    case webPane
+
+    var debugName: String {
+      switch self {
+      case .terminal:
+        return "terminal"
+      case .webPane:
+        return "webPane"
+      }
+    }
+  }
+
+  private func focusWorkspaceSessionAfterSidebarActivation(
+    sessionId: String,
+    kind: SidebarWorkspaceFocusKind
+  ) {
+    /**
+     CDXC:SidebarSessionFocus 2026-05-15-17:20:
+     Sidebar session-card clicks run inside WebKit's click dispatch, and WebKit
+     can keep the sidebar as first responder after the native focus command
+     returns. Defer only sidebar-originated workspace focus to the next main-loop
+     turn so the companion terminal or web pane becomes first responder after the
+     sidebar activation has settled.
+     CDXC:SidebarSessionFocus 2026-05-15-17:25:
+     Keep explicit before/after breadcrumbs around the deferred dispatch so a
+     reproduction shows whether focus is lost before the command leaves the
+     sidebar bridge, inside TerminalWorkspaceView, or after AppKit accepts the
+     new first responder.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.sidebarFocusCommandQueued",
+      details: [
+        "kind": kind.debugName,
+        "responderBeforeQueue": responderSnapshot(),
+        "sessionId": sessionId,
+        "webChromeFirstResponder": isWebChromeFirstResponder(),
+        "workspaceSnapshotBeforeQueue": workspaceView.activationDebugSnapshot(),
+      ])
+    DispatchQueue.main.async { [weak self] in
+      guard let self else {
+        return
+      }
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.sidebarFocusCommandDispatching",
+        details: [
+          "kind": kind.debugName,
+          "responderBeforeDispatch": self.responderSnapshot(),
+          "sessionId": sessionId,
+          "webChromeFirstResponder": self.isWebChromeFirstResponder(),
+          "workspaceSnapshotBeforeDispatch": self.workspaceView.activationDebugSnapshot(),
+        ])
+      switch kind {
+      case .terminal:
+        self.workspaceView.focusTerminal(sessionId: sessionId, reason: "sidebarFocusCommand")
+      case .webPane:
+        self.workspaceView.focusWebPane(sessionId: sessionId, reason: "sidebarFocusCommand")
+      }
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.sidebarFocusCommandDispatched",
+        details: [
+          "kind": kind.debugName,
+          "responderAfterDispatch": self.responderSnapshot(),
+          "sessionId": sessionId,
+          "webChromeFirstResponder": self.isWebChromeFirstResponder(),
+          "workspaceSnapshotAfterDispatch": self.workspaceView.activationDebugSnapshot(),
+        ])
+    }
+  }
+
+  private func responderSnapshot() -> [String: Any] {
+    guard let responder = window?.firstResponder else {
+      return [
+        "className": "nil",
+        "isModalHostResponder": false,
+        "isSidebarResponder": false,
+        "isTitlebarResponder": false,
+      ]
+    }
+    let responderView = responder as? NSView
+    let isSidebarResponder =
+      responderView.map { $0 === sidebarView || $0.isDescendant(of: sidebarView) } ?? false
+    let isModalHostResponder =
+      responderView.map { $0 === modalHostView || $0.isDescendant(of: modalHostView) } ?? false
+    let isTitlebarResponder =
+      responderView.map { $0 === titlebarChromeWebView || $0.isDescendant(of: titlebarChromeWebView) }
+      ?? false
+    return [
+      "className": String(describing: type(of: responder)),
+      "isModalHostResponder": isModalHostResponder,
+      "isSidebarResponder": isSidebarResponder,
+      "isTitlebarResponder": isTitlebarResponder,
+    ]
   }
 
   /**
@@ -4439,6 +4971,7 @@ final class ghostexRootView: NSView {
       NativeT3CodePaneReproLog.append("nativeSidebar.codeServerRuntime.start.reused", [
         "cwd": command.cwd,
         "pid": process.processIdentifier,
+        "startedAt": codeServerRuntimeStartedAt?.timeIntervalSince1970 ?? NSNull(),
       ])
       return
     }
@@ -4465,18 +4998,21 @@ final class ghostexRootView: NSView {
       let process = launch.process
       try process.run()
       codeServerRuntimeProcess = process
-      codeServerRuntimeStartedAt = Date()
+      let startedAt = Date()
+      codeServerRuntimeStartedAt = startedAt
       NativeT3CodePaneReproLog.append("nativeSidebar.codeServerRuntime.start.spawned", [
         "args": process.arguments ?? [],
         "cwd": command.cwd,
         "executable": process.executableURL?.path ?? NSNull(),
         "pid": process.processIdentifier,
       ])
-      process.terminationHandler = { [outputCapture = launch.outputCapture] terminatedProcess in
+      process.terminationHandler = { [outputCapture = launch.outputCapture, startedAt] terminatedProcess in
         var details = outputCapture.finish()
+        details["cwd"] = command.cwd
         details["pid"] = terminatedProcess.processIdentifier
         details["reason"] = terminatedProcess.terminationReason.rawValue
         details["status"] = terminatedProcess.terminationStatus
+        details["uptimeSeconds"] = Date().timeIntervalSince(startedAt)
         NativeT3CodePaneReproLog.append("nativeSidebar.codeServerRuntime.exit", details)
       }
     } catch {
@@ -4812,6 +5348,17 @@ final class ghostexRootView: NSView {
     workspaceView.frame = frames.workspace
     modalHostView.frame = frames.modalHost
     titlebarChromeView.frame = frames.titlebarChrome
+    startupOverlayView.frame = bounds
+    let startupOverlayIconSize = min(
+      Self.startupOverlayIconSize,
+      max(min(bounds.width, bounds.height) * 0.28, 64)
+    )
+    startupOverlayIconView.frame = CGRect(
+      x: (bounds.width - startupOverlayIconSize) / 2,
+      y: (bounds.height - startupOverlayIconSize) / 2,
+      width: startupOverlayIconSize,
+      height: startupOverlayIconSize
+    )
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
   }
 
@@ -4827,6 +5374,12 @@ final class ghostexRootView: NSView {
      narrow right-side pane tab cannot be intercepted by sidebar/titlebar web
      surfaces that visually pass through.
      */
+    if startupOverlayView.superview === self,
+      startupOverlayView.alphaValue > 0,
+      startupOverlayView.frame.contains(point)
+    {
+      return startupOverlayView
+    }
     if let hitView = titlebarChromeView.hitTest(convert(point, to: titlebarChromeView)) {
       return hitView
     }
@@ -6000,6 +6553,7 @@ final class ghostexFocusReportingWindow: NSWindow {
   var onFirstResponderChanged: ((NSResponder?) -> Void)?
   var onKeyDownDispatch: ((NSEvent) -> Void)?
   var onKeyEquivalent: ((NSEvent) -> Bool)?
+  var onActivationBoundaryEvent: ((NSEvent, String) -> Void)?
 
   /**
    CDXC:NativeTerminalFocus 2026-04-26-21:32
@@ -6024,7 +6578,14 @@ final class ghostexFocusReportingWindow: NSWindow {
      handles the key. Report keyDown metadata from the window boundary so the
      log can compare first responder, visible focus ring, and terminal surface
      delivery without recording typed characters.
+
+     CDXC:FocusStealDiagnostics 2026-05-15-20:09:
+     Recent focus-steal repros showed Ghostex becoming active with no fresh internal activation request. Report low-volume mouse events at the NSWindow boundary before and after AppKit dispatch so the next activation can be correlated with a real click, a synthetic companion click, or no local input at all.
      */
+    let shouldReportActivationBoundaryEvent = Self.shouldReportActivationBoundaryEvent(event)
+    if shouldReportActivationBoundaryEvent {
+      onActivationBoundaryEvent?(event, "windowSendEvent.beforeSuper")
+    }
     if event.type == .keyDown {
       onKeyDownDispatch?(event)
       if onKeyEquivalent?(event) == true {
@@ -6032,6 +6593,9 @@ final class ghostexFocusReportingWindow: NSWindow {
       }
     }
     super.sendEvent(event)
+    if shouldReportActivationBoundaryEvent && Self.isMouseActivationBoundaryEvent(event) {
+      onActivationBoundaryEvent?(event, "windowSendEvent.afterSuper")
+    }
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -6039,6 +6603,20 @@ final class ghostexFocusReportingWindow: NSWindow {
       return true
     }
     return super.performKeyEquivalent(with: event)
+  }
+
+  private static func shouldReportActivationBoundaryEvent(_ event: NSEvent) -> Bool {
+    isMouseActivationBoundaryEvent(event)
+  }
+
+  private static func isMouseActivationBoundaryEvent(_ event: NSEvent) -> Bool {
+    switch event.type {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown,
+      .otherMouseUp:
+      return true
+    default:
+      return false
+    }
   }
 }
 

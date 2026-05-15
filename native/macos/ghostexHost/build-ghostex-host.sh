@@ -135,7 +135,13 @@ mkdir -p "$WEB_DIR/cli"
 # and `gtx`; the bundled script filename follows that public CLI name while
 # internal GHOSTEX_* environment names and storage paths remain implementation
 # details.
+# CDXC:CliBranding 2026-05-15-17:41: The macOS app bundle should ship executable
+# `ghostex` and `gtx` launchers automatically so Homebrew can install both public
+# commands without asking users to add shell aliases by hand.
 cp "$REPO_ROOT/scripts/ghostex-cli.mjs" "$WEB_DIR/cli/ghostex-cli.mjs"
+cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/ghostex"
+cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/gtx"
+chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gtx"
 mkdir -p "$WEB_DIR/cli/node_modules"
 cp -R "$REPO_ROOT/node_modules/ws" "$WEB_DIR/cli/node_modules/ws"
 rm -rf "$WEB_DIR/monaco"

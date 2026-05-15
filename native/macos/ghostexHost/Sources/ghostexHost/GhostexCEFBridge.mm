@@ -1,5 +1,7 @@
 #import "GhostexCEFBridge.h"
 
+#import <QuartzCore/QuartzCore.h>
+
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -34,6 +36,7 @@ static bool g_cefInitialized = false;
 static CefRefPtr<CefApp> g_cefApp;
 static std::map<std::string, CefRefPtr<CefRequestContext>> g_persistentRequestContexts;
 static NSString* const GhostexCEFBuiltInDefaultProfileIdentifier = @"52B43C05-4A1D-45D3-8FD5-9EF94952E445";
+static NSString* const GhostexCEFViewportDiagnosticConsolePrefix = @"__GHOSTEX_CEF_VIEWPORT_DIAGNOSTIC__";
 using GhostexCEFCompletionBlock = void (^)(void);
 
 struct GhostexCEFProfileFlushState {
@@ -199,6 +202,69 @@ static NSDictionary* GhostexCEFDescribeRect(NSRect rect) {
   };
 }
 
+static NSDictionary* GhostexCEFDescribePoint(NSPoint point) {
+  return @{
+    @"x": @(point.x),
+    @"y": @(point.y),
+  };
+}
+
+static NSDictionary* GhostexCEFDescribeAffineTransform(CGAffineTransform transform) {
+  return @{
+    @"a": @(transform.a),
+    @"b": @(transform.b),
+    @"c": @(transform.c),
+    @"d": @(transform.d),
+    @"tx": @(transform.tx),
+    @"ty": @(transform.ty),
+  };
+}
+
+static NSDictionary* GhostexCEFDescribeTransform3D(CATransform3D transform) {
+  return @{
+    @"m11": @(transform.m11),
+    @"m12": @(transform.m12),
+    @"m13": @(transform.m13),
+    @"m14": @(transform.m14),
+    @"m21": @(transform.m21),
+    @"m22": @(transform.m22),
+    @"m23": @(transform.m23),
+    @"m24": @(transform.m24),
+    @"m31": @(transform.m31),
+    @"m32": @(transform.m32),
+    @"m33": @(transform.m33),
+    @"m34": @(transform.m34),
+    @"m41": @(transform.m41),
+    @"m42": @(transform.m42),
+    @"m43": @(transform.m43),
+    @"m44": @(transform.m44),
+  };
+}
+
+static NSDictionary* GhostexCEFDescribeLayer(CALayer* layer) {
+  if (!layer) {
+    return @{};
+  }
+  return @{
+    @"affineTransform": GhostexCEFDescribeAffineTransform([layer affineTransform]),
+    @"anchorPoint": GhostexCEFDescribePoint(NSPointFromCGPoint(layer.anchorPoint)),
+    @"bounds": GhostexCEFDescribeRect(NSRectFromCGRect(layer.bounds)),
+    @"class": NSStringFromClass([layer class]) ?: @"",
+    @"contentsGravity": layer.contentsGravity ?: @"",
+    @"contentsScale": @(layer.contentsScale),
+    @"frame": GhostexCEFDescribeRect(NSRectFromCGRect(layer.frame)),
+    @"geometryFlipped": @(layer.geometryFlipped),
+    @"hidden": @(layer.hidden),
+    @"masksToBounds": @(layer.masksToBounds),
+    @"opacity": @(layer.opacity),
+    @"position": GhostexCEFDescribePoint(NSPointFromCGPoint(layer.position)),
+    @"sublayerCount": @(layer.sublayers.count),
+    @"sublayerTransform": GhostexCEFDescribeTransform3D(layer.sublayerTransform),
+    @"transform": GhostexCEFDescribeTransform3D(layer.transform),
+    @"zPosition": @(layer.zPosition),
+  };
+}
+
 static id GhostexCEFDescribeBoundsInWindow(NSView* view) {
   if (!view || !view.window) {
     return [NSNull null];
@@ -211,6 +277,113 @@ static id GhostexCEFDescribeFrameInWindow(NSView* view) {
     return [NSNull null];
   }
   return GhostexCEFDescribeRect([view.superview convertRect:view.frame toView:nil]);
+}
+
+static NSDictionary* GhostexCEFDescribeView(NSView* view, NSUInteger depth, NSString* path) {
+  CALayer* layer = view.layer;
+  NSMutableDictionary* details = [@{
+    @"alphaValue": @(view.alphaValue),
+    @"autoresizingMask": @(view.autoresizingMask),
+    @"bounds": GhostexCEFDescribeRect(view.bounds),
+    @"boundsInWindow": GhostexCEFDescribeBoundsInWindow(view),
+    @"boundsRotation": @(view.boundsRotation),
+    @"canDrawSubviewsIntoLayer": @(view.canDrawSubviewsIntoLayer),
+    @"class": NSStringFromClass([view class]) ?: @"",
+    @"depth": @(depth),
+    @"frame": GhostexCEFDescribeRect(view.frame),
+    @"frameInWindow": GhostexCEFDescribeFrameInWindow(view),
+    @"frameRotation": @(view.frameRotation),
+    @"hidden": @(view.hidden),
+    @"hiddenOrHasHiddenAncestor": @([view isHiddenOrHasHiddenAncestor]),
+    @"inLiveResize": @(view.inLiveResize),
+    @"isFlipped": @([view isFlipped]),
+    @"isOpaque": @([view isOpaque]),
+    @"layerContentsRedrawPolicy": @(view.layerContentsRedrawPolicy),
+    @"needsDisplay": @(view.needsDisplay),
+    @"needsLayout": @(view.needsLayout),
+    @"path": path ?: @"",
+    @"subviewCount": @(view.subviews.count),
+    @"translatesAutoresizingMaskIntoConstraints": @(view.translatesAutoresizingMaskIntoConstraints),
+    @"visibleRect": GhostexCEFDescribeRect(view.visibleRect),
+    @"wantsLayer": @(view.wantsLayer),
+  } mutableCopy];
+  if (view.superview) {
+    details[@"superviewClass"] = NSStringFromClass([view.superview class]) ?: @"";
+  }
+  if (layer) {
+    details[@"layer"] = GhostexCEFDescribeLayer(layer);
+  }
+  return details;
+}
+
+static void GhostexCEFCollectViewHierarchy(NSView* view,
+                                           NSMutableArray* nodes,
+                                           NSUInteger depth,
+                                           NSUInteger maxDepth,
+                                           NSUInteger maxCount,
+                                           NSString* path) {
+  if (!view || nodes.count >= maxCount) {
+    return;
+  }
+  [nodes addObject:GhostexCEFDescribeView(view, depth, path)];
+  if (depth >= maxDepth) {
+    return;
+  }
+  NSUInteger index = 0;
+  for (NSView* subview in view.subviews) {
+    if (nodes.count >= maxCount) {
+      return;
+    }
+    NSString* subviewPath = [NSString stringWithFormat:@"%@.%lu", path ?: @"0", (unsigned long)index];
+    GhostexCEFCollectViewHierarchy(subview, nodes, depth + 1, maxDepth, maxCount, subviewPath);
+    index += 1;
+  }
+}
+
+static NSArray* GhostexCEFCollectAncestorChain(NSView* view, NSUInteger maxCount) {
+  NSMutableArray* ancestors = [NSMutableArray array];
+  NSView* cursor = view;
+  NSUInteger depth = 0;
+  while (cursor && ancestors.count < maxCount) {
+    [ancestors addObject:GhostexCEFDescribeView(cursor, depth, [NSString stringWithFormat:@"%lu", (unsigned long)depth])];
+    cursor = cursor.superview;
+    depth += 1;
+  }
+  return ancestors;
+}
+
+static void GhostexCEFCollectLayerHierarchy(CALayer* layer,
+                                            NSMutableArray* nodes,
+                                            NSUInteger depth,
+                                            NSUInteger maxDepth,
+                                            NSUInteger maxCount,
+                                            NSString* path) {
+  if (!layer || nodes.count >= maxCount) {
+    return;
+  }
+  NSMutableDictionary* details = [NSMutableDictionary dictionaryWithDictionary:GhostexCEFDescribeLayer(layer)];
+  details[@"depth"] = @(depth);
+  details[@"path"] = path ?: @"";
+  [nodes addObject:details];
+  if (depth >= maxDepth) {
+    return;
+  }
+  NSUInteger index = 0;
+  for (CALayer* sublayer in layer.sublayers) {
+    if (nodes.count >= maxCount) {
+      return;
+    }
+    NSString* sublayerPath = [NSString stringWithFormat:@"%@.%lu", path ?: @"0", (unsigned long)index];
+    GhostexCEFCollectLayerHierarchy(sublayer, nodes, depth + 1, maxDepth, maxCount, sublayerPath);
+    index += 1;
+  }
+}
+
+static bool GhostexCEFDiagnosticRectChangedEnough(NSRect lhs, NSRect rhs, CGFloat threshold) {
+  return fabs(lhs.origin.x - rhs.origin.x) >= threshold ||
+    fabs(lhs.origin.y - rhs.origin.y) >= threshold ||
+    fabs(lhs.size.width - rhs.size.width) >= threshold ||
+    fabs(lhs.size.height - rhs.size.height) >= threshold;
 }
 
 static void GhostexCEFAppendDiagnosticLog(NSString* event, NSDictionary* details) {
@@ -405,6 +578,13 @@ class GhostexCEFBrowserClient : public CefClient,
   void OnTitleChange(CefRefPtr<CefBrowser> browser, const CefString& title) override;
   void OnAddressChange(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const CefString& url) override;
   void OnFaviconURLChange(CefRefPtr<CefBrowser> browser, const std::vector<CefString>& icon_urls) override;
+  void OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, TransitionType transition_type) override;
+  void OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) override;
+  void OnLoadError(CefRefPtr<CefBrowser> browser,
+                   CefRefPtr<CefFrame> frame,
+                   ErrorCode errorCode,
+                   const CefString& errorText,
+                   const CefString& failedUrl) override;
   void OnLoadingStateChange(CefRefPtr<CefBrowser> browser, bool isLoading, bool canGoBack, bool canGoForward) override;
   bool OnConsoleMessage(CefRefPtr<CefBrowser> browser,
                         cef_log_severity_t level,
@@ -513,6 +693,12 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   BOOL isLoading_;
   BOOL didCreateBrowser_;
   NSUInteger layoutPass_;
+  NSUInteger internalGeometryDiagnosticSequence_;
+  NSUInteger viewportDiagnosticSequence_;
+  NSTimeInterval lastInternalGeometryDiagnosticAt_;
+  NSTimeInterval lastViewportDiagnosticAt_;
+  NSRect lastInternalGeometryDiagnosticBounds_;
+  NSRect lastViewportDiagnosticBounds_;
 }
 @end
 
@@ -589,11 +775,12 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
 
 - (void)layout {
   [super layout];
+  NSRect targetFrame = self.bounds;
   if (!cefView_) {
     return;
   }
   if (!GhostexCEFNativeDebugLoggingEnabled()) {
-    cefView_.frame = self.bounds;
+    cefView_.frame = targetFrame;
     return;
   }
 
@@ -601,7 +788,6 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   NSRect cefBoundsBefore = cefView_.bounds;
   id cefFrameInWindowBefore = GhostexCEFDescribeFrameInWindow(cefView_);
   id cefBoundsInWindowBefore = GhostexCEFDescribeBoundsInWindow(cefView_);
-  NSRect targetFrame = self.bounds;
   cefView_.frame = targetFrame;
   layoutPass_ += 1;
   NSString* cefClass = NSStringFromClass([cefView_ class]);
@@ -638,6 +824,156 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
     @"wrapperWantsLayer": @(self.wantsLayer),
     @"windowNumber": self.window ? @(self.window.windowNumber) : (id)[NSNull null],
   });
+  [self ghostexCEFEmitTargetedResizeDiagnosticsIfNeededAt:[[NSProcessInfo processInfo] systemUptime]
+                                               layoutPass:layoutPass_
+                                             currentFrame:targetFrame
+                                               currentURL:currentURL
+                                                pageTitle:pageTitle];
+}
+
+- (void)ghostexCEFEmitTargetedResizeDiagnosticsIfNeededAt:(NSTimeInterval)now
+                                               layoutPass:(NSUInteger)layoutPass
+                                             currentFrame:(NSRect)currentFrame
+                                               currentURL:(id)currentURL
+                                                pageTitle:(id)pageTitle {
+  BOOL shouldEmitInternalGeometry = lastInternalGeometryDiagnosticAt_ <= 0 ||
+    now - lastInternalGeometryDiagnosticAt_ >= 0.25 ||
+    GhostexCEFDiagnosticRectChangedEnough(lastInternalGeometryDiagnosticBounds_, currentFrame, 48);
+  if (shouldEmitInternalGeometry) {
+    lastInternalGeometryDiagnosticAt_ = now;
+    lastInternalGeometryDiagnosticBounds_ = currentFrame;
+    internalGeometryDiagnosticSequence_ += 1;
+    NSMutableArray* cefViewHierarchy = [NSMutableArray array];
+    GhostexCEFCollectViewHierarchy(cefView_, cefViewHierarchy, 0, 5, 80, @"0");
+    NSMutableArray* cefLayerHierarchy = [NSMutableArray array];
+    if (cefView_.layer) {
+      GhostexCEFCollectLayerHierarchy(cefView_.layer, cefLayerHierarchy, 0, 5, 120, @"0");
+    }
+    /*
+    CDXC:ChromiumBrowserPanes 2026-05-15-15:43:
+    The first resize repro showed wrapper and top-level CEF frames staying aligned while the rendered page appeared offset.
+    Add targeted Debugging Mode diagnostics for CEF's internal NSView/CALayer tree and the ancestor flip chain so the fix can target the exact Cocoa or compositor layer that moves.
+    */
+    GhostexCEFAppendDiagnosticLog(@"nativeWorkspace.chromiumBrowserPane.cef.internalGeometry", @{
+      @"ancestorChain": GhostexCEFCollectAncestorChain(cefView_, 16),
+      @"cefLayerHierarchy": cefLayerHierarchy,
+      @"cefSubviewHierarchy": cefViewHierarchy,
+      @"currentURL": currentURL,
+      @"diagnosticSequence": @(internalGeometryDiagnosticSequence_),
+      @"layoutPass": @(layoutPass),
+      @"pageTitle": pageTitle,
+      @"windowNumber": self.window ? @(self.window.windowNumber) : (id)[NSNull null],
+      @"wrapperClass": NSStringFromClass([self class]) ?: @"",
+    });
+  }
+
+  BOOL shouldEmitViewport = browser_ &&
+    (lastViewportDiagnosticAt_ <= 0 ||
+      now - lastViewportDiagnosticAt_ >= 0.25 ||
+      GhostexCEFDiagnosticRectChangedEnough(lastViewportDiagnosticBounds_, currentFrame, 64));
+  if (shouldEmitViewport) {
+    lastViewportDiagnosticAt_ = now;
+    lastViewportDiagnosticBounds_ = currentFrame;
+    viewportDiagnosticSequence_ += 1;
+    [self ghostexCEFEmitPageViewportDiagnosticForLayoutPass:layoutPass
+                                                   sequence:viewportDiagnosticSequence_
+                                               currentFrame:currentFrame];
+  }
+}
+
+- (void)ghostexCEFEmitPageViewportDiagnosticForLayoutPass:(NSUInteger)layoutPass
+                                                 sequence:(NSUInteger)sequence
+                                             currentFrame:(NSRect)currentFrame {
+  if (!browser_) {
+    return;
+  }
+  CefRefPtr<CefFrame> frame = browser_->GetMainFrame();
+  if (!frame) {
+    return;
+  }
+  NSString* script = [NSString stringWithFormat:
+    @"(() => {"
+      "const prefix = '%@';"
+      "const number = (value) => Number.isFinite(value) ? value : null;"
+      "const rectOf = (rect) => rect ? ({"
+        "x: number(rect.x), y: number(rect.y), width: number(rect.width), height: number(rect.height),"
+        "top: number(rect.top), right: number(rect.right), bottom: number(rect.bottom), left: number(rect.left)"
+      "}) : null;"
+      "const describe = (el) => {"
+        "if (!el) return null;"
+        "const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;"
+        "let className = '';"
+        "try { className = typeof el.className === 'string' ? el.className : String(el.className || ''); } catch (_) {}"
+        "return {"
+          "tagName: el.tagName || null,"
+          "id: el.id || '',"
+          "className: className.slice(0, 180),"
+          "rect: rectOf(rect),"
+          "scrollTop: number(el.scrollTop), scrollLeft: number(el.scrollLeft),"
+          "clientWidth: number(el.clientWidth), clientHeight: number(el.clientHeight),"
+          "scrollWidth: number(el.scrollWidth), scrollHeight: number(el.scrollHeight),"
+          "offsetTop: number(el.offsetTop), offsetLeft: number(el.offsetLeft)"
+        "};"
+      "};"
+      "try {"
+        "const doc = document;"
+        "const docEl = doc.documentElement;"
+        "const body = doc.body;"
+        "const scrollingElement = doc.scrollingElement;"
+        "const visualViewport = window.visualViewport;"
+        "const sampleX = Math.max(0, Math.min(Math.max(0, window.innerWidth - 1), Math.floor(window.innerWidth / 2)));"
+        "const topY = Math.max(0, Math.min(Math.max(0, window.innerHeight - 1), 1));"
+        "const midY = Math.max(0, Math.min(Math.max(0, window.innerHeight - 1), Math.floor(window.innerHeight / 2)));"
+        "const payload = {"
+          "layoutPass: %lu,"
+          "diagnosticSequence: %lu,"
+          "nativeFrame: {x: %.3f, y: %.3f, width: %.3f, height: %.3f},"
+          "href: String(location.href),"
+          "readyState: doc.readyState,"
+          "devicePixelRatio: number(window.devicePixelRatio),"
+          "innerWidth: number(window.innerWidth), innerHeight: number(window.innerHeight),"
+          "outerWidth: number(window.outerWidth), outerHeight: number(window.outerHeight),"
+          "scrollX: number(window.scrollX), scrollY: number(window.scrollY),"
+          "pageXOffset: number(window.pageXOffset), pageYOffset: number(window.pageYOffset),"
+          "visualViewport: visualViewport ? {"
+            "offsetLeft: number(visualViewport.offsetLeft), offsetTop: number(visualViewport.offsetTop),"
+            "pageLeft: number(visualViewport.pageLeft), pageTop: number(visualViewport.pageTop),"
+            "width: number(visualViewport.width), height: number(visualViewport.height),"
+            "scale: number(visualViewport.scale)"
+          "} : null,"
+          "documentElement: describe(docEl),"
+          "body: describe(body),"
+          "scrollingElementTag: scrollingElement ? scrollingElement.tagName : null,"
+          "scrollingElement: describe(scrollingElement),"
+          "activeElement: describe(doc.activeElement),"
+          "centerTopElement: describe(doc.elementFromPoint(sampleX, topY)),"
+          "centerMiddleElement: describe(doc.elementFromPoint(sampleX, midY)),"
+          "performanceNow: performance && performance.now ? number(performance.now()) : null"
+        "};"
+        "console.info(prefix + JSON.stringify(payload));"
+      "} catch (error) {"
+        "console.info(prefix + JSON.stringify({"
+          "layoutPass: %lu,"
+          "diagnosticSequence: %lu,"
+          "nativeFrame: {x: %.3f, y: %.3f, width: %.3f, height: %.3f},"
+          "error: String(error && (error.stack || error.message || error))"
+        "}));"
+      "}"
+    "})();",
+    GhostexCEFViewportDiagnosticConsolePrefix,
+    (unsigned long)layoutPass,
+    (unsigned long)sequence,
+    currentFrame.origin.x,
+    currentFrame.origin.y,
+    currentFrame.size.width,
+    currentFrame.size.height,
+    (unsigned long)layoutPass,
+    (unsigned long)sequence,
+    currentFrame.origin.x,
+    currentFrame.origin.y,
+    currentFrame.size.width,
+    currentFrame.size.height];
+  frame->ExecuteJavaScript(CefString([script UTF8String]), frame->GetURL(), 0);
 }
 
 - (NSString*)currentURLString {
@@ -674,7 +1010,7 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
    NSView panes because CEF forces Alloy style whenever `parent_view` is set;
    keep child panes on Alloy and let TerminalWorkspaceView handle only the
    active-drag hover/drop retargeting gap.
-   */
+  */
   windowInfo.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
   CefRect rect(0, 0, static_cast<int>(MAX(1, self.bounds.size.width)), static_cast<int>(MAX(1, self.bounds.size.height)));
   windowInfo.SetAsChild((__bridge void*)self, rect);
@@ -845,7 +1181,53 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   }
 }
 
+- (void)ghostexCEFHandleLoadEvent:(NSString*)event
+                              url:(NSString*)url
+                   httpStatusCode:(NSInteger)httpStatusCode
+                         errorCode:(NSInteger)errorCode
+                         errorText:(NSString*)errorText {
+  /*
+  CDXC:EditorPanes 2026-05-15-18:53:
+  The code editor reconnect/page-not-found repro needs CEF main-frame load boundaries separate from VS Code console messages and the code-server process exit log.
+  Forward load start, HTTP completion, and load error state to Swift diagnostics without changing navigation behavior.
+  */
+  if (self.loadEventHandler) {
+    self.loadEventHandler(
+      event ?: @"",
+      url ?: @"",
+      httpStatusCode,
+      errorCode,
+      errorText ?: @"");
+  }
+}
+
 - (void)ghostexCEFHandleConsoleMessage:(NSString*)message source:(NSString*)source line:(NSInteger)line {
+  if ([message hasPrefix:GhostexCEFViewportDiagnosticConsolePrefix]) {
+    NSString* json = [message substringFromIndex:GhostexCEFViewportDiagnosticConsolePrefix.length];
+    NSData* data = [json dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableDictionary* details = [NSMutableDictionary dictionary];
+    if (data) {
+      NSError* error = nil;
+      id payload = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+      if (!error && [payload isKindOfClass:[NSDictionary class]]) {
+        [details addEntriesFromDictionary:(NSDictionary*)payload];
+      } else if (error) {
+        details[@"parseError"] = error.localizedDescription ?: @"unknown";
+        details[@"rawMessage"] = json ?: @"";
+      }
+    }
+    /*
+    CDXC:ChromiumBrowserPanes 2026-05-15-15:43:
+    Page-scroll drift must be separated from native CEF compositor drift before changing resize behavior.
+    Capture document, visualViewport, and scrollingElement metrics through the page console bridge so a resize repro proves whether Chromium moved the web document or only its native backing surface.
+    */
+    details[@"currentURL"] = currentURLString_ ?: (id)[NSNull null];
+    details[@"pageTitle"] = pageTitle_ ?: (id)[NSNull null];
+    details[@"source"] = source ?: @"";
+    details[@"line"] = @(line);
+    GhostexCEFAppendDiagnosticLog(@"nativeWorkspace.chromiumBrowserPane.pageViewport", details);
+    return;
+  }
   if (self.consoleMessageHandler) {
     self.consoleMessageHandler(message ?: @"", source ?: @"", line);
   }
@@ -878,6 +1260,53 @@ void GhostexCEFBrowserClient::OnFaviconURLChange(CefRefPtr<CefBrowser> browser, 
   NSString* faviconURL = StringFromCefString(icon_urls.front());
   dispatch_async(dispatch_get_main_queue(), ^{
     [owner_ ghostexCEFSetFaviconURL:faviconURL];
+  });
+}
+
+void GhostexCEFBrowserClient::OnLoadStart(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, TransitionType transition_type) {
+  if (!frame || !frame->IsMain()) {
+    return;
+  }
+  NSString* urlString = StringFromCefString(frame->GetURL());
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [owner_ ghostexCEFHandleLoadEvent:@"loadStart"
+                                  url:urlString
+                       httpStatusCode:0
+                            errorCode:0
+                            errorText:@""];
+  });
+}
+
+void GhostexCEFBrowserClient::OnLoadEnd(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int httpStatusCode) {
+  if (!frame || !frame->IsMain()) {
+    return;
+  }
+  NSString* urlString = StringFromCefString(frame->GetURL());
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [owner_ ghostexCEFHandleLoadEvent:@"loadEnd"
+                                  url:urlString
+                       httpStatusCode:httpStatusCode
+                            errorCode:0
+                            errorText:@""];
+  });
+}
+
+void GhostexCEFBrowserClient::OnLoadError(CefRefPtr<CefBrowser> browser,
+                                       CefRefPtr<CefFrame> frame,
+                                       ErrorCode errorCode,
+                                       const CefString& errorText,
+                                       const CefString& failedUrl) {
+  if (!frame || !frame->IsMain()) {
+    return;
+  }
+  NSString* urlString = StringFromCefString(failedUrl);
+  NSString* errorTextString = StringFromCefString(errorText);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [owner_ ghostexCEFHandleLoadEvent:@"loadError"
+                                  url:urlString
+                       httpStatusCode:0
+                            errorCode:static_cast<NSInteger>(errorCode)
+                            errorText:errorTextString];
   });
 }
 

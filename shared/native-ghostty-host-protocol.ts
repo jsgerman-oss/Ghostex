@@ -166,6 +166,7 @@ export type NativeGhosttyHostCommand =
   | {
       activeProjectEditorId?: string;
       activeProjectDiffStats?: SidebarProjectDiffStats;
+      activeProjectMode?: "agents" | "code" | "git" | "tasks";
       activeProjectEditorIsOpen?: boolean;
       activeProjectEditorIsSleeping?: boolean;
       activeProjectEditorStatus?: "idle" | "opening" | "running" | "error";
