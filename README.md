@@ -85,12 +85,12 @@ brew install --cask maddada/tap/ghostex
 - Native diagnostics capture app activation, pane-tab geometry, and browser-pane layout details for focus and resize troubleshooting.
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Embedded T3code
-- Integrations for all the popular Agent CLI 
+- Integrations for all the popular Agent CLI
 
 ---
 
 ## Other useful stuff:
-- Built in zmx/tmux/zellij support 
+- Built in zmx/tmux/zellij support
   - Can continue via ssh then use `ghostex` or `gtx` cli to attach. Beta but working well already with especially zmx.
 - Automations and cross agent messages (coming very soon)
 - Better worktrees support coming very soon - Want to nail the UX
@@ -153,7 +153,19 @@ args = [ "chrome-devtools-mcp@latest", "--auto-connect", "--channel=canary" ]
 ```
 
 
-## Dev Setup With The ghostex Ghostty Fork
+## Dev Setup With Ghostty
+
+<!--
+CDXC:NativeGhosttyBuild 2026-05-15-16:07:
+Developer setup must make the Ghostty source boundary explicit: Ghostex embeds and links a sibling Ghostty checkout but does not modify Ghostty source.
+The default local build path expects the Ghostty repository to be cloned beside this project in a folder named `ghostty`.
+-->
+
+Ghostex embeds Ghostty by compiling and linking against a local Ghostty checkout.
+It does not modify Ghostty's source. You only need to clone the Ghostty repo next
+to this project's repo in a folder named `ghostty` so the native macOS build can
+find `GhosttyKit.xcframework`, Ghostty Swift sources, and generated Ghostty
+resources.
 
 Clone both repositories into the same parent directory and keep the Ghostty
 folder named `ghostty`:
@@ -162,7 +174,7 @@ folder named `ghostty`:
 mkdir -p ~/dev/ghostex-repos
 cd ~/dev/ghostex-repos
 git clone https://github.com/maddada/ghostex.git ghostex
-git clone https://github.com/maddada/ghostty.git ghostty
+git clone https://github.com/ghostty-org/ghostty.git ghostty
 ```
 
 Build Ghostty's native macOS framework first:

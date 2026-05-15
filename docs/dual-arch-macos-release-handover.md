@@ -387,6 +387,8 @@ cask "ghostex" do
   depends_on macos: ">= :ventura"
 
   app "ghostex.app"
+  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/ghostex"
+  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/gtx"
 
   zap trash: [
     "~/Library/Application Support/com.madda.ghostex.host",
@@ -408,6 +410,7 @@ brew fetch --cask --arch=x86_64 ./Casks/ghostex.rb
 
 If `brew fetch --cask --arch=...` is not available in the local Homebrew version, validate on real arm64 and Intel machines.
 If the tap also contains a `ghostex` cask or alias, update it in the same commit so both public install commands resolve to the same architecture-specific release.
+Keep both `binary` stanzas in the cask so Homebrew automatically installs the `ghostex` command and the `gtx` short alias from the app bundle.
 
 Commit and push the tap only after both SHA values match the stapled DMGs:
 
