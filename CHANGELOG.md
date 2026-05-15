@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.0 - 2026-05-15
+
+- Added a Tips & Tricks guide inside Ghostex with practical pages for workspace basics, agents and sessions, actions and browsers, Codex setup, and remote access from a phone or another machine.
+- Added bundled `ghostex` and `gtx` command-line launchers to the app so Homebrew installs both commands automatically for session listing, attach, wake, focus, and sleep workflows.
+- Changed new session labels to shorter `g-MMDD-HHMMSS` identities so sidebar numbers and tmux, zmx, or zellij session names are easier to read and reuse.
+- Improved sleeping-session restore behavior so waking a session puts it back into the active tab group instead of disrupting the current split layout.
+- Polished project workspace controls with clearer titlebar modes, better project panel behavior, and a cleaner path from empty project headers into a first terminal.
+- Improved native pane and browser stability around focus, tab scrolling, titlebar actions, and embedded browser resizing.
+- Improved rename handling so pasted titles are cleaned into readable session names before they are saved.
+
 ## 2.7.0 - 2026-05-15
 
 <!-- CDXC:Distribution 2026-05-15-15:08: Release notes for 2.7.0 must cover

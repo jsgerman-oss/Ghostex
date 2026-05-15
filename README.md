@@ -51,10 +51,13 @@ brew install --cask maddada/tap/ghostex
 - Native Ghostty for best cpu/ram use and compatibility
 - Native terminal panes preserve Ghostty-style scrollback, scrollbars, and trackpad momentum inside the app.
 - The same Homebrew install command automatically selects Apple Silicon or Intel Mac builds.
+- The app installs both `ghostex` and `gtx` CLI commands through Homebrew for listing, attaching, waking, focusing, and sleeping sessions.
 - Inspired by Codex App's UX
 - Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
 - Auto sleep unused terminals to save ram (auto-restore when clicked)
+- Sleeping sessions restore into the active tab group so your current split layout stays intact.
 - Auto session naming for Codex/Claude/Pi Agent/Gemini/Copilot/Factory Droid/Grok Build cli sessions (more soon)
+- New sessions use compact `g-MMDD-HHMMSS` labels that stay readable in Ghostex, tmux, zmx, and zellij.
 - Reopening the app always resumes your agent cli sessions
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
 - The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
@@ -63,8 +66,10 @@ brew install --cask maddada/tap/ghostex
 - The installed Ghostex app also proxies terminal CLI commands such as `ghostex sessions`; `gtx sessions` is the short alias.
 - The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
 - The native titlebar includes Agents, Code, Git, and Project modes for switching workspace surfaces without crowding the sidebar, with a visible active-pill transition between modes.
+- Project workspace controls include clearer titlebar modes, improved project panel behavior, and an easier empty-project first-terminal flow.
 - Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
 - The reference sidebar includes a combined-only project layout, searchable settings sections, improved command panel controls, and cleaner Previous Sessions rows.
+- Tips & Tricks is available inside Ghostex with quick pages for workspace basics, agents, actions, Codex setup, and remote access.
 - Sidebar action buttons always use explicit configurable icons, with a searchable icon picker and a sensible Play default for new actions.
 - Default agent picker order keeps the daily launch engines together: T3 Code, Codex, Claude, Pi Agent, OpenCode, Gemini, Copilot, Factory Droid, and Grok Build.
 - Project headers show git diff stats directly, keeping project groups compact while still exposing changed-file context.
