@@ -7,12 +7,11 @@ import {
 } from "./ghostex-hotkeys";
 
 describe("normalizeghostexHotkeySettings", () => {
-  test("uses cmd-first navigation defaults", () => {
+  test("uses default navigation hotkeys without stealing command-arrow editing", () => {
     /**
-     * CDXC:Hotkeys 2026-05-11-09:26
-     * Everyday navigation defaults should use plain Cmd where possible, with
-     * Ctrl reserved for direct group slots after Cmd+number is assigned to
-     * session slots.
+     * CDXC:Hotkeys 2026-05-15-13:31:
+     * Directional pane focus must avoid plain Cmd+Arrow so terminal prompts
+     * and modal prompt editors keep native text navigation.
      */
     expect(DEFAULT_ghostex_HOTKEYS.createSession).toBe("cmd+n");
     /**
@@ -25,6 +24,10 @@ describe("normalizeghostexHotkeySettings", () => {
     expect(DEFAULT_ghostex_HOTKEYS.focusNextSession).toBe("cmd+tab");
     expect(DEFAULT_ghostex_HOTKEYS.focusPreviousGroup).toBe("cmd+[");
     expect(DEFAULT_ghostex_HOTKEYS.focusNextGroup).toBe("cmd+]");
+    expect(DEFAULT_ghostex_HOTKEYS.focusLeft).toBe("cmd+alt+left");
+    expect(DEFAULT_ghostex_HOTKEYS.focusRight).toBe("cmd+alt+right");
+    expect(DEFAULT_ghostex_HOTKEYS.focusUp).toBe("cmd+alt+up");
+    expect(DEFAULT_ghostex_HOTKEYS.focusDown).toBe("cmd+alt+down");
     expect(DEFAULT_ghostex_HOTKEYS.focusGroup1).toBe("cmd+ctrl+1");
     expect(DEFAULT_ghostex_HOTKEYS.focusGroup5).toBe("cmd+ctrl+5");
     expect(DEFAULT_ghostex_HOTKEYS.focusSessionSlot1).toBe("cmd+1");
@@ -54,14 +57,18 @@ describe("normalizeghostexHotkeySettings", () => {
       normalizeghostexHotkeySettings({
         focusNextGroup: "cmd+shift+]",
         focusNextSession: "cmd+]",
+        focusLeft: "cmd+left",
         focusPreviousGroup: "cmd+shift+[",
         focusPreviousSession: "cmd+[",
+        focusRight: "cmd+right",
       }),
     ).toMatchObject({
+      focusLeft: "cmd+alt+left",
       focusNextGroup: "cmd+]",
       focusNextSession: "cmd+tab",
       focusPreviousGroup: "cmd+[",
       focusPreviousSession: "cmd+shift+tab",
+      focusRight: "cmd+alt+right",
     });
   });
 

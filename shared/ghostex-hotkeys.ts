@@ -132,9 +132,15 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
       id: `focus${capitalize(direction)}` as ghostexHotkeyActionId,
       kind: "focusDirection" as const,
     },
-    defaultKey: `cmd+${direction}`,
+    /**
+     * CDXC:Hotkeys 2026-05-15-13:31:
+     * Plain Cmd+Arrow belongs to terminal and prompt text editing, including jump-to-line-boundary behavior.
+     * Directional pane focus uses Cmd+Alt+Arrow so app navigation no longer steals common editing shortcuts.
+     */
+    defaultKey: `cmd+alt+${direction}`,
     description: `Move focus ${direction}.`,
     id: `focus${capitalize(direction)}` as ghostexHotkeyActionId,
+    retiredDefaultKeys: [`cmd+${direction}`],
     title: `Focus ${capitalize(direction)}`,
   })),
   ...[1, 2, 3, 4, 5].map((groupIndex) => ({
