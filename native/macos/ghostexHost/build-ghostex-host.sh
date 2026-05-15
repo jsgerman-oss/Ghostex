@@ -170,6 +170,14 @@ bun build "$REPO_ROOT/native/sidebar/titlebar-host.tsx" \
 	--format iife \
 	--asset-naming "[name].[ext]" \
 	--outdir "$WEB_DIR"
+# CDXC:ModeSwitcher 2026-05-15-12:38: Bundle Tasks mode as a first-party React
+# page so the titlebar switcher can open a placeholder workarea surface without
+# depending on remote assets or an external browser.
+bun build "$REPO_ROOT/native/sidebar/tasks-placeholder.tsx" \
+	--target browser \
+	--format iife \
+	--asset-naming "[name].[ext]" \
+	--outdir "$WEB_DIR"
 bun build "$REPO_ROOT/native/sidebar/pet-host.tsx" \
 	--target browser \
 	--format iife \
@@ -190,6 +198,9 @@ const modalJs = readFileSync(join(webDir, "modal-host.js"), "utf8");
 const titlebarCssPath = join(webDir, "titlebar-host.css");
 const titlebarCss = existsSync(titlebarCssPath) ? readFileSync(titlebarCssPath, "utf8") : "";
 const titlebarJs = readFileSync(join(webDir, "titlebar-host.js"), "utf8");
+const tasksPlaceholderCssPath = join(webDir, "tasks-placeholder.css");
+const tasksPlaceholderCss = existsSync(tasksPlaceholderCssPath) ? readFileSync(tasksPlaceholderCssPath, "utf8") : "";
+const tasksPlaceholderJs = readFileSync(join(webDir, "tasks-placeholder.js"), "utf8");
 const petCssPath = join(webDir, "pet-host.css");
 const petCss = existsSync(petCssPath) ? readFileSync(petCssPath, "utf8") : "";
 const petJs = readFileSync(join(webDir, "pet-host.js"), "utf8");
@@ -197,6 +208,7 @@ const petJs = readFileSync(join(webDir, "pet-host.js"), "utf8");
 const escapedJs = js.replace(/<\/script/gi, "<\\/script");
 const escapedModalJs = modalJs.replace(/<\/script/gi, "<\\/script");
 const escapedTitlebarJs = titlebarJs.replace(/<\/script/gi, "<\\/script");
+const escapedTasksPlaceholderJs = tasksPlaceholderJs.replace(/<\/script/gi, "<\\/script");
 const escapedPetJs = petJs.replace(/<\/script/gi, "<\\/script");
 writeFileSync(join(webDir, "index.html"), `<!doctype html>
 <html>
@@ -287,6 +299,37 @@ ${escapedTitlebarJs}
 }
 })();
 //# sourceURL=titlebar-host.js
+    </script>
+  </body>
+</html>
+`);
+writeFileSync(join(webDir, "tasks-placeholder.html"), `<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <style>
+${tasksPlaceholderCss}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+(() => {
+try {
+${escapedTasksPlaceholderJs}
+} catch (error) {
+  window.__ghostex_BOOT_ERROR__ = {
+    message: error && error.message ? String(error.message) : String(error),
+    stack: error && error.stack ? String(error.stack) : ""
+  };
+  throw error;
+}
+})();
+//# sourceURL=tasks-placeholder.js
     </script>
   </body>
 </html>

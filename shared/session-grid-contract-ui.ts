@@ -118,6 +118,14 @@ export function createSidebarSessionItems(
     lifecycleState:
       session.kind === "browser" ? "running" : session.isSleeping === true ? "sleeping" : "done",
     firstUserMessage: session.firstUserMessage,
+    /**
+     * CDXC:SessionFavorites 2026-05-15-12:43
+     * Favorite state is stored on the canonical session record but rendered by
+     * sidebar cards and Previous Sessions. Project it into SidebarSessionItem so
+     * card icons receive data-favorite and context menus can toggle back to
+     * Unfavorite after publish.
+     */
+    isFavorite: session.isFavorite === true,
     isFocused: snapshot.focusedSessionId === session.sessionId,
     isSleeping: session.isSleeping === true,
     isRunning: session.kind === "browser",

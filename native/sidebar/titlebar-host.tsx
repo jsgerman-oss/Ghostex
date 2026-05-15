@@ -1,16 +1,18 @@
 import {
   IconBox,
+  IconBrandGithub,
   IconBrandVscode,
   IconCheck,
   IconChevronDown,
+  IconChecklist,
+  IconCode,
   IconCube,
-  IconFileDiff,
   IconFolderOpen,
   IconPlayerPlay,
-  IconRotateClockwise,
   IconRobot,
   IconSettings,
   IconTerminal2,
+  IconUsersGroup,
   IconWorld,
 } from "@tabler/icons-react";
 import {
@@ -24,6 +26,7 @@ import {
   type ReactNode,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { motion } from "motion/react";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import {
@@ -53,6 +56,7 @@ import { SidebarCommandIconGlyph } from "../../sidebar/sidebar-command-icon";
 import "../../sidebar/styles.css";
 
 type ProjectEditorLoadStatus = "idle" | "opening" | "running" | "error";
+type TitlebarMode = "agents" | "code" | "git" | "tasks";
 
 type NativeProcessResult = {
   exitCode: number;
@@ -99,8 +103,10 @@ type NativeTitlebarCommand =
       type: "runProcess";
     }
   | { type: "openActiveProjectEditorFromTitlebar" }
+  | { type: "openAgentsModeFromTitlebar" }
+  | { type: "openGitHubProjectFromTitlebar" }
+  | { type: "openTasksPlaceholderFromTitlebar" }
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
-  | { type: "rotateActivePaneLayoutClockwiseFromTitlebar" }
   | { type: "togglePetOverlayFromTitlebar" }
   | { type: "toggleCommandsPanelFromTitlebar" }
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
@@ -148,12 +154,11 @@ declare global {
 
 const LAST_OPEN_TARGET_STORAGE_KEY = "ghostex.titlebar.lastOpenTargetId";
 const LAST_ACTION_COMMAND_STORAGE_PREFIX = "ghostex.titlebar.lastActionCommandByProject:";
-const PROJECT_EDITOR_DISPLAY_MAX_FILES = 999;
-const PROJECT_EDITOR_DISPLAY_MAX_LINES = 999;
 const TITLEBAR_HEIGHT = 30;
 const TITLEBAR_CONTROL_HEIGHT = 20;
 const TITLEBAR_CONTROL_TOP = (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT) / 2;
 const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP + 1;
+const TITLEBAR_CENTER_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_RIGHT_CONTROLS_TOP = TITLEBAR_CONTROL_TOP + 1;
 /**
  * CDXC:ReactTitlebar 2026-05-11-09:17
@@ -215,6 +220,7 @@ function App() {
   const [projectTitleTooltipOpen, setProjectTitleTooltipOpen] = useState(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
+  const [activeMode, setActiveMode] = useState<TitlebarMode>("agents");
   const copyTooltipTimeoutRef = useRef<number | undefined>(undefined);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -234,8 +240,6 @@ function App() {
   const activeAction =
     runnableActions.find((command) => command.commandId === selectedActionCommandId) ??
     runnableActions[0];
-  const codeButtonKey = createCodeButtonStateKey(projectState);
-
   const publishHitRegions = useCallback(() => {
     /**
      * CDXC:ReactTitlebar 2026-05-11-00:22
@@ -286,7 +290,6 @@ function App() {
     activeTarget?.id,
     activeAction?.commandId,
     actionsMenuOpen,
-    codeButtonKey,
     openInMenuOpen,
     projectState.projectIconDataUrl,
     projectState.projectName,
@@ -327,6 +330,7 @@ function App() {
 
   useEffect(() => {
     setSelectedActionCommandId(readLastActionCommandId(projectState));
+    setActiveMode("agents");
   }, [projectState.projectId, projectState.projectPath]);
 
   useEffect(() => {
@@ -426,12 +430,24 @@ function App() {
     postNative({ commandId: command.commandId, type: "runSidebarCommandFromTitlebar" });
   };
 
-  const rotatePanesClockwise = () => {
-    console.info("[ghostex-titlebar] rotate panes clockwise clicked", {
-      projectId: projectState.projectId,
-      projectName: projectState.projectName,
-    });
-    postNative({ type: "rotateActivePaneLayoutClockwiseFromTitlebar" });
+  const openAgentsMode = () => {
+    setActiveMode("agents");
+    postNative({ type: "openAgentsModeFromTitlebar" });
+  };
+
+  const openCodeMode = () => {
+    setActiveMode("code");
+    postNative({ type: "openActiveProjectEditorFromTitlebar" });
+  };
+
+  const openGitMode = () => {
+    setActiveMode("git");
+    postNative({ type: "openGitHubProjectFromTitlebar" });
+  };
+
+  const openTasksMode = () => {
+    setActiveMode("tasks");
+    postNative({ type: "openTasksPlaceholderFromTitlebar" });
   };
 
   const toggleCommandsPanel = () => {
@@ -485,21 +501,66 @@ function App() {
               <TooltipContent>{didCopyProjectPath ? "Copied path!" : "Click to copy path"}</TooltipContent>
             </Tooltip>
           </div>
+          <div style={styles.centerSlot}>
+            <TitlebarModeSwitcher
+              activeMode={activeMode}
+              modes={[
+                {
+                  icon: <IconUsersGroup aria-hidden="true" size={14} stroke={1.8} />,
+                  label: "Agents",
+                  onSelect: openAgentsMode,
+                  value: "agents",
+                },
+                {
+                  /**
+                   * CDXC:ReactTitlebar 2026-05-15-13:58:
+                   * The titlebar Code segment always renders as "Code". Git
+                   * diff stats moved to the sidebar project row, and editor
+                   * startup errors belong in the editor page instead of this
+                   * segmented-control button.
+                   */
+                  icon: <IconCode aria-hidden="true" size={14} stroke={1.8} />,
+                  label: "Code",
+                  onSelect: openCodeMode,
+                  value: "code",
+                },
+                {
+                  icon: <IconBrandGithub aria-hidden="true" size={14} stroke={1.8} />,
+                  label: "Git",
+                  onSelect: openGitMode,
+                  value: "git",
+                },
+                {
+                  icon: <IconChecklist aria-hidden="true" size={14} stroke={1.8} />,
+                  label: "Tasks",
+                  onSelect: openTasksMode,
+                  value: "tasks",
+                },
+              ]}
+            />
+          </div>
           <div style={styles.rightSlot}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  aria-label="Rotate panes clockwise"
-                  className="titlebar-session-button titlebar-rotate-button"
+                  aria-label={projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}
+                  className="titlebar-session-button titlebar-pet-button"
+                  data-awake={String(projectState.petOverlayEnabled)}
                   data-titlebar-hit-region
-                  onClick={rotatePanesClockwise}
+                  onClick={togglePetOverlay}
                   type="button"
                   variant="ghost"
                 >
-                  <IconRotateClockwise aria-hidden="true" size={16} stroke={1.8} />
+                  {/*
+                   * CDXC:PetOverlay 2026-05-15-14:20:
+                   * The top bar should expose the pet wake/sleep control
+                   * without the Rotate Panes button; pane rotation now lives in
+                   * the per-pane overflow menu below Split Downwards.
+                   */}
+                  <IconRobot aria-hidden="true" size={16} stroke={1.8} />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Rotate panes clockwise</TooltipContent>
+              <TooltipContent>{projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}</TooltipContent>
             </Tooltip>
             <div aria-hidden="true" className="titlebar-section-separator" />
             <DropdownMenu onOpenChange={setActionsMenuOpen} open={actionsMenuOpen}>
@@ -644,45 +705,6 @@ function App() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  aria-label="Open embedded editor"
-                  className="titlebar-session-button titlebar-code-button"
-                  data-titlebar-hit-region
-                  onClick={() => postNative({ type: "openActiveProjectEditorFromTitlebar" })}
-                  type="button"
-                  variant="ghost"
-                >
-                  <IconFileDiff aria-hidden="true" size={16} />
-                  {renderCodeButtonLabel(projectState)}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Open embedded editor</TooltipContent>
-            </Tooltip>
-            <div aria-hidden="true" className="titlebar-terminal-separator titlebar-section-separator" />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label={projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}
-                  className="titlebar-session-button titlebar-pet-button"
-                  data-awake={String(projectState.petOverlayEnabled)}
-                  data-titlebar-hit-region
-                  onClick={togglePetOverlay}
-                  type="button"
-                  variant="ghost"
-                >
-                  {/*
-                   * CDXC:PetOverlay 2026-05-15-00:36:
-                   * The top-right titlebar pet control uses a robot icon and
-                   * mirrors the persisted overlay setting: normal chrome color
-                   * when the pet is awake, dimmed when the overlay is off.
-                   */}
-                  <IconRobot aria-hidden="true" size={16} stroke={1.8} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
                   aria-label="Toggle Commands panel"
                   className="titlebar-session-button titlebar-command-panel-button"
                   data-titlebar-hit-region
@@ -730,6 +752,73 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       hiddenTargetIds: settings.workspaceOpenTargetHiddenIds,
     },
   };
+}
+
+function TitlebarModeSwitcher({
+  activeMode,
+  modes,
+}: {
+  activeMode: TitlebarMode;
+  modes: Array<{
+    icon: ReactNode;
+    label: string;
+    meta?: ReactNode;
+    onSelect: () => void;
+    value: TitlebarMode;
+  }>;
+}) {
+  return (
+    <div
+      aria-label="Mode switcher"
+      className="titlebar-mode-switcher"
+      data-titlebar-hit-region
+      role="tablist"
+    >
+      {/*
+        CDXC:ModeSwitcher 2026-05-15-12:54:
+        The app titlebar mode switcher must sit in the center as one four-part
+        animated segmented control with visible icon+text labels. Use the
+        shadcn-space Tabs-01 motion layout highlight pattern, but keep content
+        switching owned by the native sidebar bridge instead of rendering tab
+        panels inside the titlebar.
+
+        CDXC:ModeSwitcher 2026-05-15-14:47:
+        The animation must closely match shadcn-space Tabs-01: each tab is a
+        rounded-full button with the active pill rendered as the selected
+        button's shared-layout motion background. Avoid a clipped segmented
+        track because it changes the motion shape and makes the spring look
+        unlike the referenced component.
+      */}
+      {modes.map((mode) => {
+        const isActive = mode.value === activeMode;
+        return (
+          <button
+            aria-selected={isActive}
+            className="titlebar-mode-tab"
+            data-active={String(isActive)}
+            key={mode.value}
+            onClick={mode.onSelect}
+            role="tab"
+            style={{ transformStyle: "preserve-3d" }}
+            type="button"
+          >
+            {isActive ? (
+              <motion.div
+                className="titlebar-mode-tab-active"
+                layoutId="clickedbutton"
+                transition={{ type: "spring", bounce: 0.3, duration: 0.6 }}
+              />
+            ) : null}
+            <span className="titlebar-mode-tab-content">
+              {mode.icon}
+              <span className="titlebar-mode-label">{mode.label}</span>
+              {mode.meta ? <span className="titlebar-mode-meta">{mode.meta}</span> : null}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function parseSharedSettings(candidate: unknown): unknown {
@@ -797,56 +886,6 @@ function resolveVisibleOpenTargets(
       };
     })
     .filter((target): target is ResolvedOpenTarget => target !== undefined);
-}
-
-function createCodeButtonStateKey(state: TitlebarProjectState): string {
-  return [
-    state.editorStatus,
-    state.editorIsOpen,
-    state.editorIsSleeping,
-    state.diffStats.files,
-    state.diffStats.additions,
-    state.diffStats.deletions,
-    state.diffStats.isLoading,
-    state.showProjectEditorDiffFileCount,
-  ].join(":");
-}
-
-function renderCodeButtonLabel(state: TitlebarProjectState): ReactNode {
-  if (state.editorIsOpen && state.editorIsSleeping !== true && state.editorStatus === "running") {
-    return <span>Go to Code</span>;
-  }
-  if (state.editorStatus === "opening" || state.editorStatus === "error") {
-    return null;
-  }
-  return renderProjectEditorDiffLabel(state.diffStats, state.showProjectEditorDiffFileCount);
-}
-
-function renderProjectEditorDiffLabel(
-  stats: SidebarProjectDiffStats,
-  showFileCount = false,
-): ReactNode {
-  /**
-   * CDXC:ReactTitlebar 2026-05-11-01:15
-   * The compact titlebar diff button should not repeat the "Code" label or
-   * show transient opening/error text. Idle project status shows only the file
-   * count when enabled plus pastel green/red line deltas like the sidebar row.
-   */
-  return (
-    <>
-      {showFileCount ? (
-        <span className="titlebar-code-files">
-          {Math.min(PROJECT_EDITOR_DISPLAY_MAX_FILES, Math.max(0, stats.files))}
-        </span>
-      ) : null}
-      <span className="titlebar-code-additions">
-        +{Math.min(PROJECT_EDITOR_DISPLAY_MAX_LINES, Math.max(0, stats.additions))}
-      </span>
-      <span className="titlebar-code-deletions">
-        -{Math.min(PROJECT_EDITOR_DISPLAY_MAX_LINES, Math.max(0, stats.deletions))}
-      </span>
-    </>
-  );
 }
 
 function getOpenTargetIcon(target: ResolvedOpenTarget): ReactNode {
@@ -962,6 +1001,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const styles = {
+  centerSlot: {
+    alignItems: "center",
+    display: "flex",
+    left: "50%",
+    maxWidth: "min(440px, calc(100vw - 520px))",
+    minWidth: 0,
+    position: "absolute",
+    top: TITLEBAR_CENTER_CONTROLS_TOP,
+    transform: "translateX(-50%)",
+  },
   projectSlot: {
     alignItems: "center",
     display: "flex",
@@ -1080,13 +1129,77 @@ styleElement.textContent = `
     width: 28px;
     padding: 0;
   }
-  .titlebar-rotate-button {
-    width: 28px;
-    padding: 0;
-  }
   .titlebar-command-panel-button {
     width: 28px;
     padding: 0;
+  }
+  .titlebar-mode-switcher {
+    align-items: center;
+    display: flex;
+    flex: 0 1 auto;
+    height: 22px;
+    max-width: 100%;
+    overflow: visible;
+    padding: 0;
+    perspective: 1000px;
+  }
+  .titlebar-mode-tab {
+    appearance: none;
+    -webkit-appearance: none;
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 999px;
+    color: rgba(255,255,255,0.68);
+    cursor: default;
+    display: inline-flex;
+    font: 650 12px/18px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    height: 22px;
+    justify-content: center;
+    letter-spacing: 0;
+    min-width: 70px;
+    overflow: hidden;
+    padding: 0 10px;
+    position: relative;
+    white-space: nowrap;
+  }
+  .titlebar-mode-tab:hover,
+  .titlebar-mode-tab:focus-visible {
+    color: rgba(255,255,255,0.92);
+    outline: none;
+  }
+  .titlebar-mode-tab[data-active="true"] {
+    color: rgba(255,255,255,0.98);
+  }
+  .titlebar-mode-tab-active {
+    background: rgba(255,255,255,0.2);
+    border-radius: 999px;
+    inset: 0;
+    position: absolute;
+  }
+  .titlebar-mode-tab-content {
+    align-items: center;
+    display: inline-flex;
+    gap: 5px;
+    min-width: 0;
+    position: relative;
+    z-index: 1;
+  }
+  .titlebar-mode-tab-content svg {
+    flex: 0 0 auto;
+    height: 14px;
+    width: 14px;
+  }
+  .titlebar-mode-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .titlebar-mode-meta {
+    align-items: center;
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 1px;
   }
   .titlebar-pet-button {
     padding: 0;
@@ -1113,28 +1226,12 @@ styleElement.textContent = `
     border-bottom-right-radius: 5px;
     border-top-right-radius: 5px;
   }
-  .titlebar-code-button {
-    gap: 6px;
-    padding: 0 2px;
-  }
   .titlebar-section-separator {
     align-self: center;
     background: rgba(255,255,255,0.26);
     flex: 0 0 auto;
     height: 16px;
     width: 1px;
-  }
-  .titlebar-code-additions {
-    color: #9fdeb0;
-    font-variant-numeric: tabular-nums;
-  }
-  .titlebar-code-deletions {
-    color: #f0a0a0;
-    font-variant-numeric: tabular-nums;
-  }
-  .titlebar-code-files {
-    color: rgba(255,255,255,0.68);
-    font-variant-numeric: tabular-nums;
   }
   .titlebar-open-menu {
     background: #181818 !important;

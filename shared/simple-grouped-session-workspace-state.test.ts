@@ -13,6 +13,7 @@ import {
   createSessionInSimpleWorkspace,
   focusGroupInSimpleWorkspace,
   focusSessionInSimpleWorkspace,
+  mergeAllTabsInPaneLayoutInSimpleWorkspace,
   moveSessionInPaneLayoutInSimpleWorkspace,
   moveSessionToGroupInSimpleWorkspace,
   normalizeSimpleGroupedSessionWorkspaceSnapshot,
@@ -2750,6 +2751,80 @@ describe("setGroupSleepingInSimpleWorkspace", () => {
 });
 
 describe("rotatePaneLayoutClockwiseInSimpleWorkspace", () => {
+  test("should merge split pane tab groups into one pane in the owning workspace group", () => {
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(1),
+            fullscreenRestoreVisibleCount: undefined,
+            paneLayout: {
+              children: [
+                {
+                  activeSessionId: sessionIdForDisplay(1),
+                  kind: "tabs",
+                  sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+                },
+                {
+                  activeSessionId: sessionIdForDisplay(3),
+                  kind: "tabs",
+                  sessionIds: [sessionIdForDisplay(2), sessionIdForDisplay(3)],
+                },
+              ],
+              direction: "horizontal",
+              kind: "split",
+            },
+            sessions: [
+              createSessionRecord(1, 0),
+              createSessionRecord(2, 1),
+              createSessionRecord(3, 2),
+              createSessionRecord(4, 3),
+            ],
+            viewMode: "grid",
+            visibleCount: 4,
+            visibleSessionIds: [
+              sessionIdForDisplay(0),
+              sessionIdForDisplay(1),
+              sessionIdForDisplay(2),
+              sessionIdForDisplay(3),
+            ],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 4,
+      nextSessionNumber: 5,
+    });
+
+    const result = mergeAllTabsInPaneLayoutInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sessionIdForDisplay(2),
+    );
+
+    expect(result.changed).toBe(true);
+    /**
+     * CDXC:PaneTabs 2026-05-15-13:35
+     * Merge All Tabs is a workspace-group operation: every tab from the
+     * group's split pane tree becomes one tab group, and the clicked tab stays
+     * active. Command Terminal tabs live outside this workspace snapshot and
+     * therefore cannot be merged by this mutation.
+     */
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: sessionIdForDisplay(2),
+      kind: "tabs",
+      sessionIds: [
+        sessionIdForDisplay(0),
+        sessionIdForDisplay(1),
+        sessionIdForDisplay(2),
+        sessionIdForDisplay(3),
+      ],
+    });
+  });
+
   test("should rotate automatic two-pane layout into two rows", () => {
     const result = rotatePaneLayoutClockwiseInSimpleWorkspace(
       createWorkspaceSnapshot({

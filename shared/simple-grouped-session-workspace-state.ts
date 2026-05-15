@@ -1165,6 +1165,53 @@ export function reorderSessionInPaneTabGroupInSimpleWorkspace(
   };
 }
 
+export function mergeAllTabsInPaneLayoutInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  groupId: string,
+  activeSessionId: string,
+): WorkspaceMutationResult {
+  const group = getGroupById(snapshot, groupId);
+  if (!group) {
+    return { changed: false, snapshot };
+  }
+  const sessionIds = group.snapshot.sessions.map((session) => session.sessionId);
+  const paneSessionIds = dedupeVisibleSessionIds([
+    ...getPaneLayoutSessionIds(group.snapshot.paneLayout),
+    ...group.snapshot.visibleSessionIds,
+    ...sessionIds,
+  ]).filter((sessionId) => sessionIds.includes(sessionId));
+  if (paneSessionIds.length <= 1 || !paneSessionIds.includes(activeSessionId)) {
+    return { changed: false, snapshot };
+  }
+  /**
+   * CDXC:PaneTabs 2026-05-15-13:35
+   * Merge All Tabs is scoped to a normal workspace group. Flatten only that
+   * group's paneLayout into one tabs node, preserve tab order from the split
+   * tree, and keep the clicked tab active. Command Terminal tabs are stored in
+   * the project Commands panel state, so this workspace mutation cannot absorb
+   * them.
+   */
+  const nextPaneLayout: SessionPaneLayoutNode = {
+    activeSessionId,
+    kind: "tabs",
+    sessionIds: paneSessionIds,
+  };
+  const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
+    ...targetGroup,
+    snapshot: normalizeGroupSnapshot({
+      ...targetGroup.snapshot,
+      focusedSessionId: activeSessionId,
+      paneLayout: nextPaneLayout,
+      visibleCount: clampSupportedVisibleCount(Math.max(1, paneSessionIds.length)),
+      visibleSessionIds: paneSessionIds,
+    }),
+  }));
+  return {
+    changed: !areSnapshotsEqual(snapshot, nextSnapshot),
+    snapshot: nextSnapshot,
+  };
+}
+
 export function rotatePaneLayoutClockwiseInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   groupId: string,

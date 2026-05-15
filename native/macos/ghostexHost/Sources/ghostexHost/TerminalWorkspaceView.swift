@@ -1129,6 +1129,7 @@ final class TerminalWorkspaceView: NSView {
   private var paneResizeDrag: PaneResizeDrag?
   private var commandsPanelResizeDrag: CommandsPanelResizeDrag?
   private let commandsPanelChromeView = CommandsPanelChromeView()
+  private let commandsPanelReservedBottomBarView = CommandsPanelChromeView(frame: .zero)
   private let commandsPanelCollapsedRightMarginView = NSView(frame: .zero)
   private let commandsPanelResizeHandleView = TerminalWorkspacePaneResizeHandleView()
   private var projectEditorCompanionSessionId: String?
@@ -1201,6 +1202,7 @@ final class TerminalWorkspaceView: NSView {
     wantsLayer = true
     layer?.backgroundColor = Self.defaultWorkspaceBackgroundColor.cgColor
     commandsPanelChromeView.isHidden = true
+    commandsPanelReservedBottomBarView.isHidden = true
     commandsPanelCollapsedRightMarginView.wantsLayer = true
     commandsPanelCollapsedRightMarginView.layer?.backgroundColor = NSColor.black.cgColor
     commandsPanelCollapsedRightMarginView.isHidden = true
@@ -2654,6 +2656,11 @@ final class TerminalWorkspaceView: NSView {
      editor becomes active, keep the current sidebar-focused terminal or T3 Code
      session mounted in the left companion pane unless the user already closed
      that companion for this editor visit.
+     CDXC:ModeSwitcher 2026-05-15-14:42:
+     Code, Git, and Tasks modes use separate mode-scoped project-editor pane
+     IDs for the same project. Focusing one pane must hide every other
+     project-editor host immediately so mode switches keep each CEF tab alive
+     without showing stale content from the previously active mode.
    */
     let didSwitchProjectEditor = activeProjectEditorId != projectId
     activeProjectEditorId = projectId
@@ -2663,6 +2670,10 @@ final class TerminalWorkspaceView: NSView {
     hideSplitSessionSurfacesForActiveEditor()
     let companionLayout = projectEditorCompanionLayout(in: bounds)
     projectEditorCompanionResizeWorkspaceBounds = bounds
+    for otherSession in projectEditorPaneSessions.values where otherSession.projectId != projectId {
+      otherSession.hostView.isHidden = true
+      moveOffscreen(otherSession.hostView)
+    }
     session.hostView.isHidden = false
     layoutProjectEditorPane(session, in: companionLayout?.editorFrame ?? bounds)
     orderProjectEditorPaneToFront(session)
@@ -3500,15 +3511,27 @@ final class TerminalWorkspaceView: NSView {
     let shouldShowExpandedCommandsPanel = commandsPanelIsVisible && hasCommandsPanelSessions
     let shouldShowCollapsedCommandsPanel = !commandsPanelIsVisible && hasCommandsPanelSessions
     let shouldShowCommandsPanel = shouldShowExpandedCommandsPanel || shouldShowCollapsedCommandsPanel
+    let shouldFloatCommandsPanel = shouldShowExpandedCommandsPanel && commandsPanelMode == "floating"
+    let reservedFloatingCommandsPanelBottomBarHeight =
+      shouldFloatCommandsPanel ? collapsedCommandsPanelHeight() : 0
+    /**
+     CDXC:CommandsPanel 2026-05-15-13:45:
+     Unpinned command panes float above the workspace when expanded, but the
+     minimized tab-bar footprint still needs to stay reserved as a plain black
+     strip. Reserving that same bottom strip in both expanded and minimized
+     states prevents workspace panes from shifting when the command pane is
+     shown or hidden.
+     */
     let shouldReserveCommandsPanelSpace =
-      shouldShowCollapsedCommandsPanel || (shouldShowExpandedCommandsPanel && commandsPanelMode == "pinned")
+      shouldShowCollapsedCommandsPanel
+      || (shouldShowExpandedCommandsPanel && commandsPanelMode == "pinned")
+      || reservedFloatingCommandsPanelBottomBarHeight > 0
     let commandPanelHeight = shouldShowExpandedCommandsPanel
       ? clampedCommandsPanelHeight(bounds.height * commandsPanelHeightRatio)
       : shouldShowCollapsedCommandsPanel ? collapsedCommandsPanelHeight() : 0
-    let shouldFloatCommandsPanel = shouldShowExpandedCommandsPanel && commandsPanelMode == "floating"
     let floatingCommandsPanelMargin = shouldFloatCommandsPanel ? Self.floatingCommandsPanelMargin : 0
     let commandPanelResolvedHeight = min(
-      max(0, bounds.height - floatingCommandsPanelMargin * 2),
+      max(0, bounds.height - reservedFloatingCommandsPanelBottomBarHeight - floatingCommandsPanelMargin * 2),
       commandPanelHeight)
     let collapsedCommandsPanelLeftMargin =
       shouldShowCollapsedCommandsPanel ? Self.collapsedCommandsPanelLeftMargin : 0
@@ -3517,20 +3540,24 @@ final class TerminalWorkspaceView: NSView {
     let resolvedCommandPanelBounds: CGRect = shouldShowCommandsPanel
       ? CGRect(
           x: bounds.minX + floatingCommandsPanelMargin + collapsedCommandsPanelLeftMargin,
-          y: bounds.minY + floatingCommandsPanelMargin,
+          y: bounds.minY + reservedFloatingCommandsPanelBottomBarHeight + floatingCommandsPanelMargin,
           width: max(
             0,
             bounds.width - floatingCommandsPanelMargin * 2 - collapsedCommandsPanelLeftMargin
               - collapsedCommandsPanelRightMargin),
           height: commandPanelResolvedHeight)
       : .zero
+    let reservedCommandsPanelSpaceHeight: CGFloat =
+      shouldFloatCommandsPanel
+      ? reservedFloatingCommandsPanelBottomBarHeight
+      : shouldReserveCommandsPanelSpace ? resolvedCommandPanelBounds.height : 0
     let workspaceBounds =
       shouldReserveCommandsPanelSpace
       ? CGRect(
           x: bounds.minX,
-          y: resolvedCommandPanelBounds.maxY,
+          y: bounds.minY + reservedCommandsPanelSpaceHeight,
           width: bounds.width,
-          height: max(0, bounds.height - resolvedCommandPanelBounds.height))
+          height: max(0, bounds.height - reservedCommandsPanelSpaceHeight))
       : bounds
     if let activeProjectEditorId,
       let editorSession = projectEditorPaneSessions[activeProjectEditorId]
@@ -3558,7 +3585,8 @@ final class TerminalWorkspaceView: NSView {
         syncCommandsPanelChrome(
           in: resolvedCommandPanelBounds,
           isExpanded: shouldShowExpandedCommandsPanel,
-          isFloating: shouldShowExpandedCommandsPanel && commandsPanelMode == "floating")
+          isFloating: shouldShowExpandedCommandsPanel && commandsPanelMode == "floating",
+          reservedBottomBarHeight: reservedFloatingCommandsPanelBottomBarHeight)
         layoutCommandsPanel(commandSessionIds, in: resolvedCommandPanelBounds)
         syncCommandsPanelResizeHandle(
           in: resolvedCommandPanelBounds,
@@ -3593,7 +3621,8 @@ final class TerminalWorkspaceView: NSView {
       syncCommandsPanelChrome(
         in: resolvedCommandPanelBounds,
         isExpanded: shouldShowExpandedCommandsPanel,
-        isFloating: shouldShowExpandedCommandsPanel && commandsPanelMode == "floating")
+        isFloating: shouldShowExpandedCommandsPanel && commandsPanelMode == "floating",
+        reservedBottomBarHeight: reservedFloatingCommandsPanelBottomBarHeight)
       layoutCommandsPanel(commandSessionIds, in: resolvedCommandPanelBounds)
       syncCommandsPanelResizeHandle(
         in: resolvedCommandPanelBounds,
@@ -3623,11 +3652,18 @@ final class TerminalWorkspaceView: NSView {
   private func hideCommandsPanelChrome() {
     commandsPanelChromeView.isHidden = true
     commandsPanelChromeView.frame = .zero
+    commandsPanelReservedBottomBarView.isHidden = true
+    commandsPanelReservedBottomBarView.frame = .zero
     commandsPanelCollapsedRightMarginView.isHidden = true
     commandsPanelCollapsedRightMarginView.frame = .zero
   }
 
-  private func syncCommandsPanelChrome(in commandPanelBounds: CGRect, isExpanded: Bool, isFloating: Bool) {
+  private func syncCommandsPanelChrome(
+    in commandPanelBounds: CGRect,
+    isExpanded: Bool,
+    isFloating: Bool,
+    reservedBottomBarHeight: CGFloat
+  ) {
     commandsPanelChromeView.frame = commandPanelBounds
     commandsPanelChromeView.isHidden = false
     commandsPanelChromeView.layer?.zPosition = isFloating ? 250 : 0
@@ -3643,6 +3679,26 @@ final class TerminalWorkspaceView: NSView {
       addSubview(commandsPanelChromeView, positioned: .below, relativeTo: nil)
     }
     syncCommandsPanelCollapsedRightMargin(from: commandPanelBounds, isExpanded: isExpanded)
+    syncCommandsPanelReservedBottomBar(height: reservedBottomBarHeight)
+  }
+
+  private func syncCommandsPanelReservedBottomBar(height: CGFloat) {
+    guard height > 0 else {
+      commandsPanelReservedBottomBarView.isHidden = true
+      commandsPanelReservedBottomBarView.frame = .zero
+      return
+    }
+    commandsPanelReservedBottomBarView.frame = CGRect(
+      x: bounds.minX,
+      y: bounds.minY,
+      width: bounds.width,
+      height: height)
+    commandsPanelReservedBottomBarView.isHidden = false
+    commandsPanelReservedBottomBarView.layer?.zPosition = 0
+    if commandsPanelReservedBottomBarView.superview !== self {
+      addSubview(commandsPanelReservedBottomBarView, positioned: .below, relativeTo: nil)
+    }
+    addSubview(commandsPanelReservedBottomBarView, positioned: .below, relativeTo: commandsPanelChromeView)
   }
 
   private func syncCommandsPanelCollapsedRightMargin(from commandPanelBounds: CGRect, isExpanded: Bool) {
@@ -4329,6 +4385,22 @@ final class TerminalWorkspaceView: NSView {
      code-server does not become responsive within ten seconds.
      */
     sendEvent(.projectEditorLoadState(projectId: projectId, status: "opening", message: nil))
+    guard url.hasPrefix(NativeCodeServerRuntimeLauncher.origin) else {
+      /**
+       CDXC:ModeSwitcher 2026-05-15-14:42:
+       Git and Tasks modes reuse the project-editor Chromium surface so they
+       can keep the Code-style left companion session pane while loading
+       non-code-server content on the right. Only VS Code URLs should wait for
+       the local code-server runtime; other project-editor destinations must
+       navigate directly instead of failing on a localhost readiness check.
+       */
+      guard let session = projectEditorPaneSessions[projectId], session.url == url else {
+        return
+      }
+      session.chromiumView.loadURLString(url)
+      session.hostView.refreshHostedWebView(reason: reason)
+      return
+    }
     Task.detached { [weak self] in
       let isReady = NativeCodeServerRuntimeLauncher.waitUntilResponsive(timeout: 10.0)
       await MainActor.run {
@@ -4351,11 +4423,13 @@ final class TerminalWorkspaceView: NSView {
            the titlebar or project-header editor button is clicked; keep the
            pane in ghostex's project-scoped startup error state instead.
            */
+          let message = "VS Code did not finish loading within 10 seconds."
+          session.hostView.setInitialLoadingOverlayError(message, reason: reason)
           self.sendEvent(
             .projectEditorLoadState(
               projectId: projectId,
               status: "error",
-              message: "VS Code did not finish loading within 10 seconds."))
+              message: message))
           return
         }
         session.chromiumView.loadURLString(url)
@@ -11414,19 +11488,14 @@ fileprivate enum TerminalPaneChromeRole {
 private final class TerminalTitleBarTabButton: NSButton {
   enum InlineAction {
     case close
-    case sleep
   }
 
   private static let inlineButtonWidth: CGFloat = 22
   private static let inlineButtonHeight: CGFloat = 18
-  private static let inlineButtonGap: CGFloat = 0
   private static let inlineButtonTrailingPadding: CGFloat = 4
   private static let inlineButtonBackgroundColor = NSColor(calibratedWhite: 0.16, alpha: 1).cgColor
   private static let inlineButtonHoverBackgroundColor = NSColor(calibratedWhite: 0.24, alpha: 1).cgColor
-  private static let inlineButtonDividerColor = NSColor(calibratedWhite: 0.42, alpha: 1).cgColor
-  private static let inlineButtonSymbolColor = NSColor(calibratedWhite: 0.94, alpha: 1)
   private static let inlineButtonIconColor = NSColor(calibratedWhite: 0.94, alpha: 1).cgColor
-  private static let inlineButtonSymbolFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
   private static let workingIndicatorColor = NSColor(
     calibratedRed: 0xF5 / 255,
     green: 0x9E / 255,
@@ -11634,21 +11703,17 @@ private final class TerminalTitleBarTabButton: NSButton {
   func inlineAction(at point: NSPoint) -> InlineAction? {
     /**
      CDXC:PaneTabs 2026-05-11-11:47
-     Inline Sleep/Close hit testing follows the visible tab geometry, not the
-     cached hover flag. Narrow panes can receive mouseDown immediately after a
-     layout or scroll change, before AppKit has delivered a fresh mouseMoved.
+     Inline Close hit testing follows the visible tab geometry, not the cached
+     hover flag. Narrow panes can receive mouseDown immediately after a layout
+     or scroll change, before AppKit has delivered a fresh mouseMoved.
 
      CDXC:PaneTabs 2026-05-11-19:36
-     Narrow pane tabs put the rightmost inline actions close to the clipped tab
-     edge. Use the full tab-height hit band for each visible action segment so
-     real pointer clicks on the small Sleep/Close icons do not miss by the 2px
-     vertical paint inset.
+     Narrow pane tabs put the rightmost inline action close to the clipped tab
+     edge. Use the full tab-height hit band so real pointer clicks on the small
+     Close icon do not miss by the 2px vertical paint inset.
      */
     if closeButtonHitFrame.contains(point) {
       return .close
-    }
-    if !isSleepingTab, sleepButtonHitFrame.contains(point) {
-      return .sleep
     }
     return nil
   }
@@ -11658,11 +11723,11 @@ private final class TerminalTitleBarTabButton: NSButton {
      CDXC:PaneTabs 2026-05-11-02:28
      Native tab titles are drawn manually so labels stay left-aligned and
      truncate before hover actions. AppKit's default button title is centered
-     and does not reserve space for the inline Sleep/Close controls.
+     and does not reserve space for inline controls.
 
      CDXC:PaneTabs 2026-05-11-03:04
-     Reserve the inline action area even before hover so long tab titles do not
-     visually resize or shift when Sleep/Close appear. The title baseline is
+     Keep the title layout stable before and during hover so long tab titles do
+     not visually resize or shift when Close appears. The title baseline is
      nudged up 1px to align with the native title-bar button icons.
 
      CDXC:PaneTabs 2026-05-11-03:15
@@ -11678,34 +11743,19 @@ private final class TerminalTitleBarTabButton: NSButton {
      the native tab button because these tabs are AppKit controls, not React.
 
      CDXC:PaneTabs 2026-05-11-03:18
-     Sleep/Close tab controls need per-button hover feedback without changing
-     layout. Draw them as one opaque segmented control so title text cannot show
-     through between the actions, and keep the icons explicitly light on dark
-     tab chrome.
+     Close tab controls need hover feedback without changing layout. Draw an
+     opaque control so title text cannot show through, and keep the icon
+     explicitly light on dark tab chrome.
 
      CDXC:PaneTabs 2026-05-11-08:15
-     Inline tab actions need opaque split-control chrome, but their symbols
-     must preserve glyph alpha. Draw Close as explicit strokes and render the
-     preferred SF moon through an isolated alpha mask so icons do not become
-     white bounding boxes.
-
-     CDXC:PaneTabs 2026-05-11-08:27
-     The masked SF moon must not paint up to the symbol rect's horizontal edge
-     because AppKit can leave faint vertical mask-edge artifacts. Keep 2px more
-     horizontal padding around inline action icons and widen each action half
-     so the icons keep their original usable drawing width. Leave the segmented
-     control divider fixed between the two halves.
+     Inline tab actions need opaque chrome, but their symbols must preserve
+     glyph alpha. Draw Close as explicit strokes so the icon does not become a
+     white bounding box.
 
      CDXC:PaneTabs 2026-05-11-08:51
-     Widen only the inline action segments, not their height. The tab title bar
-     is 22px high, but the action chrome is intentionally 18px high; making the
-     button 22px tall made the padded moon draw into a non-square rect and
-     reintroduced SF Symbol edge artifacts.
-
-     CDXC:PaneTabs 2026-05-11-09:14
-     Inline Sleep must not use the generic mask-tint helper because its filled
-     mask rect can leave a faint square border around SF Symbols. Draw the moon
-     with an AppKit symbol color configuration so only the symbol glyph paints.
+     Widen only the inline action segment, not its height. The tab title bar is
+     22px high, but the action chrome is intentionally 18px high so it aligns
+     with the native title-bar button icons.
 
      CDXC:PaneTabs 2026-05-11-06:57
      Sleeping tabs use the moon itself as the right-side state marker instead
@@ -11727,16 +11777,19 @@ private final class TerminalTitleBarTabButton: NSButton {
     }
     /**
      CDXC:PaneTabs 2026-05-11-02:02
-     Per-session close and sleep controls live on the hovered tab, not on the
-     pane titlebar action cluster. Draw compact inline controls inside the tab
+     Per-session close controls live on the hovered tab, not on the pane
+     titlebar action cluster. Draw compact inline controls inside the tab
 
      CDXC:PaneTabs 2026-05-11-20:24
-     Inline Sleep/Close hit testing belongs to the tab button that paints those
+     Inline Close hit testing belongs to the tab button that paints those
      controls. Keeping pointer ownership in the AppKit button hierarchy makes
      narrow right-side tab controls respond without workspace monitor routing.
 
      CDXC:PaneTabs 2026-05-14-10:10:
-     Non-command pane tabs should round their inline Sleep and Close controls instead of drawing square segmented buttons. Preserve command pane tab controls as-is.
+     Non-command pane tabs should round their inline Close control instead of drawing square segmented buttons. Preserve command pane tab controls as-is.
+
+     CDXC:PaneTabs 2026-05-15-14:28:
+     Sleep moved out of hover-only tab chrome and into the tab right-click menu. Keep hover chrome focused on Close so sleeping a tab is an intentional context-menu command instead of a neighboring inline button.
      */
     drawInlineActionControl()
     drawCommandSeparatorIfNeeded()
@@ -11753,10 +11806,10 @@ private final class TerminalTitleBarTabButton: NSButton {
     }
     /**
      CDXC:PaneTabs 2026-05-12-10:13
-     Narrow panes can clip a tab while the visible fragment still owns Sleep
-     and Close controls. Give each native tab button its own tracking area so
-     hover chrome follows the actual AppKit button receiver instead of relying
-     on the parent title bar to rediscover the same clipped geometry.
+     Narrow panes can clip a tab while the visible fragment still owns the
+     Close control. Give each native tab button its own tracking area so hover
+     chrome follows the actual AppKit button receiver instead of relying on the
+     parent title bar to rediscover the same clipped geometry.
      */
     let trackingArea = NSTrackingArea(
       rect: .zero,
@@ -11797,10 +11850,10 @@ private final class TerminalTitleBarTabButton: NSButton {
     if let inlineAction = inlineAction(at: point) {
       /**
        CDXC:PaneTabs 2026-05-11-19:36
-       Visible tab Sleep/Close controls are native AppKit button-region clicks.
-       Handle them on the tab button itself instead of routing through a
-       workspace monitor or title-bar coordinate router, so narrow right-side
-       tabs keep one local mouseDown/mouseUp owner.
+       Visible tab Close controls are native AppKit button-region clicks. Handle
+       them on the tab button itself instead of routing through a workspace
+       monitor or title-bar coordinate router, so narrow right-side tabs keep
+       one local mouseDown/mouseUp owner.
        */
       pendingMouseDownInlineAction = inlineAction
       return
@@ -11837,8 +11890,6 @@ private final class TerminalTitleBarTabButton: NSButton {
       switch pendingInlineAction {
       case .close:
         onTabCloseRequested?(sessionId, .close)
-      case .sleep:
-        onTabSleepRequested?(sessionId, .sleep)
       }
       return
     }
@@ -11899,10 +11950,16 @@ private final class TerminalTitleBarTabButton: NSButton {
   override func rightMouseDown(with event: NSEvent) {
     /**
      CDXC:PaneTabs 2026-05-11-00:45
-     Native pane tabs need group-scoped sleep and close commands from the tab
-     itself. The menu reports only the clicked tab and requested scope; the
-     sidebar resolves the containing tab node so scoped actions never affect
-     unrelated panes or other tab groups.
+     Native pane tabs need single-tab and group-scoped sleep/close commands
+     from the tab itself. The menu reports only the clicked tab and requested
+     scope; the sidebar resolves the containing tab node so scoped actions
+     never affect unrelated panes or other tab groups.
+
+     CDXC:PaneTabs 2026-05-15-14:28:
+     Sleep is the first right-click menu item after leaving hover tab chrome.
+     Keep the direct clicked-tab command above scoped Sleep Right/Left/Other
+     options so users can sleep the intended tab without hunting through the
+     broader tab-group actions.
      */
     NativePaneTabDragReproLog.append(event: "nativePaneTabs.contextMenu.opened", details: [
       "buttonBounds": nativePaneTabsDebugFrame(bounds),
@@ -11911,6 +11968,10 @@ private final class TerminalTitleBarTabButton: NSButton {
       "windowNumber": event.window?.windowNumber ?? NSNull(),
     ])
     let menu = NSMenu()
+    if !isSleepingTab {
+      addTabSleepMenuItem("Sleep", scope: .sleep, to: menu)
+      menu.addItem(NSMenuItem.separator())
+    }
     addTabSleepMenuItem("Sleep Right", scope: .sleepRight, to: menu)
     addTabSleepMenuItem("Sleep Left", scope: .sleepLeft, to: menu)
     addTabSleepMenuItem("Sleep Other Tabs", scope: .sleepOthers, to: menu)
@@ -11961,29 +12022,13 @@ private final class TerminalTitleBarTabButton: NSButton {
       height: Self.inlineButtonHeight)
   }
 
-  private var sleepButtonFrame: CGRect {
-    return CGRect(
-      x: closeButtonFrame.minX - Self.inlineButtonGap - Self.inlineButtonWidth,
-      y: floor((bounds.height - Self.inlineButtonHeight) / 2),
-      width: Self.inlineButtonWidth,
-      height: Self.inlineButtonHeight)
-  }
-
   private var closeButtonHitFrame: CGRect {
     closeButtonFrame.insetBy(dx: 0, dy: -floor((bounds.height - closeButtonFrame.height) / 2))
       .intersection(bounds)
   }
 
-  private var sleepButtonHitFrame: CGRect {
-    sleepButtonFrame.insetBy(dx: 0, dy: -floor((bounds.height - sleepButtonFrame.height) / 2))
-      .intersection(bounds)
-  }
-
   private var inlineActionControlFrame: CGRect {
-    if isSleepingTab {
-      return closeButtonFrame
-    }
-    return sleepButtonFrame.union(closeButtonFrame)
+    return closeButtonFrame
   }
 
   private var titleColor: NSColor {
@@ -12169,23 +12214,9 @@ private final class TerminalTitleBarTabButton: NSButton {
     if hoveredInlineAction == .close {
       context.setFillColor(Self.inlineButtonHoverBackgroundColor)
       context.fill(closeButtonFrame)
-    } else if !isSleepingTab, hoveredInlineAction == .sleep {
-      context.setFillColor(Self.inlineButtonHoverBackgroundColor)
-      context.fill(sleepButtonFrame)
-    }
-    if !isSleepingTab {
-      context.setFillColor(Self.inlineButtonDividerColor)
-      context.fill(CGRect(
-        x: closeButtonFrame.minX - 0.5,
-        y: controlFrame.minY + 4,
-        width: 1,
-        height: max(controlFrame.height - 8, 1)))
     }
     context.restoreGState()
 
-    if !isSleepingTab {
-      drawInlineSleepSymbol(in: sleepButtonFrame)
-    }
     drawInlineCloseSymbol(in: closeButtonFrame)
   }
 
@@ -12204,53 +12235,6 @@ private final class TerminalTitleBarTabButton: NSButton {
     context.move(to: CGPoint(x: frame.maxX - insetX, y: frame.minY + insetY))
     context.addLine(to: CGPoint(x: frame.minX + insetX, y: frame.maxY - insetY))
     context.strokePath()
-    context.restoreGState()
-  }
-
-  private func drawInlineSleepSymbol(in frame: CGRect) {
-    guard let image = NSImage(systemSymbolName: "moon.fill", accessibilityDescription: nil) else {
-      return
-    }
-    let iconSide = min(frame.width - 12.4, frame.height - 8)
-    let iconRect = CGRect(
-      x: frame.midX - iconSide / 2,
-      y: frame.midY - iconSide / 2,
-      width: iconSide,
-      height: iconSide)
-    drawConfiguredSymbol(
-      image,
-      in: iconRect,
-      color: Self.inlineButtonSymbolColor,
-      rotateDegrees: 180,
-      mirrorX: true)
-  }
-
-  private func drawConfiguredSymbol(
-    _ image: NSImage,
-    in rect: CGRect,
-    color: NSColor,
-    rotateDegrees: CGFloat,
-    mirrorX: Bool
-  ) {
-    guard let context = NSGraphicsContext.current?.cgContext else {
-      return
-    }
-    let configuration = NSImage.SymbolConfiguration(paletteColors: [color])
-    let configuredImage = image.withSymbolConfiguration(configuration) ?? image
-    context.saveGState()
-    context.translateBy(x: rect.midX, y: rect.midY)
-    if mirrorX {
-      context.scaleBy(x: -1, y: 1)
-    }
-    context.rotate(by: rotateDegrees * .pi / 180)
-    context.translateBy(x: -rect.midX, y: -rect.midY)
-    configuredImage.draw(
-      in: rect,
-      from: .zero,
-      operation: .sourceOver,
-      fraction: 1,
-      respectFlipped: false,
-      hints: nil)
     context.restoreGState()
   }
 
@@ -12275,7 +12259,7 @@ private final class TerminalTitleBarTabButton: NSButton {
      CDXC:PaneTabs 2026-05-11-03:04
      AppKit template symbols drawn manually do not reliably pick up button
      tint. Draw the SF Symbol as a mask filled with an explicit light color so
-     Sleep/Close stay readable on dark tab chrome.
+     sleeping/status icons stay readable on dark tab chrome.
      */
     let maskRect = rect.insetBy(dx: 0.5, dy: 0)
     context.beginTransparencyLayer(auxiliaryInfo: nil)
@@ -12578,6 +12562,8 @@ private final class TerminalSessionTitleBarView: NSView {
     .openBrowser,
     .splitHorizontal,
     .splitVertical,
+    .rotatePanesClockwise,
+    .mergeAllTabs,
     .rename,
     .delayedSend,
     .fork,
@@ -12587,23 +12573,30 @@ private final class TerminalSessionTitleBarView: NSView {
 
   /**
    CDXC:PaneTitleBarUX 2026-05-11-11:05
-   Browser and T3 Code panes should expose the same creation/split chrome as
-   the sidebar sync sends: Terminal, Browser, separator, Split Right, Split
-   Down. Keep the initial native titlebar aligned before the first layout sync.
+   Browser and T3 Code panes should expose the same creation/split/merge chrome
+   as the sidebar sync sends: Terminal, Browser, separator, Split Right, Split
+   Down, Merge all tabs. Keep the initial native titlebar aligned before the
+   first layout sync.
+
+   CDXC:PaneTitleBarUX 2026-05-15-13:51:
+   Rotate Panes belongs directly below Split Downwards in the collapsed pane
+   overflow menu so split layout actions stay grouped before Merge All Tabs.
    */
   static let webPaneCreationActions: [TerminalTitleBarAction] = [
     .newTerminal,
     .openBrowser,
     .splitHorizontal,
     .splitVertical,
+    .rotatePanesClockwise,
+    .mergeAllTabs,
   ]
 
   init(title: String, actions: [TerminalTitleBarAction] = TerminalSessionTitleBarView.defaultActions) {
     /**
      CDXC:BrowserPanes 2026-05-11-11:05
      Browser panes keep navigation/tooling controls in their dedicated browser
-     toolbar. Their pane title bar exposes only shared pane creation/split
-     controls, while terminals keep the full session action set.
+     toolbar. Their pane title bar exposes shared pane creation, split, and
+     Merge All Tabs controls, while terminals keep the full session action set.
      */
     actionButtons = actions.map { action in
       (action, Self.makeActionButton(for: action))
@@ -13072,7 +13065,7 @@ private final class TerminalSessionTitleBarView: NSView {
     /**
      CDXC:PaneTabs 2026-05-11-11:47
      Double-clicking unused pane title-bar chrome creates a new terminal in the
-     same tab group. Reject real tab, inline Sleep/Close, and action-control
+     same tab group. Reject real tab, inline Close, and action-control
      hits, but allow unoccupied tab-strip space so wide single-tab panes keep
      the fast "new terminal in this pane" gesture.
 
@@ -13238,7 +13231,7 @@ private final class TerminalSessionTitleBarView: NSView {
      cluster would leave less than a usable tab viewport, collapse non-close
      actions into a single native hamburger menu. If even that menu would clip
      a one-tab viewport below the tab's own minimum interactive width, hide the
-     menu too; tab selection plus inline Sleep/Close are the primary narrow-pane
+     menu too; tab selection plus inline Close is the primary narrow-pane
      controls.
 
      CDXC:PaneTitleBarUX 2026-05-12-19:06
@@ -13553,8 +13546,8 @@ private final class TerminalSessionTitleBarView: NSView {
      CDXC:PaneTabs 2026-05-11-11:47
      A single-tab pane should fit the visible viewport instead of forcing an
      80px scrollable tab. Narrow panes need the active terminal tab's inline
-     Sleep/Close hit areas to stay inside the pane so activation and lifecycle
-     controls remain usable without horizontal scrolling.
+     Close hit area to stay inside the pane so activation and close controls
+     remain usable without horizontal scrolling.
      */
     let isCommandChrome = chromeRole == .commands
     let gap: CGFloat = isCommandChrome ? 0 : 2
@@ -14167,7 +14160,7 @@ private final class TerminalSessionTitleBarView: NSView {
     switch action {
     case .reload, .fork, .rename, .delayedSend:
       return 0
-    case .splitHorizontal, .splitVertical:
+    case .splitHorizontal, .splitVertical, .rotatePanesClockwise, .mergeAllTabs:
       return 1
     case .openBrowser, .newTerminal:
       return 2
@@ -14198,6 +14191,10 @@ private final class TerminalSessionTitleBarView: NSView {
       return makeActionButton(systemSymbolName: "rectangle.split.2x1", fallbackTitle: "S", tooltip: "Split Sideways")
     case .splitVertical:
       return makeActionButton(systemSymbolName: "rectangle.split.1x2", fallbackTitle: "D", tooltip: "Split Downwards")
+    case .rotatePanesClockwise:
+      return makeActionButton(systemSymbolName: "arrow.clockwise", fallbackTitle: "R", tooltip: "Rotate Panes Clockwise")
+    case .mergeAllTabs:
+      return makeActionButton(systemSymbolName: "rectangle.stack", fallbackTitle: "M", tooltip: "Merge All Tabs")
     case .rename:
       return makeActionButton(systemSymbolName: "pencil", fallbackTitle: "R", tooltip: "Rename Session")
     case .delayedSend:
@@ -14235,6 +14232,10 @@ private final class TerminalSessionTitleBarView: NSView {
       return "Split Sideways"
     case .splitVertical:
       return "Split Downwards"
+    case .rotatePanesClockwise:
+      return "Rotate Panes Clockwise"
+    case .mergeAllTabs:
+      return "Merge all tabs"
     case .rename:
       return "Rename Session"
     case .delayedSend:
@@ -14273,6 +14274,10 @@ private final class TerminalSessionTitleBarView: NSView {
       symbolName = "rectangle.split.2x1"
     case .splitVertical:
       symbolName = "rectangle.split.1x2"
+    case .rotatePanesClockwise:
+      symbolName = "arrow.clockwise"
+    case .mergeAllTabs:
+      symbolName = "rectangle.stack"
     case .rename:
       symbolName = "pencil"
     case .delayedSend:
@@ -14324,6 +14329,9 @@ private final class TerminalSessionTitleBarView: NSView {
 final class ProjectEditorInitialLoadingOverlayView: NSView {
   private let spinnerContainer = NSView(frame: .zero)
   private let spinner = NSProgressIndicator(frame: .zero)
+  private let titleLabel = NSTextField(labelWithString: "")
+  private let messageLabel = NSTextField(wrappingLabelWithString: "")
+  private var errorMessage: String?
 
   override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -14347,6 +14355,26 @@ final class ProjectEditorInitialLoadingOverlayView: NSView {
     spinner.usesThreadedAnimation = true
     spinner.appearance = NSAppearance(named: .darkAqua)
     spinnerContainer.addSubview(spinner)
+
+    titleLabel.alignment = .center
+    titleLabel.backgroundColor = .clear
+    titleLabel.font = NSFont.systemFont(ofSize: 15, weight: .semibold)
+    titleLabel.isBezeled = false
+    titleLabel.isEditable = false
+    titleLabel.isHidden = true
+    titleLabel.isSelectable = false
+    titleLabel.textColor = NSColor(calibratedWhite: 0.92, alpha: 1)
+    spinnerContainer.addSubview(titleLabel)
+
+    messageLabel.alignment = .center
+    messageLabel.backgroundColor = .clear
+    messageLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+    messageLabel.isBezeled = false
+    messageLabel.isEditable = false
+    messageLabel.isHidden = true
+    messageLabel.isSelectable = true
+    messageLabel.textColor = NSColor(calibratedWhite: 0.68, alpha: 1)
+    spinnerContainer.addSubview(messageLabel)
     startAnimating()
   }
 
@@ -14356,12 +14384,21 @@ final class ProjectEditorInitialLoadingOverlayView: NSView {
 
   override func layout() {
     super.layout()
-    let containerSize = CGSize(width: 52, height: 52)
+    let isError = errorMessage != nil
+    let containerSize =
+      isError
+      ? CGSize(width: min(max(bounds.width - 80, 280), 520), height: 126)
+      : CGSize(width: 52, height: 52)
     spinnerContainer.frame = CGRect(
       x: floor((bounds.width - containerSize.width) / 2),
       y: floor((bounds.height - containerSize.height) / 2),
       width: containerSize.width,
       height: containerSize.height)
+    if isError {
+      titleLabel.frame = CGRect(x: 18, y: 78, width: containerSize.width - 36, height: 22)
+      messageLabel.frame = CGRect(x: 22, y: 28, width: containerSize.width - 44, height: 46)
+      return
+    }
     let spinnerSize: CGFloat = 24
     spinner.frame = CGRect(
       x: floor((spinnerContainer.bounds.width - spinnerSize) / 2),
@@ -14380,13 +14417,37 @@ final class ProjectEditorInitialLoadingOverlayView: NSView {
   }
 
   func startAnimating() {
+    errorMessage = nil
     isHidden = false
+    titleLabel.isHidden = true
+    messageLabel.isHidden = true
+    spinner.isHidden = false
     spinner.startAnimation(nil)
+    needsLayout = true
   }
 
   func stopAnimating() {
     spinner.stopAnimation(nil)
     isHidden = true
+  }
+
+  func showError(message: String) {
+    /**
+     CDXC:EditorPanes 2026-05-15-13:58:
+     Code startup failures should render in the project editor page area, not
+     by mutating the sidebar or titlebar Code button label. Reuse the initial
+     native overlay so failed startup has a visible, project-scoped diagnosis
+     without navigating Chromium to a dead localhost URL.
+     */
+    errorMessage = message
+    isHidden = false
+    titleLabel.stringValue = "VS Code failed to load"
+    titleLabel.isHidden = false
+    messageLabel.stringValue = message
+    messageLabel.isHidden = false
+    spinner.stopAnimation(nil)
+    spinner.isHidden = true
+    needsLayout = true
   }
 }
 
@@ -14658,6 +14719,20 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.loadingOverlay.visibilityChanged", [
       "reason": reason,
       "visible": visible,
+      "webUrl": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+  }
+
+  func setInitialLoadingOverlayError(_ message: String, reason: String) {
+    guard let initialLoadingOverlayView else {
+      return
+    }
+    initialLoadingOverlayView.showError(message: message)
+    layoutInitialLoadingOverlay(webFrame: browserView.frame)
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.loadingOverlay.errorShown", [
+      "message": message,
+      "reason": reason,
       "webUrl": currentURLString() ?? NSNull(),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])

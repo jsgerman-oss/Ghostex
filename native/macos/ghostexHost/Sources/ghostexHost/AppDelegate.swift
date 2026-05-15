@@ -1819,6 +1819,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       (window?.contentView as? ghostexRootView)?.setReactTitlebarHitRegions(command.regions)
     case .openActiveProjectEditorFromTitlebar:
       break
+    case .openAgentsModeFromTitlebar:
+      break
+    case .openGitHubProjectFromTitlebar:
+      break
+    case .openTasksPlaceholderFromTitlebar:
+      break
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
       break
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
@@ -2833,20 +2839,23 @@ private final class NativeSettingsStore {
      Default hotkeys prefer plain Cmd chords for common navigation and reserve
      heavier modifiers only where plain Cmd is already used by session slots or
      split-direction conventions.
+     CDXC:Hotkeys 2026-05-15-13:31:
+     Plain Cmd+Arrow belongs to terminal and prompt text editing.
+     Directional pane focus uses Cmd+Alt+Arrow so AppKit no longer intercepts common text navigation shortcuts.
      */
     "createSession": "cmd+n",
-    "focusDown": "cmd+down",
+    "focusDown": "cmd+alt+down",
     "focusGroup1": "cmd+ctrl+1",
     "focusGroup2": "cmd+ctrl+2",
     "focusGroup3": "cmd+ctrl+3",
     "focusGroup4": "cmd+ctrl+4",
     "focusGroup5": "cmd+ctrl+5",
-    "focusLeft": "cmd+left",
+    "focusLeft": "cmd+alt+left",
     "focusNextGroup": "cmd+]",
     "focusNextSession": "cmd+tab",
     "focusPreviousGroup": "cmd+[",
     "focusPreviousSession": "cmd+shift+tab",
-    "focusRight": "cmd+right",
+    "focusRight": "cmd+alt+right",
     "focusSessionSlot1": "cmd+1",
     "focusSessionSlot2": "cmd+2",
     "focusSessionSlot3": "cmd+3",
@@ -2856,7 +2865,7 @@ private final class NativeSettingsStore {
     "focusSessionSlot7": "cmd+7",
     "focusSessionSlot8": "cmd+8",
     "focusSessionSlot9": "cmd+9",
-    "focusUp": "cmd+up",
+    "focusUp": "cmd+alt+up",
     "moveSidebar": "cmd+b",
     /**
      CDXC:Hotkeys 2026-05-14-08:09:
@@ -2879,10 +2888,14 @@ private final class NativeSettingsStore {
     "focusPreviousSession": ["cmd+shift+["],
   ]
   private static let retiredDefaultHotkeys: [String: [String]] = [
+    "focusDown": ["cmd+down"],
+    "focusLeft": ["cmd+left"],
     "focusNextGroup": ["cmd+shift+]"],
     "focusNextSession": ["cmd+]"],
     "focusPreviousGroup": ["cmd+shift+["],
     "focusPreviousSession": ["cmd+["],
+    "focusRight": ["cmd+right"],
+    "focusUp": ["cmd+up"],
   ]
 
   /**
@@ -3176,6 +3189,48 @@ private final class NativeSettingsStore {
   }
 }
 
+final class AppModalHostWebView: WKWebView {
+  private var topLeftHitRegions: [CGRect]?
+
+  func setTopLeftHitRegions(_ regions: [CGRect]?) {
+    topLeftHitRegions = regions
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard bounds.contains(point) else {
+      return nil
+    }
+    guard let topLeftHitRegions else {
+      return super.hitTest(point)
+    }
+    /**
+     CDXC:PromptEditor 2026-05-15-12:42:
+     The floating prompt editor renders in a transparent full-window WKWebView,
+     but only the visible editor pane should intercept AppKit events. Compare
+     against React-published top-left hit regions so clicks, scrolls, and pin
+     interactions outside the panel pass through to the terminal workspace.
+
+     CDXC:PromptEditor 2026-05-15-13:42:
+     WKWebView hit-test coordinates can arrive flipped depending on the AppKit
+     view path. Accept both direct and inverted y coordinates, with a small
+     rounding margin, so the editor panel itself remains clickable and resizable
+     while transparent space still passes through.
+     */
+    let directPoint = CGPoint(x: point.x, y: point.y)
+    let invertedPoint = CGPoint(x: point.x, y: bounds.height - point.y)
+    let candidatePoints = isFlipped ? [directPoint, invertedPoint] : [invertedPoint, directPoint]
+    let isInsideHitRegion = candidatePoints.contains { candidate in
+      topLeftHitRegions.contains { region in
+        region.insetBy(dx: -2, dy: -2).contains(candidate)
+      }
+    }
+    if isInsideHitRegion {
+      return super.hitTest(point) ?? self
+    }
+    return nil
+  }
+}
+
 final class ghostexRootView: NSView {
   private static let logger = Logger(subsystem: "com.madda.ghostex.host", category: "webview")
 
@@ -3212,7 +3267,7 @@ final class ghostexRootView: NSView {
   let workspaceView: TerminalWorkspaceView
   var sidebarWebView: WKWebView { sidebarView }
   private let sidebarView: WKWebView
-  private let modalHostView: WKWebView
+  private let modalHostView: AppModalHostWebView
   private let titlebarChromeView: ReactTitlebarChromeView
   private let titlebarChromeWebView: WKWebView
   private let scriptBridge: SidebarScriptBridge
@@ -3375,7 +3430,7 @@ final class ghostexRootView: NSView {
         forMainFrameOnly: true
       ))
     self.sidebarView = WKWebView(frame: .zero, configuration: configuration)
-    self.modalHostView = WKWebView(frame: .zero, configuration: modalHostConfiguration)
+    self.modalHostView = AppModalHostWebView(frame: .zero, configuration: modalHostConfiguration)
     self.titlebarChromeWebView = WKWebView(frame: .zero, configuration: titlebarConfiguration)
     self.titlebarChromeView = ReactTitlebarChromeView(webView: titlebarChromeWebView)
     self.divider = PaneResizeHandleView()
@@ -3491,10 +3546,11 @@ final class ghostexRootView: NSView {
      writing pane. Ignore caller language hints so the modal host consistently
      uses Markdown tokenization and text wrapping for prompt composition.
      */
+    let initialFrame = floatingPromptEditorInitialFrame(originatingSessionId: command.originatingSessionId)
+    updateFloatingPromptEditorHitRegion(frame: initialFrame)
     dispatchModalHostOpenMessage([
       "filePath": filePath,
-      "initialFrame": floatingPromptEditorInitialFrame(
-        originatingSessionId: command.originatingSessionId),
+      "initialFrame": initialFrame,
       "initialText": initialText,
       "language": language,
       "modal": "floatingPromptEditor",
@@ -3550,6 +3606,50 @@ final class ghostexRootView: NSView {
     ]
   }
 
+  private func updateFloatingPromptEditorHitRegion(frame: [String: CGFloat]) {
+    guard let left = frame["left"],
+      let top = frame["top"],
+      let width = frame["width"],
+      let height = frame["height"]
+    else {
+      modalHostView.setTopLeftHitRegions([])
+      return
+    }
+    modalHostView.setTopLeftHitRegions([
+      CGRect(x: left, y: top, width: width, height: height),
+    ])
+  }
+
+  private func updateFloatingPromptEditorHitRegion(message: [String: Any]) {
+    guard let requestId = message["requestId"] as? String,
+      let active = activeFloatingPromptEditor,
+      active.requestId == requestId,
+      let frame = message["frame"] as? [String: Any]
+    else {
+      return
+    }
+    let hitRegion = [
+      "height": Self.cgFloatValue(frame["height"]),
+      "left": Self.cgFloatValue(frame["left"]),
+      "top": Self.cgFloatValue(frame["top"]),
+      "width": Self.cgFloatValue(frame["width"]),
+    ].compactMapValues { $0 }
+    updateFloatingPromptEditorHitRegion(frame: hitRegion)
+  }
+
+  private static func cgFloatValue(_ value: Any?) -> CGFloat? {
+    if let value = value as? CGFloat {
+      return value
+    }
+    if let value = value as? Double {
+      return CGFloat(value)
+    }
+    if let value = value as? Int {
+      return CGFloat(value)
+    }
+    return nil
+  }
+
   private func saveFloatingPromptEditor(message: [String: Any]) {
     guard let requestId = message["requestId"] as? String,
       let active = activeFloatingPromptEditor,
@@ -3585,6 +3685,7 @@ final class ghostexRootView: NSView {
   private func finishFloatingPromptEditor(reason: String) {
     let returnFocusSessionId = activeFloatingPromptEditor?.originatingSessionId
     activeFloatingPromptEditor = nil
+    modalHostView.setTopLeftHitRegions(nil)
     dispatchModalHostMessage(["type": "close"])
     modalHostView.isHidden = true
     if let returnFocusSessionId {
@@ -3829,6 +3930,48 @@ final class ghostexRootView: NSView {
       """)
   }
 
+  private func openAgentsModeFromTitlebar() {
+    /**
+     CDXC:ModeSwitcher 2026-05-15-12:38:
+     Titlebar mode buttons are chrome controls, while the sidebar webview owns
+     project/session mode transitions. Forward Agents mode there so native
+     layout state and the sessions sidebar stay synchronized.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.openAgentsModeFromTitlebar?.();
+      undefined;
+      """)
+  }
+
+  private func openGitHubProjectFromTitlebar() {
+    /**
+     CDXC:ModeSwitcher 2026-05-15-12:38:
+     Git mode must open the active project's GitHub remote inside the workarea,
+     not in an external browser, so the sidebar owner resolves the remote and
+     creates or focuses the browser-backed project surface.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.openGitHubProjectFromTitlebar?.();
+      undefined;
+      """)
+  }
+
+  private func openTasksPlaceholderFromTitlebar() {
+    /**
+     CDXC:ModeSwitcher 2026-05-15-12:38:
+     Tasks mode is currently a bundled placeholder React page. Let the sidebar
+     owner open it as a project workarea surface so it keeps the sessions list
+     visible like Code mode.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.openTasksPlaceholderFromTitlebar?.();
+      undefined;
+      """)
+  }
+
   private func runSidebarCommandFromTitlebar(_ command: RunSidebarCommandFromTitlebar) {
     /**
      CDXC:TitlebarActions 2026-05-11-02:46
@@ -4042,6 +4185,12 @@ final class ghostexRootView: NSView {
       needsLayout = true
     case .openActiveProjectEditorFromTitlebar:
       openActiveProjectEditorFromTitlebar()
+    case .openAgentsModeFromTitlebar:
+      openAgentsModeFromTitlebar()
+    case .openGitHubProjectFromTitlebar:
+      openGitHubProjectFromTitlebar()
+    case .openTasksPlaceholderFromTitlebar:
+      openTasksPlaceholderFromTitlebar()
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
       refreshWorkspaceOpenTargetAvailabilityFromTitlebar()
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
@@ -4366,6 +4515,23 @@ final class ghostexRootView: NSView {
     guard event.type == .keyDown else {
       return false
     }
+    let hotkeyText = Self.hotkeyText(for: event)
+    if Self.isCommandHorizontalArrowEvent(event) {
+      /**
+       CDXC:Hotkeys 2026-05-15-12:50:
+       Command+Left and Command+Right can be intercepted before the sidebar DOM sees them.
+       Persist AppKit-side breadcrumbs without changing routing so a reproduction shows whether the command-arrow shortcut was matched natively or passed through to WebKit/Ghostty.
+      */
+      logNativeHotkeyDebug(
+        "nativeHotkeys.commandArrowAppKitKeyDown",
+        [
+          "characters": event.charactersIgnoringModifiers ?? "",
+          "firstResponder": String(describing: type(of: window?.firstResponder)),
+          "hotkeyText": hotkeyText ?? "<none>",
+          "keyCode": String(event.keyCode),
+          "webChromeFirstResponder": String(isWebChromeFirstResponder()),
+        ])
+    }
     if isWebChromeFirstResponder() {
       /**
        CDXC:Hotkeys 2026-05-10-12:06
@@ -4373,9 +4539,16 @@ final class ghostexRootView: NSView {
        and editable controls. AppKit should only preempt key equivalents while
        Ghostty/native workspace surfaces own focus.
        */
+      if Self.isCommandHorizontalArrowEvent(event) {
+        logNativeHotkeyDebug(
+          "nativeHotkeys.commandArrowAppKitWebChromeBypass",
+          [
+            "hotkeyText": hotkeyText ?? "<none>",
+            "keyCode": String(event.keyCode),
+          ])
+      }
       return false
     }
-    let hotkeyText = Self.hotkeyText(for: event)
     if Self.isHotkeyCandidate(event) {
       logNativeHotkeyDebug(
         "nativeHotkeys.appKitKeyEquivalent",
@@ -4553,6 +4726,13 @@ final class ghostexRootView: NSView {
      */
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
     return !flags.isDisjoint(with: [.command, .control, .option, .shift]) || event.keyCode == 111
+  }
+
+  private static func isCommandHorizontalArrowEvent(_ event: NSEvent) -> Bool {
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    return flags.contains(.command) &&
+      flags.isDisjoint(with: [.control, .option]) &&
+      (event.keyCode == 123 || event.keyCode == 124)
   }
 
   private static func normalizedHotkeyKey(_ event: NSEvent) -> String? {
@@ -4889,6 +5069,8 @@ final class ghostexRootView: NSView {
       let errorMessage = message["message"] as? String ?? String(describing: message)
       let stack = message["stack"] as? String
       AppDelegate.appendAppModalErrorLog(area: area, message: errorMessage, stack: stack)
+    case "floatingPromptEditorHitRegion":
+      updateFloatingPromptEditorHitRegion(message: message)
     case "floatingPromptEditorSave":
       saveFloatingPromptEditor(message: message)
     case "floatingPromptEditorCancel":
@@ -4923,6 +5105,9 @@ final class ghostexRootView: NSView {
         return
       }
       pendingModalHostOpenMessage = nil
+      if (message["modal"] as? String) != "floatingPromptEditor" {
+        modalHostView.setTopLeftHitRegions(nil)
+      }
       if let latestModalHostSidebarState {
         dispatchModalHostMessage(latestModalHostSidebarState)
       }
@@ -4944,6 +5129,7 @@ final class ghostexRootView: NSView {
       )
       dispatchModalHostMessage(["type": "close"])
       pendingModalHostOpenMessage = nil
+      modalHostView.setTopLeftHitRegions(nil)
       modalHostView.isHidden = true
     case "sidebarState":
       latestModalHostSidebarState = message

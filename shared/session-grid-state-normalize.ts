@@ -40,6 +40,12 @@ export function normalizeSessionGridSnapshot(
       normalizedSnapshot.fullscreenRestoreVisibleCount,
       visibleCount,
     ),
+    /**
+     * CDXC:PaneFocus 2026-05-15-13:31:
+     * Generic snapshot normalization must preserve the persisted paneLayout tree.
+     * Directional focus hotkeys and other legacy snapshot helpers normalize before focusing; dropping paneLayout there makes native sync rebuild grouped tabs as separate leaves.
+     */
+    ...(normalizedSnapshot.paneLayout ? { paneLayout: normalizedSnapshot.paneLayout } : {}),
     sessions: orderedSessions,
     visibleCount,
     visibleSessionIds: normalizedVisibleIds,

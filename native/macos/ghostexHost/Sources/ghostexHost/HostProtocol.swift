@@ -56,6 +56,9 @@ enum HostCommand: Decodable {
   case setSidebarSide(SetSidebarSide)
   case setReactTitlebarHitRegions(SetReactTitlebarHitRegions)
   case openActiveProjectEditorFromTitlebar
+  case openAgentsModeFromTitlebar
+  case openGitHubProjectFromTitlebar
+  case openTasksPlaceholderFromTitlebar
   case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
   case rotateActivePaneLayoutClockwiseFromTitlebar
   case togglePetOverlayFromTitlebar
@@ -125,6 +128,9 @@ enum HostCommand: Decodable {
     case setSidebarSide
     case setReactTitlebarHitRegions
     case openActiveProjectEditorFromTitlebar
+    case openAgentsModeFromTitlebar
+    case openGitHubProjectFromTitlebar
+    case openTasksPlaceholderFromTitlebar
     case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
     case rotateActivePaneLayoutClockwiseFromTitlebar
     case togglePetOverlayFromTitlebar
@@ -249,6 +255,12 @@ enum HostCommand: Decodable {
       self = .setReactTitlebarHitRegions(try SetReactTitlebarHitRegions(from: decoder))
     case .openActiveProjectEditorFromTitlebar:
       self = .openActiveProjectEditorFromTitlebar
+    case .openAgentsModeFromTitlebar:
+      self = .openAgentsModeFromTitlebar
+    case .openGitHubProjectFromTitlebar:
+      self = .openGitHubProjectFromTitlebar
+    case .openTasksPlaceholderFromTitlebar:
+      self = .openTasksPlaceholderFromTitlebar
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
       self = .refreshWorkspaceOpenTargetAvailabilityFromTitlebar
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
@@ -970,6 +982,7 @@ enum TerminalTitleBarAction: String, Codable, Hashable {
   case delayedSend
   case expandCommandsPanel
   case fork
+  case mergeAllTabs
   case newTerminal
   case openBrowser
   case pinCommandsPanel
@@ -977,6 +990,7 @@ enum TerminalTitleBarAction: String, Codable, Hashable {
   case reload
   case rename
   case restorePopOut
+  case rotatePanesClockwise
   case sleep
   case splitHorizontal
   case splitVertical

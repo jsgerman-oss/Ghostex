@@ -31,6 +31,25 @@ describe("createSidebarSessionItems", () => {
     expect(items[0]?.faviconDataUrl).toBe(faviconDataUrl);
   });
 
+  test("should expose favorite state through sidebar session items", () => {
+    const favoriteSession = {
+      ...createSessionRecord(1, 0, { title: "Favorite plan" }),
+      isFavorite: true,
+    };
+    const normalSession = createSessionRecord(2, 1, { title: "Normal plan" });
+
+    const items = createSidebarSessionItems({
+      focusedSessionId: "session-1",
+      sessions: [favoriteSession, normalSession],
+      viewMode: "grid",
+      visibleCount: 2,
+      visibleSessionIds: ["session-1", "session-2"],
+    });
+
+    expect(items[0]?.isFavorite).toBe(true);
+    expect(items[1]?.isFavorite).toBe(false);
+  });
+
   test("should treat Ghostty ghost titles as placeholders instead of persisted session names", () => {
     /**
      * CDXC:SessionTitleSync 2026-05-07-17:27

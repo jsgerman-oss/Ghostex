@@ -131,8 +131,13 @@ const floatingPromptEditorMaximumWidth = 700;
  * Users can shrink the floating prompt editor after expanding it. The minimum
  * width must still leave room for both titlebar actions anchored to the live
  * right edge, while the title and shortcut text truncate first.
+ *
+ * CDXC:PromptEditor 2026-05-15-12:42:
+ * The editor must keep shrinking cleanly after it has been widened. Use a
+ * narrower floor and let the title/shortcut disappear before action buttons
+ * or Monaco content can hold the panel at a stale wider layout.
  */
-const floatingPromptEditorMinimumWidth = 220;
+const floatingPromptEditorMinimumWidth = 180;
 
 type T3ThreadIdModalState = {
   currentThreadId: string;
@@ -388,6 +393,27 @@ function FloatingPromptEditorModal({
   useEffect(() => {
     editorRef.current?.layout();
   }, [frame.height, frame.width]);
+
+  useLayoutEffect(() => {
+    if (!isOpen || !editor) {
+      return;
+    }
+    /**
+     * CDXC:PromptEditor 2026-05-15-12:42:
+     * The floating prompt editor should only intercept native AppKit events
+     * over the visible editor panel. Publish the live panel rectangle after
+     * each move or resize so terminal panes and pins behind the transparent
+     * modal WKWebView remain clickable and scrollable outside that rectangle.
+     */
+    postAppModalHostMessage(
+      {
+        frame,
+        requestId: editor.requestId,
+        type: "floatingPromptEditorHitRegion",
+      },
+      "PromptEditor:hitRegion",
+    );
+  }, [editor?.requestId, frame.height, frame.left, frame.top, frame.width, isOpen]);
 
   useEffect(() => {
     return () => {

@@ -31,6 +31,28 @@ describe("focusSessionInSnapshot", () => {
     expect(result.snapshot.focusedSessionId).toBe("session-3");
     expect(result.snapshot.visibleSessionIds).toEqual(["session-3", "session-2"]);
   });
+
+  test("should preserve pane layout while focusing a visible session", () => {
+    const paneLayout = {
+      activeSessionId: "session-1",
+      kind: "tabs" as const,
+      sessionIds: ["session-1", "session-2"],
+    };
+    const result = focusSessionInSnapshot(
+      {
+        focusedSessionId: "session-1",
+        paneLayout,
+        sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+        viewMode: "grid",
+        visibleCount: 2,
+        visibleSessionIds: ["session-1", "session-2"],
+      },
+      "session-2",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.paneLayout).toEqual(paneLayout);
+  });
 });
 
 describe("focusDirectionInSnapshot", () => {
@@ -50,6 +72,29 @@ describe("focusDirectionInSnapshot", () => {
     const down = focusDirectionInSnapshot(snapshot, "down");
     expect(down.changed).toBe(true);
     expect(down.snapshot.focusedSessionId).toBe("session-3");
+  });
+
+  test("should preserve pane layout when moving focus with direction keys", () => {
+    const paneLayout = {
+      activeSessionId: "session-1",
+      kind: "tabs" as const,
+      sessionIds: ["session-1", "session-2", "session-3"],
+    };
+    const result = focusDirectionInSnapshot(
+      {
+        focusedSessionId: "session-1",
+        paneLayout,
+        sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1), createSessionRecord(3, 2)],
+        viewMode: "grid",
+        visibleCount: 3,
+        visibleSessionIds: ["session-1", "session-2", "session-3"],
+      },
+      "right",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.focusedSessionId).toBe("session-2");
+    expect(result.snapshot.paneLayout).toEqual(paneLayout);
   });
 });
 

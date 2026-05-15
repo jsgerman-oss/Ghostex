@@ -491,6 +491,10 @@ describe("visible primary titles", () => {
   test("should ignore bare agent names when choosing a visible session title", () => {
     expect(getPreferredSessionTitle("Session 1", "Codex")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Codex CLI")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Droid")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Factory Droid")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Grok")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Grok Build")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "OpenAI Codex")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "π - ghostex")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Claude")).toBeUndefined();
@@ -510,6 +514,8 @@ describe("visible primary titles", () => {
 
   test("should expose placeholder titles through sidebar session items without making them persisted titles", () => {
     expect(createAgentSessionDefaultTitle("codex")).toBe("Codex Session");
+    expect(createAgentSessionDefaultTitle("droid")).toBe("Factory Droid Session");
+    expect(createAgentSessionDefaultTitle("grok")).toBe("Grok Build Session");
     expect(createAgentSessionDefaultTitle("pi")).toBe("Pi Session");
     const items = createSidebarSessionItems(
       {
