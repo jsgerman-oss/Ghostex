@@ -937,7 +937,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   gap: 11px;
   height: 34px;
   justify-content: flex-start;
-  line-height: 14px;
+  line-height: 18px;
   max-width: 100%;
   min-height: 34px;
   min-width: 0;
@@ -969,6 +969,11 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
  * full label width until the row is hovered or focused, then reserve the
  * secondary-action slot so the revealed overflow/history/terminal button does
  * not overlap the title.
+ *
+ * CDXC:SidebarReference 2026-05-15-15:36:
+ * Primary sidebar labels must keep their descenders visible in the 34px rows.
+ * Use an 18px text line box instead of clipping labels to 14px, which cuts off
+ * New Session, Agents Hub, Plugins, Search, and Settings at the bottom.
  */
 .sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-primary-nav > * {
   min-width: 0;
@@ -1046,8 +1051,8 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 .sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-nav-label {
   display: block;
   flex: 1 1 auto;
-  height: 14px;
-  line-height: 14px;
+  line-height: 18px;
+  min-height: 18px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1484,6 +1489,10 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
  * The closed Recent Projects and Settings buttons should sit 6px closer
  * together; the drawer body is hidden but its grid row gap otherwise still
  * adds visual space below the closed Recent Projects button.
+ *
+ * CDXC:SidebarReference 2026-05-15-15:36:
+ * Recent Projects uses the same visual row height as Settings, so its title
+ * also needs an unclipped 18px text line box instead of a fixed 14px title row.
  */
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer[data-open="false"] {
   gap: 0;
@@ -1506,7 +1515,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   font-size: 15.55px;
   font-weight: 300;
   height: 34px;
-  line-height: 14px;
+  line-height: 18px;
   min-height: 34px;
 }
 
@@ -1522,7 +1531,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   font-size: 16px;
   font-weight: 300;
   letter-spacing: 0;
-  line-height: 1.15;
+  line-height: 18px;
   text-transform: none;
 }
 
@@ -1536,8 +1545,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   .recent-projects-drawer-toggle
   .group-title-row {
   gap: 11px;
-  height: 14px;
-  min-height: 14px;
+  min-height: 18px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
