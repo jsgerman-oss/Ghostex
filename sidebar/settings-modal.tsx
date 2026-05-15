@@ -109,7 +109,6 @@ import {
 import {
   DEFAULT_SIDEBAR_COMMAND_ICON,
   DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
-  normalizeSidebarCommandIconColor,
   type SidebarCommandIcon,
 } from "../shared/sidebar-command-icons";
 import {
@@ -124,7 +123,8 @@ import { PET_OPTIONS, type PetId } from "../shared/pets";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { HotkeyRecorderField } from "./hotkey-recorder-field";
 import { PetAvatar } from "./pet-avatar";
-import { SidebarCommandIconGlyph, SIDEBAR_COMMAND_ICON_OPTIONS } from "./sidebar-command-icon";
+import { CommandIconPicker } from "./command-icon-picker";
+import { SidebarCommandIconGlyph } from "./sidebar-command-icon";
 import { useSidebarStore } from "./sidebar-store";
 import type { AgentConfigDraft } from "./agent-config-modal";
 import type { CommandConfigDraft } from "./command-config-modal";
@@ -385,7 +385,7 @@ export function SettingsModal({
       },
       {
         key: "showProjectEditorDiffFileCount",
-        subtitle: "Show changed-file counts in project editor rows.",
+        subtitle: "Show changed-file counts in project header git stats.",
         title: "Show editor file count",
       },
     ]),
@@ -1048,18 +1048,6 @@ export function SettingsModal({
             </aside>
           <ScrollArea className="h-full min-h-0">
           <div className="flex flex-col gap-6 px-5 pb-5">
-            {accessibilityPermissionGranted === false ? (
-              /**
-               * CDXC:AccessibilityPermissions 2026-05-08-13:08
-               * Settings should expose missing macOS Accessibility status
-               * without implying ghostex needs the permission at startup. IDE
-               * attachment is the feature that asks for it when enabled.
-               */
-              <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-foreground">
-                Accessibility is off. IDE attachment won't work until it is allowed in macOS.
-              </div>
-            ) : null}
-
             {shouldShowSettingsSection(settingsSearch.sidebar) ? (
               <SettingsSection sectionRef={sidebarSectionRef} title="Sidebar">
               {/* CDXC:SidebarPlacement 2026-05-06-17:32: Sidebar side is the
@@ -1177,13 +1165,21 @@ export function SettingsModal({
                   one-click path to the matching System Settings pane without
                   presenting the permission dialog unless attachment is enabled. */}
               {shouldShowSetting(settingsSearch.ideAttachment, "accessibilityPermission") ? (
-              <ActionButtonField
-                description={getAccessibilityPermissionDescription(accessibilityPermissionGranted)}
-                label="Accessibility Permission"
-                onClick={() => onOpenAccessibilityPreferences?.()}
-              >
-                {getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
-              </ActionButtonField>
+              <div className="flex flex-col gap-2">
+                {/* CDXC:AccessibilityPermissions 2026-05-15-13:23: Missing macOS Accessibility status belongs next to the Accessibility Permission setting, not as a top-of-modal warning. Keep it gray so it reads as contextual status instead of a global amber alert. */}
+                <ActionButtonField
+                  description={getAccessibilityPermissionDescription(accessibilityPermissionGranted)}
+                  label="Accessibility Permission"
+                  onClick={() => onOpenAccessibilityPreferences?.()}
+                >
+                  {getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
+                </ActionButtonField>
+                {accessibilityPermissionGranted === false ? (
+                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                    Accessibility is off. IDE attachment won't work until it is allowed in macOS.
+                  </div>
+                ) : null}
+              </div>
               ) : null}
               {/* CDXC:IDEAttachment 2026-04-26-22:38: Settings select the IDE
                   that the workspace header link button attaches to. The
@@ -1385,7 +1381,7 @@ export function SettingsModal({
               {shouldShowSetting(settingsSearch.editor, "showProjectEditorDiffFileCount") ? (
               <ToggleField
                 checked={draft.showProjectEditorDiffFileCount}
-                description="Show changed-file counts in project editor rows."
+                description="Show changed-file counts in project header git stats."
                 label="Show editor file count"
                 {...getSettingModificationProps("showProjectEditorDiffFileCount")}
                 onChange={(checked) => updateDraft("showProjectEditorDiffFileCount", checked)}
@@ -2739,9 +2735,6 @@ function ActionSettingsEditor({
     draft.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
   );
   const [iconColor, setIconColor] = useState(draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
-  const [iconColorText, setIconColorText] = useState(
-    draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
-  );
   const [isGlobal, setIsGlobal] = useState(draft.isGlobal === true);
   const [name, setName] = useState(draft.name);
   const [playCompletionSound, setPlayCompletionSound] = useState(draft.playCompletionSound);
@@ -2753,9 +2746,6 @@ function ActionSettingsEditor({
   const closeTerminalOnExitId = useId();
   const commandId = useId();
   const globalId = useId();
-  const iconColorId = useId();
-  const iconColorTextId = useId();
-  const iconId = useId();
   const nameId = useId();
   const soundId = useId();
   const urlId = useId();
@@ -2763,16 +2753,6 @@ function ActionSettingsEditor({
   const targetValue = actionType === "browser" ? url.trim() : command.trim();
   const trimmedName = name.trim();
   const isSaveDisabled = targetValue.length === 0;
-
-  const commitIconColorText = () => {
-    const normalizedColor = normalizeSidebarCommandIconColor(iconColorText);
-    if (!normalizedColor) {
-      setIconColorText(iconColor);
-      return;
-    }
-    setIconColor(normalizedColor);
-    setIconColorText(normalizedColor);
-  };
 
   const getDraft = (): CommandConfigDraft => ({
     actionType,
@@ -2833,64 +2813,12 @@ function ActionSettingsEditor({
           value={name}
         />
       </Field>
-      <Field className="gap-2.5">
-        <FieldContent>
-          <FieldLabel className="text-sm" htmlFor={iconId}>
-            Icon
-          </FieldLabel>
-        </FieldContent>
-        <Select
-          onValueChange={(value) => {
-            setIcon(value as SidebarCommandIcon);
-            if (!normalizeSidebarCommandIconColor(iconColorText)) {
-              setIconColor(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
-              setIconColorText(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
-            }
-          }}
-          value={icon}
-        >
-          <SelectTrigger className="h-10 w-full px-3 text-sm" id={iconId}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="max-h-72" showScrollButtons={false}>
-            <SelectGroup>
-              {SIDEBAR_COMMAND_ICON_OPTIONS.map((option) => (
-                <SelectItem key={option.icon} value={option.icon}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-      </Field>
-      <Field className="gap-2.5">
-        <FieldContent>
-          <FieldLabel className="text-sm" htmlFor={iconColorTextId}>
-            Icon Color
-          </FieldLabel>
-        </FieldContent>
-        <div className="grid grid-cols-[2.75rem_minmax(0,1fr)] items-center gap-3">
-          <Input
-            aria-label="Icon color picker"
-            className="h-10 cursor-pointer rounded-xl p-1"
-            id={iconColorId}
-            onChange={(event) => {
-              setIconColor(event.currentTarget.value);
-              setIconColorText(event.currentTarget.value);
-            }}
-            type="color"
-            value={iconColor}
-          />
-          <Input
-            id={iconColorTextId}
-            className="h-10 px-3 text-sm"
-            onBlur={commitIconColorText}
-            onChange={(event) => setIconColorText(event.currentTarget.value)}
-            placeholder={DEFAULT_SIDEBAR_COMMAND_ICON_COLOR}
-            value={iconColorText}
-          />
-        </div>
-      </Field>
+      <CommandIconPicker
+        icon={icon}
+        iconColor={iconColor}
+        onIconChange={setIcon}
+        onIconColorChange={setIconColor}
+      />
       {actionType === "browser" ? (
         <Field className="gap-2.5">
           <FieldContent>

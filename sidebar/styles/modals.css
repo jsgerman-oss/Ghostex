@@ -60,7 +60,7 @@
   height: 32px;
   min-width: 0;
   overflow: hidden;
-  padding: 0 170px 0 12px;
+  padding: 0 min(170px, calc(100% - 12px)) 0 12px;
   position: relative;
   user-select: none;
   width: 100%;
@@ -91,6 +91,12 @@
  * Anchor them absolutely to the live titlebar right edge so no stale widened
  * inline layout can leave Save and Cancel clipped offscreen; if the pane gets
  * very narrow, shrink the two button boxes together instead of dropping one.
+ *
+ * CDXC:PromptEditor 2026-05-15-12:42:
+ * Narrowing after a wide resize must not let the titlebar or Monaco internals
+ * preserve a wider content box. Cap title padding/action width to the live
+ * pane width, and force the editor container to hide overflow at the panel edge
+ * while native hit-testing passes through everything outside the panel.
  */
 .floating-prompt-editor-actions {
   align-items: center;
@@ -103,7 +109,7 @@
   right: 12px;
   top: 50%;
   transform: translateY(-50%);
-  width: 146px;
+  width: min(146px, calc(100% - 24px));
 }
 
 .floating-prompt-editor-cancel,
@@ -167,6 +173,13 @@
 
 .floating-prompt-editor-monaco {
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  width: 100%;
+}
+
+.floating-prompt-editor-monaco .monaco-editor {
+  max-width: 100%;
 }
 
 /*
@@ -1587,10 +1600,6 @@
   position: relative;
 }
 
-.command-icon-picker-dropdown {
-  position: relative;
-}
-
 .command-icon-picker-trigger {
   align-items: center;
   display: inline-flex;
@@ -1621,23 +1630,30 @@
   box-shadow: 0 18px 36px rgba(0, 0, 0, 0.28);
   display: grid;
   gap: 2px;
-  left: 0;
-  margin-top: 6px;
-  max-height: 220px;
+  max-height: min(320px, var(--radix-popover-content-available-height));
   overflow: hidden;
   padding: 6px;
-  position: absolute;
-  right: 0;
-  top: 100%;
-  z-index: 2;
+  width: var(--radix-popover-trigger-width);
 }
 
-/* CDXC:CommandIcons 2026-04-28-05:23: Icon dropdown search must remain
-   visible while browsing the expanded Tabler set; only the option list scrolls. */
+/*
+ * CDXC:CommandIcons 2026-04-28-05:23:
+ * Icon dropdown search must remain visible while browsing the expanded Tabler
+ * set; only the option list scrolls.
+ *
+ * CDXC:SidebarActions 2026-05-15-14:24:
+ * The action icon menu is a shadcn Command inside a Popover. Keep the Command
+ * input pinned at the top and let Radix size the popover to the trigger so the
+ * selector still reads like a dropdown in the configuration form.
+ */
+.command-icon-picker-menu [data-slot="command"] {
+  background: transparent;
+  border-radius: 10px;
+  padding: 0;
+}
+
 .command-icon-picker-options {
-  display: grid;
-  gap: 2px;
-  max-height: 166px;
+  max-height: min(246px, calc(var(--radix-popover-content-available-height) - 56px));
   overflow: auto;
 }
 
@@ -1662,6 +1678,7 @@
 
 .command-icon-picker-option:hover,
 .command-icon-picker-option:focus-visible,
+.command-icon-picker-option[data-checked="true"],
 .command-icon-picker-option[data-selected="true"] {
   background: color-mix(in srgb, var(--app-button-background) 16%, var(--app-card-active) 84%);
   outline: none;

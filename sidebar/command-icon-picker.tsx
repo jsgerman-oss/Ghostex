@@ -1,5 +1,14 @@
 import { IconChevronDown } from "@tabler/icons-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   DEFAULT_SIDEBAR_COMMAND_ICON,
   DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
@@ -24,23 +33,9 @@ export function CommandIconPicker({
 }: CommandIconPickerProps) {
   const [colorText, setColorText] = useState(iconColor);
   const [isOpen, setIsOpen] = useState(false);
-  const [query, setQuery] = useState("");
+  const [iconListElement, setIconListElement] = useState<HTMLDivElement | null>(null);
   const labelId = useId();
-  const listboxId = useId();
-  const pickerRef = useRef<HTMLDivElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
   const selectedIcon = icon ?? DEFAULT_SIDEBAR_COMMAND_ICON;
-
-  const filteredOptions = useMemo(() => {
-    const trimmedQuery = query.trim().toLowerCase();
-    if (trimmedQuery.length === 0) {
-      return SIDEBAR_COMMAND_ICON_OPTIONS;
-    }
-
-    return SIDEBAR_COMMAND_ICON_OPTIONS.filter((option) =>
-      option.label.toLowerCase().includes(trimmedQuery),
-    );
-  }, [query]);
 
   useEffect(() => {
     setColorText(iconColor);
@@ -48,39 +43,32 @@ export function CommandIconPicker({
 
   useEffect(() => {
     if (!isOpen) {
-      setQuery("");
       return;
     }
 
-    searchInputRef.current?.focus();
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) {
+    if (!iconListElement) {
       return;
     }
 
-    const handlePointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && pickerRef.current?.contains(event.target)) {
-        return;
-      }
+    const handleWheel = (event: WheelEvent) => {
+      const maxScrollTop = iconListElement.scrollHeight - iconListElement.clientHeight;
+      const nextScrollTop = Math.max(
+        0,
+        Math.min(maxScrollTop, iconListElement.scrollTop + event.deltaY),
+      );
 
-      setIsOpen(false);
+      if (nextScrollTop !== iconListElement.scrollTop) {
+        event.preventDefault();
+        event.stopPropagation();
+        iconListElement.scrollTop = nextScrollTop;
+      }
     };
 
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
+    iconListElement.addEventListener("wheel", handleWheel, { passive: false });
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
+      iconListElement.removeEventListener("wheel", handleWheel);
     };
-  }, [isOpen]);
+  }, [iconListElement, isOpen]);
 
   const commitColorText = () => {
     const normalizedColor = normalizeSidebarCommandIconColor(colorText);
@@ -97,98 +85,107 @@ export function CommandIconPicker({
 
   return (
     <div className="command-icon-picker-fields">
-      <div className="command-config-field command-icon-picker-field" ref={pickerRef}>
+      <div className="command-config-field command-icon-picker-field">
         <span className="command-config-label" id={labelId}>
           Icon
         </span>
-        <div className="command-icon-picker-dropdown">
-          <button
-            aria-controls={listboxId}
-            aria-expanded={isOpen}
-            aria-haspopup="listbox"
-            aria-labelledby={labelId}
-            className="group-title-input command-config-input command-icon-picker-trigger"
-            onClick={() => setIsOpen((open) => !open)}
-            type="button"
-          >
-            <span className="command-icon-picker-trigger-value">
-              <span aria-hidden="true" className="command-button-icon-shell">
-                <SidebarCommandIconGlyph
-                  className="command-button-leading-icon"
-                  color={iconColor}
-                  icon={selectedIcon}
-                  size={16}
-                />
+        <Popover open={isOpen} onOpenChange={setIsOpen}>
+          <PopoverTrigger asChild>
+            <button
+              aria-expanded={isOpen}
+              aria-labelledby={labelId}
+              className="group-title-input command-config-input command-icon-picker-trigger"
+              type="button"
+            >
+              <span className="command-icon-picker-trigger-value">
+                <span aria-hidden="true" className="command-button-icon-shell">
+                  <SidebarCommandIconGlyph
+                    className="command-button-leading-icon"
+                    color={iconColor}
+                    icon={selectedIcon}
+                    size={16}
+                  />
+                </span>
+                <span>{getSidebarCommandIconLabel(selectedIcon)}</span>
               </span>
-              <span>{getSidebarCommandIconLabel(selectedIcon)}</span>
-            </span>
-            <IconChevronDown
-              aria-hidden="true"
-              className="command-icon-picker-trigger-chevron"
-              size={16}
-            />
-          </button>
-          {isOpen ? (
-            <div className="command-icon-picker-menu">
-              <input
-                aria-label="Filter icons"
-                className="group-title-input command-config-input command-icon-picker-search"
-                onChange={(event) => setQuery(event.currentTarget.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Escape") {
-                    event.stopPropagation();
-                  }
-                }}
-                placeholder="Search icons"
-                ref={searchInputRef}
-                spellCheck={false}
-                value={query}
+              <IconChevronDown
+                aria-hidden="true"
+                className="command-icon-picker-trigger-chevron"
+                size={16}
               />
-              <div
-                aria-labelledby={labelId}
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="command-icon-picker-menu"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <Command>
+              {/*
+               * CDXC:SidebarActions 2026-05-15-14:24:
+               * The action icon dropdown needs a searchable shadcn Command
+               * input at the top while every option keeps a left-side glyph.
+               * Use Popover for open/close behavior instead of custom document
+               * listeners so keyboard and outside-click handling stay with the
+               * component primitive.
+               *
+               * CDXC:SidebarActions 2026-05-15-14:46:
+               * The picker appears inside a modal settings dialog, so wheel
+               * input on the portaled Popover can be consumed by dialog scroll
+               * locking before the browser performs default list scrolling.
+               * Attach a non-passive wheel listener to the Command list so long
+               * icon sets remain browseable while the modal background stays
+               * locked.
+               */}
+              <CommandInput
+                aria-label="Search icons"
+                className="command-icon-picker-search"
+                placeholder="Search icons"
+                spellCheck={false}
+              />
+              <CommandList
                 className="command-icon-picker-options scroll-mask-y"
-                id={listboxId}
-                role="listbox"
+                ref={setIconListElement}
               >
-                {filteredOptions.map((option) => (
-                  <button
-                    aria-selected={selectedIcon === option.icon}
-                    className="command-icon-picker-option"
-                    data-selected={String(selectedIcon === option.icon)}
-                    key={option.icon}
-                    onClick={() => {
-                      onIconChange(option.icon);
-                      if (!normalizeSidebarCommandIconColor(colorText)) {
-                        onIconColorChange(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
-                        setColorText(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
-                      }
-                      setIsOpen(false);
-                    }}
-                    role="option"
-                    type="button"
-                  >
-                    <span aria-hidden="true" className="command-button-icon-shell">
-                      <SidebarCommandIconGlyph
-                        className="command-button-leading-icon"
-                        color={
-                          selectedIcon === option.icon
-                            ? iconColor
-                            : DEFAULT_SIDEBAR_COMMAND_ICON_COLOR
+                <CommandEmpty className="command-icon-picker-empty-state">
+                  No matching icons
+                </CommandEmpty>
+                <CommandGroup>
+                  {SIDEBAR_COMMAND_ICON_OPTIONS.map((option) => (
+                    <CommandItem
+                      className="command-icon-picker-option"
+                      data-checked={selectedIcon === option.icon}
+                      key={option.icon}
+                      onSelect={() => {
+                        onIconChange(option.icon);
+                        if (!normalizeSidebarCommandIconColor(colorText)) {
+                          onIconColorChange(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
+                          setColorText(DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
                         }
-                        icon={option.icon}
-                        size={16}
-                      />
-                    </span>
-                    <span className="command-icon-picker-option-copy">{option.label}</span>
-                  </button>
-                ))}
-                {filteredOptions.length === 0 ? (
-                  <div className="command-icon-picker-empty-state">No matching icons</div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </div>
+                        setIsOpen(false);
+                      }}
+                      value={option.label}
+                    >
+                      <span aria-hidden="true" className="command-button-icon-shell">
+                        <SidebarCommandIconGlyph
+                          className="command-button-leading-icon"
+                          color={
+                            selectedIcon === option.icon
+                              ? iconColor
+                              : DEFAULT_SIDEBAR_COMMAND_ICON_COLOR
+                          }
+                          icon={option.icon}
+                          size={16}
+                        />
+                      </span>
+                      <span className="command-icon-picker-option-copy">{option.label}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
       </div>
       <label className="command-config-field">
         <span className="command-config-label">Icon Color</span>

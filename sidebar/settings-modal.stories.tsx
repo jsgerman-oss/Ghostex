@@ -16,8 +16,10 @@ const modalSettings: ghostexSettings = {
 };
 
 function SettingsModalStory({
+  accessibilityPermissionGranted,
   initialSettings = modalSettings,
 }: {
+  accessibilityPermissionGranted?: boolean;
   initialSettings?: ghostexSettings;
 }) {
   const [settings, setSettings] = useState<ghostexSettings>(initialSettings);
@@ -31,6 +33,7 @@ function SettingsModalStory({
       }}
     >
       <SettingsModal
+        accessibilityPermissionGranted={accessibilityPermissionGranted}
         isOpen
         onChange={setSettings}
         onClose={() => undefined}
@@ -64,6 +67,10 @@ export const DarkGray: Story = {
       }}
     />
   ),
+};
+
+export const AccessibilityOff: Story = {
+  render: () => <SettingsModalStory accessibilityPermissionGranted={false} />,
 };
 
 export const LightOrange: Story = {
