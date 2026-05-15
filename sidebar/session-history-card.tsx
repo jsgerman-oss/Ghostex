@@ -1,4 +1,4 @@
-import { IconTrash } from "@tabler/icons-react";
+import { IconX } from "@tabler/icons-react";
 import { useRef } from "react";
 import type { SidebarPreviousSessionItem } from "../shared/session-grid-contract";
 import {
@@ -143,7 +143,7 @@ export function SessionHistoryCard({
             }}
             type="button"
           >
-            <IconTrash aria-hidden="true" size={12} stroke={1.9} />
+            <IconX aria-hidden="true" size={14} stroke={1.9} />
           </button>
           <SessionCardContent
             aliasHeadingRef={aliasHeadingRef}

@@ -720,15 +720,16 @@
 .session-history-card,
 .previous-sessions-modal .session-history-card,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session.session-history-card {
+  align-items: center;
   border: none;
   border-radius: 8px;
   box-sizing: border-box;
+  display: flex;
   height: 34px;
   min-height: 34px;
   outline: none;
   overflow: visible;
-  padding: 7px var(--reference-session-trailing-inset) 7px
-    var(--reference-session-title-inset);
+  padding: 0 var(--reference-session-trailing-inset) 0 var(--reference-session-title-inset);
 }
 
 .previous-sessions-modal .session-history-card::before {
@@ -760,9 +761,18 @@
 .session-history-card .session-head,
 .previous-sessions-modal .session-history-card .session-head,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-history-card .session-head {
+  /*
+   * CDXC:PreviousSessions 2026-05-15-04:34
+   * Previous-session restore rows need the title, project label, Last Active
+   * timestamp, and hover X control vertically centered in the whole button.
+   * Center the shared title row inside the fixed-height button instead of
+   * depending on top/bottom padding offsets that drift visually.
+   */
+  align-items: center;
   gap: 6px;
   grid-template-columns: minmax(0, 1fr) minmax(0, var(--reference-session-trailing-slot-width));
   height: 20px;
+  width: 100%;
 }
 
 .session-history-card .session-alias-heading,
@@ -860,6 +870,9 @@
 
 .previous-session-delete-button {
   align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
   color: var(--app-muted);
   display: inline-flex;
   height: calc(18px * var(--sidebar-density-scale));
@@ -869,8 +882,10 @@
   pointer-events: none;
   position: absolute;
   right: calc(10px * var(--sidebar-density-scale));
-  top: calc(9px * var(--sidebar-density-scale));
+  top: 50%;
+  transform: translateY(-50%);
   transition:
+    background-color 120ms ease,
     opacity 120ms ease,
     color 120ms ease;
   width: calc(18px * var(--sidebar-density-scale));
@@ -885,6 +900,7 @@
 }
 
 .previous-session-delete-button:hover {
+  background: color-mix(in srgb, var(--app-foreground) 10%, transparent);
   color: var(--app-foreground);
 }
 
@@ -1344,7 +1360,7 @@
  * overlap the delete affordance in compact search results.
  *
  * CDXC:PreviousSessions 2026-05-09-17:55
- * The full Previous Sessions modal follows the same rule: when the trash
+ * The full Previous Sessions modal follows the same rule: when the delete
  * button appears on hover, Last Active must hide instead of sharing the
  * trailing slot.
  */
@@ -1862,6 +1878,11 @@
    * Hovered session buttons reveal the agent icon at the same low opacity as
    * surfaced-but-not-active sessions. The low-opacity value is 20% stronger
    * than the previous 0.22 value so the icon reads without acting active.
+   *
+   * CDXC:SidebarReference 2026-05-15-07:12
+   * Hover must not dim the active session's agent icon. Limit the low-opacity
+   * hover reveal to non-focused rows so the focused row keeps its active icon
+   * emphasis while the pointer crosses it.
    */
   opacity: 0;
   top: 50%;
@@ -1878,21 +1899,21 @@
   .session-floating-reloading-icon,
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-visible="true"]
   .session-persistence-provider-badge[data-slot="floating"],
-.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:hover)
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:not([data-focused="true"]):has(.session:hover)
   .session-floating-agent-icon,
-.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:hover)
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:not([data-focused="true"]):has(.session:hover)
   .session-floating-agent-tabler-icon,
-.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:hover)
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:not([data-focused="true"]):has(.session:hover)
   .session-floating-reloading-icon,
-.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:hover)
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:not([data-focused="true"]):has(.session:hover)
   .session-persistence-provider-badge[data-slot="floating"],
-.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:focus-visible)
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:not([data-focused="true"]):has(.session:focus-visible)
   .session-floating-agent-icon,
-.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:focus-visible)
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:not([data-focused="true"]):has(.session:focus-visible)
   .session-floating-agent-tabler-icon,
-.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:focus-visible)
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:not([data-focused="true"]):has(.session:focus-visible)
   .session-floating-reloading-icon,
-.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:has(.session:focus-visible)
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-frame:not([data-focused="true"]):has(.session:focus-visible)
   .session-persistence-provider-badge[data-slot="floating"] {
   opacity: 0.26;
 }
