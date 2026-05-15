@@ -803,6 +803,9 @@ const WORKSPACE_DOCK_THEME_OPTIONS: ReadonlyArray<{ label: string; value: Sideba
  * Native first-prompt title generation must match ghostex's Codex `/rename`
  * path, including the 39-character generated title cap and 250-character
  * prompt sample used before asking Codex for a short session name.
+ *
+ * CDXC:SessionTooltips 2026-05-15-17:02:
+ * Generated titles must not end with ellipses. Cards can truncate visually, but persisted titles and hover tooltips need complete words.
  */
 const GENERATED_SESSION_TITLE_MAX_LENGTH = 39;
 const GENERATED_SESSION_TITLE_SOURCE_MAX_LENGTH = 250;
@@ -5372,8 +5375,14 @@ function createProjectedSidebarSessionsForGroup(group: SessionGroupRecord): Side
      */
     const projectedAgentName = terminalState?.agentName ?? persistedAgentName;
     const agentIcon = resolveNativeSidebarAgentIcon(projectedAgentName);
+    const shouldUseStoredTitleOverEllipsizedTerminalTitle = isEllipsizedTerminalTitleForStoredTitle(
+      visibleTerminalTitle,
+      visiblePrimaryTitle,
+    );
     const shouldPreferTerminalTitle =
-      Boolean(visibleTerminalTitle) && shouldPreferTerminalTitleForAgentIcon(agentIcon);
+      Boolean(visibleTerminalTitle) &&
+      shouldPreferTerminalTitleForAgentIcon(agentIcon) &&
+      !shouldUseStoredTitleOverEllipsizedTerminalTitle;
     const hasTrustedStoredResumeTitle =
       sessionRecord?.kind === "terminal" &&
       getNativeStoredTrustedResumeTitle(sessionRecord).title !== undefined;
@@ -5384,7 +5393,7 @@ function createProjectedSidebarSessionsForGroup(group: SessionGroupRecord): Side
         : (visibleTerminalTitle ?? displayPrimaryTitle);
     const secondaryTerminalTitle = shouldPreferTerminalTitle
       ? undefined
-      : displayPrimaryTitle
+      : displayPrimaryTitle && !shouldUseStoredTitleOverEllipsizedTerminalTitle
         ? visibleTerminalTitle
         : undefined;
     return {
@@ -5414,6 +5423,29 @@ function createProjectedSidebarSessionsForGroup(group: SessionGroupRecord): Side
       terminalTitle: secondaryTerminalTitle,
     };
   });
+}
+
+function isEllipsizedTerminalTitleForStoredTitle(
+  terminalTitle: string | undefined,
+  storedTitle: string | undefined,
+): boolean {
+  /**
+   * CDXC:SessionTooltips 2026-05-15-17:02:
+   * Session-card tooltips need the full canonical session title even after an Agent CLI reports a shortened title ending in ellipsis. When the live terminal title is only an ellipsized prefix of the stored title, keep projecting the stored title so the card can visually truncate via CSS while hover text remains complete.
+   */
+  const normalizedTerminalTitle = terminalTitle?.trim().replace(/\s+/g, " ");
+  const normalizedStoredTitle = storedTitle?.trim().replace(/\s+/g, " ");
+  if (!normalizedTerminalTitle || !normalizedStoredTitle) {
+    return false;
+  }
+
+  const prefix = normalizedTerminalTitle.replace(/(?:\.\.\.|…)$/u, "").trim();
+  return (
+    prefix !== normalizedTerminalTitle &&
+    prefix.length > 0 &&
+    normalizedStoredTitle.length > normalizedTerminalTitle.length &&
+    normalizedStoredTitle.toLowerCase().startsWith(prefix.toLowerCase())
+  );
 }
 
 function resolveNativeSidebarAgentIcon(agentName: string | undefined): SidebarAgentButton["icon"] {
@@ -9007,6 +9039,7 @@ function buildNativeSessionTitlePrompt(sourceText: string): string {
     "- keep it specific and scannable",
     "- prefer 2 to 4 words when possible",
     `- must be fewer than ${GENERATED_SESSION_TITLE_MAX_LENGTH + 1} characters`,
+    "- do not abbreviate with ellipses",
     "- do not use quotes, markdown, or commentary",
     "- do not end with punctuation",
     "- focus on the task, bug, feature, or topic",
@@ -9031,7 +9064,7 @@ function parseNativeGeneratedSessionTitleText(value: string): string {
     .replace(/^["'`]+|["'`]+$/g, "")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/[.]+$/g, "");
+    .replace(/[.…]+$/gu, "");
   if (!sanitized) {
     throw new Error("Codex title generation returned an empty session title.");
   }
