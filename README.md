@@ -50,6 +50,7 @@ brew install --cask maddada/tap/ghostex
 - Native macOS app for better performance
 - Native Ghostty for best cpu/ram use and compatibility
 - Native terminal panes preserve Ghostty-style scrollback, scrollbars, and trackpad momentum inside the app.
+- The same Homebrew install command automatically selects Apple Silicon or Intel Mac builds.
 - Inspired by Codex App's UX
 - Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
 - Auto sleep unused terminals to save ram (auto-restore when clicked)
@@ -63,9 +64,11 @@ brew install --cask maddada/tap/ghostex
 - The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
 - Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
 - The reference sidebar includes a combined-only project layout, searchable settings sections, improved command panel controls, and cleaner Previous Sessions rows.
+- Sidebar action buttons always use explicit configurable icons, with a sensible Play default for new actions.
 - Agents Hub loads real local agent files, supports in-place saving, and can open profile/config paths from the app.
 - Floating prompt editing uses a resizable Monaco pane with save/cancel handling from Ctrl+G.
 - The floating pet overlay shows active session messages and can focus the exact session when clicked.
+- The titlebar pet button toggles the floating pet overlay without opening Settings.
 - Sidebar collapse state persists locally, and project editor rows can hide or show changed-file counts from Settings.
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Embedded T3code

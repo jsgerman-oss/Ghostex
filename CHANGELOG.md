@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.5.1 - 2026-05-15
+
+<!-- CDXC:Distribution 2026-05-15-08:42: Release notes for 2.5.1 must cover
+all user-facing commits after v2.5 so GitHub, Sparkle, and Homebrew metadata
+describe the same dual-architecture Ghostex build, titlebar pet control,
+action icon defaults, Previous Sessions polish, workspace focus behavior, and
+architecture-aware local launch behavior. -->
+
+- Published a native Intel x86_64 build beside the Apple Silicon build, with a separate Intel Sparkle feed and an architecture-aware `ghostex` Homebrew cask.
+- Clarified the README install flow so the same `brew install --cask maddada/tap/ghostex` command automatically selects Apple Silicon or Intel.
+- Changed sidebar actions to always use an explicit icon, defaulting new and legacy actions to the Play glyph with editable color.
+- Added a titlebar pet control that toggles the floating pet overlay through persisted settings and keeps the overlay state synchronized.
+- Resized the floating pet overlay to fit the sprite when no activity bubbles are visible while preserving the wider activity panel when messages appear.
+- Improved Commands panel focus restoration so collapsing command terminals returns keyboard focus to the previous workspace terminal.
+- Improved Reload Session placement so reloaded terminals replace the clicked pane/tab instead of appending as a new split.
+- Kept embedded VS Code open when creating new terminal, browser, T3, or command sessions from the sidebar.
+- Polished Previous Sessions rows with centered restore content, an X delete control, and active-session icon hover behavior that does not dim the focused row.
+- Consolidated sidebar resize ownership, aligned pane tab heights, and hid active pane borders in single-pane workspaces.
+- Updated local native launch behavior so `bun run start` uses architecture-specific DerivedData paths for arm64 and x86_64 builds.
+
 ## 2.5.0 - 2026-05-14
 
 <!-- CDXC:Distribution 2026-05-14-19:06: Release notes for 2.5.0 must use the
