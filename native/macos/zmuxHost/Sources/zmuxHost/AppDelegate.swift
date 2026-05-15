@@ -392,6 +392,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var isFlushingCEFBeforeTerminate = false
   private var didFlushCEFBeforeTerminate = false
   private var workspaceActivationObserver: NSObjectProtocol?
+  private var appHotkeyEventMonitor: Any?
   private var lastNativeActivationRequest: NativeActivationRequest?
   private weak var attachToIdeTitlebarButton: NSButton?
   private weak var appTitlebarLabel: NSTextField?
@@ -454,6 +455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
        startup, so no restart-survival helper client is created.
        */
       makeWindow()
+      installAppHotkeyEventMonitor()
       startBridge()
       startSparkleBackgroundUpdateCheck()
     }
@@ -465,6 +467,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   func applicationWillTerminate(_ notification: Notification) {
     if let workspaceActivationObserver {
       NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
+    }
+    if let appHotkeyEventMonitor {
+      NSEvent.removeMonitor(appHotkeyEventMonitor)
+      self.appHotkeyEventMonitor = nil
     }
     persistMainWindowChrome()
     Self.appendNativeHostLifecycleLog(
@@ -952,6 +958,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func performGhosttyBindingMenuKeyEquivalent(with event: NSEvent) -> Bool {
     NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
+  }
+
+  @MainActor
+  private func installAppHotkeyEventMonitor() {
+    if let appHotkeyEventMonitor {
+      NSEvent.removeMonitor(appHotkeyEventMonitor)
+    }
+    /**
+     CDXC:Hotkeys 2026-05-15-11:24:
+     Next Tab and Previous Tab must keep working after the first navigation
+     moves focus from the sidebar into a native terminal or embedded browser.
+     Match configured zmux hotkeys at the app event boundary before focused
+     terminal/CEF surfaces can consume Cmd+Tab or Cmd+Shift+Tab, while
+     handleHotkeyEquivalent still lets sidebar/settings web chrome own recorder
+     and editable-field shortcuts.
+     */
+    appHotkeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+      [weak self] event in
+      guard let self else {
+        return event
+      }
+      return self.handleHotkeyEquivalent(event) ? nil : event
+    }
   }
 
   @MainActor

@@ -550,6 +550,10 @@ static bool ZmuxCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   CDXC:EditorPanes 2026-05-14-08:50:
   The embedded VS Code CEF view must own secondary-click hit testing so VS Code can open its in-editor context menus.
   Route wrapper hits into the native CEF child view instead of letting AppKit treat the wrapper as the event target.
+
+  CDXC:EditorPanes 2026-05-15-10:54:
+  Left-edge project-editor clicks can land inside the CEF view frame while Chromium's internal render-widget hit-test returns nil.
+  The visible CEF child still owns those pixels; return it instead of the wrapper so VS Code receives the click instead of only focusing the host.
   */
   if (!NSPointInRect(point, self.bounds)) {
     return nil;
@@ -557,9 +561,12 @@ static bool ZmuxCEFOriginsMatch(NSString* lhs, NSString* rhs) {
 
   if (cefView_ && !cefView_.hidden && cefView_.alphaValue > 0.0) {
     NSPoint cefPoint = [self convertPoint:point toView:cefView_];
-    NSView *hitView = [cefView_ hitTest:cefPoint];
-    if (hitView) {
-      return hitView;
+    if (NSPointInRect(cefPoint, cefView_.bounds)) {
+      NSView *hitView = [cefView_ hitTest:cefPoint];
+      if (hitView) {
+        return hitView;
+      }
+      return cefView_;
     }
   }
 

@@ -47,6 +47,18 @@
   cursor: pointer !important;
 }
 
+/*
+ * CDXC:SidebarCursor 2026-05-15-11:28:
+ * Sidebar buttons should keep the default cursor instead of the hand pointer.
+ * Hover, focus, selected, and disabled styling carry button affordance without
+ * changing the pointer shape across native buttons, shadcn buttons, and custom
+ * role="button" session rows.
+ */
+button,
+[role="button"] {
+  cursor: default !important;
+}
+
 * {
   -ms-overflow-style: none;
   scrollbar-width: none;

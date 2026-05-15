@@ -1026,8 +1026,16 @@ final class TerminalWorkspaceView: NSView {
    Command pane tabs must match the visible command tab bar height exactly.
    Keep the command titlebar height as the single source of truth for command
    tab button layout and collapsed command-panel sizing.
-   */
+  */
   private static let commandPanelTitleBarHeight: CGFloat = 26
+  /**
+   CDXC:CommandsPanel 2026-05-15-10:06
+   Command panes render above workspace/editor surfaces, so pane-tab drag
+   feedback must be higher than command terminal containers and resize rails.
+   The feedback views are visual-only and hit-test transparent, so a high layer
+   fixes command-pane drop visibility without stealing input.
+   */
+  private static let paneHeaderDragFeedbackZPosition: CGFloat = 10_700
   private static let collapsedCommandsPanelLeftMargin: CGFloat = 4
   private static let collapsedCommandsPanelRightMargin: CGFloat = 8
   /**
@@ -6248,7 +6256,7 @@ final class TerminalWorkspaceView: NSView {
       agentIconColorHex: sessionAgentIconColors[sessionId],
       maxWidth: Self.paneHeaderDragGhostMaxWidth
     )
-    ghostView.layer?.zPosition = 230
+    ghostView.layer?.zPosition = Self.paneHeaderDragFeedbackZPosition
     ghostView.alphaValue = 0.92
     ghostView.isHidden = false
     updatePaneHeaderDragFeedback(for: sessionId, at: point, eventTimestamp: nil)
@@ -6487,7 +6495,7 @@ final class TerminalWorkspaceView: NSView {
     if targetView.superview !== self {
       addSubview(targetView)
     }
-    targetView.layer?.zPosition = 225
+    targetView.layer?.zPosition = Self.paneHeaderDragFeedbackZPosition
     setPaneDragFeedbackFrame(target.lineFrame, for: targetView)
     targetView.isHidden = false
   }
@@ -6509,7 +6517,7 @@ final class TerminalWorkspaceView: NSView {
     if targetView.superview !== self {
       addSubview(targetView)
     }
-    targetView.layer?.zPosition = 220
+    targetView.layer?.zPosition = Self.paneHeaderDragFeedbackZPosition
     setPaneDragFeedbackFrame(
       paneHeaderDropTargetFrame(targetFrame: targetFrame, placement: placement),
       for: targetView)
@@ -14546,6 +14554,29 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       browserView.frame = webFrame
     }
     layoutInitialLoadingOverlay(webFrame: webFrame)
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard bounds.contains(point) else {
+      return nil
+    }
+    /**
+     CDXC:EditorPanes 2026-05-15-10:54:
+     Project-editor hit logs showed left-edge VS Code clicks reaching the editor
+     region but stopping at `WebPaneHostView` when the embedded browser child
+     declined that strip. The host is layout/focus chrome, not the web content
+     target; visible browser pixels must resolve to the hosted browser view so
+     AppKit delivers the click into VS Code.
+     */
+    if showsBrowserToolbar, toolbarView.frame.contains(point) {
+      let toolbarPoint = convert(point, to: toolbarView)
+      return toolbarView.hitTest(toolbarPoint) ?? toolbarView
+    }
+    if browserView.frame.contains(point) {
+      let browserPoint = convert(point, to: browserView)
+      return browserView.hitTest(browserPoint) ?? browserView
+    }
+    return super.hitTest(point)
   }
 
   func refreshBrowserToolbar(reason: String) {
