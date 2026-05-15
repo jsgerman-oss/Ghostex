@@ -6,13 +6,10 @@ import {
   IconArrowRight,
   IconArrowsDiagonal2,
   IconArrowsDiagonalMinimize,
-  IconBell,
-  IconBellOff,
   IconBookmark,
   IconCaretRightFilled,
   IconChevronDown,
   IconChevronRight,
-  IconDeviceMobile,
   IconEye,
   IconFilter2,
   IconFolder,
@@ -496,7 +493,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     agentManagerZoomPercent,
     browserGroupIds,
     collapsedSections,
-    completionBellEnabled,
     createSessionOnSidebarDoubleClick,
     customThemeColor,
     debuggingMode,
@@ -518,7 +514,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       agentManagerZoomPercent: state.hud.agentManagerZoomPercent,
       browserGroupIds: state.browserGroupIds,
       collapsedSections: state.hud.collapsedSections,
-      completionBellEnabled: state.hud.completionBellEnabled,
       createSessionOnSidebarDoubleClick: state.hud.createSessionOnSidebarDoubleClick,
       customThemeColor: state.hud.customThemeColor,
       debuggingMode: state.hud.debuggingMode,
@@ -2041,16 +2036,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     sidebarSessionSearchResults,
   ]);
 
-  const toggleCompletionBell = () => {
-    setIsOverflowMenuOpen(false);
-    vscode.postMessage({ type: "toggleCompletionBell" });
-  };
-
-  const cycleSessionPersistenceProvider = () => {
-    setIsOverflowMenuOpen(false);
-    vscode.postMessage({ type: "cycleSessionPersistenceProvider" });
-  };
-
   const restoreRecentProject = (projectId: string) => {
     setRecentProjectsQuery("");
     setIsRecentProjectsOpen(false);
@@ -2129,16 +2114,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     openAppModal({ modal: "agentsHub", type: "open" });
   };
 
-  const browserAccessSessionId = useMemo(() => {
-    const orderedSessionIds = groupOrder.flatMap(
-      (groupId) => authoritativeSessionIdsByGroup[groupId] ?? [],
-    );
-    const focusedSessionId = orderedSessionIds.find(
-      (sessionId) => sessionsById[sessionId]?.isFocused,
-    );
-    return focusedSessionId ?? orderedSessionIds[0];
-  }, [authoritativeSessionIdsByGroup, groupOrder, sessionsById]);
-
   const togglePinnedPrompts = () => {
     setIsOverflowMenuOpen(false);
     setIsDaemonSessionsOpen(false);
@@ -2162,28 +2137,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   };
 
   const topControlOptions = {
-    browserAccessSessionId,
-    completionBellEnabled,
     isOverflowMenuOpen,
     isPinnedPromptsOpen,
     isScratchPadOpen,
-    sessionPersistenceProvider: settings?.sessionPersistenceProvider,
     onMoveSidebar: moveSidebar,
-    onAccessT3FromBrowser: (sessionId: string) => {
-      setIsOverflowMenuOpen(false);
-      vscode.postMessage({
-        sessionId,
-        type: "requestT3SessionBrowserAccess",
-      });
-    },
     onOpenHelp: openWorkspaceWelcome,
     onOpenHotkeys: openHotkeys,
     onShowRunning: openRunningSessions,
     onTogglePinnedPrompts: togglePinnedPrompts,
-    onToggleBell: toggleCompletionBell,
     onToggleMenu: toggleOverflowMenu,
     onToggleScratchPad: openScratchPad,
-    onCycleSessionPersistenceProvider: cycleSessionPersistenceProvider,
     overflowMenuPosition,
     overflowMenuRef,
   } satisfies RenderSidebarTopControlsOptions;
@@ -2220,9 +2183,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         onDoubleClick={handleSidebarDoubleClick}
       >
         <div className="sidebar-top-panels">
-          {/* CDXC:SidebarLayout 2026-05-13-08:11: Previous sessions, pinned
-              prompts, search, and completion sound live only in the overflow
-              menu now, so section titlebars do not render duplicate buttons. */}
+          {/* CDXC:SidebarLayout 2026-05-15-10:18: Previous sessions, pinned
+              prompts, and search live outside section titlebars, while
+              completion sound is no longer exposed from the sidebar overflow
+              menu. Section titlebars should not render duplicate controls. */}
           <CommandsPanel
             createRequestId={0}
             isCollapsed={collapsedSections.actions}
@@ -3107,34 +3071,15 @@ function getScratchPadMenuLabel(isScratchPadOpen: boolean): string {
   return isScratchPadOpen ? "Hide Scratch Pad" : "Scratch Pad";
 }
 
-function getSessionPersistenceProviderMenuLabel(provider: string | undefined): string {
-  if (provider === "tmux") {
-    return "Persistence: tmux";
-  }
-  if (provider === "zmx") {
-    return "Persistence: zmx";
-  }
-  if (provider === "zellij") {
-    return "Persistence: zellij";
-  }
-  return "Persistence: Off";
-}
-
 type RenderSidebarTopControlsOptions = {
-  browserAccessSessionId?: string;
-  completionBellEnabled: boolean;
   isOverflowMenuOpen: boolean;
   isPinnedPromptsOpen: boolean;
   isScratchPadOpen: boolean;
-  sessionPersistenceProvider?: string;
-  onAccessT3FromBrowser: (sessionId: string) => void;
   onMoveSidebar: () => void;
   onOpenHelp: () => void;
   onOpenHotkeys: () => void;
   onShowRunning: () => void;
   onTogglePinnedPrompts: () => void;
-  onCycleSessionPersistenceProvider: () => void;
-  onToggleBell: () => void;
   onToggleMenu: (trigger: HTMLElement) => void;
   onToggleScratchPad: () => void;
   overflowMenuPosition?: FloatingMenuPosition;
@@ -3142,20 +3087,14 @@ type RenderSidebarTopControlsOptions = {
 };
 
 function renderFloatingOverflowMenu({
-  browserAccessSessionId,
-  completionBellEnabled,
   isOverflowMenuOpen,
   isPinnedPromptsOpen,
   isScratchPadOpen,
-  sessionPersistenceProvider,
-  onAccessT3FromBrowser,
   onMoveSidebar: _onMoveSidebar,
   onOpenHelp,
   onOpenHotkeys,
   onShowRunning,
-  onToggleBell,
   onTogglePinnedPrompts,
-  onCycleSessionPersistenceProvider,
   onToggleMenu,
   onToggleScratchPad,
   overflowMenuPosition,
@@ -3205,14 +3144,20 @@ function renderFloatingOverflowMenu({
                  * consistent menu in the reference sidebar.
                  *
                  * CDXC:Sidebar-overflow-menu 2026-05-04-03:09
-                 * The overflow menu order must match the grouped desktop menu:
-                 * secondary tools, session behavior, then status/help.
+                 * The overflow menu order must keep compact tools before
+                 * status/help actions.
                  *
                  * CDXC:Sidebar-overflow-menu 2026-05-09-15:18
                  * The sidebar hamburger menu is intentionally compact: Search,
                  * Previous Sessions, Last Activity Sort, and Settings stay out
                  * of this menu because they are available from primary chrome or
                  * dedicated settings surfaces.
+                 *
+                 * CDXC:Sidebar-overflow-menu 2026-05-15-10:18:
+                 * Completion Sound, Persistence, and Remote Access no longer
+                 * belong in the sidebar overflow menu. Keep this menu to
+                 * scratch tools, running state, hotkeys, and help so one
+                 * separator can divide tools from status/help actions.
                  */}
                 <button
                   aria-checked={isPinnedPromptsOpen}
@@ -3246,69 +3191,6 @@ function renderFloatingOverflowMenu({
               </div>
               <div className="session-context-menu-divider" role="separator" />
               <div className="session-context-menu-group">
-                <button
-                  aria-checked={completionBellEnabled}
-                  className="session-context-menu-item"
-                  onClick={onToggleBell}
-                  role="menuitemcheckbox"
-                  type="button"
-                >
-                  {completionBellEnabled ? (
-                    <IconBell
-                      aria-hidden="true"
-                      className="session-context-menu-icon"
-                      size={14}
-                      stroke={1.8}
-                    />
-                  ) : (
-                    <IconBellOff
-                      aria-hidden="true"
-                      className="session-context-menu-icon"
-                      size={14}
-                      stroke={1.8}
-                    />
-                  )}
-                  {completionBellEnabled ? "Completion Sound On" : "Completion Sound Off"}
-                </button>
-                <button
-                  className="session-context-menu-item"
-                  onClick={onCycleSessionPersistenceProvider}
-                  role="menuitem"
-                  type="button"
-                >
-                  {/*
-                   * CDXC:SessionPersistence 2026-05-05-07:28
-                   * Session persistence is a launch behavior users need while
-                   * working, so the overflow menu cycles the persisted provider
-                   * without requiring a settings-modal detour.
-                   */}
-                  <IconTerminal2
-                    aria-hidden="true"
-                    className="session-context-menu-icon"
-                    size={14}
-                    stroke={1.8}
-                  />
-                  {getSessionPersistenceProviderMenuLabel(sessionPersistenceProvider)}
-                </button>
-              </div>
-              <div className="session-context-menu-divider" role="separator" />
-              <div className="session-context-menu-group">
-                {browserAccessSessionId ? (
-                  <button
-                    className="session-context-menu-item"
-                    onClick={() => onAccessT3FromBrowser(browserAccessSessionId)}
-                    role="menuitem"
-                    type="button"
-                  >
-                    <IconDeviceMobile
-                      aria-hidden="true"
-                      className="session-context-menu-icon"
-                      size={14}
-                      stroke={1.8}
-                    />
-                    Remote Access
-                  </button>
-                ) : null}
                 <button
                   className="session-context-menu-item"
                   onClick={onShowRunning}

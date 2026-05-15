@@ -2553,10 +2553,10 @@ function createNativeSessionAttentionNotificationContent(
   terminalState: ReturnType<typeof terminalStateById.get>,
 ): { body: string; iconDataUrl?: string; title: string } {
   /**
-   * CDXC:SessionAttentionNotifications 2026-05-11-01:14
-   * macOS attention banners must identify the project, thread/session, and
-   * agent on separate lines when possible so multiple background completions
-   * can be distinguished without opening zmux first.
+   * CDXC:SessionAttentionNotifications 2026-05-15-10:33:
+   * macOS attention banners must stay minimal: use the session name as the
+   * title, use only the project name as the body, and omit thread/project/agent
+   * labels so the banner shows no extra metadata.
    */
   const agentName =
     session?.kind === "terminal"
@@ -2570,31 +2570,10 @@ function createNativeSessionAttentionNotificationContent(
       title: session?.title || DEFAULT_TERMINAL_SESSION_TITLE,
     }) ?? DEFAULT_TERMINAL_SESSION_TITLE;
   return {
-    body: [
-      `Project: ${project?.name.trim() || "Ghostex"}`,
-      `Thread: ${threadName}`,
-      `Agent: ${getNativeAttentionNotificationAgentLabel(agentName)}`,
-    ].join("\n"),
+    body: project?.name.trim() || "Ghostex",
     iconDataUrl: resolveWorkspaceProjectIconDataUrl(project),
-    title: "Agent task needs attention",
+    title: threadName,
   };
-}
-
-function getNativeAttentionNotificationAgentLabel(agentName: string | undefined): string {
-  const normalizedAgentName = agentName?.trim();
-  if (!normalizedAgentName) {
-    return "Unknown";
-  }
-  const normalizedKey = normalizedAgentName.toLowerCase();
-  return (
-    getDefaultSidebarAgentById(normalizedKey)?.name ??
-    agents.find(
-      (agent) =>
-        agent.agentId.trim().toLowerCase() === normalizedKey ||
-        agent.name.trim().toLowerCase() === normalizedKey,
-    )?.name ??
-    normalizedAgentName
-  );
 }
 
 function testNativeAgentTaskCompletion(): void {
@@ -9318,8 +9297,34 @@ function focusAdjacentNativeHotkeySession(direction: -1 | 1): void {
 }
 
 function getVisibleNativeHotkeySidebarSessionsForNavigation(): SidebarSessionItem[] {
-  return createCombinedSidebarGroups().flatMap((group) =>
-    isNativeHotkeySidebarGroupExpanded(group.groupId) ? group.sessions : [],
+  const groups = createCombinedSidebarGroups().filter((group) =>
+    isNativeHotkeySidebarGroupExpanded(group.groupId),
+  );
+  const sessionIdsByGroup = Object.fromEntries(
+    groups.map((group) => [group.groupId, group.sessions.map((session) => session.sessionId)]),
+  );
+  const sessionsById = Object.fromEntries(
+    groups.flatMap((group) => group.sessions.map((session) => [session.sessionId, session])),
+  );
+  const displayLayout = createDisplaySessionLayout({
+    sessionIdsByGroup,
+    sessionsById,
+    sortMode: activeSessionsSortMode,
+    workspaceGroupIds: groups.map((group) => group.groupId),
+  });
+
+  /**
+   * CDXC:Hotkeys 2026-05-15-10:15:
+   * Next Tab and Previous Tab must follow the same visible sidebar order the
+   * user sees, including the active sessions sort mode and collapsed Combined
+   * sections. Build the traversal list from the display layout instead of the
+   * underlying workspace session arrays so keyboard navigation does not jump
+   * by an invisible storage order.
+   */
+  return displayLayout.groupIds.flatMap((groupId) =>
+    (displayLayout.sessionIdsByGroup[groupId] ?? [])
+      .map((sessionId) => sessionsById[sessionId])
+      .filter((session): session is SidebarSessionItem => session !== undefined),
   );
 }
 

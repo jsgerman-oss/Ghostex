@@ -891,10 +891,12 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   display: grid;
   gap: 0;
   margin: 14px -5px 0;
+  min-width: 0;
   padding: 0;
 }
 
 .reference-sidebar-nav-item {
+  min-width: 0;
   position: relative;
 }
 
@@ -936,7 +938,10 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   height: 34px;
   justify-content: flex-start;
   line-height: 14px;
+  max-width: 100%;
   min-height: 34px;
+  min-width: 0;
+  overflow: hidden;
   padding: 10px;
   text-align: left;
   width: 100%;
@@ -947,21 +952,26 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-nav-item:has(.reference-sidebar-overflow-action)
+  .reference-sidebar-nav-item:has(.reference-sidebar-hover-action):is(:hover, :focus-within)
   .reference-sidebar-nav-button {
   padding-right: 42px;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-search-slot[data-active="false"]
-  .reference-sidebar-nav-button {
-  padding-right: 42px;
-}
-
-.sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-settings-row
-  .reference-sidebar-nav-button {
-  padding-right: 42px;
+/*
+ * CDXC:SidebarReference 2026-05-15-10:04:
+ * The top New Session overflow trigger must not make the primary nav wider
+ * than a narrow native sidebar. Allow all top rows to shrink below their
+ * intrinsic label width, then truncate labels so Search, Plugins, Agents Hub,
+ * and New Session stay inside the resized sidebar.
+ *
+ * CDXC:SidebarReference 2026-05-15-10:15:
+ * Hidden secondary actions must not pre-truncate primary button titles. Use the
+ * full label width until the row is hovered or focused, then reserve the
+ * secondary-action slot so the revealed overflow/history/terminal button does
+ * not overlap the title.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-primary-nav > * {
+  min-width: 0;
 }
 
 /*
@@ -978,13 +988,15 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
  *
  * CDXC:SidebarReference 2026-05-08-14:48
  * Combined-sidebar New Session owns the same small right-side overflow trigger
- * as the Actions and Search rows. Reserve right padding on that row so the menu
- * icon never covers the New Session label or primary click target.
+ * as the Actions and Search rows. Reserve right padding only while the hover
+ * action is visible so hidden secondary controls do not shorten the primary
+ * title unnecessarily.
  *
  * CDXC:WorkspacePanes 2026-05-11-02:51
  * Combined-sidebar Settings owns a matching secondary terminal action that
- * creates a full-width pane in the active project. Reserve row padding so the
- * hover icon never overlaps the Settings label.
+ * creates a full-width pane in the active project. Reserve row padding only
+ * while the hover icon is visible so the Settings label uses the full row at
+ * rest.
  */
 .reference-sidebar-hover-action {
   align-items: center;
@@ -1033,9 +1045,13 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-nav-label {
   display: block;
+  flex: 1 1 auto;
   height: 14px;
   line-height: 14px;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reference-sidebar-nav-button:hover,
