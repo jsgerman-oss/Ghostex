@@ -93,3 +93,9 @@
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Embedded T3code
 - Integrations for all the popular Agent CLI
+- Rich prompt editor image paste with durable local image references, thumbnail previews, full-size preview popups, and one-click image removal.
+- Open In menus and Settings use recognizable editor brand icons for Cursor, VS Code, Zed, Antigravity, VSCodium, and JetBrains-family editors.
+- Long project session lists include Show less / Show more controls so large projects stay easier to scan.
+- Configurable hotkeys are available for pane actions and the first five custom Actions, including browser pane, rotate panes, merge tabs, delayed send, fork, reload, and pop out.
+- Sleeping persisted sessions release the underlying provider runtime, and `ghostex` / `gtx` attach resumes sleeping sessions correctly.
+- The titlebar Resources menu shows browser memory rows by actual tab title and URL instead of raw browser process labels.

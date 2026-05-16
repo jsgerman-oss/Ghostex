@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.3.0 - 2026-05-17
+
+- Added image paste support to the rich prompt editor, including durable local image references, thumbnail previews, full-size preview popups, and one-click image removal.
+- Improved Open In menus and Settings with recognizable editor brand icons for Cursor, VS Code, Zed, Antigravity, VSCodium, and JetBrains-family editors.
+- Added Show less / Show more controls for long project session lists so large projects stay easier to scan.
+- Added configurable hotkeys for pane actions and the first five custom Actions, including browser pane, rotate panes, merge tabs, delayed send, fork, reload, and pop out.
+- Improved sleeping persisted sessions so sleeping releases the underlying provider runtime and external `ghostex` / `gtx` attach resumes sleeping sessions correctly.
+- Improved the titlebar Resources menu so browser memory rows show the actual tab title and URL instead of raw browser process labels.
+
 ## 3.2.0 - 2026-05-16
 
 - Added a titlebar Resources menu that shows live CPU and memory usage grouped by project, session, Ghostex runtime, and browser tabs.
