@@ -287,7 +287,10 @@ export function SortableSessionCard({
   const lifecycleState = getSidebarSessionLifecycleState(session);
   const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
   const hasSessionCardIcon =
-    Boolean(session.agentIcon) || showTerminalSessionIcon || session.isReloading === true;
+    Boolean(session.delayedSendRemainingLabel) ||
+    Boolean(session.agentIcon) ||
+    showTerminalSessionIcon ||
+    session.isReloading === true;
   const sessionAnchorStyle = {
     anchorName: getSessionStatusAnchorName(sessionId),
   } as CSSProperties;
@@ -597,6 +600,8 @@ export function SortableSessionCard({
      * the command text already staged in that terminal.
      */
     openAppModal({
+      delayedSendDeadlineAt: session.delayedSendDeadlineAt,
+      delayedSendRemainingLabel: session.delayedSendRemainingLabel,
       modal: "delayedSend",
       sessionId: session.sessionId,
       title: getSessionRenameInitialTitle(session),
@@ -1057,9 +1062,11 @@ export function SortableSessionCard({
           />
           <SessionFloatingAgentIcon
             agentIcon={session.agentIcon}
+            delayedSendRemainingLabel={session.delayedSendRemainingLabel}
             faviconDataUrl={session.faviconDataUrl}
             isFavorite={session.isFavorite}
             isReloading={session.isReloading}
+            onDelayedSendClick={requestDelayedSend}
             sessionPersistenceName={session.sessionPersistenceName}
             sessionPersistenceProvider={session.sessionPersistenceProvider}
             showTerminalIcon={showTerminalSessionIcon}
@@ -1169,6 +1176,7 @@ export function SortableSessionCard({
              */}
             <SessionCardContent
               aliasHeadingRef={aliasHeadingRef}
+              onDelayedSendClick={requestDelayedSend}
               onClose={() => requestClose("programmatic")}
               session={session}
               showDebugSessionNumbers={showDebugSessionNumbers}

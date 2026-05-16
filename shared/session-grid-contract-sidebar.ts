@@ -116,6 +116,15 @@ export type SidebarSessionItem = {
   isVisible: boolean;
   isRunning: boolean;
   detail?: string;
+  /**
+   * CDXC:DelayedSend 2026-05-17-03:14
+   * Delayed Send timers must be visible before they fire. Carry both the
+   * absolute deadline and the display countdown so sidebar cards, titlebar
+   * resources, and tooltips can show the same remaining time.
+   */
+  delayedSendDeadlineAt?: string;
+  delayedSendRemainingLabel?: string;
+  delayedSendRemainingMs?: number;
 };
 
 export function getSidebarSessionLifecycleState(
@@ -863,6 +872,15 @@ export type SidebarToExtensionMessage =
       delayMs: number;
       sessionId: string;
       type: "scheduleDelayedSend";
+    }
+  | {
+      /**
+       * CDXC:DelayedSend 2026-05-17-03:14
+       * Users must be able to cancel a scheduled delayed send from the same
+       * modal/sidebar affordance that shows the remaining countdown.
+       */
+      sessionId: string;
+      type: "cancelDelayedSend";
     }
   | {
       type: "forkSession";

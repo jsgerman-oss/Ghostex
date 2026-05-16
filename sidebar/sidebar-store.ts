@@ -606,6 +606,9 @@ function haveSameSidebarSessionItem(left: SidebarSessionItem, right: SidebarSess
     left.agentIcon === right.agentIcon &&
     left.alias === right.alias &&
     left.column === right.column &&
+    left.delayedSendDeadlineAt === right.delayedSendDeadlineAt &&
+    left.delayedSendRemainingLabel === right.delayedSendRemainingLabel &&
+    left.delayedSendRemainingMs === right.delayedSendRemainingMs &&
     left.detail === right.detail &&
     left.faviconDataUrl === right.faviconDataUrl &&
     left.isGeneratingFirstPromptTitle === right.isGeneratingFirstPromptTitle &&

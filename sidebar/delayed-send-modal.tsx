@@ -17,8 +17,11 @@ const MINUTE_MS = 60 * SECOND_MS;
 const HOUR_MS = 60 * MINUTE_MS;
 
 export type DelayedSendModalProps = {
+  delayedSendDeadlineAt?: string;
+  delayedSendRemainingLabel?: string;
   isOpen: boolean;
   onCancel: () => void;
+  onCancelTimer?: () => void;
   onConfirm: (delayMs: number) => void;
   sessionTitle?: string;
 };
@@ -28,10 +31,18 @@ export type DelayedSendModalProps = {
  * Terminal pins need a clock action that lets the user stage command text now
  * and submit it later. Keep the modal duration-only: the terminal already owns
  * the prompt text, and native will press Enter when the timer expires.
+ *
+ * CDXC:DelayedSend 2026-05-17-03:14
+ * Reopening Delayed Send for an active timer must show the current remaining
+ * countdown, prefill the duration controls from that remaining time, and allow
+ * cancellation so users can verify or change the pending Enter keypress.
  */
 export function DelayedSendModal({
+  delayedSendDeadlineAt,
+  delayedSendRemainingLabel,
   isOpen,
   onCancel,
+  onCancelTimer,
   onConfirm,
   sessionTitle,
 }: DelayedSendModalProps) {
@@ -48,9 +59,11 @@ export function DelayedSendModal({
       return;
     }
 
-    setHours("0");
-    setMinutes("5");
-    setSeconds("0");
+    const remainingMs = getRemainingMs(delayedSendDeadlineAt);
+    const duration = remainingMs > 0 ? durationPartsFromMs(remainingMs) : undefined;
+    setHours(String(duration?.hours ?? 0));
+    setMinutes(String(duration?.minutes ?? 5));
+    setSeconds(String(duration?.seconds ?? 0));
     const animationFrame = window.requestAnimationFrame(() => {
       firstInputRef.current?.focus();
       firstInputRef.current?.select();
@@ -58,7 +71,7 @@ export function DelayedSendModal({
     return () => {
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [isOpen]);
+  }, [delayedSendDeadlineAt, isOpen]);
 
   if (!isOpen) {
     return null;
@@ -66,6 +79,7 @@ export function DelayedSendModal({
 
   const delayMs = getDelayMs(hours, minutes, seconds);
   const isValidDelay = delayMs > 0 && delayMs <= MAX_DELAY_MS;
+  const hasActiveTimer = Boolean(delayedSendRemainingLabel);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -93,6 +107,12 @@ export function DelayedSendModal({
             <DialogTitle className="text-xl">Delayed Send</DialogTitle>
             <DialogDescription>
               Press Enter in {sessionTitle?.trim() || "this terminal"} after this delay.
+              {delayedSendRemainingLabel ? (
+                <>
+                  <br />
+                  Current timer sends in {delayedSendRemainingLabel}.
+                </>
+              ) : null}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="delayed-send-field-group">
@@ -135,6 +155,11 @@ export function DelayedSendModal({
             <FieldDescription>Enter a delay between 1 second and 24 days.</FieldDescription>
           </FieldGroup>
           <DialogFooter>
+            {hasActiveTimer ? (
+              <Button onClick={onCancelTimer} type="button" variant="destructive">
+                Cancel Timer
+              </Button>
+            ) : null}
             <Button onClick={onCancel} type="button" variant="outline">
               Cancel
             </Button>
@@ -162,4 +187,23 @@ function parseDurationPart(value: string): number {
     return 0;
   }
   return Math.floor(parsed);
+}
+
+function getRemainingMs(deadlineAt: string | undefined): number {
+  if (!deadlineAt) {
+    return 0;
+  }
+  const deadlineMs = Date.parse(deadlineAt);
+  if (!Number.isFinite(deadlineMs)) {
+    return 0;
+  }
+  return Math.max(0, deadlineMs - Date.now());
+}
+
+function durationPartsFromMs(delayMs: number): { hours: number; minutes: number; seconds: number } {
+  const totalSeconds = Math.max(1, Math.ceil(delayMs / SECOND_MS));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return { hours, minutes, seconds };
 }

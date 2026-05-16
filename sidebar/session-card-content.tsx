@@ -1,4 +1,4 @@
-import { IconLoader2, IconTerminal2, IconWorld, IconX } from "@tabler/icons-react";
+import { IconClock, IconLoader2, IconTerminal2, IconWorld, IconX } from "@tabler/icons-react";
 import {
   cloneElement,
   useEffect,
@@ -44,6 +44,7 @@ const GHOST_PLACEHOLDER_TITLE_PATTERN = /^👻(?:\s+Terminal Session)?$/u;
 export type SessionCardContentProps = {
   aliasHeadingRef?: RefObject<HTMLDivElement | null>;
   hideHeaderAgentIcon?: boolean;
+  onDelayedSendClick?: () => void;
   onClose?: () => void;
   session: SidebarSessionItem;
   showDebugSessionNumbers: boolean;
@@ -57,6 +58,7 @@ export type SessionCardContentProps = {
 export function SessionCardContent({
   aliasHeadingRef,
   hideHeaderAgentIcon = false,
+  onDelayedSendClick,
   onClose,
   session,
   showCloseButton,
@@ -72,11 +74,13 @@ export function SessionCardContent({
   });
   const hasLastInteractionTime = showLastActiveTime && Boolean(session.lastInteractionAt);
   const showHeaderLoadingSpinner = session.isReloading === true || isGeneratingFirstPromptTitle;
+  const hasDelayedSend = Boolean(session.delayedSendRemainingLabel);
   const showTerminalSessionIcon = !hideHeaderAgentIcon && shouldShowTerminalSessionIcon(session);
   const shouldAllowFullWidthTitle =
     !showLastActiveTime && !showLastInteractionTime && !trailingPrefix;
   const hasHeaderAgentIcon =
     !hideHeaderAgentIcon &&
+    !hasDelayedSend &&
     !shouldAllowFullWidthTitle &&
     (Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
   useRelativeTimeTick(hasLastInteractionTime);
@@ -170,10 +174,12 @@ export function SessionCardContent({
             {hasHeaderAgentIcon ? (
               <SessionHeaderAgentIcon
                 agentIcon={session.agentIcon}
+                delayedSendRemainingLabel={session.delayedSendRemainingLabel}
                 faviconDataUrl={session.faviconDataUrl}
                 isFavorite={session.isFavorite}
                 isGeneratingFirstPromptTitle={session.isGeneratingFirstPromptTitle}
                 isReloading={session.isReloading}
+                onDelayedSendClick={onDelayedSendClick}
                 sessionPersistenceName={session.sessionPersistenceName}
                 sessionPersistenceProvider={session.sessionPersistenceProvider}
                 showTerminalIcon={showTerminalSessionIcon}
@@ -522,6 +528,7 @@ export function getSessionTitleTooltipOptions({
 
 type SessionAgentIconProps = {
   agentIcon: SidebarSessionItem["agentIcon"];
+  delayedSendRemainingLabel?: string;
   faviconDataUrl?: string;
   isFavorite?: boolean;
   isGeneratingFirstPromptTitle?: boolean;
@@ -634,12 +641,24 @@ function SessionAgentIconDecoration({
 
 export function SessionFloatingAgentIcon({
   agentIcon,
+  delayedSendRemainingLabel,
   faviconDataUrl,
   isFavorite = false,
+  onDelayedSendClick,
   sessionPersistenceName,
   sessionPersistenceProvider,
   showTerminalIcon = false,
-}: SessionAgentIconProps) {
+}: SessionAgentIconProps & { onDelayedSendClick?: () => void }) {
+  if (delayedSendRemainingLabel) {
+    return (
+      <DelayedSendSidebarIcon
+        className="session-floating-delayed-send-icon"
+        onClick={onDelayedSendClick}
+        remainingLabel={delayedSendRemainingLabel}
+      />
+    );
+  }
+
   return (
     <>
       <SessionAgentIconDecoration
@@ -662,14 +681,26 @@ export function SessionFloatingAgentIcon({
 
 function SessionHeaderAgentIcon({
   agentIcon,
+  delayedSendRemainingLabel,
   faviconDataUrl,
   isFavorite = false,
+  onDelayedSendClick,
   isGeneratingFirstPromptTitle = false,
   isReloading = false,
   sessionPersistenceName,
   sessionPersistenceProvider,
   showTerminalIcon = false,
-}: SessionAgentIconProps) {
+}: SessionAgentIconProps & { onDelayedSendClick?: () => void }) {
+  if (delayedSendRemainingLabel) {
+    return (
+      <DelayedSendSidebarIcon
+        className="session-header-delayed-send-icon"
+        onClick={onDelayedSendClick}
+        remainingLabel={delayedSendRemainingLabel}
+      />
+    );
+  }
+
   return (
     <>
       <SessionAgentIconDecoration
@@ -689,6 +720,43 @@ function SessionHeaderAgentIcon({
         slot="header"
       />
     </>
+  );
+}
+
+function DelayedSendSidebarIcon({
+  className,
+  onClick,
+  remainingLabel,
+}: {
+  className: string;
+  onClick?: () => void;
+  remainingLabel: string;
+}) {
+  /**
+   * CDXC:DelayedSend 2026-05-17-03:14
+   * Active Delayed Send timers replace the sidebar agent icon, remain visible
+   * without hover, expose the remaining hh:mm:ss/mm:ss countdown on hover, and
+   * reopen the modal so users can change or cancel the pending Enter keypress.
+   */
+  const tooltip = `Delayed Send in ${remainingLabel}`;
+  return (
+    <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
+      <TooltipTrigger asChild>
+        <button
+          aria-label={tooltip}
+          className={className}
+          onClick={(event) => {
+            event.stopPropagation();
+            onClick?.();
+          }}
+          title={tooltip}
+          type="button"
+        >
+          <IconClock aria-hidden="true" size={14} stroke={1.9} />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -66,6 +66,8 @@ type AppModalHostMessage =
       agentDraft?: AgentConfigDraft;
       access?: T3BrowserAccessMessage;
       commandDraft?: CommandConfigDraft;
+      delayedSendDeadlineAt?: string;
+      delayedSendRemainingLabel?: string;
       initialTitle?: string;
       initialQuery?: string;
       message?: string;
@@ -114,6 +116,8 @@ type FirstUserMessageModalState = {
 };
 
 type DelayedSendModalState = {
+  delayedSendDeadlineAt?: string;
+  delayedSendRemainingLabel?: string;
   sessionId: string;
   title?: string;
 };
@@ -1422,8 +1426,20 @@ function AppModalHost() {
         }}
       />
       <DelayedSendModal
+        delayedSendDeadlineAt={delayedSend?.delayedSendDeadlineAt}
+        delayedSendRemainingLabel={delayedSend?.delayedSendRemainingLabel}
         isOpen={activeModal === "delayedSend" && delayedSend !== undefined}
         onCancel={closeModal}
+        onCancelTimer={() => {
+          if (!delayedSend) {
+            return;
+          }
+          vscode.postMessage({
+            sessionId: delayedSend.sessionId,
+            type: "cancelDelayedSend",
+          });
+          closeModal();
+        }}
         onConfirm={(delayMs) => {
           if (!delayedSend) {
             return;
@@ -1717,6 +1733,14 @@ function useModalStateFromNative() {
               throw new Error("Delayed Send modal request is missing sessionId.");
             }
             setDelayedSend({
+              delayedSendDeadlineAt:
+                typeof message.delayedSendDeadlineAt === "string"
+                  ? message.delayedSendDeadlineAt
+                  : undefined,
+              delayedSendRemainingLabel:
+                typeof message.delayedSendRemainingLabel === "string"
+                  ? message.delayedSendRemainingLabel
+                  : undefined,
               sessionId: message.sessionId,
               title: typeof message.title === "string" ? message.title : undefined,
             });

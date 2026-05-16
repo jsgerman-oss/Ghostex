@@ -785,6 +785,49 @@
   z-index: 3;
 }
 
+/*
+ * CDXC:DelayedSend 2026-05-17-03:14
+ * Active Delayed Send timers use the sidebar's agent-icon slot, but unlike
+ * ordinary agent marks they must stay visible and clickable so users can see,
+ * inspect, change, or cancel the pending Enter keypress.
+ */
+.session-floating-delayed-send-icon,
+.session-header-delayed-send-icon {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: color-mix(in srgb, var(--app-foreground) 88%, #72d8ff 12%);
+  display: inline-flex;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  pointer-events: auto;
+}
+
+.session-floating-delayed-send-icon {
+  height: calc(17px * var(--sidebar-density-scale));
+  left: calc(-5px * var(--sidebar-density-scale));
+  opacity: 0.95;
+  position: absolute;
+  top: calc(4px * var(--sidebar-density-scale));
+  width: calc(17px * var(--sidebar-density-scale));
+  z-index: 4;
+}
+
+.session-header-delayed-send-icon {
+  height: 16px;
+  opacity: 0.86;
+  width: 16px;
+}
+
+.session-floating-delayed-send-icon:hover,
+.session-floating-delayed-send-icon:focus-visible,
+.session-header-delayed-send-icon:hover,
+.session-header-delayed-send-icon:focus-visible {
+  color: var(--app-foreground);
+  opacity: 1;
+}
+
 .session-persistence-provider-badge {
   color: rgba(255, 255, 255, 0.84);
   display: grid;

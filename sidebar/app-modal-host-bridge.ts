@@ -61,7 +61,20 @@ export type OpenAppModalMessage =
       title?: string;
       type: "open";
     }
-  | { modal: "delayedSend"; sessionId: string; title?: string; type: "open" }
+  | {
+      /**
+       * CDXC:DelayedSend 2026-05-17-03:14
+       * Opening the Delayed Send modal for an active timer must prefill the
+       * current remaining duration and offer cancellation instead of acting as
+       * a blind new-schedule dialog.
+       */
+      delayedSendDeadlineAt?: string;
+      delayedSendRemainingLabel?: string;
+      modal: "delayedSend";
+      sessionId: string;
+      title?: string;
+      type: "open";
+    }
   | { initialTitle: string; modal: "renameSession"; sessionId: string; type: "open" };
 
 declare global {
