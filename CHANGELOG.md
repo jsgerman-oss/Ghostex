@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.4.0 - 2026-05-17
+
+- Added a native right-click menu in terminal panes with Copy and Paste actions.
+- Improved Last Active timestamps so sleeping and restored terminal sessions keep accurate sidebar times and sorting after restart.
+- Improved the titlebar Resources menu so Browser Tabs only count Ghostex embedded browser helpers and use clearer browser process labels.
+
 ## 3.3.0 - 2026-05-17
 
 - Added image paste support to the rich prompt editor, including durable local image references, thumbnail previews, full-size preview popups, and one-click image removal.
