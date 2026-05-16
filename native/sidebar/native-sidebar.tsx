@@ -14685,10 +14685,10 @@ function toggleCommandsPanelFromTitlebar(): void {
 
 function togglePetOverlayFromTitlebar(): void {
   /**
-   * CDXC:PetOverlay 2026-05-15-00:36:
-   * The titlebar robot button is a direct pet-awake toggle. Persist it through
-   * the same settings owner as the modal so the overlay, titlebar state, and
-   * shared settings snapshot stay synchronized.
+   * CDXC:PetOverlay 2026-05-17-02:03:
+   * The sidebar overflow menu and command palette both use this pet-awake
+   * toggle. Persist it through the same settings owner as the modal so the
+   * overlay, sidebar label, and shared settings snapshot stay synchronized.
    */
   saveSettings({
     ...settings,

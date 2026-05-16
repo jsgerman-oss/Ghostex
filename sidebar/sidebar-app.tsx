@@ -23,6 +23,7 @@ import {
   IconPencil,
   IconPlus,
   IconPlusFilled,
+  IconRobotFace,
   IconSearch,
   IconSettings,
   IconTerminal2,
@@ -2064,6 +2065,18 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     vscode.postMessage({ type: "createSession" });
   };
 
+  const togglePetOverlay = () => {
+    setIsOverflowMenuOpen(false);
+    /**
+     * CDXC:PetOverlay 2026-05-17-02:03:
+     * Wake/Sleep Pet belongs in the sidebar overflow menu attached to the New
+     * Session row instead of the native titlebar. Reuse the settings-owned
+     * native toggle so the overlay, command palette, and Settings modal stay
+     * synchronized.
+     */
+    vscode.postMessage({ type: "togglePetOverlay" });
+  };
+
   const createFullWidthTerminalPane = () => {
     /**
      * CDXC:CommandsPanel 2026-05-13-17:02
@@ -2127,12 +2140,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   const topControlOptions = {
     isOverflowMenuOpen,
+    isPetOverlayEnabled: settings?.petOverlayEnabled === true,
     isPinnedPromptsOpen,
     isScratchPadOpen,
     onMoveSidebar: moveSidebar,
     onOpenHelp: openWorkspaceWelcome,
     onOpenHotkeys: openHotkeys,
     onShowRunning: openRunningSessions,
+    onTogglePetOverlay: togglePetOverlay,
     onTogglePinnedPrompts: togglePinnedPrompts,
     onToggleMenu: toggleOverflowMenu,
     onToggleScratchPad: openScratchPad,
@@ -3056,12 +3071,14 @@ function getScratchPadMenuLabel(isScratchPadOpen: boolean): string {
 
 type RenderSidebarTopControlsOptions = {
   isOverflowMenuOpen: boolean;
+  isPetOverlayEnabled: boolean;
   isPinnedPromptsOpen: boolean;
   isScratchPadOpen: boolean;
   onMoveSidebar: () => void;
   onOpenHelp: () => void;
   onOpenHotkeys: () => void;
   onShowRunning: () => void;
+  onTogglePetOverlay: () => void;
   onTogglePinnedPrompts: () => void;
   onToggleMenu: (trigger: HTMLElement) => void;
   onToggleScratchPad: () => void;
@@ -3071,12 +3088,14 @@ type RenderSidebarTopControlsOptions = {
 
 function renderFloatingOverflowMenu({
   isOverflowMenuOpen,
+  isPetOverlayEnabled,
   isPinnedPromptsOpen,
   isScratchPadOpen,
   onMoveSidebar: _onMoveSidebar,
   onOpenHelp,
   onOpenHotkeys,
   onShowRunning,
+  onTogglePetOverlay,
   onTogglePinnedPrompts,
   onToggleMenu,
   onToggleScratchPad,
@@ -3141,7 +3160,27 @@ function renderFloatingOverflowMenu({
                  * belong in the sidebar overflow menu. Keep this menu to
                  * scratch tools, running state, hotkeys, and help so one
                  * separator can divide tools from status/help actions.
+                 *
+                 * CDXC:PetOverlay 2026-05-17-02:03:
+                 * The Wake/Sleep Pet action moved from the native titlebar into
+                 * this New Session-adjacent overflow menu, keeping the titlebar
+                 * focused on workspace mode, resources, actions, and Open In.
                  */}
+                <button
+                  aria-checked={isPetOverlayEnabled}
+                  className="session-context-menu-item"
+                  onClick={onTogglePetOverlay}
+                  role="menuitemcheckbox"
+                  type="button"
+                >
+                  <IconRobotFace
+                    aria-hidden="true"
+                    className="session-context-menu-icon"
+                    size={14}
+                    stroke={1.8}
+                  />
+                  {isPetOverlayEnabled ? "Sleep Pet" : "Wake Pet"}
+                </button>
                 <button
                   aria-checked={isPinnedPromptsOpen}
                   className="session-context-menu-item"

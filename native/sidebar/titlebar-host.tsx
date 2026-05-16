@@ -1,6 +1,7 @@
 import {
   IconBox,
   IconBrandGithub,
+  IconChartPie2Filled,
   IconCheck,
   IconChevronDown,
   IconChecklist,
@@ -11,7 +12,6 @@ import {
   IconLayoutSidebarLeftExpand,
   IconMoon,
   IconPlayerPlay,
-  IconRobotFace,
   IconSettings,
   IconTerminal2,
   IconUsersGroup,
@@ -180,7 +180,6 @@ type NativeTitlebarCommand =
   | { type: "openGitHubProjectFromTitlebar" }
   | { type: "openTasksPlaceholderFromTitlebar" }
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
-  | { type: "togglePetOverlayFromTitlebar" }
   | { type: "toggleCommandsPanelFromTitlebar" }
   | { sessionIds: string[]; type: "sleepInactiveSessionsFromTitlebar" }
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
@@ -1048,10 +1047,6 @@ function App() {
     postNative({ type: "openTasksPlaceholderFromTitlebar" });
   };
 
-  const togglePetOverlay = () => {
-    postNative({ type: "togglePetOverlayFromTitlebar" });
-  };
-
   const showProjectEditorCompanion = () => {
     postNative({ type: "showProjectEditorCompanionFromTitlebar" });
   };
@@ -1175,29 +1170,6 @@ function App() {
             />
           </div>
           <div style={styles.rightSlot}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  aria-label={projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}
-                  className="titlebar-session-button titlebar-pet-button"
-                  data-awake={String(projectState.petOverlayEnabled)}
-                  data-titlebar-hit-region
-                  onClick={togglePetOverlay}
-                  type="button"
-                  variant="ghost"
-                >
-                  {/*
-                   * CDXC:PetOverlay 2026-05-15-14:20:
-                   * The top bar should expose the pet wake/sleep control as a
-                   * robot head without the Rotate Panes button; pane rotation
-                   * now lives in the per-pane overflow menu below Split
-                   * Downwards.
-                   */}
-                  <IconRobotFace aria-hidden="true" size={16} stroke={1.8} />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}</TooltipContent>
-            </Tooltip>
             <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -1210,13 +1182,14 @@ function App() {
                       variant="ghost"
                     >
                       {/*
-                       * CDXC:TitlebarResources 2026-05-16-16:08:
-                       * The Resources button belongs between the pet toggle
-                       * and the action/start groups. IconCpu identifies the
-                       * live CPU/memory process inspector without adding text
-                       * to the compact titlebar.
+                       * CDXC:TitlebarResources 2026-05-17-02:03:
+                       * The Resources button is the first right-side titlebar
+                       * control after moving the pet wake/sleep toggle into the
+                       * sidebar overflow menu. Use IconChartPie2Filled so this
+                       * control reads as aggregate resource usage instead of
+                       * only CPU.
                        */}
-                      <IconCpu aria-hidden="true" size={16} stroke={1.8} />
+                      <IconChartPie2Filled aria-hidden="true" size={16} />
                     </Button>
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
@@ -1457,7 +1430,7 @@ function TitlebarResourcesMenu({
     <div className="titlebar-resources-panel">
       <div className="titlebar-resources-header">
         <div className="titlebar-resources-title">
-          <IconCpu aria-hidden="true" size={18} stroke={1.8} />
+          <IconChartPie2Filled aria-hidden="true" size={18} />
           <span>Ghostex Resources</span>
           <span className="titlebar-resources-note">Most resources are used by your Agent CLIs</span>
         </div>
@@ -2223,16 +2196,9 @@ styleElement.textContent = `
     gap: 4px;
     margin-left: 1px;
   }
-  .titlebar-pet-button {
-    padding: 0;
-    width: 28px;
-  }
   .titlebar-resource-button {
     padding: 0;
     width: 28px;
-  }
-  .titlebar-pet-button[data-awake="false"] {
-    color: color-mix(in srgb, rgb(244 244 245) 42%, transparent);
   }
   .titlebar-open-chevron-button {
     width: 18px;

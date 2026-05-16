@@ -13073,13 +13073,24 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   private func tabBackgroundColor() -> NSColor {
+    /*
+     CDXC:PaneTabs 2026-05-17-01:50:
+     Workspace-area sleeping tabs should use the same subdued visual treatment
+     as other unsurfaced tab siblings so the pane's surfaced session is the
+     obvious tab. The moon remains the only sleeping-specific visual marker.
+     */
+    if chromeRole == .workspace {
+      let isSurfacedWorkspaceTab = isActiveTab && !isSleepingTab
+      let overlayAlpha =
+        isSurfacedWorkspaceTab
+        ? (isFocusedPane ? CGFloat(0.13) : CGFloat(0.05))
+        : (isFocusedPane ? CGFloat(0.06) : CGFloat(0.024))
+      return NSColor(calibratedWhite: 1, alpha: overlayAlpha)
+    }
     let overlayAlpha =
       isActiveTab
       ? (isFocusedPane ? (isSleepingTab ? CGFloat(0.075) : CGFloat(0.13)) : CGFloat(0.05))
       : (isFocusedPane ? (isSleepingTab ? CGFloat(0.032) : CGFloat(0.06)) : CGFloat(0.024))
-    guard chromeRole == .commands else {
-      return NSColor(calibratedWhite: 1, alpha: overlayAlpha)
-    }
     return Self.compositedWorkspaceTabColor(overlayAlpha: overlayAlpha)
   }
 
@@ -13517,10 +13528,14 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   private var titleColor: NSColor {
-    let baseWhite: CGFloat = isActiveTab ? 0.96 : 0.78
-    let baseAlpha: CGFloat = isActiveTab ? 0.98 : 0.82
+    let isSurfacedWorkspaceTab = chromeRole != .workspace || (isActiveTab && !isSleepingTab)
+    let baseWhite: CGFloat = isSurfacedWorkspaceTab ? 0.96 : 0.78
+    let baseAlpha: CGFloat = isSurfacedWorkspaceTab ? 0.98 : 0.82
     let sleepAlpha: CGFloat = isSleepingTab ? 0.48 : 1
-    return NSColor(calibratedWhite: baseWhite, alpha: baseAlpha * sleepAlpha * (isFocusedPane ? 1 : 0.58))
+    let resolvedSleepAlpha: CGFloat = chromeRole == .workspace ? 1 : sleepAlpha
+    return NSColor(
+      calibratedWhite: baseWhite,
+      alpha: baseAlpha * resolvedSleepAlpha * (isFocusedPane ? 1 : 0.58))
   }
 
   private func drawTitle() {
