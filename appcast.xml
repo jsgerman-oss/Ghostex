@@ -8,6 +8,16 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex macOS releases.</description>
         <item>
+            <title>3.3.0</title>
+            <pubDate>Sun, 17 May 2026 02:14:39 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.3.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>30300</sparkle:version>
+            <sparkle:shortVersionString>3.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.3.0/ghostex-3.3.0-arm64.dmg" length="190135582" type="application/octet-stream" sparkle:edSignature="XAjmoNz9YzYwYETuoesUn3R8Xhuqe0ri+zybP2WatvxO1tkkFRWTT7tIo8sc755a8A6LIqv2uIsPLI8uyUvzCA=="/>
+        </item>
+        <item>
             <title>3.2.0</title>
             <pubDate>Sat, 16 May 2026 20:27:46 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.2.0</sparkle:fullReleaseNotesLink>
@@ -60,20 +70,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:releaseNotesLink sparkle:edSignature="3TuCYSgPF93wyCEPl+BrFhqyuC+8rFwpDO9C35JQB3c5S6toCxnelL5Epzvk/+J4oVrO0R0dsUg1ZfZso+/wAw==" sparkle:length="1818">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.6.0-arm64.md</sparkle:releaseNotesLink>
             <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.6.0/ghostex-2.6.0-arm64.dmg" length="189022386" type="application/octet-stream" sparkle:edSignature="6lDc8regOThfLplDDU1hEWwpXgIVW1rTc9WFg0YAVwn7PUorg+p9WwdcFSE2DhbQk4JzquffJPPLvT+/Ba1bDw=="/>
         </item>
-        <item>
-            <title>2.5.1</title>
-            <pubDate>Fri, 15 May 2026 08:51:49 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v2.5.1</sparkle:fullReleaseNotesLink>
-            <sparkle:version>20501</sparkle:version>
-            <sparkle:shortVersionString>2.5.1</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <sparkle:releaseNotesLink sparkle:edSignature="VxLk3oi5R+Xiro3DvyrWc9ciuiDMJFY0v9aiBtf7tMSTkIDpEp8s9C8+3niJNd+iab1ToFw1FflqGISjrY28BA==" sparkle:length="1569">https://raw.githubusercontent.com/maddada/Ghostex/main/ghostex-2.5.1-arm64.md</sparkle:releaseNotesLink>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v2.5.1/ghostex-2.5.1-arm64.dmg" length="188887254" type="application/octet-stream" sparkle:edSignature="vHg0EUVoPNhHav/cVVqra2bWD1J26cEXoZJh5p//ECQ2qZpfm4kRrYml+KTmMU/pBtpokLxlcG2m15AVtoiZBw=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: mX6b88dEFa5z5SClSHdDaCXafnvmbEZOBgxmq8z084OU4zjfX93SHPLPWa0uAHn+RWyCU6I9j34X8vTtflwQCw==
-length: 6604
+edSignature: nd6YReLubApmA8jqVMR4FInf+4SZbGHN0+orj+b1vnr6j7ePHR+F1fdSag5bHvFmWw0yxobTIoJV0cSi2tUWAQ==
+length: 6328
 -->
