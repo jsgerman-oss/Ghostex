@@ -6,7 +6,6 @@
 - Embedded Light Code/MD Files Editor
 - Fast & Low RAM usage
 - SSH support with live session persistence (zmx/tmux/zellij)
-
 <br/>
 
 #### Install on macOS using brew or dmg in releases page
