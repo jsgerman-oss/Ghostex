@@ -5,8 +5,6 @@ Agent CLIs Manager<br />
 Embedded Chromium Browser<br />
 Fast & Low RAM usage <br />
 
-<br />
-
 #### Install on macOS using brew or dmg in releases page
 ###### (Looking for help with dev/testing for Windows & Linux ports)
 
