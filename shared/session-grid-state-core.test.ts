@@ -173,6 +173,28 @@ describe("normalizeSessionGridSnapshot", () => {
     expect(normalized.terminalEngine).toBe("ghostty-native");
   });
 
+  test("should preserve valid terminal last activity timestamps", () => {
+    const normalized = normalizeSessionRecord({
+      ...createSessionRecord(1, 0),
+      lastActivityAt: "2026-05-17T02:45:00.000Z",
+    });
+
+    expect(normalized.kind).toBe("terminal");
+    expect(normalized.kind === "terminal" ? normalized.lastActivityAt : undefined).toBe(
+      "2026-05-17T02:45:00.000Z",
+    );
+  });
+
+  test("should drop invalid terminal last activity timestamps", () => {
+    const normalized = normalizeSessionRecord({
+      ...createSessionRecord(1, 0),
+      lastActivityAt: "not-a-date",
+    });
+
+    expect(normalized.kind).toBe("terminal");
+    expect(normalized.kind === "terminal" ? normalized.lastActivityAt : undefined).toBeUndefined();
+  });
+
   test("should preserve fullscreen restore count only while the snapshot is in fullscreen mode", () => {
     const snapshot = normalizeSessionGridSnapshot({
       focusedSessionId: "session-1",

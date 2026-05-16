@@ -299,6 +299,9 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
     displayId,
     isPoppedOut,
     kind: "terminal",
+    lastActivityAt: normalizeTerminalSessionLastActivityAt(
+      session.kind === "terminal" ? session.lastActivityAt : undefined,
+    ),
     terminalEngine: normalizeTerminalEngine(
       session.kind === "terminal" ? session.terminalEngine : undefined,
     ),
@@ -314,6 +317,20 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
     title,
     titleSource,
   };
+}
+
+function normalizeTerminalSessionLastActivityAt(value: string | undefined): string | undefined {
+  /**
+   * CDXC:SessionLastActive 2026-05-17-02:45:
+   * Stored terminal Last Active values must be real timestamps because the
+   * sidebar uses them for both visible relative time and deterministic sorting
+   * before a terminal runtime has been restored.
+   */
+  const normalized = value?.trim();
+  if (!normalized || Number.isNaN(Date.parse(normalized))) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function normalizeTerminalCommandTitle(value: string | undefined): string | undefined {

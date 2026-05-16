@@ -134,6 +134,13 @@ export type BaseSessionRecord = {
 export type TerminalSessionRecord = BaseSessionRecord & {
   agentName?: string;
   /**
+   * CDXC:SessionLastActive 2026-05-17-02:45:
+   * Last Active is durable sidebar metadata for terminal sessions. Persist it
+   * on the canonical session record so sleeping or unmounted sessions can keep
+   * correct timestamps and Last Active ordering immediately after app restart.
+   */
+  lastActivityAt?: string;
+  /**
    * CDXC:CommandPanes 2026-05-16-15:08:
    * Command-pane reuse is keyed by the configured action title rather than the
    * mutable command id. Persist the title owner on command terminal records so

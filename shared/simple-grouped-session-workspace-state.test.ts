@@ -24,6 +24,7 @@ import {
   setGroupSleepingInSimpleWorkspace,
   setSessionSleepingInSimpleWorkspace,
   setT3SessionMetadataInSimpleWorkspace,
+  setTerminalSessionLastActivityAtInSimpleWorkspace,
   setVisibleCountInSimpleWorkspace,
   selectPaneTabInSimpleWorkspace,
   swapVisibleSessionsInSimpleWorkspace,
@@ -2798,6 +2799,87 @@ describe("setSessionFavoriteInSimpleWorkspace", () => {
     expect(result.changed).toBe(true);
     expect(result.snapshot.groups[0]?.snapshot.sessions[1]?.isFavorite).toBe(true);
     expect(result.snapshot.groups[0]?.snapshot.sessions[0]?.isFavorite).toBeUndefined();
+  });
+});
+
+describe("setTerminalSessionLastActivityAtInSimpleWorkspace", () => {
+  test("should persist valid last activity timestamps on terminal sessions", () => {
+    const snapshot = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(0),
+            fullscreenRestoreVisibleCount: undefined,
+            sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+            viewMode: "grid",
+            visibleCount: 2,
+            visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 2,
+      nextSessionNumber: 3,
+    });
+
+    const result = setTerminalSessionLastActivityAtInSimpleWorkspace(
+      snapshot,
+      sessionIdForDisplay(1),
+      "2026-05-17T02:45:00.000Z",
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.sessions[1]).toEqual(
+      expect.objectContaining({
+        lastActivityAt: "2026-05-17T02:45:00.000Z",
+      }),
+    );
+    const untouchedSession = result.snapshot.groups[0]?.snapshot.sessions[0];
+    expect(
+      untouchedSession?.kind === "terminal" ? untouchedSession.lastActivityAt : undefined,
+    ).toBeUndefined();
+  });
+
+  test("should clear invalid last activity timestamps", () => {
+    const session = {
+      ...createSessionRecord(1, 0),
+      lastActivityAt: "2026-05-17T02:45:00.000Z",
+    };
+    const snapshot = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: session.sessionId,
+            fullscreenRestoreVisibleCount: undefined,
+            sessions: [session],
+            viewMode: "grid",
+            visibleCount: 1,
+            visibleSessionIds: [session.sessionId],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 1,
+      nextSessionNumber: 2,
+    });
+
+    const result = setTerminalSessionLastActivityAtInSimpleWorkspace(
+      snapshot,
+      session.sessionId,
+      "not-a-date",
+    );
+
+    expect(result.changed).toBe(true);
+    const normalizedSession = result.snapshot.groups[0]?.snapshot.sessions[0];
+    expect(
+      normalizedSession?.kind === "terminal" ? normalizedSession.lastActivityAt : undefined,
+    ).toBeUndefined();
   });
 });
 

@@ -742,6 +742,30 @@ export function setTerminalSessionAgentSessionMetadataInSimpleWorkspace(
   });
 }
 
+export function setTerminalSessionLastActivityAtInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+  lastActivityAt: string | undefined,
+): WorkspaceMutationResult {
+  const nextLastActivityAt = normalizeTerminalSessionLastActivityAt(lastActivityAt);
+  /**
+   * CDXC:SessionLastActive 2026-05-17-02:45:
+   * Last Active belongs on terminal session records because sleeping cards are
+   * rendered without live terminal state after restart. Update only the durable
+   * timestamp here; runtime activity still remains in terminalState.
+   */
+  return updateSession(snapshot, sessionId, (session) => {
+    if (session.kind !== "terminal" || session.lastActivityAt === nextLastActivityAt) {
+      return session;
+    }
+
+    return {
+      ...session,
+      lastActivityAt: nextLastActivityAt,
+    };
+  });
+}
+
 export function setTerminalSessionPersistenceNameInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,
@@ -2963,6 +2987,14 @@ function updateSession(
     changed: !areSnapshotsEqual(snapshot, nextSnapshot),
     snapshot: nextSnapshot,
   };
+}
+
+function normalizeTerminalSessionLastActivityAt(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized || Number.isNaN(Date.parse(normalized))) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function createEmptyGroup(groupId: string, title: string): SessionGroupRecord {

@@ -137,6 +137,7 @@ import {
   setT3SessionMetadataInSimpleWorkspace,
   setTerminalSessionAgentSessionMetadataInSimpleWorkspace,
   setTerminalSessionAgentNameInSimpleWorkspace,
+  setTerminalSessionLastActivityAtInSimpleWorkspace,
   setTerminalSessionPersistenceNameInSimpleWorkspace,
   setTerminalSessionPersistenceProviderInSimpleWorkspace,
   setViewModeInSimpleWorkspace,
@@ -3020,6 +3021,7 @@ function markNativeSessionSemanticActivityAt(
    * poller cannot restore an older prompt-only timestamp.
    */
   terminalState.lastActivityAt = timestamp;
+  persistTerminalSessionLastActivityAt(sessionId, timestamp);
   if (terminalState.sessionStateFilePath) {
     void persistNativeSessionSemanticActivityAt(
       terminalState.sessionStateFilePath,
@@ -4330,6 +4332,7 @@ function createArchivedPreviousSessionRecord(
     agentSessionPath: terminalState?.agentSessionPath ?? session.agentSessionPath,
     firstUserMessage: session.firstUserMessage ?? terminalState?.firstUserMessage,
     isSleeping: false,
+    lastActivityAt: terminalState?.lastActivityAt ?? session.lastActivityAt,
     title: archiveTitle.title ?? session.title,
     titleSource: archiveTitle.title
       ? (archiveTitle.titleSource ?? session.titleSource)
@@ -4975,6 +4978,53 @@ function setTerminalSessionAgentSessionMetadata(
       setTerminalSessionAgentSessionMetadataInSimpleWorkspace(workspace, sessionId, metadata)
         .snapshot,
   );
+}
+
+function persistTerminalSessionLastActivityAt(sessionId: string, lastActivityAt: string): void {
+  const reference = resolveTerminalSessionReferenceForPersistence(sessionId);
+  if (
+    reference.project.commandsPanel.sessions.some(
+      (session) => session.sessionId === reference.sessionId,
+    )
+  ) {
+    updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === reference.sessionId ? { ...session, lastActivityAt } : session,
+      ),
+    }));
+    return;
+  }
+  /**
+   * CDXC:SessionLastActive 2026-05-17-02:45:
+   * Persist only the terminal Last Active timestamp into the project snapshot.
+   * Sleeping sessions do not have live terminalState after restart, so their
+   * sidebar card and Last Active sort must read this durable value directly.
+   */
+  updateProjectWorkspace(
+    reference.project.projectId,
+    (workspace) =>
+      setTerminalSessionLastActivityAtInSimpleWorkspace(
+        workspace,
+        reference.sessionId,
+        lastActivityAt,
+      ).snapshot,
+  );
+}
+
+function resolveTerminalSessionReferenceForPersistence(sessionId: string): {
+  project: NativeProject;
+  sessionId: string;
+} {
+  const explicitReference = resolveSidebarSessionReference(sessionId);
+  if (findTerminalSessionInProject(explicitReference.project, explicitReference.sessionId)) {
+    return explicitReference;
+  }
+  const project = projects.find((candidate) => findTerminalSessionInProject(candidate, sessionId));
+  return {
+    project: project ?? explicitReference.project,
+    sessionId,
+  };
 }
 
 function setTerminalSessionPersistenceName(
@@ -5984,8 +6034,17 @@ function createProjectedSidebarSessionsForGroup(group: SessionGroupRecord): Side
        * terminal sessions always expose a last-interaction value, using the
        * live activity timestamp when known and the session creation time as
        * the canonical baseline.
+       *
+       * CDXC:SessionLastActive 2026-05-17-02:45:
+       * After restart, sleeping sessions have no live terminalState until the
+       * user wakes them. Read the durable terminal session lastActivityAt
+       * before falling back to createdAt so initial sidebar times and Last
+       * Active sorting are correct without clicking each session.
        */
-      lastInteractionAt: terminalState?.lastActivityAt ?? sessionRecord?.createdAt,
+      lastInteractionAt:
+        terminalState?.lastActivityAt ??
+        (sessionRecord?.kind === "terminal" ? sessionRecord.lastActivityAt : undefined) ??
+        sessionRecord?.createdAt,
       terminalTitle: secondaryTerminalTitle,
     };
   });
@@ -6457,6 +6516,7 @@ function restoreNativeTerminalSession(
     sessionPersistenceName,
     sessionPersistenceProvider,
     sessionStateFilePath,
+    lastActivityAt: session.lastActivityAt,
     terminalTitle: session.title,
   });
   appendAgentDetectionDebugLog("nativeSidebar.restoreTerminalState.created", {
@@ -9236,6 +9296,7 @@ async function processNativeFirstPromptAutoRename(
      * finishes.
      */
     terminalState.lastActivityAt = persistedState.lastActivityAt;
+    persistTerminalSessionLastActivityAt(sessionId, persistedState.lastActivityAt);
     publish();
   }
   if (didUpdateCommandPaneActivity || didUpdateAgentSessionState) {
