@@ -6,7 +6,7 @@
 - Fast & Low RAM usage
 
 #### Install on macOS using brew or dmg in releases page
-###### (Looking for help with dev/testing for Windows & Linux ports)
+###### (Looking for help with Windows & Linux ports)
 
 The same Homebrew command installs the correct Apple Silicon or Intel Mac build automatically.
 
