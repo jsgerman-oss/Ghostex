@@ -171,7 +171,12 @@ export function CommandPalette({
           The palette should not list itself as a command, Ghostex built-ins
           should be single-line rows without descriptions, and the pet row must
           reflect the current wake/sleep state before routing through the shared
-          settings-owned pet toggle. */}
+          settings-owned pet toggle.
+
+          CDXC:CommandPalette 2026-05-16-13:04:
+          Command rows without assigned shortcuts should leave the right edge
+          blank instead of showing "No hotkey" placeholder text so the palette
+          only surfaces concrete accelerators. */}
       <Command>
         <CommandInput placeholder="Search Ghostex commands..." />
         <CommandList className="ghostex-command-palette-list">
@@ -187,9 +192,9 @@ export function CommandPalette({
                 <span className="ghostex-command-palette-copy">
                   <span className="ghostex-command-palette-title">{command.title}</span>
                 </span>
-                <CommandShortcut>
-                  {command.hotkey ? formatSidebarHotkeyLabel(command.hotkey) : "No hotkey"}
-                </CommandShortcut>
+                {command.hotkey ? (
+                  <CommandShortcut>{formatSidebarHotkeyLabel(command.hotkey)}</CommandShortcut>
+                ) : null}
               </CommandItem>
             ))}
           </CommandGroup>
@@ -216,7 +221,6 @@ export function CommandPalette({
                         {getCommandDescription(command)}
                       </span>
                     </span>
-                    <CommandShortcut>No hotkey</CommandShortcut>
                   </CommandItem>
                 ))}
               </CommandGroup>
