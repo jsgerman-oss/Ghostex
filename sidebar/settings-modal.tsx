@@ -126,6 +126,7 @@ import {
 } from "../shared/ghostex-hotkeys";
 import { PET_OPTIONS, type PetId } from "../shared/pets";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
+import { EditorBrandIcon, getEditorBrandIconId } from "./brand-icons";
 import { HotkeyRecorderField } from "./hotkey-recorder-field";
 import { PetAvatar } from "./pet-avatar";
 import { CommandIconPicker } from "./command-icon-picker";
@@ -146,9 +147,24 @@ const HOTKEY_SETTINGS_SECTIONS: readonly HotkeySettingsSectionDefinition[] = [
       "openCommandPalette",
       "openSettings",
       "moveSidebar",
-      "renameActiveSession",
     ],
     title: "General",
+  },
+  {
+    id: "paneActions",
+    ids: [
+      "openBrowserPane",
+      "splitMore",
+      "splitMoreDown",
+      "rotatePanesClockwise",
+      "mergeAllTabs",
+      "renameActiveSession",
+      "delayedSend",
+      "forkSession",
+      "reloadSession",
+      "popOutPane",
+    ],
+    title: "Pane Actions",
   },
   {
     id: "navigation",
@@ -185,9 +201,15 @@ const HOTKEY_SETTINGS_SECTIONS: readonly HotkeySettingsSectionDefinition[] = [
     title: "Session Slots",
   },
   {
-    id: "splits",
-    ids: ["splitMore", "splitMoreDown"],
-    title: "Splits",
+    id: "actions",
+    ids: [
+      "runActionSlot1",
+      "runActionSlot2",
+      "runActionSlot3",
+      "runActionSlot4",
+      "runActionSlot5",
+    ],
+    title: "Actions",
   },
 ];
 
@@ -232,10 +254,11 @@ type GhosttySettingsSectionId = "terminal" | "terminalBehavior" | "terminalScrol
 
 type HotkeySettingsSectionId =
   | "general"
+  | "paneActions"
   | "navigation"
   | "groups"
   | "sessionSlots"
-  | "splits";
+  | "actions";
 
 type HotkeySettingsSectionDefinition = {
   ids: readonly ghostexHotkeyActionId[];
@@ -1096,7 +1119,7 @@ export function SettingsModal({
               {shouldShowSetting(settingsSearch.sidebar, "sidebarSettingsPreset") ? (
               <SidebarPresetField
                 activePresetId={activeSidebarSettingsPresetId}
-                description="Apply a sidebar UI preset. Custom appears when these settings no longer match a preset."
+                description="Apply a sidebar UI preset."
                 isModified={activeSidebarSettingsPresetId !== "codex"}
                 label="Preset"
                 onChange={updateSidebarSettingsPreset}
@@ -2077,27 +2100,34 @@ function OpenTargetsSettingsTab({
         <SettingsSection title="Open In">
           {/* CDXC:TitlebarOpenIn 2026-05-11-00:22
               Users need a Settings tab opened from the titlebar dropdown to
-              show or hide IDE targets and add custom project-open commands. */}
+              show or hide IDE targets and add custom project-open commands.
+
+              CDXC:TitlebarOpenIn 2026-05-16-23:24
+              Settings must show the same Open In editor icons as the titlebar
+              dropdown so users can scan Cursor, VS Code variants, Zed,
+              Antigravity, VSCodium, and JetBrains-family targets by brand. */}
           <div className="flex flex-col gap-2">
             {BUILT_IN_WORKSPACE_OPEN_TARGETS.map((target) => {
-              const isEmbeddedEditor = target.id === "embedded-editor";
-              const isAvailable = isEmbeddedEditor || availableBuiltInIds.has(target.id);
+              const isAvailable = target.id === "finder" || availableBuiltInIds.has(target.id);
               return (
                 <div
                   className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/40 px-3 py-2"
                   key={target.id}
                 >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{target.label}</div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {isAvailable
-                        ? target.commands?.join(", ") ?? (isEmbeddedEditor ? "Ghostex" : "macOS")
-                        : "Not installed"}
+                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                    <OpenTargetSettingsIcon targetId={target.id} />
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{target.label}</div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {isAvailable
+                          ? target.commands?.join(", ") ?? "macOS"
+                          : "Not installed"}
+                      </div>
                     </div>
                   </div>
                   <Switch
-                    checked={isEmbeddedEditor || (isAvailable && !hiddenIds.has(target.id))}
-                    disabled={isEmbeddedEditor || !isAvailable}
+                    checked={isAvailable && !hiddenIds.has(target.id)}
+                    disabled={!isAvailable}
                     onCheckedChange={(checked) => updateHiddenTarget(target.id, checked)}
                   />
                 </div>
@@ -2211,6 +2241,24 @@ function OpenTargetsSettingsTab({
         </SettingsSection>
       </div>
     </ScrollArea>
+  );
+}
+
+function OpenTargetSettingsIcon({ targetId }: { targetId: string }) {
+  if (targetId === "finder") {
+    return (
+      <IconFolderOpen
+        aria-hidden="true"
+        className="settings-open-target-icon text-muted-foreground"
+      />
+    );
+  }
+  const icon = getEditorBrandIconId(targetId);
+  if (icon) {
+    return <EditorBrandIcon className="settings-open-target-icon" icon={icon} />;
+  }
+  return (
+    <IconCodeDots aria-hidden="true" className="settings-open-target-icon text-muted-foreground" />
   );
 }
 
@@ -3035,11 +3083,12 @@ function HotkeysSettingsTab({
   searchQuery: string;
 }) {
   const normalizedHotkeys = normalizeghostexHotkeySettings(hotkeys);
+  const actionsSectionRef = useRef<HTMLDivElement>(null);
   const generalSectionRef = useRef<HTMLDivElement>(null);
   const groupsSectionRef = useRef<HTMLDivElement>(null);
   const navigationSectionRef = useRef<HTMLDivElement>(null);
+  const paneActionsSectionRef = useRef<HTMLDivElement>(null);
   const sessionSlotsSectionRef = useRef<HTMLDivElement>(null);
-  const splitsSectionRef = useRef<HTMLDivElement>(null);
   const duplicateIds = useMemo(
     () => getDuplicateHotkeyIds(normalizedHotkeys),
     [normalizedHotkeys],
@@ -3081,11 +3130,12 @@ function HotkeysSettingsTab({
     [definitionsById, searchQuery],
   );
   const sectionRefs: Record<HotkeySettingsSectionId, RefObject<HTMLDivElement | null>> = {
+    actions: actionsSectionRef,
     general: generalSectionRef,
     groups: groupsSectionRef,
     navigation: navigationSectionRef,
+    paneActions: paneActionsSectionRef,
     sessionSlots: sessionSlotsSectionRef,
-    splits: splitsSectionRef,
   };
   const visibleSections = HOTKEY_SETTINGS_SECTIONS.filter((section) =>
     shouldShowSettingsSection(sectionSearches[section.id]),

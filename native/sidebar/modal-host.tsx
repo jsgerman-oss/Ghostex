@@ -85,6 +85,21 @@ type AppModalHostMessage =
   | { type: "close" }
   | { details?: string; event: string; type: "debugLog" }
   | { requestId: string; type: "floatingPromptEditorCloseAndSave" }
+  | {
+      error?: string;
+      imagePath?: string;
+      pasteRequestId: string;
+      requestId: string;
+      type: "floatingPromptEditorImagePasteResult";
+    }
+  | {
+      dataUrl?: string;
+      error?: string;
+      path: string;
+      previewRequestId: string;
+      requestId: string;
+      type: "floatingPromptEditorImagePreviewResult";
+    }
   | { modal: AppModalKind; type: "presented" }
   | { message: unknown; type: "sidebarState" };
 
@@ -125,6 +140,14 @@ type FloatingPromptEditorState = {
 };
 
 type FloatingPromptEditorDragMode = "move" | "resize";
+
+type FloatingPromptEditorImagePreview = {
+  endOffset: number;
+  id: string;
+  markdown: string;
+  path: string;
+  startOffset: number;
+};
 
 const floatingPromptEditorFrameMargin = 16;
 const floatingPromptEditorDefaultHeight = 320;
@@ -188,12 +211,41 @@ declare global {
 
 type MonacoEditorInstance = {
   dispose: () => void;
+  executeEdits: (source: string, edits: MonacoEdit[]) => boolean;
   focus?: () => void;
-  getModel: () => unknown;
+  getModel: () => MonacoTextModel | null;
+  getPosition: () => MonacoPosition | null;
+  getSelection: () => MonacoRange | null;
   getValue: () => string;
+  hasTextFocus?: () => boolean;
   layout: () => void;
   onDidChangeModelContent: (listener: () => void) => { dispose: () => void };
+  pushUndoStop?: () => boolean;
+  revealPositionInCenterIfOutsideViewport?: (position: MonacoPosition) => void;
+  setPosition?: (position: MonacoPosition) => void;
   setValue: (value: string) => void;
+};
+
+type MonacoPosition = {
+  column: number;
+  lineNumber: number;
+};
+
+type MonacoRange = {
+  endColumn: number;
+  endLineNumber: number;
+  startColumn: number;
+  startLineNumber: number;
+};
+
+type MonacoEdit = {
+  forceMoveMarkers?: boolean;
+  range: MonacoRange;
+  text: string;
+};
+
+type MonacoTextModel = {
+  getPositionAt: (offset: number) => MonacoPosition;
 };
 
 type MonacoAmdRequire = {
@@ -275,6 +327,146 @@ function loadModalHostMonaco(): Promise<void> {
   return modalHostMonacoLoadPromise;
 }
 
+function getNextPromptEditorImageIndex(text: string): number {
+  const imageLabelPattern = /\[Image #(\d+)\]\(/g;
+  let highestIndex = 0;
+  for (const match of text.matchAll(imageLabelPattern)) {
+    const index = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(index)) {
+      highestIndex = Math.max(highestIndex, index);
+    }
+  }
+  return highestIndex + 1;
+}
+
+function hasImagePastePayload(event: ClipboardEvent): boolean {
+  const clipboardData = event.clipboardData;
+  if (!clipboardData) {
+    return false;
+  }
+
+  const files = Array.from(clipboardData.files);
+  if (
+    files.some((file) => {
+      const type = file.type.toLowerCase();
+      return type.startsWith("image/") || /\.(avif|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/iu.test(file.name);
+    })
+  ) {
+    return true;
+  }
+
+  const items = Array.from(clipboardData.items);
+  if (
+    items.some((item) => item.kind === "file" && item.type.toLowerCase().startsWith("image/"))
+  ) {
+    return true;
+  }
+
+  const types = Array.from(clipboardData.types).map((type) => type.toLowerCase());
+  if (
+    types.some(
+      (type) =>
+        type === "files" ||
+        type === "public.file-url" ||
+        type.startsWith("image/") ||
+        type.startsWith("public.image"),
+    )
+  ) {
+    return true;
+  }
+
+  return (
+    types.includes("text/uri-list") &&
+    clipboardData.getData("text/uri-list").trim().toLowerCase().startsWith("file:")
+  );
+}
+
+function rangeFromPosition(position: MonacoPosition): MonacoRange {
+  return {
+    endColumn: position.column,
+    endLineNumber: position.lineNumber,
+    startColumn: position.column,
+    startLineNumber: position.lineNumber,
+  };
+}
+
+function endPositionAfterInsertedText(start: MonacoPosition, text: string): MonacoPosition {
+  const lines = text.split("\n");
+  if (lines.length === 1) {
+    return {
+      column: start.column + text.length,
+      lineNumber: start.lineNumber,
+    };
+  }
+  return {
+    column: lines[lines.length - 1].length + 1,
+    lineNumber: start.lineNumber + lines.length - 1,
+  };
+}
+
+function PromptEditorCloseIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path
+        d="M18 6 6 18M6 6l12 12"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2.4"
+      />
+    </svg>
+  );
+}
+
+function parsePromptEditorImagePreviews(text: string): FloatingPromptEditorImagePreview[] {
+  const markdownLinkPattern = /!?\[[^\]\n]*\]\(([^)\n]+)\)/g;
+  const previews: FloatingPromptEditorImagePreview[] = [];
+  for (const match of text.matchAll(markdownLinkPattern)) {
+    const markdown = match[0];
+    const rawPath = match[1]?.trim() ?? "";
+    const startOffset = match.index ?? 0;
+    if (!isPromptEditorImagePath(rawPath)) {
+      continue;
+    }
+    previews.push({
+      endOffset: startOffset + markdown.length,
+      id: `${startOffset}:${rawPath}:${markdown.length}`,
+      markdown,
+      path: rawPath,
+      startOffset,
+    });
+  }
+  return previews;
+}
+
+function isPromptEditorImagePath(path: string): boolean {
+  const normalizedPath = path.split(/[?#]/u)[0].toLowerCase();
+  return (
+    normalizedPath.startsWith("~/.ghostex/i/") ||
+    /\.(avif|gif|heic|heif|jpe?g|png|svg|tiff?|webp)$/iu.test(normalizedPath)
+  );
+}
+
+function promptEditorElementSummary(target: EventTarget | null): string {
+  if (!(target instanceof Element)) {
+    return String(target);
+  }
+  const classes =
+    typeof target.className === "string"
+      ? target.className
+      : target.getAttribute("class") ?? "";
+  return [
+    target.tagName.toLowerCase(),
+    target.id ? `#${target.id}` : "",
+    classes
+      .split(/\s+/u)
+      .filter(Boolean)
+      .slice(0, 4)
+      .map((className) => `.${className}`)
+      .join(""),
+  ].join("");
+}
+
 function clampFloatingPromptEditorFrame(frame: FloatingPromptEditorFrame): FloatingPromptEditorFrame {
   const margin = floatingPromptEditorFrameMargin;
   const availableWidth = Math.max(240, window.innerWidth - margin * 2);
@@ -325,14 +517,43 @@ function FloatingPromptEditorModal({
   const editorRef = useRef<MonacoEditorInstance | null>(null);
   const [frame, setFrame] = useState<FloatingPromptEditorFrame>(() => defaultFloatingPromptEditorFrame());
   const [dragMode, setDragMode] = useState<FloatingPromptEditorDragMode>();
+  const [imagePreviewDataUrls, setImagePreviewDataUrls] = useState<Record<string, string>>({});
+  const [imagePreviews, setImagePreviews] = useState<FloatingPromptEditorImagePreview[]>([]);
+  const [openImagePreview, setOpenImagePreview] = useState<FloatingPromptEditorImagePreview>();
   const [isCancelConfirming, setIsCancelConfirming] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const activePointerDragCleanupRef = useRef<(() => void) | undefined>(undefined);
   const cancelConfirmTimeoutRef = useRef<number | undefined>(undefined);
+  const editorContentListenerRef = useRef<{ dispose: () => void } | undefined>(undefined);
+  const imagePasteRequestCounterRef = useRef(0);
+  const imagePreviewLoadRequestCounterRef = useRef(0);
+  const failedImagePreviewPathsRef = useRef<Set<string>>(new Set());
+  const pendingImagePreviewPathRequestsRef = useRef<Set<string>>(new Set());
+  const pendingImagePreviewRequestIdsRef = useRef<Map<string, string>>(new Map());
+  const pendingImagePasteRequestIdsRef = useRef<Set<string>>(new Set());
   const savedCloseAndSaveRequestIdRef = useRef<string | undefined>(undefined);
+  const logPromptEditorFocusDebug = (event: string, details: Record<string, unknown> = {}) => {
+    postAppModalHostMessage(
+      {
+        area: "PromptEditor:focusDebug",
+        message: JSON.stringify({
+          activeElement: promptEditorElementSummary(document.activeElement),
+          event,
+          hasEditor: editorRef.current !== null,
+          hasTextFocus: editorRef.current?.hasTextFocus?.() ?? false,
+          performanceNow: Math.round(performance.now()),
+          ...details,
+        }),
+        type: "logError",
+      },
+      "PromptEditor:focusDebug",
+    );
+  };
 
   useEffect(() => {
     if (!isOpen || !editor) {
+      editorContentListenerRef.current?.dispose();
+      editorContentListenerRef.current = undefined;
       editorRef.current?.dispose();
       editorRef.current = null;
       window.clearTimeout(cancelConfirmTimeoutRef.current);
@@ -340,12 +561,25 @@ function FloatingPromptEditorModal({
       activePointerDragCleanupRef.current?.();
       activePointerDragCleanupRef.current = undefined;
       setDragMode(undefined);
+      setImagePreviewDataUrls({});
+      setImagePreviews([]);
+      setOpenImagePreview(undefined);
       setIsCancelConfirming(false);
       setIsSaving(false);
+      failedImagePreviewPathsRef.current.clear();
+      pendingImagePreviewPathRequestsRef.current.clear();
+      pendingImagePreviewRequestIdsRef.current.clear();
+      pendingImagePasteRequestIdsRef.current.clear();
       return;
     }
     setFrame(clampFloatingPromptEditorFrame(editor.initialFrame ?? defaultFloatingPromptEditorFrame()));
     setIsCancelConfirming(false);
+    setImagePreviewDataUrls({});
+    setImagePreviews(parsePromptEditorImagePreviews(editor.initialText));
+    setOpenImagePreview(undefined);
+    failedImagePreviewPathsRef.current.clear();
+    pendingImagePreviewPathRequestsRef.current.clear();
+    pendingImagePreviewRequestIdsRef.current.clear();
   }, [editor?.requestId, isOpen]);
 
   useEffect(() => {
@@ -358,6 +592,8 @@ function FloatingPromptEditorModal({
         if (disposed || !containerRef.current || !window.monaco) {
           return;
         }
+        editorContentListenerRef.current?.dispose();
+        editorContentListenerRef.current = undefined;
         editorRef.current?.dispose();
         /**
          * CDXC:PromptEditor 2026-05-13-09:48
@@ -405,7 +641,18 @@ function FloatingPromptEditorModal({
           wordWrap: "on",
         }) as MonacoEditorInstance;
         editorRef.current = monacoEditor;
+        logPromptEditorFocusDebug("monaco.create", {
+          containerActive: document.activeElement === containerRef.current,
+          target: promptEditorElementSummary(containerRef.current),
+        });
+        setImagePreviews(parsePromptEditorImagePreviews(monacoEditor.getValue()));
+        editorContentListenerRef.current = monacoEditor.onDidChangeModelContent(() => {
+          setImagePreviews(parsePromptEditorImagePreviews(monacoEditor.getValue()));
+        });
         monacoEditor.focus?.();
+        logPromptEditorFocusDebug("monaco.initialFocus", {
+          target: promptEditorElementSummary(document.activeElement),
+        });
       })
       .catch((error) => {
         postAppModalHostMessage(
@@ -419,14 +666,230 @@ function FloatingPromptEditorModal({
       });
     return () => {
       disposed = true;
+      editorContentListenerRef.current?.dispose();
+      editorContentListenerRef.current = undefined;
       editorRef.current?.dispose();
       editorRef.current = null;
     };
   }, [editor?.requestId, isOpen]);
 
   useEffect(() => {
+    if (!isOpen || !editor || !containerRef.current) {
+      return;
+    }
+    /**
+     * CDXC:PromptEditor 2026-05-17-01:14:
+     * Prompt editor focus regressions need event-path diagnostics before any
+     * behavior change. Log native/React pointer and focus state so we can tell
+     * whether clicks reach the Monaco DOM, whether focus is requested, and
+     * whether Monaco reports text focus afterward.
+     */
+    const container = containerRef.current;
+    const logPointer = (event: PointerEvent) => {
+      logPromptEditorFocusDebug(`dom.${event.type}`, {
+        button: event.button,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        target: promptEditorElementSummary(event.target),
+      });
+    };
+    const logMouse = (event: MouseEvent) => {
+      logPromptEditorFocusDebug(`dom.${event.type}`, {
+        button: event.button,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        target: promptEditorElementSummary(event.target),
+      });
+    };
+    const logFocus = (event: FocusEvent) => {
+      logPromptEditorFocusDebug(`dom.${event.type}`, {
+        target: promptEditorElementSummary(event.target),
+      });
+    };
+    container.addEventListener("pointerdown", logPointer, true);
+    container.addEventListener("mousedown", logMouse, true);
+    container.addEventListener("click", logMouse, true);
+    container.addEventListener("focusin", logFocus, true);
+    container.addEventListener("focusout", logFocus, true);
+    return () => {
+      container.removeEventListener("pointerdown", logPointer, true);
+      container.removeEventListener("mousedown", logMouse, true);
+      container.removeEventListener("click", logMouse, true);
+      container.removeEventListener("focusin", logFocus, true);
+      container.removeEventListener("focusout", logFocus, true);
+    };
+  }, [editor?.requestId, isOpen]);
+
+  useEffect(() => {
     editorRef.current?.layout();
-  }, [frame.height, frame.width]);
+  }, [frame.height, frame.width, imagePreviews.length]);
+
+  useEffect(() => {
+    if (!openImagePreview || imagePreviews.some((preview) => preview.id === openImagePreview.id)) {
+      return;
+    }
+    setOpenImagePreview(undefined);
+  }, [imagePreviews, openImagePreview]);
+
+  useEffect(() => {
+    if (!isOpen || !editor || imagePreviews.length === 0) {
+      return;
+    }
+
+    for (const preview of imagePreviews) {
+      if (
+        imagePreviewDataUrls[preview.path] ||
+        failedImagePreviewPathsRef.current.has(preview.path) ||
+        pendingImagePreviewPathRequestsRef.current.has(preview.path)
+      ) {
+        continue;
+      }
+      const previewRequestId = `${editor.requestId}:image-preview:${++imagePreviewLoadRequestCounterRef.current}`;
+      pendingImagePreviewPathRequestsRef.current.add(preview.path);
+      pendingImagePreviewRequestIdsRef.current.set(previewRequestId, preview.path);
+      postAppModalHostMessage(
+        {
+          path: preview.path,
+          previewRequestId,
+          requestId: editor.requestId,
+          type: "floatingPromptEditorLoadImagePreview",
+        },
+        "PromptEditor:imagePreview",
+      );
+    }
+  }, [editor?.requestId, imagePreviewDataUrls, imagePreviews, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !editor) {
+      return;
+    }
+
+    const insertImageMarkdown = (imagePath: string) => {
+      const monacoEditor = editorRef.current;
+      const position = monacoEditor?.getPosition();
+      if (!monacoEditor || !position) {
+        return;
+      }
+      const markdown = `[Image #${getNextPromptEditorImageIndex(monacoEditor.getValue())}](${imagePath})`;
+      const range = monacoEditor.getSelection() ?? rangeFromPosition(position);
+      const startPosition = {
+        column: range.startColumn,
+        lineNumber: range.startLineNumber,
+      };
+      const endPosition = endPositionAfterInsertedText(startPosition, markdown);
+      /**
+       * CDXC:PromptEditor 2026-05-16-21:21:
+       * Pasting an image into the rich prompt editor should insert a Markdown
+       * file reference, not binary image content. Native owns path resolution
+       * so clipboard images become durable local files before insertion.
+       *
+       * CDXC:PromptEditor 2026-05-16-22:56:
+       * Insert the short native-returned tilde path for every pasted image.
+       * Native always copies or saves image data under ~/.ghostex/i first so
+       * long source paths do not wrap across multiple prompt-editor lines.
+       */
+      monacoEditor.pushUndoStop?.();
+      monacoEditor.executeEdits("ghostex-image-paste", [
+        {
+          forceMoveMarkers: true,
+          range,
+          text: markdown,
+        },
+      ]);
+      monacoEditor.setPosition?.(endPosition);
+      monacoEditor.revealPositionInCenterIfOutsideViewport?.(endPosition);
+      monacoEditor.pushUndoStop?.();
+      monacoEditor.focus?.();
+    };
+
+    const handlePaste = (event: ClipboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        !hasImagePastePayload(event) ||
+        !containerRef.current ||
+        !(event.target instanceof Node) ||
+        !containerRef.current.contains(event.target)
+      ) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const pasteRequestId = `${editor.requestId}:image-paste:${++imagePasteRequestCounterRef.current}`;
+      pendingImagePasteRequestIdsRef.current.add(pasteRequestId);
+      postAppModalHostMessage(
+        {
+          pasteRequestId,
+          requestId: editor.requestId,
+          type: "floatingPromptEditorPasteImage",
+        },
+        "PromptEditor:imagePaste",
+      );
+    };
+
+    const handleNativeMessage = (event: Event) => {
+      const message = (event as CustomEvent<AppModalHostMessage>).detail;
+      if (
+        message &&
+        typeof message === "object" &&
+        message.type === "floatingPromptEditorImagePreviewResult" &&
+        message.requestId === editor.requestId &&
+        pendingImagePreviewRequestIdsRef.current.has(message.previewRequestId)
+      ) {
+        const requestedPath = pendingImagePreviewRequestIdsRef.current.get(message.previewRequestId);
+        pendingImagePreviewRequestIdsRef.current.delete(message.previewRequestId);
+        if (requestedPath) {
+          pendingImagePreviewPathRequestsRef.current.delete(requestedPath);
+        }
+        if (typeof message.dataUrl === "string" && message.dataUrl.startsWith("data:image/")) {
+          setImagePreviewDataUrls((previous) => ({
+            ...previous,
+            [message.path]: message.dataUrl ?? "",
+          }));
+          return;
+        }
+        failedImagePreviewPathsRef.current.add(message.path);
+        postAppModalHostMessage(
+          {
+            area: "PromptEditor:imagePreview",
+            message: message.error || `Native image preview load failed for ${message.path}.`,
+            type: "logError",
+          },
+          "PromptEditor:imagePreview",
+        );
+        return;
+      }
+
+      if (
+        !message ||
+        typeof message !== "object" ||
+        message.type !== "floatingPromptEditorImagePasteResult" ||
+        message.requestId !== editor.requestId ||
+        !pendingImagePasteRequestIdsRef.current.has(message.pasteRequestId)
+      ) {
+        return;
+      }
+      pendingImagePasteRequestIdsRef.current.delete(message.pasteRequestId);
+      if (typeof message.imagePath === "string" && message.imagePath.trim()) {
+        insertImageMarkdown(message.imagePath.trim());
+        return;
+      }
+      postAppModalHostMessage(
+        {
+          area: "PromptEditor:imagePaste",
+          message: message.error || "Native clipboard did not provide an image path.",
+          type: "logError",
+        },
+        "PromptEditor:imagePaste",
+      );
+    };
+
+    window.addEventListener("paste", handlePaste, { capture: true });
+    window.addEventListener("ghostex-app-modal-host-message", handleNativeMessage);
+    return () => {
+      window.removeEventListener("paste", handlePaste, { capture: true });
+      window.removeEventListener("ghostex-app-modal-host-message", handleNativeMessage);
+    };
+  }, [editor?.requestId, isOpen]);
 
   useLayoutEffect(() => {
     if (!isOpen || !editor) {
@@ -483,7 +946,7 @@ function FloatingPromptEditorModal({
       cancelConfirmTimeoutRef.current = window.setTimeout(() => {
         setIsCancelConfirming(false);
         cancelConfirmTimeoutRef.current = undefined;
-      }, 5000);
+      }, 3000);
       return;
     }
     window.clearTimeout(cancelConfirmTimeoutRef.current);
@@ -504,11 +967,25 @@ function FloatingPromptEditorModal({
     }
     /**
      * CDXC:PromptEditor 2026-05-13-15:53
-     * Inside the Ctrl+G floating prompt editor, Ctrl+G must save the live Monaco text instead of only opening the editor from the terminal. Escape mirrors the Cancel button: the first press turns Cancel into Confirm, and a second press within five seconds cancels the editor.
+     * Inside the Ctrl+G floating prompt editor, Ctrl+G must save the live Monaco text instead of only opening the editor from the terminal. Escape mirrors the Cancel button: the first press turns Cancel into Confirm, and a second press within three seconds cancels the editor.
      * Save and Cancel tooltips must name those keyboard paths so hover help matches the behavior.
+     *
+     * CDXC:PromptEditor 2026-05-17-01:41:
+     * The Confirm cancel state should stay visible for three seconds so accidental discard intent clears sooner after the user hesitates.
+     *
+     * CDXC:PromptEditor 2026-05-16-23:23:
+     * Escape should close an open image preview popup without counting as the
+     * first or second Escape for prompt-editor cancellation. The popup is a
+     * transient inspection layer above the editor, not an editor discard intent.
      */
     const handleKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
+      if (!event.ctrlKey && !event.altKey && !event.metaKey && key === "escape" && openImagePreview) {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpenImagePreview(undefined);
+        return;
+      }
       if (event.ctrlKey && !event.altKey && !event.metaKey && key === "g") {
         event.preventDefault();
         event.stopPropagation();
@@ -525,7 +1002,7 @@ function FloatingPromptEditorModal({
     return () => {
       window.removeEventListener("keydown", handleKeyDown, { capture: true });
     };
-  }, [editor?.requestId, isCancelConfirming, isOpen, isSaving]);
+  }, [editor?.requestId, isCancelConfirming, isOpen, isSaving, openImagePreview]);
 
   useEffect(() => {
     if (
@@ -620,12 +1097,80 @@ function FloatingPromptEditorModal({
     }));
   };
 
+  const removeImagePreview = (preview: FloatingPromptEditorImagePreview) => {
+    const monacoEditor = editorRef.current;
+    const model = monacoEditor?.getModel();
+    if (!monacoEditor || !model) {
+      return;
+    }
+
+    const currentText = monacoEditor.getValue();
+    let startOffset =
+      currentText.slice(preview.startOffset, preview.endOffset) === preview.markdown
+        ? preview.startOffset
+        : currentText.indexOf(preview.markdown);
+    if (startOffset < 0) {
+      return;
+    }
+    let endOffset = startOffset + preview.markdown.length;
+    if (currentText[startOffset - 1] === "\n" && currentText[endOffset] === "\n") {
+      endOffset += 1;
+    } else if (currentText[endOffset] === "\n") {
+      endOffset += 1;
+    } else if (currentText[startOffset - 1] === "\n") {
+      startOffset -= 1;
+    }
+    const startPosition = model.getPositionAt(startOffset);
+    const endPosition = model.getPositionAt(endOffset);
+    monacoEditor.pushUndoStop?.();
+    monacoEditor.executeEdits("ghostex-image-preview-remove", [
+      {
+        forceMoveMarkers: true,
+        range: {
+          endColumn: endPosition.column,
+          endLineNumber: endPosition.lineNumber,
+          startColumn: startPosition.column,
+          startLineNumber: startPosition.lineNumber,
+        },
+        text: "",
+      },
+    ]);
+    monacoEditor.pushUndoStop?.();
+    monacoEditor.focus?.();
+    setOpenImagePreview((current) => (current?.id === preview.id ? undefined : current));
+  };
+
+  const closeImagePreviewFromBackdrop = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    if (event.target === event.currentTarget) {
+      /**
+       * CDXC:PromptEditor 2026-05-16-23:37:
+       * The dimmed image-preview backdrop is part of the preview dismissal
+       * target. Close on direct backdrop pointer-down while keeping clicks on
+       * the image itself inside the popup.
+       */
+      setOpenImagePreview(undefined);
+    }
+  };
+
   return (
     <div className="floating-prompt-editor-root" data-drag-mode={dragMode}>
       <section
         aria-label="Prompt Editor"
         className="floating-prompt-editor-panel"
-        onPointerDown={() => editorRef.current?.focus?.()}
+        onPointerDown={(event) => {
+          logPromptEditorFocusDebug("react.panelPointerDown.beforeFocus", {
+            clientX: event.clientX,
+            clientY: event.clientY,
+            target: promptEditorElementSummary(event.target),
+          });
+          editorRef.current?.focus?.();
+          window.setTimeout(() => {
+            logPromptEditorFocusDebug("react.panelPointerDown.afterFocus", {
+              target: promptEditorElementSummary(event.target),
+            });
+          }, 0);
+        }}
         style={{
           height: `${frame.height}px`,
           left: `${frame.left}px`,
@@ -649,6 +1194,7 @@ function FloatingPromptEditorModal({
               aria-label={isCancelConfirming ? "Confirm cancel prompt editor" : "Cancel prompt editor"}
               aria-keyshortcuts="Escape"
               className="floating-prompt-editor-cancel"
+              data-confirming={isCancelConfirming ? "true" : undefined}
               onClick={requestCancel}
               onPointerDown={(event) => event.stopPropagation()}
               title="press escape to cancel"
@@ -671,6 +1217,44 @@ function FloatingPromptEditorModal({
           </div>
         </div>
         <div className="floating-prompt-editor-monaco" ref={containerRef} spellCheck={false} />
+        {imagePreviews.length > 0 ? (
+          <div className="floating-prompt-editor-image-strip" onPointerDown={(event) => event.stopPropagation()}>
+            {imagePreviews.map((preview) => {
+              const dataUrl = imagePreviewDataUrls[preview.path];
+              return (
+                <div
+                  aria-label={`Open image preview ${preview.path}`}
+                  className="floating-prompt-editor-image-thumb"
+                  key={preview.id}
+                  onClick={() => setOpenImagePreview(preview)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setOpenImagePreview(preview);
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  title={preview.path}
+                >
+                  {dataUrl ? <img alt="" src={dataUrl} /> : <span aria-hidden="true" />}
+                  <button
+                    aria-label={`Remove image ${preview.path}`}
+                    className="floating-prompt-editor-image-remove"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      removeImagePreview(preview);
+                    }}
+                    type="button"
+                  >
+                    <PromptEditorCloseIcon />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         <div
           aria-label="Resize prompt editor"
           className="floating-prompt-editor-resize"
@@ -678,6 +1262,28 @@ function FloatingPromptEditorModal({
           role="separator"
         />
       </section>
+      {openImagePreview && imagePreviewDataUrls[openImagePreview.path] ? (
+        <div
+          className="floating-prompt-editor-image-popup"
+          onPointerDown={closeImagePreviewFromBackdrop}
+          role="presentation"
+        >
+          <button
+            aria-label="Close image preview"
+            className="floating-prompt-editor-image-popup-close"
+            onClick={() => setOpenImagePreview(undefined)}
+            type="button"
+          >
+            <PromptEditorCloseIcon />
+          </button>
+          <img
+            alt=""
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            src={imagePreviewDataUrls[openImagePreview.path]}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

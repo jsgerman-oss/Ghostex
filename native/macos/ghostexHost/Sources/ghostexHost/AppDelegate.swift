@@ -3088,8 +3088,15 @@ private final class NativeSettingsStore {
      CDXC:Hotkeys 2026-05-15-13:31:
      Plain Cmd+Arrow belongs to terminal and prompt text editing.
      Directional pane focus uses Cmd+Alt+Arrow so AppKit no longer intercepts common text navigation shortcuts.
-     */
+    */
     "createSession": "cmd+n",
+    /**
+     CDXC:CommandPalette 2026-05-17-01:32:
+     Pane context-menu actions also need configurable defaults at the AppKit
+     boundary so terminal-focused shortcuts can dispatch the same focused-pane
+     commands shown in the command palette.
+     */
+    "delayedSend": "ctrl+shift+s",
     "focusDown": "cmd+alt+down",
     "focusGroup1": "cmd+ctrl+1",
     "focusGroup2": "cmd+ctrl+2",
@@ -3112,6 +3119,8 @@ private final class NativeSettingsStore {
     "focusSessionSlot8": "cmd+8",
     "focusSessionSlot9": "cmd+9",
     "focusUp": "cmd+alt+up",
+    "forkSession": "ctrl+shift+f",
+    "mergeAllTabs": "ctrl+shift+m",
     "moveSidebar": "cmd+b",
     /**
      CDXC:CommandPalette 2026-05-15-20:38:
@@ -3125,8 +3134,28 @@ private final class NativeSettingsStore {
      Keep the native defaults in sync so AppKit matches and dispatches openCommandsPanel instead of filtering the action out of persisted hotkeys.
      */
     "openCommandsPanel": "f12",
+    "openBrowserPane": "ctrl+shift+b",
     "openSettings": "cmd+,",
+    "popOutPane": "ctrl+shift+o",
+    /**
+     CDXC:CommandPalette 2026-05-17-01:34:
+     Rotate and Reload defaults are intentionally swapped so Ctrl+Shift+L
+     rotates the layout while Ctrl+Shift+R keeps the common reload mnemonic.
+     */
+    "reloadSession": "ctrl+shift+r",
     "renameActiveSession": "cmd+r",
+    "rotatePanesClockwise": "ctrl+shift+l",
+    /**
+     CDXC:ActionsHotkeys 2026-05-17-01:18:
+     Action hotkeys launch the first five Actions by their current list order,
+     so native AppKit defaults must match the shared sidebar settings while
+     terminal panes own first responder.
+     */
+    "runActionSlot1": "ctrl+shift+1",
+    "runActionSlot2": "ctrl+shift+2",
+    "runActionSlot3": "ctrl+shift+3",
+    "runActionSlot4": "ctrl+shift+4",
+    "runActionSlot5": "ctrl+shift+5",
     /**
      CDXC:NativeSplits 2026-05-10-18:30
      Cmd+D and Cmd+Shift+D now create real terminal panes in the sidebar state
@@ -3464,6 +3493,7 @@ private final class NativeSettingsStore {
 }
 
 final class AppModalHostWebView: WKWebView {
+  private var lastPromptEditorHitTestLogAt: TimeInterval = 0
   private var topLeftHitRegions: [CGRect]?
 
   func setTopLeftHitRegions(_ regions: [CGRect]?) {
@@ -3497,6 +3527,23 @@ final class AppModalHostWebView: WKWebView {
       topLeftHitRegions.contains { region in
         region.insetBy(dx: -2, dy: -2).contains(candidate)
       }
+    }
+    let now = Date().timeIntervalSince1970
+    if now - lastPromptEditorHitTestLogAt > 0.2 {
+      lastPromptEditorHitTestLogAt = now
+      /**
+       CDXC:PromptEditor 2026-05-17-01:14:
+       Prompt editor click focus must be diagnosed before changing behavior.
+       Log throttled AppKit hit-test routing for the transparent modal WKWebView
+       so React focus logs can be correlated with whether native delivered the
+       click to the modal host or passed it through to the terminal workspace.
+       */
+      AppDelegate.appendAppModalErrorLog(
+        area: "PromptEditor:hitTestDebug",
+        message:
+          "point=(\(Int(point.x)),\(Int(point.y))) direct=(\(Int(directPoint.x)),\(Int(directPoint.y))) inverted=(\(Int(invertedPoint.x)),\(Int(invertedPoint.y))) inside=\(isInsideHitRegion) flipped=\(isFlipped) regions=\(topLeftHitRegions.map { NSStringFromRect($0) }.joined(separator: ","))",
+        stack: nil
+      )
     }
     if isInsideHitRegion {
       return super.hitTest(point) ?? self
@@ -4122,6 +4169,300 @@ final class ghostexRootView: NSView {
     }
   }
 
+  private func pasteImageIntoFloatingPromptEditor(message: [String: Any]) {
+    guard let requestId = message["requestId"] as? String,
+      let pasteRequestId = message["pasteRequestId"] as? String,
+      let active = activeFloatingPromptEditor,
+      active.requestId == requestId
+    else {
+      return
+    }
+
+    do {
+      let imagePath = try resolveFloatingPromptEditorClipboardImagePath()
+      dispatchModalHostMessage([
+        "imagePath": imagePath,
+        "pasteRequestId": pasteRequestId,
+        "requestId": active.requestId,
+        "type": "floatingPromptEditorImagePasteResult",
+      ])
+    } catch {
+      AppDelegate.appendAppModalErrorLog(
+        area: "PromptEditor:imagePaste",
+        message: error.localizedDescription,
+        stack: nil
+      )
+      dispatchModalHostMessage([
+        "error": error.localizedDescription,
+        "pasteRequestId": pasteRequestId,
+        "requestId": active.requestId,
+        "type": "floatingPromptEditorImagePasteResult",
+      ])
+    }
+  }
+
+  private func resolveFloatingPromptEditorClipboardImagePath() throws -> String {
+    let pasteboard = NSPasteboard.general
+    if let imageFileURL = Self.firstFloatingPromptEditorClipboardImageFileURL(in: pasteboard) {
+      let copiedURL = try Self.copyFloatingPromptEditorClipboardImageFile(imageFileURL)
+      return Self.floatingPromptEditorDisplayImagePath(for: copiedURL)
+    }
+
+    guard let pngData = Self.floatingPromptEditorClipboardPNGData(in: pasteboard) else {
+      throw NSError(
+        domain: "com.madda.ghostex.promptEditor.imagePaste",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Clipboard does not contain an image."]
+      )
+    }
+
+    /**
+     CDXC:PromptEditor 2026-05-16-21:21:
+     Rich prompt image paste must produce a durable Markdown file reference.
+     Store unsaved clipboard bitmaps under Ghostex-owned storage before React
+     inserts [Image #N](path) into Monaco.
+
+     CDXC:PromptEditor 2026-05-16-22:56:
+     Pasted image paths must stay short enough to read on one prompt-editor
+     line. Always copy image files and unsaved bitmap data into ~/.ghostex/i
+     with a compact timestamp filename, then insert the tilde path instead of
+     the original absolute source path.
+     */
+    let fileURL = try Self.uniqueFloatingPromptEditorImageURL(pathExtension: "png")
+    try pngData.write(to: fileURL, options: .atomic)
+    return Self.floatingPromptEditorDisplayImagePath(for: fileURL)
+  }
+
+  private static func copyFloatingPromptEditorClipboardImageFile(_ sourceURL: URL) throws -> URL {
+    let fileURL = try uniqueFloatingPromptEditorImageURL(
+      pathExtension: normalizedFloatingPromptEditorImageFileExtension(sourceURL.pathExtension))
+    try FileManager.default.copyItem(at: sourceURL, to: fileURL)
+    return fileURL
+  }
+
+  private static func uniqueFloatingPromptEditorImageURL(pathExtension: String) throws -> URL {
+    let directory = GhostexAppStorage.sharedRootDirectory.appendingPathComponent("i", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyMMddHHmmss"
+    let baseName = formatter.string(from: Date())
+    let normalizedExtension = normalizedFloatingPromptEditorImageFileExtension(pathExtension)
+    let firstURL = directory.appendingPathComponent("\(baseName).\(normalizedExtension)", isDirectory: false)
+    guard FileManager.default.fileExists(atPath: firstURL.path) else {
+      return firstURL
+    }
+
+    for index in 2...99 {
+      let candidate = directory.appendingPathComponent(
+        "\(baseName)-\(index).\(normalizedExtension)",
+        isDirectory: false
+      )
+      if !FileManager.default.fileExists(atPath: candidate.path) {
+        return candidate
+      }
+    }
+
+    return directory.appendingPathComponent(
+      "\(baseName)-\(UUID().uuidString.lowercased().prefix(4)).\(normalizedExtension)",
+      isDirectory: false
+    )
+  }
+
+  private static func normalizedFloatingPromptEditorImageFileExtension(_ pathExtension: String) -> String {
+    let normalizedExtension = pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if normalizedExtension == "jpeg" {
+      return "jpg"
+    }
+    if normalizedExtension == "tiff" {
+      return "tif"
+    }
+    return normalizedExtension.isEmpty ? "png" : normalizedExtension
+  }
+
+  private static func floatingPromptEditorDisplayImagePath(for fileURL: URL) -> String {
+    "~/.ghostex/i/\(fileURL.lastPathComponent)"
+  }
+
+  private func loadFloatingPromptEditorImagePreview(message: [String: Any]) {
+    guard let requestId = message["requestId"] as? String,
+      let previewRequestId = message["previewRequestId"] as? String,
+      let path = message["path"] as? String,
+      let active = activeFloatingPromptEditor,
+      active.requestId == requestId
+    else {
+      return
+    }
+
+    do {
+      let dataUrl = try Self.floatingPromptEditorImagePreviewDataURL(path: path)
+      dispatchModalHostMessage([
+        "dataUrl": dataUrl,
+        "path": path,
+        "previewRequestId": previewRequestId,
+        "requestId": active.requestId,
+        "type": "floatingPromptEditorImagePreviewResult",
+      ])
+    } catch {
+      AppDelegate.appendAppModalErrorLog(
+        area: "PromptEditor:imagePreview",
+        message: error.localizedDescription,
+        stack: nil
+      )
+      dispatchModalHostMessage([
+        "error": error.localizedDescription,
+        "path": path,
+        "previewRequestId": previewRequestId,
+        "requestId": active.requestId,
+        "type": "floatingPromptEditorImagePreviewResult",
+      ])
+    }
+  }
+
+  private static func floatingPromptEditorImagePreviewDataURL(path: String) throws -> String {
+    /**
+     CDXC:PromptEditor 2026-05-16-23:01:
+     The rich prompt editor thumbnail shelf must load every image path already
+     present in Monaco text. Resolve short ~/.ghostex/i paths natively and send
+     display-safe data URLs back to React so WKWebView local-file read limits do
+     not block thumbnail or popup rendering.
+     */
+    guard let fileURL = floatingPromptEditorImageFileURL(path: path),
+      FileManager.default.fileExists(atPath: fileURL.path),
+      isFloatingPromptEditorImageFileURL(fileURL)
+    else {
+      throw NSError(
+        domain: "com.madda.ghostex.promptEditor.imagePreview",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Image preview path does not point to a local image."]
+      )
+    }
+
+    let data = try Data(contentsOf: fileURL)
+    if fileURL.pathExtension.lowercased() == "svg" {
+      return "data:image/svg+xml;base64,\(data.base64EncodedString())"
+    }
+    guard let image = NSImage(data: data),
+      let pngData = floatingPromptEditorPreviewPNGData(from: image)
+    else {
+      throw NSError(
+        domain: "com.madda.ghostex.promptEditor.imagePreview",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Image preview data could not be decoded."]
+      )
+    }
+    return "data:image/png;base64,\(pngData.base64EncodedString())"
+  }
+
+  private static func floatingPromptEditorImageFileURL(path: String) -> URL? {
+    let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedPath.hasPrefix("file://"), let url = URL(string: trimmedPath), url.isFileURL {
+      return url
+    }
+    if trimmedPath.hasPrefix("~/.ghostex/") {
+      let relativePath = String(trimmedPath.dropFirst("~/.ghostex/".count))
+      return GhostexAppStorage.sharedRootDirectory.appendingPathComponent(relativePath)
+    }
+    if trimmedPath.hasPrefix("~/") {
+      let relativePath = String(trimmedPath.dropFirst(2))
+      return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(relativePath)
+    }
+    if trimmedPath.hasPrefix("/") {
+      return URL(fileURLWithPath: trimmedPath)
+    }
+    return nil
+  }
+
+  private static func floatingPromptEditorPreviewPNGData(from image: NSImage) -> Data? {
+    let sourceSize = image.size.width > 0 && image.size.height > 0 ? image.size : NSSize(width: 1, height: 1)
+    let maximumDimension = CGFloat(1600)
+    let scale = min(1, maximumDimension / max(sourceSize.width, sourceSize.height))
+    let drawSize = NSSize(width: max(1, sourceSize.width * scale), height: max(1, sourceSize.height * scale))
+    let output = NSImage(size: drawSize)
+    output.lockFocus()
+    NSColor.clear.setFill()
+    NSRect(origin: .zero, size: drawSize).fill()
+    image.draw(
+      in: NSRect(origin: .zero, size: drawSize),
+      from: NSRect(origin: .zero, size: sourceSize),
+      operation: .sourceOver,
+      fraction: 1.0
+    )
+    output.unlockFocus()
+    guard let tiffData = output.tiffRepresentation,
+      let bitmap = NSBitmapImageRep(data: tiffData)
+    else {
+      return nil
+    }
+    return bitmap.representation(using: .png, properties: [:])
+  }
+
+  private static func firstFloatingPromptEditorClipboardImageFileURL(in pasteboard: NSPasteboard) -> URL? {
+    let fileURLType = NSPasteboard.PasteboardType("public.file-url")
+    for item in pasteboard.pasteboardItems ?? [] {
+      guard let fileURLString = item.string(forType: fileURLType),
+        let fileURL = URL(string: fileURLString),
+        fileURL.isFileURL,
+        FileManager.default.fileExists(atPath: fileURL.path),
+        isFloatingPromptEditorImageFileURL(fileURL)
+      else {
+        continue
+      }
+      return fileURL
+    }
+
+    let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    guard let filenames = pasteboard.propertyList(forType: filenamesType) as? [String] else {
+      return nil
+    }
+    return filenames
+      .map { URL(fileURLWithPath: $0) }
+      .first { fileURL in
+        FileManager.default.fileExists(atPath: fileURL.path)
+          && isFloatingPromptEditorImageFileURL(fileURL)
+      }
+  }
+
+  private static func isFloatingPromptEditorImageFileURL(_ url: URL) -> Bool {
+    let pathExtension = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !pathExtension.isEmpty else {
+      return false
+    }
+    if let type = UTType(filenameExtension: pathExtension), type.conforms(to: .image) {
+      return true
+    }
+    return ["avif", "gif", "heic", "heif", "jpg", "jpeg", "png", "svg", "tif", "tiff", "webp"]
+      .contains(pathExtension.lowercased())
+  }
+
+  private static func floatingPromptEditorClipboardPNGData(in pasteboard: NSPasteboard) -> Data? {
+    let pngType = NSPasteboard.PasteboardType("public.png")
+    if let pngData = pasteboard.data(forType: pngType), NSImage(data: pngData) != nil {
+      return pngData
+    }
+
+    let tiffType = NSPasteboard.PasteboardType("public.tiff")
+    if let tiffData = pasteboard.data(forType: tiffType),
+      let image = NSImage(data: tiffData)
+    {
+      return floatingPromptEditorPNGData(from: image)
+    }
+
+    guard let image = NSImage(pasteboard: pasteboard) else {
+      return nil
+    }
+    return floatingPromptEditorPNGData(from: image)
+  }
+
+  private static func floatingPromptEditorPNGData(from image: NSImage) -> Data? {
+    guard let tiffData = image.tiffRepresentation,
+      let bitmap = NSBitmapImageRep(data: tiffData)
+    else {
+      return nil
+    }
+    return bitmap.representation(using: .png, properties: [:])
+  }
+
   private func cancelFloatingPromptEditor(message: [String: Any]) {
     guard let requestId = message["requestId"] as? String,
       let active = activeFloatingPromptEditor,
@@ -4399,6 +4740,14 @@ final class ghostexRootView: NSView {
         return item
       }
     }
+    /**
+     CDXC:TitlebarResources 2026-05-17-01:25:
+     Browser process rows need user-facing tab/view names from native CEF hosts,
+     not raw Chromium process labels. Include the workspace-owned Browser tab
+     inventory beside sidebar session groups so React can nest renderer
+     processes under the tab title and URL that caused the memory usage.
+     */
+    payload["browserTabs"] = workspaceView.titlebarBrowserResourceTabs()
     if let openTargets = command.workspaceOpenTargets {
       let availability = openTargets.availability
       payload["workspaceOpenTargets"] = [
@@ -5802,6 +6151,10 @@ final class ghostexRootView: NSView {
       updateFloatingPromptEditorHitRegion(message: message)
     case "floatingPromptEditorSave":
       saveFloatingPromptEditor(message: message)
+    case "floatingPromptEditorPasteImage":
+      pasteImageIntoFloatingPromptEditor(message: message)
+    case "floatingPromptEditorLoadImagePreview":
+      loadFloatingPromptEditorImagePreview(message: message)
     case "floatingPromptEditorCancel":
       cancelFloatingPromptEditor(message: message)
     case "ready":

@@ -35,9 +35,46 @@ describe("normalizeghostexHotkeySettings", () => {
     expect(DEFAULT_ghostex_HOTKEYS.focusRight).toBe("cmd+alt+right");
     expect(DEFAULT_ghostex_HOTKEYS.focusUp).toBe("cmd+alt+up");
     expect(DEFAULT_ghostex_HOTKEYS.focusDown).toBe("cmd+alt+down");
+    /**
+     * CDXC:CommandPalette 2026-05-17-01:32:
+     * Focused pane-menu actions should be configurable hotkeys so the command
+     * palette can expose the same actions users see in pane chrome.
+     */
+    expect(DEFAULT_ghostex_HOTKEYS.openBrowserPane).toBe("ctrl+shift+b");
+    expect(DEFAULT_ghostex_HOTKEYS.rotatePanesClockwise).toBe("ctrl+shift+l");
+    expect(DEFAULT_ghostex_HOTKEYS.mergeAllTabs).toBe("ctrl+shift+m");
+    expect(DEFAULT_ghostex_HOTKEYS.delayedSend).toBe("ctrl+shift+s");
+    expect(DEFAULT_ghostex_HOTKEYS.forkSession).toBe("ctrl+shift+f");
+    expect(DEFAULT_ghostex_HOTKEYS.reloadSession).toBe("ctrl+shift+r");
+    expect(DEFAULT_ghostex_HOTKEYS.popOutPane).toBe("ctrl+shift+o");
     expect(DEFAULT_ghostex_HOTKEYS.focusGroup1).toBe("cmd+ctrl+1");
     expect(DEFAULT_ghostex_HOTKEYS.focusGroup5).toBe("cmd+ctrl+5");
     expect(DEFAULT_ghostex_HOTKEYS.focusSessionSlot1).toBe("cmd+1");
+    /**
+     * CDXC:ActionsHotkeys 2026-05-17-01:18:
+     * Action launch hotkeys are positional so Settings can bind the first five
+     * Actions list rows without coupling shortcuts to command ids.
+     */
+    expect(DEFAULT_ghostex_HOTKEYS.runActionSlot1).toBe("ctrl+shift+1");
+    expect(DEFAULT_ghostex_HOTKEYS.runActionSlot5).toBe("ctrl+shift+5");
+  });
+
+  test("matches positional action hotkeys", () => {
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+1")).toBe(
+      "runActionSlot1",
+    );
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+5")).toBe(
+      "runActionSlot5",
+    );
+  });
+
+  test("matches focused pane action hotkeys", () => {
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+b")).toBe(
+      "openBrowserPane",
+    );
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+o")).toBe(
+      "popOutPane",
+    );
   });
 
   test("keeps browser bracket tab navigation as alternate defaults", () => {

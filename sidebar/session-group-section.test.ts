@@ -4,6 +4,7 @@ import {
   getEmptyBrowserGroupExpandTooltip,
   shouldFocusGroupOnHeaderActivation,
   shouldInitializeEmptyProjectTerminalOnHeaderActivation,
+  shouldShowOpenProjectFolderIcon,
   shouldShowProjectEditorDiffStats,
 } from "./session-group-section";
 
@@ -101,6 +102,32 @@ describe("shouldInitializeEmptyProjectTerminalOnHeaderActivation", () => {
     expect(
       shouldInitializeEmptyProjectTerminalOnHeaderActivation({
         hasProjectContext: true,
+        sessionCount: 1,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldShowOpenProjectFolderIcon", () => {
+  test("keeps empty expanded project rows visually closed", () => {
+    expect(
+      shouldShowOpenProjectFolderIcon({
+        isCollapsed: false,
+        sessionCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  test("shows the open folder only for expanded projects with sessions", () => {
+    expect(
+      shouldShowOpenProjectFolderIcon({
+        isCollapsed: false,
+        sessionCount: 1,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowOpenProjectFolderIcon({
+        isCollapsed: true,
         sessionCount: 1,
       }),
     ).toBe(false);

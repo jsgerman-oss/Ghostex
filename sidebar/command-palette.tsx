@@ -2,19 +2,27 @@ import {
   IconArrowLeft,
   IconArrowRight,
   IconArrowsDiagonal2,
+  IconBrowser,
+  IconClock,
   IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
   IconChevronUp,
   IconEdit,
+  IconExternalLink,
+  IconGitFork,
   IconKeyboard,
+  IconLayoutSidebarRightExpand,
   IconLayoutDashboard,
   IconLayoutSidebar,
   IconMoon,
   IconPlayerPlay,
   IconPlus,
+  IconRefresh,
+  IconRotateClockwise,
   IconSettings,
   IconTerminal2,
+  IconWindowMaximize,
 } from "@tabler/icons-react";
 import { useMemo } from "react";
 import {
@@ -40,6 +48,7 @@ import {
   GHOSTEX_HOTKEY_DEFINITIONS,
   normalizeHotkeyText,
   normalizeghostexHotkeySettings,
+  type ghostexFocusedPaneAction,
   type ghostexHotkeyDefinition,
   type ghostexHotkeySettings,
 } from "../shared/ghostex-hotkeys";
@@ -59,20 +68,41 @@ type CommandPaletteProps = {
   vscode: WebviewApi;
 };
 
+type HotkeyPaletteCommand = {
+  definition: ghostexHotkeyDefinition;
+  hotkey: string;
+  kind: "hotkey";
+  searchText: string;
+  title: string;
+};
+
 type BuiltInPaletteCommand =
-  | {
-      definition: ghostexHotkeyDefinition;
-      hotkey: string;
-      kind: "hotkey";
-      searchText: string;
-      title: string;
-    }
+  | HotkeyPaletteCommand
   | {
       hotkey: "";
       kind: "pet";
       searchText: string;
       title: string;
     };
+
+type ProjectPaletteCommand = {
+  command: SidebarCommandButton;
+  hotkey: string;
+  slotNumber: number;
+};
+
+const PANE_ACTION_COMMAND_IDS = [
+  "openBrowserPane",
+  "splitMore",
+  "splitMoreDown",
+  "rotatePanesClockwise",
+  "mergeAllTabs",
+  "renameActiveSession",
+  "delayedSend",
+  "forkSession",
+  "reloadSession",
+  "popOutPane",
+] as const satisfies readonly ghostexHotkeyDefinition["id"][];
 
 export function CommandPalette({
   commands,
@@ -84,22 +114,25 @@ export function CommandPalette({
   vscode,
 }: CommandPaletteProps) {
   const normalizedHotkeys = useMemo(() => normalizeghostexHotkeySettings(hotkeys), [hotkeys]);
+  const createBuiltInCommand = (definition: ghostexHotkeyDefinition): HotkeyPaletteCommand => {
+    const hotkey = normalizeHotkeyText(normalizedHotkeys[definition.id] ?? definition.defaultKey);
+    return {
+      definition,
+      hotkey,
+      kind: "hotkey",
+      searchText: `${definition.title} ${definition.description} ${hotkey}`,
+      title: definition.title,
+    };
+  };
   const builtInCommands = useMemo(
     () => {
+      const paneActionIds = new Set<ghostexHotkeyDefinition["id"]>(PANE_ACTION_COMMAND_IDS);
       const hotkeyCommands: BuiltInPaletteCommand[] = GHOSTEX_HOTKEY_DEFINITIONS.filter(
-        (definition) => definition.id !== "openCommandPalette",
-      ).map((definition) => {
-        const hotkey = normalizeHotkeyText(
-          normalizedHotkeys[definition.id] ?? definition.defaultKey,
-        );
-        return {
-          definition,
-          hotkey,
-          kind: "hotkey",
-          searchText: `${definition.title} ${definition.description} ${hotkey}`,
-          title: definition.title,
-        };
-      });
+        (definition) =>
+          definition.id !== "openCommandPalette" &&
+          definition.action.kind !== "runActionSlot" &&
+          !paneActionIds.has(definition.id),
+      ).map(createBuiltInCommand);
       const petTitle = petOverlayEnabled ? "Sleep Pet" : "Wake Pet";
       const petCommand: BuiltInPaletteCommand = {
         hotkey: "",
@@ -111,9 +144,30 @@ export function CommandPalette({
     },
     [normalizedHotkeys, petOverlayEnabled],
   );
-  const configuredCommands = useMemo(
-    () => commands.filter((command) => isRunnableOrConfigurableCommand(command)),
-    [commands],
+  const paneActionCommands = useMemo(() => {
+    const definitionsById = new Map(
+      GHOSTEX_HOTKEY_DEFINITIONS.map((definition) => [definition.id, definition]),
+    );
+    return PANE_ACTION_COMMAND_IDS.map((id) => definitionsById.get(id))
+      .filter((definition): definition is ghostexHotkeyDefinition => definition !== undefined)
+      .map(createBuiltInCommand);
+  }, [normalizedHotkeys]);
+  const projectCommands = useMemo(
+    () =>
+      commands
+        .map((command, index): ProjectPaletteCommand => {
+          const slotNumber = index + 1;
+          const actionSlotId = getActionSlotHotkeyId(slotNumber);
+          return {
+            command,
+            hotkey: actionSlotId
+              ? normalizeHotkeyText(normalizedHotkeys[actionSlotId] ?? "")
+              : "",
+            slotNumber,
+          };
+        })
+        .filter(({ command }) => isRunnableOrConfigurableCommand(command)),
+    [commands, normalizedHotkeys],
   );
 
   const runBuiltInCommand = (command: BuiltInPaletteCommand) => {
@@ -176,7 +230,18 @@ export function CommandPalette({
           CDXC:CommandPalette 2026-05-16-13:04:
           Command rows without assigned shortcuts should leave the right edge
           blank instead of showing "No hotkey" placeholder text so the palette
-          only surfaces concrete accelerators. */}
+          only surfaces concrete accelerators.
+
+          CDXC:ActionsHotkeys 2026-05-17-01:18:
+          Project actions must stay in the same order as the Actions settings
+          list. The first five rows display and execute positional action-slot
+          hotkeys, so reordering actions changes which command Ctrl+Shift+N
+          starts without changing the stored hotkey ids.
+
+          CDXC:CommandPalette 2026-05-17-01:32:
+          Focused pane-menu commands should appear together in the command
+          palette, matching the pane menu order shown in native chrome while
+          still using shared configurable hotkey definitions. */}
       <Command>
         <CommandInput placeholder="Search Ghostex commands..." />
         <CommandList className="ghostex-command-palette-list">
@@ -198,14 +263,36 @@ export function CommandPalette({
               </CommandItem>
             ))}
           </CommandGroup>
-          {configuredCommands.length > 0 ? (
+          {paneActionCommands.length > 0 ? (
+            <>
+              <CommandSeparator />
+              <CommandGroup heading="Pane Actions">
+                {paneActionCommands.map((command) => (
+                  <CommandItem
+                    key={command.definition.id}
+                    value={command.searchText}
+                    onSelect={() => runBuiltInCommand(command)}
+                  >
+                    <BuiltInCommandIcon command={command} />
+                    <span className="ghostex-command-palette-copy">
+                      <span className="ghostex-command-palette-title">{command.title}</span>
+                    </span>
+                    {command.hotkey ? (
+                      <CommandShortcut>{formatSidebarHotkeyLabel(command.hotkey)}</CommandShortcut>
+                    ) : null}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </>
+          ) : null}
+          {projectCommands.length > 0 ? (
             <>
               <CommandSeparator />
               <CommandGroup heading="Project Actions">
-                {configuredCommands.map((command) => (
+                {projectCommands.map(({ command, hotkey, slotNumber }) => (
                   <CommandItem
                     key={command.commandId}
-                    value={`${getCommandTitle(command)} ${getCommandDescription(command)}`}
+                    value={`${getCommandTitle(command)} ${getCommandDescription(command)} ${hotkey} action ${slotNumber}`}
                     onSelect={() => runProjectCommand(command)}
                   >
                     <SidebarCommandIconGlyph
@@ -221,6 +308,9 @@ export function CommandPalette({
                         {getCommandDescription(command)}
                       </span>
                     </span>
+                    {hotkey ? (
+                      <CommandShortcut>{formatSidebarHotkeyLabel(hotkey)}</CommandShortcut>
+                    ) : null}
                   </CommandItem>
                 ))}
               </CommandGroup>
@@ -257,6 +347,9 @@ function BuiltInCommandIcon({ command }: { command: BuiltInPaletteCommand }) {
   if (action.kind === "renameActiveSession") {
     return <IconEdit aria-hidden="true" />;
   }
+  if (action.kind === "focusedPaneAction") {
+    return <FocusedPaneCommandIcon action={action.focusedPaneAction} />;
+  }
   if (action.kind === "focusAdjacentGroup") {
     return action.direction < 0 ? (
       <IconChevronLeft aria-hidden="true" />
@@ -276,6 +369,31 @@ function BuiltInCommandIcon({ command }: { command: BuiltInPaletteCommand }) {
   return <IconKeyboard aria-hidden="true" />;
 }
 
+function FocusedPaneCommandIcon({ action }: { action: ghostexFocusedPaneAction }) {
+  if (action === "openBrowserPane") {
+    return <IconBrowser aria-hidden="true" />;
+  }
+  if (action === "rotatePanesClockwise") {
+    return <IconRotateClockwise aria-hidden="true" />;
+  }
+  if (action === "mergeAllTabs") {
+    return <IconWindowMaximize aria-hidden="true" />;
+  }
+  if (action === "delayedSend") {
+    return <IconClock aria-hidden="true" />;
+  }
+  if (action === "forkSession") {
+    return <IconGitFork aria-hidden="true" />;
+  }
+  if (action === "reloadSession") {
+    return <IconRefresh aria-hidden="true" />;
+  }
+  if (action === "popOutPane") {
+    return <IconExternalLink aria-hidden="true" />;
+  }
+  return <IconLayoutSidebarRightExpand aria-hidden="true" />;
+}
+
 function getFocusDirectionIcon(direction: "down" | "left" | "right" | "up") {
   if (direction === "up") {
     return <IconChevronUp aria-hidden="true" />;
@@ -287,6 +405,13 @@ function getFocusDirectionIcon(direction: "down" | "left" | "right" | "up") {
     return <IconChevronDown aria-hidden="true" />;
   }
   return <IconArrowLeft aria-hidden="true" />;
+}
+
+function getActionSlotHotkeyId(slotNumber: number): ghostexHotkeyDefinition["id"] | undefined {
+  if (slotNumber < 1 || slotNumber > 5) {
+    return undefined;
+  }
+  return `runActionSlot${slotNumber}` as ghostexHotkeyDefinition["id"];
 }
 
 function createCommandPaletteDraft(command: SidebarCommandButton): CommandConfigDraft {

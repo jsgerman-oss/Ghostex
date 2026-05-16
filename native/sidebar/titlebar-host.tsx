@@ -1,13 +1,11 @@
 import {
   IconBox,
   IconBrandGithub,
-  IconBrandVscode,
   IconCheck,
   IconChevronDown,
   IconChecklist,
   IconCode,
   IconCpu,
-  IconCube,
   IconDeviceDesktop,
   IconFolderOpen,
   IconLayoutSidebarLeftExpand,
@@ -57,6 +55,7 @@ import {
   type WorkspaceOpenTargetAvailability,
   type WorkspaceOpenTargetDefinition,
 } from "../../shared/workspace-open-targets";
+import { EditorBrandIcon, getEditorBrandIconId } from "../../sidebar/brand-icons";
 import { SidebarCommandIconGlyph } from "../../sidebar/sidebar-command-icon";
 import { createCombinedProjectSessionId } from "./combined-sidebar-mode";
 import "../../sidebar/styles.css";
@@ -109,8 +108,18 @@ type TitlebarResourceSession = {
   title: string;
 };
 
+type TitlebarBrowserTabResource = {
+  browserId: number;
+  id: string;
+  isActive?: boolean;
+  kind: "browser" | "code" | "git" | "tasks" | string;
+  title: string;
+  url?: string;
+};
+
 type TitlebarProjectState = {
   activeMode: TitlebarMode;
+  browserTabs: TitlebarBrowserTabResource[];
   debuggingMode: boolean;
   diffStats: SidebarProjectDiffStats;
   editorIsOpen: boolean;
@@ -144,8 +153,9 @@ type ResourceProcessBundle = {
   memoryMb: number;
   pids: number[];
   process?: ResourceProcess;
+  browserTab?: TitlebarBrowserTabResource;
   session?: TitlebarResourceSession;
-  type: "app" | "cef" | "code" | "orphan" | "session";
+  type: "app" | "browser" | "code" | "orphan" | "session";
 };
 
 type ResourceGroupView = {
@@ -341,9 +351,10 @@ function parseResourceProcessTable(stdout: string): ResourceProcess[] {
 }
 
 function createResourceGroupViews(
+  browserTabs: TitlebarBrowserTabResource[],
   resourceGroups: TitlebarResourceGroup[],
   processes: ResourceProcess[],
-): { appBundles: ResourceProcessBundle[]; cefBundles: ResourceProcessBundle[]; groupViews: ResourceGroupView[]; orphanBundles: ResourceProcessBundle[] } {
+): { appBundles: ResourceProcessBundle[]; browserBundles: ResourceProcessBundle[]; groupViews: ResourceGroupView[]; orphanBundles: ResourceProcessBundle[] } {
   const claimedPids = new Set<number>();
   const childrenByParent = createProcessChildrenMap(processes);
   const groupViews = resourceGroups.map((group) => {
@@ -357,9 +368,9 @@ function createResourceGroupViews(
     };
   });
   const appBundles = createAppRuntimeBundles(processes, childrenByParent, claimedPids);
-  const cefBundles = createCefBundles(processes, claimedPids);
+  const browserBundles = createBrowserBundles(browserTabs, processes, claimedPids);
   const orphanBundles = createOrphanBundles(processes, claimedPids);
-  return { appBundles, cefBundles, groupViews, orphanBundles };
+  return { appBundles, browserBundles, groupViews, orphanBundles };
 }
 
 function createProcessChildrenMap(processes: ResourceProcess[]): Map<number, ResourceProcess[]> {
@@ -497,26 +508,50 @@ function createAppRuntimeBundles(
     });
 }
 
-function createCefBundles(
+function createBrowserBundles(
+  browserTabs: TitlebarBrowserTabResource[],
   processes: ResourceProcess[],
   claimedPids: Set<number>,
 ): ResourceProcessBundle[] {
-  return processes
-    .filter((process) => !claimedPids.has(process.pid) && isCefProcess(process))
-    .slice(0, 12)
-    .map((process) => {
-      claimedPids.add(process.pid);
-      return {
-        childProcesses: [],
-        cpu: process.cpu,
-        key: `cef:${process.pid}`,
-        label: getCefProcessLabel(process),
-        memoryMb: process.rssMb,
-        pids: [process.pid],
-        process,
-        type: "cef" as const,
-      };
+  const browserProcesses = processes.filter(
+    (process) => !claimedPids.has(process.pid) && isCefProcess(process),
+  );
+  const bundles: ResourceProcessBundle[] = [];
+  for (const tab of browserTabs) {
+    const tabProcesses = browserProcesses.filter(
+      (process) => browserProcessClientId(process) === String(tab.browserId),
+    );
+    if (tabProcesses.length === 0) {
+      continue;
+    }
+    tabProcesses.forEach((process) => claimedPids.add(process.pid));
+    bundles.push({
+      browserTab: tab,
+      childProcesses: tabProcesses,
+      cpu: sumProcessCpu(tabProcesses),
+      key: `browser:${tab.id}`,
+      label: tab.title,
+      memoryMb: sumProcessMemory(tabProcesses),
+      pids: tabProcesses.map((process) => process.pid),
+      process: tabProcesses[0],
+      type: "browser",
     });
+  }
+  const sharedProcesses = browserProcesses.filter((process) => !claimedPids.has(process.pid));
+  if (sharedProcesses.length > 0) {
+    sharedProcesses.forEach((process) => claimedPids.add(process.pid));
+    bundles.push({
+      childProcesses: sharedProcesses.slice(0, 12),
+      cpu: sumProcessCpu(sharedProcesses),
+      key: "browser:shared",
+      label: "Shared browser processes",
+      memoryMb: sumProcessMemory(sharedProcesses),
+      pids: sharedProcesses.map((process) => process.pid),
+      process: sharedProcesses[0],
+      type: "browser",
+    });
+  }
+  return bundles.slice(0, 16);
 }
 
 function createOrphanBundles(processes: ResourceProcess[], claimedPids: Set<number>): ResourceProcessBundle[] {
@@ -543,18 +578,22 @@ function isAgentRuntimeProcess(process: ResourceProcess): boolean {
   return /\b(zmx|codex|code-server|computer-use|chrome-devtools-mcp|devtools)\b/i.test(process.command);
 }
 
-function getCefProcessLabel(process: ResourceProcess): string {
-  const clientId = /--client-id=(\d+)/.exec(process.command)?.[1];
+function browserProcessClientId(process: ResourceProcess): string | undefined {
+  return /--client-id=(\d+)/.exec(process.command)?.[1];
+}
+
+function getBrowserProcessDisplayName(process: ResourceProcess): string {
+  const clientId = browserProcessClientId(process);
   if (clientId) {
-    return `CEF Tab client-id ${clientId}`;
+    return `Browser renderer client ${clientId}`;
   }
   if (process.command.includes("--type=gpu-process")) {
-    return "CEF GPU";
+    return "Shared browser GPU";
   }
   if (process.command.includes("--type=utility")) {
-    return "CEF Utility";
+    return "Shared browser utility";
   }
-  return "CEF Renderer";
+  return "Browser renderer";
 }
 
 function getProcessDisplayName(process: ResourceProcess): string {
@@ -643,8 +682,8 @@ function App() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const activeMode = optimisticMode ?? projectState.activeMode;
   const resourceViews = useMemo(
-    () => createResourceGroupViews(projectState.resourceGroups, resourceProcesses),
-    [projectState.resourceGroups, resourceProcesses],
+    () => createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses),
+    [projectState.browserTabs, projectState.resourceGroups, resourceProcesses],
   );
   const inactiveAgentSleepSessionIds = useMemo(
     () => createInactiveAgentSleepSessionIds(projectState.resourceGroups),
@@ -782,6 +821,7 @@ function App() {
               : normalizeTitlebarMode(state.activeMode),
           debuggingMode: state.debuggingMode ?? current.debuggingMode,
           diffStats: state.diffStats ?? current.diffStats,
+          browserTabs: state.browserTabs ?? current.browserTabs,
           projectEditorCompanionPaneHidden:
             state.projectEditorCompanionPaneHidden ?? current.projectEditorCompanionPaneHidden,
           petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
@@ -880,10 +920,6 @@ function App() {
     }
     setSelectedTargetId(target.id);
     localStorage.setItem(LAST_OPEN_TARGET_STORAGE_KEY, target.id);
-    if (target.id === "embedded-editor") {
-      postNative({ type: "openActiveProjectEditorFromTitlebar" });
-      return;
-    }
     if (target.id === "finder") {
       postNative({ type: "openWorkspaceInFinder", workspacePath: projectState.projectPath });
       return;
@@ -1162,7 +1198,6 @@ function App() {
               </TooltipTrigger>
               <TooltipContent>{projectState.petOverlayEnabled ? "Hide pet" : "Show pet"}</TooltipContent>
             </Tooltip>
-            <div aria-hidden="true" className="titlebar-section-separator" />
             <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -1196,7 +1231,7 @@ function App() {
               >
                 <TitlebarResourcesMenu
                   appBundles={resourceViews.appBundles}
-                  cefBundles={resourceViews.cefBundles}
+                  browserBundles={resourceViews.browserBundles}
                   collapsedKeys={collapsedResourceKeys}
                   groupViews={resourceViews.groupViews}
                   inactiveAgentSleepSessionCount={inactiveAgentSleepSessionIds.length}
@@ -1207,7 +1242,6 @@ function App() {
                 />
               </DropdownMenuContent>
             </DropdownMenu>
-            <div aria-hidden="true" className="titlebar-section-separator" />
             <DropdownMenu onOpenChange={setActionsMenuOpen} open={actionsMenuOpen}>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -1282,19 +1316,22 @@ function App() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <div aria-hidden="true" className="titlebar-section-separator" />
             <DropdownMenu onOpenChange={setOpenInMenuOpen} open={openInMenuOpen}>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
                     <Button
-                      aria-label={activeTarget?.label ?? "Embedded Editor"}
+                      aria-label={activeTarget?.label ?? "Open project"}
                       className="titlebar-session-button titlebar-open-main-button"
                       onClick={() => openTarget(activeTarget)}
                       type="button"
                       variant="ghost"
                     >
-                      {activeTarget ? getOpenTargetIcon(activeTarget) : <EmbeddedEditorIcon />}
+                      {activeTarget ? (
+                        getOpenTargetIcon(activeTarget)
+                      ) : (
+                        <IconFolderOpen aria-hidden="true" className="size-4 text-zinc-400" />
+                      )}
                     </Button>
                     <DropdownMenuTrigger asChild>
                       <Button
@@ -1308,7 +1345,7 @@ function App() {
                     </DropdownMenuTrigger>
                   </ButtonGroup>
                 </TooltipTrigger>
-                <TooltipContent>{activeTarget?.label ?? "Embedded Editor"}</TooltipContent>
+                <TooltipContent>{activeTarget?.label ?? "Open project"}</TooltipContent>
               </Tooltip>
               <DropdownMenuContent
                 align="center"
@@ -1362,6 +1399,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
   const settings = normalizeghostexSettings(parseSharedSettings(sharedSettingsJson));
   return {
     activeMode: resolveInitialTitlebarMode(bootstrap),
+    browserTabs: [],
     debuggingMode: settings.debuggingMode,
     diffStats: createDefaultSidebarProjectDiffStats(false),
     editorIsOpen: false,
@@ -1389,7 +1427,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
 
 function TitlebarResourcesMenu({
   appBundles,
-  cefBundles,
+  browserBundles,
   collapsedKeys,
   groupViews,
   inactiveAgentSleepSessionCount,
@@ -1399,7 +1437,7 @@ function TitlebarResourcesMenu({
   orphanBundles,
 }: {
   appBundles: ResourceProcessBundle[];
-  cefBundles: ResourceProcessBundle[];
+  browserBundles: ResourceProcessBundle[];
   collapsedKeys: Set<string>;
   groupViews: ResourceGroupView[];
   inactiveAgentSleepSessionCount: number;
@@ -1412,7 +1450,7 @@ function TitlebarResourcesMenu({
   const allBundles = [
     ...visibleGroupViews.flatMap((view) => view.bundles),
     ...appBundles,
-    ...cefBundles,
+    ...browserBundles,
     ...orphanBundles,
   ];
   return (
@@ -1479,9 +1517,9 @@ function TitlebarResourcesMenu({
           collapsedKeys={collapsedKeys}
           onKill={onKill}
           onToggle={onToggle}
-          sectionKey="cef-tabs"
-          title="CEF Tabs"
-          bundles={cefBundles}
+          sectionKey="browser-tabs"
+          title="Browser Tabs"
+          bundles={browserBundles}
         />
         <TitlebarResourceSection
           collapsedKeys={collapsedKeys}
@@ -1570,7 +1608,7 @@ function TitlebarResourceBundle({
    * explicit user expansions for session bundles while section rows and other
    * bundle types keep the existing collapsed-key behavior.
    */
-  const isSessionCollapsedByDefault = bundle.type === "session" && hasChildren;
+  const isSessionCollapsedByDefault = (bundle.type === "session" || bundle.type === "browser") && hasChildren;
   const bundleToggleKey = isSessionCollapsedByDefault ? `expanded:${bundle.key}` : bundle.key;
   const isCollapsed = isSessionCollapsedByDefault
     ? !collapsedKeys.has(bundleToggleKey)
@@ -1632,7 +1670,9 @@ function TitlebarResourceBundle({
         <div className="titlebar-resource-children">
           {bundle.childProcesses.slice(0, 8).map((process) => (
             <div className="titlebar-resource-child-row" key={process.pid}>
-              <span className="titlebar-resource-child-name">{getProcessDisplayName(process)} pid {process.pid}</span>
+              <span className="titlebar-resource-child-name">
+                {getResourceChildProcessName(bundle, process)} pid {process.pid}
+              </span>
               <span className="titlebar-resource-metric">
                 <IconCpu aria-hidden="true" size={12} stroke={1.8} />
                 {formatWholePercent(process.cpu)}
@@ -1649,6 +1689,13 @@ function TitlebarResourceBundle({
   );
 }
 
+function getResourceChildProcessName(
+  bundle: ResourceProcessBundle,
+  process: ResourceProcess,
+): string {
+  return bundle.type === "browser" ? getBrowserProcessDisplayName(process) : getProcessDisplayName(process);
+}
+
 function getResourceBundleAvatar(bundle: ResourceProcessBundle): string {
   if (bundle.session?.sessionKind === "browser") {
     return "B";
@@ -1656,8 +1703,8 @@ function getResourceBundleAvatar(bundle: ResourceProcessBundle): string {
   if (bundle.type === "code") {
     return "V";
   }
-  if (bundle.type === "cef") {
-    return "C";
+  if (bundle.type === "browser") {
+    return "B";
   }
   if (bundle.type === "app") {
     return "GX";
@@ -1672,6 +1719,12 @@ function getResourceBundleMeta(bundle: ResourceProcessBundle): string {
       : bundle.session.sessionKind ?? "session";
     const pid = bundle.process?.pid ? ` pid ${bundle.process.pid}` : "";
     return `${provider}${pid}`;
+  }
+  if (bundle.browserTab) {
+    return bundle.browserTab.url?.trim() || "Browser tab";
+  }
+  if (bundle.type === "browser") {
+    return "Shared browser processes";
   }
   if (bundle.process?.pid) {
     return `pid ${bundle.process.pid}`;
@@ -1821,9 +1874,7 @@ function parseSharedSettings(candidate: unknown): unknown {
 function createConfiguredOpenTargets(settings: TitlebarOpenTargetsSettings): ResolvedOpenTarget[] {
   const hiddenTargetIds = new Set(settings.hiddenTargetIds);
   return [
-    ...BUILT_IN_WORKSPACE_OPEN_TARGETS.filter(
-      (target) => target.id === "embedded-editor" || !hiddenTargetIds.has(target.id),
-    ).map(
+    ...BUILT_IN_WORKSPACE_OPEN_TARGETS.filter((target) => !hiddenTargetIds.has(target.id)).map(
       (definition): ResolvedOpenTarget => ({
         definition,
         id: definition.id,
@@ -1850,7 +1901,7 @@ function resolveVisibleOpenTargets(
   const availableTargetIds = new Set(availability.availableTargetIds);
   return targets
     .map((target) => {
-      if (target.id === "embedded-editor" || target.id === "finder") {
+      if (target.id === "finder") {
         return target;
       }
       if (target.kind === "custom") {
@@ -1875,48 +1926,18 @@ function resolveVisibleOpenTargets(
 }
 
 function getOpenTargetIcon(target: ResolvedOpenTarget): ReactNode {
-  if (target.id === "embedded-editor") {
-    return <EmbeddedEditorIcon />;
-  }
-  if (target.id === "vscode" || target.id === "vscode-insiders" || target.id === "vscodium") {
-    return <IconBrandVscode aria-hidden="true" className="size-4 text-[#3b82f6]" />;
-  }
   if (target.id === "finder") {
     return <IconFolderOpen aria-hidden="true" className="size-4 text-zinc-400" />;
   }
-  if (target.id === "cursor") {
-    return <IconCube aria-hidden="true" className="size-4 text-zinc-100" />;
-  }
-  if (target.id === "zed") {
-    return <ZedIcon />;
+  const editorIcon = getEditorBrandIconId(target.id);
+  if (editorIcon) {
+    return <EditorBrandIcon className="size-4" icon={editorIcon} />;
   }
   return <IconBox aria-hidden="true" className="size-4 text-zinc-400" />;
 }
 
-function EmbeddedEditorIcon() {
-  return (
-    <svg aria-hidden="true" className="size-4" viewBox="0 0 24 24">
-      <path
-        d="M16.8 4.5 7.2 8.9 3.9 6.4 2.5 7.6v8.8l1.4 1.2 3.3-2.5 9.6 4.4 4.7-2.1V6.6l-4.7-2.1Zm0 3.2v8.6l-6.1-4.3 6.1-4.3ZM5 10l1.8 1.4L5 13v-3Z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
-
-function ZedIcon() {
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-flex size-4 items-center justify-center rounded-[3px] border border-zinc-500 text-[10px] font-semibold leading-none text-zinc-300"
-    >
-      Z
-    </span>
-  );
-}
-
 function readLastOpenTargetId(): string {
-  return localStorage.getItem(LAST_OPEN_TARGET_STORAGE_KEY) || "embedded-editor";
+  return localStorage.getItem(LAST_OPEN_TARGET_STORAGE_KEY) || "finder";
 }
 
 function readLastActionCommandId(state: Pick<TitlebarProjectState, "projectId" | "projectPath">): string | undefined {
@@ -2015,7 +2036,7 @@ const styles = {
   rightSlot: {
     alignItems: "center",
     display: "flex",
-    gap: 8,
+    gap: 9,
     position: "absolute",
     right: 10,
     top: TITLEBAR_RIGHT_CONTROLS_TOP,
@@ -2045,10 +2066,15 @@ styleElement.textContent = `
   /**
    * CDXC:ReactTitlebar 2026-05-11-09:00
    * The right titlebar controls should read as flat chrome text/icons rather
-   * than framed buttons. Keep three equally spaced groups separated by thin
-   * rules, remove the manual installed-target refresh button, and preserve the
-   * 20px centered control height so the compact 30px titlebar keeps top/bottom
-   * breathing room.
+   * than framed buttons. Remove the manual installed-target refresh button and
+   * preserve the 20px centered control height so the compact 30px titlebar
+   * keeps top/bottom breathing room.
+   *
+   * CDXC:ReactTitlebar 2026-05-17-00:57:
+   * The right titlebar controls should use spacing instead of separator rules.
+   * Keep a consistent 9px gap between control groups and show a subtle hover
+   * background on each button so pointer focus is visible without making the
+   * chrome look heavy.
    *
    * CDXC:ReactTitlebar 2026-05-15-19:41
    * The top-right titlebar should not duplicate the Commands pane entry point.
@@ -2069,7 +2095,7 @@ styleElement.textContent = `
   .titlebar-session-button:hover,
   .titlebar-session-button:focus-visible,
   .titlebar-session-button[data-state="open"] {
-    background: transparent;
+    background: rgba(255,255,255,0.08);
     color: rgba(255,255,255,0.96);
     outline: none;
   }
@@ -2226,13 +2252,6 @@ styleElement.textContent = `
     border-bottom-right-radius: 5px;
     border-top-right-radius: 5px;
   }
-  .titlebar-section-separator {
-    align-self: center;
-    background: rgba(255,255,255,0.26);
-    flex: 0 0 auto;
-    height: 16px;
-    width: 1px;
-  }
   .titlebar-open-menu {
     background: #181818 !important;
     background-color: #181818 !important;
@@ -2247,7 +2266,7 @@ styleElement.textContent = `
     font: 500 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   }
   .titlebar-resources-menu {
-    width: min(820px, calc(100vw - 24px));
+    width: min(656px, calc(100vw - 24px));
     max-height: min(760px, calc(100vh - 46px));
     overflow: hidden;
   }
@@ -2328,9 +2347,8 @@ styleElement.textContent = `
     padding: 8px 10px 10px;
   }
   .titlebar-resource-section + .titlebar-resource-section {
-    border-top: 1px solid rgba(255,255,255,0.08);
     margin-top: 8px;
-    padding-top: 8px;
+    padding-top: 0;
   }
   .titlebar-resource-section-heading {
     align-items: center;
@@ -2374,11 +2392,18 @@ styleElement.textContent = `
     background: rgba(255,255,255,0.025);
   }
   .titlebar-resource-row {
+    /*
+     * CDXC:TitlebarResources 2026-05-16-20:07:
+     * Long session titles and the hover-only close button must not shift the
+     * row controls. Keep identity controls in fixed grid tracks, let only the
+     * text track shrink, and hide metrics while the destructive button is shown.
+     */
     align-items: center;
     display: grid;
     gap: 10px;
-    grid-template-columns: minmax(270px, 1fr) 82px 94px;
+    grid-template-columns: minmax(0, 1fr) 74px 88px;
     min-height: 44px;
+    overflow: hidden;
     padding: 7px 8px;
     position: relative;
   }
@@ -2387,8 +2412,9 @@ styleElement.textContent = `
   }
   .titlebar-resource-main {
     align-items: center;
-    display: flex;
+    display: grid;
     gap: 8px;
+    grid-template-columns: 20px 28px minmax(0, 1fr);
     min-width: 0;
   }
   .titlebar-resource-collapse-button {
@@ -2403,7 +2429,8 @@ styleElement.textContent = `
     width: 20px;
   }
   .titlebar-resource-collapse-spacer {
-    flex: 0 0 20px;
+    display: block;
+    width: 20px;
   }
   .titlebar-resource-avatar {
     align-items: center;
@@ -2469,6 +2496,10 @@ styleElement.textContent = `
     transform: translateY(-50%) scale(0.96);
     transition: opacity 120ms ease, transform 120ms ease;
     width: 22px;
+  }
+  .titlebar-resource-row:hover > .titlebar-resource-metric,
+  .titlebar-resource-row:focus-within > .titlebar-resource-metric {
+    opacity: 0;
   }
   .titlebar-resource-row:hover .titlebar-resource-kill-button,
   .titlebar-resource-row:focus-within .titlebar-resource-kill-button {

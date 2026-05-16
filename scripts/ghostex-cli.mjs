@@ -604,7 +604,17 @@ async function attachSessionCommand(args) {
   const selector = rest.join(" ").trim();
   const result = await fetchSessionList(flags);
   const session = await resolveOneListedSession(selector, result.sessions ?? []);
-  const command = session.attachCommand || session.resumeCommand;
+  /**
+   * CDXC:CliSessions 2026-05-17-01:33:
+   * Sleeping a provider-backed agent session stops the tmux/zmx/zellij runtime to
+   * release the agent CLI memory. External attach should therefore prefer the
+   * agent resume command for sleeping rows; provider attach remains first for
+   * awake rows where the named session is still live.
+   */
+  const command =
+    session.status === "sleep"
+      ? session.resumeCommand || session.attachCommand
+      : session.attachCommand || session.resumeCommand;
   if (!command) {
     throw new Error(
       `Session ${session.alias} has no provider attach command or supported agent resume command.`,

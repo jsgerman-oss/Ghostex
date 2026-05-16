@@ -63,7 +63,7 @@
   box-shadow: 0 18px 42px rgb(0 0 0 / 36%);
   color: #ececec;
   display: grid;
-  grid-template-rows: 32px minmax(0, 1fr);
+  grid-template-rows: 32px minmax(0, 1fr) auto;
   overflow: hidden;
   pointer-events: auto;
   position: absolute;
@@ -91,7 +91,7 @@
 /*
  * CDXC:PromptEditor 2026-05-13-10:22
  * Ctrl+G prompt editing opens as a 400px wrapped Markdown pane. Titlebar actions
- * live together on the top right: Cancel requires a second click within five
+ * live together on the top right: Cancel requires a second click within three
  * seconds, while Save stays immediately available.
  *
  * CDXC:PromptEditor 2026-05-13-15:53
@@ -115,6 +115,11 @@
  * preserve a wider content box. Cap title padding/action width to the live
  * pane width, and force the editor container to hide overflow at the panel edge
  * while native hit-testing passes through everything outside the panel.
+ *
+ * CDXC:PromptEditor 2026-05-17-01:30:
+ * After the user clicks Cancel in the rich prompt editor, the second-click
+ * Confirm action is destructive. Color that temporary confirmation button red
+ * so the user can tell another click will discard the editor contents.
  */
 .floating-prompt-editor-actions {
   align-items: center;
@@ -155,10 +160,23 @@
   flex-grow: 1.18;
 }
 
+.floating-prompt-editor-cancel[data-confirming="true"] {
+  background: rgb(220 38 38 / 82%);
+  border-color: rgb(248 113 113 / 84%);
+  color: #fff;
+  box-shadow: 0 0 0 1px rgb(248 113 113 / 20%), 0 8px 18px rgb(127 29 29 / 28%);
+}
+
 .floating-prompt-editor-cancel:hover,
 .floating-prompt-editor-save:hover {
   background: rgb(255 255 255 / 9%);
   color: rgb(255 255 255 / 86%);
+}
+
+.floating-prompt-editor-cancel[data-confirming="true"]:hover {
+  background: rgb(239 68 68 / 90%);
+  border-color: rgb(252 165 165 / 92%);
+  color: #fff;
 }
 
 .floating-prompt-editor-title {
@@ -198,6 +216,143 @@
 
 .floating-prompt-editor-monaco .monaco-editor {
   max-width: 100%;
+}
+
+/*
+ * CDXC:PromptEditor 2026-05-16-23:01:
+ * Pasted prompt images should remain visible while writing without replacing
+ * Monaco text. Render a compact thumbnail shelf below the editor, keep every
+ * thumbnail square, and reveal removal controls only on hover so the shelf
+ * stays quiet during normal prompt editing.
+ */
+.floating-prompt-editor-image-strip {
+  align-items: center;
+  background: #111;
+  border-top: 1px solid rgb(255 255 255 / 10%);
+  box-sizing: border-box;
+  display: flex;
+  gap: 8px;
+  min-height: 58px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 7px 32px 7px 10px;
+}
+
+.floating-prompt-editor-image-thumb {
+  background: rgb(255 255 255 / 4%);
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 6px;
+  box-sizing: border-box;
+  cursor: default;
+  flex: 0 0 44px;
+  height: 44px;
+  overflow: hidden;
+  position: relative;
+  width: 44px;
+}
+
+.floating-prompt-editor-image-thumb:hover,
+.floating-prompt-editor-image-thumb:focus-visible {
+  border-color: rgb(255 255 255 / 28%);
+}
+
+.floating-prompt-editor-image-thumb img {
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.floating-prompt-editor-image-thumb span {
+  background:
+    linear-gradient(135deg, transparent 0 45%, rgb(255 255 255 / 18%) 46% 54%, transparent 55%),
+    rgb(255 255 255 / 5%);
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.floating-prompt-editor-image-remove {
+  align-items: center;
+  background: rgb(0 0 0 / 58%);
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 999px;
+  color: rgb(255 255 255 / 76%);
+  cursor: default;
+  display: inline-flex;
+  font: 700 10px/1 system-ui, sans-serif;
+  height: 16px;
+  justify-content: center;
+  opacity: 0;
+  padding: 0;
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  transition: opacity 120ms ease;
+  width: 16px;
+}
+
+.floating-prompt-editor-image-remove svg {
+  height: 10px;
+  width: 10px;
+}
+
+.floating-prompt-editor-image-thumb:hover .floating-prompt-editor-image-remove,
+.floating-prompt-editor-image-thumb:focus-within .floating-prompt-editor-image-remove {
+  opacity: 1;
+}
+
+.floating-prompt-editor-image-popup {
+  align-items: center;
+  background: rgb(0 0 0 / 74%);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 28px;
+  pointer-events: auto;
+  position: fixed;
+  z-index: 1400;
+}
+
+.floating-prompt-editor-image-popup img {
+  border-radius: 8px;
+  box-shadow: 0 18px 60px rgb(0 0 0 / 50%);
+  max-height: min(82vh, 900px);
+  max-width: min(82vw, 1100px);
+  object-fit: contain;
+}
+
+.floating-prompt-editor-image-popup-close {
+  align-items: center;
+  background: rgb(18 18 18 / 90%);
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 999px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 38%);
+  color: rgb(255 255 255 / 82%);
+  cursor: default;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+  position: fixed;
+  right: 20px;
+  top: 20px;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+  width: 32px;
+}
+
+.floating-prompt-editor-image-popup-close:hover {
+  background: rgb(32 32 32 / 94%);
+  border-color: rgb(255 255 255 / 32%);
+  color: #fff;
+}
+
+.floating-prompt-editor-image-popup-close svg {
+  height: 18px;
+  width: 18px;
 }
 
 /*

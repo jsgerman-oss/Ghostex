@@ -397,6 +397,14 @@ static bool GhostexCEFDiagnosticRectChangedEnough(NSRect lhs, NSRect rhs, CGFloa
     fabs(lhs.size.height - rhs.size.height) >= threshold;
 }
 
+static bool GhostexCEFRectAlmostEqual(NSRect lhs, NSRect rhs) {
+  const CGFloat epsilon = 0.001;
+  return fabs(lhs.origin.x - rhs.origin.x) < epsilon &&
+    fabs(lhs.origin.y - rhs.origin.y) < epsilon &&
+    fabs(lhs.size.width - rhs.size.width) < epsilon &&
+    fabs(lhs.size.height - rhs.size.height) < epsilon;
+}
+
 static void GhostexCEFAppendDiagnosticLog(NSString* event, NSDictionary* details) {
   if (!GhostexCEFNativeDebugLoggingEnabled()) {
     return;
@@ -790,12 +798,20 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   if (!cefView_) {
     return;
   }
+  NSRect cefFrameBefore = cefView_.frame;
+  /*
+  CDXC:ChromiumBrowserPanes 2026-05-16-22:37:
+  Disabled browser-toolbar clicks reproduced upward visual drift with unchanged AppKit and DOM geometry: the CEF wrapper stayed fixed while Chromium's flipped compositor layer grew after every redundant same-frame layout.
+  Treat the native CEF frame assignment as an idempotent resize boundary, and only notify CEF when the hosted frame actually changes.
+  */
+  if (GhostexCEFRectAlmostEqual(cefFrameBefore, targetFrame)) {
+    return;
+  }
   if (!GhostexCEFNativeDebugLoggingEnabled()) {
     cefView_.frame = targetFrame;
     return;
   }
 
-  NSRect cefFrameBefore = cefView_.frame;
   NSRect cefBoundsBefore = cefView_.bounds;
   id cefFrameInWindowBefore = GhostexCEFDescribeFrameInWindow(cefView_);
   id cefBoundsInWindowBefore = GhostexCEFDescribeBoundsInWindow(cefView_);
@@ -1032,6 +1048,17 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
 
 - (NSString*)pageTitle {
   return pageTitle_;
+}
+
+- (NSInteger)browserIdentifier {
+  /**
+   CDXC:TitlebarResources 2026-05-17-01:25:
+   The Resources dropdown needs to group Chromium renderer processes under the
+   visible Browser tab or project editor view. Expose CEF's browser identifier
+   so Swift can correlate renderer `--client-id` process arguments with the
+   title and URL already tracked by GhostexCEFBrowserView.
+   */
+  return browser_ ? browser_->GetIdentifier() : -1;
 }
 
 - (BOOL)canGoBack {

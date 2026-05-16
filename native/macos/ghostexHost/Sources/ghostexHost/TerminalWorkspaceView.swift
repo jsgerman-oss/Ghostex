@@ -574,7 +574,7 @@ final class GhostexGhosttyApp {
       let urlString = urlPtr.withMemoryRebound(to: UInt8.self, capacity: length) { rawPtr in
         String(bytes: UnsafeBufferPointer(start: rawPtr, count: length), encoding: .utf8)
       }
-      guard let urlString, let url = URL(string: urlString) else {
+      guard let urlString, let url = resolvedGhosttyOpenURL(urlString) else {
         return false
       }
       NSWorkspace.shared.open(url)
@@ -599,6 +599,53 @@ final class GhostexGhosttyApp {
       return nil
     }
     return Unmanaged<GhostexGhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
+  }
+
+  private static func resolvedGhosttyOpenURL(_ value: String) -> URL? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      return nil
+    }
+    /**
+     CDXC:TerminalLinks 2026-05-16-22:45:
+     Command-clicking rich prompt image references should open the image file
+     from `[Image #N](/path/to/image.png)`. Embedded Ghostty sends plain matched
+     text through `open_url`, so ghostex must treat schemeless matches as file
+     paths instead of passing relative URL objects to NSWorkspace, which fails
+     with AppKit error -50 for normal filesystem paths.
+     */
+    let openValue = markdownImageReferencePath(in: trimmed) ?? trimmed
+    if let candidate = URL(string: openValue), candidate.scheme?.isEmpty == false {
+      return candidate
+    }
+    guard isGhosttyOpenFilePath(openValue) else {
+      return nil
+    }
+    return URL(fileURLWithPath: NSString(string: openValue).standardizingPath)
+  }
+
+  private static func isGhosttyOpenFilePath(_ value: String) -> Bool {
+    value.hasPrefix("/")
+      || value.hasPrefix("~/")
+      || value.hasPrefix("./")
+      || value.hasPrefix("../")
+      || value.contains("/")
+  }
+
+  private static func markdownImageReferencePath(in value: String) -> String? {
+    guard value.hasPrefix("[Image #"),
+      let openParen = value.firstIndex(of: "("),
+      value.hasSuffix(")")
+    else {
+      return nil
+    }
+    let pathStart = value.index(after: openParen)
+    let pathEnd = value.index(before: value.endIndex)
+    guard pathStart < pathEnd else {
+      return nil
+    }
+    let path = value[pathStart..<pathEnd].trimmingCharacters(in: .whitespacesAndNewlines)
+    return path.isEmpty ? nil : path
   }
 
   private static func readClipboard(
@@ -2824,6 +2871,30 @@ final class TerminalWorkspaceView: NSView {
      tab alive without showing stale content from the previously active mode.
    */
     let didSwitchProjectEditor = activeProjectEditorId != projectId
+    let currentCompanionLayout = projectEditorCompanionLayout(in: bounds)
+    let currentEditorFrame = currentCompanionLayout?.editorFrame ?? bounds
+    let currentProjectEditorFrames = projectEditorPaneFrames(session, in: currentEditorFrame)
+    let companionStateSettled = projectEditorCompanionPaneHidden || projectEditorCompanionSessionId != nil
+    let activeHostSettled =
+      session.hostView.superview === self
+      && !session.hostView.isHidden
+      && rectsMatch(session.hostView.frame, currentProjectEditorFrames.hostFrame)
+    let currentTitleBarShouldBeHidden = currentProjectEditorFrames.titleBarFrame.height <= 0
+    let activeTitleBarSettled =
+      session.titleBarView == nil
+      || (
+        session.titleBarView?.superview === self
+        && session.titleBarView?.isHidden == currentTitleBarShouldBeHidden
+        && rectsMatch(session.titleBarView?.frame ?? .zero, currentProjectEditorFrames.titleBarFrame)
+      )
+    /*
+     CDXC:ChromiumBrowserPanes 2026-05-16-22:37:
+     Disabled browser-toolbar clicks call the project-editor focus path even though the same editor is already visible.
+     Do not re-run host visibility, ordering, companion sync, AppKit layout, or CEF first-responder work when the active project editor is already settled; redundant focus layouts can cause Chromium's internal compositor layer to drift while native frames stay fixed.
+     */
+    if !didSwitchProjectEditor && companionStateSettled && activeHostSettled && activeTitleBarSettled {
+      return
+    }
     activeProjectEditorId = projectId
     if projectEditorCompanionPaneHidden {
       projectEditorCompanionIsVisible = false
@@ -2963,6 +3034,65 @@ final class TerminalWorkspaceView: NSView {
       return activeTab.url
     }
     return session.chromiumView.currentURLString ?? session.url
+  }
+
+  func titlebarBrowserResourceTabs() -> [[String: Any]] {
+    /**
+     CDXC:TitlebarResources 2026-05-17-01:25:
+     The Resources dropdown should explain browser memory like terminal memory:
+     show the visible Browser tab or project editor view first, then nest the
+     Chromium processes below it. Export CEF browser identifiers with the
+     tracked title and URL so the React titlebar can correlate renderer process
+     `--client-id` values without showing implementation labels to users.
+     */
+    var tabs: [[String: Any]] = []
+    for session in webPaneSessions.values {
+      guard let chromiumView = session.chromiumView, chromiumView.browserIdentifier >= 0 else {
+        continue
+      }
+      let currentURL = chromiumView.currentURLString ?? session.currentURLString ?? ""
+      let title = chromiumWebPaneDisplayTitle(
+        title: chromiumView.pageTitle,
+        url: currentURL,
+        fallbackTitle: session.title)
+      tabs.append([
+        "browserId": chromiumView.browserIdentifier,
+        "id": "browser:\(session.sessionId)",
+        "isActive": orderedVisibleSessionIds().contains(session.sessionId),
+        "kind": "browser",
+        "title": title,
+        "url": currentURL,
+      ])
+    }
+    for session in projectEditorPaneSessions.values {
+      for tab in session.tabs where tab.chromiumView.browserIdentifier >= 0 {
+        let currentURL = tab.chromiumView.currentURLString ?? tab.url
+        tabs.append([
+          "browserId": tab.chromiumView.browserIdentifier,
+          "id": "project-editor:\(session.projectId):\(tab.tabId)",
+          "isActive": activeProjectEditorId == session.projectId && session.activeTabId == tab.tabId,
+          "kind": session.mode,
+          "title": titlebarBrowserResourceTitle(mode: session.mode, title: tab.title),
+          "url": currentURL,
+        ])
+      }
+    }
+    return tabs
+  }
+
+  private func titlebarBrowserResourceTitle(mode: String, title: String) -> String {
+    let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let visibleTitle = trimmedTitle.isEmpty ? "Browser tab" : trimmedTitle
+    switch mode {
+    case "code":
+      return "Code - \(visibleTitle)"
+    case "git":
+      return "Git - \(visibleTitle)"
+    case "tasks":
+      return "Project - \(visibleTitle)"
+    default:
+      return visibleTitle
+    }
   }
 
   private func selectProjectEditorTab(projectId: String, tabId: String) {
@@ -3354,6 +3484,9 @@ final class TerminalWorkspaceView: NSView {
     guard let clickedSessionId = surfaceView.ghostexSessionId else {
       return
     }
+    emitAttentionAcknowledgementClickIfNeeded(
+      sessionId: clickedSessionId,
+      reason: "nativeTerminalContentMouseDown")
     let responderSessionId =
       event.window?.firstResponder.flatMap { sessionId(containing: $0) } ?? currentResponderSessionId()
     let isSurfaceFirstResponder = event.window?.firstResponder === surfaceView
@@ -3383,6 +3516,23 @@ final class TerminalWorkspaceView: NSView {
         "sessionId": clickedSessionId,
       ])
     focusTerminal(sessionId: clickedSessionId, reason: "nativeTerminalContentMouseDown")
+  }
+
+  private func emitAttentionAcknowledgementClickIfNeeded(sessionId: String, reason: String) {
+    guard attentionSessionIds.contains(sessionId) || sessionActivities[sessionId] == .attention else {
+      return
+    }
+    /**
+     CDXC:SessionAttention 2026-05-16-23:35:
+     User clicks on an already-focused pane or its title bar can be suppressed as duplicate focus locally. Still emit the existing terminalFocused event while the session is green/attention so the sidebar can clear the shared attention state after its 1.5-second minimum visibility floor.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.attentionClickAcknowledgement.emitted",
+      details: [
+        "reason": reason,
+        "sessionId": sessionId,
+      ])
+    sendEvent(.terminalFocused(sessionId: sessionId))
   }
 
   func windowFirstResponderChanged(_ responder: NSResponder?, reason: String) {
@@ -3531,6 +3681,11 @@ final class TerminalWorkspaceView: NSView {
    The sidebar stages `/rename <title>` as terminal text, then submits it with
    a real Return key event. Ghostty treats text carriage returns differently
    in Codex, so Enter must travel through the same key path as a user press.
+
+   CDXC:SessionTitleSync 2026-05-16-22:19
+   Rename submission must target the staged terminal command without stealing
+   focus from the user's current pane. Send Enter directly to the target
+   surface view and preserve the current focused session/responder state.
    */
   func sendTerminalEnter(sessionId: String) {
     guard let view = sessions[sessionId]?.view else {
@@ -3548,11 +3703,11 @@ final class TerminalWorkspaceView: NSView {
       event: "nativeWorkspace.sendTerminalEnter.start",
       details: [
         "activeSessionIds": Array(activeSessionIds).sorted(),
+        "preserveFocus": true,
         "requestedSessionId": sessionId,
         "responderBefore": responderSnapshot(),
         "visibleSessionIds": orderedVisibleSessionIds(),
       ])
-    focusTerminal(sessionId: sessionId, reason: "sendTerminalEnter")
     guard
       let event = NSEvent.keyEvent(
         with: .keyDown,
@@ -3571,7 +3726,7 @@ final class TerminalWorkspaceView: NSView {
         event: "nativeWorkspace.sendTerminalEnter.eventCreationFailed",
         details: [
           "requestedSessionId": sessionId,
-          "responderAfterFocus": responderSnapshot(),
+          "responderBeforeSend": responderSnapshot(),
         ])
       return
     }
@@ -3785,7 +3940,13 @@ final class TerminalWorkspaceView: NSView {
         setProjectEditorTabHostVisibility(session, isActive: isActive)
         session.titleBarView?.isHidden = !isActive
         if isActive {
-          layoutProjectEditorPane(session)
+          /*
+           CDXC:ChromiumBrowserPanes 2026-05-17-10:05:
+           Switching the active session shown in the Code/Git companion pane must not temporarily expand the editor CEF host to full workspace width before the normal layout pass restores the split.
+           Use the current companion editor frame during setActiveTerminalSet relayout so Chromium sees a stable width while the companion pane retargets.
+           */
+          let companionLayout = projectEditorCompanionLayout(in: bounds)
+          layoutProjectEditorPane(session, in: companionLayout?.editorFrame ?? bounds)
           orderProjectEditorPaneToFront(session)
         } else {
           if let titleBarView = session.titleBarView {
@@ -4905,17 +5066,11 @@ final class TerminalWorkspaceView: NSView {
     )
   }
 
-  private func layoutProjectEditorPane(_ session: ProjectEditorPaneSession, in rect: CGRect? = nil) {
-    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.start", [
-      "hostFrameBefore": describeFrame(session.hostView.frame),
-      "mode": session.mode,
-      "projectId": session.projectId,
-      "showsProjectTabs": session.showsProjectTabs,
-      "url": session.url,
-      "workspaceBounds": describeFrame(bounds),
-      "windowNumber": window?.windowNumber ?? NSNull(),
-    ])
-    let nextFrame = chromiumBackingPixelAlignedFrame(rect ?? bounds)
+  private func projectEditorPaneFrames(
+    _ session: ProjectEditorPaneSession,
+    in rect: CGRect
+  ) -> (titleBarFrame: CGRect, hostFrame: CGRect) {
+    let nextFrame = chromiumBackingPixelAlignedFrame(rect)
     let titleBarHeight =
       session.showsProjectTabs && session.titleBarView != nil
       ? min(Self.terminalTitleBarHeight, max(nextFrame.height, 0))
@@ -4932,6 +5087,22 @@ final class TerminalWorkspaceView: NSView {
       width: nextFrame.width,
       height: max(0, nextFrame.height - titleBarHeight)
     )
+    return (titleBarFrame: titleBarFrame, hostFrame: hostFrame)
+  }
+
+  private func layoutProjectEditorPane(_ session: ProjectEditorPaneSession, in rect: CGRect? = nil) {
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.start", [
+      "hostFrameBefore": describeFrame(session.hostView.frame),
+      "mode": session.mode,
+      "projectId": session.projectId,
+      "showsProjectTabs": session.showsProjectTabs,
+      "url": session.url,
+      "workspaceBounds": describeFrame(bounds),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+    let frames = projectEditorPaneFrames(session, in: rect ?? bounds)
+    let titleBarFrame = frames.titleBarFrame
+    let hostFrame = frames.hostFrame
     if let titleBarView = session.titleBarView {
       /**
        CDXC:GitProjectTabs 2026-05-16-07:42:
@@ -4939,9 +5110,9 @@ final class TerminalWorkspaceView: NSView {
        Agents workarea above the existing browser address toolbar. Keep this
        tab row outside WebPaneHostView so browser navigation chrome remains the
        same component normal browser panes use.
-       */
+      */
       titleBarView.frame = titleBarFrame
-      titleBarView.isHidden = titleBarHeight <= 0
+      titleBarView.isHidden = titleBarFrame.height <= 0
     }
     /**
      CDXC:EditorPanes 2026-05-08-13:37
@@ -7037,6 +7208,7 @@ final class TerminalWorkspaceView: NSView {
         "sessionId": sessionId,
         "titleBarFrame": describeFrame(paneTitleBarFrame(for: sessionId) ?? .zero),
       ])
+    emitAttentionAcknowledgementClickIfNeeded(sessionId: sessionId, reason: focusReason)
     if commandsPanelActiveSessionIds.contains(sessionId), !commandsPanelIsVisible {
       NativePaneTabDragReproLog.append(event: "nativeCommandsPanel.collapsedTitleBar.expandRequested", details: [
         "hitPoint": nativePaneTabsDebugFrame(CGRect(x: startPoint.x, y: startPoint.y, width: 0, height: 0)),
@@ -10725,8 +10897,13 @@ private enum NativeSessionPersistenceMode {
      CDXC:SessionPersistence 2026-05-15-18:40:
      An explicit Ghostex sidebar close owns the full provider-backed session
      lifetime. Kill the named tmux/zmx/zellij session instead of merely closing
-     the attached Ghostty client, while sleep/reload paths opt into preserving
-     the provider session for later reattach.
+     the attached Ghostty client, while reload paths opt into preserving the
+     provider session until the replacement terminal has attached.
+
+     CDXC:SessionSleep 2026-05-17-01:33:
+     Sleep also owns the provider runtime lifetime. It must terminate the named
+     provider session so an idle sleeping agent CLI is not left running in the
+     background and consuming memory.
      */
     let quotedName = shellQuote(sessionName)
     switch provider {

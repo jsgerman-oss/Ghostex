@@ -228,6 +228,7 @@ import {
 import {
   getghostexHotkeyActionById,
   getghostexHotkeyActionIdForKey,
+  type ghostexFocusedPaneAction,
   type ghostexHotkeyActionId,
 } from "../../shared/ghostex-hotkeys";
 import { getGhosttyTerminalConfigValues } from "../../shared/ghostty-terminal-settings";
@@ -803,6 +804,11 @@ const AUTO_SUBMIT_STAGED_RENAME_DELAY_MS = 1_000;
 const DELAYED_SEND_MAX_DELAY_MS = 2_147_483_647;
 const NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS = 7_000;
 const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
+/**
+ * CDXC:SessionAttention 2026-05-16-23:35:
+ * Green attention borders and status dots must remain visible for at least 1.5 seconds after appearing. A click during that floor records the acknowledgement immediately but delays clearing the shared attention state until the minimum visible duration has elapsed.
+ */
+const NATIVE_MIN_ATTENTION_VISIBLE_MS = 1_500;
 const ghostex_AGENT_NOTIFY_HOOK_PATH = `${nativeGhostexHomeDirectory()}/hooks/agent-shell-notify.sh`;
 const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/ghostex.ts`;
 const FIND_PREVIOUS_SESSION_AGENT_ID = "codex";
@@ -1145,6 +1151,8 @@ const terminalStateById = new Map<
 const titleDerivedActivityBySessionId = new Map<string, TitleDerivedSessionActivity>();
 const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
+const nativeAttentionEnteredAtBySessionId = new Map<string, number>();
+const nativeAttentionAcknowledgementTimeoutBySessionId = new Map<string, number>();
 /**
  * CDXC:SessionAttentionNotifications 2026-05-10-16:46
  * Notification rate limits live next to the sidebar activity source of truth:
@@ -2964,6 +2972,8 @@ function playNativeSessionCompletionSound(sessionId: string, source: string): vo
 }
 
 function handleNativeSessionEnteredAttention(sessionId: string, source: string): void {
+  clearNativeSessionAttentionAcknowledgementTimer(sessionId);
+  nativeAttentionEnteredAtBySessionId.set(sessionId, Date.now());
   /**
    * CDXC:SessionAttentionNotifications 2026-05-10-16:46
    * Attention transitions fan out to both optional sounds and optional macOS
@@ -2972,6 +2982,20 @@ function handleNativeSessionEnteredAttention(sessionId: string, source: string):
    */
   playNativeSessionCompletionSound(sessionId, source);
   showNativeSessionAttentionNotification(sessionId, source);
+}
+
+function clearNativeSessionAttentionAcknowledgementTimer(sessionId: string): void {
+  const timeout = nativeAttentionAcknowledgementTimeoutBySessionId.get(sessionId);
+  if (timeout === undefined) {
+    return;
+  }
+  window.clearTimeout(timeout);
+  nativeAttentionAcknowledgementTimeoutBySessionId.delete(sessionId);
+}
+
+function clearNativeSessionAttentionTracking(sessionId: string): void {
+  clearNativeSessionAttentionAcknowledgementTimer(sessionId);
+  nativeAttentionEnteredAtBySessionId.delete(sessionId);
 }
 
 function markNativeSessionSemanticActivityAt(
@@ -7386,6 +7410,7 @@ function suppressNativeSessionActivityIndicators(
   const terminalState = terminalStateById.get(sessionId);
   if (terminalState?.activity === "attention" || terminalState?.activity === "working") {
     terminalState.activity = "idle";
+    clearNativeSessionAttentionTracking(sessionId);
   }
   /**
    * CDXC:SessionRestore 2026-04-27-08:20
@@ -9804,6 +9829,7 @@ function closeTerminal(
     titleDerivedActivityBySessionId.delete(reference.sessionId);
     nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
     nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
+    clearNativeSessionAttentionTracking(reference.sessionId);
     nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
     clearDelayedSendTimer(reference.sessionId);
     postNative({
@@ -9834,6 +9860,7 @@ function closeTerminal(
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
+  clearNativeSessionAttentionTracking(reference.sessionId);
   nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
   clearDelayedSendTimer(reference.sessionId);
   postNative({
@@ -10069,6 +10096,16 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
       }
       focusNativeHotkeySessionSlot(action.slotNumber);
       return;
+    case "focusedPaneAction":
+      /**
+       * CDXC:CommandPalette 2026-05-17-01:32:
+       * Command-palette pane actions and their hotkeys should execute through
+       * the same focused-session titlebar handler as the native pane menu, so
+       * browser, split, merge, fork, reload, delay, and pop-out behavior stays
+       * scoped to the user's current pane.
+       */
+      runFocusedPaneHotkeyAction(action.focusedPaneAction);
+      return;
     case "moveSidebar":
       moveSidebarToOtherSide();
       return;
@@ -10094,6 +10131,15 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
     case "renameActiveSession":
       promptRenameFocusedNativeHotkeySession();
       return;
+    case "runActionSlot":
+      /**
+       * CDXC:ActionsHotkeys 2026-05-17-01:18:
+       * Action hotkeys are positional launchers for the current Actions list.
+       * Resolve the command at dispatch time so reordering actions changes
+       * Ctrl+Shift+N behavior without rewriting saved hotkey settings.
+       */
+      runNativeSidebarCommandSlot(action.slotNumber);
+      return;
     case "setViewMode":
       updateActiveProjectWorkspace((workspace) =>
         setViewModeInSimpleWorkspace(workspace, action.viewMode),
@@ -10104,6 +10150,54 @@ function runNativeHotkeyAction(actionId: ghostexHotkeyActionId, source: "dom" | 
       splitFocusedNativePane(action.direction);
       return;
   }
+}
+
+function runFocusedPaneHotkeyAction(action: ghostexFocusedPaneAction): void {
+  const focusedSessionId = activeSnapshot().focusedSessionId;
+  if (!focusedSessionId) {
+    logNativeHotkeyDebug("nativeHotkeys.focusedPaneActionNoFocusedSession", { action });
+    return;
+  }
+  if (action === "popOutPane") {
+    const session = findSessionRecord(focusedSessionId);
+    handleNativeTerminalTitleBarAction(
+      focusedSessionId,
+      session?.isPoppedOut === true ? "restorePopOut" : "popOut",
+    );
+    return;
+  }
+  handleNativeTerminalTitleBarAction(focusedSessionId, focusedPaneHotkeyActionToTitlebarAction(action));
+}
+
+function focusedPaneHotkeyActionToTitlebarAction(
+  action: Exclude<ghostexFocusedPaneAction, "popOutPane">,
+): NativeTerminalTitleBarAction {
+  switch (action) {
+    case "openBrowserPane":
+      return "openBrowser";
+    case "rotatePanesClockwise":
+      return "rotatePanesClockwise";
+    case "mergeAllTabs":
+      return "mergeAllTabs";
+    case "delayedSend":
+      return "delayedSend";
+    case "forkSession":
+      return "fork";
+    case "reloadSession":
+      return "reload";
+  }
+}
+
+function runNativeSidebarCommandSlot(slotNumber: number): void {
+  const command = commands[slotNumber - 1];
+  if (!command) {
+    logNativeHotkeyDebug("nativeHotkeys.actionSlotMissing", {
+      slotNumber: String(slotNumber),
+      totalCommands: String(commands.length),
+    });
+    return;
+  }
+  runNativeSidebarCommand(command);
 }
 
 function getMatchingNativeHotkeyActionId(
@@ -10503,11 +10597,64 @@ function acknowledgeNativeTerminalAttention(
     return false;
   }
 
+  const attentionEnteredAt = nativeAttentionEnteredAtBySessionId.get(sessionId);
+  const remainingVisibleMs =
+    attentionEnteredAt === undefined
+      ? 0
+      : NATIVE_MIN_ATTENTION_VISIBLE_MS - Math.max(0, Date.now() - attentionEnteredAt);
+  if (attentionEnteredAt !== undefined && remainingVisibleMs > 0) {
+    if (!nativeAttentionAcknowledgementTimeoutBySessionId.has(sessionId)) {
+      const timeout = window.setTimeout(() => {
+        nativeAttentionAcknowledgementTimeoutBySessionId.delete(sessionId);
+        const latestAttentionEnteredAt = nativeAttentionEnteredAtBySessionId.get(sessionId);
+        if (
+          latestAttentionEnteredAt !== attentionEnteredAt ||
+          !completeNativeTerminalAttentionAcknowledgement(sessionId, reason, attentionEnteredAt)
+        ) {
+          return;
+        }
+        publish();
+      }, remainingVisibleMs);
+      nativeAttentionAcknowledgementTimeoutBySessionId.set(sessionId, timeout);
+    }
+    appendAgentDetectionDebugLog("nativeSidebar.sessionAttentionAcknowledgementDeferred", {
+      attentionEnteredAt: new Date(attentionEnteredAt).toISOString(),
+      reason,
+      remainingVisibleMs,
+      sessionId,
+    });
+    return true;
+  }
+
+  return completeNativeTerminalAttentionAcknowledgement(sessionId, reason, attentionEnteredAt);
+}
+
+function completeNativeTerminalAttentionAcknowledgement(
+  sessionId: string,
+  reason: "native-focus" | "sidebar-focus",
+  attentionEnteredAt?: number,
+): boolean {
+  const terminalState = terminalStateById.get(sessionId);
+  if (terminalState?.activity !== "attention") {
+    return false;
+  }
+  const latestAttentionEnteredAt = nativeAttentionEnteredAtBySessionId.get(sessionId);
+  if (
+    attentionEnteredAt !== undefined &&
+    latestAttentionEnteredAt !== undefined &&
+    latestAttentionEnteredAt !== attentionEnteredAt
+  ) {
+    return false;
+  }
+
   /**
    * CDXC:NativeSessionStatus 2026-04-27-07:39
    * Done/green is an attention state, not just an exited lifecycle. Clicking a
    * green session card acknowledges that completion and clears both the card
    * dot and workspace-bar done count until the next working-to-done transition.
+   *
+   * CDXC:SessionAttention 2026-05-16-23:35:
+   * Pane/tab clicks should always acknowledge the current green attention state. If the click arrives before the 1.5-second visibility floor, acknowledgement is completed by the deferred timer above so the border and dot disappear only after the user has had enough time to perceive them.
    */
   const previousDerivedActivity = titleDerivedActivityBySessionId.get(sessionId);
   const acknowledgedDerivedActivity =
@@ -10516,7 +10663,11 @@ function acknowledgeNativeTerminalAttention(
     titleDerivedActivityBySessionId.set(sessionId, acknowledgedDerivedActivity);
   }
   terminalState.activity = "idle";
+  nativeAttentionEnteredAtBySessionId.delete(sessionId);
+  clearNativeSessionAttentionAcknowledgementTimer(sessionId);
   appendAgentDetectionDebugLog("nativeSidebar.sessionAttentionAcknowledged", {
+    attentionEnteredAt:
+      attentionEnteredAt === undefined ? undefined : new Date(attentionEnteredAt).toISOString(),
     acknowledgedDerivedActivity,
     previousDerivedActivity,
     reason,
@@ -10798,20 +10949,22 @@ async function renameNativeSidebarTerminalSession(
   publish();
 }
 
-function disposeNativeSleepingSessionSurface(sessionId: string, project = activeProject()): void {
+function stopNativeSleepingSessionRuntime(sessionId: string, project = activeProject()): void {
   const nativeSessionId = forgetNativeSessionMappingForProject(project.projectId, sessionId);
   clearNativeSidebarCommandSessionBySessionId(sessionId);
   terminalStateById.delete(sessionId);
   titleDerivedActivityBySessionId.delete(sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(sessionId);
   nativeWorkingStartedAtBySessionId.delete(sessionId);
+  clearNativeSessionAttentionTracking(sessionId);
   /**
-   * CDXC:SessionPersistence 2026-05-15-18:40:
-   * Sleeping a provider-backed terminal only disposes the Ghostty attachment.
-   * Keep the named tmux/zmx/zellij session alive so wake can reattach without
-   * converting sleep into an explicit user close.
+   * CDXC:SessionSleep 2026-05-17-01:33:
+   * Sleeping must release the actual agent CLI, not only detach the Ghostty view.
+   * Close the tmux/zmx/zellij provider session too; wake recreates the provider
+   * session and runs the stored agent resume command when the sidebar has a
+   * restorable identity.
    */
-  postNative({ preservePersistenceSession: true, sessionId: nativeSessionId, type: "closeTerminal" });
+  postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
 }
 
 function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
@@ -10826,7 +10979,7 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
       setSessionSleepingInSimpleWorkspace(workspace, reference.sessionId, sleeping).snapshot,
   );
   if (sleeping) {
-    disposeNativeSleepingSessionSurface(reference.sessionId, reference.project);
+    stopNativeSleepingSessionRuntime(reference.sessionId, reference.project);
   } else if (!terminalStateById.has(reference.sessionId)) {
     const nextSession = findTerminalSessionInProject(reference.project, reference.sessionId);
     if (nextSession) {
@@ -10915,7 +11068,7 @@ function setNativeGroupSleeping(groupId: string, sleeping: boolean): void {
   );
   if (sleeping) {
     for (const session of sessionsToSleep) {
-      disposeNativeSleepingSessionSurface(session.sessionId);
+      stopNativeSleepingSessionRuntime(session.sessionId);
     }
   } else {
     const nextGroup = activeProject().workspace.groups.find(
@@ -11007,6 +11160,7 @@ function restartNativeSession(sessionId: string): void {
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
+  clearNativeSessionAttentionTracking(reference.sessionId);
   nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
   clearDelayedSendTimer(reference.sessionId);
   updateProjectWorkspace(
@@ -11211,7 +11365,7 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
           agent: terminalState?.agentName ?? session.agentName,
           alias: items.length + 1,
           attachCommand:
-            provider && providerSessionName
+            provider && providerSessionName && status !== "sleep"
               ? buildNativeCliAttachCommand(provider, providerSessionName)
               : undefined,
           groupId: group.groupId,
@@ -12284,6 +12438,21 @@ function copyAttachCommand(sessionId: string): void {
   if (!session) {
     return;
   }
+  if (session.isSleeping === true) {
+    /**
+     * CDXC:SessionSleep 2026-05-17-01:33:
+     * Sleeping stops the provider runtime, so a copied external command should
+     * resume the agent conversation instead of reattaching to a killed zmx/tmux
+     * provider session and creating an empty shell.
+     */
+    const resumeCommand = buildNativeCopyResumeCommand(session);
+    if (!resumeCommand) {
+      showNativeMessage("info", "No resume command is available for this sleeping session.");
+      return;
+    }
+    void navigator.clipboard?.writeText(resumeCommand).catch(() => undefined);
+    return;
+  }
   const terminalState = terminalStateById.get(reference.sessionId);
   const provider =
     terminalState?.sessionPersistenceProvider ??
@@ -12681,6 +12850,7 @@ function closeAllNativeSessions(): void {
     postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
     terminalStateById.delete(sessionId);
     titleDerivedActivityBySessionId.delete(sessionId);
+    clearNativeSessionAttentionTracking(sessionId);
   }
   sidebarCommandSessionByCommandId.clear();
   sidebarCommandCommandIdBySessionId.clear();
@@ -12703,8 +12873,13 @@ function addProject(path: string, name = projectNameFromPath(path)): void {
     return;
   }
   if (!existingProject) {
-    projects = [
-      ...projects,
+    /**
+     * CDXC:ProjectList 2026-05-16-21:46
+     * Sidebar-created projects should be immediately visible at the top of the
+     * projects list. Insert the new code project before existing code projects
+     * while preserving the established chat-first ordering.
+     */
+    projects = orderNativeProjectsForSidebar([
       {
         commandsPanel: createDefaultCommandsPanelState(),
         name: name.trim() || projectNameFromPath(normalizedPath),
@@ -12713,7 +12888,8 @@ function addProject(path: string, name = projectNameFromPath(path)): void {
         theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
         workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
       },
-    ];
+      ...projects,
+    ]);
     writeStoredProjects("addProject");
   }
   focusProject(projectId);
@@ -13202,6 +13378,7 @@ function removeProject(projectId: string): void {
       titleDerivedActivityBySessionId.delete(session.sessionId);
       nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
       nativeWorkingStartedAtBySessionId.delete(session.sessionId);
+      clearNativeSessionAttentionTracking(session.sessionId);
     }
   }
   const nextProjects = projects.filter((project) => project.projectId !== projectId);
@@ -13318,6 +13495,7 @@ function disposeNativeRecentProjectSessionSurface(
   titleDerivedActivityBySessionId.delete(session.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
   nativeWorkingStartedAtBySessionId.delete(session.sessionId);
+  clearNativeSessionAttentionTracking(session.sessionId);
   postNative({
     sessionId: nativeSessionId,
     type: session.kind === "t3" || session.kind === "browser" ? "closeWebPane" : "closeTerminal",
@@ -15123,6 +15301,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         titleDerivedActivityBySessionId.delete(session.sessionId);
         nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
         nativeWorkingStartedAtBySessionId.delete(session.sessionId);
+        clearNativeSessionAttentionTracking(session.sessionId);
         const nativeSessionId = forgetNativeSessionMapping(session.sessionId);
         postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
       }
@@ -16847,7 +17026,12 @@ function handleNativePaneReorderRequested(
 }
 
 function handleNativePaneTabSelected(sessionId: string): void {
+  const acknowledgedAttention = acknowledgeNativeTerminalAttention(sessionId, "native-focus");
   if (activeCommandPanelContainsSession(sessionId)) {
+    /**
+     * CDXC:SessionAttention 2026-05-16-23:35:
+     * Clicking an already-selected command or workspace tab must still acknowledge green attention. Tab selection can be a layout no-op, so acknowledge before the unchanged guard and let the delayed attention timer preserve the 1.5-second visual floor when needed.
+     */
     updateActiveProjectCommandsPanel((panel) => ({
       ...panel,
       activeSessionId: sessionId,
@@ -16874,11 +17058,15 @@ function handleNativePaneTabSelected(sessionId: string): void {
   const result = selectPaneTabInSimpleWorkspace(workspaceWithWake, group.groupId, sessionId);
   if (!result.changed && !wasSleeping) {
     appendPaneLayoutTraceDebugLog("paneTabSelected.unchanged", {
+      acknowledgedAttention,
       activeProjectId,
       groupId: group.groupId,
       sessionId,
       targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(workspaceWithWake, group.groupId),
     });
+    if (acknowledgedAttention) {
+      publish();
+    }
     return;
   }
   /**
@@ -16890,6 +17078,7 @@ function handleNativePaneTabSelected(sessionId: string): void {
    */
   updateActiveProjectWorkspace(() => (result.changed ? result.snapshot : workspaceWithWake));
   appendPaneLayoutTraceDebugLog("paneTabSelected.applied", {
+    acknowledgedAttention,
     activeProjectId,
     groupId: group.groupId,
     sessionId,

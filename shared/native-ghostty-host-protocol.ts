@@ -106,6 +106,7 @@ export type NativeGhosttyHostCommand =
       type: "openFloatingEditor";
     }
   | {
+      preservePersistenceSession?: boolean;
       sessionId: string;
       type: "closeTerminal";
     }

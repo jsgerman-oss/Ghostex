@@ -42,6 +42,7 @@ int GhostexCEFRemoteDebuggingPort(void);
 
 @property(nonatomic, readonly, nullable) NSString* currentURLString;
 @property(nonatomic, readonly, nullable) NSString* pageTitle;
+@property(nonatomic, readonly) NSInteger browserIdentifier;
 @property(nonatomic, readonly) BOOL canGoBack;
 @property(nonatomic, readonly) BOOL canGoForward;
 @property(nonatomic, readonly) BOOL isLoading;

@@ -2,11 +2,18 @@ import type { SessionGridDirection, TerminalViewMode } from "./session-grid-cont
 
 export type ghostexHotkeyActionId =
   | "createSession"
+  | "delayedSend"
+  | "forkSession"
+  | "mergeAllTabs"
   | "openCommandPalette"
+  | "openBrowserPane"
   | "openSettings"
   | "moveSidebar"
   | "openCommandsPanel"
+  | "popOutPane"
+  | "reloadSession"
   | "renameActiveSession"
+  | "rotatePanesClockwise"
   | "focusPreviousGroup"
   | "focusNextGroup"
   | "focusPreviousSession"
@@ -17,10 +24,20 @@ export type ghostexHotkeyActionId =
   | "focusLeft"
   | "splitMore"
   | "splitMoreDown"
+  | `runActionSlot${1 | 2 | 3 | 4 | 5}`
   | `focusGroup${1 | 2 | 3 | 4 | 5}`
   | `focusSessionSlot${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9}`;
 
 export type ghostexHotkeySettings = Partial<Record<ghostexHotkeyActionId, string>>;
+
+export type ghostexFocusedPaneAction =
+  | "delayedSend"
+  | "forkSession"
+  | "mergeAllTabs"
+  | "openBrowserPane"
+  | "popOutPane"
+  | "reloadSession"
+  | "rotatePanesClockwise";
 
 export type ghostexHotkeyAction =
   | { id: ghostexHotkeyActionId; kind: "createSession" }
@@ -28,11 +45,13 @@ export type ghostexHotkeyAction =
   | { id: ghostexHotkeyActionId; kind: "focusDirection"; direction: SessionGridDirection }
   | { id: ghostexHotkeyActionId; kind: "focusGroup"; groupIndex: number }
   | { id: ghostexHotkeyActionId; kind: "focusSessionSlot"; slotNumber: number }
+  | { id: ghostexHotkeyActionId; kind: "focusedPaneAction"; focusedPaneAction: ghostexFocusedPaneAction }
   | { id: ghostexHotkeyActionId; kind: "moveSidebar" }
   | { id: ghostexHotkeyActionId; kind: "openCommandPalette" }
   | { id: ghostexHotkeyActionId; kind: "openCommandsPanel" }
   | { id: ghostexHotkeyActionId; kind: "openSettings" }
   | { id: ghostexHotkeyActionId; kind: "renameActiveSession" }
+  | { id: ghostexHotkeyActionId; kind: "runActionSlot"; slotNumber: number }
   | { id: ghostexHotkeyActionId; kind: "setViewMode"; viewMode: TerminalViewMode }
   | { direction: "horizontal" | "vertical"; id: ghostexHotkeyActionId; kind: "splitFocusedPane" };
 
@@ -108,6 +127,70 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
     title: "Rename Active Session",
   },
   {
+    action: { focusedPaneAction: "openBrowserPane", id: "openBrowserPane", kind: "focusedPaneAction" },
+    /**
+     * CDXC:CommandPalette 2026-05-17-01:32:
+     * Pane context-menu actions should also be command-palette commands with
+     * configurable shortcuts. These hotkeys target the focused pane/session so
+     * keyboard use follows the same scope as the visible pane menu.
+     */
+    defaultKey: "ctrl+shift+b",
+    description: "Open a browser pane beside the focused pane.",
+    id: "openBrowserPane",
+    title: "Open Browser Pane",
+  },
+  {
+    action: {
+      focusedPaneAction: "rotatePanesClockwise",
+      id: "rotatePanesClockwise",
+      kind: "focusedPaneAction",
+    },
+    /**
+     * CDXC:CommandPalette 2026-05-17-01:34:
+     * Rotate and Reload defaults are intentionally swapped so Ctrl+Shift+L
+     * rotates the layout while Ctrl+Shift+R keeps the common reload mnemonic.
+     */
+    defaultKey: "ctrl+shift+l",
+    description: "Rotate panes clockwise in the focused group.",
+    id: "rotatePanesClockwise",
+    title: "Rotate Panes Clockwise",
+  },
+  {
+    action: { focusedPaneAction: "mergeAllTabs", id: "mergeAllTabs", kind: "focusedPaneAction" },
+    defaultKey: "ctrl+shift+m",
+    description: "Merge the focused group's panes into one tabbed pane.",
+    id: "mergeAllTabs",
+    title: "Merge All Tabs",
+  },
+  {
+    action: { focusedPaneAction: "delayedSend", id: "delayedSend", kind: "focusedPaneAction" },
+    defaultKey: "ctrl+shift+s",
+    description: "Schedule Enter for the focused terminal session.",
+    id: "delayedSend",
+    title: "Delayed Send",
+  },
+  {
+    action: { focusedPaneAction: "forkSession", id: "forkSession", kind: "focusedPaneAction" },
+    defaultKey: "ctrl+shift+f",
+    description: "Fork the focused session.",
+    id: "forkSession",
+    title: "Fork Session",
+  },
+  {
+    action: { focusedPaneAction: "reloadSession", id: "reloadSession", kind: "focusedPaneAction" },
+    defaultKey: "ctrl+shift+r",
+    description: "Reload the focused session.",
+    id: "reloadSession",
+    title: "Reload Session",
+  },
+  {
+    action: { focusedPaneAction: "popOutPane", id: "popOutPane", kind: "focusedPaneAction" },
+    defaultKey: "ctrl+shift+o",
+    description: "Pop out or restore the focused pane.",
+    id: "popOutPane",
+    title: "Pop Out Pane",
+  },
+  {
     action: { direction: -1, id: "focusPreviousGroup", kind: "focusAdjacentGroup" },
     defaultKey: "cmd+[",
     description: "Focus the previous group.",
@@ -179,6 +262,23 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
     description: `Focus session slot ${slotNumber}.`,
     id: `focusSessionSlot${slotNumber}` as ghostexHotkeyActionId,
     title: `Focus Session ${slotNumber}`,
+  })),
+  ...[1, 2, 3, 4, 5].map((slotNumber) => ({
+    action: {
+      id: `runActionSlot${slotNumber}` as ghostexHotkeyActionId,
+      kind: "runActionSlot" as const,
+      slotNumber,
+    },
+    /**
+     * CDXC:ActionsHotkeys 2026-05-17-01:18:
+     * Action hotkeys are positional by the Actions settings list, not tied to
+     * command ids, so users can reorder actions without rebinding the first
+     * five launcher shortcuts.
+     */
+    defaultKey: `ctrl+shift+${slotNumber}`,
+    description: `Start action ${slotNumber} from the Actions list.`,
+    id: `runActionSlot${slotNumber}` as ghostexHotkeyActionId,
+    title: `Start Action ${slotNumber}`,
   })),
   {
     action: { direction: "horizontal", id: "splitMore", kind: "splitFocusedPane" },
