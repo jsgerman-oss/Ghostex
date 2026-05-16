@@ -12,20 +12,29 @@ This target is intentionally AppKit-first:
 
 ## Build Prerequisites
 
-Build Ghostty's macOS xcframework first:
+<!--
+CDXC:NativeGhosttyBuild 2026-05-17-00:13:
+The native host defaults to the repo-root `ghostty/` source dependency so the embedded terminal source is versioned with Ghostex and contributes its Zig code to the parent repo language breakdown.
+Use `GHOSTTY_ROOT` only when intentionally testing a separate Ghostty checkout.
+-->
+
+Build Ghostty's macOS xcframework from the repo-root `ghostty/` source
+dependency first:
 
 ```sh
-cd "$GHOSTTY_ROOT"
-env DEVELOPER_DIR=/Library/Developer/CommandLineTools \
-  SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \
-  GHOSTTY_METAL_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  zig build -Demit-xcframework -Dxcframework-target=native -Demit-macos-app=false
+(
+  cd ghostty
+  env DEVELOPER_DIR=/Library/Developer/CommandLineTools \
+    SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \
+    GHOSTTY_METAL_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+    zig build -Demit-xcframework -Dxcframework-target=native -Demit-macos-app=false
+)
 ```
 
 That should produce:
 
 ```text
-$GHOSTTY_ROOT/macos/GhosttyKit.xcframework
+ghostty/macos/GhosttyKit.xcframework
 ```
 
 If Zig finishes the native build but `xcodebuild -create-xcframework` fails,

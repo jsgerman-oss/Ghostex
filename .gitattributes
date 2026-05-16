@@ -1,0 +1,4 @@
+# CDXC:NativeGhosttySource 2026-05-17-00:13: Ghostty source is committed under /ghostty so the parent repo language breakdown includes the embedded terminal dependency's Zig source while build scripts still treat it as an upstream source dependency.
+ghostty/** -linguist-vendored
+ghostty/** -linguist-generated
+ghostty/** -linguist-documentation

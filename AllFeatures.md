@@ -42,4 +42,54 @@
 - Agent launch diagnostics record inherited color-related environment values for debugging monochrome CLI sessions.
 - Workspace dock highlights the active project and dims inactive project icons.
 - T3code sessions support
-- Much more!
+- Native macOS app shell for better performance (No node runtime)
+- Native Ghostty terminals for best compatibility with Agent CLIs and low cpu/ram use (No bugs due to xterm.js or ghostty-web)
+- The same Homebrew install command automatically selects Apple Silicon or Intel Mac builds.
+- The app installs both `ghostex` and `gtx` CLI commands through Homebrew for listing, attaching, waking, focusing, and sleeping sessions.
+- Inspired by Codex App's UX
+- Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
+- Auto sleep unused terminals to save ram (auto-restore when clicked)
+- Sleeping sessions restore into the active tab group so your current split layout stays intact.
+- Auto session naming for Codex/Claude/Pi Agent/Gemini/Copilot/Factory Droid/Grok Build cli sessions (more soon)
+- New sessions use compact `g-MMDD-HHMMSS` labels that stay readable in Ghostex, tmux, zmx, and zellij.
+- Reopening the app always resumes your agent cli sessions
+- Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
+- The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
+- Rich Prompt Editing with Zapet can be enabled from Settings and installed from Homebrew inside the app.
+- Hotkeys use a recorder UI with direct split controls for creating real sideways and downward panes, and directional pane focus uses `Cmd+Alt+Arrow` so normal text navigation stays intact.
+- Press `Cmd+K` to open the full-window Command Palette for Ghostex actions, project actions, pane controls, Settings, and pet controls.
+- The installed Ghostex app also proxies terminal CLI commands such as `ghostex sessions`; `gtx sessions` is the short alias.
+- `ghostex` and `gtx` list sessions in the same Last Active order as the sidebar and include grouped, easier-to-scan help output.
+- The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
+- The native titlebar includes Agents, Code, Git, and Project modes for switching workspace surfaces without crowding the sidebar, with a visible active-pill transition between modes.
+- The titlebar Resources menu shows live CPU and memory use by project, session, Ghostex runtime, and browser tabs, with a shortcut to sleep inactive agent sessions.
+- Code, Git, and Project modes can hide the agent side pane and restore it from the titlebar without losing that preference when switching modes.
+- Project workspace controls include clearer titlebar modes, improved project panel behavior, and an easier empty-project first-terminal flow.
+- Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
+- The reference sidebar includes a combined-only project layout, searchable settings sections, improved command panel controls, and cleaner Previous Sessions rows.
+- Tips & Tricks is available inside Ghostex with quick pages for workspace basics, agents, actions, Codex setup, and remote access.
+- Sidebar action buttons always use explicit configurable icons, with a searchable icon picker and a sensible Play default for new actions.
+- Custom terminal actions reuse their command panes by action title and block duplicate titles so actions do not open the wrong command tab.
+- Sidebar display presets let you switch between Codex, Minimal, and Detailed layouts.
+- Default agent picker order keeps the daily launch engines together: T3 Code, Codex, Claude, Pi Agent, OpenCode, Gemini, Copilot, Factory Droid, and Grok Build.
+- Browser pane sessions live inside their project groups, and project Git/browser panes can use project tabs plus browser toolbar controls.
+- Project headers can show or hide git diff stats directly, keeping project groups compact while still exposing changed-file context when wanted.
+- Pane overflow actions include Rotate Panes and Merge All Tabs for reorganizing split workspaces in place.
+- Workspace pane tabs keep readable widths and scroll horizontally when groups become too narrow.
+- Agents Hub loads real local agent files, supports in-place saving, and can open profile/config paths from the app.
+- Agents Hub save updates are reflected immediately in the open modal, and external editor buttons open the containing folder with the selected file focused.
+- Agents Hub profile tooltips show structured profile labels, source paths, target paths, and Finder actions for easier local agent configuration review.
+- Floating prompt editing uses a resizable Monaco pane with save/cancel handling from Ctrl+G.
+- Generated session titles avoid ellipses so sidebar cards can truncate visually while hover tooltips keep the full title.
+- Persistence-backed tmux, zmx, and zellij sessions keep agent icons clean while still exposing provider metadata for attach commands and tooltips.
+- Reference-sidebar primary labels keep descenders visible in compact 34px rows.
+- The floating pet overlay shows active session messages and can focus the exact session when clicked.
+- The titlebar pet button toggles the floating pet overlay without opening Settings.
+- Sidebar collapse state persists locally, project editor rows can hide or show changed-file counts from Settings, and active session cards can hide Last Active timestamps.
+- Previous Sessions focuses on agent-session restore by hiding browser page history from the modal.
+- Next Tab and Previous Tab follow the same sorted and collapsed session order visible in the sidebar.
+- Provider-backed tmux, zmx, and zellij terminal panes show their persistence context in-pane and announce it when a new persisted session starts.
+- Native diagnostics capture app activation, pane-tab geometry, and browser-pane layout details for focus and resize troubleshooting.
+- Menu bar working & done indicators and notification sounds for almost all agent clis
+- Embedded T3code
+- Integrations for all the popular Agent CLI

@@ -57,15 +57,15 @@ export GHOSTEX_SPARKLE_FEED_URL
 export GHOSTEX_SPARKLE_PUBLIC_ED_KEY
 
 if [[ -z "$GHOSTTY_ROOT" ]]; then
-	# CDXC:NativeHost 2026-04-27-06:06: Local start/build commands should
-	# discover the adjacent Ghostty checkout that already contains the required
-	# xcframework so `bun start` launches the native host without per-shell setup.
+	# CDXC:NativeHost 2026-04-27-06:06: Local start/build commands should discover the Ghostty checkout that contains the required xcframework so `bun start` launches the native host without per-shell setup.
+	# CDXC:NativeHost 2026-05-17-00:13: The committed /ghostty source dependency is the default Ghostty root so clones keep the embedded terminal source in one repo and GitHub counts Ghostty's Zig source in the parent language breakdown. Older sibling checkout paths remain fallbacks for local worktrees during migration.
 	for candidate in \
+		"$REPO_ROOT/ghostty" \
 		"$REPO_ROOT/../ghostty" \
 		"$REPO_ROOT/../ghostty-ghostex-survival" \
 		"$REPO_ROOT/../../_forks/ghostty" \
 		"$HOME/dev/_active/ghostty"; do
-		if [[ -d "$candidate/macos/GhosttyKit.xcframework" ]]; then
+		if [[ -f "$candidate/build.zig" ]]; then
 			GHOSTTY_ROOT="$(cd "$candidate" && pwd)"
 			break
 		fi
