@@ -9,6 +9,7 @@
 - Improved sleeping persisted sessions so sleeping releases the underlying provider runtime and external `ghostex` / `gtx` attach resumes sleeping sessions correctly.
 - Improved the titlebar Resources menu so browser memory rows show the actual tab title and URL instead of raw browser process labels.
 - Moved the Wake/Sleep Pet control into the sidebar overflow menu so pet controls live next to session tools while the titlebar stays focused on workspace actions.
+- Improved rich prompt editor focus so clicking blank editor chrome reliably keeps typing inside the prompt editor.
 
 ## 3.2.0 - 2026-05-16
 
