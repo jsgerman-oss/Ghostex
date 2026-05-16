@@ -38,16 +38,23 @@ enum TerminalFocusDebugLog {
    app storage logs file. These native entries record AppKit first-responder
    state only when debugging mode is enabled, with routine focus/layout/hotkey
    events suppressed so normal terminal use cannot generate oversized logs.
+
+   CDXC:StartupPaneDiagnostics 2026-05-16-09:14:
+   Startup pane-layout diagnostics must be available even when a restart-time
+   tab/split restore bug happens before Debugging Mode is enabled. Use the
+   nativePaneLayoutStartup prefix for those one-shot breadcrumbs while keeping
+   the existing forced-repro and Settings-controlled logging paths intact.
    */
   static func append(event: String, details: [String: Any] = [:], force: Bool = false) {
     /**
-     CDXC:SidebarSessionFocus 2026-05-15-20:01:
-     Forced terminal-focus entries are reserved for low-volume session-card
-     focus repro breadcrumbs. They must persist even when Debugging Mode was
-     not enabled before the unexpected split appeared, while routine focus
-     events still use the normal debug toggle and noisy-event suppression.
+     CDXC:Diagnostics 2026-05-16-07:23:
+     Forced terminal-focus entries may bypass noisy-event suppression during a
+     focused repro. Startup pane breadcrumbs use the same forced write path and
+     a distinct prefix so they can be found after a restart-time layout restore
+     issue without broadening routine focus logging.
      */
-    guard force || (NativeDebugLogging.isEnabled && !noisyEvents.contains(event)) else {
+    let isStartupPaneLayoutEvent = event.hasPrefix("nativePaneLayoutStartup.")
+    guard force || isStartupPaneLayoutEvent || (NativeDebugLogging.isEnabled && !noisyEvents.contains(event)) else {
       return
     }
     let logsDirectory = GhostexAppStorage.logsDirectory

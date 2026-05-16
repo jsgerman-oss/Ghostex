@@ -80,6 +80,7 @@ type TitlebarSidebarActionsSettings = {
 
 type TitlebarProjectState = {
   activeMode: TitlebarMode;
+  debuggingMode: boolean;
   diffStats: SidebarProjectDiffStats;
   editorIsOpen: boolean;
   editorIsSleeping: boolean;
@@ -200,14 +201,20 @@ function appendTitlebarActionCrashDebugLog(event: string, details?: unknown): vo
   });
 }
 
-function appendTitlebarCodeLagDebugLog(event: string, details?: unknown): void {
+function appendTitlebarCodeLagDebugLog(
+  debuggingMode: boolean,
+  event: string,
+  details?: unknown,
+): void {
   /**
-   * CDXC:ModeSwitcher 2026-05-15-18:39:
-   * Titlebar Code-click lag needs forced, low-volume breadcrumbs before the
-   * sidebar/native bridge can become busy. Record the isolated titlebar click
-   * boundary in the persistent diagnostics log so a repro can be correlated
-   * with sidebar project-editor wake and native CEF focus events.
+   * CDXC:ModeSwitcher 2026-05-16-07:23:
+   * Titlebar Code-click lag breadcrumbs are regular diagnostics. Send them only
+   * while Settings Debugging Mode is enabled, matching the app-wide requirement
+   * that non-error logging stays silent during normal use.
    */
+  if (!debuggingMode) {
+    return;
+  }
   postNative({
     details: JSON.stringify({
       details,
@@ -215,7 +222,6 @@ function appendTitlebarCodeLagDebugLog(event: string, details?: unknown): void {
       wallTimeMs: Date.now(),
     }),
     event,
-    force: true,
     type: "appendSessionTitleDebugLog",
   });
 }
@@ -377,6 +383,7 @@ function App() {
             state.activeMode === undefined
               ? current.activeMode
               : normalizeTitlebarMode(state.activeMode),
+          debuggingMode: state.debuggingMode ?? current.debuggingMode,
           diffStats: state.diffStats ?? current.diffStats,
           petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
           sidebarActions: state.sidebarActions ?? current.sidebarActions,
@@ -513,7 +520,7 @@ function App() {
   };
 
   const openCodeMode = () => {
-    appendTitlebarCodeLagDebugLog("titlebarCodeLag.titlebarClickStart", {
+    appendTitlebarCodeLagDebugLog(projectState.debuggingMode, "titlebarCodeLag.titlebarClickStart", {
       activeMode: projectState.activeMode,
       editorIsOpen: projectState.editorIsOpen,
       editorIsSleeping: projectState.editorIsSleeping,
@@ -524,7 +531,7 @@ function App() {
     });
     setOptimisticMode("code");
     postNative({ type: "openActiveProjectEditorFromTitlebar" });
-    appendTitlebarCodeLagDebugLog("titlebarCodeLag.titlebarClickPostedNative", {
+    appendTitlebarCodeLagDebugLog(projectState.debuggingMode, "titlebarCodeLag.titlebarClickPostedNative", {
       projectId: projectState.projectId,
       projectPath: projectState.projectPath,
     });
@@ -810,6 +817,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
   const settings = normalizeghostexSettings(parseSharedSettings(sharedSettingsJson));
   return {
     activeMode: resolveInitialTitlebarMode(bootstrap),
+    debuggingMode: settings.debuggingMode,
     diffStats: createDefaultSidebarProjectDiffStats(false),
     editorIsOpen: false,
     editorIsSleeping: false,

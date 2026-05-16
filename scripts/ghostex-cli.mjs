@@ -27,6 +27,7 @@ const LOG_DIR = path.join(GHOSTEX_HOME, "logs");
 const CLI_DIR = path.join(GHOSTEX_HOME, "cli");
 const BRIDGE_TOKEN_PATH = path.join(CLI_DIR, "bridge-token");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
+const SHARED_SETTINGS_PATH = path.join(GHOSTEX_HOME, "state", "native-sidebar-settings.json");
 
 const COMMANDS = new Map([
   ["sessions", sessionsCommand],
@@ -230,7 +231,8 @@ async function floatingEditorCommand(args) {
   const workDir = await mkdtemp(path.join(tmpdir(), "ghostex-floating-editor-"));
   const statusFile = path.join(workDir, "status");
   const wrapperPath = path.join(workDir, "run.zsh");
-  const logPath = floatingEditorLogPath();
+  const debuggingMode = await readDebuggingMode();
+  const logPath = debuggingMode ? floatingEditorLogPath() : "/dev/null";
   const resolvedCommandArgs = [...commandArgs];
   resolvedCommandArgs[0] = await resolveExecutable(commandArgs[0]);
   await writeFile(wrapperPath, floatingEditorWrapperScript(resolvedCommandArgs, cwd, statusFile, logPath));
@@ -488,6 +490,15 @@ function floatingEditorLogPath() {
 }
 
 async function appendFloatingEditorLog(details) {
+  /**
+   * CDXC:Diagnostics 2026-05-16-07:23:
+   * Floating-editor CLI breadcrumbs are regular app diagnostics written to a
+   * persistent log file. Honor the shared Settings Debugging Mode switch before
+   * creating or appending ~/Library/Logs/ghostex/floating-editor.log.
+   */
+  if (!(await readDebuggingMode())) {
+    return;
+  }
   const logPath = floatingEditorLogPath();
   await mkdir(path.dirname(logPath), { recursive: true });
   await appendFile(
@@ -498,6 +509,18 @@ async function appendFloatingEditorLog(details) {
       timestamp: new Date().toISOString(),
     })}\n`,
   );
+}
+
+async function readDebuggingMode() {
+  const settingsJson = await readFile(SHARED_SETTINGS_PATH, "utf8").catch(() => "");
+  if (!settingsJson) {
+    return false;
+  }
+  try {
+    return JSON.parse(settingsJson)?.debuggingMode === true;
+  } catch {
+    return false;
+  }
 }
 
 function shellQuote(value) {
@@ -745,9 +768,10 @@ function printSessionList(sessions, { grouped }) {
     return;
   }
   if (!grouped) {
+    const displaySessions = sortSessionsBySidebarActivity(sessions);
     printTable(
       ["#", "Project", "Active", "Title", "Status", "Provider", "Agent"],
-      sessions.map((session) => [
+      displaySessions.map((session) => [
         String(session.alias),
         session.projectName || "-",
         formatActiveTime(session.lastInteractionAt),
@@ -779,6 +803,42 @@ function printSessionList(sessions, { grouped }) {
   });
 }
 
+function sortSessionsBySidebarActivity(sessions) {
+  /**
+   * CDXC:CliSessions 2026-05-15-20:52
+   * The `ghostex sessions` and `gtx sessions` views should mirror the Combined sidebar: keep project groups in sidebar order, but order each project's rows by the same activity priority and Last Active timestamp users see in the app.
+   */
+  return [...sessions].sort((left, right) => {
+    const activityPriorityDelta = getSessionActivitySortPriority(right) - getSessionActivitySortPriority(left);
+    if (activityPriorityDelta !== 0) {
+      return activityPriorityDelta;
+    }
+
+    const activityTimeDelta = getSessionLastInteractionTime(right) - getSessionLastInteractionTime(left);
+    if (activityTimeDelta !== 0) {
+      return activityTimeDelta;
+    }
+
+    return sessions.indexOf(left) - sessions.indexOf(right);
+  });
+}
+
+function getSessionActivitySortPriority(session) {
+  switch (session?.activity ?? session?.status) {
+    case "attention":
+      return 2;
+    case "working":
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+function getSessionLastInteractionTime(session) {
+  const timestamp = Date.parse(session?.lastInteractionAt ?? "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 function groupSessionsByProject(sessions) {
   const groups = [];
   const groupsByProjectId = new Map();
@@ -794,7 +854,10 @@ function groupSessionsByProject(sessions) {
     }
     group.sessions.push(session);
   }
-  return groups;
+  return groups.map((group) => ({
+    ...group,
+    sessions: sortSessionsBySidebarActivity(group.sessions),
+  }));
 }
 
 function printTable(headers, rows) {
@@ -1056,81 +1119,110 @@ function helpCommand() {
   console.log(usage());
 }
 
+function formatHelpCommand(signature, description) {
+  const commandColumnWidth = 58;
+  const gap = " ".repeat(Math.max(2, commandColumnWidth - signature.length));
+  return `  ${signature}${gap}${description}`;
+}
+
 function usage() {
-  return `Ghostex CLI
+  /**
+   * CDXC:CliHelp 2026-05-15-20:33
+   * The public Ghostex help menu should follow the organized Zellij/ZMX shape: a short product description, compact usage lines, aligned command groups with aliases beside the command name, and separate explanatory sections for selectors and workflows that would make the command table noisy.
+   */
+  const sessionCommands = [
+    formatHelpCommand("sessions | s | ls [--ungrouped|-u] [--json]", "List running terminal sessions"),
+    formatHelpCommand("attach | a <selector>", "Attach to a provider or agent resume command"),
+    formatHelpCommand("resume | r <selector>", "Alias for attach"),
+    formatHelpCommand("kill | k <selector|all>", "Close one session or every listed session"),
+    formatHelpCommand("sleep <selector|all>", "Sleep one session or every listed session"),
+    formatHelpCommand("wake <selector|all>", "Wake one session or every listed session"),
+    formatHelpCommand("focus <selector> [--json]", "Focus a session in Ghostex"),
+  ].join("\n");
+
+  const workspaceCommands = [
+    formatHelpCommand("state | dump-state", "Print sidebar state as JSON"),
+    formatHelpCommand("create-session [title] [--input text] [--group-id id]", "Create a terminal session"),
+    formatHelpCommand("create-agent <agentId> [--group-id id]", "Create a configured agent session"),
+    formatHelpCommand("run-agent <agentId>", "Run a configured agent button"),
+    formatHelpCommand("run-command <commandId>", "Run a configured command button"),
+    formatHelpCommand("click-button <agent|command|section> <id>", "Trigger a sidebar button"),
+    formatHelpCommand("switch-project (--project-id|--path|--name) <value>", "Switch active project"),
+    formatHelpCommand("add-project <path> [--name name]", "Add a project to Ghostex"),
+    formatHelpCommand("focus-session <id|--index n|--session-number n>", "Focus a session by raw selector"),
+    formatHelpCommand("focus-group <groupId>", "Focus a project group"),
+  ].join("\n");
+
+  const inputCommands = [
+    formatHelpCommand("send-text <sessionId> <text>", "Type text into a session"),
+    formatHelpCommand("send-enter <sessionId>", "Send Enter to a session"),
+    formatHelpCommand("send-key <sessionId> <key>", "Send ctrl-c, escape, tab, or arrow keys"),
+    formatHelpCommand("rename-session <sessionId> <title>", "Rename a session"),
+    formatHelpCommand("rename-command <sessionId> <title>", "Send the agent rename command"),
+  ].join("\n");
+
+  const uiCommands = [
+    formatHelpCommand("floating-editor | fe -- <editor> [args...]", "Open a draggable terminal overlay"),
+    formatHelpCommand("floating-monaco-editor | fme <file>", "Open a draggable Monaco editor overlay"),
+    formatHelpCommand("(close|restart|fork|reload)-session <id>", "Manage a session lifecycle"),
+    formatHelpCommand("sleep-session|favorite-session <id> [true|false]", "Set raw session flags"),
+    formatHelpCommand("toggle-section <actions|agents> [--collapsed true|false]", "Collapse or expand a sidebar section"),
+    formatHelpCommand("set-visible-count <1|2|3|4|6|9>", "Set visible session count"),
+    formatHelpCommand("set-view-mode <grid|horizontal|vertical>", "Set session layout mode"),
+    formatHelpCommand("open-browser [url]", "Open the browser surface"),
+    formatHelpCommand("open-browser-pane", "Open a browser pane"),
+    formatHelpCommand("show-browser", "Show the browser surface"),
+    formatHelpCommand("move-sidebar", "Move the sidebar"),
+  ].join("\n");
+
+  const evidenceCommands = [
+    formatHelpCommand("screenshot [output.png]", "Capture the Ghostex window"),
+    formatHelpCommand("logs [--file name] [--lines n] [--grep text] [--json]", "Print recent logs"),
+    formatHelpCommand("bundle [output-dir] [--lines n]", "Save state, logs, and a screenshot"),
+    formatHelpCommand("assert-card <id> [--agent-icon codex] [--visible true]", "Assert card projection"),
+    formatHelpCommand("wait-for <id> [--agent-icon codex] [--timeout-ms n]", "Wait for card projection"),
+  ].join("\n");
+
+  return `Ghostex CLI - manage running Ghostex terminal sessions
 
 Usage:
-  ghostex <command> [args] [--flags]
-  gtx <command> [args] [--flags]
-  bun scripts/ghostex-cli.mjs <command> [args] [--flags]
-  bun scripts/ghostex-cli.mjs --help | -h
+  ghostex <command> [args...] [--flags]
+  gtx <command> [args...] [--flags]
+  bun scripts/ghostex-cli.mjs <command> [args...] [--flags]
 
-Session commands:
-  sessions | s | list-sessions | ls [--ungrouped|-u] [--json]
-      List running terminal sessions grouped by project by default.
-      Columns are: # Active Title Status Provider Agent.
-      --ungrouped/-u adds the Project column and prints one flat table.
+Commands:
+${sessionCommands}
 
-  attach | a <alias|id|title|project:title>
-  resume | r <alias|id|title|project:title>
-      Attach to the stored tmux/zmx/zellij provider session when present.
-      If no provider is stored, run the supported agent resume command in the
-      session project directory.
+Workspace:
+${workspaceCommands}
 
-  kill | k <alias|id|title|project:title|all>
-      Close one session or every listed terminal session.
+Input:
+${inputCommands}
 
-  sleep <alias|id|title|project:title|all>
-      Sleep one session or every listed terminal session.
+UI:
+${uiCommands}
 
-  wake <alias|id|title|project:title|all>
-      Wake one session or every listed terminal session.
+Evidence:
+${evidenceCommands}
 
-  focus <alias|id|title|project:title>
-      Focus the selected session in Ghostex.
+Selectors:
+  <selector> can be an alias, session id, title, or project:title.
+  Numeric aliases come from the last "ghostex sessions" or "gtx sessions" list.
+  Titles match exact first, then case-insensitive substring.
 
-  floating-editor | fe -- <editor> [args...]
-      Open an editor command in a draggable Ghostex floating terminal overlay.
+Sessions:
+  The sessions command groups by project and sorts each project by sidebar Last Active order by default.
+  --ungrouped/-u prints one flat table and adds the Project column.
+  Columns are: # Active Title Status Provider Agent.
 
-  floating-monaco-editor | fme <file>
-      Open a file in the draggable Ghostex floating Monaco editor overlay.
+Attach:
+  attach/resume uses the stored tmux, zmx, or zellij provider session when present.
+  Without provider metadata, it runs the supported agent resume command in the session project.
 
-Selector rules:
-  Numeric aliases come from the last "ghostex sessions" or "gtx sessions" list and stay global
-  across grouped and --ungrouped output. Titles match exact first, then
-  case-insensitive substring. Use project:title when a title is ambiguous.
-
-Core commands:
-  state | dump-state
-  create-session [title] [--input text] [--group-id id]
-  create-agent <agentId> [--group-id id]
-  run-agent <agentId>
-  run-command <commandId>
-  click-button <agent|command|section> <id>
-  focus-session <sessionId> | --index n | --session-number n
-  focus-group <groupId>
-  switch-project --project-id id | --path path | --name name
-  add-project <path> [--name name]
-  send-text <sessionId> <text>
-  send-enter <sessionId>
-  send-key <sessionId> <ctrl-c|escape|tab|arrow-up|arrow-down|arrow-left|arrow-right>
-  rename-command <sessionId> <title>
-  rename-session <sessionId> <title>
-  close-session|restart-session|fork-session|reload-session <sessionId>
-  sleep-session|favorite-session <sessionId> [true|false]
-  toggle-section <actions|agents> [--collapsed true|false]
-  set-visible-count <1|2|3|4|6|9>
-  set-view-mode <grid|horizontal|vertical>
-  open-browser [url]
-  open-browser-pane
-  show-browser
-  move-sidebar
-
-Evidence commands:
-  screenshot [output.png]
-  logs [--file agent-detection-debug.log] [--lines 200] [--grep text] [--json]
-  bundle [output-dir] [--lines 500]
-  assert-card <sessionId> [--agent-icon codex] [--agent-name codex] [--visible true]
-  wait-for <sessionId> [--agent-icon codex] [--timeout-ms 5000]
+Global flags:
+  --port <number>       Native bridge port
+  --token <token>       Bridge token
+  --timeout <ms>        Bridge request timeout
+  -h, --help            Show this help
 `;
 }

@@ -112,6 +112,15 @@ private func nativeZapetPromptEditorLogURL() -> URL {
 }
 
 private func nativeLogZapetPromptEditor(_ event: String, details: [String: String] = [:]) {
+  /**
+   CDXC:Diagnostics 2026-05-16-07:23:
+   Zapet prompt-editor breadcrumbs are persistent regular diagnostics. Do not
+   create or append zapet-prompt-editor.log unless Settings Debugging Mode is
+   enabled.
+   */
+  guard NativeDebugLogging.isEnabled else {
+    return
+  }
   let url = nativeZapetPromptEditorLogURL()
   let directory = url.deletingLastPathComponent()
   try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -215,6 +224,7 @@ private func nativeApplyZapetPromptEditingEnvironment(_ environment: inout [Stri
   let promptEditor = nativePromptEditorCommand(backend: promptEditorBackend)
   environment["EDITOR"] = promptEditor
   environment["VISUAL"] = promptEditor
+  environment["GHOSTEX_DEBUGGING_MODE"] = NativeDebugLogging.isEnabled ? "1" : "0"
   environment["GHOSTEX_ZAPET_PROMPT_EDITOR_LOG"] = nativeZapetPromptEditorLogURL().path
   if let appVariant = ProcessInfo.processInfo.environment["GHOSTEX_APP_VARIANT"], !appVariant.isEmpty {
     environment["GHOSTEX_APP_VARIANT"] = appVariant
@@ -307,9 +317,11 @@ private func nativeZapetZshStartupShim(
 
       export EDITOR=\(nativeShellQuote(promptEditorCommand))
       export VISUAL=\(nativeShellQuote(promptEditorCommand))
-      {
-        printf '[%s] zsh-shim.export file=%s pid=%s editor=%s visual=%s pwd=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${PWD}"
-      } >> "${_ghostex_zapet_log}" 2>/dev/null
+      if [ "${_ghostex_zapet_debug}" = "1" ]; then
+        {
+          printf '[%s] zsh-shim.export file=%s pid=%s editor=%s visual=%s pwd=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${PWD}"
+        } >> "${_ghostex_zapet_log}" 2>/dev/null
+      fi
       """
     : ""
   return """
@@ -319,20 +331,26 @@ private func nativeZapetZshStartupShim(
     # EDITOR.
     _ghostex_shim_zdotdir="${ZDOTDIR}"
     _ghostex_original_zdotdir="${GHOSTEX_ORIGINAL_ZDOTDIR:-$HOME}"
-    _ghostex_zapet_log="${GHOSTEX_ZAPET_PROMPT_EDITOR_LOG:-$HOME/Library/Logs/ghostex/zapet-prompt-editor.log}"
-    mkdir -p "${_ghostex_zapet_log:h}" 2>/dev/null
-    {
-      printf '[%s] zsh-shim.enter file=%s pid=%s editor_before=%s visual_before=%s zdotdir=%s original_zdotdir=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${ZDOTDIR}" "${_ghostex_original_zdotdir}"
-    } >> "${_ghostex_zapet_log}" 2>/dev/null
+    _ghostex_zapet_debug="${GHOSTEX_DEBUGGING_MODE:-0}"
+    if [ "${_ghostex_zapet_debug}" = "1" ]; then
+      _ghostex_zapet_log="${GHOSTEX_ZAPET_PROMPT_EDITOR_LOG:-$HOME/Library/Logs/ghostex/zapet-prompt-editor.log}"
+      mkdir -p "${_ghostex_zapet_log:h}" 2>/dev/null
+      {
+        printf '[%s] zsh-shim.enter file=%s pid=%s editor_before=%s visual_before=%s zdotdir=%s original_zdotdir=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${ZDOTDIR}" "${_ghostex_original_zdotdir}"
+      } >> "${_ghostex_zapet_log}" 2>/dev/null
+    fi
     if [ -r "${_ghostex_original_zdotdir}/\(fileName)" ]; then
       ZDOTDIR="${_ghostex_original_zdotdir}"
       source "${_ghostex_original_zdotdir}/\(fileName)"
       ZDOTDIR="${_ghostex_shim_zdotdir}"
     fi\(originalZdotdirUpdateBlock)\(exportBlock)
-    {
-      printf '[%s] zsh-shim.leave file=%s pid=%s editor_after=%s visual_after=%s zdotdir=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${ZDOTDIR}"
-    } >> "${_ghostex_zapet_log}" 2>/dev/null
-    unset _ghostex_zapet_log
+    if [ "${_ghostex_zapet_debug}" = "1" ]; then
+      {
+        printf '[%s] zsh-shim.leave file=%s pid=%s editor_after=%s visual_after=%s zdotdir=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${ZDOTDIR}"
+      } >> "${_ghostex_zapet_log}" 2>/dev/null
+      unset _ghostex_zapet_log
+    fi
+    unset _ghostex_zapet_debug
     unset _ghostex_shim_zdotdir
     unset _ghostex_original_zdotdir
 
@@ -924,12 +942,26 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
-  private struct ProjectEditorPaneSession {
+  private struct ProjectEditorBrowserTab {
+    let tabId: String
     let chromiumView: GhostexCEFBrowserView
     let hostView: WebPaneHostView
+    var title: String
+    var url: String
+  }
+
+  private struct ProjectEditorPaneSession {
+    var activeTabId: String
+    var chromiumView: GhostexCEFBrowserView
+    var hostView: WebPaneHostView
+    let mode: String
     let projectId: String
-    let title: String
-    let url: String
+    let projectTitle: String
+    let showsProjectTabs: Bool
+    var tabs: [ProjectEditorBrowserTab]
+    let titleBarView: TerminalSessionTitleBarView?
+    var title: String
+    var url: String
   }
 
   private struct PaneResizeHit {
@@ -1053,14 +1085,22 @@ final class TerminalWorkspaceView: NSView {
   /**
    CDXC:CommandsPanel 2026-05-14-08:12:
    The native command pane default must match the shared 27% sidebar model so first layout, resize reset, and persisted height normalization agree.
+
+   CDXC:CommandsPanel 2026-05-16-07:36:
+   Users need the bottom command pane to resize down to 5% of the window height. Keep the 27% default but clamp native drag geometry and persisted ratios to the same minimum.
    */
+  private static let minimumCommandsPanelHeightRatio: CGFloat = 0.05
+  private static let maximumCommandsPanelHeightRatio: CGFloat = 0.55
   private static let defaultCommandsPanelHeightRatio: CGFloat = 0.27
   /**
    CDXC:ProjectEditorCompanion 2026-05-14-09:19:
-   Embedded VS Code should open with the currently active terminal or T3 Code session visible as a simple left companion pane at 25% of the workarea.
+   Embedded VS Code should open with the currently active terminal or T3 Code session visible as a simple left companion pane.
    Keep this state native because the editor surface, terminal surface, and resize rail are AppKit/CEF/Ghostty views outside the React sidebar DOM.
+
+   CDXC:ProjectEditorCompanion 2026-05-16-06:55:
+   The companion pane width is a user preference shared by every project and app restart. New installs start at 32% of the workarea, and user resize/reset writes the same normalized ratio to native settings instead of storing it on a per-project workspace snapshot.
    */
-  private static let defaultProjectEditorCompanionWidthRatio: CGFloat = 0.25
+  private static let defaultProjectEditorCompanionWidthRatio: CGFloat = 0.32
   private static let projectEditorMinimumWidth: CGFloat = 360
   private static let floatingCommandsPanelMargin: CGFloat = 25
   /**
@@ -1138,8 +1178,11 @@ final class TerminalWorkspaceView: NSView {
   private var projectEditorCompanionResizeDrag: ProjectEditorCompanionResizeDrag?
   private var projectEditorCompanionResizeWorkspaceBounds: CGRect = .zero
   private let projectEditorCompanionResizeHandleView = TerminalWorkspacePaneResizeHandleView()
+  private let persistProjectEditorCompanionWidthRatio: (CGFloat) -> Void
   private var paneResizeHandleViews: [TerminalWorkspacePaneResizeHandleView] = []
   private var paneHeaderDrag: PaneHeaderDrag?
+  private var paneTabDragCaptureEventMonitor: Any?
+  private var paneTabDragHiddenBrowserContentViews: [ObjectIdentifier: NSView] = [:]
   private var paneHeaderDragGhostView: TerminalPaneHeaderDragGhostView?
   private var paneHeaderDragTargetView: TerminalPaneHeaderDragTargetView?
   private var paneTabReorderTargetView: TerminalPaneTabReorderTargetView?
@@ -1195,9 +1238,17 @@ final class TerminalWorkspaceView: NSView {
    Inactive terminal surfaces are moved offscreen, and sidebar/native id
    translation decides which native Ghostty session is active.
    */
-  init(ghostty: GhostexGhosttyApp, sendEvent: @escaping (HostEvent) -> Void) {
+  init(
+    ghostty: GhostexGhosttyApp,
+    sendEvent: @escaping (HostEvent) -> Void,
+    initialProjectEditorCompanionWidthRatio: CGFloat? = nil,
+    persistProjectEditorCompanionWidthRatio: @escaping (CGFloat) -> Void = { _ in }
+  ) {
     self.ghostty = ghostty
     self.sendEvent = sendEvent
+    self.projectEditorCompanionWidthRatio = Self.normalizedProjectEditorCompanionWidthRatio(
+      initialProjectEditorCompanionWidthRatio)
+    self.persistProjectEditorCompanionWidthRatio = persistProjectEditorCompanionWidthRatio
     super.init(frame: .zero)
     wantsLayer = true
     layer?.backgroundColor = Self.defaultWorkspaceBackgroundColor.cgColor
@@ -1233,6 +1284,9 @@ final class TerminalWorkspaceView: NSView {
   }
 
   deinit {
+    if let paneTabDragCaptureEventMonitor {
+      NSEvent.removeMonitor(paneTabDragCaptureEventMonitor)
+    }
     if let cefNativeDragSourceReleaseEventMonitor {
       NSEvent.removeMonitor(cefNativeDragSourceReleaseEventMonitor)
     }
@@ -1825,6 +1879,7 @@ final class TerminalWorkspaceView: NSView {
         provider: sessionPersistenceProvider,
         cwd: command.cwd,
         initialInput: command.initialInput,
+        title: command.title,
         sessionName: sessionPersistenceName
       )
     }
@@ -2577,22 +2632,20 @@ final class TerminalWorkspaceView: NSView {
       "url": command.url,
     ])
     if let existingSession = projectEditorPaneSessions[command.projectId] {
-      let nextSession = ProjectEditorPaneSession(
-        chromiumView: existingSession.chromiumView,
-        hostView: existingSession.hostView,
-        projectId: command.projectId,
-        title: command.title,
-        url: command.url
-      )
+      var nextSession = existingSession
+      nextSession = updateProjectEditorSessionActiveTab(
+        nextSession,
+        url: command.url,
+        title: projectEditorTabTitle(for: command.url, fallback: command.title))
+      nextSession = projectEditorSession(nextSession, activating: nextSession.activeTabId)
+      nextSession.title = command.title
+      nextSession.url = command.url
       projectEditorPaneSessions[command.projectId] = nextSession
+      nextSession.titleBarView?.setTitle(nextSession.projectTitle)
       if existingSession.url != command.url {
         loadProjectEditorPaneWhenReady(
           projectId: command.projectId, url: command.url, reason: "createProjectEditorPaneReroute")
       }
-      configureProjectEditorChromiumCallbacks(
-        existingSession.chromiumView,
-        projectId: command.projectId,
-        reason: "createProjectEditorPaneExisting")
       focusProjectEditorPane(projectId: command.projectId, reason: "createProjectEditorPaneExisting")
       return
     }
@@ -2617,6 +2670,73 @@ final class TerminalWorkspaceView: NSView {
       return
     }
 
+    let titleBarView: TerminalSessionTitleBarView?
+    if command.showsProjectTabs == true {
+      let view = TerminalSessionTitleBarView(title: command.projectTitle ?? command.title, actions: [])
+      view.setDebugContext(ownerSessionId: command.projectId, paneKind: "projectEditorGit")
+      view.setShowsTabAddButton(true)
+      view.setAllowsTabClosing(true)
+      view.onAction = { [weak self] action in
+        guard action == .newTerminal else { return }
+        self?.addProjectEditorGitTab(
+          projectId: command.projectId,
+          url: command.url,
+          title: "GitHub",
+          reason: "projectEditorGitTabAddButton")
+      }
+      view.onTabMouseUp = { [weak self] _, selectedTabId in
+        self?.selectProjectEditorTab(projectId: command.projectId, tabId: selectedTabId)
+      }
+      view.onTabCloseRequested = { [weak self] tabId, _ in
+        self?.closeProjectEditorGitTab(projectId: command.projectId, tabId: tabId)
+      }
+      view.translatesAutoresizingMaskIntoConstraints = true
+      titleBarView = view
+    } else {
+      titleBarView = nil
+    }
+    let initialTab = makeProjectEditorBrowserTab(
+      projectId: command.projectId,
+      tabId: createProjectEditorGitTabId(),
+      title: projectEditorTabTitle(for: command.url, fallback: command.title),
+      url: command.url,
+      showsBrowserToolbar: command.showsBrowserToolbar ?? false,
+      showsInitialLoadingOverlay: true,
+      reason: "createProjectEditorPaneNew")
+    projectEditorPaneSessions[command.projectId] = ProjectEditorPaneSession(
+      activeTabId: initialTab.tabId,
+      chromiumView: initialTab.chromiumView,
+      hostView: initialTab.hostView,
+      mode: command.mode ?? "code",
+      projectId: command.projectId,
+      projectTitle: command.projectTitle ?? command.title,
+      showsProjectTabs: command.showsProjectTabs ?? false,
+      tabs: [initialTab],
+      titleBarView: titleBarView,
+      title: command.title,
+      url: command.url
+    )
+    addSubview(initialTab.hostView)
+    if let titleBarView {
+      addSubview(titleBarView)
+      moveOffscreen(titleBarView)
+    }
+    moveOffscreen(initialTab.hostView)
+    syncProjectEditorTabBars()
+    loadProjectEditorPaneWhenReady(
+      projectId: command.projectId, url: command.url, reason: "createProjectEditorPaneNew")
+    focusProjectEditorPane(projectId: command.projectId, reason: "createProjectEditorPaneNew")
+  }
+
+  private func makeProjectEditorBrowserTab(
+    projectId: String,
+    tabId: String,
+    title: String,
+    url: String,
+    showsBrowserToolbar: Bool,
+    showsInitialLoadingOverlay: Bool,
+    reason: String
+  ) -> ProjectEditorBrowserTab {
     /**
      CDXC:EditorPanes 2026-05-07-07:53
      Embedded VS Code panel positions must survive app restarts without making
@@ -2624,6 +2744,12 @@ final class TerminalWorkspaceView: NSView {
      layout in browser-side origin storage, so project editor CEF views use the
      persistent default Chromium profile; project ownership stays in the native
      editor session and code-server folder URL, not in a separate CEF profile.
+
+     CDXC:GitProjectTabs 2026-05-16-10:32:
+     Git project tabs need stable browser state when switching tabs. Each Git
+     tab owns its own CEF view and WebPaneHostView, while the project-editor
+     session points at whichever tab is active for existing layout, focus, and
+     toolbar commands.
      */
     let chromiumView = GhostexCEFBrowserView(
       frame: .zero,
@@ -2634,30 +2760,35 @@ final class TerminalWorkspaceView: NSView {
     let hostView = WebPaneHostView(
       browserView: chromiumView,
       chromiumView: chromiumView,
-      showsBrowserToolbar: false,
-      showsInitialLoadingOverlay: true,
-      initialAddress: command.url,
+      showsBrowserToolbar: showsBrowserToolbar,
+      showsInitialLoadingOverlay: showsInitialLoadingOverlay,
+      initialAddress: url,
       onFocus: { [weak self] in
-        self?.focusProjectEditorPane(projectId: command.projectId, reason: "projectEditorHostFocus")
+        self?.focusProjectEditorPaneFromUserInteraction(
+          projectId: projectId,
+          reason: "projectEditorHostFocus")
+      },
+      onOpenDevTools: { [weak self] in
+        self?.openProjectEditorDevTools(projectId: projectId)
+      },
+      onInjectReactGrab: { [weak self] in
+        self?.injectProjectEditorReactGrab(projectId: projectId)
+      },
+      onShowProfilePicker: { [weak self] in
+        self?.showProjectEditorProfilePicker(projectId: projectId)
+      },
+      onShowImportSettings: { [weak self] in
+        self?.showProjectEditorImportSettings(projectId: projectId)
       }
     )
     hostView.translatesAutoresizingMaskIntoConstraints = true
-    projectEditorPaneSessions[command.projectId] = ProjectEditorPaneSession(
+    configureProjectEditorChromiumCallbacks(chromiumView, projectId: projectId, reason: reason)
+    return ProjectEditorBrowserTab(
+      tabId: tabId,
       chromiumView: chromiumView,
       hostView: hostView,
-      projectId: command.projectId,
-      title: command.title,
-      url: command.url
-    )
-    configureProjectEditorChromiumCallbacks(
-      chromiumView,
-      projectId: command.projectId,
-      reason: "createProjectEditorPaneNew")
-    addSubview(hostView)
-    moveOffscreen(hostView)
-    loadProjectEditorPaneWhenReady(
-      projectId: command.projectId, url: command.url, reason: "createProjectEditorPaneNew")
-    focusProjectEditorPane(projectId: command.projectId, reason: "createProjectEditorPaneNew")
+      title: title,
+      url: url)
   }
 
   func focusProjectEditorPane(
@@ -2697,10 +2828,15 @@ final class TerminalWorkspaceView: NSView {
     let companionLayout = projectEditorCompanionLayout(in: bounds)
     projectEditorCompanionResizeWorkspaceBounds = bounds
     for otherSession in projectEditorPaneSessions.values where otherSession.projectId != projectId {
-      otherSession.hostView.isHidden = true
-      moveOffscreen(otherSession.hostView)
+      setProjectEditorTabHostVisibility(otherSession, isActive: false)
+      if let titleBarView = otherSession.titleBarView {
+        titleBarView.isHidden = true
+        moveOffscreen(titleBarView)
+      }
     }
-    session.hostView.isHidden = false
+    setProjectEditorTabHostVisibility(session, isActive: true)
+    session.titleBarView?.isHidden = false
+    syncProjectEditorTabBars()
     layoutProjectEditorPane(session, in: companionLayout?.editorFrame ?? bounds)
     orderProjectEditorPaneToFront(session)
     syncProjectEditorCompanionPane(layout: companionLayout)
@@ -2723,6 +2859,229 @@ final class TerminalWorkspaceView: NSView {
     ])
   }
 
+  private func syncProjectEditorTabBars() {
+    for session in projectEditorPaneSessions.values where session.mode == "git" && session.showsProjectTabs {
+      let items = session.tabs.map { tab in
+        TerminalSessionTitleBarView.TabItem(
+          actions: [],
+          isSleeping: false,
+          sessionId: tab.tabId,
+          title: tab.title)
+      }
+      session.titleBarView?.setTabs(items, activeSessionId: session.activeTabId)
+      session.titleBarView?.setFocusedPane(session.projectId == activeProjectEditorId)
+    }
+  }
+
+  private func projectEditorSession(
+    _ session: ProjectEditorPaneSession,
+    activating tabId: String
+  ) -> ProjectEditorPaneSession {
+    guard let tab = session.tabs.first(where: { $0.tabId == tabId }) else {
+      return session
+    }
+    var nextSession = session
+    nextSession.activeTabId = tab.tabId
+    nextSession.chromiumView = tab.chromiumView
+    nextSession.hostView = tab.hostView
+    nextSession.title = tab.title
+    nextSession.url = tab.url
+    return nextSession
+  }
+
+  private func projectEditorHostViews(_ session: ProjectEditorPaneSession) -> [WebPaneHostView] {
+    var seen = Set<ObjectIdentifier>()
+    var hostViews: [WebPaneHostView] = []
+    for tab in session.tabs {
+      let identifier = ObjectIdentifier(tab.hostView)
+      if !seen.contains(identifier) {
+        seen.insert(identifier)
+        hostViews.append(tab.hostView)
+      }
+    }
+    if !seen.contains(ObjectIdentifier(session.hostView)) {
+      hostViews.append(session.hostView)
+    }
+    return hostViews
+  }
+
+  private func setProjectEditorTabHostVisibility(_ session: ProjectEditorPaneSession, isActive: Bool) {
+    for hostView in projectEditorHostViews(session) {
+      let isActiveHost = isActive && hostView === session.hostView
+      hostView.isHidden = !isActiveHost
+      if !isActiveHost {
+        moveOffscreen(hostView)
+      }
+    }
+  }
+
+  private func projectEditorHostView(
+    projectId: String,
+    chromiumView: GhostexCEFBrowserView
+  ) -> WebPaneHostView? {
+    guard let session = projectEditorPaneSessions[projectId] else {
+      return nil
+    }
+    return session.tabs.first(where: { $0.chromiumView === chromiumView })?.hostView
+      ?? (session.chromiumView === chromiumView ? session.hostView : nil)
+  }
+
+  private func focusProjectEditorPaneFromUserInteraction(projectId: String, reason: String) {
+    focusProjectEditorPane(projectId: projectId, reason: reason)
+    guard projectEditorPaneSessions[projectId]?.mode == "git" else {
+      return
+    }
+    /**
+     CDXC:GitProjectTabs 2026-05-16-09:50:
+     Git browser chrome focus is a user-visible project-mode selection. Report
+     toolbar-originated focus, including Back button clicks and address-field
+     edits, to the sidebar before React sends another layout command so stale
+     Code-mode state cannot bring the Code CEF pane forward.
+     */
+    sendProjectEditorTabSelected(projectId: projectId)
+  }
+
+  private func sendProjectEditorTabSelected(projectId: String) {
+    sendEvent(
+      .projectEditorTabSelected(
+        projectId: projectId,
+        url: activeProjectEditorTabURL(projectId: projectId)))
+  }
+
+  private func activeProjectEditorTabURL(projectId: String) -> String? {
+    guard let session = projectEditorPaneSessions[projectId] else {
+      return nil
+    }
+    if let activeTab = session.tabs.first(where: { $0.tabId == session.activeTabId }) {
+      return activeTab.url
+    }
+    return session.chromiumView.currentURLString ?? session.url
+  }
+
+  private func selectProjectEditorTab(projectId: String, tabId: String) {
+    guard let session = projectEditorPaneSessions[projectId],
+      let tab = session.tabs.first(where: { $0.tabId == tabId })
+    else {
+      return
+    }
+    /**
+     CDXC:GitProjectTabs 2026-05-16-10:32:
+     Git mode uses project-local browser tabs inside the Git view, not one
+     global project tab row. Selecting a tab must switch to that tab's existing
+     CEF host instead of navigating the active host to the tab URL, otherwise
+     tab switching reloads GitHub pages and loses scroll/input state.
+     */
+    let nextSession = projectEditorSession(session, activating: tab.tabId)
+    projectEditorPaneSessions[projectId] = nextSession
+    setProjectEditorTabHostVisibility(nextSession, isActive: activeProjectEditorId == projectId)
+    nextSession.hostView.refreshBrowserToolbar(reason: "projectEditorGitTabSelected")
+    syncProjectEditorTabBars()
+    focusProjectEditorPane(projectId: projectId, reason: "projectEditorGitTabSelected")
+    sendProjectEditorTabSelected(projectId: projectId)
+  }
+
+  private func addProjectEditorGitTab(
+    projectId: String,
+    url: String,
+    title: String? = nil,
+    reason: String
+  ) {
+    guard let session = projectEditorPaneSessions[projectId] else {
+      return
+    }
+    let tab = makeProjectEditorBrowserTab(
+      projectId: projectId,
+      tabId: createProjectEditorGitTabId(),
+      title: title ?? projectEditorTabTitle(for: url, fallback: "GitHub"),
+      url: url,
+      showsBrowserToolbar: true,
+      showsInitialLoadingOverlay: true,
+      reason: reason)
+    var nextSession = session
+    nextSession.tabs.append(tab)
+    nextSession = projectEditorSession(nextSession, activating: tab.tabId)
+    projectEditorPaneSessions[projectId] = nextSession
+    addSubview(tab.hostView)
+    moveOffscreen(tab.hostView)
+    tab.chromiumView.loadURLString(tab.url)
+    tab.hostView.refreshHostedWebView(reason: reason)
+    setProjectEditorTabHostVisibility(nextSession, isActive: activeProjectEditorId == projectId)
+    syncProjectEditorTabBars()
+    focusProjectEditorPane(projectId: projectId, reason: reason)
+    sendProjectEditorTabSelected(projectId: projectId)
+  }
+
+  private func closeProjectEditorGitTab(projectId: String, tabId: String) {
+    guard let session = projectEditorPaneSessions[projectId], session.tabs.count > 1 else {
+      return
+    }
+    let removedIndex = session.tabs.firstIndex(where: { $0.tabId == tabId })
+    let removedTab = session.tabs.first(where: { $0.tabId == tabId })
+    let nextTabs = session.tabs.filter { $0.tabId != tabId }
+    guard !nextTabs.isEmpty else {
+      return
+    }
+    let nextActiveTab: ProjectEditorBrowserTab
+    if session.activeTabId == tabId {
+      let nextIndex = min(removedIndex ?? 0, nextTabs.count - 1)
+      nextActiveTab = nextTabs[nextIndex]
+    } else {
+      nextActiveTab = nextTabs.first(where: { $0.tabId == session.activeTabId }) ?? nextTabs[0]
+    }
+    var nextSession = session
+    nextSession.tabs = nextTabs
+    nextSession = projectEditorSession(nextSession, activating: nextActiveTab.tabId)
+    projectEditorPaneSessions[projectId] = nextSession
+    if let removedTab {
+      removedTab.chromiumView.closeBrowser()
+      removedTab.hostView.removeFromSuperview()
+    }
+    setProjectEditorTabHostVisibility(nextSession, isActive: activeProjectEditorId == projectId)
+    syncProjectEditorTabBars()
+    if session.activeTabId == tabId {
+      sendProjectEditorTabSelected(projectId: projectId)
+    }
+  }
+
+  private func createProjectEditorGitTabId() -> String {
+    "git-tab-\(UUID().uuidString)"
+  }
+
+  private func projectEditorTabTitle(for url: String, fallback: String) -> String {
+    guard let parsed = URL(string: url) else {
+      return fallback
+    }
+    let lastPath = parsed.pathComponents.last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !lastPath.isEmpty && lastPath != "/" {
+      return lastPath
+    }
+    return parsed.host ?? fallback
+  }
+
+  private func updateProjectEditorSessionActiveTab(
+    _ session: ProjectEditorPaneSession,
+    url: String,
+    title: String? = nil
+  ) -> ProjectEditorPaneSession {
+    var nextSession = session
+    let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+    nextSession.tabs = nextSession.tabs.map { tab in
+      guard tab.tabId == nextSession.activeTabId else {
+        return tab
+      }
+      return ProjectEditorBrowserTab(
+        tabId: tab.tabId,
+        chromiumView: tab.chromiumView,
+        hostView: tab.hostView,
+        title: normalizedTitle?.isEmpty == false
+          ? normalizedTitle!
+          : projectEditorTabTitle(for: url, fallback: tab.title),
+        url: url)
+    }
+    nextSession = projectEditorSession(nextSession, activating: nextSession.activeTabId)
+    return nextSession
+  }
+
   func closeProjectEditorPane(projectId: String) {
     guard let session = projectEditorPaneSessions.removeValue(forKey: projectId) else {
       return
@@ -2731,8 +3090,16 @@ final class TerminalWorkspaceView: NSView {
       "projectId": projectId,
       "url": session.url,
     ])
-    session.chromiumView.closeBrowser()
-    session.hostView.removeFromSuperview()
+    for tab in session.tabs {
+      tab.chromiumView.closeBrowser()
+      tab.hostView.removeFromSuperview()
+    }
+    if session.tabs.isEmpty {
+      session.chromiumView.closeBrowser()
+      session.hostView.removeFromSuperview()
+    }
+    session.titleBarView?.removeFromSuperview()
+    syncProjectEditorTabBars()
     if activeProjectEditorId == projectId {
       activeProjectEditorId = nil
       projectEditorCompanionSessionId = nil
@@ -2801,6 +3168,14 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  func openProjectEditorDevTools(projectId: String) {
+    guard let session = projectEditorPaneSessions[projectId] else {
+      return
+    }
+    focusProjectEditorPane(projectId: projectId, reason: "projectEditorDevTools")
+    session.chromiumView.toggleDevTools()
+  }
+
   func injectBrowserReactGrab(sessionId: String) {
     guard let session = webPaneSessions[sessionId] else {
       return
@@ -2815,6 +3190,16 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  func injectProjectEditorReactGrab(projectId: String) {
+    guard let session = projectEditorPaneSessions[projectId] else {
+      return
+    }
+    focusProjectEditorPane(projectId: projectId, reason: "projectEditorReactGrab")
+    Task { @MainActor in
+      await NativeBrowserReactGrabInjector.toggleOrInject(into: session.chromiumView)
+    }
+  }
+
   func showBrowserProfilePicker(sessionId: String) {
     guard let session = webPaneSessions[sessionId] else {
       return
@@ -2826,11 +3211,27 @@ final class TerminalWorkspaceView: NSView {
     )
   }
 
+  func showProjectEditorProfilePicker(projectId: String) {
+    guard projectEditorPaneSessions[projectId] != nil else {
+      return
+    }
+    focusProjectEditorPane(projectId: projectId, reason: "projectEditorProfilePicker")
+    NativeBrowserProfileUI.showPicker(parentWindow: window, currentProfileID: nil)
+  }
+
   func showBrowserImportSettings(sessionId: String) {
     guard webPaneSessions[sessionId] != nil else {
       return
     }
     focusWebPane(sessionId: sessionId, reason: "browserImportSettings")
+    NativeBrowserProfileUI.showImportSettings(parentWindow: window)
+  }
+
+  func showProjectEditorImportSettings(projectId: String) {
+    guard projectEditorPaneSessions[projectId] != nil else {
+      return
+    }
+    focusProjectEditorPane(projectId: projectId, reason: "projectEditorImportSettings")
     NativeBrowserProfileUI.showImportSettings(parentWindow: window)
   }
 
@@ -3290,6 +3691,7 @@ final class TerminalWorkspaceView: NSView {
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
     activeProjectEditorId = nextActiveProjectEditorId
+    syncProjectEditorTabBars()
     focusedSessionId = command.focusedSessionId
     terminalLayout = nextLayout
     paneGap = nextPaneGap
@@ -3370,12 +3772,15 @@ final class TerminalWorkspaceView: NSView {
     if shouldRelayout {
       for session in projectEditorPaneSessions.values {
         let isActive = activeProjectEditorId == session.projectId
-        session.hostView.isHidden = !isActive
+        setProjectEditorTabHostVisibility(session, isActive: isActive)
+        session.titleBarView?.isHidden = !isActive
         if isActive {
           layoutProjectEditorPane(session)
           orderProjectEditorPaneToFront(session)
         } else {
-          moveOffscreen(session.hostView)
+          if let titleBarView = session.titleBarView {
+            moveOffscreen(titleBarView)
+          }
         }
       }
       needsLayout = true
@@ -3603,7 +4008,7 @@ final class TerminalWorkspaceView: NSView {
       hideSplitSessionSurfacesForActiveEditor()
       let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
       projectEditorCompanionResizeWorkspaceBounds = workspaceBounds
-      editorSession.hostView.isHidden = false
+      setProjectEditorTabHostVisibility(editorSession, isActive: true)
       layoutProjectEditorPane(editorSession, in: companionLayout?.editorFrame ?? workspaceBounds)
       orderProjectEditorPaneToFront(editorSession)
       syncProjectEditorCompanionPane(layout: companionLayout)
@@ -3924,8 +4329,8 @@ final class TerminalWorkspaceView: NSView {
     guard bounds.height > 0 else {
       return 0
     }
-    let minimumHeight = min(Self.paneResizeMinimumHeight, bounds.height)
-    let maximumHeight = max(minimumHeight, bounds.height * 0.55)
+    let minimumHeight = bounds.height * Self.minimumCommandsPanelHeightRatio
+    let maximumHeight = max(minimumHeight, bounds.height * Self.maximumCommandsPanelHeightRatio)
     return min(max(value, minimumHeight), maximumHeight)
   }
 
@@ -4250,7 +4655,7 @@ final class TerminalWorkspaceView: NSView {
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
      Companion controls belong in the existing session titlebar
-     row beside the pane hamburger. Do not reserve a separate header strip above
+     row. Do not reserve a separate header strip above
      the terminal content; that strip was visually detached from the actual
      clickable titlebar surface.
 
@@ -4288,8 +4693,8 @@ final class TerminalWorkspaceView: NSView {
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
      The companion pane's local controls must live inside the selected session
-     titlebar, immediately left of the pane hamburger, so hover and click
-     handling use the same AppKit button path as existing titlebar actions.
+     titlebar, so hover and click handling use the same AppKit button path as
+     existing titlebar actions.
      Clear the controls from every non-companion titlebar when the companion is
      hidden or retargeted.
 
@@ -4347,6 +4752,13 @@ final class TerminalWorkspaceView: NSView {
     return min(max(value, minimumWidth), maximumWidth)
   }
 
+  private static func normalizedProjectEditorCompanionWidthRatio(_ value: CGFloat?) -> CGFloat {
+    guard let value, value.isFinite else {
+      return defaultProjectEditorCompanionWidthRatio
+    }
+    return min(max(value, 0.05), 0.9)
+  }
+
   private func closeProjectEditorCompanionPane() {
     projectEditorCompanionIsVisible = false
     projectEditorCompanionResizeDrag = nil
@@ -4365,6 +4777,7 @@ final class TerminalWorkspaceView: NSView {
       projectEditorCompanionWidthRatio = Self.defaultProjectEditorCompanionWidthRatio
       needsLayout = true
       layoutSubtreeIfNeeded()
+      persistProjectEditorCompanionWidthRatio(projectEditorCompanionWidthRatio)
       NSCursor.resizeLeftRight.set()
       return true
     }
@@ -4386,7 +4799,8 @@ final class TerminalWorkspaceView: NSView {
     let nextWidth = clampedProjectEditorCompanionWidth(
       drag.startWidth + point.x - drag.startX,
       in: drag.workspaceBounds)
-    projectEditorCompanionWidthRatio = nextWidth / max(drag.workspaceBounds.width, 1)
+    projectEditorCompanionWidthRatio = Self.normalizedProjectEditorCompanionWidthRatio(
+      nextWidth / max(drag.workspaceBounds.width, 1))
     NSCursor.resizeLeftRight.set()
     needsLayout = true
     layoutSubtreeIfNeeded()
@@ -4400,6 +4814,7 @@ final class TerminalWorkspaceView: NSView {
     }
     _ = continueProjectEditorCompanionResize(with: event)
     projectEditorCompanionResizeDrag = nil
+    persistProjectEditorCompanionWidthRatio(projectEditorCompanionWidthRatio)
     NSCursor.resizeLeftRight.set()
     return true
   }
@@ -4439,12 +4854,41 @@ final class TerminalWorkspaceView: NSView {
   private func layoutProjectEditorPane(_ session: ProjectEditorPaneSession, in rect: CGRect? = nil) {
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.start", [
       "hostFrameBefore": describeFrame(session.hostView.frame),
+      "mode": session.mode,
       "projectId": session.projectId,
+      "showsProjectTabs": session.showsProjectTabs,
       "url": session.url,
       "workspaceBounds": describeFrame(bounds),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
     let nextFrame = chromiumBackingPixelAlignedFrame(rect ?? bounds)
+    let titleBarHeight =
+      session.showsProjectTabs && session.titleBarView != nil
+      ? min(Self.terminalTitleBarHeight, max(nextFrame.height, 0))
+      : 0
+    let titleBarFrame = CGRect(
+      x: nextFrame.minX,
+      y: nextFrame.maxY - titleBarHeight,
+      width: nextFrame.width,
+      height: titleBarHeight
+    )
+    let hostFrame = CGRect(
+      x: nextFrame.minX,
+      y: nextFrame.minY,
+      width: nextFrame.width,
+      height: max(0, nextFrame.height - titleBarHeight)
+    )
+    if let titleBarView = session.titleBarView {
+      /**
+       CDXC:GitProjectTabs 2026-05-16-07:42:
+       Git project views should show the same AppKit tab strip used by the
+       Agents workarea above the existing browser address toolbar. Keep this
+       tab row outside WebPaneHostView so browser navigation chrome remains the
+       same component normal browser panes use.
+       */
+      titleBarView.frame = titleBarFrame
+      titleBarView.isHidden = titleBarHeight <= 0
+    }
     /**
      CDXC:EditorPanes 2026-05-08-13:37
      Sidebar resize must not synchronously refresh or display the hosted VS
@@ -4454,12 +4898,16 @@ final class TerminalWorkspaceView: NSView {
      this layout method, because that self-invalidates and can loop when the
      project editor is the active workspace surface.
      */
-    if session.hostView.frame != nextFrame {
-      session.hostView.frame = nextFrame
+    for hostView in projectEditorHostViews(session) {
+      if hostView.frame != hostFrame {
+        hostView.frame = hostFrame
+      }
     }
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.end", [
       "hostFrameAfter": describeFrame(session.hostView.frame),
+      "mode": session.mode,
       "projectId": session.projectId,
+      "titleBarFrame": describeFrame(session.titleBarView?.frame ?? .zero),
       "url": session.url,
       "workspaceBounds": describeFrame(bounds),
       "windowNumber": window?.windowNumber ?? NSNull(),
@@ -4475,11 +4923,21 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func orderProjectEditorPaneToFront(_ session: ProjectEditorPaneSession) {
+    if let titleBarView = session.titleBarView, titleBarView.superview !== self {
+      addSubview(titleBarView)
+    }
     if session.hostView.superview !== self {
       addSubview(session.hostView)
+      if let titleBarView = session.titleBarView {
+        addSubview(titleBarView, positioned: .above, relativeTo: session.hostView)
+      }
       return
     }
     guard shouldRaiseProjectEditorHost(session.hostView) else {
+      if let titleBarView = session.titleBarView, shouldRaiseProjectEditorHost(titleBarView) {
+        titleBarView.removeFromSuperview()
+        addSubview(titleBarView, positioned: .above, relativeTo: session.hostView)
+      }
       return
     }
     /**
@@ -4496,9 +4954,13 @@ final class TerminalWorkspaceView: NSView {
      Switching the sidebar-selected companion session must leave the VS Code
      CEF host mounted and ordered in place. Only raise the editor when a real
      overlapping workspace surface sits above it.
-     */
+    */
     session.hostView.removeFromSuperview()
     addSubview(session.hostView, positioned: .above, relativeTo: nil)
+    if let titleBarView = session.titleBarView {
+      titleBarView.removeFromSuperview()
+      addSubview(titleBarView, positioned: .above, relativeTo: session.hostView)
+    }
   }
 
   private func shouldRaiseProjectEditorHost(_ hostView: NSView) -> Bool {
@@ -4646,12 +5108,65 @@ final class TerminalWorkspaceView: NSView {
         chromiumView: chromiumView,
         isLoading: isLoading,
         reason: "chromiumNavigationStateChanged")
+      self.projectEditorHostView(projectId: projectId, chromiumView: chromiumView)?.refreshBrowserToolbar(
+        reason: "projectEditorNavigationStateChanged")
+    }
+    chromiumView.titleChangedHandler = { [weak self, weak chromiumView] title in
+      guard let chromiumView else { return }
+      self?.updateProjectEditorActiveTabMetadata(
+        projectId: projectId,
+        chromiumView: chromiumView,
+        title: title,
+        url: nil)
+      self?.projectEditorHostView(projectId: projectId, chromiumView: chromiumView)?.refreshBrowserToolbar(
+        reason: "projectEditorTitleChanged")
+    }
+    chromiumView.urlChangedHandler = { [weak self, weak chromiumView] url in
+      guard let chromiumView else { return }
+      self?.updateProjectEditorActiveTabMetadata(
+        projectId: projectId,
+        chromiumView: chromiumView,
+        title: nil,
+        url: url)
+      self?.projectEditorHostView(projectId: projectId, chromiumView: chromiumView)?.refreshBrowserToolbar(
+        reason: "projectEditorUrlChanged")
+      if self?.projectEditorPaneSessions[projectId]?.mode == "git",
+        self?.activeProjectEditorId == projectId,
+        self?.projectEditorPaneSessions[projectId]?.chromiumView === chromiumView
+      {
+        /**
+         CDXC:GitProjectTabs 2026-05-16-09:50:
+         Browser Back/Forward changes the active Git tab URL after the toolbar
+         has already focused the Git pane. Send the post-navigation URL so the
+         sidebar stores the visible Git tab address rather than the pre-click
+         address or a stale Code-mode URL for the same project.
+         */
+        self?.sendProjectEditorTabSelected(projectId: projectId)
+      }
+    }
+    chromiumView.newWindowRequestedHandler = { [weak self, weak chromiumView] url in
+      guard let chromiumView else { return }
+      guard let self, self.projectEditorPaneSessions[projectId]?.mode == "git" else {
+        chromiumView.loadURLString(url)
+        return
+      }
+      /**
+       CDXC:GitProjectTabs 2026-05-16-07:42:
+       Target-blank and window.open navigations inside a Git tab should create
+       a new tab in that project's Git tab strip. Normal browser panes keep
+       their existing single-pane retargeting behavior in the CEF bridge.
+       */
+      self.addProjectEditorGitTab(
+        projectId: projectId,
+        url: url,
+        reason: "projectEditorGitPopup")
     }
     chromiumView.loadEventHandler = { [weak self, weak chromiumView] event, url, httpStatusCode, errorCode, errorText in
       guard let self else {
         return
       }
       let session = self.projectEditorPaneSessions[projectId]
+      let hostView = chromiumView.flatMap { self.projectEditorHostView(projectId: projectId, chromiumView: $0) }
       NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.cef.loadEvent", [
         "activeProjectEditorId": self.activeProjectEditorId ?? NSNull(),
         "currentUrl": chromiumView?.currentURLString ?? NSNull(),
@@ -4659,7 +5174,7 @@ final class TerminalWorkspaceView: NSView {
         "errorText": errorText,
         "event": event,
         "expectedUrl": session?.url ?? NSNull(),
-        "hostFrame": session.map { self.describeFrame($0.hostView.frame) } ?? NSNull(),
+        "hostFrame": hostView.map { self.describeFrame($0.frame) } ?? NSNull(),
         "httpStatusCode": httpStatusCode,
         "isActive": self.activeProjectEditorId == projectId,
         "isLoading": chromiumView?.isLoading ?? false,
@@ -4720,8 +5235,7 @@ final class TerminalWorkspaceView: NSView {
     isLoading: Bool,
     reason: String
   ) {
-    guard let session = projectEditorPaneSessions[projectId],
-      session.chromiumView === chromiumView,
+    guard let hostView = projectEditorHostView(projectId: projectId, chromiumView: chromiumView),
       !isLoading
     else {
       return
@@ -4730,8 +5244,81 @@ final class TerminalWorkspaceView: NSView {
     guard !currentURL.isEmpty, currentURL != "about:blank" else {
       return
     }
-    session.hostView.setInitialLoadingOverlayVisible(false, reason: reason)
+    hostView.setInitialLoadingOverlayVisible(false, reason: reason)
     sendEvent(.projectEditorLoadState(projectId: projectId, status: "running", message: nil))
+  }
+
+  private func updateProjectEditorActiveTabMetadata(
+    projectId: String,
+    chromiumView: GhostexCEFBrowserView,
+    title: String?,
+    url: String?
+  ) {
+    guard var session = projectEditorPaneSessions[projectId],
+      session.mode == "git",
+      session.showsProjectTabs,
+      let tabIndex = session.tabs.firstIndex(where: { $0.chromiumView === chromiumView })
+    else {
+      return
+    }
+    let existingTab = session.tabs[tabIndex]
+    let nextURL = url?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isProjectEditorPlaceholderURL(nextURL) {
+      /**
+       CDXC:GitProjectTabs 2026-05-16-12:40:
+       First-open Git tabs are created with an internal about:blank CEF
+       placeholder before the project GitHub URL is loaded. That placeholder
+       must never replace the visible tab URL/title or the session URL, because
+       the loader uses the intended GitHub URL as the navigation contract for
+       the first Git view render.
+       */
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.gitTab.placeholderMetadataIgnored", [
+        "activeTabId": session.activeTabId,
+        "incomingTitle": title ?? NSNull(),
+        "incomingUrl": nextURL ?? NSNull(),
+        "projectId": projectId,
+        "tabId": existingTab.tabId,
+        "tabTitle": existingTab.title,
+        "tabUrl": existingTab.url,
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
+      return
+    }
+    let resolvedURL = nextURL?.isEmpty == false ? nextURL! : existingTab.url
+    let nextTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedNextTitle =
+      isProjectEditorPlaceholderTitle(nextTitle) && !isProjectEditorPlaceholderURL(existingTab.url)
+      ? nil
+      : nextTitle
+    let resolvedTitle =
+      resolvedNextTitle?.isEmpty == false
+      ? resolvedNextTitle!
+      : projectEditorTabTitle(for: resolvedURL, fallback: existingTab.title)
+    session.tabs[tabIndex] = ProjectEditorBrowserTab(
+      tabId: existingTab.tabId,
+      chromiumView: existingTab.chromiumView,
+      hostView: existingTab.hostView,
+      title: resolvedTitle,
+      url: resolvedURL)
+    if existingTab.tabId == session.activeTabId {
+      session = projectEditorSession(session, activating: existingTab.tabId)
+    }
+    projectEditorPaneSessions[projectId] = session
+    syncProjectEditorTabBars()
+  }
+
+  private func isProjectEditorPlaceholderURL(_ value: String?) -> Bool {
+    guard let value else {
+      return false
+    }
+    return value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "about:blank"
+  }
+
+  private func isProjectEditorPlaceholderTitle(_ value: String?) -> Bool {
+    guard let value else {
+      return false
+    }
+    return value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "about:blank"
   }
 
   private func orderedVisibleSessionIds() -> [String] {
@@ -5446,13 +6033,62 @@ final class TerminalWorkspaceView: NSView {
       activeProjectEditorId.flatMap { projectEditorPaneSessions[$0] }
       ?? visibleProjectEditorInteractionSessionIds.compactMap { projectEditorPaneSessions[$0] }.first
     guard let activeSession, !activeSession.hostView.isHidden else {
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.activeHostMissing", [
+        "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
+        "knownProjectEditorIds": Array(projectEditorPaneSessions.keys).sorted(),
+        "point": describePoint(point),
+        "visibleProjectEditorInteractionSessionIds": Array(visibleProjectEditorInteractionSessionIds).sorted(),
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
       return nil
+    }
+    if let titleBarView = activeSession.titleBarView,
+      !titleBarView.isHidden,
+      titleBarView.frame.contains(point)
+    {
+      /**
+       CDXC:GitProjectTabs 2026-05-16-07:42:
+       Git tab chrome sits above the browser host inside the project-editor
+       frame. Route hit testing to that native tab bar before falling back to
+       the hosted Chromium view so tabs, inline buttons, and the plus control
+       receive real AppKit mouse events.
+      */
+      let titleBarPoint = convert(point, to: titleBarView)
+      let hitView = titleBarView.hitTest(titleBarPoint) ?? titleBarView
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.gitTabBar", [
+        "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
+        "hitView": String(describing: type(of: hitView)),
+        "point": describePoint(point),
+        "titleBarFrame": describeFrame(titleBarView.frame),
+        "titleBarPoint": describePoint(titleBarPoint),
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
+      return hitView
     }
     let editorPoint = convert(point, to: activeSession.hostView)
     guard activeSession.hostView.bounds.contains(editorPoint) else {
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.editorOutsideHostBounds", [
+        "activeHostFrame": describeFrame(activeSession.hostView.frame),
+        "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
+        "editorPoint": describePoint(editorPoint),
+        "hostBounds": describeFrame(activeSession.hostView.bounds),
+        "point": describePoint(point),
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
       return activeSession.hostView
     }
-    return activeSession.hostView.hitTest(editorPoint) ?? activeSession.hostView
+    let hitView = activeSession.hostView.hitTest(editorPoint) ?? activeSession.hostView
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.editorHost", [
+      "activeHostFrame": describeFrame(activeSession.hostView.frame),
+      "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
+      "activeProjectEditorMode": activeSession.mode,
+      "activeTabId": activeSession.activeTabId,
+      "editorPoint": describePoint(editorPoint),
+      "hitView": String(describing: type(of: hitView)),
+      "hostHidden": activeSession.hostView.isHidden,
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+    return hitView
   }
 
   private func projectEditorHitTestWorkspaceBounds() -> CGRect {
@@ -5774,6 +6410,7 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     paneHeaderDrag = nil
+    uninstallPaneTabDragCaptureMonitor()
     endPaneHeaderDragFeedback()
     super.mouseUp(with: event)
   }
@@ -5848,7 +6485,60 @@ final class TerminalWorkspaceView: NSView {
 
   private func resetPaneHeaderInteractionState() {
     paneHeaderDrag = nil
+    uninstallPaneTabDragCaptureMonitor()
+    restoreBrowserContentAfterPaneTabDrag()
     endPaneHeaderDragFeedback(restoresCursor: false)
+  }
+
+  private func installPaneTabDragCaptureMonitorIfNeeded() {
+    guard paneTabDragCaptureEventMonitor == nil else {
+      return
+    }
+    /**
+     CDXC:PaneTabs 2026-05-16-11:25:
+     Native tab dragging must stay owned by TerminalWorkspaceView after tab
+     mouse-down, even when the active pane is a CEF browser surface. Capture
+     left-drag and left-up locally for the active paneHeaderDrag so Chromium
+     cannot take over the mouse stream and terminate the native tab drag after a
+     short movement.
+     */
+    paneTabDragCaptureEventMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.leftMouseDragged, .leftMouseUp]
+    ) { [weak self] event in
+      self?.handleCapturedPaneTabDragEvent(event) ?? event
+    }
+  }
+
+  private func uninstallPaneTabDragCaptureMonitor() {
+    guard let paneTabDragCaptureEventMonitor else {
+      return
+    }
+    NSEvent.removeMonitor(paneTabDragCaptureEventMonitor)
+    self.paneTabDragCaptureEventMonitor = nil
+  }
+
+  private func handleCapturedPaneTabDragEvent(_ event: NSEvent) -> NSEvent? {
+    guard window != nil else {
+      uninstallPaneTabDragCaptureMonitor()
+      return event
+    }
+    if let eventWindow = event.window, eventWindow !== window {
+      return event
+    }
+    guard let drag = paneHeaderDrag else {
+      uninstallPaneTabDragCaptureMonitor()
+      return event
+    }
+    switch event.type {
+    case .leftMouseDragged:
+      handlePaneTitleBarMouseDragged(event, sessionId: drag.sourceSessionId)
+      return nil
+    case .leftMouseUp:
+      handlePaneTabMouseUp(event, sessionId: drag.sourceSessionId)
+      return nil
+    default:
+      return event
+    }
   }
 
   private func syncCEFNativeDragSourceReleaseMonitor(reason: String) {
@@ -6321,6 +7011,7 @@ final class TerminalWorkspaceView: NSView {
       startedFromTab: true,
       startPoint: startPoint,
       targetSessionId: nil)
+    installPaneTabDragCaptureMonitorIfNeeded()
     NativePaneTabDragReproLog.append(event: "nativePaneTabDrag.mouseDown", details: [
       "sessionId": sessionId,
       "startPoint": describeFrame(CGRect(x: startPoint.x, y: startPoint.y, width: 0, height: 0)),
@@ -6330,6 +7021,8 @@ final class TerminalWorkspaceView: NSView {
 
   private func handlePaneTabMouseUp(_ event: NSEvent, sessionId: String) {
     guard let drag = paneHeaderDrag, drag.sourceSessionId == sessionId else {
+      uninstallPaneTabDragCaptureMonitor()
+      restoreBrowserContentAfterPaneTabDrag()
       NativePaneTabDragReproLog.append(event: "nativePaneTabDrag.mouseUp.noDragState", details: [
         "sessionId": sessionId,
         "windowNumber": event.window?.windowNumber ?? NSNull(),
@@ -6339,6 +7032,8 @@ final class TerminalWorkspaceView: NSView {
     }
     if !drag.isDragging {
       paneHeaderDrag = nil
+      uninstallPaneTabDragCaptureMonitor()
+      restoreBrowserContentAfterPaneTabDrag()
       NativePaneTabDragReproLog.append(event: "nativePaneTabDrag.clickSelected", details: [
         "sessionId": sessionId,
         "windowNumber": event.window?.windowNumber ?? NSNull(),
@@ -6393,9 +7088,12 @@ final class TerminalWorkspaceView: NSView {
 
   private func handlePaneTitleBarMouseUp(_ event: NSEvent, sessionId: String) {
     guard let drag = paneHeaderDrag, drag.sourceSessionId == sessionId else {
+      uninstallPaneTabDragCaptureMonitor()
+      restoreBrowserContentAfterPaneTabDrag()
       return
     }
     paneHeaderDrag = nil
+    uninstallPaneTabDragCaptureMonitor()
     endPaneHeaderDragFeedback()
     guard drag.isDragging else {
       /**
@@ -6558,6 +7256,7 @@ final class TerminalWorkspaceView: NSView {
    */
   private func beginPaneHeaderDragFeedback(for sessionId: String, at point: CGPoint) {
     logStalePaneDragFeedbackIfMounted(reason: "beginPaneHeaderDragFeedback")
+    hideBrowserContentDuringPaneTabDragIfNeeded()
     let ghostView = paneHeaderDragGhostView ?? TerminalPaneHeaderDragGhostView()
     paneHeaderDragGhostView = ghostView
     if ghostView.superview !== self {
@@ -6648,6 +7347,7 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func endPaneHeaderDragFeedback(restoresCursor: Bool = true) {
+    restoreBrowserContentAfterPaneTabDrag()
     paneHeaderDragGhostView?.removeFromSuperview()
     paneHeaderDragGhostView = nil
     paneHeaderDragTargetView?.removeFromSuperview()
@@ -6655,6 +7355,52 @@ final class TerminalWorkspaceView: NSView {
     paneTabReorderTargetView?.removeFromSuperview()
     paneTabReorderTargetView = nil
     _ = restoresCursor
+  }
+
+  private func hideBrowserContentDuringPaneTabDragIfNeeded() {
+    guard paneHeaderDrag?.startedFromTab == true else {
+      return
+    }
+    /**
+     CDXC:PaneTabs 2026-05-16-12:51:
+     Browser pane tab dragging should hide CEF page content for the duration of
+     the native tab drag. The tab drawer, drag ghost, insertion line, and
+     split/drop target still stay native and visible, but the accelerated
+     Chromium page surface is removed from compositing so dragging any tab over
+     or near an active browser pane cannot flicker the browser contents.
+     */
+    for session in webPaneSessions.values {
+      guard !session.containerView.isHidden,
+        !session.hostView.isHidden,
+        let chromiumView = session.chromiumView
+      else {
+        continue
+      }
+      hidePaneTabDragBrowserContentView(chromiumView)
+    }
+    for session in projectEditorPaneSessions.values where session.projectId == activeProjectEditorId {
+      for tab in session.tabs where !tab.hostView.isHidden {
+        hidePaneTabDragBrowserContentView(tab.chromiumView)
+      }
+    }
+  }
+
+  private func hidePaneTabDragBrowserContentView(_ view: NSView) {
+    guard !view.isHidden else {
+      return
+    }
+    paneTabDragHiddenBrowserContentViews[ObjectIdentifier(view)] = view
+    setHidden(true, for: view)
+  }
+
+  private func restoreBrowserContentAfterPaneTabDrag() {
+    guard !paneTabDragHiddenBrowserContentViews.isEmpty else {
+      return
+    }
+    for view in paneTabDragHiddenBrowserContentViews.values {
+      setHidden(false, for: view)
+    }
+    paneTabDragHiddenBrowserContentViews.removeAll()
   }
 
   private func logStalePaneDragFeedbackIfMounted(reason: String) {
@@ -9457,6 +10203,13 @@ final class TerminalWorkspaceView: NSView {
     ]
   }
 
+  private func describePoint(_ point: CGPoint) -> [String: Double] {
+    [
+      "x": Double(point.x),
+      "y": Double(point.y),
+    ]
+  }
+
   private func describeSize(_ size: CGSize) -> [String: Double] {
     [
       "height": Double(size.height),
@@ -9494,7 +10247,10 @@ final class TerminalWorkspaceView: NSView {
     guard let value, value.isFinite else {
       return defaultCommandsPanelHeightRatio
     }
-    return CGFloat(min(0.55, max(0.18, value)))
+    return CGFloat(
+      min(
+        Double(maximumCommandsPanelHeightRatio),
+        max(Double(minimumCommandsPanelHeightRatio), value)))
   }
 
   private static func workspaceBackgroundColor(_ value: String?) -> NSColor {
@@ -9829,13 +10585,18 @@ private enum NativeSessionPersistenceMode {
     provider: NativeSessionPersistenceProvider,
     cwd: String,
     initialInput: String?,
+    title: String?,
     sessionName: String
   ) -> String {
     switch provider {
     case .tmux:
       return tmuxAttachCommand(cwd: cwd, initialInput: initialInput, sessionName: sessionName)
     case .zmx:
-      return zmxAttachCommand(cwd: cwd, initialInput: initialInput, sessionName: sessionName)
+      return zmxAttachCommand(
+        cwd: cwd,
+        initialInput: initialInput,
+        title: title,
+        sessionName: sessionName)
     case .zellij:
       return zellijAttachCommand(cwd: cwd, initialInput: initialInput, sessionName: sessionName)
     }
@@ -10009,27 +10770,40 @@ private enum NativeSessionPersistenceMode {
   private static func zmxAttachCommand(
     cwd: String,
     initialInput: String?,
+    title: String?,
     sessionName: String
   ) -> String {
     let initialCommand = shellCommandWithPersistenceNotice(
       provider: .zmx,
       sessionName: sessionName,
       initialInput: initialInput)
+    let persistenceNoticeCommand = persistenceNoticeShellCommand(
+      provider: .zmx,
+      sessionName: sessionName)
+    let titleNoticeCommand = sessionTitleShellCommand(title: title)
     let script = """
       zmx_session=\(shellQuote(sessionName))
       zmx_cwd=\(shellQuote(cwd))
       zmx_initial_command=\(shellQuote(initialCommand))
+      zmx_persistence_notice_command=\(shellQuote(persistenceNoticeCommand))
+      zmx_title_notice_command=\(shellQuote(titleNoticeCommand))
       unset ZMX_SESSION ZMX_SESSION_PREFIX
       if ! command -v zmx >/dev/null 2>&1; then
         printf '%s\\n' 'session persistence is set to zmx, but zmx was not found on PATH.'
         exit 127
       fi
+      if zmx list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
+        if [ -n "$zmx_title_notice_command" ]; then
+          /bin/zsh -lc "$zmx_title_notice_command"
+        fi
+        exec zmx attach "$zmx_session"
+      fi
       if [ -z "$zmx_initial_command" ]; then
         cd "$zmx_cwd" || exit
         exec zmx attach "$zmx_session"
       fi
-      if zmx list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
-        exec zmx attach "$zmx_session"
+      if [ -n "$zmx_persistence_notice_command" ]; then
+        /bin/zsh -lc "$zmx_persistence_notice_command"
       fi
       cd "$zmx_cwd" || exit
       exec zmx attach "$zmx_session" /bin/zsh -lc "$zmx_initial_command"
@@ -10059,6 +10833,12 @@ private enum NativeSessionPersistenceMode {
      A newly created zmx agent session must print a plain-language persistence
      notice before the agent command runs. Keep empty zmx terminals on direct
      attach so they stay normal shells without zmx task wrapper output.
+
+     CDXC:SessionPersistence 2026-05-16-07:14:
+     zmx startup should give Ghostty immediate context before the attach takes
+     over: existing named sessions print the known sidebar title before attach,
+     while first-run agent sessions print the persistence notice outside zmx and
+     again inside the newly created zmx command before agent launch text.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
@@ -10307,6 +11087,14 @@ private enum NativeSessionPersistenceMode {
     sessionName: String
   ) -> String {
     "printf '%s\\n' \(shellQuote("This session is using \(provider.rawValue) persistence: \(sessionName)"))"
+  }
+
+  private static func sessionTitleShellCommand(title: String?) -> String {
+    let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmedTitle.isEmpty else {
+      return ""
+    }
+    return "printf '%s\\n' \(shellQuote(trimmedTitle))"
   }
 
   private static func shellQuote(_ value: String) -> String {
@@ -11955,6 +12743,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   var onTabSleepRequested: ((String, PaneTabSleepScope) -> Void)?
   var onTabActionRequested: ((String, TerminalTitleBarAction) -> Void)?
   private var contextMenuActions: [TerminalTitleBarAction] = []
+  private var allowsClose = true
   private var activity: NativeTerminalActivity?
   private var hoveredInlineAction: InlineAction? {
     didSet {
@@ -12091,6 +12880,16 @@ private final class TerminalTitleBarTabButton: NSButton {
     contextMenuActions = actions
   }
 
+  func setAllowsClose(_ isAllowed: Bool) {
+    guard allowsClose != isAllowed else {
+      return
+    }
+    allowsClose = isAllowed
+    pendingMouseDownInlineAction = nil
+    setHoveredInlineAction(nil)
+    needsDisplay = true
+  }
+
   func setIdentityIconDataUrl(
     faviconDataUrl: String?,
     agentIconDataUrl: String?,
@@ -12112,6 +12911,9 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   func inlineAction(at point: NSPoint) -> InlineAction? {
+    guard allowsClose else {
+      return nil
+    }
     /**
      CDXC:PaneTabs 2026-05-11-11:47
      Inline Close hit testing follows the visible tab geometry, not the cached
@@ -12202,7 +13004,9 @@ private final class TerminalTitleBarTabButton: NSButton {
      CDXC:PaneTabs 2026-05-15-14:28:
      Sleep moved out of hover-only tab chrome and into the tab right-click menu. Keep hover chrome focused on Close so sleeping a tab is an intentional context-menu command instead of a neighboring inline button.
      */
-    drawInlineActionControl()
+    if allowsClose {
+      drawInlineActionControl()
+    }
     drawCommandSeparatorIfNeeded()
   }
 
@@ -12346,7 +13150,7 @@ private final class TerminalTitleBarTabButton: NSButton {
       "sessionId": sessionId,
       "windowNumber": event.window?.windowNumber ?? NSNull(),
     ])
-    if bounds.contains(point) {
+    if allowsClose, bounds.contains(point) {
       onTabCloseRequested?(sessionId, .close)
     }
   }
@@ -12851,6 +13655,8 @@ private final class TerminalSessionTitleBarView: NSView {
   private var doubleClickNewTerminalFrame: CGRect = .zero
   private var tabButtons: [TerminalTitleBarTabButton] = []
   private var tabItems: [TabItem] = []
+  private var allowsTabClosing = true
+  private var showsTabAddButton = true
   private var debugOwnerSessionId: String?
   private var debugPaneKind = "unknown"
   private var lastLoggedPaneTabGeometrySignature: String?
@@ -12979,6 +13785,7 @@ private final class TerminalSessionTitleBarView: NSView {
       }
       tabButtons.append(button)
       tabContentView.addSubview(button)
+      button.setAllowsClose(allowsTabClosing)
     }
     for (index, tab) in nextTabs.enumerated() {
       let button = tabButtons[index]
@@ -12993,6 +13800,30 @@ private final class TerminalSessionTitleBarView: NSView {
     updateTabGroupFocusAppearance()
     needsLayout = true
     window?.invalidateCursorRects(for: self)
+  }
+
+  func setAllowsTabClosing(_ allowsClosing: Bool) {
+    guard allowsTabClosing != allowsClosing else {
+      return
+    }
+    /**
+     CDXC:GitProjectTabs 2026-05-16-07:42:
+     Git project tabs reuse the main native tab strip for navigation only.
+     Disable inline close chrome for that strip so Git tabs cannot appear to be
+     normal Agents session tabs with close/sleep lifecycle controls.
+     */
+    allowsTabClosing = allowsClosing
+    for button in tabButtons {
+      button.setAllowsClose(allowsClosing)
+    }
+  }
+
+  func setShowsTabAddButton(_ isVisible: Bool) {
+    guard showsTabAddButton != isVisible else {
+      return
+    }
+    showsTabAddButton = isVisible
+    needsLayout = true
   }
 
   fileprivate func setChromeRole(_ role: TerminalPaneChromeRole) {
@@ -13154,7 +13985,7 @@ private final class TerminalSessionTitleBarView: NSView {
   override func mouseDown(with event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
     isPointerInsideTitleBar = true
-    if event.clickCount >= 2, !tabItems.isEmpty, isEmptyTitleBarDoubleClickPoint(point) {
+    if showsTabAddButton, event.clickCount >= 2, !tabItems.isEmpty, isEmptyTitleBarDoubleClickPoint(point) {
       /**
        CDXC:PaneTabs 2026-05-11-11:47
        Double-clicking unoccupied pane title-bar chrome creates a new terminal
@@ -13267,14 +14098,13 @@ private final class TerminalSessionTitleBarView: NSView {
       /**
        CDXC:ProjectEditorCompanion 2026-05-14-09:47:
        Companion controls live inside the session titlebar and must be returned
-       as concrete NSButton hits, just like the hamburger. This keeps hover
-       background and click dispatch on the visible controls instead of a
-       detached overlay strip.
+       as concrete NSButton hits. This keeps hover background and click dispatch
+       on the visible controls instead of a detached overlay strip.
 
        CDXC:ProjectEditorCompanion 2026-05-15-15:29:
        Only the companion Close button remains in this titlebar control group.
        It still returns as a concrete native button hit so AppKit owns hover and
-       click dispatch beside the hamburger.
+       click dispatch.
        */
       return projectEditorCompanionButton
     }
@@ -13733,7 +14563,9 @@ private final class TerminalSessionTitleBarView: NSView {
      to the expanded icon cluster on wider widths.
      */
     let shouldCollapseActionMenu =
-      !Self.isCommandsPanelChromeActionSet(actionButtons.map(\.action)) && !nonCloseActions.isEmpty
+      !showsProjectEditorCompanionControls
+      && !Self.isCommandsPanelChromeActionSet(actionButtons.map(\.action))
+      && !nonCloseActions.isEmpty
     let minimumContentWidthForCollapsedControls =
       tabItems.isEmpty ? 0 : Self.minimumVisibleTabViewportWidth
     let hasCloseAction = actionButtons.contains { $0.action == .close }
@@ -13746,7 +14578,24 @@ private final class TerminalSessionTitleBarView: NSView {
       bounds.width - insetX * 2 - reservedCloseActionWidth - buttonSize - tabViewportTrailingGap
         >= minimumContentWidthForCollapsedControls
     var separatorIndex = 0
-    if shouldCollapseActionMenu {
+    if showsProjectEditorCompanionControls {
+      /*
+       CDXC:ProjectEditorCompanion 2026-05-16-11:46:
+       The side companion pane in Code, Git, and Project views needs a minimal
+       titlebar with only its local close control. Hide the normal session pane
+       action buttons and collapsed overflow menu instead of leaving generic
+       pane actions in this embedded-editor surface.
+       */
+      collapsedActionMenuActions = []
+      actionMenuButton.frame = .zero
+      for item in actionButtons {
+        item.button.frame = .zero
+        nextLayoutHiddenActions.insert(item.action)
+      }
+      for separator in actionSeparators {
+        separator.frame = .zero
+      }
+    } else if shouldCollapseActionMenu {
       collapsedActionMenuActions = canReserveCollapsedActionMenu ? nonCloseActions : []
       for item in actionButtons {
         if item.action == .close && canReserveCloseActionInCollapsedLayout {
@@ -13846,8 +14695,9 @@ private final class TerminalSessionTitleBarView: NSView {
       tabClipView.isHidden = false
       let tabAreaMaxX = max(insetX, trailingX - tabViewportTrailingGap)
       let canShowTabAddButton =
-        tabAreaMaxX - insetX
-          >= Self.minimumVisibleTabViewportWidthWithDoubleClickTarget + tabAddButtonGap + tabAddButtonSize
+        showsTabAddButton
+        && (tabAreaMaxX - insetX
+          >= Self.minimumVisibleTabViewportWidthWithDoubleClickTarget + tabAddButtonGap + tabAddButtonSize)
       let tabViewportMaxX =
         canShowTabAddButton
         ? max(insetX, tabAreaMaxX - tabAddButtonGap - tabAddButtonSize)
@@ -14258,13 +15108,18 @@ private final class TerminalSessionTitleBarView: NSView {
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
      The embedded-editor companion controls are titlebar-local actions, not
      normal pane lifecycle actions. Show them only on the selected companion
-     session so Close and the hamburger share one row and one AppKit
-     button/hover implementation.
+     session so Close uses the same AppKit button/hover implementation as
+     native pane titlebar controls.
 
      CDXC:ProjectEditorCompanion 2026-05-15-15:29:
      The selected companion titlebar now exposes Close as the only companion
      action. Removing Back to Agents View from this group keeps the code/git
      companion pane chrome focused on pane dismissal.
+
+     CDXC:ProjectEditorCompanion 2026-05-16-11:46:
+     Code, Git, and Project companion panes should not show the generic pane
+     overflow menu in their titlebar. Agents view panes still use the normal
+     action menu because they do not enable companion controls.
      */
     showsProjectEditorCompanionControls = shouldShowControls
     updateProjectEditorCompanionButtonVisibility()
@@ -14359,7 +15214,7 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   @objc private func performTabAddButton(_ sender: NSButton) {
-    guard sender === tabAddButton, !tabAddButton.isHidden, tabAddButton.isEnabled else {
+    guard showsTabAddButton, sender === tabAddButton, !tabAddButton.isHidden, tabAddButton.isEnabled else {
       return
     }
     onAction?(.newTerminal)
@@ -14527,9 +15382,9 @@ private final class TerminalSessionTitleBarView: NSView {
     button.action = action
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:47:
-     Companion controls are placed beside the titlebar hamburger and dispatch
-     on left mouse-down, matching existing pane action buttons so a focus change
-     during the click cannot swallow the action.
+     Companion controls are placed in the session titlebar and dispatch on left
+     mouse-down, matching existing pane action buttons so a focus change during
+     the click cannot swallow the action.
 
      CDXC:ProjectEditorCompanion 2026-05-15-15:29:
      Close is the only companion-specific button configured here; the Back to
@@ -15163,7 +16018,27 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
      */
     if showsBrowserToolbar, toolbarView.frame.contains(point) {
       let toolbarPoint = convert(point, to: toolbarView)
-      return toolbarView.hitTest(toolbarPoint) ?? toolbarView
+      let hitView = browserToolbarHitView(at: toolbarPoint)
+      /**
+       CDXC:BrowserToolbarDiagnostics 2026-05-16-11:05:
+       Browser toolbar clicks are currently failing in both Git project views
+       and normal browser panes. Log toolbar-row hit routing before any action
+       callback so reproduction timestamps can distinguish lost AppKit hit
+       tests from controls that receive the click but do not execute.
+       */
+      logBrowserToolbarInteraction("hitTest.toolbar", details: [
+        "addressFieldFrame": Self.describeFrame(addressField.frame),
+        "browserFrame": Self.describeFrame(browserView.frame),
+        "hitTarget": toolbarTargetName(at: toolbarPoint),
+        "hitView": String(describing: type(of: hitView)),
+        "hostBounds": Self.describeFrame(bounds),
+        "hostFrame": Self.describeFrame(frame),
+        "isHidden": isHidden,
+        "toolbarFrame": Self.describeFrame(toolbarView.frame),
+        "toolbarPoint": Self.describePoint(toolbarPoint),
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
+      return hitView
     }
     if browserView.frame.contains(point) {
       let browserPoint = convert(point, to: browserView)
@@ -15235,6 +16110,18 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   override func mouseDown(with event: NSEvent) {
+    if showsBrowserToolbar {
+      let localPoint = convert(event.locationInWindow, from: nil)
+      let toolbarPoint = convert(localPoint, to: toolbarView)
+      logBrowserToolbarInteraction("mouseDown.host", details: [
+        "clickCount": event.clickCount,
+        "eventLocation": Self.describePoint(event.locationInWindow),
+        "hitTarget": toolbarView.frame.contains(localPoint) ? toolbarTargetName(at: toolbarPoint) : "outside-toolbar",
+        "localPoint": Self.describePoint(localPoint),
+        "toolbarPoint": Self.describePoint(toolbarPoint),
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
+    }
     onFocus?()
     super.mouseDown(with: event)
   }
@@ -15295,10 +16182,22 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
 
   func controlTextDidBeginEditing(_ obj: Notification) {
     isEditingAddress = true
+    logBrowserToolbarInteraction("address.beginEditing", details: [
+      "addressFieldFrame": Self.describeFrame(addressField.frame),
+      "fieldValue": addressField.stringValue,
+      "firstResponder": (window?.firstResponder).map { String(describing: type(of: $0)) } ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
   }
 
   func controlTextDidEndEditing(_ obj: Notification) {
     isEditingAddress = false
+    logBrowserToolbarInteraction("address.endEditing", details: [
+      "fieldValue": addressField.stringValue,
+      "isReturnTextMovement": isReturnTextMovement(obj),
+      "movement": obj.userInfo?["NSTextMovement"] ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     if isReturnTextMovement(obj) {
       /**
        CDXC:BrowserPanes 2026-05-03-04:09
@@ -15327,19 +16226,24 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     guard control === addressField else {
       return false
     }
-	    if commandSelector == #selector(NSResponder.insertNewline(_:)) {
-	      /**
-	       CDXC:BrowserPanes 2026-05-03-03:59
-	       Address-bar Return must always drive pane browser navigation. Handling the
-	       text command directly avoids AppKit swallowing the field action after a
-	       page focus transition or autocomplete interaction.
+    logBrowserToolbarInteraction("address.command", details: [
+      "commandSelector": NSStringFromSelector(commandSelector),
+      "fieldValue": addressField.stringValue,
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
+    if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+      /**
+       CDXC:BrowserPanes 2026-05-03-03:59
+       Address-bar Return must always drive pane browser navigation. Handling the
+       text command directly avoids AppKit swallowing the field action after a
+       page focus transition or autocomplete interaction.
 
        CDXC:BrowserPanes 2026-05-11-20:24
        Return/keypad Enter are owned by the address field's AppKit delegate
        command path, not a local key monitor. This keeps browser address commits
        scoped to the editing field editor and prevents unrelated key events from
        being consumed outside responder dispatch.
-	       */
+       */
       commitAddress()
       window?.makeFirstResponder(browserView)
       return true
@@ -15482,7 +16386,19 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     let lockSymbol = URL(string: currentURLString() ?? "")?.scheme == "https" ? "lock.fill" : "globe"
     securityIcon.image = NSImage(systemSymbolName: lockSymbol, accessibilityDescription: nil)
     if !isEditingAddress {
-      addressField.stringValue = currentURLString() ?? addressField.stringValue
+      let currentURL = currentURLString()?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let existingAddress = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+      /**
+       CDXC:GitProjectTabs 2026-05-16-12:40:
+       Git panes seed the native address field with the project's GitHub URL
+       before CEF finishes its initial about:blank bootstrap. Keep that seeded
+       address visible until the browser reports a real URL so first-open Git
+       views do not flash or settle on an about:blank address row.
+       */
+      if currentURL?.lowercased() == "about:blank", !existingAddress.isEmpty {
+        return
+      }
+      addressField.stringValue = currentURL ?? addressField.stringValue
     }
   }
 
@@ -15514,6 +16430,11 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   @objc private func goBack() {
+    logBrowserToolbarInteraction("button.back", details: [
+      "canGoBack": canGoBack(),
+      "currentURL": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onFocus?()
     if chromiumView?.canGoBack == true {
       chromiumView?.goBack()
@@ -15523,6 +16444,11 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   @objc private func goForward() {
+    logBrowserToolbarInteraction("button.forward", details: [
+      "canGoForward": canGoForward(),
+      "currentURL": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onFocus?()
     if chromiumView?.canGoForward == true {
       chromiumView?.goForward()
@@ -15532,6 +16458,11 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   @objc private func reloadPage() {
+    logBrowserToolbarInteraction("button.reload", details: [
+      "currentURL": currentURLString() ?? NSNull(),
+      "isPageLoading": isPageLoading(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onFocus?()
     if isPageLoading() {
       if let chromiumView {
@@ -15558,10 +16489,20 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
      */
     let input = addressField.stringValue
     guard let url = Self.url(fromAddressInput: input) else {
+      logBrowserToolbarInteraction("address.commit.invalid", details: [
+        "input": input,
+        "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
       NSSound.beep()
       updateBrowserToolbarState()
       return
     }
+    logBrowserToolbarInteraction("address.commit", details: [
+      "currentURL": currentURLString() ?? NSNull(),
+      "input": input,
+      "resolvedURL": url.absoluteString,
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onFocus?()
     NativeT3CodePaneReproLog.append("nativeWorkspace.browserPane.address.commit", [
       "input": input,
@@ -15576,18 +16517,34 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   @objc private func openDevTools() {
+    logBrowserToolbarInteraction("button.devTools", details: [
+      "currentURL": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onOpenDevTools?()
   }
 
   @objc private func injectReactGrab() {
+    logBrowserToolbarInteraction("button.reactGrab", details: [
+      "currentURL": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onInjectReactGrab?()
   }
 
   @objc private func showProfilePicker() {
+    logBrowserToolbarInteraction("button.profile", details: [
+      "currentURL": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onShowProfilePicker?()
   }
 
   @objc private func showAppearanceMenu() {
+    logBrowserToolbarInteraction("button.appearance", details: [
+      "currentURL": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onFocus?()
     let menu = NSMenu(title: "Browser Theme")
     for mode in [BrowserPaneThemeMode.system, .light, .dark] {
@@ -15639,7 +16596,94 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   @objc private func showImportSettings() {
+    logBrowserToolbarInteraction("button.importSettings", details: [
+      "currentURL": currentURLString() ?? NSNull(),
+      "windowNumber": window?.windowNumber ?? NSNull(),
+    ])
     onShowImportSettings?()
+  }
+
+  private func toolbarTargetName(at point: CGPoint) -> String {
+    if backButton.frame.contains(point) {
+      return "backButton"
+    }
+    if forwardButton.frame.contains(point) {
+      return "forwardButton"
+    }
+    if reloadButton.frame.contains(point) {
+      return "reloadButton"
+    }
+    if securityIcon.frame.contains(point) {
+      return "securityIcon"
+    }
+    if addressField.frame.contains(point) {
+      return "addressField"
+    }
+    if reactGrabButton.frame.contains(point) {
+      return "reactGrabButton"
+    }
+    if profileButton.frame.contains(point) {
+      return "profileButton"
+    }
+    if appearanceButton.frame.contains(point) {
+      return "appearanceButton"
+    }
+    if devToolsButton.frame.contains(point) {
+      return "devToolsButton"
+    }
+    if toolbarView.bounds.contains(point) {
+      return "toolbarBackground"
+    }
+    return "outsideToolbar"
+  }
+
+  private func browserToolbarHitView(at point: CGPoint) -> NSView {
+    /**
+     CDXC:BrowserToolbarDiagnostics 2026-05-16-12:45:
+     Repro logs at 2026-05-16 12:41 showed toolbar hit testing correctly
+     classified `backButton`, `reloadButton`, and `addressField`, but
+     `toolbarView.hitTest` always returned the toolbar container `NSView`.
+     Route directly to the known AppKit controls so browser toolbar clicks
+     execute their button actions or start address-field editing in both Git
+     project views and normal browser panes.
+     */
+    if backButton.frame.contains(point) {
+      return backButton
+    }
+    if forwardButton.frame.contains(point) {
+      return forwardButton
+    }
+    if reloadButton.frame.contains(point) {
+      return reloadButton
+    }
+    if addressField.frame.contains(point) {
+      return addressField
+    }
+    if reactGrabButton.frame.contains(point) {
+      return reactGrabButton
+    }
+    if profileButton.frame.contains(point) {
+      return profileButton
+    }
+    if appearanceButton.frame.contains(point) {
+      return appearanceButton
+    }
+    if devToolsButton.frame.contains(point) {
+      return devToolsButton
+    }
+    return toolbarView
+  }
+
+  private func logBrowserToolbarInteraction(_ phase: String, details: [String: Any] = [:]) {
+    var payload = details
+    payload["backEnabled"] = backButton.isEnabled
+    payload["currentURL"] = currentURLString() ?? NSNull()
+    payload["forwardEnabled"] = forwardButton.isEnabled
+    payload["isEditingAddress"] = isEditingAddress
+    payload["isPageLoading"] = isPageLoading()
+    payload["phase"] = phase
+    payload["showsBrowserToolbar"] = showsBrowserToolbar
+    NativeT3CodePaneReproLog.append("nativeWorkspace.browserToolbar.interaction", payload)
   }
 
   private static func url(fromAddressInput value: String) -> URL? {
@@ -15705,6 +16749,13 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       "width": Double(frame.width),
       "x": Double(frame.minX),
       "y": Double(frame.minY),
+    ]
+  }
+
+  private static func describePoint(_ point: CGPoint) -> [String: Double] {
+    [
+      "x": Double(point.x),
+      "y": Double(point.y),
     ]
   }
 }
@@ -15810,7 +16861,7 @@ private final class PoppedOutTerminalPaneContentView: NSView {
     persistenceLabelView.frame = persistenceLabelView.isHidden
       ? .zero
       : CGRect(
-        x: max(10, bounds.maxX - labelWidth - 10),
+        x: max(10, bounds.maxX - labelWidth - 5),
         y: max(6, bounds.height - titleHeight - labelHeight - 6),
         width: labelWidth,
         height: labelHeight)
@@ -16020,6 +17071,9 @@ private final class TerminalPanePersistenceLabelView: NSTextField {
 
      CDXC:SessionPersistence 2026-05-15-09:58:
      Move the provider/session context to the top-right corner so it stays visible without sitting beside prompt input at the bottom of the terminal body.
+
+     CDXC:SessionPersistence 2026-05-16-07:14:
+     Shift the top-right provider/session context 5px farther right so the floating label aligns closer to the terminal pane edge.
      */
     stringValue = nextTitle
     updateVisibility()

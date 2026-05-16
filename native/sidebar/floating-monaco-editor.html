@@ -65,8 +65,14 @@
            * The standalone Ctrl+G Monaco prompt editor shares the rich prompt
            * writing behavior: caret placement on a word must not highlight
            * every matching word as if this were code navigation.
+           *
+           * CDXC:PromptEditor 2026-05-15-20:36:
+           * Keep the standalone prompt editor aligned with the rich prompt
+           * modal: disable selection match highlights, active-line highlighting,
+           * and syntax-highlighted clipboard output for plain prompt text.
            */
           occurrencesHighlight: "off",
+          copyWithSyntaxHighlighting: false,
           padding: {
             bottom: 48,
             top: 12,
@@ -75,8 +81,9 @@
             enabled: false,
           },
           quickSuggestions: false,
-          renderLineHighlight: "all",
+          renderLineHighlight: "none",
           scrollBeyondLastLine: false,
+          selectionHighlight: false,
           snippetSuggestions: "none",
           suggestOnTriggerCharacters: false,
           tabCompletion: "off",

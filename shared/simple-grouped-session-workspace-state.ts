@@ -69,6 +69,10 @@ type CreateSessionInSimpleWorkspaceOptions = {
   visiblePlacement?: VisibleSessionPlacement;
 };
 
+type MoveSessionInPaneLayoutOptions = {
+  wakeSourceSession?: boolean;
+};
+
 type CreateGroupResult = WorkspaceMutationResult & {
   groupId?: string;
 };
@@ -1026,6 +1030,7 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
   sourceSessionId: string,
   targetSessionId: string,
   placement: SessionPaneDropPlacement,
+  options: MoveSessionInPaneLayoutOptions = {},
 ): WorkspaceMutationResult {
   const group = getGroupById(snapshot, groupId);
   if (!group) {
@@ -1075,6 +1080,17 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
   if (!nextLayout) {
     return { changed: false, snapshot };
   }
+  const sourceSession = group.snapshot.sessions.find(
+    (session) => session.sessionId === sourceSessionId,
+  );
+  const shouldWakeSourceSession = options.wakeSourceSession === true && sourceSession?.isSleeping === true;
+  const nextSessions = shouldWakeSourceSession
+    ? group.snapshot.sessions.map((session) =>
+        session.sessionId === sourceSessionId
+          ? { ...session, isPoppedOut: undefined, isSleeping: false }
+          : session,
+      )
+    : group.snapshot.sessions;
   const nextVisibleSessionIds =
     placement === "center"
       ? paneSessionIds
@@ -1097,6 +1113,12 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
    * that tab out. Resolve that same-session side drop to a remaining sibling
    * before removing the source tab; single-tab panes still have no valid
    * sibling anchor and remain a no-op.
+   *
+   * CDXC:PaneTabs 2026-05-16-09:43:
+   * Dragging a sleeping tab into a center or edge pane drop is an explicit
+   * restore action. Wake the dragged source in the same paneLayout mutation so
+   * normalization keeps it focused, includes it in active visible ids, and lets
+   * native sync show the restored split instead of parking the moved tab.
    */
   const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
     ...targetGroup,
@@ -1104,6 +1126,7 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
       ...targetGroup.snapshot,
       focusedSessionId: sourceSessionId,
       paneLayout: nextLayout,
+      sessions: nextSessions,
       visibleCount: clampSupportedVisibleCount(Math.max(1, nextVisibleSessionIds.length)),
       visibleSessionIds: nextVisibleSessionIds,
     }),

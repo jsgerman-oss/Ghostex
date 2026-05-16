@@ -477,6 +477,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       self.appHotkeyEventMonitor = nil
     }
     persistMainWindowChrome()
+    (window?.contentView as? ghostexRootView)?.persistNativeChromeForAppLifecycle()
     Self.appendNativeHostLifecycleLog(
       "applicationWillTerminate pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false)"
     )
@@ -1079,6 +1080,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func windowWillClose(_ notification: Notification) {
     persistMainWindowChrome()
+    (window?.contentView as? ghostexRootView)?.persistNativeChromeForAppLifecycle()
     Self.appendNativeHostLifecycleLog(
       "windowWillClose title=\(window?.title ?? "<missing>") visibleBeforeClose=\(window?.isVisible ?? false)"
     )
@@ -3060,6 +3062,7 @@ private struct NativeZedOverlaySettings {
 
 private struct NativeSidebarChromeSettings {
   let width: CGFloat?
+  let projectEditorCompanionWidthRatio: CGFloat?
 }
 
 private struct NativeMainWindowChromeSettings {
@@ -3106,6 +3109,12 @@ private final class NativeSettingsStore {
     "focusSessionSlot9": "cmd+9",
     "focusUp": "cmd+alt+up",
     "moveSidebar": "cmd+b",
+    /**
+     CDXC:CommandPalette 2026-05-15-20:38:
+     Cmd+K opens the shadcn command palette even while terminal panes own first
+     responder, so AppKit must match the same shared hotkey id as the sidebar.
+     */
+    "openCommandPalette": "cmd+k",
     /**
      CDXC:Hotkeys 2026-05-14-08:09:
      F12 is the default Commands panel shortcut in shared sidebar settings, and terminal focus reaches AppKit before the sidebar DOM can observe that bare function key.
@@ -3181,12 +3190,16 @@ private final class NativeSettingsStore {
    The native sidebar width is user-resized AppKit chrome, so it must be
    stored in the shared native settings file and restored before the first
    layout after an app restart.
+   CDXC:ProjectEditorCompanion 2026-05-16-06:55:
+   The project-editor companion pane width is the same kind of native chrome preference: it should follow the user across projects and app restarts, not reset with the active project's workspace snapshot.
    */
   func readSidebarChrome() -> NativeSidebarChromeSettings {
     guard let settings = readSettingsDictionary() else {
-      return NativeSidebarChromeSettings(width: nil)
+      return NativeSidebarChromeSettings(width: nil, projectEditorCompanionWidthRatio: nil)
     }
-    return NativeSidebarChromeSettings(width: Self.readCGFloat(settings["sidebarWidth"]))
+    return NativeSidebarChromeSettings(
+      width: Self.readCGFloat(settings["sidebarWidth"]),
+      projectEditorCompanionWidthRatio: Self.readCGFloat(settings["projectEditorCompanionWidthRatio"]))
   }
 
   func readSidebarSide() -> SidebarSide {
@@ -3254,6 +3267,24 @@ private final class NativeSettingsStore {
       try data.write(to: url, options: [.atomic])
     } catch {
       Self.logger.error("Failed to persist sidebar width: \(error.localizedDescription)")
+    }
+  }
+
+  func persistProjectEditorCompanionWidthRatio(_ widthRatio: CGFloat) {
+    do {
+      let url = settingsURL()
+      var settings = readSettingsDictionary() ?? [:]
+      settings["projectEditorCompanionWidthRatio"] = widthRatio
+      let data = try JSONSerialization.data(
+        withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
+      try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+      )
+      try data.write(to: url, options: [.atomic])
+    } catch {
+      Self.logger.error(
+        "Failed to persist project editor companion width ratio: \(error.localizedDescription)")
     }
   }
 
@@ -3583,9 +3614,15 @@ final class ghostexRootView: NSView {
     setSessionStatusIndicators: @escaping (SetSessionStatusIndicators) -> Void,
     setPetOverlayState: @escaping (SetPetOverlayState) -> Void
   ) {
+    let settingsStore = NativeSettingsStore()
+    let storedSidebarChrome = settingsStore.readSidebarChrome()
     self.workspaceView = TerminalWorkspaceView(
       ghostty: ghostty,
-      sendEvent: sendEvent
+      sendEvent: sendEvent,
+      initialProjectEditorCompanionWidthRatio: storedSidebarChrome.projectEditorCompanionWidthRatio,
+      persistProjectEditorCompanionWidthRatio: { widthRatio in
+        settingsStore.persistProjectEditorCompanionWidthRatio(widthRatio)
+      }
     )
     self.scriptBridge = SidebarScriptBridge(router: sidebarCommandRouter)
     self.configureZedOverlay = configureZedOverlay
@@ -3602,7 +3639,7 @@ final class ghostexRootView: NSView {
     self.setSessionStatusIndicators = setSessionStatusIndicators
     self.setPetOverlayState = setPetOverlayState
     self.sendHostEvent = sendEvent
-    self.sidebarWidth = nativeSettingsStore.readSidebarChrome().width ?? Self.defaultSidebarWidth
+    self.sidebarWidth = storedSidebarChrome.width ?? Self.defaultSidebarWidth
     self.sidebarSide = nativeSettingsStore.readSidebarSide()
     let configuration = WKWebViewConfiguration()
     configuration.userContentController.add(scriptBridge, name: "ghostexNativeHost")
@@ -4213,6 +4250,9 @@ final class ghostexRootView: NSView {
     if let activeProjectPath = command.activeProjectPath {
       payload["projectPath"] = activeProjectPath
     }
+    if let debuggingMode = command.debuggingMode {
+      payload["debuggingMode"] = debuggingMode
+    }
     if let status = command.activeProjectEditorStatus {
       payload["editorStatus"] = status
     }
@@ -4310,17 +4350,16 @@ final class ghostexRootView: NSView {
      project-editor flow as the project header. Forward the command into the
      sidebar webview instead of reimplementing code-server startup in Swift.
 
-     CDXC:ModeSwitcher 2026-05-15-18:39:
+     CDXC:ModeSwitcher 2026-05-16-07:23:
      Code-tab lag reports need a native bridge timestamp before and after the
-     sidebar JavaScript hop, so the repro log can distinguish titlebar click
-     handling from sidebar work and AppKit/CEF project-editor creation.
+     sidebar JavaScript hop while Settings Debugging Mode is enabled. These are
+     regular diagnostics, so they must not bypass the debug-mode log gate.
      */
     AppDelegate.appendSessionTitleDebugLog(
       event: "titlebarCodeLag.swiftForwardStart",
       details: AppDelegate.jsonObjectString([
         "timeInterval": "\(Date().timeIntervalSince1970)"
-      ]),
-      force: true)
+      ]))
     sidebarView.evaluateJavaScript(
       """
       window.__ghostex_NATIVE_SIDEBAR__?.openActiveProjectEditorFromTitlebar?.();
@@ -4332,8 +4371,7 @@ final class ghostexRootView: NSView {
         details: AppDelegate.jsonObjectString([
           "error": error?.localizedDescription ?? "",
           "timeInterval": "\(Date().timeIntervalSince1970)",
-        ]),
-        force: true)
+        ]))
     }
   }
 
@@ -4404,7 +4442,9 @@ final class ghostexRootView: NSView {
   }
 
   private func rotateActivePaneLayoutClockwiseFromTitlebar() {
-    print("[ghostex-titlebar] forwarding rotate panes command to sidebar webview")
+    if NativeDebugLogging.isEnabled {
+      print("[ghostex-titlebar] forwarding rotate panes command to sidebar webview")
+    }
     sidebarView.evaluateJavaScript(
       """
       window.__ghostex_NATIVE_SIDEBAR__?.rotateActivePaneLayoutClockwiseFromTitlebar?.();
@@ -4480,8 +4520,7 @@ final class ghostexRootView: NSView {
         details: AppDelegate.jsonObjectString([
           "cwd": command.cwd,
           "timeInterval": "\(Date().timeIntervalSince1970)",
-        ]),
-        force: true)
+        ]))
       startCodeServerRuntime(command)
     case .stopCodeServerRuntime:
       stopCodeServerRuntime(logPrefix: "nativeSidebar")
@@ -4492,8 +4531,7 @@ final class ghostexRootView: NSView {
           "projectId": command.projectId,
           "timeInterval": "\(Date().timeIntervalSince1970)",
           "title": command.title,
-        ]),
-        force: true)
+        ]))
       workspaceView.createProjectEditorPane(command)
     case .focusProjectEditorPane(let command):
       AppDelegate.appendSessionTitleDebugLog(
@@ -4501,8 +4539,7 @@ final class ghostexRootView: NSView {
         details: AppDelegate.jsonObjectString([
           "projectId": command.projectId,
           "timeInterval": "\(Date().timeIntervalSince1970)",
-        ]),
-        force: true)
+        ]))
       workspaceView.focusProjectEditorPane(projectId: command.projectId)
     case .closeProjectEditorPane(let command):
       workspaceView.closeProjectEditorPane(projectId: command.projectId)
@@ -5585,6 +5622,14 @@ final class ghostexRootView: NSView {
     0
   }
 
+  func persistNativeChromeForAppLifecycle() {
+    /**
+     CDXC:NativeSidebarChrome 2026-05-16-06:55:
+     The app sidebar width must survive normal app restarts even when shutdown happens outside the resize handle's mouse-up path. Persist the currently clamped native width during window-close and terminate lifecycle hooks as the same setting used by drag resize.
+     */
+    persistSidebarWidth()
+  }
+
   private func persistSidebarWidth() {
     nativeSettingsStore.persistSidebarWidth(sidebarWidth)
   }
@@ -5995,7 +6040,9 @@ final class ghostexRootView: NSView {
     if let urlString = ProcessInfo.processInfo.environment["ghostex_SIDEBAR_URL"],
       let url = URL(string: urlString)
     {
-      Self.logger.info("Loading sidebar URL \(url.absoluteString, privacy: .public)")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info("Loading sidebar URL \(url.absoluteString, privacy: .public)")
+      }
       sidebarView.load(URLRequest(url: url))
       return
     }
@@ -6003,7 +6050,9 @@ final class ghostexRootView: NSView {
     let webAssets = Self.resolveWebAssets()
     let builtSidebar = webAssets.appendingPathComponent("index.html")
     if FileManager.default.fileExists(atPath: builtSidebar.path) {
-      Self.logger.info("Loading built sidebar from \(builtSidebar.path, privacy: .public)")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info("Loading built sidebar from \(builtSidebar.path, privacy: .public)")
+      }
       sidebarView.loadFileURL(builtSidebar, allowingReadAccessTo: webAssets)
       return
     }
@@ -6052,7 +6101,9 @@ final class ghostexRootView: NSView {
     let webAssets = Self.resolveWebAssets()
     let builtModalHost = webAssets.appendingPathComponent("modal-host.html")
     if FileManager.default.fileExists(atPath: builtModalHost.path) {
-      Self.logger.info("Loading modal host from \(builtModalHost.path, privacy: .public)")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info("Loading modal host from \(builtModalHost.path, privacy: .public)")
+      }
       modalHostView.loadFileURL(
         builtModalHost,
         allowingReadAccessTo: webAssets
@@ -6072,7 +6123,9 @@ final class ghostexRootView: NSView {
     let webAssets = Self.resolveWebAssets()
     let builtTitlebarChrome = webAssets.appendingPathComponent("titlebar-host.html")
     if FileManager.default.fileExists(atPath: builtTitlebarChrome.path) {
-      Self.logger.info("Loading React titlebar chrome from \(builtTitlebarChrome.path, privacy: .public)")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info("Loading React titlebar chrome from \(builtTitlebarChrome.path, privacy: .public)")
+      }
       titlebarChromeWebView.loadFileURL(
         builtTitlebarChrome,
         allowingReadAccessTo: webAssets
@@ -6681,6 +6734,9 @@ final class PaneResizeHandleView: NSView {
 
 extension ghostexRootView: WKNavigationDelegate {
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    guard NativeDebugLogging.isEnabled else {
+      return
+    }
     Self.logger.info("Sidebar webview finished loading")
     webView.evaluateJavaScript(
       "JSON.stringify({ text: document.body.innerText.slice(0, 240), rootHTML: document.getElementById('root')?.innerHTML.slice(0, 240) || '', bootError: window.__ghostex_BOOT_ERROR__ || null })"
@@ -6855,7 +6911,9 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
     if message.name == "ghostexNativeHostDiagnostics" {
       let diagnostic = String(describing: message.body)
       if diagnostic.contains("diagnostics-ready") {
-        Self.logger.info("Sidebar diagnostic: \(diagnostic, privacy: .public)")
+        if NativeDebugLogging.isEnabled {
+          Self.logger.info("Sidebar diagnostic: \(diagnostic, privacy: .public)")
+        }
       } else {
         Self.logger.error("Sidebar diagnostic: \(diagnostic, privacy: .public)")
       }
@@ -6888,7 +6946,9 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
       if (message.body as? [String: Any])?["type"] as? String
         == "rotateActivePaneLayoutClockwiseFromTitlebar"
       {
-        print("[ghostex-titlebar] native bridge received rotateActivePaneLayoutClockwiseFromTitlebar")
+        if NativeDebugLogging.isEnabled {
+          print("[ghostex-titlebar] native bridge received rotateActivePaneLayoutClockwiseFromTitlebar")
+        }
       }
       router.onCommand?(command)
     } catch {

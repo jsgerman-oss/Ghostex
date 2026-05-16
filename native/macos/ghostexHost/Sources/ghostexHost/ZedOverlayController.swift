@@ -121,9 +121,11 @@ final class ZedOverlayController: NSObject {
     enabled = command.enabled
     targetApp = command.targetApp
     workspacePath = command.workspacePath ?? workspacePath
-    Self.logger.info(
-      "Configured Zed overlay enabled=\(command.enabled) target=\(command.targetApp.rawValue, privacy: .public)"
-    )
+    if NativeDebugLogging.isEnabled {
+      Self.logger.info(
+        "Configured Zed overlay enabled=\(command.enabled) target=\(command.targetApp.rawValue, privacy: .public)"
+      )
+    }
 
     guard let window else {
       return
@@ -720,9 +722,11 @@ final class ZedOverlayController: NSObject {
     let appKitButtonTopLeft = appKitTopLeftPoint(fromAccessibilityTopLeft: buttonTopLeft)
     panel.setContentSize(Self.buttonPanelSize)
     panel.setFrameTopLeftPoint(appKitButtonTopLeft)
-    Self.logger.debug(
-      "Showing Zed overlay button ax=(\(buttonTopLeft.x), \(buttonTopLeft.y)) appkit=(\(appKitButtonTopLeft.x), \(appKitButtonTopLeft.y))"
-    )
+    if NativeDebugLogging.isEnabled {
+      Self.logger.debug(
+        "Showing Zed overlay button ax=(\(buttonTopLeft.x), \(buttonTopLeft.y)) appkit=(\(appKitButtonTopLeft.x), \(appKitButtonTopLeft.y))"
+      )
+    }
     panel.orderFrontRegardless()
   }
 
@@ -811,15 +815,19 @@ final class ZedOverlayController: NSObject {
         [
           "targetApp": targetApp.rawValue
         ])
-      Self.logger.info(
-        "Accessibility permission is required before the target editor frame can be read")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info(
+          "Accessibility permission is required before the target editor frame can be read")
+      }
       return nil
     }
     hasRequestedAccessibilityPermission = false
 
     let applications = runningTargetApplications()
     guard !applications.isEmpty else {
-      Self.logger.debug("Configured target Zed app is not running")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.debug("Configured target Zed app is not running")
+      }
       return nil
     }
 
@@ -837,7 +845,9 @@ final class ZedOverlayController: NSObject {
       }
     }
 
-    Self.logger.info("Could not read any target editor windows through Accessibility")
+    if NativeDebugLogging.isEnabled {
+      Self.logger.info("Could not read any target editor windows through Accessibility")
+    }
     return nil
   }
 
@@ -853,9 +863,11 @@ final class ZedOverlayController: NSObject {
       let windows = windowsValue as? [AXUIElement],
       let window = windows.first
     else {
-      Self.logger.info(
-        "Could not read target editor windows through Accessibility pid=\(application.processIdentifier)"
-      )
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info(
+          "Could not read target editor windows through Accessibility pid=\(application.processIdentifier)"
+        )
+      }
       return nil
     }
 
@@ -868,7 +880,9 @@ final class ZedOverlayController: NSObject {
       let position = positionValue,
       let size = sizeValue
     else {
-      Self.logger.info("Could not read target Zed window position/size through Accessibility")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info("Could not read target Zed window position/size through Accessibility")
+      }
       return nil
     }
 
@@ -886,13 +900,17 @@ final class ZedOverlayController: NSObject {
 
     let screen = screen(containingAccessibilityTopLeft: topLeft) ?? NSScreen.main
     guard let screen else {
-      Self.logger.info("Could not map target editor Accessibility frame to an NSScreen")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info("Could not map target editor Accessibility frame to an NSScreen")
+      }
       return nil
     }
     let appKitTopLeft = appKitTopLeftPoint(fromAccessibilityTopLeft: topLeft)
-    Self.logger.debug(
-      "Read target editor frame pid=\(application.processIdentifier) ax=(\(topLeft.x), \(topLeft.y)) size=(\(windowSize.width), \(windowSize.height)) appkit=(\(appKitTopLeft.x), \(appKitTopLeft.y)) screen=\(screen.localizedName, privacy: .public)"
-    )
+    if NativeDebugLogging.isEnabled {
+      Self.logger.debug(
+        "Read target editor frame pid=\(application.processIdentifier) ax=(\(topLeft.x), \(topLeft.y)) size=(\(windowSize.width), \(windowSize.height)) appkit=(\(appKitTopLeft.x), \(appKitTopLeft.y)) screen=\(screen.localizedName, privacy: .public)"
+      )
+    }
     return TargetWindowFrame(axTopLeft: topLeft, size: windowSize, screen: screen)
   }
 

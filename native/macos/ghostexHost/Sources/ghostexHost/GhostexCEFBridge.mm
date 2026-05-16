@@ -884,7 +884,7 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
 - (void)ghostexCEFEmitPageViewportDiagnosticForLayoutPass:(NSUInteger)layoutPass
                                                  sequence:(NSUInteger)sequence
                                              currentFrame:(NSRect)currentFrame {
-  if (!browser_) {
+  if (!browser_ || !GhostexCEFNativeDebugLoggingEnabled()) {
     return;
   }
   CefRefPtr<CefFrame> frame = browser_->GetMainFrame();
@@ -1367,6 +1367,16 @@ bool GhostexCEFBrowserClient::OnBeforePopup(CefRefPtr<CefBrowser> browser,
                                          CefRefPtr<CefDictionaryValue>& extra_info,
                                          bool* no_javascript_access) {
   std::string url = target_url.ToString();
+  GhostexCEFBrowserView* owner = owner_;
+  if (!url.empty() && owner.newWindowRequestedHandler) {
+    NSString* requestedURL = StringFromCefString(target_url);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (owner.newWindowRequestedHandler) {
+        owner.newWindowRequestedHandler(requestedURL);
+      }
+    });
+    return true;
+  }
   if (browser && !url.empty()) {
     browser->GetMainFrame()->LoadURL(target_url);
   }
@@ -1574,6 +1584,15 @@ bool GhostexCEFInitialize(int argc, char* _Nullable argv[]) {
   CefString(&settings.root_cache_path) = [cachePath UTF8String];
   settings.persist_session_cookies = true;
   CefString(&settings.log_file) = [[cachePath stringByAppendingPathComponent:@"debug.log"] UTF8String];
+  /*
+  CDXC:ChromiumBrowserPanes 2026-05-16-07:23:
+  CEF may write routine browser diagnostics through its own log file. Keep
+  non-error CEF logging behind Settings Debugging Mode while still allowing CEF
+  error entries in normal app mode.
+  */
+  settings.log_severity = GhostexCEFNativeDebugLoggingEnabled()
+    ? LOGSEVERITY_DEFAULT
+    : LOGSEVERITY_ERROR;
   CefString(&settings.accept_language_list) = "en-US,en";
 
   if (!CefInitialize(mainArgs, settings, g_cefApp.get(), nullptr)) {
@@ -1581,7 +1600,9 @@ bool GhostexCEFInitialize(int argc, char* _Nullable argv[]) {
     return false;
   }
   g_cefInitialized = true;
-  NSLog(@"[CEF] Initialized with remote debugging on 127.0.0.1:%d", g_remoteDebuggingPort);
+  if (GhostexCEFNativeDebugLoggingEnabled()) {
+    NSLog(@"[CEF] Initialized with remote debugging on 127.0.0.1:%d", g_remoteDebuggingPort);
+  }
   return true;
 }
 

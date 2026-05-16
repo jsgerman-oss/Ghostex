@@ -1957,6 +1957,72 @@ describe("createSessionInSimpleWorkspace", () => {
     });
   });
 
+  test("should wake a sleeping tab when a committed pane drop splits it beside another pane", () => {
+    const sleepingSession = {
+      ...createSessionRecord(2, 1),
+      isSleeping: true,
+    };
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(0),
+            fullscreenRestoreVisibleCount: undefined,
+            paneLayout: {
+              children: [
+                {
+                  activeSessionId: sessionIdForDisplay(0),
+                  kind: "tabs",
+                  sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+                },
+                { kind: "leaf", sessionId: sessionIdForDisplay(2) },
+              ],
+              direction: "horizontal",
+              kind: "split",
+            },
+            sessions: [createSessionRecord(1, 0), sleepingSession, createSessionRecord(3, 2)],
+            viewMode: "grid",
+            visibleCount: 2,
+            visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(2)],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 3,
+      nextSessionNumber: 4,
+    });
+
+    const result = moveSessionInPaneLayoutInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sessionIdForDisplay(1),
+      sessionIdForDisplay(2),
+      "right",
+      { wakeSourceSession: true },
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.sessions[1]?.isSleeping).toBe(false);
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(sessionIdForDisplay(1));
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      sessionIdForDisplay(0),
+      sessionIdForDisplay(2),
+      sessionIdForDisplay(1),
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+        { kind: "leaf", sessionId: sessionIdForDisplay(2) },
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
   test("should select the active session in an existing tab group", () => {
     const workspace = createWorkspaceSnapshot({
       activeGroupId: DEFAULT_MAIN_GROUP_ID,

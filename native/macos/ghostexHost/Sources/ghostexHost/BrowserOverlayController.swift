@@ -275,7 +275,9 @@ final class BrowserOverlayController {
         "state": stateSnapshot(),
       ])
     guard remainingAttempts > 0 else {
-      Self.logger.info("Chrome Canary window was not available through Accessibility")
+      if NativeDebugLogging.isEnabled {
+        Self.logger.info("Chrome Canary window was not available through Accessibility")
+      }
       appendReproLog(
         "position.failedNoAttempts",
         [

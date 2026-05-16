@@ -40,7 +40,12 @@ export const DEFAULT_TERMINAL_SESSION_TITLE = "Terminal Session";
 /**
  * CDXC:CommandsPanel 2026-05-14-08:12:
  * The bottom command pane must open at 27% of the workspace height by default so the main terminal area keeps more vertical room while command sessions remain visible.
+ *
+ * CDXC:CommandsPanel 2026-05-16-07:36:
+ * Users need the bottom command pane to shrink to 5% of the window height, while the default remains 27% so command sessions still open at a usable size.
  */
+export const MIN_COMMANDS_PANEL_HEIGHT_RATIO = 0.05;
+export const MAX_COMMANDS_PANEL_HEIGHT_RATIO = 0.55;
 export const DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO = 0.27;
 const DEFAULT_TERMINAL_ENGINE: TerminalEngine = "ghostty-native";
 const IGNORED_GENERIC_TERMINAL_TITLES = new Set([

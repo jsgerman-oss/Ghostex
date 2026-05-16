@@ -359,7 +359,11 @@ struct StartCodeServerRuntime: Decodable {
 }
 
 struct CreateProjectEditorPane: Decodable {
+  let mode: String?
   let projectId: String
+  let projectTitle: String?
+  let showsBrowserToolbar: Bool?
+  let showsProjectTabs: Bool?
   let title: String
   let url: String
 }
@@ -400,6 +404,7 @@ struct SetActiveTerminalSet: Decodable {
   let commandsPanelIsVisible: Bool?
   let commandsPanelLayout: NativeTerminalLayout?
   let commandsPanelMode: String?
+  let debuggingMode: Bool?
   let focusRequestId: Int?
   let focusedSessionId: String?
   let sleepingSessionIds: [String]?
@@ -774,6 +779,7 @@ enum HostEvent: Encodable {
   case commandsPanelHeightRatioChanged(heightRatio: Double)
   case terminalError(sessionId: String, message: String)
   case projectEditorBackRequested(projectId: String)
+  case projectEditorTabSelected(projectId: String, url: String?)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
   case petOverlayActivityClicked(projectId: String, sessionId: String)
@@ -911,9 +917,21 @@ enum HostEvent: Encodable {
        The native editor companion Back button returns to the agents workarea
        immediately in AppKit, then notifies the sidebar so its project-editor
        open state stops reactivating VS Code on the next layout sync.
-       */
+      */
       try container.encode("projectEditorBackRequested", forKey: .type)
       try container.encode(projectId, forKey: .projectId)
+    case .projectEditorTabSelected(let projectId, let url):
+      /**
+       CDXC:GitProjectTabs 2026-05-16-09:50:
+       Git project tabs and browser toolbar controls live in native AppKit
+       chrome, but the sidebar remains the owner of active project and mode
+       state. Send the selected project-editor id and active tab URL back so
+       React's next layout sync keeps the Git CEF pane visible instead of
+       restoring the same project's Code CEF pane.
+       */
+      try container.encode("projectEditorTabSelected", forKey: .type)
+      try container.encode(projectId, forKey: .projectId)
+      try container.encodeIfPresent(url, forKey: .url)
     case .projectEditorLoadState(let projectId, let status, let message):
       /**
        CDXC:EditorPanes 2026-05-09-17:24

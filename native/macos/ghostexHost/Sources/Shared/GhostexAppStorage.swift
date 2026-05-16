@@ -329,6 +329,10 @@ enum NativeDebugLogging {
    debug switch briefly so disabled diagnostics do not read shared settings
    from disk on every keystroke, while still reacting quickly when the user
    enables Debugging Mode before reproducing.
+   CDXC:Diagnostics 2026-05-16-07:23
+   Regular non-error console, OSLog, and persistent diagnostic logging must run
+   only while Settings Debugging Mode is enabled. Error logs remain outside this
+   gate so actual failures are still captured when the app is not in debug mode.
    */
   static var isEnabled: Bool {
     let now = ProcessInfo.processInfo.systemUptime

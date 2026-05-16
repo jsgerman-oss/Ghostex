@@ -141,7 +141,17 @@ export type NativeGhosttyHostCommand =
       type: "stopCodeServerRuntime";
     }
   | {
+      /**
+       * CDXC:GitProjectTabs 2026-05-16-07:42:
+       * Git mode needs visible project-scoped browser chrome: reuse the native
+       * browser address toolbar and the main work-area tab strip for each open
+       * project's Git view while leaving Code and Project editor panes plain.
+       */
+      mode?: "code" | "git" | "tasks";
       projectId: string;
+      projectTitle?: string;
+      showsBrowserToolbar?: boolean;
+      showsProjectTabs?: boolean;
       title: string;
       type: "createProjectEditorPane";
       url: string;
@@ -190,6 +200,7 @@ export type NativeGhosttyHostCommand =
       appTitle?: string;
       attentionSessionIds?: string[];
       backgroundColor?: string;
+      debuggingMode?: boolean;
       focusRequestId?: number;
       focusedSessionId?: string;
       sleepingSessionIds?: string[];
@@ -362,6 +373,19 @@ export type NativeGhosttyHostEvent =
        */
       projectId: string;
       type: "projectEditorBackRequested";
+    }
+  | {
+      /**
+       * CDXC:GitProjectTabs 2026-05-16-09:50:
+       * Native Git project tabs and toolbar buttons report the selected
+       * project-editor id plus active tab URL so React can make Git mode the
+       * authoritative active surface before the next layout sync. This prevents
+       * browser toolbar actions like Back from resurrecting the same project's
+       * Code CEF pane.
+       */
+      projectId: string;
+      type: "projectEditorTabSelected";
+      url?: string;
     }
   | {
       /**

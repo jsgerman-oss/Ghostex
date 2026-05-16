@@ -10,6 +10,7 @@ import type {
 import type { SidebarGitAction, SidebarGitState } from "./sidebar-git";
 import type { SidebarProjectDiffStats } from "./project-diff-stats";
 import type { ZedOverlayTargetApp, ghostexSettings } from "./ghostex-settings";
+import type { ghostexHotkeyActionId } from "./ghostex-hotkeys";
 import type { SidebarPinnedPrompt } from "./sidebar-pinned-prompts";
 import type {
   SessionLifecycleState,
@@ -574,7 +575,26 @@ export type SidebarToExtensionMessage =
       type: "moveSidebarToOtherSide";
     }
   | {
+      /**
+       * CDXC:CommandPalette 2026-05-16-08:18:
+       * The full-window command palette needs a pet wake/sleep action that
+       * reuses the sidebar settings owner instead of mutating pet visibility
+       * inside the detached modal host.
+       */
+      type: "togglePetOverlay";
+    }
+  | {
       type: "createSession";
+    }
+  | {
+      /**
+       * CDXC:CommandPalette 2026-05-15-20:38:
+       * Palette selections for built-in Ghostex commands should execute through
+       * the same native hotkey action dispatcher as physical shortcuts so the
+       * available command list cannot drift from actual app behavior.
+       */
+      actionId: ghostexHotkeyActionId;
+      type: "runGhostexHotkeyAction";
     }
   | {
       /**
