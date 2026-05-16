@@ -3,7 +3,6 @@ import type { ZedOverlayTargetApp } from "./ghostex-settings";
 export type WorkspaceOpenTargetLaunchStyle = "direct-path" | "goto" | "line-column";
 
 export type BuiltInWorkspaceOpenTargetId =
-  | "embedded-editor"
   | "cursor"
   | "trae"
   | "kiro"
@@ -45,7 +44,6 @@ export type CustomWorkspaceOpenTarget = {
 
 export const CUSTOM_WORKSPACE_OPEN_TARGET_ID_PREFIX = "custom:";
 export const ALWAYS_AVAILABLE_WORKSPACE_OPEN_TARGET_IDS: readonly BuiltInWorkspaceOpenTargetId[] = [
-  "embedded-editor",
   "finder",
 ];
 
@@ -65,17 +63,16 @@ export const DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY: WorkspaceOpenTargetAvai
 
 /**
  * CDXC:TitlebarOpenIn 2026-05-11-00:22
- * The titlebar Open In menu should start with the embedded project editor, then
- * mirror t3code's editor command catalog so installed local IDEs appear without
- * maintaining a second, smaller ghostex-only list.
+ * The titlebar Open In menu mirrors t3code's editor command catalog so
+ * installed local IDEs appear without maintaining a second, smaller
+ * ghostex-only list.
+ *
+ * CDXC:TitlebarOpenIn 2026-05-16-23:02
+ * Embedded Editor is a first-party Code surface reached from the titlebar Code
+ * mode, not an external Open In selection. Keep the Open In catalog focused on
+ * installed editors and Finder so the dropdown does not duplicate Code mode.
  */
 export const BUILT_IN_WORKSPACE_OPEN_TARGETS: readonly WorkspaceOpenTargetDefinition[] = [
-  {
-    commands: null,
-    id: "embedded-editor",
-    label: "Embedded Editor",
-    launchStyle: "direct-path",
-  },
   {
     commands: ["cursor"],
     id: "cursor",
