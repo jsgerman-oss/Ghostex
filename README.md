@@ -1,3 +1,5 @@
+Discord: https://discord.gg/xYSBPapM
+
 ## Ghostty Terminals with Codex App's Awesome Features = Ghostex!<br />
 
 - T3code Support
