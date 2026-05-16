@@ -3,7 +3,11 @@
 - T3code Support
 - Agent CLIs Manager
 - Embedded Chromium Browser
+- Embedded Light Code/MD Files Editor
 - Fast & Low RAM usage
+- SSH support with live session persistence (zmx/tmux/zellij)
+
+<br/>
 
 #### Install on macOS using brew or dmg in releases page
 ###### (Looking for help with Windows & Linux ports)
