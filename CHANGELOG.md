@@ -8,6 +8,7 @@
 - Added configurable hotkeys for pane actions and the first five custom Actions, including browser pane, rotate panes, merge tabs, delayed send, fork, reload, and pop out.
 - Improved sleeping persisted sessions so sleeping releases the underlying provider runtime and external `ghostex` / `gtx` attach resumes sleeping sessions correctly.
 - Improved the titlebar Resources menu so browser memory rows show the actual tab title and URL instead of raw browser process labels.
+- Moved the Wake/Sleep Pet control into the sidebar overflow menu so pet controls live next to session tools while the titlebar stays focused on workspace actions.
 
 ## 3.2.0 - 2026-05-16
 
