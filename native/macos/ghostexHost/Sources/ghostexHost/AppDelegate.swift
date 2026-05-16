@@ -3493,7 +3493,6 @@ private final class NativeSettingsStore {
 }
 
 final class AppModalHostWebView: WKWebView {
-  private var lastPromptEditorHitTestLogAt: TimeInterval = 0
   private var topLeftHitRegions: [CGRect]?
 
   func setTopLeftHitRegions(_ regions: [CGRect]?) {
@@ -3527,23 +3526,6 @@ final class AppModalHostWebView: WKWebView {
       topLeftHitRegions.contains { region in
         region.insetBy(dx: -2, dy: -2).contains(candidate)
       }
-    }
-    let now = Date().timeIntervalSince1970
-    if now - lastPromptEditorHitTestLogAt > 0.2 {
-      lastPromptEditorHitTestLogAt = now
-      /**
-       CDXC:PromptEditor 2026-05-17-01:14:
-       Prompt editor click focus must be diagnosed before changing behavior.
-       Log throttled AppKit hit-test routing for the transparent modal WKWebView
-       so React focus logs can be correlated with whether native delivered the
-       click to the modal host or passed it through to the terminal workspace.
-       */
-      AppDelegate.appendAppModalErrorLog(
-        area: "PromptEditor:hitTestDebug",
-        message:
-          "point=(\(Int(point.x)),\(Int(point.y))) direct=(\(Int(directPoint.x)),\(Int(directPoint.y))) inverted=(\(Int(invertedPoint.x)),\(Int(invertedPoint.y))) inside=\(isInsideHitRegion) flipped=\(isFlipped) regions=\(topLeftHitRegions.map { NSStringFromRect($0) }.joined(separator: ","))",
-        stack: nil
-      )
     }
     if isInsideHitRegion {
       return super.hitTest(point) ?? self

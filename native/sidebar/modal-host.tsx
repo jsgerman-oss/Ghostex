@@ -217,7 +217,6 @@ type MonacoEditorInstance = {
   getPosition: () => MonacoPosition | null;
   getSelection: () => MonacoRange | null;
   getValue: () => string;
-  hasTextFocus?: () => boolean;
   layout: () => void;
   onDidChangeModelContent: (listener: () => void) => { dispose: () => void };
   pushUndoStop?: () => boolean;
@@ -447,26 +446,6 @@ function isPromptEditorImagePath(path: string): boolean {
   );
 }
 
-function promptEditorElementSummary(target: EventTarget | null): string {
-  if (!(target instanceof Element)) {
-    return String(target);
-  }
-  const classes =
-    typeof target.className === "string"
-      ? target.className
-      : target.getAttribute("class") ?? "";
-  return [
-    target.tagName.toLowerCase(),
-    target.id ? `#${target.id}` : "",
-    classes
-      .split(/\s+/u)
-      .filter(Boolean)
-      .slice(0, 4)
-      .map((className) => `.${className}`)
-      .join(""),
-  ].join("");
-}
-
 function clampFloatingPromptEditorFrame(frame: FloatingPromptEditorFrame): FloatingPromptEditorFrame {
   const margin = floatingPromptEditorFrameMargin;
   const availableWidth = Math.max(240, window.innerWidth - margin * 2);
@@ -532,23 +511,6 @@ function FloatingPromptEditorModal({
   const pendingImagePreviewRequestIdsRef = useRef<Map<string, string>>(new Map());
   const pendingImagePasteRequestIdsRef = useRef<Set<string>>(new Set());
   const savedCloseAndSaveRequestIdRef = useRef<string | undefined>(undefined);
-  const logPromptEditorFocusDebug = (event: string, details: Record<string, unknown> = {}) => {
-    postAppModalHostMessage(
-      {
-        area: "PromptEditor:focusDebug",
-        message: JSON.stringify({
-          activeElement: promptEditorElementSummary(document.activeElement),
-          event,
-          hasEditor: editorRef.current !== null,
-          hasTextFocus: editorRef.current?.hasTextFocus?.() ?? false,
-          performanceNow: Math.round(performance.now()),
-          ...details,
-        }),
-        type: "logError",
-      },
-      "PromptEditor:focusDebug",
-    );
-  };
 
   useEffect(() => {
     if (!isOpen || !editor) {
@@ -641,18 +603,11 @@ function FloatingPromptEditorModal({
           wordWrap: "on",
         }) as MonacoEditorInstance;
         editorRef.current = monacoEditor;
-        logPromptEditorFocusDebug("monaco.create", {
-          containerActive: document.activeElement === containerRef.current,
-          target: promptEditorElementSummary(containerRef.current),
-        });
         setImagePreviews(parsePromptEditorImagePreviews(monacoEditor.getValue()));
         editorContentListenerRef.current = monacoEditor.onDidChangeModelContent(() => {
           setImagePreviews(parsePromptEditorImagePreviews(monacoEditor.getValue()));
         });
         monacoEditor.focus?.();
-        logPromptEditorFocusDebug("monaco.initialFocus", {
-          target: promptEditorElementSummary(document.activeElement),
-        });
       })
       .catch((error) => {
         postAppModalHostMessage(
@@ -670,53 +625,6 @@ function FloatingPromptEditorModal({
       editorContentListenerRef.current = undefined;
       editorRef.current?.dispose();
       editorRef.current = null;
-    };
-  }, [editor?.requestId, isOpen]);
-
-  useEffect(() => {
-    if (!isOpen || !editor || !containerRef.current) {
-      return;
-    }
-    /**
-     * CDXC:PromptEditor 2026-05-17-01:14:
-     * Prompt editor focus regressions need event-path diagnostics before any
-     * behavior change. Log native/React pointer and focus state so we can tell
-     * whether clicks reach the Monaco DOM, whether focus is requested, and
-     * whether Monaco reports text focus afterward.
-     */
-    const container = containerRef.current;
-    const logPointer = (event: PointerEvent) => {
-      logPromptEditorFocusDebug(`dom.${event.type}`, {
-        button: event.button,
-        clientX: event.clientX,
-        clientY: event.clientY,
-        target: promptEditorElementSummary(event.target),
-      });
-    };
-    const logMouse = (event: MouseEvent) => {
-      logPromptEditorFocusDebug(`dom.${event.type}`, {
-        button: event.button,
-        clientX: event.clientX,
-        clientY: event.clientY,
-        target: promptEditorElementSummary(event.target),
-      });
-    };
-    const logFocus = (event: FocusEvent) => {
-      logPromptEditorFocusDebug(`dom.${event.type}`, {
-        target: promptEditorElementSummary(event.target),
-      });
-    };
-    container.addEventListener("pointerdown", logPointer, true);
-    container.addEventListener("mousedown", logMouse, true);
-    container.addEventListener("click", logMouse, true);
-    container.addEventListener("focusin", logFocus, true);
-    container.addEventListener("focusout", logFocus, true);
-    return () => {
-      container.removeEventListener("pointerdown", logPointer, true);
-      container.removeEventListener("mousedown", logMouse, true);
-      container.removeEventListener("click", logMouse, true);
-      container.removeEventListener("focusin", logFocus, true);
-      container.removeEventListener("focusout", logFocus, true);
     };
   }, [editor?.requestId, isOpen]);
 
@@ -1153,24 +1061,31 @@ function FloatingPromptEditorModal({
     }
   };
 
+  const focusEditorFromPanelPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    const target = event.target;
+    const isMonacoPointer = target instanceof Element && target.closest(".floating-prompt-editor-monaco");
+    /**
+     * CDXC:PromptEditor 2026-05-17-02:15:
+     * Clicking blank prompt-editor chrome should focus Monaco just like clicking
+     * text. Browser default pointer handling blurs the hidden Monaco textarea
+     * after React's panel handler on non-editable targets, so prevent that blur
+     * outside Monaco internals and refocus after the default phase.
+     */
+    if (!isMonacoPointer) {
+      event.preventDefault();
+    }
+    editorRef.current?.focus?.();
+    window.setTimeout(() => {
+      editorRef.current?.focus?.();
+    }, 0);
+  };
+
   return (
     <div className="floating-prompt-editor-root" data-drag-mode={dragMode}>
       <section
         aria-label="Prompt Editor"
         className="floating-prompt-editor-panel"
-        onPointerDown={(event) => {
-          logPromptEditorFocusDebug("react.panelPointerDown.beforeFocus", {
-            clientX: event.clientX,
-            clientY: event.clientY,
-            target: promptEditorElementSummary(event.target),
-          });
-          editorRef.current?.focus?.();
-          window.setTimeout(() => {
-            logPromptEditorFocusDebug("react.panelPointerDown.afterFocus", {
-              target: promptEditorElementSummary(event.target),
-            });
-          }, 0);
-        }}
+        onPointerDown={focusEditorFromPanelPointerDown}
         style={{
           height: `${frame.height}px`,
           left: `${frame.left}px`,
