@@ -52,7 +52,7 @@ brew install --cask maddada/tap/ghostex
 - Embedded T3code
 - Integrations for all the popular Agent CLI 
 
----
+<br/>
 
 ## Other useful stuff:
 - Built in zmx/tmux/zellij support
@@ -64,7 +64,7 @@ brew install --cask maddada/tap/ghostex
 - Auto sync of the terminal title and status with UI
 - Allows multiple panes and multiple groups per project, each with different split/tab layouts
 
----
+<br/>
 
 ## Even more useful features:
 
