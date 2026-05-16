@@ -36,7 +36,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { AppTooltip } from "./app-tooltip";
-import { AGENT_LOGOS } from "./agent-logos";
+import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import {
   getSidebarSessionLifecycleState,
   type SidebarTheme,
@@ -1031,13 +1031,18 @@ export function SessionGroupSection({
           requestFocusGroup();
         }}
         onContextMenu={(event: ReactMouseEvent<HTMLElement>) => {
-          if (isNestedInteractiveContextMenuTarget(event)) {
+          if (!projectContext && isNestedInteractiveContextMenuTarget(event)) {
             /**
              * CDXC:SidebarContextMenu 2026-05-15-17:53:
              * Header buttons without their own context menu should not open the
              * surrounding project/group context menu on right-click. Suppress
              * nested interactive targets while preserving right-click menus on
              * the row surface itself.
+             *
+             * CDXC:SidebarContextMenu 2026-05-16-13:39:
+             * Project headers own a custom project context menu across their
+             * whole header, including icon/title and action-button children.
+             * Do not apply the nested-control suppression to project groups.
              */
             event.preventDefault();
             event.stopPropagation();
@@ -1837,7 +1842,7 @@ export function SessionGroupSection({
                   role="menuitem"
                   type="button"
                 >
-                  <ProjectAgentLauncherIcon agent={agent} />
+                  <ProjectAgentLauncherIcon agent={agent} colorMode="brand" />
                   <span className="group-agent-menu-label">{agent.name}</span>
                   {primaryProjectAgent?.agentId === agent.agentId ? (
                     <IconCheck aria-hidden="true" className="session-context-menu-icon" size={14} />
@@ -1886,7 +1891,13 @@ export function SessionGroupSection({
   );
 }
 
-function ProjectAgentLauncherIcon({ agent }: { agent?: SidebarAgentButton }) {
+function ProjectAgentLauncherIcon({
+  agent,
+  colorMode = "monochrome",
+}: {
+  agent?: SidebarAgentButton;
+  colorMode?: "brand" | "monochrome";
+}) {
   if (!agent) {
     return (
       <IconCode
@@ -1899,13 +1910,21 @@ function ProjectAgentLauncherIcon({ agent }: { agent?: SidebarAgentButton }) {
   }
 
   if (agent.icon) {
+    /**
+     * CDXC:ProjectAgents 2026-05-16-18:21:
+     * The sidebar project agent dropdown should show colored provider icons for
+     * scanability, while the compact split launcher keeps its quieter
+     * monochrome treatment everywhere outside that dropdown.
+     */
+    const iconColor = colorMode === "brand" ? AGENT_LOGO_COLORS[agent.icon] : "currentColor";
+
     return (
       <span
         aria-hidden="true"
         className="group-agent-launcher-icon group-agent-launcher-agent-icon"
         data-agent-icon={agent.icon}
         style={{
-          backgroundColor: "currentColor",
+          backgroundColor: iconColor,
           maskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
           WebkitMaskImage: `url("${AGENT_LOGOS[agent.icon]}")`,
         }}

@@ -170,6 +170,23 @@
   cursor: pointer;
 }
 
+/*
+ * CDXC:ProjectHeaders 2026-05-16-13:39:
+ * Project headers still support left-click activation/collapse and a custom
+ * right-click project menu, but hovering the header or its parent wrappers
+ * should keep the default cursor. Visual row hover states carry affordance
+ * without showing the hand pointer over project names or header chrome.
+ */
+.group[data-project-group="true"],
+.group[data-project-group="true"] .group-head,
+.group[data-project-group="true"] .group-title-wrap,
+.group[data-project-group="true"] .group-title-row,
+.group[data-project-group="true"] .group-title-handle,
+.group[data-project-group="true"] .group-title-button,
+.group[data-project-group="true"] .group-collapse-button {
+  cursor: default !important;
+}
+
 .group-title-wrap {
   align-items: center;
   display: flex;
@@ -607,9 +624,14 @@
 .group-agent-launcher-icon {
   /*
    * CDXC:ProjectHeaders 2026-05-10-15:56
-   * Project header agent launch icons must stay monochrome in every hover,
-   * focus, selected, and open state; brand color appears too loud in the
-   * compact project action row.
+   * Project header agent launch icons must stay monochrome in compact hover,
+   * focus, and open states; brand color appears too loud in the project action
+   * row.
+   *
+   * CDXC:ProjectAgents 2026-05-16-18:21:
+   * The portaled sidebar project-agent dropdown opts into provider colors from
+   * the icon component itself, so this base class remains safe for non-menu
+   * sidebar placements.
    */
   color: color-mix(in srgb, var(--app-foreground) 62%, var(--app-muted) 38%);
   display: block;
