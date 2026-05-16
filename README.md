@@ -1,21 +1,11 @@
 ## The best parts of Ghostty & Codex App = Ghostex!<br />
 
-Fully-featured Native Agent CLIs Manager<br />
-Embedded Browser<br />
-Advanced Agents<br />
-Support Fast & Lower RAM <br /><br />
+T3code Support<br />
+Agent CLIs Manager<br />
+Embedded Chromium Browser<br />
+Fast & Low RAM usage <br />
 
-<!--
-CDXC:Branding 2026-05-12-07:35
-The public product name is Ghostex. The repository folder, code identifiers,
-bundle ids, storage paths, and historical release assets can keep ghostex as an
-internal implementation name, but user-facing app and CLI copy should say
-Ghostex. The public CLI commands are `ghostex` and the short alias `gtx`.
-
-CDXC:Distribution 2026-05-15-03:43
-The public Homebrew command stays the same for Apple Silicon and Intel Macs.
-The `ghostex` cask selects the correct arm64 or x86_64 DMG automatically.
--->
+<br />
 
 #### Install on macOS using brew or dmg in releases page
 ###### (Looking for help with dev/testing for Windows & Linux ports)
