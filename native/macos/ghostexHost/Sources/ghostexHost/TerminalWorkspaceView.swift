@@ -3043,7 +3043,7 @@ final class TerminalWorkspaceView: NSView {
      show the visible Browser tab or project editor view first, then nest the
      Chromium processes below it. Export CEF browser identifiers with the
      tracked title and URL so the React titlebar can correlate renderer process
-     `--client-id` values without showing implementation labels to users.
+     `--renderer-client-id` values without showing implementation labels to users.
      */
     var tabs: [[String: Any]] = []
     for session in webPaneSessions.values {
@@ -11861,12 +11861,16 @@ final class GhostexGhosttySurfaceView: NSView {
 
   override func rightMouseDown(with event: NSEvent) {
     sendMousePosition(event)
-    sendMouseButton(event, action: GHOSTTY_MOUSE_PRESS, button: 1)
+    if !sendMouseButton(event, action: GHOSTTY_MOUSE_PRESS, button: 1) {
+      super.rightMouseDown(with: event)
+    }
   }
 
   override func rightMouseUp(with event: NSEvent) {
     sendMousePosition(event)
-    sendMouseButton(event, action: GHOSTTY_MOUSE_RELEASE, button: 1)
+    if !sendMouseButton(event, action: GHOSTTY_MOUSE_RELEASE, button: 1) {
+      super.rightMouseUp(with: event)
+    }
   }
 
   override func mouseDragged(with event: NSEvent) {
@@ -11901,6 +11905,38 @@ final class GhostexGhosttySurfaceView: NSView {
       event.scrollingDeltaX * multiplier,
       event.scrollingDeltaY * multiplier,
       mods)
+  }
+
+  /**
+   CDXC:NativeTerminalContextMenu 2026-05-17-03:01:
+   Embedded Ghostty surfaces need a native AppKit context menu on terminal body
+   right-clicks, but ghostex should not expose Ghostty.app's split, reset,
+   inspector, read-only, or title actions inside managed panes. Keep the surface
+   menu limited to terminal clipboard commands and let Ghostty mouse reporting
+   suppress the menu when a terminal application consumes right-click events.
+   */
+  override func menu(for event: NSEvent) -> NSMenu? {
+    guard event.type == .rightMouseDown else {
+      return nil
+    }
+
+    let menu = NSMenu()
+    menu.autoenablesItems = false
+    let copyItem = menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+    copyItem.target = self
+    copyItem.isEnabled = hasSelection()
+
+    let pasteItem = menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
+    pasteItem.target = self
+    return menu
+  }
+
+  @IBAction func copy(_ sender: Any?) {
+    _ = performBindingAction("copy_to_clipboard")
+  }
+
+  @IBAction func paste(_ sender: Any?) {
+    _ = performBindingAction("paste_from_clipboard")
   }
 
   /**
@@ -12125,15 +12161,21 @@ final class GhostexGhosttySurfaceView: NSView {
     ghostty_surface_mouse_pos(surface, point.x, point.y, mods(from: event))
   }
 
+  @discardableResult
   private func sendMouseButton(
     _ event: NSEvent,
     action: ghostty_input_mouse_state_e,
     button: Int
-  ) {
-    guard let surface else { return }
+  ) -> Bool {
+    guard let surface else { return false }
     let ghosttyButton: ghostty_input_mouse_button_e =
       button == 1 ? GHOSTTY_MOUSE_RIGHT : button == 2 ? GHOSTTY_MOUSE_MIDDLE : GHOSTTY_MOUSE_LEFT
-    _ = ghostty_surface_mouse_button(surface, action, ghosttyButton, mods(from: event))
+    return ghostty_surface_mouse_button(surface, action, ghosttyButton, mods(from: event))
+  }
+
+  private func hasSelection() -> Bool {
+    guard let surface else { return false }
+    return ghostty_surface_has_selection(surface)
   }
 
   private func ghosttyMousePoint(from event: NSEvent) -> NSPoint {
