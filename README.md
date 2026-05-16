@@ -39,9 +39,8 @@ brew install --cask maddada/tap/ghostex
 
 ## Best features:
 
-- Native macOS app for better performance
-- Native Ghostty for best cpu/ram use and compatibility
-- Native terminal panes preserve Ghostty-style scrollback, scrollbars, and trackpad momentum inside the app.
+- Native macOS app shell for better performance (No node runtime)
+- Native Ghostty terminals for best compatibility with Agent CLIs and low cpu/ram use (No bugs due to xterm.js or ghostty-web)
 - The same Homebrew install command automatically selects Apple Silicon or Intel Mac builds.
 - The app installs both `ghostex` and `gtx` CLI commands through Homebrew for listing, attaching, waking, focusing, and sleeping sessions.
 - Inspired by Codex App's UX
