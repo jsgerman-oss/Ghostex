@@ -102,21 +102,85 @@ button,
   opacity: revert-layer;
 }
 
-/* CDXC:UnifiedSettings 2026-05-09-17:01: The unified Settings modal should
-   use the sidebar reference button radius across cards and controls, with the
-   modal surface pinned to #0e0e0e so Settings, Agents, Actions, and Hotkeys
-   read as one product surface. */
+/*
+ CDXC:UnifiedSettings 2026-05-09-17:01:
+ The unified Settings modal should use the sidebar reference button radius
+ across cards and controls, with the modal surface pinned to #0e0e0e so
+ Settings, Agents, Actions, and Hotkeys read as one product surface.
+
+ CDXC:AppModals 2026-05-16-08:10:
+ All React modal background shells should use the same 7px radius as the
+ Settings modal background. Keep that radius as an app modal token so Radix
+ dialogs and legacy React modal shells cannot drift apart.
+*/
+:root {
+  --app-modal-background-radius: 7px;
+}
+
 .ghostex-settings-shadcn {
   --background: #0e0e0e;
   --card: #0e0e0e;
   --popover: #0e0e0e;
-  --radius: 7px;
-  --settings-control-radius: 7px;
+  --radius: var(--app-modal-background-radius);
+  --settings-control-radius: var(--app-modal-background-radius);
+}
+
+.app-modal-host-body [data-slot="dialog-content"],
+[data-slot="dialog-content"] {
+  border-radius: var(--app-modal-background-radius) !important;
 }
 
 .ghostex-settings-shadcn[data-slot="dialog-content"] {
   background-color: #0e0e0e !important;
-  border-radius: var(--settings-control-radius) !important;
+  border-radius: var(--app-modal-background-radius) !important;
+}
+
+/*
+ CDXC:CommandPalette 2026-05-15-20:38:
+ The Cmd+K command palette uses shadcn Command composition with a compact
+ centered surface. It must show command names, descriptions, and right-aligned
+ shortcut labels without inheriting legacy sidebar button chrome.
+
+ CDXC:CommandPalette 2026-05-16-08:15:
+ Filtering command results must not change the palette's actual height. Keep
+ the initial modal footprint fixed and let the command list show empty space
+ when fewer results match so the centered surface does not jump while typing.
+*/
+.ghostex-command-palette-dialog {
+  height: min(620px, calc(100vh - 2rem));
+  max-height: min(620px, calc(100vh - 2rem));
+  max-width: min(660px, calc(100vw - 1rem));
+  top: 50% !important;
+  translate: -50% -50% !important;
+  width: min(660px, calc(100vw - 1rem));
+}
+
+.ghostex-command-palette-list {
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
+}
+
+.ghostex-command-palette-copy {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.ghostex-command-palette-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghostex-command-palette-description {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /*

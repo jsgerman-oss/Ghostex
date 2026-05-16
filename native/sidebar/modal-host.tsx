@@ -3,6 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
 import { AgentsHubModal } from "../../sidebar/agents-hub-modal";
+import { CommandPalette } from "../../sidebar/command-palette";
 import { CommandConfigModal, type CommandConfigDraft } from "../../sidebar/command-config-modal";
 import { DaemonSessionsModal } from "../../sidebar/daemon-sessions-modal";
 import { DelayedSendModal } from "../../sidebar/delayed-send-modal";
@@ -37,6 +38,7 @@ import "../../sidebar/styles.css";
 type AppModalKind =
   | "agentConfig"
   | "agentsHub"
+  | "commandPalette"
   | "commandConfig"
   | "configureActions"
   | "configureAgents"
@@ -201,7 +203,9 @@ type MonacoAmdRequire = {
 
 const vscode: WebviewApi = {
   postMessage(message) {
-    console.debug("[ghostex-app-modal-host] sidebarCommand", message);
+    if (isAppModalDebugLoggingEnabled()) {
+      console.debug("[ghostex-app-modal-host] sidebarCommand", message);
+    }
     /**
      * CDXC:PreviousSessions 2026-05-07-16:02
      * Previous-session search crosses the full-window modal host before the
@@ -211,6 +215,10 @@ const vscode: WebviewApi = {
     postAppModalHostMessage({ message, type: "sidebarCommand" }, "AppModals:sidebarCommand");
   },
 };
+
+function isAppModalDebugLoggingEnabled(): boolean {
+  return useSidebarStore.getState().hud.debuggingMode;
+}
 
 function closeModal() {
   postAppModalHostMessage({ type: "close" }, "AppModals:close");
@@ -363,10 +371,16 @@ function FloatingPromptEditorModal({
          * Prompt writing should not behave like code navigation. Disable
          * Monaco occurrence highlights so moving the caret onto a word does not
          * mark every matching word in the rich prompt editor.
+         *
+         * CDXC:PromptEditor 2026-05-15-20:36:
+         * Keep the rich prompt editor visually quiet for prose editing. Disable
+         * selection match highlights, active-line highlighting, and rich text
+         * clipboard metadata so copied prompt text remains plain.
          */
         const monacoEditor = window.monaco.editor.create(containerRef.current, {
           acceptSuggestionOnEnter: "off",
           automaticLayout: true,
+          copyWithSyntaxHighlighting: false,
           cursorBlinking: "smooth",
           fontFamily:
             "JetBrains Mono, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
@@ -379,8 +393,9 @@ function FloatingPromptEditorModal({
           padding: { bottom: 48, top: 12 },
           parameterHints: { enabled: false },
           quickSuggestions: false,
-          renderLineHighlight: "all",
+          renderLineHighlight: "none",
           scrollBeyondLastLine: false,
+          selectionHighlight: false,
           snippetSuggestions: "none",
           suggestOnTriggerCharacters: false,
           tabCompletion: "off",
@@ -716,6 +731,7 @@ function AppModalHost() {
   } = useModalStateFromNative();
   const [ghostexFolderStatsLoading, setGhostexFolderStatsLoading] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
+  const commands = useSidebarStore((state) => state.hud.commands);
   const customThemeColor = useSidebarStore((state) => state.hud.customThemeColor);
   const theme = useSidebarStore((state) => state.hud.theme);
   const isSettingsRenderable = isSettingsModalKind(activeModal) && settings !== undefined;
@@ -848,14 +864,35 @@ function AppModalHost() {
         onClose={closeModal}
         vscode={vscode}
       />
+      {/*
+       * CDXC:CommandPalette 2026-05-16-20:51:
+       * Cmd+K must render in the same full-window app-modal host as Settings,
+       * not inside the sidebar webview. The palette reads mirrored sidebar
+       * state here so its command list remains current while the dialog is
+       * centered over the whole Ghostex window.
+       */}
+      <CommandPalette
+        commands={commands}
+        hotkeys={settings?.hotkeys}
+        isOpen={activeModal === "commandPalette"}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            closeModal();
+          }
+        }}
+        petOverlayEnabled={settings?.petOverlayEnabled}
+        vscode={vscode}
+      />
       <FindPreviousSessionModal
         initialQuery={findPreviousSession?.initialQuery}
         isOpen={activeModal === "findPreviousSession"}
         onCancel={closeModal}
         onConfirm={(query) => {
-          console.debug("[ghostex-app-modal-host] findPreviousSession.confirm", {
-            queryLength: query.trim().length,
-          });
+          if (isAppModalDebugLoggingEnabled()) {
+            console.debug("[ghostex-app-modal-host] findPreviousSession.confirm", {
+              queryLength: query.trim().length,
+            });
+          }
           vscode.postMessage({
             query,
             type: "promptFindPreviousSession",
@@ -1074,18 +1111,20 @@ function useModalStateFromNative() {
         }
 
         if (message.type === "open") {
-          postAppModalHostMessage(
-            {
-              details: JSON.stringify({
-                hasSettings: useSidebarStore.getState().hud.settings !== undefined,
-                modal: message.modal,
-                performanceNow: performance.now(),
-              }),
-              event: "modalHost.open.received",
-              type: "debugLog",
-            },
-            "AppModals:debug",
-          );
+          if (isAppModalDebugLoggingEnabled()) {
+            postAppModalHostMessage(
+              {
+                details: JSON.stringify({
+                  hasSettings: useSidebarStore.getState().hud.settings !== undefined,
+                  modal: message.modal,
+                  performanceNow: performance.now(),
+                }),
+                event: "modalHost.open.received",
+                type: "debugLog",
+              },
+              "AppModals:debug",
+            );
+          }
           if (message.modal === "renameSession") {
             if (!message.sessionId) {
               throw new Error("Rename modal request is missing sessionId.");
@@ -1260,14 +1299,16 @@ function useModalStateFromNative() {
         }
 
         if (message.type === "close") {
-          postAppModalHostMessage(
-            {
-              details: JSON.stringify({ performanceNow: performance.now() }),
-              event: "modalHost.close.received",
-              type: "debugLog",
-            },
-            "AppModals:debug",
-          );
+          if (isAppModalDebugLoggingEnabled()) {
+            postAppModalHostMessage(
+              {
+                details: JSON.stringify({ performanceNow: performance.now() }),
+                event: "modalHost.close.received",
+                type: "debugLog",
+              },
+              "AppModals:debug",
+            );
+          }
           setActiveModal(undefined);
           setConfig({});
           setDelayedSend(undefined);
@@ -1390,6 +1431,7 @@ function isModalRenderable({
     case "agentConfig":
       return config.agentDraft !== undefined;
     case "agentsHub":
+    case "commandPalette":
       return true;
     case "commandConfig":
       return config.commandDraft !== undefined;

@@ -52,6 +52,7 @@ export type DefaultEditorCommand =
 export type SessionPersistenceProvider = "off" | "tmux" | "zmx" | "zellij";
 export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large";
 export type SidebarSide = "left" | "right";
+export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "monaco" | "zpet";
 export type ZedOverlayTargetApp = "zed" | "zed-preview" | "vscode" | "vscode-insiders";
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
@@ -78,12 +79,14 @@ export type ghostexSettings = {
   codeServerUseVscodeInsidersUserConfig: boolean;
   customDefaultEditorCommand: string;
   defaultEditorCommand: DefaultEditorCommand;
+  hideProjectHeaderDiffStats: boolean;
   showProjectEditorDiffFileCount: boolean;
   completionBellEnabled: boolean;
   completionSound: CompletionSoundSetting;
   createSessionOnSidebarDoubleClick: boolean;
   debuggingMode: boolean;
   renameSessionOnDoubleClick: boolean;
+  hideSessionAgentIconUntilHover: boolean;
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
   hideLastActiveTimeOnSessionCards: boolean;
@@ -137,6 +140,64 @@ export type ghostexSettings = {
   zedOverlayTargetApp: ZedOverlayTargetApp;
 };
 
+export const SIDEBAR_SETTINGS_PRESET_KEYS = [
+  "hideSessionAgentIconUntilHover",
+  "showCloseButtonOnSessionCards",
+  "hideLastActiveTimeOnSessionCards",
+  "hideProjectHeaderDiffStats",
+  "showProjectEditorDiffFileCount",
+  "hideFloatingSessionStatusIndicators",
+  "hideMenuBarSessionStatusIndicators",
+] as const satisfies ReadonlyArray<keyof ghostexSettings>;
+
+export type SidebarSettingsPresetKey = (typeof SIDEBAR_SETTINGS_PRESET_KEYS)[number];
+export type SidebarSettingsPresetSettings = Pick<ghostexSettings, SidebarSettingsPresetKey>;
+
+/**
+ * CDXC:SidebarSettingsPresets 2026-05-16-10:11:
+ * The Settings top row exposes Codex, Minimal, and Detailed sidebar UI presets as toggle buttons.
+ * Preset state is derived from the controlled sidebar settings instead of persisted separately, so manual deviations show Custom without adding another source of truth.
+ */
+export const SIDEBAR_SETTINGS_PRESET_SETTINGS = {
+  codex: {
+    hideSessionAgentIconUntilHover: true,
+    showCloseButtonOnSessionCards: true,
+    hideLastActiveTimeOnSessionCards: false,
+    hideProjectHeaderDiffStats: true,
+    showProjectEditorDiffFileCount: false,
+    hideFloatingSessionStatusIndicators: true,
+    hideMenuBarSessionStatusIndicators: true,
+  },
+  minimal: {
+    hideSessionAgentIconUntilHover: true,
+    showCloseButtonOnSessionCards: true,
+    hideLastActiveTimeOnSessionCards: true,
+    hideProjectHeaderDiffStats: true,
+    showProjectEditorDiffFileCount: false,
+    hideFloatingSessionStatusIndicators: true,
+    hideMenuBarSessionStatusIndicators: true,
+  },
+  detailed: {
+    hideSessionAgentIconUntilHover: false,
+    showCloseButtonOnSessionCards: false,
+    hideLastActiveTimeOnSessionCards: false,
+    hideProjectHeaderDiffStats: false,
+    showProjectEditorDiffFileCount: false,
+    hideFloatingSessionStatusIndicators: false,
+    hideMenuBarSessionStatusIndicators: false,
+  },
+} as const satisfies Record<SidebarSettingsPresetId, SidebarSettingsPresetSettings>;
+
+export const SIDEBAR_SETTINGS_PRESETS: ReadonlyArray<{
+  id: SidebarSettingsPresetId;
+  label: string;
+  settings: SidebarSettingsPresetSettings;
+}> = [
+  { id: "codex", label: "Codex", settings: SIDEBAR_SETTINGS_PRESET_SETTINGS.codex },
+  { id: "minimal", label: "Minimal", settings: SIDEBAR_SETTINGS_PRESET_SETTINGS.minimal },
+  { id: "detailed", label: "Detailed", settings: SIDEBAR_SETTINGS_PRESET_SETTINGS.detailed },
+];
+
 /**
  * CDXC:IDEAttachment 2026-04-26-22:38
  * Users can attach ghostex to the IDE selected in settings. Keep the existing
@@ -175,23 +236,47 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   customDefaultEditorCommand: "",
   defaultEditorCommand: "code",
   /**
+   * CDXC:ProjectDiffStats 2026-05-16-08:46:
+   * Users can hide the project-header +added/-removed git summary completely
+   * when they want project names to stay visually quiet. This is independent
+   * from the existing changed-file count preference.
+   *
+   * CDXC:SidebarSettingsPresets 2026-05-16-10:11:
+   * Codex is the default sidebar preset, so new settings hide project-header
+   * git stats unless the user selects Detailed or changes the setting directly.
+   */
+  hideProjectHeaderDiffStats: SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideProjectHeaderDiffStats,
+  /**
    * CDXC:ProjectDiffStats 2026-05-15-14:33:
    * Project-header git stats should hide the changed-file count by default and
    * show only added/removed line counts. Users can opt back into the file
    * number from Settings when they want the full diff summary.
    */
-  showProjectEditorDiffFileCount: false,
+  showProjectEditorDiffFileCount:
+    SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.showProjectEditorDiffFileCount,
   completionBellEnabled: false,
   completionSound: DEFAULT_COMPLETION_SOUND,
   createSessionOnSidebarDoubleClick: false,
   debuggingMode: false,
   renameSessionOnDoubleClick: false,
   /**
+   * CDXC:SidebarSessions 2026-05-16-08:46:
+   * Agent identity remains configurable in Settings through an explicit
+   * hover-only mode for quieter session lists.
+   *
+   * CDXC:SidebarSettingsPresets 2026-05-16-10:11:
+   * Codex and Minimal presets hide session agent icons until hover; Detailed is
+   * the explicit preset for always-visible session identity chrome.
+   */
+  hideSessionAgentIconUntilHover:
+    SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideSessionAgentIconUntilHover,
+  /**
    * CDXC:SidebarSessions 2026-05-09-17:00
    * Session-card close controls should be available out of the box. Users can
    * still turn the hover chrome off from Settings when they want quieter cards.
    */
-  showCloseButtonOnSessionCards: true,
+  showCloseButtonOnSessionCards:
+    SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.showCloseButtonOnSessionCards,
   showHotkeysOnSessionCards: false,
   /**
    * CDXC:SidebarSessions 2026-05-15-08:57
@@ -200,7 +285,8 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * This setting applies only to session-card timestamps and must not affect
    * project-header git diff stats.
    */
-  hideLastActiveTimeOnSessionCards: false,
+  hideLastActiveTimeOnSessionCards:
+    SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideLastActiveTimeOnSessionCards,
   /**
    * CDXC:SessionAttentionNotifications 2026-05-10-16:46
    * macOS attention notifications are enabled by default so a background
@@ -214,12 +300,14 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   showMacOSAttentionNotifications: true,
   /**
    * CDXC:SessionStatusIndicators 2026-05-09-17:30
-   * Floating desktop status badges are opt-in because the menu bar now shows
-   * the same working/attention/available counts by default. Keep separate hide
-   * toggles so users can independently choose desktop and menu bar chrome.
+   * Floating and menu bar desktop status badges are hidden by the default
+   * Codex preset. Keep separate hide toggles so Detailed can reveal either
+   * surface without coupling their visibility.
    */
-  hideFloatingSessionStatusIndicators: true,
-  hideMenuBarSessionStatusIndicators: false,
+  hideFloatingSessionStatusIndicators:
+    SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideFloatingSessionStatusIndicators,
+  hideMenuBarSessionStatusIndicators:
+    SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideMenuBarSessionStatusIndicators,
   petOverlayEnabled: false,
   selectedPetId: DEFAULT_PET_ID,
   /**
@@ -530,6 +618,17 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       ),
     ),
     /**
+     * CDXC:ProjectDiffStats 2026-05-16-08:46:
+     * Missing project-header visibility now follows the Codex preset, which
+     * hides git line deltas unless the user selects Detailed or changes this
+     * setting directly.
+     */
+    hideProjectHeaderDiffStats: readBoolean(
+      source,
+      "hideProjectHeaderDiffStats",
+      DEFAULT_ghostex_SETTINGS.hideProjectHeaderDiffStats,
+    ),
+    /**
      * CDXC:ProjectDiffStats 2026-05-15-14:33:
      * Missing or invalid older settings must keep project-header git stats in
      * the quieter default that hides the changed-file count.
@@ -557,6 +656,17 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "renameSessionOnDoubleClick",
       DEFAULT_ghostex_SETTINGS.renameSessionOnDoubleClick,
+    ),
+    /**
+     * CDXC:SidebarSessions 2026-05-16-08:46:
+     * Missing session-card icon visibility now follows the Codex preset, which
+     * hides agent icons until hover unless the user selects Detailed or changes
+     * this setting directly.
+     */
+    hideSessionAgentIconUntilHover: readBoolean(
+      source,
+      "hideSessionAgentIconUntilHover",
+      DEFAULT_ghostex_SETTINGS.hideSessionAgentIconUntilHover,
     ),
     showCloseButtonOnSessionCards: readBoolean(
       source,
@@ -864,6 +974,24 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
 
 export function getTerminalFontFamilyForghostexSettings(settings: ghostexSettings): string {
   return settings.terminalFontFamily.trim() || getTerminalFontFamilyForPreset("JetBrains Mono");
+}
+
+export function getSidebarSettingsPresetId(
+  settings: Pick<ghostexSettings, SidebarSettingsPresetKey>,
+): SidebarSettingsPresetId | undefined {
+  return SIDEBAR_SETTINGS_PRESETS.find((preset) =>
+    SIDEBAR_SETTINGS_PRESET_KEYS.every((key) => Object.is(settings[key], preset.settings[key])),
+  )?.id;
+}
+
+export function applySidebarSettingsPreset(
+  settings: ghostexSettings,
+  presetId: SidebarSettingsPresetId,
+): ghostexSettings {
+  return normalizeghostexSettings({
+    ...settings,
+    ...SIDEBAR_SETTINGS_PRESET_SETTINGS[presetId],
+  });
 }
 
 function normalizeTerminalCursorStyle(value: string | undefined): TerminalCursorStyle {

@@ -15,6 +15,13 @@ describe("normalizeghostexHotkeySettings", () => {
      */
     expect(DEFAULT_ghostex_HOTKEYS.createSession).toBe("cmd+n");
     /**
+     * CDXC:CommandPalette 2026-05-15-20:38:
+     * Cmd+K should remain the shared default for the command palette so users
+     * see the same binding in Settings, the palette, and terminal-focused
+     * native dispatch.
+     */
+    expect(DEFAULT_ghostex_HOTKEYS.openCommandPalette).toBe("cmd+k");
+    /**
      * CDXC:Hotkeys 2026-05-14-08:09:
      * The Commands panel must remain bound to bare F12 so terminal-focused AppKit dispatch and sidebar-focused DOM dispatch agree on the same user shortcut.
      */

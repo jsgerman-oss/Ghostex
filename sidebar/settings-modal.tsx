@@ -35,6 +35,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Tooltip,
   TooltipContent,
@@ -71,9 +72,12 @@ import {
   type PromptEditorBackend,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
+  SIDEBAR_SETTINGS_PRESETS,
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
   ZED_OVERLAY_TARGET_APP_OPTIONS,
+  applySidebarSettingsPreset,
+  getSidebarSettingsPresetId,
   normalizeghostexSettings,
   type BrowserOpenMode,
   type DefaultEditorCommand,
@@ -82,6 +86,7 @@ import {
   type GhosttyScrollbar,
   type SessionPersistenceProvider,
   type SessionStatusIndicatorSize,
+  type SidebarSettingsPresetId,
   type SidebarSide,
   type TerminalCursorStyle,
   type ZedOverlayTargetApp,
@@ -136,7 +141,13 @@ const MODIFIED_SETTING_TOOLTIP = "Modified Setting.\n \nClick to Reset to Defaul
 const HOTKEY_SETTINGS_SECTIONS: readonly HotkeySettingsSectionDefinition[] = [
   {
     id: "general",
-    ids: ["createSession", "openSettings", "moveSidebar", "renameActiveSession"],
+    ids: [
+      "createSession",
+      "openCommandPalette",
+      "openSettings",
+      "moveSidebar",
+      "renameActiveSession",
+    ],
     title: "General",
   },
   {
@@ -384,6 +395,11 @@ export function SettingsModal({
         title: "Use VS Code Insiders settings",
       },
       {
+        key: "hideProjectHeaderDiffStats",
+        subtitle: "Hide +added/-removed line counts next to project headers.",
+        title: "Hide project git stats",
+      },
+      {
         key: "showProjectEditorDiffFileCount",
         subtitle: "Show changed-file counts in project header git stats.",
         title: "Show editor file count",
@@ -419,6 +435,11 @@ export function SettingsModal({
     ]),
     sessionCards: getSettingsSectionSearch(settingsSearchQuery, "Session Cards", [
       {
+        key: "hideSessionAgentIconUntilHover",
+        subtitle: "Hide session agent icons until a session row is hovered.",
+        title: "Hide agent icon until hover",
+      },
+      {
         key: "showCloseButtonOnSessionCards",
         subtitle: "Reveal the close control when hovering a card.",
         title: "Show close button on hover",
@@ -447,6 +468,18 @@ export function SettingsModal({
       },
     ]),
     sidebar: getSettingsSectionSearch(settingsSearchQuery, "Sidebar", [
+      {
+        key: "sidebarSettingsPreset",
+        options: [
+          ...SIDEBAR_SETTINGS_PRESETS.map((preset) => ({
+            label: preset.label,
+            value: preset.id,
+          })),
+          { label: "Custom", value: "custom" },
+        ],
+        subtitle: "Apply a sidebar UI preset or show Custom when controlled settings diverge.",
+        title: "Preset",
+      },
       {
         key: "sidebarSide",
         options: SIDEBAR_SIDE_OPTIONS,
@@ -880,6 +913,12 @@ export function SettingsModal({
   ) => {
     applySettingsDebounced({ ...(pendingSettingsRef.current ?? draft), [key]: value });
   };
+  const activeSidebarSettingsPresetId = getSidebarSettingsPresetId(
+    pendingSettingsRef.current ?? draft,
+  );
+  const updateSidebarSettingsPreset = (presetId: SidebarSettingsPresetId) => {
+    applySettings(applySidebarSettingsPreset(pendingSettingsRef.current ?? draft, presetId));
+  };
 
   const resetSettings = () => applySettings(DEFAULT_ghostex_SETTINGS);
   const resetSetting = <Key extends keyof ghostexSettings>(key: Key) => {
@@ -1053,9 +1092,20 @@ export function SettingsModal({
           <div className="flex flex-col gap-6 px-5 pb-5">
             {shouldShowSettingsSection(settingsSearch.sidebar) ? (
               <SettingsSection sectionRef={sidebarSectionRef} title="Sidebar">
-              {/* CDXC:SidebarPlacement 2026-05-06-17:32: Sidebar side is the
-                  first Sidebar setting so users can move the sidebar to the
-                  right side from Settings without discovering the hotkey. */}
+              {/* CDXC:SidebarSettingsPresets 2026-05-16-10:11: Preset is the first Sidebar setting so users can apply Codex, Minimal, or Detailed sidebar UI defaults before tuning individual controlled settings. */}
+              {shouldShowSetting(settingsSearch.sidebar, "sidebarSettingsPreset") ? (
+              <SidebarPresetField
+                activePresetId={activeSidebarSettingsPresetId}
+                description="Apply a sidebar UI preset. Custom appears when these settings no longer match a preset."
+                isModified={activeSidebarSettingsPresetId !== "codex"}
+                label="Preset"
+                onChange={updateSidebarSettingsPreset}
+                onResetToDefault={() => updateSidebarSettingsPreset("codex")}
+              />
+              ) : null}
+              {/* CDXC:SidebarPlacement 2026-05-06-17:32: Sidebar side remains
+                  near the top of Sidebar settings so users can move the
+                  sidebar to the right side without discovering the hotkey. */}
               {shouldShowSetting(settingsSearch.sidebar, "sidebarSide") ? (
               <SelectField
                 description="Choose which side of the screen holds the sidebar."
@@ -1184,6 +1234,16 @@ export function SettingsModal({
 
             {shouldShowSettingsSection(settingsSearch.sessionCards) ? (
             <SettingsSection sectionRef={sessionCardsSectionRef} title="Session Cards">
+              {/* CDXC:SidebarSessions 2026-05-16-08:46: Session-card agent identity should stay visible by default, with a user setting that makes those icons appear only while hovering a session row. */}
+              {shouldShowSetting(settingsSearch.sessionCards, "hideSessionAgentIconUntilHover") ? (
+              <ToggleField
+                checked={draft.hideSessionAgentIconUntilHover}
+                description="Hide session agent icons until a session row is hovered."
+                label="Hide agent icon until hover"
+                {...getSettingModificationProps("hideSessionAgentIconUntilHover")}
+                onChange={(checked) => updateDraft("hideSessionAgentIconUntilHover", checked)}
+              />
+              ) : null}
               {shouldShowSetting(settingsSearch.sessionCards, "showCloseButtonOnSessionCards") ? (
               <ToggleField
                 checked={draft.showCloseButtonOnSessionCards}
@@ -1296,6 +1356,16 @@ export function SettingsModal({
                 onChange={(checked) =>
                   updateDraft("codeServerUseVscodeInsidersUserConfig", checked)
                 }
+              />
+              ) : null}
+              {/* CDXC:ProjectDiffStats 2026-05-16-08:46: The project-header git line summary is useful but visually noisy for some workflows, so Settings owns a full hide toggle separate from the changed-file count toggle. */}
+              {shouldShowSetting(settingsSearch.editor, "hideProjectHeaderDiffStats") ? (
+              <ToggleField
+                checked={draft.hideProjectHeaderDiffStats}
+                description="Hide +added/-removed line counts next to project headers."
+                label="Hide project git stats"
+                {...getSettingModificationProps("hideProjectHeaderDiffStats")}
+                onChange={(checked) => updateDraft("hideProjectHeaderDiffStats", checked)}
               />
               ) : null}
               {shouldShowSetting(settingsSearch.editor, "showProjectEditorDiffFileCount") ? (
@@ -4023,6 +4093,58 @@ function ColorField({
 
 function normalizeColorInputValue(value: string): string {
   return /^#[0-9a-f]{6}$/iu.test(value.trim()) ? value.trim() : "#121212";
+}
+
+function SidebarPresetField({
+  activePresetId,
+  description,
+  isModified,
+  label,
+  onChange,
+  onResetToDefault,
+}: {
+  activePresetId?: SidebarSettingsPresetId;
+  description?: string;
+  label: string;
+  onChange: (presetId: SidebarSettingsPresetId) => void;
+} & SettingModificationProps) {
+  const id = useId();
+  return (
+    <SettingRow
+      description={description}
+      htmlFor={id}
+      isModified={isModified}
+      label={label}
+      onResetToDefault={onResetToDefault}
+    >
+      <div className="flex flex-col gap-2">
+        <ToggleGroup
+          aria-label={label}
+          className="w-full [&>[data-slot=toggle-group-item]]:flex-1"
+          onValueChange={(value) => {
+            const [nextPresetId] = value as SidebarSettingsPresetId[];
+            if (nextPresetId) {
+              onChange(nextPresetId);
+            }
+          }}
+          value={activePresetId ? [activePresetId] : []}
+          variant="outline"
+        >
+          {SIDEBAR_SETTINGS_PRESETS.map((preset, index) => (
+            <ToggleGroupItem
+              aria-label={preset.label}
+              id={index === 0 ? id : undefined}
+              key={preset.id}
+              value={preset.id}
+            >
+              {preset.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+        {activePresetId ? null : <span className="text-sm text-muted-foreground">Custom</span>}
+      </div>
+    </SettingRow>
+  );
 }
 
 function ToggleField({

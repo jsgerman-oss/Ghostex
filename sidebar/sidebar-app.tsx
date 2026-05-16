@@ -89,7 +89,6 @@ import {
   moveSessionIdsByDropTarget,
 } from "./sidebar-dnd";
 import {
-  expandCollapsedGroupsById,
   getAutoCollapseGroupIds,
   getSessionCountsByGroup,
   reconcileCollapsedGroupsById,
@@ -109,6 +108,7 @@ import { filterPreviousSessions, filterSidebarSessionItems } from "./previous-se
 import { filterRecentProjects } from "./recent-project-search";
 import { isEmptySidebarDoubleClick } from "./empty-sidebar-double-click";
 import { closeAppModal, openAppModal } from "./app-modal-host-bridge";
+import { formatSidebarHotkeyLabel } from "./hotkey-label";
 import {
   GHOSTEX_HOTKEY_DEFINITIONS,
   normalizeHotkeyText,
@@ -246,41 +246,6 @@ function formatNumberedHotkeyExample(hotkey: string): string {
   return hotkey.replace(/(^|[+ ])1(?=$| )/u, "$1n");
 }
 
-function formatSidebarHotkeyLabel(hotkey: string): string {
-  return hotkey
-    .split(" ")
-    .map((chord) =>
-      chord
-        .split("+")
-        .map(formatSidebarHotkeyPart)
-        .join("+"),
-    )
-    .join(" ");
-}
-
-function formatSidebarHotkeyPart(part: string): string {
-  switch (part) {
-    case "cmd":
-      return "⌘";
-    case "ctrl":
-      return "⌃";
-    case "alt":
-      return "⌥";
-    case "shift":
-      return "⇧";
-    case "up":
-      return "↑";
-    case "right":
-      return "→";
-    case "down":
-      return "↓";
-    case "left":
-      return "←";
-    default:
-      return part.length === 1 ? part.toUpperCase() : part;
-  }
-}
-
 type SidebarPointerDownSessionTarget = {
   groupId: string;
   point: {
@@ -323,7 +288,6 @@ const SIDEBAR_STARTUP_REPRO_WINDOW_MS = 15_000;
 const SIDEBAR_POINTER_DRAG_REORDER_THRESHOLD_PX = 8;
 const SIDEBAR_SECTION_COLLAPSE_PERSIST_DEBOUNCE_MS = 200;
 const SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY = "ghostex-sidebar-ui-collapse-state";
-const BROWSER_AUTO_COLLAPSE_SUPPRESSION_MS = 1_200;
 const MIN_SESSION_SEARCH_QUERY_LENGTH = 2;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
 const DEBUG_BUILD_STAMP_STYLE: CSSProperties = {
@@ -452,7 +416,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const sessionIdsByGroupRef = useRef<SessionIdsByGroup>({});
   const previousSessionCountsByGroupRef = useRef<Record<string, number>>({});
   const didApplyStartupEmptyChatsCollapseRef = useRef(false);
-  const browserAutoCollapseSuppressedUntilRef = useRef(0);
   const previousNormalizedSessionSearchQueryRef = useRef("");
   const refreshDebugInstanceIdRef = useRef(createSidebarRefreshDebugInstanceId());
   const pointerDownSessionTargetRef = useRef<SidebarPointerDownSessionTarget | undefined>(
@@ -586,8 +549,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       groupIds: groupOrder,
       sessionIdsByGroup: authoritativeSessionIdsByGroup,
     });
-    const collapseBlockedBrowserGroupIds =
-      getSidebarStartupNow() < browserAutoCollapseSuppressedUntilRef.current ? browserGroupIds : [];
     const sessionCountIncreaseGroupIds = groupOrder.filter((groupId) => {
       const previousCount = previousSessionCountsByGroupRef.current[groupId];
       return (
@@ -600,7 +561,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       reconcileCollapsedGroupsById({
         autoCollapseGroupIds,
         browserGroupIds,
-        collapseBlockedGroupIds: collapseBlockedBrowserGroupIds,
         expandOnSessionCountIncreaseGroupIds: groupOrder,
         groupIds: groupOrder,
         previousSessionCountsByGroup: previousSessionCountsByGroupRef.current,
@@ -634,21 +594,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   ]);
 
   const isSidebarInteractionBlocked = isStartupInteractionBlocked;
-
-  const expandGroups = (groupIds: readonly string[]) => {
-    setCollapsedGroupsById((previous) =>
-      expandCollapsedGroupsById({
-        groupIds,
-        previousCollapsedGroupsById: previous,
-      }),
-    );
-  };
-
-  const prepareBrowserGroupsForOpen = (groupIds: readonly string[]) => {
-    browserAutoCollapseSuppressedUntilRef.current =
-      getSidebarStartupNow() + BROWSER_AUTO_COLLAPSE_SUPPRESSION_MS;
-    expandGroups(groupIds);
-  };
 
   const setGroupCollapsed = (groupId: string, collapsed: boolean) => {
     setCollapsedGroupsById((previous) => {
@@ -1202,7 +1147,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   };
 
   const isManualActiveSessionsSort = activeSessionsSortMode === "manual";
-  const visibleBrowserGroupIds: string[] = [];
   const shouldShowActionsPanel = sectionVisibility.actions;
   /**
    * CDXC:SidebarLayout 2026-05-13-08:11
@@ -1231,23 +1175,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const normalizedSessionSearchQuery = sessionSearchQuery.trim();
   const isSessionSearchFiltering =
     isSessionSearchOpen && normalizedSessionSearchQuery.length >= MIN_SESSION_SEARCH_QUERY_LENGTH;
-  const displayedBrowserSessionIdsByGroup = useMemo(
-    () =>
-      createDisplayedSessionIdsByGroup({
-        groupIds: visibleBrowserGroupIds,
-        query: normalizedSessionSearchQuery,
-        sessionIdsByGroup: authoritativeSessionIdsByGroup,
-        sessionsById,
-        shouldFilter: isSessionSearchFiltering,
-      }),
-    [
-      authoritativeSessionIdsByGroup,
-      isSessionSearchFiltering,
-      normalizedSessionSearchQuery,
-      sessionsById,
-      visibleBrowserGroupIds,
-    ],
-  );
+  /**
+   * CDXC:ProjectBrowserTabs 2026-05-16-12:59:
+   * Do not render a standalone Browsers group in the sidebar. Browser pane
+   * sessions belong in their project group, and the shared workspace display
+   * layout orders those project browser sessions before terminals/agents.
+   */
   const displayedWorkspaceSessionIdsByGroup = useMemo(
     () =>
       createDisplayedSessionIdsByGroup({
@@ -1264,15 +1197,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       normalizedSessionSearchQuery,
       sessionsById,
     ],
-  );
-  const displayedBrowserGroupIds = useMemo(
-    () =>
-      createDisplayedGroupIds(
-        visibleBrowserGroupIds,
-        displayedBrowserSessionIdsByGroup,
-        isSessionSearchFiltering,
-      ),
-    [displayedBrowserSessionIdsByGroup, isSessionSearchFiltering, visibleBrowserGroupIds],
   );
   const displayedWorkspaceGroupIds = useMemo(
     () =>
@@ -1358,14 +1282,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   const shouldShowSessionSearchEmptyState =
     isSessionSearchFiltering &&
-    displayedBrowserGroupIds.length === 0 &&
     displayedWorkspaceGroupIds.length === 0 &&
     filteredPreviousSessions.length === 0;
   /**
    * CDXC:SidebarSearch 2026-05-08-11:26
    * A no-match search is its own result state. Hide the normal Chats and
    * Projects sections while it is visible so the empty placeholder has the
-   * same visual role as the existing "No chats" group placeholder.
+   * same visual role as the existing "No Quick Sessions" group placeholder.
    */
   const shouldHideReferenceSectionsForSearchEmptyState = shouldShowSessionSearchEmptyState;
   const {
@@ -1376,15 +1299,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const sidebarSessionSearchResults = useMemo(
     () =>
       createSidebarSessionSearchResults({
-        displayedBrowserGroupIds,
-        displayedBrowserSessionIdsByGroup,
         displayedWorkspaceGroupIds,
         displayedWorkspaceSessionIdsByGroup,
         filteredPreviousSessions,
       }),
     [
-      displayedBrowserGroupIds,
-      displayedBrowserSessionIdsByGroup,
       displayedWorkspaceGroupIds,
       displayedWorkspaceSessionIdsByGroup,
       filteredPreviousSessions,
@@ -1811,6 +1730,25 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     openAppModal({ modal: "hotkeys", type: "open" });
   };
 
+  const openCommandPalette = () => {
+    /**
+     * CDXC:CommandPalette 2026-05-16-20:51:
+     * Cmd+K should open the full-window app-modal command palette, matching
+     * Settings instead of rendering a dialog inside the narrow sidebar. Close
+     * transient sidebar drawers first so the centered palette is the only
+     * active command surface.
+     */
+    setIsOverflowMenuOpen(false);
+    setIsPinnedPromptsOpen(false);
+    setIsPreviousSessionsOpen(false);
+    setIsDaemonSessionsOpen(false);
+    setIsScratchPadOpen(false);
+    setIsSessionSearchSelectionVisible(false);
+    setIsSessionSearchOpen(false);
+    setSessionSearchQuery("");
+    openAppModal({ modal: "commandPalette", type: "open" });
+  };
+
   const closeSessionSearch = () => {
     setIsSessionSearchSelectionVisible(false);
     setIsSessionSearchOpen(false);
@@ -1933,6 +1871,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
         event.preventDefault();
         event.stopPropagation();
+        return;
+      }
+
+      if (isCommandPaletteHotkey(event) && !hasActiveSidebarHotkeyRecorder()) {
+        event.preventDefault();
+        event.stopPropagation();
+        openCommandPalette();
         return;
       }
 
@@ -2197,7 +2142,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
             createRequestId={0}
             isCollapsed={collapsedSections.actions}
             isVisible={shouldShowActionsPanel}
-            onBrowserCommandRun={() => prepareBrowserGroupsForOpen(browserGroupIds)}
             onToggleCollapsed={(collapsed) => {
               setSectionCollapsed("actions", collapsed);
               scheduleSectionCollapsePersistence("actions", collapsed);
@@ -2235,35 +2179,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
               data-scrollable-y={String(sessionGroupsHaveScrollableOverflow)}
               ref={sessionGroupsContentRef}
             >
-              {displayedBrowserGroupIds.length > 0 ? (
-                <div className="group-list browser-group-list">
-                  {displayedBrowserGroupIds.map((groupId) => (
-                    <SessionGroupSection
-                      autoEdit={false}
-                      canClose={false}
-                      completionFlashNonceBySessionId={completionFlashNonceBySessionId}
-                      draggingDisabled={isSessionSearchOpen}
-                      groupId={groupId}
-                      index={-1}
-                      isCollapsed={collapsedGroupsById[groupId] === true}
-                      key={groupId}
-                      onAutoEditHandled={() => undefined}
-                      onCollapsedChange={setGroupCollapsed}
-                      onCreateSessionRequested={(requestedGroupId) =>
-                        prepareBrowserGroupsForOpen([requestedGroupId])
-                      }
-                      orderedSessionIds={displayedBrowserSessionIdsByGroup[groupId] ?? []}
-                      selectedSearchSessionId={
-                        isSessionSearchSelectionVisible &&
-                        selectedSessionSearchResult?.kind === "session"
-                          ? selectedSessionSearchResult.sessionId
-                          : undefined
-                      }
-                      vscode={vscode}
-                    />
-                  ))}
-                </div>
-              ) : null}
               <DragDropProvider
                 key={dragStructureKey}
                 onDragEnd={handleDragEnd}
@@ -2275,6 +2190,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                 {!shouldHideReferenceSectionsForSearchEmptyState &&
                 displayedReferenceChatGroupIds.length > 0 ? (
                   <>
+                    {/* CDXC:QuickSessions 2026-05-16-12:55: The projectless chat collection is user-facing as Quick in the reference sidebar while internal chat group semantics stay unchanged. */}
                     <SidebarReferenceSectionHeader
                       collapsed={isReferenceChatsCollapsed}
                       onCreateBrowserChat={createReferenceBrowserChat}
@@ -2283,7 +2199,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                       onToggleCollapsed={() =>
                         setIsReferenceChatsCollapsed((previous) => !previous)
                       }
-                      title="Chats"
+                      title="Quick"
                     />
                     <div
                       aria-hidden={isReferenceChatsCollapsed}
@@ -2428,8 +2344,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     No current or previous sessions match that search.
                   </div>
                 </div>
-              ) : displayedBrowserGroupIds.length === 0 &&
-                displayedWorkspaceGroupIds.every(
+              ) : displayedWorkspaceGroupIds.every(
                   (groupId) => (displayedWorkspaceSessionIdsByGroup[groupId] ?? []).length === 0,
                 ) &&
                 !isSessionSearchOpen ? (
@@ -3560,6 +3475,20 @@ function isSidebarSearchActivationKey(event: KeyboardEvent): boolean {
     !event.metaKey &&
     /^[\p{L}\p{N}]$/u.test(event.key)
   );
+}
+
+function isCommandPaletteHotkey(event: KeyboardEvent): boolean {
+  return (
+    event.metaKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.shiftKey &&
+    event.key.toLowerCase() === "k"
+  );
+}
+
+function hasActiveSidebarHotkeyRecorder(): boolean {
+  return Boolean(document.querySelector("[data-hotkey-recorder='true'][data-recording='true']"));
 }
 
 function isSidebarSessionSearchNavigationKey(event: KeyboardEvent): boolean {

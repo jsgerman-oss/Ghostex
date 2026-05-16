@@ -3,12 +3,15 @@ import {
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
-  getDefaultEditorCommandForSettings,
   GHOSTTY_THEME_SETTING_OPTIONS,
+  applySidebarSettingsPreset,
+  getDefaultEditorCommandForSettings,
+  getSidebarSettingsPresetId,
   normalizeghostexSettings,
   PROMPT_EDITOR_BACKEND_OPTIONS,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
+  SIDEBAR_SETTINGS_PRESET_SETTINGS,
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
   ZED_OVERLAY_TARGET_APP_OPTIONS,
@@ -75,8 +78,9 @@ describe("normalizeghostexSettings", () => {
   test("hides project-header git file counts by default", () => {
     /**
      * CDXC:ProjectDiffStats 2026-05-15-14:33:
-     * Project-header git stats default to showing added/removed line counts
-     * only; the changed-file number is an explicit Settings preference.
+     * When project-header git stats are visible, they should omit the
+     * changed-file number by default. The file count stays off in every
+     * sidebar preset and is only enabled by an explicit setting change.
      */
     expect(DEFAULT_ghostex_SETTINGS.showProjectEditorDiffFileCount).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
@@ -85,6 +89,51 @@ describe("normalizeghostexSettings", () => {
     expect(normalizeghostexSettings({ showProjectEditorDiffFileCount: true })).toMatchObject({
       showProjectEditorDiffFileCount: true,
     });
+  });
+
+  test("defaults sidebar UI settings to the Codex preset", () => {
+    /**
+     * CDXC:SidebarSettingsPresets 2026-05-16-10:11:
+     * Codex is the default sidebar preset for normalized settings. It hides
+     * hover-only agent icons, project-header git stats, floating badges, and
+     * menu bar badges while keeping close controls and Last Active timestamps.
+     */
+    expect(DEFAULT_ghostex_SETTINGS).toMatchObject(SIDEBAR_SETTINGS_PRESET_SETTINGS.codex);
+    expect(normalizeghostexSettings({})).toMatchObject(SIDEBAR_SETTINGS_PRESET_SETTINGS.codex);
+    expect(getSidebarSettingsPresetId(DEFAULT_ghostex_SETTINGS)).toBe("codex");
+    expect(
+      normalizeghostexSettings({
+        hideProjectHeaderDiffStats: false,
+        hideSessionAgentIconUntilHover: false,
+      }),
+    ).toMatchObject({
+      hideProjectHeaderDiffStats: false,
+      hideSessionAgentIconUntilHover: false,
+    });
+  });
+
+  test("detects sidebar presets and custom deviations", () => {
+    /**
+     * CDXC:SidebarSettingsPresets 2026-05-16-10:11:
+     * Preset selection is derived from the controlled setting values. Any
+     * controlled value that differs from all presets is Custom rather than a
+     * persisted fourth preset state.
+     */
+    expect(
+      getSidebarSettingsPresetId(applySidebarSettingsPreset(DEFAULT_ghostex_SETTINGS, "codex")),
+    ).toBe("codex");
+    expect(
+      getSidebarSettingsPresetId(applySidebarSettingsPreset(DEFAULT_ghostex_SETTINGS, "minimal")),
+    ).toBe("minimal");
+    expect(
+      getSidebarSettingsPresetId(applySidebarSettingsPreset(DEFAULT_ghostex_SETTINGS, "detailed")),
+    ).toBe("detailed");
+    expect(
+      getSidebarSettingsPresetId({
+        ...DEFAULT_ghostex_SETTINGS,
+        showProjectEditorDiffFileCount: true,
+      }),
+    ).toBeUndefined();
   });
 
   test("keeps session-card last active timestamps visible unless explicitly hidden", () => {
@@ -194,16 +243,16 @@ describe("normalizeghostexSettings", () => {
      * indicator size. Settings must expose all named scale points so users can
      * return to the larger visual or choose smaller indicators later.
      * CDXC:SessionStatusIndicators 2026-05-09-17:30
-     * Floating status badges are hidden by default now that the menu bar
-     * indicator is the default always-visible chrome. Keep menu bar visibility
-     * independent so users can hide either surface without affecting counts.
+     * Floating and menu bar status badges are hidden in the default Codex
+     * preset, while Detailed can still reveal either surface without coupling
+     * visibility to indicator size.
      */
     expect(DEFAULT_ghostex_SETTINGS.hideFloatingSessionStatusIndicators).toBe(true);
-    expect(DEFAULT_ghostex_SETTINGS.hideMenuBarSessionStatusIndicators).toBe(false);
+    expect(DEFAULT_ghostex_SETTINGS.hideMenuBarSessionStatusIndicators).toBe(true);
     expect(DEFAULT_ghostex_SETTINGS.sessionStatusIndicatorSize).toBe("medium");
     expect(normalizeghostexSettings({})).toMatchObject({
       hideFloatingSessionStatusIndicators: true,
-      hideMenuBarSessionStatusIndicators: false,
+      hideMenuBarSessionStatusIndicators: true,
       sessionStatusIndicatorSize: "medium",
     });
     expect(

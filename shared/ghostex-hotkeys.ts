@@ -2,6 +2,7 @@ import type { SessionGridDirection, TerminalViewMode } from "./session-grid-cont
 
 export type ghostexHotkeyActionId =
   | "createSession"
+  | "openCommandPalette"
   | "openSettings"
   | "moveSidebar"
   | "openCommandsPanel"
@@ -28,6 +29,7 @@ export type ghostexHotkeyAction =
   | { id: ghostexHotkeyActionId; kind: "focusGroup"; groupIndex: number }
   | { id: ghostexHotkeyActionId; kind: "focusSessionSlot"; slotNumber: number }
   | { id: ghostexHotkeyActionId; kind: "moveSidebar" }
+  | { id: ghostexHotkeyActionId; kind: "openCommandPalette" }
   | { id: ghostexHotkeyActionId; kind: "openCommandsPanel" }
   | { id: ghostexHotkeyActionId; kind: "openSettings" }
   | { id: ghostexHotkeyActionId; kind: "renameActiveSession" }
@@ -63,6 +65,19 @@ export const GHOSTEX_HOTKEY_DEFINITIONS: readonly ghostexHotkeyDefinition[] = [
     description: "Create a terminal session.",
     id: "createSession",
     title: "Create Session",
+  },
+  {
+    action: { id: "openCommandPalette", kind: "openCommandPalette" },
+    /**
+     * CDXC:CommandPalette 2026-05-15-20:38:
+     * Cmd+K is the discoverable command palette shortcut. It must live in the
+     * shared hotkey model so terminal-focused AppKit dispatch and sidebar DOM
+     * dispatch both open the same shadcn command surface.
+     */
+    defaultKey: "cmd+k",
+    description: "Open the Ghostex command palette.",
+    id: "openCommandPalette",
+    title: "Open Command Palette",
   },
   {
     action: { id: "openCommandsPanel", kind: "openCommandsPanel" },

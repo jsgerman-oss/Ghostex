@@ -305,7 +305,13 @@
 .confirm-modal {
   background: var(--app-card);
   border: 1px solid color-mix(in srgb, var(--app-border) 84%, transparent);
-  border-radius: 20px;
+  /*
+   * CDXC:AppModals 2026-05-16-08:10:
+   * Legacy React modal background shells must match the Settings modal
+   * background radius so confirm, picker, previous-session, and management
+   * dialogs share the same outer corner geometry as Radix dialogs.
+   */
+  border-radius: var(--app-modal-background-radius, 7px);
   box-shadow:
     0 24px 60px color-mix(in srgb, var(--app-shadow) 34%, transparent),
     0 0 0 1px color-mix(in srgb, var(--app-button-background) 12%, transparent);
