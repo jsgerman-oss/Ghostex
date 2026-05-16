@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.4.1 - 2026-05-17
+
+- Added visible Delayed Send countdowns in the sidebar, native pane tabs, and terminal panes so scheduled sends are easy to spot before they fire.
+- Improved Delayed Send controls so reopening an active timer shows the remaining time and lets you cancel or reschedule it.
+
 ## 3.4.0 - 2026-05-17
 
 - Added a native right-click menu in terminal panes with Copy and Paste actions.

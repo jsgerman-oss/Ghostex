@@ -104,3 +104,4 @@
 - Terminal panes include a native right-click menu for Copy and Paste.
 - Sleeping and restored terminal sessions keep accurate Last Active times and sidebar sorting after restart.
 - The titlebar Resources menu only counts Ghostex embedded browser helpers in Browser Tabs and uses clearer browser process labels.
+- Delayed Send timers show live countdowns in the sidebar, native pane tabs, and terminal panes, and active timers can be reopened to cancel or reschedule them.
