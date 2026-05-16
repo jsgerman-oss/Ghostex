@@ -1,5 +1,5 @@
-## Ghostty Terminals with Codex App's Awesome Features = Ghostex!
-<br />
+## Ghostty Terminals with Codex App's Awesome Features = Ghostex!<br />
+
 - T3code Support
 - Agent CLIs Manager
 - Embedded Chromium Browser
