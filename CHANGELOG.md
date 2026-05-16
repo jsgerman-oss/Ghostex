@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.0 - 2026-05-16
+
+- Added a titlebar Resources menu that shows live CPU and memory usage grouped by project, session, Ghostex runtime, and browser tabs.
+- Added a one-click titlebar action to sleep inactive agent sessions from the Resources menu.
+- Added persistent hide/show behavior for the agent side pane in Code, Git, and Project modes, with a titlebar restore button when the pane is hidden.
+- Improved custom terminal actions so command panes are reused by action title and duplicate action titles are blocked before saving.
+- Improved project headers with more reliable right-click menus and easier-to-scan agent launcher icons.
+
 ## 3.1.0 - 2026-05-16
 
 - Added a full-window Command Palette on `Cmd+K` for Ghostex actions, project actions, Settings, pane controls, and pet controls.

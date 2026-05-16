@@ -59,11 +59,14 @@ brew install --cask maddada/tap/ghostex
 - `ghostex` and `gtx` list sessions in the same Last Active order as the sidebar and include grouped, easier-to-scan help output.
 - The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
 - The native titlebar includes Agents, Code, Git, and Project modes for switching workspace surfaces without crowding the sidebar, with a visible active-pill transition between modes.
+- The titlebar Resources menu shows live CPU and memory use by project, session, Ghostex runtime, and browser tabs, with a shortcut to sleep inactive agent sessions.
+- Code, Git, and Project modes can hide the agent side pane and restore it from the titlebar without losing that preference when switching modes.
 - Project workspace controls include clearer titlebar modes, improved project panel behavior, and an easier empty-project first-terminal flow.
 - Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
 - The reference sidebar includes a combined-only project layout, searchable settings sections, improved command panel controls, and cleaner Previous Sessions rows.
 - Tips & Tricks is available inside Ghostex with quick pages for workspace basics, agents, actions, Codex setup, and remote access.
 - Sidebar action buttons always use explicit configurable icons, with a searchable icon picker and a sensible Play default for new actions.
+- Custom terminal actions reuse their command panes by action title and block duplicate titles so actions do not open the wrong command tab.
 - Sidebar display presets let you switch between Codex, Minimal, and Detailed layouts.
 - Default agent picker order keeps the daily launch engines together: T3 Code, Codex, Claude, Pi Agent, OpenCode, Gemini, Copilot, Factory Droid, and Grok Build.
 - Browser pane sessions live inside their project groups, and project Git/browser panes can use project tabs plus browser toolbar controls.
