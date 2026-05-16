@@ -490,7 +490,7 @@ function createAppRuntimeBundles(
       const tree = collectProcessTree([process], childrenByParent).filter(
         (treeProcess) =>
           !claimedPids.has(treeProcess.pid) &&
-          !isCefProcess(treeProcess) &&
+          !isGhostexBrowserProcess(treeProcess) &&
           (treeProcess.pid === process.pid || !isAgentRuntimeProcess(treeProcess)),
       );
       tree.forEach((treeProcess) => claimedPids.add(treeProcess.pid));
@@ -512,8 +512,16 @@ function createBrowserBundles(
   processes: ResourceProcess[],
   claimedPids: Set<number>,
 ): ResourceProcessBundle[] {
+  /**
+   * CDXC:TitlebarResources 2026-05-17-03:09:
+   * Browser tab resources must only count Ghostex-owned embedded browser helper
+   * processes. System-wide Chromium/Electron helpers from Chrome, VS Code,
+   * Codex, Discord, or other apps can share the same `--type=renderer`
+   * arguments, so ownership must be proven before a process is allowed into the
+   * Browser Tabs section.
+   */
   const browserProcesses = processes.filter(
-    (process) => !claimedPids.has(process.pid) && isCefProcess(process),
+    (process) => !claimedPids.has(process.pid) && isGhostexBrowserProcess(process),
   );
   const bundles: ResourceProcessBundle[] = [];
   for (const tab of browserTabs) {
@@ -536,17 +544,32 @@ function createBrowserBundles(
       type: "browser",
     });
   }
-  const sharedProcesses = browserProcesses.filter((process) => !claimedPids.has(process.pid));
-  if (sharedProcesses.length > 0) {
-    sharedProcesses.forEach((process) => claimedPids.add(process.pid));
+  const remainingProcesses = browserProcesses.filter((process) => !claimedPids.has(process.pid));
+  const unmatchedRendererProcesses = remainingProcesses.filter((process) => browserProcessClientId(process));
+  if (unmatchedRendererProcesses.length > 0) {
+    unmatchedRendererProcesses.forEach((process) => claimedPids.add(process.pid));
     bundles.push({
-      childProcesses: sharedProcesses.slice(0, 12),
-      cpu: sumProcessCpu(sharedProcesses),
-      key: "browser:shared",
-      label: "Shared browser processes",
-      memoryMb: sumProcessMemory(sharedProcesses),
-      pids: sharedProcesses.map((process) => process.pid),
-      process: sharedProcesses[0],
+      childProcesses: unmatchedRendererProcesses.slice(0, 12),
+      cpu: sumProcessCpu(unmatchedRendererProcesses),
+      key: "browser:unmatched-renderers",
+      label: "Unmatched browser renderers",
+      memoryMb: sumProcessMemory(unmatchedRendererProcesses),
+      pids: unmatchedRendererProcesses.map((process) => process.pid),
+      process: unmatchedRendererProcesses[0],
+      type: "browser",
+    });
+  }
+  const runtimeProcesses = remainingProcesses.filter((process) => !claimedPids.has(process.pid));
+  if (runtimeProcesses.length > 0) {
+    runtimeProcesses.forEach((process) => claimedPids.add(process.pid));
+    bundles.push({
+      childProcesses: runtimeProcesses.slice(0, 12),
+      cpu: sumProcessCpu(runtimeProcesses),
+      key: "browser:runtime",
+      label: "Browser runtime",
+      memoryMb: sumProcessMemory(runtimeProcesses),
+      pids: runtimeProcesses.map((process) => process.pid),
+      process: runtimeProcesses[0],
       type: "browser",
     });
   }
@@ -569,8 +592,17 @@ function createOrphanBundles(processes: ResourceProcess[], claimedPids: Set<numb
     }));
 }
 
-function isCefProcess(process: ResourceProcess): boolean {
-  return /Chromium Embedded Framework|--type=(renderer|gpu-process|utility)/.test(process.command);
+function isGhostexBrowserProcess(process: ResourceProcess): boolean {
+  const command = process.command;
+  const isBrowserHelper = /Chromium Embedded Framework|--type=(renderer|gpu-process|utility)\b/.test(command);
+  if (!isBrowserHelper) {
+    return false;
+  }
+  return (
+    /\/Contents\/Frameworks\/[^/\s]*ghostex[^/\s]* Helper/i.test(command) ||
+    /--main-bundle-path=\S*\/ghostex(?:-dev)?\.app\b/i.test(command) ||
+    /--user-data-dir=\S*\/\.ghostex\/cef\b/.test(command)
+  );
 }
 
 function isAgentRuntimeProcess(process: ResourceProcess): boolean {
@@ -578,7 +610,7 @@ function isAgentRuntimeProcess(process: ResourceProcess): boolean {
 }
 
 function browserProcessClientId(process: ResourceProcess): string | undefined {
-  return /--client-id=(\d+)/.exec(process.command)?.[1];
+  return /--(?:renderer-)?client-id=(\d+)/.exec(process.command)?.[1];
 }
 
 function getBrowserProcessDisplayName(process: ResourceProcess): string {
@@ -587,12 +619,29 @@ function getBrowserProcessDisplayName(process: ResourceProcess): string {
     return `Browser renderer client ${clientId}`;
   }
   if (process.command.includes("--type=gpu-process")) {
-    return "Shared browser GPU";
+    return "Browser GPU";
   }
   if (process.command.includes("--type=utility")) {
-    return "Shared browser utility";
+    return getBrowserUtilityProcessDisplayName(process);
   }
   return "Browser renderer";
+}
+
+function getBrowserUtilityProcessDisplayName(process: ResourceProcess): string {
+  const subtype = /--utility-sub-type=([^\s]+)/.exec(process.command)?.[1];
+  if (subtype?.includes("NetworkService")) {
+    return "Browser network service";
+  }
+  if (subtype?.includes("StorageService")) {
+    return "Browser storage service";
+  }
+  if (subtype?.includes("AudioService")) {
+    return "Browser audio service";
+  }
+  if (subtype?.includes("VideoCaptureService")) {
+    return "Browser video capture service";
+  }
+  return "Browser utility";
 }
 
 function getProcessDisplayName(process: ResourceProcess): string {
@@ -669,15 +718,12 @@ function App() {
   const [selectedActionCommandId, setSelectedActionCommandId] = useState(() =>
     readLastActionCommandId(createInitialProjectState(bootstrap)),
   );
-  const [didCopyProjectPath, setDidCopyProjectPath] = useState(false);
-  const [projectTitleTooltipOpen, setProjectTitleTooltipOpen] = useState(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
   const [resourceProcesses, setResourceProcesses] = useState<ResourceProcess[]>([]);
   const [collapsedResourceKeys, setCollapsedResourceKeys] = useState<Set<string>>(() => new Set());
   const [optimisticMode, setOptimisticMode] = useState<TitlebarMode>();
-  const copyTooltipTimeoutRef = useRef<number | undefined>(undefined);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const activeMode = optimisticMode ?? projectState.activeMode;
   const resourceViews = useMemo(
@@ -787,15 +833,6 @@ function App() {
     return () => window.removeEventListener("resize", publishHitRegions);
   }, [publishHitRegions]);
 
-  useEffect(
-    () => () => {
-      if (copyTooltipTimeoutRef.current !== undefined) {
-        window.clearTimeout(copyTooltipTimeoutRef.current);
-      }
-    },
-    [],
-  );
-
   useEffect(() => {
     window.__ghostex_TITLEBAR__ = {
       closeOpenDropdowns: () => {
@@ -891,27 +928,6 @@ function App() {
     }, RESOURCE_POLL_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [refreshResources, resourcesMenuOpen]);
-
-  const copyProjectPath = () => {
-    /**
-     * CDXC:ReactTitlebar 2026-05-11-01:15
-     * The active project title is plain titlebar text, not a bordered button.
-     * Its shadcn tooltip names the copy-path action and flips to a short copied
-     * confirmation after click so the compact titlebar does not need permanent
-     * helper text.
-     */
-    void navigator.clipboard?.writeText(projectState.projectPath);
-    setDidCopyProjectPath(true);
-    setProjectTitleTooltipOpen(true);
-    if (copyTooltipTimeoutRef.current !== undefined) {
-      window.clearTimeout(copyTooltipTimeoutRef.current);
-    }
-    copyTooltipTimeoutRef.current = window.setTimeout(() => {
-      setDidCopyProjectPath(false);
-      setProjectTitleTooltipOpen(false);
-      copyTooltipTimeoutRef.current = undefined;
-    }, 2_000);
-  };
 
   const openTarget = (target: ResolvedOpenTarget | undefined) => {
     if (!target || !projectState.projectPath) {
@@ -1062,43 +1078,25 @@ function App() {
       <div className="dark" ref={rootRef} style={styles.shell}>
         <div style={styles.titlebar}>
           <div style={styles.projectSlot}>
-            <Tooltip
-              onOpenChange={(open) => {
-                if (!didCopyProjectPath) {
-                  setProjectTitleTooltipOpen(open);
-                }
-              }}
-              open={projectTitleTooltipOpen}
-            >
-              <TooltipTrigger asChild>
-                <div
-                  aria-label="Copy project path"
-                  className="titlebar-project-title"
-                  data-titlebar-hit-region
-                  onClick={copyProjectPath}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      copyProjectPath();
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
-                >
-                  {projectState.projectIconDataUrl ? (
-                    <img
-                      alt=""
-                      aria-hidden="true"
-                      className="titlebar-project-icon"
-                      draggable={false}
-                      src={projectState.projectIconDataUrl}
-                    />
-                  ) : null}
-                  <span className="truncate">{projectState.projectName}</span>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent>{didCopyProjectPath ? "Copied path!" : "Click to copy path"}</TooltipContent>
-            </Tooltip>
+            <div className="titlebar-project-title">
+              {/*
+               * CDXC:ReactTitlebar 2026-05-17-02:29:
+               * The project name is passive titlebar identity text. Do not use
+               * it as a copy-path button and do not attach a tooltip; project
+               * path actions should live in explicit menus instead of hidden
+               * titlebar hover behavior.
+               */}
+              {projectState.projectIconDataUrl ? (
+                <img
+                  alt=""
+                  aria-hidden="true"
+                  className="titlebar-project-icon"
+                  draggable={false}
+                  src={projectState.projectIconDataUrl}
+                />
+              ) : null}
+              <span className="truncate">{projectState.projectName}</span>
+            </div>
           </div>
           <div style={styles.centerSlot}>
             {shouldShowCompanionRestoreButton ? (
@@ -1170,31 +1168,32 @@ function App() {
             />
           </div>
           <div style={styles.rightSlot}>
+            {/*
+             * CDXC:ReactTitlebar 2026-05-17-02:29:
+             * Top-right titlebar controls should not show hover tooltips.
+             * Keep accessible labels on the buttons and visible labels inside
+             * dropdown menus, while avoiding extra titlebar hover chrome.
+             */}
             <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      aria-label="Ghostex resources"
-                      className="titlebar-session-button titlebar-resource-button"
-                      data-titlebar-hit-region
-                      type="button"
-                      variant="ghost"
-                    >
-                      {/*
-                       * CDXC:TitlebarResources 2026-05-17-02:03:
-                       * The Resources button is the first right-side titlebar
-                       * control after moving the pet wake/sleep toggle into the
-                       * sidebar overflow menu. Use IconChartPie2Filled so this
-                       * control reads as aggregate resource usage instead of
-                       * only CPU.
-                       */}
-                      <IconChartPie2Filled aria-hidden="true" size={16} />
-                    </Button>
-                  </DropdownMenuTrigger>
-                </TooltipTrigger>
-                <TooltipContent>Resources</TooltipContent>
-              </Tooltip>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  aria-label="Ghostex resources"
+                  className="titlebar-session-button titlebar-resource-button"
+                  data-titlebar-hit-region
+                  type="button"
+                  variant="ghost"
+                >
+                  {/*
+                   * CDXC:TitlebarResources 2026-05-17-02:03:
+                   * The Resources button is the first right-side titlebar
+                   * control after moving the pet wake/sleep toggle into the
+                   * sidebar overflow menu. Use IconChartPie2Filled so this
+                   * control reads as aggregate resource usage instead of
+                   * only CPU.
+                   */}
+                  <IconChartPie2Filled aria-hidden="true" size={16} />
+                </Button>
+              </DropdownMenuTrigger>
               <DropdownMenuContent
                 align="end"
                 className="titlebar-open-menu titlebar-resources-menu rounded-lg border-border/80 !bg-[#181818] p-0 text-[13px] text-foreground shadow-2xl"
@@ -1216,39 +1215,32 @@ function App() {
               </DropdownMenuContent>
             </DropdownMenu>
             <DropdownMenu onOpenChange={setActionsMenuOpen} open={actionsMenuOpen}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <ButtonGroup className="titlebar-open-group titlebar-actions-group" data-titlebar-hit-region>
-                    <Button
-                      aria-label={
-                        activeAction
-                          ? `Run ${getSidebarActionLabel(activeAction)}`
-                          : "No actions configured"
-                      }
-                      className="titlebar-session-button titlebar-open-main-button"
-                      disabled={!activeAction}
-                      onClick={() => runSidebarAction(activeAction)}
-                      type="button"
-                      variant="ghost"
-                    >
-                      {getSidebarActionIcon(activeAction)}
-                    </Button>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        aria-label="Actions menu"
-                        className="titlebar-session-button titlebar-open-chevron-button"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <IconChevronDown aria-hidden="true" size={14} />
-                      </Button>
-                    </DropdownMenuTrigger>
-                  </ButtonGroup>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {activeAction ? getSidebarActionLabel(activeAction) : "No actions configured"}
-                </TooltipContent>
-              </Tooltip>
+              <ButtonGroup className="titlebar-open-group titlebar-actions-group" data-titlebar-hit-region>
+                <Button
+                  aria-label={
+                    activeAction
+                      ? `Run ${getSidebarActionLabel(activeAction)}`
+                      : "No actions configured"
+                  }
+                  className="titlebar-session-button titlebar-open-main-button"
+                  disabled={!activeAction}
+                  onClick={() => runSidebarAction(activeAction)}
+                  type="button"
+                  variant="ghost"
+                >
+                  {getSidebarActionIcon(activeAction)}
+                </Button>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    aria-label="Actions menu"
+                    className="titlebar-session-button titlebar-open-chevron-button"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconChevronDown aria-hidden="true" size={14} />
+                  </Button>
+                </DropdownMenuTrigger>
+              </ButtonGroup>
               <DropdownMenuContent
                 align="center"
                 alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
@@ -1290,36 +1282,31 @@ function App() {
               </DropdownMenuContent>
             </DropdownMenu>
             <DropdownMenu onOpenChange={setOpenInMenuOpen} open={openInMenuOpen}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
-                    <Button
-                      aria-label={activeTarget?.label ?? "Open project"}
-                      className="titlebar-session-button titlebar-open-main-button"
-                      onClick={() => openTarget(activeTarget)}
-                      type="button"
-                      variant="ghost"
-                    >
-                      {activeTarget ? (
-                        getOpenTargetIcon(activeTarget)
-                      ) : (
-                        <IconFolderOpen aria-hidden="true" className="size-4 text-zinc-400" />
-                      )}
-                    </Button>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        aria-label="Open project menu"
-                        className="titlebar-session-button titlebar-open-chevron-button"
-                        type="button"
-                        variant="ghost"
-                      >
-                        <IconChevronDown aria-hidden="true" size={14} />
-                      </Button>
-                    </DropdownMenuTrigger>
-                  </ButtonGroup>
-                </TooltipTrigger>
-                <TooltipContent>{activeTarget?.label ?? "Open project"}</TooltipContent>
-              </Tooltip>
+              <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
+                <Button
+                  aria-label={activeTarget?.label ?? "Open project"}
+                  className="titlebar-session-button titlebar-open-main-button"
+                  onClick={() => openTarget(activeTarget)}
+                  type="button"
+                  variant="ghost"
+                >
+                  {activeTarget ? (
+                    getOpenTargetIcon(activeTarget)
+                  ) : (
+                    <IconFolderOpen aria-hidden="true" className="size-4 text-zinc-400" />
+                  )}
+                </Button>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    aria-label="Open project menu"
+                    className="titlebar-session-button titlebar-open-chevron-button"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconChevronDown aria-hidden="true" size={14} />
+                  </Button>
+                </DropdownMenuTrigger>
+              </ButtonGroup>
               <DropdownMenuContent
                 align="center"
                 alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
@@ -1697,7 +1684,13 @@ function getResourceBundleMeta(bundle: ResourceProcessBundle): string {
     return bundle.browserTab.url?.trim() || "Browser tab";
   }
   if (bundle.type === "browser") {
-    return "Shared browser processes";
+    if (bundle.key === "browser:runtime") {
+      return "Shared GPU, network, and storage helpers";
+    }
+    if (bundle.key === "browser:unmatched-renderers") {
+      return "No visible Browser tab matched these helpers";
+    }
+    return "Browser helper processes";
   }
   if (bundle.process?.pid) {
     return `pid ${bundle.process.pid}`;
@@ -2088,7 +2081,7 @@ styleElement.textContent = `
   .titlebar-project-title {
     align-items: center;
     color: rgba(255,255,255,0.9);
-    cursor: pointer;
+    cursor: default;
     display: inline-flex;
     font: 650 13.5px/${TITLEBAR_CONTROL_HEIGHT}px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
@@ -2110,11 +2103,6 @@ styleElement.textContent = `
     margin-right: 5px;
     object-fit: contain;
     width: 14px;
-  }
-  .titlebar-project-title:focus-visible {
-    border-radius: 6px;
-    outline: 2px solid rgba(255,255,255,0.24);
-    outline-offset: 2px;
   }
   .titlebar-open-main-button {
     width: 28px;

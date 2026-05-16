@@ -1055,7 +1055,7 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
    CDXC:TitlebarResources 2026-05-17-01:25:
    The Resources dropdown needs to group Chromium renderer processes under the
    visible Browser tab or project editor view. Expose CEF's browser identifier
-   so Swift can correlate renderer `--client-id` process arguments with the
+   so Swift can correlate renderer `--renderer-client-id` process arguments with the
    title and URL already tracked by GhostexCEFBrowserView.
    */
   return browser_ ? browser_->GetIdentifier() : -1;
