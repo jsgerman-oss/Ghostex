@@ -1,5 +1,8 @@
 ## The best parts of Ghostty & Codex App = Ghostex!<br />
-### Fully-featured Native Agent CLIs Manager<br />Embedded Browser | Advanced Agents Support | Fast & Lower RAM <br /><br />
+### Fully-featured Native Agent CLIs Manager<br />
+Embedded Browser<br />
+Advanced Agents<br />
+Support Fast & Lower RAM <br /><br />
 
 <!--
 CDXC:Branding 2026-05-12-07:35
