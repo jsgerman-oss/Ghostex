@@ -292,6 +292,7 @@ enum HostCommand: Decodable {
 struct CreateTerminal: Decodable {
   let activateOnCreate: Bool?
   let cwd: String
+  let diagnosticSource: String?
   let env: [String: String]?
   let initialInput: String?
   let sessionId: String
@@ -432,6 +433,13 @@ struct SetActiveTerminalSet: Decodable {
   let sessionAgentIconColors: [String: String]?
   let sessionAgentIconDataUrls: [String: String]?
   let sessionActivities: [String: NativeTerminalActivity]?
+  /**
+   CDXC:DelayedSend 2026-05-17-03:14
+   AppKit tab strips and terminal-pane overlays need the same Delayed Send
+   countdown labels as the React sidebar because native Ghostty surfaces sit
+   outside the webview tree.
+   */
+  let sessionDelayedSendRemainingLabels: [String: String]?
   let sessionFaviconDataUrls: [String: String]?
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
@@ -454,6 +462,9 @@ struct TitlebarResourceGroup: Decodable {
 struct TitlebarResourceSession: Decodable {
   let activity: String
   let agentIcon: String?
+  let delayedSendDeadlineAt: String?
+  let delayedSendRemainingLabel: String?
+  let delayedSendRemainingMs: Double?
   let isRunning: Bool
   let isSleeping: Bool?
   let lastInteractionAt: String?

@@ -57,6 +57,14 @@ export type TitlebarResourceGroup = {
 export type TitlebarResourceSession = {
   activity: "attention" | "idle" | "working";
   agentIcon?: string;
+  /**
+   * CDXC:DelayedSend 2026-05-17-03:14
+   * React titlebar resources need Delayed Send state so any terminal picker or
+   * context menu using this resource graph can expose the active countdown.
+   */
+  delayedSendDeadlineAt?: string;
+  delayedSendRemainingLabel?: string;
+  delayedSendRemainingMs?: number;
   isRunning: boolean;
   isSleeping?: boolean;
   lastInteractionAt?: string;
@@ -251,6 +259,12 @@ export type NativeGhosttyHostCommand =
       sessionActivities?: Record<string, "attention" | "sleeping" | "working">;
       sessionAgentIconColors?: Record<string, string>;
       sessionAgentIconDataUrls?: Record<string, string>;
+      /**
+       * CDXC:DelayedSend 2026-05-17-03:14
+       * Native tab strips and pane overlays are outside React, so layout sync
+       * must carry the active Delayed Send countdown labels into AppKit.
+       */
+      sessionDelayedSendRemainingLabels?: Record<string, string>;
       sessionFaviconDataUrls?: Record<string, string>;
       sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;

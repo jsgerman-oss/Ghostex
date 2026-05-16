@@ -1864,6 +1864,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         CreateTerminal(
           activateOnCreate: true,
           cwd: FileManager.default.currentDirectoryPath,
+          diagnosticSource: nil,
           env: nil,
           initialInput: "printf 'Failed to start Ghostex bridge: \(error.localizedDescription)\\n'\r",
           sessionId: "bridge-error",

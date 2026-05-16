@@ -276,6 +276,7 @@ type NativeHostCommand =
       activateOnCreate?: boolean;
       cwd: string;
       env?: Record<string, string>;
+      diagnosticSource?: "previousSessionRestore";
       initialInput?: string;
       sessionId: string;
       sessionPersistenceName?: string;
@@ -377,6 +378,7 @@ type NativeHostCommand =
       sessionAgentIconDataUrls?: Record<string, string>;
       sessionAgentIconColors?: Record<string, string>;
       sessionActivities?: Record<string, "attention" | "sleeping" | "working">;
+      sessionDelayedSendRemainingLabels?: Record<string, string>;
 	      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
 	      sessionTitles?: Record<string, string>;
 	      petOverlayEnabled?: boolean;
@@ -955,6 +957,9 @@ type TitlebarResourceGroup = {
 type TitlebarResourceSession = {
   activity: "attention" | "idle" | "working";
   agentIcon?: string;
+  delayedSendDeadlineAt?: string;
+  delayedSendRemainingLabel?: string;
+  delayedSendRemainingMs?: number;
   isRunning: boolean;
   isSleeping?: boolean;
   lastInteractionAt?: string;
@@ -1164,10 +1169,25 @@ const NATIVE_ATTENTION_NOTIFICATION_SESSION_COOLDOWN_MS = 20_000;
 const NATIVE_ATTENTION_NOTIFICATION_GLOBAL_WINDOW_MS = 60_000;
 const NATIVE_ATTENTION_NOTIFICATION_GLOBAL_LIMIT = 8;
 const SIDEBAR_CARD_FOCUS_TRACE_WINDOW_MS = 5_000;
+const PREVIOUS_SESSION_RESTORE_TRACE_WINDOW_MS = 30_000;
+const previousSessionRestoreTraceStartedAtByNativeSessionId = new Map<string, number>();
 const nativeAttentionNotificationLastSentAtBySessionId = new Map<string, number>();
 let nativeAttentionNotificationWindowStartedAt = 0;
 let nativeAttentionNotificationWindowCount = 0;
-const delayedSendTimeoutBySessionId = new Map<string, number>();
+type DelayedSendTimerState = {
+  deadlineAtMs: number;
+  projectId: string;
+  sessionId: string;
+  timeoutId: number;
+};
+/**
+ * CDXC:DelayedSend 2026-05-17-03:14
+ * Delayed Send needs a visible countdown, editable modal state, sidebar badges,
+ * native tab indicators, and pane overlay text. Store deadline metadata beside
+ * the timeout id so every surface derives the same active timer state.
+ */
+const delayedSendTimerByNativeSessionId = new Map<string, DelayedSendTimerState>();
+let delayedSendCountdownTicker: number | undefined;
 type NativeSidebarCommandSession = {
   closeOnExit: boolean;
   commandId: string;
@@ -1346,6 +1366,50 @@ function getRecentSidebarCardFocusTrace(
   return latestSidebarCardFocusTrace;
 }
 
+function rememberPreviousSessionRestoreTraceNativeSession(nativeSessionId: string): void {
+  previousSessionRestoreTraceStartedAtByNativeSessionId.set(nativeSessionId, Date.now());
+}
+
+function getRecentPreviousSessionRestoreTrace(nativeSessionId: string | undefined):
+  | { ageMs: number; nativeSessionId: string; startedAt: number }
+  | undefined {
+  if (!nativeSessionId) {
+    return undefined;
+  }
+  const startedAt = previousSessionRestoreTraceStartedAtByNativeSessionId.get(nativeSessionId);
+  if (startedAt === undefined) {
+    return undefined;
+  }
+  const ageMs = Date.now() - startedAt;
+  if (ageMs > PREVIOUS_SESSION_RESTORE_TRACE_WINDOW_MS) {
+    previousSessionRestoreTraceStartedAtByNativeSessionId.delete(nativeSessionId);
+    return undefined;
+  }
+  return { ageMs, nativeSessionId, startedAt };
+}
+
+function getNativeCommandPreviousSessionRestoreTrace(command: NativeHostCommand):
+  | { ageMs: number; nativeSessionId: string; startedAt: number }
+  | undefined {
+  if (command.type === "setActiveTerminalSet") {
+    const candidateNativeSessionIds = [
+      command.focusedSessionId,
+      ...(command.activeSessionIds ?? []),
+    ].filter((sessionId): sessionId is string => typeof sessionId === "string");
+    for (const nativeSessionId of candidateNativeSessionIds) {
+      const trace = getRecentPreviousSessionRestoreTrace(nativeSessionId);
+      if (trace) {
+        return trace;
+      }
+    }
+    return undefined;
+  }
+  if ("sessionId" in command && typeof command.sessionId === "string") {
+    return getRecentPreviousSessionRestoreTrace(command.sessionId);
+  }
+  return undefined;
+}
+
 function summarizeSidebarCardFocusTrace(
   trace:
     | { details?: unknown; nativeReceivedAt: number; requestId: number; sessionId?: string }
@@ -1376,25 +1440,34 @@ function postNative(command: NativeHostCommand): void {
     const sidebarCardFocusTrace = getRecentSidebarCardFocusTrace(
       getNativeFocusCommandSidebarSessionId(command),
     );
+    const previousSessionRestoreTrace = getNativeCommandPreviousSessionRestoreTrace(command);
+    const forceTrace =
+      sidebarCardFocusTrace !== undefined || previousSessionRestoreTrace !== undefined;
     /**
      * CDXC:NativeTerminalStartupFocus 2026-05-11-12:31
      * Startup focus drift can depend on command ordering across create,
      * layout, and explicit focus messages. Persist the actual native command
      * boundary under the focus-trace allowlist while Debugging Mode is enabled
      * so a repro minute shows which pane the sidebar asked native to focus.
+     *
+     * CDXC:PreviousSessions 2026-05-17-03:18:
+     * Previous-session restore can lose the terminal pane after the sidebar has already posted native create/layout commands.
+     * When a command references the just-restored native session, force this bridge breadcrumb for the short restore trace window so the repro shows the exact native command order.
      */
     appendTerminalFocusDebugLog("nativeFocusTrace.sidebarPostNativeFocusCommand", {
       command: summarizeNativeFocusCommand(command),
       focusedSessionId: snapshot?.focusedSessionId,
+      previousSessionRestoreTrace,
       sidebarCardFocusTrace: summarizeSidebarCardFocusTrace(sidebarCardFocusTrace),
       visibleSessionIds: snapshot?.visibleSessionIds,
-    }, { force: sidebarCardFocusTrace !== undefined });
+    }, { force: forceTrace });
     appendTerminalFocusDebugLog("nativeSidebar.postNative", {
       command: summarizeNativeFocusCommand(command),
       focusedSessionId: snapshot?.focusedSessionId,
+      previousSessionRestoreTrace,
       sidebarCardFocusTrace: summarizeSidebarCardFocusTrace(sidebarCardFocusTrace),
       visibleSessionIds: snapshot?.visibleSessionIds,
-    }, { force: sidebarCardFocusTrace !== undefined });
+    }, { force: forceTrace });
   }
   window.webkit?.messageHandlers?.ghostexNativeHost?.postMessage(command);
 }
@@ -1677,6 +1750,7 @@ function summarizeNativeFocusCommand(command: NativeHostCommand): Record<string,
   return {
     activeSessionIds: "activeSessionIds" in command ? command.activeSessionIds : undefined,
     backgroundColor: "backgroundColor" in command ? command.backgroundColor : undefined,
+    diagnosticSource: "diagnosticSource" in command ? command.diagnosticSource : undefined,
     focusRequestId: "focusRequestId" in command ? command.focusRequestId : undefined,
     focusedSessionId: "focusedSessionId" in command ? command.focusedSessionId : undefined,
     hasInitialInput: "initialInput" in command ? Boolean(command.initialInput) : undefined,
@@ -1753,6 +1827,25 @@ function appendStartupPaneLayoutDebugLog(event: string, details?: unknown): void
   postNative({
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event: `nativePaneLayoutStartup.${event}`,
+    force: true,
+    type: "appendTerminalFocusDebugLog",
+  });
+}
+
+function appendPreviousSessionRestoreTraceDebugLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:PreviousSessions 2026-05-17-03:18:
+   * The zmx previous-session restore repro can hide the terminal pane before the user can enable or inspect normal Debugging Mode logs.
+   * Force only this click-scoped restore breadcrumb chain so the next repro shows the archived record, provider choice, sidebar workspace mutation, and native create/layout handoff without broadening routine terminal logging.
+   */
+  postNative({
+    details: details === undefined ? undefined : safeSerializeForNativeLog({
+      activeProjectId,
+      details,
+      performanceNowMs: performance.now(),
+      wallTimeMs: Date.now(),
+    }),
+    event: `previousSessionRestore.${event}`,
     force: true,
     type: "appendTerminalFocusDebugLog",
   });
@@ -4434,17 +4527,53 @@ function deletePreviousSession(historyId: string): void {
 
 function restorePreviousSession(historyId: string): void {
   const previousSession = previousSessions.find((session) => session.historyId === historyId);
+  appendPreviousSessionRestoreTraceDebugLog("request.received", {
+    historyId,
+    isRestorable: previousSession?.isRestorable === true,
+    previousSessionCount: previousSessions.length,
+    previousSession: previousSession
+      ? {
+          groupId: previousSession.groupId,
+          projectId: previousSession.projectId,
+          projectPath: previousSession.projectPath,
+          title: previousSession.primaryTitle || previousSession.alias,
+        }
+      : undefined,
+  });
   if (!previousSession?.isRestorable) {
+    appendPreviousSessionRestoreTraceDebugLog("request.skipped", {
+      historyId,
+      reason: previousSession ? "not-restorable" : "history-missing",
+    });
     return;
   }
   const archivedRecord = normalizePreviousSessionRecord(previousSession.sessionRecord);
+  appendPreviousSessionRestoreTraceDebugLog("record.normalized", {
+    archivedKind: archivedRecord?.kind,
+    archivedSessionId: archivedRecord?.sessionId,
+    historyId,
+    sessionPersistenceName:
+      archivedRecord?.kind === "terminal" ? archivedRecord.sessionPersistenceName : undefined,
+    sessionPersistenceProvider:
+      archivedRecord?.kind === "terminal" ? archivedRecord.sessionPersistenceProvider : undefined,
+    title: archivedRecord?.title,
+    titleSource: archivedRecord?.titleSource,
+  });
   if (archivedRecord?.kind === "terminal") {
     if (restorePreviousTerminalSession(previousSession, archivedRecord)) {
       deletePreviousSession(historyId);
+      appendPreviousSessionRestoreTraceDebugLog("history.deletedAfterRestore", {
+        historyId,
+        remainingPreviousSessionCount: previousSessions.length,
+      });
     }
     return;
   }
 
+  appendPreviousSessionRestoreTraceDebugLog("nonTerminalFallback.createTerminal", {
+    historyId,
+    title: previousSession.primaryTitle || previousSession.alias || "Restored Session",
+  });
   createTerminal(previousSession.primaryTitle || previousSession.alias || "Restored Session");
   deletePreviousSession(historyId);
 }
@@ -4472,6 +4601,19 @@ function restorePreviousTerminalSession(
    * which appends restored sessions as new split panes.
    */
   const visiblePlacement = createFocusedTabGroupPlacement(groupId);
+  appendPreviousSessionRestoreTraceDebugLog("terminal.beforeCreate", {
+    archivedAgentName: archivedRecord.agentName,
+    archivedSessionId: archivedRecord.sessionId,
+    archivedSessionPersistenceName: archivedRecord.sessionPersistenceName,
+    archivedSessionPersistenceProvider: archivedRecord.sessionPersistenceProvider,
+    currentSessionPersistenceProvider: sessionPersistenceProvider,
+    groupId,
+    hasResumeInput: Boolean(initialInput.trim()),
+    projectId: project.projectId,
+    projectPath: project.path,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(project.workspace, groupId),
+    visiblePlacement: summarizeVisiblePlacement(visiblePlacement),
+  });
   const restoredSession = createTerminal(
     archivedRecord.title || previousSession.primaryTitle || DEFAULT_TERMINAL_SESSION_TITLE,
     initialInput,
@@ -4484,13 +4626,32 @@ function restorePreviousTerminalSession(
       ),
       sessionPersistenceProvider,
       visiblePlacement,
+      diagnosticSource: "previousSessionRestore",
     },
   );
   if (!restoredSession) {
+    appendPreviousSessionRestoreTraceDebugLog("terminal.createFailed", {
+      archivedSessionId: archivedRecord.sessionId,
+      groupId,
+      projectId: project.projectId,
+    });
     return false;
   }
 
   const restoredRecord = mergeArchivedTerminalDetails(restoredSession, archivedRecord);
+  const restoredNativeSessionId = nativeSessionIdForProjectSidebarSession(
+    project.projectId,
+    restoredSession.sessionId,
+  );
+  rememberPreviousSessionRestoreTraceNativeSession(restoredNativeSessionId);
+  appendPreviousSessionRestoreTraceDebugLog("terminal.created", {
+    archivedSessionId: archivedRecord.sessionId,
+    nativeSessionId: restoredNativeSessionId,
+    restoredSessionId: restoredSession.sessionId,
+    restoredSessionPersistenceName: restoredSession.sessionPersistenceName,
+    restoredSessionPersistenceProvider: restoredSession.sessionPersistenceProvider,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(project.workspace, groupId),
+  });
   updateProjectWorkspace(project.projectId, (workspace) =>
     replaceSessionRecordInWorkspace(workspace, restoredSession.sessionId, restoredRecord),
   );
@@ -4512,6 +4673,14 @@ function restorePreviousTerminalSession(
     terminalState.terminalTitle = restoredRecord.title;
   }
   publish();
+  appendPreviousSessionRestoreTraceDebugLog("terminal.afterPublish", {
+    nativeSessionId: restoredNativeSessionId,
+    restoredSessionId: restoredSession.sessionId,
+    targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
+      activeProject().workspace,
+      groupId,
+    ),
+  });
   return true;
 }
 
@@ -5684,7 +5853,7 @@ function createProjectedSidebarGroupsForProject(project: NativeProject): Sidebar
     isFocusModeActive: group.snapshot.visibleCount === 1,
     kind: "workspace",
     layoutVisibleCount: group.snapshot.visibleCount,
-    sessions: createProjectedSidebarSessionsForGroup(group),
+    sessions: createProjectedSidebarSessionsForGroup(group, project.projectId),
     title: group.title,
     viewMode: group.snapshot.viewMode,
     visibleCount: group.snapshot.visibleCount,
@@ -5811,6 +5980,9 @@ function createTitlebarResourceSession(
   return {
     activity: session.activity,
     agentIcon: session.agentIcon,
+    delayedSendDeadlineAt: session.delayedSendDeadlineAt,
+    delayedSendRemainingLabel: session.delayedSendRemainingLabel,
+    delayedSendRemainingMs: session.delayedSendRemainingMs,
     isRunning: session.isRunning,
     isSleeping: session.isSleeping,
     lastInteractionAt: session.lastInteractionAt,
@@ -5954,16 +6126,23 @@ function setProjectEditorCompanionPaneHidden(
   }
 }
 
-function createProjectedSidebarSessionsForGroup(group: SessionGroupRecord): SidebarSessionItem[] {
+function createProjectedSidebarSessionsForGroup(
+  group: SessionGroupRecord,
+  projectId = activeProject().projectId,
+): SidebarSessionItem[] {
   return createSidebarSessionItems(group.snapshot, "mac").map((session) => {
     const sessionRecord = group.snapshot.sessions.find(
       (candidate) => candidate.sessionId === session.sessionId,
     );
+    const delayedSend = getDelayedSendProjectionForProjectSession(projectId, session.sessionId);
     if (sessionRecord?.kind === "t3") {
       const isSleeping = sessionRecord.isSleeping === true;
       return {
         ...session,
         agentIcon: "t3",
+        delayedSendDeadlineAt: delayedSend?.deadlineAt,
+        delayedSendRemainingLabel: delayedSend?.remainingLabel,
+        delayedSendRemainingMs: delayedSend?.remainingMs,
         isRunning: !isSleeping,
         lastInteractionAt: sessionRecord.createdAt,
         lifecycleState: isSleeping ? "sleeping" : "running",
@@ -5975,7 +6154,12 @@ function createProjectedSidebarSessionsForGroup(group: SessionGroupRecord): Side
       sessionRecord?.kind === "terminal" ? sessionRecord.agentName : undefined;
     const terminalState = terminalStateById.get(session.sessionId);
     if (session.sessionKind !== "terminal") {
-      return session;
+      return {
+        ...session,
+        delayedSendDeadlineAt: delayedSend?.deadlineAt,
+        delayedSendRemainingLabel: delayedSend?.remainingLabel,
+        delayedSendRemainingMs: delayedSend?.remainingMs,
+      };
     }
     const visibleTerminalTitle = getVisibleTerminalTitle(terminalState?.terminalTitle);
     const displayPrimaryTitle =
@@ -6016,6 +6200,9 @@ function createProjectedSidebarSessionsForGroup(group: SessionGroupRecord): Side
       ...session,
       activity: terminalState?.activity ?? session.activity,
       agentIcon,
+      delayedSendDeadlineAt: delayedSend?.deadlineAt,
+      delayedSendRemainingLabel: delayedSend?.remainingLabel,
+      delayedSendRemainingMs: delayedSend?.remainingMs,
       firstUserMessage: sessionRecord?.firstUserMessage ?? terminalState?.firstUserMessage,
       lifecycleState: terminalState?.lifecycleState ?? session.lifecycleState,
       isGeneratingFirstPromptTitle: terminalState?.firstPromptAutoRenameInProgress === true,
@@ -7991,6 +8178,7 @@ function createTerminal(
   options?: {
     initialPresentation?: "background" | "focused";
     focusAfterCreate?: boolean;
+    diagnosticSource?: "previousSessionRestore";
     sessionPersistenceName?: string;
     sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
     splitDirection?: "horizontal" | "vertical";
@@ -8043,6 +8231,7 @@ function createTerminal(
   appendTerminalLaunchDebugLog("nativeSidebar.createTerminal.request", {
     activeProjectId,
     agentName,
+    diagnosticSource: options?.diagnosticSource,
     focusedSessionIdBefore: beforeSnapshot?.focusedSessionId,
     groupId,
     initialInputPreview: initialInput.trim().slice(0, 80),
@@ -8148,6 +8337,7 @@ function createTerminal(
   appendTerminalLaunchDebugLog("nativeSidebar.createTerminal.created", {
     activateOnCreate: false,
     agentName,
+    diagnosticSource: options?.diagnosticSource,
     focusedSessionIdAfter: result.snapshot.groups.find(
       (group) => group.groupId === result.snapshot.activeGroupId,
     )?.snapshot.focusedSessionId,
@@ -8207,6 +8397,7 @@ function createTerminal(
     */
     activateOnCreate: false,
     cwd: project.path,
+    diagnosticSource: options?.diagnosticSource,
     env: nativeEnvironment,
     initialInput,
     sessionId: nativeSessionId,
@@ -9892,7 +10083,7 @@ function closeTerminal(
     nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
     clearNativeSessionAttentionTracking(reference.sessionId);
     nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
-    clearDelayedSendTimer(reference.sessionId);
+    clearDelayedSendTimer(reference.sessionId, reference.project.projectId);
     postNative({
       preservePersistenceSession: options.preservePersistenceSession,
       sessionId: nativeSessionId,
@@ -9923,7 +10114,7 @@ function closeTerminal(
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
   clearNativeSessionAttentionTracking(reference.sessionId);
   nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
-  clearDelayedSendTimer(reference.sessionId);
+  clearDelayedSendTimer(reference.sessionId, reference.project.projectId);
   postNative({
     preservePersistenceSession: options.preservePersistenceSession,
     sessionId: nativeSessionId,
@@ -11223,7 +11414,7 @@ function restartNativeSession(sessionId: string): void {
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
   clearNativeSessionAttentionTracking(reference.sessionId);
   nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
-  clearDelayedSendTimer(reference.sessionId);
+  clearDelayedSendTimer(reference.sessionId, reference.project.projectId);
   updateProjectWorkspace(
     reference.project.projectId,
     (workspace) => removeSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
@@ -11301,7 +11492,10 @@ function promptDelayedSend(sessionId: string): void {
   if (!session || session.kind !== "terminal") {
     return;
   }
+  const delayedSend = getDelayedSendProjectionForSidebarSession(sessionId);
   openAppModal({
+    delayedSendDeadlineAt: delayedSend?.deadlineAt,
+    delayedSendRemainingLabel: delayedSend?.remainingLabel,
     modal: "delayedSend",
     sessionId,
     title: session.title || DEFAULT_TERMINAL_SESSION_TITLE,
@@ -11310,7 +11504,8 @@ function promptDelayedSend(sessionId: string): void {
 }
 
 function scheduleDelayedSend(sessionId: string, delayMs: number): void {
-  const session = findSessionRecord(sessionId);
+  const reference = resolveSidebarSessionReference(sessionId);
+  const session = findSessionRecordInProject(reference.project, reference.sessionId);
   if (!session || session.kind !== "terminal") {
     showNativeMessage("info", "Delayed Send is only available for terminal sessions.");
     return;
@@ -11320,9 +11515,13 @@ function scheduleDelayedSend(sessionId: string, delayMs: number): void {
     return;
   }
 
-  const existingTimeout = delayedSendTimeoutBySessionId.get(sessionId);
-  if (existingTimeout !== undefined) {
-    window.clearTimeout(existingTimeout);
+  const nativeSessionId = nativeSessionIdForProjectSidebarSession(
+    reference.project.projectId,
+    reference.sessionId,
+  );
+  const existingTimer = delayedSendTimerByNativeSessionId.get(nativeSessionId);
+  if (existingTimer !== undefined) {
+    window.clearTimeout(existingTimer.timeoutId);
   }
 
   /**
@@ -11330,30 +11529,114 @@ function scheduleDelayedSend(sessionId: string, delayMs: number): void {
    * Delayed Send must press Enter in the existing terminal after the requested
    * wait, so use the native sendTerminalEnter command instead of writing a
    * carriage return as terminal text.
+   *
+   * CDXC:DelayedSend 2026-05-17-03:14
+   * The pending Enter needs to remain inspectable and cancellable until it
+   * fires, so record the exact deadline and refresh published UI countdowns
+   * once per second while any Delayed Send timer exists.
    */
+  const deadlineAtMs = Date.now() + delayMs;
   const timeout = window.setTimeout(() => {
-    delayedSendTimeoutBySessionId.delete(sessionId);
-    const currentSession = findSessionRecord(sessionId);
+    delayedSendTimerByNativeSessionId.delete(nativeSessionId);
+    stopDelayedSendCountdownTickerIfIdle();
+    publish();
+    const currentProject = findProject(reference.project.projectId);
+    const currentSession = currentProject
+      ? findSessionRecordInProject(currentProject, reference.sessionId)
+      : undefined;
     if (!currentSession || currentSession.kind !== "terminal" || currentSession.isSleeping === true) {
       return;
     }
     postNative({
-      sessionId: nativeSessionIdForSidebarSession(sessionId),
+      sessionId: nativeSessionId,
       type: "sendTerminalEnter",
     });
   }, delayMs);
 
-  delayedSendTimeoutBySessionId.set(sessionId, timeout);
+  delayedSendTimerByNativeSessionId.set(nativeSessionId, {
+    deadlineAtMs,
+    projectId: reference.project.projectId,
+    sessionId: reference.sessionId,
+    timeoutId: timeout,
+  });
+  ensureDelayedSendCountdownTicker();
+  publish();
   showNativeMessage("info", `Delayed Send will press Enter in ${formatDelayedSendDelay(delayMs)}.`);
 }
 
-function clearDelayedSendTimer(sessionId: string): void {
-  const timeout = delayedSendTimeoutBySessionId.get(sessionId);
-  if (timeout === undefined) {
+function cancelDelayedSend(sessionId: string): void {
+  if (!clearDelayedSendTimer(sessionId)) {
+    showNativeMessage("info", "No Delayed Send timer is active for this terminal.");
     return;
   }
-  window.clearTimeout(timeout);
-  delayedSendTimeoutBySessionId.delete(sessionId);
+  publish();
+  showNativeMessage("info", "Delayed Send timer canceled.");
+}
+
+function clearDelayedSendTimer(sessionId: string, projectId?: string): boolean {
+  const nativeSessionId = projectId
+    ? nativeSessionIdForProjectSidebarSession(projectId, sessionId)
+    : nativeSessionIdForSidebarSession(sessionId);
+  const timer = delayedSendTimerByNativeSessionId.get(nativeSessionId);
+  if (timer === undefined) {
+    return false;
+  }
+  window.clearTimeout(timer.timeoutId);
+  delayedSendTimerByNativeSessionId.delete(nativeSessionId);
+  stopDelayedSendCountdownTickerIfIdle();
+  return true;
+}
+
+function getDelayedSendProjectionForSidebarSession(
+  sessionId: string,
+): { deadlineAt: string; remainingLabel: string; remainingMs: number } | undefined {
+  const reference = resolveSidebarSessionReference(sessionId);
+  return getDelayedSendProjectionForProjectSession(reference.project.projectId, reference.sessionId);
+}
+
+function getDelayedSendProjectionForProjectSession(
+  projectId: string,
+  sessionId: string,
+): { deadlineAt: string; remainingLabel: string; remainingMs: number } | undefined {
+  const nativeSessionId = nativeSessionIdForProjectSidebarSession(projectId, sessionId);
+  const timer = delayedSendTimerByNativeSessionId.get(nativeSessionId);
+  if (!timer) {
+    return undefined;
+  }
+  const remainingMs = timer.deadlineAtMs - Date.now();
+  if (remainingMs <= 0) {
+    return {
+      deadlineAt: new Date(timer.deadlineAtMs).toISOString(),
+      remainingLabel: formatDelayedSendCountdown(0),
+      remainingMs: 0,
+    };
+  }
+  return {
+    deadlineAt: new Date(timer.deadlineAtMs).toISOString(),
+    remainingLabel: formatDelayedSendCountdown(remainingMs),
+    remainingMs,
+  };
+}
+
+function ensureDelayedSendCountdownTicker(): void {
+  if (delayedSendCountdownTicker !== undefined) {
+    return;
+  }
+  delayedSendCountdownTicker = window.setInterval(() => {
+    if (delayedSendTimerByNativeSessionId.size === 0) {
+      stopDelayedSendCountdownTickerIfIdle();
+      return;
+    }
+    publish();
+  }, 1_000);
+}
+
+function stopDelayedSendCountdownTickerIfIdle(): void {
+  if (delayedSendTimerByNativeSessionId.size > 0 || delayedSendCountdownTicker === undefined) {
+    return;
+  }
+  window.clearInterval(delayedSendCountdownTicker);
+  delayedSendCountdownTicker = undefined;
 }
 
 function formatDelayedSendDelay(delayMs: number): string {
@@ -11367,6 +11650,19 @@ function formatDelayedSendDelay(delayMs: number): string {
     seconds > 0 ? `${seconds}s` : undefined,
   ].filter((part): part is string => part !== undefined);
   return parts.join(" ") || "1s";
+}
+
+function formatDelayedSendCountdown(delayMs: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(delayMs / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  const paddedMinutes = String(minutes).padStart(2, "0");
+  const paddedSeconds = String(seconds).padStart(2, "0");
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${paddedMinutes}:${paddedSeconds}`;
+  }
+  return `${paddedMinutes}:${paddedSeconds}`;
 }
 
 function findSidebarSessionForCli(
@@ -15320,6 +15616,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "scheduleDelayedSend":
       scheduleDelayedSend(message.sessionId, message.delayMs);
       return;
+    case "cancelDelayedSend":
+      cancelDelayedSend(message.sessionId);
+      return;
     case "fullReloadSession":
       restartNativeSession(message.sessionId);
       return;
@@ -15873,6 +16172,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const sessionActivities: Record<string, "attention" | "sleeping" | "working"> = {};
   const sessionAgentIconColors: Record<string, string> = {};
   const sessionAgentIconDataUrls: Record<string, string> = {};
+  const sessionDelayedSendRemainingLabels: Record<string, string> = {};
   const sessionFaviconDataUrls: Record<string, string> = {};
   const sessionTitleBarActions: Record<string, NativeTerminalTitleBarAction[]> = {};
   const sessionTitles: Record<string, string> = {};
@@ -15880,6 +16180,10 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   for (const session of [...visibleSessions, ...commandPanelVisibleSessions]) {
     const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
     sessionTitles[nativeSessionId] = session.title;
+    const delayedSend = getDelayedSendProjectionForSidebarSession(session.sessionId);
+    if (delayedSend) {
+      sessionDelayedSendRemainingLabels[nativeSessionId] = delayedSend.remainingLabel;
+    }
     /**
      * CDXC:NativePaneReorder 2026-05-03-03:57
      * Native pane reorder feedback must show the same identity cue as the
@@ -16088,6 +16392,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     poppedOutSessionIds,
     sessionAgentIconDataUrls,
     sessionAgentIconColors,
+    sessionDelayedSendRemainingLabels,
     sessionFaviconDataUrls,
     sessionActivities,
     sleepingSessionIds,

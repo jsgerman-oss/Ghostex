@@ -944,6 +944,7 @@ final class TerminalWorkspaceView: NSView {
     let titleBarView: TerminalSessionTitleBarView
     let borderView: TerminalPaneBorderView
     let persistenceLabelView: TerminalPanePersistenceLabelView
+    let delayedSendLabelView: TerminalPaneDelayedSendLabelView
     var foregroundPid: Int?
     var sessionPersistenceName: String?
     var sessionPersistenceProvider: NativeSessionPersistenceProvider?
@@ -1199,6 +1200,7 @@ final class TerminalWorkspaceView: NSView {
   private var sessionAgentIconColors = [String: String]()
   private var sessionAgentIconDataUrls = [String: String]()
   private var sessionActivities = [String: NativeTerminalActivity]()
+  private var sessionDelayedSendRemainingLabels = [String: String]()
   private var sessionFaviconDataUrls = [String: String]()
   private var sessionTitleBarActions = [String: [TerminalTitleBarAction]]()
   private var sessionTitles = [String: String]()
@@ -1847,29 +1849,38 @@ final class TerminalWorkspaceView: NSView {
 
   func createTerminal(_ command: CreateTerminal) {
     let activateOnCreate = command.activateOnCreate ?? true
+    let forcePreviousSessionRestoreDiagnostics = command.diagnosticSource == "previousSessionRestore"
     /**
      CDXC:CrashDiagnostics 2026-05-04-09:10
      Rapid sidebar agent launches must identify whether the crash happens
      before Ghostty surface allocation, during mount, or after ready events.
      Keep these breadcrumbs in the native focus log alongside layout sync.
+
+     CDXC:PreviousSessions 2026-05-17-03:18:
+     Previous-session restore repros need native create breadcrumbs even when Settings Debugging Mode was not enabled before the bad click.
+     Force only commands tagged by the sidebar restore flow so zmx attach and AppKit surface creation can be correlated with the sidebar restore trace.
      */
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.createTerminal.received",
       details: [
         "activateOnCreate": activateOnCreate,
         "activeSessionIds": Array(activeSessionIds).sorted(),
+        "diagnosticSource": command.diagnosticSource ?? "",
         "hasInitialInput": command.initialInput?.isEmpty == false,
         "knownSessionIds": Array(sessions.keys).sorted(),
         "requestedSessionId": command.sessionId,
         "title": command.title ?? "",
-      ])
+      ],
+      force: forcePreviousSessionRestoreDiagnostics)
     if sessions[command.sessionId] != nil {
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.createTerminal.existing",
         details: [
           "activeSessionIds": Array(activeSessionIds).sorted(),
+          "diagnosticSource": command.diagnosticSource ?? "",
           "requestedSessionId": command.sessionId,
-        ])
+        ],
+        force: forcePreviousSessionRestoreDiagnostics)
       focusTerminal(sessionId: command.sessionId, reason: "createTerminalExisting")
       if let initialInput = command.initialInput, !initialInput.isEmpty {
         writeTerminalText(sessionId: command.sessionId, text: initialInput)
@@ -1941,11 +1952,13 @@ final class TerminalWorkspaceView: NSView {
         "requestedSessionId": command.sessionId,
         "surfaceProcessColorEnv": nativeTerminalColorEnvironmentSnapshot(
           nativeGhosttyTerminalEffectiveProcessEnvironment()),
+        "diagnosticSource": command.diagnosticSource ?? "",
         "title": command.title ?? "",
         "sessionPersistenceName": sessionPersistenceName ?? "",
         "sessionPersistenceProvider": sessionPersistenceProvider?.rawValue ?? "off",
         "workingDirectory": command.cwd,
-      ])
+      ],
+      force: forcePreviousSessionRestoreDiagnostics)
     let surfaceView = withNativeGhosttyTerminalProcessEnvironment {
       GhostexGhosttySurfaceView(app, baseConfig: config)
     }
@@ -1966,9 +1979,11 @@ final class TerminalWorkspaceView: NSView {
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.createTerminal.surfaceInit.completed",
       details: [
+        "diagnosticSource": command.diagnosticSource ?? "",
         "hasSurfaceModel": surfaceView.surfaceModel != nil,
         "requestedSessionId": command.sessionId,
-      ])
+      ],
+      force: forcePreviousSessionRestoreDiagnostics)
     surfaceView.translatesAutoresizingMaskIntoConstraints = false
     /**
      CDXC:NativeTerminals 2026-04-28-03:09
@@ -2024,6 +2039,8 @@ final class TerminalWorkspaceView: NSView {
     let persistenceLabelView = TerminalPanePersistenceLabelView()
     persistenceLabelView.translatesAutoresizingMaskIntoConstraints = false
     persistenceLabelView.setProvider(sessionPersistenceProvider, sessionName: sessionPersistenceName)
+    let delayedSendLabelView = TerminalPaneDelayedSendLabelView()
+    delayedSendLabelView.translatesAutoresizingMaskIntoConstraints = false
     let containerView = TerminalPaneLeafContainerView()
     containerView.translatesAutoresizingMaskIntoConstraints = true
 
@@ -2036,6 +2053,7 @@ final class TerminalWorkspaceView: NSView {
       titleBarView: titleBarView,
       borderView: borderView,
       persistenceLabelView: persistenceLabelView,
+      delayedSendLabelView: delayedSendLabelView,
       foregroundPid: nil,
       sessionPersistenceName: sessionPersistenceName,
       sessionPersistenceProvider: sessionPersistenceProvider,
@@ -2145,11 +2163,13 @@ final class TerminalWorkspaceView: NSView {
       details: [
         "activateOnCreate": activateOnCreate,
         "activeSessionIds": Array(activeSessionIds).sorted(),
+        "diagnosticSource": command.diagnosticSource ?? "",
         "foregroundPid": foregroundPid ?? 0,
         "requestedSessionId": command.sessionId,
         "ttyName": ttyName ?? "",
         "visibleSessionIds": orderedVisibleSessionIds(),
-      ])
+      ],
+      force: forcePreviousSessionRestoreDiagnostics)
   }
 
   private func updatePersistenceSessionForTerminalTitle(sessionId: String, title: String) -> String? {
@@ -2233,6 +2253,7 @@ final class TerminalWorkspaceView: NSView {
     activeSessionIds.remove(sessionId)
     sessionActivities.removeValue(forKey: sessionId)
     sessionAgentIconDataUrls.removeValue(forKey: sessionId)
+    sessionDelayedSendRemainingLabels.removeValue(forKey: sessionId)
     sessionFaviconDataUrls.removeValue(forKey: sessionId)
     sessionTitleBarActions.removeValue(forKey: sessionId)
     sessionTitles.removeValue(forKey: sessionId)
@@ -2581,6 +2602,7 @@ final class TerminalWorkspaceView: NSView {
     activeSessionIds.remove(sessionId)
     sessionActivities.removeValue(forKey: sessionId)
     sessionAgentIconDataUrls.removeValue(forKey: sessionId)
+    sessionDelayedSendRemainingLabels.removeValue(forKey: sessionId)
     sessionFaviconDataUrls.removeValue(forKey: sessionId)
     sessionTitleBarActions.removeValue(forKey: sessionId)
     sessionTitles.removeValue(forKey: sessionId)
@@ -3798,6 +3820,7 @@ final class TerminalWorkspaceView: NSView {
     let nextPaneGap = Self.clampedPaneGap(command.paneGap)
     let nextLayout = command.layout
     let previousSidebarResizeEdgeExtensionWidth = sidebarResizeEdgeExtensionWidth
+    let previousDelayedSendRemainingLabels = sessionDelayedSendRemainingLabels
     let shouldRelayout =
       command.layoutChanged
       ?? (nativeLayoutSignature(
@@ -3849,10 +3872,14 @@ final class TerminalWorkspaceView: NSView {
     sessionAgentIconColors = command.sessionAgentIconColors ?? [:]
     sessionAgentIconDataUrls = command.sessionAgentIconDataUrls ?? [:]
     sessionActivities = command.sessionActivities ?? [:]
+    sessionDelayedSendRemainingLabels = command.sessionDelayedSendRemainingLabels ?? [:]
     sessionFaviconDataUrls = command.sessionFaviconDataUrls ?? [:]
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
     activeProjectEditorId = nextActiveProjectEditorId
+    if previousDelayedSendRemainingLabels != sessionDelayedSendRemainingLabels {
+      needsLayout = true
+    }
     syncProjectEditorTabBars()
     focusedSessionId = command.focusedSessionId
     terminalLayout = nextLayout
@@ -3896,6 +3923,8 @@ final class TerminalWorkspaceView: NSView {
       session.titleBarView.setAgentIconDataUrl(
         sessionAgentIconDataUrls[session.sessionId],
         colorHex: sessionAgentIconColors[session.sessionId])
+      session.delayedSendLabelView.setRemainingLabel(
+        sessionDelayedSendRemainingLabels[session.sessionId])
       if shouldRelayout {
         let isPoppedOut = poppedOutSessionIds.contains(session.sessionId)
         let isActive = (!isProjectEditorActive && activeSessionIds.contains(session.sessionId)) || isCommandActive
@@ -4409,6 +4438,7 @@ final class TerminalWorkspaceView: NSView {
     mount(session.scrollView, in: session.containerView)
     mount(session.searchBarView, in: session.containerView)
     mount(session.persistenceLabelView, in: session.containerView)
+    mount(session.delayedSendLabelView, in: session.containerView)
     mount(session.borderView, in: session.containerView)
   }
 
@@ -8456,6 +8486,7 @@ final class TerminalWorkspaceView: NSView {
       session.searchBarView.isHidden = true
       session.persistenceLabelView.setSuppressed(true)
       session.persistenceLabelView.frame = .zero
+      session.delayedSendLabelView.frame = .zero
       session.borderView.frame = session.containerView.bounds
       updateTerminalBorder(for: sessionId)
       return
@@ -8468,6 +8499,9 @@ final class TerminalWorkspaceView: NSView {
     session.persistenceLabelView.frame = persistenceLabelFrame(
       in: terminalRect,
       labelView: session.persistenceLabelView)
+    session.delayedSendLabelView.frame = delayedSendLabelFrame(
+      in: terminalRect,
+      labelView: session.delayedSendLabelView)
     session.borderView.frame = session.containerView.bounds
     logTerminalResizeIfNeeded(
       session: session,
@@ -8491,6 +8525,24 @@ final class TerminalWorkspaceView: NSView {
     return CGRect(
       x: max(10, terminalRect.maxX - labelWidth - 10),
       y: max(6, terminalRect.maxY - labelHeight - 6),
+      width: labelWidth,
+      height: labelHeight
+    )
+  }
+
+  private func delayedSendLabelFrame(
+    in terminalRect: CGRect,
+    labelView: TerminalPaneDelayedSendLabelView
+  ) -> CGRect {
+    guard !labelView.isHidden, terminalRect.width > 48, terminalRect.height > 32 else {
+      return .zero
+    }
+    let labelSize = labelView.fittingSize
+    let labelWidth = min(ceil(labelSize.width), max(terminalRect.width - 24, 0))
+    let labelHeight = min(max(ceil(labelSize.height), 22), max(terminalRect.height - 16, 0))
+    return CGRect(
+      x: max(12, terminalRect.maxX - labelWidth - 12),
+      y: terminalRect.minY + 8,
       width: labelWidth,
       height: labelHeight
     )
@@ -8543,6 +8595,7 @@ final class TerminalWorkspaceView: NSView {
       session.titleBarView.setDebugContext(ownerSessionId: ownerSessionId, paneKind: "terminal")
       session.titleBarView.setTabs(items, activeSessionId: activeSessionId)
       session.titleBarView.setTabActivities(sessionActivities)
+      session.titleBarView.setTabDelayedSendRemainingLabels(sessionDelayedSendRemainingLabels)
       session.titleBarView.setTabIdentityIcons(
         faviconDataUrls: sessionFaviconDataUrls,
         agentIconDataUrls: sessionAgentIconDataUrls,
@@ -8552,6 +8605,7 @@ final class TerminalWorkspaceView: NSView {
       session.titleBarView.setDebugContext(ownerSessionId: ownerSessionId, paneKind: "web")
       session.titleBarView.setTabs(items, activeSessionId: activeSessionId)
       session.titleBarView.setTabActivities(sessionActivities)
+      session.titleBarView.setTabDelayedSendRemainingLabels(sessionDelayedSendRemainingLabels)
       session.titleBarView.setTabIdentityIcons(
         faviconDataUrls: sessionFaviconDataUrls,
         agentIconDataUrls: sessionAgentIconDataUrls,
@@ -10031,6 +10085,7 @@ final class TerminalWorkspaceView: NSView {
       setHidden(!isActive, for: session.borderView)
       session.titleBarView.setState(activity: sessionActivities[sessionId])
       session.titleBarView.setTabActivities(sessionActivities)
+      session.titleBarView.setTabDelayedSendRemainingLabels(sessionDelayedSendRemainingLabels)
       session.titleBarView.setTabIdentityIcons(
         faviconDataUrls: sessionFaviconDataUrls,
         agentIconDataUrls: sessionAgentIconDataUrls,
@@ -10055,6 +10110,7 @@ final class TerminalWorkspaceView: NSView {
       activity: sessionActivities[sessionId]
     )
     session.titleBarView.setTabActivities(sessionActivities)
+    session.titleBarView.setTabDelayedSendRemainingLabels(sessionDelayedSendRemainingLabels)
     session.titleBarView.setTabIdentityIcons(
       faviconDataUrls: sessionFaviconDataUrls,
       agentIconDataUrls: sessionAgentIconDataUrls,
@@ -12975,11 +13031,13 @@ private final class TerminalTitleBarTabButton: NSButton {
     alpha: 1
   ).cgColor
   private static let sleepingIconColor = NSColor(calibratedWhite: 0.86, alpha: 0.42)
+  private static let delayedSendIconColor = NSColor(calibratedRed: 0xB6 / 255, green: 0xEC / 255, blue: 0xFF / 255, alpha: 0.9)
   private static let commandTabSeparatorColor = NSColor(calibratedWhite: 1, alpha: 0.10).cgColor
   private static let workspaceTabBaseRed: CGFloat = 0x05 / 255
   private static let workspaceTabBaseGreen: CGFloat = 0x06 / 255
   private static let workspaceTabBaseBlue: CGFloat = 0x08 / 255
   private static let sleepingIconSize: CGFloat = 9
+  private static let delayedSendIconSize: CGFloat = 10
   private static let activityIndicatorSize: CGFloat = 8
   private static let activityIndicatorTrailingPadding: CGFloat = 9
   private static let titleLeadingPadding: CGFloat = 8
@@ -13033,6 +13091,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   private var identityFaviconImage: NSImage?
   private var isFocusedPane = true
   private var chromeRole: TerminalPaneChromeRole = .workspace
+  private var delayedSendRemainingLabel: String?
   private var isSleepingTab = false
   private var showsCommandTrailingSeparator = false
   private var pendingMouseDownInlineAction: InlineAction?
@@ -13080,6 +13139,24 @@ private final class TerminalTitleBarTabButton: NSButton {
     }
     isSleepingTab = isSleeping
     updateChrome()
+  }
+
+  func setDelayedSendRemainingLabel(_ remainingLabel: String?) {
+    let normalizedLabel = remainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let nextLabel = normalizedLabel?.isEmpty == false ? normalizedLabel : nil
+    guard delayedSendRemainingLabel != nextLabel else {
+      toolTip = delayedSendToolTip()
+      return
+    }
+    /*
+     CDXC:DelayedSend 2026-05-17-03:14:
+     Native pane tabs need the active Delayed Send timer beside the session
+     title, using the same right-side status slot as the sleeping moon, and the
+     tooltip must expose the remaining countdown.
+     */
+    delayedSendRemainingLabel = nextLabel
+    toolTip = delayedSendToolTip()
+    needsDisplay = true
   }
 
   func setFocusedPane(_ isFocused: Bool) {
@@ -13682,7 +13759,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   private var hasActivityIndicator: Bool {
-    isSleepingTab || activity != nil
+    delayedSendRemainingLabel != nil || isSleepingTab || activity != nil
   }
 
   private var activityIndicatorFrame: CGRect {
@@ -13694,6 +13771,10 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   private func drawActivityIndicatorIfNeeded() {
+    if delayedSendRemainingLabel != nil {
+      drawDelayedSendIcon()
+      return
+    }
     if isSleepingTab || activity == .sleeping {
       drawSleepingIcon()
       return
@@ -13732,6 +13813,31 @@ private final class TerminalTitleBarTabButton: NSButton {
       color: Self.sleepingIconColor,
       rotateDegrees: 0,
       mirrorX: false)
+  }
+
+  private func drawDelayedSendIcon() {
+    let baseRect = activityIndicatorFrame
+    let iconRect = CGRect(
+      x: baseRect.midX - Self.delayedSendIconSize / 2,
+      y: floor((bounds.height - Self.delayedSendIconSize) / 2) + 1,
+      width: Self.delayedSendIconSize,
+      height: Self.delayedSendIconSize)
+    guard let image = NSImage(systemSymbolName: "clock", accessibilityDescription: nil) else {
+      return
+    }
+    drawTintedSymbol(
+      image,
+      in: iconRect,
+      color: Self.delayedSendIconColor,
+      rotateDegrees: 0,
+      mirrorX: false)
+  }
+
+  private func delayedSendToolTip() -> String {
+    guard let delayedSendRemainingLabel else {
+      return title
+    }
+    return "\(title)\nDelayed Send in \(delayedSendRemainingLabel)"
   }
 
   private func drawInlineActionControl() {
@@ -14083,6 +14189,7 @@ private final class TerminalSessionTitleBarView: NSView {
       button.setChromeRole(chromeRole)
       button.setActive(tab.sessionId == activeSessionId)
       button.setSleeping(tab.isSleeping)
+      button.setDelayedSendRemainingLabel(nil)
       button.setContextMenuActions(tab.actions)
     }
     updateTabGroupFocusAppearance()
@@ -14131,6 +14238,12 @@ private final class TerminalSessionTitleBarView: NSView {
   func setTabActivities(_ activities: [String: NativeTerminalActivity]) {
     for button in tabButtons {
       button.setActivity(activities[button.sessionId])
+    }
+  }
+
+  func setTabDelayedSendRemainingLabels(_ remainingLabels: [String: String]) {
+    for button in tabButtons {
+      button.setDelayedSendRemainingLabel(remainingLabels[button.sessionId])
     }
   }
 
@@ -17443,6 +17556,62 @@ private final class TerminalPanePersistenceLabelView: NSTextField {
 
   private func updateVisibility() {
     isHidden = isSuppressedByPaneState || stringValue.isEmpty
+  }
+}
+
+private final class TerminalPaneDelayedSendLabelView: NSTextField {
+  private static let labelFont = NSFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold)
+
+  override var fittingSize: NSSize {
+    guard !stringValue.isEmpty else {
+      return .zero
+    }
+    let size = (stringValue as NSString).size(withAttributes: [.font: Self.labelFont])
+    return NSSize(width: ceil(size.width) + 16, height: 26)
+  }
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    isBezeled = false
+    drawsBackground = false
+    isEditable = false
+    isSelectable = false
+    isHidden = true
+    lineBreakMode = .byTruncatingTail
+    font = Self.labelFont
+    textColor = NSColor(calibratedRed: 0xB6 / 255, green: 0xEC / 255, blue: 0xFF / 255, alpha: 0.74)
+    alignment = .right
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
+  }
+
+  func setRemainingLabel(_ remainingLabel: String?) {
+    let normalizedLabel = remainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let nextLabel: String
+    if let normalizedLabel, !normalizedLabel.isEmpty {
+      nextLabel = normalizedLabel
+    } else {
+      nextLabel = ""
+    }
+    guard stringValue != nextLabel else {
+      return
+    }
+    /*
+     CDXC:DelayedSend 2026-05-17-03:14:
+     Terminal panes need a larger bottom-right floating countdown for active
+     Delayed Send timers, formatted as hh:mm:ss only when hours exist and
+     otherwise mm:ss, so users can see when the staged command will submit.
+     */
+    stringValue = nextLabel
+    isHidden = nextLabel.isEmpty
+    needsLayout = true
+    superview?.needsLayout = true
   }
 }
 
