@@ -1,4 +1,6 @@
-## The best parts of Ghostty & Codex App = Ghostex!<br />
+## Ghostty Terminals with Codex App's Awesome Features = Ghostex!
+
+<br />
 
 - T3code Support
 - Agent CLIs Manager
