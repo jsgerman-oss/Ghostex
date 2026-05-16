@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.0 - 2026-05-16
+
+- Added a full-window Command Palette on `Cmd+K` for Ghostex actions, project actions, Settings, pane controls, and pet controls.
+- Added sidebar display presets for Codex, Minimal, and Detailed layouts so users can quickly choose how quiet or information-rich the sidebar should be.
+- Improved Agents Hub editing so saved files update immediately in the open modal and external editor buttons open the right folder with the selected file focused.
+- Moved browser pane sessions into their project groups and removed the separate Browsers sidebar section so project work stays grouped together.
+- Improved project Git/browser panes with project tabs, browser toolbar support, and more reliable active project selection.
+- Improved Previous Sessions search with the newer modal styling and multiline query input.
+- Improved the `ghostex` / `gtx` CLI help and session listing so commands are easier to scan and sessions follow the sidebar's Last Active order.
+
 ## 3.0.0 - 2026-05-15
 
 - Added a Tips & Tricks guide inside Ghostex with practical pages for workspace basics, agents and sessions, actions and browsers, Codex setup, and remote access from a phone or another machine.
