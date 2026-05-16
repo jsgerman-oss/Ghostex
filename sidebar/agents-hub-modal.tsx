@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
+import { applySavedAgentsHubContents } from "../shared/agents-hub-catalog";
 import type {
   AgentsHubCatalogMessage,
   AgentsHubFile,
@@ -73,6 +74,12 @@ const emptyGroupsByTab: Record<AgentsHubTab, AgentsHubGroup[]> = {
   hooks: [],
   mds: [],
   skills: [],
+};
+const emptySavedContentsByPath: Record<string, string> = {};
+
+type AgentsHubSavedContentOverlay = {
+  catalogGeneratedAt?: string;
+  contentsByPath: Record<string, string>;
 };
 
 export function AgentsHubModal({
@@ -132,7 +139,18 @@ function AgentsHubSurface({
   isOpen: boolean;
   vscode: WebviewApi;
 }) {
-  const groupsByTab = catalog?.groupsByTab ?? emptyGroupsByTab;
+  const [savedContentOverlay, setSavedContentOverlay] = useState<AgentsHubSavedContentOverlay>({
+    contentsByPath: emptySavedContentsByPath,
+  });
+  const activeSavedContentsByPath =
+    savedContentOverlay.catalogGeneratedAt === catalog?.generatedAt
+      ? savedContentOverlay.contentsByPath
+      : emptySavedContentsByPath;
+  const groupsByTab = useMemo(
+    () =>
+      applySavedAgentsHubContents(catalog?.groupsByTab ?? emptyGroupsByTab, activeSavedContentsByPath),
+    [activeSavedContentsByPath, catalog?.groupsByTab],
+  );
   const [activeTab, setActiveTab] = useState<AgentsHubTab>(initialTab);
   const [query, setQuery] = useState("");
   const [selectedFileIds, setSelectedFileIds] = useState<Record<AgentsHubTab, string>>({
@@ -238,7 +256,27 @@ function AgentsHubSurface({
               </ScrollArea>
             </aside>
             {activeFile ? (
-              <EditorPane editorCommand={editorCommand} file={activeFile} vscode={vscode} />
+              <EditorPane
+                editorCommand={editorCommand}
+                file={activeFile}
+                onSaveContent={(filePath, content) => {
+                  /**
+                   * CDXC:AgentsHub 2026-05-16-07:19:
+                   * Saving a Hub file must immediately update the open modal's file catalog because users can select another file and return before native sends a fresh filesystem scan.
+                   * Keep the persisted editor text as the selected file content only for the catalog generation it was saved from, so reselecting a saved file cannot rehydrate the pre-save buffer and a later native scan stays authoritative.
+                   */
+                  setSavedContentOverlay((current) => ({
+                    catalogGeneratedAt: catalog?.generatedAt,
+                    contentsByPath: {
+                      ...(current.catalogGeneratedAt === catalog?.generatedAt
+                        ? current.contentsByPath
+                        : emptySavedContentsByPath),
+                      [filePath]: content,
+                    },
+                  }));
+                }}
+                vscode={vscode}
+              />
             ) : (
               <div className="agents-hub-editor-frame">
                 <div className="agents-hub-empty">
@@ -428,10 +466,12 @@ function getAgentProfileBadge(profilePath: string): string | undefined {
 function EditorPane({
   editorCommand,
   file,
+  onSaveContent,
   vscode,
 }: {
   editorCommand: string;
   file: AgentsHubFile;
+  onSaveContent: (filePath: string, content: string) => void;
   vscode: WebviewApi;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -526,6 +566,7 @@ function EditorPane({
       filePath: file.path,
       type: "saveAgentsHubFile",
     });
+    onSaveContent(file.path, value);
     setSavedValue(value);
     setFallbackValue(value);
     setIsSaving(false);
