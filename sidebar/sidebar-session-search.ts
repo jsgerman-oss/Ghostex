@@ -24,21 +24,22 @@ export type SidebarSessionSearchSelection =
     };
 
 export function createSidebarSessionSearchResults({
-  displayedBrowserGroupIds,
-  displayedBrowserSessionIdsByGroup,
   displayedWorkspaceGroupIds,
   displayedWorkspaceSessionIdsByGroup,
   filteredPreviousSessions,
 }: {
-  displayedBrowserGroupIds: readonly string[];
-  displayedBrowserSessionIdsByGroup: SessionIdsByGroup;
   displayedWorkspaceGroupIds: readonly string[];
   displayedWorkspaceSessionIdsByGroup: SessionIdsByGroup;
   filteredPreviousSessions: readonly SidebarPreviousSessionItem[];
 }): SidebarSessionSearchResult[] {
   const results: SidebarSessionSearchResult[] = [];
 
-  appendSessionResults(results, displayedBrowserGroupIds, displayedBrowserSessionIdsByGroup);
+  /**
+   * CDXC:ProjectBrowserTabs 2026-05-16-12:59:
+   * The standalone Browsers group is no longer part of the sidebar. Browser
+   * pane sessions participate in search through their owning project group,
+   * so keyboard navigation should follow the project session list only.
+   */
   appendSessionResults(results, displayedWorkspaceGroupIds, displayedWorkspaceSessionIdsByGroup);
 
   for (const session of filteredPreviousSessions) {

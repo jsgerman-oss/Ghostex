@@ -250,10 +250,12 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
               className="previous-sessions-find-button"
               onClick={() => {
                 const normalizedQuery = searchQuery.trim();
-                console.debug("[ghostex-previous-sessions] promptFindPreviousSession.click", {
-                  hasQuery: Boolean(normalizedQuery),
-                  queryLength: normalizedQuery.length,
-                });
+                if (showDebugSessionNumbers) {
+                  console.debug("[ghostex-previous-sessions] promptFindPreviousSession.click", {
+                    hasQuery: Boolean(normalizedQuery),
+                    queryLength: normalizedQuery.length,
+                  });
+                }
                 /**
                  * CDXC:PreviousSessions 2026-05-07-16:02
                  * The footer button is explicitly a prompt launcher. Always

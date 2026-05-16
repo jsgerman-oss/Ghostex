@@ -425,6 +425,11 @@ export function SessionGroupSection({
   const areSessionDropTargetsDisabled = draggingDisabled || sessionDraggingDisabled;
   const debuggingMode = useSidebarStore((state) => state.hud.debuggingMode);
   const agents = useSidebarStore((state) => state.hud.agents);
+  const hideProjectHeaderDiffStats = useSidebarStore(
+    (state) =>
+      state.hud.settings?.hideProjectHeaderDiffStats ??
+      DEFAULT_ghostex_SETTINGS.hideProjectHeaderDiffStats,
+  );
   const showProjectEditorDiffFileCount = useSidebarStore(
     (state) =>
       state.hud.settings?.showProjectEditorDiffFileCount ??
@@ -522,7 +527,15 @@ export function SessionGroupSection({
     groupKind: group.kind,
     sessions: groupSessions,
   });
-  const emptyStateLabel = isBrowserGroup ? "No browsers" : isChatCollection ? "No chats" : "No sessions";
+  /*
+   * CDXC:QuickSessions 2026-05-16-12:55:
+   * The projectless chat collection remains modeled as Chats internally, but the empty reference-sidebar copy should read as Quick Sessions for users.
+   */
+  const emptyStateLabel = isBrowserGroup
+    ? "No browsers"
+    : isChatCollection
+      ? "No Quick Sessions"
+      : "No sessions";
   const shouldInitializeEmptyProjectTerminal =
     shouldInitializeEmptyProjectTerminalOnHeaderActivation({
       hasProjectContext: Boolean(projectContext),
@@ -1253,7 +1266,9 @@ export function SessionGroupSection({
                     ) : null}
                   </div>
                 ) : null}
+                {/* CDXC:ProjectDiffStats 2026-05-16-08:46: Users can hide the project-header +added/-removed line summary entirely while keeping diff collection and action refresh behavior unchanged. */}
                 {projectContext &&
+                !hideProjectHeaderDiffStats &&
                 !shouldShowCollapsedProjectCounts &&
                 shouldShowProjectEditorDiffStats(projectContext.editor.diffStats) ? (
                   <ProjectHeaderDiffStats

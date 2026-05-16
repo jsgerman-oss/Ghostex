@@ -151,6 +151,7 @@ export function SortableSessionCard({
 }: SortableSessionCardProps) {
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
   const {
+    hideSessionAgentIconUntilHover,
     renameSessionOnDoubleClick,
     showCloseButton,
     showDebugSessionNumbers,
@@ -158,6 +159,15 @@ export function SortableSessionCard({
     showLastActiveTime,
   } = useSidebarStore(
     useShallow((state) => ({
+      /*
+       * CDXC:SidebarSessions 2026-05-16-08:46:
+       * The hover-only agent icon setting is visual chrome only; keep icons in
+       * the DOM so the same row can reveal them on hover/focus without
+       * changing session identity or drag hit targets.
+       */
+      hideSessionAgentIconUntilHover:
+        state.hud.settings?.hideSessionAgentIconUntilHover ??
+        DEFAULT_ghostex_SETTINGS.hideSessionAgentIconUntilHover,
       renameSessionOnDoubleClick: state.hud.renameSessionOnDoubleClick,
       showCloseButton: state.hud.showCloseButtonOnSessionCards,
       showDebugSessionNumbers: state.hud.debuggingMode,
@@ -1028,6 +1038,7 @@ export function SortableSessionCard({
           data-focused={String(session.isFocused)}
           data-group-connector={String(showGroupConnector)}
           data-has-agent-icon={String(hasSessionCardIcon)}
+          data-agent-icon-hover-only={String(hideSessionAgentIconUntilHover)}
           data-lifecycle-state={lifecycleState}
           data-running={String(lifecycleState === "running")}
           data-sleeping={String(Boolean(session.isSleeping))}
@@ -1073,6 +1084,7 @@ export function SortableSessionCard({
             data-focused={String(session.isFocused)}
             data-group-connector={String(showGroupConnector)}
             data-lifecycle-state={lifecycleState}
+            data-agent-icon-hover-only={String(hideSessionAgentIconUntilHover)}
             data-running={String(lifecycleState === "running")}
             data-search-selected={String(isSearchSelected)}
             data-sleeping={String(Boolean(session.isSleeping))}

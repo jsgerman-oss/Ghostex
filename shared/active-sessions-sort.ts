@@ -22,7 +22,10 @@ export function createDisplaySessionLayout({
   sessionIdsByGroup: SessionIdsByGroup;
 } {
   const manualSessionIdsByGroup = Object.fromEntries(
-    workspaceGroupIds.map((groupId) => [groupId, sessionIdsByGroup[groupId] ?? []]),
+    workspaceGroupIds.map((groupId) => [
+      groupId,
+      orderBrowserSessionsFirst(sessionIdsByGroup[groupId] ?? [], sessionsById),
+    ]),
   );
   if (sortMode === "manual") {
     return {
@@ -34,7 +37,10 @@ export function createDisplaySessionLayout({
   const sortedSessionIdsByGroup = Object.fromEntries(
     workspaceGroupIds.map((groupId) => [
       groupId,
-      sortSessionIdsByLastActivity(manualSessionIdsByGroup[groupId] ?? [], sessionsById),
+      orderBrowserSessionsFirst(
+        sortSessionIdsByLastActivity(manualSessionIdsByGroup[groupId] ?? [], sessionsById),
+        sessionsById,
+      ),
     ]),
   );
 
@@ -72,6 +78,36 @@ function sortSessionIdsByLastActivity(
 
     return sessionIds.indexOf(leftSessionId) - sessionIds.indexOf(rightSessionId);
   });
+}
+
+function orderBrowserSessionsFirst(
+  sessionIds: readonly string[],
+  sessionsById: Record<string, SidebarSessionItem>,
+): string[] {
+  /**
+   * CDXC:ProjectBrowserTabs 2026-05-16-12:49:
+   * Browser pane sessions that belong to a project should render at the top of
+   * that project's sidebar session list, directly under the project header,
+   * while preserving the existing order within browser and non-browser
+   * sessions. Apply this in the shared display layout so search, drag, focus,
+   * and flattening code all use the same visible order.
+   */
+  const browserSessionIds: string[] = [];
+  const otherSessionIds: string[] = [];
+
+  for (const sessionId of sessionIds) {
+    if (isBrowserSession(sessionsById[sessionId])) {
+      browserSessionIds.push(sessionId);
+    } else {
+      otherSessionIds.push(sessionId);
+    }
+  }
+
+  return [...browserSessionIds, ...otherSessionIds];
+}
+
+function isBrowserSession(session: SidebarSessionItem | undefined): boolean {
+  return session?.kind === "browser" || session?.sessionKind === "browser";
 }
 
 function getSessionActivitySortPriority(session: SidebarSessionItem | undefined): number {

@@ -9,10 +9,6 @@ describe("createSidebarSessionSearchResults", () => {
   test("should flatten displayed current and previous sessions in render order", () => {
     expect(
       createSidebarSessionSearchResults({
-        displayedBrowserGroupIds: ["browser-group"],
-        displayedBrowserSessionIdsByGroup: {
-          "browser-group": ["browser-session-1"],
-        },
         displayedWorkspaceGroupIds: ["workspace-group-1", "workspace-group-2"],
         displayedWorkspaceSessionIdsByGroup: {
           "workspace-group-1": ["session-1", "session-2"],
@@ -34,11 +30,6 @@ describe("createSidebarSessionSearchResults", () => {
         ],
       }),
     ).toEqual([
-      {
-        groupId: "browser-group",
-        kind: "session",
-        sessionId: "browser-session-1",
-      },
       {
         groupId: "workspace-group-1",
         kind: "session",

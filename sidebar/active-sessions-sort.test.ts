@@ -24,6 +24,33 @@ describe("createDisplaySessionLayout", () => {
     });
   });
 
+  test("should place project browser sessions before other sessions in manual mode", () => {
+    const layout = createDisplaySessionLayout({
+      sessionIdsByGroup: {
+        "group-1": ["session-1", "session-2", "session-3", "session-4"],
+      },
+      sessionsById: {
+        "session-1": createSession("session-1", "2026-04-07T12:00:00.000Z"),
+        "session-2": createSession("session-2", "2026-04-07T09:00:00.000Z", "idle", {
+          sessionKind: "browser",
+        }),
+        "session-3": createSession("session-3", "2026-04-07T08:00:00.000Z"),
+        "session-4": createSession("session-4", "2026-04-07T11:00:00.000Z", "idle", {
+          kind: "browser",
+        }),
+      },
+      sortMode: "manual",
+      workspaceGroupIds: ["group-1"],
+    });
+
+    expect(layout.sessionIdsByGroup["group-1"]).toEqual([
+      "session-2",
+      "session-4",
+      "session-1",
+      "session-3",
+    ]);
+  });
+
   test("should keep groups manual while sorting sessions in each group by last activity", () => {
     const layout = createDisplaySessionLayout({
       sessionIdsByGroup: {
@@ -62,6 +89,33 @@ describe("createDisplaySessionLayout", () => {
       "session-3",
       "session-1",
       "session-4",
+    ]);
+  });
+
+  test("should keep project browser sessions first when sorting by last activity", () => {
+    const layout = createDisplaySessionLayout({
+      sessionIdsByGroup: {
+        "group-1": ["session-1", "session-2", "session-3", "session-4"],
+      },
+      sessionsById: {
+        "session-1": createSession("session-1", "2026-04-07T12:00:00.000Z", "attention"),
+        "session-2": createSession("session-2", "2026-04-07T09:00:00.000Z", "idle", {
+          sessionKind: "browser",
+        }),
+        "session-3": createSession("session-3", "2026-04-07T08:00:00.000Z", "working"),
+        "session-4": createSession("session-4", "2026-04-07T11:00:00.000Z", "attention", {
+          kind: "browser",
+        }),
+      },
+      sortMode: "lastActivity",
+      workspaceGroupIds: ["group-1"],
+    });
+
+    expect(layout.sessionIdsByGroup["group-1"]).toEqual([
+      "session-4",
+      "session-2",
+      "session-1",
+      "session-3",
     ]);
   });
 
@@ -128,6 +182,7 @@ function createSession(
   sessionId: string,
   lastInteractionAt: string | undefined,
   activity: SidebarSessionItem["activity"] = "idle",
+  options: Pick<SidebarSessionItem, "kind" | "sessionKind"> = {},
 ): SidebarSessionItem {
   return {
     activity,
@@ -137,6 +192,7 @@ function createSession(
     isFocused: false,
     isRunning: true,
     isVisible: false,
+    ...options,
     lastInteractionAt,
     primaryTitle: sessionId,
     row: 0,

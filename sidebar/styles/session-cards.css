@@ -1219,6 +1219,31 @@
 }
 
 /*
+ * CDXC:SidebarSessions 2026-05-16-08:46:
+ * The hover-only agent icon preference should suppress the passive header
+ * agent/persistence chrome, but keep hover and keyboard focus reveal behavior
+ * on the existing row so the setting does not change session layout.
+ */
+.session-frame[data-agent-icon-hover-only="true"]:not(:hover):not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-header-agent-icon,
+.session-frame[data-agent-icon-hover-only="true"]:not(:hover):not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-header-agent-tabler-icon,
+.session-frame[data-agent-icon-hover-only="true"]:not(:hover):not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-header-reloading-icon,
+.session-frame[data-agent-icon-hover-only="true"]:not(:hover):not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-persistence-provider-badge[data-slot="header"] {
+  opacity: 0;
+}
+
+/*
  * CDXC:SidebarSessions 2026-05-09-16:55
  * Every visible project/chat session card has a hover-only close action. When
  * it appears, it takes precedence over Last Active, agent, activity, and
@@ -1637,6 +1662,34 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-focused="true"]
   .session-persistence-provider-badge[data-slot="floating"] {
   opacity: 0.8;
+}
+
+/*
+ * CDXC:SidebarReference 2026-05-16-08:46:
+ * Hover-only agent icons in the reference sidebar must hide even for visible
+ * or focused sessions until the user points at or keyboard-focuses the row.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-agent-icon-hover-only="true"]:not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-floating-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-agent-icon-hover-only="true"]:not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-floating-agent-tabler-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-agent-icon-hover-only="true"]:not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-floating-reloading-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-agent-icon-hover-only="true"]:not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-persistence-provider-badge[data-slot="floating"] {
+  opacity: 0;
 }
 
 /*

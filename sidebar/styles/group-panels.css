@@ -599,14 +599,6 @@ body[data-sidebar-theme^="light-"]
   opacity: 1;
 }
 
-.browser-group-list {
-  margin-top: calc(3px * var(--sidebar-density-scale));
-}
-
-.session-groups-content > .browser-group-list + .workspace-group-list {
-  margin-top: calc(1px * var(--sidebar-density-scale));
-}
-
 .session-search-toolbar {
   display: grid;
 }
