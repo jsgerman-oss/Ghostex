@@ -1,9 +1,9 @@
 ## The best parts of Ghostty & Codex App = Ghostex!<br />
 
-T3code Support<br />
-Agent CLIs Manager<br />
-Embedded Chromium Browser<br />
-Fast & Low RAM usage <br />
+- T3code Support
+- Agent CLIs Manager
+- Embedded Chromium Browser
+- Fast & Low RAM usage
 
 #### Install on macOS using brew or dmg in releases page
 ###### (Looking for help with dev/testing for Windows & Linux ports)
