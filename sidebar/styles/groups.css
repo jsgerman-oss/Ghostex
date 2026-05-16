@@ -1048,6 +1048,30 @@
   width: 100%;
 }
 
+.project-session-list-toggle {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  box-sizing: border-box;
+  color: color-mix(in srgb, var(--app-muted) 82%, var(--app-foreground) 18%);
+  display: block;
+  font: inherit;
+  justify-self: stretch;
+  min-width: 0;
+  overflow: hidden;
+  padding: 8px 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.project-session-list-toggle:hover,
+.project-session-list-toggle:focus-visible {
+  color: var(--app-foreground);
+  outline: none;
+}
+
 .group-create-list {
   margin-top: calc(3px * var(--sidebar-density-scale));
 }
@@ -1386,6 +1410,29 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-sessions {
   gap: 1px;
   overflow: visible;
+}
+
+/*
+ * CDXC:ProjectSessionLists 2026-05-16-21:50:
+ * Long project session lists need the same quiet row treatment as the
+ * reference sidebar sample: the Show more/Show less control sits below the
+ * sessions, aligns with session titles, and uses muted text instead of a
+ * framed button.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .project-session-list-toggle {
+  color: #8b8b8b;
+  font-size: 15.55px;
+  font-weight: 300 !important;
+  letter-spacing: 0;
+  line-height: 20px;
+  min-height: 34px;
+  padding: 7px var(--reference-session-trailing-inset, 10px) 7px
+    var(--reference-session-title-inset, 36px);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .project-session-list-toggle:hover,
+.sidebar-reference-layout[data-reference-sidebar="true"] .project-session-list-toggle:focus-visible {
+  color: #d8d8d8;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-session-connector="true"] .session-frame {

@@ -270,6 +270,10 @@ type SidebarUiCollapseState = {
   isReferenceProjectsCollapsed: boolean;
 };
 
+type ReferenceSidebarSectionId = "projects" | "quick";
+
+const REFERENCE_SECTION_CHILD_ANIMATION_RESET_MS = 420;
+
 const sensors = [
   PointerSensor.configure({
     activationConstraints(event) {
@@ -398,6 +402,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const [collapsedGroupsById, setCollapsedGroupsById] = useState<Record<string, true>>(
     initialUiCollapseState.collapsedGroupsById,
   );
+  const [referenceSectionChildAnimations, setReferenceSectionChildAnimations] = useState<
+    Record<ReferenceSidebarSectionId, boolean>
+  >({
+    projects: false,
+    quick: false,
+  });
   const previousExpandedReferenceProjectGroupIdsRef = useRef<string[]>([]);
   const [recentProjectsQuery, setRecentProjectsQuery] = useState("");
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
@@ -423,6 +433,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   );
   const sessionPointerDragStateRef = useRef<SidebarSessionPointerDragState | undefined>(undefined);
   const completionFlashTimeoutBySessionIdRef = useRef<Map<string, number>>(new Map());
+  const referenceSectionAnimationTimeoutsRef = useRef<
+    Partial<Record<ReferenceSidebarSectionId, number>>
+  >({});
   const sectionCollapsePersistTimeoutsRef = useRef<
     Partial<Record<SidebarCollapsibleSection, number>>
   >({});
@@ -973,6 +986,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       }
       completionFlashTimeoutBySessionIdRef.current.clear();
 
+      for (const timeoutId of Object.values(referenceSectionAnimationTimeoutsRef.current)) {
+        if (timeoutId !== undefined) {
+          window.clearTimeout(timeoutId);
+        }
+      }
+      referenceSectionAnimationTimeoutsRef.current = {};
+
       for (const timeoutId of Object.values(sectionCollapsePersistTimeoutsRef.current)) {
         if (timeoutId !== undefined) {
           window.clearTimeout(timeoutId);
@@ -1146,6 +1166,30 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     setIsOverflowMenuOpen((previous) => !previous);
   };
 
+  const triggerReferenceSectionChildAnimation = (section: ReferenceSidebarSectionId) => {
+    /**
+     * CDXC:SidebarSessions 2026-05-17-00:11:
+     * Reference-sidebar child entrance motion is only for explicit section
+     * expansion. Session open/close hydration must not leave a durable CSS
+     * state that replays the project/session "loading in" animation.
+     */
+    setReferenceSectionChildAnimations((previous) =>
+      previous[section] ? previous : { ...previous, [section]: true },
+    );
+
+    const existingTimeoutId = referenceSectionAnimationTimeoutsRef.current[section];
+    if (existingTimeoutId !== undefined) {
+      window.clearTimeout(existingTimeoutId);
+    }
+
+    referenceSectionAnimationTimeoutsRef.current[section] = window.setTimeout(() => {
+      setReferenceSectionChildAnimations((previous) =>
+        previous[section] ? { ...previous, [section]: false } : previous,
+      );
+      delete referenceSectionAnimationTimeoutsRef.current[section];
+    }, REFERENCE_SECTION_CHILD_ANIMATION_RESET_MS);
+  };
+
   const isManualActiveSessionsSort = activeSessionsSortMode === "manual";
   const shouldShowActionsPanel = sectionVisibility.actions;
   /**
@@ -1309,12 +1353,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       filteredPreviousSessions,
     ],
   );
-  const dragStructureKey = useMemo(
-    () =>
-      createDragStructureKey(displayedReferenceProjectGroupIds, displayedWorkspaceSessionIdsByGroup),
-    [displayedReferenceProjectGroupIds, displayedWorkspaceSessionIdsByGroup],
-  );
-
   useEffect(() => {
     groupIdsRef.current = displayedReferenceProjectGroupIds;
   }, [displayedReferenceProjectGroupIds]);
@@ -2179,8 +2217,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
               data-scrollable-y={String(sessionGroupsHaveScrollableOverflow)}
               ref={sessionGroupsContentRef}
             >
+              {/*
+                CDXC:SidebarSessions 2026-05-17-00:11:
+                Opening or closing one session must not remount every sidebar
+                project. Keep DragDropProvider stable so sortable/droppable hooks
+                update the dnd registry without forcing all project rows to
+                replay their entrance animation.
+              */}
               <DragDropProvider
-                key={dragStructureKey}
                 onDragEnd={handleDragEnd}
                 onDragMove={handleDragMove}
                 onDragOver={handleDragOver}
@@ -2196,14 +2240,18 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                       onCreateBrowserChat={createReferenceBrowserChat}
                       onCreateChat={createReferenceChat}
                       onFilterChats={toggleSessionSearch}
-                      onToggleCollapsed={() =>
-                        setIsReferenceChatsCollapsed((previous) => !previous)
-                      }
+                      onToggleCollapsed={() => {
+                        if (isReferenceChatsCollapsed) {
+                          triggerReferenceSectionChildAnimation("quick");
+                        }
+                        setIsReferenceChatsCollapsed((previous) => !previous);
+                      }}
                       title="Quick"
                     />
                     <div
                       aria-hidden={isReferenceChatsCollapsed}
                       className="group-list workspace-group-list reference-chat-group-list reference-sidebar-collapsible-body"
+                      data-animate-children={String(referenceSectionChildAnimations.quick)}
                       data-collapsed={String(isReferenceChatsCollapsed)}
                     >
                       {displayedReferenceChatGroupIds.map((groupId, groupIndex) => (
@@ -2226,6 +2274,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                               ? selectedSessionSearchResult.sessionId
                               : undefined
                           }
+                          enableProjectSessionListToggle={!isSessionSearchFiltering}
                           sessionDropIndicatorGroupId={sessionDropIndicatorGroupId}
                           sessionDraggingDisabled={true}
                           showHeaderActions={true}
@@ -2251,6 +2300,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     onBulkProjectToggle={
                       displayedReferenceProjectGroupIds.length > 0
                         ? () => {
+                            if (isReferenceProjectsCollapsed && !hasExpandedReferenceProjects) {
+                              triggerReferenceSectionChildAnimation("projects");
+                            }
                             setIsReferenceProjectsCollapsed(false);
                             if (hasExpandedReferenceProjects) {
                               previousExpandedReferenceProjectGroupIdsRef.current =
@@ -2274,9 +2326,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           }
                         : undefined
                     }
-                    onToggleCollapsed={() =>
-                      setIsReferenceProjectsCollapsed((previous) => !previous)
-                    }
+                    onToggleCollapsed={() => {
+                      if (isReferenceProjectsCollapsed) {
+                        triggerReferenceSectionChildAnimation("projects");
+                      }
+                      setIsReferenceProjectsCollapsed((previous) => !previous);
+                    }}
                     title="Projects"
                   />
                 ) : null}
@@ -2284,6 +2339,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                   <div
                     aria-hidden={isReferenceProjectsCollapsed}
                     className="group-list workspace-group-list reference-project-group-list reference-sidebar-collapsible-body"
+                    data-animate-children={String(referenceSectionChildAnimations.projects)}
                     data-collapsed={String(isReferenceProjectsCollapsed)}
                   >
                     {displayedReferenceProjectGroupIds.length > 0 ? (
@@ -2307,6 +2363,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                               ? selectedSessionSearchResult.sessionId
                               : undefined
                           }
+                          enableProjectSessionListToggle={!isSessionSearchFiltering}
                           sessionDropIndicatorGroupId={sessionDropIndicatorGroupId}
                           sessionDraggingDisabled={true}
                           showHeaderActions={true}
@@ -2956,15 +3013,6 @@ function createWorkspaceSessionIdsByGroup(
   return Object.fromEntries(
     workspaceGroupIds.map((groupId) => [groupId, sessionIdsByGroup[groupId] ?? []]),
   );
-}
-
-function createDragStructureKey(
-  groupIds: readonly string[],
-  sessionIdsByGroup: SessionIdsByGroup,
-): string {
-  return groupIds
-    .map((groupId) => `${groupId}:${(sessionIdsByGroup[groupId] ?? []).join(",")}`)
-    .join("|");
 }
 
 function findSessionGroupId(

@@ -59,6 +59,12 @@ import { useCollapsibleHeight } from "./use-collapsible-height";
 import type { WebviewApi } from "./webview-api";
 import { openAppModal } from "./app-modal-host-bridge";
 import {
+  PROJECT_SESSION_LIST_COLLAPSED_COUNT,
+  getVisibleProjectSessionIds,
+  normalizeStoredProjectSessionListCollapsedState,
+  type ProjectSessionListCollapsedState,
+} from "./project-session-list-toggle";
+import {
   DEFAULT_WORKSPACE_THEME_COLOR,
   normalizeWorkspaceThemeColor,
   readWorkspaceThemeColorHistory,
@@ -73,6 +79,8 @@ const CONTEXT_MENU_VERTICAL_PADDING_PX = 12;
 const GROUP_CONTROL_MENU_MARGIN_PX = 12;
 const GROUP_AGENT_MENU_WIDTH_PX = 220;
 const PROJECT_AGENT_LAUNCHER_STORAGE_KEY = "ghostex-sidebar-project-terminal-launcher";
+const PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY =
+  "ghostex-sidebar-project-session-list-collapsed";
 const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
@@ -240,6 +248,22 @@ export function shouldInitializeEmptyProjectTerminalOnHeaderActivation({
   return hasProjectContext && sessionCount === 0;
 }
 
+export function shouldShowOpenProjectFolderIcon({
+  isCollapsed,
+  sessionCount,
+}: {
+  isCollapsed: boolean;
+  sessionCount: number;
+}): boolean {
+  /**
+   * CDXC:ProjectHeaders 2026-05-17-01:43:
+   * A project row with zero sessions should look like a closed folder even
+   * when its group body is technically expanded. Reserve the open folder icon
+   * for expanded projects that actually have session rows under them.
+   */
+  return !isCollapsed && sessionCount > 0;
+}
+
 export function formatProjectEditorDiffStatsLabel(
   stats: SidebarProjectDiffStats,
   showFileCount = false,
@@ -319,6 +343,7 @@ export type SessionGroupSectionProps = {
   onFocusRequested?: (groupId: string, sessionId: string) => void;
   orderedSessionIds?: readonly string[];
   selectedSearchSessionId?: string;
+  enableProjectSessionListToggle?: boolean;
   sessionDropIndicatorGroupId?: string;
   sessionDraggingDisabled?: boolean;
   showHeaderActions?: boolean;
@@ -377,6 +402,7 @@ export function SessionGroupSection({
   onFocusRequested,
   orderedSessionIds: orderedSessionIdsProp,
   selectedSearchSessionId,
+  enableProjectSessionListToggle = true,
   sessionDropIndicatorGroupId,
   sessionDraggingDisabled = false,
   showHeaderActions = true,
@@ -397,6 +423,9 @@ export function SessionGroupSection({
   const [primaryProjectAgentLauncherId, setPrimaryProjectAgentLauncherId] = useState(
     readPrimaryProjectAgentLauncherId,
   );
+  const [projectSessionListCollapsedState, setProjectSessionListCollapsedState] = useState(
+    readProjectSessionListCollapsedState,
+  );
   const { collapsibleStyle, contentRef } = useCollapsibleHeight<HTMLDivElement>();
   const menuRef = useRef<HTMLDivElement>(null);
   const controlMenuRef = useRef<HTMLDivElement>(null);
@@ -416,6 +445,7 @@ export function SessionGroupSection({
    */
   const isChatCollection = group?.isChatCollection === true;
   const projectContext = group?.projectContext;
+  const projectSessionListStorageId = projectContext?.editor.projectId ?? group?.groupId;
   /**
    * CDXC:SidebarLayout 2026-05-13-08:11
    * Project groups stay draggable while session drag targets are disabled in
@@ -483,6 +513,23 @@ export function SessionGroupSection({
   const groupSessions = orderedSessionIds
     .map((sessionId) => sessionsById[sessionId])
     .filter((session): session is NonNullable<typeof session> => session !== undefined);
+  const isProjectSessionListCollapsed =
+    Boolean(projectContext) &&
+    projectSessionListStorageId !== undefined &&
+    projectSessionListCollapsedState[projectSessionListStorageId] === true;
+  const visibleSessionIds = getVisibleProjectSessionIds({
+    isCollapsed: isProjectSessionListCollapsed,
+    isProjectGroup: Boolean(projectContext),
+    isToggleEnabled: enableProjectSessionListToggle,
+    sessionIds: orderedSessionIds,
+  });
+  const visibleGroupSessions = visibleSessionIds
+    .map((sessionId) => sessionsById[sessionId])
+    .filter((session): session is NonNullable<typeof session> => session !== undefined);
+  const shouldShowProjectSessionListToggle =
+    Boolean(projectContext) &&
+    enableProjectSessionListToggle &&
+    orderedSessionIds.length > PROJECT_SESSION_LIST_COLLAPSED_COUNT;
   const sessionSummary = getGroupSessionSummary(groupSessions);
   const actualSessionCount = storedSessionIds.length;
   const allSessionsSleeping =
@@ -541,6 +588,10 @@ export function SessionGroupSection({
       hasProjectContext: Boolean(projectContext),
       sessionCount: actualSessionCount,
     });
+  const shouldRenderOpenProjectFolderIcon = shouldShowOpenProjectFolderIcon({
+    isCollapsed,
+    sessionCount: actualSessionCount,
+  });
   /**
    * CDXC:ProjectGroups 2026-05-15-14:33:
    * Project groups remain expandable even with no sessions because the body can
@@ -777,6 +828,24 @@ export function SessionGroupSection({
   const persistPrimaryProjectAgentLauncher = (agentId: string) => {
     setPrimaryProjectAgentLauncherId(agentId);
     writePrimaryProjectAgentLauncherId(agentId);
+  };
+
+  const toggleProjectSessionListCollapsed = () => {
+    if (!projectSessionListStorageId) {
+      return;
+    }
+
+    setProjectSessionListCollapsedState(() => {
+      const latestState = readProjectSessionListCollapsedState();
+      const nextState = { ...latestState };
+      if (latestState[projectSessionListStorageId]) {
+        delete nextState[projectSessionListStorageId];
+      } else {
+        nextState[projectSessionListStorageId] = true;
+      }
+      writeProjectSessionListCollapsedState(nextState);
+      return nextState;
+    });
   };
 
   const requestCreateProjectTerminal = () => {
@@ -1146,10 +1215,10 @@ export function SessionGroupSection({
                           <IconWorld size={16} stroke={1.8} />
                         ) : isChatCollection ? (
                           <IconMessageCircle size={16} stroke={1.8} />
-                        ) : isCollapsed ? (
-                          <IconFolder size={16} stroke={1.8} />
-                        ) : (
+                        ) : shouldRenderOpenProjectFolderIcon ? (
                           <IconFolderOpen size={16} stroke={1.8} />
+                        ) : (
+                          <IconFolder size={16} stroke={1.8} />
                         )}
                       </span>
                       {canToggleCollapsed ? (
@@ -1187,10 +1256,10 @@ export function SessionGroupSection({
                         <IconWorld size={16} stroke={1.8} />
                       ) : isChatCollection ? (
                         <IconMessageCircle size={16} stroke={1.8} />
-                      ) : isCollapsed ? (
-                        <IconFolder size={16} stroke={1.8} />
-                      ) : (
+                      ) : shouldRenderOpenProjectFolderIcon ? (
                         <IconFolderOpen size={16} stroke={1.8} />
+                      ) : (
+                        <IconFolder size={16} stroke={1.8} />
                       )}
                     </span>
                     {canToggleCollapsed ? (
@@ -1472,21 +1541,41 @@ export function SessionGroupSection({
               </>
             ) : null}
             {orderedSessionIds.length > 0 ? (
-              orderedSessionIds.map((sessionId, sessionIndex) => (
-                <SortableSessionCard
-                  completionFlashNonce={completionFlashNonceBySessionId?.[sessionId] ?? 0}
-                  dragDisabled={areSessionDropTargetsDisabled}
-                  groupId={group.groupId}
-                  index={sessionIndex}
-                  isSearchSelected={selectedSearchSessionId === sessionId}
-                  key={sessionId}
-                  onFocusRequested={onFocusRequested}
-                  sessionId={sessionId}
-                  showGroupConnector={showSessionGroupConnector}
-                  showDropPositionIndicator={showSessionDropPositionIndicators}
-                  vscode={vscode}
-                />
-              ))
+              <>
+                {visibleSessionIds.map((sessionId, sessionIndex) => (
+                  <SortableSessionCard
+                    completionFlashNonce={completionFlashNonceBySessionId?.[sessionId] ?? 0}
+                    dragDisabled={areSessionDropTargetsDisabled}
+                    groupId={group.groupId}
+                    index={sessionIndex}
+                    isSearchSelected={selectedSearchSessionId === sessionId}
+                    key={sessionId}
+                    onFocusRequested={onFocusRequested}
+                    sessionId={sessionId}
+                    showGroupConnector={showSessionGroupConnector}
+                    showDropPositionIndicator={showSessionDropPositionIndicators}
+                    vscode={vscode}
+                  />
+                ))}
+                {shouldShowProjectSessionListToggle ? (
+                  <button
+                    aria-label={
+                      isProjectSessionListCollapsed
+                        ? `Show all sessions in ${group.title}`
+                        : `Show fewer sessions in ${group.title}`
+                    }
+                    className="project-session-list-toggle"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      toggleProjectSessionListCollapsed();
+                    }}
+                    type="button"
+                  >
+                    {isProjectSessionListCollapsed ? "Show more" : "Show less"}
+                  </button>
+                ) : null}
+              </>
             ) : shouldInitializeEmptyProjectTerminal ? null : (
               <div
                 className="group-empty-drop-target"
@@ -1499,7 +1588,7 @@ export function SessionGroupSection({
             )}
           </div>
           {showSessionGroupConnector
-            ? groupSessions.map((session) => (
+            ? visibleGroupSessions.map((session) => (
                 <div
                   aria-hidden
                   className="session-status-dot session-status-dot-anchored"
@@ -1954,6 +2043,26 @@ function readPrimaryProjectAgentLauncherId(): string | undefined {
 
 function writePrimaryProjectAgentLauncherId(agentId: string): void {
   localStorage.setItem(PROJECT_AGENT_LAUNCHER_STORAGE_KEY, agentId);
+}
+
+function readProjectSessionListCollapsedState(): ProjectSessionListCollapsedState {
+  try {
+    return normalizeStoredProjectSessionListCollapsedState(
+      JSON.parse(localStorage.getItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY) ?? "null"),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function writeProjectSessionListCollapsedState(state: ProjectSessionListCollapsedState): void {
+  /**
+   * CDXC:ProjectSessionLists 2026-05-16-21:50:
+   * Show less / Show more is per-project navigation state, not session data.
+   * Persist only the collapsed project ids so new projects and projects the
+   * user has never collapsed continue to start with all sessions shown.
+   */
+  localStorage.setItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY, JSON.stringify(state));
 }
 
 function getPortalMenuStyle(button: HTMLButtonElement | null, menuWidth: number) {

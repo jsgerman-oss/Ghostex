@@ -27,7 +27,7 @@ import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import type { SidebarCommandButton } from "../shared/sidebar-commands";
 import { getZedOverlayTargetAppLabel, type ZedOverlayTargetApp } from "../shared/ghostex-settings";
 import { AGENT_LOGOS } from "./agent-logos";
-import { VisualStudioCodeIcon } from "./brand-icons";
+import { EditorBrandIcon } from "./brand-icons";
 import { getSidebarButtonGridColumnCount } from "./button-grid";
 import { SidebarCommandIconGlyph } from "./sidebar-command-icon";
 import { postSidebarOrderReproLog } from "./sidebar-order-repro-log";
@@ -943,29 +943,10 @@ function OpenInQuickActionIcon({ target }: { target: OpenInQuickActionTarget }) 
   }
 
   if (target === "vscode") {
-    return <VisualStudioCodeIcon className="quick-action-icon quick-action-brand-icon" />;
+    return <EditorBrandIcon className="quick-action-icon quick-action-brand-icon" icon="vscode" />;
   }
 
-  return <ZedIcon className="quick-action-icon quick-action-brand-icon quick-action-zed-icon" />;
-}
-
-function ZedIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      viewBox="0 0 96 96"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path
-        clipRule="evenodd"
-        d="M9 6a3 3 0 0 0-3 3v66H0V9a9 9 0 0 1 9-9h80.379c4.009 0 6.016 4.847 3.182 7.682L43.055 57.187H57V51h6v7.688a4.5 4.5 0 0 1-4.5 4.5H37.055L26.743 73.5H73.5V36h6v37.5a6 6 0 0 1-6 6H20.743L10.243 90H87a3 3 0 0 0 3-3V21h6v66a9 9 0 0 1-9 9H6.621c-4.009 0-6.016-4.847-3.182-7.682L52.757 39H39v6h-6v-7.5a4.5 4.5 0 0 1 4.5-4.5h21.257l10.5-10.5H22.5V60h-6V22.5a6 6 0 0 1 6-6h52.757L85.757 6H9Z"
-        fill="currentColor"
-        fillRule="evenodd"
-      />
-    </svg>
-  );
+  return <EditorBrandIcon className="quick-action-icon quick-action-brand-icon" icon="zed" />;
 }
 
 function isRunnableSidebarCommand(command: SidebarCommandButton): boolean {

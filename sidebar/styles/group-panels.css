@@ -1266,8 +1266,14 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   visibility: hidden;
 }
 
+/*
+ * CDXC:SidebarSessions 2026-05-17-00:11:
+ * Reference sidebar project/session rows should only run child entrance motion
+ * during an explicit section expand. Normal session open/close updates keep
+ * expanded sections mounted and must not replay the loading-in animation.
+ */
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"][data-animate-children="true"]
   > *,
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-drawer-body[data-collapsed="false"]
@@ -1280,7 +1286,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"][data-animate-children="true"]
   > :nth-child(1),
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-drawer-body[data-collapsed="false"]
@@ -1293,7 +1299,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"][data-animate-children="true"]
   > :nth-child(2),
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-drawer-body[data-collapsed="false"]
@@ -1306,7 +1312,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"][data-animate-children="true"]
   > :nth-child(3),
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-drawer-body[data-collapsed="false"]
@@ -1316,7 +1322,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"][data-animate-children="true"]
   > :nth-child(4),
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-drawer-body[data-collapsed="false"]
@@ -1326,7 +1332,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
-  .reference-sidebar-collapsible-body[data-collapsed="false"]
+  .reference-sidebar-collapsible-body[data-collapsed="false"][data-animate-children="true"]
   > :nth-child(n + 5),
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-drawer-body[data-collapsed="false"]
