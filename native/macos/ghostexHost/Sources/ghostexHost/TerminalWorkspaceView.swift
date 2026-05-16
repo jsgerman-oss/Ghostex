@@ -1174,6 +1174,7 @@ final class TerminalWorkspaceView: NSView {
   private let commandsPanelResizeHandleView = TerminalWorkspacePaneResizeHandleView()
   private var projectEditorCompanionSessionId: String?
   private var projectEditorCompanionIsVisible = false
+  private var projectEditorCompanionPaneHidden = false
   private var projectEditorCompanionWidthRatio = TerminalWorkspaceView.defaultProjectEditorCompanionWidthRatio
   private var projectEditorCompanionResizeDrag: ProjectEditorCompanionResizeDrag?
   private var projectEditorCompanionResizeWorkspaceBounds: CGRect = .zero
@@ -2631,6 +2632,9 @@ final class TerminalWorkspaceView: NSView {
       "title": command.title,
       "url": command.url,
     ])
+    applyProjectEditorCompanionPaneHiddenPreference(
+      command.companionPaneHidden,
+      reason: "createProjectEditorPane")
     if let existingSession = projectEditorPaneSessions[command.projectId] {
       var nextSession = existingSession
       nextSession = updateProjectEditorSessionActiveTab(
@@ -2821,7 +2825,10 @@ final class TerminalWorkspaceView: NSView {
    */
     let didSwitchProjectEditor = activeProjectEditorId != projectId
     activeProjectEditorId = projectId
-    if didSwitchProjectEditor || projectEditorCompanionSessionId == nil {
+    if projectEditorCompanionPaneHidden {
+      projectEditorCompanionIsVisible = false
+      projectEditorCompanionResizeDrag = nil
+    } else if didSwitchProjectEditor || projectEditorCompanionSessionId == nil {
       openDefaultProjectEditorCompanionPane(reason: reason)
     }
     hideSplitSessionSurfacesForActiveEditor()
@@ -3704,6 +3711,9 @@ final class TerminalWorkspaceView: NSView {
        */
       superview?.needsLayout = true
     }
+    applyProjectEditorCompanionPaneHiddenPreference(
+      command.activeProjectEditorCompanionPaneHidden,
+      reason: "setActiveTerminalSet")
     syncProjectEditorCompanionSelectionFromSidebar(reason: "setActiveTerminalSet")
     /**
      CDXC:WorkspaceLayout 2026-04-28-06:08
@@ -4365,6 +4375,30 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  private func applyProjectEditorCompanionPaneHiddenPreference(_ hidden: Bool?, reason: String) {
+    guard let hidden else {
+      return
+    }
+    /**
+     CDXC:ProjectEditorCompanion 2026-05-16-14:42:
+     The agent side pane hidden flag is owned by the sidebar as project state
+     and applies to every mode-scoped editor pane for that project. Native must
+     honor it during editor creation and layout sync so Code, Git, and Project
+     surfaces do not reopen the companion after the user closed it.
+     */
+    projectEditorCompanionPaneHidden = hidden
+    if hidden {
+      projectEditorCompanionIsVisible = false
+      projectEditorCompanionResizeDrag = nil
+      needsLayout = true
+      return
+    }
+    if activeProjectEditorId != nil, !projectEditorCompanionIsVisible {
+      openDefaultProjectEditorCompanionPane(reason: reason)
+      needsLayout = true
+    }
+  }
+
   private func openDefaultProjectEditorCompanionPane(reason: String) {
     guard let sessionId = preferredProjectEditorCompanionSessionId() else {
       projectEditorCompanionSessionId = nil
@@ -4381,6 +4415,11 @@ final class TerminalWorkspaceView: NSView {
 
   private func syncProjectEditorCompanionSelectionFromSidebar(reason: String) {
     guard activeProjectEditorId != nil else {
+      return
+    }
+    if projectEditorCompanionPaneHidden {
+      projectEditorCompanionIsVisible = false
+      projectEditorCompanionResizeDrag = nil
       return
     }
     if projectEditorCompanionIsVisible {
@@ -4454,6 +4493,17 @@ final class TerminalWorkspaceView: NSView {
     }
     guard activeProjectEditorId != nil, isEligible else {
       return false
+    }
+    if projectEditorCompanionPaneHidden {
+      projectEditorCompanionSessionId = sessionId
+      projectEditorCompanionIsVisible = false
+      focusedSessionId = sessionId
+      projectEditorCompanionResizeDrag = nil
+      needsLayout = true
+      layoutSubtreeIfNeeded()
+      updateAllTerminalBorders()
+      sendEvent(.terminalFocused(sessionId: sessionId))
+      return true
     }
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:19:
@@ -4760,8 +4810,12 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func closeProjectEditorCompanionPane() {
+    projectEditorCompanionPaneHidden = true
     projectEditorCompanionIsVisible = false
     projectEditorCompanionResizeDrag = nil
+    if let activeProjectEditorId {
+      sendEvent(.projectEditorCompanionPaneHiddenChanged(projectId: activeProjectEditorId, hidden: true))
+    }
     needsLayout = true
     layoutSubtreeIfNeeded()
   }
@@ -16430,7 +16484,7 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   @objc private func goBack() {
-    logBrowserToolbarInteraction("button.back", details: [
+    logBrowserToolbarActionDiagnostics(action: "back", phase: "before", details: [
       "canGoBack": canGoBack(),
       "currentURL": currentURLString() ?? NSNull(),
       "windowNumber": window?.windowNumber ?? NSNull(),
@@ -16441,10 +16495,12 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     } else if webView?.canGoBack == true {
       webView?.goBack()
     }
+    logBrowserToolbarActionDiagnostics(action: "back", phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: "back")
   }
 
   @objc private func goForward() {
-    logBrowserToolbarInteraction("button.forward", details: [
+    logBrowserToolbarActionDiagnostics(action: "forward", phase: "before", details: [
       "canGoForward": canGoForward(),
       "currentURL": currentURLString() ?? NSNull(),
       "windowNumber": window?.windowNumber ?? NSNull(),
@@ -16455,10 +16511,13 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     } else if webView?.canGoForward == true {
       webView?.goForward()
     }
+    logBrowserToolbarActionDiagnostics(action: "forward", phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: "forward")
   }
 
   @objc private func reloadPage() {
-    logBrowserToolbarInteraction("button.reload", details: [
+    let action = isPageLoading() ? "stopLoading" : "reload"
+    logBrowserToolbarActionDiagnostics(action: action, phase: "before", details: [
       "currentURL": currentURLString() ?? NSNull(),
       "isPageLoading": isPageLoading(),
       "windowNumber": window?.windowNumber ?? NSNull(),
@@ -16477,6 +16536,8 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
         webView?.reload()
       }
     }
+    logBrowserToolbarActionDiagnostics(action: action, phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: action)
   }
 
   @objc private func commitAddress() {
@@ -16517,31 +16578,37 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   @objc private func openDevTools() {
-    logBrowserToolbarInteraction("button.devTools", details: [
+    logBrowserToolbarActionDiagnostics(action: "devTools", phase: "before", details: [
       "currentURL": currentURLString() ?? NSNull(),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
     onOpenDevTools?()
+    logBrowserToolbarActionDiagnostics(action: "devTools", phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: "devTools")
   }
 
   @objc private func injectReactGrab() {
-    logBrowserToolbarInteraction("button.reactGrab", details: [
+    logBrowserToolbarActionDiagnostics(action: "reactGrab", phase: "before", details: [
       "currentURL": currentURLString() ?? NSNull(),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
     onInjectReactGrab?()
+    logBrowserToolbarActionDiagnostics(action: "reactGrab", phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: "reactGrab")
   }
 
   @objc private func showProfilePicker() {
-    logBrowserToolbarInteraction("button.profile", details: [
+    logBrowserToolbarActionDiagnostics(action: "profile", phase: "before", details: [
       "currentURL": currentURLString() ?? NSNull(),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
     onShowProfilePicker?()
+    logBrowserToolbarActionDiagnostics(action: "profile", phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: "profile")
   }
 
   @objc private func showAppearanceMenu() {
-    logBrowserToolbarInteraction("button.appearance", details: [
+    logBrowserToolbarActionDiagnostics(action: "appearance", phase: "before", details: [
       "currentURL": currentURLString() ?? NSNull(),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
@@ -16559,6 +16626,8 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       with: syntheticMenuEvent(),
       for: appearanceButton
     )
+    logBrowserToolbarActionDiagnostics(action: "appearance", phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: "appearance")
   }
 
   @objc private func selectAppearanceMode(_ sender: NSMenuItem) {
@@ -16596,11 +16665,13 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   }
 
   @objc private func showImportSettings() {
-    logBrowserToolbarInteraction("button.importSettings", details: [
+    logBrowserToolbarActionDiagnostics(action: "importSettings", phase: "before", details: [
       "currentURL": currentURLString() ?? NSNull(),
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
     onShowImportSettings?()
+    logBrowserToolbarActionDiagnostics(action: "importSettings", phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: "importSettings")
   }
 
   private func toolbarTargetName(at point: CGPoint) -> String {
@@ -16672,6 +16743,47 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       return devToolsButton
     }
     return toolbarView
+  }
+
+  private func logBrowserToolbarActionDiagnostics(
+    action: String,
+    phase: String,
+    details: [String: Any] = [:]
+  ) {
+    /**
+     CDXC:ChromiumBrowserPanes 2026-05-16-15:48:
+     A browser-toolbar click can move CEF page contents upward even when no pane resize occurs, and a full reload can restore the correct visual position.
+     Log host geometry and force a CEF/page viewport snapshot before, after, and shortly after toolbar navigation actions so the repro can show whether the click changes AppKit frames, Chromium compositor layers, or only document viewport state.
+     */
+    var payload = details
+    payload["action"] = action
+    payload["addressFieldFrame"] = Self.describeFrame(addressField.frame)
+    payload["browserFrame"] = Self.describeFrame(browserView.frame)
+    if browserView.window != nil {
+      payload["browserFrameInWindow"] = Self.describeFrame(browserView.convert(browserView.bounds, to: nil))
+    } else {
+      payload["browserFrameInWindow"] = NSNull()
+    }
+    payload["hostBounds"] = Self.describeFrame(bounds)
+    payload["hostFrame"] = Self.describeFrame(frame)
+    payload["phase"] = phase
+    payload["toolbarFrame"] = Self.describeFrame(toolbarView.frame)
+    payload["windowNumber"] = window?.windowNumber ?? NSNull()
+    logBrowserToolbarInteraction("button.\(action).\(phase)", details: payload)
+    chromiumView?.emitToolbarActionDiagnostics(action: action, phase: phase)
+  }
+
+  private func scheduleBrowserToolbarActionDiagnostics(action: String) {
+    let delayedPhases: [(TimeInterval, String)] = [
+      (0.08, "after-80ms"),
+      (0.25, "after-250ms"),
+      (0.75, "after-750ms"),
+    ]
+    for (delay, phase) in delayedPhases {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        self?.logBrowserToolbarActionDiagnostics(action: action, phase: phase)
+      }
+    }
   }
 
   private func logBrowserToolbarInteraction(_ phase: String, details: [String: Any] = [:]) {

@@ -58,11 +58,13 @@ enum HostCommand: Decodable {
   case openActiveProjectEditorFromTitlebar
   case openAgentsModeFromTitlebar
   case openGitHubProjectFromTitlebar
+  case showProjectEditorCompanionFromTitlebar
   case openTasksPlaceholderFromTitlebar
   case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
   case rotateActivePaneLayoutClockwiseFromTitlebar
   case togglePetOverlayFromTitlebar
   case toggleCommandsPanelFromTitlebar
+  case sleepInactiveSessionsFromTitlebar(SleepInactiveSessionsFromTitlebar)
   case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
   case configureZedOverlay(ConfigureZedOverlay)
   case openZedWorkspace(OpenZedWorkspace)
@@ -130,11 +132,13 @@ enum HostCommand: Decodable {
     case openActiveProjectEditorFromTitlebar
     case openAgentsModeFromTitlebar
     case openGitHubProjectFromTitlebar
+    case showProjectEditorCompanionFromTitlebar
     case openTasksPlaceholderFromTitlebar
     case refreshWorkspaceOpenTargetAvailabilityFromTitlebar
     case rotateActivePaneLayoutClockwiseFromTitlebar
     case togglePetOverlayFromTitlebar
     case toggleCommandsPanelFromTitlebar
+    case sleepInactiveSessionsFromTitlebar
     case runSidebarCommandFromTitlebar
     case configureZedOverlay
     case openZedWorkspace
@@ -259,6 +263,8 @@ enum HostCommand: Decodable {
       self = .openAgentsModeFromTitlebar
     case .openGitHubProjectFromTitlebar:
       self = .openGitHubProjectFromTitlebar
+    case .showProjectEditorCompanionFromTitlebar:
+      self = .showProjectEditorCompanionFromTitlebar
     case .openTasksPlaceholderFromTitlebar:
       self = .openTasksPlaceholderFromTitlebar
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
@@ -269,6 +275,8 @@ enum HostCommand: Decodable {
       self = .togglePetOverlayFromTitlebar
     case .toggleCommandsPanelFromTitlebar:
       self = .toggleCommandsPanelFromTitlebar
+    case .sleepInactiveSessionsFromTitlebar:
+      self = .sleepInactiveSessionsFromTitlebar(try SleepInactiveSessionsFromTitlebar(from: decoder))
     case .runSidebarCommandFromTitlebar:
       self = .runSidebarCommandFromTitlebar(try RunSidebarCommandFromTitlebar(from: decoder))
     case .configureZedOverlay:
@@ -359,6 +367,7 @@ struct StartCodeServerRuntime: Decodable {
 }
 
 struct CreateProjectEditorPane: Decodable {
+  let companionPaneHidden: Bool?
   let mode: String?
   let projectId: String
   let projectTitle: String?
@@ -381,6 +390,7 @@ struct SetActiveTerminalSet: Decodable {
   let activeProjectEditorId: String?
   let activeProjectDiffStats: TitlebarProjectDiffStats?
   let activeProjectMode: String?
+  let activeProjectEditorCompanionPaneHidden: Bool?
   let activeProjectEditorIsOpen: Bool?
   let activeProjectEditorIsSleeping: Bool?
   let activeProjectEditorStatus: String?
@@ -427,7 +437,33 @@ struct SetActiveTerminalSet: Decodable {
   let sessionTitles: [String: String]?
   let showProjectEditorDiffFileCount: Bool?
   let sidebarActions: TitlebarSidebarActions?
+  let titlebarResourceGroups: [TitlebarResourceGroup]?
   let workspaceOpenTargets: TitlebarWorkspaceOpenTargets?
+}
+
+struct TitlebarResourceGroup: Decodable {
+  let groupId: String
+  let isActive: Bool
+  let projectId: String?
+  let projectName: String
+  let projectPath: String
+  let sessions: [TitlebarResourceSession]
+  let title: String
+}
+
+struct TitlebarResourceSession: Decodable {
+  let activity: String
+  let agentIcon: String?
+  let isRunning: Bool
+  let isSleeping: Bool?
+  let lastInteractionAt: String?
+  let projectId: String?
+  let sessionId: String
+  let sessionKind: String?
+  let sessionPersistenceName: String?
+  let sessionPersistenceProvider: String?
+  let terminalTitle: String?
+  let title: String
 }
 
 struct TitlebarProjectDiffStats: Decodable {
@@ -688,6 +724,10 @@ struct RunSidebarCommandFromTitlebar: Decodable {
   let commandId: String
 }
 
+struct SleepInactiveSessionsFromTitlebar: Decodable {
+  let sessionIds: [String]
+}
+
 enum SidebarSide: String, Decodable {
   case left
   case right
@@ -779,6 +819,7 @@ enum HostEvent: Encodable {
   case commandsPanelHeightRatioChanged(heightRatio: Double)
   case terminalError(sessionId: String, message: String)
   case projectEditorBackRequested(projectId: String)
+  case projectEditorCompanionPaneHiddenChanged(projectId: String, hidden: Bool)
   case projectEditorTabSelected(projectId: String, url: String?)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
@@ -794,6 +835,7 @@ enum HostEvent: Encodable {
     case exitCode
     case cwd
     case foregroundPid
+    case hidden
     case heightRatio
     case message
     case protocolVersion
@@ -920,6 +962,16 @@ enum HostEvent: Encodable {
       */
       try container.encode("projectEditorBackRequested", forKey: .type)
       try container.encode(projectId, forKey: .projectId)
+    case .projectEditorCompanionPaneHiddenChanged(let projectId, let hidden):
+      /**
+       CDXC:ProjectEditorCompanion 2026-05-16-14:42:
+       Closing the agent side pane is a project preference, not a transient
+       AppKit layout toggle. Report native close clicks to the sidebar so Code,
+       Git, and Project editor modes share the hidden state across restarts.
+       */
+      try container.encode("projectEditorCompanionPaneHiddenChanged", forKey: .type)
+      try container.encode(projectId, forKey: .projectId)
+      try container.encode(hidden, forKey: .hidden)
     case .projectEditorTabSelected(let projectId, let url):
       /**
        CDXC:GitProjectTabs 2026-05-16-09:50:

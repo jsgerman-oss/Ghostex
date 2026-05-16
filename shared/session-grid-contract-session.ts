@@ -415,6 +415,7 @@ export function createSessionRecord(
     agentName: normalizeTerminalSessionAgentName(terminalAgentName),
     agentSessionId: normalizeTerminalAgentSessionIdentity(options?.agentSessionId),
     agentSessionPath: normalizeTerminalAgentSessionIdentity(options?.agentSessionPath),
+    commandTitle: normalizeTerminalCommandTitle(options?.commandTitle),
     column: position.column,
     createdAt,
     displayId,
@@ -452,6 +453,11 @@ function normalizeSessionTitleSource(
 }
 
 export function normalizeTerminalSessionAgentName(value: string | undefined): string | undefined {
+  const normalizedValue = value?.replace(/\s+/g, " ").trim();
+  return normalizedValue && normalizedValue.length > 0 ? normalizedValue : undefined;
+}
+
+function normalizeTerminalCommandTitle(value: string | undefined): string | undefined {
   const normalizedValue = value?.replace(/\s+/g, " ").trim();
   return normalizedValue && normalizedValue.length > 0 ? normalizedValue : undefined;
 }

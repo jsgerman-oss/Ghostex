@@ -134,6 +134,13 @@ export type BaseSessionRecord = {
 export type TerminalSessionRecord = BaseSessionRecord & {
   agentName?: string;
   /**
+   * CDXC:CommandPanes 2026-05-16-15:08:
+   * Command-pane reuse is keyed by the configured action title rather than the
+   * mutable command id. Persist the title owner on command terminal records so
+   * Ghostex can rediscover the correct idle pane after restart or state hydrate.
+   */
+  commandTitle?: string;
+  /**
    * CDXC:PiAgent 2026-05-08-09:42
    * Some agents need a durable conversation identity that is not the sidebar
    * title or terminal-provider session name. Pi restore/fork uses its session
@@ -181,6 +188,7 @@ export type CreateSessionRecordOptions =
       agentName?: string;
       agentSessionId?: string;
       agentSessionPath?: string;
+      commandTitle?: string;
       displayId?: string;
       initialPresentation?: "background" | "focused";
       kind?: "terminal";

@@ -321,6 +321,7 @@ type NativeHostCommand =
     }
   | { type: "stopCodeServerRuntime" }
   | {
+      companionPaneHidden?: boolean;
       mode?: ProjectEditorSurfaceMode;
       projectId: string;
       projectTitle?: string;
@@ -343,10 +344,11 @@ type NativeHostCommand =
       commandsPanelIsVisible?: boolean;
       commandsPanelLayout?: NativeTerminalLayout;
       commandsPanelMode?: "floating" | "pinned";
-	      activeProjectDiffStats?: SidebarProjectDiffStats;
-	      activeProjectMode?: TitlebarMode;
-	      activeProjectEditorIsOpen?: boolean;
-	      activeProjectEditorIsSleeping?: boolean;
+      activeProjectDiffStats?: SidebarProjectDiffStats;
+      activeProjectMode?: TitlebarMode;
+      activeProjectEditorCompanionPaneHidden?: boolean;
+      activeProjectEditorIsOpen?: boolean;
+      activeProjectEditorIsSleeping?: boolean;
 	      activeProjectEditorStatus?: ProjectEditorLoadStatus;
 	      activeProjectId?: string;
       activeProjectIconDataUrl?: string;
@@ -380,6 +382,7 @@ type NativeHostCommand =
 	      sidebarActions?: {
 	        commands: SidebarCommandButton[];
 	      };
+      titlebarResourceGroups?: TitlebarResourceGroup[];
 	      type: "setActiveTerminalSet";
 	      workspaceOpenTargets?: {
 	        availability: ghostexSettings["workspaceOpenTargetAvailability"];
@@ -633,6 +636,11 @@ type NativeHostEvent =
       projectId: string;
       type: "projectEditorBackRequested";
     }
+  | {
+      hidden: boolean;
+      projectId: string;
+      type: "projectEditorCompanionPaneHiddenChanged";
+    }
   | { status: NativeSessionStatusIndicatorStatus; type: "sessionStatusIndicatorClicked" }
   | { projectId: string; sessionId: string; type: "petOverlayActivityClicked" }
   | { sessionId: string; type: "sessionAttentionNotificationClicked" }
@@ -704,6 +712,8 @@ declare global {
       openActiveProjectEditorFromTitlebar: () => void;
       openAgentsModeFromTitlebar: () => void;
       openGitHubProjectFromTitlebar: () => void;
+      showProjectEditorCompanionFromTitlebar: () => void;
+      sleepInactiveSessionsFromTitlebar: (sessionIds: string[]) => void;
       openTasksPlaceholderFromTitlebar: () => void;
       refreshWorkspaceOpenTargetAvailabilityFromTitlebar: () => void;
       rotateActivePaneLayoutClockwiseFromTitlebar: () => void;
@@ -916,12 +926,38 @@ type NativeProject = {
   isRecentProject?: boolean;
   name: string;
   path: string;
+  projectEditorCompanionPaneHidden?: boolean;
   projectEditor?: NativeProjectEditorRestoreState;
   projectId: string;
   recentClosedAt?: string;
   theme?: SidebarTheme;
   themeColor?: string;
   workspace: GroupedSessionWorkspaceSnapshot;
+};
+
+type TitlebarResourceGroup = {
+  groupId: string;
+  isActive: boolean;
+  projectId?: string;
+  projectName: string;
+  projectPath: string;
+  sessions: TitlebarResourceSession[];
+  title: string;
+};
+
+type TitlebarResourceSession = {
+  activity: "attention" | "idle" | "working";
+  agentIcon?: string;
+  isRunning: boolean;
+  isSleeping?: boolean;
+  lastInteractionAt?: string;
+  projectId?: string;
+  sessionId: string;
+  sessionKind?: "browser" | "terminal" | "t3";
+  sessionPersistenceName?: string;
+  sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
+  terminalTitle?: string;
+  title: string;
 };
 
 type NativeProjectEditorRestoreState = {
@@ -1126,6 +1162,7 @@ const delayedSendTimeoutBySessionId = new Map<string, number>();
 type NativeSidebarCommandSession = {
   closeOnExit: boolean;
   commandId: string;
+  commandTitle: string;
   playCompletionSound: boolean;
   runId?: string;
   sessionId: string;
@@ -3462,6 +3499,7 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
       isRecentProject: project.isRecentProject === true,
       name: project.name?.trim() || projectNameFromPath(path),
       path,
+      projectEditorCompanionPaneHidden: project.projectEditorCompanionPaneHidden === true,
       projectEditor: normalizeStoredProjectEditorRestoreState(project.projectEditor),
       projectId,
       recentClosedAt:
@@ -5089,7 +5127,11 @@ function rememberedWorkspaceTerminalForCommandsPanel(project: NativeProject): st
 function createCommandTerminal(
   title = "Command Terminal",
   initialInput = "",
-  options: { focusAfterCreate?: boolean; commandId?: string; targetTabGroupSessionId?: string } = {},
+  options: {
+    commandTitle?: string;
+    focusAfterCreate?: boolean;
+    targetTabGroupSessionId?: string;
+  } = {},
 ): TerminalSessionRecord | undefined {
   const project = activeProject();
   if (
@@ -5121,6 +5163,7 @@ function createCommandTerminal(
       surface: "commands",
       terminalEngine: "ghostty-native",
       title,
+      commandTitle: options.commandTitle,
     }),
   ) as TerminalSessionRecord;
   const nativeSessionId = rememberNativeSessionMapping(project.projectId, session.sessionId);
@@ -5638,6 +5681,75 @@ function createCombinedSidebarGroups(): SidebarSessionGroup[] {
   ];
 }
 
+function createTitlebarResourceGroups(): TitlebarResourceGroup[] {
+  /**
+   * CDXC:TitlebarResources 2026-05-16-16:08:
+   * The resource dropdown lives in the isolated React titlebar, but its session
+   * grouping must mirror the combined sidebar. Send a compact projection with
+   * original session ids and provider names so titlebar process polling can
+   * match zmx/codex children while still rendering Quick and project groups.
+   */
+  const orderedProjects = orderNativeProjectsForSidebar(projects).filter(
+    (project) => project.isRecentProject !== true,
+  );
+  const chatProjects = orderedProjects.filter((project) => project.isChat === true);
+  const quickSessions = chatProjects.flatMap((project) =>
+    createProjectedSidebarGroupsForProject(project).flatMap((group) =>
+      group.sessions.map((session) => createTitlebarResourceSession(project.projectId, session)),
+    ),
+  );
+  const groups: TitlebarResourceGroup[] = [];
+  if (quickSessions.length > 0) {
+    groups.push({
+      groupId: COMBINED_CHATS_GROUP_ID,
+      isActive: chatProjects.some((project) => project.projectId === activeProjectId),
+      projectName: "Quick",
+      projectPath: "",
+      sessions: quickSessions,
+      title: "Quick",
+    });
+  }
+
+  for (const project of orderedProjects) {
+    if (project.isChat === true) {
+      continue;
+    }
+    groups.push({
+      groupId: createCombinedProjectGroupId(project.projectId),
+      isActive: project.projectId === activeProjectId,
+      projectId: project.projectId,
+      projectName: project.name,
+      projectPath: project.path,
+      sessions: createProjectedSidebarGroupsForProject(project).flatMap((group) =>
+        group.sessions.map((session) => createTitlebarResourceSession(project.projectId, session)),
+      ),
+      title: project.name,
+    });
+  }
+
+  return groups;
+}
+
+function createTitlebarResourceSession(
+  projectId: string,
+  session: SidebarSessionItem,
+): TitlebarResourceSession {
+  return {
+    activity: session.activity,
+    agentIcon: session.agentIcon,
+    isRunning: session.isRunning,
+    isSleeping: session.isSleeping,
+    lastInteractionAt: session.lastInteractionAt,
+    projectId,
+    sessionId: session.sessionId,
+    sessionKind: session.sessionKind,
+    sessionPersistenceName: session.sessionPersistenceName,
+    sessionPersistenceProvider: session.sessionPersistenceProvider,
+    terminalTitle: session.terminalTitle,
+    title: session.primaryTitle?.trim() || session.terminalTitle?.trim() || session.alias,
+  };
+}
+
 function createSidebarRecentProjects(): SidebarRecentProject[] {
   /**
    * CDXC:RecentProjects 2026-05-04-14:25
@@ -5735,6 +5847,34 @@ function setProjectEditorPersistedOpen(
     return projectWithoutEditor;
   });
 
+  if (didChange) {
+    writeStoredProjects(reason);
+  }
+}
+
+function setProjectEditorCompanionPaneHidden(
+  projectId: string,
+  hidden: boolean,
+  reason: string,
+): void {
+  let didChange = false;
+  projects = projects.map((project) => {
+    if (project.projectId !== projectId) {
+      return project;
+    }
+    if ((project.projectEditorCompanionPaneHidden === true) === hidden) {
+      return project;
+    }
+    didChange = true;
+    /**
+     * CDXC:ProjectEditorCompanion 2026-05-16-14:42:
+     * Closing the agent side pane is a project preference shared by Code, Git,
+     * and Project mode surfaces. Persist it on the project record, not on the
+     * mode-specific projectEditor state, so switching modes and restarting the
+     * app keep the companion pane hidden until the titlebar restore button is used.
+     */
+    return { ...project, projectEditorCompanionPaneHidden: hidden };
+  });
   if (didChange) {
     writeStoredProjects(reason);
   }
@@ -5875,17 +6015,28 @@ function resolveNativeSidebarAgentIcon(agentName: string | undefined): SidebarAg
 }
 
 function getNativeSidebarCommandSessionIndicators(
-  commands: readonly { commandId: string }[],
+  commands: readonly SidebarCommandButton[],
 ): SidebarCommandSessionIndicator[] {
   const focusedSessionId = activeSnapshot().focusedSessionId;
   return commands.flatMap((command) => {
+    if (command.actionType !== "terminal") {
+      return [];
+    }
     const storedSession = sidebarCommandSessionByCommandId.get(command.commandId);
-    if (!storedSession) {
+    const commandTitleKey = getNativeSidebarCommandTitleKey(
+      getNativeSidebarCommandSessionTitle(command),
+    );
+    const mappedSessionTitleKey = getNativeSidebarCommandTitleKey(storedSession?.commandTitle);
+    const indicatorSessionId =
+      storedSession && mappedSessionTitleKey === commandTitleKey
+        ? storedSession.sessionId
+        : findNativeSidebarCommandPaneByTitle(commandTitleKey)?.sessionId;
+    if (!indicatorSessionId) {
       return [];
     }
 
-    const session = findSessionRecord(storedSession.sessionId);
-    const terminalState = terminalStateById.get(storedSession.sessionId);
+    const session = findSessionRecord(indicatorSessionId);
+    const terminalState = terminalStateById.get(indicatorSessionId);
     if (!session || !terminalState) {
       return [];
     }
@@ -5900,8 +6051,8 @@ function getNativeSidebarCommandSessionIndicators(
     return [
       {
         commandId: command.commandId,
-        isActive: storedSession.sessionId === focusedSessionId,
-        sessionId: storedSession.sessionId,
+        isActive: indicatorSessionId === focusedSessionId,
+        sessionId: indicatorSessionId,
         status,
         title: terminalState.terminalTitle ?? session.title.trim() ?? undefined,
       },
@@ -10685,6 +10836,43 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
   publish();
 }
 
+function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
+  const thresholdTime = Date.now() - 7 * 60 * 1_000;
+  /**
+   * CDXC:TitlebarResources 2026-05-16-19:53:
+   * The titlebar sleep shortcut may be clicked from stale dropdown data, so the
+   * sidebar revalidates each target against current project/session state.
+   * Sleep only idle, awake agent terminals older than seven minutes and never
+   * sleep sessions that are currently working or requesting attention.
+   */
+  for (const sessionId of Array.from(new Set(sessionIds))) {
+    const reference = resolveSidebarSessionReference(sessionId);
+    const session = findTerminalSessionInProject(reference.project, reference.sessionId);
+    if (!session || session.kind !== "terminal" || session.isSleeping === true) {
+      continue;
+    }
+    const projectedSession = createProjectedSidebarGroupsForProject(reference.project)
+      .flatMap((group) => group.sessions)
+      .find((candidate) => candidate.sessionId === reference.sessionId);
+    const terminalState = terminalStateById.get(reference.sessionId);
+    const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
+    if (activity === "working" || activity === "attention") {
+      continue;
+    }
+    const agentName = terminalState?.agentName ?? session.agentName;
+    if (!agentName?.trim()) {
+      continue;
+    }
+    const lastInteractionTime = Date.parse(
+      projectedSession?.lastInteractionAt ?? terminalState?.lastActivityAt ?? session.createdAt,
+    );
+    if (!Number.isFinite(lastInteractionTime) || lastInteractionTime >= thresholdTime) {
+      continue;
+    }
+    setNativeSessionSleeping(sessionId, true);
+  }
+}
+
 function setNativeSessionPoppedOut(sessionId: string, poppedOut: boolean): void {
   const reference = resolveSidebarSessionReference(sessionId);
   const session = findSessionRecordInProject(reference.project, reference.sessionId);
@@ -11325,6 +11513,26 @@ function getNativeSidebarCommandSessionTitle(command: SidebarCommandButton): str
     : (command.command ?? "").trim().slice(0, 20);
 }
 
+function normalizeNativeSidebarCommandTitle(value: string | undefined): string | undefined {
+  const normalized = value?.trim().replace(/\s+/g, " ");
+  return normalized ? normalized : undefined;
+}
+
+function getNativeSidebarCommandTitleKey(value: string | undefined): string {
+  return normalizeNativeSidebarCommandTitle(value)?.toLocaleLowerCase() ?? "";
+}
+
+function getNativeSidebarActionTitle(
+  command: Pick<SidebarCommandButton, "command" | "name" | "url">,
+): string {
+  const normalizedActionName = normalizeNativeSidebarCommandTitle(command.name);
+  if (normalizedActionName) {
+    return normalizedActionName;
+  }
+  const target = normalizeNativeSidebarCommandTitle(command.command ?? command.url);
+  return target?.slice(0, 20) ?? "";
+}
+
 function getNativeSidebarCommandExecutionText(
   command: string,
   closeOnExit: boolean,
@@ -11440,9 +11648,11 @@ function setNativeSidebarCommandSession(
   runId?: string,
 ): void {
   const existingSession = sidebarCommandSessionByCommandId.get(command.commandId);
+  const commandTitle = getNativeSidebarCommandSessionTitle(command);
   appendActionCrashTraceDebugLog("nativeSidebar.actionCrashTrace.sessionMappingStart", {
     closeOnExit,
     commandId: command.commandId,
+    commandTitle,
     existingSessionId: existingSession?.sessionId,
     nextSessionId: sessionId,
     previousCommandIdForSession: sidebarCommandCommandIdBySessionId.get(sessionId),
@@ -11462,6 +11672,7 @@ function setNativeSidebarCommandSession(
   sidebarCommandSessionByCommandId.set(command.commandId, {
     closeOnExit,
     commandId: command.commandId,
+    commandTitle,
     playCompletionSound: command.playCompletionSound,
     runId,
     sessionId,
@@ -11470,6 +11681,7 @@ function setNativeSidebarCommandSession(
   appendActionCrashTraceDebugLog("nativeSidebar.actionCrashTrace.sessionMappingDone", {
     closeOnExit,
     commandId: command.commandId,
+    commandTitle,
     runId,
     sessionId,
   });
@@ -11508,6 +11720,11 @@ function setNativeSidebarCommandPaneTitle(sessionId: string, title: string): voi
    * previously mapped command title. Refresh the stored command-panel session
    * title before every run so reused tabs and native tab chrome stay aligned
    * with the current action label.
+   *
+   * CDXC:CommandPanes 2026-05-16-15:08:
+   * The action title is also the persisted command-pane owner. Rewriting
+   * commandTitle with the visible tab title keeps title-based reuse stable
+   * after restart and after an action is edited.
    */
   updateActiveProjectCommandsPanel((panel) => ({
     ...panel,
@@ -11515,6 +11732,7 @@ function setNativeSidebarCommandPaneTitle(sessionId: string, title: string): voi
       session.sessionId === sessionId
         ? {
             ...session,
+            commandTitle: title,
             title,
             titleSource: "user",
           }
@@ -11557,13 +11775,18 @@ function findReusableNativeSidebarCommandPane(
   command: SidebarCommandButton,
 ): TerminalSessionRecord | undefined {
   const existingSession = sidebarCommandSessionByCommandId.get(command.commandId);
+  const commandTitle = getNativeSidebarCommandSessionTitle(command);
+  const commandTitleKey = getNativeSidebarCommandTitleKey(commandTitle);
   const existingCommandSession =
-    existingSession && isReusableNativeSidebarCommandPane(existingSession.sessionId)
+    existingSession &&
+    getNativeSidebarCommandTitleKey(existingSession.commandTitle) === commandTitleKey &&
+    isReusableNativeSidebarCommandPane(existingSession.sessionId)
       ? findTerminalSession(existingSession.sessionId)
       : undefined;
   if (existingCommandSession) {
     appendActionCrashTraceDebugLog("nativeSidebar.actionCrashTrace.reuseExistingCommandSession", {
       commandId: command.commandId,
+      commandTitle,
       sessionId: existingCommandSession.sessionId,
       terminalActivity: terminalStateById.get(existingCommandSession.sessionId)?.activity,
       terminalLifecycle: terminalStateById.get(existingCommandSession.sessionId)?.lifecycleState,
@@ -11571,19 +11794,39 @@ function findReusableNativeSidebarCommandPane(
     return existingCommandSession;
   }
 
+  const titleOwnedSession = findNativeSidebarCommandPaneByTitle(commandTitleKey);
+  const reusableTitleOwnedSession =
+    titleOwnedSession && isReusableNativeSidebarCommandPane(titleOwnedSession.sessionId)
+      ? titleOwnedSession
+      : undefined;
   /**
-   * CDXC:CommandPanes 2026-05-16-08:25:
-   * Sidebar actions own one command-pane tab per command id. Re-running the
-   * same action may reuse its mapped idle pane, but a different action must
-   * create its own tab instead of taking over an unrelated idle command pane.
+   * CDXC:CommandPanes 2026-05-16-15:08:
+   * Sidebar terminal actions own one command-pane tab per action title. The
+   * title key lets Ghostex reuse a pane after restart even when the in-memory
+   * command-id map has not been rebuilt. Duplicate action titles are rejected
+   * per project so this title ownership stays unambiguous.
    */
   appendActionCrashTraceDebugLog("nativeSidebar.actionCrashTrace.reuseLookup", {
     commandId: command.commandId,
+    commandTitle,
     commandPanelSessionCount: activeProject().commandsPanel.sessions.length,
     existingSessionId: existingSession?.sessionId,
-    reusableSessionId: undefined,
+    reusableSessionId: reusableTitleOwnedSession?.sessionId,
+    titleOwnedSessionId: titleOwnedSession?.sessionId,
   });
-  return undefined;
+  return reusableTitleOwnedSession;
+}
+
+function findNativeSidebarCommandPaneByTitle(
+  commandTitleKey: string,
+): TerminalSessionRecord | undefined {
+  if (!commandTitleKey) {
+    return undefined;
+  }
+  return activeProject().commandsPanel.sessions.find(
+    (session) =>
+      getNativeSidebarCommandTitleKey(session.commandTitle ?? session.title) === commandTitleKey,
+  );
 }
 
 function isReusableNativeSidebarCommandPane(sessionId: string): boolean {
@@ -11717,8 +11960,8 @@ function runNativeSidebarCommand(
   const session =
     reusableSession ??
     createCommandTerminal(sessionTitle, `${executionText}\r`, {
+      commandTitle: sessionTitle,
       focusAfterCreate: false,
-      commandId: command.commandId,
     });
   if (!session) {
     appendActionCrashTraceDebugLog("nativeSidebar.actionCrashTrace.createCommandPaneFailed", {
@@ -13555,6 +13798,7 @@ function wakeProjectEditorSurface(project: NativeProject, mode?: ProjectEditorSu
     });
   }
   postNative({
+    companionPaneHidden: project.projectEditorCompanionPaneHidden === true,
     mode: nextMode,
     projectId: nativeEditorId,
     projectTitle: projectEditorTitle(project),
@@ -13766,6 +14010,19 @@ function openAgentsModeFromTitlebar(): void {
   publish();
 }
 
+function showProjectEditorCompanionFromTitlebar(): void {
+  const project = activeProject();
+  if (project.isChat === true || project.isRecentProject === true) {
+    return;
+  }
+  setProjectEditorCompanionPaneHidden(
+    project.projectId,
+    false,
+    "showProjectEditorCompanionFromTitlebar",
+  );
+  publish();
+}
+
 function openProjectGitEditorSurface(project: NativeProject, githubUrl: string): void {
   if (activeProjectId !== project.projectId) {
     focusProject(project.projectId);
@@ -13825,6 +14082,7 @@ function openProjectGitEditorSurface(project: NativeProject, githubUrl: string):
   });
   rememberAwakeProjectEditorMode(project.projectId, "git");
   postNative({
+    companionPaneHidden: project.projectEditorCompanionPaneHidden === true,
     mode: "git",
     projectId: nativeEditorId,
     projectTitle: projectEditorTitle(project),
@@ -13898,6 +14156,7 @@ function openProjectTasksEditorSurface(project: NativeProject, tasksUrl: string)
   });
   rememberAwakeProjectEditorMode(project.projectId, "tasks");
   postNative({
+    companionPaneHidden: project.projectEditorCompanionPaneHidden === true,
     mode: "tasks",
     projectId: nativeEditorId,
     projectTitle: projectEditorTitle(project),
@@ -14151,6 +14410,23 @@ function handleProjectEditorBackRequested(nativeEditorId: string): void {
   if (focusedSessionId) {
     queueNativeLayoutFocusRequest(focusedSessionId, "projectEditorBackRequested");
   }
+  publish();
+}
+
+function handleProjectEditorCompanionPaneHiddenChanged(
+  nativeEditorId: string,
+  hidden: boolean,
+): void {
+  const projectId = projectIdFromProjectEditorId(nativeEditorId);
+  const project = findProject(projectId);
+  if (!project || project.isChat === true || project.isRecentProject === true) {
+    return;
+  }
+  setProjectEditorCompanionPaneHidden(
+    projectId,
+    hidden,
+    "projectEditorCompanionPaneHiddenChanged",
+  );
   publish();
 }
 
@@ -14411,6 +14687,27 @@ function saveSidebarCommand(
     ...(message.icon ? { icon: message.icon, iconColor } : {}),
     ...(message.actionType === "browser" ? { url } : { command }),
   };
+  const nextCommandTitle = getNativeSidebarActionTitle(nextCommand);
+  const nextCommandTitleKey = getNativeSidebarCommandTitleKey(nextCommandTitle);
+  /**
+   * CDXC:CommandPanes 2026-05-16-15:08:
+   * Command-pane identity is the configured action title inside the active
+   * project. Reject duplicate action titles at save time so repeat-click pane
+   * reuse cannot ambiguously target another command's tab.
+   */
+  const duplicateCommand = commands.find(
+    (candidate) =>
+      candidate.commandId !== commandId &&
+      getNativeSidebarCommandTitleKey(getNativeSidebarActionTitle(candidate)) ===
+        nextCommandTitleKey,
+  );
+  if (duplicateCommand) {
+    showNativeMessage(
+      "warning",
+      `An action titled "${nextCommandTitle}" already exists in this project.`,
+    );
+    return;
+  }
   const existingIndex = storedCommands.findIndex((candidate) => candidate.commandId === commandId);
   const nextCommands =
     existingIndex >= 0
@@ -15516,6 +15813,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
      * segmented control in sync with the visible surface.
      */
     activeProjectDiffStats: currentProjectEditor.diffStats,
+    activeProjectEditorCompanionPaneHidden: currentProject.projectEditorCompanionPaneHidden === true,
     activeProjectMode:
       currentProjectEditorSurfaceState?.isOpen === true &&
       currentProjectEditorSurfaceState.isSleeping !== true
@@ -15560,6 +15858,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     sessionTitles,
     petOverlayEnabled: settings.petOverlayEnabled,
     showProjectEditorDiffFileCount: settings.showProjectEditorDiffFileCount,
+    titlebarResourceGroups: createTitlebarResourceGroups(),
     type: "setActiveTerminalSet",
     workspaceOpenTargets: {
       availability: settings.workspaceOpenTargetAvailability,
@@ -16026,6 +16325,10 @@ window.addEventListener("ghostex-native-host-event", (event) => {
   }
   if (hostEvent.type === "projectEditorBackRequested") {
     handleProjectEditorBackRequested(hostEvent.projectId);
+    return;
+  }
+  if (hostEvent.type === "projectEditorCompanionPaneHiddenChanged") {
+    handleProjectEditorCompanionPaneHiddenChanged(hostEvent.projectId, hostEvent.hidden);
     return;
   }
   if (hostEvent.type === "projectEditorTabSelected") {
@@ -17142,6 +17445,8 @@ window.__ghostex_NATIVE_SIDEBAR__ = {
   openGitHubProjectFromTitlebar: () => {
     void openGitHubProjectFromTitlebar();
   },
+  showProjectEditorCompanionFromTitlebar,
+  sleepInactiveSessionsFromTitlebar,
   openTasksPlaceholderFromTitlebar,
   refreshWorkspaceOpenTargetAvailabilityFromTitlebar,
   rotateActivePaneLayoutClockwiseFromTitlebar,

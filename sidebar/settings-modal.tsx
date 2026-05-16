@@ -2673,6 +2673,7 @@ function ActionsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
           {editorState ? (
             <ActionSettingsEditor
               draft={editorState.draft}
+              existingCommands={commands}
               lockedActionType={editorState.lockedActionType}
               onCancel={() => setEditorState(undefined)}
               onDelete={deleteCommand}
@@ -2781,12 +2782,14 @@ function SettingsCommandRow({
 
 function ActionSettingsEditor({
   draft,
+  existingCommands,
   lockedActionType,
   onCancel,
   onDelete,
   onSave,
 }: {
   draft: CommandConfigDraft;
+  existingCommands: readonly SidebarCommandButton[];
   lockedActionType?: SidebarActionType;
   onCancel: () => void;
   onDelete: (draft: CommandConfigDraft) => void;
@@ -2816,7 +2819,20 @@ function ActionSettingsEditor({
   const isActionTypeLocked = lockedActionType !== undefined;
   const targetValue = actionType === "browser" ? url.trim() : command.trim();
   const trimmedName = name.trim();
-  const isSaveDisabled = targetValue.length === 0;
+  const commandTitle = getSettingsCommandDraftTitle({ actionType, command, name, url });
+  /**
+   * CDXC:CommandPanes 2026-05-16-15:08:
+   * Settings must enforce one action title per project because command-pane
+   * reuse uses that title as the pane identifier. Blocking duplicates here
+   * prevents saving an action that could target another action's command tab.
+   */
+  const hasDuplicateTitle = existingCommands.some(
+    (commandButton) =>
+      commandButton.commandId !== draft.commandId &&
+      getSettingsCommandTitleKey(getSettingsCommandButtonTitle(commandButton)) ===
+        getSettingsCommandTitleKey(commandTitle),
+  );
+  const isSaveDisabled = targetValue.length === 0 || hasDuplicateTitle;
 
   const getDraft = (): CommandConfigDraft => ({
     actionType,
@@ -2862,7 +2878,7 @@ function ActionSettingsEditor({
           </Select>
         </Field>
       )}
-      <Field className="gap-2.5">
+      <Field className="gap-2.5" data-invalid={hasDuplicateTitle || undefined}>
         <FieldContent>
           <FieldLabel className="text-sm" htmlFor={nameId}>
             Text
@@ -2870,12 +2886,18 @@ function ActionSettingsEditor({
         </FieldContent>
         <Input
           autoFocus
+          aria-invalid={hasDuplicateTitle || undefined}
           className="h-10 px-3 text-sm"
           id={nameId}
           onChange={(event) => setName(event.currentTarget.value)}
           placeholder={actionType === "browser" ? "Docs" : "Dev"}
           value={name}
         />
+        {hasDuplicateTitle ? (
+          <FieldDescription className="text-sm">
+            Another action already uses this title.
+          </FieldDescription>
+        ) : null}
       </Field>
       <CommandIconPicker
         icon={icon}
@@ -2964,6 +2986,43 @@ function ActionSettingsEditor({
       </div>
     </>
   );
+}
+
+function getSettingsCommandDraftTitle({
+  actionType,
+  command,
+  name,
+  url,
+}: {
+  actionType: SidebarActionType;
+  command: string;
+  name: string;
+  url: string;
+}): string {
+  const normalizedName = normalizeSettingsCommandTitle(name);
+  if (normalizedName) {
+    return normalizedName;
+  }
+  const target = normalizeSettingsCommandTitle(actionType === "browser" ? url : command);
+  return target?.slice(0, 20) ?? "";
+}
+
+function getSettingsCommandButtonTitle(command: SidebarCommandButton): string {
+  const normalizedName = normalizeSettingsCommandTitle(command.name);
+  if (normalizedName) {
+    return normalizedName;
+  }
+  const target = normalizeSettingsCommandTitle(command.command ?? command.url);
+  return target?.slice(0, 20) ?? "";
+}
+
+function getSettingsCommandTitleKey(value: string | undefined): string {
+  return normalizeSettingsCommandTitle(value)?.toLocaleLowerCase() ?? "";
+}
+
+function normalizeSettingsCommandTitle(value: string | undefined): string | undefined {
+  const normalized = value?.trim().replace(/\s+/g, " ");
+  return normalized ? normalized : undefined;
 }
 
 function HotkeysSettingsTab({

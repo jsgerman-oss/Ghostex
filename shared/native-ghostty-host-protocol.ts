@@ -44,6 +44,31 @@ export type NativeTerminalTitleBarAction =
   | "splitVertical"
   | "unpinCommandsPanel";
 
+export type TitlebarResourceGroup = {
+  groupId: string;
+  isActive: boolean;
+  projectId?: string;
+  projectName: string;
+  projectPath: string;
+  sessions: TitlebarResourceSession[];
+  title: string;
+};
+
+export type TitlebarResourceSession = {
+  activity: "attention" | "idle" | "working";
+  agentIcon?: string;
+  isRunning: boolean;
+  isSleeping?: boolean;
+  lastInteractionAt?: string;
+  projectId?: string;
+  sessionId: string;
+  sessionKind?: "browser" | "terminal" | "t3";
+  sessionPersistenceName?: string;
+  sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
+  terminalTitle?: string;
+  title: string;
+};
+
 export type NativeGhosttyHostCommand =
   | {
       activateOnCreate?: boolean;
@@ -148,6 +173,7 @@ export type NativeGhosttyHostCommand =
        * project's Git view while leaving Code and Project editor panes plain.
        */
       mode?: "code" | "git" | "tasks";
+      companionPaneHidden?: boolean;
       projectId: string;
       projectTitle?: string;
       showsBrowserToolbar?: boolean;
@@ -177,6 +203,7 @@ export type NativeGhosttyHostCommand =
       activeProjectEditorId?: string;
       activeProjectDiffStats?: SidebarProjectDiffStats;
       activeProjectMode?: "agents" | "code" | "git" | "tasks";
+      activeProjectEditorCompanionPaneHidden?: boolean;
       activeProjectEditorIsOpen?: boolean;
       activeProjectEditorIsSleeping?: boolean;
       activeProjectEditorStatus?: "idle" | "opening" | "running" | "error";
@@ -230,6 +257,7 @@ export type NativeGhosttyHostCommand =
       sidebarActions?: {
         commands: SidebarCommandButton[];
       };
+      titlebarResourceGroups?: TitlebarResourceGroup[];
       type: "setActiveTerminalSet";
       workspaceOpenTargets?: {
         availability: WorkspaceOpenTargetAvailability;
@@ -373,6 +401,17 @@ export type NativeGhosttyHostEvent =
        */
       projectId: string;
       type: "projectEditorBackRequested";
+    }
+  | {
+      /**
+       * CDXC:ProjectEditorCompanion 2026-05-16-14:42:
+       * Closing the agent side pane is project state shared by Code, Git, and
+       * Project surfaces. Native reports the close so the sidebar can persist
+       * the hidden preference across mode switches and app restarts.
+       */
+      hidden: boolean;
+      projectId: string;
+      type: "projectEditorCompanionPaneHiddenChanged";
     }
   | {
       /**

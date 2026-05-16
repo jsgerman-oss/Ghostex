@@ -2,7 +2,14 @@ import { IconTrash } from "@tabler/icons-react";
 import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Field, FieldContent, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldTitle,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -13,7 +20,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { DEFAULT_BROWSER_ACTION_URL, type SidebarActionType } from "../shared/sidebar-commands";
+import {
+  DEFAULT_BROWSER_ACTION_URL,
+  type SidebarActionType,
+  type SidebarCommandButton,
+} from "../shared/sidebar-commands";
 import {
   DEFAULT_SIDEBAR_COMMAND_ICON,
   DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
@@ -36,6 +47,7 @@ export type CommandConfigDraft = {
 
 export type CommandConfigModalProps = {
   draft: CommandConfigDraft;
+  existingCommands?: readonly SidebarCommandButton[];
   isOpen: boolean;
   lockedActionType?: SidebarActionType;
   onCancel: () => void;
@@ -57,6 +69,7 @@ export type CommandConfigModalProps = {
  */
 export function CommandConfigModal({
   draft,
+  existingCommands = [],
   isOpen,
   lockedActionType,
   onCancel,
@@ -129,7 +142,20 @@ export function CommandConfigModal({
 
   const targetValue = actionType === "browser" ? url.trim() : command.trim();
   const trimmedName = name.trim();
-  const isSaveDisabled = targetValue.length === 0;
+  const commandTitle = getCommandConfigDraftTitle({ actionType, command, name, url });
+  /**
+   * CDXC:CommandPanes 2026-05-16-15:08:
+   * Command panes reuse tabs by action title, so the editor must block saving
+   * a second action with the same project title before native state receives an
+   * ambiguous command-pane owner.
+   */
+  const hasDuplicateTitle = existingCommands.some(
+    (commandButton) =>
+      commandButton.commandId !== draft.commandId &&
+      getCommandConfigTitleKey(getCommandConfigButtonTitle(commandButton)) ===
+        getCommandConfigTitleKey(commandTitle),
+  );
+  const isSaveDisabled = targetValue.length === 0 || hasDuplicateTitle;
   const description =
     actionType === "browser"
       ? "This action opens the URL in a VS Code browser tab. The tab is detected and shown in the Browsers group."
@@ -175,7 +201,7 @@ export function CommandConfigModal({
               </Select>
             </Field>
           )}
-          <Field className="gap-2.5">
+          <Field className="gap-2.5" data-invalid={hasDuplicateTitle || undefined}>
             <FieldContent>
               <FieldTitle>
                 <FieldLabel className="text-sm" htmlFor={nameId}>
@@ -186,11 +212,17 @@ export function CommandConfigModal({
             <Input
               autoFocus
               className="h-10 px-3 text-sm md:text-sm"
+              aria-invalid={hasDuplicateTitle || undefined}
               id={nameId}
               onChange={(event) => setName(event.currentTarget.value)}
               placeholder={actionType === "browser" ? "Docs" : "Dev"}
               value={name}
             />
+            {hasDuplicateTitle ? (
+              <FieldDescription className="text-sm">
+                Another action already uses this title.
+              </FieldDescription>
+            ) : null}
           </Field>
           <CommandIconPicker
             icon={icon}
@@ -326,4 +358,41 @@ export function CommandConfigModal({
       </DialogContent>
     </Dialog>
   );
+}
+
+function getCommandConfigDraftTitle({
+  actionType,
+  command,
+  name,
+  url,
+}: {
+  actionType: SidebarActionType;
+  command: string;
+  name: string;
+  url: string;
+}): string {
+  const normalizedName = normalizeCommandConfigTitle(name);
+  if (normalizedName) {
+    return normalizedName;
+  }
+  const target = normalizeCommandConfigTitle(actionType === "browser" ? url : command);
+  return target?.slice(0, 20) ?? "";
+}
+
+function getCommandConfigButtonTitle(command: SidebarCommandButton): string {
+  const normalizedName = normalizeCommandConfigTitle(command.name);
+  if (normalizedName) {
+    return normalizedName;
+  }
+  const target = normalizeCommandConfigTitle(command.command ?? command.url);
+  return target?.slice(0, 20) ?? "";
+}
+
+function getCommandConfigTitleKey(value: string | undefined): string {
+  return normalizeCommandConfigTitle(value)?.toLocaleLowerCase() ?? "";
+}
+
+function normalizeCommandConfigTitle(value: string | undefined): string | undefined {
+  const normalized = value?.trim().replace(/\s+/g, " ");
+  return normalized ? normalized : undefined;
 }

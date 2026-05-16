@@ -180,6 +180,7 @@ export function ConfigureActionsModal({ isOpen, onClose, vscode }: ConfigureActi
       ) : null}
       <CommandConfigModal
         draft={editorState?.draft ?? createCommandDraft("terminal")}
+        existingCommands={commands}
         isOpen={isEditorOpen}
         lockedActionType={editorState?.lockedActionType}
         onCancel={() => setEditorState(undefined)}

@@ -52,6 +52,8 @@ int GhostexCEFRemoteDebuggingPort(void);
 - (void)reload;
 - (void)stopLoading;
 - (void)executeJavaScript:(NSString*)javaScript;
+- (void)emitToolbarActionDiagnosticsWithAction:(NSString*)action
+                                         phase:(NSString*)phase NS_SWIFT_NAME(emitToolbarActionDiagnostics(action:phase:));
 - (void)completeCurrentDragAtWindowPoint:(NSPoint)windowPoint;
 - (void)toggleDevTools;
 - (void)closeBrowser;

@@ -279,6 +279,17 @@ static id GhostexCEFDescribeFrameInWindow(NSView* view) {
   return GhostexCEFDescribeRect([view.superview convertRect:view.frame toView:nil]);
 }
 
+static NSString* GhostexCEFJSONStringLiteral(NSString* value) {
+  if (!value) {
+    return @"null";
+  }
+  NSData* data = [NSJSONSerialization dataWithJSONObject:value options:NSJSONWritingFragmentsAllowed error:nil];
+  if (!data) {
+    return @"null";
+  }
+  return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"null";
+}
+
 static NSDictionary* GhostexCEFDescribeView(NSView* view, NSUInteger depth, NSString* path) {
   CALayer* layer = view.layer;
   NSMutableDictionary* details = [@{
@@ -831,6 +842,48 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
                                                 pageTitle:pageTitle];
 }
 
+- (void)ghostexCEFAppendInternalGeometryDiagnosticForLayoutPass:(NSUInteger)layoutPass
+                                                  currentFrame:(NSRect)currentFrame
+                                                    currentURL:(id)currentURL
+                                                     pageTitle:(id)pageTitle
+                                                        reason:(NSString*)reason
+                                                         phase:(NSString*)phase {
+  if (!cefView_ || !GhostexCEFNativeDebugLoggingEnabled()) {
+    return;
+  }
+  internalGeometryDiagnosticSequence_ += 1;
+  NSMutableArray* cefViewHierarchy = [NSMutableArray array];
+  GhostexCEFCollectViewHierarchy(cefView_, cefViewHierarchy, 0, 5, 80, @"0");
+  NSMutableArray* cefLayerHierarchy = [NSMutableArray array];
+  if (cefView_.layer) {
+    GhostexCEFCollectLayerHierarchy(cefView_.layer, cefLayerHierarchy, 0, 5, 120, @"0");
+  }
+  /*
+  CDXC:ChromiumBrowserPanes 2026-05-15-15:43:
+  The first resize repro showed wrapper and top-level CEF frames staying aligned while the rendered page appeared offset.
+  Add targeted Debugging Mode diagnostics for CEF's internal NSView/CALayer tree and the ancestor flip chain so the fix can target the exact Cocoa or compositor layer that moves.
+
+  CDXC:ChromiumBrowserPanes 2026-05-16-15:48:
+  Toolbar button clicks can reproduce the same upward CEF content drift without resizing the pane, while a full reload restores the content position.
+  Reuse the internal geometry snapshot on demand around browser-toolbar actions so the repro can distinguish button hit/focus effects from resize-only layout effects.
+  */
+  GhostexCEFAppendDiagnosticLog(@"nativeWorkspace.chromiumBrowserPane.cef.internalGeometry", @{
+    @"ancestorChain": GhostexCEFCollectAncestorChain(cefView_, 16),
+    @"cefLayerHierarchy": cefLayerHierarchy,
+    @"cefSubviewHierarchy": cefViewHierarchy,
+    @"currentURL": currentURL,
+    @"diagnosticPhase": phase ?: @"",
+    @"diagnosticReason": reason ?: @"",
+    @"diagnosticSequence": @(internalGeometryDiagnosticSequence_),
+    @"layoutPass": @(layoutPass),
+    @"pageTitle": pageTitle,
+    @"windowNumber": self.window ? @(self.window.windowNumber) : (id)[NSNull null],
+    @"wrapperClass": NSStringFromClass([self class]) ?: @"",
+    @"wrapperFrame": GhostexCEFDescribeRect(self.frame),
+    @"wrapperFrameInWindow": GhostexCEFDescribeFrameInWindow(self),
+  });
+}
+
 - (void)ghostexCEFEmitTargetedResizeDiagnosticsIfNeededAt:(NSTimeInterval)now
                                                layoutPass:(NSUInteger)layoutPass
                                              currentFrame:(NSRect)currentFrame
@@ -842,29 +895,12 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   if (shouldEmitInternalGeometry) {
     lastInternalGeometryDiagnosticAt_ = now;
     lastInternalGeometryDiagnosticBounds_ = currentFrame;
-    internalGeometryDiagnosticSequence_ += 1;
-    NSMutableArray* cefViewHierarchy = [NSMutableArray array];
-    GhostexCEFCollectViewHierarchy(cefView_, cefViewHierarchy, 0, 5, 80, @"0");
-    NSMutableArray* cefLayerHierarchy = [NSMutableArray array];
-    if (cefView_.layer) {
-      GhostexCEFCollectLayerHierarchy(cefView_.layer, cefLayerHierarchy, 0, 5, 120, @"0");
-    }
-    /*
-    CDXC:ChromiumBrowserPanes 2026-05-15-15:43:
-    The first resize repro showed wrapper and top-level CEF frames staying aligned while the rendered page appeared offset.
-    Add targeted Debugging Mode diagnostics for CEF's internal NSView/CALayer tree and the ancestor flip chain so the fix can target the exact Cocoa or compositor layer that moves.
-    */
-    GhostexCEFAppendDiagnosticLog(@"nativeWorkspace.chromiumBrowserPane.cef.internalGeometry", @{
-      @"ancestorChain": GhostexCEFCollectAncestorChain(cefView_, 16),
-      @"cefLayerHierarchy": cefLayerHierarchy,
-      @"cefSubviewHierarchy": cefViewHierarchy,
-      @"currentURL": currentURL,
-      @"diagnosticSequence": @(internalGeometryDiagnosticSequence_),
-      @"layoutPass": @(layoutPass),
-      @"pageTitle": pageTitle,
-      @"windowNumber": self.window ? @(self.window.windowNumber) : (id)[NSNull null],
-      @"wrapperClass": NSStringFromClass([self class]) ?: @"",
-    });
+    [self ghostexCEFAppendInternalGeometryDiagnosticForLayoutPass:layoutPass
+                                                    currentFrame:currentFrame
+                                                      currentURL:currentURL
+                                                       pageTitle:pageTitle
+                                                          reason:@"layout"
+                                                           phase:@"resize"];
   }
 
   BOOL shouldEmitViewport = browser_ &&
@@ -877,13 +913,17 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
     viewportDiagnosticSequence_ += 1;
     [self ghostexCEFEmitPageViewportDiagnosticForLayoutPass:layoutPass
                                                    sequence:viewportDiagnosticSequence_
-                                               currentFrame:currentFrame];
+                                               currentFrame:currentFrame
+                                                     reason:@"layout"
+                                                      phase:@"resize"];
   }
 }
 
 - (void)ghostexCEFEmitPageViewportDiagnosticForLayoutPass:(NSUInteger)layoutPass
                                                  sequence:(NSUInteger)sequence
-                                             currentFrame:(NSRect)currentFrame {
+                                             currentFrame:(NSRect)currentFrame
+                                                   reason:(NSString*)reason
+                                                    phase:(NSString*)phase {
   if (!browser_ || !GhostexCEFNativeDebugLoggingEnabled()) {
     return;
   }
@@ -891,9 +931,13 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   if (!frame) {
     return;
   }
+  NSString* reasonLiteral = GhostexCEFJSONStringLiteral(reason ?: @"");
+  NSString* phaseLiteral = GhostexCEFJSONStringLiteral(phase ?: @"");
   NSString* script = [NSString stringWithFormat:
     @"(() => {"
       "const prefix = '%@';"
+      "const diagnosticReason = %@;"
+      "const diagnosticPhase = %@;"
       "const number = (value) => Number.isFinite(value) ? value : null;"
       "const rectOf = (rect) => rect ? ({"
         "x: number(rect.x), y: number(rect.y), width: number(rect.width), height: number(rect.height),"
@@ -927,6 +971,8 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
         "const payload = {"
           "layoutPass: %lu,"
           "diagnosticSequence: %lu,"
+          "diagnosticReason: diagnosticReason,"
+          "diagnosticPhase: diagnosticPhase,"
           "nativeFrame: {x: %.3f, y: %.3f, width: %.3f, height: %.3f},"
           "href: String(location.href),"
           "readyState: doc.readyState,"
@@ -955,12 +1001,16 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
         "console.info(prefix + JSON.stringify({"
           "layoutPass: %lu,"
           "diagnosticSequence: %lu,"
+          "diagnosticReason: diagnosticReason,"
+          "diagnosticPhase: diagnosticPhase,"
           "nativeFrame: {x: %.3f, y: %.3f, width: %.3f, height: %.3f},"
           "error: String(error && (error.stack || error.message || error))"
         "}));"
       "}"
     "})();",
     GhostexCEFViewportDiagnosticConsolePrefix,
+    reasonLiteral,
+    phaseLiteral,
     (unsigned long)layoutPass,
     (unsigned long)sequence,
     currentFrame.origin.x,
@@ -1094,6 +1144,46 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   if (frame) {
     frame->ExecuteJavaScript(CefString([javaScript UTF8String]), frame->GetURL(), 0);
   }
+}
+
+- (void)emitToolbarActionDiagnosticsWithAction:(NSString*)action phase:(NSString*)phase {
+  if (!GhostexCEFNativeDebugLoggingEnabled()) {
+    return;
+  }
+  NSString* reason = action.length > 0
+    ? [NSString stringWithFormat:@"toolbar.%@", action]
+    : @"toolbar";
+  id currentURL = currentURLString_ ? currentURLString_ : (id)[NSNull null];
+  id pageTitle = pageTitle_ ? pageTitle_ : (id)[NSNull null];
+  NSRect currentFrame = self.bounds;
+  GhostexCEFAppendDiagnosticLog(@"nativeWorkspace.chromiumBrowserPane.cef.toolbarAction", @{
+    @"action": action ?: @"",
+    @"cefBounds": cefView_ ? GhostexCEFDescribeRect(cefView_.bounds) : (id)[NSNull null],
+    @"cefFrame": cefView_ ? GhostexCEFDescribeRect(cefView_.frame) : (id)[NSNull null],
+    @"cefFrameInWindow": cefView_ ? GhostexCEFDescribeFrameInWindow(cefView_) : (id)[NSNull null],
+    @"currentURL": currentURL,
+    @"hasBrowser": @(browser_ != nullptr),
+    @"hasCEFView": @(cefView_ != nil),
+    @"layoutPass": @(layoutPass_),
+    @"pageTitle": pageTitle,
+    @"phase": phase ?: @"",
+    @"wrapperBounds": GhostexCEFDescribeRect(self.bounds),
+    @"wrapperFrame": GhostexCEFDescribeRect(self.frame),
+    @"wrapperFrameInWindow": GhostexCEFDescribeFrameInWindow(self),
+    @"windowNumber": self.window ? @(self.window.windowNumber) : (id)[NSNull null],
+  });
+  [self ghostexCEFAppendInternalGeometryDiagnosticForLayoutPass:layoutPass_
+                                                  currentFrame:currentFrame
+                                                    currentURL:currentURL
+                                                     pageTitle:pageTitle
+                                                        reason:reason
+                                                         phase:phase ?: @""];
+  viewportDiagnosticSequence_ += 1;
+  [self ghostexCEFEmitPageViewportDiagnosticForLayoutPass:layoutPass_
+                                                 sequence:viewportDiagnosticSequence_
+                                             currentFrame:currentFrame
+                                                   reason:reason
+                                                    phase:phase ?: @""];
 }
 
 - (void)completeCurrentDragAtWindowPoint:(NSPoint)windowPoint {

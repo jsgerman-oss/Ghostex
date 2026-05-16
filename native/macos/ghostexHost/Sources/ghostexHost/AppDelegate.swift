@@ -2060,6 +2060,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       break
     case .openGitHubProjectFromTitlebar:
       break
+    case .showProjectEditorCompanionFromTitlebar:
+      break
     case .openTasksPlaceholderFromTitlebar:
       break
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
@@ -2069,6 +2071,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .togglePetOverlayFromTitlebar:
       break
     case .toggleCommandsPanelFromTitlebar:
+      break
+    case .sleepInactiveSessionsFromTitlebar:
       break
     case .runSidebarCommandFromTitlebar:
       break
@@ -3577,6 +3581,7 @@ final class ghostexRootView: NSView {
   private var t3RuntimeLivenessTimer: Timer?
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
+  private var titlebarOutsideClickMonitor: Any?
   private lazy var sessionAttentionNotificationController =
     SessionAttentionNotificationController { [weak self] sessionId in
       self?.handleSessionAttentionNotificationClick(sessionId)
@@ -3771,6 +3776,38 @@ final class ghostexRootView: NSView {
     loadSidebar()
     loadModalHost()
     loadTitlebarChrome()
+    installTitlebarOutsideClickMonitor()
+  }
+
+  deinit {
+    if let titlebarOutsideClickMonitor {
+      NSEvent.removeMonitor(titlebarOutsideClickMonitor)
+    }
+  }
+
+  private func installTitlebarOutsideClickMonitor() {
+    titlebarOutsideClickMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+    ) { [weak self] event in
+      guard let self, event.window === self.window else {
+        return event
+      }
+      let point = self.convert(event.locationInWindow, from: nil)
+      if self.titlebarChromeView.containsInteractiveHitRegion(
+        self.titlebarChromeView.convert(point, from: self)
+      ) {
+        return event
+      }
+      /**
+       CDXC:ReactTitlebar 2026-05-16-20:01:
+       Clicking behind a titlebar dropdown lands in AppKit, not the React
+       titlebar document. Close Resources, Actions, and Open menus from a native
+       local mouse monitor before the original click continues to the sidebar or
+       workspace target.
+       */
+      self.titlebarChromeView.closeOpenDropdowns()
+      return event
+    }
   }
 
   private func installStartupOverlay() {
@@ -4262,6 +4299,9 @@ final class ghostexRootView: NSView {
     if let isSleeping = command.activeProjectEditorIsSleeping {
       payload["editorIsSleeping"] = isSleeping
     }
+    if let companionPaneHidden = command.activeProjectEditorCompanionPaneHidden {
+      payload["projectEditorCompanionPaneHidden"] = companionPaneHidden
+    }
     if let showFileCount = command.showProjectEditorDiffFileCount {
       payload["showProjectEditorDiffFileCount"] = showFileCount
     }
@@ -4304,6 +4344,60 @@ final class ghostexRootView: NSView {
           return item
         } ?? []
       ]
+    }
+    if let resourceGroups = command.titlebarResourceGroups {
+      /**
+       CDXC:TitlebarResources 2026-05-16-16:08:
+       Forward the sidebar-owned session grouping into the isolated React
+       titlebar so its resource dropdown can render Quick/project sections
+       while the titlebar webview polls process metrics independently.
+       */
+      payload["resourceGroups"] = resourceGroups.map { group in
+        var item: [String: Any] = [
+          "groupId": group.groupId,
+          "isActive": group.isActive,
+          "projectName": group.projectName,
+          "projectPath": group.projectPath,
+          "sessions": group.sessions.map { session in
+            var sessionItem: [String: Any] = [
+              "activity": session.activity,
+              "isRunning": session.isRunning,
+              "sessionId": session.sessionId,
+              "title": session.title,
+            ]
+            if let agentIcon = session.agentIcon {
+              sessionItem["agentIcon"] = agentIcon
+            }
+            if let isSleeping = session.isSleeping {
+              sessionItem["isSleeping"] = isSleeping
+            }
+            if let lastInteractionAt = session.lastInteractionAt {
+              sessionItem["lastInteractionAt"] = lastInteractionAt
+            }
+            if let projectId = session.projectId {
+              sessionItem["projectId"] = projectId
+            }
+            if let sessionKind = session.sessionKind {
+              sessionItem["sessionKind"] = sessionKind
+            }
+            if let sessionPersistenceName = session.sessionPersistenceName {
+              sessionItem["sessionPersistenceName"] = sessionPersistenceName
+            }
+            if let sessionPersistenceProvider = session.sessionPersistenceProvider {
+              sessionItem["sessionPersistenceProvider"] = sessionPersistenceProvider
+            }
+            if let terminalTitle = session.terminalTitle {
+              sessionItem["terminalTitle"] = terminalTitle
+            }
+            return sessionItem
+          },
+          "title": group.title,
+        ]
+        if let projectId = group.projectId {
+          item["projectId"] = projectId
+        }
+        return item
+      }
     }
     if let openTargets = command.workspaceOpenTargets {
       let availability = openTargets.availability
@@ -4403,6 +4497,20 @@ final class ghostexRootView: NSView {
       """)
   }
 
+  private func showProjectEditorCompanionFromTitlebar() {
+    /**
+     CDXC:ProjectEditorCompanion 2026-05-16-14:42:
+     The titlebar restore button must clear the sidebar-owned project
+     preference before native reopens the agent side pane. Forward through
+     React state so Code, Git, and Project modes continue sharing one value.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.showProjectEditorCompanionFromTitlebar?.();
+      undefined;
+      """)
+  }
+
   private func openTasksPlaceholderFromTitlebar() {
     /**
      CDXC:ModeSwitcher 2026-05-15-12:38:
@@ -4437,6 +4545,25 @@ final class ghostexRootView: NSView {
     sidebarView.evaluateJavaScript(
       """
       window.__ghostex_NATIVE_SIDEBAR__?.runSidebarCommandFromTitlebar?.(\(commandIdJson));
+      undefined;
+      """)
+  }
+
+  private func sleepInactiveSessionsFromTitlebar(_ command: SleepInactiveSessionsFromTitlebar) {
+    /**
+     CDXC:TitlebarResources 2026-05-16-19:53:
+     The React titlebar owns the Resources dropdown button, but the sidebar
+     owns session sleep state. Forward the selected session ids as JSON so the
+     sidebar can revalidate activity and age before sleeping inactive agents.
+     */
+    guard let sessionIdsData = try? JSONSerialization.data(withJSONObject: command.sessionIds),
+      let sessionIdsJson = String(data: sessionIdsData, encoding: .utf8)
+    else {
+      return
+    }
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.sleepInactiveSessionsFromTitlebar?.(\(sessionIdsJson));
       undefined;
       """)
   }
@@ -4662,6 +4789,8 @@ final class ghostexRootView: NSView {
       openAgentsModeFromTitlebar()
     case .openGitHubProjectFromTitlebar:
       openGitHubProjectFromTitlebar()
+    case .showProjectEditorCompanionFromTitlebar:
+      showProjectEditorCompanionFromTitlebar()
     case .openTasksPlaceholderFromTitlebar:
       openTasksPlaceholderFromTitlebar()
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
@@ -4672,6 +4801,8 @@ final class ghostexRootView: NSView {
       togglePetOverlayFromTitlebar()
     case .toggleCommandsPanelFromTitlebar:
       toggleCommandsPanelFromTitlebar()
+    case .sleepInactiveSessionsFromTitlebar(let command):
+      sleepInactiveSessionsFromTitlebar(command)
     case .runSidebarCommandFromTitlebar(let command):
       runSidebarCommandFromTitlebar(command)
     case .configureZedOverlay(let command):
@@ -6820,12 +6951,27 @@ final class ReactTitlebarChromeView: NSView {
      */
   }
 
+  func containsInteractiveHitRegion(_ point: NSPoint) -> Bool {
+    guard bounds.contains(point) else {
+      return false
+    }
+    let webPoint = CGPoint(x: point.x, y: bounds.height - point.y)
+    return hitRegions.contains(where: { $0.contains(webPoint) })
+  }
+
+  func closeOpenDropdowns() {
+    webView.evaluateJavaScript(
+      """
+      window.__ghostex_TITLEBAR__?.closeOpenDropdowns?.();
+      undefined;
+      """)
+  }
+
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard bounds.contains(point) else {
       return nil
     }
-    let webPoint = CGPoint(x: point.x, y: bounds.height - point.y)
-    if hitRegions.contains(where: { $0.contains(webPoint) }) {
+    if containsInteractiveHitRegion(point) {
       return webView.hitTest(point)
     }
     if isPointInFixedTitlebarStrip(point) {
