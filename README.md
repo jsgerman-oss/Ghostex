@@ -1,5 +1,4 @@
 ## Ghostty Terminals with Codex App's Awesome Features = Ghostex!
-
 <br />
 
 - T3code Support
