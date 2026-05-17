@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { execFile, spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -34,6 +36,7 @@ const COMMANDS = new Map([
   ["s", sessionsCommand],
   ["list-sessions", sessionsCommand],
   ["ls", sessionsCommand],
+  ["android-check", androidCheckCommand],
   ["attach", attachSessionCommand],
   ["a", attachSessionCommand],
   ["resume", attachSessionCommand],
@@ -49,7 +52,7 @@ const COMMANDS = new Map([
   ["fme", floatingMonacoEditorCommand],
   ["state", bridgeAction("state")],
   ["dump-state", bridgeAction("dumpState")],
-  ["create-session", bridgeAction("createSession", parseCreateSession)],
+  ["create-session", bridgeAction("createSession", parseCreateSession, { failOnNotOk: true })],
   ["create-agent", bridgeAction("createAgentSession", parseAgent)],
   ["run-agent", bridgeAction("runAgent", parseAgent)],
   ["run-command", bridgeAction("runCommand", parseCommandButton)],
@@ -62,7 +65,7 @@ const COMMANDS = new Map([
   ["restart-session", bridgeAction("restartSession", parseSessionSelector)],
   ["fork-session", bridgeAction("forkSession", parseSessionSelector)],
   ["reload-session", bridgeAction("fullReloadSession", parseSessionSelector)],
-  ["rename-session", bridgeAction("renameSession", parseRename)],
+  ["rename-session", bridgeAction("renameSession", parseRename, { failOnNotOk: true })],
   ["sleep-session", bridgeAction("sleepSession", parseSessionBoolean("sleeping"))],
   ["favorite-session", bridgeAction("favoriteSession", parseSessionBoolean("favorite"))],
   ["send-text", bridgeAction("sendText", parseSendText)],
@@ -84,10 +87,29 @@ const COMMANDS = new Map([
   ["help", helpCommand],
 ]);
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (isDirectCliEntryPoint()) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
+
+function isDirectCliEntryPoint() {
+  const entryPath = process.argv[1];
+  /**
+   * CDXC:CliEntrypoint 2026-05-18-01:17:
+   * Android reaches the Mac CLI through the installed `ghostex` wrapper, which
+   * can execute a Homebrew symlink to this repo's `ghostex-cli.mjs`. Resolve
+   * both paths before deciding whether to run `main()`, otherwise the CLI exits
+   * zero with no JSON and Android reports "Ghostex CLI did not return JSON."
+   */
+  if (!entryPath) return false;
+  try {
+    return realpathSync(entryPath) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return import.meta.url === pathToFileURL(entryPath).href;
+  }
+}
 
 async function main() {
   const [commandName = "help", ...args] = process.argv.slice(2);
@@ -110,7 +132,13 @@ function bridgeAction(action, parser = () => ({}), options = {}) {
   return async (args) => {
     const { flags, rest } = parseArgs(args);
     const result = await sendSidebarCliCommand(action, parser(rest, flags), flags);
-    if (options.assertOk && result.ok === false) {
+    /**
+     * CDXC:AndroidRemoteSessions 2026-05-17-14:24:
+     * Android remote actions use SSH exit status to decide whether to show
+     * recovery UI. Android-facing bridge commands such as rename-session must
+     * convert `{ ok: false }` bridge replies into a nonzero CLI exit.
+     */
+    if ((options.assertOk || options.failOnNotOk) && isFailedCliResult(result)) {
       printJson(result);
       process.exitCode = 1;
       return;
@@ -599,9 +627,114 @@ async function sessionsCommand(args) {
   });
 }
 
+async function androidCheckCommand(args) {
+  const { flags } = parseArgs(args);
+  const result = await runAndroidReadinessCheck(flags);
+  /**
+   * CDXC:AndroidConnectionManagement 2026-05-17-18:20:
+   * Ghostex Android needs one Mac-side readiness contract instead of inferring
+   * release support from generic session listing. This command proves zmx is on
+   * PATH, Ghostex settings are actually set to zmx, and the running app bridge
+   * can return the sidebar session inventory used by Android.
+   */
+  if (flags.json) {
+    printJson(result);
+  } else if (result.ok) {
+    console.log(`Ghostex Android ready: ${result.sessions} sessions, persistence ${result.sessionPersistenceProvider}.`);
+  } else {
+    console.error(result.error);
+  }
+  if (!result.ok) {
+    process.exitCode = 1;
+  }
+}
+
+async function runAndroidReadinessCheck(flags = {}) {
+  const zmxPath = await resolveCommandPath("zmx");
+  if (!zmxPath) {
+    return {
+      error: "zmx not found. Install zmx and set Ghostex session persistence to zmx before connecting from Android.",
+      ok: false,
+    };
+  }
+
+  const settingsResult = await readAndroidReadinessSettings();
+  if (!settingsResult.ok) {
+    return settingsResult;
+  }
+
+  const result = await sendSidebarCliCommand("listSessions", {}, flags).catch((error) => ({
+    bridgeOk: false,
+    error: error instanceof Error ? error.message : String(error),
+    ok: false,
+  }));
+  if (isFailedCliResult(result)) {
+    return {
+      bridgeOk: result.bridgeOk,
+      error: result.error ?? "Could not load Ghostex sessions from the running app.",
+      ok: false,
+      sessionPersistenceProvider: settingsResult.sessionPersistenceProvider,
+      zmxPath,
+    };
+  }
+
+  return {
+    ok: true,
+    sessionPersistenceProvider: settingsResult.sessionPersistenceProvider,
+    sessions: Array.isArray(result.sessions) ? result.sessions.length : 0,
+    zmxPath,
+  };
+}
+
+async function readAndroidReadinessSettings(settingsPath = SHARED_SETTINGS_PATH) {
+  const text = await readFile(settingsPath, "utf8").catch(() => "");
+  if (!text.trim()) {
+    return {
+      error: `Ghostex settings were not found at ${settingsPath}. Start Ghostex, set Session persistence to zmx, and try again.`,
+      ok: false,
+    };
+  }
+  const settings = parseJson(text);
+  if (!settings || typeof settings !== "object") {
+    return {
+      error: `Ghostex settings at ${settingsPath} are not valid JSON. Open Ghostex settings, save Session persistence as zmx, and try again.`,
+      ok: false,
+    };
+  }
+  /**
+   * CDXC:AndroidConnectionManagement 2026-05-17-20:39:
+   * Android supports zmx only for this release, but readiness should not depend
+   * on presentation casing or accidental surrounding whitespace in the shared
+   * settings JSON. Normalize the provider token before enforcing the contract.
+   */
+  const provider = settings.sessionPersistenceProvider;
+  const normalizedProvider = String(provider ?? "").trim().toLowerCase();
+  if (normalizedProvider !== "zmx") {
+    return {
+      error: `Ghostex session persistence is set to ${provider || "off"}. Open Ghostex Settings and set Session persistence to zmx before connecting from Android.`,
+      ok: false,
+      sessionPersistenceProvider: provider || "off",
+    };
+  }
+  return { ok: true, sessionPersistenceProvider: normalizedProvider };
+}
+
+async function resolveCommandPath(command) {
+  const { stdout } = await execFileAsync("/bin/zsh", ["-lc", `command -v -- ${shellQuote(command)}`]).catch(() => ({
+    stdout: "",
+  }));
+  return stdout.trim().split(/\r?\n/)[0] || "";
+}
+
 async function attachSessionCommand(args) {
   const { flags, rest } = parseArgs(args);
-  const selector = rest.join(" ").trim();
+  /**
+   * CDXC:AndroidRemoteSessions 2026-05-17-13:59:
+   * Ghostex Android attaches by stable session id and should use the same
+   * documented `--session-id` form as focus, wake, sleep, kill, and rename.
+   * Keep positional selectors for human usage.
+   */
+  const selector = flags.sessionId ?? rest.join(" ").trim();
   const result = await fetchSessionList(flags);
   const session = await resolveOneListedSession(selector, result.sessions ?? []);
   /**
@@ -626,7 +759,13 @@ async function attachSessionCommand(args) {
 function sessionActionCommand(action, pastTense, extraPayload = {}) {
   return async (args) => {
     const { flags, rest } = parseArgs(args);
-    const selector = rest.join(" ").trim();
+    /**
+     * CDXC:AndroidRemoteSessions 2026-05-17-13:57:
+     * Ghostex Android uses `--session-id <id> --json` for remote wake, sleep,
+     * and kill actions so every context-menu command has the same stable
+     * selector shape as rename. Keep positional selectors for human usage.
+     */
+    const selector = flags.sessionId ?? rest.join(" ").trim();
     const result = await fetchSessionList(flags);
     const sessions =
       selector.toLowerCase() === "all"
@@ -645,7 +784,19 @@ function sessionActionCommand(action, pastTense, extraPayload = {}) {
         },
         flags,
       );
-      if (actionResult.ok === false) {
+      /**
+       * CDXC:AndroidRemoteSessions 2026-05-17-20:58:
+       * Android relies on `ghostex sleep|wake|kill --session-id --json` exit
+       * status for recovery UI. Treat bridge-level failures the same as
+       * command-level `{ ok: false }`, and preserve JSON output when Android
+       * requested it so the phone can extract concise error/message fields.
+       */
+      if (isFailedCliResult(actionResult)) {
+        if (flags.json) {
+          printJson(actionResult);
+          process.exitCode = 1;
+          return;
+        }
         throw new Error(actionResult.error ?? `Could not ${action} ${session.title}.`);
       }
       affected.push({ ok: actionResult.ok !== false, session });
@@ -662,7 +813,12 @@ function sessionActionCommand(action, pastTense, extraPayload = {}) {
 
 async function focusSmartSessionCommand(args) {
   const { flags, rest } = parseArgs(args);
-  const selector = rest.join(" ").trim();
+  /**
+   * CDXC:AndroidRemoteSessions 2026-05-17-13:57:
+   * Android focus is a remote sidebar context action and should use the same
+   * structured session-id flag form as lifecycle actions.
+   */
+  const selector = flags.sessionId ?? rest.join(" ").trim();
   const result = await fetchSessionList(flags);
   const session = await resolveOneListedSession(selector, result.sessions ?? []);
   const actionResult = await sendSidebarCliCommand(
@@ -670,6 +826,21 @@ async function focusSmartSessionCommand(args) {
     { sessionId: session.sessionId },
     flags,
   );
+  /**
+   * CDXC:AndroidRemoteSessions 2026-05-17-14:24:
+   * Android treats the SSH process exit status as the remote action contract.
+   * If focus returns `{ ok: false }`, exit nonzero instead of printing a JSON
+   * failure with status 0, otherwise Android would report a failed focus as
+   * successful.
+   */
+  if (isFailedCliResult(actionResult)) {
+    if (flags.json) {
+      printJson(actionResult);
+      process.exitCode = 1;
+      return;
+    }
+    throw new Error(actionResult.error ?? `Could not focus ${session.title}.`);
+  }
   if (flags.json) {
     printJson(actionResult);
     return;
@@ -679,7 +850,14 @@ async function focusSmartSessionCommand(args) {
 
 async function fetchSessionList(flags = {}, options = {}) {
   const result = await sendSidebarCliCommand("listSessions", {}, flags);
-  if (result.ok === false) {
+  /**
+   * CDXC:AndroidRemoteSessions 2026-05-17-21:03:
+   * `ghostex sessions --json` is Android reconnect's inventory contract. A
+   * bridge transport failure must fail the CLI instead of returning an empty
+   * success-shaped session list, otherwise Android would show a misleading
+   * "No ZMX sessions" state when Ghostex is unreachable.
+   */
+  if (isFailedCliResult(result)) {
     throw new Error(result.error ?? "Could not list Ghostex sessions.");
   }
   const sessions = Array.isArray(result.sessions) ? result.sessions : [];
@@ -937,9 +1115,16 @@ async function runInteractiveShellCommand(command, cwd) {
 }
 
 function parseCreateSession(rest, flags) {
+  /**
+   * CDXC:AndroidRemoteSessions 2026-05-18-02:31:
+   * Ghostex Android creates new terminals through `ghostex create-session`
+   * over SSH. Preserve project/group flags so the running Mac app owns the
+   * creation path and applies the active zmx persistence setting.
+   */
   return {
     groupId: flags.groupId,
     input: flags.input ?? rest.slice(1).join(" "),
+    projectId: flags.projectId,
     title: flags.title ?? rest[0],
   };
 }
@@ -990,6 +1175,10 @@ function parseSessionSelector(rest, flags) {
 }
 
 function parseRename(rest, flags) {
+  /**
+   * CDXC:AndroidRemoteSessions 2026-05-17-13:23:
+   * Ghostex Android invokes remote rename through `ghostex rename-session --session-id <id> --title <title> --json` so SSH quoting can keep the stable session id and user-entered title as separate CLI arguments. Keep positional parsing for human CLI usage, but treat the flag form as part of the Android/macOS bridge contract.
+   */
   return {
     ...parseSessionSelector(rest, flags),
     title: flags.title ?? rest.slice(1).join(" "),
@@ -1113,6 +1302,10 @@ function parseJson(value) {
   }
 }
 
+function isFailedCliResult(result) {
+  return result?.ok === false || result?.bridgeOk === false;
+}
+
 function toCamelCase(value) {
   return value.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 }
@@ -1142,17 +1335,20 @@ function usage() {
    */
   const sessionCommands = [
     formatHelpCommand("sessions | s | ls [--ungrouped|-u] [--json]", "List running terminal sessions"),
+    formatHelpCommand("android-check [--json]", "Verify this Mac is ready for Ghostex Android"),
     formatHelpCommand("attach | a <selector>", "Attach to a provider or agent resume command"),
     formatHelpCommand("resume | r <selector>", "Alias for attach"),
-    formatHelpCommand("kill | k <selector|all>", "Close one session or every listed session"),
-    formatHelpCommand("sleep <selector|all>", "Sleep one session or every listed session"),
-    formatHelpCommand("wake <selector|all>", "Wake one session or every listed session"),
+    formatHelpCommand("attach | a --session-id <id>", "Flag form used by Android session attach"),
+    formatHelpCommand("kill | k <selector|all> [--json]", "Close one session or every listed session"),
+    formatHelpCommand("sleep <selector|all> [--json]", "Sleep one session or every listed session"),
+    formatHelpCommand("wake <selector|all> [--json]", "Wake one session or every listed session"),
     formatHelpCommand("focus <selector> [--json]", "Focus a session in Ghostex"),
+    formatHelpCommand("(focus|sleep|wake|kill) --session-id <id> [--json]", "Flag form used by Android sidebar actions"),
   ].join("\n");
 
   const workspaceCommands = [
     formatHelpCommand("state | dump-state", "Print sidebar state as JSON"),
-    formatHelpCommand("create-session [title] [--input text] [--group-id id]", "Create a terminal session"),
+    formatHelpCommand("create-session [title] [--input text] [--project-id id] [--group-id id]", "Create a terminal session"),
     formatHelpCommand("create-agent <agentId> [--group-id id]", "Create a configured agent session"),
     formatHelpCommand("run-agent <agentId>", "Run a configured agent button"),
     formatHelpCommand("run-command <commandId>", "Run a configured command button"),
@@ -1167,7 +1363,8 @@ function usage() {
     formatHelpCommand("send-text <sessionId> <text>", "Type text into a session"),
     formatHelpCommand("send-enter <sessionId>", "Send Enter to a session"),
     formatHelpCommand("send-key <sessionId> <key>", "Send ctrl-c, escape, tab, or arrow keys"),
-    formatHelpCommand("rename-session <sessionId> <title>", "Rename a session"),
+    formatHelpCommand("rename-session <sessionId> <title> [--json]", "Rename a session"),
+    formatHelpCommand("rename-session --session-id <id> --title <title> [--json]", "Flag form used by Android SSH actions"),
     formatHelpCommand("rename-command <sessionId> <title>", "Send the agent rename command"),
   ].join("\n");
 
@@ -1236,3 +1433,5 @@ Global flags:
   -h, --help            Show this help
 `;
 }
+
+export { isFailedCliResult, parseArgs, parseCreateSession, parseRename, readAndroidReadinessSettings, usage };
