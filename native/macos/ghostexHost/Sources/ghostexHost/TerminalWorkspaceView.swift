@@ -65,6 +65,12 @@ private let nativeGhosttyTerminalColorDisablingEnvironmentKeys = [
   "NODE_DISABLE_COLORS",
 ]
 
+private let nativeSshConnectionEnvironmentKeys = [
+  "SSH_CONNECTION",
+  "SSH_CLIENT",
+  "SSH_TTY",
+]
+
 private func nativePromptEditorCommand(backend: String) -> String {
   if let executablePath = Bundle.main.executableURL?.path,
     !executablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -93,6 +99,77 @@ private func nativePromptEditorBackend(from environment: [String: String]) -> St
     return "monaco"
   }
   return nil
+}
+
+private func nativeHasNonEmptyEnvironmentValue(
+  _ key: String,
+  in environment: [String: String]
+) -> Bool {
+  if let value = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines),
+    !value.isEmpty
+  {
+    return true
+  }
+  if let value = nativeProcessEnvironmentValue(key)?.trimmingCharacters(in: .whitespacesAndNewlines),
+    !value.isEmpty
+  {
+    return true
+  }
+  return false
+}
+
+private func nativeIsSshConnectionEnvironment(_ environment: [String: String]) -> Bool {
+  nativeSshConnectionEnvironmentKeys.contains { key in
+    nativeHasNonEmptyEnvironmentValue(key, in: environment)
+  }
+}
+
+private func nativeIsGhostexPromptEditorValue(_ value: String?) -> Bool {
+  guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+    !trimmed.isEmpty
+  else {
+    return false
+  }
+  return trimmed.contains("floating-monaco-editor")
+    || trimmed.contains("floating-editor -- zpet")
+}
+
+private func nativePreserveSshEditorEnvironment(_ environment: inout [String: String]) -> Bool {
+  guard nativeIsSshConnectionEnvironment(environment) else {
+    return false
+  }
+  let hasGhostexPromptEditorOverlay =
+    nativePromptEditorBackend(from: environment) != nil
+    || nativeIsGhostexPromptEditorValue(environment["EDITOR"])
+    || nativeIsGhostexPromptEditorValue(environment["VISUAL"])
+  guard hasGhostexPromptEditorOverlay else {
+    return false
+  }
+
+  /**
+   CDXC:PromptEditorBackend 2026-05-17-08:46:
+   SSH-connected shells must keep the editor chosen by that SSH login instead of
+   inheriting Ghostex's Ctrl+G prompt-editor command. Remove only Ghostex's
+   prompt-editor overlay and markers so normal EDITOR/VISUAL values continue to
+   come from the login environment.
+   */
+  for key in [
+    "GHOSTEX_PROMPT_EDITOR_BACKEND",
+    "GHOSTEX_PROMPT_EDITING_ENABLED",
+    "GHOSTEX_RICH_PROMPT_EDITING_WITH_ZAPET",
+    "GHOSTEX_DEBUGGING_MODE",
+    "GHOSTEX_ZAPET_PROMPT_EDITOR_LOG",
+    "ZDOTDIR",
+    "GHOSTEX_ORIGINAL_ZDOTDIR",
+  ] {
+    environment.removeValue(forKey: key)
+  }
+  for key in ["EDITOR", "VISUAL"] {
+    if nativeIsGhostexPromptEditorValue(environment[key]) {
+      environment.removeValue(forKey: key)
+    }
+  }
+  return true
 }
 
 private func nativeZapetPromptEditorCommand() -> String {
@@ -204,6 +281,9 @@ private func nativeGhosttyFloatingEditorEnvironment(
 }
 
 private func nativeApplyZapetPromptEditingEnvironment(_ environment: inout [String: String]) {
+  if nativePreserveSshEditorEnvironment(&environment) {
+    return
+  }
   guard let promptEditorBackend = nativePromptEditorBackend(from: environment) else {
     return
   }
@@ -315,12 +395,15 @@ private func nativeZapetZshStartupShim(
     exportZapet
     ? """
 
-      export EDITOR=\(nativeShellQuote(promptEditorCommand))
-      export VISUAL=\(nativeShellQuote(promptEditorCommand))
-      if [ "${_ghostex_zapet_debug}" = "1" ]; then
-        {
-          printf '[%s] zsh-shim.export file=%s pid=%s editor=%s visual=%s pwd=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${PWD}"
-        } >> "${_ghostex_zapet_log}" 2>/dev/null
+      # CDXC:PromptEditorBackend 2026-05-17-08:46: SSH logins keep their existing EDITOR/VISUAL instead of being rewritten to Ghostex's local floating editor command.
+      if [ -z "${SSH_CONNECTION}${SSH_CLIENT}${SSH_TTY}" ]; then
+        export EDITOR=\(nativeShellQuote(promptEditorCommand))
+        export VISUAL=\(nativeShellQuote(promptEditorCommand))
+        if [ "${_ghostex_zapet_debug}" = "1" ]; then
+          {
+            printf '[%s] zsh-shim.export file=%s pid=%s editor=%s visual=%s pwd=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${PWD}"
+          } >> "${_ghostex_zapet_log}" 2>/dev/null
+        fi
       fi
       """
     : ""
