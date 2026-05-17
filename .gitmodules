@@ -1,0 +1,5 @@
+# CDXC:AndroidUpstream 2026-05-17-09:26: Keep Termux under `android/termux-app` as a Git submodule so the parent repo pins a reviewed upstream commit while Termux keeps its own remote and git history.
+# CDXC:AndroidUpstream 2026-05-17-09:28: Use the `maddada/ghostex-android` fork as the submodule remote so Android work can live under project-owned GitHub history while preserving upstream Termux ancestry.
+[submodule "android/termux-app"]
+	path = android/termux-app
+	url = https://github.com/maddada/ghostex-android.git
