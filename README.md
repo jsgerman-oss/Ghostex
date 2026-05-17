@@ -22,7 +22,7 @@ brew install --cask maddada/tap/ghostex
 
 ### Work with tens of agents in multiple projects with ease:
 
-<img width="3324" height="2058" alt="image" src="https://github.com/user-attachments/assets/a65dbb58-b5c8-41c6-94a1-d9ecef370077" />
+<img width="3322" height="2060" alt="ghostex-main" src="https://github.com/user-attachments/assets/49862e2d-1edd-4647-8161-5afb25ed8341" />
 
 ### All Agent CLIs supported (please send an issue or PR for integrating any missing agent cli)
 
