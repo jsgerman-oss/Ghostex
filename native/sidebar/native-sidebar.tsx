@@ -12524,10 +12524,21 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         return { ok: true, revision, sessions: listNativeCliSessions() };
       case "createSession": {
         const groupId = typeof payload.groupId === "string" ? payload.groupId : undefined;
+        const projectId = typeof payload.projectId === "string" ? payload.projectId : undefined;
+        if (projectId && findProject(projectId) && activeProjectId !== projectId) {
+          focusProject(projectId);
+        }
         if (groupId === COMBINED_CHATS_GROUP_ID || (!groupId && activeProject().isChat === true)) {
           await createNativeChat(typeof payload.title === "string" ? payload.title : undefined);
           return { ok: true, state: summarizeCliState() };
         }
+        /**
+         * CDXC:AndroidRemoteSessions 2026-05-18-02:31:
+         * Android's project-header plus button reaches this path through the
+         * Mac-hosted Ghostex CLI. Focus the requested project first, then use
+         * createTerminal so current Settings, including zmx persistence, remain
+         * the source of truth for the new session.
+         */
         const session = createTerminal(
           typeof payload.title === "string" ? payload.title : DEFAULT_TERMINAL_SESSION_TITLE,
           typeof payload.input === "string" ? payload.input : "",
