@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.5.0 - 2026-05-18
+
+- Added a much more complete Ghostex Android remote workflow with built-in connection handling, session attach, remote actions, session creation, file upload, and shareable phone-side diagnostics without requiring phone-side OpenSSH or sshpass setup.
+- Improved Ghostex Android navigation with a cleaner drawer, quick refresh, explicit Machines, Settings, and Exit controls, collapsible project groups, project reordering, and project-level session creation.
+- Added Ghostex Android terminal settings inside the drawer for common terminal behavior and display options.
+- Improved zmx-backed terminal stability on macOS so panes refresh more reliably after resize, mode switches, pop-out changes, and sleeping-session wake.
+- Improved sleeping-session wake behavior so restored sessions return to the focused tab group instead of unexpectedly reappearing as separate split panes.
+
 ## 3.4.1 - 2026-05-17
 
 - Added visible Delayed Send countdowns in the sidebar, native pane tabs, and terminal panes so scheduled sends are easy to spot before they fire.

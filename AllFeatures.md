@@ -105,3 +105,8 @@
 - Sleeping and restored terminal sessions keep accurate Last Active times and sidebar sorting after restart.
 - The titlebar Resources menu only counts Ghostex embedded browser helpers in Browser Tabs and uses clearer browser process labels.
 - Delayed Send timers show live countdowns in the sidebar, native pane tabs, and terminal panes, and active timers can be reopened to cancel or reschedule them.
+- Ghostex Android can connect to a Mac, attach sessions, run remote actions, create sessions, upload files, and write shareable diagnostics through its built-in connection workflow without phone-side OpenSSH or sshpass setup.
+- Ghostex Android includes a cleaner remote-session drawer with refresh, Machines, Settings, Exit, collapsible project groups, project reordering, and project-level new session controls.
+- Ghostex Android includes in-drawer terminal settings for common terminal behavior and display options.
+- zmx-backed terminal panes refresh more reliably after resize, mode switches, pop-out changes, and sleeping-session wake.
+- Sleeping sessions wake back into the focused tab group instead of unexpectedly returning as separate split panes.
