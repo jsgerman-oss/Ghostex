@@ -2,8 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   formatProjectEditorDiffStatsLabel,
   getEmptyBrowserGroupExpandTooltip,
-  shouldFocusGroupOnHeaderActivation,
-  shouldInitializeEmptyProjectTerminalOnHeaderActivation,
+  shouldTreatProjectAsEmptySessionGroup,
   shouldShowOpenProjectFolderIcon,
   shouldShowProjectEditorDiffStats,
 } from "./session-group-section";
@@ -40,67 +39,25 @@ describe("getEmptyBrowserGroupExpandTooltip", () => {
   });
 });
 
-describe("shouldFocusGroupOnHeaderActivation", () => {
-  test("keeps empty combined project headers out of the focus-only path", () => {
+describe("shouldTreatProjectAsEmptySessionGroup", () => {
+  test("identifies an empty project group so expanding it can create a first terminal", () => {
     expect(
-      shouldFocusGroupOnHeaderActivation({
-        hasProjectContext: true,
-        isActive: false,
-        shouldInitializeEmptyProjectTerminal: true,
-      }),
-    ).toBe(false);
-  });
-
-  test("focuses inactive combined project headers with sessions", () => {
-    expect(
-      shouldFocusGroupOnHeaderActivation({
-        hasProjectContext: true,
-        isActive: false,
-        shouldInitializeEmptyProjectTerminal: false,
-      }),
-    ).toBe(true);
-  });
-
-  test("does not refocus the active combined project header", () => {
-    expect(
-      shouldFocusGroupOnHeaderActivation({
-        hasProjectContext: true,
-        isActive: true,
-        shouldInitializeEmptyProjectTerminal: false,
-      }),
-    ).toBe(false);
-  });
-
-  test("keeps non-project workspace group headers collapse-only", () => {
-    expect(
-      shouldFocusGroupOnHeaderActivation({
-        hasProjectContext: false,
-        isActive: false,
-        shouldInitializeEmptyProjectTerminal: false,
-      }),
-    ).toBe(false);
-  });
-});
-
-describe("shouldInitializeEmptyProjectTerminalOnHeaderActivation", () => {
-  test("creates the first terminal from an empty project header", () => {
-    expect(
-      shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+      shouldTreatProjectAsEmptySessionGroup({
         hasProjectContext: true,
         sessionCount: 0,
       }),
     ).toBe(true);
   });
 
-  test("does not create terminals from non-project or non-empty headers", () => {
+  test("does not treat non-project or non-empty groups as empty project groups", () => {
     expect(
-      shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+      shouldTreatProjectAsEmptySessionGroup({
         hasProjectContext: false,
         sessionCount: 0,
       }),
     ).toBe(false);
     expect(
-      shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+      shouldTreatProjectAsEmptySessionGroup({
         hasProjectContext: true,
         sessionCount: 1,
       }),

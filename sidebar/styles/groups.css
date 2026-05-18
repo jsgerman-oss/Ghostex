@@ -47,6 +47,36 @@
   opacity: 0.72;
 }
 
+.group[data-project-group="true"]::before,
+.group[data-project-group="true"]::after {
+  /*
+   * CDXC:ProjectReorder 2026-05-18-20:39:
+   * Project drag reorder needs a dim drop line that marks the exact insertion
+   * point without turning the target project into a loud highlighted card.
+   */
+  background: color-mix(in srgb, var(--app-foreground) 28%, transparent);
+  border-radius: 999px;
+  content: "";
+  height: 2px;
+  left: calc(6px * var(--sidebar-density-scale));
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: calc(6px * var(--sidebar-density-scale));
+  transition: opacity 120ms ease;
+  z-index: 8;
+}
+
+.group[data-project-group="true"][data-group-drop-position="before"]::before {
+  opacity: 0.72;
+  top: calc(-9px * var(--sidebar-density-scale));
+}
+
+.group[data-project-group="true"][data-group-drop-position="after"]::after {
+  bottom: calc(-9px * var(--sidebar-density-scale));
+  opacity: 0.72;
+}
+
 .group[data-active="true"] {
   background: transparent;
   box-shadow: none;
@@ -1208,11 +1238,32 @@
   padding-right: 10px;
 }
 
+/*
+ * CDXC:ProjectHeaders 2026-05-18-09:13:
+ * Inactive projects should read as secondary context as a whole, including
+ * their header and session list, so the active project is obvious while users
+ * scan the reference sidebar.
+ *
+ * CDXC:ProjectHeaders 2026-05-18-09:29:
+ * Inactive projects should use 50% opacity, not 70%, so the active project has
+ * stronger contrast without adding a separate active highlight.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"][data-active="false"] {
+  opacity: 0.5;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-head::before,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-head::after,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-session-connector-rail,
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-session-connector-button {
   display: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"]
+  .group-head::before {
+  display: block;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
@@ -1264,6 +1315,29 @@
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-active="true"] .group-title {
   color: #a5a5a5;
+}
+
+/*
+ * CDXC:ProjectHeaders 2026-05-18-09:26:
+ * Active project indication is the absence of the inactive 50% opacity, not a
+ * persistent colored header fill. Project headers should show background only
+ * while the header itself is hovered or focused.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"][data-active="true"]
+  .group-head::before {
+  background: transparent;
+  box-shadow: none;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"][data-active="true"]
+  .group-head:hover::before,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"][data-active="true"]
+  .group-head:has(.group-title-button:focus-visible)::before {
+  background: color-mix(in srgb, var(--app-foreground) 6%, transparent);
+  box-shadow: none;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-title-handle {

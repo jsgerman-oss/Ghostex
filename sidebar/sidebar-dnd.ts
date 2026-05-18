@@ -9,6 +9,11 @@ type GroupDropData = {
   kind: "group";
 };
 
+export type SidebarGroupDropTarget = {
+  groupId: string;
+  position: "before" | "after";
+};
+
 type CreateGroupDropData = {
   kind: "create-group";
 };
@@ -184,6 +189,65 @@ export function getSidebarSessionDropTargetFromEvent(
   return getSidebarSessionDropTargetFromElement(element, point?.y);
 }
 
+export function getSidebarGroupDropTargetAtPoint(
+  documentLike: Pick<Document, "elementFromPoint"> & Partial<Pick<Document, "elementsFromPoint">>,
+  x: number,
+  y: number,
+): SidebarGroupDropTarget | undefined {
+  const elements =
+    typeof documentLike.elementsFromPoint === "function"
+      ? documentLike.elementsFromPoint(x, y)
+      : [documentLike.elementFromPoint(x, y)];
+
+  for (const element of elements) {
+    if (!isDomElement(element) || isDraggingElement(element)) {
+      continue;
+    }
+
+    const target = getSidebarGroupDropTargetFromElement(element, y);
+    if (target) {
+      return target;
+    }
+  }
+
+  return undefined;
+}
+
+export function getSidebarGroupDropTargetFromEvent(
+  event: Event | null | undefined,
+): SidebarGroupDropTarget | undefined {
+  const point = getClientPoint(event);
+  const target = event?.target;
+  const element = target instanceof Element ? target : undefined;
+  if (!element) {
+    return undefined;
+  }
+
+  return getSidebarGroupDropTargetFromElement(element, point?.y);
+}
+
+export function moveGroupIdsByDropTarget(
+  groupIds: readonly string[],
+  sourceGroupId: string,
+  target: SidebarGroupDropTarget,
+): string[] {
+  const sourceIndex = groupIds.indexOf(sourceGroupId);
+  const targetIndex = groupIds.indexOf(target.groupId);
+  if (sourceIndex < 0 || targetIndex < 0) {
+    return [...groupIds];
+  }
+
+  if (sourceGroupId === target.groupId) {
+    return [...groupIds];
+  }
+
+  const insertIndex = targetIndex + (target.position === "after" ? 1 : 0);
+  const adjustedInsertIndex = insertIndex > sourceIndex ? insertIndex - 1 : insertIndex;
+  const nextGroupIds = groupIds.filter((groupId) => groupId !== sourceGroupId);
+  nextGroupIds.splice(clampIndex(adjustedInsertIndex, nextGroupIds.length), 0, sourceGroupId);
+  return nextGroupIds;
+}
+
 export function moveSessionIdsByDropTarget(
   sessionIdsByGroup: Record<string, string[]>,
   sessionId: string,
@@ -303,6 +367,24 @@ function getSidebarSessionDropTargetFromElement(
     groupId,
     kind: "group",
     position: relativeY > bounds.top + bounds.height / 2 ? "end" : "start",
+  };
+}
+
+function getSidebarGroupDropTargetFromElement(
+  element: Element,
+  clientY: number | undefined,
+): SidebarGroupDropTarget | undefined {
+  const groupElement = element.closest<HTMLElement>(SIDEBAR_GROUP_SELECTOR);
+  const groupId = groupElement?.dataset.sidebarGroupId;
+  if (!groupElement || !groupId) {
+    return undefined;
+  }
+
+  const bounds = groupElement.getBoundingClientRect();
+  const relativeY = clientY ?? bounds.top + bounds.height / 2;
+  return {
+    groupId,
+    position: relativeY > bounds.top + bounds.height / 2 ? "after" : "before",
   };
 }
 

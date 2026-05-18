@@ -49,6 +49,7 @@ import {
   createGroupDropData,
   createSessionDropTargetData,
   createSessionDropTargetId,
+  type SidebarGroupDropTarget,
 } from "./sidebar-dnd";
 import { getGroupSessionSummary, type GroupSessionSummary } from "./group-session-summary";
 import { shouldShowSessionGroupConnector } from "./session-group-connector";
@@ -211,29 +212,7 @@ export function getEmptyBrowserGroupExpandTooltip({
     : undefined;
 }
 
-export function shouldFocusGroupOnHeaderActivation({
-  hasProjectContext,
-  isActive,
-  shouldInitializeEmptyProjectTerminal,
-}: {
-  hasProjectContext: boolean;
-  isActive: boolean;
-  shouldInitializeEmptyProjectTerminal: boolean;
-}): boolean {
-  /**
-   * CDXC:SidebarLayout 2026-05-13-08:11
-   * Project headers activate their project even when they also collapse or
-   * expand sessions. That activation drives the debounced attached IDE
-   * workspace sync in the combined-only sidebar.
-   *
-   * CDXC:ProjectHeaders 2026-05-15-16:06
-   * Empty project headers now create the first terminal directly, so they
-   * should not take the focus-only activation branch before terminal creation.
-   */
-  return hasProjectContext && !isActive && !shouldInitializeEmptyProjectTerminal;
-}
-
-export function shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+export function shouldTreatProjectAsEmptySessionGroup({
   hasProjectContext,
   sessionCount,
 }: {
@@ -241,9 +220,10 @@ export function shouldInitializeEmptyProjectTerminalOnHeaderActivation({
   sessionCount: number;
 }): boolean {
   /**
-   * CDXC:ProjectHeaders 2026-05-15-16:06
-   * Clicking an empty project header should initialize that project with one
-   * blank terminal instead of only selecting an empty workspace shell.
+   * CDXC:ProjectHeaders 2026-05-18-14:53:
+   * Empty project groups should not show a "No sessions" placeholder. When a
+   * user expands a collapsed empty project, create a session there so the
+   * expanded project immediately has active content.
    */
   return hasProjectContext && sessionCount === 0;
 }
@@ -334,6 +314,7 @@ export type SessionGroupSectionProps = {
   canClose: boolean;
   completionFlashNonceBySessionId?: Record<string, number>;
   draggingDisabled?: boolean;
+  groupDropIndicator?: SidebarGroupDropTarget;
   groupId: string;
   index: number;
   isCollapsed: boolean;
@@ -393,6 +374,7 @@ export function SessionGroupSection({
   canClose,
   completionFlashNonceBySessionId,
   draggingDisabled = false,
+  groupDropIndicator,
   groupId,
   index,
   isCollapsed,
@@ -570,6 +552,16 @@ export function SessionGroupSection({
     sortable.isDropTarget ||
     emptyGroupDropTarget.isDropTarget ||
     sessionDropIndicatorGroupId === groupId;
+  /**
+   * CDXC:ProjectReorder 2026-05-18-20:39:
+   * Dragging a project in the reference sidebar must show a dim insertion line
+   * where the project will land on pointer release. Keep the indicator on the
+   * target project row instead of coloring the whole row so scanning remains
+   * quiet during reorder.
+   */
+  const groupDropPosition =
+    groupDropIndicator?.groupId === groupId ? groupDropIndicator.position : undefined;
+  const isSessionDropTargetVisible = groupDropPosition === undefined && isGroupDropTarget;
   const showSessionGroupConnector = shouldShowSessionGroupConnector({
     groupKind: group.kind,
     sessions: groupSessions,
@@ -583,8 +575,8 @@ export function SessionGroupSection({
     : isChatCollection
       ? "No Quick Sessions"
       : "No sessions";
-  const shouldInitializeEmptyProjectTerminal =
-    shouldInitializeEmptyProjectTerminalOnHeaderActivation({
+  const isEmptyProjectGroup =
+    shouldTreatProjectAsEmptySessionGroup({
       hasProjectContext: Boolean(projectContext),
       sessionCount: actualSessionCount,
     });
@@ -604,16 +596,18 @@ export function SessionGroupSection({
     (actualSessionCount > 0 || Boolean(projectContext)) && emptyBrowserExpandTooltip === undefined;
   const groupTitleActionLabel =
     emptyBrowserExpandTooltip ??
-    (shouldInitializeEmptyProjectTerminal
-      ? `Create terminal in ${group.title}`
-      : canToggleCollapsed
+    (canToggleCollapsed
         ? `${isCollapsed ? "Expand" : "Collapse"} ${group.title}`
         : group.title);
+  /**
+   * CDXC:ProjectHeaders 2026-05-18-14:53:
+   * Project row collapse/expand and project header action buttons keep accessible
+   * labels but do not show hover tooltips. Project title clicks toggle the
+   * project session list rather than activating the project, and the folder icon
+   * is visual-only instead of a separate click target.
+   */
   const shouldSuppressProjectCollapseTooltip =
-    Boolean(projectContext) && canToggleCollapsed && !shouldInitializeEmptyProjectTerminal;
-  const createBrowserPaneTooltip = "Create Browser Pane";
-  const agentSelectorTooltip = "Select Agent";
-  const createProjectTerminalTooltip = "Create Terminal";
+    Boolean(projectContext) && canToggleCollapsed;
   const createSessionTooltip = isBrowserGroup
     ? "Open a Browser"
     : isChatCollection
@@ -1038,29 +1032,20 @@ export function SessionGroupSection({
   };
 
   const toggleCollapsedOrSelectEmptyProject = () => {
-    if (shouldInitializeEmptyProjectTerminal) {
-      requestCreateProjectTerminal();
+    if (!projectContext) {
+      toggleCollapsed();
       return;
     }
 
-    if (
-      shouldFocusGroupOnHeaderActivation({
-        hasProjectContext: Boolean(projectContext),
-        isActive: group.isActive,
-        shouldInitializeEmptyProjectTerminal,
-      })
-    ) {
-      /**
-       * CDXC:SidebarLayout 2026-05-13-08:11
-       * Non-empty project headers activate the project so the attached IDE
-       * follows the active ghostex workspace before any later agent/action
-       * launch. Empty project headers return earlier to create their first
-       * terminal.
-       */
-      requestFocusGroup();
+    if (!canToggleCollapsed) {
+      return;
     }
 
-    toggleCollapsed();
+    const isExpandingEmptyProject = isCollapsed && isEmptyProjectGroup;
+    onCollapsedChange(group.groupId, !isCollapsed);
+    if (isExpandingEmptyProject) {
+      requestCreateProjectTerminal();
+    }
   };
 
   const handleGroupHeaderClick = (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1069,6 +1054,12 @@ export function SessionGroupSection({
     }
 
     if (event.target instanceof Element && event.target.closest(".group-header-actions")) {
+      return;
+    }
+
+    if (projectContext) {
+      event.preventDefault();
+      event.stopPropagation();
       return;
     }
 
@@ -1084,9 +1075,10 @@ export function SessionGroupSection({
         data-active={String(group.isActive)}
         data-collapsed={String(isCollapsed)}
         data-dragging={String(Boolean(sortable.isDragging))}
+        data-group-drop-position={groupDropPosition}
         data-drop-target={String(isGroupDropTarget)}
         data-empty-space-blocking="true"
-        data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
+        data-empty-project={String(isEmptyProjectGroup)}
         data-project-group={String(Boolean(projectContext))}
         data-chat-collection={String(isChatCollection)}
         data-session-connector={String(showSessionGroupConnector)}
@@ -1169,6 +1161,11 @@ export function SessionGroupSection({
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
+                        if (projectContext) {
+                          toggleCollapsed();
+                          return;
+                        }
+
                         toggleCollapsedOrSelectEmptyProject();
                       }}
                       type="button"
@@ -1189,56 +1186,45 @@ export function SessionGroupSection({
                     </button>
                   </AppTooltip>
                 ) : projectContext ? (
-                  <AppTooltip content={groupTitleActionLabel}>
-                    <button
-                      aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
-                      aria-disabled={!canToggleCollapsed && !shouldInitializeEmptyProjectTerminal}
-                      aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
-                      aria-label={groupTitleActionLabel}
-                      className="group-collapse-button section-titlebar-toggle"
-                      data-collapsed={String(isCollapsed)}
-                      data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
-                      data-has-idle-icon={String(canToggleCollapsed)}
-                      data-static-icon={String(!canToggleCollapsed)}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        toggleCollapsedOrSelectEmptyProject();
-                      }}
-                      type="button"
+                  <span
+                    aria-hidden="true"
+                    className="group-collapse-button section-titlebar-toggle"
+                    data-collapsed={String(isCollapsed)}
+                    data-empty-project={String(isEmptyProjectGroup)}
+                    data-has-idle-icon={String(canToggleCollapsed)}
+                    data-static-icon={String(!canToggleCollapsed)}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="group-collapse-icon group-collapse-idle-icon section-titlebar-toggle-icon section-titlebar-toggle-idle-icon"
                     >
-                      <span
+                      {isBrowserGroup ? (
+                        <IconWorld size={16} stroke={1.8} />
+                      ) : isChatCollection ? (
+                        <IconMessageCircle size={16} stroke={1.8} />
+                      ) : shouldRenderOpenProjectFolderIcon ? (
+                        <IconFolderOpen size={16} stroke={1.8} />
+                      ) : (
+                        <IconFolder size={16} stroke={1.8} />
+                      )}
+                    </span>
+                    {canToggleCollapsed ? (
+                      <IconCaretRightFilled
                         aria-hidden="true"
-                        className="group-collapse-icon group-collapse-idle-icon section-titlebar-toggle-icon section-titlebar-toggle-idle-icon"
-                      >
-                        {isBrowserGroup ? (
-                          <IconWorld size={16} stroke={1.8} />
-                        ) : isChatCollection ? (
-                          <IconMessageCircle size={16} stroke={1.8} />
-                        ) : shouldRenderOpenProjectFolderIcon ? (
-                          <IconFolderOpen size={16} stroke={1.8} />
-                        ) : (
-                          <IconFolder size={16} stroke={1.8} />
-                        )}
-                      </span>
-                      {canToggleCollapsed ? (
-                        <IconCaretRightFilled
-                          aria-hidden="true"
-                          className="group-collapse-icon group-collapse-chevron-icon section-titlebar-toggle-icon section-titlebar-toggle-chevron-icon"
-                          size={16}
-                        />
-                      ) : null}
-                    </button>
-                  </AppTooltip>
+                        className="group-collapse-icon group-collapse-chevron-icon section-titlebar-toggle-icon section-titlebar-toggle-chevron-icon"
+                        size={16}
+                      />
+                    ) : null}
+                  </span>
                 ) : (
                   <button
                     aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
-                    aria-disabled={!canToggleCollapsed && !shouldInitializeEmptyProjectTerminal}
+                    aria-disabled={!canToggleCollapsed && !isEmptyProjectGroup}
                     aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                     aria-label={groupTitleActionLabel}
                     className="group-collapse-button section-titlebar-toggle"
                     data-collapsed={String(isCollapsed)}
-                    data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
+                    data-empty-project={String(isEmptyProjectGroup)}
                     data-has-idle-icon={String(canToggleCollapsed)}
                     data-static-icon={String(!canToggleCollapsed)}
                     onClick={(event) => {
@@ -1281,13 +1267,13 @@ export function SessionGroupSection({
                       aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
                       aria-disabled={
                         emptyBrowserExpandTooltip !== undefined ||
-                        (!canToggleCollapsed && !shouldInitializeEmptyProjectTerminal)
+                        (!canToggleCollapsed && !isEmptyProjectGroup)
                       }
                       aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                       aria-label={groupTitleActionLabel}
                       className="group-title-button"
                       data-empty-browser-group={String(emptyBrowserExpandTooltip !== undefined)}
-                      data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
+                      data-empty-project={String(isEmptyProjectGroup)}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -1303,13 +1289,13 @@ export function SessionGroupSection({
                         aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
                         aria-disabled={
                           emptyBrowserExpandTooltip !== undefined ||
-                          (!canToggleCollapsed && !shouldInitializeEmptyProjectTerminal)
+                          (!canToggleCollapsed && !isEmptyProjectGroup)
                         }
                         aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                         aria-label={groupTitleActionLabel}
                         className="group-title-button"
                         data-empty-browser-group={String(emptyBrowserExpandTooltip !== undefined)}
-                        data-empty-project={String(shouldInitializeEmptyProjectTerminal)}
+                        data-empty-project={String(isEmptyProjectGroup)}
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
@@ -1380,91 +1366,83 @@ export function SessionGroupSection({
                        * project-header Show Code Editor button. Embedded Code
                        * remains reachable through the native titlebar.
                        *
-                       * CDXC:ProjectGroups 2026-05-08-15:28
-                       * Top-level project row icon buttons need Radix
-                       * tooltips so compact controls remain understandable
-                       * without adding visible labels to the header.
+                       * CDXC:ProjectGroups 2026-05-18-14:53:
+                       * Project header icon actions should rely on accessible
+                       * labels only, without hover tooltips, so project rows
+                       * stay visually quiet while scanning and hovering.
                       */
                       <>
-                        <AppTooltip content={createBrowserPaneTooltip}>
-                          <button
-                            aria-label={`Create a browser pane in ${group.title}`}
-                            className="group-add-button group-browser-button"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              requestCreateBrowserPane();
-                            }}
-                            type="button"
-                          >
-                            <IconWorld
-                              aria-hidden="true"
-                              className="group-add-icon"
-                              size={14}
-                              stroke={2}
-                            />
-                          </button>
-                        </AppTooltip>
-                        <AppTooltip content={createProjectTerminalTooltip}>
-                          <button
-                            aria-label={`Create a terminal in ${group.title}`}
-                            className="group-add-button group-project-terminal-button"
-                            onClick={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              requestCreateProjectTerminal();
-                            }}
-                            type="button"
-                          >
-                            <IconTerminal2
-                              aria-hidden="true"
-                              className="group-add-icon"
-                              size={14}
-                              stroke={2}
-                            />
-                          </button>
-                        </AppTooltip>
+                        <button
+                          aria-label={`Create a browser pane in ${group.title}`}
+                          className="group-add-button group-browser-button"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            requestCreateBrowserPane();
+                          }}
+                          type="button"
+                        >
+                          <IconWorld
+                            aria-hidden="true"
+                            className="group-add-icon"
+                            size={14}
+                            stroke={2}
+                          />
+                        </button>
+                        <button
+                          aria-label={`Create a terminal in ${group.title}`}
+                          className="group-add-button group-project-terminal-button"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            requestCreateProjectTerminal();
+                          }}
+                          type="button"
+                        >
+                          <IconTerminal2
+                            aria-hidden="true"
+                            className="group-add-icon"
+                            size={14}
+                            stroke={2}
+                          />
+                        </button>
                         <div className="group-control-anchor">
                           <div
                             className="group-agent-split-button"
                             data-open={String(openControlMenu === "project-agent")}
                           >
-                            <AppTooltip content={`Create ${primaryProjectAgentLabel}`}>
-                              <button
-                                aria-label={`Create ${primaryProjectAgentLabel} in ${group.title}`}
-                                className="group-agent-main-button"
-                                onClick={(event) => {
-                                  event.preventDefault();
-                                  event.stopPropagation();
-                                  if (!primaryProjectAgent) {
-                                    openConfigureAgentsModal();
-                                    return;
-                                  }
-                                  requestRunProjectAgent(primaryProjectAgent);
-                                }}
-                                type="button"
-                              >
-                                <ProjectAgentLauncherIcon agent={primaryProjectAgent} />
-                              </button>
-                            </AppTooltip>
-                            <AppTooltip content={agentSelectorTooltip}>
-                              <button
-                                aria-expanded={openControlMenu === "project-agent"}
-                                aria-haspopup="menu"
-                                aria-label={`Select agent for ${group.title}`}
-                                className="group-agent-toggle-button"
-                                data-open={String(openControlMenu === "project-agent")}
-                                onClick={() => {
-                                  setOpenControlMenu((previous) =>
-                                    previous === "project-agent" ? undefined : "project-agent",
-                                  );
-                                }}
-                                ref={projectAgentButtonRef}
-                                type="button"
-                              >
-                                <IconChevronDown aria-hidden="true" size={13} stroke={2} />
-                              </button>
-                            </AppTooltip>
+                            <button
+                              aria-label={`Create ${primaryProjectAgentLabel} in ${group.title}`}
+                              className="group-agent-main-button"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                if (!primaryProjectAgent) {
+                                  openConfigureAgentsModal();
+                                  return;
+                                }
+                                requestRunProjectAgent(primaryProjectAgent);
+                              }}
+                              type="button"
+                            >
+                              <ProjectAgentLauncherIcon agent={primaryProjectAgent} />
+                            </button>
+                            <button
+                              aria-expanded={openControlMenu === "project-agent"}
+                              aria-haspopup="menu"
+                              aria-label={`Select agent for ${group.title}`}
+                              className="group-agent-toggle-button"
+                              data-open={String(openControlMenu === "project-agent")}
+                              onClick={() => {
+                                setOpenControlMenu((previous) =>
+                                  previous === "project-agent" ? undefined : "project-agent",
+                                );
+                              }}
+                              ref={projectAgentButtonRef}
+                              type="button"
+                            >
+                              <IconChevronDown aria-hidden="true" size={13} stroke={2} />
+                            </button>
                           </div>
                         </div>
                       </>
@@ -1521,7 +1499,7 @@ export function SessionGroupSection({
         >
           <div
             className="group-sessions sidebar-collapse-content"
-            data-drop-target={String(isGroupDropTarget)}
+            data-drop-target={String(isSessionDropTargetVisible)}
             id={sessionsRegionId}
             ref={contentRef}
           >
@@ -1576,11 +1554,11 @@ export function SessionGroupSection({
                   </button>
                 ) : null}
               </>
-            ) : shouldInitializeEmptyProjectTerminal ? null : (
+            ) : isEmptyProjectGroup ? null : (
               <div
                 className="group-empty-drop-target"
                 data-drop-position={emptyGroupDropTarget.isDropTarget ? "start" : undefined}
-                data-drop-target={String(isGroupDropTarget)}
+                data-drop-target={String(isSessionDropTargetVisible)}
                 ref={emptyGroupDropTarget.ref}
               >
                 <div className="group-empty-state">{emptyStateLabel}</div>

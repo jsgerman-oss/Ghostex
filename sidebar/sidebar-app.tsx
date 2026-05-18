@@ -82,8 +82,12 @@ import { scrollElementIntoViewIfNeeded } from "./scroll-into-view-if-needed";
 import { resetSidebarStore, useSidebarStore } from "./sidebar-store";
 import {
   getClientPoint,
+  getSidebarGroupDropTargetAtPoint,
+  getSidebarGroupDropTargetFromEvent,
   getSidebarDropData,
   getSidebarSessionDropTarget,
+  moveGroupIdsByDropTarget,
+  type SidebarGroupDropTarget,
   type SidebarSessionDropTarget,
   getSidebarSessionDropTargetFromEvent,
   getSidebarSessionDropTargetAtPoint,
@@ -412,6 +416,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const previousExpandedReferenceProjectGroupIdsRef = useRef<string[]>([]);
   const [recentProjectsQuery, setRecentProjectsQuery] = useState("");
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
+  const [groupDropIndicator, setGroupDropIndicator] = useState<SidebarGroupDropTarget>();
   const [sessionDropIndicatorGroupId, setSessionDropIndicatorGroupId] = useState<string>();
   const [overflowMenuAnchor, setOverflowMenuAnchor] = useState<HTMLElement>();
   const [overflowMenuPosition, setOverflowMenuPosition] = useState<FloatingMenuPosition>();
@@ -1498,12 +1503,30 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   const updateSessionDropIndicator = useEffectEvent(
     (event: Parameters<NonNullable<DragDropEventHandlers["onDragOver"]>>[0]) => {
+      const sourceData = getSidebarDropData(event.operation.source);
+      if (sourceData?.kind === "group") {
+        setSessionDropIndicatorGroupId(undefined);
+        const resolvedGroupDropTarget = resolveGroupDropTargetFromPoint(
+          getDragNativeEvent(event),
+          groupIdsRef.current,
+          getSidebarDropData(event.operation.target),
+          sourceData,
+        );
+        setGroupDropIndicator((previous) =>
+          areSameGroupDropTarget(previous, resolvedGroupDropTarget)
+            ? previous
+            : resolvedGroupDropTarget,
+        );
+        return;
+      }
+
       if (isManualActiveSessionsSort) {
+        setGroupDropIndicator(undefined);
         setSessionDropIndicatorGroupId(undefined);
         return;
       }
 
-      const sourceData = getSidebarDropData(event.operation.source);
+      setGroupDropIndicator(undefined);
       if (sourceData?.kind !== "session") {
         setSessionDropIndicatorGroupId(undefined);
         return;
@@ -1534,6 +1557,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       sourceData?.kind === "session"
         ? createSessionPointerDragState(sourceData, pointerDownSessionTarget, nativeEvent)
         : undefined;
+    setGroupDropIndicator(undefined);
     setSessionDropIndicatorGroupId(undefined);
     postSidebarDebugLog("session.dragStart", {
       nativeEventType: nativeEvent?.type,
@@ -1555,6 +1579,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   }) satisfies DragDropEventHandlers["onDragOver"];
 
   const handleDragEnd = ((event) => {
+    setGroupDropIndicator(undefined);
     setSessionDropIndicatorGroupId(undefined);
     const currentGroupIds = groupIdsRef.current;
     const currentSessionIdsByGroup = sessionIdsByGroupRef.current;
@@ -1590,11 +1615,21 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     }
 
     if (sourceData.kind === "group") {
-      if (event.canceled || targetData?.kind !== "group") {
+      if (event.canceled) {
         return;
       }
 
-      const nextGroupIds = move(currentGroupIds, event);
+      const resolvedGroupDropTarget = resolveGroupDropTargetFromPoint(
+        nativeEvent,
+        currentGroupIds,
+        targetData,
+        sourceData,
+      );
+      const nextGroupIds = resolvedGroupDropTarget
+        ? moveGroupIdsByDropTarget(currentGroupIds, sourceData.groupId, resolvedGroupDropTarget)
+        : targetData?.kind === "group"
+          ? move(currentGroupIds, event)
+          : currentGroupIds;
       if (haveSameSessionOrder(authoritativeGroupIds, nextGroupIds)) {
         return;
       }
@@ -2275,6 +2310,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           canClose={effectiveGroupIds.length > 1}
                           completionFlashNonceBySessionId={completionFlashNonceBySessionId}
                           draggingDisabled={true}
+                          groupDropIndicator={groupDropIndicator}
                           groupId={groupId}
                           index={groupIndex}
                           isCollapsed={false}
@@ -2364,6 +2400,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           canClose={effectiveGroupIds.length > 1}
                           completionFlashNonceBySessionId={completionFlashNonceBySessionId}
                           draggingDisabled={isSessionSearchOpen}
+                          groupDropIndicator={groupDropIndicator}
                           groupId={groupId}
                           index={groupIndex}
                           isCollapsed={collapsedGroupsById[groupId] === true}
@@ -3293,6 +3330,41 @@ function resolveSessionDropTargetFromPoint(
   return null;
 }
 
+function resolveGroupDropTargetFromPoint(
+  nativeEvent: Event | undefined,
+  groupIds: readonly string[],
+  targetData: ReturnType<typeof getSidebarDropData>,
+  sourceData: Extract<ReturnType<typeof getSidebarDropData>, { kind: "group" }> | undefined,
+): SidebarGroupDropTarget | undefined {
+  const point = getClientPoint(nativeEvent);
+  const candidates = [
+    getSidebarGroupDropTargetFromDropData(targetData, point),
+    point ? getSidebarGroupDropTargetAtPoint(document, point.x, point.y) : undefined,
+    getSidebarGroupDropTargetFromEvent(nativeEvent),
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate || candidate.groupId === sourceData?.groupId) {
+      continue;
+    }
+
+    if (!groupIds.includes(candidate.groupId)) {
+      continue;
+    }
+
+    return candidate;
+  }
+
+  return undefined;
+}
+
+function areSameGroupDropTarget(
+  left: SidebarGroupDropTarget | undefined,
+  right: SidebarGroupDropTarget | undefined,
+): boolean {
+  return left?.groupId === right?.groupId && left?.position === right?.position;
+}
+
 function isSourceSessionDropTarget(
   candidate: SidebarSessionDropTarget,
   sourceData: Extract<ReturnType<typeof getSidebarDropData>, { kind: "session" }> | undefined,
@@ -3348,6 +3420,27 @@ function getSidebarSessionDropTargetFromDropData(
   return undefined;
 }
 
+function getSidebarGroupDropTargetFromDropData(
+  targetData: ReturnType<typeof getSidebarDropData>,
+  point: ReturnType<typeof getClientPoint>,
+): SidebarGroupDropTarget | undefined {
+  if (targetData?.kind !== "group") {
+    return undefined;
+  }
+
+  const groupElement = getTargetGroupElement(targetData.groupId, point);
+  if (!groupElement) {
+    return undefined;
+  }
+
+  const bounds = groupElement.getBoundingClientRect();
+  const relativeY = point?.y ?? bounds.top + bounds.height / 2;
+  return {
+    groupId: targetData.groupId,
+    position: relativeY > bounds.top + bounds.height / 2 ? "after" : "before",
+  };
+}
+
 function getTargetSessionElement(
   sessionId: string,
   point: ReturnType<typeof getClientPoint>,
@@ -3364,6 +3457,25 @@ function getTargetSessionElement(
 
   return Array.from(document.querySelectorAll<HTMLElement>(selector)).find(
     (sessionElement) => sessionElement.dataset.dragging !== "true",
+  );
+}
+
+function getTargetGroupElement(
+  groupId: string,
+  point: ReturnType<typeof getClientPoint>,
+): HTMLElement | undefined {
+  const selector = `[data-sidebar-group-id="${groupId}"]`;
+  if (point) {
+    for (const element of document.elementsFromPoint(point.x, point.y)) {
+      const groupElement = element.closest<HTMLElement>(selector);
+      if (groupElement && groupElement.dataset.dragging !== "true") {
+        return groupElement;
+      }
+    }
+  }
+
+  return Array.from(document.querySelectorAll<HTMLElement>(selector)).find(
+    (groupElement) => groupElement.dataset.dragging !== "true",
   );
 }
 

@@ -3,9 +3,11 @@ import {
   createGroupDropData,
   createSessionDropTargetData,
   createSessionDragData,
+  getSidebarGroupDropTargetAtPoint,
   getSidebarDropData,
   getSidebarSessionDropTarget,
   getSidebarSessionDropTargetAtPoint,
+  moveGroupIdsByDropTarget,
   moveSessionIdsByDropTarget,
   type SidebarSessionDropTarget,
 } from "./sidebar-dnd";
@@ -120,6 +122,58 @@ describe("moveSessionIdsByDropTarget", () => {
     expect(nextSessionIdsByGroup).toEqual({
       "group-1": [],
       "group-2": ["session-2", "session-1", "session-3"],
+    });
+  });
+});
+
+describe("moveGroupIdsByDropTarget", () => {
+  test("should move a project before the hovered project", () => {
+    expect(
+      moveGroupIdsByDropTarget(["project-1", "project-2", "project-3"], "project-3", {
+        groupId: "project-1",
+        position: "before",
+      }),
+    ).toEqual(["project-3", "project-1", "project-2"]);
+  });
+
+  test("should move a project after the hovered project", () => {
+    expect(
+      moveGroupIdsByDropTarget(["project-1", "project-2", "project-3"], "project-1", {
+        groupId: "project-3",
+        position: "after",
+      }),
+    ).toEqual(["project-2", "project-3", "project-1"]);
+  });
+});
+
+describe("getSidebarGroupDropTargetAtPoint", () => {
+  test("should skip the dragging project and resolve the project underneath", () => {
+    const groupElement = createMockElement({
+      dataset: { sidebarGroupId: "project-2" },
+      getBoundingClientRect: () => ({ height: 48, top: 100 }),
+    }) as HTMLElement;
+    const draggingGroupElement = createMockElement({
+      closestMap: new Map([["[data-dragging='true']", {} as HTMLElement]]),
+    });
+    const targetGroupChild = createMockElement({
+      closestMap: new Map([
+        ["[data-dragging='true']", null],
+        ["[data-sidebar-group-id]", groupElement],
+      ]),
+    });
+
+    const dropTarget = getSidebarGroupDropTargetAtPoint(
+      {
+        elementFromPoint: () => draggingGroupElement,
+        elementsFromPoint: () => [draggingGroupElement, targetGroupChild],
+      },
+      50,
+      130,
+    );
+
+    expect(dropTarget).toEqual({
+      groupId: "project-2",
+      position: "after",
     });
   });
 });

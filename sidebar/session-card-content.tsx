@@ -22,6 +22,14 @@ import { formatRelativeTime } from "./relative-time";
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
 import { useRelativeTimeTick } from "./use-relative-time-tick";
 
+/*
+ * CDXC:SessionTooltips 2026-05-18-14:53:
+ * Session hover tooltips should wait one second longer than the app-wide
+ * tooltip delay so incidental cursor movement over session rows does not
+ * immediately cover the sidebar while users scan active work.
+ */
+const SESSION_HOVER_TOOLTIP_DELAY_MS = TOOLTIP_DELAY_MS + 1_000;
+
 const AGENT_SECONDARY_LABELS: Record<SidebarAgentIcon, readonly string[]> = {
   browser: ["browser"],
   claude: ["claude", "claude code"],
@@ -740,7 +748,7 @@ function DelayedSendSidebarIcon({
    */
   const tooltip = `Delayed Send in ${remainingLabel}`;
   return (
-    <Tooltip delayDuration={TOOLTIP_DELAY_MS}>
+    <Tooltip delayDuration={SESSION_HOVER_TOOLTIP_DELAY_MS}>
       <TooltipTrigger asChild>
         <button
           aria-label={tooltip}
@@ -966,7 +974,7 @@ export function OverflowTooltipText({
       activeOverflowTooltipClose = closeTooltip;
       setIsOpen(true);
       openTimeoutIdRef.current = undefined;
-    }, TOOLTIP_DELAY_MS);
+    }, SESSION_HOVER_TOOLTIP_DELAY_MS);
   };
 
   useEffect(() => {
