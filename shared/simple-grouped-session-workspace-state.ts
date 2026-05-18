@@ -434,6 +434,17 @@ export function setSessionSleepingInSimpleWorkspace(
     return { changed: false, snapshot: normalizedSnapshot };
   }
 
+  if (!sleeping) {
+    const snapshotWithWakeState = updateGroup(normalizedSnapshot, owningGroup.groupId, (group) => ({
+      ...group,
+      snapshot: wakeSessionsIntoFocusedPaneTabGroup(group.snapshot, [sessionId]),
+    }));
+    return {
+      changed: !areSnapshotsEqual(normalizedSnapshot, snapshotWithWakeState),
+      snapshot: snapshotWithWakeState,
+    };
+  }
+
   const snapshotWithSleepState = updateGroup(normalizedSnapshot, owningGroup.groupId, (group) => ({
     ...group,
     snapshot: normalizeGroupSnapshot({
@@ -549,6 +560,20 @@ export function setGroupSleepingInSimpleWorkspace(
   const hasChange = targetSessions.some((session) => session.isSleeping !== sleeping);
   if (!hasChange) {
     return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  if (!sleeping) {
+    const snapshotWithWakeState = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
+      ...targetGroup,
+      snapshot: wakeSessionsIntoFocusedPaneTabGroup(
+        targetGroup.snapshot,
+        targetSessions.map((session) => session.sessionId),
+      ),
+    }));
+    return {
+      changed: !areSnapshotsEqual(normalizedSnapshot, snapshotWithWakeState),
+      snapshot: snapshotWithWakeState,
+    };
   }
 
   const snapshotWithSleepState = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
@@ -1630,6 +1655,67 @@ function normalizeGroupSnapshot(
     visibleCount,
     visibleSessionIds,
   };
+}
+
+function wakeSessionsIntoFocusedPaneTabGroup(
+  snapshot: SessionGroupRecord["snapshot"],
+  sessionIds: readonly string[],
+): SessionGroupRecord["snapshot"] {
+  const wakeSessionIdSet = new Set(sessionIds.map((sessionId) => sessionId.trim()));
+  const sessions = snapshot.sessions.map((session) =>
+    wakeSessionIdSet.has(session.sessionId)
+      ? { ...session, isPoppedOut: undefined, isSleeping: false }
+      : session,
+  );
+  const restoredSessionIds = snapshot.sessions
+    .filter((session) => wakeSessionIdSet.has(session.sessionId) && session.isSleeping === true)
+    .map((session) => session.sessionId);
+  if (restoredSessionIds.length === 0) {
+    return normalizeGroupSnapshot({ ...snapshot, sessions });
+  }
+
+  let currentFocusedSessionId = snapshot.focusedSessionId;
+  let currentPaneLayout = snapshot.paneLayout;
+  let currentVisibleSessionIds = snapshot.visibleSessionIds;
+  let currentVisibleCount = snapshot.visibleCount;
+
+  for (const restoredSessionId of restoredSessionIds) {
+    const nextVisibleSessionIds = getNextVisibleIdsForRestoredSleepingSession(
+      getAwakeSessions(sessions),
+      currentVisibleCount,
+      restoredSessionId,
+      currentVisibleSessionIds,
+      currentFocusedSessionId,
+    );
+    const nextPaneLayout = getNextPaneLayoutForRestoredSleepingSession(
+      currentPaneLayout,
+      currentVisibleSessionIds,
+      nextVisibleSessionIds,
+      restoredSessionId,
+      currentFocusedSessionId,
+    );
+
+    currentFocusedSessionId = restoredSessionId;
+    currentPaneLayout = nextPaneLayout;
+    currentVisibleSessionIds = nextVisibleSessionIds;
+    currentVisibleCount = clampSupportedVisibleCount(Math.max(1, nextVisibleSessionIds.length));
+  }
+
+  /**
+   * CDXC:SessionSleep 2026-05-18-15:47:
+   * Any wake path can run while Code/Git owns the visible workarea. Reattach
+   * restored sessions to the focused pane tab group before marking them active
+   * so the later Agents-mode native layout sync does not append each awake but
+   * paneLayout-missing session as a separate split pane.
+   */
+  return normalizeGroupSnapshot({
+    ...snapshot,
+    focusedSessionId: currentFocusedSessionId,
+    ...(currentPaneLayout ? { paneLayout: currentPaneLayout } : {}),
+    sessions,
+    visibleCount: currentVisibleCount,
+    visibleSessionIds: currentVisibleSessionIds,
+  });
 }
 
 function getVisibleSessionPlacementResult(

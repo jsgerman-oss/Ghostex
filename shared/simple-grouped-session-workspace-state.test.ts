@@ -2541,7 +2541,7 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
     expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([sessionIdForDisplay(0)]);
   });
 
-  test("should preserve pane layout position while a session sleeps and wakes", () => {
+  test("should preserve pane layout position while sleeping and wake into focused tab group", () => {
     const sleepingSessionId = sessionIdForDisplay(1);
     const awakeSessionId = sessionIdForDisplay(0);
     const slept = setSessionSleepingInSimpleWorkspace(
@@ -2588,17 +2588,21 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
     });
 
     const woke = setSessionSleepingInSimpleWorkspace(slept.snapshot, sleepingSessionId, false);
+    expect(woke.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(sleepingSessionId);
     expect(woke.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
       awakeSessionId,
       sleepingSessionId,
     ]);
+    /**
+     * CDXC:SessionSleep 2026-05-18-15:47:
+     * Direct wake uses the same pane-tab restore rule as session focus. A
+     * sleeping split leaf becomes a tab in the currently focused pane instead
+     * of reappearing as a separate split when Agents mode is surfaced later.
+     */
     expect(woke.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
-      children: [
-        { kind: "leaf", sessionId: awakeSessionId },
-        { kind: "leaf", sessionId: sleepingSessionId },
-      ],
-      direction: "horizontal",
-      kind: "split",
+      activeSessionId: sleepingSessionId,
+      kind: "tabs",
+      sessionIds: [awakeSessionId, sleepingSessionId],
     });
   });
 
@@ -2972,6 +2976,66 @@ describe("setGroupSleepingInSimpleWorkspace", () => {
     expect(result.snapshot.groups[1]?.snapshot.sessions[0]?.isSleeping).toBe(true);
     expect(result.snapshot.groups[1]?.snapshot.sessions[1]?.isSleeping).toBeUndefined();
     expect(result.snapshot.groups[1]?.snapshot.visibleSessionIds).toEqual([sessionIdForDisplay(2)]);
+  });
+
+  test("should wake targeted group sessions into one focused pane tab group", () => {
+    const focusedSessionId = sessionIdForDisplay(0);
+    const sleepingSessionId = sessionIdForDisplay(1);
+    const secondSleepingSessionId = sessionIdForDisplay(2);
+    const result = setGroupSleepingInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: focusedSessionId },
+                  { kind: "leaf", sessionId: sleepingSessionId },
+                  { kind: "leaf", sessionId: secondSleepingSessionId },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                { ...createSessionRecord(2, 1), isSleeping: true },
+                { ...createSessionRecord(3, 2), isSleeping: true },
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [focusedSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+      false,
+      [sleepingSessionId, secondSleepingSessionId],
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.sessions.map((session) => session.isSleeping)).toEqual([
+      undefined,
+      false,
+      false,
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      focusedSessionId,
+      sleepingSessionId,
+      secondSleepingSessionId,
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: secondSleepingSessionId,
+      kind: "tabs",
+      sessionIds: [focusedSessionId, sleepingSessionId, secondSleepingSessionId],
+    });
   });
 });
 
