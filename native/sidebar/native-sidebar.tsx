@@ -1582,6 +1582,22 @@ function appendTerminalFocusDebugLog(
   });
 }
 
+function appendZmxPersistenceFocusReproLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:ZmxPersistenceDiagnostics 2026-05-18-08:52:
+   * Intermittent broken text after clicking zmx-backed sidebar sessions must
+   * be diagnosable from a session id and minute without requiring the user to
+   * pre-enable broad Debugging Mode. Force only this zmx focus breadcrumb chain
+   * into the native terminal-focus log; keep the payload metadata-only.
+   */
+  postNative({
+    details: details === undefined ? undefined : safeSerializeForNativeLog(details),
+    event,
+    force: true,
+    type: "appendTerminalFocusDebugLog",
+  });
+}
+
 function appendActionCrashTraceDebugLog(event: string, details?: unknown): void {
   /**
    * CDXC:TitlebarActions 2026-05-15-17:23:
@@ -10141,6 +10157,36 @@ function focusTerminal(sessionId: string): void {
     reference.project,
     reference.sessionId,
   );
+  const sessionRecord = findSessionRecord(reference.sessionId);
+  const terminalState = terminalStateById.get(reference.sessionId);
+  const sessionPersistenceProvider =
+    terminalState?.sessionPersistenceProvider ??
+    (sessionRecord?.kind === "terminal" ? sessionRecord.sessionPersistenceProvider : undefined);
+  const sessionPersistenceName =
+    terminalState?.sessionPersistenceName ??
+    (sessionRecord?.kind === "terminal" ? sessionRecord.sessionPersistenceName : undefined);
+  if (sessionPersistenceProvider === "zmx") {
+    appendZmxPersistenceFocusReproLog("nativeSidebar.zmxPersistenceFocus.requested", {
+      activeProjectId,
+      activeSnapshotFocusedSessionId: activeSnapshot().focusedSessionId,
+      commandPanelContainsSession: commandPanelContainsSession(reference.project, reference.sessionId),
+      focusTargetBefore,
+      hasNativeTerminalState: terminalState !== undefined,
+      nativeSessionId: nativeSessionIdForProjectSidebarSession(
+        reference.project.projectId,
+        reference.sessionId,
+      ),
+      requestedSessionId: sessionId,
+      resolvedProjectId: reference.project.projectId,
+      resolvedSessionId: reference.sessionId,
+      sessionKind: sessionRecord?.kind,
+      sessionPersistenceName,
+      sessionPersistenceProvider,
+      terminalStateSessionPersistenceName: terminalState?.sessionPersistenceName,
+      terminalStateSessionPersistenceProvider: terminalState?.sessionPersistenceProvider,
+      visibleSessionIdsBefore: activeSnapshot().visibleSessionIds,
+    });
+  }
   appendTerminalFocusDebugLog("nativeFocusTrace.sidebarFocusTerminalStart", {
     activeProjectId,
     activeSnapshotFocusedSessionId: activeSnapshot().focusedSessionId,
@@ -10205,7 +10251,6 @@ function focusTerminal(sessionId: string): void {
   if (!shouldKeepProjectEditorOpen) {
     queueNativeLayoutFocusRequest(reference.sessionId, "focusTerminal");
   }
-  const sessionRecord = findSessionRecord(reference.sessionId);
   /**
    * CDXC:SidebarSessionFocus 2026-05-15-20:01:
    * A session card must activate the existing paneLayout owner for that
@@ -10263,6 +10308,24 @@ function focusTerminal(sessionId: string): void {
   if (session && !terminalStateById.has(reference.sessionId)) {
     restoreNativeTerminalSession(activeProject(), session, "focus-sleeping-session");
     restoredSleepingTerminal = true;
+  }
+  if (sessionPersistenceProvider === "zmx") {
+    appendZmxPersistenceFocusReproLog("nativeSidebar.zmxPersistenceFocus.preNativeFocus", {
+      activeProjectId,
+      focusedSessionId: activeSnapshot().focusedSessionId,
+      focusTargetAfter,
+      isProjectEditorCompanionPath: shouldKeepProjectEditorOpen,
+      nativeSessionId: nativeSessionIdForProjectSidebarSession(
+        reference.project.projectId,
+        reference.sessionId,
+      ),
+      restoredSleepingTerminal,
+      resolvedProjectId: reference.project.projectId,
+      resolvedSessionId: reference.sessionId,
+      sessionPersistenceName,
+      sessionPersistenceProvider,
+      visibleSessionIdsAfterState: activeSnapshot().visibleSessionIds,
+    });
   }
   acknowledgeNativeTerminalAttention(reference.sessionId, "sidebar-focus");
   if (restoredSleepingTerminal) {
@@ -11788,6 +11851,22 @@ function buildNativeCliAttachCommand(
   }
 }
 
+function summarizeCreatedCliSession(session: TerminalSessionRecord | undefined) {
+  if (!session) {
+    return undefined;
+  }
+  const project = activeProject();
+  const group = project.workspace.groups.find((candidate) =>
+    candidate.snapshot.sessions.some((candidateSession) => candidateSession.sessionId === session.sessionId),
+  );
+  return {
+    groupId: group?.groupId,
+    projectId: project.projectId,
+    sessionId: session.sessionId,
+    title: session.title ?? DEFAULT_TERMINAL_SESSION_TITLE,
+  };
+}
+
 function requireCliSession(payload: Record<string, unknown>): SidebarSessionItem {
   const session = findSidebarSessionForCli({
     index: typeof payload.index === "number" ? payload.index : undefined,
@@ -12530,7 +12609,7 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         }
         if (groupId === COMBINED_CHATS_GROUP_ID || (!groupId && activeProject().isChat === true)) {
           await createNativeChat(typeof payload.title === "string" ? payload.title : undefined);
-          return { ok: true, state: summarizeCliState() };
+          return { kind: "chat", ok: true, revision };
         }
         /**
          * CDXC:AndroidRemoteSessions 2026-05-18-02:31:
@@ -12538,13 +12617,19 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
          * Mac-hosted Ghostex CLI. Focus the requested project first, then use
          * createTerminal so current Settings, including zmx persistence, remain
          * the source of truth for the new session.
+         *
+         * CDXC:AndroidRemoteSessions 2026-05-18-03:01:
+         * Android only needs to know whether create-session succeeded before it
+         * refreshes the inventory. Return a compact created-session summary so
+         * the mobile path does not serialize the full sidebar state immediately
+         * after native terminal creation.
          */
         const session = createTerminal(
           typeof payload.title === "string" ? payload.title : DEFAULT_TERMINAL_SESSION_TITLE,
           typeof payload.input === "string" ? payload.input : "",
           groupId,
         );
-        return { ok: true, session, state: summarizeCliState() };
+        return { ok: true, revision, session: summarizeCreatedCliSession(session) };
       }
       case "createChat":
         await createNativeChat(typeof payload.title === "string" ? payload.title : undefined);
@@ -12620,6 +12705,38 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         }
         focusProject(project.projectId);
         return { ok: true, state: summarizeCliState() };
+      }
+      case "moveProject": {
+        /**
+         * CDXC:AndroidSidebar 2026-05-18-16:13:
+         * Android project overflow menus move projects through this CLI bridge so
+         * desktop persistence owns ordering. The sessions inventory already emits
+         * projects in desktop sidebar order, so mobile refreshes converge on the
+         * same placement instead of keeping a phone-only sort.
+         */
+        const projectId = typeof payload.projectId === "string" ? payload.projectId : "";
+        const direction = payload.direction === "up" || payload.direction === "down"
+          ? payload.direction
+          : undefined;
+        const orderedProjectIds = orderNativeProjectsForSidebar(projects)
+          .filter((project) => project.isRecentProject !== true)
+          .map((project) => project.projectId);
+        const sourceIndex = orderedProjectIds.indexOf(projectId);
+        if (sourceIndex < 0) {
+          return { error: "No matching project was found.", ok: false };
+        }
+        if (!direction) {
+          return { error: "Project move direction must be up or down.", ok: false };
+        }
+        const targetIndex = sourceIndex + (direction === "up" ? -1 : 1);
+        if (targetIndex < 0 || targetIndex >= orderedProjectIds.length) {
+          return { ok: true, projectId, revision, unchanged: true };
+        }
+        const nextProjectIds = [...orderedProjectIds];
+        const [movedProjectId] = nextProjectIds.splice(sourceIndex, 1);
+        nextProjectIds.splice(targetIndex, 0, movedProjectId);
+        reorderProjects(nextProjectIds);
+        return { ok: true, projectId, revision, state: summarizeCliState() };
       }
       case "addProject":
         addProject(

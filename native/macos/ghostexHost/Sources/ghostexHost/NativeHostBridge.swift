@@ -178,8 +178,10 @@ private final class BridgeClient {
   private var isClosed = false
   private let onClose: (BridgeClient) -> Void
   private let onMessage: (BridgeClient, String) -> Void
+  private var pendingWriteBuffer = Data()
   private let socketDescriptor: Int32
   private var source: DispatchSourceRead?
+  private var writeSource: DispatchSourceWrite?
   private(set) var isAuthenticated = false
 
   init(
@@ -194,6 +196,7 @@ private final class BridgeClient {
 
   deinit {
     source?.cancel()
+    writeSource?.cancel()
     if !isClosed {
       Darwin.close(socketDescriptor)
     }
@@ -212,23 +215,15 @@ private final class BridgeClient {
     guard let data = "\(text)\n".data(using: .utf8) else {
       return
     }
-    data.withUnsafeBytes { rawBuffer in
-      guard let baseAddress = rawBuffer.baseAddress else {
-        return
-      }
-      var offset = 0
-      while offset < rawBuffer.count {
-        let written = write(socketDescriptor, baseAddress.advanced(by: offset), rawBuffer.count - offset)
-        if written > 0 {
-          offset += written
-          continue
-        }
-        if errno == EINTR {
-          continue
-        }
-        break
-      }
-    }
+    /**
+     CDXC:AndroidRemoteSessions 2026-05-18-03:01:
+     Android plus-button creation and debug state requests can return a large
+     sidebar payload. The bridge socket is nonblocking, so a short write must
+     keep the unwritten bytes queued until the socket is writable again instead
+     of dropping the JSON newline that lets the CLI resolve.
+     */
+    pendingWriteBuffer.append(data)
+    flushPendingWrites()
   }
 
   func authenticate() {
@@ -242,8 +237,52 @@ private final class BridgeClient {
     isClosed = true
     source?.cancel()
     source = nil
+    writeSource?.cancel()
+    writeSource = nil
+    pendingWriteBuffer.removeAll()
     Darwin.close(socketDescriptor)
     onClose(self)
+  }
+
+  private func flushPendingWrites() {
+    guard !isClosed else {
+      return
+    }
+    while !pendingWriteBuffer.isEmpty {
+      let written = pendingWriteBuffer.withUnsafeBytes { rawBuffer -> Int in
+        guard let baseAddress = rawBuffer.baseAddress else {
+          return 0
+        }
+        return Darwin.write(socketDescriptor, baseAddress, rawBuffer.count)
+      }
+      if written > 0 {
+        pendingWriteBuffer.removeSubrange(..<written)
+        continue
+      }
+      if errno == EINTR {
+        continue
+      }
+      if errno == EWOULDBLOCK || errno == EAGAIN {
+        ensureWriteSource()
+        return
+      }
+      close()
+      return
+    }
+    writeSource?.cancel()
+    writeSource = nil
+  }
+
+  private func ensureWriteSource() {
+    guard writeSource == nil, !isClosed else {
+      return
+    }
+    let source = DispatchSource.makeWriteSource(fileDescriptor: socketDescriptor, queue: .main)
+    source.setEventHandler { [weak self] in
+      self?.flushPendingWrites()
+    }
+    writeSource = source
+    source.resume()
   }
 
   private func readAvailableData() {

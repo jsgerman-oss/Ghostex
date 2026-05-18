@@ -60,6 +60,7 @@ const COMMANDS = new Map([
   ["focus-session", bridgeAction("focusSession", parseSessionSelector)],
   ["focus-group", bridgeAction("focusGroup", parseGroup)],
   ["switch-project", bridgeAction("switchProject", parseProject)],
+  ["move-project", bridgeAction("moveProject", parseProjectMove, { failOnNotOk: true })],
   ["add-project", bridgeAction("addProject", parseProjectPath)],
   ["close-session", bridgeAction("closeSession", parseSessionSelector)],
   ["restart-session", bridgeAction("restartSession", parseSessionSelector)],
@@ -1159,6 +1160,19 @@ function parseProject(rest, flags) {
   };
 }
 
+function parseProjectMove(rest, flags) {
+  /**
+   * CDXC:AndroidSidebar 2026-05-18-16:13:
+   * Ghostex Android reorders project groups through the Mac CLI, not local phone
+   * state. The desktop sidebar remains the source of truth and later inventory
+   * calls return the persisted order to mobile.
+   */
+  return {
+    direction: flags.direction ?? flags.dir ?? rest[1],
+    projectId: flags.projectId ?? rest[0],
+  };
+}
+
 function parseProjectPath(rest, flags) {
   return {
     name: flags.name,
@@ -1354,6 +1368,7 @@ function usage() {
     formatHelpCommand("run-command <commandId>", "Run a configured command button"),
     formatHelpCommand("click-button <agent|command|section> <id>", "Trigger a sidebar button"),
     formatHelpCommand("switch-project (--project-id|--path|--name) <value>", "Switch active project"),
+    formatHelpCommand("move-project --project-id id --direction up|down", "Move a project in the desktop sidebar order"),
     formatHelpCommand("add-project <path> [--name name]", "Add a project to Ghostex"),
     formatHelpCommand("focus-session <id|--index n|--session-number n>", "Focus a session by raw selector"),
     formatHelpCommand("focus-group <groupId>", "Focus a project group"),
