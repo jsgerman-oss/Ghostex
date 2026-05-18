@@ -4,10 +4,22 @@ Discord: https://discord.gg/xYSBPapM
 
 - T3code Support
 - Agent CLIs Manager
-- Embedded Chromium Browser
+- Embedded Chromium Browser w Devtools and profiles
 - Embedded Light Code/MD Files Editor
 - Fast & Low RAM usage
 - SSH support with live session persistence (zmx/tmux/zellij)
+- Native Swift macOS app shell for better performance
+- Native Ghostty for best cpu/ram use and compatibility
+- Auto sleep unused terminals to save ram (auto-restore when clicked)
+- Auto session naming
+- Reopening the app always resumes your agent cli sessions
+- Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
+- The best agent CLI rich prompt editor with Image insert/preview support Press ctrl+g to use it.
+- Menu bar working & done indicators and notification sounds for almost all agent clis
+- Supports Pets so you can see session status at a glance :)
+- Works with all Agent CLIs (Claude Code, Codex CLI, OpenCode, Pi Agent, Gemini, Copilot, etc.)
+- Schedule sending messages to agents (more automation features coming soon)
+- Way more features to fit here
 <br/>
 
 #### Install on macOS using brew or dmg in releases page
