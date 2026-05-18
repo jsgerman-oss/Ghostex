@@ -15,7 +15,7 @@ CDXC:AndroidSidebar 2026-05-17-10:43:
 The Android sidebar must preserve project/group rows from the macOS sidebar, expose project and session long-press menus, and avoid launcher shortcuts that reintroduce ordinary local Termux session workflows.
 
 CDXC:AndroidOnboarding 2026-05-17-10:51:
-Ghostex Android must make phone-side SSH setup actionable in-app: the drawer should expose a Setup action, reconnect should preflight local `ssh`/`sshpass`, and the tutorial should point users to the in-app install flow.
+Ghostex Android must make connection setup actionable in-app: the drawer should expose a Setup action, reconnect should use the app-owned SSHJ transport, and the tutorial should point users to Tailscale, saved-machine, and host-key repair flows.
 
 CDXC:AndroidConnectionSecurity 2026-05-17-11:17:
 An SSH password entered with Save password unchecked is still valid for the current app process, but must remain session-only and must not be written to normal settings, files, logs, command arguments, or docs.
@@ -27,7 +27,7 @@ CDXC:AndroidBranding 2026-05-17-11:38:
 A released Ghostex Android package must not use a package id that disagrees with the Termux bootstrap prefix.
 
 CDXC:AndroidSideBySideInstall 2026-05-17-23:39:
-Ghostex Android must install beside upstream Termux. The current side-by-side id is `com.ghostx`, and the build must generate bootstrap archives patched to `/data/data/com.ghostx/files/usr` before packaging. A longer package id remains blocked until Ghostex has rebuilt bootstrap/package artifacts for that prefix.
+Ghostex Android must install beside upstream Termux. The current side-by-side id is `io.ghostex`, and the build must generate bootstrap archives patched to `/data/data/io.ghostex/files/usr` before packaging. A longer package id remains blocked until Ghostex has rebuilt bootstrap/package artifacts for that prefix.
 
 CDXC:AndroidOnboarding 2026-05-17-11:55:
 The first-run tutorial and saved-machine settings should use Ghostex-styled, scrollable product panels with setup step cards and machine action cards, not raw list dialogs.
@@ -39,7 +39,7 @@ CDXC:AndroidConnectionManagement 2026-05-17-13:02:
 The drawer must show visible state cards for setup, connecting, failed reconnect, and empty-session cases so the machine dropdown and recovery actions are not paired with an unexplained blank session list.
 
 CDXC:AndroidOnboarding 2026-05-17-13:25:
-The phone-side Setup flow should be a Ghostex-styled panel with inline OpenSSH/sshpass status, install repair, Tailscale, and tutorial actions instead of a raw Android action list.
+The Setup flow should be a Ghostex-styled panel with built-in SSHJ transport status, host-key repair, machine management, Tailscale, and tutorial actions instead of a raw Android action list.
 
 CDXC:AndroidSidebar 2026-05-17-13:48:
 Long-press sidebar actions should use Ghostex-styled action sheets with short descriptions and destructive-action styling, because these menus replace macOS hover controls on Android.
@@ -78,10 +78,10 @@ CDXC:AndroidRemoteSessions 2026-05-17-17:55:
 When a remote kill or sleep action succeeds, Android must evict the matching warm attach terminal surfaces. These actions change the ZMX lifecycle on the Mac, so quick switching must not return the user to a stale SSH attach surface.
 
 CDXC:AndroidConnectionSecurity 2026-05-17-18:31:
-Saved or session-only SSH passwords may be passed to `sshpass` only through process environment, and Termux execution logging must redact those environment values before writing verbose logs.
+Saved or session-only SSH passwords may be used only inside the app-owned SSHJ transport, and diagnostic logging must never write password values.
 
 CDXC:AndroidRemoteSessions 2026-05-17-18:24:
-Non-interactive reconnect, session inventory, remote actions, and phone setup checks must run with the full Termux shell environment so they use the same HOME, PREFIX, PATH, TMPDIR, and known_hosts state as visible terminal sessions.
+Non-interactive reconnect, session inventory, remote actions, and setup checks must run through the app-owned SSHJ transport and the Mac login shell, with host-key state stored in Ghostex Android's app-owned SSHJ verifier.
 
 CDXC:AndroidConnectionManagement 2026-05-17-18:46:
 Saved-machine forms must reject malformed SSH targets in the editor, including user@host entered into the host field, whitespace/control characters, option-like leading dashes, and invalid ports.
@@ -99,7 +99,7 @@ CDXC:AndroidConnectionManagement 2026-05-17-14:18:
 The Open Tailscale action must work on Android 11+ by declaring a narrow Tailscale package visibility query, while avoiding broad package-query permissions.
 
 CDXC:AndroidConnectionRecovery 2026-05-17-14:20:
-Reset SSH host key must clear the known_hosts entries that match the saved machine target, including both raw and bracketed forms for default-port IPv6 literals.
+Reset SSH host key must clear the app-owned SSHJ fingerprint stored for the selected saved machine target.
 
 CDXC:AndroidReleaseSurface 2026-05-17-19:08:
 The release manifest must request only permissions needed by the Ghostex remote-session workflow. Stock Termux storage, package-install, overlay, boot, usage-stats, log, dump, alarm, and secure-settings permissions should stay absent unless a Ghostex feature explicitly requires them.
@@ -141,7 +141,7 @@ CDXC:AndroidReleaseE2E 2026-05-17-18:24:
 The first-run UI smoke harness must require explicit confirmation before clearing Ghostex Android data on a selected device.
 
 CDXC:AndroidReleaseE2E 2026-05-17-19:34:
-Because the live E2E harness uninstalls Ghostex Android before debug instrumentation, it must prepare the fresh app runtime itself: launch the app, wait for bootstrap `pkg`, install OpenSSH and sshpass, and verify both tools before running phone-to-Mac SSH tests.
+Because the live E2E harness uninstalls Ghostex Android before debug instrumentation, it must prepare the fresh app runtime itself: launch the app, add a saved machine, and verify phone-to-Mac SSHJ checks without requiring phone-side package installation.
 
 CDXC:AndroidReleaseE2E 2026-05-17-19:26:
 Release-facing Android README instructions must stay aligned with the actual harnesses: final UI smoke exercises the selected release candidate or explicit signed APK, debug APKs are development-only for UI smoke, and both UI smoke and live E2E document package uninstall/data-clear confirmation before they touch a connected device.
@@ -309,7 +309,7 @@ CDXC:AndroidRemoteSessions 2026-05-17-13:42:
 Session inventory parsing must identify the Ghostex CLI JSON object by the `sessions` payload, not by the first brace in SSH output, because real Mac login shells may print profile/MOTD text before the command response.
 
 CDXC:AndroidOnboarding 2026-05-17-13:52:
-Opening a cold remote session attach must preflight phone-side SSH tooling too, so users see the same setup recovery path whether the missing tool is discovered during reconnect or during session attach.
+Opening a cold remote session attach must use the same app-owned SSHJ transport as reconnect, so users see consistent setup recovery paths for credentials, Tailscale reachability, and host-key verification.
 
 CDXC:AndroidConnectionManagement 2026-05-17-14:03:
 Saved-machine management should provide a Check connection action that verifies local SSH tools, SSH reachability, and the remote Ghostex CLI before users commit to switching machines or opening a session.
@@ -336,10 +336,10 @@ CDXC:AndroidConnectionManagement 2026-05-17-13:45:
 Saved-machine actions should let users copy the exact SSH target string for setup, support, and debugging across devices.
 
 CDXC:AndroidOnboarding 2026-05-17-13:49:
-Remote sidebar actions should use the same phone-side SSH tooling preflight as reconnect and attach so focus, wake, sleep, kill, project actions, and rename fail into the Ghostex setup recovery path when local tools are missing.
+Remote sidebar actions should use the same app-owned SSHJ transport as reconnect and attach so focus, wake, sleep, kill, project actions, and rename fail into the Ghostex setup recovery path when credentials, Tailscale, or host-key verification need attention.
 
 CDXC:AndroidConnectionManagement 2026-05-17-13:50:
-Check connection should open the phone setup panel when local OpenSSH/sshpass tooling is missing, because that action is a repair path and should not leave users with only compact status text.
+Check connection should open setup recovery when credentials, Tailscale, host-key verification, Ghostex CLI, or zmx readiness need attention, because that action is a repair path and should not leave users with only compact status text.
 
 CDXC:AndroidConnectionManagement 2026-05-17-13:52:
 Saved-machine readiness checks must suppress stale asynchronous results so an older Check connection request cannot replace the latest status, setup panel, or SSH password recovery prompt.
@@ -390,7 +390,7 @@ CDXC:AndroidConnectionManagement 2026-05-17-15:21:
 Editing a saved machine's SSH target must expire in-flight checks and selected-machine SSH work for that stable id so callbacks started against the old host cannot update the edited account.
 
 CDXC:AndroidConnectionManagement 2026-05-17-15:23:
-Machine-scoped dialogs and recovery callbacks must require both the same machine id and same SSH target so UI opened before a host/user/port edit cannot mutate credentials or known_hosts for the edited account.
+Machine-scoped dialogs and recovery callbacks must require both the same machine id and same SSH target so UI opened before a host/user/port edit cannot mutate credentials or SSHJ host-key state for the edited account.
 
 CDXC:AndroidConnectionManagement 2026-05-17-15:25:
 Credential writes from prompts must preserve the latest saved-machine metadata, because a prompt can stay valid across display-name or Last Connected updates when the SSH target is unchanged.
@@ -423,7 +423,7 @@ CDXC:AndroidSidebar 2026-05-17-16:42:
 Release builds must gate the Ghostex drawer wiring so the app cannot ship with the stock Termux local-session drawer, missing machine/recovery controls, or a drawer keyboard button instead of the floating terminal keyboard control.
 
 CDXC:AndroidOnboarding 2026-05-17-16:58:
-The first-run tutorial copy must live in a tested onboarding contract so release users keep exact setup steps for Tailscale, macOS Remote Login, Ghostex CLI, zmx persistence, phone SSH tools, saved-machine setup, reconnect, and the SSH-to-Ghostex-CLI-to-ZMX model.
+The first-run tutorial copy must live in a tested onboarding contract so release users keep exact setup steps for Tailscale, macOS Remote Login, Ghostex CLI, zmx persistence, built-in SSHJ transport, saved-machine setup, reconnect, and the SSH-to-Ghostex-CLI-to-ZMX model.
 
 CDXC:AndroidRemoteSessions 2026-05-17-17:12:
 Android SSH command construction must reject missing stable session ids for attach, focus, wake, sleep, kill, and rename so an empty selector is never sent to the Mac-side Ghostex CLI.
@@ -466,6 +466,13 @@ Release APK filenames should include the Ghostex Android version name and versio
 -->
 
 # Ghostex Android Requirements
+
+## Requirement Update 2026-05-18
+
+- Supersedes the earlier phone-side OpenSSH/sshpass setup requirement: Ghostex Android must use the app-owned SSHJ/SFTP transport for reconnect, session inventory, attach, remote actions, create/rename, readiness checks, and file upload.
+- The Android app must not require installing OpenSSH, sshpass, or patched Termux packages on the phone for Ghostex workflows.
+- Setup should remain available for Tailscale guidance, machine management, tutorial review, connection checks, and SSHJ host-key repair.
+- Reset SSH host key should clear Ghostex Android's app-owned SSHJ host-key fingerprint for the saved machine, not edit Termux `known_hosts`.
 
 ## Product Goal
 
@@ -521,15 +528,15 @@ Ghostex Android should be a Termux-based Android app for connecting to already p
 - Machine management should provide a details view for each saved machine with selected state, SSH target, password mode, Last Connected, and machine id.
 - Machine management should let users copy the exact saved SSH target string.
 - Users must be able to forget a saved password without deleting the machine entry.
-- Users should be able to check a saved machine from its actions to confirm phone SSH tools, SSH reachability, the remote Ghostex CLI, zmx, Ghostex's zmx persistence setting, and the running Ghostex bridge inventory endpoint are ready.
+- Users should be able to check a saved machine from its actions to confirm SSH reachability, credentials, the remote Ghostex CLI, zmx, Ghostex's zmx persistence setting, and the running Ghostex bridge inventory endpoint are ready through the app-owned SSHJ transport.
 - Check connection should call `ghostex android-check --json` on the Mac after SSH reaches the host, rather than inferring readiness from a generic session-list command.
-- If Check connection finds missing phone-side SSH tools, it should open the phone setup panel directly.
+- Check connection must not require phone-side SSH package installation; local setup recovery should focus on Tailscale, credentials, saved machines, tutorial steps, and SSHJ host-key repair.
 - If Check connection requires a password, entering it should re-run the check without switching the currently selected saved machine.
 - If multiple Check connection requests overlap, only the latest request should update visible status, setup recovery, or password prompts.
 - If a saved machine is deleted while Check connection is still running, the pending check must not update UI, open credential recovery, or recreate that machine.
 - If an already-open credential prompt targets a machine that is deleted before the prompt is accepted, accepting the prompt must not save credentials or recreate the deleted machine.
 - If an already-open machine editor, action sheet, or repair confirmation targets a machine that is deleted before the action is accepted, the action must expire instead of mutating credentials, reconnecting, or operating on another saved machine.
-- If an already-open credential prompt, machine editor, action sheet, or host-key repair callback targets a machine whose host, username, or port changed before the action is accepted, the action must expire instead of mutating credentials, reconnecting, checking, or resetting known_hosts for the edited account.
+- If an already-open credential prompt, machine editor, action sheet, or host-key repair callback targets a machine whose host, username, or port changed before the action is accepted, the action must expire instead of mutating credentials, reconnecting, checking, or resetting the SSHJ host-key store for the edited account.
 - If an already-open destructive machine confirmation targets a machine whose host, username, or port changed before the action is accepted, the destructive action must expire instead of deleting the newly edited same-id account.
 - If an already-open credential prompt is still valid because the SSH target did not change, saving or clearing password mode must preserve the latest saved-machine display name, connection fields, and Last Connected metadata.
 - Editing a saved machine's host, username, or port must require a fresh password before keeping saved-password reconnect enabled, so an old secret is not silently reused for a different SSH target.
@@ -559,10 +566,10 @@ Ghostex Android should be a Termux-based Android app for connecting to already p
 - SSH and remote CLI stderr must be captured for reconnect/action failures so recovery states and password prompts are based on the real SSH error, not only stdout.
 - Failed Ghostex CLI JSON payloads should be reduced to their error/message text before recovery copy is shown.
 - Common SSH and remote CLI failures must be mapped to actionable recovery copy, including host-key verification failures, SSH connection refused, DNS/Tailscale reachability, missing remote Ghostex CLI, and missing ZMX.
-- Host-key verification recovery should include a confirmed in-app action that removes only the selected machine's known_hosts entry from this phone, then retries connection.
+- Host-key verification recovery should include a confirmed in-app action that removes only the selected machine's app-owned SSHJ host-key fingerprint from this phone, then retries connection.
 - Check connection host-key failures should open that confirmed reset action for the checked machine.
 - Check connection host-key reset should re-run Check connection for that machine without changing the selected saved machine.
-- IPv6 default-port host-key reset should remove both raw IPv6 and bracketed `[host]:22` known_hosts entries for the saved machine so the next reconnect can accept the current host key.
+- IPv6 default-port host-key reset should clear the selected saved machine's SSHJ host-key fingerprint regardless of the display format used for the host, so the next reconnect can accept the current host key.
 - The recovery state should include a visible drawer card explaining what happened and which nearby actions can repair it.
 - Drawer recovery state cards should be tappable and open repair actions for retry, Tailscale, phone setup, machine management, add machine, and tutorial.
 - If SSH reports a missing or rejected password, prompt for a password from the recovery flow and let the user choose session-only use or secure saved-password reconnect.
@@ -573,17 +580,15 @@ Ghostex Android should be a Termux-based Android app for connecting to already p
 - The Tailscale app launcher must use only a narrow package visibility query for Tailscale and must not request broad package-query permission.
 - If Tailscale is not installed or the device cannot open the app, store, or web fallback, Ghostex Android should show clear recovery status instead of dismissing setup or crashing.
 - If Android rejects a Tailscale, store, or web launch intent with a runtime or security start failure, the launcher should return failure so the setup/recovery panel can show status copy instead of crashing.
-- Show a first-level Setup action for phone-side SSH tooling.
-- The Setup action should open a polished setup panel that explains the phone-side tools and provides check, install, Tailscale, and tutorial actions in one place.
-- Before reconnecting, check whether the phone has `ssh`, and when saved-password reconnect is being used, `sshpass`.
-- Before opening a cold remote session attach terminal, run the same phone-side `ssh`/`sshpass` preflight and show the setup recovery state if the tools are missing.
-- Before running remote sidebar actions such as focus, wake, sleep, kill, project actions, or rename, run the same phone-side `ssh`/`sshpass` preflight and show the setup recovery state if the tools are missing.
-- Phone-side SSH checks and non-interactive Ghostex CLI commands must execute inside a real Termux shell environment, not a partial Android process environment.
+- Show a first-level Setup action for connection guidance, saved-machine management, Tailscale, tutorial review, and SSHJ host-key repair.
+- The Setup action should open a polished setup panel that explains the built-in SSHJ transport and provides check, host-key repair, machine management, Tailscale, and tutorial actions in one place.
+- Before reconnecting, attaching, or running sidebar actions such as focus, wake, sleep, kill, project actions, or rename, use the app-owned SSHJ transport directly; do not require or install phone-side `ssh`, `sshpass`, or patched Termux packages.
+- Non-interactive Ghostex CLI commands must execute through the macOS login shell over SSHJ so they see the remote PATH where Homebrew or app-bundled `ghostex` launchers are installed.
 - Session inventory parsing must use the Ghostex CLI JSON payload even when SSH login banners or shell text appear before or after the JSON object.
 - Session inventory parsing must ignore earlier brace-delimited shell/profile output and select the first valid JSON object that contains the `sessions` array.
 - Session inventory and failed-action JSON parsing must keep scanning after malformed or unmatched brace snippets from shell/profile output.
 - Remote Ghostex CLI commands should run through the macOS login shell so SSH sees the PATH where Homebrew or app-bundled `ghostex` launchers are installed.
-- If phone-side SSH tooling is missing, show a clear recovery state and offer an in-app install/repair path.
+- If the built-in SSHJ transport cannot connect, show a clear recovery state with Retry, Tailscale, machine management, tutorial, and host-key repair actions.
 - Only support ZMX-backed Ghostex sessions for now; unsupported providers should not become part of the main Android workflow.
 - Remote provider and lifecycle tokens should be normalized before filtering so harmless CLI case/whitespace differences do not hide valid ZMX sessions.
 
@@ -636,7 +641,7 @@ Ghostex Android should be a Termux-based Android app for connecting to already p
 - Release QA must run `android/termux-app/tools/ghostex-android-device-e2e.sh` with `GHOSTEX_ANDROID_HOST`, `GHOSTEX_ANDROID_USER`, and optional password/session arguments against a live Mac before calling the Android app release-ready.
 - Release QA should run `android/termux-app/tools/ghostex-android-ui-smoke.sh` on a connected emulator/device to prove the first-run tutorial is visible, scrollable, and hands off to Add Machine on a fresh install.
 - The first-run UI smoke harness should also save a disposable SSH machine through the real Add Machine UI, restart the app, and verify the saved-machine settings/action surfaces so automatic reconnect and multi-machine management are covered without depending on a live Mac.
-- After that restart, the first-run UI smoke harness should verify that reconnect recovery leads to the phone Setup repair panel, accepting either missing phone SSH tools or a connection failure as long as the user can reach setup actions from the drawer.
+- After that restart, the first-run UI smoke harness should verify that reconnect recovery leads to the Setup repair panel when the loopback target is unavailable, as long as the user can reach setup actions from the drawer.
 - Final release validation should support `npm run android:verify-release`, which runs the Mac `ghostex android-check --json` contract, root CLI tests, Android release gates, release lint, APK/AAB build, APK/AAB checksum verification, live connected-device E2E, and first-run UI smoke.
 - Local source/build validation may use `npm run android:verify-release:local`, but that mode must skip connected-device checks only with explicit copy that it is not final release proof.
 - The live E2E and first-run UI smoke scripts should require `GHOSTEX_ANDROID_CONFIRM_CLEAR_DATA=1` before uninstalling or clearing Ghostex Android app data.
@@ -661,7 +666,7 @@ Ghostex Android should be a Termux-based Android app for connecting to already p
 - Upstream Termux workflows that publish debug APKs or trigger Termux library release behavior should stay manual-only in the Ghostex fork unless they are rewritten for Ghostex Android artifacts.
 - The foreground notification should use Ghostex remote-session language, not stock Termux local-session/task/wakelock wording.
 - Foreground, crash, and retained upstream plugin-error notification PendingIntents should be immutable because they open fixed app-owned actions and do not need caller mutation.
-- Runtime package identity must match the bootstrap and package repository prefix. The current side-by-side package id is `com.ghostx`, with build-local bootstrap archives patched to the matching private prefix; a manifest-only rename to a different-length id is invalid because it would break the terminal environment.
+- Runtime package identity must match the bootstrap and package repository prefix. The current side-by-side package id is `io.ghostex`, with build-local bootstrap archives patched to the matching private prefix; a manifest-only rename to a different-length id is invalid because it would break the terminal environment.
 
 ## Touch Interaction Model
 
