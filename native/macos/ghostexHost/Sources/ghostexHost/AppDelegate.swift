@@ -1088,6 +1088,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func windowDidResize(_ notification: Notification) {
     persistMainWindowChrome()
+    /**
+     CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+     Main-window resize changes the frame of every surfaced terminal pane without using TerminalWorkspaceView's split resize handlers.
+     Ask the workspace to run its trailing surfaced-only zmx viewport refresh after AppKit resize settles.
+     */
+    workspaceView?.scheduleZmxPersistenceRefreshForSurfacedTerminalsAfterResize(reason: "mainWindowResize")
   }
 
   func windowDidMove(_ notification: Notification) {
@@ -6054,6 +6060,12 @@ final class ghostexRootView: NSView {
       "sidebarWidth": Double(sidebarWidth),
     ])
     needsLayout = true
+    /**
+     CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+     Sidebar width drags resize the workspace and therefore the surfaced terminal panes, but they are owned by root chrome rather than pane resize rails.
+     Schedule the same trailing surfaced-only zmx refresh from the workspace owner.
+     */
+    workspaceView.scheduleZmxPersistenceRefreshForSurfacedTerminalsAfterResize(reason: "sidebarWidthResize")
   }
 
   private func resetSidebarWidth() {
@@ -6063,6 +6075,11 @@ final class ghostexRootView: NSView {
     )
     needsLayout = true
     persistSidebarWidth()
+    /**
+     CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+     Resetting the sidebar width is a one-shot workspace resize, so zmx terminals need the same surfaced-only trailing refresh as drag resize.
+     */
+    workspaceView.scheduleZmxPersistenceRefreshForSurfacedTerminalsAfterResize(reason: "sidebarWidthReset")
   }
 
   private func currentMaxSidebarWidth() -> CGFloat {

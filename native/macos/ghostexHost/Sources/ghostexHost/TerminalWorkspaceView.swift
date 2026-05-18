@@ -1214,6 +1214,18 @@ final class TerminalWorkspaceView: NSView {
   private static let paneResizeOuterEdgeExclusion: CGFloat = 8
   private static let paneResizeRailWidth: CGFloat = 5
   /**
+   CDXC:ZmxPersistence 2026-05-18-07:20:
+   zmx-backed Ghostty panes can keep stale visual state after session switches
+   and split-pane resize settles. Refresh the terminal viewport with one
+   PageUp/PageDown scroll cycle, and debounce resize-triggered refreshes on the
+   trailing edge until the user has stopped resizing.
+
+   CDXC:ZmxPersistence 2026-05-18-15:03:
+   Resize-triggered zmx refresh should fire sooner after the final resize event.
+   Keep the debounce trailing-only and reduce the settle window to 800 ms.
+   */
+  private static let zmxPersistenceRefreshDebounceInterval: TimeInterval = 0.8
+  /**
    CDXC:CommandsPanel 2026-05-14-08:12:
    The native command pane default must match the shared 27% sidebar model so first layout, resize reset, and persisted height normalization agree.
 
@@ -1322,6 +1334,7 @@ final class TerminalWorkspaceView: NSView {
   private var cefNativeDragSourceRelease: CEFNativeDragSourceRelease?
   private var cefNativeDragSourceReleaseEventMonitor: Any?
   private var cefNativeDragHoverTimer: Timer?
+  private var zmxPersistenceRefreshTimer: Timer?
   private var resizeLogSignatureBySessionId = [String: String]()
   private var exitPollTimer: Timer?
   private var floatingEditorOverlayView: FloatingEditorOverlayView?
@@ -1424,6 +1437,7 @@ final class TerminalWorkspaceView: NSView {
       NSEvent.removeMonitor(cefNativeDragSourceReleaseEventMonitor)
     }
     cefNativeDragHoverTimer?.invalidate()
+    zmxPersistenceRefreshTimer?.invalidate()
     floatingEditorExitPollTimer?.invalidate()
   }
 
@@ -3023,6 +3037,14 @@ final class TerminalWorkspaceView: NSView {
     layoutProjectEditorPane(session, in: companionLayout?.editorFrame ?? bounds)
     orderProjectEditorPaneToFront(session)
     syncProjectEditorCompanionPane(layout: companionLayout)
+    if didSwitchProjectEditor {
+      /*
+       CDXC:ZmxPersistenceRefresh 2026-05-18-15:03:
+       Switching from Agents into Code, Git, or Project mode surfaces the current companion terminal without always taking the ordinary terminal-focus path.
+       Refresh the zmx terminal pane that is actually visible after the editor and companion frames are applied.
+       */
+      refreshZmxPersistenceTerminalsForSurfacedPanes(reason: "focusProjectEditorPane.modeSwitch")
+    }
     /**
      CDXC:EditorPanes 2026-05-13-23:13
      VS Code drag/drop inside the embedded CEF editor depends on ghostex's native
@@ -3517,6 +3539,8 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     let isCommandPanelSession = commandsPanelActiveSessionIds.contains(sessionId)
+    let previousFocusedTerminalSessionId =
+      isCommandPanelSession ? commandsPanelFocusedSessionId : focusedSessionId
     if !isCommandPanelSession,
       activateProjectEditorCompanionPane(sessionId: sessionId, focus: true, reason: reason)
     {
@@ -3577,9 +3601,207 @@ final class TerminalWorkspaceView: NSView {
         "visibleSessionIds": orderedVisibleSessionIds(),
         "windowIsKey": window?.isKeyWindow ?? false,
       ])
+    refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
+      sessionId: sessionId,
+      previousSessionId: previousFocusedTerminalSessionId,
+      didSurface: false,
+      reason: "focusTerminal.\(reason)")
     if isCommandPanelSession {
       emitFocusedSessionSelectionIfNeeded(sessionId: sessionId, reason: reason)
     }
+  }
+
+  private func refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
+    sessionId: String,
+    previousSessionId: String?,
+    didSurface: Bool,
+    reason: String
+  ) {
+    guard didSurface || (previousSessionId != nil && previousSessionId != sessionId) else {
+      return
+    }
+    refreshZmxPersistenceTerminalIfNeeded(sessionId: sessionId, reason: reason)
+  }
+
+  private func refreshZmxPersistenceTerminalIfNeeded(sessionId: String, reason: String) {
+    let session = sessions[sessionId]
+    let isWorkspaceActive = activeSessionIds.contains(sessionId)
+    let isCommandActive = commandsPanelActiveSessionIds.contains(sessionId)
+    let skipReason: String?
+    if session == nil {
+      skipReason = "missing-terminal-session"
+    } else if session?.sessionPersistenceProvider != .zmx {
+      skipReason = "provider-not-zmx"
+    } else if !isWorkspaceActive && !isCommandActive {
+      skipReason = "session-not-active"
+    } else {
+      skipReason = nil
+    }
+    if let skipReason {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.skipped",
+        details: zmxPersistenceRefreshDiagnosticDetails(
+          sessionId: sessionId,
+          reason: reason,
+          session: session,
+          extra: ["skipReason": skipReason]),
+        force: true)
+      return
+    }
+    guard let session else { return }
+    session.view.refreshZmxPersistenceViewport(reason: reason)
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.zmxPersistenceViewportRefresh.sent",
+      details: zmxPersistenceRefreshDiagnosticDetails(
+        sessionId: sessionId,
+        reason: reason,
+        session: session),
+      force: true)
+  }
+
+  private func scheduleZmxPersistenceTerminalRefreshAfterResize(reason: String) {
+    scheduleZmxPersistenceTerminalRefreshAfterResize(
+      sessionIds: zmxPersistenceTerminalSessionIdsForSurfacedPanes(),
+      reason: reason)
+  }
+
+  func scheduleZmxPersistenceRefreshForSurfacedTerminalsAfterResize(reason: String) {
+    /*
+     CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+     External resize owners such as the main window and sidebar chrome can resize terminal panes without entering TerminalWorkspaceView's split-drag handlers.
+     Expose a surfaced-only scheduler so those owners can request the same trailing PageUp/PageDown repair without targeting hidden zmx tab siblings.
+     */
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: reason)
+  }
+
+  private func scheduleZmxPersistenceTerminalRefreshAfterResize(sessionIds: [String], reason: String) {
+    guard !sessionIds.isEmpty else {
+      zmxPersistenceRefreshTimer?.invalidate()
+      zmxPersistenceRefreshTimer = nil
+      return
+    }
+    zmxPersistenceRefreshTimer?.invalidate()
+    /**
+     CDXC:ZmxPersistenceDiagnostics 2026-05-18-08:52:
+     Intermittent broken text after sidebar session surfacing needs forced,
+     low-volume breadcrumbs that survive normal Debugging Mode settings. Log
+     only zmx refresh scheduling, firing, send, and skip decisions so a repro
+     can be located by session id and minute without enabling broad focus logs.
+     */
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.zmxPersistenceViewportRefresh.resizeScheduled",
+      details: [
+        "debounceSeconds": Double(Self.zmxPersistenceRefreshDebounceInterval),
+        "reason": reason,
+        "sessionIds": sessionIds,
+        "visibleCommandSessionIds": orderedVisibleCommandSessionIds(),
+        "visibleSessionIds": orderedVisibleSessionIds(),
+      ],
+      force: true)
+    zmxPersistenceRefreshTimer = Timer.scheduledTimer(
+      withTimeInterval: Self.zmxPersistenceRefreshDebounceInterval,
+      repeats: false
+    ) { [weak self] _ in
+      Task { @MainActor in
+        guard let self else { return }
+        self.zmxPersistenceRefreshTimer = nil
+        TerminalFocusDebugLog.append(
+          event: "nativeWorkspace.zmxPersistenceViewportRefresh.resizeFired",
+          details: [
+            "reason": reason,
+            "sessionIds": sessionIds,
+            "visibleCommandSessionIds": self.orderedVisibleCommandSessionIds(),
+            "visibleSessionIds": self.orderedVisibleSessionIds(),
+          ],
+          force: true)
+        for sessionId in sessionIds {
+          self.refreshZmxPersistenceTerminalIfNeeded(
+            sessionId: sessionId,
+            reason: "resizeDebounce.\(reason)")
+        }
+      }
+    }
+  }
+
+  private func refreshZmxPersistenceTerminalsForSurfacedPanes(reason: String) {
+    let sessionIds = zmxPersistenceTerminalSessionIdsForSurfacedPanes()
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.zmxPersistenceViewportRefresh.surfacedPanes",
+      details: [
+        "activeProjectEditorId": nullableString(activeProjectEditorId),
+        "commandsPanelIsVisible": commandsPanelIsVisible,
+        "companionSessionId": nullableString(projectEditorCompanionSessionId),
+        "companionVisible": projectEditorCompanionIsVisible,
+        "reason": reason,
+        "sessionIds": sessionIds,
+        "visibleCommandSessionIds": orderedVisibleCommandSessionIds(),
+        "visibleSessionIds": orderedVisibleSessionIds(),
+      ],
+      force: true)
+    for sessionId in sessionIds {
+      refreshZmxPersistenceTerminalIfNeeded(sessionId: sessionId, reason: "surfacedPanes.\(reason)")
+    }
+  }
+
+  private func zmxPersistenceTerminalSessionIdsForSurfacedPanes() -> [String] {
+    var candidates: [String] = []
+    if activeProjectEditorId != nil {
+      if projectEditorCompanionIsVisible, let projectEditorCompanionSessionId {
+        candidates.append(projectEditorCompanionSessionId)
+      }
+    } else {
+      candidates.append(contentsOf: orderedVisiblePaneOwnerSessionIds())
+    }
+    if commandsPanelIsVisible {
+      candidates.append(contentsOf: orderedVisibleCommandPaneOwnerSessionIds())
+    }
+    return zmxPersistenceTerminalSessionIds(from: candidates, includePoppedOut: false)
+  }
+
+  private func zmxPersistenceTerminalSessionIds(
+    from candidates: [String],
+    includePoppedOut: Bool
+  ) -> [String] {
+    var seen = Set<String>()
+    return candidates.compactMap { sessionId in
+      guard !seen.contains(sessionId),
+        (includePoppedOut || !poppedOutSessionIds.contains(sessionId)),
+        sessions[sessionId]?.sessionPersistenceProvider == .zmx
+      else {
+        return nil
+      }
+      seen.insert(sessionId)
+      return sessionId
+    }
+  }
+
+  private func zmxPersistenceRefreshDiagnosticDetails(
+    sessionId: String,
+    reason: String,
+    session: TerminalSession?,
+    extra: [String: Any] = [:]
+  ) -> [String: Any] {
+    var details: [String: Any] = [
+      "activeSessionIds": Array(activeSessionIds).sorted(),
+      "commandsPanelActiveSessionIds": Array(commandsPanelActiveSessionIds).sorted(),
+      "focusedSessionId": nullableString(focusedSessionId),
+      "commandsPanelFocusedSessionId": nullableString(commandsPanelFocusedSessionId),
+      "isCommandActive": commandsPanelActiveSessionIds.contains(sessionId),
+      "isPoppedOut": poppedOutSessionIds.contains(sessionId),
+      "isWorkspaceActive": activeSessionIds.contains(sessionId),
+      "reason": reason,
+      "responder": responderSnapshot(),
+      "sessionId": sessionId,
+      "sessionPersistenceName": nullableString(session?.sessionPersistenceName),
+      "sessionPersistenceProvider": session?.sessionPersistenceProvider?.rawValue ?? "none",
+      "surfaceHasGhosttySurface": session?.view.hasGhosttySurfaceForDiagnostics ?? false,
+      "visibleCommandSessionIds": orderedVisibleCommandSessionIds(),
+      "visibleSessionIds": orderedVisibleSessionIds(),
+    ]
+    for (key, value) in extra {
+      details[key] = value
+    }
+    return details
   }
 
   private func focusTerminalFromContentMouseDown(
@@ -3921,6 +4143,16 @@ final class TerminalWorkspaceView: NSView {
           poppedOutSessionIds: poppedOutSessionIds
         ))
     let previousFocusedSessionId = focusedSessionId
+    let previousCommandsPanelFocusedSessionId = commandsPanelFocusedSessionId
+    let previousCommandsPanelActiveSessionIds = commandsPanelActiveSessionIds
+    let previousCommandsPanelIsVisible = commandsPanelIsVisible
+    let previousCommandsPanelHeightRatio = commandsPanelHeightRatio
+    let previousCommandsPanelMode = commandsPanelMode
+    let previousActiveProjectEditorId = activeProjectEditorId
+    let previousPaneGap = paneGap
+    let previousProjectEditorCompanionIsVisible = projectEditorCompanionIsVisible
+    let previousProjectEditorCompanionPaneHidden = projectEditorCompanionPaneHidden
+    let previousProjectEditorCompanionSessionId = projectEditorCompanionSessionId
     let responderSessionIdBefore = currentResponderSessionId()
     if command.focusRequestId != nil || previousFocusedSessionId != command.focusedSessionId {
       /**
@@ -4123,6 +4355,63 @@ final class TerminalWorkspaceView: NSView {
         "responderBefore": responderBefore,
         "visibleSessionIds": orderedVisibleSessionIds(),
       ])
+    if previousActiveProjectEditorId != activeProjectEditorId {
+      /*
+       CDXC:ZmxPersistenceRefresh 2026-05-18-15:03:
+       Sidebar mode switches between Agents and Code/Git/Project can reveal a zmx terminal set through layout state rather than direct terminal focus.
+       Refresh every surfaced zmx terminal after the active project-editor id is applied so both directions repair persisted terminal text.
+       */
+      refreshZmxPersistenceTerminalsForSurfacedPanes(reason: "setActiveTerminalSet.projectEditorModeSwitch")
+    }
+    if abs(previousPaneGap - paneGap) > 0.5 {
+      /*
+       CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+       Pane-gap preference changes resize every surfaced workspace pane through layout sync instead of a drag handler.
+       Schedule the trailing zmx refresh against surfaced pane owners only.
+       */
+      scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "setActiveTerminalSet.paneGapChanged")
+    }
+    if previousCommandsPanelIsVisible != commandsPanelIsVisible
+      || previousCommandsPanelActiveSessionIds.isEmpty != commandsPanelActiveSessionIds.isEmpty
+      || previousCommandsPanelMode != commandsPanelMode
+      || abs(previousCommandsPanelHeightRatio - commandsPanelHeightRatio) > 0.001
+    {
+      /*
+       CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+       Commands panel show/hide, collapse/expand, mode, and height-ratio sync change the workspace terminal frame without necessarily using the native resize rail.
+       Refresh only the surfaced zmx workspace or command pane after layout settles.
+       */
+      scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "setActiveTerminalSet.commandsPanelSurfaceOrFrameChanged")
+    }
+    if previousActiveProjectEditorId == activeProjectEditorId
+      && (previousProjectEditorCompanionIsVisible != projectEditorCompanionIsVisible
+      || previousProjectEditorCompanionPaneHidden != projectEditorCompanionPaneHidden
+      || previousProjectEditorCompanionSessionId != projectEditorCompanionSessionId)
+    {
+      /*
+       CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+       Companion-pane show/hide and retargeting changes the visible terminal frame inside Code/Git/Project mode without always being a pane-resize drag.
+       Use the surfaced-only scheduler so hidden Agents tabs do not receive synthetic PageUp/PageDown.
+       */
+      scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "setActiveTerminalSet.projectEditorCompanionChanged")
+    }
+    if command.focusRequestId == nil,
+      commandsPanelIsVisible,
+      !previousCommandsPanelIsVisible,
+      let commandsPanelFocusedSessionId,
+      commandsPanelActiveSessionIds.contains(commandsPanelFocusedSessionId)
+    {
+      /*
+       CDXC:ZmxPersistenceRefresh 2026-05-18-09:04:
+       Command-pane surfacing can make an already-selected zmx terminal visible without an explicit focus request.
+       Use the pre-layout command-panel visibility so opening the pane still refreshes the terminal viewport once it is actually on screen.
+       */
+      refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
+        sessionId: commandsPanelFocusedSessionId,
+        previousSessionId: previousCommandsPanelFocusedSessionId,
+        didSurface: true,
+        reason: "setActiveTerminalSet.commandPanelVisible")
+    }
     guard let focusRequestId = command.focusRequestId else {
       /**
        CDXC:NativeTerminalFocus 2026-05-04-16:02
@@ -4174,7 +4463,28 @@ final class TerminalWorkspaceView: NSView {
         return
       }
       if sessions[focusedSessionId] != nil {
+        let isCommandPanelFocus = commandsPanelActiveSessionIds.contains(focusedSessionId)
         focusTerminal(sessionId: focusedSessionId, reason: "setActiveTerminalSet")
+        if isCommandPanelFocus {
+          /*
+           CDXC:ZmxPersistenceRefresh 2026-05-18-09:04:
+           Command-pane focus state is applied from sidebar layout before focusTerminal runs, so focusTerminal can no longer compare against the previous command-pane selection.
+           Refresh zmx using the pre-apply command-pane state when a command tab is selected or newly surfaced.
+           */
+          refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
+            sessionId: focusedSessionId,
+            previousSessionId: previousCommandsPanelFocusedSessionId,
+            didSurface: commandsPanelIsVisible
+              && (!previousCommandsPanelIsVisible
+                || !previousCommandsPanelActiveSessionIds.contains(focusedSessionId)),
+            reason: "setActiveTerminalSet.commandPanelFocusSwitch")
+        } else {
+          refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
+            sessionId: focusedSessionId,
+            previousSessionId: previousFocusedSessionId,
+            didSurface: false,
+            reason: "setActiveTerminalSet.focusSwitch")
+        }
       } else if webPaneSessions[focusedSessionId] != nil {
         focusWebPane(sessionId: focusedSessionId, reason: "setActiveTerminalSet")
       }
@@ -4740,6 +5050,8 @@ final class TerminalWorkspaceView: NSView {
     reason: String
   ) -> Bool {
     let isEligible = isProjectEditorCompanionEligibleSession(sessionId)
+    let previousCompanionSessionId = projectEditorCompanionSessionId
+    let wasCompanionVisible = projectEditorCompanionIsVisible
     if activeProjectEditorId != nil || reason == "sidebarFocusCommand" {
       /**
        CDXC:SidebarSessionFocus 2026-05-15-17:25:
@@ -4836,6 +5148,18 @@ final class TerminalWorkspaceView: NSView {
       "sessionId": sessionId,
     ])
     sendEvent(.terminalFocused(sessionId: sessionId))
+    /*
+     CDXC:ZmxPersistenceRefresh 2026-05-18-09:04:
+     Code-mode sidebar session switches surface terminals through the project-editor companion branch, which returns before the ordinary focusTerminal refresh hook.
+     Refresh zmx after the companion pane has been retargeted and focused so broken persisted terminal text is corrected without a manual PageUp/PageDown.
+     */
+    if sessions[sessionId] != nil {
+      refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
+        sessionId: sessionId,
+        previousSessionId: previousCompanionSessionId,
+        didSurface: !wasCompanionVisible || previousCompanionSessionId != sessionId,
+        reason: "projectEditorCompanion.\(reason)")
+    }
     return true
   }
 
@@ -5092,6 +5416,12 @@ final class TerminalWorkspaceView: NSView {
     }
     needsLayout = true
     layoutSubtreeIfNeeded()
+    /*
+     CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+     Closing the Code/Git/Project companion pane resizes the editor surface and removes the visible terminal pane through local native state before sidebar sync returns.
+     Schedule a surfaced-only zmx refresh so any remaining visible zmx command pane is repaired without targeting the hidden companion terminal.
+     */
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionClosed")
   }
 
   @discardableResult
@@ -5106,6 +5436,7 @@ final class TerminalWorkspaceView: NSView {
       needsLayout = true
       layoutSubtreeIfNeeded()
       persistProjectEditorCompanionWidthRatio(projectEditorCompanionWidthRatio)
+      scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionResizeReset")
       NSCursor.resizeLeftRight.set()
       return true
     }
@@ -5132,6 +5463,7 @@ final class TerminalWorkspaceView: NSView {
     NSCursor.resizeLeftRight.set()
     needsLayout = true
     layoutSubtreeIfNeeded()
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionResizeDrag")
     return true
   }
 
@@ -5144,6 +5476,7 @@ final class TerminalWorkspaceView: NSView {
     projectEditorCompanionResizeDrag = nil
     persistProjectEditorCompanionWidthRatio(projectEditorCompanionWidthRatio)
     NSCursor.resizeLeftRight.set()
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "projectEditorCompanionResizeEnd")
     return true
   }
 
@@ -6678,6 +7011,7 @@ final class TerminalWorkspaceView: NSView {
 
     if event.clickCount >= 2 {
       resetPaneResizeRatios(for: hit)
+      scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "paneResizeReset")
       paneResizeCursor(for: hit.direction).set()
       return true
     }
@@ -6736,6 +7070,7 @@ final class TerminalWorkspaceView: NSView {
       minimumAfter: drag.minimumAfter)
     needsLayout = true
     layoutSubtreeIfNeeded()
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "paneResizeDrag")
     return true
   }
 
@@ -6777,6 +7112,7 @@ final class TerminalWorkspaceView: NSView {
     commandsPanelHeightRatio = Self.defaultCommandsPanelHeightRatio
     needsLayout = true
     layoutSubtreeIfNeeded()
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "commandsPanelResizeReset")
     sendEvent(.commandsPanelHeightRatioChanged(heightRatio: Double(commandsPanelHeightRatio)))
   }
 
@@ -6791,6 +7127,7 @@ final class TerminalWorkspaceView: NSView {
     NSCursor.resizeUpDown.set()
     needsLayout = true
     layoutSubtreeIfNeeded()
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "commandsPanelResizeDrag")
     return true
   }
 
@@ -6818,6 +7155,7 @@ final class TerminalWorkspaceView: NSView {
     paneResizeDrag = nil
     let point = convert(event.locationInWindow, from: nil)
     paneResizeCursor(at: point)?.set()
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "paneResizeEnd")
     return true
   }
 
@@ -8266,6 +8604,19 @@ final class TerminalWorkspaceView: NSView {
           action: .restorePopOut,
           reason: "poppedOutWindowClose")
         self.sendEvent(.terminalTitleBarAction(sessionId: sessionId, action: .restorePopOut))
+      },
+      onResize: { [weak self] sessionId in
+        guard let self else { return }
+        /*
+         CDXC:ZmxPersistenceRefresh 2026-05-18-15:10:
+         Popped-out terminal panes resize in their own NSWindow and bypass the workspace split, command-panel, and companion-pane resize handlers.
+         Route those resize events into the same trailing zmx viewport refresh so persisted terminal text repairs after the user stops resizing the pop-out window.
+         */
+        self.scheduleZmxPersistenceTerminalRefreshAfterResize(
+          sessionIds: self.zmxPersistenceTerminalSessionIds(
+            from: [sessionId],
+            includePoppedOut: true),
+          reason: "poppedOutWindowResize")
       })
     poppedOutPaneControllers[sessionId] = controller
     showPoppedOutPlaceholderImmediately(sessionId: sessionId, reason: reason)
@@ -8292,6 +8643,12 @@ final class TerminalWorkspaceView: NSView {
     }
     removePoppedOutPlaceholder(sessionId: sessionId)
     needsLayout = true
+    /*
+     CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+     Sidebar sync can also pop a pane back into the workspace without using the local title-bar action path.
+     Schedule a surfaced-only refresh so restored zmx terminals repair after their new workspace frame is applied.
+     */
+    scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "poppedOutWindowReattached")
     NativeT3CodePaneReproLog.append("nativeWorkspace.panePopOut.window.reattached", [
       "reason": reason,
       "sessionId": sessionId,
@@ -8389,6 +8746,12 @@ final class TerminalWorkspaceView: NSView {
       reattachPoppedOutPane(sessionId: sessionId, reason: "\(reason).restorePopOut")
       needsLayout = true
       layoutSubtreeIfNeeded()
+      /*
+       CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
+       Restoring a popped-out zmx terminal reparents the live Ghostty surface into the workspace and gives it a new visible frame.
+       Run the trailing surfaced-pane refresh after the pop-in layout settles.
+       */
+      scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "\(reason).restorePopOut")
     default:
       return
     }
@@ -11831,6 +12194,10 @@ final class GhostexGhosttySurfaceView: NSView {
     return ghostty_surface_process_exited(surface)
   }
 
+  var hasGhosttySurfaceForDiagnostics: Bool {
+    surface != nil
+  }
+
   init(_ app: ghostty_app_t, baseConfig: GhostexGhosttySurfaceConfiguration? = nil, uuid: UUID? = nil) {
     self.id = uuid ?? UUID()
     super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
@@ -12207,6 +12574,80 @@ final class GhostexGhosttySurfaceView: NSView {
   private func performBindingAction(_ action: String) -> Bool {
     guard let surface else { return false }
     return ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8)))
+  }
+
+  func refreshZmxPersistenceViewport(reason: String) {
+    /**
+     CDXC:ZmxPersistence 2026-05-18-07:20:
+     zmx session switches and settled pane resizes need the same visible nudge
+     users perform with PageUp then PageDown. Send the real key events to the
+     zmx-backed terminal so zmx refreshes its attached session instead of only
+     moving Ghostty's local scrollback viewport.
+     */
+    let didPageUp = sendSyntheticPageKey(
+      keyCode: 0x74,
+      privateUseScalar: 0xF72C,
+      label: "pageUp")
+    let didPageDown = sendSyntheticPageKey(
+      keyCode: 0x79,
+      privateUseScalar: 0xF72D,
+      label: "pageDown")
+    TerminalFocusDebugLog.append(
+      event: "nativeWorkspace.zmxPersistenceViewportRefresh.surface",
+      details: [
+        "didPageDown": didPageDown,
+        "didPageUp": didPageUp,
+        "reason": reason,
+        "sessionId": ghostexSessionId ?? "",
+      ],
+      force: true)
+  }
+
+  private func sendSyntheticPageKey(
+    keyCode: UInt16,
+    privateUseScalar: UInt32,
+    label: String
+  ) -> Bool {
+    guard let scalar = UnicodeScalar(privateUseScalar) else {
+      return false
+    }
+    let characters = String(scalar)
+    let windowNumber = window?.windowNumber ?? 0
+    guard
+      let keyDown = NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: windowNumber,
+        context: nil,
+        characters: characters,
+        charactersIgnoringModifiers: characters,
+        isARepeat: false,
+        keyCode: keyCode
+      ),
+      let keyUp = NSEvent.keyEvent(
+        with: .keyUp,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: windowNumber,
+        context: nil,
+        characters: characters,
+        charactersIgnoringModifiers: characters,
+        isARepeat: false,
+        keyCode: keyCode
+      )
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.keyEventFailed",
+        details: ["key": label, "sessionId": ghostexSessionId ?? ""],
+        force: true)
+      return false
+    }
+    sendKeyEvent(keyDown, action: GHOSTTY_ACTION_PRESS, includeText: false)
+    sendKeyEvent(keyUp, action: GHOSTTY_ACTION_RELEASE, includeText: false)
+    return true
   }
 
   private func updateGhosttySurfaceSize() {
@@ -17306,17 +17747,20 @@ private final class PoppedOutPaneWindowController: NSWindowController, NSWindowD
   let sessionId: String
   let titleBarView: TerminalSessionTitleBarView
   private let onReattachRequested: (String) -> Void
+  private let onResize: (String) -> Void
   private var isClosingProgrammatically = false
 
   init(
     sessionId: String,
     titleBarView: TerminalSessionTitleBarView,
     window: NSWindow,
-    onReattachRequested: @escaping (String) -> Void
+    onReattachRequested: @escaping (String) -> Void,
+    onResize: @escaping (String) -> Void
   ) {
     self.sessionId = sessionId
     self.titleBarView = titleBarView
     self.onReattachRequested = onReattachRequested
+    self.onResize = onResize
     super.init(window: window)
     /**
      CDXC:PanePopOut 2026-05-11-19:10
@@ -17324,6 +17768,11 @@ private final class PoppedOutPaneWindowController: NSWindowController, NSWindowD
      as in-workspace panes. Pop In must be handled by the title bar's native
      AppKit mouseDown/mouseUp path instead of a window-level event monitor so
      click ownership stays local to the control hierarchy.
+
+     CDXC:ZmxPersistenceRefresh 2026-05-18-15:10:
+     Popped-out zmx terminals need the PageUp/PageDown viewport repair after
+     their standalone NSWindow resize settles, because workspace resize
+     observers do not see the popped-out window's content-frame changes.
      */
     window.delegate = self
   }
@@ -17344,6 +17793,10 @@ private final class PoppedOutPaneWindowController: NSWindowController, NSWindowD
     }
     onReattachRequested(sessionId)
     return false
+  }
+
+  func windowDidResize(_ notification: Notification) {
+    onResize(sessionId)
   }
 }
 
