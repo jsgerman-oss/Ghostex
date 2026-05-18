@@ -30,6 +30,10 @@ The same Homebrew command installs the correct Apple Silicon or Intel Mac build 
 ```bash
 brew install --cask maddada/tap/ghostex
 ```
+
+#### Android sideload
+
+Download the Android 1.0 APK from the GitHub release: [ghostex-android-1.0.apk](https://github.com/maddada/Ghostex/releases/download/v3.5.0/ghostex-android-1.0.apk)
 <br />
 
 ### Work with tens of agents in multiple projects with ease:
