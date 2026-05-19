@@ -47,6 +47,12 @@ Download the Android 1.0 APK from the GitHub release: [ghostex-android-1.0.apk](
 
 <br />
 
+Android and iOS apps for remote controlling ANY Agent CLI running on your mac live:
+
+
+
+<br />
+
 ### Includes Chromium based embedded browser with Devtools, profiles, and MCP access:
 
 <img width="1000" alt="Ghostex sidebar with terminal and browser panes" src="media/readme/ghostex-browser-pane.png" />
