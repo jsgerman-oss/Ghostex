@@ -2,7 +2,7 @@ Discord: https://discord.gg/xYSBPapM
 
 ## Ghostty Terminals with Codex App's Awesome Features = Ghostex!<br />
 
-- Agent CLIs Manager
+- Awesome Agent CLIs Manager UX
 - Embedded Chromium Browser w Devtools and profiles
 - Embedded Light Code/MD Files Editor
 - Fast & Low RAM usage
