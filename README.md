@@ -2,11 +2,10 @@ Discord: https://discord.gg/xYSBPapM
 
 ## Ghostty Terminals with Codex App's Awesome Features = Ghostex!<br />
 
-- Smooth Agent CLIs Manager UX
-- Access your sessions with any Agent CLI live from the Android/iOS apps.
+- Fast & Low RAM usage 
 - Embedded Chromium Browser w Devtools and profiles
 - Embedded Light Code/MD Files Editor
-- Fast & Low RAM usage
+- Access your sessions with any Agent CLI live from the Android/iOS apps.
 - SSH support with live session persistence (zmx/tmux/zellij)
 - Native Swift macOS app shell for better performance
 - Native Ghostty for best cpu/ram use and compatibility
