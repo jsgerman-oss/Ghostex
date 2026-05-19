@@ -2,7 +2,6 @@ Discord: https://discord.gg/xYSBPapM
 
 ## Ghostty Terminals with Codex App's Awesome Features = Ghostex!<br />
 
-- T3code Support
 - Agent CLIs Manager
 - Embedded Chromium Browser w Devtools and profiles
 - Embedded Light Code/MD Files Editor
@@ -14,6 +13,7 @@ Discord: https://discord.gg/xYSBPapM
 - Auto session naming
 - Reopening the app always resumes your agent cli sessions
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
+- T3code Support if you prefer GUI
 - The best agent CLI rich prompt editor with Image insert/preview support Press ctrl+g to use it.
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Supports Pets so you can see session status at a glance :)
