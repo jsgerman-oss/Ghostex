@@ -47,9 +47,9 @@ Download the Android 1.0 APK from the GitHub release: [ghostex-android-1.0.apk](
 
 <br />
 
-Android and iOS apps for remote controlling ANY Agent CLI running on your mac live:
+Android and iOS apps for remote controlling ANY Agent CLI running on your mac (live remote control that includes all features):
 
-
+<img width="1080" height="2520" alt="73681" src="https://github.com/user-attachments/assets/848a2475-a1f0-40f4-9313-c00df1893cbf" />
 
 <br />
 
