@@ -58,51 +58,25 @@ Download the Android 1.0 APK from the GitHub release: [ghostex-android-1.0.apk](
 
 <br />
 
-## Best features:
-
-- Native Swift macOS app shell for better performance
-- Native Ghostty for best cpu/ram use and compatibility
-- Inspired by Codex App's UX
-- Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
-- Auto sleep unused terminals to save ram (auto-restore when clicked)
-- Auto session naming for Codex/Claude/Pi/Gemini/Copilot cli sessions (more soon)
-- Reopening the app always resumes your agent cli sessions
-- Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
-- The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
-- Menu bar working & done indicators and notification sounds for almost all agent clis
-- Embedded T3code
-- Integrations for all the popular Agent CLI 
-
-<br/>
-
 ## Other useful stuff:
 - Built in zmx/tmux/zellij support
-  - Can continue via ssh then use `ghostex` or `gtx` cli to attach. Beta but working well already with especially zmx.
+  - Can continue via ssh then use `ghostex` or `gtx` cli to attach. Beta but working well already with zmx especially.
 - Automations and cross agent messages (coming very soon)
-- Better worktrees support coming very soon - Want to nail the UX
+- Better worktrees support coming very soon (Want to nail the UX)
 - Prompt to find any past thread in your history with just a few keywords
   - Very useful if you want to continue with an agent that already has context about a complex feature
 - Auto sync of the terminal title and status with UI
 - Allows multiple panes and multiple groups per project, each with different split/tab layouts
-
-<br/>
-
-## Even more useful features:
-
-### Can be attached to your IDE: Shows a button on the attached IDE (Zed / VScode) to show Ghostex.
-
-- Follows your IDE size/position.
-- Project in IDE & Ghostex is mirrored.
-- Hotkey to hide/show.
-- Click on your IDE to hide Ghostex
-
-### Can also integrate with Chrome Canary as the default agentic browser (positions it inside Ghostex and adds it to the sidebar)
-
-#### MCP setting to make Chrome Canary always used by your agent:
-
-1. Ask the agent to use "Chrome Devtools MCP"
-2. Enable remote debugging on Chrome Canary
-3. Set your mcp to use canary channel:
+- Can be attached to your IDE: Shows a button on the attached IDE (Zed / VScode) to show Ghostex.
+  - Follows your IDE size/position.
+  - Project in IDE & Ghostex is mirrored.
+  - Hotkey to hide/show.
+  - Click on your IDE to hide Ghostex
+- Can also integrate with Chrome Canary as the default agentic browser (positions it inside Ghostex and adds it to the sidebar)
+  - MCP setting to make Chrome Canary always used by your agent:
+  1. Ask the agent to use "Chrome Devtools MCP"
+  2. Enable remote debugging on Chrome Canary
+  3. Set your mcp to use canary channel:
 
 ##### For Claude Code:
 
