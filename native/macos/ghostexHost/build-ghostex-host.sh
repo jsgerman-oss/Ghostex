@@ -7,6 +7,7 @@ CONFIGURATION="${CONFIGURATION:-Debug}"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 WEB_DIR="$SCRIPT_DIR/Web"
 GHOSTTY_ROOT="${GHOSTTY_ROOT:-}"
+ZMX_ROOT="${ZMX_ROOT:-$REPO_ROOT/zmx}"
 GHOSTEX_MACOS_ARCH="${GHOSTEX_MACOS_ARCH:-$(uname -m)}"
 case "$GHOSTEX_MACOS_ARCH" in
 	arm64 | aarch64)
@@ -142,6 +143,41 @@ cp "$REPO_ROOT/scripts/ghostex-cli.mjs" "$WEB_DIR/cli/ghostex-cli.mjs"
 cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/ghostex"
 cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/gtx"
 chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gtx"
+# CDXC:ZmxPersistence 2026-05-20-09:57: zmx pane refresh is now a zmx IPC feature, so Ghostex must bundle the pinned submodule binary instead of depending on whichever zmx happens to be on PATH. Build the submodule for the requested macOS architecture and copy it into app resources where TerminalWorkspaceView can launch it directly.
+if [[ ! -f "$ZMX_ROOT/build.zig" ]]; then
+	cat >&2 <<EOF
+zmx source is missing:
+  $ZMX_ROOT
+
+Initialize submodules before building:
+  git submodule update --init --recursive zmx
+EOF
+	exit 1
+fi
+case "$GHOSTEX_MACOS_ARCH" in
+	arm64)
+		ZMX_TARGET="aarch64-macos.15.0"
+		;;
+	x86_64)
+		ZMX_TARGET="x86_64-macos.13.0"
+		;;
+esac
+(
+	cd "$ZMX_ROOT"
+	# CDXC:ZmxPersistence 2026-05-20-10:23: Zig 0.15.2 currently resolves the native build runner through the selected macOS 26 Xcode SDK on this machine, which can fail before zmx compilation starts. Scope the Command Line Tools developer dir to the zmx submodule build only; the zmx artifact itself is still built for the explicit deployment target above.
+	ZMX_BUILD_ENV=(env -u LDFLAGS)
+	if [[ -z "${ZMX_BUILD_DEVELOPER_DIR:-}" && -d /Library/Developer/CommandLineTools ]]; then
+		ZMX_BUILD_DEVELOPER_DIR=/Library/Developer/CommandLineTools
+	fi
+	if [[ -n "${ZMX_BUILD_DEVELOPER_DIR:-}" ]]; then
+		ZMX_BUILD_ENV+=(DEVELOPER_DIR="$ZMX_BUILD_DEVELOPER_DIR")
+	fi
+	"${ZMX_BUILD_ENV[@]}" zig build -Doptimize=ReleaseSafe -Dtarget="$ZMX_TARGET"
+)
+rm -rf "$WEB_DIR/bin"
+mkdir -p "$WEB_DIR/bin"
+cp "$ZMX_ROOT/zig-out/bin/zmx" "$WEB_DIR/bin/zmx"
+chmod 755 "$WEB_DIR/bin/zmx"
 mkdir -p "$WEB_DIR/cli/node_modules"
 cp -R "$REPO_ROOT/node_modules/ws" "$WEB_DIR/cli/node_modules/ws"
 rm -rf "$WEB_DIR/monaco"

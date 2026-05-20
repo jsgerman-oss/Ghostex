@@ -3,3 +3,7 @@
 [submodule "android/termux-app"]
 	path = android/termux-app
 	url = https://github.com/maddada/ghostex-android.git
+# CDXC:ZmxPersistence 2026-05-20-09:57: Keep the Ghostex-managed zmx fork as a pinned submodule because native zmx pane refresh depends on a first-party zmx IPC protocol that older PATH installs do not implement.
+[submodule "zmx"]
+	path = zmx
+	url = https://github.com/maddada/zmx.git

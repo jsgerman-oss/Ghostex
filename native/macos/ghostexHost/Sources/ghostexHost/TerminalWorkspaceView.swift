@@ -1216,9 +1216,9 @@ final class TerminalWorkspaceView: NSView {
   /**
    CDXC:ZmxPersistence 2026-05-18-07:20:
    zmx-backed Ghostty panes can keep stale visual state after session switches
-   and split-pane resize settles. Refresh the terminal viewport with one
-   PageUp/PageDown scroll cycle, and debounce resize-triggered refreshes on the
-   trailing edge until the user has stopped resizing.
+   and split-pane resize settles. Ask zmx to repaint the attached terminal
+   surface, and debounce resize-triggered refreshes on the trailing edge until
+   the user has stopped resizing.
 
    CDXC:ZmxPersistence 2026-05-18-15:03:
    Resize-triggered zmx refresh should fire sooner after the final resize event.
@@ -3669,7 +3669,7 @@ final class TerminalWorkspaceView: NSView {
     /*
      CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
      External resize owners such as the main window and sidebar chrome can resize terminal panes without entering TerminalWorkspaceView's split-drag handlers.
-     Expose a surfaced-only scheduler so those owners can request the same trailing PageUp/PageDown repair without targeting hidden zmx tab siblings.
+     Expose a surfaced-only scheduler so those owners can request the same trailing zmx repaint without targeting hidden zmx tab siblings.
      */
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: reason)
   }
@@ -4391,7 +4391,7 @@ final class TerminalWorkspaceView: NSView {
       /*
        CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
        Companion-pane show/hide and retargeting changes the visible terminal frame inside Code/Git/Project mode without always being a pane-resize drag.
-       Use the surfaced-only scheduler so hidden Agents tabs do not receive synthetic PageUp/PageDown.
+       Use the surfaced-only scheduler so hidden Agents tabs do not receive zmx refresh requests.
        */
       scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "setActiveTerminalSet.projectEditorCompanionChanged")
     }
@@ -5151,7 +5151,7 @@ final class TerminalWorkspaceView: NSView {
     /*
      CDXC:ZmxPersistenceRefresh 2026-05-18-09:04:
      Code-mode sidebar session switches surface terminals through the project-editor companion branch, which returns before the ordinary focusTerminal refresh hook.
-     Refresh zmx after the companion pane has been retargeted and focused so broken persisted terminal text is corrected without a manual PageUp/PageDown.
+     Refresh zmx after the companion pane has been retargeted and focused so broken persisted terminal text is corrected without manual terminal input.
      */
     if sessions[sessionId] != nil {
       refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
@@ -11420,11 +11420,8 @@ private enum NativeSessionPersistenceMode {
     case .zmx:
       return """
         unset ZMX_SESSION ZMX_SESSION_PREFIX
-        if ! command -v zmx >/dev/null 2>&1; then
-          printf '%s\\n' 'session persistence is set to zmx, but zmx was not found on PATH.' >&2
-          exit 127
-        fi
-        exec zmx kill \(quotedName) --force
+        \(zmxExecutableShellSetup())
+        exec "$zmx_bin" kill \(quotedName) --force
         """
     case .zellij:
       return """
@@ -11520,26 +11517,23 @@ private enum NativeSessionPersistenceMode {
       zmx_initial_command=\(shellQuote(initialCommand))
       zmx_persistence_notice_command=\(shellQuote(persistenceNoticeCommand))
       zmx_title_notice_command=\(shellQuote(titleNoticeCommand))
+      \(zmxExecutableShellSetup())
       unset ZMX_SESSION ZMX_SESSION_PREFIX
-      if ! command -v zmx >/dev/null 2>&1; then
-        printf '%s\\n' 'session persistence is set to zmx, but zmx was not found on PATH.'
-        exit 127
-      fi
-      if zmx list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
+      if "$zmx_bin" list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
         if [ -n "$zmx_title_notice_command" ]; then
           /bin/zsh -lc "$zmx_title_notice_command"
         fi
-        exec zmx attach "$zmx_session"
+        exec "$zmx_bin" attach "$zmx_session"
       fi
       if [ -z "$zmx_initial_command" ]; then
         cd "$zmx_cwd" || exit
-        exec zmx attach "$zmx_session"
+        exec "$zmx_bin" attach "$zmx_session"
       fi
       if [ -n "$zmx_persistence_notice_command" ]; then
         /bin/zsh -lc "$zmx_persistence_notice_command"
       fi
       cd "$zmx_cwd" || exit
-      exec zmx attach "$zmx_session" /bin/zsh -lc "$zmx_initial_command"
+      exec "$zmx_bin" attach "$zmx_session" /bin/zsh -lc "$zmx_initial_command"
       """
     /**
      CDXC:SessionPersistence 2026-05-05-07:28
@@ -11832,6 +11826,27 @@ private enum NativeSessionPersistenceMode {
 
   private static func shellQuote(_ value: String) -> String {
     "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+  }
+
+  private static func zmxExecutableShellSetup() -> String {
+    let bundledZmxPath =
+      Bundle.main.resourceURL?
+      .appendingPathComponent("Web/bin/zmx", isDirectory: false)
+      .path ?? ""
+    /**
+     CDXC:ZmxPersistence 2026-05-20-09:57:
+     Ghostex-managed zmx sessions require the bundled zmx build because the pane
+     refresh protocol is implemented by zmx itself. Do not fall back to an older
+     PATH zmx here; using a binary without the refresh protocol can leak the
+     private refresh sequence into the user's shell.
+     */
+    return """
+      zmx_bin=\(shellQuote(bundledZmxPath))
+      if [ ! -x "$zmx_bin" ]; then
+        printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.'
+        exit 127
+      fi
+      """
   }
 
   private static func zellijLayout(cwd: String, initialCommand: String) -> String {
@@ -12148,6 +12163,7 @@ private final class FloatingEditorResizeHandleView: NSView {
 }
 
 final class GhostexGhosttySurfaceView: NSView {
+  private static let zmxPersistenceRefreshSequence = "\u{001B}]1337;ZMX_REFRESH\u{0007}"
   let id: UUID
   var ghostexSessionId: String?
   var onKeyDownProbe: ((GhostexGhosttySurfaceView, NSEvent, String) -> Void)?
@@ -12579,75 +12595,52 @@ final class GhostexGhosttySurfaceView: NSView {
   func refreshZmxPersistenceViewport(reason: String) {
     /**
      CDXC:ZmxPersistence 2026-05-18-07:20:
-     zmx session switches and settled pane resizes need the same visible nudge
-     users perform with PageUp then PageDown. Send the real key events to the
-     zmx-backed terminal so zmx refreshes its attached session instead of only
-     moving Ghostty's local scrollback viewport.
+     zmx session switches and settled pane resizes need a visible terminal
+     refresh after AppKit surfaces the command-pane view.
+
+     CDXC:ZmxPersistence 2026-05-20-09:57:
+     Ghostty redraw alone does not repair stale zmx pane content. Send zmx's
+     private refresh sequence to the attached zmx client so zmx consumes it and
+     emits a display-only VT repaint from daemon state; the sequence must never
+     be forwarded as PTY input to the user's shell.
      */
-    let didPageUp = sendSyntheticPageKey(
-      keyCode: 0x74,
-      privateUseScalar: 0xF72C,
-      label: "pageUp")
-    let didPageDown = sendSyntheticPageKey(
-      keyCode: 0x79,
-      privateUseScalar: 0xF72D,
-      label: "pageDown")
+    guard surface != nil else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.surface",
+        details: [
+          "didRefresh": false,
+          "reason": reason,
+          "sessionId": ghostexSessionId ?? "",
+          "skipReason": "missingSurface",
+        ],
+        force: true)
+      return
+    }
+    guard window != nil, !isHidden, !bounds.isEmpty else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.surface",
+        details: [
+          "boundsHeight": bounds.height,
+          "boundsWidth": bounds.width,
+          "didRefresh": false,
+          "isHidden": isHidden,
+          "reason": reason,
+          "sessionId": ghostexSessionId ?? "",
+          "skipReason": window == nil ? "missingWindow" : "hiddenOrEmptyBounds",
+        ],
+        force: true)
+      return
+    }
+
+    insertText(Self.zmxPersistenceRefreshSequence, replacementRange: NSRange(location: NSNotFound, length: 0))
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.zmxPersistenceViewportRefresh.surface",
       details: [
-        "didPageDown": didPageDown,
-        "didPageUp": didPageUp,
+        "didRefresh": true,
         "reason": reason,
         "sessionId": ghostexSessionId ?? "",
       ],
       force: true)
-  }
-
-  private func sendSyntheticPageKey(
-    keyCode: UInt16,
-    privateUseScalar: UInt32,
-    label: String
-  ) -> Bool {
-    guard let scalar = UnicodeScalar(privateUseScalar) else {
-      return false
-    }
-    let characters = String(scalar)
-    let windowNumber = window?.windowNumber ?? 0
-    guard
-      let keyDown = NSEvent.keyEvent(
-        with: .keyDown,
-        location: .zero,
-        modifierFlags: [],
-        timestamp: ProcessInfo.processInfo.systemUptime,
-        windowNumber: windowNumber,
-        context: nil,
-        characters: characters,
-        charactersIgnoringModifiers: characters,
-        isARepeat: false,
-        keyCode: keyCode
-      ),
-      let keyUp = NSEvent.keyEvent(
-        with: .keyUp,
-        location: .zero,
-        modifierFlags: [],
-        timestamp: ProcessInfo.processInfo.systemUptime,
-        windowNumber: windowNumber,
-        context: nil,
-        characters: characters,
-        charactersIgnoringModifiers: characters,
-        isARepeat: false,
-        keyCode: keyCode
-      )
-    else {
-      TerminalFocusDebugLog.append(
-        event: "nativeWorkspace.zmxPersistenceViewportRefresh.keyEventFailed",
-        details: ["key": label, "sessionId": ghostexSessionId ?? ""],
-        force: true)
-      return false
-    }
-    sendKeyEvent(keyDown, action: GHOSTTY_ACTION_PRESS, includeText: false)
-    sendKeyEvent(keyUp, action: GHOSTTY_ACTION_RELEASE, includeText: false)
-    return true
   }
 
   private func updateGhosttySurfaceSize() {
@@ -17770,7 +17763,7 @@ private final class PoppedOutPaneWindowController: NSWindowController, NSWindowD
      click ownership stays local to the control hierarchy.
 
      CDXC:ZmxPersistenceRefresh 2026-05-18-15:10:
-     Popped-out zmx terminals need the PageUp/PageDown viewport repair after
+     Popped-out zmx terminals need the zmx repaint request after
      their standalone NSWindow resize settles, because workspace resize
      observers do not see the popped-out window's content-frame changes.
      */
