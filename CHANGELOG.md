@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.6.0 - 2026-05-21
+
+- Added Cursor CLI, Antigravity CLI, and Amp CLI as built-in agents with matching icons, launch commands, title cleanup, and working/done detection.
+- Added global and per-agent Accept All controls for supported agent CLIs, including a first-launch setup surface for choosing the default behavior.
+- Added project worktree workflows for creating a new worktree from a prompt, launching an agent into it, reviewing changed files, and optionally cleaning up the worktree after git actions.
+- Improved sidebar Actions so each project can keep its own action list while worktrees inherit their parent project's actions.
+- Improved the Ghostex CLI so running `ghostex` or `gtx` with no subcommand lists sessions in the same project order as the app, and zmx-backed resume can recreate a missing named session when possible.
+- Improved the pet overlay with actionable status badges, a Go to Ghostex menu action, a Sleep Pet action, and an additional pet sprite.
+- Made the floating prompt editor open faster after startup by warming the editor host before the first real prompt edit.
+- Improved Delayed Send reliability by preserving pending deadlines with restored terminal sessions.
+- Added a Storybook regression story for large real project lists so sidebar scrolling and project reachability are easier to verify.
+
 ## 3.5.0 - 2026-05-18
 
 - Added a much more complete Ghostex Android remote workflow with built-in connection handling, session attach, remote actions, session creation, file upload, and shareable phone-side diagnostics without requiring phone-side OpenSSH or sshpass setup.
@@ -60,12 +72,6 @@
 
 ## 2.7.0 - 2026-05-15
 
-<!-- CDXC:Distribution 2026-05-15-15:08: Release notes for 2.7.0 must cover
-all user-facing commits after v2.6.0 so GitHub, Sparkle, and Homebrew metadata
-describe the same Ghostex rename cleanup, built-in agent additions, safer
-directional hotkeys, searchable action icons, project-header stats, titlebar
-modes, and pane actions. -->
-
 - Completed the Ghostex public naming cleanup across release, app, Homebrew, and generated CEF helper surfaces.
 - Added Factory Droid and Grok Build as built-in agent options with bundled icons, sidebar labels, and session metadata support.
 - Updated the default agent picker order to T3 Code, Codex, Claude, Pi Agent, OpenCode, Gemini, Copilot, Factory Droid, and Grok Build.
@@ -88,12 +94,6 @@ modes, and pane actions. -->
 
 ## 2.6.0 - 2026-05-15
 
-<!-- CDXC:Distribution 2026-05-15-10:42: Release notes for 2.6.0 must cover
-all user-facing commits after v2.5.1 so GitHub, Sparkle, and Homebrew metadata
-describe the same Agents Hub tooltip polish, Previous Sessions filtering,
-session-card timestamp controls, sidebar navigation cleanup, project-editor hit
-routing, native diagnostics, pane context labels, and persistence notices. -->
-
 - Improved Agents Hub profile tooltips with structured profile labels, instruction file paths, target paths, and Finder actions that stay readable for dense local agent configurations.
 - Added a setting to hide Last Active timestamps on active session cards while letting titles use the full card width without overlapping status dots or close buttons.
 - Hid browser page history from the Previous Sessions modal so the restore flow stays focused on agent sessions.
@@ -108,12 +108,6 @@ routing, native diagnostics, pane context labels, and persistence notices. -->
 
 ## 2.5.1 - 2026-05-15
 
-<!-- CDXC:Distribution 2026-05-15-08:42: Release notes for 2.5.1 must cover
-all user-facing commits after v2.5 so GitHub, Sparkle, and Homebrew metadata
-describe the same dual-architecture Ghostex build, titlebar pet control,
-action icon defaults, Previous Sessions polish, workspace focus behavior, and
-architecture-aware local launch behavior. -->
-
 - Published a native Intel x86_64 build beside the Apple Silicon build, with a separate Intel Sparkle feed and an architecture-aware `ghostex` Homebrew cask.
 - Clarified the README install flow so the same `brew install --cask maddada/tap/ghostex` command automatically selects Apple Silicon or Intel.
 - Changed sidebar actions to always use an explicit icon, defaulting new and legacy actions to the Play glyph with editable color.
@@ -127,16 +121,6 @@ architecture-aware local launch behavior. -->
 - Updated local native launch behavior so `bun run start` uses architecture-specific DerivedData paths for arm64 and x86_64 builds.
 
 ## 2.5.0 - 2026-05-14
-
-<!-- CDXC:Distribution 2026-05-14-19:06: Release notes for 2.5.0 must use the
-Ghostex public name and cover the rename, reference sidebar workflows, command
-panel work, native pane/runtime stability, pet overlay routing, terminal
-scrollbar restoration, and arm64 public release metadata. -->
-
-<!-- CDXC:Branding 2026-05-12-07:35: Public release notes must describe the
-Ghostex rename without rewriting historical ghostex entries. Homebrew should use
-the `ghostex` cask token as the public install command, while the public CLI
-command changes to `ghostex` with `gtx` as the short alias. -->
 
 - Added dual-architecture release pipeline support for separate Apple Silicon and Intel DMGs, separate Sparkle feeds, and an architecture-aware Homebrew cask.
 - Renamed the public app surface from Ghostex to Ghostex while keeping internal repository, code, storage, bundle id, and historical asset names under `ghostex`.
@@ -153,16 +137,6 @@ command changes to `ghostex` with `gtx` as the short alias. -->
 
 ## 2.3.2 - 2026-05-10
 
-<!-- CDXC:Distribution 2026-05-10-16:56: Release notes for 2.3.2 must include
-macOS session attention banners and project editor diff-row alignment shipped
-after v2.3 so GitHub, Sparkle, and Homebrew metadata stay aligned without
-editing README. -->
-
-<!-- CDXC:Distribution 2026-05-12-13:09: Version-specific root changelog files
-are being retired. Their release summaries and artifact hashes must be kept in
-this canonical changelog so deleting the per-version markdown files does not
-drop shipped release metadata. -->
-
 This patch release adds session attention notifications and tightens project editor row alignment.
 
 - Added optional macOS attention banners for sessions that need attention, including Settings control, native notification permission handling, click-to-focus routing, and sidebar rate limiting.
@@ -172,14 +146,6 @@ This patch release adds session attention notifications and tightens project edi
 SHA256: `61d2d71547b492eb732483d09193df3cb3de2b475f86f7916f75344d89daf220`
 
 ## 2.3.0 - 2026-05-10
-
-<!-- CDXC:Distribution 2026-05-10-14:08: Release notes for 2.3.0 must include
-the hotkey recorder, Zapet prompt editing, bundled CLI proxy, native terminal
-runtime fixes, persistence recreation behavior, active-project titlebar sync,
-project agent/terminal launcher separation, Combined New Session routing,
-project editor row preferences, sidebar collapse persistence, sidebar polish,
-and README updates shipped after v2.2 so GitHub, Sparkle, and Homebrew metadata
-stay aligned. -->
 
 This minor release improves the 2.x workspace with stronger hotkey editing, richer prompt editing, native runtime fixes, and more predictable sidebar behavior.
 
@@ -202,11 +168,6 @@ SHA256: `aabfea87f042ab59e1eb8aabd371226108df5a980edccbee80f58b26d7a80d70`
 
 ## 2.2.0 - 2026-05-09
 
-<!-- CDXC:Distribution 2026-05-09-22:23: Release notes for 2.2.0 must describe
-the unified settings surface, menu bar status indicators, editor-row
-diagnostics, dev startup split, and README updates shipped after v2.1 so
-GitHub, Sparkle, and Homebrew metadata stay aligned. -->
-
 This minor release tightens the new 2.x interface with the latest workspace, settings, and release workflow polish.
 
 - Added a unified tabbed Settings dialog that brings Settings, Agents, Actions, and Hotkeys into one configuration surface.
@@ -222,10 +183,6 @@ SHA256: `73340ec06d57c3b16a585ee9c5566513c91fd5e0a6cba9477ae5982a122521c9`
 
 ## 2.1.0 - 2026-05-08
 
-<!-- CDXC:Distribution 2026-05-08-18:04: Release notes for 2.1.0 must keep
-the 2.x messaging focused on the full UI refresh plus stability/performance
-work, while also calling out the macOS app icon shipped after v2.0. -->
-
 - Continued the 2.x UI refresh messaging: ghostex now presents the redesigned simplified Codex-style workspace, refreshed project groups, action controls, tooltips, session cards, settings surfaces, and updated screenshots.
 - Continued the 2.x stability and performance focus across native sidebar sync, AppKit relayout avoidance, shared storage writes, diagnostic filtering, and workspace visibility.
 - Added the macOS application icon from agent-manager-x so Finder, Dock, app switcher, and signed release builds use the intended branded icon instead of a generic app icon.
@@ -236,10 +193,6 @@ SHA256: `6bbd2a95f1f585df20a2811c8f2cae492ad53492bc13814b4b085c5a906e9ced`
 Install with Homebrew: `brew install --cask maddada/tap/ghostex`
 
 ## 2.0.0 - 2026-05-08
-
-<!-- CDXC:Distribution 2026-05-08-17:16: Release notes for 2.0.0 must emphasize
-the full UI refresh plus stability and performance work shipped since v1.4.11
-so README, GitHub, Sparkle, and Homebrew metadata describe the same release. -->
 
 - Changed the whole ghostex UI around the simplified Codex-style workspace: refreshed top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, icons, and README screenshots.
 - Improved workspace stability and performance by suppressing byte-identical native storage writes, skipping metadata-only AppKit relayouts, reducing high-frequency native diagnostics, and filtering noisy T3/focus logs.
@@ -254,10 +207,6 @@ Install with Homebrew: `brew install --cask maddada/tap/ghostex`
 
 ## 1.4.11 - 2026-05-08
 
-<!-- CDXC:Distribution 2026-05-08-13:47: Release notes for 1.4.11 must include
-all commits after v1.4.10 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
-
 - Added reference-style sidebar action flows, modal flows, story fixtures, and Combined layout refinements.
 - Added Pi as a supported agent option with icon assets, tests, and agent configuration UI wiring.
 - Improved sidebar group, session-card, search, modal, and scroll styling to better match the reference layout.
@@ -266,10 +215,6 @@ metadata describe the same shipped behavior. -->
 - Improved session title, activity, rename, and first-prompt metadata handling so loading and restored-title states are more reliable.
 
 ## 1.4.10 - 2026-05-08
-
-<!-- CDXC:Distribution 2026-05-08-00:46: Release notes for 1.4.10 must include
-all commits after v1.4.9 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
 
 - Added human-facing `ghostex` CLI session commands for listing, attaching, resuming, killing, sleeping, waking, and focusing running terminal sessions.
 - Added provider-backed attach metadata so tmux, zmx, and zellij sessions keep their stored provider, show sidebar badges, and expose copyable attach commands.
@@ -280,10 +225,6 @@ metadata describe the same shipped behavior. -->
 
 ## 1.4.9 - 2026-05-07
 
-<!-- CDXC:Distribution 2026-05-07-08:01: Release notes for 1.4.9 must include
-all commits after v1.4.8 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
-
 - Improved embedded code-server editor panes so VS Code panel/sidebar drag and drop keeps live hover and drop targeting while using CEF.
 - Fixed embedded browser/editor pane teardown so closing a pane from the sidebar does not close the top-level app window.
 - Improved project editor persistence so VS Code workbench layout survives app restarts without putting code-server into a fresh Chromium profile.
@@ -292,10 +233,6 @@ metadata describe the same shipped behavior. -->
 - Enlarged README screenshots for clearer GitHub documentation.
 
 ## 1.4.8 - 2026-05-06
-
-<!-- CDXC:Distribution 2026-05-06-19:47: Release notes for 1.4.8 must include
-all commits after v1.4.7 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
 
 - Added embedded code-server editor panes so project groups can open a native CEF-backed code editor surface.
 - Added project header controls for opening project-scoped browser panes and project editor panes from the clicked group.
@@ -310,10 +247,6 @@ metadata describe the same shipped behavior. -->
 - Removed versioned Sparkle release-note markdown files from the repository.
 
 ## 1.4.7 - 2026-05-06
-
-<!-- CDXC:Distribution 2026-05-06-03:12: Release notes for 1.4.7 must include
-all commits after v1.4.6 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
 
 - Added persistent terminal session providers so terminal metadata, restore inputs, and provider state can survive app restarts.
 - Added Chromium CEF native browser support with vendored CEF build wiring, persistent browser storage, and cookie flushing on app termination.
@@ -331,10 +264,6 @@ metadata describe the same shipped behavior. -->
 
 ## 1.4.6 - 2026-05-05
 
-<!-- CDXC:Distribution 2026-05-05-05:01: Release notes for 1.4.6 must include
-all commits after v1.4.5 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
-
 - Replaced native title-bar action controls with compact sidebar Actions dropdowns for project commands and Open In targets.
 - Added explicit Open In choices for Finder, Visual Studio Code, and Zed, including brand icons and persisted primary target selection.
 - Added removable Actions dropdown rows so configured project actions can be deleted from the same menu that runs them.
@@ -347,10 +276,6 @@ metadata describe the same shipped behavior. -->
 
 ## 1.4.5 - 2026-05-05
 
-<!-- CDXC:Distribution 2026-05-05-02:22: Release notes for 1.4.5 must include
-all commits after v1.4.4 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
-
 - Added native title-bar split controls for primary Actions and Open In commands while keeping empty title-bar space draggable.
 - Added React-rendered title-bar dropdown menus for configured ghostex actions and Open In targets, reusing the existing sidebar command and selected-IDE state.
 - Improved terminal focus sync so passive layout/status updates no longer steal focus from the terminal or modal the user is actively typing in.
@@ -358,10 +283,6 @@ metadata describe the same shipped behavior. -->
 - Added optional CEF prototype scaffolding for future Chromium browser panes while keeping the default WKWebView build path buildable without the Chromium SDK.
 
 ## 1.4.4 - 2026-05-04
-
-<!-- CDXC:Distribution 2026-05-04-16:01: Release notes for 1.4.4 must include
-all commits after v1.4.3 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
 
 - Added Combined sidebar mode so native ghostex can show one project group per project across all projects, while preserving Separated mode for the previous per-project layout.
 - Added a Recent Projects drawer with fuzzy project/path search and startup cleanup for empty combined-mode projects.
@@ -374,10 +295,6 @@ metadata describe the same shipped behavior. -->
 
 ## 1.4.3 - 2026-05-03
 
-<!-- CDXC:Distribution 2026-05-03-08:14: Release notes for 1.4.3 must include
-all commits after v1.4.2 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
-
 - Added an opt-in Browser Panes mode that opens browser actions as first-class workspace panes instead of Chrome Canary windows.
 - Added native browser pane controls for address navigation, reload, DevTools, React Grab, profile selection, and browser-data import messaging.
 - Persisted browser pane URLs, favicons, and browser-auto titles so sidebar cards and app restarts reflect the current page.
@@ -385,28 +302,16 @@ metadata describe the same shipped behavior. -->
 
 ## 1.4.2 - 2026-05-02
 
-<!-- CDXC:Distribution 2026-05-02-11:33: Release notes for 1.4.2 must call
-out the Sparkle build-number fix because installed apps compare
-CFBundleVersion when deciding whether a feed item is newer. -->
-
 - Fixed Sparkle update detection by publishing releases with a monotonic `CFBundleVersion` build number.
 - Kept the native AppKit pane resizing changes from 1.4.1 available in the update feed.
 
 ## 1.4.1 - 2026-05-02
-
-<!-- CDXC:Distribution 2026-05-02-11:16: Release notes for 1.4.1 must include
-all commits after v1.4.0 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
 
 - Moved split pane resizing into the native AppKit terminal workspace so Ghostty and WKWebView panes resize from the same layout owner.
 - Removed the React workspace resize overlay and tests that no longer apply to native pane sizing.
 - Removed whole-cell terminal body stepping so pane chrome and terminal renderer widths stay aligned during native resize.
 
 ## 1.4.0 - 2026-05-02
-
-<!-- CDXC:Distribution 2026-05-02-08:37: Release notes for 1.4.0 must include
-all commits after v1.3.0 so README, GitHub, Sparkle, and Homebrew release
-metadata describe the same shipped behavior. -->
 
 - Added Sparkle appcast update support with signed appcast metadata for native macOS updates.
 - Added native T3 Code panes with managed runtime bootstrap, authentication, thread routing, and runtime diagnostics.
@@ -421,10 +326,6 @@ metadata describe the same shipped behavior. -->
 
 ## 1.3.0 - 2026-04-30
 
-<!-- CDXC:Distribution 2026-04-30-03:37: Release notes for 1.3.0 must include
-all commits after v1.2.0 so README, GitHub, and Homebrew release metadata
-describe the same shipped behavior. -->
-
 - Added Ghostty config actions and a recommended Ghostty config that includes ghostex-managed color, cursor, font, scroll, and split-opacity settings.
 - Added a cyan Ghostty palette default to improve terminal color readability with the recommended ghostex-managed config.
 - Added a local agent release skill for repeatable split commits, release notes, GitHub releases, and Homebrew cask publishing.
@@ -434,10 +335,6 @@ describe the same shipped behavior. -->
 - Hid bare agent status words such as `Working`, `Done`, `Idle`, `Thinking`, and `Error` from visible terminal titles.
 
 ## 1.2.0 - 2026-04-29
-
-<!-- CDXC:Distribution 2026-04-29-09:31: Release notes for 1.2.0 must include
-all user-facing commits after v1.1.0 so README, GitHub, and Homebrew release
-metadata describe the same shipped behavior. -->
 
 - Added terminal scroll multiplier settings for precision devices and discrete mouse wheels.
 - Synced Ghostty mouse-scroll-multiplier values into the shared Ghostty config and reloads scroll-only changes immediately.
@@ -449,10 +346,6 @@ metadata describe the same shipped behavior. -->
 
 ## 1.1.0 - 2026-04-29
 
-<!-- CDXC:Distribution 2026-04-29-08:42: Release notes for 1.1.0 must include
-all user-facing commits after v1.0.4 so README, GitHub, and Homebrew release
-metadata describe the same shipped behavior. -->
-
 - Added full-window native modals for Find Previous Session and T3 Thread ID entry.
 - Improved previous-session search launching by routing modal input through the sidebar/native command bridge.
 - Improved T3 session thread binding controls in the native sidebar workflow.
@@ -462,10 +355,6 @@ metadata describe the same shipped behavior. -->
 - Expanded native terminal resize diagnostics with core Ghostty grid, padding, backing-pixel, and pane geometry metrics.
 
 ## 1.0.4 - 2026-04-28
-
-<!-- CDXC:Distribution 2026-04-28-06:27: Release notes for 1.0.4 must be
-derived from the commits after v1.0.3 so README, GitHub, and Homebrew users see
-the same user-facing feature set. -->
 
 - Added configurable app hotkeys, including native AppKit handling while terminal panes have focus.
 - Added saved first-message metadata for agent sessions and a copyable "View 1st Message" modal in active and previous session flows.
@@ -480,10 +369,6 @@ the same user-facing feature set. -->
 - Added Scratch Pad focus diagnostics to help trace terminal-first-responder focus steals without logging note text.
 
 ## 1.0.3 - 2026-04-28
-
-<!-- CDXC:Distribution 2026-04-28-16:00: Release notes must summarize the
-user-facing changes added after v1.0.2 so GitHub, README, and Homebrew release
-metadata describe the same shipped behavior. -->
 
 - Added native terminal title bars with rename, fork, reload, sleep, and close actions.
 - Added visible native Ghostty scrollbars and disabled middle-click paste in embedded terminals.

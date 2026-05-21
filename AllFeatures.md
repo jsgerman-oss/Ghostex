@@ -110,3 +110,15 @@
 - Ghostex Android includes in-drawer terminal settings for common terminal behavior and display options.
 - zmx-backed terminal panes refresh more reliably after resize, mode switches, pop-out changes, and sleeping-session wake.
 - Sleeping sessions wake back into the focused tab group instead of unexpectedly returning as separate split panes.
+- Cursor CLI, Antigravity CLI, and Amp CLI are built-in agents with matching icons, launch commands, title cleanup, and working/done detection.
+- Supported agents can inherit a global Accept All setting or override it per agent, with Ghostex appending the right permission-bypass flag at launch time.
+- First launch setup can present focused setup controls such as the global Accept All agent setting after Tips & Tricks.
+- Project worktrees can be created from a prompt, opened as their own project, seeded with an agent, and reviewed with changed-file selection before commit, push, or PR actions.
+- Worktree git actions can optionally remove the temporary worktree project after the action completes.
+- Sidebar Actions are stored per project, and worktrees share their parent project's action list.
+- The Ghostex CLI lists sessions when run as bare `ghostex` or `gtx`, using the same project order as the app.
+- zmx-backed CLI attach can recreate a missing named zmx session and run the saved agent resume command when possible.
+- The pet overlay includes clickable status badges, Go to Ghostex, Sleep Pet, and an additional pet sprite.
+- The floating prompt editor prewarms after startup so the first real prompt edit opens faster.
+- Delayed Send deadlines persist with restored terminal sessions so pending sends can resume after restart.
+- Large-project sidebar scrolling has a current-projects Storybook regression story for checking real project list reachability.
