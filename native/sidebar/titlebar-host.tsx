@@ -47,7 +47,17 @@ import {
 } from "@/components/ui/tooltip";
 import type { SidebarProjectDiffStats } from "../../shared/project-diff-stats";
 import { createDefaultSidebarProjectDiffStats } from "../../shared/project-diff-stats";
-import type { SidebarCommandButton } from "../../shared/sidebar-commands";
+import {
+  DEFAULT_BROWSER_ACTION_URL,
+  getSidebarCommandPreviewLabel,
+  isSidebarCommandConfigured,
+  type SidebarCommandButton,
+} from "../../shared/sidebar-commands";
+import {
+  DEFAULT_SIDEBAR_COMMAND_ICON,
+  DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
+} from "../../shared/sidebar-command-icons";
+import type { CommandConfigDraft } from "../../sidebar/command-config-modal";
 import { normalizeghostexSettings, type ZedOverlayTargetApp } from "../../shared/ghostex-settings";
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
@@ -762,13 +772,13 @@ function App() {
     [allTargets, projectState.workspaceOpenTargets.availability],
   );
   const activeTarget = visibleTargets.find((target) => target.id === selectedTargetId) ?? visibleTargets[0];
-  const runnableActions = useMemo(
-    () => projectState.sidebarActions.commands.filter(isRunnableSidebarCommand),
+  const visibleActions = useMemo(
+    () => projectState.sidebarActions.commands,
     [projectState.sidebarActions.commands],
   );
   const activeAction =
-    runnableActions.find((command) => command.commandId === selectedActionCommandId) ??
-    runnableActions[0];
+    visibleActions.find((command) => command.commandId === selectedActionCommandId) ??
+    visibleActions[0];
   const publishHitRegions = useCallback(() => {
     /**
      * CDXC:ReactTitlebar 2026-05-11-00:22
@@ -974,12 +984,24 @@ function App() {
     ]);
   };
 
+  const openSidebarActionEditor = (command: SidebarCommandButton) => {
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      commandDraft: createTitlebarCommandConfigDraft(command),
+      modal: "commandConfig",
+      type: "open",
+    });
+  };
+
   const runSidebarAction = (command: SidebarCommandButton | undefined) => {
     if (!command) {
       appendTitlebarActionCrashDebugLog("nativeSidebar.actionCrashTrace.titlebarMissingAction", {
         projectId: projectState.projectId,
         projectPath: projectState.projectPath,
       });
+      return;
+    }
+    if (!isSidebarCommandConfigured(command)) {
+      openSidebarActionEditor(command);
       return;
     }
     appendTitlebarActionCrashDebugLog("nativeSidebar.actionCrashTrace.titlebarClick", {
@@ -1249,20 +1271,43 @@ function App() {
                 sideOffset={6}
                 style={{ backgroundColor: "#181818" }}
               >
-                {runnableActions.length > 0 ? (
-                  runnableActions.map((command) => (
-                    <DropdownMenuItem
-                      className="titlebar-open-menu-item"
-                      key={command.commandId}
-                      onClick={() => runSidebarAction(command)}
-                    >
-                      {getSidebarActionIcon(command)}
-                      <span className="min-w-0 flex-1 truncate">{getSidebarActionLabel(command)}</span>
-                      {activeAction?.commandId === command.commandId ? (
-                        <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
-                      ) : null}
-                    </DropdownMenuItem>
-                  ))
+                {visibleActions.length > 0 ? (
+                  visibleActions.map((command) => {
+                    const actionCommandPreview = getSidebarCommandPreviewLabel(command);
+                    return (
+                      <DropdownMenuItem
+                        className="titlebar-open-menu-item titlebar-action-menu-item"
+                        key={command.commandId}
+                        onClick={() => runSidebarAction(command)}
+                      >
+                        <span className="titlebar-action-menu-icon">{getSidebarActionIcon(command)}</span>
+                        <span className="titlebar-action-menu-copy">
+                          <span className="titlebar-action-menu-title">
+                            {getSidebarActionLabel(command)}
+                          </span>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                className="titlebar-action-command-preview"
+                                data-unconfigured={String(!isSidebarCommandConfigured(command))}
+                              >
+                                {actionCommandPreview}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              className="titlebar-action-command-tooltip whitespace-normal text-left"
+                              sideOffset={6}
+                            >
+                              {actionCommandPreview}
+                            </TooltipContent>
+                          </Tooltip>
+                        </span>
+                        {activeAction?.commandId === command.commandId ? (
+                          <IconCheck aria-hidden="true" className="ml-2 size-4 shrink-0 opacity-75" />
+                        ) : null}
+                      </DropdownMenuItem>
+                    );
+                  })
                 ) : (
                   <div className="px-2 py-2 text-muted-foreground">No Actions configured</div>
                 )}
@@ -1938,14 +1983,22 @@ function getLastActionCommandStorageKey(
   return `${LAST_ACTION_COMMAND_STORAGE_PREFIX}${projectKey}`;
 }
 
-function isRunnableSidebarCommand(command: SidebarCommandButton): boolean {
-  return command.actionType === "browser"
-    ? Boolean(command.url?.trim())
-    : Boolean(command.command?.trim());
-}
-
 function getSidebarActionLabel(command: SidebarCommandButton): string {
   return command.name.trim() || command.commandId;
+}
+
+function createTitlebarCommandConfigDraft(command: SidebarCommandButton): CommandConfigDraft {
+  return {
+    actionType: command.actionType,
+    closeTerminalOnExit: command.closeTerminalOnExit,
+    command: command.command ?? (command.actionType === "terminal" ? "" : undefined),
+    commandId: command.commandId,
+    icon: command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
+    iconColor: command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
+    name: command.name,
+    playCompletionSound: command.playCompletionSound,
+    url: command.url ?? (command.actionType === "browser" ? DEFAULT_BROWSER_ACTION_URL : undefined),
+  };
 }
 
 function getSidebarActionIcon(command: SidebarCommandButton | undefined): ReactNode {
@@ -2218,6 +2271,51 @@ styleElement.textContent = `
     gap: 10px;
     border-radius: 7px;
     font: 500 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  }
+  /**
+   * CDXC:TitlebarActions 2026-05-19-16:05:
+   * Action rows stack the configured title above a single-line dimmed command
+   * preview. Hovering the preview opens a wrapped tooltip capped at 190px wide.
+   */
+  .titlebar-action-menu-item {
+    align-items: flex-start !important;
+    min-height: 44px;
+    padding-block: 7px;
+  }
+  .titlebar-action-menu-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .titlebar-action-menu-copy {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .titlebar-action-menu-title {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .titlebar-action-command-preview {
+    color: rgba(255, 255, 255, 0.48);
+    display: block;
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.2;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .titlebar-action-command-preview[data-unconfigured="true"] {
+    font-style: italic;
+  }
+  .titlebar-action-command-tooltip {
+    max-width: 190px !important;
+    overflow-wrap: anywhere;
   }
   .titlebar-resources-menu {
     width: min(656px, calc(100vw - 24px));

@@ -69,6 +69,8 @@ enum HostCommand: Decodable {
   case configureZedOverlay(ConfigureZedOverlay)
   case openZedWorkspace(OpenZedWorkspace)
   case sidebarCliCommand(SidebarCliCommand)
+  case sidebarContextMenuOpened
+  case sidebarContextMenuClosed
 
   private enum CodingKeys: String, CodingKey {
     case type
@@ -143,6 +145,8 @@ enum HostCommand: Decodable {
     case configureZedOverlay
     case openZedWorkspace
     case sidebarCliCommand
+    case sidebarContextMenuOpened
+    case sidebarContextMenuClosed
   }
 
   init(from decoder: Decoder) throws {
@@ -285,6 +289,10 @@ enum HostCommand: Decodable {
       self = .openZedWorkspace(try OpenZedWorkspace(from: decoder))
     case .sidebarCliCommand:
       self = .sidebarCliCommand(try SidebarCliCommand(from: decoder))
+    case .sidebarContextMenuOpened:
+      self = .sidebarContextMenuOpened
+    case .sidebarContextMenuClosed:
+      self = .sidebarContextMenuClosed
     }
   }
 }
@@ -298,6 +306,7 @@ struct CreateTerminal: Decodable {
   let sessionId: String
   let sessionPersistenceName: String?
   let sessionPersistenceProvider: String?
+  let shellCommand: String?
   let title: String?
   let tmuxMode: Bool?
   let tmuxSessionName: String?
@@ -510,7 +519,6 @@ struct TitlebarSidebarCommand: Decodable {
   let icon: String?
   let iconColor: String?
   let isDefault: Bool?
-  let isGlobal: Bool?
   let name: String
   let playCompletionSound: Bool?
   let url: String?
@@ -536,6 +544,7 @@ struct SetPetOverlayState: Codable {
   let activities: [PetOverlayActivity]
   let enabled: Bool
   let selectedPetId: String
+  let statusItems: [PetOverlayStatusItem]
 }
 
 struct PetOverlayActivity: Codable {
@@ -547,7 +556,13 @@ struct PetOverlayActivity: Codable {
 
 enum PetOverlayActivityState: String, Codable {
   case attention
+  case available
   case working
+}
+
+struct PetOverlayStatusItem: Codable {
+  let count: Int
+  let status: NativeSessionStatusIndicatorStatus
 }
 
 struct ShowSessionAttentionNotification: Decodable {

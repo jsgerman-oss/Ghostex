@@ -1,6 +1,7 @@
 import { useEffect, useRef, type CSSProperties } from "react";
 import { cn } from "@/lib/utils";
 import type { PetId } from "../shared/pets";
+import booSpritesheetUrl from "./assets/pets/boo-spritesheet-codexpethub-8a8161fb.webp";
 import bsodSpritesheetUrl from "./assets/pets/bsod-spritesheet-v4-BRrRVy1T.webp";
 import codexSpritesheetUrl from "./assets/pets/codex-spritesheet-v4-Bl6P89d_.webp";
 import deweySpritesheetUrl from "./assets/pets/dewey-spritesheet-v4-gAYk_M9g.webp";
@@ -32,6 +33,7 @@ const SPRITESHEET_ROWS = 9;
 const IDLE_SPEED_MULTIPLIER = 6;
 
 const PET_SPRITESHEETS: Record<PetId, string> = {
+  boo: booSpritesheetUrl,
   bsod: bsodSpritesheetUrl,
   codex: codexSpritesheetUrl,
   dewey: deweySpritesheetUrl,

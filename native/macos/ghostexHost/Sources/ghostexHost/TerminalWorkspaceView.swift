@@ -2016,6 +2016,13 @@ final class TerminalWorkspaceView: NSView {
     var config = GhostexGhosttySurfaceConfiguration()
     config.workingDirectory = command.cwd
     config.environmentVariables = nativeGhosttyTerminalEnvironment(command.env, sessionId: command.sessionId)
+    /**
+     CDXC:CommandPanes 2026-05-20-22:52:
+     Command-pane actions need a hidden launch command so Ghostty executes the
+     status wrapper as process setup rather than echoed terminal input. Provider
+     attach commands still own their first-run command path below.
+     */
+    config.command = command.shellCommand
     config.initialInput = sessionPersistenceProvider == nil ? command.initialInput : nil
     if let sessionPersistenceProvider, let sessionPersistenceName {
       /**
@@ -2044,6 +2051,7 @@ final class TerminalWorkspaceView: NSView {
       details: [
         "commandColorEnv": nativeTerminalColorEnvironmentSnapshot(config.environmentVariables),
         "envCount": config.environmentVariables.count,
+        "hasShellCommand": command.shellCommand?.isEmpty == false,
         "hasInitialInput": command.initialInput?.isEmpty == false,
         "processColorEnv": nativeTerminalColorEnvironmentSnapshot(ProcessInfo.processInfo.environment),
         "requestedSessionId": command.sessionId,
@@ -3960,6 +3968,30 @@ final class TerminalWorkspaceView: NSView {
       details: payload)
   }
 
+  private func logTerminalSearchInteraction(
+    _ event: String,
+    session: TerminalSession,
+    details: [String: Any] = [:]
+  ) {
+    var payload = keyboardRouteDebugPayload(surfaceSessionId: session.sessionId)
+    payload["searchActive"] = session.view.searchState != nil
+    payload["searchBarFrame"] = describeFrame(session.searchBarView.frame)
+    payload["searchBarHidden"] = session.searchBarView.isHidden
+    payload["searchNeedleLength"] = session.view.searchState?.needle.count ?? 0
+    payload["sessionId"] = session.sessionId
+    payload["surfaceFocusedFlag"] = session.view.focused
+    for (key, value) in details {
+      payload[key] = value
+    }
+    /**
+     CDXC:NativeTerminalSearch 2026-05-19-09:02:
+     Cmd+F search-box repros need AppKit routing breadcrumbs for the embedded
+     Ghostty panes. Log search visibility, hit-test targets, first-responder
+     state, and query length without persisting the user's typed search text.
+     */
+    TerminalFocusDebugLog.append(event: event, details: payload)
+  }
+
   private func logSurfaceTextInputProbe(
     surfaceView: GhostexGhosttySurfaceView,
     text: Any,
@@ -4153,6 +4185,8 @@ final class TerminalWorkspaceView: NSView {
     let previousProjectEditorCompanionIsVisible = projectEditorCompanionIsVisible
     let previousProjectEditorCompanionPaneHidden = projectEditorCompanionPaneHidden
     let previousProjectEditorCompanionSessionId = projectEditorCompanionSessionId
+    let previousSessionTitleBarActions = sessionTitleBarActions
+    let previousSessionTitles = sessionTitles
     let responderSessionIdBefore = currentResponderSessionId()
     if command.focusRequestId != nil || previousFocusedSessionId != command.focusedSessionId {
       /**
@@ -4192,6 +4226,8 @@ final class TerminalWorkspaceView: NSView {
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
     activeProjectEditorId = nextActiveProjectEditorId
+    let shouldRefreshPaneTabMetadata =
+      previousSessionTitleBarActions != sessionTitleBarActions || previousSessionTitles != sessionTitles
     if previousDelayedSendRemainingLabels != sessionDelayedSendRemainingLabels {
       needsLayout = true
     }
@@ -4199,6 +4235,9 @@ final class TerminalWorkspaceView: NSView {
     focusedSessionId = command.focusedSessionId
     terminalLayout = nextLayout
     paneGap = nextPaneGap
+    if shouldRefreshPaneTabMetadata && !shouldRelayout {
+      syncPaneTabChromeFromCurrentLayout()
+    }
     if abs(sidebarResizeEdgeExtensionWidth - previousSidebarResizeEdgeExtensionWidth) > 0.5 {
       /**
        CDXC:SidebarResizeRails 2026-05-15-03:59:
@@ -6955,7 +6994,17 @@ final class TerminalWorkspaceView: NSView {
     if !session.searchBarView.isHidden {
       let searchPoint = convert(point, to: session.searchBarView)
       if session.searchBarView.bounds.contains(searchPoint) {
-        return session.searchBarView.hitTest(searchPoint) ?? session.searchBarView
+        let hitView = session.searchBarView.hitTest(searchPoint) ?? session.searchBarView
+        logTerminalSearchInteraction(
+          "nativeWorkspace.terminalSearch.hitTest",
+          session: session,
+          details: [
+            "hitView": String(describing: type(of: hitView)),
+            "rootPoint": describePoint(point),
+            "searchBarFrame": describeFrame(session.searchBarView.frame),
+            "searchPoint": describePoint(searchPoint),
+          ])
+        return hitView
       }
     }
     let contentPoint = convert(point, to: session.scrollView)
@@ -8941,6 +8990,17 @@ final class TerminalWorkspaceView: NSView {
     session.scrollView.needsLayout = true
     session.scrollView.layoutSubtreeIfNeeded()
     session.searchBarView.frame = searchBarFrame(in: terminalRect)
+    if session.view.searchState != nil {
+      logTerminalSearchInteraction(
+        "nativeWorkspace.terminalSearch.layout",
+        session: session,
+        details: [
+          "containerFrame": describeFrame(session.containerView.frame),
+          "scrollViewFrame": describeFrame(session.scrollView.frame),
+          "terminalRect": describeFrame(terminalRect),
+          "titleBarRect": describeFrame(titleBarRect),
+        ])
+    }
     session.persistenceLabelView.setSuppressed(false)
     session.persistenceLabelView.frame = persistenceLabelFrame(
       in: terminalRect,
@@ -9056,6 +9116,60 @@ final class TerminalWorkspaceView: NSView {
         faviconDataUrls: sessionFaviconDataUrls,
         agentIconDataUrls: sessionAgentIconDataUrls,
         agentIconColors: sessionAgentIconColors)
+    }
+  }
+
+  /**
+   CDXC:PaneTabs 2026-05-21-02:27:
+   Session rename sync can change only `sessionTitles` while the split/tab tree
+   is otherwise unchanged. Refresh the currently mounted native tab buttons from
+   the authoritative layout immediately so the selected tab does not keep the
+   old title until a later focus or layout change rebuilds the tab strip.
+   */
+  private func syncPaneTabChromeFromCurrentLayout() {
+    if let activeProjectEditorId,
+      projectEditorPaneSessions[activeProjectEditorId] != nil
+    {
+      if let companionLayout = projectEditorCompanionLayout(in: bounds) {
+        setPaneTabs([], activeSessionId: companionLayout.sessionId, on: companionLayout.sessionId)
+      }
+    } else if let terminalLayout {
+      syncPaneTabChrome(in: terminalLayout)
+    } else {
+      for sessionId in orderedVisibleSessionIds() {
+        setPaneTabs([sessionId], activeSessionId: sessionId, on: sessionId)
+      }
+    }
+
+    if let commandsPanelLayout {
+      syncPaneTabChrome(in: commandsPanelLayout)
+    } else {
+      for sessionId in orderedVisibleCommandSessionIds() {
+        setPaneTabs([sessionId], activeSessionId: sessionId, on: sessionId)
+      }
+    }
+  }
+
+  private func syncPaneTabChrome(in node: NativeTerminalLayout) {
+    switch node {
+    case .leaf(let sessionId):
+      guard isPaneSessionVisible(sessionId) else {
+        return
+      }
+      setPaneTabs([sessionId], activeSessionId: sessionId, on: sessionId)
+    case .tabs(let activeSessionId, let sessionIds):
+      let tabSessionIds = sessionIds.filter { isPaneSessionVisible($0) || sleepingSessionIds.contains($0) }
+      let activeTabSessionIds = tabSessionIds.filter { isPaneSessionVisible($0) }
+      guard !activeTabSessionIds.isEmpty else {
+        return
+      }
+      let selectedSessionId =
+        activeSessionId.flatMap { activeTabSessionIds.contains($0) ? $0 : nil } ?? activeTabSessionIds[0]
+      setPaneTabs(tabSessionIds, activeSessionId: selectedSessionId, on: selectedSessionId)
+    case .split(_, _, let children):
+      for child in children {
+        syncPaneTabChrome(in: child)
+      }
     }
   }
 
@@ -11307,6 +11421,15 @@ private enum NativeSessionPersistenceProvider: String {
 }
 
 private enum NativeSessionPersistenceMode {
+  /**
+   CDXC:SessionPersistence 2026-05-19-16:59:
+   Agent commands launched from sidebar buttons must resolve the same zshrc
+   functions and aliases as direct Ghostty agent launches. Persistence providers
+   still own first-run replay prevention, but zmx and zellij should run that
+   first command through an interactive login zsh instead of a non-interactive
+   login shell.
+   */
+  private static let persistedInitialCommandShellFlag = "-lic"
   private static let zellijSessionNameMaxLength = 25
 
   static func attachCommand(
@@ -11449,10 +11572,14 @@ private enum NativeSessionPersistenceMode {
     sessionName: String
   ) -> String {
     let noticeCommand = persistenceNoticeShellCommand(provider: .tmux, sessionName: sessionName)
+    let initialCommand = shellCommandWithPersistenceNotice(
+      provider: .tmux,
+      sessionName: sessionName,
+      initialInput: initialInput)
     let script = """
       tmux_session=\(shellQuote(sessionName))
       tmux_cwd=\(shellQuote(cwd))
-      tmux_initial_input=\(shellQuote(initialInput ?? ""))
+      tmux_initial_command=\(shellQuote(initialCommand))
       tmux_notice_command=\(shellQuote(noticeCommand))
       tmux_created=0
       if ! command -v tmux >/dev/null 2>&1; then
@@ -11460,19 +11587,18 @@ private enum NativeSessionPersistenceMode {
         exit 127
       fi
       if ! tmux has-session -t "$tmux_session" 2>/dev/null; then
-        tmux new-session -d -s "$tmux_session" -c "$tmux_cwd"
+        if [ -n "$tmux_initial_command" ]; then
+          tmux new-session -d -s "$tmux_session" -c "$tmux_cwd" /bin/zsh \(persistedInitialCommandShellFlag) "$tmux_initial_command"
+        else
+          tmux new-session -d -s "$tmux_session" -c "$tmux_cwd"
+        fi
         tmux_created=1
       fi
       tmux set-option -t "$tmux_session" set-titles on >/dev/null
       tmux set-option -t "$tmux_session" set-titles-string '#T' >/dev/null
-      if [ "$tmux_created" = "1" ]; then
+      if [ "$tmux_created" = "1" ] && [ -z "$tmux_initial_command" ]; then
         tmux send-keys -t "$tmux_session" -l "$tmux_notice_command"
         tmux send-keys -t "$tmux_session" Enter
-      fi
-      if [ "$tmux_created" = "1" ] && [ -n "$tmux_initial_input" ]; then
-        # CDXC:TmuxMode 2026-05-05-06:31: Target the active pane by session
-        # name so user tmux base-index settings do not break first launch.
-        tmux send-keys -t "$tmux_session" -l "$tmux_initial_input"
       fi
       exec tmux attach-session -t "$tmux_session"
       """
@@ -11490,9 +11616,15 @@ private enum NativeSessionPersistenceMode {
 
      CDXC:SessionPersistence 2026-05-15-09:36
      New provider-backed sessions must announce their persistence manager at the
-     top of the terminal before any agent launch text runs. tmux receives the
-     notice through send-keys in the same newly created pane as the first agent
-     command, while restart attach remains read-only.
+     top of the terminal before any agent launch text runs. Empty tmux sessions
+     receive the notice through send-keys, while first-run command sessions run
+     the notice inside the hidden login-shell command. Restart attach remains
+     read-only.
+
+     CDXC:CommandPanes 2026-05-20-22:52:
+     tmux-backed command panes must not send the Ghostex action wrapper as
+     literal keystrokes because tmux scrollback would show the status heredoc.
+     Start the new pane with the hidden login-shell command instead.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
@@ -11533,7 +11665,7 @@ private enum NativeSessionPersistenceMode {
         /bin/zsh -lc "$zmx_persistence_notice_command"
       fi
       cd "$zmx_cwd" || exit
-      exec "$zmx_bin" attach "$zmx_session" /bin/zsh -lc "$zmx_initial_command"
+      exec "$zmx_bin" attach "$zmx_session" /bin/zsh \(persistedInitialCommandShellFlag) "$zmx_initial_command"
       """
     /**
      CDXC:SessionPersistence 2026-05-05-07:28
@@ -11863,7 +11995,7 @@ private enum NativeSessionPersistenceMode {
         pane {
           cwd \(zellijKdlString(cwd))
           command "/bin/zsh"
-          args "-lc" \(zellijKdlString(initialCommand))
+          args \(zellijKdlString(persistedInitialCommandShellFlag)) \(zellijKdlString(initialCommand))
         }
       }
       """
@@ -12175,10 +12307,20 @@ final class GhostexGhosttySurfaceView: NSView {
   @Published var searchState: GhostexGhosttySearchState? {
     didSet {
       searchNeedleCancellable = nil
+      appendSearchLog(
+        event: "nativeWorkspace.terminalSearch.surfaceStateChanged",
+        details: [
+          "hadOldState": oldValue != nil,
+          "hasNewState": searchState != nil,
+          "needleLength": searchState?.needle.count ?? 0,
+        ])
       if let searchState {
         searchNeedleCancellable = searchState.$needle
           .removeDuplicates()
           .sink { [weak self] needle in
+            self?.appendSearchLog(
+              event: "nativeWorkspace.terminalSearch.needlePublished",
+              details: ["needleLength": needle.count])
             self?.performBindingAction("search:\(needle)")
           }
       } else if oldValue != nil {
@@ -12286,6 +12428,11 @@ final class GhostexGhosttySurfaceView: NSView {
         ghostty_surface_set_focus(surface, true)
       }
     }
+    if searchState != nil {
+      appendSearchLog(
+        event: "nativeWorkspace.terminalSearch.surfaceBecomeFirstResponder",
+        details: ["result": result])
+    }
     return result
   }
 
@@ -12296,6 +12443,11 @@ final class GhostexGhosttySurfaceView: NSView {
       if let surface {
         ghostty_surface_set_focus(surface, false)
       }
+    }
+    if searchState != nil {
+      appendSearchLog(
+        event: "nativeWorkspace.terminalSearch.surfaceResignFirstResponder",
+        details: ["result": result])
     }
     return result
   }
@@ -12477,9 +12629,23 @@ final class GhostexGhosttySurfaceView: NSView {
     }
     switch event.charactersIgnoringModifiers?.lowercased() {
     case "f":
+      appendSearchLog(
+        event: "nativeWorkspace.terminalSearch.keyEquivalent",
+        details: [
+          "action": "start_search",
+          "keyCode": Int(event.keyCode),
+          "modifierFlags": Self.searchDebugModifierNames(event.modifierFlags),
+        ])
       performBindingAction("start_search")
       return true
     case "g":
+      appendSearchLog(
+        event: "nativeWorkspace.terminalSearch.keyEquivalent",
+        details: [
+          "action": flags.contains(.shift) ? "goto_previous_match" : "goto_next_match",
+          "keyCode": Int(event.keyCode),
+          "modifierFlags": Self.searchDebugModifierNames(event.modifierFlags),
+        ])
       if flags.contains(.shift) {
         _ = navigateSearchToPrevious()
       } else {
@@ -12529,12 +12695,35 @@ final class GhostexGhosttySurfaceView: NSView {
 
   @discardableResult
   func navigateSearchToNext() -> Bool {
-    performBindingAction("goto_next_match")
+    /**
+     CDXC:NativeTerminalSearch 2026-05-20-22:46:
+     Ghostty search navigation is a parameterized `navigate_search` binding.
+     Earlier `goto_*_match` strings are not valid Ghostty actions, so the
+     embedded search bar could receive Return, arrow, or button events and
+     still no-op because the binding API returned false.
+     */
+    let action = "navigate_search:next"
+    let didNavigate = performBindingAction(action)
+    appendSearchLog(
+      event: "nativeWorkspace.terminalSearch.navigateNext",
+      details: [
+        "action": action,
+        "didNavigate": didNavigate,
+      ])
+    return didNavigate
   }
 
   @discardableResult
   func navigateSearchToPrevious() -> Bool {
-    performBindingAction("goto_previous_match")
+    let action = "navigate_search:previous"
+    let didNavigate = performBindingAction(action)
+    appendSearchLog(
+      event: "nativeWorkspace.terminalSearch.navigatePrevious",
+      details: [
+        "action": action,
+        "didNavigate": didNavigate,
+      ])
+    return didNavigate
   }
 
   func setTerminalTitle(_ titlePointer: UnsafePointer<CChar>?) {
@@ -12555,6 +12744,12 @@ final class GhostexGhosttySurfaceView: NSView {
 
   func startSearch(_ action: ghostty_action_start_search_s) {
     let needle = action.needle.map { String(cString: $0) } ?? ""
+    appendSearchLog(
+      event: "nativeWorkspace.terminalSearch.startSearch",
+      details: [
+        "incomingNeedleLength": needle.count,
+        "wasActive": searchState != nil,
+      ])
     if let searchState {
       if !needle.isEmpty {
         searchState.needle = needle
@@ -12562,18 +12757,26 @@ final class GhostexGhosttySurfaceView: NSView {
     } else {
       searchState = GhostexGhosttySearchState(needle: needle)
     }
+    appendSearchLog(event: "nativeWorkspace.terminalSearch.focusNotificationPosted")
     NotificationCenter.default.post(name: .ghosttySearchFocus, object: self)
   }
 
   func endSearch() {
+    appendSearchLog(event: "nativeWorkspace.terminalSearch.endSearch")
     searchState = nil
   }
 
   func setSearchTotal(_ total: Int) {
+    appendSearchLog(
+      event: "nativeWorkspace.terminalSearch.totalUpdated",
+      details: ["total": total])
     searchState?.total = total >= 0 ? UInt(total) : nil
   }
 
   func setSearchSelected(_ selected: Int) {
+    appendSearchLog(
+      event: "nativeWorkspace.terminalSearch.selectedUpdated",
+      details: ["selected": selected])
     searchState?.selected = selected >= 0 ? UInt(selected) : nil
   }
 
@@ -12765,6 +12968,41 @@ final class GhostexGhosttySurfaceView: NSView {
     if flags.contains(.command) { mods |= GHOSTTY_MODS_SUPER.rawValue }
     if flags.contains(.capsLock) { mods |= GHOSTTY_MODS_CAPS.rawValue }
     return ghostty_input_mods_e(rawValue: mods)
+  }
+
+  private func appendSearchLog(event: String, details: [String: Any] = [:]) {
+    var payload = details
+    let firstResponder = window?.firstResponder
+    payload["firstResponderClass"] = firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+    payload["firstResponderIsSurface"] = firstResponder === self
+    payload["focused"] = focused
+    payload["hasSurface"] = surface != nil
+    payload["isHidden"] = isHidden
+    payload["needleLength"] = searchState?.needle.count ?? 0
+    payload["sessionId"] = ghostexSessionId ?? ""
+    payload["windowIsKey"] = window?.isKeyWindow ?? false
+    payload["windowNumber"] = window?.windowNumber ?? 0
+    /**
+     CDXC:NativeTerminalSearch 2026-05-19-09:02:
+     Embedded Ghostty search failures can happen before the floating AppKit
+     search bar receives input. Surface-level logs mark the command/action
+     boundary and responder state without recording the search query itself.
+     */
+    TerminalFocusDebugLog.append(event: event, details: payload)
+  }
+
+  static func searchDebugModifierNames(_ flags: NSEvent.ModifierFlags) -> [String] {
+    let normalizedFlags = flags.intersection(.deviceIndependentFlagsMask)
+    var names: [String] = []
+    if normalizedFlags.contains(.capsLock) { names.append("capsLock") }
+    if normalizedFlags.contains(.shift) { names.append("shift") }
+    if normalizedFlags.contains(.control) { names.append("control") }
+    if normalizedFlags.contains(.option) { names.append("option") }
+    if normalizedFlags.contains(.command) { names.append("command") }
+    if normalizedFlags.contains(.numericPad) { names.append("numericPad") }
+    if normalizedFlags.contains(.help) { names.append("help") }
+    if normalizedFlags.contains(.function) { names.append("function") }
+    return names
   }
 
   private func unshiftedCodepoint(from event: NSEvent) -> UInt32 {
@@ -12969,48 +13207,194 @@ private final class TerminalSearchTextFieldCell: NSTextFieldCell {
   }
 }
 
+private final class TerminalSearchCountLabelCell: NSTextFieldCell {
+  private static let verticalTextOffset: CGFloat = 2
+
+  override func drawingRect(forBounds rect: NSRect) -> NSRect {
+    adjustedTextFrame(super.drawingRect(forBounds: rect))
+  }
+
+  private func adjustedTextFrame(_ frame: NSRect) -> NSRect {
+    var nextFrame = frame
+    /**
+     CDXC:NativeTerminalSearch 2026-05-20-21:38:
+     The search result counter shares the compact find-box row with text and
+     icon controls, but AppKit label cells draw slightly high at this size.
+     Shift only the counter text rect down so current/total reads vertically
+     centered without changing button or input hit targets.
+     */
+    nextFrame.origin.y += Self.verticalTextOffset
+    return nextFrame
+  }
+}
+
 private final class TerminalSearchTextField: NSTextField {
   var onClose: (() -> Void)?
+  var onDiagnostic: ((String, [String: Any]) -> Void)?
   var onFindNext: (() -> Void)?
   var onFindPrevious: (() -> Void)?
+  var onFocusChanged: ((Bool) -> Void)?
+
+  override var acceptsFirstResponder: Bool {
+    true
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     guard event.type == .keyDown else {
       return super.performKeyEquivalent(with: event)
     }
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-    if flags.contains(.command),
-      flags.isDisjoint(with: [.control, .option]),
-      event.charactersIgnoringModifiers?.lowercased() == "g"
-    {
+    guard flags.contains(.command),
+      flags.isDisjoint(with: [.control, .option])
+    else {
+      return super.performKeyEquivalent(with: event)
+    }
+
+    switch event.charactersIgnoringModifiers?.lowercased() {
+    case "a":
+      onDiagnostic?(
+        "nativeWorkspace.terminalSearch.textFieldKeyEquivalent",
+        [
+          "action": "selectAll",
+          "keyCode": Int(event.keyCode),
+          "modifierFlags": GhostexGhosttySurfaceView.searchDebugModifierNames(event.modifierFlags),
+        ])
+      selectSearchText()
+      return true
+    case "g":
+      onDiagnostic?(
+        "nativeWorkspace.terminalSearch.textFieldKeyEquivalent",
+        [
+          "action": flags.contains(.shift) ? "findPrevious" : "findNext",
+          "keyCode": Int(event.keyCode),
+          "modifierFlags": GhostexGhosttySurfaceView.searchDebugModifierNames(event.modifierFlags),
+        ])
       if flags.contains(.shift) {
         onFindPrevious?()
       } else {
         onFindNext?()
       }
       return true
+    default:
+      return super.performKeyEquivalent(with: event)
     }
-    return super.performKeyEquivalent(with: event)
   }
 
   override func keyDown(with event: NSEvent) {
-    if event.keyCode == 53 {
+    onDiagnostic?(
+      "nativeWorkspace.terminalSearch.textFieldKeyDown",
+      [
+        "charactersIgnoringModifiersLength": event.charactersIgnoringModifiers?.count ?? 0,
+        "charactersLength": event.characters?.count ?? 0,
+        "keyCode": Int(event.keyCode),
+        "modifierFlags": GhostexGhosttySurfaceView.searchDebugModifierNames(event.modifierFlags),
+      ])
+    let navigationFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    if event.keyCode == 53, navigationFlags.isEmpty {
       onClose?()
       return
     }
     if event.keyCode == 36 || event.keyCode == 76 {
-      if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift) {
+      guard navigationFlags.isDisjoint(with: [.command, .control, .option]) else {
+        super.keyDown(with: event)
+        return
+      }
+      if navigationFlags.contains(.shift) {
         onFindPrevious?()
       } else {
         onFindNext?()
       }
       return
     }
+    if event.keyCode == 126, navigationFlags.isEmpty {
+      onFindPrevious?()
+      return
+    }
+    if event.keyCode == 125, navigationFlags.isEmpty {
+      onFindNext?()
+      return
+    }
     super.keyDown(with: event)
   }
 
+  override func mouseDown(with event: NSEvent) {
+    onDiagnostic?(
+      "nativeWorkspace.terminalSearch.textFieldMouseDown",
+      [
+        "clickCount": event.clickCount,
+        "eventWindowNumber": event.window?.windowNumber ?? 0,
+        "localPoint": Self.describeLogPoint(convert(event.locationInWindow, from: nil)),
+      ])
+    super.mouseDown(with: event)
+  }
+
+  override func becomeFirstResponder() -> Bool {
+    let result = super.becomeFirstResponder()
+    onDiagnostic?(
+      "nativeWorkspace.terminalSearch.textFieldBecomeFirstResponder",
+      ["result": result])
+    if result {
+      onFocusChanged?(true)
+    }
+    return result
+  }
+
+  override func resignFirstResponder() -> Bool {
+    let result = super.resignFirstResponder()
+    onDiagnostic?(
+      "nativeWorkspace.terminalSearch.textFieldResignFirstResponder",
+      ["result": result])
+    if result {
+      onFocusChanged?(false)
+    }
+    return result
+  }
+
   override func cancelOperation(_ sender: Any?) {
+    onDiagnostic?("nativeWorkspace.terminalSearch.textFieldCancelOperation", [:])
     onClose?()
+  }
+
+  private func selectSearchText() {
+    if let editor = currentEditor() {
+      editor.selectAll(nil)
+    } else {
+      selectText(nil)
+    }
+  }
+
+  private static func describeLogPoint(_ point: CGPoint) -> [String: Double] {
+    [
+      "x": Double(point.x),
+      "y": Double(point.y),
+    ]
+  }
+}
+
+private final class TerminalSearchButton: NSButton {
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+}
+
+private enum SearchNavigationAction {
+  case close
+  case next
+  case previous
+
+  var logName: String {
+    switch self {
+    case .close:
+      return "close"
+    case .next:
+      return "next"
+    case .previous:
+      return "previous"
+    }
   }
 }
 
@@ -13033,15 +13417,19 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
     blue: 0x88 / 255,
     alpha: 0.42
   ).cgColor
+  private static let focusedBorderColor = NSColor(calibratedWhite: 1, alpha: 0.94).cgColor
 
   private weak var surfaceView: GhostexGhosttySurfaceView?
   private var searchState: GhostexGhosttySearchState?
   private var cancellables = Set<AnyCancellable>()
+  private var searchKeyMonitor: Any?
+  private var searchFocusObserver: NSObjectProtocol?
+  private var isSearchFieldFocused = false
   private let textField = TerminalSearchTextField()
   private let countLabel = NSTextField(labelWithString: "")
-  private let previousButton = NSButton()
-  private let nextButton = NSButton()
-  private let closeButton = NSButton()
+  private let previousButton = TerminalSearchButton()
+  private let nextButton = TerminalSearchButton()
+  private let closeButton = TerminalSearchButton()
 
   init(surfaceView: GhostexGhosttySurfaceView) {
     self.surfaceView = surfaceView
@@ -13064,10 +13452,68 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
     addSubview(previousButton)
     addSubview(nextButton)
     addSubview(closeButton)
+
+    searchFocusObserver = NotificationCenter.default.addObserver(
+      forName: .ghosttySearchFocus,
+      object: surfaceView,
+      queue: .main
+    ) { [weak self] _ in
+      self?.focusSearchField(reason: "ghosttySearchFocusNotification")
+    }
   }
 
   required init?(coder: NSCoder) {
     fatalError("init(coder:) is not supported")
+  }
+
+  deinit {
+    removeSearchKeyMonitor()
+    if let searchFocusObserver {
+      NotificationCenter.default.removeObserver(searchFocusObserver)
+    }
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard !isHidden, alphaValue > 0, bounds.contains(point) else {
+      return nil
+    }
+    /**
+     CDXC:NativeTerminalSearch 2026-05-20-10:45:
+     The floating Ghostty search bar sits above the terminal surface as a
+     manually laid-out AppKit view. Child controls must be explicit hit-test
+     owners so clicks on the text field and icon buttons do not stop at the
+     parent bar and then fall back to terminal keyboard focus.
+     */
+    for child in [closeButton, nextButton, previousButton, textField] as [NSView] {
+      guard !child.isHidden, child.alphaValue > 0 else {
+        continue
+      }
+      let childPoint = convert(point, to: child)
+      guard child.bounds.contains(childPoint) else {
+        continue
+      }
+      let hitView = child.hitTest(childPoint) ?? child
+      appendSearchLog(
+        "nativeWorkspace.terminalSearch.childHitTest",
+        details: [
+          "childView": String(describing: type(of: child)),
+          "hitView": String(describing: type(of: hitView)),
+          "searchPoint": Self.describeLogPoint(point),
+        ])
+      return hitView
+    }
+    return self
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.barMouseDown",
+      details: ["localPoint": Self.describeLogPoint(convert(event.locationInWindow, from: nil))])
+    focusSearchField(reason: "barMouseDown")
   }
 
   override func layout() {
@@ -13101,17 +13547,41 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
       width: max(right - inset - 2, 80),
       height: contentHeight
     )
+    if searchState != nil {
+      appendSearchLog(
+        "nativeWorkspace.terminalSearch.barLayout",
+        details: [
+          "closeButtonFrame": Self.describeLogFrame(closeButton.frame),
+          "countLabelFrame": Self.describeLogFrame(countLabel.frame),
+          "nextButtonFrame": Self.describeLogFrame(nextButton.frame),
+          "previousButtonFrame": Self.describeLogFrame(previousButton.frame),
+          "textFieldFrame": Self.describeLogFrame(textField.frame),
+        ])
+    }
   }
 
   func setSearchState(_ nextSearchState: GhostexGhosttySearchState?) {
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.barSetState",
+      details: [
+        "hadOldState": searchState != nil,
+        "hasNewState": nextSearchState != nil,
+        "incomingNeedleLength": nextSearchState?.needle.count ?? 0,
+      ])
     searchState = nextSearchState
     cancellables.removeAll()
     guard let nextSearchState else {
       isHidden = true
+      isSearchFieldFocused = false
+      removeSearchKeyMonitor()
+      updateFocusChrome()
+      appendSearchLog("nativeWorkspace.terminalSearch.barHidden")
       return
     }
 
     isHidden = false
+    installSearchKeyMonitorIfNeeded()
+    updateFocusChrome()
     updateNeedle(nextSearchState.needle)
     updateCount(selected: nextSearchState.selected, total: nextSearchState.total)
     nextSearchState.$needle
@@ -13128,8 +13598,7 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
       }
       .store(in: &cancellables)
     DispatchQueue.main.async { [weak self] in
-      guard let self, !self.isHidden else { return }
-      self.window?.makeFirstResponder(self.textField)
+      self?.focusSearchField(reason: "setSearchState")
     }
   }
 
@@ -13137,6 +13606,9 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
     guard notification.object as? NSTextField === textField else {
       return
     }
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.controlTextDidChange",
+      details: ["needleLength": textField.stringValue.count])
     searchState?.needle = textField.stringValue
   }
 
@@ -13148,6 +13620,9 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
     guard control === textField else {
       return false
     }
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.controlCommand",
+      details: ["commandSelector": NSStringFromSelector(commandSelector)])
     if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
       closeSearch()
       return true
@@ -13166,6 +13641,18 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
       navigateSearchFromReturn(shouldGoPrevious: true)
       return true
     }
+    if commandSelector == #selector(NSResponder.insertLineBreak(_:)) {
+      navigateSearchFromReturn(shouldGoPrevious: true)
+      return true
+    }
+    if commandSelector == #selector(NSResponder.moveUp(_:)) {
+      navigateSearchFromArrow(shouldGoPrevious: true)
+      return true
+    }
+    if commandSelector == #selector(NSResponder.moveDown(_:)) {
+      navigateSearchFromArrow(shouldGoPrevious: false)
+      return true
+    }
     return false
   }
 
@@ -13173,17 +13660,28 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
     textField.delegate = self
     textField.cell = TerminalSearchTextFieldCell(textCell: "")
     textField.placeholderString = "Search"
+    textField.isEditable = true
+    textField.isEnabled = true
+    textField.isSelectable = true
     textField.focusRingType = .none
     textField.isBezeled = false
     textField.drawsBackground = false
     textField.font = NSFont.systemFont(ofSize: 13)
     textField.textColor = NSColor(calibratedWhite: 0.94, alpha: 1)
     textField.onClose = { [weak self] in self?.closeSearch() }
+    textField.onDiagnostic = { [weak self] event, details in
+      self?.appendSearchLog(event, details: details)
+    }
     textField.onFindNext = { [weak self] in self?.findNext() }
     textField.onFindPrevious = { [weak self] in self?.findPrevious() }
+    textField.onFocusChanged = { [weak self] isFocused in
+      self?.isSearchFieldFocused = isFocused
+      self?.updateFocusChrome()
+    }
   }
 
   private func configureCountLabel() {
+    countLabel.cell = TerminalSearchCountLabelCell(textCell: "")
     countLabel.alignment = .right
     countLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     countLabel.textColor = NSColor(calibratedWhite: 0.72, alpha: 1)
@@ -13200,6 +13698,13 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
   }
 
   private func updateNeedle(_ needle: String) {
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.updateNeedle",
+      details: [
+        "currentTextLength": textField.stringValue.count,
+        "incomingNeedleLength": needle.count,
+        "willAssign": textField.stringValue != needle,
+      ])
     if textField.stringValue != needle {
       textField.stringValue = needle
     }
@@ -13217,6 +13722,12 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
 
   private func navigateSearchFromReturn(shouldGoPrevious: Bool) {
     let flags = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.returnNavigation",
+      details: [
+        "modifierFlags": GhostexGhosttySurfaceView.searchDebugModifierNames(flags),
+        "shouldGoPrevious": shouldGoPrevious,
+      ])
     if shouldGoPrevious || flags.contains(.shift) {
       findPrevious()
     } else {
@@ -13224,19 +13735,240 @@ private final class TerminalSearchBarView: NSView, NSTextFieldDelegate {
     }
   }
 
+  private func navigateSearchFromArrow(shouldGoPrevious: Bool) {
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.arrowNavigation",
+      details: ["shouldGoPrevious": shouldGoPrevious])
+    if shouldGoPrevious {
+      findPrevious()
+    } else {
+      findNext()
+    }
+  }
+
+  private func installSearchKeyMonitorIfNeeded() {
+    guard searchKeyMonitor == nil else {
+      return
+    }
+    /**
+     CDXC:NativeTerminalSearch 2026-05-20-21:38:
+     Once typing uses AppKit's shared NSTextView field editor, navigation keys
+     can bypass TerminalSearchTextField.keyDown and may not always arrive as
+     NSTextFieldDelegate command selectors before Ghostty regains focus.
+     While the search field or its field editor owns first responder, consume
+     only search-navigation keys: Return/Shift+Return, Up, Down, and Escape.
+     Printable input remains on the normal field-editor text path.
+     */
+    searchKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+      guard let self, self.shouldHandleSearchNavigationEvent(event) else {
+        return event
+      }
+      self.handleSearchNavigationEvent(event)
+      return nil
+    }
+  }
+
+  private func removeSearchKeyMonitor() {
+    if let searchKeyMonitor {
+      NSEvent.removeMonitor(searchKeyMonitor)
+      self.searchKeyMonitor = nil
+    }
+  }
+
+  private func shouldHandleSearchNavigationEvent(_ event: NSEvent) -> Bool {
+    guard searchState != nil, !isHidden, firstResponderIsSearchFieldOrEditor() else {
+      return false
+    }
+    return Self.searchNavigationAction(for: event) != nil
+  }
+
+  private func handleSearchNavigationEvent(_ event: NSEvent) {
+    guard let action = Self.searchNavigationAction(for: event) else {
+      return
+    }
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.navigationKeyMonitor",
+      details: [
+        "action": action.logName,
+        "keyCode": Int(event.keyCode),
+        "modifierFlags": GhostexGhosttySurfaceView.searchDebugModifierNames(event.modifierFlags),
+      ])
+    switch action {
+    case .close:
+      closeSearch()
+    case .next:
+      findNext()
+    case .previous:
+      findPrevious()
+    }
+  }
+
+  private static func searchNavigationAction(for event: NSEvent) -> SearchNavigationAction? {
+    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    guard flags.isDisjoint(with: [.command, .control, .option]) else {
+      return nil
+    }
+    switch event.keyCode {
+    case 36, 76:
+      return flags.contains(.shift) ? .previous : .next
+    case 53:
+      return flags.isEmpty ? .close : nil
+    case 125:
+      return flags.isEmpty ? .next : nil
+    case 126:
+      return flags.isEmpty ? .previous : nil
+    default:
+      return nil
+    }
+  }
+
   @objc private func findNext() {
-    _ = surfaceView?.navigateSearchToNext()
+    let didNavigate = surfaceView?.navigateSearchToNext() ?? false
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.nextButtonAction",
+      details: ["didNavigate": didNavigate])
   }
 
   @objc private func findPrevious() {
-    _ = surfaceView?.navigateSearchToPrevious()
+    let didNavigate = surfaceView?.navigateSearchToPrevious() ?? false
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.previousButtonAction",
+      details: ["didNavigate": didNavigate])
   }
 
   @objc private func closeSearch() {
+    appendSearchLog("nativeWorkspace.terminalSearch.closeAction")
+    removeSearchKeyMonitor()
     surfaceView?.searchState = nil
+    isSearchFieldFocused = false
+    updateFocusChrome()
     if let surfaceView {
-      window?.makeFirstResponder(surfaceView)
+      let didFocusSurface = window?.makeFirstResponder(surfaceView) ?? false
+      appendSearchLog(
+        "nativeWorkspace.terminalSearch.closeFocusSurfaceRequested",
+        details: ["didFocusSurface": didFocusSurface])
     }
+  }
+
+  private func focusSearchField(reason: String) {
+    guard searchState != nil, !isHidden else {
+      appendSearchLog(
+        "nativeWorkspace.terminalSearch.textFieldFocusSkipped",
+        details: ["reason": reason])
+      return
+    }
+    /**
+     CDXC:NativeTerminalSearch 2026-05-20-10:45:
+     Cmd+F must immediately move keyboard ownership into the Ghostty search
+     text field, including repeated Cmd+F while the bar is already open.
+     While the field owns focus, ordinary typing plus editing shortcuts such
+     as Cmd+A stay in the field; Return/Shift+Return navigate matches and
+     Escape closes search.
+     */
+    let didFocus = window?.makeFirstResponder(textField) ?? false
+    activateSearchFieldEditor(reason: reason)
+    isSearchFieldFocused = didFocus || firstResponderIsSearchFieldOrEditor()
+    updateFocusChrome()
+    appendSearchLog(
+      "nativeWorkspace.terminalSearch.textFieldFocusRequested",
+      details: [
+        "didFocus": didFocus,
+        "reason": reason,
+      ])
+  }
+
+  private func activateSearchFieldEditor(reason: String) {
+    /**
+     CDXC:NativeTerminalSearch 2026-05-20-11:35:
+     Focusing an NSTextField control is not enough for Ghostty search because
+     AppKit can leave the first responder as TerminalSearchTextField instead of
+     installing the shared NSTextView field editor. Start editing explicitly so
+     the caret appears, typed characters mutate the search string, and
+     controlTextDidChange publishes the query into Ghostty.
+
+     CDXC:NativeTerminalSearch 2026-05-20-14:38:
+     Repros showed the control becoming first responder while currentEditor()
+     stayed nil. Search input must be explicitly editable/selectable and must
+     request AppKit's shared field editor after focus so keyDown does not stop
+     at the control without an editable text session.
+     */
+    textField.selectText(nil)
+    let editor = textField.currentEditor() ?? window?.fieldEditor(true, for: textField)
+    if let editor {
+      window?.makeFirstResponder(editor)
+      let caretLocation = textField.stringValue.utf16.count
+      editor.selectedRange = NSRange(location: caretLocation, length: 0)
+      appendSearchLog(
+        "nativeWorkspace.terminalSearch.textFieldEditorActivated",
+        details: [
+          "caretLocation": caretLocation,
+          "editorClass": String(describing: type(of: editor)),
+          "reason": reason,
+        ])
+    } else {
+      appendSearchLog(
+        "nativeWorkspace.terminalSearch.textFieldEditorMissing",
+        details: [
+          "isEditable": textField.isEditable,
+          "isEnabled": textField.isEnabled,
+          "isSelectable": textField.isSelectable,
+          "reason": reason,
+        ])
+    }
+  }
+
+  private func updateFocusChrome() {
+    let shouldHighlight = searchState != nil && (isSearchFieldFocused || firstResponderIsSearchFieldOrEditor())
+    layer?.borderColor = shouldHighlight ? Self.focusedBorderColor : Self.borderColor
+    layer?.borderWidth = shouldHighlight ? 2 : 1
+  }
+
+  private func firstResponderIsSearchFieldOrEditor() -> Bool {
+    let firstResponder = window?.firstResponder
+    return firstResponder === textField || firstResponder === textField.currentEditor()
+  }
+
+  private func appendSearchLog(_ event: String, details: [String: Any] = [:]) {
+    var payload = details
+    let firstResponder = window?.firstResponder
+    payload["barFrame"] = Self.describeLogFrame(frame)
+    payload["barHidden"] = isHidden
+    payload["firstResponderClass"] = firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+    payload["firstResponderIsTextField"] = firstResponder === textField
+    payload["firstResponderIsTextEditor"] = firstResponder === textField.currentEditor()
+    payload["searchFieldFocused"] = isSearchFieldFocused
+    payload["needleLength"] = searchState?.needle.count ?? 0
+    payload["sessionId"] = surfaceView?.ghostexSessionId ?? ""
+    payload["surfaceFocusedFlag"] = surfaceView?.focused ?? false
+    payload["textFieldFrame"] = Self.describeLogFrame(textField.frame)
+    payload["windowIsKey"] = window?.isKeyWindow ?? false
+    payload["windowNumber"] = window?.windowNumber ?? 0
+    /**
+     CDXC:NativeTerminalSearch 2026-05-19-09:02:
+     The floating Ghostty search box can be visible while AppKit refuses
+     clicks or text input. Search-bar logs capture responder transitions,
+     field-editor commands, and button action delivery without persisting the
+     query text.
+     */
+    TerminalFocusDebugLog.append(event: event, details: payload)
+  }
+
+  private static func describeLogFrame(_ frame: CGRect) -> [String: Double] {
+    [
+      "height": Double(frame.height),
+      "maxX": Double(frame.maxX),
+      "maxY": Double(frame.maxY),
+      "minX": Double(frame.minX),
+      "minY": Double(frame.minY),
+      "width": Double(frame.width),
+    ]
+  }
+
+  private static func describeLogPoint(_ point: CGPoint) -> [String: Double] {
+    [
+      "x": Double(point.x),
+      "y": Double(point.y),
+    ]
   }
 }
 
@@ -13548,13 +14280,13 @@ private final class TerminalTitleBarTabButton: NSButton {
     alpha: 1
   ).cgColor
   private static let sleepingIconColor = NSColor(calibratedWhite: 0.86, alpha: 0.42)
-  private static let delayedSendIconColor = NSColor(calibratedRed: 0xB6 / 255, green: 0xEC / 255, blue: 0xFF / 255, alpha: 0.9)
+  private static let delayedSendIconColor = NSColor(calibratedRed: 0xF5 / 255, green: 0x9E / 255, blue: 0x0B / 255, alpha: 0.96)
   private static let commandTabSeparatorColor = NSColor(calibratedWhite: 1, alpha: 0.10).cgColor
   private static let workspaceTabBaseRed: CGFloat = 0x05 / 255
   private static let workspaceTabBaseGreen: CGFloat = 0x06 / 255
   private static let workspaceTabBaseBlue: CGFloat = 0x08 / 255
   private static let sleepingIconSize: CGFloat = 9
-  private static let delayedSendIconSize: CGFloat = 10
+  private static let delayedSendIconSize: CGFloat = 13
   private static let activityIndicatorSize: CGFloat = 8
   private static let activityIndicatorTrailingPadding: CGFloat = 9
   private static let titleLeadingPadding: CGFloat = 8
@@ -14334,9 +15066,15 @@ private final class TerminalTitleBarTabButton: NSButton {
 
   private func drawDelayedSendIcon() {
     let baseRect = activityIndicatorFrame
+    /*
+     CDXC:DelayedSend 2026-05-21-12:21:
+     Native pane-tab Delayed Send indicators should read as a larger orange
+     timer in the same status slot as the sleeping moon, shifted down 3px from
+     the previous placement so the clock sits on the tab title bar baseline.
+     */
     let iconRect = CGRect(
       x: baseRect.midX - Self.delayedSendIconSize / 2,
-      y: floor((bounds.height - Self.delayedSendIconSize) / 2) + 1,
+      y: floor((bounds.height - Self.delayedSendIconSize) / 2) + 2,
       width: Self.delayedSendIconSize,
       height: Self.delayedSendIconSize)
     guard let image = NSImage(systemSymbolName: "clock", accessibilityDescription: nil) else {

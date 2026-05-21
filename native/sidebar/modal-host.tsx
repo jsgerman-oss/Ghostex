@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { Toaster, toast } from "sonner";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
 import { AgentsHubModal } from "../../sidebar/agents-hub-modal";
 import { CommandPalette } from "../../sidebar/command-palette";
@@ -16,7 +17,9 @@ import { SettingsModal, type SettingsModalTab } from "../../sidebar/settings-mod
 import { SessionRenameModal } from "../../sidebar/session-rename-modal";
 import { T3BrowserAccessModal } from "../../sidebar/t3-browser-access-modal";
 import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
+import { FirstLaunchSetupModal } from "../../sidebar/first-launch-setup-modal";
 import { TipsAndTricksModal } from "../../sidebar/tips-and-tricks-modal";
+import { WorktreeCreateModal } from "../../sidebar/worktree-create-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
 import type {
   ExtensionToSidebarMessage,
@@ -56,7 +59,9 @@ type AppModalKind =
   | "settings"
   | "t3BrowserAccess"
   | "t3ThreadId"
-  | "tipsAndTricks";
+  | "worktree"
+  | "tipsAndTricks"
+  | "firstLaunchSetup";
 
 type T3BrowserAccessMessage = Extract<ExtensionToSidebarMessage, { type: "showT3BrowserAccess" }>;
 type AgentsHubCatalogMessage = Extract<ExtensionToSidebarMessage, { type: "agentsHubCatalog" }>;
@@ -71,12 +76,15 @@ type AppModalHostMessage =
       initialTitle?: string;
       initialQuery?: string;
       message?: string;
+      projectId?: string;
+      projectName?: string;
       filePath?: string;
       initialFrame?: FloatingPromptEditorFrame;
       initialText?: string;
       lockedActionType?: SidebarActionType;
       language?: string;
       modal: AppModalKind;
+      prewarm?: boolean;
       requestId?: string;
       sessionId?: string;
       statusFile?: string;
@@ -85,6 +93,15 @@ type AppModalHostMessage =
       type: "open";
     }
   | { type: "close" }
+  | {
+      description?: string;
+      level?: "info" | "success" | "warning" | "error";
+      title: string;
+      type: "toast";
+    }
+  | { keepOpen?: boolean; type: "toastDismissed" }
+  | { type: "pickWorktreeImages" }
+  | { paths: string[]; type: "worktreeImageFilesPicked" }
   | { details?: string; event: string; type: "debugLog" }
   | { requestId: string; type: "floatingPromptEditorCloseAndSave" }
   | {
@@ -137,6 +154,7 @@ type FloatingPromptEditorState = {
   filePath: string;
   initialFrame?: FloatingPromptEditorFrame;
   initialText: string;
+  isPrewarm?: boolean;
   language: string;
   requestId: string;
   statusFile?: string;
@@ -170,9 +188,22 @@ const floatingPromptEditorMaximumWidth = 700;
  */
 const floatingPromptEditorMinimumWidth = 180;
 
+/**
+ * CDXC:PromptEditor 2026-05-19-10:05:
+ * Native opens and closes one hidden prompt-editor session during the macOS
+ * startup overlay so Monaco and the modal host finish their first-load work
+ * before Ctrl+G needs them.
+ */
+export const FLOATING_PROMPT_EDITOR_PREWARM_REQUEST_ID = "ghostex-floating-prompt-editor-prewarm";
+
 type T3ThreadIdModalState = {
   currentThreadId: string;
   sessionId: string;
+};
+
+type WorktreeModalState = {
+  projectId?: string;
+  projectName?: string;
 };
 
 const APP_MODAL_CONTEXT_MENU_EDITABLE_SELECTOR =
@@ -275,6 +306,35 @@ function isAppModalDebugLoggingEnabled(): boolean {
   return useSidebarStore.getState().hud.debuggingMode;
 }
 
+/**
+ * CDXC:PromptEditor 2026-05-19-11:20:
+ * Prompt-editor repro logs must land in ~/.ghostex/logs/native-prompt-editor-debug.log
+ * only while Settings debugging mode is enabled. Native owns the file; React posts
+ * structured events across the modal-host bridge so Monaco, hit regions, and focus
+ * can be correlated on one timeline.
+ */
+function appendPromptEditorDebugLog(
+  event: string,
+  details: Record<string, string | number | boolean | null | undefined> = {},
+) {
+  if (!isAppModalDebugLoggingEnabled()) {
+    return;
+  }
+  const payload = {
+    performanceNow: performance.now(),
+    ...details,
+  };
+  console.debug("[ghostex-prompt-editor]", event, payload);
+  postAppModalHostMessage(
+    {
+      details: JSON.stringify(payload),
+      event,
+      type: "promptEditorDebugLog",
+    },
+    "PromptEditor:debug",
+  );
+}
+
 function closeModal() {
   postAppModalHostMessage({ type: "close" }, "AppModals:close");
 }
@@ -328,6 +388,21 @@ function loadModalHostMonaco(): Promise<void> {
     document.head.appendChild(script);
   });
   return modalHostMonacoLoadPromise;
+}
+
+function moveMonacoCaretToEnd(monacoEditor: MonacoEditorInstance, text: string) {
+  const model = monacoEditor.getModel();
+  if (!model) {
+    return;
+  }
+  /**
+   * CDXC:PromptEditor 2026-05-19-10:05:
+   * Ctrl+G prompt editing should open with the caret at the end of the loaded
+   * buffer so users can append to an existing prompt immediately.
+   */
+  const endPosition = model.getPositionAt(text.length);
+  monacoEditor.setPosition?.(endPosition);
+  monacoEditor.revealPositionInCenterIfOutsideViewport?.(endPosition);
 }
 
 function getNextPromptEditorImageIndex(text: string): number {
@@ -518,6 +593,10 @@ function FloatingPromptEditorModal({
 
   useEffect(() => {
     if (!isOpen || !editor) {
+      appendPromptEditorDebugLog("react.lifecycle.closed", {
+        hadEditorRef: editorRef.current !== null,
+        requestId: editor?.requestId ?? null,
+      });
       editorContentListenerRef.current?.dispose();
       editorContentListenerRef.current = undefined;
       editorRef.current?.dispose();
@@ -546,16 +625,37 @@ function FloatingPromptEditorModal({
     failedImagePreviewPathsRef.current.clear();
     pendingImagePreviewPathRequestsRef.current.clear();
     pendingImagePreviewRequestIdsRef.current.clear();
+    appendPromptEditorDebugLog("react.lifecycle.opened", {
+      hasInitialFrame: editor.initialFrame !== undefined,
+      initialTextLength: editor.initialText.length,
+      isPrewarm: editor.isPrewarm === true,
+      requestId: editor.requestId,
+    });
   }, [editor?.requestId, isOpen]);
 
   useEffect(() => {
     if (!isOpen || !editor || !containerRef.current) {
+      if (isOpen && editor && !containerRef.current) {
+        appendPromptEditorDebugLog("react.monaco.waitingForContainer", {
+          requestId: editor.requestId,
+        });
+      }
       return;
     }
     let disposed = false;
+    appendPromptEditorDebugLog("react.monaco.loadStart", {
+      hasExistingMonaco: Boolean(window.monaco),
+      requestId: editor.requestId,
+    });
     loadModalHostMonaco()
       .then(() => {
         if (disposed || !containerRef.current || !window.monaco) {
+          appendPromptEditorDebugLog("react.monaco.createSkipped", {
+            disposed,
+            hasContainer: containerRef.current !== null,
+            hasMonacoGlobal: Boolean(window.monaco),
+            requestId: editor.requestId,
+          });
           return;
         }
         editorContentListenerRef.current?.dispose();
@@ -607,11 +707,34 @@ function FloatingPromptEditorModal({
           wordWrap: "on",
         }) as MonacoEditorInstance;
         editorRef.current = monacoEditor;
+        moveMonacoCaretToEnd(monacoEditor, editor.initialText);
+        const caretPosition = monacoEditor.getPosition();
         setImagePreviews(parsePromptEditorImagePreviews(monacoEditor.getValue()));
         editorContentListenerRef.current = monacoEditor.onDidChangeModelContent(() => {
           setImagePreviews(parsePromptEditorImagePreviews(monacoEditor.getValue()));
         });
+        if (editor.isPrewarm) {
+          appendPromptEditorDebugLog("react.monaco.prewarmReady", {
+            requestId: editor.requestId,
+            textLength: monacoEditor.getValue().length,
+          });
+          postAppModalHostMessage(
+            {
+              requestId: editor.requestId,
+              type: "floatingPromptEditorPrewarmReady",
+            },
+            "PromptEditor:prewarm",
+          );
+          return;
+        }
         monacoEditor.focus?.();
+        appendPromptEditorDebugLog("react.monaco.createdAndFocused", {
+          caretColumn: caretPosition?.column ?? null,
+          caretLine: caretPosition?.lineNumber ?? null,
+          documentHasFocus: document.hasFocus(),
+          requestId: editor.requestId,
+          textLength: monacoEditor.getValue().length,
+        });
       })
       .catch((error) => {
         postAppModalHostMessage(
@@ -625,6 +748,10 @@ function FloatingPromptEditorModal({
       });
     return () => {
       disposed = true;
+      appendPromptEditorDebugLog("react.monaco.effectCleanup", {
+        hadEditorRef: editorRef.current !== null,
+        requestId: editor?.requestId ?? null,
+      });
       editorContentListenerRef.current?.dispose();
       editorContentListenerRef.current = undefined;
       editorRef.current?.dispose();
@@ -814,6 +941,16 @@ function FloatingPromptEditorModal({
      * each move or resize so terminal panes and pins behind the transparent
      * modal WKWebView remain clickable and scrollable outside that rectangle.
      */
+    appendPromptEditorDebugLog("react.hitRegion.publish", {
+      frameHeight: frame.height,
+      frameLeft: frame.left,
+      frameTop: frame.top,
+      frameWidth: frame.width,
+      hasEditorRef: editorRef.current !== null,
+      innerHeight: window.innerHeight,
+      innerWidth: window.innerWidth,
+      requestId: editor.requestId,
+    });
     postAppModalHostMessage(
       {
         frame,
@@ -889,6 +1026,10 @@ function FloatingPromptEditorModal({
      * Escape should close an open image preview popup without counting as the
      * first or second Escape for prompt-editor cancellation. The popup is a
      * transient inspection layer above the editor, not an editor discard intent.
+     *
+     * CDXC:PromptEditor 2026-05-19-10:05:
+     * Cmd+S must save the prompt editor the same way Ctrl+G does so macOS users
+     * can use the standard save shortcut inside the floating writing pane.
      */
     const handleKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
@@ -898,7 +1039,10 @@ function FloatingPromptEditorModal({
         setOpenImagePreview(undefined);
         return;
       }
-      if (event.ctrlKey && !event.altKey && !event.metaKey && key === "g") {
+      if (
+        (event.ctrlKey && !event.altKey && !event.metaKey && key === "g") ||
+        (event.metaKey && !event.ctrlKey && !event.altKey && key === "s")
+      ) {
         event.preventDefault();
         event.stopPropagation();
         save();
@@ -1068,6 +1212,7 @@ function FloatingPromptEditorModal({
   const focusEditorFromPanelPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
     const target = event.target;
     const isMonacoPointer = target instanceof Element && target.closest(".floating-prompt-editor-monaco");
+    const monacoEditor = editorRef.current;
     /**
      * CDXC:PromptEditor 2026-05-17-02:15:
      * Clicking blank prompt-editor chrome should focus Monaco just like clicking
@@ -1075,17 +1220,36 @@ function FloatingPromptEditorModal({
      * after React's panel handler on non-editable targets, so prevent that blur
      * outside Monaco internals and refocus after the default phase.
      */
+    appendPromptEditorDebugLog("react.panelPointerDown", {
+      documentHasFocus: document.hasFocus(),
+      hasEditorRef: monacoEditor !== null,
+      isMonacoPointer: Boolean(isMonacoPointer),
+      pointerType: event.pointerType,
+      requestId: editor.requestId,
+      targetClass:
+        target instanceof Element && typeof target.className === "string" ? target.className : null,
+    });
     if (!isMonacoPointer) {
       event.preventDefault();
     }
-    editorRef.current?.focus?.();
+    monacoEditor?.focus?.();
     window.setTimeout(() => {
-      editorRef.current?.focus?.();
+      const refocusedEditor = editorRef.current;
+      refocusedEditor?.focus?.();
+      appendPromptEditorDebugLog("react.panelPointerDown.refocus", {
+        documentHasFocus: document.hasFocus(),
+        hasEditorRef: refocusedEditor !== null,
+        requestId: editor.requestId,
+      });
     }, 0);
   };
 
   return (
-    <div className="floating-prompt-editor-root" data-drag-mode={dragMode}>
+    <div
+      className="floating-prompt-editor-root"
+      data-drag-mode={dragMode}
+      data-prewarm={editor.isPrewarm ? "true" : undefined}
+    >
       <section
         aria-label="Prompt Editor"
         className="floating-prompt-editor-panel"
@@ -1106,7 +1270,7 @@ function FloatingPromptEditorModal({
              * current right edge during resize.
              */}
             <span className="floating-prompt-editor-title-text">{editor.title}</span>
-            <span className="floating-prompt-editor-title-shortcut">(Ctrl + G to save)</span>
+            <span className="floating-prompt-editor-title-shortcut">(Ctrl + G or Cmd + S to save)</span>
           </div>
           <div className="floating-prompt-editor-actions">
             <button
@@ -1122,13 +1286,13 @@ function FloatingPromptEditorModal({
               {isCancelConfirming ? "Confirm" : "Cancel"}
             </button>
             <button
-              aria-keyshortcuts="Control+G"
+              aria-keyshortcuts="Control+G Meta+S"
               aria-label="Save prompt editor"
               className="floating-prompt-editor-save"
               disabled={isSaving}
               onClick={save}
               onPointerDown={(event) => event.stopPropagation()}
-              title="press ctrl+g to save"
+              title="press ctrl+g or cmd+s to save"
               type="button"
             >
               {isSaving ? "Saving" : "Save"}
@@ -1252,11 +1416,16 @@ function AppModalHost() {
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
+    worktree,
     ghostexFolderStats,
   } = useModalStateFromNative();
   const [ghostexFolderStatsLoading, setGhostexFolderStatsLoading] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
+  const agents = useSidebarStore((state) => state.hud.agents);
   const commands = useSidebarStore((state) => state.hud.commands);
+  const projectSettingsProjects = useSidebarStore(
+    (state) => state.hud.projectSettingsProjects ?? [],
+  );
   const customThemeColor = useSidebarStore((state) => state.hud.customThemeColor);
   const theme = useSidebarStore((state) => state.hud.theme);
   const isSettingsRenderable = isSettingsModalKind(activeModal) && settings !== undefined;
@@ -1272,6 +1441,7 @@ function AppModalHost() {
     settings,
     t3BrowserAccess,
     t3ThreadId,
+    worktree,
   });
 
   /**
@@ -1284,6 +1454,12 @@ function AppModalHost() {
     if (!activeModal || !isActiveModalRenderable) {
       return;
     }
+    if (activeModal === "floatingPromptEditor" && floatingPromptEditor) {
+      appendPromptEditorDebugLog("react.presented", {
+        documentHasFocus: document.hasFocus(),
+        requestId: floatingPromptEditor.requestId,
+      });
+    }
     postAppModalHostMessage(
       {
         modal: activeModal,
@@ -1291,7 +1467,7 @@ function AppModalHost() {
       },
       "AppModals:presented",
     );
-  }, [activeModal, isActiveModalRenderable]);
+  }, [activeModal, floatingPromptEditor?.requestId, isActiveModalRenderable]);
 
   useEffect(() => {
     if (activeModal !== "settings") {
@@ -1453,6 +1629,25 @@ function AppModalHost() {
         }}
         sessionTitle={delayedSend?.title}
       />
+      {/*
+       * CDXC:Worktrees 2026-05-18-23:07:
+       * Creating a project worktree is a full-window modal flow because it selects an agent, collects a first prompt, and can attach image file paths before native creates the branch/worktree.
+       */}
+      <WorktreeCreateModal
+        agents={agents}
+        isOpen={activeModal === "worktree" && worktree !== undefined}
+        onCancel={closeModal}
+        onConfirm={(draft) => {
+          vscode.postMessage({
+            agentId: draft.agentId,
+            projectId: worktree?.projectId,
+            prompt: draft.prompt,
+            type: "createProjectWorktree",
+          });
+          closeModal();
+        }}
+        projectName={worktree?.projectName}
+      />
       <ScratchPadModal
         isOpen={activeModal === "scratchPad"}
         onClose={closeModal}
@@ -1522,6 +1717,7 @@ function AppModalHost() {
           vscode.postMessage({ type: "testAgentTaskCompletion" });
         }}
         onClose={closeModal}
+        projects={projectSettingsProjects}
         settings={settings}
         vscode={vscode}
         ghostexFolderStats={ghostexFolderStats}
@@ -1529,9 +1725,25 @@ function AppModalHost() {
       />
       <TipsAndTricksModal
         isOpen={activeModal === "tipsAndTricks"}
+        onClose={() => {
+          closeModal();
+          vscode.postMessage({ type: "tipsAndTricksClosed" });
+        }}
+        settings={settings}
+        theme={theme}
+      />
+      <FirstLaunchSetupModal
+        isOpen={activeModal === "firstLaunchSetup"}
+        onChange={(nextSettings) => {
+          vscode.postMessage({
+            settings: nextSettings,
+            type: "updateSettings",
+          });
+        }}
         onClose={closeModal}
         settings={settings}
         theme={theme}
+        vscode={vscode}
       />
       <T3ThreadIdModal
         currentThreadId={t3ThreadId?.currentThreadId ?? ""}
@@ -1590,7 +1802,6 @@ function AppModalHost() {
             commandId: draft.commandId,
             icon: draft.icon,
             iconColor: draft.iconColor,
-            isGlobal: draft.isGlobal,
             name: draft.name,
             playCompletionSound: draft.playCompletionSound,
             type: "saveSidebarCommand",
@@ -1605,6 +1816,7 @@ function AppModalHost() {
         onCancel={closeModal}
         onSave={(draft) => {
           vscode.postMessage({
+            acceptAllMode: draft.acceptAllMode,
             agentId: draft.agentId,
             command: draft.command,
             icon: draft.icon,
@@ -1614,6 +1826,7 @@ function AppModalHost() {
           closeModal();
         }}
       />
+      <Toaster position="bottom-center" richColors />
     </>
   );
 }
@@ -1637,7 +1850,14 @@ function useModalStateFromNative() {
   const [renameSession, setRenameSession] = useState<RenameSessionModalState>();
   const [t3BrowserAccess, setT3BrowserAccess] = useState<T3BrowserAccessMessage>();
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
+  const [worktree, setWorktree] = useState<WorktreeModalState>();
   const [ghostexFolderStats, setGhostexFolderStats] = useState<SidebarGhostexFolderStatsMessage>();
+  const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
+  const toastTokenRef = useRef(0);
+
+  useEffect(() => {
+    activeModalRef.current = activeModal;
+  }, [activeModal]);
 
   useEffect(() => {
     const handleMessage = (event: Event) => {
@@ -1677,6 +1897,7 @@ function useModalStateFromNative() {
             setFloatingPromptEditor(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else if (message.modal === "firstUserMessage") {
             if (typeof message.message !== "string" || !message.message.trim()) {
               throw new Error("First message modal request is missing message text.");
@@ -1692,6 +1913,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else if (message.modal === "floatingPromptEditor") {
             if (
               typeof message.requestId !== "string" ||
@@ -1712,10 +1934,18 @@ function useModalStateFromNative() {
              * hints, so wrapped prose and Markdown tokenization stay consistent
              * in the floating pane.
              */
+            appendPromptEditorDebugLog("react.openMessage", {
+              filePath: message.filePath,
+              hasInitialFrame: message.initialFrame !== undefined,
+              initialTextLength: message.initialText.length,
+              isPrewarm: message.prewarm === true,
+              requestId: message.requestId,
+            });
             setFloatingPromptEditor({
               filePath: message.filePath,
               initialFrame: message.initialFrame,
               initialText: message.initialText,
+              isPrewarm: message.prewarm === true,
               language: "markdown",
               requestId: message.requestId,
               statusFile: message.statusFile,
@@ -1728,6 +1958,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else if (message.modal === "delayedSend") {
             if (!message.sessionId) {
               throw new Error("Delayed Send modal request is missing sessionId.");
@@ -1751,6 +1982,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else if (message.modal === "findPreviousSession") {
             setFindPreviousSession({
               initialQuery:
@@ -1763,6 +1995,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else if (message.modal === "t3BrowserAccess") {
             if (!message.access) {
               throw new Error("T3 browser access modal request is missing access details.");
@@ -1781,6 +2014,7 @@ function useModalStateFromNative() {
             setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else if (message.modal === "t3ThreadId") {
             if (!message.sessionId || typeof message.threadId !== "string") {
               throw new Error("T3 thread id modal request is missing sessionId or threadId.");
@@ -1796,6 +2030,20 @@ function useModalStateFromNative() {
             setFloatingPromptEditor(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
+            setWorktree(undefined);
+          } else if (message.modal === "worktree") {
+            setWorktree({
+              projectId: typeof message.projectId === "string" ? message.projectId : undefined,
+              projectName: typeof message.projectName === "string" ? message.projectName : undefined,
+            });
+            setConfig({});
+            setDelayedSend(undefined);
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
           } else if (message.modal === "commandConfig") {
             if (!message.commandDraft) {
               throw new Error("Command config modal request is missing commandDraft.");
@@ -1811,6 +2059,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else if (message.modal === "agentConfig") {
             if (!message.agentDraft) {
               throw new Error("Agent config modal request is missing agentDraft.");
@@ -1823,6 +2072,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else {
             setConfig({});
             setDelayedSend(undefined);
@@ -1832,6 +2082,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setWorktree(undefined);
           }
           if (message.modal === "settings") {
             setGhostexFolderStats(undefined);
@@ -1844,6 +2095,11 @@ function useModalStateFromNative() {
         }
 
         if (message.type === "close") {
+          if (activeModalRef.current === "floatingPromptEditor") {
+            appendPromptEditorDebugLog("react.closeMessage", {
+              activeModal: activeModalRef.current,
+            });
+          }
           if (isAppModalDebugLoggingEnabled()) {
             postAppModalHostMessage(
               {
@@ -1863,8 +2119,37 @@ function useModalStateFromNative() {
           setRenameSession(undefined);
           setT3BrowserAccess(undefined);
           setT3ThreadId(undefined);
+          setWorktree(undefined);
           setGhostexFolderStats(undefined);
           setAgentsHubCatalog(undefined);
+          return;
+        }
+
+        if (message.type === "toast") {
+          /**
+           * CDXC:Worktrees 2026-05-18-23:07:
+           * Native worktree and git actions report progress through the app-modal host toast layer so command feedback appears over the full Ghostex window without stealing focus from terminal panes.
+           */
+          toastTokenRef.current += 1;
+          const toastToken = toastTokenRef.current;
+          if (message.level === "error") {
+            toast.error(message.title, { description: message.description });
+          } else if (message.level === "warning") {
+            toast.warning(message.title, { description: message.description });
+          } else if (message.level === "success") {
+            toast.success(message.title, { description: message.description });
+          } else {
+            toast.message(message.title, { description: message.description });
+          }
+          window.setTimeout(() => {
+            if (toastToken !== toastTokenRef.current) {
+              return;
+            }
+            postAppModalHostMessage(
+              { keepOpen: activeModalRef.current !== undefined, type: "toastDismissed" },
+              "AppModals:toastDismissed",
+            );
+          }, 4_200);
           return;
         }
 
@@ -1892,6 +2177,9 @@ function useModalStateFromNative() {
 
     window.addEventListener("ghostex-app-modal-host-message", handleMessage);
     postAppModalHostMessage({ type: "ready" }, "AppModals:ready");
+    loadModalHostMonaco().catch((error) => {
+      logAppModalError("PromptEditor:prewarmMonacoLoad", error);
+    });
     return () => {
       window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
     };
@@ -1909,6 +2197,7 @@ function useModalStateFromNative() {
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
+    worktree,
     ghostexFolderStats,
   };
 }
@@ -1958,6 +2247,7 @@ function isModalRenderable({
   settings,
   t3BrowserAccess,
   t3ThreadId,
+  worktree,
 }: {
   activeModal: AppModalKind | undefined;
   config: ConfigModalState;
@@ -1969,6 +2259,7 @@ function isModalRenderable({
   settings: unknown;
   t3BrowserAccess: T3BrowserAccessMessage | undefined;
   t3ThreadId: T3ThreadIdModalState | undefined;
+  worktree: WorktreeModalState | undefined;
 }): boolean {
   switch (activeModal) {
     case undefined:
@@ -2000,11 +2291,14 @@ function isModalRenderable({
       return t3BrowserAccess !== undefined;
     case "t3ThreadId":
       return t3ThreadId !== undefined;
+    case "worktree":
+      return worktree !== undefined;
     case "daemonSessions":
     case "pinnedPrompts":
     case "previousSessions":
     case "scratchPad":
     case "tipsAndTricks":
+    case "firstLaunchSetup":
       return true;
   }
 }

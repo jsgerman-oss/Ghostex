@@ -1384,11 +1384,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self?.handleSessionStatusIndicatorClick(status)
       })
     self.sessionStatusIndicatorController = sessionStatusIndicatorController
-    let petOverlayController = PetOverlayController { [weak self] projectId, sessionId in
-      Task { @MainActor in
-        self?.handlePetOverlayActivityClick(projectId: projectId, sessionId: sessionId)
-      }
-    }
+    let petOverlayController = PetOverlayController(
+      onActivityClick: { [weak self] projectId, sessionId in
+        Task { @MainActor in
+          self?.handlePetOverlayActivityClick(projectId: projectId, sessionId: sessionId)
+        }
+      },
+      onGoToGhostex: { [weak self] in
+        Task { @MainActor in
+          self?.handlePetOverlayGoToGhostex()
+        }
+      },
+      onStatusClick: { [weak self] status in
+        Task { @MainActor in
+          /**
+           CDXC:PetOverlay 2026-05-21-02:19:
+           Collapsed pet status badges must behave exactly like the floating
+           status indicator badges: raise Ghostex, record the native activation,
+           and let the sidebar choose the matching aggregate session target.
+           */
+          self?.recordNativeActivationRequest(
+            reason: "petOverlayStatusIndicatorClick.\(status.rawValue)")
+          NSApp.activate(ignoringOtherApps: true)
+          self?.handleSessionStatusIndicatorClick(status)
+        }
+      },
+      onSleepPet: { [weak self] in
+        Task { @MainActor in
+          (self?.window?.contentView as? ghostexRootView)?.sleepPetOverlayFromPet()
+        }
+      })
     self.petOverlayController = petOverlayController
     petOverlayController.load(webAssets: ghostexRootView.resolveWebAssets())
     let root = ghostexRootView(
@@ -1467,7 +1492,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.onKeyEquivalent = { [weak root] event in
       root?.handleHotkeyEquivalent(event) ?? false
     }
-    window.onActivationBoundaryEvent = { [weak self] event, phase in
+    window.onActivationBoundaryEvent = { [weak self, weak root] event, phase in
+      if phase == "windowSendEvent.beforeSuper" {
+        root?.handleWindowMouseDownBeforeDispatch(event)
+      }
       self?.logNativeActivationBoundaryInputEvent(event, phase: phase)
     }
     window.title = "Ghostex"
@@ -1575,6 +1603,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window?.makeKeyAndOrderFront(nil)
     bridge?.send(event)
     (window?.contentView as? ghostexRootView)?.postHostEvent(event)
+  }
+
+  @MainActor
+  private func handlePetOverlayGoToGhostex() {
+    /**
+     CDXC:PetOverlay 2026-05-21-14:59:
+     The pet context menu's Go to Ghostex item should reverse both macOS hide and
+     minimize states before raising the main window. This is a pure app activation
+     action, not a session-selection event, so it does not send a sidebar host
+     event after bringing Ghostex forward.
+     */
+    recordNativeActivationRequest(reason: "petOverlayContextMenu.goToGhostex")
+    NSApp.unhide(nil)
+    if window?.isMiniaturized == true {
+      window?.deminiaturize(nil)
+    }
+    NSApp.activate(ignoringOtherApps: true)
+    window?.makeKeyAndOrderFront(nil)
+    window?.orderFrontRegardless()
   }
 
   @MainActor
@@ -1876,6 +1923,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
           sessionId: "bridge-error",
           sessionPersistenceName: nil,
           sessionPersistenceProvider: nil,
+          /**
+           CDXC:CliBridgeTransport 2026-05-21-00:56:
+           The bridge-error terminal must remain a normal shell session that receives diagnostic initial input, so the explicit shellCommand contract is nil here.
+           */
+          shellCommand: nil,
           title: "Bridge error",
           tmuxMode: nil,
           tmuxSessionName: nil
@@ -2152,6 +2204,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         targetApp: command.targetApp, workspacePath: command.workspacePath)
     case .sidebarCliCommand(let command):
       runSidebarCliCommand(command)
+    case .sidebarContextMenuOpened:
+      /**
+       CDXC:SidebarContextMenu 2026-05-21-04:27:
+       HostCommand is shared by the sidebar WKWebView and the localhost CLI bridge,
+       so app-level dispatch must keep the sidebar context-menu lifecycle exhaustive
+       and forward it to the root view that owns native outside-click monitoring.
+       */
+      (window?.contentView as? ghostexRootView)?.noteSidebarContextMenuOpenedFromHost()
+    case .sidebarContextMenuClosed:
+      (window?.contentView as? ghostexRootView)?.noteSidebarContextMenuClosedFromHost()
     }
   }
 
@@ -3578,6 +3640,7 @@ final class ghostexRootView: NSView {
   private static let startupOverlayIconOpacity: CGFloat = 0.14
   private static let startupOverlayIconSize: CGFloat = 132
   private static let floatingPromptEditorFrameDefaultsKey = "ghostex.floatingPromptEditor.frame.v1"
+  private static let floatingPromptEditorPrewarmRequestId = "ghostex-floating-prompt-editor-prewarm"
 
   let workspaceView: TerminalWorkspaceView
   var sidebarWebView: WKWebView { sidebarView }
@@ -3610,6 +3673,9 @@ final class ghostexRootView: NSView {
   private var pendingModalHostOpenMessage: [String: Any]?
   private var latestModalHostSidebarState: [String: Any]?
   private var activeFloatingPromptEditor: ActiveFloatingPromptEditor?
+  private var hasPrewarmedFloatingPromptEditor = false
+  private var isPrewarmingFloatingPromptEditor = false
+  private var floatingPromptEditorPrewarmTempFileURL: URL?
   private var pendingHotkeyPrefix: String?
   private var pendingHotkeyPrefixExpiresAt: Date?
   private var t3CodeRuntimeProcess: Process?
@@ -3618,6 +3684,7 @@ final class ghostexRootView: NSView {
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
   private var titlebarOutsideClickMonitor: Any?
+  private var sidebarContextMenuOpenCount = 0
   private lazy var sessionAttentionNotificationController =
     SessionAttentionNotificationController { [weak self] sessionId in
       self?.handleSessionAttentionNotificationClick(sessionId)
@@ -3829,6 +3896,7 @@ final class ghostexRootView: NSView {
         return event
       }
       let point = self.convert(event.locationInWindow, from: nil)
+      self.dismissSidebarContextMenuForOutsideClick(at: point)
       if self.titlebarChromeView.containsInteractiveHitRegion(
         self.titlebarChromeView.convert(point, from: self)
       ) {
@@ -3844,6 +3912,63 @@ final class ghostexRootView: NSView {
       self.titlebarChromeView.closeOpenDropdowns()
       return event
     }
+  }
+
+  func handleWindowMouseDownBeforeDispatch(_ event: NSEvent) {
+    guard Self.isMouseDownEvent(event) else {
+      return
+    }
+    let point = convert(event.locationInWindow, from: nil)
+    dismissSidebarContextMenuForOutsideClick(at: point)
+  }
+
+  private func dismissSidebarContextMenuForOutsideClick(at pointInRoot: NSPoint) {
+    guard sidebarContextMenuOpenCount > 0 else {
+      return
+    }
+    guard !sidebarView.frame.contains(pointInRoot) else {
+      return
+    }
+    /**
+     CDXC:SidebarContextMenu 2026-05-21-04:35:
+     Terminal panes, titlebar chrome, and other non-sidebar surfaces must close
+     open sidebar context menus before the original AppKit click continues.
+     */
+    dismissSidebarContextMenuFromNativeOutsideClick()
+  }
+
+  private static func isMouseDownEvent(_ event: NSEvent) -> Bool {
+    switch event.type {
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private func noteSidebarContextMenuOpened() {
+    sidebarContextMenuOpenCount += 1
+  }
+
+  private func noteSidebarContextMenuClosed() {
+    sidebarContextMenuOpenCount = max(0, sidebarContextMenuOpenCount - 1)
+  }
+
+  func noteSidebarContextMenuOpenedFromHost() {
+    noteSidebarContextMenuOpened()
+  }
+
+  func noteSidebarContextMenuClosedFromHost() {
+    noteSidebarContextMenuClosed()
+  }
+
+  private func dismissSidebarContextMenuFromNativeOutsideClick() {
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.dismissSidebarContextMenu?.();
+      undefined;
+      """
+    )
   }
 
   private func installStartupOverlay() {
@@ -3943,6 +4068,10 @@ final class ghostexRootView: NSView {
   }
 
   private func openFloatingPromptEditor(_ command: OpenFloatingEditor) {
+    let interruptedPrewarm = isPrewarmingFloatingPromptEditor
+    if interruptedPrewarm {
+      finishFloatingPromptEditorPrewarm()
+    }
     let requestId = command.requestId ?? "floating-monaco-editor-\(UUID().uuidString)"
     guard let filePath = command.filePath?.trimmingCharacters(in: .whitespacesAndNewlines),
       !filePath.isEmpty
@@ -3975,6 +4104,18 @@ final class ghostexRootView: NSView {
      */
     let initialFrame = floatingPromptEditorInitialFrame(originatingSessionId: command.originatingSessionId)
     updateFloatingPromptEditorHitRegion(frame: initialFrame)
+    PromptEditorDebugLog.append(
+      event: "native.open",
+      details: [
+        "filePath": filePath,
+        "initialTextLength": initialText.count,
+        "interruptedPrewarm": interruptedPrewarm,
+        "modalHostHidden": modalHostView.isHidden,
+        "originatingSessionId": command.originatingSessionId ?? "",
+        "requestId": requestId,
+        "startupOverlayVisible": startupOverlayView.superview === self && startupOverlayView.alphaValue > 0,
+      ]
+    )
     dispatchModalHostOpenMessage([
       "filePath": filePath,
       "initialFrame": initialFrame,
@@ -3996,6 +4137,88 @@ final class ghostexRootView: NSView {
       return
     }
     dispatchModalHostMessage(message)
+  }
+
+  /**
+   CDXC:PromptEditor 2026-05-19-10:05:
+   The first real Ctrl+G prompt-editor open is slow because Monaco and the
+   modal host pay one-time startup costs. Open and close one hidden editor
+   session as soon as the modal host is ready, ideally while the macOS startup
+   overlay is still visible, so later launches reuse the warmed Monaco runtime.
+   */
+  private func prewarmFloatingPromptEditorIfNeeded() {
+    guard !hasPrewarmedFloatingPromptEditor,
+      !isPrewarmingFloatingPromptEditor,
+      activeFloatingPromptEditor == nil
+    else {
+      return
+    }
+
+    isPrewarmingFloatingPromptEditor = true
+    let tempURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("ghostex-prompt-editor-prewarm-\(UUID().uuidString).md")
+    do {
+      try "".write(to: tempURL, atomically: true, encoding: .utf8)
+    } catch {
+      isPrewarmingFloatingPromptEditor = false
+      PromptEditorDebugLog.append(
+        event: "native.prewarm.tempFileFailed",
+        details: ["error": error.localizedDescription]
+      )
+      return
+    }
+    PromptEditorDebugLog.append(
+      event: "native.prewarm.start",
+      details: [
+        "modalHostHidden": modalHostView.isHidden,
+        "modalHostReady": isModalHostReady,
+        "startupOverlayVisible": startupOverlayView.superview === self && startupOverlayView.alphaValue > 0,
+      ]
+    )
+    floatingPromptEditorPrewarmTempFileURL = tempURL
+    activeFloatingPromptEditor = ActiveFloatingPromptEditor(
+      filePath: tempURL.path,
+      originatingSessionId: nil,
+      requestId: Self.floatingPromptEditorPrewarmRequestId,
+      statusFile: nil
+    )
+    let initialFrame = floatingPromptEditorInitialFrame(originatingSessionId: nil)
+    updateFloatingPromptEditorHitRegion(frame: initialFrame)
+    dispatchModalHostOpenMessage([
+      "filePath": tempURL.path,
+      "initialFrame": initialFrame,
+      "initialText": "",
+      "language": "markdown",
+      "modal": "floatingPromptEditor",
+      "prewarm": true,
+      "requestId": Self.floatingPromptEditorPrewarmRequestId,
+      "statusFile": "",
+      "title": "Prompt Editor",
+      "type": "open",
+    ])
+  }
+
+  private func finishFloatingPromptEditorPrewarm() {
+    guard isPrewarmingFloatingPromptEditor else {
+      return
+    }
+    PromptEditorDebugLog.append(
+      event: "native.prewarm.finish",
+      details: [
+        "modalHostHidden": modalHostView.isHidden,
+        "requestId": Self.floatingPromptEditorPrewarmRequestId,
+      ]
+    )
+    hasPrewarmedFloatingPromptEditor = true
+    isPrewarmingFloatingPromptEditor = false
+    activeFloatingPromptEditor = nil
+    modalHostView.setTopLeftHitRegions(nil)
+    dispatchModalHostMessage(["type": "close"])
+    modalHostView.isHidden = true
+    if let tempURL = floatingPromptEditorPrewarmTempFileURL {
+      try? FileManager.default.removeItem(at: tempURL)
+      floatingPromptEditorPrewarmTempFileURL = nil
+    }
   }
 
   private func floatingPromptEditorInitialFrame(originatingSessionId: String?) -> [String: CGFloat] {
@@ -4100,9 +4323,21 @@ final class ghostexRootView: NSView {
       modalHostView.setTopLeftHitRegions([])
       return
     }
-    modalHostView.setTopLeftHitRegions([
-      CGRect(x: left, y: top, width: width, height: height),
-    ])
+    let region = CGRect(x: left, y: top, width: width, height: height)
+    modalHostView.setTopLeftHitRegions([region])
+    PromptEditorDebugLog.append(
+      event: "native.hitRegion.applied",
+      details: [
+        "height": height,
+        "left": left,
+        "modalHostBoundsHeight": modalHostView.bounds.height,
+        "modalHostBoundsWidth": modalHostView.bounds.width,
+        "modalHostHidden": modalHostView.isHidden,
+        "requestId": activeFloatingPromptEditor?.requestId ?? "",
+        "top": top,
+        "width": width,
+      ]
+    )
   }
 
   private func updateFloatingPromptEditorHitRegion(message: [String: Any]) {
@@ -4111,6 +4346,15 @@ final class ghostexRootView: NSView {
       active.requestId == requestId,
       let frame = message["frame"] as? [String: Any]
     else {
+      PromptEditorDebugLog.append(
+        event: "native.hitRegion.messageIgnored",
+        details: [
+          "activeRequestId": activeFloatingPromptEditor?.requestId ?? "",
+          "hasActiveEditor": activeFloatingPromptEditor != nil,
+          "hasFrame": message["frame"] != nil,
+          "messageRequestId": message["requestId"] as? String ?? "",
+        ]
+      )
       return
     }
     let hitRegion = [
@@ -4120,7 +4364,9 @@ final class ghostexRootView: NSView {
       "width": Self.cgFloatValue(frame["width"]),
     ].compactMapValues { $0 }
     let clampedFrame = clampedFloatingPromptEditorFrame(hitRegion)
-    persistFloatingPromptEditorFrame(clampedFrame)
+    if !isPrewarmingFloatingPromptEditor {
+      persistFloatingPromptEditorFrame(clampedFrame)
+    }
     updateFloatingPromptEditorHitRegion(frame: clampedFrame)
   }
 
@@ -4465,6 +4711,14 @@ final class ghostexRootView: NSView {
 
   private func finishFloatingPromptEditor(reason: String) {
     let returnFocusSessionId = activeFloatingPromptEditor?.originatingSessionId
+    PromptEditorDebugLog.append(
+      event: "native.finish",
+      details: [
+        "reason": reason,
+        "requestId": activeFloatingPromptEditor?.requestId ?? "",
+        "returnFocusSessionId": returnFocusSessionId ?? "",
+      ]
+    )
     activeFloatingPromptEditor = nil
     modalHostView.setTopLeftHitRegions(nil)
     dispatchModalHostMessage(["type": "close"])
@@ -4655,7 +4909,6 @@ final class ghostexRootView: NSView {
             "closeTerminalOnExit": command.closeTerminalOnExit ?? false,
             "commandId": command.commandId,
             "isDefault": command.isDefault ?? false,
-            "isGlobal": command.isGlobal ?? false,
             "name": command.name,
             "playCompletionSound": command.playCompletionSound ?? false,
           ]
@@ -4939,6 +5192,20 @@ final class ghostexRootView: NSView {
       """)
   }
 
+  func sleepPetOverlayFromPet() {
+    /**
+     CDXC:PetOverlay 2026-05-21-02:19:
+     The pet right-click menu exposes only Sleep Pet. Forward a one-way sleep
+     command to the sidebar settings owner instead of reusing the titlebar
+     toggle, because the context-menu action should never wake the overlay.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.sleepPetOverlayFromPet?.();
+      undefined;
+      """)
+  }
+
   private func refreshWorkspaceOpenTargetAvailabilityFromTitlebar() {
     /**
      CDXC:TitlebarOpenIn 2026-05-11-03:13
@@ -5168,6 +5435,10 @@ final class ghostexRootView: NSView {
        HostCommand does not make the sidebar command switch non-exhaustive.
        */
       break
+    case .sidebarContextMenuOpened:
+      noteSidebarContextMenuOpened()
+    case .sidebarContextMenuClosed:
+      noteSidebarContextMenuClosed()
     }
   }
 
@@ -5558,6 +5829,26 @@ final class ghostexRootView: NSView {
       return false
     }
     let hotkeyText = Self.hotkeyText(for: event)
+    if isNativeEditableFirstResponder() {
+      /**
+       CDXC:NativeTerminalSearch 2026-05-20-10:45:
+       App-wide hotkey matching runs before AppKit dispatches key equivalents.
+       When a native text editor owns focus, including the embedded Ghostty
+       search field editor, editing shortcuts such as Cmd+A, copy, paste, and
+       selection movement must stay with the focused control instead of being
+       claimed as terminal/workspace hotkeys.
+       */
+      if Self.isHotkeyCandidate(event) {
+        logNativeHotkeyDebug(
+          "nativeHotkeys.appKitNativeEditableBypass",
+          [
+            "firstResponder": String(describing: type(of: window?.firstResponder)),
+            "hotkeyText": hotkeyText ?? "<none>",
+            "keyCode": String(event.keyCode),
+          ])
+      }
+      return false
+    }
     if Self.isCommandHorizontalArrowEvent(event) {
       /**
        CDXC:Hotkeys 2026-05-15-12:50:
@@ -5631,6 +5922,13 @@ final class ghostexRootView: NSView {
       || responderView.isDescendant(of: sidebarView)
       || responderView === modalHostView
       || responderView.isDescendant(of: modalHostView)
+  }
+
+  private func isNativeEditableFirstResponder() -> Bool {
+    guard let responder = window?.firstResponder else {
+      return false
+    }
+    return responder is NSTextView || responder is NSTextField
   }
 
   private func matchedHotkeyActionId(for hotkeyText: String) -> String? {
@@ -6142,6 +6440,13 @@ final class ghostexRootView: NSView {
       let event = message["event"] as? String ?? "nativeBridge.appModal.debug"
       let details = message["details"] as? String
       AppDelegate.appendAgentDetectionDebugLog(event: "nativeBridge.appModal.\(event)", details: details)
+    case "promptEditorDebugLog":
+      let event = message["event"] as? String ?? "modalHost.promptEditor.unknown"
+      if let details = message["details"] as? String, !details.isEmpty {
+        PromptEditorDebugLog.append(event: "modalHost.\(event)", details: details)
+      } else {
+        PromptEditorDebugLog.append(event: "modalHost.\(event)")
+      }
     case "logError":
       let area = message["area"] as? String ?? "AppModals:unknown"
       let errorMessage = message["message"] as? String ?? String(describing: message)
@@ -6157,6 +6462,22 @@ final class ghostexRootView: NSView {
       loadFloatingPromptEditorImagePreview(message: message)
     case "floatingPromptEditorCancel":
       cancelFloatingPromptEditor(message: message)
+    case "floatingPromptEditorPrewarmReady":
+      guard isPrewarmingFloatingPromptEditor,
+        let requestId = message["requestId"] as? String,
+        requestId == Self.floatingPromptEditorPrewarmRequestId
+      else {
+        PromptEditorDebugLog.append(
+          event: "native.prewarm.readyIgnored",
+          details: [
+            "isPrewarming": isPrewarmingFloatingPromptEditor,
+            "requestId": message["requestId"] as? String ?? "",
+          ]
+        )
+        return
+      }
+      PromptEditorDebugLog.append(event: "native.prewarm.ready", details: ["requestId": requestId])
+      finishFloatingPromptEditorPrewarm()
     case "ready":
       AppDelegate.appendAgentDetectionDebugLog(
         event: "nativeBridge.appModal.ready",
@@ -6170,6 +6491,7 @@ final class ghostexRootView: NSView {
         dispatchModalHostMessage(pendingModalHostOpenMessage)
         self.pendingModalHostOpenMessage = nil
       }
+      prewarmFloatingPromptEditorIfNeeded()
     case "open":
       /**
        CDXC:AppModals 2026-04-28-12:06
@@ -6203,7 +6525,29 @@ final class ghostexRootView: NSView {
         event: "nativeBridge.appModal.presented",
         details: "modal=\(message["modal"] as? String ?? "unknown") wasHidden=\(modalHostView.isHidden)"
       )
+      if (message["modal"] as? String) == "floatingPromptEditor" {
+        PromptEditorDebugLog.append(
+          event: "native.presented",
+          details: [
+            "isPrewarming": isPrewarmingFloatingPromptEditor,
+            "modalHostHiddenBefore": modalHostView.isHidden,
+            "requestId": activeFloatingPromptEditor?.requestId ?? "",
+          ]
+        )
+      }
+      if isPrewarmingFloatingPromptEditor {
+        return
+      }
       modalHostView.isHidden = false
+      if (message["modal"] as? String) == "floatingPromptEditor" {
+        PromptEditorDebugLog.append(
+          event: "native.presented.modalHostShown",
+          details: [
+            "modalHostHiddenAfter": modalHostView.isHidden,
+            "requestId": activeFloatingPromptEditor?.requestId ?? "",
+          ]
+        )
+      }
     case "close":
       AppDelegate.appendAgentDetectionDebugLog(
         event: "nativeBridge.appModal.close.received",
@@ -6213,6 +6557,22 @@ final class ghostexRootView: NSView {
       pendingModalHostOpenMessage = nil
       modalHostView.setTopLeftHitRegions(nil)
       modalHostView.isHidden = true
+    case "toast":
+      /**
+       CDXC:Worktrees 2026-05-18-23:07:
+       Worktree and git progress messages are transient app-modal toasts. Keep the transparent modal host visible only while a toast or real modal is active so terminal panes are not covered by an idle overlay.
+       */
+      if !isModalHostReady {
+        return
+      }
+      dispatchModalHostMessage(message)
+      modalHostView.isHidden = false
+    case "toastDismissed":
+      if (message["keepOpen"] as? Bool) != true {
+        modalHostView.isHidden = true
+      }
+    case "pickWorktreeImages":
+      presentWorktreeImagePicker()
     case "sidebarState":
       latestModalHostSidebarState = message
       dispatchModalHostMessage(message)
@@ -6338,6 +6698,32 @@ final class ghostexRootView: NSView {
         return
       }
       self?.addWorkspaceProject(path: url.path, name: url.lastPathComponent)
+    }
+
+    if let window {
+      panel.beginSheetModal(for: window, completionHandler: completion)
+    } else {
+      completion(panel.runModal())
+    }
+  }
+
+  private func presentWorktreeImagePicker() {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = false
+    panel.canChooseFiles = true
+    panel.allowsMultipleSelection = true
+    panel.allowedContentTypes = [.image]
+    panel.prompt = "Add Images"
+    panel.message = "Choose images to attach to the worktree prompt."
+
+    let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+      guard response == .OK else {
+        return
+      }
+      self?.dispatchModalHostMessage([
+        "paths": panel.urls.map(\.path),
+        "type": "worktreeImageFilesPicked",
+      ])
     }
 
     if let window {

@@ -698,6 +698,25 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   return leftOrigin.length > 0 && [leftOrigin isEqualToString:rightOrigin];
 }
 
+static void GhostexCEFGrantTrustedClipboardContentSetting(CefRefPtr<CefRequestContext> requestContext,
+                                                          NSString* trustedOrigin) {
+  NSString* normalizedOrigin = GhostexCEFNormalizedOrigin(trustedOrigin);
+  if (!requestContext || normalizedOrigin.length == 0) {
+    return;
+  }
+
+  /*
+  CDXC:EditorClipboard 2026-05-21-07:23:
+  VS Code Explorer file-copy reads Chromium's async clipboard before writing its file resource payload. CEF Alloy does not show Chrome's site-settings UI, so the embedded code-server origin must receive Chromium's clipboard read/write content setting up front instead of leaving navigator.clipboard.readText behind the default ask state.
+  */
+  CefString origin([normalizedOrigin UTF8String]);
+  requestContext->SetContentSetting(
+    origin,
+    origin,
+    CEF_CONTENT_SETTING_TYPE_CLIPBOARD_READ_WRITE,
+    CEF_CONTENT_SETTING_VALUE_ALLOW);
+}
+
 @interface GhostexCEFBrowserView () {
  @private
   NSString* initialURL_;
@@ -1105,6 +1124,9 @@ static bool GhostexCEFOriginsMatch(NSString* lhs, NSString* rhs) {
   }
 
   CefRefPtr<CefRequestContext> requestContext = GhostexCEFRequestContextForProfile(profileIdentifier_);
+  if (self.trustedClipboardOrigin.length > 0) {
+    GhostexCEFGrantTrustedClipboardContentSetting(requestContext, self.trustedClipboardOrigin);
+  }
 
   client_ = new GhostexCEFBrowserClient(self);
   browser_ = CefBrowserHost::CreateBrowserSync(

@@ -1,4 +1,5 @@
 export type PetId =
+  | "boo"
   | "codex"
   | "dewey"
   | "fireball"
@@ -14,9 +15,20 @@ export type PetOption = {
   id: PetId;
 };
 
-export const DEFAULT_PET_ID: PetId = "codex";
+/*
+CDXC:PetSelection 2026-05-21-10:23:
+Boo is bundled from the verified CodexPetHub pet asset and is the first-install
+default pet. Keep the pet metadata static in-app data; the package contributes
+only a spritesheet and descriptive fields, not executable behavior.
+*/
+export const DEFAULT_PET_ID: PetId = "boo";
 
 export const PET_OPTIONS: ReadonlyArray<PetOption> = [
+  {
+    description: "A friendly ghost for quiet workspace focus.",
+    displayName: "Boo",
+    id: "boo",
+  },
   {
     description: "The original Codex companion.",
     displayName: "Codex",
