@@ -33,7 +33,9 @@ brew install --cask maddada/tap/ghostex
 
 #### Android sideload
 
-Download the Android 1.0 APK from the GitHub release: [ghostex-android-1.0.apk](https://github.com/maddada/Ghostex/releases/download/v3.5.0/ghostex-android-1.0.apk)
+[![Download Android Companion App](docs/assets/download-android-companion.svg)](https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.1.0/ghostex-1.1.0.apk)
+
+Download the latest Android companion APK from GitHub Releases: [ghostex-1.1.0.apk](https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.1.0/ghostex-1.1.0.apk)
 <br />
 
 ### Work with tens of agents in multiple projects with ease:
