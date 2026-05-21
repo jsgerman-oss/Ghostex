@@ -7,6 +7,8 @@ release/*.dmg
 release/*.zip
 .ghostex/
 .vsmux/
+.antigravitycli/
+.playwright-mcp/
 .DS_Store
 .vscode/
 .fresh/
