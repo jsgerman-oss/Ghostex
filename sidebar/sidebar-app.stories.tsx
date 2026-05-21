@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { SidebarStoryArgs } from "./sidebar-story-fixtures";
+import { CurrentProjectsSidebarStory } from "./sidebar-current-projects-story";
 import {
   DEFAULT_SIDEBAR_STORY_ARGS,
   SIDEBAR_STORY_ARG_TYPES,
@@ -93,6 +94,25 @@ export const ScrollEndRetention: Story = {
     viewMode: "grid",
     visibleCount: 1,
   },
+};
+
+export const CurrentProjectsScrollRegression: Story = {
+  args: {
+    fixture: "combined-header-alignment",
+    highlightedVisibleCount: 1,
+    showCloseButtonOnSessionCards: true,
+    showHotkeysOnSessionCards: true,
+    theme: "plain-dark",
+    viewMode: "grid",
+    visibleCount: 1,
+  },
+  render: (args) => (
+    <div className="native-sidebar-shell" data-sidebar-mode="combined">
+      <main className="native-sidebar-main">
+        <CurrentProjectsSidebarStory args={args} />
+      </main>
+    </div>
+  ),
 };
 
 export const EmptyGroups: Story = {

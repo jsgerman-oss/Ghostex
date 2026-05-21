@@ -50,6 +50,28 @@ const config: StorybookConfig = {
               response.end("{}");
             }
           });
+          server.middlewares.use("/__ghostex-current-sidebar-projects", (_request, response) => {
+            const projectsPath = path.join(
+              os.homedir(),
+              ".ghostex",
+              "state",
+              "native-sidebar-projects.json",
+            );
+            response.setHeader("Content-Type", "application/json; charset=utf-8");
+            try {
+              /**
+               * CDXC:SidebarScroll 2026-05-20-08:08:
+               * Scroll regressions depend on the user's real project/session
+               * count, especially when the zmux project is expanded. Storybook
+               * serves the native project snapshot read-only so the regression
+               * story can reproduce that local sidebar shape without committing
+               * private project data into source fixtures.
+               */
+              response.end(fs.readFileSync(projectsPath, "utf8"));
+            } catch {
+              response.end("{}");
+            }
+          });
         },
       },
     ];
