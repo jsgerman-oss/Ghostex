@@ -1826,7 +1826,24 @@ function AppModalHost() {
           closeModal();
         }}
       />
-      <Toaster position="bottom-center" richColors />
+      {/*
+       * CDXC:AppToasts 2026-05-21-12:21:
+       * Native/sidebar status feedback should appear as dark Ghostex toasts,
+       * not Sonner's bright default surface, so non-blocking Delayed Send and
+       * worktree/git notices stay visually consistent with the dark app chrome.
+       */}
+      <Toaster
+        position="bottom-center"
+        richColors
+        theme="dark"
+        toastOptions={{
+          style: {
+            background: "#181818",
+            border: "1px solid rgba(255, 255, 255, 0.14)",
+            color: "#f4f4f5",
+          },
+        }}
+      />
     </>
   );
 }

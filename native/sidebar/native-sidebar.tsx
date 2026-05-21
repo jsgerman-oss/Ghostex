@@ -3185,6 +3185,7 @@ function playNativeSessionCompletionSound(sessionId: string, source: string): vo
 function handleNativeSessionEnteredAttention(sessionId: string, source: string): void {
   clearNativeSessionAttentionAcknowledgementTimer(sessionId);
   nativeAttentionEnteredAtBySessionId.set(sessionId, Date.now());
+  persistTerminalSessionRestoreActivity(sessionId, "attention");
   /**
    * CDXC:SessionAttentionNotifications 2026-05-10-16:46
    * Attention transitions fan out to both optional sounds and optional macOS
@@ -3232,6 +3233,7 @@ function markNativeSessionSemanticActivityAt(
    */
   terminalState.lastActivityAt = timestamp;
   persistTerminalSessionLastActivityAt(sessionId, timestamp);
+  persistTerminalSessionRestoreActivity(sessionId, activity);
   if (terminalState.sessionStateFilePath) {
     void persistNativeSessionSemanticActivityAt(
       terminalState.sessionStateFilePath,
@@ -3678,6 +3680,12 @@ function normalizeStartupTerminalSleepState(
    * A provider-backed terminal with an active Delayed Send deadline must wake on
    * restart even when it is not the surfaced pane, because the pending Enter key
    * needs a live terminal to submit the prompt when the restored timer fires.
+   *
+   * CDXC:StartupRestore 2026-05-21-13:04:
+   * Terminals that quit while working or requesting attention should also wake
+   * on next app start, regardless of provider persistence. The attention marker
+   * is restored; the working marker is only a wake hint because current work is
+   * inferred from fresh terminal activity after launch.
    */
   return storedProjects.map((project) => ({
     ...project,
@@ -3700,7 +3708,8 @@ function normalizeStartupTerminalSleepState(
                     ...session,
                     isSleeping:
                       !startupAwakeSessionIds.has(session.sessionId) &&
-                      !hasRestorableDelayedSendDeadline(session),
+                      !hasRestorableDelayedSendDeadline(session) &&
+                      !hasStartupRestoreActivityWake(session),
                   }
                 : session,
             ),
@@ -5767,6 +5776,57 @@ function persistTerminalSessionLastActivityAt(sessionId: string, lastActivityAt:
   );
 }
 
+function persistTerminalSessionRestoreActivity(
+  sessionId: string,
+  restoreActivity: TerminalSessionRecord["restoreActivity"],
+): void {
+  const reference = resolveTerminalSessionReferenceForPersistence(sessionId);
+  if (
+    reference.project.commandsPanel.sessions.some(
+      (session) => session.sessionId === reference.sessionId,
+    )
+  ) {
+    updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === reference.sessionId
+          ? setTerminalSessionRestoreActivity(session, restoreActivity)
+          : session,
+      ),
+    }));
+    return;
+  }
+
+  updateProjectWorkspace(reference.project.projectId, (workspace) => ({
+    ...workspace,
+    groups: workspace.groups.map((group) => ({
+      ...group,
+      snapshot: {
+        ...group.snapshot,
+        sessions: group.snapshot.sessions.map((session) =>
+          session.kind === "terminal" && session.sessionId === reference.sessionId
+            ? setTerminalSessionRestoreActivity(session, restoreActivity)
+            : session,
+        ),
+      },
+    })),
+  }));
+}
+
+function setTerminalSessionRestoreActivity(
+  session: TerminalSessionRecord,
+  restoreActivity: TerminalSessionRecord["restoreActivity"],
+): TerminalSessionRecord {
+  if (restoreActivity === "attention" || restoreActivity === "working") {
+    return session.restoreActivity === restoreActivity ? session : { ...session, restoreActivity };
+  }
+  if (session.restoreActivity === undefined) {
+    return session;
+  }
+  const { restoreActivity: _removedRestoreActivity, ...sessionWithoutRestoreActivity } = session;
+  return sessionWithoutRestoreActivity;
+}
+
 function resolveTerminalSessionReferenceForPersistence(sessionId: string): {
   project: NativeProject;
   sessionId: string;
@@ -6970,10 +7030,11 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         gitState,
         {
           /**
-           * CDXC:SidebarLayout 2026-05-13-08:11
-           * Combined is now the only supported sidebar layout. The old Actions
-           * and browser groups stay hidden, while Agents and Git remain owned
-           * by the reference sidebar chrome.
+           * CDXC:SidebarLayout 2026-05-21-11:07:
+           * The current sidebar no longer renders hidden Actions, Agents,
+           * Browsers, or project-header mounts in React. Keep this visibility
+           * projection only for older persisted state normalization while the
+           * native titlebar and settings own those surfaces.
            */
           actions: false,
           agents: true,
@@ -6986,18 +7047,6 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         settings.renameSessionOnDoubleClick,
         getNativeSidebarCommandSessionIndicators(commands),
       ),
-      /**
-       * CDXC:SidebarLayout 2026-05-13-08:11
-       * The reference sidebar keeps the top current-project header so users
-       * can see which project receives new agent/action launches after
-       * selecting a project group with no sessions.
-       */
-      projectHeader: {
-        directory: project.path,
-        name: project.name,
-        projectId: project.projectId,
-        worktree: project.worktree,
-      },
       customThemeColor: normalizeWorkspaceThemeColor(project.themeColor),
       projectSettingsProjects: createSidebarProjectSettingsProjects(),
       recentProjects: createSidebarRecentProjects(),
@@ -7208,17 +7257,28 @@ function ensureVisibleNativeSessions(reason: string): boolean {
    * Restored Delayed Send timers must be allowed to create their provider-backed
    * terminal surface outside the active workspace group so restart does not
    * strand a pending Enter behind a sleeping or unmounted session.
+   *
+   * CDXC:StartupRestore 2026-05-21-13:04:
+   * Quit-time working/attention state is also a startup wake reason for any
+   * terminal session. This path intentionally does not require zmx/tmux/zellij;
+   * non-persistent agent sessions still get a chance to resume through their
+   * stored launch/resume command.
    */
   for (const project of projects) {
-    const hasRestorableDelayedCommandSession = project.commandsPanel.sessions.some(
-      hasRestorableDelayedSendDeadline,
+    const hasStartupWakeCommandSession = project.commandsPanel.sessions.some(
+      (session) =>
+        hasRestorableDelayedSendDeadline(session) || hasStartupRestoreActivityWake(session),
     );
     if (
-      (project.projectId === activeProjectId || hasRestorableDelayedCommandSession) &&
+      (project.projectId === activeProjectId || hasStartupWakeCommandSession) &&
       project.commandsPanel.sessions.length > 0
     ) {
       for (const session of project.commandsPanel.sessions) {
-        if (project.projectId !== activeProjectId && !hasRestorableDelayedSendDeadline(session)) {
+        if (
+          project.projectId !== activeProjectId &&
+          !hasRestorableDelayedSendDeadline(session) &&
+          !hasStartupRestoreActivityWake(session)
+        ) {
           continue;
         }
         if (terminalStateById.has(session.sessionId)) {
@@ -7236,7 +7296,13 @@ function ensureVisibleNativeSessions(reason: string): boolean {
           session.isSleeping !== true;
         const isDelayedSendWakeSession =
           session.kind === "terminal" && hasRestorableDelayedSendDeadline(session);
-        if (!isAwakeInActiveWorkspaceGroup && !isDelayedSendWakeSession) {
+        const isStartupActivityWakeSession =
+          session.kind === "terminal" && hasStartupRestoreActivityWake(session);
+        if (
+          !isAwakeInActiveWorkspaceGroup &&
+          !isDelayedSendWakeSession &&
+          !isStartupActivityWakeSession
+        ) {
           continue;
         }
         if (session.kind === "t3") {
@@ -7286,6 +7352,7 @@ function restoreNativeTerminalSession(
     sessionPersistenceProvider,
     session,
   );
+  const initialActivity = session.restoreActivity === "attention" ? "attention" : "idle";
   if (
     session.sessionPersistenceProvider !== sessionPersistenceProvider ||
     session.sessionPersistenceName !== sessionPersistenceName
@@ -7318,7 +7385,7 @@ function restoreNativeTerminalSession(
     }
   }
   terminalStateById.set(session.sessionId, {
-    activity: "idle",
+    activity: initialActivity,
     agentName: session.agentName,
     agentSessionId: session.agentSessionId,
     agentSessionPath: session.agentSessionPath,
@@ -7337,9 +7404,14 @@ function restoreNativeTerminalSession(
     lastActivityAt: session.lastActivityAt,
     terminalTitle: session.title,
   });
+  if (initialActivity === "attention") {
+    nativeAttentionEnteredAtBySessionId.set(session.sessionId, Date.now());
+  } else if (session.restoreActivity === "working") {
+    persistTerminalSessionRestoreActivity(session.sessionId, undefined);
+  }
   appendAgentDetectionDebugLog("nativeSidebar.restoreTerminalState.created", {
     agentName: session.agentName,
-    initialActivity: "idle",
+    initialActivity,
     initialInputPreview: initialInput.trim().slice(0, 120),
     nativeSessionId,
     reason,
@@ -8381,6 +8453,7 @@ function suppressNativeSessionActivityIndicators(
   const terminalState = terminalStateById.get(sessionId);
   if (terminalState?.activity === "attention" || terminalState?.activity === "working") {
     terminalState.activity = "idle";
+    persistTerminalSessionRestoreActivity(sessionId, undefined);
     clearNativeSessionAttentionTracking(sessionId);
   }
   /**
@@ -10605,6 +10678,10 @@ function syncNativePersistedCommandPaneActivity(
   const nextActivity = persistedState.status === "working" ? "working" : "idle";
   if (terminalState.activity !== nextActivity) {
     terminalState.activity = nextActivity;
+    persistTerminalSessionRestoreActivity(
+      sessionId,
+      nextActivity === "working" ? "working" : undefined,
+    );
     didChange = true;
   }
 
@@ -12045,6 +12122,7 @@ function completeNativeTerminalAttentionAcknowledgement(
     titleDerivedActivityBySessionId.set(sessionId, acknowledgedDerivedActivity);
   }
   terminalState.activity = "idle";
+  persistTerminalSessionRestoreActivity(sessionId, undefined);
   nativeAttentionEnteredAtBySessionId.delete(sessionId);
   clearNativeSessionAttentionAcknowledgementTimer(sessionId);
   appendAgentDetectionDebugLog("nativeSidebar.sessionAttentionAcknowledged", {
@@ -12652,6 +12730,10 @@ function hasRestorableDelayedSendDeadline(session: TerminalSessionRecord): boole
   );
 }
 
+function hasStartupRestoreActivityWake(session: TerminalSessionRecord): boolean {
+  return session.restoreActivity === "attention" || session.restoreActivity === "working";
+}
+
 function restoreDelayedSendTimersFromStoredProjects(): void {
   /**
    * CDXC:DelayedSend 2026-05-21-12:21:
@@ -12862,16 +12944,33 @@ function scheduleDelayedSend(sessionId: string, delayMs: number): void {
     "scheduleDelayedSend",
   );
   publish();
-  showNativeMessage("info", `Delayed Send will press Enter in ${formatDelayedSendDelay(delayMs)}.`);
+  /**
+   * CDXC:DelayedSend 2026-05-21-12:21:
+   * Scheduling a Delayed Send should acknowledge with the bottom-center
+   * app-modal toast layer, matching worktree progress feedback, instead of a
+   * blocking macOS alert that forces users to press OK before returning to the
+   * terminal prompt they just staged.
+   */
+  showAppToast(
+    "info",
+    "Delayed Send scheduled",
+    `Presses Enter in ${formatDelayedSendDelay(delayMs)}.`,
+  );
 }
 
 function cancelDelayedSend(sessionId: string): void {
   if (!clearDelayedSendTimer(sessionId)) {
-    showNativeMessage("info", "No Delayed Send timer is active for this terminal.");
+    /*
+     * CDXC:DelayedSend 2026-05-21-12:21:
+     * Canceling Delayed Send is status feedback, not a blocking decision. Use
+     * the app toast layer so the terminal keeps focus and users do not have to
+     * dismiss a macOS alert after canceling or finding no active timer.
+     */
+    showAppToast("info", "No Delayed Send timer is active");
     return;
   }
   publish();
-  showNativeMessage("info", "Delayed Send timer canceled.");
+  showAppToast("info", "Delayed Send canceled");
 }
 
 function clearDelayedSendTimer(sessionId: string, projectId?: string): boolean {
@@ -13586,6 +13685,7 @@ function markNativeSidebarCommandPaneRunStarted(sessionId: string): void {
     return;
   }
   terminalState.activity = "working";
+  persistTerminalSessionRestoreActivity(sessionId, "working");
 }
 
 function setNativeSidebarCommandPaneTitle(sessionId: string, title: string): void {
@@ -18954,6 +19054,9 @@ window.addEventListener("ghostex-native-host-event", (event) => {
         terminalState.agentName = effectiveDerivedActivity.agentName;
         terminalState.activity = effectiveDerivedActivity.activity;
         setTerminalSessionAgentName(sidebarSessionId, effectiveDerivedActivity.agentName);
+        if (previousActivity !== "idle" && terminalState.activity === "idle") {
+          persistTerminalSessionRestoreActivity(sidebarSessionId, undefined);
+        }
         if (previousActivity !== "working" && terminalState.activity === "working") {
           markNativeSessionSemanticActivityAt(sidebarSessionId, "working", "terminal-title");
         }
@@ -19001,6 +19104,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }
       terminalState.lifecycleState = "done";
       terminalState.activity = "idle";
+      persistTerminalSessionRestoreActivity(sidebarSessionId, undefined);
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
       if (handleNativeSidebarCommandSessionExit(sidebarSessionId, hostEvent.exitCode)) {
         return;

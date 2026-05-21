@@ -55,6 +55,7 @@ int GhostexCEFRemoteDebuggingPort(void);
 - (void)executeJavaScript:(NSString*)javaScript;
 - (void)emitToolbarActionDiagnosticsWithAction:(NSString*)action
                                          phase:(NSString*)phase NS_SWIFT_NAME(emitToolbarActionDiagnostics(action:phase:));
+- (void)pinHostedViewToBounds;
 - (void)completeCurrentDragAtWindowPoint:(NSPoint)windowPoint;
 - (void)toggleDevTools;
 - (void)closeBrowser;

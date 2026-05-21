@@ -52,7 +52,7 @@ export function DelayedSendModal({
   const hoursInputId = useId();
   const minutesInputId = useId();
   const secondsInputId = useId();
-  const firstInputRef = useRef<HTMLInputElement>(null);
+  const minutesInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!isOpen) {
@@ -65,8 +65,14 @@ export function DelayedSendModal({
     setMinutes(String(duration?.minutes ?? 5));
     setSeconds(String(duration?.seconds ?? 0));
     const animationFrame = window.requestAnimationFrame(() => {
-      firstInputRef.current?.focus();
-      firstInputRef.current?.select();
+      /*
+       * CDXC:DelayedSend 2026-05-21-12:21:
+       * Opening or editing Delayed Send should select the minutes field, not
+       * merely place a caret there, so typing immediately replaces the common
+       * duration value without requiring Cmd+A or manual deletion.
+       */
+      minutesInputRef.current?.focus();
+      minutesInputRef.current?.select();
     });
     return () => {
       window.cancelAnimationFrame(animationFrame);
@@ -124,7 +130,6 @@ export function DelayedSendModal({
                   id={hoursInputId}
                   min={0}
                   onChange={(event) => setHours(event.currentTarget.value)}
-                  ref={firstInputRef}
                   type="number"
                   value={hours}
                 />
@@ -136,6 +141,8 @@ export function DelayedSendModal({
                   id={minutesInputId}
                   min={0}
                   onChange={(event) => setMinutes(event.currentTarget.value)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  ref={minutesInputRef}
                   type="number"
                   value={minutes}
                 />

@@ -305,6 +305,9 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
     lastActivityAt: normalizeTerminalSessionLastActivityAt(
       session.kind === "terminal" ? session.lastActivityAt : undefined,
     ),
+    restoreActivity: normalizeTerminalRestoreActivity(
+      session.kind === "terminal" ? session.restoreActivity : undefined,
+    ),
     terminalEngine: normalizeTerminalEngine(
       session.kind === "terminal" ? session.terminalEngine : undefined,
     ),
@@ -334,6 +337,10 @@ function normalizeTerminalSessionLastActivityAt(value: string | undefined): stri
     return undefined;
   }
   return normalized;
+}
+
+function normalizeTerminalRestoreActivity(value: string | undefined): "attention" | "working" | undefined {
+  return value === "attention" || value === "working" ? value : undefined;
 }
 
 function normalizeTerminalCommandTitle(value: string | undefined): string | undefined {

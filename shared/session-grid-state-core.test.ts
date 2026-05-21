@@ -195,6 +195,28 @@ describe("normalizeSessionGridSnapshot", () => {
     expect(normalized.kind === "terminal" ? normalized.lastActivityAt : undefined).toBeUndefined();
   });
 
+  test("should preserve startup terminal restore activity wake hints", () => {
+    const normalized = normalizeSessionRecord({
+      ...createSessionRecord(1, 0),
+      restoreActivity: "attention",
+    });
+
+    expect(normalized.kind).toBe("terminal");
+    expect(normalized.kind === "terminal" ? normalized.restoreActivity : undefined).toBe(
+      "attention",
+    );
+  });
+
+  test("should drop invalid startup terminal restore activity wake hints", () => {
+    const normalized = normalizeSessionRecord({
+      ...createSessionRecord(1, 0),
+      restoreActivity: "idle" as "attention",
+    });
+
+    expect(normalized.kind).toBe("terminal");
+    expect(normalized.kind === "terminal" ? normalized.restoreActivity : undefined).toBeUndefined();
+  });
+
   test("should preserve fullscreen restore count only while the snapshot is in fullscreen mode", () => {
     const snapshot = normalizeSessionGridSnapshot({
       focusedSessionId: "session-1",

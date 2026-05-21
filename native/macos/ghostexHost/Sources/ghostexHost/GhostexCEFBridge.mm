@@ -405,6 +405,12 @@ static bool GhostexCEFRectAlmostEqual(NSRect lhs, NSRect rhs) {
     fabs(lhs.size.height - rhs.size.height) < epsilon;
 }
 
+static bool GhostexCEFPointAlmostEqual(NSPoint lhs, NSPoint rhs) {
+  const CGFloat epsilon = 0.001;
+  return fabs(lhs.x - rhs.x) < epsilon &&
+    fabs(lhs.y - rhs.y) < epsilon;
+}
+
 static void GhostexCEFAppendDiagnosticLog(NSString* event, NSDictionary* details) {
   if (!GhostexCEFNativeDebugLoggingEnabled()) {
     return;
@@ -738,6 +744,7 @@ static void GhostexCEFGrantTrustedClipboardContentSetting(CefRefPtr<CefRequestCo
   NSRect lastInternalGeometryDiagnosticBounds_;
   NSRect lastViewportDiagnosticBounds_;
 }
+- (void)ghostexCEFPinHostedViewToBoundsWithReason:(NSString*)reason;
 @end
 
 @implementation GhostexCEFBrowserView
@@ -813,28 +820,53 @@ static void GhostexCEFGrantTrustedClipboardContentSetting(CefRefPtr<CefRequestCo
 
 - (void)layout {
   [super layout];
+  [self ghostexCEFPinHostedViewToBoundsWithReason:@"layout"];
+}
+
+- (void)pinHostedViewToBounds {
+  [self ghostexCEFPinHostedViewToBoundsWithReason:@"explicit"];
+}
+
+- (void)ghostexCEFPinHostedViewToBoundsWithReason:(NSString*)reason {
   NSRect targetFrame = self.bounds;
   if (!cefView_) {
     return;
   }
   NSRect cefFrameBefore = cefView_.frame;
+  NSRect cefBoundsBefore = cefView_.bounds;
+  NSPoint targetBoundsOrigin = NSMakePoint(0, 0);
+  BOOL needsFrameUpdate = !GhostexCEFRectAlmostEqual(cefFrameBefore, targetFrame);
+  BOOL needsBoundsOriginUpdate = !GhostexCEFPointAlmostEqual(cefBoundsBefore.origin, targetBoundsOrigin);
   /*
   CDXC:ChromiumBrowserPanes 2026-05-16-22:37:
   Disabled browser-toolbar clicks reproduced upward visual drift with unchanged AppKit and DOM geometry: the CEF wrapper stayed fixed while Chromium's flipped compositor layer grew after every redundant same-frame layout.
   Treat the native CEF frame assignment as an idempotent resize boundary, and only notify CEF when the hosted frame actually changes.
+
+  CDXC:ChromiumBrowserPanes 2026-05-21-11:09:
+  Bottom command-pane show/hide legitimately resizes the Code/Git CEF wrapper to reserve visible space; that resize must not let Chromium's hosted NSView keep a nonzero local bounds origin.
+  Pin the hosted CEF view synchronously to the wrapper bounds instead of overlaying the command pane or reloading the page.
   */
-  if (GhostexCEFRectAlmostEqual(cefFrameBefore, targetFrame)) {
+  if (!needsFrameUpdate && !needsBoundsOriginUpdate) {
     return;
   }
   if (!GhostexCEFNativeDebugLoggingEnabled()) {
-    cefView_.frame = targetFrame;
+    if (needsFrameUpdate) {
+      cefView_.frame = targetFrame;
+    }
+    if (needsBoundsOriginUpdate) {
+      [cefView_ setBoundsOrigin:targetBoundsOrigin];
+    }
     return;
   }
 
-  NSRect cefBoundsBefore = cefView_.bounds;
   id cefFrameInWindowBefore = GhostexCEFDescribeFrameInWindow(cefView_);
   id cefBoundsInWindowBefore = GhostexCEFDescribeBoundsInWindow(cefView_);
-  cefView_.frame = targetFrame;
+  if (needsFrameUpdate) {
+    cefView_.frame = targetFrame;
+  }
+  if (needsBoundsOriginUpdate) {
+    [cefView_ setBoundsOrigin:targetBoundsOrigin];
+  }
   layoutPass_ += 1;
   NSString* cefClass = NSStringFromClass([cefView_ class]);
   NSString* wrapperClass = NSStringFromClass([self class]);
@@ -859,7 +891,10 @@ static void GhostexCEFGrantTrustedClipboardContentSetting(CefRefPtr<CefRequestCo
     @"cefWantsLayer": @(cefView_.wantsLayer),
     @"currentURL": currentURL,
     @"layoutPass": @(layoutPass_),
+    @"needsBoundsOriginUpdate": @(needsBoundsOriginUpdate),
+    @"needsFrameUpdate": @(needsFrameUpdate),
     @"pageTitle": pageTitle,
+    @"reason": reason ? reason : @"",
     @"targetFrame": GhostexCEFDescribeRect(targetFrame),
     @"wrapperBounds": GhostexCEFDescribeRect(self.bounds),
     @"wrapperBoundsInWindow": GhostexCEFDescribeBoundsInWindow(self),
@@ -1142,8 +1177,8 @@ static void GhostexCEFGrantTrustedClipboardContentSetting(CefRefPtr<CefRequestCo
 
   CefWindowHandle handle = browser_->GetHost()->GetWindowHandle();
   cefView_ = (__bridge NSView*)handle;
-  cefView_.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-  cefView_.frame = self.bounds;
+  cefView_.autoresizingMask = NSViewNotSizable;
+  [self ghostexCEFPinHostedViewToBoundsWithReason:@"createBrowser"];
   [self setNeedsLayout:YES];
 
   if (initialURL_.length > 0) {

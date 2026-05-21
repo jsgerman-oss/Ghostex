@@ -148,6 +148,14 @@ export type TerminalSessionRecord = BaseSessionRecord & {
    */
   lastActivityAt?: string;
   /**
+   * CDXC:StartupRestore 2026-05-21-13:04:
+   * Runtime working/attention state is normally inferred from terminal output,
+   * but app quit needs a durable hint so interrupted work wakes on next launch.
+   * Attention is restored visually; working only wakes the session and is then
+   * cleared because the resumed terminal may no longer be active.
+   */
+  restoreActivity?: Extract<SidebarSessionActivityState, "attention" | "working">;
+  /**
    * CDXC:CommandPanes 2026-05-16-15:08:
    * Command-pane reuse is keyed by the configured action title rather than the
    * mutable command id. Persist the title owner on command terminal records so

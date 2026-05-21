@@ -9044,11 +9044,11 @@ final class TerminalWorkspaceView: NSView {
       return .zero
     }
     let labelSize = labelView.fittingSize
-    let labelWidth = min(ceil(labelSize.width), max(terminalRect.width - 24, 0))
-    let labelHeight = min(max(ceil(labelSize.height), 22), max(terminalRect.height - 16, 0))
+    let labelWidth = min(ceil(labelSize.width), max(terminalRect.width - 32, 0))
+    let labelHeight = min(max(ceil(labelSize.height), 34), max(terminalRect.height - 24, 0))
     return CGRect(
       x: max(12, terminalRect.maxX - labelWidth - 12),
-      y: terminalRect.minY + 8,
+      y: max(8, terminalRect.maxY - labelHeight - 8),
       width: labelWidth,
       height: labelHeight
     )
@@ -14286,7 +14286,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   private static let workspaceTabBaseGreen: CGFloat = 0x06 / 255
   private static let workspaceTabBaseBlue: CGFloat = 0x08 / 255
   private static let sleepingIconSize: CGFloat = 9
-  private static let delayedSendIconSize: CGFloat = 13
+  private static let delayedSendIconSize: CGFloat = 14
   private static let activityIndicatorSize: CGFloat = 8
   private static let activityIndicatorTrailingPadding: CGFloat = 9
   private static let titleLeadingPadding: CGFloat = 8
@@ -15069,12 +15069,12 @@ private final class TerminalTitleBarTabButton: NSButton {
     /*
      CDXC:DelayedSend 2026-05-21-12:21:
      Native pane-tab Delayed Send indicators should read as a larger orange
-     timer in the same status slot as the sleeping moon, shifted down 3px from
-     the previous placement so the clock sits on the tab title bar baseline.
+     timer in the same status slot as the sleeping moon. Center it slightly
+     higher than the default symbol box so it aligns with the tab title text.
      */
     let iconRect = CGRect(
       x: baseRect.midX - Self.delayedSendIconSize / 2,
-      y: floor((bounds.height - Self.delayedSendIconSize) / 2) + 2,
+      y: floor((bounds.height - Self.delayedSendIconSize) / 2) - 1,
       width: Self.delayedSendIconSize,
       height: Self.delayedSendIconSize)
     guard let image = NSImage(systemSymbolName: "clock", accessibilityDescription: nil) else {
@@ -17657,6 +17657,12 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       webFrame = bounds
     }
     browserView.frame = webFrame
+    /**
+     CDXC:ChromiumBrowserPanes 2026-05-21-11:09:
+     Code/Git browser hosts still shrink when the bottom command pane reserves space, so no page content is hidden behind the command pane.
+     Force the embedded CEF child back to the host's local origin after that resize so repeated command-pane toggles cannot accumulate an upward compositor offset.
+     */
+    chromiumView?.pinHostedViewToBounds()
     layoutInitialLoadingOverlay(webFrame: webFrame)
   }
 
@@ -18828,13 +18834,15 @@ private final class TerminalPanePersistenceLabelView: NSTextField {
 
 private final class TerminalPaneDelayedSendLabelView: NSTextField {
   private static let labelFont = NSFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold)
+  private static let backgroundColor = NSColor(calibratedWhite: 0.05, alpha: 0.78)
+  private static let borderColor = NSColor(calibratedWhite: 1.0, alpha: 0.12)
 
   override var fittingSize: NSSize {
     guard !stringValue.isEmpty else {
       return .zero
     }
     let size = (stringValue as NSString).size(withAttributes: [.font: Self.labelFont])
-    return NSSize(width: ceil(size.width) + 16, height: 26)
+    return NSSize(width: ceil(size.width) + 28, height: 34)
   }
 
   override init(frame frameRect: NSRect) {
@@ -18844,10 +18852,17 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
     isEditable = false
     isSelectable = false
     isHidden = true
+    wantsLayer = true
+    layer?.backgroundColor = Self.backgroundColor.cgColor
+    layer?.borderColor = Self.borderColor.cgColor
+    layer?.borderWidth = 1
+    layer?.cornerRadius = 9
+    layer?.masksToBounds = true
     lineBreakMode = .byTruncatingTail
     font = Self.labelFont
     textColor = NSColor(calibratedRed: 0xB6 / 255, green: 0xEC / 255, blue: 0xFF / 255, alpha: 0.74)
-    alignment = .right
+    alignment = .center
+    usesSingleLineMode = true
   }
 
   required init?(coder: NSCoder) {
@@ -18873,7 +18888,12 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
      CDXC:DelayedSend 2026-05-17-03:14:
      Terminal panes need a larger bottom-right floating countdown for active
      Delayed Send timers, formatted as hh:mm:ss only when hours exist and
-     otherwise mm:ss, so users can see when the staged command will submit.
+     otherwise mm:ss.
+
+     CDXC:DelayedSend 2026-05-21-12:21:
+     The pane countdown should appear over the terminal pane with a
+     rounded rectangle background so it reads as an intentional timer badge
+     instead of terminal output or bottom-corner persistence metadata.
      */
     stringValue = nextLabel
     isHidden = nextLabel.isEmpty
