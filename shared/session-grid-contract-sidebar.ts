@@ -1,4 +1,5 @@
 import type { CompletionSoundSetting } from "./completion-sound";
+import type { AgentAcceptAllMode } from "./sidebar-agent-accept-all";
 import type { SidebarAgentButton, SidebarAgentIcon } from "./sidebar-agents";
 import type { SidebarCommandIcon } from "./sidebar-command-icons";
 import type { WorkspaceDockIcon } from "./workspace-dock-icons";
@@ -7,7 +8,7 @@ import type {
   SidebarCommandButton,
   SidebarCommandRunMode,
 } from "./sidebar-commands";
-import type { SidebarGitAction, SidebarGitState } from "./sidebar-git";
+import type { SidebarGitAction, SidebarGitChangedFile, SidebarGitState } from "./sidebar-git";
 import type { SidebarProjectDiffStats } from "./project-diff-stats";
 import type { ZedOverlayTargetApp, ghostexSettings } from "./ghostex-settings";
 import type { ghostexHotkeyActionId } from "./ghostex-hotkeys";
@@ -125,6 +126,13 @@ export type SidebarSessionItem = {
   delayedSendDeadlineAt?: string;
   delayedSendRemainingLabel?: string;
   delayedSendRemainingMs?: number;
+  /**
+   * CDXC:PanePopOut 2026-05-19-10:15:
+   * Sidebar session context menus need the live pop-out presentation flag so
+   * browser and agent cards can offer Pop Out Pane versus Restore Pane without
+   * re-querying native chrome state.
+   */
+  isPoppedOut?: boolean;
 };
 
 export function getSidebarSessionLifecycleState(
@@ -197,6 +205,7 @@ export type SidebarSessionGroup = {
     };
     theme?: SidebarTheme;
     themeColor?: string;
+    worktree?: SidebarProjectWorktreeMetadata;
   };
   sessions: SidebarSessionItem[];
   title: string;
@@ -207,6 +216,7 @@ export type SidebarSessionGroup = {
 export type SidebarProjectHeader = {
   directory: string;
   faviconDataUrl?: string;
+  worktree?: SidebarProjectWorktreeMetadata;
   name: string;
   /**
    * CDXC:SidebarActions 2026-05-08-09:11
@@ -217,10 +227,26 @@ export type SidebarProjectHeader = {
   worktrees?: SidebarProjectWorktree[];
 };
 
+export type SidebarProjectWorktreeMetadata = {
+  branch: string;
+  createdAt?: string;
+  name: string;
+  parentProjectId: string;
+  parentProjectName: string;
+  parentProjectPath: string;
+};
+
 export type SidebarProjectWorktree = {
   branch?: string;
   directory: string;
   name: string;
+};
+
+export type SidebarProjectSettingsItem = {
+  name: string;
+  path: string;
+  projectId: string;
+  worktreeCommand?: string;
 };
 
 export type SidebarRecentProject = {
@@ -267,6 +293,11 @@ export type SidebarHudState = {
   isFocusModeActive: boolean;
   pendingAgentIds: string[];
   projectHeader?: SidebarProjectHeader;
+  /**
+   * CDXC:Worktrees 2026-05-18-23:07:
+   * The Worktrees settings surface needs the same project id/name/path projection as native workspace storage, plus an optional per-project command override for creating worktrees.
+   */
+  projectSettingsProjects?: SidebarProjectSettingsItem[];
   /**
    * CDXC:RecentProjects 2026-05-04-14:25
    * Combined sidebar hides projects without active/sleeping sessions in a
@@ -413,12 +444,17 @@ export type SidebarT3SessionItem = {
 
 export type SidebarPromptGitCommitMessage = {
   action: SidebarGitAction;
+  changedFiles?: SidebarGitChangedFile[];
   confirmLabel: string;
+  deleteWorktreeAfterDefault?: boolean;
   description: string;
+  isWorktree?: boolean;
   requestId: string;
+  showCommitMessage?: boolean;
   suggestedBody?: string;
   suggestedSubject: string;
   type: "promptGitCommit";
+  worktreeName?: string;
 };
 
 export type SidebarT3BrowserAccessMode = "external" | "local-network" | "local-only" | "tailscale";
@@ -514,6 +550,14 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
+       * CDXC:FirstLaunchSetup 2026-05-19-11:20:
+       * The modal host emits this after Tips & Tricks closes so native can
+       * chain into the filtered first-launch setup modal on the first run.
+       */
+      type: "tipsAndTricksClosed";
+    }
+  | {
+      /**
        * CDXC:GhosttySettings 2026-04-30-01:48
        * The settings modal exposes Ghostty-specific actions that are not plain
        * ghostex preference changes: reset managed config keys, apply the
@@ -582,6 +626,18 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "moveSidebarToOtherSide";
+    }
+  | {
+      /**
+       * CDXC:SidebarContextMenu 2026-05-20-13:05:
+       * Session and project context menus notify native when open so clicks on
+       * terminal, titlebar, and other non-sidebar surfaces dismiss the menu
+       * while the original AppKit click still reaches its target.
+       */
+      type: "sidebarContextMenuOpened";
+    }
+  | {
+      type: "sidebarContextMenuClosed";
     }
   | {
       /**
@@ -891,6 +947,16 @@ export type SidebarToExtensionMessage =
       sessionId: string;
     }
   | {
+      /**
+       * CDXC:PanePopOut 2026-05-19-10:15:
+       * Browser and agent session cards expose Pop Out Pane in the sidebar
+       * context menu. The controller toggles pop-out presentation from the
+       * current session record, matching the focused-pane hotkey behavior.
+       */
+      sessionId: string;
+      type: "popOutPane";
+    }
+  | {
       type: "attachToIde";
     }
   | {
@@ -1021,9 +1087,15 @@ export type SidebarToExtensionMessage =
       type: "setSidebarGitGenerateCommitBodyEnabled";
     }
   | {
+      deleteWorktreeAfter?: boolean;
+      filePaths?: string[];
       message: string;
       requestId: string;
       type: "confirmSidebarGitCommit";
+    }
+  | {
+      filePath: string;
+      type: "openSidebarGitChangedFile";
     }
   | {
       requestId: string;
@@ -1036,7 +1108,6 @@ export type SidebarToExtensionMessage =
       commandId?: string;
       icon?: SidebarCommandIcon;
       iconColor?: string;
-      isGlobal?: boolean;
       name: string;
       playCompletionSound: boolean;
       command?: string;
@@ -1057,6 +1128,18 @@ export type SidebarToExtensionMessage =
       groupId?: string;
     }
   | {
+      type: "createProjectWorktree";
+      agentId: string;
+      prompt: string;
+      projectId?: string;
+    }
+  | {
+      type: "setProjectWorktreeCommand";
+      command: string;
+      projectId: string;
+    }
+  | {
+      acceptAllMode?: AgentAcceptAllMode;
       type: "saveSidebarAgent";
       agentId?: string;
       command: string;

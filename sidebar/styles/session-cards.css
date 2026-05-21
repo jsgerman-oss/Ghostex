@@ -787,45 +787,59 @@
 
 /*
  * CDXC:DelayedSend 2026-05-17-03:14
- * Active Delayed Send timers use the sidebar's agent-icon slot, but unlike
- * ordinary agent marks they must stay visible and clickable so users can see,
- * inspect, change, or cancel the pending Enter keypress.
+ * CDXC:DelayedSend 2026-05-21-12:21
+ * Active Delayed Send timers must occupy the exact same visual slot as the
+ * session-card agent icon, but stay visible regardless of hover-only agent
+ * settings. Keep only timer-specific color/visibility here; placement and
+ * outer dimensions come from the normal floating/header agent icon classes.
  */
-.session-floating-delayed-send-icon,
-.session-header-delayed-send-icon {
+.session-delayed-send-agent-icon {
   align-items: center;
   background: transparent;
   border: 0;
-  color: color-mix(in srgb, var(--app-foreground) 88%, #72d8ff 12%);
-  display: inline-flex;
+  color: #f6c945 !important;
   justify-content: center;
+  line-height: 0;
   margin: 0;
+  opacity: 1 !important;
   padding: 0;
   pointer-events: auto;
 }
 
-.session-floating-delayed-send-icon {
+.session-delayed-send-agent-icon > svg {
+  display: block;
   height: calc(17px * var(--sidebar-density-scale));
-  left: calc(-5px * var(--sidebar-density-scale));
-  opacity: 0.95;
-  position: absolute;
-  top: calc(4px * var(--sidebar-density-scale));
   width: calc(17px * var(--sidebar-density-scale));
-  z-index: 4;
 }
 
-.session-header-delayed-send-icon {
-  height: 16px;
-  opacity: 0.86;
-  width: 16px;
+.session-frame[data-dragging="true"] .session-delayed-send-agent-icon {
+  opacity: 0 !important;
 }
 
-.session-floating-delayed-send-icon:hover,
-.session-floating-delayed-send-icon:focus-visible,
-.session-header-delayed-send-icon:hover,
-.session-header-delayed-send-icon:focus-visible {
-  color: var(--app-foreground);
-  opacity: 1;
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-agent-icon-hover-only="true"]:not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-floating-agent-tabler-icon.session-delayed-send-agent-icon {
+  display: inline-flex !important;
+  opacity: 1 !important;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-floating-agent-tabler-icon.session-delayed-send-agent-icon {
+  align-items: center;
+  display: inline-flex !important;
+  height: var(--reference-session-icon-size);
+  justify-content: center;
+  opacity: 1 !important;
+  width: var(--reference-session-icon-size);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-floating-agent-tabler-icon.session-delayed-send-agent-icon
+  > svg {
+  height: var(--reference-session-icon-size);
+  width: var(--reference-session-icon-size);
 }
 
 .session-persistence-provider-badge {

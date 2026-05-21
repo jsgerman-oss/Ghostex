@@ -311,6 +311,7 @@
     0 20px 30px -28px rgba(0, 0, 0, 0.4);
   display: grid;
   gap: calc(10px * var(--sidebar-density-scale));
+  grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
   padding: calc(15px * var(--sidebar-density-scale)) calc(24px * var(--sidebar-density-scale))
     calc(15px * var(--sidebar-density-scale));
@@ -321,6 +322,54 @@
   display: flex;
   gap: calc(12px * var(--sidebar-density-scale));
   min-width: 0;
+}
+
+.sidebar-project-header-actions {
+  align-items: center;
+  align-self: center;
+  display: inline-flex;
+  flex: none;
+  gap: calc(6px * var(--sidebar-density-scale));
+  justify-content: flex-end;
+  max-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    max-width 140ms ease,
+    opacity 140ms ease,
+    visibility 0s linear 140ms;
+  visibility: hidden;
+}
+
+.sidebar-project-header-surface:hover .sidebar-project-header-actions,
+.sidebar-project-header-surface:has(:focus-visible) .sidebar-project-header-actions {
+  max-width: calc(76px * var(--sidebar-density-scale));
+  opacity: 1;
+  overflow: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+  visibility: visible;
+}
+
+.sidebar-project-header-action {
+  align-items: center;
+  background: color-mix(in srgb, var(--app-card-active) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border) 92%, transparent);
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--app-button-background) 74%, var(--app-foreground) 26%);
+  display: inline-flex;
+  flex: none;
+  height: calc(24px * var(--sidebar-density-scale));
+  justify-content: center;
+  padding: 0;
+  width: calc(24px * var(--sidebar-density-scale));
+}
+
+.sidebar-project-header-action:disabled,
+.sidebar-project-header-action[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.56;
 }
 
 .sidebar-project-header-icon-shell {
@@ -492,9 +541,18 @@ body[data-sidebar-theme^="light-"]
 }
 
 .sidebar-collapse-shell[data-collapsed="true"] {
+  /*
+   * CDXC:SidebarScroll 2026-05-20-08:08:
+   * Collapsed project bodies must not contribute their hidden session rows to
+   * the parent scrollHeight. Expanded group bodies can keep visible overflow
+   * for anchored status/UI affordances, but collapsed shells need to clip so an
+   * all-collapsed project list disables sidebar scrolling when the visible
+   * rows fit in the viewport.
+   */
   margin-top: calc(-10px * var(--sidebar-density-scale));
   max-height: 0;
   opacity: 0;
+  overflow: hidden;
   pointer-events: none;
 }
 
@@ -1032,6 +1090,49 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   cursor: default;
 }
 
+/*
+ * CDXC:Tooltips 2026-05-19-19:05:
+ * Reference-sidebar hover icons and section-header action buttons cannot rely on
+ * portaled Radix tooltips because the native sidebar webview mis-anchors them
+ * against the trigger. Render the label beside the icon with a local
+ * pseudo-element to the left instead.
+ */
+.reference-sidebar-section-action.reference-sidebar-hover-action-tooltip {
+  position: relative;
+}
+
+.reference-sidebar-hover-action-tooltip::after,
+.reference-sidebar-section-action.reference-sidebar-hover-action-tooltip::after {
+  background: #262626;
+  border-radius: 16px;
+  color: #ffffff;
+  content: attr(data-tooltip);
+  font-size: 12px;
+  line-height: 1.3;
+  opacity: 0;
+  padding: 6px 12px;
+  pointer-events: none;
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  transition:
+    opacity 120ms ease,
+    visibility 0s linear 120ms;
+  visibility: hidden;
+  white-space: nowrap;
+  z-index: var(--ghostex-tooltip-z-index, 1400);
+}
+
+.reference-sidebar-nav-item:hover .reference-sidebar-hover-action-tooltip:is(:hover, :focus-visible)::after,
+.reference-sidebar-hover-action-tooltip:focus-visible::after,
+.reference-sidebar-section-row:hover .reference-sidebar-hover-action-tooltip:is(:hover, :focus-visible)::after,
+.reference-sidebar-section-row:focus-within .reference-sidebar-hover-action-tooltip:focus-visible::after {
+  opacity: 1;
+  transition-delay: 0s;
+  visibility: visible;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .reference-sidebar-nav-button
   svg.reference-sidebar-nav-icon {
@@ -1157,6 +1258,26 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-content {
   /*
+   * CDXC:SidebarStickyHeaders 2026-05-20-10:15:
+   * Project folder headers should stick to the top of the scroll area itself.
+   * Move the scroll viewport down slightly to create top breathing room, then
+   * subtract the same amount from the first section header margin so Quick and
+   * Projects keep their current visual spacing in normal document flow.
+   *
+   * CDXC:SidebarStickyHeaders 2026-05-20-10:31:
+   * Add 7px more space below the Search button by increasing the scroll
+   * viewport's top offset from 8px to 15px. Keep the first section header's
+   * visual position stable by deriving its top margin from the same offset.
+   *
+   * CDXC:SidebarStickyHeaders 2026-05-20-10:38:
+   * Quick needs 5px more visible breathing room inside the scroll area after
+   * the Search-to-scroll gap was increased, so expose a separate first-section
+   * top inset instead of changing project sticky positioning.
+   */
+  --reference-sidebar-project-sticky-top: 0px;
+  --reference-sidebar-quick-top-extra: 5px;
+  --reference-sidebar-scroll-top-offset: 15px;
+  /*
    * CDXC:SidebarSearch 2026-05-08-16:20
    * Reference-mode search renders filtered current projects followed by
    * Previous Sessions in the same scroll surface. The shared grid layout can
@@ -1166,6 +1287,8 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
    */
   display: block;
   gap: 0;
+  height: calc(100% - var(--reference-sidebar-scroll-top-offset, 15px));
+  margin-top: var(--reference-sidebar-scroll-top-offset, 15px);
   padding-right: 0;
   scrollbar-width: none;
 }
@@ -1199,15 +1322,36 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 
 .reference-sidebar-section-row {
   align-items: center;
+  background: var(--app-background);
   display: flex;
   margin: 48px 15px 10px 17px;
   min-height: 22px;
+  /*
+   * CDXC:SidebarStickyHeaders 2026-05-20-08:08:
+   * Quick and Projects started as scroll-context sticky headers, but review
+   * showed the section label plus sticky project row created awkward stacked
+   * whitespace. Keep section labels in normal document flow and let only
+   * project folder headers stick while scrolling.
+   */
+}
+
+.reference-sidebar-section-row[data-reference-section="projects"] {
+  /*
+   * CDXC:SidebarStickyHeaders 2026-05-20-09:55:
+   * The first project folder should sit close to the normal Projects section
+   * label so the handoff into sticky project-folder headers feels immediate
+   * without making Quick's chat-section spacing tighter.
+   */
+  margin-bottom: 2px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-groups-content
   > .reference-sidebar-section-row:first-child {
-  margin-top: 23px;
+  margin-top: calc(
+    23px - var(--reference-sidebar-scroll-top-offset, 15px) +
+      var(--reference-sidebar-quick-top-extra, 5px)
+  );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
@@ -1235,7 +1379,26 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   margin-top: 23px;
 }
 
-.sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-collapsible-body,
+.sidebar-reference-layout[data-reference-sidebar="true"] .reference-sidebar-collapsible-body {
+  /*
+   * CDXC:SidebarScroll 2026-05-20-08:08:
+   * Expanded Projects can contain a real workspace like zmux with dozens of
+   * sessions plus more projects after it. Do not cap the expanded section with
+   * a synthetic max-height; the parent session-groups viewport must measure the
+   * full content height so every project and session remains reachable.
+   */
+  max-height: none;
+  opacity: 1;
+  overflow: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition:
+    opacity 150ms ease,
+    transform 180ms ease,
+    visibility 0s linear 0s;
+  visibility: visible;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-drawer-body {
   max-height: 2000px;
   opacity: 1;

@@ -4,8 +4,10 @@ import {
   IconClock,
   IconDeviceMobile,
   IconDownload,
+  IconExternalLink,
   IconGitFork,
   IconHandFinger,
+  IconLayoutSidebarRightExpand,
   IconMessageCircle,
   IconMoon,
   IconPencil,
@@ -20,7 +22,6 @@ import { KeyboardSensor, PointerActivationConstraints, PointerSensor } from "@dn
 import { SortableKeyboardPlugin } from "@dnd-kit/dom/sortable";
 import { useDroppable } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
-import { createPortal } from "react-dom";
 import {
   Fragment,
   useEffect,
@@ -52,6 +53,7 @@ import {
   createSessionDropTargetId,
 } from "./sidebar-dnd";
 import { openAppModal } from "./app-modal-host-bridge";
+import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
 
@@ -195,6 +197,7 @@ export function SortableSessionCard({
     !isBrowserSession &&
     Boolean(session?.sessionPersistenceProvider && session.sessionPersistenceName);
   const canFullReloadSession = session ? !isBrowserSession && supportsFullReload(session) : false;
+  const canPopOutPane = session ? supportsPopOutPane(session, isBrowserSession, isT3Session) : false;
   const canGenerateSessionTitle = session
     ? !isBrowserSession &&
       supportsGeneratedName(session) &&
@@ -456,54 +459,6 @@ export function SortableSessionCard({
     vscode,
   ]);
 
-  useEffect(() => {
-    if (!contextMenuPosition) {
-      return;
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) {
-        return;
-      }
-
-      setContextMenuPosition(undefined);
-    };
-    const handleContextMenu = (event: MouseEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) {
-        return;
-      }
-
-      setContextMenuPosition(undefined);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setContextMenuPosition(undefined);
-      }
-    };
-    const handleBlur = () => {
-      setContextMenuPosition(undefined);
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== "visible") {
-        setContextMenuPosition(undefined);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("contextmenu", handleContextMenu);
-    document.addEventListener("keydown", handleKeyDown);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("blur", handleBlur);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("contextmenu", handleContextMenu);
-      document.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("blur", handleBlur);
-    };
-  }, [contextMenuPosition]);
-
   const openContextMenu = (clientX: number, clientY: number) => {
     setContextMenuPosition(
       clampContextMenuPosition(clientX, clientY, contextMenuItemCount, contextMenuDividerCount),
@@ -687,6 +642,24 @@ export function SortableSessionCard({
     vscode.postMessage({
       sessionId: session.sessionId,
       type: "fullReloadSession",
+    });
+  };
+
+  const requestPopOutPane = () => {
+    if (!canPopOutPane) {
+      return;
+    }
+
+    setContextMenuPosition(undefined);
+    /**
+     * CDXC:PanePopOut 2026-05-19-10:15:
+     * Browser and agent session cards expose Pop Out Pane in the sidebar context
+     * menu. The native controller toggles presentation from the current session
+     * record, matching the focused-pane hotkey and tab-bar overflow behavior.
+     */
+    vscode.postMessage({
+      sessionId: session.sessionId,
+      type: "popOutPane",
     });
   };
 
@@ -941,6 +914,28 @@ export function SortableSessionCard({
       onClick: requestFullReloadSession,
     });
   }
+  if (canPopOutPane) {
+    sessionActions.push({
+      icon: session.isPoppedOut ? (
+        <IconLayoutSidebarRightExpand
+          aria-hidden="true"
+          className="session-context-menu-icon"
+          size={16}
+          stroke={1.8}
+        />
+      ) : (
+        <IconExternalLink
+          aria-hidden="true"
+          className="session-context-menu-icon"
+          size={16}
+          stroke={1.8}
+        />
+      ),
+      key: "pop-out-pane",
+      label: session.isPoppedOut ? "Restore Pane" : "Pop Out Pane",
+      onClick: requestPopOutPane,
+    });
+  }
 
   const destructiveActions: SessionContextMenuAction[] = [
     {
@@ -1060,17 +1055,6 @@ export function SortableSessionCard({
             className="session-drop-target-surface session-drop-target-surface-after"
             ref={afterDropTarget.ref}
           />
-          <SessionFloatingAgentIcon
-            agentIcon={session.agentIcon}
-            delayedSendRemainingLabel={session.delayedSendRemainingLabel}
-            faviconDataUrl={session.faviconDataUrl}
-            isFavorite={session.isFavorite}
-            isReloading={session.isReloading}
-            onDelayedSendClick={requestDelayedSend}
-            sessionPersistenceName={session.sessionPersistenceName}
-            sessionPersistenceProvider={session.sessionPersistenceProvider}
-            showTerminalIcon={showTerminalSessionIcon}
-          />
           <article
             aria-expanded={contextMenuPosition ? true : undefined}
             aria-haspopup="menu"
@@ -1168,6 +1152,17 @@ export function SortableSessionCard({
             style={sessionAnchorStyle}
             tabIndex={0}
           >
+            <SessionFloatingAgentIcon
+              agentIcon={session.agentIcon}
+              delayedSendRemainingLabel={session.delayedSendRemainingLabel}
+              faviconDataUrl={session.faviconDataUrl}
+              isFavorite={session.isFavorite}
+              isReloading={session.isReloading}
+              onDelayedSendClick={requestDelayedSend}
+              sessionPersistenceName={session.sessionPersistenceName}
+              sessionPersistenceProvider={session.sessionPersistenceProvider}
+              showTerminalIcon={showTerminalSessionIcon}
+            />
             {/**
              * CDXC:SidebarSessions 2026-05-09-16:55
              * Project and chat session cards route the close-on-hover setting
@@ -1188,49 +1183,41 @@ export function SortableSessionCard({
           <div aria-hidden className="session-status-dot session-status-dot-inline" />
         </div>
       </OverflowTooltipText>
-      {contextMenuPosition
-        ? createPortal(
-            <div
-              className="session-context-menu"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-              onPointerDown={(event) => {
-                event.stopPropagation();
-              }}
-              ref={menuRef}
-              role="menu"
-              style={{
-                left: `${contextMenuPosition.x}px`,
-                top: `${contextMenuPosition.y}px`,
-              }}
-            >
-              {contextMenuSections.map((section, sectionIndex) => (
-                <Fragment key={`section-${sectionIndex}`}>
-                  {sectionIndex > 0 ? (
-                    <div className="session-context-menu-divider" role="separator" />
-                  ) : null}
-                  <div className="session-context-menu-section">
-                    {section.map((action) => (
-                      <button
-                        key={action.key}
-                        className={`session-context-menu-item${action.danger ? " session-context-menu-item-danger" : ""}`}
-                        onClick={action.onClick}
-                        role="menuitem"
-                        type="button"
-                      >
-                        {action.icon}
-                        {action.label}
-                      </button>
-                    ))}
-                  </div>
-                </Fragment>
-              ))}
-            </div>,
-            document.body,
-          )
-        : null}
+      {contextMenuPosition ? (
+        <SidebarContextMenuPortal
+          menuRef={menuRef}
+          menuStyle={{
+            left: `${contextMenuPosition.x}px`,
+            top: `${contextMenuPosition.y}px`,
+          }}
+          onDismiss={() => {
+            setContextMenuPosition(undefined);
+          }}
+          vscode={vscode}
+        >
+          {contextMenuSections.map((section, sectionIndex) => (
+            <Fragment key={`section-${sectionIndex}`}>
+              {sectionIndex > 0 ? (
+                <div className="session-context-menu-divider" role="separator" />
+              ) : null}
+              <div className="session-context-menu-section">
+                {section.map((action) => (
+                  <button
+                    key={action.key}
+                    className={`session-context-menu-item${action.danger ? " session-context-menu-item-danger" : ""}`}
+                    onClick={action.onClick}
+                    role="menuitem"
+                    type="button"
+                  >
+                    {action.icon}
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+            </Fragment>
+          ))}
+        </SidebarContextMenuPortal>
+      ) : null}
     </>
   );
 }
@@ -1244,6 +1231,10 @@ function supportsResumeCommandCopy(session: SidebarSessionItem): boolean {
    * CDXC:SessionRestore 2026-04-27-08:04
    * Match agent-tiler context-menu visibility: Copy resume is only shown for
    * built-in agents with known resume or resume-selection CLI behavior.
+   *
+   * CDXC:CursorCLI 2026-05-20-08:20:
+   * Cursor resume uses stored chat UUIDs or a local title lookup fallback, so
+   * Cursor CLI cards expose the same copy-resume affordance as Codex and Pi.
    */
   return (
     session.agentIcon === "codex" ||
@@ -1251,7 +1242,8 @@ function supportsResumeCommandCopy(session: SidebarSessionItem): boolean {
     session.agentIcon === "copilot" ||
     session.agentIcon === "gemini" ||
     session.agentIcon === "opencode" ||
-    session.agentIcon === "pi"
+    session.agentIcon === "pi" ||
+    session.agentIcon === "cursor-cli"
   );
 }
 
@@ -1284,6 +1276,28 @@ function supportsGeneratedName(session: SidebarSessionItem): boolean {
   );
 }
 
+function supportsPopOutPane(
+  session: SidebarSessionItem,
+  isBrowserSession: boolean,
+  isT3Session: boolean,
+): boolean {
+  /**
+   * CDXC:PanePopOut 2026-05-19-10:15:
+   * Sidebar context menus expose pop-out for browser panes and agent terminal
+   * sessions. Sleeping sessions dispose their native surface and cannot remain
+   * in a detached window; T3 panes keep the native title-bar model unchanged.
+   */
+  if (session.isSleeping === true || isT3Session) {
+    return false;
+  }
+
+  if (isBrowserSession) {
+    return true;
+  }
+
+  return session.sessionKind === "terminal" && Boolean(session.agentIcon);
+}
+
 function supportsFullReload(session: SidebarSessionItem): boolean {
   /**
    * CDXC:SessionRestore 2026-04-27-08:04
@@ -1293,12 +1307,17 @@ function supportsFullReload(session: SidebarSessionItem): boolean {
    * CDXC:PiAgent 2026-05-08-16:18
    * Pi has a restorable CLI identity through its captured session id/path, so
    * right-click Full reload should be visible on Pi cards like it is for Codex.
+   *
+   * CDXC:CursorCLI 2026-05-20-08:20:
+   * Cursor cards can full-reload through stored chat UUIDs or trusted titles
+   * resolved from the local Cursor chat store for the active project.
    */
   return (
     session.agentIcon === "codex" ||
     session.agentIcon === "claude" ||
     session.agentIcon === "opencode" ||
-    session.agentIcon === "pi"
+    session.agentIcon === "pi" ||
+    session.agentIcon === "cursor-cli"
   );
 }
 

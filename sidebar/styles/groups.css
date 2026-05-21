@@ -333,6 +333,40 @@
   min-width: 0;
 }
 
+.group[data-project-group="true"] .group-title-handle {
+  /*
+   * CDXC:ProjectHeaders 2026-05-21-01:08:
+   * Project header actions should align to the right edge of the header surface.
+   * Keep the title cell shrink-wrapped so the right-aligned action cluster owns
+   * the trailing slot without making icons drift during expand/collapse.
+   */
+  flex: 0 1 auto;
+  margin-left: calc(8px * var(--sidebar-density-scale));
+  max-width: 100%;
+}
+
+.group[data-project-group="true"] .group-title-row {
+  gap: 0;
+}
+
+.group[data-project-group="true"] .group-title-button {
+  flex: 0 1 auto;
+  width: auto;
+}
+
+.group[data-project-group="true"] .group-title-spacer {
+  display: none;
+}
+
+.group[data-project-group="true"] .group-header-actions {
+  transition: none;
+}
+
+.group[data-project-group="true"] .group-add-button,
+.group[data-project-group="true"] .group-agent-split-button {
+  transition: none;
+}
+
 .group-title-row:has(.group-collapsed-status-counts) .group-title-spacer {
   flex: 0 0 auto;
 }
@@ -775,7 +809,9 @@
 .group-head:hover .group-collapsed-status-counts,
 .group-head:has(:focus-visible) .group-collapsed-status-counts,
 .group-title-row:has(.group-header-actions[data-open="true"]) .group-collapsed-status-counts {
+  display: none;
   gap: 0;
+  margin-left: 0;
   max-width: 0;
   opacity: 0;
   visibility: hidden;
@@ -910,12 +946,13 @@
   gap: calc(6px * var(--sidebar-density-scale));
   margin-left: calc(6px * var(--sidebar-density-scale));
   /*
-   * CDXC:SidebarHover 2026-05-04-07:00
-   * The group trailing controls should end flush with the header surface. The
-   * sidebar runs under CSS zoom, so a 140px cap leaves room for browser, VS
-   * Code reveal, terminal, and agent split buttons in project headers.
+   * CDXC:SidebarHover 2026-05-19-15:50:
+   * Hover-revealed group controls should size to their rendered buttons instead
+   * of a fixed pixel cap. The action cluster can include worktree, browser,
+   * terminal, and agent controls, but it must not reserve phantom width that
+   * truncates project titles or blocks header collapse clicks.
    */
-  max-width: 140px;
+  max-width: max-content;
   opacity: 1;
   /*
    * CDXC:SidebarHover 2026-05-04-08:28
@@ -927,6 +964,12 @@
   pointer-events: auto;
   transition-delay: 0s;
   visibility: visible;
+}
+
+.group[data-project-group="true"] .group-head:hover .group-header-actions,
+.group[data-project-group="true"] .group-head:has(:focus-visible) .group-header-actions,
+.group[data-project-group="true"] .group-header-actions[data-open="true"] {
+  margin-left: auto;
 }
 
 .group-head:hover .group-add-button,
@@ -1233,9 +1276,32 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .group-head {
+  /*
+   * CDXC:SidebarStickyHeaders 2026-05-20-08:08:
+   * Project folder headers are the only sticky context row in the sidebar.
+   * Quick and Projects labels scroll normally, while each project header
+   * sticks only within its own group so the nearest project replaces the
+   * previous one naturally through long session lists.
+   *
+   * CDXC:SidebarStickyHeaders 2026-05-20-10:03:
+   * Project headers stick to the top of the scroll area itself. The scroll
+   * viewport owns the top breathing room below Search, while Quick and Projects
+   * labels remain normal scrolling content.
+   *
+   * CDXC:SidebarStickyHeaders 2026-05-20-10:22:
+   * Sticky project headers need a square backdrop so scrolled session content
+   * cannot peek through the header's rounded corners. Keep the actual
+   * interactive button radius on the ::before surface while the sticky header
+   * element paints the unrounded background behind it.
+   */
+  background: var(--app-background);
+  border-radius: 0;
   box-sizing: border-box;
   padding-left: 10px;
   padding-right: 10px;
+  position: sticky;
+  top: var(--reference-sidebar-project-sticky-top, 0px);
+  z-index: 28;
 }
 
 /*
@@ -1263,6 +1329,7 @@
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .group[data-project-group="true"]
   .group-head::before {
+  border-radius: 8px;
   display: block;
 }
 
@@ -1275,6 +1342,18 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-title-row {
   gap: 12px;
   min-height: 32px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"]
+  .group-title-row {
+  gap: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"]
+  .group-title-handle {
+  margin-left: 12px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-project-diff-stats {
@@ -1363,7 +1442,21 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-header-actions[data-open="true"] {
   gap: 2px;
   margin-left: 6px;
-  max-width: 136px;
+  max-width: max-content;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"]
+  .group-head:hover
+  .group-header-actions,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"]
+  .group-head:has(:focus-visible)
+  .group-header-actions,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .group[data-project-group="true"]
+  .group-header-actions[data-open="true"] {
+  margin-left: auto;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button,

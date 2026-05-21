@@ -161,6 +161,33 @@ describe("reconcileCollapsedGroupsById", () => {
     ).toEqual({});
   });
 
+  test("should keep collapsed project groups collapsed while seeding the startup baseline", () => {
+    /**
+     * CDXC:SidebarGroups 2026-05-20-12:00
+     * Restart hydration replays restored session counts from zero. The first
+     * post-hydrate reconcile must not treat that replay as a newly created session.
+     */
+    expect(
+      reconcileCollapsedGroupsById({
+        browserGroupIds: [],
+        expandOnSessionCountIncreaseGroupIds: ["project-ghostex"],
+        groupIds: ["project-ghostex"],
+        previousSessionCountsByGroup: {
+          "project-ghostex": 0,
+        },
+        previousCollapsedGroupsById: {
+          "project-ghostex": true,
+        },
+        sessionIdsByGroup: {
+          "project-ghostex": ["session-1", "session-2"],
+        },
+        skipExpandOnSessionCountIncrease: true,
+      }),
+    ).toEqual({
+      "project-ghostex": true,
+    });
+  });
+
   test("should expand a collapsed project group when a session is created without auto-collapsing empty projects", () => {
     /**
      * CDXC:SidebarGroups 2026-05-08-11:09

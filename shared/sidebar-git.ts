@@ -1,5 +1,11 @@
 export type SidebarGitAction = "commit" | "push" | "pr";
 
+export type SidebarGitChangedFile = {
+  additions: number;
+  deletions: number;
+  path: string;
+};
+
 export type SidebarGitPullRequest = {
   number?: number;
   state: "open" | "closed" | "merged";
@@ -21,8 +27,11 @@ export type SidebarGitState = {
   hasWorkingTreeChanges: boolean;
   isBusy: boolean;
   isRepo: boolean;
+  files: SidebarGitChangedFile[];
+  isWorktree: boolean;
   pr: SidebarGitPullRequest | null;
   primaryAction: SidebarGitAction;
+  worktreeName?: string;
 };
 
 export type SidebarGitMenuItem = {
@@ -60,6 +69,8 @@ export function createDefaultSidebarGitState(
     hasWorkingTreeChanges: false,
     isBusy: false,
     isRepo: false,
+    files: [],
+    isWorktree: false,
     pr: null,
     primaryAction,
   };

@@ -76,6 +76,7 @@ export function ConfigureAgentsModal({ isOpen, onClose, vscode }: ConfigureAgent
   const openAgentEditor = (agent: SidebarAgentButton) => {
     setEditorState({
       draft: {
+        acceptAllMode: agent.acceptAllMode ?? "inherit",
         agentId: agent.agentId,
         command: agent.command ?? "",
         icon: agent.icon,
@@ -86,6 +87,7 @@ export function ConfigureAgentsModal({ isOpen, onClose, vscode }: ConfigureAgent
 
   const saveAgent = (draft: AgentConfigDraft) => {
     vscode.postMessage({
+      acceptAllMode: draft.acceptAllMode,
       agentId: draft.agentId,
       command: draft.command,
       icon: draft.icon,

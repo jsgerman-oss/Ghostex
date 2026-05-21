@@ -466,6 +466,27 @@ button,
   padding-top: 2.75rem;
 }
 
+/*
+ * CDXC:SettingsManagement 2026-05-21-09:17:
+ * Settings Agents and Actions rows keep edit/delete controls on the right side
+ * of each card, but reveal those controls only while the card is hovered or
+ * keyboard-focused so management lists stay quiet while scanning.
+ */
+.ghostex-settings-shadcn .settings-management-row-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 0.25rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.ghostex-settings-shadcn .settings-management-row:hover .settings-management-row-actions,
+.ghostex-settings-shadcn .settings-management-row:focus-within .settings-management-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .ghostex-settings-shadcn .settings-section-header-actions {
   align-items: center;
   background: #0e0e0e;

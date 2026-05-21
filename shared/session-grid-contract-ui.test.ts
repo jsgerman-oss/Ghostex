@@ -84,4 +84,11 @@ describe("createSidebarSessionItems", () => {
     );
     expect(getPreferredSessionTitle("Codex Session", codexSessionId)).toBeUndefined();
   });
+
+  test("should treat Cursor Agent boot titles as placeholders instead of persisted names", () => {
+    expect(getSessionCardPrimaryTitle({ agentName: "cursor", title: "Cursor Agent" })).toBe(
+      "Cursor CLI Session",
+    );
+    expect(getPreferredSessionTitle("Cursor CLI Session", "Cursor Agent - ✅ Ready")).toBeUndefined();
+  });
 });

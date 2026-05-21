@@ -432,6 +432,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const sessionIdsByGroupRef = useRef<SessionIdsByGroup>({});
   const previousSessionCountsByGroupRef = useRef<Record<string, number>>({});
   const didApplyStartupEmptyChatsCollapseRef = useRef(false);
+  const hasEstablishedStartupGroupCollapseBaselineRef = useRef(false);
   const previousNormalizedSessionSearchQueryRef = useRef("");
   const refreshDebugInstanceIdRef = useRef(createSidebarRefreshDebugInstanceId());
   const pointerDownSessionTargetRef = useRef<SidebarPointerDownSessionTarget | undefined>(
@@ -559,6 +560,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   );
 
   useLayoutEffect(() => {
+    if (!hasAppliedHydrateRef.current) {
+      return;
+    }
+
     const autoCollapseGroupIds = getAutoCollapseGroupIds({
       browserGroupIds,
       groupsById,
@@ -568,13 +573,17 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       groupIds: groupOrder,
       sessionIdsByGroup: authoritativeSessionIdsByGroup,
     });
-    const sessionCountIncreaseGroupIds = groupOrder.filter((groupId) => {
-      const previousCount = previousSessionCountsByGroupRef.current[groupId];
-      return (
-        previousCount !== undefined &&
-        (authoritativeSessionIdsByGroup[groupId] ?? []).length > previousCount
-      );
-    });
+    const isEstablishingStartupGroupCollapseBaseline =
+      !hasEstablishedStartupGroupCollapseBaselineRef.current;
+    const sessionCountIncreaseGroupIds = isEstablishingStartupGroupCollapseBaseline
+      ? []
+      : groupOrder.filter((groupId) => {
+          const previousCount = previousSessionCountsByGroupRef.current[groupId];
+          return (
+            previousCount !== undefined &&
+            (authoritativeSessionIdsByGroup[groupId] ?? []).length > previousCount
+          );
+        });
 
     setCollapsedGroupsById((previous) =>
       reconcileCollapsedGroupsById({
@@ -585,6 +594,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         previousSessionCountsByGroup: previousSessionCountsByGroupRef.current,
         previousCollapsedGroupsById: previous,
         sessionIdsByGroup: authoritativeSessionIdsByGroup,
+        skipExpandOnSessionCountIncrease: isEstablishingStartupGroupCollapseBaseline,
       }),
     );
 
@@ -594,6 +604,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * collapsed Combined sidebar area, expand the owning Chats/Projects section
      * as soon as the host hydrates the added session so the user sees the
      * result of the action.
+     * CDXC:SidebarReference 2026-05-20-12:00
+     * Do not expand Chats/Projects section headers on the first post-hydrate
+     * baseline pass after restart. Restored session counts are not new sessions.
      */
     if (sessionCountIncreaseGroupIds.some((groupId) => groupsById[groupId]?.isChatCollection)) {
       setIsReferenceChatsCollapsed(false);
@@ -604,6 +617,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     }
 
     previousSessionCountsByGroupRef.current = nextSessionCountsByGroup;
+    if (isEstablishingStartupGroupCollapseBaseline) {
+      hasEstablishedStartupGroupCollapseBaselineRef.current = true;
+    }
   }, [
     authoritativeSessionIdsByGroup,
     browserGroupIds,
@@ -1316,6 +1332,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * Combined section headers, Recent Projects, and per-group collapse state are
      * UI navigation state. Persist them in the sidebar webview so restarting
      * ghostex keeps collapsed items collapsed and expanded items expanded.
+     * CDXC:SidebarReference 2026-05-20-12:00
+     * The first post-hydrate group-collapse reconcile seeds session-count baseline
+     * without expand-on-count-increase so restored projects do not reopen on launch.
      */
     writeSidebarUiCollapseState({
       collapsedGroupsById,
@@ -1344,7 +1363,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const {
     hasOverflow: sessionGroupsHaveScrollableOverflow,
     showBottomGlow: showSessionGroupsBottomGlow,
-    showTopGlow: showSessionGroupsTopGlow,
   } = useScrollGlowState(sessionGroupsContentRef);
   const sidebarSessionSearchResults = useMemo(
     () =>
@@ -2252,16 +2270,19 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           <div className="session-groups-top">
             {null}
           </div>
+          {/*
+            CDXC:SidebarStickyHeaders 2026-05-20-09:55:
+            The reference sidebar scroll area should not draw the dark top
+            scroll glow now that project folder headers stick at the scroll
+            viewport top. The sticky project row provides top-edge context,
+            while the bottom glow remains useful for undiscovered content below.
+          */}
           <div
             className="session-groups-scroll-shell"
             data-scroll-glow-bottom={String(showSessionGroupsBottomGlow)}
-            data-scroll-glow-top={String(showSessionGroupsTopGlow)}
+            data-scroll-glow-top="false"
             data-scrollable-y={String(sessionGroupsHaveScrollableOverflow)}
           >
-            <div
-              aria-hidden="true"
-              className="session-groups-scroll-glow session-groups-scroll-glow-top"
-            />
             <div
               className="session-groups-content scroll-mask-y"
               data-scrollable-y={String(sessionGroupsHaveScrollableOverflow)}
@@ -2296,6 +2317,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                         }
                         setIsReferenceChatsCollapsed((previous) => !previous);
                       }}
+                      sectionKey="quick"
                       title="Quick"
                     />
                     <div
@@ -2383,6 +2405,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                       }
                       setIsReferenceProjectsCollapsed((previous) => !previous);
                     }}
+                    sectionKey="projects"
                     title="Projects"
                   />
                 ) : null}
@@ -2584,7 +2607,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
             gitCommitDraft ?? {
               confirmLabel: "Commit",
               description: "",
+              changedFiles: [],
               requestId: "",
+              showCommitMessage: true,
               suggestedBody: undefined,
               suggestedSubject: "",
             }
@@ -2593,9 +2618,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           onCancel={(requestId) => {
             closeGitCommitModal(requestId);
           }}
-          onConfirm={(requestId, message) => {
+          onConfirm={(requestId, message, options) => {
             setGitCommitDraft(undefined);
             vscode.postMessage({
+              deleteWorktreeAfter: options.deleteWorktreeAfter,
+              filePaths: options.filePaths,
               message,
               requestId,
               type: "confirmSidebarGitCommit",
@@ -2728,24 +2755,23 @@ function SidebarReferenceNewSessionNavItem({
         label="New Session"
         onClick={onCreateSession}
       />
-      <AppTooltip align="end" collisionPadding={4} content="More">
-        <button
-          aria-controls="sidebar-overflow-menu"
-          aria-expanded={isOverflowMenuOpen}
-          aria-haspopup="menu"
-          aria-label="Open sidebar menu"
-          className="reference-sidebar-hover-action reference-sidebar-overflow-action"
-          data-sidebar-overflow-trigger="true"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onToggleMenu(event.currentTarget);
-          }}
-          type="button"
-        >
-          <IconMenu2Filled aria-hidden="true" size={15} />
-        </button>
-      </AppTooltip>
+      <button
+        aria-controls="sidebar-overflow-menu"
+        aria-expanded={isOverflowMenuOpen}
+        aria-haspopup="menu"
+        aria-label="More"
+        className="reference-sidebar-hover-action reference-sidebar-hover-action-tooltip reference-sidebar-overflow-action"
+        data-sidebar-overflow-trigger="true"
+        data-tooltip="More"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggleMenu(event.currentTarget);
+        }}
+        type="button"
+      >
+        <IconMenu2Filled aria-hidden="true" size={15} />
+      </button>
     </div>
   );
 }
@@ -2781,26 +2807,25 @@ function SidebarReferenceSearchNavItem({
       ) : (
         <div className="reference-sidebar-nav-item">
           <SidebarReferenceNavButton icon={IconSearch} label="Search" onClick={onSearch} />
-          <AppTooltip align="end" collisionPadding={4} content="Previous Sessions">
-            <button
-              aria-label="Previous Sessions"
-              className="reference-sidebar-hover-action reference-sidebar-previous-sessions-button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onOpenPreviousSessions();
-              }}
-              type="button"
-            >
-              {/*
-               * CDXC:PreviousSessions 2026-05-09-17:49
-               * The Search row's hover action uses IconHistoryToggle so the
-               * affordance reads as opening historical sessions instead of a
-               * generic list.
-               */}
-              <IconHistoryToggle aria-hidden="true" size={15} stroke={1.9} />
-            </button>
-          </AppTooltip>
+          <button
+            aria-label="Previous Sessions"
+            className="reference-sidebar-hover-action reference-sidebar-hover-action-tooltip reference-sidebar-previous-sessions-button"
+            data-tooltip="Previous Sessions"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onOpenPreviousSessions();
+            }}
+            type="button"
+          >
+            {/*
+             * CDXC:PreviousSessions 2026-05-09-17:49
+             * The Search row's hover action uses IconHistoryToggle so the
+             * affordance reads as opening historical sessions instead of a
+             * generic list.
+             */}
+            <IconHistoryToggle aria-hidden="true" size={15} stroke={1.9} />
+          </button>
         </div>
       )}
     </div>
@@ -2850,6 +2875,7 @@ function SidebarReferenceSectionHeader({
   onCreateChat,
   onFilterChats,
   onToggleCollapsed,
+  sectionKey,
   title,
 }: {
   actionsAlwaysVisible?: boolean;
@@ -2861,6 +2887,7 @@ function SidebarReferenceSectionHeader({
   onCreateChat?: () => void;
   onFilterChats?: () => void;
   onToggleCollapsed: () => void;
+  sectionKey: "projects" | "quick";
   title: string;
 }) {
   /**
@@ -2880,6 +2907,17 @@ function SidebarReferenceSectionHeader({
    * IconArrowsDiagonal2 for Collapse All and IconArrowsDiagonalMinimize for
    * Expand Previous, while preserving the text labels for tooltips and
    * accessibility.
+   *
+   * CDXC:Tooltips 2026-05-20-10:05:
+   * Quick and Projects section-header actions use the same local left-side
+   * tooltip treatment as the reference-sidebar hover icons because portaled
+   * Radix tooltips mis-anchor in the native sidebar webview. Quick exposes
+   * Quick Browser Tab and Quick Terminal actions beside the section label.
+   *
+   * CDXC:SidebarStickyHeaders 2026-05-20-09:55:
+   * Section headers need a stable section key in the DOM so spacing can be
+   * tuned for Projects and Quick independently without depending on visible
+   * label text or adjacent markup shape.
    */
   const BulkProjectIcon =
     bulkActionLabel === "Collapse All" ? IconArrowsDiagonalMinimize : IconArrowsDiagonal2;
@@ -2890,6 +2928,7 @@ function SidebarReferenceSectionHeader({
     <div
       className="reference-sidebar-section-row"
       data-actions-always-visible={String(actionsAlwaysVisible === true)}
+      data-reference-section={sectionKey}
     >
       <button
         aria-expanded={!collapsed}
@@ -2907,52 +2946,48 @@ function SidebarReferenceSectionHeader({
       {hasActions ? (
         <div className="reference-sidebar-section-actions">
           {onCreateBrowserChat ? (
-            <AppTooltip content="Open a Browser">
-              <button
-                aria-label="Open a browser chat"
-                className="reference-sidebar-section-action"
-                onClick={onCreateBrowserChat}
-                type="button"
-              >
-                <IconWorld aria-hidden="true" size={15} stroke={1.9} />
-              </button>
-            </AppTooltip>
+            <button
+              aria-label="Quick Browser Tab"
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip="Quick Browser Tab"
+              onClick={onCreateBrowserChat}
+              type="button"
+            >
+              <IconWorld aria-hidden="true" size={15} stroke={1.9} />
+            </button>
           ) : null}
           {onCreateChat ? (
-            <AppTooltip content="New chat">
-              <button
-                aria-label="New chat"
-                className="reference-sidebar-section-action"
-                onClick={onCreateChat}
-                type="button"
-              >
-                <IconPencil aria-hidden="true" size={15} stroke={1.9} />
-              </button>
-            </AppTooltip>
+            <button
+              aria-label="Quick Terminal"
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip="Quick Terminal"
+              onClick={onCreateChat}
+              type="button"
+            >
+              <IconTerminal2 aria-hidden="true" size={14} stroke={2} />
+            </button>
           ) : null}
           {onBulkProjectToggle && bulkActionLabel ? (
-            <AppTooltip content={bulkActionLabel}>
-              <button
-                aria-label={bulkActionLabel}
-                className="reference-sidebar-section-action"
-                onClick={onBulkProjectToggle}
-                type="button"
-              >
-                <BulkProjectIcon aria-hidden="true" size={14} stroke={1.9} />
-              </button>
-            </AppTooltip>
+            <button
+              aria-label={bulkActionLabel}
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip={bulkActionLabel}
+              onClick={onBulkProjectToggle}
+              type="button"
+            >
+              <BulkProjectIcon aria-hidden="true" size={14} stroke={1.9} />
+            </button>
           ) : null}
           {onAddProject ? (
-            <AppTooltip content="Add project">
-              <button
-                aria-label="Add project"
-                className="reference-sidebar-section-action"
-                onClick={onAddProject}
-                type="button"
-              >
-                <IconPlus aria-hidden="true" size={14} stroke={2} />
-              </button>
-            </AppTooltip>
+            <button
+              aria-label="Add project"
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip="Add project"
+              onClick={onAddProject}
+              type="button"
+            >
+              <IconPlus aria-hidden="true" size={14} stroke={2} />
+            </button>
           ) : null}
         </div>
       ) : null}
@@ -2977,21 +3012,25 @@ function SidebarReferenceSettingsButton({
           after removing the duplicate terminal icon from the native titlebar.
           Its hover label should name that destination instead of describing the
           underlying terminal-tab creation detail.
+
+          CDXC:Tooltips 2026-05-19-19:05:
+          This bottom-right hover icon cannot use portaled Radix tooltips because
+          the native sidebar webview mis-anchors them far from the trigger. Keep
+          the label local to the button and render it to the left of the icon.
         */}
-        <AppTooltip align="end" collisionPadding={4} content="Show Commands Pane">
-          <button
-            aria-label="Create terminal tab"
-            className="reference-sidebar-hover-action reference-sidebar-settings-terminal-action"
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              onCreateFullWidthTerminalPane();
-            }}
-            type="button"
-          >
-            <IconTerminal2 aria-hidden="true" size={15} stroke={1.9} />
-          </button>
-        </AppTooltip>
+        <button
+          aria-label="Show Commands Pane"
+          className="reference-sidebar-hover-action reference-sidebar-hover-action-tooltip reference-sidebar-settings-terminal-action"
+          data-tooltip="Show Commands Pane"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onCreateFullWidthTerminalPane();
+          }}
+          type="button"
+        >
+          <IconTerminal2 aria-hidden="true" size={15} stroke={1.9} />
+        </button>
       </div>
     </div>
   );

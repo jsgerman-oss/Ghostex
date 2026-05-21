@@ -200,6 +200,7 @@ export function createSessionInSimpleWorkspace(
               currentVisibleSessionIds,
               nextVisibleSessionIds,
               nextSessionRecord.sessionId,
+              group.snapshot.focusedSessionId,
               visiblePlacement,
               placementResult?.replacedSessionId,
             ),
@@ -1774,6 +1775,7 @@ function getNextPaneLayoutForCreatedSession(
   currentVisibleSessionIds: readonly string[],
   nextVisibleSessionIds: readonly string[],
   nextSessionId: string,
+  currentFocusedSessionId: string | undefined,
   placement: VisibleSessionPlacement | undefined,
   replacedSessionId: string | undefined,
 ): SessionPaneLayoutNode | undefined {
@@ -1794,26 +1796,40 @@ function getNextPaneLayoutForCreatedSession(
     ...currentVisibleSessionIds,
     ...currentPaneLayoutSessionIds,
   ]);
+  const normalizedCurrentLayout = normalizePaneLayout(
+    currentLayout,
+    seededLayoutSessionIds,
+    seededLayoutSessionIds,
+  );
   const seededLayout =
-    normalizePaneLayout(currentLayout, seededLayoutSessionIds, seededLayoutSessionIds) ??
-    createPaneLayoutFromVisibleIds(currentVisibleSessionIds);
+    normalizedCurrentLayout ??
+    (placement?.kind === "insertAfter" || placement?.kind === "appendFullWidth"
+      ? createPaneLayoutFromVisibleIds(currentVisibleSessionIds)
+      : createInitialPaneLayoutForCreatedSession(
+          currentVisibleSessionIds,
+          currentFocusedSessionId ?? currentVisibleSessionIds.at(-1) ?? nextSessionId,
+        ));
   if (!seededLayout) {
-    return normalizePaneLayout(
-      createPaneLayoutFromVisibleIds(nextVisibleSessionIds),
-      nextVisibleSessionIds,
-      nextVisibleSessionIds,
-      nextSessionId,
-    );
+    return createInitialPaneLayoutForCreatedSession(nextVisibleSessionIds, nextSessionId);
   }
 
   if (!placement) {
     /**
-     * CDXC:PaneTabs 2026-05-11-18:13
+     * CDXC:PaneTabs 2026-05-11-18:13:
      * Fork, restore, debug, and legacy creation paths may not pass an explicit
      * placement. They must still preserve the existing split/tab tree instead
      * of rebuilding paneLayout from visibleSessionIds, which flattens every tab
      * group into single-tab split panes.
+     *
+     * CDXC:SplitIntent 2026-05-19-08:29:
+     * Missing placement is not split intent. Default creation paths add the new
+     * session to the focused pane's tab group; only explicit split placements
+     * such as insertAfter or appendFullWidth may create a new split leaf.
      */
+    const targetSessionId =
+      currentFocusedSessionId && currentVisibleSessionIds.includes(currentFocusedSessionId)
+        ? currentFocusedSessionId
+        : currentVisibleSessionIds[0];
     const preservedLayoutSessionIds = dedupeVisibleSessionIds([
       ...nextVisibleSessionIds,
       ...currentPaneLayoutSessionIds,
@@ -1830,8 +1846,11 @@ function getNextPaneLayoutForCreatedSession(
       ...getPaneLayoutSessionIds(preservedLayout),
       nextSessionId,
     ]);
+    const tabbedLayout = targetSessionId
+      ? addSessionToPaneTabGroup(preservedLayout, targetSessionId, nextSessionId)
+      : undefined;
     return normalizePaneLayout(
-      appendSessionToPaneLayout(preservedLayout, nextSessionId, "horizontal"),
+      tabbedLayout ?? createInitialPaneLayoutForCreatedSession(nextVisibleSessionIds, nextSessionId),
       nextPaneLayoutSessionIds,
       nextPaneLayoutSessionIds,
       nextSessionId,
@@ -1927,6 +1946,21 @@ function normalizeCreatedPaneLayout(
     paneLayoutSessionIds,
     nextSessionId,
   );
+}
+
+function createInitialPaneLayoutForCreatedSession(
+  nextVisibleSessionIds: readonly string[],
+  nextSessionId: string,
+): SessionPaneLayoutNode | undefined {
+  const sessionIds = dedupeVisibleSessionIds(nextVisibleSessionIds);
+  if (sessionIds.length === 0) {
+    return undefined;
+  }
+  if (sessionIds.length === 1) {
+    return { kind: "leaf", sessionId: sessionIds[0]! };
+  }
+  const activeSessionId = sessionIds.includes(nextSessionId) ? nextSessionId : sessionIds.at(-1);
+  return { activeSessionId, kind: "tabs", sessionIds };
 }
 
 function createPaneLayoutFromVisibleIds(
@@ -2421,10 +2455,22 @@ function normalizePaneLayout(
   if (missingVisibleSessionIds.length === 0) {
     return normalized;
   }
-  const missingLayout = createPaneLayoutFromVisibleIds(missingVisibleSessionIds);
   if (!normalized) {
-    return missingLayout;
+    /**
+     * CDXC:SplitIntent 2026-05-19-08:29:
+     * Legacy snapshots without paneLayout have no explicit split intent. Backfill
+     * their visible sessions as one tab group so normalization cannot invent new
+     * split panes before a real split command supplies an explicit split tree.
+     */
+    return createInitialPaneLayoutForCreatedSession(
+      missingVisibleSessionIds,
+      focusedSessionId ?? missingVisibleSessionIds.at(-1) ?? "",
+    );
   }
+  const missingLayout = createInitialPaneLayoutForCreatedSession(
+    missingVisibleSessionIds,
+    focusedSessionId ?? missingVisibleSessionIds.at(-1) ?? "",
+  );
   if (!missingLayout) {
     return normalized;
   }

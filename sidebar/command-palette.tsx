@@ -422,7 +422,6 @@ function createCommandPaletteDraft(command: SidebarCommandButton): CommandConfig
     commandId: command.commandId,
     icon: command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
     iconColor: command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
-    isGlobal: command.isGlobal === true,
     name: command.name,
     playCompletionSound: command.playCompletionSound,
     url: command.url ?? (command.actionType === "browser" ? DEFAULT_BROWSER_ACTION_URL : undefined),

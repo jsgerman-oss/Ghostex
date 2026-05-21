@@ -6,6 +6,7 @@ import {
   createTimestampedSessionId,
   formatSessionDisplayId,
   type GroupedSessionWorkspaceSnapshot,
+  type SessionPaneLayoutNode,
 } from "./session-grid-contract";
 import {
   createGroupInSimpleWorkspace,
@@ -1005,6 +1006,94 @@ describe("createSessionInSimpleWorkspace", () => {
     expect(secondResult.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(secondSessionId);
   });
 
+  test("should add default-created sessions as tabs instead of split panes", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(0),
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: sessionIdForDisplay(0) },
+                  { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+    );
+
+    /**
+     * CDXC:SplitIntent 2026-05-19-08:29:
+     * Plain session creation has no split intent. It may surface and focus the
+     * new session, but it must attach to the focused pane as a tab instead of
+     * increasing split leaf count.
+     */
+    expect(countSplitLeafNodes(result.snapshot.groups[0]?.snapshot.paneLayout)).toBe(1);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: result.session?.sessionId,
+          kind: "tabs",
+          sessionIds: [sessionIdForDisplay(0), result.session?.sessionId],
+        },
+        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should seed missing pane layout as tabs when creation has no split intent", () => {
+    const result = createSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: sessionIdForDisplay(1),
+              fullscreenRestoreVisibleCount: undefined,
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+    );
+
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: result.session?.sessionId,
+      kind: "tabs",
+      sessionIds: [
+        sessionIdForDisplay(0),
+        sessionIdForDisplay(1),
+        result.session?.sessionId,
+      ],
+    });
+  });
+
   test("should use one timestamped opaque id for session id, display id, and alias", () => {
     const result = createSessionInSimpleWorkspace(
       createWorkspaceSnapshot({
@@ -1127,13 +1216,20 @@ describe("createSessionInSimpleWorkspace", () => {
       sessionIdForDisplay(2),
       sessionIdForDisplay(3),
     ]);
+    expect(countSplitLeafNodes(result.snapshot.groups[0]?.snapshot.paneLayout)).toBe(1);
     expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
       children: [
-        { kind: "leaf", sessionId: sessionIdForDisplay(0) },
-        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
+        {
+          activeSessionId: sessionIdForDisplay(1),
+          kind: "tabs",
+          sessionIds: [
+            sessionIdForDisplay(0),
+            sessionIdForDisplay(1),
+            sessionIdForDisplay(2),
+            sessionIdForDisplay(3),
+          ],
+        },
         { kind: "leaf", sessionId: result.session?.sessionId },
-        { kind: "leaf", sessionId: sessionIdForDisplay(2) },
-        { kind: "leaf", sessionId: sessionIdForDisplay(3) },
       ],
       direction: "horizontal",
       kind: "split",
@@ -1584,22 +1680,15 @@ describe("createSessionInSimpleWorkspace", () => {
     expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
       children: [
         {
-          children: [
-            {
-              activeSessionId: sessionIdForDisplay(1),
-              kind: "tabs",
-              sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
-            },
-            { kind: "leaf", sessionId: sessionIdForDisplay(2) },
-          ],
-          direction: "vertical",
-          kind: "split",
-          ratio: 0.7,
+          activeSessionId: result.session?.sessionId,
+          kind: "tabs",
+          sessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1), result.session?.sessionId],
         },
-        { kind: "leaf", sessionId: result.session?.sessionId },
+        { kind: "leaf", sessionId: sessionIdForDisplay(2) },
       ],
-      direction: "horizontal",
+      direction: "vertical",
       kind: "split",
+      ratio: 0.7,
     });
   });
 
@@ -3114,7 +3203,7 @@ describe("rotatePaneLayoutClockwiseInSimpleWorkspace", () => {
     });
   });
 
-  test("should rotate automatic two-pane layout into two rows", () => {
+  test("should not synthesize a split tree just to rotate legacy visible panes", () => {
     const result = rotatePaneLayoutClockwiseInSimpleWorkspace(
       createWorkspaceSnapshot({
         activeGroupId: DEFAULT_MAIN_GROUP_ID,
@@ -3139,15 +3228,7 @@ describe("rotatePaneLayoutClockwiseInSimpleWorkspace", () => {
       DEFAULT_MAIN_GROUP_ID,
     );
 
-    expect(result.changed).toBe(true);
-    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
-      children: [
-        { kind: "leaf", sessionId: sessionIdForDisplay(0) },
-        { kind: "leaf", sessionId: sessionIdForDisplay(1) },
-      ],
-      direction: "vertical",
-      kind: "split",
-    });
+    expect(result.changed).toBe(false);
   });
 
   test("should rotate two columns into two rows", () => {
@@ -3245,4 +3326,18 @@ function createWorkspaceSnapshot(
   snapshot: GroupedSessionWorkspaceSnapshot,
 ): GroupedSessionWorkspaceSnapshot {
   return normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+}
+
+function countSplitLeafNodes(layout: SessionPaneLayoutNode | undefined): number {
+  if (!layout) {
+    return 0;
+  }
+  switch (layout.kind) {
+    case "leaf":
+      return 1;
+    case "tabs":
+      return 0;
+    case "split":
+      return layout.children.reduce((count, child) => count + countSplitLeafNodes(child), 0);
+  }
 }

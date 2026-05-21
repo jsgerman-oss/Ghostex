@@ -99,6 +99,7 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
       highlightedVisibleCount: 1,
       isFocusModeActive: false,
       pendingAgentIds: [],
+      projectSettingsProjects: [],
       recentProjects: [],
       sectionVisibility: createDefaultSidebarSectionVisibility(),
       settings: DEFAULT_ghostex_SETTINGS,
@@ -268,6 +269,7 @@ function applySidebarMessageState(
     hud: {
       ...message.hud,
       collapsedSections,
+      projectSettingsProjects: message.hud.projectSettingsProjects ?? [],
       recentProjects: message.hud.recentProjects ?? [],
     },
     pendingFocusedSessionId: reconciledGroups.pendingFocusedSessionId,
@@ -586,6 +588,9 @@ function haveSameSidebarProjectContext(
     left.canRemoveProject === right.canRemoveProject &&
     left.theme === right.theme &&
     left.themeColor === right.themeColor &&
+    left.worktree?.branch === right.worktree?.branch &&
+    left.worktree?.name === right.worktree?.name &&
+    left.worktree?.parentProjectId === right.worktree?.parentProjectId &&
     left.editor.projectId === right.editor.projectId &&
     left.editor.errorMessage === right.editor.errorMessage &&
     left.editor.isOpen === right.editor.isOpen &&

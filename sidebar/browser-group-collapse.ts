@@ -60,6 +60,7 @@ export function reconcileCollapsedGroupsById({
   previousSessionCountsByGroup,
   previousCollapsedGroupsById,
   sessionIdsByGroup,
+  skipExpandOnSessionCountIncrease = false,
 }: {
   autoCollapseGroupIds?: readonly string[];
   browserGroupIds: readonly string[];
@@ -69,6 +70,13 @@ export function reconcileCollapsedGroupsById({
   previousSessionCountsByGroup: Readonly<Record<string, number>>;
   previousCollapsedGroupsById: CollapsedGroupsById;
   sessionIdsByGroup: SessionIdsByGroup;
+  /**
+   * CDXC:SidebarGroups 2026-05-20-12:00
+   * After restart, hydrated session counts must not be treated as newly created
+   * sessions. Skip expand-on-count-increase while seeding the first post-hydrate
+   * baseline so persisted project collapse state survives app relaunch.
+   */
+  skipExpandOnSessionCountIncrease?: boolean;
 }): CollapsedGroupsById {
   const blockedGroupIds = new Set(collapseBlockedGroupIds);
   const validGroupIds = new Set(groupIds);
@@ -114,14 +122,16 @@ export function reconcileCollapsedGroupsById({
    * so project groups can avoid forced empty collapse but still expand when
    * their session count increases.
    */
-  for (const groupId of new Set(
-    expandOnSessionCountIncreaseGroupIds ?? autoCollapseGroupIds ?? browserGroupIds,
-  )) {
-    const previousCount = previousSessionCountsByGroup[groupId];
-    const nextCount = (sessionIdsByGroup[groupId] ?? []).length;
-    if (previousCount !== undefined && nextCount > previousCount && next[groupId]) {
-      delete next[groupId];
-      changed = true;
+  if (!skipExpandOnSessionCountIncrease) {
+    for (const groupId of new Set(
+      expandOnSessionCountIncreaseGroupIds ?? autoCollapseGroupIds ?? browserGroupIds,
+    )) {
+      const previousCount = previousSessionCountsByGroup[groupId];
+      const nextCount = (sessionIdsByGroup[groupId] ?? []).length;
+      if (previousCount !== undefined && nextCount > previousCount && next[groupId]) {
+        delete next[groupId];
+        changed = true;
+      }
     }
   }
 

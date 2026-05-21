@@ -290,6 +290,9 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
     commandTitle: normalizeTerminalCommandTitle(
       session.kind === "terminal" ? session.commandTitle : undefined,
     ),
+    delayedSendDeadlineAt: normalizeTerminalDelayedSendDeadlineAt(
+      session.kind === "terminal" ? session.delayedSendDeadlineAt : undefined,
+    ),
     agentSessionId: normalizeTerminalAgentSessionIdentity(
       session.kind === "terminal" ? session.agentSessionId : undefined,
     ),
@@ -336,6 +339,11 @@ function normalizeTerminalSessionLastActivityAt(value: string | undefined): stri
 function normalizeTerminalCommandTitle(value: string | undefined): string | undefined {
   const normalized = value?.trim().replace(/\s+/g, " ");
   return normalized ? normalized : undefined;
+}
+
+function normalizeTerminalDelayedSendDeadlineAt(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized && !Number.isNaN(Date.parse(normalized)) ? normalized : undefined;
 }
 
 function normalizeTerminalSessionPersistenceName(value: string | undefined): string | undefined {

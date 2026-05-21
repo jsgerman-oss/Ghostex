@@ -11,7 +11,6 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./app-tooltip";
 import {
   DEFAULT_TERMINAL_SESSION_TITLE,
   type SidebarSessionItem,
@@ -31,8 +30,11 @@ import { useRelativeTimeTick } from "./use-relative-time-tick";
 const SESSION_HOVER_TOOLTIP_DELAY_MS = TOOLTIP_DELAY_MS + 1_000;
 
 const AGENT_SECONDARY_LABELS: Record<SidebarAgentIcon, readonly string[]> = {
+  "amp-cli": ["amp", "amp cli"],
+  "antigravity-cli": ["agy", "antigravity", "antigravity cli"],
   browser: ["browser"],
   claude: ["claude", "claude code"],
+  "cursor-cli": ["cursor", "cursor agent", "cursor cli", "cursor-agent"],
   codex: ["codex", "codex cli", "openai codex"],
   copilot: ["copilot", "github copilot"],
   "factory-droid": ["droid", "factory droid"],
@@ -88,9 +90,8 @@ export function SessionCardContent({
     !showLastActiveTime && !showLastInteractionTime && !trailingPrefix;
   const hasHeaderAgentIcon =
     !hideHeaderAgentIcon &&
-    !hasDelayedSend &&
     !shouldAllowFullWidthTitle &&
-    (Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
+    (hasDelayedSend || Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
   useRelativeTimeTick(hasLastInteractionTime);
   const lastInteractionLabel =
     hasLastInteractionTime && session.lastInteractionAt
@@ -249,6 +250,7 @@ export function getSessionCardTitleTooltip({
     | "activityLabel"
     | "agentIcon"
     | "alias"
+    | "delayedSendRemainingLabel"
     | "detail"
     | "firstUserMessage"
     | "kind"
@@ -300,21 +302,35 @@ export function getSessionCardTitleTooltip({
    * title tooltip: archived agent, source project, and persistence provider
    * must be visible without exposing extra columns in the compact result row.
    */
+  const sessionIdTooltip =
+    showDebugSessionNumbers && session.sessionNumber !== undefined
+      ? `ID: ${session.sessionNumber}`
+      : undefined;
   const tooltipMetadata = [
+    /*
+     * CDXC:DelayedSend 2026-05-21-12:21:
+     * Session-row hover tooltips must surface an active Delayed Send countdown
+     * directly below the title, even when the user is not hovering the clock
+     * icon itself, so pending Enter timing is visible from the normal card hover.
+     */
+    session.delayedSendRemainingLabel
+      ? `Delayed Send in ${session.delayedSendRemainingLabel}`
+      : undefined,
     getSessionTooltipSecondaryText(session),
     ...(showSessionDetails ? getSessionDetailsTooltipLines(session) : []),
-    getSessionPersistenceTooltipText(session),
+    /*
+     * CDXC:SessionTooltips 2026-05-20-07:30:
+     * Sidebar session-card tooltips already expose the visible session ID, so
+     * omit duplicate provider session names such as `zmx session: g-0515-...`.
+     */
+    sessionIdTooltip ? undefined : getSessionPersistenceTooltipText(session),
   ]
     .filter((value): value is string => Boolean(value))
     .join("\n");
-  const debugSessionNumberTooltip =
-    showDebugSessionNumbers && session.sessionNumber !== undefined
-      ? `Session number: ${session.sessionNumber}`
-      : undefined;
   const titleTooltip = buildSessionTitleTooltip({
-    debugSessionNumberTooltip,
     headingText: fullTooltipHeadingText,
     secondaryText: tooltipMetadata,
+    sessionIdTooltip,
   });
   const titleTooltipOptions = getSessionTitleTooltipOptions({
     alwaysShowTitleTooltip,
@@ -452,13 +468,13 @@ function normalizeSessionCardHeadingTitle(title: string | undefined): {
 }
 
 export function buildSessionTitleTooltip({
-  debugSessionNumberTooltip,
   headingText,
   secondaryText,
+  sessionIdTooltip,
 }: {
-  debugSessionNumberTooltip?: string;
   headingText: string;
   secondaryText?: string;
+  sessionIdTooltip?: string;
 }): string {
   /**
    * CDXC:Tooltips 2026-05-07-18:16
@@ -467,7 +483,7 @@ export function buildSessionTitleTooltip({
    * authored line breaks visible while making row boundaries readable after
    * wrapping.
    */
-  const uniqueLines = [headingText, secondaryText, debugSessionNumberTooltip].reduce<string[]>(
+  const uniqueLines = [headingText, secondaryText, sessionIdTooltip].reduce<string[]>(
     (lines, block) => {
       const normalizedBlockLines =
         block
@@ -660,7 +676,7 @@ export function SessionFloatingAgentIcon({
   if (delayedSendRemainingLabel) {
     return (
       <DelayedSendSidebarIcon
-        className="session-floating-delayed-send-icon"
+        className="session-floating-agent-tabler-icon session-delayed-send-agent-icon"
         onClick={onDelayedSendClick}
         remainingLabel={delayedSendRemainingLabel}
       />
@@ -702,7 +718,7 @@ function SessionHeaderAgentIcon({
   if (delayedSendRemainingLabel) {
     return (
       <DelayedSendSidebarIcon
-        className="session-header-delayed-send-icon"
+        className="session-header-agent-tabler-icon session-delayed-send-agent-icon"
         onClick={onDelayedSendClick}
         remainingLabel={delayedSendRemainingLabel}
       />
@@ -742,29 +758,28 @@ function DelayedSendSidebarIcon({
 }) {
   /**
    * CDXC:DelayedSend 2026-05-17-03:14
-   * Active Delayed Send timers replace the sidebar agent icon, remain visible
-   * without hover, expose the remaining hh:mm:ss/mm:ss countdown on hover, and
-   * reopen the modal so users can change or cancel the pending Enter keypress.
+   * CDXC:DelayedSend 2026-05-21-12:21
+   * Active Delayed Send timers replace the sidebar agent icon in the same DOM
+   * slot and dimensions as the normal agent glyph, expose the remaining
+   * hh:mm:ss/mm:ss countdown on hover, and reopen the modal so users can
+   * change or cancel the pending Enter keypress. Render the clock element
+   * directly in the agent-icon slot; a wrapper would become a separate flow box
+   * and can push the clock above the session card.
    */
   const tooltip = `Delayed Send in ${remainingLabel}`;
   return (
-    <Tooltip delayDuration={SESSION_HOVER_TOOLTIP_DELAY_MS}>
-      <TooltipTrigger asChild>
-        <button
-          aria-label={tooltip}
-          className={className}
-          onClick={(event) => {
-            event.stopPropagation();
-            onClick?.();
-          }}
-          title={tooltip}
-          type="button"
-        >
-          <IconClock aria-hidden="true" size={14} stroke={1.9} />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>{tooltip}</TooltipContent>
-    </Tooltip>
+    <button
+      aria-label={tooltip}
+      className={className}
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick?.();
+      }}
+      title={tooltip}
+      type="button"
+    >
+      <IconClock aria-hidden="true" size={16} stroke={1.9} />
+    </button>
   );
 }
 
@@ -993,12 +1008,23 @@ export function OverflowTooltipText({
     onMouseEnter: chainEventHandlers(children.props.onMouseEnter, openTooltip),
     onMouseLeave: chainEventHandlers(children.props.onMouseLeave, closeTooltip),
   });
+  const tooltipContent = tooltip ?? text;
 
+  /*
+   * CDXC:SessionTooltips 2026-05-20-11:05:
+   * Session-card title tooltips must render below the row without overlapping
+   * the trigger. Portaled Radix tooltips mis-anchor in the native sidebar
+   * webview, so keep the label local to the card with a below-positioned popup.
+   */
   return (
-    <Tooltip onOpenChange={(open) => !open && closeTooltip()} open={isOpen}>
-      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-      <TooltipContent sideOffset={8}>{tooltip ?? text}</TooltipContent>
-    </Tooltip>
+    <div className="session-local-tooltip-shell">
+      {trigger}
+      {isOpen && tooltipContent ? (
+        <div className="session-local-tooltip-popup" role="tooltip">
+          {tooltipContent}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

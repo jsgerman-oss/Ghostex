@@ -479,6 +479,29 @@ describe("visible primary titles", () => {
     );
   });
 
+  test("should strip Antigravity CLI attention titles down to agy", () => {
+    expect(normalizeTerminalTitle("🔔 agy")).toBe("agy");
+    expect(normalizeTerminalTitle("agy")).toBe("agy");
+    expect(getVisibleTerminalTitle("🔔 agy")).toBeUndefined();
+    expect(getVisibleTerminalTitle("agy")).toBeUndefined();
+  });
+
+  test("should strip Cursor CLI working and ready status suffixes from terminal titles", () => {
+    expect(normalizeTerminalTitle("Cursor Agent - ✅ Ready")).toBeUndefined();
+    expect(normalizeTerminalTitle("Cursor Agent")).toBeUndefined();
+    expect(getVisibleTerminalTitle("Cursor Agent - ✅ Ready")).toBeUndefined();
+    expect(getVisibleTerminalTitle("Cursor Agent")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Cursor Agent - ✅ Ready")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Cursor Agent")).toBeUndefined();
+    expect(normalizeTerminalTitle("My Task - ⏳ Working ···")).toBe("My Task");
+    expect(normalizeTerminalTitle("My Task - ⏳ Working .··")).toBe("My Task");
+    expect(normalizeTerminalTitle("My Task - ⏳ Working ..·")).toBe("My Task");
+    expect(normalizeTerminalTitle("My Task - ✅ Ready")).toBe("My Task");
+    expect(normalizeTerminalTitle("- ⏳ Working ..·")).toBeUndefined();
+    expect(getVisibleTerminalTitle("My Task - ⏳ Working ···")).toBe("My Task");
+    expect(getVisibleTerminalTitle("- ⏳ Working ..·")).toBeUndefined();
+  });
+
   test("should hide generated Session N placeholder titles in sidebar items", () => {
     expect(getVisiblePrimaryTitle("Session 1")).toBeUndefined();
     expect(getVisiblePrimaryTitle(" Session 12 ")).toBeUndefined();
@@ -528,6 +551,13 @@ describe("visible primary titles", () => {
     expect(getPreferredSessionTitle("Session 1", "Factory Droid")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Grok")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Grok Build")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Amp")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Amp CLI")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Antigravity")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Antigravity CLI")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Cursor")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Cursor Agent")).toBeUndefined();
+    expect(getPreferredSessionTitle("Session 1", "Cursor CLI")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "OpenAI Codex")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "π - ghostex")).toBeUndefined();
     expect(getPreferredSessionTitle("Session 1", "Claude")).toBeUndefined();
@@ -549,6 +579,9 @@ describe("visible primary titles", () => {
     expect(createAgentSessionDefaultTitle("codex")).toBe("Codex Session");
     expect(createAgentSessionDefaultTitle("droid")).toBe("Factory Droid Session");
     expect(createAgentSessionDefaultTitle("grok")).toBe("Grok Build Session");
+    expect(createAgentSessionDefaultTitle("cursor")).toBe("Cursor CLI Session");
+    expect(createAgentSessionDefaultTitle("antigravity")).toBe("Antigravity CLI Session");
+    expect(createAgentSessionDefaultTitle("amp")).toBe("Amp CLI Session");
     expect(createAgentSessionDefaultTitle("pi")).toBe("Pi Session");
     const items = createSidebarSessionItems(
       {

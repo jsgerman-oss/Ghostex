@@ -16,6 +16,7 @@ import {
   type SidebarGitState,
 } from "../shared/sidebar-git";
 import { AppTooltip } from "./app-tooltip";
+import { ChangedFilesTree } from "./changed-files-tree";
 import type { WebviewApi } from "./webview-api";
 
 export type GitActionRowProps = {
@@ -117,13 +118,6 @@ export function GitActionRow({ git, vscode }: GitActionRowProps) {
     vscode.postMessage({ type: "refreshGitState" });
   };
 
-  const setPrimaryAction = (action: SidebarGitAction) => {
-    vscode.postMessage({
-      action,
-      type: "setSidebarGitPrimaryAction",
-    });
-  };
-
   const setCommitConfirmationEnabled = (enabled: boolean) => {
     vscode.postMessage({
       enabled,
@@ -146,6 +140,13 @@ export function GitActionRow({ git, vscode }: GitActionRowProps) {
     });
   };
 
+  const openChangedFile = (filePath: string) => {
+    vscode.postMessage({
+      filePath,
+      type: "openSidebarGitChangedFile",
+    });
+  };
+
   return (
     <div className="git-action-row" onMouseEnter={requestRefresh} ref={wrapperRef}>
       <div className="git-action-split-button">
@@ -155,7 +156,11 @@ export function GitActionRow({ git, vscode }: GitActionRowProps) {
             className="git-action-main-button"
             data-disabled={String(primaryAction.disabled)}
             data-empty-space-blocking="true"
-            onClick={() => runAction(primaryAction.action)}
+            onClick={() => {
+              if (!primaryAction.disabled) {
+                runAction(primaryAction.action);
+              }
+            }}
             type="button"
           >
             <span aria-hidden="true" className="git-action-main-icon-shell">
@@ -214,8 +219,9 @@ export function GitActionRow({ git, vscode }: GitActionRowProps) {
                     className="git-action-menu-item"
                     data-disabled={String(item.disabled)}
                     onClick={() => {
-                      setPrimaryAction(item.action);
-                      setIsMenuOpen(false);
+                      if (!item.disabled) {
+                        runAction(item.action);
+                      }
                     }}
                     role="menuitem"
                     type="button"
@@ -299,6 +305,19 @@ export function GitActionRow({ git, vscode }: GitActionRowProps) {
             document.body,
           )
         : null}
+      {git.files.length > 0 ? (
+        <div className="git-action-changed-files">
+          <div className="git-action-changed-files-header">
+            <span>Changed Files</span>
+            <span className="git-action-changed-files-count">{git.files.length}</span>
+          </div>
+          <ChangedFilesTree
+            allDirectoriesExpanded={false}
+            files={git.files}
+            onOpenFile={openChangedFile}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

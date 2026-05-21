@@ -2,8 +2,10 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   createSidebarCommandButtons,
   getFirstBrowserSidebarCommandUrl,
+  getSidebarCommandPreviewLabel,
   normalizeStoredSidebarCommandOrder,
   normalizeStoredSidebarCommands,
+  SIDEBAR_UNCONFIGURED_TERMINAL_COMMAND_LABEL,
 } from "./sidebar-commands";
 import { DEFAULT_SIDEBAR_COMMAND_ICON_COLOR } from "./sidebar-command-icons";
 
@@ -374,31 +376,20 @@ describe("normalizeStoredSidebarCommands", () => {
     ]);
   });
 
-  test("should preserve global action metadata", () => {
+});
+
+describe("getSidebarCommandPreviewLabel", () => {
+  test("should show the placeholder when a terminal action has no command", () => {
     expect(
-      normalizeStoredSidebarCommands([
-        {
-          closeTerminalOnExit: false,
-          command: "pnpm lint",
-          commandId: "custom-lint",
-          isDefault: false,
-          isGlobal: true,
-          name: "Lint",
-          playCompletionSound: true,
-        },
-      ]),
-    ).toEqual([
-      {
+      getSidebarCommandPreviewLabel({
         actionType: "terminal",
         closeTerminalOnExit: false,
-        command: "pnpm lint",
-        commandId: "custom-lint",
-        isDefault: false,
-        isGlobal: true,
-        name: "Lint",
+        commandId: "dev",
+        isDefault: true,
+        name: "Dev",
         playCompletionSound: true,
-      },
-    ]);
+      }),
+    ).toBe(SIDEBAR_UNCONFIGURED_TERMINAL_COMMAND_LABEL);
   });
 });
 

@@ -24,33 +24,33 @@ describe("buildSessionTitleTooltip", () => {
   test("should keep unique metadata lines in order", () => {
     expect(
       buildSessionTitleTooltip({
-        debugSessionNumberTooltip: "Session number: 02",
         headingText: "Browser ignore",
         secondaryText: "https://example.com",
+        sessionIdTooltip: "ID: 02",
       }),
-    ).toBe("Browser ignore\n\nhttps://example.com\n\nSession number: 02");
+    ).toBe("Browser ignore\n\nhttps://example.com\n\nID: 02");
   });
 
   test("should separate metadata block lines with blank lines", () => {
     expect(
       buildSessionTitleTooltip({
-        debugSessionNumberTooltip: "Session number: 02",
         headingText: "Browser ignore",
         secondaryText: "https://example.com\nzmx session: ghostex-session-1",
+        sessionIdTooltip: "ID: 02",
       }),
     ).toBe(
-      "Browser ignore\n\nhttps://example.com\n\nzmx session: ghostex-session-1\n\nSession number: 02",
+      "Browser ignore\n\nhttps://example.com\n\nzmx session: ghostex-session-1\n\nID: 02",
     );
   });
 
   test("should trim values before deduping", () => {
     expect(
       buildSessionTitleTooltip({
-        debugSessionNumberTooltip: " Session number: 02 ",
         headingText: " Browser ignore ",
         secondaryText: "Browser ignore",
+        sessionIdTooltip: " ID: 02 ",
       }),
-    ).toBe("Browser ignore\n\nSession number: 02");
+    ).toBe("Browser ignore\n\nID: 02");
   });
 });
 
@@ -122,7 +122,7 @@ describe("getSessionCardTitleTooltip", () => {
       }),
     ).toEqual({
       headingText: "∗ A very long session title",
-      tooltip: "∗ A very long session title (Unsynced title)\n\nrepo sweep\n\nSession number: 3",
+      tooltip: "∗ A very long session title (Unsynced title)\n\nrepo sweep\n\nID: 3",
       tooltipWhen: "always",
     });
   });
@@ -149,7 +149,7 @@ describe("getSessionCardTitleTooltip", () => {
     ).toEqual({
       headingText: "when using zmx/tmux/zellij as the persistence...",
       tooltip:
-        "when using zmx/tmux/zellij as the persistence provider, keep the sidebar title readable\n\nzmx session: g-0515-092521\n\nSession number: g-0515-092521",
+        "when using zmx/tmux/zellij as the persistence provider, keep the sidebar title readable\n\nID: g-0515-092521",
       tooltipWhen: "always",
     });
   });
@@ -242,6 +242,29 @@ describe("getSessionCardTitleTooltip", () => {
     ).toEqual({
       headingText: "Fix restore",
       tooltip: "Fix restore\n\nzmx session: ghostex-session-1",
+      tooltipWhen: "always",
+    });
+  });
+
+  test("should show delayed send countdown directly below the tooltip title", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "Session 1",
+          delayedSendRemainingLabel: "04:32",
+          detail: "OpenAI Codex",
+          isPrimaryTitleTerminalTitle: true,
+          primaryTitle: "Fix restore",
+          sessionNumber: undefined,
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: false,
+      }),
+    ).toEqual({
+      headingText: "Fix restore",
+      tooltip: "Fix restore\n\nDelayed Send in 04:32",
       tooltipWhen: "always",
     });
   });

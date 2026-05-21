@@ -8,6 +8,9 @@ import {
   IconCopy,
   IconFolder,
   IconFolderOpen,
+  IconGitBranch,
+  IconGitMerge,
+  IconGitPullRequest,
   IconMessageCircle,
   IconMoon,
   IconPencil,
@@ -56,6 +59,7 @@ import { shouldShowSessionGroupConnector } from "./session-group-connector";
 import { getGroupStatusAnchorName, getSessionStatusAnchorName } from "./session-status-anchor";
 import { useSidebarStore } from "./sidebar-store";
 import { SortableSessionCard } from "./sortable-session-card";
+import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 import { useCollapsibleHeight } from "./use-collapsible-height";
 import type { WebviewApi } from "./webview-api";
 import { openAppModal } from "./app-modal-host-bridge";
@@ -116,6 +120,7 @@ const PROJECT_CONTEXT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: Sideb
   { label: "Light Pink", value: "light-pink" },
   { label: "Light Orange", value: "light-orange" },
 ];
+
 function getAnchoredSessionStatusStyle(sessionId: string): CSSProperties {
   return {
     left: "anchor(right)",
@@ -602,9 +607,9 @@ export function SessionGroupSection({
   /**
    * CDXC:ProjectHeaders 2026-05-18-14:53:
    * Project row collapse/expand and project header action buttons keep accessible
-   * labels but do not show hover tooltips. Project title clicks toggle the
-   * project session list rather than activating the project, and the folder icon
-   * is visual-only instead of a separate click target.
+   * labels but do not show hover tooltips. Project header clicks toggle the
+   * project session list rather than activating the project; only the right-side
+   * action buttons keep their own click behavior, and the folder icon is visual-only.
    */
   const shouldSuppressProjectCollapseTooltip =
     Boolean(projectContext) && canToggleCollapsed;
@@ -676,54 +681,6 @@ export function SessionGroupSection({
 
     setOpenControlMenu(undefined);
   }, [group.isActive]);
-
-  useEffect(() => {
-    if (!contextMenuPosition) {
-      return;
-    }
-
-    const handlePointerDown = (event: PointerEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) {
-        return;
-      }
-
-      setContextMenuPosition(undefined);
-    };
-    const handleContextMenu = (event: MouseEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) {
-        return;
-      }
-
-      setContextMenuPosition(undefined);
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setContextMenuPosition(undefined);
-      }
-    };
-    const handleBlur = () => {
-      setContextMenuPosition(undefined);
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== "visible") {
-        setContextMenuPosition(undefined);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("contextmenu", handleContextMenu);
-    document.addEventListener("keydown", handleKeyDown);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("blur", handleBlur);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("contextmenu", handleContextMenu);
-      document.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("blur", handleBlur);
-    };
-  }, [contextMenuPosition]);
 
   useEffect(() => {
     if (!openControlMenu) {
@@ -845,6 +802,18 @@ export function SessionGroupSection({
   const requestCreateProjectTerminal = () => {
     setOpenControlMenu(undefined);
     requestCreateSession();
+  };
+
+  const openWorktreeModal = () => {
+    if (!projectContext) {
+      return;
+    }
+    openAppModal({
+      modal: "worktree",
+      projectId: projectContext.editor.projectId,
+      projectName: group.title,
+      type: "open",
+    });
   };
 
   const requestRunProjectAgent = (agent: SidebarAgentButton | undefined) => {
@@ -1060,6 +1029,7 @@ export function SessionGroupSection({
     if (projectContext) {
       event.preventDefault();
       event.stopPropagation();
+      toggleCollapsedOrSelectEmptyProject();
       return;
     }
 
@@ -1202,6 +1172,8 @@ export function SessionGroupSection({
                         <IconWorld size={16} stroke={1.8} />
                       ) : isChatCollection ? (
                         <IconMessageCircle size={16} stroke={1.8} />
+                      ) : projectContext.worktree ? (
+                        <IconGitBranch size={16} stroke={1.8} />
                       ) : shouldRenderOpenProjectFolderIcon ? (
                         <IconFolderOpen size={16} stroke={1.8} />
                       ) : (
@@ -1370,8 +1342,69 @@ export function SessionGroupSection({
                        * Project header icon actions should rely on accessible
                        * labels only, without hover tooltips, so project rows
                        * stay visually quiet while scanning and hovering.
+                       *
+                       * CDXC:Worktrees 2026-05-18-23:07:
+                       * Main project rows expose Create Worktree. Worktree rows
+                       * replace that with disabled PR and merge affordances until
+                       * those follow-up actions are wired to real commands.
                       */
                       <>
+                        {projectContext.worktree ? (
+                          <>
+                            <button
+                              aria-disabled="true"
+                              aria-label={`Create PR for ${group.title}`}
+                              className="group-add-button group-worktree-pr-button"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              }}
+                              type="button"
+                            >
+                              <IconGitPullRequest
+                                aria-hidden="true"
+                                className="group-add-icon"
+                                size={14}
+                                stroke={2}
+                              />
+                            </button>
+                            <button
+                              aria-disabled="true"
+                              aria-label={`Merge ${group.title} to main`}
+                              className="group-add-button group-worktree-merge-button"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                              }}
+                              type="button"
+                            >
+                              <IconGitMerge
+                                aria-hidden="true"
+                                className="group-add-icon"
+                                size={14}
+                                stroke={2}
+                              />
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            aria-label={`Create a worktree from ${group.title}`}
+                            className="group-add-button group-worktree-button"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              openWorktreeModal();
+                            }}
+                            type="button"
+                          >
+                            <IconGitBranch
+                              aria-hidden="true"
+                              className="group-add-icon"
+                              size={14}
+                              stroke={2}
+                            />
+                          </button>
+                        )}
                         <button
                           aria-label={`Create a browser pane in ${group.title}`}
                           className="group-add-button group-browser-button"
@@ -1579,23 +1612,19 @@ export function SessionGroupSection({
             : null}
         </div>
       </section>
-      {!isBrowserGroup && contextMenuPosition
-        ? createPortal(
-            <div
-              className="session-context-menu"
-              onClick={(event) => event.stopPropagation()}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-              }}
-              ref={menuRef}
-              role="menu"
-              style={{
-                left: `${contextMenuPosition.x}px`,
-                top: `${contextMenuPosition.y}px`,
-                width: `${CONTEXT_MENU_WIDTH_PX}px`,
-              }}
-            >
+      {!isBrowserGroup && contextMenuPosition ? (
+        <SidebarContextMenuPortal
+          menuRef={menuRef}
+          menuStyle={{
+            left: `${contextMenuPosition.x}px`,
+            top: `${contextMenuPosition.y}px`,
+            width: `${CONTEXT_MENU_WIDTH_PX}px`,
+          }}
+          onDismiss={() => {
+            setContextMenuPosition(undefined);
+          }}
+          vscode={vscode}
+        >
               {projectContext ? (
                 contextMenuPosition.view === "project-themes" ? (
                   <>
@@ -1886,10 +1915,8 @@ export function SessionGroupSection({
                   </button>
                 </>
               )}
-            </div>,
-            document.body,
-          )
-        : null}
+        </SidebarContextMenuPortal>
+      ) : null}
       {projectContext && openControlMenu === "project-agent"
         ? createPortal(
             <div

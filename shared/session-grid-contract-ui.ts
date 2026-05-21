@@ -131,6 +131,7 @@ export function createSidebarSessionItems(
      */
     isFavorite: session.isFavorite === true,
     isFocused: snapshot.focusedSessionId === session.sessionId,
+    isPoppedOut: session.isSleeping === true ? undefined : session.isPoppedOut === true || undefined,
     isSleeping: session.isSleeping === true,
     isRunning: session.kind === "browser",
     isVisible: visibleIds.has(session.sessionId),

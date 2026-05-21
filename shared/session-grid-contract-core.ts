@@ -134,6 +134,13 @@ export type BaseSessionRecord = {
 export type TerminalSessionRecord = BaseSessionRecord & {
   agentName?: string;
   /**
+   * CDXC:DelayedSend 2026-05-21-12:21:
+   * Provider-backed delayed sends must survive app restart with the terminal
+   * session that owns the prompt. Persist the absolute deadline on the terminal
+   * record so restore can wake the session and re-arm the pending Enter key.
+   */
+  delayedSendDeadlineAt?: string;
+  /**
    * CDXC:SessionLastActive 2026-05-17-02:45:
    * Last Active is durable sidebar metadata for terminal sessions. Persist it
    * on the canonical session record so sleeping or unmounted sessions can keep
@@ -196,6 +203,7 @@ export type CreateSessionRecordOptions =
       agentSessionId?: string;
       agentSessionPath?: string;
       commandTitle?: string;
+      delayedSendDeadlineAt?: string;
       displayId?: string;
       initialPresentation?: "background" | "focused";
       kind?: "terminal";

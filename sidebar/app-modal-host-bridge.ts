@@ -27,7 +27,9 @@ export type AppModalKind =
   | "settings"
   | "t3BrowserAccess"
   | "t3ThreadId"
-  | "tipsAndTricks";
+  | "worktree"
+  | "tipsAndTricks"
+  | "firstLaunchSetup";
 
 export type OpenAppModalMessage =
   | {
@@ -42,6 +44,7 @@ export type OpenAppModalMessage =
         | "renameSession"
         | "t3BrowserAccess"
         | "t3ThreadId"
+        | "worktree"
       >;
       type: "open";
     }
@@ -75,7 +78,8 @@ export type OpenAppModalMessage =
       title?: string;
       type: "open";
     }
-  | { initialTitle: string; modal: "renameSession"; sessionId: string; type: "open" };
+  | { initialTitle: string; modal: "renameSession"; sessionId: string; type: "open" }
+  | { modal: "worktree"; projectId?: string; projectName?: string; type: "open" };
 
 declare global {
   interface Window {

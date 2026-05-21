@@ -39,7 +39,6 @@ export type CommandConfigDraft = {
   commandId?: string;
   icon?: SidebarCommandIcon;
   iconColor?: string;
-  isGlobal?: boolean;
   name: string;
   playCompletionSound: boolean;
   url?: string;
@@ -83,12 +82,10 @@ export function CommandConfigModal({
     draft.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
   );
   const [iconColor, setIconColor] = useState(draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
-  const [isGlobal, setIsGlobal] = useState(draft.isGlobal === true);
   const [name, setName] = useState(draft.name);
   const [playCompletionSound, setPlayCompletionSound] = useState(draft.playCompletionSound);
   const [url, setUrl] = useState(draft.url ?? "");
   const checkboxId = useId();
-  const globalCheckboxId = useId();
   const soundCheckboxId = useId();
   const actionTypeId = useId();
   const commandId = useId();
@@ -106,7 +103,6 @@ export function CommandConfigModal({
     setCommand(draft.command ?? "");
     setIcon(draft.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON);
     setIconColor(draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
-    setIsGlobal(draft.isGlobal === true);
     setName(draft.name);
     setPlayCompletionSound(draft.playCompletionSound);
     setUrl(
@@ -293,18 +289,6 @@ export function CommandConfigModal({
               </Field>
             </>
           )}
-          <Field className="items-center justify-between" orientation="horizontal">
-            <FieldContent>
-              <FieldLabel className="text-sm" htmlFor={globalCheckboxId}>
-                Show this action in every ghostex project
-              </FieldLabel>
-            </FieldContent>
-            <Switch
-              checked={isGlobal}
-              id={globalCheckboxId}
-              onCheckedChange={setIsGlobal}
-            />
-          </Field>
         </FieldGroup>
         <DialogFooter>
           {onDelete && draft.commandId ? (
@@ -318,7 +302,6 @@ export function CommandConfigModal({
                   commandId: draft.commandId,
                   icon,
                   iconColor,
-                  isGlobal,
                   name: trimmedName,
                   playCompletionSound: actionType === "terminal" ? playCompletionSound : false,
                   url: actionType === "browser" ? url.trim() : undefined,
@@ -344,7 +327,6 @@ export function CommandConfigModal({
                 commandId: draft.commandId,
                 icon,
                 iconColor,
-                isGlobal,
                 name: trimmedName,
                 playCompletionSound: actionType === "terminal" ? playCompletionSound : false,
                 url: actionType === "browser" ? url.trim() : undefined,

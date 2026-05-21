@@ -27,6 +27,26 @@ export const DEFAULT_SIDEBAR_COMMANDS = [
 export const DEFAULT_BROWSER_ACTION_URL = "http://localhost:5173";
 export const DEFAULT_BROWSER_LAUNCH_URL = "https://www.google.com";
 
+/**
+ * CDXC:ProjectActions 2026-05-19-17:10:
+ * Default terminal actions ship without a configured command. Surfaces that show
+ * the runnable target use this label until the user saves a command.
+ */
+export const SIDEBAR_UNCONFIGURED_TERMINAL_COMMAND_LABEL = "Set the command";
+
+export function isSidebarCommandConfigured(command: SidebarCommandButton): boolean {
+  return command.actionType === "browser"
+    ? Boolean(command.url?.trim())
+    : Boolean(command.command?.trim());
+}
+
+export function getSidebarCommandPreviewLabel(command: SidebarCommandButton): string {
+  if (command.actionType === "browser") {
+    return command.url?.trim() ?? "";
+  }
+  return command.command?.trim() || SIDEBAR_UNCONFIGURED_TERMINAL_COMMAND_LABEL;
+}
+
 export type DefaultSidebarCommandId = (typeof DEFAULT_SIDEBAR_COMMANDS)[number]["commandId"];
 export type SidebarActionType = "browser" | "terminal";
 export type SidebarCommandRunMode = "default" | "debug";
@@ -38,7 +58,6 @@ export type SidebarCommandButton = {
   commandId: string;
   icon?: SidebarCommandIcon;
   iconColor?: string;
-  isGlobal?: boolean;
   isDefault: boolean;
   name: string;
   playCompletionSound: boolean;
@@ -51,7 +70,6 @@ export type StoredSidebarCommand = {
   commandId: string;
   icon?: SidebarCommandIcon;
   iconColor?: string;
-  isGlobal?: boolean;
   isDefault: boolean;
   name: string;
   playCompletionSound: boolean;
@@ -148,8 +166,6 @@ export function normalizeStoredSidebarCommands(candidate: unknown): StoredSideba
       : undefined;
     const isDefault =
       partialItem.isDefault === true || (commandId ? isDefaultSidebarCommandId(commandId) : false);
-    const isGlobal = partialItem.isGlobal === true;
-
     if (!commandId || seenCommandIds.has(commandId) || (name.length === 0 && !icon)) {
       continue;
     }
@@ -165,7 +181,6 @@ export function normalizeStoredSidebarCommands(candidate: unknown): StoredSideba
         closeTerminalOnExit: false,
         commandId,
         isDefault,
-        ...(isGlobal ? { isGlobal } : {}),
         name,
         playCompletionSound: false,
         ...(icon ? { icon, iconColor } : {}),
@@ -186,7 +201,6 @@ export function normalizeStoredSidebarCommands(candidate: unknown): StoredSideba
       command,
       commandId,
       isDefault,
-      ...(isGlobal ? { isGlobal } : {}),
       name,
       playCompletionSound:
         typeof partialItem.playCompletionSound === "boolean"
@@ -245,7 +259,6 @@ function normalizeStoredCommandButton(command: StoredSidebarCommand): SidebarCom
         closeTerminalOnExit: false,
         command: undefined,
         commandId: command.commandId,
-        ...(command.isGlobal ? { isGlobal: true } : {}),
         isDefault: command.isDefault,
         name: command.name,
         playCompletionSound: false,
@@ -257,7 +270,6 @@ function normalizeStoredCommandButton(command: StoredSidebarCommand): SidebarCom
         closeTerminalOnExit: command.closeTerminalOnExit,
         command: command.command,
         commandId: command.commandId,
-        ...(command.isGlobal ? { isGlobal: true } : {}),
         isDefault: command.isDefault,
         name: command.name,
         playCompletionSound: command.playCompletionSound,
