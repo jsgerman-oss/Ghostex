@@ -33,7 +33,6 @@ import {
 export type SidebarGroupRecord = Omit<SidebarSessionGroup, "sessions">;
 
 type SidebarStoreDataState = {
-  browserGroupIds: string[];
   commandRunStates: Record<string, SidebarCommandRunFeedbackState>;
   daemonSessionsState: SidebarDaemonSessionsStateMessage | undefined;
   gitCommitDraft: SidebarPromptGitCommitMessage | undefined;
@@ -71,7 +70,6 @@ export type SidebarStoreState = SidebarStoreDataState & SidebarStoreActions;
 
 export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
   return {
-    browserGroupIds: [],
     commandRunStates: {},
     daemonSessionsState: undefined,
     gitCommitDraft: undefined,
@@ -259,7 +257,6 @@ function applySidebarMessageState(
   );
 
   return {
-    browserGroupIds: normalizedGroups.browserGroupIds,
     commandRunStates: reconcileSidebarCommandRunFeedbackStates(
       state.commandRunStates,
       message.hud.commands.map((command) => command.commandId),
@@ -374,7 +371,6 @@ function applyLocalFocusState(
 function normalizeSidebarGroups(
   previousState: Pick<
     SidebarStoreDataState,
-    | "browserGroupIds"
     | "groupOrder"
     | "groupsById"
     | "sessionIdsByGroup"
@@ -384,7 +380,6 @@ function normalizeSidebarGroups(
   groups: readonly SidebarSessionGroup[],
 ) {
   const nextGroupOrder = groups.map((group) => group.groupId);
-  const nextBrowserGroupIds: string[] = [];
   const nextWorkspaceGroupIds: string[] = [];
   const nextGroupsById: Record<string, SidebarGroupRecord> = {};
   const nextSessionIdsByGroup: Record<string, string[]> = {};
@@ -393,9 +388,7 @@ function normalizeSidebarGroups(
   for (const group of groups) {
     const groupSessions = group.sessions ?? [];
 
-    if (group.kind === "browser") {
-      nextBrowserGroupIds.push(group.groupId);
-    } else {
+    if (group.kind !== "browser") {
       nextWorkspaceGroupIds.push(group.groupId);
     }
 
@@ -423,9 +416,6 @@ function normalizeSidebarGroups(
   }
 
   return {
-    browserGroupIds: haveSameStringArray(previousState.browserGroupIds, nextBrowserGroupIds)
-      ? previousState.browserGroupIds
-      : nextBrowserGroupIds,
     groupOrder: haveSameStringArray(previousState.groupOrder, nextGroupOrder)
       ? previousState.groupOrder
       : nextGroupOrder,

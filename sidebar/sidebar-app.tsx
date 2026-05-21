@@ -1,4 +1,4 @@
-import { KeyboardSensor, PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
+import { Cursor, KeyboardSensor, PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { move } from "@dnd-kit/helpers";
 import { DragDropProvider, type DragDropEventHandlers } from "@dnd-kit/react";
 import {
@@ -13,6 +13,7 @@ import {
   IconEye,
   IconFilter2,
   IconFolder,
+  IconFolderOpen,
   IconGridDots,
   IconHelpCircle,
   IconHistory,
@@ -48,18 +49,13 @@ import { Button } from "@/components/ui/button";
 import {
   MAX_GROUP_COUNT,
   type ExtensionToSidebarMessage,
-  type SidebarCollapsibleSection,
-  type SidebarProjectHeader as SidebarProjectHeaderData,
 } from "../shared/session-grid-contract";
 import {
   getWorkspaceThemeForeground,
   normalizeWorkspaceThemeColor,
 } from "../shared/workspace-dock-icons";
 import { playCompletionSound, prepareCompletionSoundPlayback } from "./completion-sound-player";
-import { AgentsPanel } from "./agents-panel";
-import { CommandsPanel } from "./commands-panel";
 import { GitCommitModal } from "./git-commit-modal";
-import { SidebarProjectHeader } from "./project-header";
 import {
   SidebarPreviousSessionsSearchGroup,
   SidebarSessionSearchField,
@@ -97,7 +93,7 @@ import {
   getAutoCollapseGroupIds,
   getSessionCountsByGroup,
   reconcileCollapsedGroupsById,
-} from "./browser-group-collapse";
+} from "./group-collapse";
 import { SessionGroupSection } from "./session-group-section";
 import {
   applyTextEditingKey,
@@ -130,6 +126,16 @@ type SessionIdsByGroup = Record<string, string[]>;
 type FloatingMenuPosition = {
   right: number;
   top: number;
+};
+
+type SidebarGroupDragPreview = {
+  groupId: string;
+  icon: "closed" | "open";
+  isCollapsed: boolean;
+  pointerX: number;
+  pointerY: number;
+  themeColor?: string;
+  title: string;
 };
 
 function useCommandHotkeyOverlay(): boolean {
@@ -201,6 +207,53 @@ function SidebarHotkeyOverlay({ hotkeys }: { hotkeys?: ghostexHotkeySettings }) 
         </div>
       </aside>
     </>
+  );
+}
+
+function ProjectGroupDragGhost({ preview }: { preview: SidebarGroupDragPreview }) {
+  const style = {
+    left: `${preview.pointerX}px`,
+    top: `${preview.pointerY}px`,
+    ...(preview.themeColor ? { "--workspace-project-theme-color": preview.themeColor } : {}),
+  } as CSSProperties;
+
+  return (
+    <div aria-hidden="true" className="project-drag-ghost" style={style}>
+      <div className="group-title-row">
+        <span
+          aria-hidden="true"
+          className="group-collapse-button section-titlebar-toggle"
+          data-collapsed={String(preview.isCollapsed)}
+          data-empty-project="false"
+          data-has-idle-icon="true"
+          data-static-icon="false"
+        >
+          <span
+            aria-hidden="true"
+            className="group-collapse-icon group-collapse-idle-icon section-titlebar-toggle-icon section-titlebar-toggle-idle-icon"
+          >
+            {preview.icon === "open" ? (
+              <IconFolderOpen size={16} stroke={1.8} />
+            ) : (
+              <IconFolder size={16} stroke={1.8} />
+            )}
+          </span>
+        </span>
+        <div className="group-title-handle" data-draggable="true">
+          <button
+            aria-disabled="false"
+            aria-expanded={!preview.isCollapsed}
+            aria-label={preview.title}
+            className="group-title-button"
+            data-empty-project="false"
+            tabIndex={-1}
+            type="button"
+          >
+            <span className="group-title section-titlebar-label">{preview.title}</span>
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -295,7 +348,6 @@ const sensors = [
 const SIDEBAR_STARTUP_INTERACTION_BLOCK_MS = 1500;
 const SIDEBAR_STARTUP_REPRO_WINDOW_MS = 15_000;
 const SIDEBAR_POINTER_DRAG_REORDER_THRESHOLD_PX = 8;
-const SIDEBAR_SECTION_COLLAPSE_PERSIST_DEBOUNCE_MS = 200;
 const SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY = "ghostex-sidebar-ui-collapse-state";
 const MIN_SESSION_SEARCH_QUERY_LENGTH = 2;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
@@ -417,6 +469,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const [recentProjectsQuery, setRecentProjectsQuery] = useState("");
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const [groupDropIndicator, setGroupDropIndicator] = useState<SidebarGroupDropTarget>();
+  const [groupDragPreview, setGroupDragPreview] = useState<SidebarGroupDragPreview>();
   const [sessionDropIndicatorGroupId, setSessionDropIndicatorGroupId] = useState<string>();
   const [overflowMenuAnchor, setOverflowMenuAnchor] = useState<HTMLElement>();
   const [overflowMenuPosition, setOverflowMenuPosition] = useState<FloatingMenuPosition>();
@@ -443,9 +496,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const referenceSectionAnimationTimeoutsRef = useRef<
     Partial<Record<ReferenceSidebarSectionId, number>>
   >({});
-  const sectionCollapsePersistTimeoutsRef = useRef<
-    Partial<Record<SidebarCollapsibleSection, number>>
-  >({});
   const sessionGroupsContentRef = useRef<HTMLDivElement>(null);
   const sidebarStartupStartedAtRef = useRef(getSidebarStartupNow());
   const hasAppliedHydrateRef = useRef(false);
@@ -470,12 +520,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const applySidebarMessage = useSidebarStore((state) => state.applySidebarMessage);
   const setDaemonSessionsState = useSidebarStore((state) => state.setDaemonSessionsState);
   const setGitCommitDraft = useSidebarStore((state) => state.setGitCommitDraft);
-  const setSectionCollapsed = useSidebarStore((state) => state.setSectionCollapsed);
   const {
     activeSessionsSortMode,
     agentManagerZoomPercent,
-    browserGroupIds,
-    collapsedSections,
     createSessionOnSidebarDoubleClick,
     customThemeColor,
     debuggingMode,
@@ -483,9 +530,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     groupsById,
     previousSessions,
     recentProjects,
-    sectionVisibility,
     settings,
-    projectHeader,
     revision,
     showHotkeysOnSessionCards,
     sessionsById,
@@ -495,8 +540,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     useShallow((state) => ({
       activeSessionsSortMode: state.hud.activeSessionsSortMode,
       agentManagerZoomPercent: state.hud.agentManagerZoomPercent,
-      browserGroupIds: state.browserGroupIds,
-      collapsedSections: state.hud.collapsedSections,
       createSessionOnSidebarDoubleClick: state.hud.createSessionOnSidebarDoubleClick,
       customThemeColor: state.hud.customThemeColor,
       debuggingMode: state.hud.debuggingMode,
@@ -504,9 +547,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       groupsById: state.groupsById,
       previousSessions: state.previousSessions,
       recentProjects: state.hud.recentProjects,
-      projectHeader: state.hud.projectHeader,
       revision: state.revision,
-      sectionVisibility: state.hud.sectionVisibility,
       settings: state.hud.settings,
       showHotkeysOnSessionCards: state.hud.showHotkeysOnSessionCards,
       sessionsById: state.sessionsById,
@@ -565,7 +606,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     }
 
     const autoCollapseGroupIds = getAutoCollapseGroupIds({
-      browserGroupIds,
       groupsById,
       workspaceGroupIds,
     });
@@ -588,7 +628,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     setCollapsedGroupsById((previous) =>
       reconcileCollapsedGroupsById({
         autoCollapseGroupIds,
-        browserGroupIds,
         expandOnSessionCountIncreaseGroupIds: groupOrder,
         groupIds: groupOrder,
         previousSessionCountsByGroup: previousSessionCountsByGroupRef.current,
@@ -622,7 +661,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     }
   }, [
     authoritativeSessionIdsByGroup,
-    browserGroupIds,
     groupOrder,
     groupsById,
     workspaceGroupIds,
@@ -947,7 +985,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   useEffect(() => {
     const renderState = {
-      browserGroupCount: browserGroupIds.length,
       elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
       firstHydrateRevision: firstHydrateRevisionRef.current,
       groupCount: groupOrder.length,
@@ -976,7 +1013,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       });
     }
   }, [
-    browserGroupIds,
     debuggingMode,
     groupOrder,
     isStartupInteractionBlocked,
@@ -1014,13 +1050,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         }
       }
       referenceSectionAnimationTimeoutsRef.current = {};
-
-      for (const timeoutId of Object.values(sectionCollapsePersistTimeoutsRef.current)) {
-        if (timeoutId !== undefined) {
-          window.clearTimeout(timeoutId);
-        }
-      }
-      sectionCollapsePersistTimeoutsRef.current = {};
     };
   }, []);
 
@@ -1213,18 +1242,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   };
 
   const isManualActiveSessionsSort = activeSessionsSortMode === "manual";
-  const shouldShowActionsPanel = sectionVisibility.actions;
   /**
    * CDXC:SidebarLayout 2026-05-13-08:11
    * The reference sidebar replaces the old visible Actions/Agents grids with
-   * primary navigation rows. Keep the underlying panels mounted but hidden so
-   * their modal/configuration flows remain available through the new entries.
-   *
-   * CDXC:SidebarReference 2026-05-08-01:10
-   * The ChatGPT-style sidebar reference owns the visible sidebar navigation.
+   * app-modal entries, titlebar modes, and project header controls. Do not
+   * mount the obsolete hidden panels in the sidebar tree.
    */
-  const shouldShowAgentsPanel = sectionVisibility.agents;
-
   const { groupIds: effectiveGroupIds, sessionIdsByGroup: effectiveSessionIdsByGroup } = useMemo(
     () =>
       createDisplaySessionLayout({
@@ -1571,6 +1594,36 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     const nativeEvent = getDragNativeEvent(event);
     const sourceData = getSidebarDropData(event.operation.source);
     const pointerDownSessionTarget = pointerDownSessionTargetRef.current;
+    if (sourceData?.kind === "group") {
+      const point = getClientPoint(nativeEvent);
+      const group = groupsById[sourceData.groupId];
+      /**
+       * CDXC:ProjectDragPreview 2026-05-21-11:45:
+       * Project drag ghosts should be anchored to the live cursor and should
+       * render only the project header, even when the source project is expanded.
+       * Keep the source row in the list as the faint placeholder instead of
+       * cloning the whole expanded project into the moving preview.
+       */
+      setGroupDragPreview(
+        point && group?.projectContext
+          ? {
+              groupId: sourceData.groupId,
+              icon:
+                collapsedGroupsById[sourceData.groupId] === true ||
+                (authoritativeSessionIdsByGroup[sourceData.groupId] ?? []).length === 0
+                  ? "closed"
+                  : "open",
+              isCollapsed: collapsedGroupsById[sourceData.groupId] === true,
+              pointerX: point.x,
+              pointerY: point.y,
+              themeColor: group.projectContext.themeColor,
+              title: group.title,
+            }
+          : undefined,
+      );
+    } else {
+      setGroupDragPreview(undefined);
+    }
     sessionPointerDragStateRef.current =
       sourceData?.kind === "session"
         ? createSessionPointerDragState(sourceData, pointerDownSessionTarget, nativeEvent)
@@ -1587,17 +1640,22 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   }) satisfies DragDropEventHandlers["onDragStart"];
 
   const handleDragMove = ((event) => {
-    updateSessionPointerDragState(sessionPointerDragStateRef.current, getDragNativeEvent(event));
+    const nativeEvent = getDragNativeEvent(event);
+    updateGroupDragPreviewFromEvent(setGroupDragPreview, nativeEvent);
+    updateSessionPointerDragState(sessionPointerDragStateRef.current, nativeEvent);
     updateSessionDropIndicator(event);
   }) satisfies DragDropEventHandlers["onDragMove"];
 
   const handleDragOver = ((event) => {
-    updateSessionPointerDragState(sessionPointerDragStateRef.current, getDragNativeEvent(event));
+    const nativeEvent = getDragNativeEvent(event);
+    updateGroupDragPreviewFromEvent(setGroupDragPreview, nativeEvent);
+    updateSessionPointerDragState(sessionPointerDragStateRef.current, nativeEvent);
     updateSessionDropIndicator(event);
   }) satisfies DragDropEventHandlers["onDragOver"];
 
   const handleDragEnd = ((event) => {
     setGroupDropIndicator(undefined);
+    setGroupDragPreview(undefined);
     setSessionDropIndicatorGroupId(undefined);
     const currentGroupIds = groupIdsRef.current;
     const currentSessionIdsByGroup = sessionIdsByGroupRef.current;
@@ -1751,36 +1809,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     setSessionSearchQuery("");
     openAppModal({ modal: "scratchPad", type: "open" });
   };
-
-  const persistSectionCollapsed = useEffectEvent(
-    (section: SidebarCollapsibleSection, collapsed: boolean) => {
-      vscode.postMessage({
-        collapsed,
-        section,
-        type: "setSidebarSectionCollapsed",
-      });
-    },
-  );
-
-  const scheduleSectionCollapsePersistence = useEffectEvent(
-    (section: SidebarCollapsibleSection, collapsed: boolean) => {
-      const existingTimeoutId = sectionCollapsePersistTimeoutsRef.current[section];
-      if (existingTimeoutId !== undefined) {
-        window.clearTimeout(existingTimeoutId);
-      }
-
-      const timeoutId = window.setTimeout(() => {
-        if (sectionCollapsePersistTimeoutsRef.current[section] !== timeoutId) {
-          return;
-        }
-
-        delete sectionCollapsePersistTimeoutsRef.current[section];
-        persistSectionCollapsed(section, collapsed);
-      }, SIDEBAR_SECTION_COLLAPSE_PERSIST_DEBOUNCE_MS);
-
-      sectionCollapsePersistTimeoutsRef.current[section] = timeoutId;
-    },
-  );
 
   const openRunningSessions = () => {
     setIsOverflowMenuOpen(false);
@@ -2222,15 +2250,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           onOpenPreviousSessions={openPreviousSessions}
           onSearch={toggleSessionSearch}
           onToggleMenu={toggleOverflowMenu}
-          projectHeader={projectHeader}
           searchInputRef={searchInputRef}
           sessionSearchQuery={sessionSearchQuery}
           setSessionSearchQuery={setSessionSearchQuery}
         />
-      {/* CDXC:SidebarLayout 2026-05-13-08:11: The reference sidebar shows the
-          current-project header because empty project groups act as project
-          selectors for subsequent agent/action launches. */}
-      <SidebarProjectHeader projectHeader={projectHeader} />
       {renderFloatingOverflowMenu(topControlOptions)}
       <div
         className="stack"
@@ -2239,33 +2262,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         data-sidebar-theme={theme}
         onDoubleClick={handleSidebarDoubleClick}
       >
-        <div className="sidebar-top-panels">
-          {/* CDXC:SidebarLayout 2026-05-15-10:18: Previous sessions, pinned
-              prompts, and search live outside section titlebars, while
-              completion sound is no longer exposed from the sidebar overflow
-              menu. Section titlebars should not render duplicate controls. */}
-          <CommandsPanel
-            createRequestId={0}
-            isCollapsed={collapsedSections.actions}
-            isVisible={shouldShowActionsPanel}
-            onToggleCollapsed={(collapsed) => {
-              setSectionCollapsed("actions", collapsed);
-              scheduleSectionCollapsePersistence("actions", collapsed);
-            }}
-            showGitButton={sectionVisibility.git}
-            vscode={vscode}
-          />
-          <AgentsPanel
-            createRequestId={agentCreateRequestId}
-            isCollapsed={collapsedSections.agents}
-            isVisible={shouldShowAgentsPanel}
-            onToggleCollapsed={(collapsed) => {
-              setSectionCollapsed("agents", collapsed);
-              scheduleSectionCollapsePersistence("agents", collapsed);
-            }}
-            vscode={vscode}
-          />
-        </div>
         <section className="session-groups-panel" ref={sessionGroupsPanelRef}>
           <div className="session-groups-top">
             {null}
@@ -2300,6 +2296,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                 onDragMove={handleDragMove}
                 onDragOver={handleDragOver}
                 onDragStart={handleDragStart}
+                plugins={(plugins) => plugins.filter((plugin) => plugin !== Cursor)}
                 sensors={sensors}
               >
                 {!shouldHideReferenceSectionsForSearchEmptyState &&
@@ -2335,6 +2332,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           groupDropIndicator={groupDropIndicator}
                           groupId={groupId}
                           index={groupIndex}
+                          isGroupDragPreviewSource={groupDragPreview?.groupId === groupId}
                           isCollapsed={false}
                           key={groupId}
                           onAutoEditHandled={() => setAutoEditingGroupId(undefined)}
@@ -2426,6 +2424,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           groupDropIndicator={groupDropIndicator}
                           groupId={groupId}
                           index={groupIndex}
+                          isGroupDragPreviewSource={groupDragPreview?.groupId === groupId}
                           isCollapsed={collapsedGroupsById[groupId] === true}
                           key={groupId}
                           onAutoEditHandled={() => setAutoEditingGroupId(undefined)}
@@ -2451,6 +2450,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     )}
                   </div>
                 ) : null}
+                {groupDragPreview && typeof document !== "undefined"
+                  ? createPortal(
+                      <ProjectGroupDragGhost preview={groupDragPreview} />,
+                      document.body,
+                    )
+                  : null}
               </DragDropProvider>
               {isSessionSearchFiltering ? (
                 <SidebarPreviousSessionsSearchGroup
@@ -2664,7 +2669,6 @@ function SidebarReferenceTopChrome({
   onOpenPreviousSessions,
   onSearch,
   onToggleMenu,
-  projectHeader,
   searchInputRef,
   sessionSearchQuery,
   setSessionSearchQuery,
@@ -2678,7 +2682,6 @@ function SidebarReferenceTopChrome({
   onOpenPreviousSessions: () => void;
   onSearch: () => void;
   onToggleMenu: (trigger: HTMLElement) => void;
-  projectHeader: SidebarProjectHeaderData | undefined;
   searchInputRef: RefObject<HTMLInputElement | null>;
   sessionSearchQuery: string;
   setSessionSearchQuery: (query: string) => void;
@@ -3522,6 +3525,30 @@ function getDragNativeEvent(value: unknown): Event | undefined {
   return isObjectRecord(value) && value.nativeEvent instanceof Event
     ? value.nativeEvent
     : undefined;
+}
+
+function updateGroupDragPreviewFromEvent(
+  setGroupDragPreview: (
+    updater: (
+      previous: SidebarGroupDragPreview | undefined,
+    ) => SidebarGroupDragPreview | undefined,
+  ) => void,
+  nativeEvent: Event | undefined,
+): void {
+  const point = getClientPoint(nativeEvent);
+  if (!point) {
+    return;
+  }
+
+  setGroupDragPreview((previous) =>
+    previous
+      ? {
+          ...previous,
+          pointerX: point.x,
+          pointerY: point.y,
+        }
+      : previous,
+  );
 }
 
 function createSessionPointerDragState(

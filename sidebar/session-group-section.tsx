@@ -197,26 +197,6 @@ type GroupContextMenuPosition = ContextMenuPosition & {
 
 type GroupControlMenu = "project-agent";
 
-export function getEmptyBrowserGroupExpandTooltip({
-  browserTabCount,
-  isBrowserGroup,
-  isCollapsed,
-}: {
-  browserTabCount: number;
-  isBrowserGroup: boolean;
-  isCollapsed: boolean;
-}): string | undefined {
-  /**
-   * CDXC:SidebarGroups 2026-04-23-15:00
-   * Collapsed browser groups with zero live tabs should not expand into an empty
-   * shell. Keep the header inert in that state and surface a hover explanation
-   * instead so the user sees why nothing opens.
-   */
-  return isBrowserGroup && browserTabCount === 0 && isCollapsed
-    ? "No browser tabs open"
-    : undefined;
-}
-
 export function shouldTreatProjectAsEmptySessionGroup({
   hasProjectContext,
   sessionCount,
@@ -322,6 +302,7 @@ export type SessionGroupSectionProps = {
   groupDropIndicator?: SidebarGroupDropTarget;
   groupId: string;
   index: number;
+  isGroupDragPreviewSource?: boolean;
   isCollapsed: boolean;
   onAutoEditHandled: () => void;
   onCollapsedChange: (groupId: string, collapsed: boolean) => void;
@@ -382,6 +363,7 @@ export function SessionGroupSection({
   groupDropIndicator,
   groupId,
   index,
+  isGroupDragPreviewSource = false,
   isCollapsed,
   onAutoEditHandled,
   onCollapsedChange,
@@ -418,7 +400,6 @@ export function SessionGroupSection({
   const controlMenuRef = useRef<HTMLDivElement>(null);
   const projectAgentButtonRef = useRef<HTMLButtonElement>(null);
   const debugInstanceIdRef = useRef(createSessionGroupDebugInstanceId());
-  const isBrowserGroup = group?.kind === "browser";
   /**
    * CDXC:Projects 2026-05-04-14:49
    * Project group headers use folder metaphors: closed folder when collapsed
@@ -471,7 +452,15 @@ export function SessionGroupSection({
     accept: ["group", "session"],
     collisionPriority: CollisionPriority.Low,
     data: createGroupDropData(groupId),
-    disabled: isBrowserGroup || isChatCollection || draggingDisabled,
+    disabled: isChatCollection || draggingDisabled,
+    /**
+     * CDXC:ProjectDragPreview 2026-05-21-11:45:
+     * Project reordering uses an app-rendered cursor ghost instead of dnd-kit's
+     * source-sized feedback. Expanded projects can contain many session rows,
+     * so the default feedback makes the preview appear far from the cursor and
+     * includes content that should stay out of the drag ghost.
+     */
+    feedback: projectContext ? "none" : "default",
     id: groupId,
     index,
     plugins: [SortableKeyboardPlugin],
@@ -485,7 +474,7 @@ export function SessionGroupSection({
       kind: "group",
       position: "start",
     }),
-    disabled: isBrowserGroup || isChatCollection || areSessionDropTargetsDisabled,
+    disabled: isChatCollection || areSessionDropTargetsDisabled,
     id: createSessionDropTargetId({
       groupId,
       kind: "group",
@@ -521,12 +510,6 @@ export function SessionGroupSection({
   const actualSessionCount = storedSessionIds.length;
   const allSessionsSleeping =
     groupSessions.length > 0 && groupSessions.every((session) => session.isSleeping);
-  const browserTabCount = isBrowserGroup ? groupSessions.length : 0;
-  const emptyBrowserExpandTooltip = getEmptyBrowserGroupExpandTooltip({
-    browserTabCount,
-    isBrowserGroup,
-    isCollapsed,
-  });
   const canFullReloadGroup = groupSessions.length > 0;
   const collapsedIndicatorActivity = sessionSummary.indicatorActivity;
   const hasCollapsedSummary = collapsedIndicatorActivity !== undefined;
@@ -568,18 +551,13 @@ export function SessionGroupSection({
     groupDropIndicator?.groupId === groupId ? groupDropIndicator.position : undefined;
   const isSessionDropTargetVisible = groupDropPosition === undefined && isGroupDropTarget;
   const showSessionGroupConnector = shouldShowSessionGroupConnector({
-    groupKind: group.kind,
     sessions: groupSessions,
   });
   /*
    * CDXC:QuickSessions 2026-05-16-12:55:
    * The projectless chat collection remains modeled as Chats internally, but the empty reference-sidebar copy should read as Quick Sessions for users.
    */
-  const emptyStateLabel = isBrowserGroup
-    ? "No browsers"
-    : isChatCollection
-      ? "No Quick Sessions"
-      : "No sessions";
+  const emptyStateLabel = isChatCollection ? "No Quick Sessions" : "No sessions";
   const isEmptyProjectGroup =
     shouldTreatProjectAsEmptySessionGroup({
       hasProjectContext: Boolean(projectContext),
@@ -594,16 +572,11 @@ export function SessionGroupSection({
    * Project groups remain expandable even with no sessions because the body can
    * later receive project sessions. The sidebar no longer exposes an embedded
    * Code editor row or a project-header Code reveal button.
-   * Browser groups still block empty expansion, and non-project empty groups
-   * keep the old static header behavior.
+   * Non-project empty groups keep the old static header behavior.
    */
-  const canToggleCollapsed =
-    (actualSessionCount > 0 || Boolean(projectContext)) && emptyBrowserExpandTooltip === undefined;
+  const canToggleCollapsed = actualSessionCount > 0 || Boolean(projectContext);
   const groupTitleActionLabel =
-    emptyBrowserExpandTooltip ??
-    (canToggleCollapsed
-        ? `${isCollapsed ? "Expand" : "Collapse"} ${group.title}`
-        : group.title);
+    canToggleCollapsed ? `${isCollapsed ? "Expand" : "Collapse"} ${group.title}` : group.title;
   /**
    * CDXC:ProjectHeaders 2026-05-18-14:53:
    * Project row collapse/expand and project header action buttons keep accessible
@@ -613,26 +586,19 @@ export function SessionGroupSection({
    */
   const shouldSuppressProjectCollapseTooltip =
     Boolean(projectContext) && canToggleCollapsed;
-  const createSessionTooltip = isBrowserGroup
-    ? "Open a Browser"
-    : isChatCollection
-      ? "Create a Chat"
-      : "Create a Terminal";
+  const createSessionTooltip = isChatCollection ? "Create a Chat" : "Create a Terminal";
   const primaryProjectAgent =
     agents.find((agent) => agent.agentId === primaryProjectAgentLauncherId) ?? agents[0];
   const primaryProjectAgentLabel = primaryProjectAgent?.name ?? "Agent";
   useEffect(() => {
     postGroupDebugLog("group.sectionMounted", {
-      isBrowserGroup,
       orderedSessionIds,
     });
 
     return () => {
-      postGroupDebugLog("group.sectionUnmounted", {
-        isBrowserGroup,
-      });
+      postGroupDebugLog("group.sectionUnmounted", {});
     };
-  }, [isBrowserGroup, postGroupDebugLog]);
+  }, [postGroupDebugLog, orderedSessionIds]);
 
   useEffect(() => {
     postGroupDebugLog("group.dropStateChanged", {
@@ -730,10 +696,6 @@ export function SessionGroupSection({
   }, [openControlMenu]);
 
   const submitRename = () => {
-    if (isBrowserGroup) {
-      return;
-    }
-
     const nextTitle = draftTitle.trim();
     setIsEditing(false);
     setDraftTitle(nextTitle || group.title);
@@ -750,10 +712,6 @@ export function SessionGroupSection({
   };
 
   const requestFocusGroup = () => {
-    if (isBrowserGroup) {
-      return;
-    }
-
     vscode.postMessage({
       groupId: group.groupId,
       type: "focusGroup",
@@ -762,13 +720,6 @@ export function SessionGroupSection({
 
   const requestCreateSession = () => {
     onCreateSessionRequested?.(group.groupId);
-
-    if (isBrowserGroup) {
-      vscode.postMessage({
-        type: "openBrowser",
-      });
-      return;
-    }
 
     vscode.postMessage({
       groupId: group.groupId,
@@ -863,10 +814,6 @@ export function SessionGroupSection({
   };
 
   const requestSetGroupSleeping = (sleeping: boolean) => {
-    if (isBrowserGroup) {
-      return;
-    }
-
     setContextMenuPosition(undefined);
     vscode.postMessage({
       groupId: group.groupId,
@@ -876,7 +823,7 @@ export function SessionGroupSection({
   };
 
   const requestFullReloadGroup = () => {
-    if (isBrowserGroup || !canFullReloadGroup) {
+    if (!canFullReloadGroup) {
       return;
     }
 
@@ -1018,7 +965,7 @@ export function SessionGroupSection({
   };
 
   const handleGroupHeaderClick = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (isEditing || emptyBrowserExpandTooltip) {
+    if (isEditing) {
       return;
     }
 
@@ -1044,7 +991,7 @@ export function SessionGroupSection({
         className="group"
         data-active={String(group.isActive)}
         data-collapsed={String(isCollapsed)}
-        data-dragging={String(Boolean(sortable.isDragging))}
+        data-dragging={String(Boolean(sortable.isDragging || isGroupDragPreviewSource))}
         data-group-drop-position={groupDropPosition}
         data-drop-target={String(isGroupDropTarget)}
         data-empty-space-blocking="true"
@@ -1055,7 +1002,7 @@ export function SessionGroupSection({
         data-sidebar-group-id={group.groupId}
         data-workspace-custom-theme={String(Boolean(projectContext?.themeColor))}
         onClick={() => {
-          if (isBrowserGroup || isCollapsed) {
+          if (isCollapsed) {
             return;
           }
 
@@ -1080,7 +1027,7 @@ export function SessionGroupSection({
             return;
           }
 
-          if (isBrowserGroup || isChatCollection || (!showHeaderActions && !projectContext)) {
+          if (isChatCollection || (!showHeaderActions && !projectContext)) {
             return;
           }
 
@@ -1116,46 +1063,7 @@ export function SessionGroupSection({
               />
             ) : (
               <div className="group-title-row">
-                {emptyBrowserExpandTooltip ? (
-                  <AppTooltip content={emptyBrowserExpandTooltip} delayDuration={100}>
-                    <button
-                      aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
-                      aria-disabled="true"
-                      aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
-                      aria-label={emptyBrowserExpandTooltip}
-                      className="group-collapse-button section-titlebar-toggle"
-                      data-collapsed={String(isCollapsed)}
-                      data-empty-browser-group="true"
-                      data-has-idle-icon={String(canToggleCollapsed)}
-                      data-static-icon={String(!canToggleCollapsed)}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        if (projectContext) {
-                          toggleCollapsed();
-                          return;
-                        }
-
-                        toggleCollapsedOrSelectEmptyProject();
-                      }}
-                      type="button"
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="group-collapse-icon group-collapse-idle-icon section-titlebar-toggle-icon section-titlebar-toggle-idle-icon"
-                      >
-                        <IconWorld size={16} stroke={1.8} />
-                      </span>
-                      {canToggleCollapsed ? (
-                        <IconCaretRightFilled
-                          aria-hidden="true"
-                          className="group-collapse-icon group-collapse-chevron-icon section-titlebar-toggle-icon section-titlebar-toggle-chevron-icon"
-                          size={16}
-                        />
-                      ) : null}
-                    </button>
-                  </AppTooltip>
-                ) : projectContext ? (
+                {projectContext ? (
                   <span
                     aria-hidden="true"
                     className="group-collapse-button section-titlebar-toggle"
@@ -1168,9 +1076,7 @@ export function SessionGroupSection({
                       aria-hidden="true"
                       className="group-collapse-icon group-collapse-idle-icon section-titlebar-toggle-icon section-titlebar-toggle-idle-icon"
                     >
-                      {isBrowserGroup ? (
-                        <IconWorld size={16} stroke={1.8} />
-                      ) : isChatCollection ? (
+                      {isChatCollection ? (
                         <IconMessageCircle size={16} stroke={1.8} />
                       ) : projectContext.worktree ? (
                         <IconGitBranch size={16} stroke={1.8} />
@@ -1210,9 +1116,7 @@ export function SessionGroupSection({
                       aria-hidden="true"
                       className="group-collapse-icon group-collapse-idle-icon section-titlebar-toggle-icon section-titlebar-toggle-idle-icon"
                     >
-                      {isBrowserGroup ? (
-                        <IconWorld size={16} stroke={1.8} />
-                      ) : isChatCollection ? (
+                      {isChatCollection ? (
                         <IconMessageCircle size={16} stroke={1.8} />
                       ) : shouldRenderOpenProjectFolderIcon ? (
                         <IconFolderOpen size={16} stroke={1.8} />
@@ -1231,20 +1135,16 @@ export function SessionGroupSection({
                 )}
                 <div
                   className="group-title-handle"
-                  data-draggable={String(!isBrowserGroup && !isChatCollection)}
-                  ref={isBrowserGroup || isChatCollection ? undefined : sortable.handleRef}
+                  data-draggable={String(!isChatCollection)}
+                  ref={isChatCollection ? undefined : sortable.handleRef}
                 >
                   {shouldSuppressProjectCollapseTooltip ? (
                     <button
                       aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
-                      aria-disabled={
-                        emptyBrowserExpandTooltip !== undefined ||
-                        (!canToggleCollapsed && !isEmptyProjectGroup)
-                      }
+                      aria-disabled={!canToggleCollapsed && !isEmptyProjectGroup}
                       aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                       aria-label={groupTitleActionLabel}
                       className="group-title-button"
-                      data-empty-browser-group={String(emptyBrowserExpandTooltip !== undefined)}
                       data-empty-project={String(isEmptyProjectGroup)}
                       onClick={(event) => {
                         event.preventDefault();
@@ -1259,14 +1159,10 @@ export function SessionGroupSection({
                     <AppTooltip content={groupTitleActionLabel}>
                       <button
                         aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
-                        aria-disabled={
-                          emptyBrowserExpandTooltip !== undefined ||
-                          (!canToggleCollapsed && !isEmptyProjectGroup)
-                        }
+                        aria-disabled={!canToggleCollapsed && !isEmptyProjectGroup}
                         aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
                         aria-label={groupTitleActionLabel}
                         className="group-title-button"
-                        data-empty-browser-group={String(emptyBrowserExpandTooltip !== undefined)}
                         data-empty-project={String(isEmptyProjectGroup)}
                         onClick={(event) => {
                           event.preventDefault();
@@ -1308,12 +1204,6 @@ export function SessionGroupSection({
                     stats={projectContext.editor.diffStats}
                   />
                 ) : null}
-                {/*
-                 * CDXC:SidebarGroups 2026-04-28-02:41
-                 * Browser section headers should stay visually quiet: do not
-                 * render the live tab-count badge next to "Browsers". Keep the
-                 * count only for empty-state and collapse behavior.
-                 */}
                 {showHeaderActions ? (
                   <div
                     className="group-header-actions"
@@ -1484,9 +1374,7 @@ export function SessionGroupSection({
                         <AppTooltip content={createSessionTooltip}>
                           <button
                             aria-label={
-                              isBrowserGroup
-                                ? `Open a browser in ${group.title}`
-                                : isChatCollection
+                              isChatCollection
                                   ? `Create a chat in ${group.title}`
                                   : `Create a session in ${group.title}`
                             }
@@ -1612,7 +1500,7 @@ export function SessionGroupSection({
             : null}
         </div>
       </section>
-      {!isBrowserGroup && contextMenuPosition ? (
+      {contextMenuPosition ? (
         <SidebarContextMenuPortal
           menuRef={menuRef}
           menuStyle={{
@@ -1959,28 +1847,26 @@ export function SessionGroupSection({
             document.body,
           )
         : null}
-      {!isBrowserGroup ? (
-        /**
-         * CDXC:SessionClose 2026-05-11-00:45
-         * Group close confirmation copy must use Close so bulk session removal
-         * matches the session context menu and does not expose
-         * process-lifecycle wording to users.
-         */
-        <ConfirmationModal
-          confirmLabel="Close Group"
-          description={`This will close all ${orderedSessionIds.length} session${orderedSessionIds.length === 1 ? "" : "s"} in ${group.title}.`}
-          isOpen={isConfirmOpen}
-          onCancel={() => setIsConfirmOpen(false)}
-          onConfirm={() => {
-            setIsConfirmOpen(false);
-            vscode.postMessage({
-              groupId: group.groupId,
-              type: "closeGroup",
-            });
-          }}
-          title="Close group?"
-        />
-      ) : null}
+      {/**
+       * CDXC:SessionClose 2026-05-11-00:45
+       * Group close confirmation copy must use Close so bulk session removal
+       * matches the session context menu and does not expose
+       * process-lifecycle wording to users.
+       */}
+      <ConfirmationModal
+        confirmLabel="Close Group"
+        description={`This will close all ${orderedSessionIds.length} session${orderedSessionIds.length === 1 ? "" : "s"} in ${group.title}.`}
+        isOpen={isConfirmOpen}
+        onCancel={() => setIsConfirmOpen(false)}
+        onConfirm={() => {
+          setIsConfirmOpen(false);
+          vscode.postMessage({
+            groupId: group.groupId,
+            type: "closeGroup",
+          });
+        }}
+        title="Close group?"
+      />
     </>
   );
 }

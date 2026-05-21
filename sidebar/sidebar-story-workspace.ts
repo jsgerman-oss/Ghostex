@@ -68,7 +68,6 @@ export type SidebarStoryWorkspace = {
   options: SidebarStoryWorkspaceOptions;
   pinnedPrompts: SidebarHydrateMessage["pinnedPrompts"];
   previousSessions: SidebarHydrateMessage["previousSessions"];
-  projectHeader: SidebarHydrateMessage["hud"]["projectHeader"];
   sessionDecorationsById: Readonly<Record<string, SidebarSessionDecoration>>;
   snapshot: GroupedSessionWorkspaceSnapshot;
 };
@@ -110,7 +109,6 @@ export function createSidebarStoryWorkspace(message: SidebarHydrateMessage): Sid
     ),
     pinnedPrompts: message.pinnedPrompts.map((prompt) => ({ ...prompt })),
     previousSessions: message.previousSessions.map((session) => ({ ...session })),
-    projectHeader: message.hud.projectHeader,
     sessionDecorationsById: Object.fromEntries(
       message.groups.flatMap((group) =>
         group.sessions.map((session) => [
@@ -210,7 +208,6 @@ export function createSidebarStoryMessage(
     groups,
     hud: {
       ...hud,
-      projectHeader: workspace.projectHeader,
       recentProjects: workspace.options.recentProjects,
       settings: workspace.options.settings,
     },

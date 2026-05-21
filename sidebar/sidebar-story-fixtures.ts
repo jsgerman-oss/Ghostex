@@ -25,7 +25,6 @@ import {
 
 export type SidebarStoryFixture =
   | "agent-icon-render"
-  | "browser-groups"
   | "combined-header-alignment"
   | "combined-recent-projects"
   | "combined-sparse-reference"
@@ -218,15 +217,6 @@ export function createSidebarStoryMessage(
     visibleCount: args.visibleCount,
     visibleSlotLabels: getVisibleSlotLabels(groups),
   };
-
-  if (
-    isCombinedReferenceFixture(args.fixture)
-  ) {
-    hud.projectHeader = {
-      directory: "/Users/story/dev/ghostex",
-      name: "ghostex",
-    };
-  }
 
   return {
     groups,

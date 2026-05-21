@@ -2,23 +2,9 @@ import { describe, expect, test } from "vitest";
 import { shouldShowSessionGroupConnector } from "./session-group-connector";
 
 describe("shouldShowSessionGroupConnector", () => {
-  test("should show the connector for browser groups with sessions", () => {
+  test("should show the connector for any non-empty group", () => {
     expect(
       shouldShowSessionGroupConnector({
-        groupKind: "browser",
-        sessions: [
-          {
-            sessionId: "browser-1",
-          },
-        ],
-      }),
-    ).toBe(true);
-  });
-
-  test("should show the connector for any non-empty workspace group", () => {
-    expect(
-      shouldShowSessionGroupConnector({
-        groupKind: "workspace",
         sessions: [
           {
             sessionId: "session-1",
@@ -39,7 +25,6 @@ describe("shouldShowSessionGroupConnector", () => {
      */
     expect(
       shouldShowSessionGroupConnector({
-        groupKind: "workspace",
         sessions: [],
       }),
     ).toBe(false);
@@ -48,7 +33,6 @@ describe("shouldShowSessionGroupConnector", () => {
   test("should not show the connector when a non-project group is empty", () => {
     expect(
       shouldShowSessionGroupConnector({
-        groupKind: "workspace",
         sessions: [],
       }),
     ).toBe(false);

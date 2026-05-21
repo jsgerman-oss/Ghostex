@@ -165,13 +165,6 @@ function createCurrentProjectsSidebarMessage(
       highlightedVisibleCount,
       isFocusModeActive: args.isFocusModeActive,
       pendingAgentIds: [],
-      projectHeader: activeProject
-        ? {
-            directory: activeProject.path ?? "",
-            name: activeProject.name ?? "Project",
-            projectId: activeProject.projectId,
-          }
-        : undefined,
       recentProjects: createCurrentRecentProjects(projects),
       renameSessionOnDoubleClick:
         currentSettings?.renameSessionOnDoubleClick ?? args.renameSessionOnDoubleClick,

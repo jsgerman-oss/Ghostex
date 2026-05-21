@@ -505,11 +505,6 @@ button:where(:not([data-slot])):disabled {
   position: relative;
 }
 
-.sidebar-top-panels {
-  display: grid;
-  gap: 0;
-}
-
 .stack[data-dimmed="true"] {
   filter: saturate(0.7);
   opacity: 0.4;

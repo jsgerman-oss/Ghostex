@@ -213,20 +213,6 @@ export type SidebarSessionGroup = {
   visibleCount: VisibleSessionCount;
 };
 
-export type SidebarProjectHeader = {
-  directory: string;
-  faviconDataUrl?: string;
-  worktree?: SidebarProjectWorktreeMetadata;
-  name: string;
-  /**
-   * CDXC:SidebarActions 2026-05-08-09:11
-   * Combined-sidebar Actions quick run remembers the last launched action per
-   * project, so the React HUD needs the durable project id, not only path copy.
-   */
-  projectId?: string;
-  worktrees?: SidebarProjectWorktree[];
-};
-
 export type SidebarProjectWorktreeMetadata = {
   branch: string;
   createdAt?: string;
@@ -292,7 +278,6 @@ export type SidebarHudState = {
   git: SidebarGitState;
   isFocusModeActive: boolean;
   pendingAgentIds: string[];
-  projectHeader?: SidebarProjectHeader;
   /**
    * CDXC:Worktrees 2026-05-18-23:07:
    * The Worktrees settings surface needs the same project id/name/path projection as native workspace storage, plus an optional per-project command override for creating worktrees.

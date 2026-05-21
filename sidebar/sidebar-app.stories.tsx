@@ -21,13 +21,6 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const BrowserGroups: Story = {
-  args: {
-    fixture: "browser-groups",
-    theme: "plain-dark",
-  },
-};
-
 export const CommandIndicatorActive: Story = {
   args: {
     fixture: "command-indicator-active",
