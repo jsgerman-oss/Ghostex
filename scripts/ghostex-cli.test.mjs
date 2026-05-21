@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
+  buildSessionAttachCommand,
+  formatCompactSessionLine,
+  groupSessionsPreservingSidebarOrder,
   isFailedCliResult,
   parseArgs,
   parseCreateSession,
@@ -44,10 +47,12 @@ describe("ghostex CLI Android remote-session contract", () => {
     try {
       const linkPath = path.join(tempDir, "ghostex-cli.mjs");
       await symlink(path.resolve("scripts/ghostex-cli.mjs"), linkPath);
-      const result = await execFileAsync(process.execPath, [linkPath, "help"]);
+      const helpResult = await execFileAsync(process.execPath, [linkPath, "help"]);
+      const shortHelpResult = await execFileAsync(process.execPath, [linkPath, "h"]);
 
-      expect(result.stdout).toContain("Usage:");
-      expect(result.stdout).toContain("sessions | s | ls [--ungrouped|-u] [--json]");
+      expect(helpResult.stdout).toContain("Usage:");
+      expect(helpResult.stdout).toContain("sessions | s | ls [--ungrouped|-u] [--json]");
+      expect(shortHelpResult.stdout).toBe(helpResult.stdout);
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
@@ -105,6 +110,91 @@ describe("ghostex CLI Android remote-session contract", () => {
       sessionId: "session-1",
       title: "Ship Android",
     });
+  });
+
+  test("documents bare ghostex and gtx commands as session listings", () => {
+    const help = usage();
+
+    expect(help).toContain("Running ghostex or gtx with no subcommand lists sessions");
+    expect(help).toMatch(/^\s+ghostex$/m);
+    expect(help).toMatch(/^\s+gtx$/m);
+  });
+
+  test("formats compact session rows without field labels", () => {
+    /**
+     * CDXC:CliSessions 2026-05-20-12:20:
+     * Session listing should stay compact on narrow terminals: one headline row
+     * plus a short detail line, with project paths only on project headers.
+     */
+    const line = formatCompactSessionLine({
+      alias: 2,
+      title: "Ship Android polish",
+      lastInteractionAt: new Date(Date.now() - 120_000).toISOString(),
+      status: "working",
+      provider: "zmx",
+      providerSessionName: "zmux-main-2",
+      agent: "codex",
+      isFocused: true,
+    });
+
+    expect(line).toBe(
+      "› #2  Ship Android polish\n    codex · zmx/zmux-main-2 · working · 2m ago",
+    );
+    expect(line).not.toContain("project:");
+    expect(line).not.toContain("path:");
+    expect(line).not.toContain("group:");
+  });
+
+  test("creates a missing zmx session with the agent resume command before attach", () => {
+    /**
+     * CDXC:AndroidRemoteSessions 2026-05-21-07:21:
+     * Android sidebar taps should match macOS persistence restore behavior:
+     * attach live zmx sessions, but recreate a missing named zmx session with
+     * the agent resume command instead of letting the mobile terminal close.
+     */
+    const command = buildSessionAttachCommand({
+      alias: 7,
+      attachCommand: "zmx attach ghostex-session-7",
+      projectPath: "/Users/madda/project",
+      provider: "zmx",
+      providerSessionName: "ghostex-session-7",
+      resumeCommand: 'codex resume "Ship Android"',
+      status: "idle",
+    });
+
+    expect(command).toContain("zmx list --short");
+    expect(command).toContain('exec zmx attach "$zmx_session"');
+    expect(command).toContain('exec zmx attach "$zmx_session" /bin/zsh -lc "$zmx_resume_command"');
+    expect(command).toContain("codex resume");
+  });
+
+  test("preserves sidebar project and session order from the inventory", () => {
+    const grouped = groupSessionsPreservingSidebarOrder([
+      {
+        alias: 1,
+        projectId: "b",
+        projectName: "Beta",
+        projectPath: "/beta",
+        title: "one",
+      },
+      {
+        alias: 2,
+        projectId: "a",
+        projectName: "Alpha",
+        projectPath: "/alpha",
+        title: "two",
+      },
+      {
+        alias: 3,
+        projectId: "a",
+        projectName: "Alpha",
+        projectPath: "/alpha",
+        title: "three",
+      },
+    ]);
+
+    expect(grouped.map((project) => project.projectName)).toEqual(["Beta", "Alpha"]);
+    expect(grouped[1]?.sessions.map((session) => session.title)).toEqual(["two", "three"]);
   });
 
   test("documents JSON action and Android rename forms in help", () => {

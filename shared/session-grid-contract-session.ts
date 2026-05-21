@@ -33,9 +33,28 @@ import { normalizeT3SessionMetadata } from "./t3-session-metadata";
  * working/done indicators.
  * CDXC:Terminology 2026-05-09-15:53
  * Use working for agent work status. Reserve running for live runtime state.
+ *
+ * CDXC:CursorCLI 2026-05-19-15:22:
+ * Cursor CLI appends ` - ⏳ Working <spinner>` and ` - ✅ Ready` to terminal titles,
+ * including the startup title `Cursor Agent - ✅ Ready`. Strip those trailing status
+ * suffixes for visible sidebar titles. Keep the detection patterns in
+ * session-title-activity.ts aligned with these strip rules.
+ *
+ * CDXC:AntigravityCLI 2026-05-19-18:45:
+ * Antigravity CLI uses `agy` while running and `🔔 agy` when finished. Strip the
+ * bell attention prefix for visible sidebar titles while title-activity keeps the
+ * raw terminal title for attention detection.
  */
 const LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✶✻✽✸✹✺✷✴✦◇🤖🔔]+/u;
+const ANTIGRAVITY_ATTENTION_TITLE_PATTERN = /^🔔\s*agy$/iu;
+const ANTIGRAVITY_IDLE_TITLE_PATTERN = /^agy$/iu;
 const LEADING_TERMINAL_TITLE_PREFIX_PATTERN = /^(?:OC\s*\|\s*)+/iu;
+const CURSOR_CLI_WORKING_TITLE_SUFFIX_PATTERN = /⏳ Working [.·]+$/u;
+const CURSOR_CLI_READY_TITLE_SUFFIX_PATTERN = /✅ Ready$/u;
+const CURSOR_CLI_AGENT_READY_TITLE_PATTERN = /^Cursor Agent\s*-\s*✅ Ready$/iu;
+const CURSOR_CLI_AGENT_TITLE_PATTERN = /^Cursor Agent$/iu;
+const CURSOR_CLI_WORKING_TITLE_STRIP_PATTERN = /\s*-\s*⏳ Working [.·]+$/u;
+const CURSOR_CLI_READY_TITLE_STRIP_PATTERN = /\s*-\s*✅ Ready$/u;
 export const DEFAULT_TERMINAL_SESSION_TITLE = "Terminal Session";
 /**
  * CDXC:CommandsPanel 2026-05-14-08:12:
@@ -49,10 +68,19 @@ export const MAX_COMMANDS_PANEL_HEIGHT_RATIO = 0.55;
 export const DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO = 0.27;
 const DEFAULT_TERMINAL_ENGINE: TerminalEngine = "ghostty-native";
 const IGNORED_GENERIC_TERMINAL_TITLES = new Set([
+  "amp",
+  "amp cli",
+  "agy",
+  "antigravity",
+  "antigravity cli",
   "claude",
   "claude code",
   "codex",
   "codex cli",
+  "cursor",
+  "cursor agent",
+  "cursor cli",
+  "cursor-agent",
   "droid",
   "factory droid",
   "grok",
@@ -64,11 +92,18 @@ const IGNORED_GENERIC_TERMINAL_TITLES = new Set([
 ]);
 const IGNORED_PLACEHOLDER_SESSION_TITLES = new Set([
   DEFAULT_TERMINAL_SESSION_TITLE.toLowerCase(),
+  "amp cli session",
+  "amp session",
+  "antigravity cli session",
+  "antigravity session",
   "claude session",
   "claude code session",
   "codex session",
   "codex cli session",
   "copilot session",
+  "cursor agent session",
+  "cursor cli session",
+  "cursor session",
   "droid session",
   "factory droid session",
   "gemini session",
@@ -81,11 +116,18 @@ const IGNORED_PLACEHOLDER_SESSION_TITLES = new Set([
   "t3 code session",
 ]);
 const DEFAULT_SESSION_AGENT_TITLE_NAMES = new Map<string, string>([
+  ["agy", "Antigravity CLI"],
+  ["amp", "Amp CLI"],
+  ["amp-cli", "Amp CLI"],
+  ["antigravity", "Antigravity CLI"],
+  ["antigravity-cli", "Antigravity CLI"],
   ["claude", "Claude"],
   ["claude-code", "Claude"],
   ["codex", "Codex"],
   ["codex-cli", "Codex"],
   ["copilot", "Copilot"],
+  ["cursor", "Cursor CLI"],
+  ["cursor-cli", "Cursor CLI"],
   ["droid", "Factory Droid"],
   ["factory-droid", "Factory Droid"],
   ["gemini", "Gemini"],
@@ -418,6 +460,7 @@ export function createSessionRecord(
     commandTitle: normalizeTerminalCommandTitle(options?.commandTitle),
     column: position.column,
     createdAt,
+    delayedSendDeadlineAt: normalizeTerminalDelayedSendDeadlineAt(options?.delayedSendDeadlineAt),
     displayId,
     kind: "terminal",
     row: position.row,
@@ -460,6 +503,11 @@ export function normalizeTerminalSessionAgentName(value: string | undefined): st
 function normalizeTerminalCommandTitle(value: string | undefined): string | undefined {
   const normalizedValue = value?.replace(/\s+/g, " ").trim();
   return normalizedValue && normalizedValue.length > 0 ? normalizedValue : undefined;
+}
+
+function normalizeTerminalDelayedSendDeadlineAt(value: string | undefined): string | undefined {
+  const normalizedValue = value?.trim();
+  return normalizedValue && !Number.isNaN(Date.parse(normalizedValue)) ? normalizedValue : undefined;
 }
 
 export function normalizeTerminalAgentSessionIdentity(value: string | undefined): string | undefined {
@@ -555,6 +603,7 @@ export function getSessionCardPrimaryTitle(
     /^Session \d+$/iu.test(normalizedTitle) ||
     getCodexSessionIdFromTitle(normalizedTitle) !== undefined ||
     isGhostPlaceholderSessionTitle(normalizedTitle) ||
+    isIgnoredGenericAgentTerminalTitle(normalizedTitle) ||
     isPathLikeTerminalTitle(normalizedTitle)
   ) {
     return createAgentSessionDefaultTitle(session.agentName);
@@ -605,7 +654,63 @@ export function normalizeTerminalTitle(title: string | undefined): string | unde
     .replace(LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN, "")
     .replace(LEADING_TERMINAL_TITLE_PREFIX_PATTERN, "")
     .trim();
+  const cursorTitle = normalizeCursorTerminalTitle(sanitizedTitle);
+  if (cursorTitle !== null) {
+    return cursorTitle;
+  }
+  const antigravityTitle = normalizeAntigravityTerminalTitle(sanitizedTitle);
+  if (antigravityTitle !== null) {
+    return antigravityTitle;
+  }
   return normalizePiTerminalTitle(sanitizedTitle) ?? (sanitizedTitle || undefined);
+}
+
+function normalizeAntigravityTerminalTitle(title: string): string | undefined | null {
+  const normalizedTitle = title.trim().replace(/\s+/g, " ");
+  if (
+    ANTIGRAVITY_ATTENTION_TITLE_PATTERN.test(normalizedTitle) ||
+    ANTIGRAVITY_IDLE_TITLE_PATTERN.test(normalizedTitle)
+  ) {
+    return "agy";
+  }
+
+  return null;
+}
+
+function isCursorCliPlaceholderTerminalTitle(title: string): boolean {
+  const normalizedTitle = title.trim().replace(/\s+/g, " ");
+  return (
+    CURSOR_CLI_AGENT_READY_TITLE_PATTERN.test(normalizedTitle) ||
+    CURSOR_CLI_AGENT_TITLE_PATTERN.test(normalizedTitle) ||
+    isIgnoredGenericAgentTerminalTitle(normalizedTitle)
+  );
+}
+
+function isIgnoredGenericAgentTerminalTitle(title: string): boolean {
+  /**
+   * CDXC:CursorCLI 2026-05-19-19:05:
+   * Agent boot titles such as `Codex`, `Claude Code`, and `Cursor Agent` are CLI
+   * placeholders. They may drive agent detection, but must never persist as the
+   * canonical session title or render as a user-named card heading.
+   */
+  return IGNORED_GENERIC_TERMINAL_TITLES.has(title.trim().replace(/\s+/g, " ").toLowerCase());
+}
+
+function normalizeCursorTerminalTitle(title: string): string | undefined | null {
+  const normalizedTitle = title.trim().replace(/\s+/g, " ");
+  if (isCursorCliPlaceholderTerminalTitle(normalizedTitle)) {
+    return undefined;
+  }
+  if (CURSOR_CLI_READY_TITLE_SUFFIX_PATTERN.test(normalizedTitle)) {
+    const strippedTitle = normalizedTitle.replace(CURSOR_CLI_READY_TITLE_STRIP_PATTERN, "").trim();
+    return isCursorCliPlaceholderTerminalTitle(strippedTitle) ? undefined : strippedTitle || undefined;
+  }
+  if (CURSOR_CLI_WORKING_TITLE_SUFFIX_PATTERN.test(normalizedTitle)) {
+    const strippedTitle = normalizedTitle.replace(CURSOR_CLI_WORKING_TITLE_STRIP_PATTERN, "").trim();
+    return isCursorCliPlaceholderTerminalTitle(strippedTitle) ? undefined : strippedTitle || undefined;
+  }
+
+  return null;
 }
 
 function normalizePiTerminalTitle(title: string): string | undefined {

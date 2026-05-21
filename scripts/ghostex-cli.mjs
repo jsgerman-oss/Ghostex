@@ -86,6 +86,7 @@ const COMMANDS = new Map([
   ["logs", logsCommand],
   ["bundle", bundleCommand],
   ["help", helpCommand],
+  ["h", helpCommand],
 ]);
 
 if (isDirectCliEntryPoint()) {
@@ -113,7 +114,18 @@ function isDirectCliEntryPoint() {
 }
 
 async function main() {
-  const [commandName = "help", ...args] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  /**
+   * CDXC:CliSessions 2026-05-20-12:00:
+   * Running `ghostex` or `gtx` with no subcommand should list live sessions the
+   * same way as `ghostex ls`, because a bare command name is the most common
+   * terminal check for what is running.
+   */
+  if (argv.length === 0) {
+    await sessionsCommand([]);
+    return;
+  }
+  const [commandName, ...args] = argv;
   if (commandName === "-h" || commandName === "--help") {
     helpCommand();
     return;
@@ -745,16 +757,59 @@ async function attachSessionCommand(args) {
    * agent resume command for sleeping rows; provider attach remains first for
    * awake rows where the named session is still live.
    */
-  const command =
-    session.status === "sleep"
-      ? session.resumeCommand || session.attachCommand
-      : session.attachCommand || session.resumeCommand;
+  const command = buildSessionAttachCommand(session);
   if (!command) {
     throw new Error(
       `Session ${session.alias} has no provider attach command or supported agent resume command.`,
     );
   }
   await runInteractiveShellCommand(command, session.projectPath);
+}
+
+function buildSessionAttachCommand(session) {
+  if (shouldCreateMissingZmxSessionWithResume(session)) {
+    return buildZmxAttachOrResumeCommand(session);
+  }
+  return session.status === "sleep"
+    ? session.resumeCommand || session.attachCommand
+    : session.attachCommand || session.resumeCommand;
+}
+
+function shouldCreateMissingZmxSessionWithResume(session) {
+  return (
+    String(session.provider ?? "").trim().toLowerCase() === "zmx" &&
+    Boolean(String(session.providerSessionName ?? "").trim()) &&
+    Boolean(String(session.resumeCommand ?? "").trim())
+  );
+}
+
+function buildZmxAttachOrResumeCommand(session) {
+  const sessionName = String(session.providerSessionName).trim();
+  const resumeCommand = String(session.resumeCommand).trim();
+  const cwd = String(session.projectPath || ".").trim() || ".";
+  const script = `
+zmx_session=${shellQuote(sessionName)}
+zmx_resume_command=${shellQuote(resumeCommand)}
+zmx_cwd=${shellQuote(cwd)}
+unset ZMX_SESSION ZMX_SESSION_PREFIX
+if ! command -v zmx >/dev/null 2>&1; then
+  printf '%s\\n' 'zmx was not found on PATH.'
+  exit 127
+fi
+if zmx list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
+  exec zmx attach "$zmx_session"
+fi
+cd "$zmx_cwd" || exit
+exec zmx attach "$zmx_session" /bin/zsh -lc "$zmx_resume_command"
+`;
+  /**
+   * CDXC:AndroidRemoteSessions 2026-05-21-07:21:
+   * Mobile sidebar taps run through `ghostex attach --session-id`. If the card's
+   * zmx session is gone but the agent has a resume command, recreate the named
+   * zmx session and run the agent resume command there instead of opening an
+   * attach terminal that immediately exits or becomes an empty shell.
+   */
+  return `/bin/zsh -lc ${shellQuote(script)}`;
 }
 
 function sessionActionCommand(action, pastTense, extraPayload = {}) {
@@ -956,79 +1011,72 @@ function printSessionList(sessions, { grouped }) {
     console.log("No running terminal sessions.");
     return;
   }
+  /**
+   * CDXC:CliSessions 2026-05-20-12:20:
+   * The human session list should stay compact on narrow terminals: group by
+   * project with the project path as the section header, print each session as
+   * a short two-line block without field labels, and preserve the sidebar order
+   * returned by the native inventory instead of re-sorting in the CLI.
+   */
+  const projectGroups = groupSessionsPreservingSidebarOrder(sessions);
   if (!grouped) {
-    const displaySessions = sortSessionsBySidebarActivity(sessions);
-    printTable(
-      ["#", "Project", "Active", "Title", "Status", "Provider", "Agent"],
-      displaySessions.map((session) => [
-        String(session.alias),
-        session.projectName || "-",
-        formatActiveTime(session.lastInteractionAt),
-        session.title || "-",
-        session.status || "-",
-        session.provider || "-",
-        session.agent || "-",
-      ]),
-    );
+    for (const project of projectGroups) {
+      for (const session of project.sessions) {
+        console.log(
+          formatCompactSessionLine(session, {
+            projectLabel: project.projectName,
+          }),
+        );
+      }
+    }
     return;
   }
-  const groupedSessions = groupSessionsByProject(sessions);
-  groupedSessions.forEach((group, index) => {
-    if (index > 0) {
+  projectGroups.forEach((project, projectIndex) => {
+    if (projectIndex > 0) {
       console.log("");
     }
-    console.log(group.projectName);
-    printTable(
-      ["#", "Active", "Title", "Status", "Provider", "Agent"],
-      group.sessions.map((session) => [
-        String(session.alias),
-        formatActiveTime(session.lastInteractionAt),
-        session.title || "-",
-        session.status || "-",
-        session.provider || "-",
-        session.agent || "-",
-      ]),
-    );
+    console.log(project.projectName);
+    if (project.projectPath) {
+      console.log(project.projectPath);
+    }
+    for (const session of project.sessions) {
+      console.log(formatCompactSessionLine(session));
+    }
   });
 }
 
-function sortSessionsBySidebarActivity(sessions) {
-  /**
-   * CDXC:CliSessions 2026-05-15-20:52
-   * The `ghostex sessions` and `gtx sessions` views should mirror the Combined sidebar: keep project groups in sidebar order, but order each project's rows by the same activity priority and Last Active timestamp users see in the app.
-   */
-  return [...sessions].sort((left, right) => {
-    const activityPriorityDelta = getSessionActivitySortPriority(right) - getSessionActivitySortPriority(left);
-    if (activityPriorityDelta !== 0) {
-      return activityPriorityDelta;
-    }
-
-    const activityTimeDelta = getSessionLastInteractionTime(right) - getSessionLastInteractionTime(left);
-    if (activityTimeDelta !== 0) {
-      return activityTimeDelta;
-    }
-
-    return sessions.indexOf(left) - sessions.indexOf(right);
-  });
-}
-
-function getSessionActivitySortPriority(session) {
-  switch (session?.activity ?? session?.status) {
-    case "attention":
-      return 2;
-    case "working":
-      return 1;
-    default:
-      return 0;
+function formatCompactSessionLine(session, { projectLabel } = {}) {
+  const marker = session.isFocused ? "›" : " ";
+  const headline = projectLabel
+    ? `${marker} #${session.alias}  ${projectLabel} · ${session.title || "-"}`
+    : `${marker} #${session.alias}  ${session.title || "-"}`;
+  const details = [
+    session.agent,
+    formatCompactProvider(session),
+    session.status,
+    formatActiveTime(session.lastInteractionAt),
+  ]
+    .map((value) => String(value ?? "").trim())
+    .filter((value) => value.length > 0 && value !== "-");
+  if (details.length === 0) {
+    return headline;
   }
+  return `${headline}\n    ${details.join(" · ")}`;
 }
 
-function getSessionLastInteractionTime(session) {
-  const timestamp = Date.parse(session?.lastInteractionAt ?? "");
-  return Number.isFinite(timestamp) ? timestamp : 0;
+function formatCompactProvider(session) {
+  const provider = session.provider?.trim();
+  const providerSessionName = session.providerSessionName?.trim();
+  if (!provider) {
+    return undefined;
+  }
+  if (providerSessionName) {
+    return `${provider}/${providerSessionName}`;
+  }
+  return provider;
 }
 
-function groupSessionsByProject(sessions) {
+function groupSessionsPreservingSidebarOrder(sessions) {
   const groups = [];
   const groupsByProjectId = new Map();
   for (const session of sessions) {
@@ -1036,6 +1084,7 @@ function groupSessionsByProject(sessions) {
     if (!group) {
       group = {
         projectName: session.projectName || session.projectPath || "Project",
+        projectPath: session.projectPath || "",
         sessions: [],
       };
       groupsByProjectId.set(session.projectId, group);
@@ -1043,37 +1092,7 @@ function groupSessionsByProject(sessions) {
     }
     group.sessions.push(session);
   }
-  return groups.map((group) => ({
-    ...group,
-    sessions: sortSessionsBySidebarActivity(group.sessions),
-  }));
-}
-
-function printTable(headers, rows) {
-  const widths = headers.map((header, columnIndex) =>
-    Math.max(
-      header.length,
-      ...rows.map((row) => visibleLength(String(row[columnIndex] ?? ""))),
-    ),
-  );
-  console.log(formatTableRow(headers, widths));
-  for (const row of rows) {
-    console.log(formatTableRow(row, widths));
-  }
-}
-
-function formatTableRow(row, widths) {
-  return row
-    .map((value, index) => {
-      const text = String(value ?? "");
-      const padding = " ".repeat(Math.max(0, widths[index] - visibleLength(text)));
-      return index === row.length - 1 ? text : `${text}${padding}`;
-    })
-    .join("  ");
-}
-
-function visibleLength(value) {
-  return value.length;
+  return groups;
 }
 
 function formatActiveTime(value) {
@@ -1408,6 +1427,8 @@ function usage() {
   return `Ghostex CLI - manage running Ghostex terminal sessions
 
 Usage:
+  ghostex
+  gtx
   ghostex <command> [args...] [--flags]
   gtx <command> [args...] [--flags]
   bun scripts/ghostex-cli.mjs <command> [args...] [--flags]
@@ -1433,9 +1454,10 @@ Selectors:
   Titles match exact first, then case-insensitive substring.
 
 Sessions:
-  The sessions command groups by project and sorts each project by sidebar Last Active order by default.
-  --ungrouped/-u prints one flat table and adds the Project column.
-  Columns are: # Active Title Status Provider Agent.
+  Running ghostex or gtx with no subcommand lists sessions the same way as ghostex ls.
+  Projects and sessions follow the macOS sidebar order, including the active Last Active sort mode.
+  Each project prints its path once as the section header, then compact session rows without field labels.
+  --ungrouped/-u prints one flat list and prefixes each row with the project name.
 
 Attach:
   attach/resume uses the stored tmux, zmx, or zellij provider session when present.
@@ -1445,8 +1467,19 @@ Global flags:
   --port <number>       Native bridge port
   --token <token>       Bridge token
   --timeout <ms>        Bridge request timeout
+  help | h              Show this help
   -h, --help            Show this help
 `;
 }
 
-export { isFailedCliResult, parseArgs, parseCreateSession, parseRename, readAndroidReadinessSettings, usage };
+export {
+  buildSessionAttachCommand,
+  formatCompactSessionLine,
+  groupSessionsPreservingSidebarOrder,
+  isFailedCliResult,
+  parseArgs,
+  parseCreateSession,
+  parseRename,
+  readAndroidReadinessSettings,
+  usage,
+};

@@ -47,6 +47,19 @@ const META_PROMPT_PREFIXES = [
 const GENERIC_SESSION_TITLES_BY_AGENT = new Map<string, ReadonlySet<string>>([
   ["claude", new Set(["claude", "claude code"])],
   ["codex", new Set(["codex", "openai codex", "codex cli"])],
+  /**
+   * CDXC:CursorCLI 2026-05-19-15:35:
+   * Cursor CLI sessions start with placeholder names until the CLI publishes a
+   * real terminal title. Treat those placeholders as generic so terminal-title
+   * sync can persist the CLI-provided name without fighting first-prompt rename.
+   */
+  ["cursor", new Set(["cursor", "cursor agent", "cursor cli", "cursor-agent"])],
+  /**
+   * CDXC:AntigravityCLI 2026-05-19-18:45:
+   * Antigravity CLI keeps the short `agy` terminal title while running. Treat
+   * that placeholder as generic so richer auto titles can sync when available.
+   */
+  ["antigravity", new Set(["agy", "antigravity", "antigravity cli"])],
   ["gemini", new Set(["gemini"])],
   ["opencode", new Set(["opencode", "open code"])],
   ["pi", new Set(["pi", "π"])],
