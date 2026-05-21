@@ -9045,7 +9045,7 @@ final class TerminalWorkspaceView: NSView {
     }
     let labelSize = labelView.fittingSize
     let labelWidth = min(ceil(labelSize.width), max(terminalRect.width - 32, 0))
-    let labelHeight = min(max(ceil(labelSize.height), 34), max(terminalRect.height - 24, 0))
+    let labelHeight = min(max(ceil(labelSize.height), 46), max(terminalRect.height - 24, 0))
     return CGRect(
       x: max(12, terminalRect.maxX - labelWidth - 12),
       y: max(8, terminalRect.maxY - labelHeight - 8),
@@ -18833,16 +18833,22 @@ private final class TerminalPanePersistenceLabelView: NSTextField {
 }
 
 private final class TerminalPaneDelayedSendLabelView: NSTextField {
-  private static let labelFont = NSFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold)
+  private static let labelFont = NSFont.monospacedDigitSystemFont(ofSize: 23, weight: .bold)
   private static let backgroundColor = NSColor(calibratedWhite: 0.05, alpha: 0.78)
   private static let borderColor = NSColor(calibratedWhite: 1.0, alpha: 0.12)
+  private static let labelColor = NSColor(
+    calibratedRed: 0xF6 / 255,
+    green: 0xC9 / 255,
+    blue: 0x45 / 255,
+    alpha: 1.0
+  )
 
   override var fittingSize: NSSize {
     guard !stringValue.isEmpty else {
       return .zero
     }
     let size = (stringValue as NSString).size(withAttributes: [.font: Self.labelFont])
-    return NSSize(width: ceil(size.width) + 28, height: 34)
+    return NSSize(width: ceil(size.width) + 44, height: 46)
   }
 
   override init(frame frameRect: NSRect) {
@@ -18856,11 +18862,11 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
     layer?.backgroundColor = Self.backgroundColor.cgColor
     layer?.borderColor = Self.borderColor.cgColor
     layer?.borderWidth = 1
-    layer?.cornerRadius = 9
+    layer?.cornerRadius = 12
     layer?.masksToBounds = true
     lineBreakMode = .byTruncatingTail
     font = Self.labelFont
-    textColor = NSColor(calibratedRed: 0xB6 / 255, green: 0xEC / 255, blue: 0xFF / 255, alpha: 0.74)
+    textColor = Self.labelColor
     alignment = .center
     usesSingleLineMode = true
   }
@@ -18894,6 +18900,11 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
      The pane countdown should appear over the terminal pane with a
      rounded rectangle background so it reads as an intentional timer badge
      instead of terminal output or bottom-corner persistence metadata.
+
+     CDXC:DelayedSend 2026-05-21-12:21:
+     The floating timer badge needs a larger timer and more internal padding,
+     with #f6c945 text, so the countdown is legible as the primary pending
+     action state inside the terminal pane.
      */
     stringValue = nextLabel
     isHidden = nextLabel.isEmpty
