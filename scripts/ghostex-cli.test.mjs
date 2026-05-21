@@ -263,7 +263,7 @@ describe("ghostex CLI Android remote-session contract", () => {
     try {
       const settingsPath = path.join(home, "state", "native-sidebar-settings.json");
       await mkdir(path.dirname(settingsPath), { recursive: true });
-      await writeFile(settingsPath, JSON.stringify({ sessionPersistenceProvider: " ZMX " }));
+      await writeFile(settingsPath, JSON.stringify({ sessionPersistenceProvider: " zmx " }));
 
       await expect(readAndroidReadinessSettings(settingsPath)).resolves.toMatchObject({
         ok: true,
@@ -280,7 +280,7 @@ describe("ghostex CLI Android remote-session contract", () => {
      * The default Android release runner is final proof, not a source-only
      * convenience command. It must reject `--skip-mac-check` unless `--local`
      * is also present so final release validation always proves the Mac
-     * Ghostex/ZMX readiness contract.
+     * Ghostex/zmx readiness contract.
      */
     await expect(
       execFileAsync("bash", [

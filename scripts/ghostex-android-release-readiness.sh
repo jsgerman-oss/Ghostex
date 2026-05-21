@@ -42,7 +42,7 @@ set -euo pipefail
 # Final release proof must always run the Mac-side `ghostex android-check
 # --json` readiness contract. Keep `--skip-mac-check` limited to `--local`
 # source/build validation so the strict path cannot accidentally omit the live
-# Ghostex/ZMX Mac verification step.
+# Ghostex/zmx Mac verification step.
 #
 # CDXC:AndroidReleaseSurface 2026-05-17-21:01:
 # Final release proof should reject missing or in-checkout publish keystores at

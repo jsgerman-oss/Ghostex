@@ -911,7 +911,7 @@ async function fetchSessionList(flags = {}, options = {}) {
    * `ghostex sessions --json` is Android reconnect's inventory contract. A
    * bridge transport failure must fail the CLI instead of returning an empty
    * success-shaped session list, otherwise Android would show a misleading
-   * "No ZMX sessions" state when Ghostex is unreachable.
+   * "No zmx sessions" state when Ghostex is unreachable.
    */
   if (isFailedCliResult(result)) {
     throw new Error(result.error ?? "Could not list Ghostex sessions.");
@@ -1364,7 +1364,7 @@ function formatHelpCommand(signature, description) {
 function usage() {
   /**
    * CDXC:CliHelp 2026-05-15-20:33
-   * The public Ghostex help menu should follow the organized Zellij/ZMX shape: a short product description, compact usage lines, aligned command groups with aliases beside the command name, and separate explanatory sections for selectors and workflows that would make the command table noisy.
+   * The public Ghostex help menu should follow the organized zellij/zmx shape: a short product description, compact usage lines, aligned command groups with aliases beside the command name, and separate explanatory sections for selectors and workflows that would make the command table noisy.
    */
   const sessionCommands = [
     formatHelpCommand("sessions | s | ls [--ungrouped|-u] [--json]", "List running terminal sessions"),
