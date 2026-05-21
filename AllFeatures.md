@@ -122,3 +122,8 @@
 - The floating prompt editor prewarms after startup so the first real prompt edit opens faster.
 - Delayed Send deadlines persist with restored terminal sessions so pending sends can resume after restart.
 - Large-project sidebar scrolling has a current-projects Storybook regression story for checking real project list reachability.
+- Embedded Code, Git, and browser panes stay visually pinned when the command pane is shown or hidden, avoiding upward page drift after repeated resizes.
+- Delayed Send shows a clearer floating terminal countdown badge, uses non-blocking app toasts for scheduling feedback, and selects the minutes field when the timer dialog opens.
+- Sessions that quit while working or needing attention wake again on the next launch so interrupted work is easier to resume.
+- The sidebar no longer mounts hidden legacy Agents, Actions, Browsers, or project-header surfaces.
+- Project group reordering uses a compact cursor-following drag preview so large expanded projects are easier to move.

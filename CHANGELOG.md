@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.7.0 - 2026-05-21
+
+- Improved embedded Code, Git, and browser panes so showing or hiding the command pane no longer shifts page content upward over repeated resizes.
+- Improved Delayed Send with a clearer floating countdown badge in terminal panes, non-blocking scheduling feedback, and a timer dialog that selects the minutes field when opened.
+- Improved restart recovery so sessions that quit while working or needing attention wake again on the next launch.
+- Simplified the sidebar by removing hidden legacy Agents, Actions, Browsers, and project-header surfaces from the React sidebar.
+- Improved project group reordering with a compact cursor-following drag preview for large expanded projects.
+
 ## 3.6.0 - 2026-05-21
 
 - Added Cursor CLI, Antigravity CLI, and Amp CLI as built-in agents with matching icons, launch commands, title cleanup, and working/done detection.
