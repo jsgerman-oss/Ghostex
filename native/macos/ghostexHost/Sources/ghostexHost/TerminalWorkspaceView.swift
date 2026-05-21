@@ -3195,6 +3195,7 @@ final class TerminalWorkspaceView: NSView {
         "id": "browser:\(session.sessionId)",
         "isActive": orderedVisibleSessionIds().contains(session.sessionId),
         "kind": "browser",
+        "sessionId": session.sessionId,
         "title": title,
         "url": currentURL,
       ])
@@ -3207,6 +3208,7 @@ final class TerminalWorkspaceView: NSView {
           "id": "project-editor:\(session.projectId):\(tab.tabId)",
           "isActive": activeProjectEditorId == session.projectId && session.activeTabId == tab.tabId,
           "kind": session.mode,
+          "projectId": session.projectId,
           "title": titlebarBrowserResourceTitle(mode: session.mode, title: tab.title),
           "url": currentURL,
         ])
@@ -4641,7 +4643,14 @@ final class TerminalWorkspaceView: NSView {
       let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
       projectEditorCompanionResizeWorkspaceBounds = workspaceBounds
       setProjectEditorTabHostVisibility(editorSession, isActive: true)
-      layoutProjectEditorPane(editorSession, in: companionLayout?.editorFrame ?? workspaceBounds)
+      let projectEditorLiveResizeBackingRect =
+        commandsPanelResizeDrag != nil
+        ? projectEditorCompanionLayout(in: bounds)?.editorFrame ?? bounds
+        : nil
+      layoutProjectEditorPane(
+        editorSession,
+        in: companionLayout?.editorFrame ?? workspaceBounds,
+        chromiumLiveResizeBackingRect: projectEditorLiveResizeBackingRect)
       orderProjectEditorPaneToFront(editorSession)
       syncProjectEditorCompanionPane(layout: companionLayout)
       if shouldShowCommandsPanel {
@@ -5575,7 +5584,11 @@ final class TerminalWorkspaceView: NSView {
     return (titleBarFrame: titleBarFrame, hostFrame: hostFrame)
   }
 
-  private func layoutProjectEditorPane(_ session: ProjectEditorPaneSession, in rect: CGRect? = nil) {
+  private func layoutProjectEditorPane(
+    _ session: ProjectEditorPaneSession,
+    in rect: CGRect? = nil,
+    chromiumLiveResizeBackingRect: CGRect? = nil
+  ) {
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.layout.start", [
       "hostFrameBefore": describeFrame(session.hostView.frame),
       "mode": session.mode,
@@ -5588,6 +5601,9 @@ final class TerminalWorkspaceView: NSView {
     let frames = projectEditorPaneFrames(session, in: rect ?? bounds)
     let titleBarFrame = frames.titleBarFrame
     let hostFrame = frames.hostFrame
+    let chromiumLiveResizeBackingHostHeight = chromiumLiveResizeBackingRect.map {
+      projectEditorPaneFrames(session, in: $0).hostFrame.height
+    }
     if let titleBarView = session.titleBarView {
       /**
        CDXC:GitProjectTabs 2026-05-16-07:42:
@@ -5609,6 +5625,7 @@ final class TerminalWorkspaceView: NSView {
      project editor is the active workspace surface.
      */
     for hostView in projectEditorHostViews(session) {
+      hostView.chromiumLiveResizeBackingHeight = chromiumLiveResizeBackingHostHeight
       if hostView.frame != hostFrame {
         hostView.frame = hostFrame
       }
@@ -7187,6 +7204,8 @@ final class TerminalWorkspaceView: NSView {
     }
     _ = continueCommandsPanelResize(with: event)
     commandsPanelResizeDrag = nil
+    needsLayout = true
+    layoutSubtreeIfNeeded()
     sendEvent(.commandsPanelHeightRatioChanged(heightRatio: Double(commandsPanelHeightRatio)))
     NSCursor.resizeUpDown.set()
     return true
@@ -17542,6 +17561,13 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   private let onShowProfilePicker: (() -> Void)?
   private let onShowImportSettings: (() -> Void)?
   private let toolbarView = NSView(frame: .zero)
+  var chromiumLiveResizeBackingHeight: CGFloat? {
+    didSet {
+      if chromiumLiveResizeBackingHeight != oldValue {
+        needsLayout = true
+      }
+    }
+  }
   private let backButton = WebPaneHostView.makeToolbarButton(
     systemSymbolName: "chevron.left",
     fallbackTitle: "<",
@@ -17615,7 +17641,7 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       .cgColor
     layer?.masksToBounds = true
     browserView.translatesAutoresizingMaskIntoConstraints = true
-    browserView.autoresizingMask = [.width, .height]
+    browserView.autoresizingMask = []
     browserView.frame = bounds
     if showsBrowserToolbar {
       configureBrowserToolbar(initialAddress: initialAddress)
@@ -17642,9 +17668,10 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       browserView.removeFromSuperview()
       addSubview(browserView)
     }
+    let toolbarHeight: CGFloat
     let webFrame: CGRect
     if showsBrowserToolbar {
-      let toolbarHeight = min(Self.browserToolbarHeight, max(0, bounds.height))
+      toolbarHeight = min(Self.browserToolbarHeight, max(0, bounds.height))
       toolbarView.frame = CGRect(
         x: 0,
         y: bounds.height - toolbarHeight,
@@ -17654,9 +17681,26 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       layoutBrowserToolbar()
       webFrame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - toolbarHeight))
     } else {
+      toolbarHeight = 0
       webFrame = bounds
     }
-    browserView.frame = webFrame
+    let browserFrame: CGRect
+    if let chromiumLiveResizeBackingHeight, chromiumView != nil {
+      /**
+       CDXC:ChromiumBrowserPanes 2026-05-21-12:38:
+       Dragging the bottom command-pane handle can emit dozens of top-anchored editor-height changes in one gesture; pinning the CEF child origin is not enough because Chromium's macOS backing layer can still crawl during continuous resizes.
+       Keep the CEF viewport at a stable top-anchored backing height while the host view clips to the live command-pane boundary, then commit the final CEF height once the drag ends.
+       */
+      let backingWebHeight = max(webFrame.height, chromiumLiveResizeBackingHeight - toolbarHeight)
+      browserFrame = CGRect(
+        x: webFrame.minX,
+        y: webFrame.maxY - backingWebHeight,
+        width: webFrame.width,
+        height: backingWebHeight)
+    } else {
+      browserFrame = webFrame
+    }
+    browserView.frame = browserFrame
     /**
      CDXC:ChromiumBrowserPanes 2026-05-21-11:09:
      Code/Git browser hosts still shrink when the bottom command pane reserves space, so no page content is hidden behind the command pane.

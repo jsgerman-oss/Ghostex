@@ -410,9 +410,10 @@ type NativeHostCommand =
 	      sessionTitles?: Record<string, string>;
 	      petOverlayEnabled?: boolean;
 	      showProjectEditorDiffFileCount?: boolean;
-	      sidebarActions?: {
-	        commands: SidebarCommandButton[];
-	      };
+      sidebarActions?: {
+        commands: SidebarCommandButton[];
+      };
+      sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
       titlebarResourceGroups?: TitlebarResourceGroup[];
 	      type: "setActiveTerminalSet";
 	      workspaceOpenTargets?: {
@@ -750,6 +751,7 @@ declare global {
       openActiveProjectEditorFromTitlebar: () => void;
       openAgentsModeFromTitlebar: () => void;
       openGitHubProjectFromTitlebar: () => void;
+      quitResourcesFromTitlebar: (sessionIds: string[], projectIds: string[]) => void;
       showProjectEditorCompanionFromTitlebar: () => void;
       sleepInactiveSessionsFromTitlebar: (sessionIds: string[]) => void;
       openTasksPlaceholderFromTitlebar: () => void;
@@ -1215,7 +1217,7 @@ const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
 const nativeAttentionEnteredAtBySessionId = new Map<string, number>();
 const nativeAttentionAcknowledgementTimeoutBySessionId = new Map<string, number>();
-const ZMX_FOCUS_ATTACH_EXIT_RECOVERY_WINDOW_MS = 2_500;
+const zmxFocusAttachExitRecoveryWindowMs = 2_500;
 const recentZmxFocusAttachAttemptsBySessionId = new Map<
   string,
   { nativeSessionId: string; sessionPersistenceName?: string; startedAt: number }
@@ -11449,7 +11451,7 @@ function handleRecentZmxAttachExitWithFullReload(
   if (
     attempt.nativeSessionId !== nativeSessionId ||
     elapsedMs < 0 ||
-    elapsedMs > ZMX_FOCUS_ATTACH_EXIT_RECOVERY_WINDOW_MS
+    elapsedMs > zmxFocusAttachExitRecoveryWindowMs
   ) {
     return false;
   }
@@ -12484,6 +12486,28 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
     }
     setNativeSessionSleeping(sessionId, true);
   }
+}
+
+function quitResourcesFromTitlebar(sessionIds: string[], projectIds: string[]): void {
+  /**
+   * CDXC:TitlebarResources 2026-05-21-16:38:
+   * Resource-manager Quit controls must close through the sidebar owner so
+   * terminal cards, Browser panes, and VS Code project-editor state disappear
+   * together with their native surfaces. The titlebar sends combined session
+   * ids for cross-project rows; revalidate every id against current state.
+   */
+  for (const projectId of Array.from(new Set(projectIds))) {
+    if (findProject(projectId)) {
+      disposeProjectEditorSurface(projectId);
+    }
+  }
+  for (const sessionId of Array.from(new Set(sessionIds))) {
+    const reference = resolveSidebarSessionReference(sessionId);
+    if (findSessionRecordInProject(reference.project, reference.sessionId)) {
+      closeTerminal(sessionId);
+    }
+  }
+  publish();
 }
 
 function setNativeSessionPoppedOut(sessionId: string, poppedOut: boolean): void {
@@ -18181,6 +18205,8 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     sidebarActions: {
       commands,
     },
+    sessionPersistenceProvider:
+      settings.sessionPersistenceProvider === "off" ? undefined : settings.sessionPersistenceProvider,
     sessionTitleBarActions,
     sessionTitles,
     petOverlayEnabled: settings.petOverlayEnabled,
@@ -19890,6 +19916,7 @@ window.__ghostex_NATIVE_SIDEBAR__ = {
   openGitHubProjectFromTitlebar: () => {
     void openGitHubProjectFromTitlebar();
   },
+  quitResourcesFromTitlebar,
   showProjectEditorCompanionFromTitlebar,
   sleepInactiveSessionsFromTitlebar,
   openTasksPlaceholderFromTitlebar,

@@ -65,6 +65,7 @@ enum HostCommand: Decodable {
   case togglePetOverlayFromTitlebar
   case toggleCommandsPanelFromTitlebar
   case sleepInactiveSessionsFromTitlebar(SleepInactiveSessionsFromTitlebar)
+  case quitResourcesFromTitlebar(QuitResourcesFromTitlebar)
   case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
   case configureZedOverlay(ConfigureZedOverlay)
   case openZedWorkspace(OpenZedWorkspace)
@@ -141,6 +142,7 @@ enum HostCommand: Decodable {
     case togglePetOverlayFromTitlebar
     case toggleCommandsPanelFromTitlebar
     case sleepInactiveSessionsFromTitlebar
+    case quitResourcesFromTitlebar
     case runSidebarCommandFromTitlebar
     case configureZedOverlay
     case openZedWorkspace
@@ -281,6 +283,8 @@ enum HostCommand: Decodable {
       self = .toggleCommandsPanelFromTitlebar
     case .sleepInactiveSessionsFromTitlebar:
       self = .sleepInactiveSessionsFromTitlebar(try SleepInactiveSessionsFromTitlebar(from: decoder))
+    case .quitResourcesFromTitlebar:
+      self = .quitResourcesFromTitlebar(try QuitResourcesFromTitlebar(from: decoder))
     case .runSidebarCommandFromTitlebar:
       self = .runSidebarCommandFromTitlebar(try RunSidebarCommandFromTitlebar(from: decoder))
     case .configureZedOverlay:
@@ -454,6 +458,7 @@ struct SetActiveTerminalSet: Decodable {
   let sessionTitles: [String: String]?
   let showProjectEditorDiffFileCount: Bool?
   let sidebarActions: TitlebarSidebarActions?
+  let sessionPersistenceProvider: String?
   let titlebarResourceGroups: [TitlebarResourceGroup]?
   let workspaceOpenTargets: TitlebarWorkspaceOpenTargets?
 }
@@ -751,6 +756,11 @@ struct RunSidebarCommandFromTitlebar: Decodable {
 }
 
 struct SleepInactiveSessionsFromTitlebar: Decodable {
+  let sessionIds: [String]
+}
+
+struct QuitResourcesFromTitlebar: Decodable {
+  let projectIds: [String]
   let sessionIds: [String]
 }
 

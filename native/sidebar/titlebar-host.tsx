@@ -67,7 +67,7 @@ import {
 } from "../../shared/workspace-open-targets";
 import { EditorBrandIcon, getEditorBrandIconId } from "../../sidebar/brand-icons";
 import { SidebarCommandIconGlyph } from "../../sidebar/sidebar-command-icon";
-import { createCombinedProjectSessionId } from "./combined-sidebar-mode";
+import { createCombinedProjectSessionId, parseCombinedProjectGroupId } from "./combined-sidebar-mode";
 import "../../sidebar/styles.css";
 
 type ProjectEditorLoadStatus = "idle" | "opening" | "running" | "error";
@@ -123,6 +123,8 @@ type TitlebarBrowserTabResource = {
   id: string;
   isActive?: boolean;
   kind: "browser" | "code" | "git" | "tasks" | string;
+  projectId?: string;
+  sessionId?: string;
   title: string;
   url?: string;
 };
@@ -144,6 +146,7 @@ type TitlebarProjectState = {
   resourceGroups: TitlebarResourceGroup[];
   sidebarActions: TitlebarSidebarActionsSettings;
   showProjectEditorDiffFileCount: boolean;
+  sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
   workspaceOpenTargets: TitlebarOpenTargetsSettings;
 };
 
@@ -192,6 +195,7 @@ type NativeTitlebarCommand =
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
   | { type: "toggleCommandsPanelFromTitlebar" }
   | { sessionIds: string[]; type: "sleepInactiveSessionsFromTitlebar" }
+  | { projectIds: string[]; sessionIds: string[]; type: "quitResourcesFromTitlebar" }
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
   | {
       targetApp: ZedOverlayTargetApp;
@@ -366,20 +370,55 @@ function createResourceGroupViews(
 ): { appBundles: ResourceProcessBundle[]; browserBundles: ResourceProcessBundle[]; groupViews: ResourceGroupView[]; orphanBundles: ResourceProcessBundle[] } {
   const claimedPids = new Set<number>();
   const childrenByParent = createProcessChildrenMap(processes);
+  const groupedBrowserTabIds = new Set<string>();
   const groupViews = resourceGroups.map((group) => {
+    const groupBrowserTabs = browserTabs
+      .filter((tab) => isBrowserTabInResourceGroup(tab, group))
+      .map((tab) => ({
+        ...tab,
+        projectId: tab.projectId ?? resourceGroupProjectIdForBrowserTab(tab, group),
+      }));
+    groupBrowserTabs.forEach((tab) => groupedBrowserTabIds.add(tab.id));
     const bundles = group.sessions
       .map((session) => createSessionResourceBundle(session, processes, childrenByParent, claimedPids))
       .filter((bundle): bundle is ResourceProcessBundle => bundle !== undefined);
     const codeBundle = createProjectCodeServerBundle(group, processes, childrenByParent, claimedPids);
+    const browserBundles = createBrowserBundles(groupBrowserTabs, processes, claimedPids, {
+      includeRuntimeBundles: false,
+    });
     return {
-      bundles: codeBundle ? [...bundles, codeBundle] : bundles,
+      bundles: [...bundles, ...(codeBundle ? [codeBundle] : []), ...browserBundles],
       group,
     };
   });
   const appBundles = createAppRuntimeBundles(processes, childrenByParent, claimedPids);
-  const browserBundles = createBrowserBundles(browserTabs, processes, claimedPids);
+  const browserBundles = createBrowserBundles(
+    browserTabs.filter((tab) => !groupedBrowserTabIds.has(tab.id)),
+    processes,
+    claimedPids,
+  );
   const orphanBundles = createOrphanBundles(processes, claimedPids);
   return { appBundles, browserBundles, groupViews, orphanBundles };
+}
+
+function isBrowserTabInResourceGroup(
+  tab: TitlebarBrowserTabResource,
+  group: TitlebarResourceGroup,
+): boolean {
+  const tabSessionId = browserTabSessionId(tab);
+  if (tabSessionId && group.sessions.some((session) => session.sessionId === tabSessionId)) {
+    return true;
+  }
+  const projectId = browserTabProjectId(tab);
+  return Boolean(projectId && group.projectId && projectId === group.projectId);
+}
+
+function resourceGroupProjectIdForBrowserTab(
+  tab: TitlebarBrowserTabResource,
+  group: TitlebarResourceGroup,
+): string | undefined {
+  const tabSessionId = browserTabSessionId(tab);
+  return group.projectId ?? group.sessions.find((session) => session.sessionId === tabSessionId)?.projectId;
 }
 
 function createProcessChildrenMap(processes: ResourceProcess[]): Map<number, ResourceProcess[]> {
@@ -521,6 +560,7 @@ function createBrowserBundles(
   browserTabs: TitlebarBrowserTabResource[],
   processes: ResourceProcess[],
   claimedPids: Set<number>,
+  options: { includeRuntimeBundles?: boolean } = {},
 ): ResourceProcessBundle[] {
   /**
    * CDXC:TitlebarResources 2026-05-17-03:09:
@@ -553,6 +593,9 @@ function createBrowserBundles(
       process: tabProcesses[0],
       type: "browser",
     });
+  }
+  if (options.includeRuntimeBundles === false) {
+    return bundles.slice(0, 16);
   }
   const remainingProcesses = browserProcesses.filter((process) => !claimedPids.has(process.pid));
   const unmatchedRendererProcesses = remainingProcesses.filter((process) => browserProcessClientId(process));
@@ -621,6 +664,29 @@ function isAgentRuntimeProcess(process: ResourceProcess): boolean {
 
 function browserProcessClientId(process: ResourceProcess): string | undefined {
   return /--(?:renderer-)?client-id=(\d+)/.exec(process.command)?.[1];
+}
+
+function browserTabSessionId(tab: TitlebarBrowserTabResource): string | undefined {
+  if (tab.sessionId?.trim()) {
+    return tab.sessionId.trim();
+  }
+  const match = /^browser:(?<sessionId>.+)$/u.exec(tab.id);
+  return match?.groups?.sessionId;
+}
+
+function browserTabProjectId(tab: TitlebarBrowserTabResource): string | undefined {
+  if (tab.projectId?.trim()) {
+    return tab.projectId.trim();
+  }
+  const match = /^project-editor:(?<projectId>.+):[^:]+$/u.exec(tab.id);
+  if (!match?.groups?.projectId) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(match.groups.projectId);
+  } catch {
+    return undefined;
+  }
 }
 
 function getBrowserProcessDisplayName(process: ResourceProcess): string {
@@ -709,6 +775,58 @@ function createInactiveAgentSleepSessionIds(resourceGroups: TitlebarResourceGrou
   );
 }
 
+function uniqueResourceBundles(bundles: ResourceProcessBundle[]): ResourceProcessBundle[] {
+  const seen = new Set<string>();
+  return bundles.filter((bundle) => {
+    if (seen.has(bundle.key)) {
+      return false;
+    }
+    seen.add(bundle.key);
+    return true;
+  });
+}
+
+function resourceBundleSidebarSessionIds(bundle: ResourceProcessBundle): string[] {
+  const session = bundle.session;
+  if (session) {
+    return [
+      session.projectId
+        ? createCombinedProjectSessionId(session.projectId, session.sessionId)
+        : session.sessionId,
+    ];
+  }
+  const browserSessionId = bundle.browserTab ? browserTabSessionId(bundle.browserTab) : undefined;
+  if (!browserSessionId) {
+    return [];
+  }
+  return [
+    bundle.browserTab?.projectId
+      ? createCombinedProjectSessionId(bundle.browserTab.projectId, browserSessionId)
+      : browserSessionId,
+  ];
+}
+
+function resourceBundleProjectEditorIds(bundle: ResourceProcessBundle): string[] {
+  if (bundle.type === "code") {
+    const match = /^code:(?<groupId>.+)$/u.exec(bundle.key);
+    const projectId = match?.groups?.groupId ? parseCombinedProjectGroupId(match.groups.groupId) : undefined;
+    return projectId ? [projectId] : [];
+  }
+  const projectId = bundle.browserTab ? browserTabProjectId(bundle.browserTab) : undefined;
+  return projectId ? [projectId] : [];
+}
+
+function sortResourceBundlesForDisplay(
+  bundles: ResourceProcessBundle[],
+  quittingKeys: Set<string>,
+): ResourceProcessBundle[] {
+  return [...bundles].sort((left, right) => {
+    const leftQuitting = quittingKeys.has(left.key);
+    const rightQuitting = quittingKeys.has(right.key);
+    return leftQuitting === rightQuitting ? 0 : leftQuitting ? 1 : -1;
+  });
+}
+
 function formatWholePercent(value: number): string {
   return `${Math.trunc(Math.max(0, value))}%`;
 }
@@ -732,7 +850,15 @@ function App() {
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
   const [resourceProcesses, setResourceProcesses] = useState<ResourceProcess[]>([]);
-  const [collapsedResourceKeys, setCollapsedResourceKeys] = useState<Set<string>>(() => new Set());
+  const [collapsedResourceKeys, setCollapsedResourceKeys] = useState<Set<string>>(() => {
+    /**
+     * CDXC:TitlebarResources 2026-05-21-16:51:
+     * Orphaned / Detached resources are diagnostic spillover, so keep that
+     * section collapsed by default while preserving the normal user toggle.
+     */
+    return new Set(["orphaned"]);
+  });
+  const [quittingResourceKeys, setQuittingResourceKeys] = useState<Set<string>>(() => new Set());
   const [optimisticMode, setOptimisticMode] = useState<TitlebarMode>();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const activeMode = optimisticMode ?? projectState.activeMode;
@@ -873,6 +999,8 @@ function App() {
           petOverlayEnabled: state.petOverlayEnabled ?? current.petOverlayEnabled,
           resourceGroups: state.resourceGroups ?? current.resourceGroups,
           sidebarActions: state.sidebarActions ?? current.sidebarActions,
+          sessionPersistenceProvider:
+            state.sessionPersistenceProvider ?? current.sessionPersistenceProvider,
           workspaceOpenTargets: state.workspaceOpenTargets ?? current.workspaceOpenTargets,
         }));
       },
@@ -1030,16 +1158,55 @@ function App() {
     });
   };
 
-  const killResourceBundle = (bundle: ResourceProcessBundle) => {
-    const pids = Array.from(new Set(bundle.pids)).filter((pid) => Number.isFinite(pid));
-    if (pids.length === 0) {
+  const quitResourceBundles = (bundles: ResourceProcessBundle[]) => {
+    const uniqueBundles = uniqueResourceBundles(bundles);
+    if (uniqueBundles.length === 0) {
       return;
     }
-    void runNativeProcess("/bin/kill", ["-TERM", ...pids.map(String)]).finally(() => {
-      window.setTimeout(() => {
-        void refreshResources();
-      }, 250);
+    /**
+     * CDXC:TitlebarResources 2026-05-21-16:38:
+     * Any Quit action in the resource manager should immediately mark the row
+     * as closing and move it below active resources. Sidebar-owned sessions,
+     * browser panes, and VS Code project editors close through sidebar state;
+     * only detached process bundles use direct SIGTERM.
+     */
+    setQuittingResourceKeys((current) => {
+      const next = new Set(current);
+      uniqueBundles.forEach((bundle) => next.add(bundle.key));
+      return next;
     });
+    const sessionIds = uniqueBundles.flatMap(resourceBundleSidebarSessionIds);
+    const projectIds = uniqueBundles.flatMap(resourceBundleProjectEditorIds);
+    const managedPids = new Set(
+      uniqueBundles
+        .filter((bundle) => resourceBundleSidebarSessionIds(bundle).length > 0 || resourceBundleProjectEditorIds(bundle).length > 0)
+        .flatMap((bundle) => bundle.pids),
+    );
+    const pids = Array.from(
+      new Set(
+        uniqueBundles
+          .flatMap((bundle) => bundle.pids)
+          .filter((pid) => Number.isFinite(pid) && !managedPids.has(pid)),
+      ),
+    );
+    if (sessionIds.length > 0 || projectIds.length > 0) {
+      postNative({
+        projectIds: Array.from(new Set(projectIds)),
+        sessionIds: Array.from(new Set(sessionIds)),
+        type: "quitResourcesFromTitlebar",
+      });
+    }
+    if (pids.length > 0) {
+      void runNativeProcess("/bin/kill", ["-TERM", ...pids.map(String)]).finally(() => {
+        window.setTimeout(() => {
+          void refreshResources();
+        }, 250);
+      });
+      return;
+    }
+    window.setTimeout(() => {
+      void refreshResources();
+    }, 250);
   };
 
   const sleepInactiveAgentSessions = () => {
@@ -1229,10 +1396,12 @@ function App() {
                   collapsedKeys={collapsedResourceKeys}
                   groupViews={resourceViews.groupViews}
                   inactiveAgentSleepSessionCount={inactiveAgentSleepSessionIds.length}
-                  onKill={killResourceBundle}
+                  onQuit={quitResourceBundles}
                   onSleepInactiveSessions={sleepInactiveAgentSessions}
                   onToggle={toggleResourceCollapse}
                   orphanBundles={resourceViews.orphanBundles}
+                  quittingKeys={quittingResourceKeys}
+                  sessionPersistenceProvider={projectState.sessionPersistenceProvider}
                 />
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1422,6 +1591,8 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       commands: [],
     },
     showProjectEditorDiffFileCount: settings.showProjectEditorDiffFileCount,
+    sessionPersistenceProvider:
+      settings.sessionPersistenceProvider === "off" ? undefined : settings.sessionPersistenceProvider,
     workspaceOpenTargets: {
       availability: settings.workspaceOpenTargetAvailability,
       customTargets: settings.customWorkspaceOpenTargets,
@@ -1436,20 +1607,24 @@ function TitlebarResourcesMenu({
   collapsedKeys,
   groupViews,
   inactiveAgentSleepSessionCount,
-  onKill,
+  onQuit,
   onSleepInactiveSessions,
   onToggle,
   orphanBundles,
+  quittingKeys,
+  sessionPersistenceProvider,
 }: {
   appBundles: ResourceProcessBundle[];
   browserBundles: ResourceProcessBundle[];
   collapsedKeys: Set<string>;
   groupViews: ResourceGroupView[];
   inactiveAgentSleepSessionCount: number;
-  onKill: (bundle: ResourceProcessBundle) => void;
+  onQuit: (bundles: ResourceProcessBundle[]) => void;
   onSleepInactiveSessions: () => void;
   onToggle: (key: string) => void;
   orphanBundles: ResourceProcessBundle[];
+  quittingKeys: Set<string>;
+  sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
 }) {
   const visibleGroupViews = groupViews.filter((view) => view.bundles.length > 0);
   const allBundles = [
@@ -1458,13 +1633,17 @@ function TitlebarResourcesMenu({
     ...browserBundles,
     ...orphanBundles,
   ];
+  const sessionBundles = [
+    ...visibleGroupViews.flatMap((view) => view.bundles),
+    ...browserBundles,
+    ...orphanBundles,
+  ];
   return (
     <div className="titlebar-resources-panel">
       <div className="titlebar-resources-header">
         <div className="titlebar-resources-title">
           <IconChartPie2Filled aria-hidden="true" size={18} />
-          <span>Ghostex Resources</span>
-          <span className="titlebar-resources-note">Most resources are used by your Agent CLIs</span>
+          <span>Resources</span>
         </div>
         <div className="titlebar-resources-actions">
           <Tooltip>
@@ -1482,6 +1661,14 @@ function TitlebarResourcesMenu({
             </TooltipTrigger>
             <TooltipContent>Sleep inactive sessions</TooltipContent>
           </Tooltip>
+          <button
+            className="titlebar-resources-quit-all-button"
+            disabled={sessionBundles.length === 0}
+            onClick={() => onQuit(sessionBundles)}
+            type="button"
+          >
+            Quit All Sessions
+          </button>
           <div className="titlebar-resources-summary">
             <span>
               <IconCpu aria-hidden="true" size={13} stroke={1.8} />
@@ -1495,13 +1682,22 @@ function TitlebarResourcesMenu({
         </div>
       </div>
       <div className="titlebar-resources-scroll">
+        <div className="titlebar-resources-info-note">
+          Most resources are used by Agent Terminals.
+        </div>
+        {sessionPersistenceProvider === "zmx" ? (
+          <div className="titlebar-resources-zmx-note">
+            Quitting Ghostex does not quit zmx terminals. Use Quit All Sessions to clear RAM.
+          </div>
+        ) : null}
         {visibleGroupViews.length > 0 ? (
           visibleGroupViews.map((view) => (
             <TitlebarResourceSection
               collapsedKeys={collapsedKeys}
               key={view.group.groupId}
-              onKill={onKill}
+              onQuit={onQuit}
               onToggle={onToggle}
+              quittingKeys={quittingKeys}
               sectionKey={`group:${view.group.groupId}`}
               title={view.group.title}
               bundles={view.bundles}
@@ -1512,24 +1708,27 @@ function TitlebarResourcesMenu({
         )}
         <TitlebarResourceSection
           collapsedKeys={collapsedKeys}
-          onKill={onKill}
+          onQuit={onQuit}
           onToggle={onToggle}
+          quittingKeys={quittingKeys}
           sectionKey="app-runtime"
           title="App Runtime"
           bundles={appBundles}
         />
         <TitlebarResourceSection
           collapsedKeys={collapsedKeys}
-          onKill={onKill}
+          onQuit={onQuit}
           onToggle={onToggle}
+          quittingKeys={quittingKeys}
           sectionKey="browser-tabs"
           title="Browser Tabs"
           bundles={browserBundles}
         />
         <TitlebarResourceSection
           collapsedKeys={collapsedKeys}
-          onKill={onKill}
+          onQuit={onQuit}
           onToggle={onToggle}
+          quittingKeys={quittingKeys}
           sectionKey="orphaned"
           title="Orphaned / Detached"
           bundles={orphanBundles}
@@ -1542,15 +1741,17 @@ function TitlebarResourcesMenu({
 function TitlebarResourceSection({
   bundles,
   collapsedKeys,
-  onKill,
+  onQuit,
   onToggle,
+  quittingKeys,
   sectionKey,
   title,
 }: {
   bundles: ResourceProcessBundle[];
   collapsedKeys: Set<string>;
-  onKill: (bundle: ResourceProcessBundle) => void;
+  onQuit: (bundles: ResourceProcessBundle[]) => void;
   onToggle: (key: string) => void;
+  quittingKeys: Set<string>;
   sectionKey: string;
   title: string;
 }) {
@@ -1560,31 +1761,46 @@ function TitlebarResourceSection({
   const isCollapsed = collapsedKeys.has(sectionKey);
   const sectionCpu = sumBundleCpu(bundles);
   const sectionMemory = sumBundleMemory(bundles);
+  const sortedBundles = sortResourceBundlesForDisplay(bundles, quittingKeys);
   return (
     <section className="titlebar-resource-section">
-      <button className="titlebar-resource-section-heading" onClick={() => onToggle(sectionKey)} type="button">
-        <IconChevronDown aria-hidden="true" data-collapsed={String(isCollapsed)} size={14} stroke={1.8} />
-        <span>{title}</span>
-        <span className="titlebar-resource-section-summary">
-          <span>
-            <IconCpu aria-hidden="true" size={12} stroke={1.8} />
-            {formatWholePercent(sectionCpu)}
+      <div className="titlebar-resource-section-heading">
+        <button
+          className="titlebar-resource-section-toggle"
+          onClick={() => onToggle(sectionKey)}
+          type="button"
+        >
+          <IconChevronDown aria-hidden="true" data-collapsed={String(isCollapsed)} size={14} stroke={1.8} />
+          <span>{title}</span>
+          <span className="titlebar-resource-section-summary">
+            <span>
+              <IconCpu aria-hidden="true" size={12} stroke={1.8} />
+              {formatWholePercent(sectionCpu)}
+            </span>
+            <span>
+              <IconDeviceDesktop aria-hidden="true" size={12} stroke={1.8} />
+              {formatWholeMemory(sectionMemory)}
+            </span>
+            <span className="titlebar-resource-section-count">{bundles.length}</span>
           </span>
-          <span>
-            <IconDeviceDesktop aria-hidden="true" size={12} stroke={1.8} />
-            {formatWholeMemory(sectionMemory)}
-          </span>
-          <span className="titlebar-resource-section-count">{bundles.length}</span>
-        </span>
-      </button>
+        </button>
+        <button
+          className="titlebar-resource-section-quit-button"
+          onClick={() => onQuit(bundles)}
+          type="button"
+        >
+          Quit
+        </button>
+      </div>
       {isCollapsed ? null : (
         <div className="titlebar-resource-section-body">
-          {bundles.map((bundle) => (
+          {sortedBundles.map((bundle) => (
             <TitlebarResourceBundle
               bundle={bundle}
               collapsedKeys={collapsedKeys}
+              isQuitting={quittingKeys.has(bundle.key)}
               key={bundle.key}
-              onKill={onKill}
+              onQuit={onQuit}
               onToggle={onToggle}
             />
           ))}
@@ -1597,12 +1813,14 @@ function TitlebarResourceSection({
 function TitlebarResourceBundle({
   bundle,
   collapsedKeys,
-  onKill,
+  isQuitting,
+  onQuit,
   onToggle,
 }: {
   bundle: ResourceProcessBundle;
   collapsedKeys: Set<string>;
-  onKill: (bundle: ResourceProcessBundle) => void;
+  isQuitting: boolean;
+  onQuit: (bundles: ResourceProcessBundle[]) => void;
   onToggle: (key: string) => void;
 }) {
   const hasChildren = bundle.childProcesses.length > 0;
@@ -1619,7 +1837,7 @@ function TitlebarResourceBundle({
     ? !collapsedKeys.has(bundleToggleKey)
     : collapsedKeys.has(bundleToggleKey);
   return (
-    <div className="titlebar-resource-bundle">
+    <div className="titlebar-resource-bundle" data-quitting={String(isQuitting)}>
       <div
         className="titlebar-resource-row"
         data-expandable={String(hasChildren)}
@@ -1647,7 +1865,9 @@ function TitlebarResourceBundle({
           <span className="titlebar-resource-avatar">{getResourceBundleAvatar(bundle)}</span>
           <span className="titlebar-resource-text">
             <span className="titlebar-resource-name">{bundle.label}</span>
-            <span className="titlebar-resource-meta">{getResourceBundleMeta(bundle)}</span>
+            <span className="titlebar-resource-meta">
+              {isQuitting ? "Quitting..." : getResourceBundleMeta(bundle)}
+            </span>
           </span>
         </div>
         <span className="titlebar-resource-metric">
@@ -1664,7 +1884,7 @@ function TitlebarResourceBundle({
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            onKill(bundle);
+            onQuit([bundle]);
           }}
           type="button"
         >
@@ -2350,14 +2570,6 @@ styleElement.textContent = `
     font: 750 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     min-width: 0;
   }
-  .titlebar-resources-note {
-    color: rgba(255,255,255,0.46);
-    font: 500 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-    margin-left: 4px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .titlebar-resources-actions {
     gap: 10px;
     margin-left: auto;
@@ -2371,17 +2583,76 @@ styleElement.textContent = `
     display: inline-flex;
     height: 24px;
     justify-content: center;
+    opacity: 0;
     padding: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
     width: 24px;
   }
   .titlebar-resources-sleep-button:disabled {
     color: rgba(255,255,255,0.3);
     cursor: default;
+  }
+  .titlebar-resources-header:hover .titlebar-resources-sleep-button,
+  .titlebar-resources-header:focus-within .titlebar-resources-sleep-button {
+    /*
+     * CDXC:TitlebarResources 2026-05-21-17:03:
+     * Hide secondary resource-manager actions until the header is hovered or
+     * focused so the compact top bar shows only title and live metrics by default.
+     */
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .titlebar-resources-header:hover .titlebar-resources-sleep-button:disabled,
+  .titlebar-resources-header:focus-within .titlebar-resources-sleep-button:disabled {
     opacity: 0.55;
   }
   .titlebar-resources-sleep-button:not(:disabled):hover {
     background: rgba(255,255,255,0.14);
     color: rgba(255,255,255,0.92);
+  }
+  .titlebar-resources-quit-all-button,
+  .titlebar-resource-section-quit-button {
+    align-items: center;
+    appearance: none;
+    background: rgba(220,38,38,0.18);
+    border: 1px solid rgba(248,113,113,0.28);
+    border-radius: 6px;
+    color: rgba(255,255,255,0.86);
+    display: inline-flex;
+    font: 750 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    height: 24px;
+    justify-content: center;
+    opacity: 0;
+    padding: 0 8px;
+    pointer-events: none;
+    transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+    white-space: nowrap;
+  }
+  .titlebar-resources-header:hover .titlebar-resources-quit-all-button,
+  .titlebar-resources-header:focus-within .titlebar-resources-quit-all-button,
+  .titlebar-resource-section-heading:hover .titlebar-resource-section-quit-button,
+  .titlebar-resource-section-heading:focus-within .titlebar-resource-section-quit-button {
+    /*
+     * CDXC:TitlebarResources 2026-05-21-16:58:
+     * Resource-manager Quit controls should stay available without crowding the
+     * header or section chrome. Reveal destructive buttons only while the row is
+     * hovered or keyboard-focused.
+     */
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .titlebar-resources-quit-all-button:disabled {
+    cursor: default;
+  }
+  .titlebar-resources-header:hover .titlebar-resources-quit-all-button:disabled,
+  .titlebar-resources-header:focus-within .titlebar-resources-quit-all-button:disabled {
+    opacity: 0.45;
+  }
+  .titlebar-resources-quit-all-button:not(:disabled):hover,
+  .titlebar-resource-section-quit-button:hover {
+    background: rgba(220,38,38,0.28);
+    color: rgba(255,255,255,0.96);
   }
   .titlebar-resources-summary {
     color: rgba(255,255,255,0.72);
@@ -2398,15 +2669,41 @@ styleElement.textContent = `
     overflow: auto;
     padding: 8px 10px 10px;
   }
+  .titlebar-resources-info-note {
+    /*
+     * CDXC:TitlebarResources 2026-05-21-16:58:
+     * Keep explanatory copy out of the crowded titlebar. Put the general
+     * resource-usage note in the scroll body above the zmx persistence warning.
+     */
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 7px;
+    color: rgba(255,255,255,0.62);
+    font: 600 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+  }
+  .titlebar-resources-zmx-note {
+    /*
+     * CDXC:TitlebarResources 2026-05-21-16:38:
+     * When zmx persistence is enabled, the resource manager must state that
+     * quitting Ghostex leaves durable terminals alive and direct users to Quit
+     * All Sessions when their goal is freeing RAM.
+     */
+    background: rgba(250,204,21,0.1);
+    border: 1px solid rgba(250,204,21,0.22);
+    border-radius: 7px;
+    color: rgba(255,255,255,0.82);
+    font: 600 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+  }
   .titlebar-resource-section + .titlebar-resource-section {
     margin-top: 8px;
     padding-top: 0;
   }
   .titlebar-resource-section-heading {
     align-items: center;
-    appearance: none;
-    background: transparent;
-    border: 0;
     color: rgba(255,255,255,0.62);
     display: flex;
     font: 750 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
@@ -2415,6 +2712,25 @@ styleElement.textContent = `
     padding: 4px 2px 7px;
     text-transform: uppercase;
     width: 100%;
+  }
+  .titlebar-resource-section-toggle {
+    align-items: center;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    display: inline-flex;
+    flex: 1;
+    font: inherit;
+    gap: 6px;
+    letter-spacing: inherit;
+    min-width: 0;
+    padding: 0;
+    text-transform: inherit;
+  }
+  .titlebar-resource-section-quit-button {
+    height: 22px;
+    margin-left: 8px;
   }
   .titlebar-resource-section-heading svg[data-collapsed="true"],
   .titlebar-resource-collapse-button svg[data-collapsed="true"] {
@@ -2442,6 +2758,9 @@ styleElement.textContent = `
     border-radius: 8px;
     overflow: hidden;
     background: rgba(255,255,255,0.025);
+  }
+  .titlebar-resource-bundle[data-quitting="true"] {
+    opacity: 0.3;
   }
   .titlebar-resource-row {
     /*

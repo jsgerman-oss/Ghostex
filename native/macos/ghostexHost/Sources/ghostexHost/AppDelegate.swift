@@ -2133,6 +2133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       break
     case .sleepInactiveSessionsFromTitlebar:
       break
+    case .quitResourcesFromTitlebar:
+      break
     case .runSidebarCommandFromTitlebar:
       break
     case .configureZedOverlay(let command):
@@ -4982,6 +4984,9 @@ final class ghostexRootView: NSView {
         return item
       }
     }
+    if let sessionPersistenceProvider = command.sessionPersistenceProvider {
+      payload["sessionPersistenceProvider"] = sessionPersistenceProvider
+    }
     /**
      CDXC:TitlebarResources 2026-05-17-01:25:
      Browser process rows need user-facing tab/view names from native CEF hosts,
@@ -5155,6 +5160,28 @@ final class ghostexRootView: NSView {
     sidebarView.evaluateJavaScript(
       """
       window.__ghostex_NATIVE_SIDEBAR__?.sleepInactiveSessionsFromTitlebar?.(\(sessionIdsJson));
+      undefined;
+      """)
+  }
+
+  private func quitResourcesFromTitlebar(_ command: QuitResourcesFromTitlebar) {
+    /**
+     CDXC:TitlebarResources 2026-05-21-16:38:
+     React titlebar resource Quit controls can only identify sidebar-owned
+     sessions and project editors. Forward those ids to the sidebar webview so
+     app state, persisted cards, and native surfaces close from one owner.
+     */
+    guard
+      let sessionIdsData = try? JSONSerialization.data(withJSONObject: command.sessionIds),
+      let sessionIdsJson = String(data: sessionIdsData, encoding: .utf8),
+      let projectIdsData = try? JSONSerialization.data(withJSONObject: command.projectIds),
+      let projectIdsJson = String(data: projectIdsData, encoding: .utf8)
+    else {
+      return
+    }
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.quitResourcesFromTitlebar?.(\(sessionIdsJson), \(projectIdsJson));
       undefined;
       """)
   }
@@ -5408,6 +5435,8 @@ final class ghostexRootView: NSView {
       toggleCommandsPanelFromTitlebar()
     case .sleepInactiveSessionsFromTitlebar(let command):
       sleepInactiveSessionsFromTitlebar(command)
+    case .quitResourcesFromTitlebar(let command):
+      quitResourcesFromTitlebar(command)
     case .runSidebarCommandFromTitlebar(let command):
       runSidebarCommandFromTitlebar(command)
     case .configureZedOverlay(let command):

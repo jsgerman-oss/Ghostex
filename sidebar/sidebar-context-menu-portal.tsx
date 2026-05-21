@@ -18,6 +18,7 @@ type GhostexNativeSidebarBridge = {
   openActiveProjectEditorFromTitlebar: () => void;
   openAgentsModeFromTitlebar: () => void;
   openGitHubProjectFromTitlebar: () => void;
+  quitResourcesFromTitlebar: (sessionIds: string[], projectIds: string[]) => void;
   showProjectEditorCompanionFromTitlebar: () => void;
   sleepInactiveSessionsFromTitlebar: (sessionIds: string[]) => void;
   openTasksPlaceholderFromTitlebar: () => void;
