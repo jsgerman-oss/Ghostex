@@ -116,9 +116,12 @@ targets:
         buildPhase: resources
         type: folder
       # CDXC:Branding 2026-05-08-18:04: The installed macOS app must use the
-      # same app icon as agent-manager-x. Bundle its AppIcon asset catalog here
-      # so Finder, Dock, app switcher, and signed release builds all resolve the
-      # compiled icon from Xcode instead of falling back to a generic app icon.
+      # same AppIcon asset catalog as the public Ghostex app so Finder, Dock,
+      # app switcher, and signed release builds all resolve the compiled icon
+      # from Xcode instead of falling back to a generic app icon.
+      # CDXC:Branding 2026-05-21-18:22: The iOS/a-Shell app icon set is also
+      # generated from this macOS Ghostex icon so Mac-installed iOS wrapper apps
+      # present the same Ghostex brand instead of the upstream a-Shell mini icon.
       - path: Resources/Assets.xcassets
         buildPhase: resources
     dependencies:
