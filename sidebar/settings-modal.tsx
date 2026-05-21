@@ -1381,7 +1381,7 @@ export function SettingsModal({
               {mainSettingVisible(settingsSearch.statusIndicators, "petOverlayEnabled") ? (
               <ToggleField
                 checked={draft.petOverlayEnabled}
-                description="Show the draggable animated pet in the native sidebar."
+                description="Show a draggable floating animated pet."
                 label="Wake Pet"
                 {...getSettingModificationProps("petOverlayEnabled")}
                 onChange={(checked) => updateDraft("petOverlayEnabled", checked)}
