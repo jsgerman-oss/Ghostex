@@ -7,3 +7,7 @@
 [submodule "zmx"]
 	path = zmx
 	url = https://github.com/maddada/zmx.git
+# CDXC:iOSUpstream 2026-05-21-09:41: Keep the Ghostex iOS app under the root `iOS` submodule so the parent repo pins a reviewed mobile app commit while iOS work keeps its own repository history.
+[submodule "iOS"]
+	path = iOS
+	url = https://github.com/maddada/ghostex-ios.git
