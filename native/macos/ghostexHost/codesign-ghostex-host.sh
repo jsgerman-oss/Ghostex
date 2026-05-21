@@ -118,6 +118,28 @@ if [[ -d "$FRAMEWORKS_PATH" ]]; then
 		done
 fi
 
+RESOURCE_BIN_PATH="$APP_PATH/Contents/Resources/Web/bin"
+if [[ -d "$RESOURCE_BIN_PATH" ]]; then
+	# CDXC:Distribution 2026-05-21-10:39: The release app bundles executable
+	# helper tools such as zmx under Web/bin. Notarization validates those
+	# Mach-O files independently, so sign them with Developer ID, timestamp, and
+	# hardened runtime before signing the outer app bundle.
+	find "$RESOURCE_BIN_PATH" \
+		-type f \
+		-perm -111 \
+		-print0 |
+		while IFS= read -r -d '' resource_executable; do
+			if file "$resource_executable" | grep -q 'Mach-O'; then
+				codesign \
+					--force \
+					--options runtime \
+					"$CODE_SIGN_TIMESTAMP_FLAG" \
+					--sign "$CODE_SIGN_IDENTITY" \
+					"$resource_executable"
+			fi
+		done
+fi
+
 codesign \
 	--force \
 	--deep \
