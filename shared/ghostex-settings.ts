@@ -73,6 +73,13 @@ const MAX_GHOSTTY_SCROLLBACK_LIMIT_MB = 200;
  */
 export type ghostexSettings = {
   actionCompletionSound: CompletionSoundSetting;
+  /**
+   * CDXC:SidebarAgents 2026-05-19-10:05:
+   * When enabled, built-in and custom agent launches inherit Accept All mode and
+   * append each CLI's permission-bypass flag at runtime unless a specific agent
+   * overrides the behavior in its own configuration.
+   */
+  agentAcceptAllEnabled: boolean;
   agentManagerZoomPercent: number;
   browserOpenMode: BrowserOpenMode;
   codeServerLinkVscodeUserConfig: boolean;
@@ -210,6 +217,7 @@ export const SIDEBAR_SETTINGS_PRESETS: ReadonlyArray<{
  */
 export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   actionCompletionSound: "shamisenreverb",
+  agentAcceptAllEnabled: false,
   agentManagerZoomPercent: DEFAULT_AGENT_MANAGER_ZOOM_PERCENT,
   /**
    * CDXC:BrowserPanes 2026-05-02-06:35
@@ -579,6 +587,11 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
   return {
     actionCompletionSound: clampCompletionSoundSetting(
       readString(source, "actionCompletionSound", DEFAULT_ghostex_SETTINGS.actionCompletionSound),
+    ),
+    agentAcceptAllEnabled: readBoolean(
+      source,
+      "agentAcceptAllEnabled",
+      DEFAULT_ghostex_SETTINGS.agentAcceptAllEnabled,
     ),
     agentManagerZoomPercent: clampAgentManagerZoomPercent(
       readNumber(source, "agentManagerZoomPercent", DEFAULT_ghostex_SETTINGS.agentManagerZoomPercent),

@@ -4,6 +4,7 @@ import {
   normalizeStoredSidebarAgentOrder,
   normalizeStoredSidebarAgents,
   shouldPreferTerminalTitleForAgentIcon,
+  supportsTerminalTitleSessionSync,
 } from "./sidebar-agents";
 
 describe("createSidebarAgentButtons", () => {
@@ -31,6 +32,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Claude",
       },
       {
+        agentId: "cursor",
+        command: "cursor-agent",
+        icon: "cursor-cli",
+        isDefault: true,
+        name: "Cursor CLI",
+      },
+      {
         agentId: "pi",
         command: "pi",
         icon: "pi",
@@ -46,7 +54,7 @@ describe("createSidebarAgentButtons", () => {
       },
       {
         agentId: "gemini",
-        command: "gemini -y",
+        command: "gemini",
         icon: "gemini",
         isDefault: true,
         name: "Gemini",
@@ -71,6 +79,20 @@ describe("createSidebarAgentButtons", () => {
         icon: "grok-build",
         isDefault: true,
         name: "Grok Build",
+      },
+      {
+        agentId: "antigravity",
+        command: "agy",
+        icon: "antigravity-cli",
+        isDefault: true,
+        name: "Antigravity CLI",
+      },
+      {
+        agentId: "amp",
+        command: "amp",
+        icon: "amp-cli",
+        isDefault: true,
+        name: "Amp CLI",
       },
     ]);
   });
@@ -99,6 +121,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Claude",
       },
       {
+        agentId: "cursor",
+        command: "cursor-agent",
+        icon: "cursor-cli",
+        isDefault: true,
+        name: "Cursor CLI",
+      },
+      {
         agentId: "pi",
         command: "pi",
         icon: "pi",
@@ -114,7 +143,7 @@ describe("createSidebarAgentButtons", () => {
       },
       {
         agentId: "gemini",
-        command: "gemini -y",
+        command: "gemini",
         icon: "gemini",
         isDefault: true,
         name: "Gemini",
@@ -140,6 +169,20 @@ describe("createSidebarAgentButtons", () => {
         isDefault: true,
         name: "Grok Build",
       },
+      {
+        agentId: "antigravity",
+        command: "agy",
+        icon: "antigravity-cli",
+        isDefault: true,
+        name: "Antigravity CLI",
+      },
+      {
+        agentId: "amp",
+        command: "amp",
+        icon: "amp-cli",
+        isDefault: true,
+        name: "Amp CLI",
+      },
     ]);
   });
 
@@ -161,10 +204,10 @@ describe("createSidebarAgentButtons", () => {
           name: "Pi",
         },
         {
-          agentId: "cursor",
-          command: "cursor-agent",
+          agentId: "aider",
+          command: "aider",
           isDefault: false,
-          name: "Cursor",
+          name: "Aider",
         },
       ]),
     ).toEqual([
@@ -190,6 +233,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Claude",
       },
       {
+        agentId: "cursor",
+        command: "cursor-agent",
+        icon: "cursor-cli",
+        isDefault: true,
+        name: "Cursor CLI",
+      },
+      {
         agentId: "pi",
         command: "pi",
         icon: "pi",
@@ -205,7 +255,7 @@ describe("createSidebarAgentButtons", () => {
       },
       {
         agentId: "gemini",
-        command: "gemini -y",
+        command: "gemini",
         icon: "gemini",
         isDefault: true,
         name: "Gemini",
@@ -232,11 +282,25 @@ describe("createSidebarAgentButtons", () => {
         name: "Grok Build",
       },
       {
-        agentId: "cursor",
-        command: "cursor-agent",
+        agentId: "antigravity",
+        command: "agy",
+        icon: "antigravity-cli",
+        isDefault: true,
+        name: "Antigravity CLI",
+      },
+      {
+        agentId: "amp",
+        command: "amp",
+        icon: "amp-cli",
+        isDefault: true,
+        name: "Amp CLI",
+      },
+      {
+        agentId: "aider",
+        command: "aider",
         icon: undefined,
         isDefault: false,
-        name: "Cursor",
+        name: "Aider",
       },
     ]);
   });
@@ -269,6 +333,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Claude",
       },
       {
+        agentId: "cursor",
+        command: "cursor-agent",
+        icon: "cursor-cli",
+        isDefault: true,
+        name: "Cursor CLI",
+      },
+      {
         agentId: "pi",
         command: "pi",
         icon: "pi",
@@ -284,7 +355,7 @@ describe("createSidebarAgentButtons", () => {
       },
       {
         agentId: "gemini",
-        command: "gemini -y",
+        command: "gemini",
         icon: "gemini",
         isDefault: true,
         name: "Gemini",
@@ -309,6 +380,20 @@ describe("createSidebarAgentButtons", () => {
         icon: "grok-build",
         isDefault: true,
         name: "Grok Build",
+      },
+      {
+        agentId: "antigravity",
+        command: "agy",
+        icon: "antigravity-cli",
+        isDefault: true,
+        name: "Antigravity CLI",
+      },
+      {
+        agentId: "amp",
+        command: "amp",
+        icon: "amp-cli",
+        isDefault: true,
+        name: "Amp CLI",
       },
     ]);
   });
@@ -347,6 +432,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Claude",
       },
       {
+        agentId: "cursor",
+        command: "cursor-agent",
+        icon: "cursor-cli",
+        isDefault: true,
+        name: "Cursor CLI",
+      },
+      {
         agentId: "pi",
         command: "pi",
         icon: "pi",
@@ -362,7 +454,7 @@ describe("createSidebarAgentButtons", () => {
       },
       {
         agentId: "gemini",
-        command: "gemini -y",
+        command: "gemini",
         icon: "gemini",
         isDefault: true,
         name: "Gemini",
@@ -387,6 +479,20 @@ describe("createSidebarAgentButtons", () => {
         icon: "grok-build",
         isDefault: true,
         name: "Grok Build",
+      },
+      {
+        agentId: "antigravity",
+        command: "agy",
+        icon: "antigravity-cli",
+        isDefault: true,
+        name: "Antigravity CLI",
+      },
+      {
+        agentId: "amp",
+        command: "amp",
+        icon: "amp-cli",
+        isDefault: true,
+        name: "Amp CLI",
       },
       {
         agentId: "custom-codex-fast",
@@ -415,7 +521,7 @@ describe("createSidebarAgentButtons", () => {
     ).toEqual([
       {
         agentId: "gemini",
-        command: "gemini -y",
+        command: "gemini",
         icon: "gemini",
         isDefault: true,
         name: "Gemini",
@@ -449,6 +555,13 @@ describe("createSidebarAgentButtons", () => {
         name: "Codex",
       },
       {
+        agentId: "cursor",
+        command: "cursor-agent",
+        icon: "cursor-cli",
+        isDefault: true,
+        name: "Cursor CLI",
+      },
+      {
         agentId: "pi",
         command: "pi",
         icon: "pi",
@@ -483,6 +596,20 @@ describe("createSidebarAgentButtons", () => {
         isDefault: true,
         name: "Grok Build",
       },
+      {
+        agentId: "antigravity",
+        command: "agy",
+        icon: "antigravity-cli",
+        isDefault: true,
+        name: "Antigravity CLI",
+      },
+      {
+        agentId: "amp",
+        command: "amp",
+        icon: "amp-cli",
+        isDefault: true,
+        name: "Amp CLI",
+      },
     ]);
   });
 });
@@ -491,6 +618,20 @@ describe("shouldPreferTerminalTitleForAgentIcon", () => {
   test("should prefer terminal titles for OpenCode", () => {
     expect(shouldPreferTerminalTitleForAgentIcon("opencode")).toBe(true);
     expect(shouldPreferTerminalTitleForAgentIcon("pi")).toBe(true);
+    expect(shouldPreferTerminalTitleForAgentIcon("cursor-cli")).toBe(true);
+    expect(shouldPreferTerminalTitleForAgentIcon("antigravity-cli")).toBe(true);
+  });
+});
+
+describe("supportsTerminalTitleSessionSync", () => {
+  test("should allow Cursor CLI terminal titles to sync like Codex", () => {
+    expect(supportsTerminalTitleSessionSync("cursor")).toBe(true);
+    expect(supportsTerminalTitleSessionSync("Cursor CLI")).toBe(true);
+    expect(supportsTerminalTitleSessionSync("cursor-agent")).toBe(true);
+    expect(supportsTerminalTitleSessionSync("agy")).toBe(true);
+    expect(supportsTerminalTitleSessionSync("Antigravity CLI")).toBe(true);
+    expect(supportsTerminalTitleSessionSync("codex")).toBe(true);
+    expect(supportsTerminalTitleSessionSync("amp")).toBe(false);
   });
 });
 

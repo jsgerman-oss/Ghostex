@@ -283,7 +283,7 @@ describe("normalizeghostexSettings", () => {
     expect(DEFAULT_ghostex_SETTINGS.selectedPetId).toBe(DEFAULT_PET_ID);
     expect(normalizeghostexSettings({})).toMatchObject({
       petOverlayEnabled: false,
-      selectedPetId: "codex",
+      selectedPetId: "boo",
     });
     expect(
       normalizeghostexSettings({ petOverlayEnabled: true, selectedPetId: "dewey" }),
@@ -292,7 +292,7 @@ describe("normalizeghostexSettings", () => {
       selectedPetId: "dewey",
     });
     expect(normalizeghostexSettings({ selectedPetId: "not-a-pet" })).toMatchObject({
-      selectedPetId: "codex",
+      selectedPetId: "boo",
     });
   });
 

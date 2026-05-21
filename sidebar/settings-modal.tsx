@@ -57,6 +57,7 @@ import { GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES } from "../shared/ghostty-conf
 import {
   resolveSidebarTheme,
   type SidebarGhostexFolderStatsMessage,
+  type SidebarProjectSettingsItem,
   type SidebarTheme,
   type SidebarThemeVariant,
 } from "../shared/session-grid-contract";
@@ -100,6 +101,15 @@ import {
   normalizeWorkspaceOpenTargetHiddenIds,
   type CustomWorkspaceOpenTarget,
 } from "../shared/workspace-open-targets";
+import {
+  FIRST_LAUNCH_SETUP_VISIBLE_MAIN_SETTINGS,
+  isFirstLaunchSetupMainSettingVisible,
+  type FirstLaunchSetupMainSettingKey,
+} from "../shared/first-launch-setup-settings";
+import {
+  supportsAgentAcceptAll,
+  type AgentAcceptAllMode,
+} from "../shared/sidebar-agent-accept-all";
 import {
   DEFAULT_SIDEBAR_AGENTS,
   getDefaultSidebarAgentByIcon,
@@ -234,14 +244,16 @@ type SettingModificationProps = {
 export type SettingsModalTab =
   | "settings"
   | "ghostty"
+  | "projects"
   | "agents"
   | "actions"
   | "openTargets"
   | "hotkeys";
 
 type MainSettingsSectionId =
+  | "agents"
   | "sidebar"
-  | "pets"
+  | "statusIndicators"
   | "sessionCards"
   | "workspace"
   | "browser"
@@ -249,6 +261,67 @@ type MainSettingsSectionId =
   | "ideAttachment"
   | "sounds"
   | "storage";
+
+const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
+  MainSettingsSectionId,
+  readonly FirstLaunchSetupMainSettingKey[]
+> = {
+  agents: ["agentAcceptAllEnabled"],
+  sidebar: [
+    "sidebarSettingsPreset",
+    "sidebarSide",
+    "sidebarTheme",
+    "sessionStatusIndicatorSize",
+    "agentManagerZoomPercent",
+    "createSessionOnSidebarDoubleClick",
+    "renameSessionOnDoubleClick",
+  ],
+  browser: ["browserOpenMode"],
+  /*
+   * CDXC:StatusIndicators 2026-05-20-12:00:
+   * Status Indicators groups desktop session badges and the optional sidebar pet
+   * overlay because both surfaces communicate session state at a glance.
+   */
+  statusIndicators: [
+    "hideFloatingSessionStatusIndicators",
+    "hideMenuBarSessionStatusIndicators",
+    "petOverlayEnabled",
+    "selectedPetId",
+  ],
+  sessionCards: [
+    "hideSessionAgentIconUntilHover",
+    "showCloseButtonOnSessionCards",
+    "hideLastActiveTimeOnSessionCards",
+  ],
+  workspace: [
+    "workspacePaneGap",
+    "workspaceActivePaneBorderColor",
+    "workspaceBackgroundColor",
+    "debuggingMode",
+  ],
+  editor: [
+    "defaultEditorCommand",
+    "customDefaultEditorCommand",
+    "codeServerLinkVscodeUserConfig",
+    "codeServerUseVscodeInsidersUserConfig",
+    "hideProjectHeaderDiffStats",
+    "showProjectEditorDiffFileCount",
+  ],
+  ideAttachment: [
+    "accessibilityPermission",
+    "zedOverlayEnabled",
+    "zedOverlayHideTitlebarButton",
+    "zedOverlayTargetApp",
+    "syncOpenProjectWithZed",
+  ],
+  sounds: [
+    "completionBellEnabled",
+    "completionSound",
+    "showMacOSAttentionNotifications",
+    "actionCompletionSound",
+  ],
+  storage: [],
+};
 
 type GhosttySettingsSectionId = "terminal" | "terminalBehavior" | "terminalScrolling";
 
@@ -291,10 +364,14 @@ export type GhosttySettingsAction =
   | "openGhosttySettingsDocs"
   | "resetGhosttySettingsToDefault";
 
+export type SettingsModalPresentation = "default" | "firstLaunchSetup";
+
 export type SettingsModalProps = {
   accessibilityPermissionGranted?: boolean;
+  firstLaunchSetupVisibleSettings?: ReadonlySet<FirstLaunchSetupMainSettingKey>;
   initialTab?: SettingsModalTab;
   isOpen: boolean;
+  presentation?: SettingsModalPresentation;
   onChange: (settings: ghostexSettings) => void;
   onClose: () => void;
   onOpenAccessibilityPreferences?: () => void;
@@ -306,6 +383,7 @@ export type SettingsModalProps = {
   onRequestMacOSNotificationPermission?: () => void;
   onRequestGhostexFolderStats?: () => void;
   onTestAgentTaskCompletion?: () => void;
+  projects?: SidebarProjectSettingsItem[];
   settings?: ghostexSettings;
   theme?: SidebarTheme;
   vscode?: WebviewApi;
@@ -315,10 +393,12 @@ export type SettingsModalProps = {
 
 export function SettingsModal({
   accessibilityPermissionGranted,
+  firstLaunchSetupVisibleSettings,
   initialTab = "settings",
   isOpen,
   onChange,
   onClose,
+  presentation = "default",
   onOpenAccessibilityPreferences,
   onOpenMacOSNotificationSettings,
   onOpenGhostexFolder,
@@ -328,12 +408,14 @@ export function SettingsModal({
   onRequestMacOSNotificationPermission,
   onRequestGhostexFolderStats,
   onTestAgentTaskCompletion,
+  projects = [],
   settings,
   theme = "dark-blue",
   vscode,
   ghostexFolderStats,
   ghostexFolderStatsLoading = false,
 }: SettingsModalProps) {
+  const isFirstLaunchSetup = presentation === "firstLaunchSetup";
   const [draft, setDraft] = useState<ghostexSettings>(normalizeghostexSettings(settings));
   const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
   const [ghosttySearchQuery, setGhosttySearchQuery] = useState("");
@@ -349,8 +431,9 @@ export function SettingsModal({
   const ghosttyScrollingSectionRef = useRef<HTMLDivElement>(null);
   const ghosttyTerminalSectionRef = useRef<HTMLDivElement>(null);
   const ideAttachmentSectionRef = useRef<HTMLDivElement>(null);
-  const petsSectionRef = useRef<HTMLDivElement>(null);
+  const statusIndicatorsSectionRef = useRef<HTMLDivElement>(null);
   const sessionCardsSectionRef = useRef<HTMLDivElement>(null);
+  const agentsOnboardingSectionRef = useRef<HTMLDivElement>(null);
   const sidebarSectionRef = useRef<HTMLDivElement>(null);
   const soundsSectionRef = useRef<HTMLDivElement>(null);
   const storageSectionRef = useRef<HTMLDivElement>(null);
@@ -477,7 +560,22 @@ export function SettingsModal({
         title: "Hide last active time",
       },
     ]),
-    pets: getSettingsSectionSearch(settingsSearchQuery, "Pets", [
+    statusIndicators: getSettingsSectionSearch(settingsSearchQuery, "Status Indicators", [
+      /*
+       * CDXC:StatusIndicators 2026-05-20-12:00:
+       * hide* settings stay persisted as hide flags, but Settings presents them
+       * as Show toggles so ON means the indicator surface is visible.
+       */
+      {
+        key: "hideFloatingSessionStatusIndicators",
+        subtitle: "Show the desktop floating session status badges.",
+        title: "Show Floating Session Indicators",
+      },
+      {
+        key: "hideMenuBarSessionStatusIndicators",
+        subtitle: "Show the menu bar session status badges.",
+        title: "Show Menu Bar Session Indicators",
+      },
       {
         key: "petOverlayEnabled",
         subtitle: "Show the draggable animated pet in the native sidebar.",
@@ -514,16 +612,6 @@ export function SettingsModal({
         options: SIDEBAR_THEME_SETTING_OPTIONS,
         subtitle: "Choose the sidebar color scheme.",
         title: "Theme",
-      },
-      {
-        key: "hideFloatingSessionStatusIndicators",
-        subtitle: "Hide the desktop floating session status badges.",
-        title: "Hide Floating Session Indicators",
-      },
-      {
-        key: "hideMenuBarSessionStatusIndicators",
-        subtitle: "Hide the menu bar session status badges.",
-        title: "Hide Menu Bar Session Indicators",
       },
       {
         key: "sessionStatusIndicatorSize",
@@ -749,8 +837,13 @@ export function SettingsModal({
     title: string;
   }> = [
     { id: "sidebar", ref: sidebarSectionRef, searchResult: settingsSearch.sidebar, title: "Sidebar" },
+    {
+      id: "statusIndicators",
+      ref: statusIndicatorsSectionRef,
+      searchResult: settingsSearch.statusIndicators,
+      title: "Status Indicators",
+    },
     { id: "browser", ref: browserSectionRef, searchResult: settingsSearch.browser, title: "Browser" },
-    { id: "pets", ref: petsSectionRef, searchResult: settingsSearch.pets, title: "Pets" },
     {
       id: "sessionCards",
       ref: sessionCardsSectionRef,
@@ -808,11 +901,38 @@ export function SettingsModal({
   const hasVisibleGhosttySettings = ghosttySettingsSectionNavigation.some((section) =>
     hasVisibleSettingsSearchResult(section.searchResult),
   );
-
+  const visibleFirstLaunchMainSettings =
+    firstLaunchSetupVisibleSettings ?? FIRST_LAUNCH_SETUP_VISIBLE_MAIN_SETTINGS;
+  const mainSettingVisible = (
+    sectionResult: SettingsSectionSearchResult,
+    settingKey: string,
+  ) => {
+    if (isFirstLaunchSetup) {
+      return isFirstLaunchSetupMainSettingVisible(
+        settingKey as FirstLaunchSetupMainSettingKey,
+        visibleFirstLaunchMainSettings,
+      );
+    }
+    return shouldShowSetting(sectionResult, settingKey);
+  };
+  const mainSectionVisible = (
+    sectionId: MainSettingsSectionId,
+    sectionResult: SettingsSectionSearchResult,
+  ) => {
+    if (isFirstLaunchSetup) {
+      return MAIN_SETTINGS_SECTION_SETTING_KEYS[sectionId].some((settingKey) =>
+        isFirstLaunchSetupMainSettingVisible(settingKey, visibleFirstLaunchMainSettings),
+      );
+    }
+    return shouldShowSettingsSection(sectionResult);
+  };
   useEffect(() => {
     if (!isOpen) {
       hasRequestedStorageStatsRef.current = false;
       return;
+    }
+    if (isFirstLaunchSetup) {
+      setActiveTabState("settings");
     }
     /**
      * CDXC:SettingsTabs 2026-05-13-16:05
@@ -821,7 +941,7 @@ export function SettingsModal({
      * tab; tab changes are owned by explicit navigation and initial open state.
      */
     setDraft(normalizeghostexSettings(settings));
-  }, [isOpen, settings]);
+  }, [isFirstLaunchSetup, isOpen, settings]);
 
   useEffect(() => {
     if (
@@ -1033,7 +1153,14 @@ export function SettingsModal({
             value={activeTab}
           >
           <DialogHeader className="px-5 pt-5 pb-3">
-            <DialogTitle className="text-xl">Settings</DialogTitle>
+            <DialogTitle className="text-xl">
+              {isFirstLaunchSetup ? "Get started" : "Settings"}
+            </DialogTitle>
+            {isFirstLaunchSetup ? (
+              <p className="mt-2 text-sm text-muted-foreground">
+                Choose a few defaults for Ghostex. You can change everything later in Settings.
+              </p>
+            ) : null}
             {/*
              * CDXC:UnifiedSettings 2026-05-09-15:30
              * Settings is the single configuration surface. Ghostty owns the
@@ -1041,15 +1168,19 @@ export function SettingsModal({
              * while Agents, Actions, Open In, and Hotkeys keep their routed
              * entry points in the same dialog.
              */}
+            {!isFirstLaunchSetup ? (
             <TabsList className="mt-3 w-full">
               <TabsTrigger value="settings">Settings</TabsTrigger>
               <TabsTrigger value="ghostty">Ghostty</TabsTrigger>
+              <TabsTrigger value="projects">Projects</TabsTrigger>
               <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
               <TabsTrigger value="agents">Agents</TabsTrigger>
               <TabsTrigger value="actions">Actions</TabsTrigger>
               <TabsTrigger value="openTargets">Open In</TabsTrigger>
             </TabsList>
-            {activeTab === "settings" || activeTab === "ghostty" || activeTab === "hotkeys" ? (
+            ) : null}
+            {!isFirstLaunchSetup &&
+            (activeTab === "settings" || activeTab === "ghostty" || activeTab === "hotkeys") ? (
               <Input
                 aria-label={
                   activeTab === "hotkeys"
@@ -1097,8 +1228,18 @@ export function SettingsModal({
               reachable without mixing Ghostty terminal controls into this tab. */}
           <div className="settings-main-tab-layout">
             <aside aria-label="Settings sections" className="settings-section-sidebar">
-              {mainSettingsSectionNavigation
-                .filter((section) => shouldShowSettingsSection(section.searchResult))
+              {(isFirstLaunchSetup
+                ? [
+                    { id: "agents" as const, ref: agentsOnboardingSectionRef, title: "Agents" },
+                    ...mainSettingsSectionNavigation,
+                  ]
+                : mainSettingsSectionNavigation
+              )
+                .filter((section) =>
+                  section.id === "agents"
+                    ? mainSectionVisible("agents", settingsSearch.sidebar)
+                    : mainSectionVisible(section.id, section.searchResult),
+                )
                 .map((section) => (
                   <Button
                     className="settings-section-sidebar-button"
@@ -1113,10 +1254,23 @@ export function SettingsModal({
             </aside>
           <ScrollArea className="h-full min-h-0">
           <div className="flex flex-col gap-6 px-5 pb-5">
-            {shouldShowSettingsSection(settingsSearch.sidebar) ? (
+            {isFirstLaunchSetup && mainSectionVisible("agents", settingsSearch.sidebar) ? (
+              <SettingsSection sectionRef={agentsOnboardingSectionRef} title="Agents">
+                {mainSettingVisible(settingsSearch.sidebar, "agentAcceptAllEnabled") ? (
+                  <ToggleField
+                    checked={draft.agentAcceptAllEnabled}
+                    description="Append each supported agent CLI's permission-bypass flag when launching sessions. Per-agent overrides live in Settings → Agents."
+                    label="Accept All"
+                    {...getSettingModificationProps("agentAcceptAllEnabled")}
+                    onChange={(checked) => updateDraft("agentAcceptAllEnabled", checked)}
+                  />
+                ) : null}
+              </SettingsSection>
+            ) : null}
+            {mainSectionVisible("sidebar", settingsSearch.sidebar) ? (
               <SettingsSection sectionRef={sidebarSectionRef} title="Sidebar">
               {/* CDXC:SidebarSettingsPresets 2026-05-16-10:11: Preset is the first Sidebar setting so users can apply Codex, Minimal, or Detailed sidebar UI defaults before tuning individual controlled settings. */}
-              {shouldShowSetting(settingsSearch.sidebar, "sidebarSettingsPreset") ? (
+              {mainSettingVisible(settingsSearch.sidebar, "sidebarSettingsPreset") ? (
               <SidebarPresetField
                 activePresetId={activeSidebarSettingsPresetId}
                 description="Apply a sidebar UI preset."
@@ -1129,7 +1283,7 @@ export function SettingsModal({
               {/* CDXC:SidebarPlacement 2026-05-06-17:32: Sidebar side remains
                   near the top of Sidebar settings so users can move the
                   sidebar to the right side without discovering the hotkey. */}
-              {shouldShowSetting(settingsSearch.sidebar, "sidebarSide") ? (
+              {mainSettingVisible(settingsSearch.sidebar, "sidebarSide") ? (
               <SelectField
                 description="Choose which side of the screen holds the sidebar."
                 label="Side"
@@ -1139,37 +1293,16 @@ export function SettingsModal({
                 value={draft.sidebarSide}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.sidebar, "sidebarTheme") ? (
+              {mainSettingVisible(settingsSearch.sidebar, "sidebarTheme") ? (
               <StaticNoteField
                 description="Dark Gray is active. Themes are coming back soon."
                 label="Theme"
               />
               ) : null}
-              {/* CDXC:SessionStatusIndicators 2026-05-09-17:30: Settings must
-                  expose independent hide toggles because floating badges are
-                  hidden by default while menu bar badges are shown by default. */}
-              {shouldShowSetting(settingsSearch.sidebar, "hideFloatingSessionStatusIndicators") ? (
-              <ToggleField
-                checked={draft.hideFloatingSessionStatusIndicators}
-                description="Hide the desktop floating session status badges."
-                label="Hide Floating Session Indicators"
-                {...getSettingModificationProps("hideFloatingSessionStatusIndicators")}
-                onChange={(checked) => updateDraft("hideFloatingSessionStatusIndicators", checked)}
-              />
-              ) : null}
-              {shouldShowSetting(settingsSearch.sidebar, "hideMenuBarSessionStatusIndicators") ? (
-              <ToggleField
-                checked={draft.hideMenuBarSessionStatusIndicators}
-                description="Hide the menu bar session status badges."
-                label="Hide Menu Bar Session Indicators"
-                {...getSettingModificationProps("hideMenuBarSessionStatusIndicators")}
-                onChange={(checked) => updateDraft("hideMenuBarSessionStatusIndicators", checked)}
-              />
-              ) : null}
               {/* CDXC:SessionStatusIndicators 2026-05-07-18:20: The floating
                   AppKit indicator size is a Sidebar setting because it controls
                   sidebar-owned session navigation chrome outside the webview. */}
-              {shouldShowSetting(settingsSearch.sidebar, "sessionStatusIndicatorSize") ? (
+              {mainSettingVisible(settingsSearch.sidebar, "sessionStatusIndicatorSize") ? (
               <SelectField
                 description="Scale the floating session status indicator."
                 label="Floating Session Indicator Size"
@@ -1181,7 +1314,7 @@ export function SettingsModal({
                 value={draft.sessionStatusIndicatorSize}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.sidebar, "agentManagerZoomPercent") ? (
+              {mainSettingVisible(settingsSearch.sidebar, "agentManagerZoomPercent") ? (
               <SliderNumberField
                 description="Scale the agent manager UI."
                 label="Agent Manager Zoom"
@@ -1194,7 +1327,7 @@ export function SettingsModal({
                 value={draft.agentManagerZoomPercent}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.sidebar, "createSessionOnSidebarDoubleClick") ? (
+              {mainSettingVisible(settingsSearch.sidebar, "createSessionOnSidebarDoubleClick") ? (
               <ToggleField
                 checked={draft.createSessionOnSidebarDoubleClick}
                 description="Create a session from empty sidebar space."
@@ -1203,7 +1336,7 @@ export function SettingsModal({
                 onChange={(checked) => updateDraft("createSessionOnSidebarDoubleClick", checked)}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.sidebar, "renameSessionOnDoubleClick") ? (
+              {mainSettingVisible(settingsSearch.sidebar, "renameSessionOnDoubleClick") ? (
               <ToggleField
                 checked={draft.renameSessionOnDoubleClick}
                 description="Rename sessions directly from their cards."
@@ -1215,13 +1348,62 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.browser) ? (
+            {mainSectionVisible("statusIndicators", settingsSearch.statusIndicators) ? (
+            <SettingsSection sectionRef={statusIndicatorsSectionRef} title="Status Indicators">
+              {mainSettingVisible(
+                settingsSearch.statusIndicators,
+                "hideFloatingSessionStatusIndicators",
+              ) ? (
+              <ToggleField
+                checked={!draft.hideFloatingSessionStatusIndicators}
+                description="Show the desktop floating session status badges."
+                label="Show Floating Session Indicators"
+                {...getSettingModificationProps("hideFloatingSessionStatusIndicators")}
+                onChange={(checked) =>
+                  updateDraft("hideFloatingSessionStatusIndicators", !checked)
+                }
+              />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.statusIndicators,
+                "hideMenuBarSessionStatusIndicators",
+              ) ? (
+              <ToggleField
+                checked={!draft.hideMenuBarSessionStatusIndicators}
+                description="Show the menu bar session status badges."
+                label="Show Menu Bar Session Indicators"
+                {...getSettingModificationProps("hideMenuBarSessionStatusIndicators")}
+                onChange={(checked) =>
+                  updateDraft("hideMenuBarSessionStatusIndicators", !checked)
+                }
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.statusIndicators, "petOverlayEnabled") ? (
+              <ToggleField
+                checked={draft.petOverlayEnabled}
+                description="Show the draggable animated pet in the native sidebar."
+                label="Wake Pet"
+                {...getSettingModificationProps("petOverlayEnabled")}
+                onChange={(checked) => updateDraft("petOverlayEnabled", checked)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.statusIndicators, "selectedPetId") ? (
+              <PetPickerField
+                {...getSettingModificationProps("selectedPetId")}
+                onChange={(value) => updateDraft("selectedPetId", value)}
+                value={draft.selectedPetId}
+              />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {mainSectionVisible("browser", settingsSearch.browser) ? (
             <SettingsSection sectionRef={browserSectionRef} title="Browser">
               {/* CDXC:BrowserPanes 2026-05-02-06:35: Users can keep the
                   existing Chrome Canary native-window integration or route
                   browser actions into workspace browser panes that behave like
                   normal session cards inside sidebar groups. */}
-              {shouldShowSetting(settingsSearch.browser, "browserOpenMode") ? (
+              {mainSettingVisible(settingsSearch.browser, "browserOpenMode") ? (
               <SelectField
                 description="Choose where browser actions open URLs."
                 label="Open URLs With"
@@ -1234,31 +1416,10 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.pets) ? (
-            <SettingsSection sectionRef={petsSectionRef} title="Pets">
-              {shouldShowSetting(settingsSearch.pets, "petOverlayEnabled") ? (
-              <ToggleField
-                checked={draft.petOverlayEnabled}
-                description="Show the draggable animated pet in the native sidebar."
-                label="Wake Pet"
-                {...getSettingModificationProps("petOverlayEnabled")}
-                onChange={(checked) => updateDraft("petOverlayEnabled", checked)}
-              />
-              ) : null}
-              {shouldShowSetting(settingsSearch.pets, "selectedPetId") ? (
-              <PetPickerField
-                {...getSettingModificationProps("selectedPetId")}
-                onChange={(value) => updateDraft("selectedPetId", value)}
-                value={draft.selectedPetId}
-              />
-              ) : null}
-            </SettingsSection>
-            ) : null}
-
-            {shouldShowSettingsSection(settingsSearch.sessionCards) ? (
+            {mainSectionVisible("sessionCards", settingsSearch.sessionCards) ? (
             <SettingsSection sectionRef={sessionCardsSectionRef} title="Session Cards">
               {/* CDXC:SidebarSessions 2026-05-16-08:46: Session-card agent identity should stay visible by default, with a user setting that makes those icons appear only while hovering a session row. */}
-              {shouldShowSetting(settingsSearch.sessionCards, "hideSessionAgentIconUntilHover") ? (
+              {mainSettingVisible(settingsSearch.sessionCards, "hideSessionAgentIconUntilHover") ? (
               <ToggleField
                 checked={draft.hideSessionAgentIconUntilHover}
                 description="Hide session agent icons until a session row is hovered."
@@ -1267,7 +1428,7 @@ export function SettingsModal({
                 onChange={(checked) => updateDraft("hideSessionAgentIconUntilHover", checked)}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.sessionCards, "showCloseButtonOnSessionCards") ? (
+              {mainSettingVisible(settingsSearch.sessionCards, "showCloseButtonOnSessionCards") ? (
               <ToggleField
                 checked={draft.showCloseButtonOnSessionCards}
                 description="Reveal the close control when hovering a card."
@@ -1276,7 +1437,7 @@ export function SettingsModal({
                 onChange={(checked) => updateDraft("showCloseButtonOnSessionCards", checked)}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.sessionCards, "hideLastActiveTimeOnSessionCards") ? (
+              {mainSettingVisible(settingsSearch.sessionCards, "hideLastActiveTimeOnSessionCards") ? (
               <ToggleField
                 checked={draft.hideLastActiveTimeOnSessionCards}
                 description="Hide Last Active timestamps from session-card title rows."
@@ -1288,9 +1449,9 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.workspace) ? (
+            {mainSectionVisible("workspace", settingsSearch.workspace) ? (
             <SettingsSection sectionRef={workspaceSectionRef} title="Workspace">
-              {shouldShowSetting(settingsSearch.workspace, "workspacePaneGap") ? (
+              {mainSettingVisible(settingsSearch.workspace, "workspacePaneGap") ? (
               <SliderNumberField
                 description="Control spacing between panes."
                 label="Pane Gap"
@@ -1303,7 +1464,7 @@ export function SettingsModal({
                 value={draft.workspacePaneGap}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.workspace, "workspaceActivePaneBorderColor") ? (
+              {mainSettingVisible(settingsSearch.workspace, "workspaceActivePaneBorderColor") ? (
               <TextField
                 description="CSS color for the focused pane border."
                 label="Active Pane Border"
@@ -1312,7 +1473,7 @@ export function SettingsModal({
                 value={draft.workspaceActivePaneBorderColor}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.workspace, "workspaceBackgroundColor") ? (
+              {mainSettingVisible(settingsSearch.workspace, "workspaceBackgroundColor") ? (
               <ColorField
                 description="Color shown behind terminal panes."
                 label="Terminal Background"
@@ -1321,7 +1482,7 @@ export function SettingsModal({
                 value={draft.workspaceBackgroundColor}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.workspace, "debuggingMode") ? (
+              {mainSettingVisible(settingsSearch.workspace, "debuggingMode") ? (
               <ToggleField
                 checked={draft.debuggingMode}
                 description="Expose debugging-only sidebar controls."
@@ -1333,9 +1494,9 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.editor) ? (
+            {mainSectionVisible("editor", settingsSearch.editor) ? (
             <SettingsSection sectionRef={editorSectionRef} title="Editor">
-              {shouldShowSetting(settingsSearch.editor, "defaultEditorCommand") ? (
+              {mainSettingVisible(settingsSearch.editor, "defaultEditorCommand") ? (
               <SelectField
                 description="Choose the command used when opening files in an external editor."
                 label="Default editor command"
@@ -1348,7 +1509,7 @@ export function SettingsModal({
               />
               ) : null}
               {draft.defaultEditorCommand === "other" &&
-              shouldShowSetting(settingsSearch.editor, "customDefaultEditorCommand") ? (
+              mainSettingVisible(settingsSearch.editor, "customDefaultEditorCommand") ? (
               <TextField
                 description="Write the command exactly as it should be launched. The file path will be passed to it later."
                 label="Custom editor command"
@@ -1362,7 +1523,7 @@ export function SettingsModal({
                   panes pass --link-vscode-user-config by default so editor
                   sessions inherit local VS Code user settings. The Insiders
                   checkbox only changes the linked config directory. */}
-              {shouldShowSetting(settingsSearch.editor, "codeServerLinkVscodeUserConfig") ? (
+              {mainSettingVisible(settingsSearch.editor, "codeServerLinkVscodeUserConfig") ? (
               <ToggleField
                 checked={draft.codeServerLinkVscodeUserConfig}
                 description="Use the VS Code settings from the local VS Code install."
@@ -1370,7 +1531,7 @@ export function SettingsModal({
                 onChange={(checked) => updateDraft("codeServerLinkVscodeUserConfig", checked)}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.editor, "codeServerUseVscodeInsidersUserConfig") ? (
+              {mainSettingVisible(settingsSearch.editor, "codeServerUseVscodeInsidersUserConfig") ? (
               <ToggleField
                 checked={draft.codeServerUseVscodeInsidersUserConfig}
                 description="Use the VS Code Insiders user settings directory."
@@ -1382,7 +1543,7 @@ export function SettingsModal({
               />
               ) : null}
               {/* CDXC:ProjectDiffStats 2026-05-16-08:46: The project-header git line summary is useful but visually noisy for some workflows, so Settings owns a full hide toggle separate from the changed-file count toggle. */}
-              {shouldShowSetting(settingsSearch.editor, "hideProjectHeaderDiffStats") ? (
+              {mainSettingVisible(settingsSearch.editor, "hideProjectHeaderDiffStats") ? (
               <ToggleField
                 checked={draft.hideProjectHeaderDiffStats}
                 description="Hide +added/-removed line counts next to project headers."
@@ -1391,7 +1552,7 @@ export function SettingsModal({
                 onChange={(checked) => updateDraft("hideProjectHeaderDiffStats", checked)}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.editor, "showProjectEditorDiffFileCount") ? (
+              {mainSettingVisible(settingsSearch.editor, "showProjectEditorDiffFileCount") ? (
               <ToggleField
                 checked={draft.showProjectEditorDiffFileCount}
                 description="Show changed-file counts in project header git stats."
@@ -1403,9 +1564,9 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.sounds) ? (
+            {mainSectionVisible("sounds", settingsSearch.sounds) ? (
             <SettingsSection sectionRef={soundsSectionRef} title="Sounds">
-              {shouldShowSetting(settingsSearch.sounds, "completionBellEnabled") ? (
+              {mainSettingVisible(settingsSearch.sounds, "completionBellEnabled") ? (
               <ToggleField
                 checked={draft.completionBellEnabled}
                 description="Play a completion sound when work finishes."
@@ -1414,7 +1575,7 @@ export function SettingsModal({
                 onChange={(checked) => updateDraft("completionBellEnabled", checked)}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.sounds, "completionSound") ? (
+              {mainSettingVisible(settingsSearch.sounds, "completionSound") ? (
               <SoundField
                 description="Sound for terminal completions."
                 label="Completion Sound"
@@ -1427,7 +1588,7 @@ export function SettingsModal({
               {/* CDXC:SessionAttentionNotifications 2026-05-10-16:46:
                   Attention banners are separate from completion sounds because
                   users may want clickable macOS routing without audible alerts. */}
-              {shouldShowSetting(settingsSearch.sounds, "showMacOSAttentionNotifications") ? (
+              {mainSettingVisible(settingsSearch.sounds, "showMacOSAttentionNotifications") ? (
               <ToggleField
                 checked={draft.showMacOSAttentionNotifications}
                 description="Show a macOS banner when a session needs attention."
@@ -1445,7 +1606,7 @@ export function SettingsModal({
                   The Settings test button must run the real completion alert
                   path while the adjacent macOS button handles denied or muted
                   system notification permission outside ghostex settings. */}
-              {shouldShowSetting(settingsSearch.sounds, "attentionNotificationActions") ? (
+              {mainSettingVisible(settingsSearch.sounds, "attentionNotificationActions") ? (
               <ActionButtonPairField
                 actions={[
                   {
@@ -1461,7 +1622,7 @@ export function SettingsModal({
                 label="Completion Alerts"
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.sounds, "actionCompletionSound") ? (
+              {mainSettingVisible(settingsSearch.sounds, "actionCompletionSound") ? (
               <SoundField
                 description="Sound for action completions."
                 label="Action Completion Sound"
@@ -1474,13 +1635,13 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.ideAttachment) ? (
+            {mainSectionVisible("ideAttachment", settingsSearch.ideAttachment) ? (
             <SettingsSection sectionRef={ideAttachmentSectionRef} title="IDE Attachment">
               {/* CDXC:AccessibilityPermissions 2026-05-08-13:08: Settings must
                   show the current macOS Accessibility status and provide a
                   one-click path to the matching System Settings pane without
                   presenting the permission dialog unless attachment is enabled. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "accessibilityPermission") ? (
+              {mainSettingVisible(settingsSearch.ideAttachment, "accessibilityPermission") ? (
               <div className="flex flex-col gap-2">
                 {/* CDXC:AccessibilityPermissions 2026-05-15-13:23: Missing macOS Accessibility status belongs next to the Accessibility Permission setting, not as a top-of-modal warning. Keep it gray so it reads as contextual status instead of a global amber alert. */}
                 <ActionButtonField
@@ -1501,7 +1662,7 @@ export function SettingsModal({
                   that the workspace header link button attaches to. The
                   persisted keys remain zedOverlay* so existing installs keep
                   their saved attach state and target. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayEnabled") ? (
+              {mainSettingVisible(settingsSearch.ideAttachment, "zedOverlayEnabled") ? (
               <ToggleField
                 checked={draft.zedOverlayEnabled}
                 description="Attach Ghostex as an overlay to the selected IDE."
@@ -1510,7 +1671,7 @@ export function SettingsModal({
                 onChange={(checked) => updateDraft("zedOverlayEnabled", checked)}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayHideTitlebarButton") ? (
+              {mainSettingVisible(settingsSearch.ideAttachment, "zedOverlayHideTitlebarButton") ? (
               <ToggleField
                 checked={draft.zedOverlayHideTitlebarButton}
                 description="Hide the native Attach/Detach IDE button from the Ghostex title bar."
@@ -1519,7 +1680,7 @@ export function SettingsModal({
                 onChange={(checked) => updateDraft("zedOverlayHideTitlebarButton", checked)}
               />
               ) : null}
-              {shouldShowSetting(settingsSearch.ideAttachment, "zedOverlayTargetApp") ? (
+              {mainSettingVisible(settingsSearch.ideAttachment, "zedOverlayTargetApp") ? (
               <SelectField
                 description="Select which IDE should receive the overlay."
                 label="Target IDE"
@@ -1536,7 +1697,7 @@ export function SettingsModal({
                   Ghostex opens the active project in the attached IDE after
                   workspace switches instead of waiting for a title-bar button
                   click. */}
-              {shouldShowSetting(settingsSearch.ideAttachment, "syncOpenProjectWithZed") ? (
+              {mainSettingVisible(settingsSearch.ideAttachment, "syncOpenProjectWithZed") ? (
               <ToggleField
                 checked={draft.syncOpenProjectWithZed}
                 description="Open the active Ghostex project in the attached IDE after switching workspaces."
@@ -1548,7 +1709,7 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
-            {shouldShowSettingsSection(settingsSearch.storage) ? (
+            {mainSectionVisible("storage", settingsSearch.storage) ? (
               <div ref={storageSectionRef}>
                 <GhostexFolderStatsSection
                   isLoading={ghostexFolderStatsLoading}
@@ -1558,27 +1719,45 @@ export function SettingsModal({
               </div>
             ) : null}
 
-            {!hasVisibleMainSettings ? (
+            {!isFirstLaunchSetup && !hasVisibleMainSettings ? (
               <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
                 No settings match your search.
               </div>
             ) : null}
 
-            <Separator className="bg-border" />
-            <div className="flex justify-between gap-3">
-              <Button
-                className="h-10 px-5 text-sm"
-                onClick={resetSettings}
-                type="button"
-                variant="outline"
-              >
-                Reset to defaults
-              </Button>
-            </div>
+            {isFirstLaunchSetup ? (
+              <div className="flex justify-end pt-2">
+                <Button
+                  className="h-10 px-5 text-sm"
+                  onClick={() => {
+                    flushPendingSettings();
+                    onClose();
+                  }}
+                  type="button"
+                >
+                  Continue
+                </Button>
+              </div>
+            ) : (
+              <>
+                <Separator className="bg-border" />
+                <div className="flex justify-between gap-3">
+                  <Button
+                    className="h-10 px-5 text-sm"
+                    onClick={resetSettings}
+                    type="button"
+                    variant="outline"
+                  >
+                    Reset to defaults
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
           </ScrollArea>
           </div>
           </TabsContent>
+          {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="ghostty">
             {/* CDXC:SettingsNavigation 2026-05-13-16:05
                 Ghostty settings use their own section sidebar and independent
@@ -1968,18 +2147,40 @@ export function SettingsModal({
             </ScrollArea>
             </div>
           </TabsContent>
-          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="agents">
-            <AgentsSettingsTab vscode={vscode} />
+          ) : null}
+          {!isFirstLaunchSetup ? (
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="projects">
+            <ProjectsSettingsPanel projects={projects} vscode={vscode} />
           </TabsContent>
+          ) : null}
+          {!isFirstLaunchSetup ? (
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="agents">
+            <AgentsSettingsTab
+              agentAcceptAllEnabled={draft.agentAcceptAllEnabled}
+              onAgentAcceptAllEnabledChange={(checked) =>
+                applySettings({
+                  ...draft,
+                  agentAcceptAllEnabled: checked,
+                })
+              }
+              vscode={vscode}
+            />
+          </TabsContent>
+          ) : null}
+          {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="actions">
             <ActionsSettingsTab vscode={vscode} />
           </TabsContent>
+          ) : null}
+          {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="openTargets">
             <OpenTargetsSettingsTab
               onChange={(nextSettings) => applySettings(nextSettings)}
               settings={draft}
             />
           </TabsContent>
+          ) : null}
+          {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="hotkeys">
             <HotkeysSettingsTab
               hotkeys={draft.hotkeys}
@@ -1987,6 +2188,7 @@ export function SettingsModal({
               onChange={(hotkeys) => updateDraft("hotkeys", hotkeys)}
             />
           </TabsContent>
+          ) : null}
           </Tabs>
         </TooltipProvider>
       </DialogContent>
@@ -2011,6 +2213,111 @@ type SettingsOpenTargetEditorState = {
   };
   id?: string;
 };
+
+function ProjectsSettingsPanel({
+  projects,
+  vscode,
+}: {
+  projects: SidebarProjectSettingsItem[];
+  vscode?: WebviewApi;
+}) {
+  const [selectedProjectId, setSelectedProjectId] = useState(projects[0]?.projectId ?? "");
+  const selectedProject =
+    projects.find((project) => project.projectId === selectedProjectId) ?? projects[0];
+  const [command, setCommand] = useState(selectedProject?.worktreeCommand ?? "");
+
+  useEffect(() => {
+    if (!projects.some((project) => project.projectId === selectedProjectId)) {
+      setSelectedProjectId(projects[0]?.projectId ?? "");
+    }
+  }, [projects, selectedProjectId]);
+
+  useEffect(() => {
+    setCommand(selectedProject?.worktreeCommand ?? "");
+  }, [selectedProject?.projectId, selectedProject?.worktreeCommand]);
+
+  const saveCommand = () => {
+    if (!selectedProject) {
+      return;
+    }
+    vscode?.postMessage({
+      command,
+      projectId: selectedProject.projectId,
+      type: "setProjectWorktreeCommand",
+    });
+  };
+
+  if (projects.length === 0) {
+    return (
+      <div className="settings-tab-scroll scroll-mask-y">
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>No projects</EmptyTitle>
+            <EmptyDescription>Main projects will appear here.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      </div>
+    );
+  }
+
+  return (
+    <div className="settings-tab-scroll scroll-mask-y">
+      {/*
+       * CDXC:Worktrees 2026-05-18-23:07:
+       * Main projects can store a setup command that runs inside every new worktree before the selected agent receives the first prompt. Keep worktree projects out of this list because they inherit from their parent project.
+       */}
+      <div className="projects-settings-layout">
+        <div className="projects-settings-list" role="list">
+          {projects.map((project) => (
+            <button
+              aria-pressed={selectedProject?.projectId === project.projectId}
+              className="settings-management-row projects-settings-project"
+              data-selected={String(selectedProject?.projectId === project.projectId)}
+              key={project.projectId}
+              onClick={() => setSelectedProjectId(project.projectId)}
+              type="button"
+            >
+              <span className="settings-management-icon flex size-9 shrink-0 items-center justify-center bg-muted">
+                <IconFolderOpen aria-hidden="true" />
+              </span>
+              <span className="settings-management-main min-w-0">
+                <span className="settings-management-title">{project.name}</span>
+                <span className="settings-management-detail">{project.path}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+        <Card className="settings-project-command-card">
+          <CardContent className="flex flex-col gap-4 p-4">
+            <FieldGroup>
+              <Field>
+                <FieldLabel>Worktree command</FieldLabel>
+                <Textarea
+                  aria-label="Worktree command"
+                  className="settings-project-command-textarea"
+                  onChange={(event) => setCommand(event.currentTarget.value)}
+                  placeholder="bun install"
+                  value={command}
+                />
+                <FieldDescription>
+                  Runs in the new worktree folder before the agent prompt is attached.
+                </FieldDescription>
+              </Field>
+            </FieldGroup>
+            <div className="settings-management-actions">
+              <Button onClick={() => setCommand("")} type="button" variant="outline">
+                Clear
+              </Button>
+              <Button onClick={saveCommand} type="button">
+                Save Command
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
 
 type SettingsAgentDragData = {
   agentId: string;
@@ -2262,8 +2569,17 @@ function OpenTargetSettingsIcon({ targetId }: { targetId: string }) {
   );
 }
 
-function AgentsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
+function AgentsSettingsTab({
+  agentAcceptAllEnabled,
+  onAgentAcceptAllEnabledChange,
+  vscode,
+}: {
+  agentAcceptAllEnabled: boolean;
+  onAgentAcceptAllEnabledChange: (checked: boolean) => void;
+  vscode?: WebviewApi;
+}) {
   const agents = useSidebarStore((state) => state.hud.agents);
+  const acceptAllToggleId = useId();
   const [editorState, setEditorState] = useState<SettingsAgentEditorState>();
   const [draftAgentIds, setDraftAgentIds] = useState<string[]>();
 
@@ -2290,6 +2606,7 @@ function AgentsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
       return;
     }
     vscode.postMessage({
+      acceptAllMode: draft.acceptAllMode,
       agentId: draft.agentId,
       command: draft.command,
       icon: draft.icon,
@@ -2339,6 +2656,25 @@ function AgentsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
   return (
     <ScrollArea className="h-full min-h-0">
       <div className="flex flex-col gap-6 px-5 pb-5">
+        {!editorState ? (
+          <Field className="items-center justify-between rounded-lg border border-border bg-muted/20 px-4 py-3" orientation="horizontal">
+            <FieldContent>
+              <FieldLabel className="text-sm" htmlFor={acceptAllToggleId}>
+                Accept All
+              </FieldLabel>
+              <FieldDescription className="text-xs text-muted-foreground">
+                Append each supported agent CLI&apos;s permission-bypass flag when launching sessions.
+                Per-agent settings can inherit or override this default.
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              checked={agentAcceptAllEnabled}
+              disabled={!vscode}
+              id={acceptAllToggleId}
+              onCheckedChange={onAgentAcceptAllEnabledChange}
+            />
+          </Field>
+        ) : null}
         <SettingsSection
           actions={
             !editorState ? (
@@ -2375,6 +2711,7 @@ function AgentsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
                         onEdit={() =>
                           setEditorState({
                             draft: {
+                              acceptAllMode: agent.acceptAllMode ?? "inherit",
                               agentId: agent.agentId,
                               command: agent.command ?? "",
                               icon: agent.icon,
@@ -2461,18 +2798,26 @@ function SettingsAgentRow({
           </span>
         </span>
       </Button>
-      <Button aria-label={`Edit ${agent.name}`} onClick={onEdit} size="icon-sm" type="button" variant="ghost">
-        <IconPencil aria-hidden="true" />
-      </Button>
-      <Button
-        aria-label={`Delete ${agent.name}`}
-        onClick={onDelete}
-        size="icon-sm"
-        type="button"
-        variant="destructive"
-      >
-        <IconTrash aria-hidden="true" />
-      </Button>
+      <span className="settings-management-row-actions">
+        <Button
+          aria-label={`Edit ${agent.name}`}
+          onClick={onEdit}
+          size="icon-sm"
+          type="button"
+          variant="ghost"
+        >
+          <IconPencil aria-hidden="true" />
+        </Button>
+        <Button
+          aria-label={`Delete ${agent.name}`}
+          onClick={onDelete}
+          size="icon-sm"
+          type="button"
+          variant="destructive"
+        >
+          <IconTrash aria-hidden="true" />
+        </Button>
+      </span>
     </div>
   );
 }
@@ -2486,13 +2831,17 @@ function AgentSettingsEditor({
   onCancel: () => void;
   onSave: (draft: AgentConfigDraft) => void;
 }) {
+  const [acceptAllMode, setAcceptAllMode] = useState<AgentAcceptAllMode>(draft.acceptAllMode ?? "inherit");
   const [command, setCommand] = useState(draft.command);
   const [icon, setIcon] = useState<SidebarAgentIcon | "custom">(draft.icon ?? "custom");
   const [name, setName] = useState(draft.name);
+  const acceptAllModeId = useId();
   const agentTypeId = useId();
   const commandId = useId();
   const nameId = useId();
   const isSaveDisabled = name.trim().length === 0 || command.trim().length === 0;
+  const resolvedAgentId = draft.agentId ?? getDefaultSidebarAgentByIcon(icon === "custom" ? undefined : icon)?.agentId ?? "";
+  const acceptAllSupported = supportsAgentAcceptAll(resolvedAgentId, icon === "custom" ? undefined : icon);
 
   const updateAgentType = (value: string) => {
     const nextType = value as SidebarAgentIcon | "custom";
@@ -2573,6 +2922,34 @@ function AgentSettingsEditor({
           value={command}
         />
       </Field>
+      <Field className="gap-2.5">
+        <FieldContent>
+          <FieldLabel className="text-sm" htmlFor={acceptAllModeId}>
+            Accept All
+          </FieldLabel>
+          <FieldDescription className="text-xs text-muted-foreground">
+            {acceptAllSupported
+              ? "Inherit uses the global Agents setting. Accept All appends this CLI's permission-bypass flag at launch without changing the stored command."
+              : "This agent CLI does not expose a supported Accept All flag in Ghostex."}
+          </FieldDescription>
+        </FieldContent>
+        <Select
+          disabled={!acceptAllSupported}
+          onValueChange={(value) => setAcceptAllMode(value as AgentAcceptAllMode)}
+          value={acceptAllMode}
+        >
+          <SelectTrigger className="h-10 w-full px-3 text-sm" id={acceptAllModeId}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              <SelectItem value="inherit">Inherit global setting</SelectItem>
+              <SelectItem value="enabled">Accept All</SelectItem>
+              <SelectItem value="disabled">Ask for permission</SelectItem>
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </Field>
       <div className="flex justify-end gap-3">
         <Button onClick={onCancel} type="button" variant="outline">
           Cancel
@@ -2581,6 +2958,7 @@ function AgentSettingsEditor({
           disabled={isSaveDisabled}
           onClick={() =>
             onSave({
+              acceptAllMode,
               agentId: draft.agentId,
               command: command.trim(),
               icon: icon === "custom" ? undefined : icon,
@@ -2637,7 +3015,6 @@ function ActionsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
       commandId: draft.commandId,
       icon: draft.icon,
       iconColor: draft.iconColor,
-      isGlobal: draft.isGlobal,
       name: draft.name,
       playCompletionSound: draft.playCompletionSound,
       type: "saveSidebarCommand",
@@ -2646,13 +3023,9 @@ function ActionsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
     setEditorState(undefined);
   };
 
-  const deleteCommand = (draft: CommandConfigDraft) => {
-    if (!draft.commandId) {
-      setEditorState(undefined);
-      return;
-    }
+  const deleteCommand = (commandId: string) => {
     vscode?.postMessage({
-      commandId: draft.commandId,
+      commandId,
       type: "deleteSidebarCommand",
     });
     setEditorState(undefined);
@@ -2724,7 +3097,6 @@ function ActionsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
               existingCommands={commands}
               lockedActionType={editorState.lockedActionType}
               onCancel={() => setEditorState(undefined)}
-              onDelete={deleteCommand}
               onSave={saveCommand}
             />
           ) : (
@@ -2742,6 +3114,7 @@ function ActionsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
                             draft: createSettingsCommandDraftFromButton(command),
                           })
                         }
+                        onDelete={() => deleteCommand(command.commandId)}
                       />
                     ))}
                   </div>
@@ -2765,10 +3138,12 @@ function ActionsSettingsTab({ vscode }: { vscode?: WebviewApi }) {
 function SettingsCommandRow({
   command,
   index,
+  onDelete,
   onEdit,
 }: {
   command: SidebarCommandButton;
   index: number;
+  onDelete: () => void;
   onEdit: () => void;
 }) {
   const sortable = useSortable({
@@ -2821,9 +3196,26 @@ function SettingsCommandRow({
           </span>
         </span>
       </Button>
-      <Button aria-label={`Edit ${getActionTitle(command)}`} onClick={onEdit} size="icon-sm" type="button" variant="ghost">
-        <IconPencil aria-hidden="true" />
-      </Button>
+      <span className="settings-management-row-actions">
+        <Button
+          aria-label={`Edit ${getActionTitle(command)}`}
+          onClick={onEdit}
+          size="icon-sm"
+          type="button"
+          variant="ghost"
+        >
+          <IconPencil aria-hidden="true" />
+        </Button>
+        <Button
+          aria-label={`Delete ${getActionTitle(command)}`}
+          onClick={onDelete}
+          size="icon-sm"
+          type="button"
+          variant="destructive"
+        >
+          <IconTrash aria-hidden="true" />
+        </Button>
+      </span>
     </div>
   );
 }
@@ -2833,14 +3225,12 @@ function ActionSettingsEditor({
   existingCommands,
   lockedActionType,
   onCancel,
-  onDelete,
   onSave,
 }: {
   draft: CommandConfigDraft;
   existingCommands: readonly SidebarCommandButton[];
   lockedActionType?: SidebarActionType;
   onCancel: () => void;
-  onDelete: (draft: CommandConfigDraft) => void;
   onSave: (draft: CommandConfigDraft) => void;
 }) {
   const [actionType, setActionType] = useState<SidebarActionType>(draft.actionType);
@@ -2850,7 +3240,6 @@ function ActionSettingsEditor({
     draft.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
   );
   const [iconColor, setIconColor] = useState(draft.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR);
-  const [isGlobal, setIsGlobal] = useState(draft.isGlobal === true);
   const [name, setName] = useState(draft.name);
   const [playCompletionSound, setPlayCompletionSound] = useState(draft.playCompletionSound);
   const [url, setUrl] = useState(
@@ -2860,7 +3249,6 @@ function ActionSettingsEditor({
   const actionTypeId = useId();
   const closeTerminalOnExitId = useId();
   const commandId = useId();
-  const globalId = useId();
   const nameId = useId();
   const soundId = useId();
   const urlId = useId();
@@ -2889,7 +3277,6 @@ function ActionSettingsEditor({
     commandId: draft.commandId,
     icon,
     iconColor,
-    isGlobal,
     name: trimmedName,
     playCompletionSound: actionType === "terminal" ? playCompletionSound : false,
     url: actionType === "browser" ? url.trim() : undefined,
@@ -3010,21 +3397,7 @@ function ActionSettingsEditor({
           </Field>
         </>
       )}
-      <Field className="items-center justify-between" orientation="horizontal">
-        <FieldContent>
-          <FieldLabel className="text-sm" htmlFor={globalId}>
-            Show this action in every Ghostex project
-          </FieldLabel>
-        </FieldContent>
-        <Switch checked={isGlobal} id={globalId} onCheckedChange={setIsGlobal} />
-      </Field>
       <div className="flex justify-end gap-3">
-        {draft.commandId ? (
-          <Button className="mr-auto" onClick={() => onDelete(getDraft())} type="button" variant="destructive">
-            <IconTrash aria-hidden="true" data-icon="inline-start" />
-            Delete
-          </Button>
-        ) : null}
         <Button onClick={onCancel} type="button" variant="outline">
           Cancel
         </Button>
@@ -3290,7 +3663,6 @@ function createSettingsCommandDraft(actionType: SidebarActionType): CommandConfi
     commandId: undefined,
     icon: DEFAULT_SIDEBAR_COMMAND_ICON,
     iconColor: DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
-    isGlobal: false,
     name: "",
     playCompletionSound: actionType === "terminal",
     url: actionType === "browser" ? DEFAULT_BROWSER_ACTION_URL : undefined,
@@ -3305,7 +3677,6 @@ function createSettingsCommandDraftFromButton(command: SidebarCommandButton): Co
     commandId: command.commandId,
     icon: command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
     iconColor: command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
-    isGlobal: command.isGlobal === true,
     name: command.name,
     playCompletionSound: command.playCompletionSound,
     url: command.url,

@@ -1,3 +1,8 @@
+import {
+  normalizeAgentAcceptAllMode,
+  type AgentAcceptAllMode,
+} from "./sidebar-agent-accept-all";
+
 /**
  * CDXC:SidebarAgents 2026-04-30-03:55
  * T3 Code is shown in the default agent list again after the native runtime
@@ -8,9 +13,9 @@ export const DEFAULT_SIDEBAR_AGENTS = [
   /**
    * CDXC:SidebarAgents 2026-05-15-15:25:
    * The default model picker should present the first built-in launch engines
-   * in the user-facing order T3 Code, Codex, Claude, Pi Agent, OpenCode,
-   * Gemini, Copilot, Factory Droid, and Grok Build so the top of the menu
-   * matches the expected daily-selection flow.
+   * in the user-facing order T3 Code, Codex, Claude, Cursor CLI, Pi Agent,
+   * OpenCode, Gemini, Copilot, Factory Droid, Grok Build, Antigravity CLI, and
+   * Amp CLI so the top of the menu matches the expected daily-selection flow.
    */
   {
     agentId: "t3",
@@ -29,6 +34,19 @@ export const DEFAULT_SIDEBAR_AGENTS = [
     command: "claude",
     icon: "claude",
     name: "Claude",
+  },
+  /**
+   * CDXC:SidebarAgents 2026-05-19-09:10:
+   * Cursor CLI is a built-in launch engine directly under Claude in the default
+   * agent list. Launch it with `cursor-agent` and reuse the Cursor editor
+   * logomark so sidebar cards, configure-agent rows, and native title bars stay
+   * visually aligned with the existing Cursor open-target branding.
+   */
+  {
+    agentId: "cursor",
+    command: "cursor-agent",
+    icon: "cursor-cli",
+    name: "Cursor CLI",
   },
   /**
    * CDXC:PiAgent 2026-05-15-15:25:
@@ -52,7 +70,7 @@ export const DEFAULT_SIDEBAR_AGENTS = [
   },
   {
     agentId: "gemini",
-    command: "gemini -y",
+    command: "gemini",
     icon: "gemini",
     name: "Gemini",
   },
@@ -86,6 +104,30 @@ export const DEFAULT_SIDEBAR_AGENTS = [
     icon: "grok-build",
     name: "Grok Build",
   },
+  /**
+   * CDXC:SidebarAgents 2026-05-19-14:40:
+   * Antigravity CLI is a built-in launch engine just above Amp at the bottom of
+   * the default agent list. Launch it with `agy` and use the Antigravity
+   * logomark path from the official icon as a mask-friendly sidebar asset.
+   */
+  {
+    agentId: "antigravity",
+    command: "agy",
+    icon: "antigravity-cli",
+    name: "Antigravity CLI",
+  },
+  /**
+   * CDXC:SidebarAgents 2026-05-19-09:10:
+   * Amp CLI is a built-in launch engine at the bottom of the default agent list.
+   * Launch it with Sourcegraph's `amp` command and use the official Amp wordmark
+   * so the sidebar launcher matches Amp's CLI branding.
+   */
+  {
+    agentId: "amp",
+    command: "amp",
+    icon: "amp-cli",
+    name: "Amp CLI",
+  },
 ] as const;
 
 export type DefaultSidebarAgent = (typeof DEFAULT_SIDEBAR_AGENTS)[number];
@@ -96,6 +138,7 @@ export type DefaultSidebarAgentCommandOverrides = Partial<
 >;
 
 export type SidebarAgentButton = {
+  acceptAllMode?: AgentAcceptAllMode;
   agentId: string;
   command?: string;
   icon?: SidebarAgentIcon;
@@ -104,6 +147,7 @@ export type SidebarAgentButton = {
 };
 
 export type StoredSidebarAgent = {
+  acceptAllMode?: AgentAcceptAllMode;
   agentId: string;
   command: string;
   hidden?: boolean;
@@ -139,6 +183,7 @@ export function createSidebarAgentButtons(
     if (!storedAgent) {
       return [
         {
+          acceptAllMode: undefined,
           agentId: agent.agentId,
           command: commandOverrides[agent.agentId] ?? agent.command,
           icon: agent.icon,
@@ -150,6 +195,7 @@ export function createSidebarAgentButtons(
 
     return [
       {
+        acceptAllMode: storedAgent.acceptAllMode,
         agentId: storedAgent.agentId,
         command: storedAgent.command,
         icon: storedAgent.icon ?? agent.icon,
@@ -162,6 +208,7 @@ export function createSidebarAgentButtons(
   const customButtons = storedAgents
     .filter((agent) => !isDefaultSidebarAgentId(agent.agentId) && agent.hidden !== true)
     .map((agent) => ({
+      acceptAllMode: agent.acceptAllMode,
       agentId: agent.agentId,
       command: agent.command,
       icon: agent.icon,
@@ -205,8 +252,67 @@ export function getSidebarAgentNameByIcon(icon: SidebarAgentIcon | undefined): s
   return DEFAULT_SIDEBAR_AGENTS.find((agent) => agent.icon === icon)?.name;
 }
 
+/**
+ * CDXC:CursorCLI 2026-05-19-15:35:
+ * Cursor CLI auto-generates conversation titles in the terminal. Include Cursor
+ * alongside the other agents whose live terminal titles can drive sidebar cards
+ * and be persisted through native terminal-title sync.
+ */
+const TERMINAL_TITLE_SESSION_SYNC_AGENT_IDS = new Set<DefaultSidebarAgentId>([
+  "antigravity",
+  "claude",
+  "codex",
+  "copilot",
+  "cursor",
+  "gemini",
+  "opencode",
+  "pi",
+]);
+
+export function supportsTerminalTitleSessionSync(agentName: string | undefined): boolean {
+  const normalizedAgentName = agentName?.trim().toLowerCase();
+  if (!normalizedAgentName) {
+    return false;
+  }
+
+  if (TERMINAL_TITLE_SESSION_SYNC_AGENT_IDS.has(normalizedAgentName as DefaultSidebarAgentId)) {
+    return true;
+  }
+
+  if (
+    normalizedAgentName === "claude code" ||
+    normalizedAgentName === "codex cli" ||
+    normalizedAgentName === "agy" ||
+    normalizedAgentName === "antigravity cli" ||
+    normalizedAgentName === "cursor agent" ||
+    normalizedAgentName === "cursor cli" ||
+    normalizedAgentName === "cursor-agent" ||
+    normalizedAgentName === "github copilot" ||
+    normalizedAgentName === "open code" ||
+    normalizedAgentName === "π"
+  ) {
+    return true;
+  }
+
+  const defaultAgent = DEFAULT_SIDEBAR_AGENTS.find(
+    (agent) =>
+      agent.agentId === normalizedAgentName ||
+      agent.name.trim().toLowerCase() === normalizedAgentName,
+  );
+  return defaultAgent
+    ? TERMINAL_TITLE_SESSION_SYNC_AGENT_IDS.has(defaultAgent.agentId)
+    : false;
+}
+
 export function shouldPreferTerminalTitleForAgentIcon(icon: SidebarAgentIcon | undefined): boolean {
-  return icon === "claude" || icon === "codex" || icon === "opencode" || icon === "pi";
+  return (
+    icon === "antigravity-cli" ||
+    icon === "claude" ||
+    icon === "codex" ||
+    icon === "cursor-cli" ||
+    icon === "opencode" ||
+    icon === "pi"
+  );
 }
 
 export function normalizeStoredSidebarAgents(candidate: unknown): StoredSidebarAgent[] {
@@ -227,6 +333,7 @@ export function normalizeStoredSidebarAgents(candidate: unknown): StoredSidebarA
     const name = partialItem.name?.trim();
     const command = partialItem.command?.trim();
     const icon = isSidebarAgentIcon(partialItem.icon) ? partialItem.icon : undefined;
+    const acceptAllMode = normalizeAgentAcceptAllMode(partialItem.acceptAllMode);
     const isDefault =
       partialItem.isDefault === true || (agentId ? isDefaultSidebarAgentId(agentId) : false);
     const hidden = partialItem.hidden === true;
@@ -236,6 +343,7 @@ export function normalizeStoredSidebarAgents(candidate: unknown): StoredSidebarA
     }
 
     normalizedAgents.push({
+      acceptAllMode,
       agentId,
       command,
       hidden,
@@ -295,6 +403,7 @@ function getDefaultSidebarAgentName(agentId: string, storedName: string): string
   if (
     (agentId === "codex" && normalizedStoredName === "codex cli") ||
     (agentId === "claude" && normalizedStoredName === "claude code") ||
+    (agentId === "cursor" && normalizedStoredName === "cursor") ||
     (agentId === "pi" && normalizedStoredName === "pi")
   ) {
     return defaultName;

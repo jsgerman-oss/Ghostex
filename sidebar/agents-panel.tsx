@@ -24,7 +24,15 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { SidebarAgentButton } from "../shared/sidebar-agents";
-import type { SidebarCommandButton } from "../shared/sidebar-commands";
+import {
+  DEFAULT_BROWSER_ACTION_URL,
+  type SidebarCommandButton,
+} from "../shared/sidebar-commands";
+import {
+  DEFAULT_SIDEBAR_COMMAND_ICON,
+  DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
+} from "../shared/sidebar-command-icons";
+import type { CommandConfigDraft } from "./command-config-modal";
 import { getZedOverlayTargetAppLabel, type ZedOverlayTargetApp } from "../shared/ghostex-settings";
 import { AGENT_LOGOS } from "./agent-logos";
 import { EditorBrandIcon } from "./brand-icons";
@@ -230,6 +238,7 @@ export function AgentsPanel({
 
   const openAgentEditor = (agent: SidebarAgentButton) => {
     const draft: AgentConfigDraft = {
+      acceptAllMode: agent.acceptAllMode ?? "inherit",
       agentId: agent.agentId,
       command: agent.command ?? "",
       icon: agent.icon,
@@ -332,8 +341,7 @@ export function AgentsPanel({
   }, [agents, draftAgentIds]);
   const gridColumnCount = getSidebarButtonGridColumnCount(orderedAgents.length);
   const shouldShowEmptyState = orderedAgents.length === 0;
-  const runnableCommands = commands.filter(isRunnableSidebarCommand);
-  const primaryCommand = resolvePrimaryCommand(runnableCommands, primaryCommandId);
+  const primaryCommand = resolvePrimaryCommand(commands, primaryCommandId);
   const primaryOpenInLabel = getOpenInQuickActionLabel(primaryOpenInTarget);
 
   const persistPrimaryCommand = (commandId: string) => {
@@ -364,6 +372,17 @@ export function AgentsPanel({
   const runCommand = (command: SidebarCommandButton | undefined) => {
     if (!command) {
       openConfigureActionsModal();
+      return;
+    }
+    if (
+      (command.actionType === "browser" && !command.url?.trim()) ||
+      (command.actionType === "terminal" && !command.command?.trim())
+    ) {
+      openAppModal({
+        commandDraft: createAgentsPanelCommandDraft(command),
+        modal: "commandConfig",
+        type: "open",
+      });
       return;
     }
     persistPrimaryCommand(command.commandId);
@@ -736,7 +755,7 @@ export function AgentsPanel({
       {quickActionMenu
         ? createPortal(
             <QuickActionMenu
-              commands={runnableCommands}
+              commands={commands}
               menu={quickActionMenu}
               onConfigureActions={() => {
                 setQuickActionMenu(undefined);
@@ -949,10 +968,18 @@ function OpenInQuickActionIcon({ target }: { target: OpenInQuickActionTarget }) 
   return <EditorBrandIcon className="quick-action-icon quick-action-brand-icon" icon="zed" />;
 }
 
-function isRunnableSidebarCommand(command: SidebarCommandButton): boolean {
-  return command.actionType === "browser"
-    ? Boolean(command.url?.trim())
-    : Boolean(command.command?.trim());
+function createAgentsPanelCommandDraft(command: SidebarCommandButton): CommandConfigDraft {
+  return {
+    actionType: command.actionType,
+    closeTerminalOnExit: command.closeTerminalOnExit,
+    command: command.command ?? (command.actionType === "terminal" ? "" : undefined),
+    commandId: command.commandId,
+    icon: command.icon ?? DEFAULT_SIDEBAR_COMMAND_ICON,
+    iconColor: command.iconColor ?? DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
+    name: command.name,
+    playCompletionSound: command.playCompletionSound,
+    url: command.url ?? (command.actionType === "browser" ? DEFAULT_BROWSER_ACTION_URL : undefined),
+  };
 }
 
 function resolvePrimaryCommand(

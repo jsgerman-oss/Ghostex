@@ -1,5 +1,8 @@
+import ampCliLogo from "../src/assets/amp-cli.svg" with { type: "text" };
+import antigravityCliLogo from "../src/assets/antigravity-cli.svg" with { type: "text" };
 import browserLogo from "../src/assets/browser.svg" with { type: "text" };
 import claudeLogo from "../src/assets/claude.svg" with { type: "text" };
+import cursorCliLogo from "../src/assets/cursor-cli.svg" with { type: "text" };
 import codexLogo from "../src/assets/codex.svg" with { type: "text" };
 import copilotLogo from "../src/assets/copilot.svg" with { type: "text" };
 import factoryDroidLogo from "../src/assets/factory-droid.svg" with { type: "text" };
@@ -29,8 +32,11 @@ function svgTextToDataUrl(svgText: string): string {
 }
 
 export const AGENT_LOGOS: Record<SidebarAgentIcon, string> = {
+  "amp-cli": svgTextToDataUrl(ampCliLogo),
+  "antigravity-cli": svgTextToDataUrl(antigravityCliLogo),
   browser: svgTextToDataUrl(browserLogo),
   claude: svgTextToDataUrl(claudeLogo),
+  "cursor-cli": svgTextToDataUrl(cursorCliLogo),
   codex: svgTextToDataUrl(codexLogo),
   copilot: svgTextToDataUrl(copilotLogo),
   "factory-droid": svgTextToDataUrl(factoryDroidLogo),
@@ -49,8 +55,11 @@ export const AGENT_LOGOS: Record<SidebarAgentIcon, string> = {
  * session card.
  */
 export const AGENT_LOGO_COLORS: Record<SidebarAgentIcon, string> = {
+  "amp-cli": "#ffffff",
+  "antigravity-cli": "#749bff",
   browser: "#82b7ff",
   claude: "#d97757",
+  "cursor-cli": "#edecec",
   codex: "#ffffff",
   copilot: "#ffffff",
   "factory-droid": "#ff7a1a",

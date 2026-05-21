@@ -1,7 +1,14 @@
 import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Field, FieldContent, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+  FieldTitle,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -12,12 +19,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  type AgentAcceptAllMode,
+  supportsAgentAcceptAll,
+} from "../shared/sidebar-agent-accept-all";
+import {
   DEFAULT_SIDEBAR_AGENTS,
   getDefaultSidebarAgentByIcon,
   type SidebarAgentIcon,
 } from "../shared/sidebar-agents";
 
 export type AgentConfigDraft = {
+  acceptAllMode?: AgentAcceptAllMode;
   agentId?: string;
   command: string;
   icon?: SidebarAgentIcon;
@@ -38,9 +50,11 @@ export type AgentConfigModalProps = {
  * close behavior.
  */
 export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfigModalProps) {
+  const [acceptAllMode, setAcceptAllMode] = useState<AgentAcceptAllMode>(draft.acceptAllMode ?? "inherit");
   const [command, setCommand] = useState(draft.command);
   const [icon, setIcon] = useState<SidebarAgentIcon | "custom">(draft.icon ?? "custom");
   const [name, setName] = useState(draft.name);
+  const acceptAllModeId = useId();
   const agentTypeId = useId();
   const commandId = useId();
   const nameId = useId();
@@ -50,6 +64,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
       return;
     }
 
+    setAcceptAllMode(draft.acceptAllMode ?? "inherit");
     setCommand(draft.command);
     setIcon(draft.icon ?? "custom");
     setName(draft.name);
@@ -73,6 +88,8 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
   }, [isOpen, onCancel]);
 
   const isSaveDisabled = name.trim().length === 0 || command.trim().length === 0;
+  const resolvedAgentId = draft.agentId ?? getDefaultSidebarAgentByIcon(icon === "custom" ? undefined : icon)?.agentId ?? "";
+  const acceptAllSupported = supportsAgentAcceptAll(resolvedAgentId, icon === "custom" ? undefined : icon);
 
   return (
     <Dialog
@@ -186,6 +203,36 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
               value={command}
             />
           </Field>
+          <Field className="gap-2.5">
+            <FieldContent>
+              <FieldTitle>
+                <FieldLabel className="text-sm" htmlFor={acceptAllModeId}>
+                  Accept All
+                </FieldLabel>
+              </FieldTitle>
+              <FieldDescription className="text-xs text-muted-foreground">
+                {acceptAllSupported
+                  ? "Inherit uses the global Agents setting. Accept All appends this CLI's permission-bypass flag at launch without changing the stored command."
+                  : "This agent CLI does not expose a supported Accept All flag in Ghostex."}
+              </FieldDescription>
+            </FieldContent>
+            <Select
+              disabled={!acceptAllSupported}
+              onValueChange={(value) => setAcceptAllMode(value as AgentAcceptAllMode)}
+              value={acceptAllMode}
+            >
+              <SelectTrigger className="h-10 w-full px-3 text-sm" id={acceptAllModeId}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="inherit">Inherit global setting</SelectItem>
+                  <SelectItem value="enabled">Accept All</SelectItem>
+                  <SelectItem value="disabled">Ask for permission</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
         </FieldGroup>
         <DialogFooter>
           <Button onClick={onCancel} type="button" variant="outline">
@@ -195,6 +242,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
             disabled={isSaveDisabled}
             onClick={() =>
               onSave({
+                acceptAllMode,
                 agentId: draft.agentId,
                 command: command.trim(),
                 icon: icon === "custom" ? undefined : icon,

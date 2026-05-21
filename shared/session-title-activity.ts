@@ -5,6 +5,20 @@ import type { SidebarSessionActivityState } from "./session-grid-contract";
  * Native Ghostty panes still derive agent activity from Claude/Codex/Gemini
  * terminal titles. Keep that runtime logic in shared code after removing the
  * unused VS Code extension and Node wrapper sources.
+ *
+ * CDXC:CursorCLI 2026-05-19-15:05:
+ * Cursor CLI publishes terminal titles as `<session> - ⏳ Working <spinner>` while
+ * working and `<session> - ✅ Ready` when idle, including bare `- ⏳ Working ..·`
+ * titles before a session name exists. New sessions also boot with
+ * `Cursor Agent - ✅ Ready`. Match those Cursor markers before Claude's
+ * single-character braille/dot inference so Cursor keeps the cursor-cli icon and
+ * activity even when users launch a different agent first.
+ *
+ * CDXC:AntigravityCLI 2026-05-19-18:45:
+ * Antigravity CLI (`agy`) uses the terminal title `agy` while running and
+ * `🔔 agy` when finished and waiting for attention. Detect those titles before
+ * Copilot's shared `🔔` idle marker so Antigravity sessions keep the correct icon
+ * and attention state even without a working-phase title signal.
  */
 
 const CLAUDE_CODE_IDLE_MARKERS = ["✳", "*"] as const;
@@ -39,6 +53,14 @@ const COPILOT_WORKING_MARKER = "🤖";
 const COPILOT_IDLE_MARKER = "🔔";
 const OPENCODE_TITLE_PREFIX_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✦◇🤖🔔]*OC\s*\|/iu;
 const PI_TITLE_PREFIX_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✦◇🤖🔔]*π\s*-/u;
+const CURSOR_CLI_WORKING_TITLE_SUFFIX_PATTERN = /⏳ Working [.·]+$/u;
+const CURSOR_CLI_READY_TITLE_SUFFIX_PATTERN = /✅ Ready$/u;
+const CURSOR_CLI_AGENT_READY_TITLE_PATTERN = /^Cursor Agent\s*-\s*✅ Ready$/iu;
+const CURSOR_CLI_AGENT_TITLE_PATTERN = /^Cursor Agent$/iu;
+const CURSOR_TITLE_KEYWORD = "cursor";
+const ANTIGRAVITY_TITLE_KEYWORD = "agy";
+const ANTIGRAVITY_ATTENTION_TITLE_PATTERN = /^🔔\s*agy$/iu;
+const ANTIGRAVITY_IDLE_TITLE_PATTERN = /^agy$/iu;
 export const TITLE_ACTIVITY_WINDOW_MS = 1_000;
 export const SLOW_SPINNER_ACTIVITY_WINDOW_MS = 3_000;
 
@@ -71,10 +93,16 @@ export function getTitleDerivedSessionActivity(
   const isAcknowledged = sameAgent ? (previousDerivedActivity?.isAcknowledged ?? false) : false;
   const lastTitleChangeAt = sameAgent ? previousDerivedActivity?.lastTitleChangeAt : undefined;
   if (titleState.state === "idle") {
+    const antigravityAttention = getAntigravityAttentionActivity(
+      title,
+      titleState.agentName,
+      isAcknowledged,
+    );
     return {
-      activity: hasSeenWorking && !isAcknowledged ? "attention" : "idle",
+      activity:
+        antigravityAttention ?? (hasSeenWorking && !isAcknowledged ? "attention" : "idle"),
       agentName: titleState.agentName,
-      hasSeenWorking,
+      hasSeenWorking: antigravityAttention ? true : hasSeenWorking,
       isAcknowledged,
       lastTitleChangeAt,
     };
@@ -124,15 +152,20 @@ export function getTitleDerivedSessionActivityFromTransition(
         previousDerivedActivity?.activity === "attention"
       : false;
     const isAcknowledged = sameAgent ? (previousDerivedActivity?.isAcknowledged ?? false) : false;
+    const antigravityAttention = getAntigravityAttentionActivity(
+      nextTitle,
+      nextTitleState.agentName,
+      isAcknowledged,
+    );
     return {
       activity:
         nextTitleState.state === "working"
           ? "working"
-          : hasSeenWorking && !isAcknowledged
-            ? "attention"
-            : "idle",
+          : (antigravityAttention ??
+            (hasSeenWorking && !isAcknowledged ? "attention" : "idle")),
       agentName: nextTitleState.agentName,
-      hasSeenWorking: nextTitleState.state === "working" ? true : hasSeenWorking,
+      hasSeenWorking:
+        nextTitleState.state === "working" || antigravityAttention ? true : hasSeenWorking,
       isAcknowledged: nextTitleState.state === "working" ? false : isAcknowledged,
       lastTitleChangeAt:
         nextTitleState.state === "working"
@@ -199,7 +232,15 @@ function getTitleState(
   knownAgentName?: string,
 ):
   | {
-      agentName: "claude" | "codex" | "copilot" | "gemini" | "opencode" | "pi";
+      agentName:
+        | "antigravity"
+        | "claude"
+        | "codex"
+        | "copilot"
+        | "cursor"
+        | "gemini"
+        | "opencode"
+        | "pi";
       state: "idle" | "working";
     }
   | undefined {
@@ -207,6 +248,25 @@ function getTitleState(
   const normalizedTitle = title.trim().replace(/\s+/g, " ");
   if (hasOpenCodeTitlePrefix(normalizedTitle)) {
     return undefined;
+  }
+
+  const cursorTitleState = getCursorTitleState(title, normalizedAgentName === "cursor");
+  if (cursorTitleState) {
+    return {
+      agentName: "cursor",
+      state: cursorTitleState,
+    };
+  }
+
+  const antigravityTitleState = getAntigravityTitleState(
+    title,
+    normalizedAgentName === "antigravity",
+  );
+  if (antigravityTitleState) {
+    return {
+      agentName: "antigravity",
+      state: antigravityTitleState,
+    };
   }
 
   const claudeCodeTitleState = getClaudeCodeTitleState(title, normalizedAgentName === "claude");
@@ -264,10 +324,63 @@ export function hasClaudeCodeIdleTitleMarker(title: string | undefined): boolean
   return title !== undefined && getClaudeCodeTitleState(title, true) === "idle";
 }
 
+export function hasCursorCliWorkingTitleMarker(title: string | undefined): boolean {
+  return title !== undefined && getCursorTitleState(title, true) === "working";
+}
+
+export function hasCursorCliReadyTitleMarker(title: string | undefined): boolean {
+  return title !== undefined && getCursorTitleState(title, true) === "idle";
+}
+
+export function hasAntigravityCliAttentionTitleMarker(title: string | undefined): boolean {
+  return title !== undefined && isAntigravityAttentionTitle(title);
+}
+
+export function hasAntigravityCliIdleTitleMarker(title: string | undefined): boolean {
+  return title !== undefined && getAntigravityTitleState(title, true) === "idle";
+}
+
+function getCursorTitleState(
+  title: string,
+  allowAgentHintMatch = false,
+): "idle" | "working" | undefined {
+  const normalizedTitle = title.trim().replace(/\s+/g, " ");
+  if (
+    CURSOR_CLI_AGENT_READY_TITLE_PATTERN.test(normalizedTitle) ||
+    CURSOR_CLI_READY_TITLE_SUFFIX_PATTERN.test(normalizedTitle)
+  ) {
+    return "idle";
+  }
+
+  if (CURSOR_CLI_WORKING_TITLE_SUFFIX_PATTERN.test(normalizedTitle)) {
+    return "working";
+  }
+
+  if (CURSOR_CLI_AGENT_TITLE_PATTERN.test(normalizedTitle)) {
+    return "idle";
+  }
+
+  const lowerTitle = normalizedTitle.toLowerCase();
+  const hasCursorKeyword =
+    lowerTitle.includes("cursor cli") ||
+    lowerTitle.includes("cursor-agent") ||
+    lowerTitle.includes("cursor agent") ||
+    lowerTitle === CURSOR_TITLE_KEYWORD;
+  if (allowAgentHintMatch && hasCursorKeyword) {
+    return "idle";
+  }
+
+  return undefined;
+}
+
 function getClaudeCodeTitleState(
   title: string,
   allowAgentHintMatch = false,
 ): "idle" | "working" | undefined {
+  if (getCursorTitleState(title) !== undefined) {
+    return undefined;
+  }
+
   const normalizedTitle = title.trim().replace(/\s+/g, " ");
   const lowerTitle = normalizedTitle.toLowerCase();
   const lowerClaudeCodeTitle = CLAUDE_CODE_TITLE.toLowerCase();
@@ -388,10 +501,52 @@ function getGeminiTitleState(
   return undefined;
 }
 
+function getAntigravityTitleState(
+  title: string,
+  allowAgentHintMatch = false,
+): "idle" | "working" | undefined {
+  const normalizedTitle = title.trim().replace(/\s+/g, " ");
+  if (isAntigravityAttentionTitle(normalizedTitle) || ANTIGRAVITY_IDLE_TITLE_PATTERN.test(normalizedTitle)) {
+    return "idle";
+  }
+
+  const lowerTitle = normalizedTitle.toLowerCase();
+  if (
+    allowAgentHintMatch &&
+    (lowerTitle === ANTIGRAVITY_TITLE_KEYWORD ||
+      lowerTitle.includes("antigravity cli") ||
+      lowerTitle === "antigravity")
+  ) {
+    return "idle";
+  }
+
+  return undefined;
+}
+
+function isAntigravityAttentionTitle(title: string): boolean {
+  return ANTIGRAVITY_ATTENTION_TITLE_PATTERN.test(title.trim().replace(/\s+/g, " "));
+}
+
+function getAntigravityAttentionActivity(
+  title: string,
+  agentName: string,
+  isAcknowledged: boolean,
+): SidebarSessionActivityState | undefined {
+  if (agentName !== "antigravity" || !isAntigravityAttentionTitle(title)) {
+    return undefined;
+  }
+
+  return isAcknowledged ? "idle" : "attention";
+}
+
 function getCopilotTitleState(
   title: string,
   allowAgentHintMatch = false,
 ): "idle" | "working" | undefined {
+  if (getAntigravityTitleState(title) !== undefined) {
+    return undefined;
+  }
+
   const normalizedTitle = title.trim().replace(/\s+/g, " ");
   const lowerTitle = normalizedTitle.toLowerCase();
   if (
@@ -425,7 +580,16 @@ function containsAnyMarker(title: string, markers: readonly string[]): boolean {
 
 function normalizeKnownAgentName(
   knownAgentName: string | undefined,
-): "claude" | "codex" | "copilot" | "gemini" | "opencode" | "pi" | undefined {
+):
+  | "antigravity"
+  | "claude"
+  | "codex"
+  | "copilot"
+  | "cursor"
+  | "gemini"
+  | "opencode"
+  | "pi"
+  | undefined {
   const normalizedAgentName = knownAgentName?.trim().toLowerCase();
   if (normalizedAgentName === "claude code") {
     return "claude";
@@ -436,6 +600,20 @@ function normalizeKnownAgentName(
   if (normalizedAgentName === "github copilot") {
     return "copilot";
   }
+  if (
+    normalizedAgentName === "agy" ||
+    normalizedAgentName === "antigravity cli" ||
+    normalizedAgentName === "antigravity"
+  ) {
+    return "antigravity";
+  }
+  if (
+    normalizedAgentName === "cursor cli" ||
+    normalizedAgentName === "cursor-agent" ||
+    normalizedAgentName === "cursor agent"
+  ) {
+    return "cursor";
+  }
   if (normalizedAgentName === "open code") {
     return "opencode";
   }
@@ -443,8 +621,10 @@ function normalizeKnownAgentName(
     return "pi";
   }
   if (
+    normalizedAgentName === "antigravity" ||
     normalizedAgentName === "claude" ||
     normalizedAgentName === "codex" ||
+    normalizedAgentName === "cursor" ||
     normalizedAgentName === "gemini" ||
     normalizedAgentName === "copilot" ||
     normalizedAgentName === "opencode" ||
@@ -459,7 +639,7 @@ function normalizeKnownAgentName(
 function requiresObservedTitleTransitions(
   agentName: TitleDerivedSessionActivity["agentName"],
 ): boolean {
-  return agentName === "claude" || agentName === "codex" || agentName === "pi";
+  return agentName === "claude" || agentName === "codex" || agentName === "cursor" || agentName === "pi";
 }
 
 export function getTitleActivityWindowMs(
