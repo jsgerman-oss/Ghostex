@@ -682,7 +682,9 @@ function isCursorCliPlaceholderTerminalTitle(title: string): boolean {
   return (
     CURSOR_CLI_AGENT_READY_TITLE_PATTERN.test(normalizedTitle) ||
     CURSOR_CLI_AGENT_TITLE_PATTERN.test(normalizedTitle) ||
-    isIgnoredGenericAgentTerminalTitle(normalizedTitle)
+    ["cursor", "cursor agent", "cursor cli", "cursor-agent"].includes(
+      normalizedTitle.toLowerCase(),
+    )
   );
 }
 
