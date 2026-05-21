@@ -63,6 +63,7 @@
 - The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
 - The native titlebar includes Agents, Code, Git, and Project modes for switching workspace surfaces without crowding the sidebar, with a visible active-pill transition between modes.
 - The titlebar Resources menu shows live CPU and memory use by project, session, Ghostex runtime, and browser tabs, with a shortcut to sleep inactive agent sessions.
+- The titlebar Resources menu can quit individual resource groups or all managed sessions, explains zmx persistence clearly, and keeps diagnostic resources collapsed until needed.
 - Code, Git, and Project modes can hide the agent side pane and restore it from the titlebar without losing that preference when switching modes.
 - Project workspace controls include clearer titlebar modes, improved project panel behavior, and an easier empty-project first-terminal flow.
 - Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
@@ -118,6 +119,8 @@
 - Sidebar Actions are stored per project, and worktrees share their parent project's action list.
 - The Ghostex CLI lists sessions when run as bare `ghostex` or `gtx`, using the same project order as the app.
 - zmx-backed CLI attach can recreate a missing named zmx session and run the saved agent resume command when possible.
+- Embedded Code, Git, and browser panes stay visually stable while the command pane is resized.
+- Collapsed Quick and Projects sections no longer create hidden extra scroll space in compact sidebars.
 - The pet overlay includes clickable status badges, Go to Ghostex, Sleep Pet, and an additional pet sprite.
 - The floating prompt editor prewarms after startup so the first real prompt edit opens faster.
 - Delayed Send deadlines persist with restored terminal sessions so pending sends can resume after restart.

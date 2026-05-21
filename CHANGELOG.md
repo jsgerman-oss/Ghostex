@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.8.0 - 2026-05-21
+
+- Added Quit controls to the titlebar Resources menu so individual resource groups or all managed sessions can be closed from one place.
+- Improved the Resources menu for zmx users with clearer persistence guidance, less crowded header actions, and collapsed diagnostic resources by default.
+- Improved embedded Code, Git, and browser panes so command-pane resizing stays visually stable during live drag gestures.
+- Improved compact sidebar layouts so collapsed Quick and Projects sections no longer create extra hidden scroll space.
+
 ## 3.7.0 - 2026-05-21
 
 - Improved embedded Code, Git, and browser panes so showing or hiding the command pane no longer shifts page content upward over repeated resizes.
