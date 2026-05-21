@@ -4,6 +4,7 @@
 
 - Added Quit controls to the titlebar Resources menu so individual resource groups or all managed sessions can be closed from one place.
 - Improved the Resources menu for zmx users with clearer persistence guidance, less crowded header actions, and collapsed diagnostic resources by default.
+- Improved the pet overlay so attention/completed session cards appear ahead of active working cards while preserving sidebar order within each status.
 - Improved embedded Code, Git, and browser panes so command-pane resizing stays visually stable during live drag gestures.
 - Improved compact sidebar layouts so collapsed Quick and Projects sections no longer create extra hidden scroll space.
 

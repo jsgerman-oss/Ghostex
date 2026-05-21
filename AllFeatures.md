@@ -122,6 +122,7 @@
 - Embedded Code, Git, and browser panes stay visually stable while the command pane is resized.
 - Collapsed Quick and Projects sections no longer create hidden extra scroll space in compact sidebars.
 - The pet overlay includes clickable status badges, Go to Ghostex, Sleep Pet, and an additional pet sprite.
+- The pet overlay places attention/completed session cards ahead of active working cards while preserving sidebar order within each status.
 - The floating prompt editor prewarms after startup so the first real prompt edit opens faster.
 - Delayed Send deadlines persist with restored terminal sessions so pending sends can resume after restart.
 - Large-project sidebar scrolling has a current-projects Storybook regression story for checking real project list reachability.
