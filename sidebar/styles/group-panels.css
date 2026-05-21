@@ -1204,8 +1204,16 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   .reference-sidebar-collapsible-body[data-collapsed="true"],
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-drawer-body[data-collapsed="true"] {
+  /*
+   * CDXC:SidebarScroll 2026-05-21-12:32:
+   * When both Quick and Projects are collapsed, their hidden child rows must
+   * not keep inflating the session-groups scrollHeight. Clip collapsed section
+   * bodies so the two visible section headers fit without creating a fake
+   * scroll range that can hide them.
+   */
   max-height: 0;
   opacity: 0;
+  overflow: hidden;
   pointer-events: none;
   transform: translateY(-4px);
   transition:
