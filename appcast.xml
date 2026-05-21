@@ -15,7 +15,7 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:shortVersionString>3.8.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.8.0/ghostex-3.8.0-arm64.dmg" length="190208493" type="application/octet-stream" sparkle:edSignature="vhJCEi1IrQFxO2iibUI9LcYSv4cEAoY2Nfox91x1qu2xv0QzEZDNdLH71gR142cGBFS7lIwebV8vNx3ZMiIsAA=="/>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.8.0/ghostex-3.8.0-arm64.dmg" length="190049190" type="application/octet-stream" sparkle:edSignature="WLdXfRTGQOP90QhU7ujmKbrKomOp31iNVRWlQ1Tr6Z1zoJTjNp1dm1KxXyddSKPCBVgYhAlNh5E8tq/s6zQ3BA=="/>
         </item>
         <item>
             <title>3.7.0</title>
@@ -70,6 +70,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: otaWk9h3tEFoSp51vpAxu5Hqyr1ojHuwpd58wCajBC4JoC83mXnAvtlam/YCMrTmQWEJODwoKkvEzIzZOnJSAA==
+edSignature: eIMdQdyovO3nidUeX5k6iCOjiKk/yG6d/2TtYasYdrLl+EtphnKS3z8xL14GUfnr0G2nvdKa5UMoBCGBV7UMDA==
 length: 5502
 -->
