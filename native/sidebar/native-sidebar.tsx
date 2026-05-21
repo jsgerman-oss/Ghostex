@@ -7627,7 +7627,7 @@ function syncNativePetOverlayState(): void {
   );
   const shownActivityCandidates =
     actionableActivityCandidates.length > 0
-      ? actionableActivityCandidates.slice(0, 3)
+      ? [...actionableActivityCandidates].sort(compareNativePetOverlayActivityCandidates).slice(0, 3)
       : [...petActivityCandidates].sort(compareNativeSessionStatusIndicatorCandidates).slice(0, 2);
   const activities = shownActivityCandidates.map((candidate) => ({
     id: candidate.sessionId,
@@ -7651,6 +7651,12 @@ function syncNativePetOverlayState(): void {
    * When no done/attention or in-progress/working sessions exist, expanded pet
    * cards still need useful shortcuts. Show the two most recently active open
    * sessions as neutral cards instead of leaving the expanded area empty.
+   * CDXC:PetOverlay 2026-05-21-15:14:
+   * Expanded pet cards must never place an orange working session above a green
+   * attention session. Preserve rendered sidebar order within each status, but
+   * group green attention cards before orange working cards globally so the pet
+   * stack cannot imply active work is more important than completed/attention
+   * sessions.
    */
   postNative({
     activities,
@@ -7708,6 +7714,32 @@ function createNativePetOverlayActivityCandidates(): NativeSessionStatusIndicato
   }
 
   return candidates;
+}
+
+function compareNativePetOverlayActivityCandidates(
+  left: NativeSessionStatusIndicatorCandidate,
+  right: NativeSessionStatusIndicatorCandidate,
+): number {
+  const statusDelta =
+    getNativePetOverlayActivityStatusPriority(right.status) -
+    getNativePetOverlayActivityStatusPriority(left.status);
+  if (statusDelta !== 0) {
+    return statusDelta;
+  }
+  return left.order - right.order;
+}
+
+function getNativePetOverlayActivityStatusPriority(
+  status: NativeSessionStatusIndicatorStatus,
+): number {
+  switch (status) {
+    case "attention":
+      return 2;
+    case "working":
+      return 1;
+    case "available":
+      return 0;
+  }
 }
 
 function createNativePetOverlayStatusItems(
