@@ -1,7 +1,7 @@
 Discord: https://discord.gg/xYSBPapM
 
 # The best Free & Open Source alternative to Codex App. 
-Ghostty Terminals. All Agent CLIs. T3code. VScode Embed. Embedded Browser.
+Ghostty Terminals. All Agent CLIs. T3code. VScode Embed. Embedded Browser. Rich Editor. Android & iOS Apps.
 
 > Looking for contributers! Please join the discord if interested!
 
