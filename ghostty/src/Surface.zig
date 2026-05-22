@@ -244,6 +244,9 @@ const Mouse = struct {
     /// The last x/y sent for mouse reports.
     event_point: ?terminal.point.Coordinate = null,
 
+    /// The last binding modifiers sent for mouse reports.
+    event_mods: ?input.Mods = null,
+
     /// The pressure stage for the mouse. This should always be none if
     /// the mouse is not pressed.
     pressure_stage: input.MousePressureStage = .none,
@@ -1535,7 +1538,6 @@ fn modsChanged(self: *Surface, mods: input.Mods) void {
         // The mouse mods only contain binding modifiers since we don't
         // want caps/num lock or sided modifiers to affect the mouse.
         self.mouse.mods = mods.binding();
-
         // We also need to update the renderer so it knows if it should
         // highlight links. Additionally, mark the screen as dirty so
         // that the highlight state of all links is properly updated.
@@ -3651,6 +3653,7 @@ fn mouseReport(
         // Keep track of our last reported viewport cell for event
         // deduplication.
         opts.last_cell = &self.mouse.event_point;
+        opts.last_mods = &self.mouse.event_mods;
 
         break :opts opts;
     };
