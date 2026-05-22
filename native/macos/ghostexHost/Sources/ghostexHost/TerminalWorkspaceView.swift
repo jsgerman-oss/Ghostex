@@ -9149,7 +9149,7 @@ final class TerminalWorkspaceView: NSView {
     }
     let labelSize = labelView.fittingSize
     let labelWidth = min(ceil(labelSize.width), max(terminalRect.width - 32, 0))
-    let labelHeight = min(max(ceil(labelSize.height), 46), max(terminalRect.height - 24, 0))
+    let labelHeight = min(max(ceil(labelSize.height), 52), max(terminalRect.height - 24, 0))
     return CGRect(
       x: max(12, terminalRect.maxX - labelWidth - 12),
       y: max(8, terminalRect.maxY - labelHeight - 8),
@@ -12557,10 +12557,10 @@ final class GhostexGhosttySurfaceView: NSView {
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    if handleGhostexSearchKeyEquivalent(event) {
+    if handleCommandEditingKeyEquivalent(event) {
       return true
     }
-    if handleCommandEditingKeyEquivalent(event) {
+    if handleGhostexSearchKeyEquivalent(event) {
       return true
     }
     return super.performKeyEquivalent(with: event)
@@ -12776,10 +12776,21 @@ final class GhostexGhosttySurfaceView: NSView {
    AppKit's Select All menu key equivalent claims Cmd-A before embedded
    Ghostty can encode it for terminal applications. When a terminal pane is
    focused, Cmd-A must reach the child program as Command/Super, while Cmd-Left
-   remains on the terminal input path. Keep native search above this handler so
-   Cmd-F/Cmd-G continue
-   to drive Ghostty search chrome, and leave non-terminal text fields on the
+   remains on the terminal input path. Keep non-terminal text fields on the
    normal AppKit Edit menu path.
+
+   CDXC:TerminalPromptEditing 2026-05-23-01:51:
+   Cmd+G in focused Ghostty terminal panes must send Ctrl+G to child TUIs so
+   Claude Code/Codex can open EDITOR and gte can save from the same shortcut.
+   Cmd+F still opens Ghostty search, and Cmd+G search navigation remains scoped
+   to TerminalSearchTextField when the search field owns first responder.
+
+   CDXC:TerminalPromptEditing 2026-05-23-02:10:
+   gte is the default terminal editor, so focused Ghostty panes must forward the
+   main Mac editing shortcuts as Super-modified CSI-u sequences instead of
+   letting AppKit's menu equivalents swallow them. Preserve native terminal-copy
+   behavior when Ghostty owns an active selection, then send Cmd+C through to gte
+   when the selection is inside the TUI itself.
    */
   private func handleCommandEditingKeyEquivalent(_ event: NSEvent) -> Bool {
     guard event.type == .keyDown, focused else {
@@ -12790,10 +12801,27 @@ final class GhostexGhosttySurfaceView: NSView {
       return false
     }
 
-    if flags.isDisjoint(with: [.shift]),
-      event.charactersIgnoringModifiers?.lowercased() == "a"
-    {
-      return sendTerminalInput(Self.commandASequence, label: "cmd-a-as-super")
+    let key = event.charactersIgnoringModifiers?.lowercased()
+
+    if flags.isDisjoint(with: [.shift]), key == "g" {
+      return sendTerminalInput(Self.controlGSequence, label: "cmd-g-as-ctrl-g")
+    }
+
+    if flags.isDisjoint(with: [.shift]), key == "c", hasSelection() {
+      return false
+    }
+
+    if flags.isDisjoint(with: [.shift]), let key {
+      switch key {
+      case "a", "c", "s", "y", "z":
+        return sendTerminalInput(Self.commandSequence(for: key), label: "cmd-\(key)-as-super")
+      default:
+        break
+      }
+    }
+
+    if flags.contains(.shift), key == "z" {
+      return sendTerminalInput(Self.commandShiftZSequence, label: "cmd-shift-z-as-super-shift")
     }
 
     return false
@@ -13136,7 +13164,15 @@ final class GhostexGhosttySurfaceView: NSView {
     return scalar.value
   }
 
-  private static let commandASequence = "\u{1B}[97;9u"
+  private static func commandSequence(for key: String) -> String {
+    guard let scalar = key.unicodeScalars.first else {
+      return ""
+    }
+    return "\u{1B}[\(scalar.value);9u"
+  }
+
+  private static let commandShiftZSequence = "\u{1B}[122;10u"
+  private static let controlGSequence = "\u{07}"
 
 }
 
@@ -19029,7 +19065,7 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
       return .zero
     }
     let size = (stringValue as NSString).size(withAttributes: [.font: Self.labelFont])
-    return NSSize(width: ceil(size.width) + 44, height: 46)
+    return NSSize(width: ceil(size.width) + 54, height: 52)
   }
 
   override init(frame frameRect: NSRect) {
@@ -19086,6 +19122,10 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
      The floating timer badge needs a larger timer and more internal padding,
      with #f6c945 text, so the countdown is legible as the primary pending
      action state inside the terminal pane.
+
+     CDXC:DelayedSend 2026-05-23-01:51:
+     Increase the visible timer badge padding by another 5px on the left and
+     right and 3px on the top and bottom without changing the timer text size.
      */
     stringValue = nextLabel
     isHidden = nextLabel.isEmpty

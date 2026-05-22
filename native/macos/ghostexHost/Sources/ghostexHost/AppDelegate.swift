@@ -3911,7 +3911,7 @@ final class ghostexRootView: NSView {
      CDXC:AppModals 2026-04-26-15:10
      Sidebar dialogs need a full-window React host because WKWebView portals
      cannot escape the sidebar's frame. Keep this transparent overlay above
-     terminal and sidebar chrome, and show it only while a modal is active.
+     terminal chrome, and show it only while a modal is active.
      */
     addSubview(modalHostView)
     /**
@@ -3922,6 +3922,7 @@ final class ghostexRootView: NSView {
      workspace clicks still pass through below the fixed titlebar strip.
      */
     addSubview(titlebarChromeView)
+    promoteSidebarChrome()
     installStartupOverlay()
     loadSidebar()
     loadModalHost()
@@ -6265,6 +6266,7 @@ final class ghostexRootView: NSView {
     workspaceView.frame = frames.workspace
     modalHostView.frame = frames.modalHost
     titlebarChromeView.frame = frames.titlebarChrome
+    promoteSidebarChrome()
     startupOverlayView.frame = bounds
     let startupOverlayIconSize = min(
       Self.startupOverlayIconSize,
@@ -6277,6 +6279,18 @@ final class ghostexRootView: NSView {
       height: startupOverlayIconSize
     )
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
+  }
+
+  private func promoteSidebarChrome() {
+    /**
+     CDXC:SidebarLayering 2026-05-23-01:51:
+     Toasts and app-modal portals render through a full-window transparent
+     WKWebView, but no app overlay should cover the sidebar. Keep the sidebar
+     and its resize divider visually above modal/titlebar web layers so session
+     cards remain clickable while bottom-center toasts are visible.
+     */
+    addSubview(sidebarView, positioned: .above, relativeTo: titlebarChromeView)
+    addSubview(divider, positioned: .above, relativeTo: sidebarView)
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
@@ -6297,6 +6311,22 @@ final class ghostexRootView: NSView {
     {
       return startupOverlayView
     }
+    if divider.frame.contains(point),
+      let hitView = divider.hitTest(convert(point, to: divider))
+    {
+      return hitView
+    }
+    if sidebarView.frame.contains(point),
+      let hitView = sidebarView.hitTest(convert(point, to: sidebarView))
+    {
+      /**
+       CDXC:SidebarLayering 2026-05-23-01:51:
+       Sidebar input must not pass through modal-host or titlebar WKWebViews.
+       Bottom-center toast overlays can remain visible over the work area, but
+       project/session navigation in the sidebar always owns its frame first.
+       */
+      return hitView
+    }
     if workspaceView.frame.contains(point),
       let nativeChromeHitView = workspaceView.nativeChromeHitView(at: convert(point, to: workspaceView))
     {
@@ -6314,16 +6344,6 @@ final class ghostexRootView: NSView {
     }
     if !modalHostView.isHidden,
       let hitView = modalHostView.hitTest(convert(point, to: modalHostView))
-    {
-      return hitView
-    }
-    if divider.frame.contains(point),
-      let hitView = divider.hitTest(convert(point, to: divider))
-    {
-      return hitView
-    }
-    if sidebarView.frame.contains(point),
-      let hitView = sidebarView.hitTest(convert(point, to: sidebarView))
     {
       return hitView
     }
@@ -6680,14 +6700,24 @@ final class ghostexRootView: NSView {
       /**
        CDXC:Worktrees 2026-05-18-23:07:
        Worktree and git progress messages are transient app-modal toasts. Keep the transparent modal host visible only while a toast or real modal is active so terminal panes are not covered by an idle overlay.
+
+       CDXC:AppModals 2026-05-23-01:51:
+       Toast-only modal-host visibility must be visual, not interactive. When
+       no real app modal is open, constrain the modal host to an empty hit
+       region so bottom-center delayed-send/status toasts cannot steal clicks
+       from terminal panes or other workspace surfaces.
        */
       if !isModalHostReady {
         return
       }
       dispatchModalHostMessage(message)
+      if activeAppModalKind == nil {
+        modalHostView.setTopLeftHitRegions([])
+      }
       modalHostView.isHidden = false
     case "toastDismissed":
       if (message["keepOpen"] as? Bool) != true {
+        modalHostView.setTopLeftHitRegions(nil)
         modalHostView.isHidden = true
       }
     case "pickWorktreeImages":
