@@ -468,6 +468,7 @@ typedef struct {
   ghostty_platform_e platform_tag;
   ghostty_platform_u platform;
   void* userdata;
+  void (*write_pty_cb)(void*, const char*, size_t);
   double scale_factor;
   float font_size;
   const char* working_directory;
@@ -1082,6 +1083,7 @@ GHOSTTY_API void ghostty_config_free(ghostty_config_t);
 GHOSTTY_API ghostty_config_t ghostty_config_clone(ghostty_config_t);
 GHOSTTY_API void ghostty_config_load_cli_args(ghostty_config_t);
 GHOSTTY_API void ghostty_config_load_file(ghostty_config_t, const char*);
+GHOSTTY_API void ghostty_config_load_string(ghostty_config_t, const char*, uintptr_t);
 GHOSTTY_API void ghostty_config_load_default_files(ghostty_config_t);
 GHOSTTY_API void ghostty_config_load_recursive_files(ghostty_config_t);
 GHOSTTY_API void ghostty_config_finalize(ghostty_config_t);
@@ -1121,6 +1123,12 @@ GHOSTTY_API bool ghostty_surface_needs_confirm_quit(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_process_exited(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_refresh(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_draw(ghostty_surface_t);
+/*
+ CDXC:iOSNativeTerminals 2026-05-22-10:42:
+ Mobile Ghostex owns the process or SSH stream outside Ghostty, so embedded iOS surfaces need a first-class native input for remote terminal bytes.
+ Feed those bytes through the same Termio process-output path used by Ghostty's PTY reader instead of routing output through WKWebView or a JavaScript terminal.
+ */
+GHOSTTY_API void ghostty_surface_write_data(ghostty_surface_t, const char*, uintptr_t);
 GHOSTTY_API void ghostty_surface_set_content_scale(ghostty_surface_t, double, double);
 GHOSTTY_API void ghostty_surface_set_focus(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_occlusion(ghostty_surface_t, bool);

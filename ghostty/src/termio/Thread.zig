@@ -19,6 +19,7 @@ const crash = @import("../crash/main.zig");
 const internal_os = @import("../os/main.zig");
 const termio = @import("../termio.zig");
 const renderer = @import("../renderer.zig");
+const build_config = @import("../build_config.zig");
 
 const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.io_thread);
@@ -333,19 +334,24 @@ fn drainMailbox(
             .start_synchronized_output => self.startSynchronizedOutput(cb),
             .linefeed_mode => |v| self.flags.linefeed_mode = v,
             .focused => |v| try io.focusGained(data, v),
-            .write_small => |v| try io.queueWrite(
-                data,
-                v.data[0..v.len],
-                self.flags.linefeed_mode,
-            ),
-            .write_stable => |v| try io.queueWrite(
-                data,
-                v,
-                self.flags.linefeed_mode,
-            ),
+            .write_small => |v| {
+                const bytes = v.data[0..v.len];
+                if (!writePtyDataToHost(io, bytes, self.flags.linefeed_mode)) try io.queueWrite(
+                    data,
+                    bytes,
+                    self.flags.linefeed_mode,
+                );
+            },
+            .write_stable => |v| {
+                if (!writePtyDataToHost(io, v, self.flags.linefeed_mode)) try io.queueWrite(
+                    data,
+                    v,
+                    self.flags.linefeed_mode,
+                );
+            },
             .write_alloc => |v| {
                 defer v.alloc.free(v.data);
-                try io.queueWrite(
+                if (!writePtyDataToHost(io, v.data, self.flags.linefeed_mode)) try io.queueWrite(
                     data,
                     v.data,
                     self.flags.linefeed_mode,
@@ -359,6 +365,11 @@ fn drainMailbox(
     if (redraw) {
         try io.renderer_wakeup.notify();
     }
+}
+
+fn writePtyDataToHost(io: *termio.Termio, data: []const u8, linefeed: bool) bool {
+    if (comptime build_config.artifact != .lib) return false;
+    return io.surface_mailbox.surface.rt_surface.writePtyData(data, linefeed);
 }
 
 fn startSynchronizedOutput(self: *Thread, cb: *CallbackData) void {

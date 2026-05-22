@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const cli = @import("../cli.zig");
 const inputpkg = @import("../input.zig");
 const state = &@import("../global.zig").state;
 const String = @import("../main_c.zig").String;
@@ -72,6 +73,25 @@ export fn ghostty_config_load_file(self: *Config, path: [*:0]const u8) void {
     const path_slice = std.mem.span(path);
     self.loadFile(state.alloc, path_slice) catch |err| {
         log.err("error loading config from file path={s} err={}", .{ path_slice, err });
+    };
+}
+
+/// Load configuration from a string using Ghostty's normal config-file syntax.
+///
+/// CDXC:iOSNativeTerminals 2026-05-22-11:06:
+/// Native iOS terminal settings must update Ghostty surfaces through Ghostty
+/// configuration, not hterm preference JavaScript or UIKit-only colors.
+/// Expose string-backed config loading so the iOS host can apply its existing
+/// font, color, cursor, and scrollback settings to embedded GhosttyKit surfaces.
+export fn ghostty_config_load_string(
+    self: *Config,
+    str: [*]const u8,
+    len: usize,
+) void {
+    var reader: std.Io.Reader = .fixed(str[0..len]);
+    var iter: cli.args.LineIterator = .init(&reader);
+    self.loadIter(state.alloc, &iter) catch |err| {
+        log.err("error loading config from string err={}", .{err});
     };
 }
 
