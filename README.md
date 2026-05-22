@@ -33,7 +33,7 @@ Discord: https://discord.gg/xYSBPapM
 - Way more features to fit here
 <br/>
 
-#### Install on macOS using brew or dmg in releases page
+### macOS: Install on macOS using brew or dmg in releases page
 ###### (Looking for help with Windows & Linux ports)
 
 The same Homebrew command installs the correct Apple Silicon or Intel Mac build automatically.
@@ -42,7 +42,7 @@ The same Homebrew command installs the correct Apple Silicon or Intel Mac build 
 brew install --cask maddada/tap/ghostex
 ```
 
-### Mobile apps
+### Android & iOS apps to Live connect to sessions remotely
 
 - Android app APK is in GitHub Releases: 
 [![Download Android APK](https://img.shields.io/badge/Android-APK-3DDC84?logo=android&logoColor=white)](https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.1.0/ghostex-1.1.0.apk)
