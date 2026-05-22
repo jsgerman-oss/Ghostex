@@ -55,7 +55,7 @@
 - Reopening the app always resumes your agent cli sessions
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
 - The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
-- Rich Prompt Editing with Zapet can be enabled from Settings and installed from Homebrew inside the app.
+- Rich Prompt Editing with gte can be enabled from Settings and installed from Homebrew inside the app.
 - Hotkeys use a recorder UI with direct split controls for creating real sideways and downward panes, and directional pane focus uses `Cmd+Alt+Arrow` so normal text navigation stays intact.
 - Press `Cmd+K` to open the full-window Command Palette for Ghostex actions, project actions, pane controls, Settings, and pet controls.
 - The installed Ghostex app also proxies terminal CLI commands such as `ghostex sessions`; `gtx sessions` is the short alias.

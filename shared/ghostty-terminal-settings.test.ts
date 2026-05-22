@@ -31,6 +31,7 @@ describe("getGhosttyTerminalConfigValues", () => {
       clipboardTrimTrailingSpaces: false,
       confirmCloseSurface: "always",
       copyOnSelect: "clipboard",
+      cursorStyle: "bar",
       cursorStyleBlink: false,
       fontFamily: "JetBrains Mono",
       fontSize: 13,
@@ -44,10 +45,10 @@ describe("getGhosttyTerminalConfigValues", () => {
     });
   });
 
-  test("leaves Ghostty font weight unmanaged at the default slider value", () => {
+  test("leaves Ghostty font weight unmanaged at the normal slider value", () => {
     /**
      * CDXC:TerminalTypographySettings 2026-04-29-09:32
-     * A 400 weight is the UI's normal-weight default, so ghostex does not write a
+     * A 400 weight is the UI's normal-weight value, so ghostex does not write a
      * font-variation wght value unless the user moves the slider away from it.
      */
     expect(

@@ -3,6 +3,7 @@ import type { ghostexSettings } from "./ghostex-settings";
 export type GhosttyTerminalConfigValues = {
   adjustCellHeightPercent: number;
   adjustCellWidth: number;
+  cursorStyle: string;
   fontFamily: string;
   fontSize: number;
   fontVariationWeight: number | null;
@@ -40,6 +41,12 @@ export type GhosttyTerminalConfigValues = {
  * value intentionally means the native config merge should not manage
  * font-family, preserving the user's current Ghostty config or platform
  * default.
+ *
+ * CDXC:GhosttyDefaults 2026-05-22-12:29:
+ * New Ghostex terminals should generate the requested GitHub Dark baseline with
+ * black/white colors, a bar cursor, JetBrains Mono 13pt at wght=300, 20% cell
+ * height expansion, 15 MB scrollback, protected clipboard behavior, no
+ * copy-on-select, and one-to-one precision/discrete mouse scroll multipliers.
  */
 export function getGhosttyTerminalConfigValues(
   settings: ghostexSettings,
@@ -47,6 +54,7 @@ export function getGhosttyTerminalConfigValues(
   return {
     adjustCellHeightPercent: settings.terminalLineHeight - 1,
     adjustCellWidth: settings.terminalLetterSpacing,
+    cursorStyle: settings.terminalCursorStyle,
     fontFamily: settings.terminalFontFamily.trim(),
     fontSize: settings.terminalFontSize,
     fontVariationWeight: settings.terminalFontWeight === 400 ? null : settings.terminalFontWeight,

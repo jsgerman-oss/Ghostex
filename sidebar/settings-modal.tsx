@@ -62,6 +62,7 @@ import {
   type SidebarThemeVariant,
 } from "../shared/session-grid-contract";
 import {
+  BROWSER_FEEDBACK_TOOL_OPTIONS,
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
@@ -80,6 +81,7 @@ import {
   applySidebarSettingsPreset,
   getSidebarSettingsPresetId,
   normalizeghostexSettings,
+  type BrowserFeedbackTool,
   type BrowserOpenMode,
   type DefaultEditorCommand,
   type GhosttyConfirmCloseSurface,
@@ -276,7 +278,12 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "createSessionOnSidebarDoubleClick",
     "renameSessionOnDoubleClick",
   ],
-  browser: ["browserOpenMode"],
+  /*
+   * CDXC:BrowserSettings 2026-05-22-09:18:
+   * Browser-related controls belong in one Browser section on the main
+   * Settings tab: URL open target and browser-pane feedback tool selection.
+   */
+  browser: ["browserOpenMode", "browserFeedbackTool"],
   /*
    * CDXC:StatusIndicators 2026-05-20-12:00:
    * Status Indicators groups desktop session badges and the optional sidebar pet
@@ -378,7 +385,7 @@ export type SettingsModalProps = {
   onOpenMacOSNotificationSettings?: () => void;
   onOpenGhostexFolder?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
-  onInstallZapet?: () => void;
+  onInstallGte?: () => void;
   onPlayCompletionSound?: (sound: CompletionSoundSetting) => void;
   onRequestMacOSNotificationPermission?: () => void;
   onRequestGhostexFolderStats?: () => void;
@@ -403,7 +410,7 @@ export function SettingsModal({
   onOpenMacOSNotificationSettings,
   onOpenGhostexFolder,
   onGhosttySettingsAction,
-  onInstallZapet,
+  onInstallGte,
   onPlayCompletionSound,
   onRequestMacOSNotificationPermission,
   onRequestGhostexFolderStats,
@@ -472,6 +479,12 @@ export function SettingsModal({
         options: BROWSER_OPEN_MODE_OPTIONS,
         subtitle: "Choose where browser actions open URLs.",
         title: "Open URLs With",
+      },
+      {
+        key: "browserFeedbackTool",
+        options: BROWSER_FEEDBACK_TOOL_OPTIONS,
+        subtitle: "Choose the feedback tool launched from browser pane menus.",
+        title: "Feedback Tool",
       },
     ]),
     editor: getSettingsSectionSearch(settingsSearchQuery, "Editor", [
@@ -742,13 +755,31 @@ export function SettingsModal({
           "Enable only when you need ssh from other devices to continue Ghostex-created sessions.",
         title: "Session Persistence (Beta)",
       },
+      ...(draft.sessionPersistenceProvider === "off"
+        ? []
+        : [
+            {
+              key: "showSessionIdInTerminalPanes",
+              subtitle: "Show the provider session id in the top-right corner of terminal panes.",
+              title: "Show session id in terminal panes",
+            },
+          ]),
       {
         key: "promptEditorBackend",
-        options: [...PROMPT_EDITOR_BACKEND_OPTIONS, { label: "Install Zapet", value: "installZapet" }],
+        options: [...PROMPT_EDITOR_BACKEND_OPTIONS, { label: "Install gte", value: "installGte" }],
         subtitle:
-          "Choose which floating editor Ctrl+G uses when a terminal prompt asks for $EDITOR.",
+          "Choose which editor Ctrl+G uses when a terminal prompt asks for $EDITOR.",
         title: "Ctrl+G prompt editor",
       },
+      ...(draft.promptEditorBackend === "custom"
+        ? [
+            {
+              key: "customPromptEditorCommand",
+              subtitle: "Write a custom $EDITOR command for Ctrl+G prompt editing.",
+              title: "Custom Ctrl+G editor command",
+            },
+          ]
+        : []),
     ]),
     terminalBehavior: getSettingsSectionSearch(ghosttySearchQuery, "Terminal Behavior", [
       {
@@ -1413,6 +1444,20 @@ export function SettingsModal({
                 value={draft.browserOpenMode}
               />
               ) : null}
+              {/* CDXC:BrowserFeedbackTools 2026-05-22-09:18:
+                  Browser-pane context menus should expose one feedback action whose injected tool is user-selectable: Agentation by default for structured visual annotations, or React Grab when explicitly selected. */}
+              {mainSettingVisible(settingsSearch.browser, "browserFeedbackTool") ? (
+              <SelectField
+                description="Choose the feedback tool launched from browser pane menus."
+                label="Feedback Tool"
+                {...getSettingModificationProps("browserFeedbackTool")}
+                onChange={(value) =>
+                  updateDraft("browserFeedbackTool", value as BrowserFeedbackTool)
+                }
+                options={BROWSER_FEEDBACK_TOOL_OPTIONS}
+                value={draft.browserFeedbackTool}
+              />
+              ) : null}
             </SettingsSection>
             ) : null}
 
@@ -1940,21 +1985,55 @@ export function SettingsModal({
                         value={draft.sessionPersistenceProvider}
                       />
                     ) : null}
+                    {draft.sessionPersistenceProvider !== "off" &&
+                    shouldShowSetting(settingsSearch.terminal, "showSessionIdInTerminalPanes") ? (
+                      /*
+                       * CDXC:SessionPersistence 2026-05-23-00:50:
+                       * The pane-local provider/session label is useful for zmx/tmux/zellij
+                       * attach context. Keep this setting shown only when a persistence
+                       * provider is selected, while the label renderer still requires each
+                       * terminal pane to have provider metadata before showing text.
+                       */
+                      <ToggleField
+                        checked={draft.showSessionIdInTerminalPanes}
+                        description="Show the provider session id in the top-right corner of each terminal pane."
+                        label="Show session id in the top right of each terminal pane"
+                        {...getSettingModificationProps("showSessionIdInTerminalPanes")}
+                        onChange={(checked) => updateDraft("showSessionIdInTerminalPanes", checked)}
+                      />
+                    ) : null}
                     {shouldShowSetting(settingsSearch.terminal, "promptEditorBackend") ? (
                       /**
                        * CDXC:PromptEditorBackend 2026-05-11-14:38
                        * Ctrl+G prompt editing can render either through the native
-                       * WebKit Monaco overlay or the existing zpet TUI floating
-                       * terminal. Keep the install action with the zpet option.
+                       * WebKit Monaco overlay or the gte TUI running inside the
+                       * launching terminal. Keep the install action with the gte option.
+                       *
+                       * CDXC:PromptEditorBackend 2026-05-22-09:56:
+                       * Settings copy must use gte for Ghostex Terminal Editor so users see the same name in the app, install command, and Ctrl+G editor selection.
+                       *
+                       * CDXC:PromptEditorBackend 2026-05-22-10:16:
+                       * Selecting gte must not describe or launch a popup. gte runs in the terminal that invoked Ctrl+G, while Monaco remains the popup editor.
                        */
-                      <ZapetPromptEditingField
+                      <GtePromptEditingField
                         backend={draft.promptEditorBackend}
                         isModified={getSettingModificationProps("promptEditorBackend").isModified}
-                        onInstall={() => onInstallZapet?.()}
+                        onInstall={() => onInstallGte?.()}
                         onChange={(backend) => updateDraft("promptEditorBackend", backend)}
                         onResetToDefault={
                           getSettingModificationProps("promptEditorBackend").onResetToDefault
                         }
+                      />
+                    ) : null}
+                    {draft.promptEditorBackend === "custom" &&
+                    shouldShowSetting(settingsSearch.terminal, "customPromptEditorCommand") ? (
+                      <TextField
+                        description="Write the command exactly as the terminal should export it for $EDITOR and $VISUAL."
+                        label="Custom Ctrl+G editor command"
+                        {...getSettingModificationProps("customPromptEditorCommand")}
+                        onChange={(value) => updateDraft("customPromptEditorCommand", value)}
+                        placeholder="code --wait"
+                        value={draft.customPromptEditorCommand}
                       />
                     ) : null}
                   </SettingsSection>
@@ -3935,7 +4014,7 @@ function GhosttySettingsActions({
   );
 }
 
-function ZapetPromptEditingField({
+function GtePromptEditingField({
   backend,
   isModified,
   onChange,
@@ -3951,7 +4030,7 @@ function ZapetPromptEditingField({
   const id = useId();
   return (
     <SettingRow
-      description="Choose which floating editor new terminals use when Ctrl+G asks the shell to edit prompt text."
+      description="Choose which editor new terminals use when Ctrl+G asks the shell to edit prompt text."
       htmlFor={id}
       isModified={isModified}
       label="Ctrl+G prompt editor"
@@ -3978,7 +4057,7 @@ function ZapetPromptEditingField({
           type="button"
           variant="outline"
         >
-          Install Zapet
+          Install gte
         </Button>
       </div>
     </SettingRow>

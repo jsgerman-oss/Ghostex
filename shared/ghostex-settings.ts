@@ -39,6 +39,7 @@ export type GhosttyCopyOnSelect = "false" | "true" | "clipboard";
 export type GhosttyScrollbar = "system" | "never";
 export type TerminalCursorStyle = "bar" | "block" | "underline";
 export type BrowserOpenMode = "chrome-canary" | "browser-pane";
+export type BrowserFeedbackTool = "react-grab" | "agentation";
 export type DefaultEditorCommand =
   | "code"
   | "code-insiders"
@@ -53,7 +54,7 @@ export type SessionPersistenceProvider = "off" | "tmux" | "zmx" | "zellij";
 export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large";
 export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
-export type PromptEditorBackend = "monaco" | "zpet";
+export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
 export type ZedOverlayTargetApp = "zed" | "zed-preview" | "vscode" | "vscode-insiders";
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
@@ -81,6 +82,7 @@ export type ghostexSettings = {
    */
   agentAcceptAllEnabled: boolean;
   agentManagerZoomPercent: number;
+  browserFeedbackTool: BrowserFeedbackTool;
   browserOpenMode: BrowserOpenMode;
   codeServerLinkVscodeUserConfig: boolean;
   codeServerUseVscodeInsidersUserConfig: boolean;
@@ -104,6 +106,7 @@ export type ghostexSettings = {
   selectedPetId: PetId;
   sessionStatusIndicatorSize: SessionStatusIndicatorSize;
   sessionPersistenceProvider: SessionPersistenceProvider;
+  showSessionIdInTerminalPanes: boolean;
   sidebarSide: SidebarSide;
   sidebarTheme: SidebarThemeSetting;
   terminalCursorStyle: TerminalCursorStyle;
@@ -127,8 +130,9 @@ export type ghostexSettings = {
   terminalMouseHideWhileTyping: boolean;
   terminalScrollbar: GhosttyScrollbar;
   promptEditorBackend: PromptEditorBackend;
-  richPromptEditingWithZapet: boolean;
-  useZpetForCtrlGPromptEditing: boolean;
+  customPromptEditorCommand: string;
+  richPromptEditingWithGte: boolean;
+  useGteForCtrlGPromptEditing: boolean;
   hotkeys: ghostexHotkeySettings;
   workspaceActivePaneBorderColor: string;
   workspaceBackgroundColor: string;
@@ -219,6 +223,17 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   actionCompletionSound: "shamisenreverb",
   agentAcceptAllEnabled: false,
   agentManagerZoomPercent: DEFAULT_AGENT_MANAGER_ZOOM_PERCENT,
+  /**
+   * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
+   * Browser panes can inject either React Grab or Agentation for visual
+   * feedback.
+   *
+   * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
+   * Agentation is the default browser feedback tool so browser panes open the
+   * structured annotation workflow unless a user explicitly switches back to
+   * React Grab in Settings.
+   */
+  browserFeedbackTool: "agentation",
   /**
    * CDXC:BrowserPanes 2026-05-02-06:35
    * Browser-pane support is opt-in so existing installs keep launching browser
@@ -340,6 +355,13 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   sessionPersistenceProvider: "off",
   /**
+   * CDXC:SessionPersistence 2026-05-23-00:50:
+   * The session-id pane overlay preference is enabled by default, but the
+   * native label itself must still render only for terminal panes that carry
+   * zmx/tmux/zellij persistence metadata.
+   */
+  showSessionIdInTerminalPanes: true,
+  /**
    * CDXC:SidebarPlacement 2026-05-06-17:32
    * Sidebar side is a first-class setting so users can choose left or right
    * placement from Settings instead of relying only on the move-sidebar hotkey.
@@ -352,16 +374,23 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * value so the resolved chrome is the dark gray palette immediately.
    */
   sidebarTheme: "plain",
+  /**
+   * CDXC:GhosttyDefaults 2026-05-22-12:29:
+   * New Ghostex terminals should default to the requested GitHub Dark terminal
+   * profile: JetBrains Mono 13pt, bar cursor with blink, wght=300, 20% cell
+   * height expansion, 15 MB scrollback, no copy-on-select, and one-to-one
+   * precision/discrete mouse scrolling.
+   */
   terminalCursorStyle: "bar",
   terminalCursorStyleBlink: true,
   terminalEngine: "ghostty-native",
-  terminalFontFamily: "",
+  terminalFontFamily: "JetBrains Mono",
   terminalFontSize: 13,
-  terminalFontWeight: 400,
-  terminalGhosttyTheme: "",
+  terminalFontWeight: 300,
+  terminalGhosttyTheme: "GitHub Dark",
   terminalLetterSpacing: 0,
-  terminalLineHeight: 1,
-  terminalMouseScrollMultiplierDiscrete: 3,
+  terminalLineHeight: 1.2,
+  terminalMouseScrollMultiplierDiscrete: 1,
   terminalMouseScrollMultiplierPrecision: 1,
   /**
    * CDXC:SessionPersistence 2026-05-05-07:28
@@ -371,8 +400,8 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   tmuxMode: false,
   terminalScrollToBottomWhenTyping: true,
-  terminalScrollbackLimitMb: 10,
-  terminalCopyOnSelect: "true",
+  terminalScrollbackLimitMb: 15,
+  terminalCopyOnSelect: "false",
   terminalConfirmCloseSurface: "true",
   terminalClipboardTrimTrailingSpaces: true,
   terminalClipboardPasteProtection: true,
@@ -380,16 +409,22 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   terminalScrollbar: "system",
   /**
    * CDXC:PromptEditorBackend 2026-05-13-15:58
-   * Ctrl+G rich prompt editing defaults to the floating Monaco editor. Preserve explicit zpet choices, but keep new and invalid settings on Monaco.
+   * Ctrl+G rich prompt editing defaults to the floating Monaco editor. Preserve explicit gte choices, but keep new and invalid settings on Monaco.
+   *
+   * CDXC:PromptEditorBackend 2026-05-22-09:56
+   * The terminal prompt editor is named gte for Ghostex Terminal Editor. Settings, launch commands, and install copy must use gte consistently across the app.
+   *
+   * CDXC:PromptEditorBackend 2026-05-22-10:16
+   * Monaco is popup-backed, but gte is terminal-native. A gte backend selection must resolve to the plain `gte` command so Ctrl+G edits inside the terminal that launched the editor.
    */
   promptEditorBackend: "monaco",
+  customPromptEditorCommand: "code --wait",
   /**
-   * CDXC:ZapetPromptEditing 2026-05-10-11:11
-   * Keep the legacy setting keys for compatibility with older settings
-   * snapshots. New UI and launch behavior use promptEditorBackend.
+   * CDXC:GtePromptEditing 2026-05-22-09:56
+   * The boolean mirrors keep the Ctrl+G prompt-editor setting easy to search while promptEditorBackend remains the source of truth for launch behavior.
    */
-  richPromptEditingWithZapet: false,
-  useZpetForCtrlGPromptEditing: false,
+  richPromptEditingWithGte: false,
+  useGteForCtrlGPromptEditing: false,
   hotkeys: DEFAULT_ghostex_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
   workspaceBackgroundColor: "#0e0e0e",
@@ -452,6 +487,14 @@ export const BROWSER_OPEN_MODE_OPTIONS: ReadonlyArray<{
 }> = [
   { label: "Chrome Canary", value: "chrome-canary" },
   { label: "Browser Panes", value: "browser-pane" },
+];
+
+export const BROWSER_FEEDBACK_TOOL_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: BrowserFeedbackTool;
+}> = [
+  { label: "React Grab", value: "react-grab" },
+  { label: "Agentation", value: "agentation" },
 ];
 
 export const DEFAULT_EDITOR_COMMAND_OPTIONS: ReadonlyArray<{
@@ -527,8 +570,10 @@ export const PROMPT_EDITOR_BACKEND_OPTIONS: ReadonlyArray<{
   label: string;
   value: PromptEditorBackend;
 }> = [
+  { label: "Inherit from system", value: "inherit" },
   { label: "Monaco floating editor", value: "monaco" },
-  { label: "zpet TUI floating editor", value: "zpet" },
+  { label: "gte terminal editor", value: "gte" },
+  { label: "Custom", value: "custom" },
 ];
 
 export const GHOSTTY_THEME_SETTING_OPTIONS: ReadonlyArray<{
@@ -595,6 +640,15 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     ),
     agentManagerZoomPercent: clampAgentManagerZoomPercent(
       readNumber(source, "agentManagerZoomPercent", DEFAULT_ghostex_SETTINGS.agentManagerZoomPercent),
+    ),
+    /**
+     * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
+     * Normalize the browser feedback injector choice so missing or invalid
+     * settings use Agentation, while explicit React Grab selections continue
+     * to launch the legacy injector.
+     */
+    browserFeedbackTool: normalizeBrowserFeedbackTool(
+      readString(source, "browserFeedbackTool", DEFAULT_ghostex_SETTINGS.browserFeedbackTool),
     ),
     /**
      * CDXC:BrowserPanes 2026-05-02-06:35
@@ -751,6 +805,17 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     ),
     sessionPersistenceProvider,
     /**
+     * CDXC:SessionPersistence 2026-05-23-00:50:
+     * Older settings should gain the default-on session-id overlay preference.
+     * The native pane still suppresses the actual label unless that terminal is
+     * backed by zmx, tmux, or zellij.
+     */
+    showSessionIdInTerminalPanes: readBoolean(
+      source,
+      "showSessionIdInTerminalPanes",
+      DEFAULT_ghostex_SETTINGS.showSessionIdInTerminalPanes,
+    ),
+    /**
      * CDXC:SidebarPlacement 2026-05-06-17:32
      * Persist only the supported AppKit chrome sides. Unknown values normalize
      * to the default left placement so the native layout never receives an
@@ -901,19 +966,26 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       readString(source, "terminalScrollbar", DEFAULT_ghostex_SETTINGS.terminalScrollbar),
     ),
     promptEditorBackend: normalizePromptEditorBackend(source),
+    customPromptEditorCommand: normalizeCustomPromptEditorCommand(
+      readString(
+        source,
+        "customPromptEditorCommand",
+        DEFAULT_ghostex_SETTINGS.customPromptEditorCommand,
+      ),
+    ),
     /**
-     * CDXC:ZapetPromptEditing 2026-05-10-11:11
+     * CDXC:GtePromptEditing 2026-05-10-11:11
      * Keep reading the old opt-in key so older snapshots round-trip cleanly.
      */
-    richPromptEditingWithZapet: readBoolean(
+    richPromptEditingWithGte: readBoolean(
       source,
-      "richPromptEditingWithZapet",
-      DEFAULT_ghostex_SETTINGS.richPromptEditingWithZapet,
+      "richPromptEditingWithGte",
+      DEFAULT_ghostex_SETTINGS.richPromptEditingWithGte,
     ),
-    useZpetForCtrlGPromptEditing: readBoolean(
+    useGteForCtrlGPromptEditing: readBoolean(
       source,
-      "useZpetForCtrlGPromptEditing",
-      readBoolean(source, "richPromptEditingWithZapet", false) === true,
+      "useGteForCtrlGPromptEditing",
+      readBoolean(source, "richPromptEditingWithGte", false) === true,
     ),
     /**
      * CDXC:Hotkeys 2026-04-28-05:20
@@ -1015,6 +1087,10 @@ function normalizeBrowserOpenMode(value: string | undefined): BrowserOpenMode {
   return value === "browser-pane" ? "browser-pane" : DEFAULT_ghostex_SETTINGS.browserOpenMode;
 }
 
+function normalizeBrowserFeedbackTool(value: string | undefined): BrowserFeedbackTool {
+  return value === "react-grab" ? "react-grab" : DEFAULT_ghostex_SETTINGS.browserFeedbackTool;
+}
+
 function normalizeDefaultEditorCommand(value: string | undefined): DefaultEditorCommand {
   return value === "code-insiders" ||
     value === "zed" ||
@@ -1030,6 +1106,10 @@ function normalizeDefaultEditorCommand(value: string | undefined): DefaultEditor
 
 function normalizeCustomDefaultEditorCommand(value: string | undefined): string {
   return (value ?? "").trim().slice(0, 240);
+}
+
+function normalizeCustomPromptEditorCommand(value: string | undefined): string {
+  return ((value ?? "").trim() || DEFAULT_ghostex_SETTINGS.customPromptEditorCommand).slice(0, 240);
 }
 
 export function getDefaultEditorCommandForSettings(settings: ghostexSettings): string {
@@ -1057,14 +1137,14 @@ function normalizeSessionPersistenceProvider(
 
 function normalizePromptEditorBackend(source: Record<string, unknown>): PromptEditorBackend {
   const backend = readString(source, "promptEditorBackend", "");
-  if (backend === "monaco" || backend === "zpet") {
+  if (backend === "inherit" || backend === "monaco" || backend === "gte" || backend === "custom") {
     return backend;
   }
   if (
-    readBoolean(source, "useZpetForCtrlGPromptEditing", false) ||
-    readBoolean(source, "richPromptEditingWithZapet", false)
+    readBoolean(source, "useGteForCtrlGPromptEditing", false) ||
+    readBoolean(source, "richPromptEditingWithGte", false)
   ) {
-    return "zpet";
+    return "gte";
   }
   return DEFAULT_ghostex_SETTINGS.promptEditorBackend;
 }
@@ -1089,7 +1169,7 @@ function normalizeGhosttyFontFamily(value: string | undefined): string {
 }
 
 function normalizeGhosttyCopyOnSelect(value: string | undefined): GhosttyCopyOnSelect {
-  return value === "false" || value === "clipboard" ? value : "true";
+  return value === "true" || value === "clipboard" ? value : DEFAULT_ghostex_SETTINGS.terminalCopyOnSelect;
 }
 
 function normalizeGhosttyConfirmCloseSurface(

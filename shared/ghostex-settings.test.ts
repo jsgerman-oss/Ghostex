@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  BROWSER_FEEDBACK_TOOL_OPTIONS,
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
@@ -73,6 +74,29 @@ describe("normalizeghostexSettings", () => {
       label: "Browser Panes",
       value: "browser-pane",
     });
+  });
+
+  test("defaults browser feedback tools to Agentation and allows React Grab", () => {
+    /**
+     * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
+     * The browser-pane feedback action defaults to Agentation for selector and
+     * annotation output from the CEF page, while Settings can switch the same
+     * action back to React Grab.
+     */
+    expect(DEFAULT_ghostex_SETTINGS.browserFeedbackTool).toBe("agentation");
+    expect(normalizeghostexSettings({})).toMatchObject({
+      browserFeedbackTool: "agentation",
+    });
+    expect(normalizeghostexSettings({ browserFeedbackTool: "react-grab" })).toMatchObject({
+      browserFeedbackTool: "react-grab",
+    });
+    expect(normalizeghostexSettings({ browserFeedbackTool: "unknown" })).toMatchObject({
+      browserFeedbackTool: "agentation",
+    });
+    expect(BROWSER_FEEDBACK_TOOL_OPTIONS).toEqual([
+      { label: "React Grab", value: "react-grab" },
+      { label: "Agentation", value: "agentation" },
+    ]);
   });
 
   test("hides project-header git file counts by default", () => {
@@ -331,7 +355,7 @@ describe("normalizeghostexSettings", () => {
      * writing the shared Ghostty config.
      */
     expect(DEFAULT_ghostex_SETTINGS.terminalMouseScrollMultiplierPrecision).toBe(1);
-    expect(DEFAULT_ghostex_SETTINGS.terminalMouseScrollMultiplierDiscrete).toBe(3);
+    expect(DEFAULT_ghostex_SETTINGS.terminalMouseScrollMultiplierDiscrete).toBe(1);
     expect(
       normalizeghostexSettings({
         terminalMouseScrollMultiplierDiscrete: 4,
@@ -359,11 +383,18 @@ describe("normalizeghostexSettings", () => {
      * user selects a provider in Settings. Legacy tmuxMode=true settings should
      * migrate to the tmux provider, and zmx/zellij must persist as provider
      * choices with the same restart-safe attach/recreate contract.
+     *
+     * CDXC:SessionPersistence 2026-05-23-00:50:
+     * The top-right provider/session overlay preference is enabled by default,
+     * but non-persistent terminal panes still have no provider session label to
+     * render.
      */
     expect(DEFAULT_ghostex_SETTINGS.sessionPersistenceProvider).toBe("off");
+    expect(DEFAULT_ghostex_SETTINGS.showSessionIdInTerminalPanes).toBe(true);
     expect(DEFAULT_ghostex_SETTINGS.tmuxMode).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
       sessionPersistenceProvider: "off",
+      showSessionIdInTerminalPanes: true,
       tmuxMode: false,
     });
     expect(normalizeghostexSettings({ tmuxMode: true })).toMatchObject({
@@ -377,6 +408,24 @@ describe("normalizeghostexSettings", () => {
     expect(normalizeghostexSettings({ sessionPersistenceProvider: "zellij" })).toMatchObject({
       sessionPersistenceProvider: "zellij",
       tmuxMode: false,
+    });
+    expect(
+      normalizeghostexSettings({
+        sessionPersistenceProvider: "zmx",
+        showSessionIdInTerminalPanes: true,
+      }),
+    ).toMatchObject({
+      sessionPersistenceProvider: "zmx",
+      showSessionIdInTerminalPanes: true,
+    });
+    expect(
+      normalizeghostexSettings({
+        sessionPersistenceProvider: "zmx",
+        showSessionIdInTerminalPanes: false,
+      }),
+    ).toMatchObject({
+      sessionPersistenceProvider: "zmx",
+      showSessionIdInTerminalPanes: false,
     });
     expect(SESSION_PERSISTENCE_PROVIDER_OPTIONS).toContainEqual({
       label: "zellij",
@@ -398,10 +447,10 @@ describe("normalizeghostexSettings", () => {
       terminalClipboardPasteProtection: true,
       terminalClipboardTrimTrailingSpaces: true,
       terminalConfirmCloseSurface: "true",
-      terminalCopyOnSelect: "true",
+      terminalCopyOnSelect: "false",
       terminalCursorStyleBlink: true,
       terminalMouseHideWhileTyping: false,
-      terminalScrollbackLimitMb: 10,
+      terminalScrollbackLimitMb: 15,
       terminalScrollbar: "system",
     });
     expect(
@@ -434,60 +483,88 @@ describe("normalizeghostexSettings", () => {
       }),
     ).toMatchObject({
       terminalConfirmCloseSurface: "true",
-      terminalCopyOnSelect: "true",
+      terminalCopyOnSelect: "false",
       terminalScrollbackLimitMb: 200,
       terminalScrollbar: "system",
     });
   });
 
-  test("defaults Ctrl+G prompt editing to Monaco and preserves legacy zpet opt-ins", () => {
+  test("defaults Ctrl+G prompt editing to Monaco and supports gte opt-ins", () => {
     /**
      * CDXC:PromptEditorBackend 2026-05-11-14:38
-     * Monaco is the default floating editor backend. Legacy zpet opt-in keys
-     * still normalize to zpet so existing explicit zpet users are not moved.
+     * Monaco is the default floating editor backend. Explicit gte opt-in keys
+     * normalize to gte so selected Ctrl+G prompt-editor behavior is stable.
+     *
+     * CDXC:PromptEditorBackend 2026-05-22-09:56
+     * The terminal prompt editor is named gte for Ghostex Terminal Editor. Tests should pin gte as the persisted backend value and visible Settings option.
      */
     expect(DEFAULT_ghostex_SETTINGS.promptEditorBackend).toBe("monaco");
     expect(normalizeghostexSettings({})).toMatchObject({
+      customPromptEditorCommand: "code --wait",
       promptEditorBackend: "monaco",
-      richPromptEditingWithZapet: false,
-      useZpetForCtrlGPromptEditing: false,
+      richPromptEditingWithGte: false,
+      useGteForCtrlGPromptEditing: false,
     });
-    expect(normalizeghostexSettings({ richPromptEditingWithZapet: false })).toMatchObject({
+    expect(normalizeghostexSettings({ richPromptEditingWithGte: false })).toMatchObject({
       promptEditorBackend: "monaco",
     });
-    expect(normalizeghostexSettings({ richPromptEditingWithZapet: true })).toMatchObject({
-      promptEditorBackend: "zpet",
-      richPromptEditingWithZapet: true,
-      useZpetForCtrlGPromptEditing: true,
+    expect(normalizeghostexSettings({ richPromptEditingWithGte: true })).toMatchObject({
+      promptEditorBackend: "gte",
+      richPromptEditingWithGte: true,
+      useGteForCtrlGPromptEditing: true,
     });
-    expect(normalizeghostexSettings({ useZpetForCtrlGPromptEditing: true })).toMatchObject({
-      promptEditorBackend: "zpet",
+    expect(normalizeghostexSettings({ useGteForCtrlGPromptEditing: true })).toMatchObject({
+      promptEditorBackend: "gte",
     });
-    expect(normalizeghostexSettings({ promptEditorBackend: "zpet" })).toMatchObject({
-      promptEditorBackend: "zpet",
+    expect(normalizeghostexSettings({ promptEditorBackend: "gte" })).toMatchObject({
+      promptEditorBackend: "gte",
+    });
+    expect(normalizeghostexSettings({ promptEditorBackend: "inherit" })).toMatchObject({
+      promptEditorBackend: "inherit",
+    });
+    expect(
+      normalizeghostexSettings({
+        customPromptEditorCommand: "  vim -f  ",
+        promptEditorBackend: "custom",
+      }),
+    ).toMatchObject({
+      customPromptEditorCommand: "vim -f",
+      promptEditorBackend: "custom",
+    });
+    expect(
+      normalizeghostexSettings({
+        customPromptEditorCommand: "",
+        promptEditorBackend: "custom",
+      }),
+    ).toMatchObject({
+      customPromptEditorCommand: "code --wait",
+      promptEditorBackend: "custom",
     });
     expect(normalizeghostexSettings({ promptEditorBackend: "invalid" })).toMatchObject({
       promptEditorBackend: "monaco",
     });
     expect(PROMPT_EDITOR_BACKEND_OPTIONS).toEqual([
+      { label: "Inherit from system", value: "inherit" },
       { label: "Monaco floating editor", value: "monaco" },
-      { label: "zpet TUI floating editor", value: "zpet" },
+      { label: "gte terminal editor", value: "gte" },
+      { label: "Custom", value: "custom" },
     ]);
   });
 
   test("keeps Ghostty typography settings in documented practical ranges", () => {
     /**
      * CDXC:TerminalTypographySettings 2026-04-29-09:32
-     * Typography settings default to Ghostty's macOS defaults where possible:
-     * font family is unmanaged, font size is 13pt, no thickening is requested,
-     * and cell metric adjustments start at zero.
+     * CDXC:GhosttyDefaults 2026-05-22-12:29:
+     * Typography settings default to the requested Ghostex terminal profile:
+     * JetBrains Mono, 13pt, wght=300, no cell-width adjustment, and a 20%
+     * cell-height expansion.
      */
     expect(normalizeghostexSettings({})).toMatchObject({
-      terminalFontFamily: "",
+      terminalFontFamily: "JetBrains Mono",
       terminalFontSize: 13,
-      terminalFontWeight: 400,
+      terminalFontWeight: 300,
       terminalLetterSpacing: 0,
-      terminalLineHeight: 1,
+      terminalLineHeight: 1.2,
     });
     expect(
       normalizeghostexSettings({
@@ -526,14 +603,21 @@ describe("normalizeghostexSettings", () => {
      * CDXC:TerminalThemeSettings 2026-04-29-09:32
      * Ghostty theme names are exact strings from the bundled theme list. The
      * empty value means ghostex should leave the user's Ghostty theme unmanaged.
+     *
+     * CDXC:GhosttyDefaults 2026-05-22-12:29:
+     * New installs default to GitHub Dark rather than leaving the theme
+     * unmanaged.
      */
     expect(GHOSTTY_THEME_SETTING_OPTIONS).toContainEqual({
       label: "Use existing Ghostty config",
       value: "__ghostex_ghostty_theme_unmanaged__",
     });
     expect(GHOSTTY_THEME_SETTING_OPTIONS).toContainEqual({
-      label: "GitHub Dark Default",
-      value: "GitHub Dark Default",
+      label: "GitHub Dark",
+      value: "GitHub Dark",
+    });
+    expect(normalizeghostexSettings({})).toMatchObject({
+      terminalGhosttyTheme: "GitHub Dark",
     });
     expect(
       normalizeghostexSettings({

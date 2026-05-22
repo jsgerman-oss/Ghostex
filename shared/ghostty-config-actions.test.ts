@@ -18,6 +18,9 @@ describe("mergeGhosttyConfigLines", () => {
       mergeGhosttyConfigLines(
         [
           "keybind = cmd+t=new_tab",
+          "keybind = super+e=previous_value",
+          "palette = 1=#ff0000",
+          "palette = 6=#old",
           "theme = Dracula",
           "font-size = 18",
           "window-padding-x = 4",
@@ -27,11 +30,18 @@ describe("mergeGhosttyConfigLines", () => {
     ).toContain(
       [
         "keybind = cmd+t=new_tab",
+        "palette = 1=#ff0000",
         "window-padding-x = 4",
         "# Applied by Ghostex:",
         "theme = GitHub Dark",
       ].join("\n"),
     );
+    expect(
+      mergeGhosttyConfigLines(
+        ["keybind = super+e=previous_value", "palette = 6=#old"].join("\n"),
+        GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES,
+      ),
+    ).not.toContain("previous_value");
   });
 
   test("resets ghostex-managed Ghostty settings to defaults", () => {

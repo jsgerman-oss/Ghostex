@@ -167,7 +167,7 @@ This minor release improves the 2.x workspace with stronger hotkey editing, rich
 
 - Added a shortcut recorder for hotkey settings so Command chords are captured directly instead of typed into text fields.
 - Updated split-count shortcuts to single-chord defaults and added direct Split More / Split Less actions for faster workspace layout control.
-- Added opt-in Rich Prompt Editing with Zapet, including Settings UI, native install routing, environment injection, and zsh startup shims that keep Zapet in charge after shell profiles load.
+- Added opt-in Rich Prompt Editing with gte, including Settings UI, native install routing, environment injection, and zsh startup shims that keep gte in charge after shell profiles load.
 - Added installed-app CLI proxying so terminal commands such as `ghostex --help` and `ghostex sessions` run the bundled Node CLI before the macOS app starts.
 - Improved native command execution by normalizing GUI-launched process `PATH` values so background commands can find common developer tools.
 - Improved terminal search keyboard behavior, centering, and neutral styling for embedded Ghostty panes.
