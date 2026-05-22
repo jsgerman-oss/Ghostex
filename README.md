@@ -1,5 +1,7 @@
 Discord: https://discord.gg/xYSBPapM
 
+# Ghostex is the Free & Open Source alternative to Codex App
+
 ## Ghostty Terminals with Codex App's Awesome Features = Ghostex!<br />
 
 - Fast & Low RAM usage 
