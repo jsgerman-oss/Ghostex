@@ -1,6 +1,9 @@
 Discord: https://discord.gg/xYSBPapM
 
-# Ghostex is the best Free & Open Source alternative to Codex App
+# The best Free & Open Source alternative to Codex App. 
+Ghostty Terminals. All Agent CLIs. T3code. VScode Embed. Embedded Browser.
+
+> Looking for contributers! Please join the discord if interested!
 
 <img width="3322" height="2060" alt="ghostex-main" src="https://github.com/user-attachments/assets/49862e2d-1edd-4647-8161-5afb25ed8341" />
 
