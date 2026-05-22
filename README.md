@@ -2,15 +2,18 @@ Discord: https://discord.gg/xYSBPapM
 
 # Ghostex is the best Free & Open Source alternative to Codex App
 
-# Main Points:
-## 1. Ghostty Terminals for best Agent CLIs compatibility and ram saving
-## 2. Native swift for all the parts that require it to improve performance and UX.
-## 3. T3code for GUI panes
-## 4. Chromium CEF browser with Devtools
-## 5. Light embedded VS Code (for Markdown/Reviewing Code & PRs)
+<img width="3322" height="2060" alt="ghostex-main" src="https://github.com/user-attachments/assets/49862e2d-1edd-4647-8161-5afb25ed8341" />
 
-More Features:
-- Fast & Low RAM usage 
+# Main Points:
+### 1. Ghostty Terminals for best Agent CLIs compatibility and ram saving
+### 2. Native swift for all the parts that require it to improve performance and UX.
+### 3. T3code for GUI panes
+### 4. Chromium CEF browser with Devtools
+### 5. Light embedded VS Code (for Markdown/Reviewing Code & PRs)
+### 6. Android & iOS apps for connecting to sessions easily
+
+### More Features:
+- Fast & Low RAM usage
 - Embedded Chromium Browser w Devtools and profiles
 - Embedded Light Code/MD Files Editor
 - Access your sessions with any Agent CLI live from the Android/iOS apps.
@@ -48,10 +51,6 @@ brew install --cask maddada/tap/ghostex
 - iPhone app is in Test Flight. Join the Discord to get it.
 - Android app APK is in GitHub Releases: [ghostex-1.1.0.apk](https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.1.0/ghostex-1.1.0.apk)
 <br />
-
-### Work with tens of agents in multiple projects with ease:
-
-<img width="3322" height="2060" alt="ghostex-main" src="https://github.com/user-attachments/assets/49862e2d-1edd-4647-8161-5afb25ed8341" />
 
 ### All Agent CLIs supported (please send an issue or PR for integrating any missing agent cli)
 
