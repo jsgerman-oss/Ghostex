@@ -4,7 +4,7 @@ Discord: https://discord.gg/xYSBPapM
 
 <img width="3322" height="2060" alt="ghostex-main" src="https://github.com/user-attachments/assets/49862e2d-1edd-4647-8161-5afb25ed8341" />
 
-# Main Points:
+## Main Points:
 ### 1. Ghostty Terminals for best Agent CLIs compatibility and ram saving
 ### 2. Native swift for all the parts that require it to improve performance and UX.
 ### 3. T3code for GUI panes
