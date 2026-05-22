@@ -128,6 +128,40 @@ export const DEFAULT_SIDEBAR_AGENTS = [
     icon: "amp-cli",
     name: "Amp CLI",
   },
+  /**
+   * CDXC:SessionRestore 2026-05-23-00:25:
+   * Match cmux's restorable-agent surface for Rovo Dev, Hermes Agent,
+   * CodeBuddy, and Qoder, but keep these less-common launchers hidden until
+   * the user explicitly enables or configures them.
+   */
+  {
+    agentId: "rovodev",
+    command: "acli rovodev run",
+    hiddenByDefault: true,
+    icon: "rovo-dev",
+    name: "Rovo Dev",
+  },
+  {
+    agentId: "hermes-agent",
+    command: "hermes",
+    hiddenByDefault: true,
+    icon: "hermes-agent",
+    name: "Hermes Agent",
+  },
+  {
+    agentId: "codebuddy",
+    command: "codebuddy",
+    hiddenByDefault: true,
+    icon: "codebuddy",
+    name: "CodeBuddy",
+  },
+  {
+    agentId: "qoder",
+    command: "qodercli",
+    hiddenByDefault: true,
+    icon: "qoder",
+    name: "Qoder",
+  },
 ] as const;
 
 export type DefaultSidebarAgent = (typeof DEFAULT_SIDEBAR_AGENTS)[number];
@@ -159,13 +193,19 @@ export type StoredSidebarAgent = {
 export function createDefaultSidebarAgentButtons(
   commandOverrides: DefaultSidebarAgentCommandOverrides = {},
 ): SidebarAgentButton[] {
-  return DEFAULT_SIDEBAR_AGENTS.map((agent) => ({
-    agentId: agent.agentId,
-    command: commandOverrides[agent.agentId] ?? agent.command,
-    icon: agent.icon,
-    isDefault: true,
-    name: agent.name,
-  }));
+  return DEFAULT_SIDEBAR_AGENTS.flatMap((agent) =>
+    "hiddenByDefault" in agent && agent.hiddenByDefault === true
+      ? []
+      : [
+          {
+            agentId: agent.agentId,
+            command: commandOverrides[agent.agentId] ?? agent.command,
+            icon: agent.icon,
+            isDefault: true,
+            name: agent.name,
+          },
+        ],
+  );
 }
 
 export function createSidebarAgentButtons(
@@ -176,6 +216,9 @@ export function createSidebarAgentButtons(
   const storedAgentById = new Map(storedAgents.map((agent) => [agent.agentId, agent]));
   const defaultButtons = DEFAULT_SIDEBAR_AGENTS.flatMap((agent) => {
     const storedAgent = storedAgentById.get(agent.agentId);
+    if (!storedAgent && "hiddenByDefault" in agent && agent.hiddenByDefault === true) {
+      return [];
+    }
     if (storedAgent?.hidden === true) {
       return [];
     }
@@ -265,8 +308,11 @@ const TERMINAL_TITLE_SESSION_SYNC_AGENT_IDS = new Set<DefaultSidebarAgentId>([
   "copilot",
   "cursor",
   "gemini",
+  "hermes-agent",
   "opencode",
   "pi",
+  "qoder",
+  "rovodev",
 ]);
 
 export function supportsTerminalTitleSessionSync(agentName: string | undefined): boolean {
@@ -288,7 +334,12 @@ export function supportsTerminalTitleSessionSync(agentName: string | undefined):
     normalizedAgentName === "cursor cli" ||
     normalizedAgentName === "cursor-agent" ||
     normalizedAgentName === "github copilot" ||
+    normalizedAgentName === "hermes" ||
+    normalizedAgentName === "hermes agent" ||
     normalizedAgentName === "open code" ||
+    normalizedAgentName === "qodercli" ||
+    normalizedAgentName === "rovo" ||
+    normalizedAgentName === "rovo dev" ||
     normalizedAgentName === "π"
   ) {
     return true;
@@ -310,8 +361,11 @@ export function shouldPreferTerminalTitleForAgentIcon(icon: SidebarAgentIcon | u
     icon === "claude" ||
     icon === "codex" ||
     icon === "cursor-cli" ||
+    icon === "hermes-agent" ||
     icon === "opencode" ||
-    icon === "pi"
+    icon === "pi" ||
+    icon === "qoder" ||
+    icon === "rovo-dev"
   );
 }
 

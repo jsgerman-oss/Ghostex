@@ -398,6 +398,23 @@ describe("createSidebarAgentButtons", () => {
     ]);
   });
 
+  test("should keep less-common restorable agents hidden until enabled", () => {
+    expect(createSidebarAgentButtons([]).some((agent) => agent.agentId === "rovodev")).toBe(false);
+
+    expect(
+      createSidebarAgentButtons([
+        {
+          agentId: "rovodev",
+          command: "acli rovodev run",
+          hidden: false,
+          icon: "rovo-dev",
+          isDefault: true,
+          name: "Rovo Dev",
+        },
+      ]).some((agent) => agent.agentId === "rovodev"),
+    ).toBe(true);
+  });
+
   test("should keep custom duplicates of default agent types", () => {
     expect(
       createSidebarAgentButtons([

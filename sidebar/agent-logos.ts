@@ -2,14 +2,18 @@ import ampCliLogo from "../src/assets/amp-cli.svg" with { type: "text" };
 import antigravityCliLogo from "../src/assets/antigravity-cli.svg" with { type: "text" };
 import browserLogo from "../src/assets/browser.svg" with { type: "text" };
 import claudeLogo from "../src/assets/claude.svg" with { type: "text" };
+import codebuddyLogo from "../src/assets/codebuddy.svg" with { type: "text" };
 import cursorCliLogo from "../src/assets/cursor-cli.svg" with { type: "text" };
 import codexLogo from "../src/assets/codex.svg" with { type: "text" };
 import copilotLogo from "../src/assets/copilot.svg" with { type: "text" };
 import factoryDroidLogo from "../src/assets/factory-droid.svg" with { type: "text" };
 import geminiLogo from "../src/assets/gemini.svg" with { type: "text" };
 import grokBuildLogo from "../src/assets/grok-build.svg" with { type: "text" };
+import hermesAgentLogo from "../src/assets/hermes-agent.svg" with { type: "text" };
 import opencodeLogo from "../src/assets/opencode.svg" with { type: "text" };
 import piLogo from "../src/assets/pi.svg" with { type: "text" };
+import qoderLogo from "../src/assets/qoder.svg" with { type: "text" };
+import rovoDevLogo from "../src/assets/rovo-dev.svg" with { type: "text" };
 import t3Logo from "../src/assets/t3.svg" with { type: "text" };
 import type { SidebarAgentIcon } from "../shared/sidebar-agents";
 
@@ -36,14 +40,18 @@ export const AGENT_LOGOS: Record<SidebarAgentIcon, string> = {
   "antigravity-cli": svgTextToDataUrl(antigravityCliLogo),
   browser: svgTextToDataUrl(browserLogo),
   claude: svgTextToDataUrl(claudeLogo),
+  codebuddy: svgTextToDataUrl(codebuddyLogo),
   "cursor-cli": svgTextToDataUrl(cursorCliLogo),
   codex: svgTextToDataUrl(codexLogo),
   copilot: svgTextToDataUrl(copilotLogo),
   "factory-droid": svgTextToDataUrl(factoryDroidLogo),
   gemini: svgTextToDataUrl(geminiLogo),
   "grok-build": svgTextToDataUrl(grokBuildLogo),
+  "hermes-agent": svgTextToDataUrl(hermesAgentLogo),
   opencode: svgTextToDataUrl(opencodeLogo),
   pi: svgTextToDataUrl(piLogo),
+  qoder: svgTextToDataUrl(qoderLogo),
+  "rovo-dev": svgTextToDataUrl(rovoDevLogo),
   t3: svgTextToDataUrl(t3Logo),
 };
 
@@ -59,13 +67,17 @@ export const AGENT_LOGO_COLORS: Record<SidebarAgentIcon, string> = {
   "antigravity-cli": "#749bff",
   browser: "#82b7ff",
   claude: "#d97757",
+  codebuddy: "#72d6ff",
   "cursor-cli": "#edecec",
   codex: "#ffffff",
   copilot: "#ffffff",
   "factory-droid": "#ff7a1a",
   gemini: "#8b9aff",
   "grok-build": "#ffffff",
+  "hermes-agent": "#f3c46b",
   opencode: "#6d96c0",
   pi: "#c8ff62",
+  qoder: "#a991ff",
+  "rovo-dev": "#4fc3a1",
   t3: "#ff6af3",
 };

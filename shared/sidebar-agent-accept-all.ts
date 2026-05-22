@@ -45,6 +45,7 @@ export const AGENT_ACCEPT_ALL_FLAG_SPECS: Readonly<
     aliases: ["--yolo"],
     canonicalFlag: "--yolo",
   },
+  codebuddy: null,
   copilot: {
     aliases: ["--allow-all", "--yolo"],
     canonicalFlag: "--yolo",
@@ -67,11 +68,14 @@ export const AGENT_ACCEPT_ALL_FLAG_SPECS: Readonly<
     aliases: ["--always-approve"],
     canonicalFlag: "--always-approve",
   },
+  "hermes-agent": null,
   opencode: {
     aliases: ["--dangerously-skip-permissions", "--yolo"],
     canonicalFlag: "--dangerously-skip-permissions",
   },
   pi: null,
+  qoder: null,
+  rovodev: null,
   t3: null,
 };
 
