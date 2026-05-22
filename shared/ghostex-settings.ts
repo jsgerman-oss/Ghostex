@@ -409,22 +409,28 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   terminalScrollbar: "system",
   /**
    * CDXC:PromptEditorBackend 2026-05-13-15:58
-   * Ctrl+G rich prompt editing defaults to the floating Monaco editor. Preserve explicit gte choices, but keep new and invalid settings on Monaco.
+   * Ctrl+G rich prompt editing originally defaulted to the floating Monaco editor. Preserve explicit gte choices, but keep new and invalid settings on the current built-in backend.
    *
    * CDXC:PromptEditorBackend 2026-05-22-09:56
    * The terminal prompt editor is named gte for Ghostex Terminal Editor. Settings, launch commands, and install copy must use gte consistently across the app.
    *
    * CDXC:PromptEditorBackend 2026-05-22-10:16
    * Monaco is popup-backed, but gte is terminal-native. A gte backend selection must resolve to the plain `gte` command so Ctrl+G edits inside the terminal that launched the editor.
+   *
+   * CDXC:PromptEditorBackend 2026-05-23-01:51:
+   * The user's current Ctrl+G prompt editor setting is gte. New installs should launch gte inside the terminal by default, while explicit Monaco/custom selections remain user-owned settings.
    */
-  promptEditorBackend: "monaco",
+  promptEditorBackend: "gte",
   customPromptEditorCommand: "code --wait",
   /**
    * CDXC:GtePromptEditing 2026-05-22-09:56
    * The boolean mirrors keep the Ctrl+G prompt-editor setting easy to search while promptEditorBackend remains the source of truth for launch behavior.
+   *
+   * CDXC:GtePromptEditing 2026-05-23-01:51:
+   * First-run settings mirror the default gte backend so older call sites that still read these booleans agree with promptEditorBackend.
    */
-  richPromptEditingWithGte: false,
-  useGteForCtrlGPromptEditing: false,
+  richPromptEditingWithGte: true,
+  useGteForCtrlGPromptEditing: true,
   hotkeys: DEFAULT_ghostex_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
   workspaceBackgroundColor: "#0e0e0e",
@@ -620,6 +626,7 @@ export function getZedOverlayTargetAppLabel(targetApp: ZedOverlayTargetApp): str
 
 export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
   const source = isRecord(candidate) ? candidate : {};
+  const promptEditorBackend = normalizePromptEditorBackend(source);
   const sessionPersistenceProvider = normalizeSessionPersistenceProvider(
     readString(
       source,
@@ -965,7 +972,7 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     terminalScrollbar: normalizeGhosttyScrollbar(
       readString(source, "terminalScrollbar", DEFAULT_ghostex_SETTINGS.terminalScrollbar),
     ),
-    promptEditorBackend: normalizePromptEditorBackend(source),
+    promptEditorBackend,
     customPromptEditorCommand: normalizeCustomPromptEditorCommand(
       readString(
         source,
@@ -976,16 +983,19 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     /**
      * CDXC:GtePromptEditing 2026-05-10-11:11
      * Keep reading the old opt-in key so older snapshots round-trip cleanly.
+     *
+     * CDXC:GtePromptEditing 2026-05-23-01:51:
+     * Mirror defaults follow the normalized backend so first-run settings and older files without mirror keys still report gte as the active Ctrl+G editor.
      */
     richPromptEditingWithGte: readBoolean(
       source,
       "richPromptEditingWithGte",
-      DEFAULT_ghostex_SETTINGS.richPromptEditingWithGte,
+      promptEditorBackend === "gte",
     ),
     useGteForCtrlGPromptEditing: readBoolean(
       source,
       "useGteForCtrlGPromptEditing",
-      readBoolean(source, "richPromptEditingWithGte", false) === true,
+      readBoolean(source, "richPromptEditingWithGte", promptEditorBackend === "gte") === true,
     ),
     /**
      * CDXC:Hotkeys 2026-04-28-05:20
