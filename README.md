@@ -1,14 +1,21 @@
 Discord: https://discord.gg/xYSBPapM
 
-# Ghostex is the Free & Open Source alternative to Codex App
+# Ghostex is the best Free & Open Source alternative to Codex App
 
-## Ghostty Terminals with Codex App's Awesome Features = Ghostex!<br />
+# Main Points:
+## 1. Ghostty Terminals for best Agent CLIs compatibility and ram saving
+## 2. Native swift for all the parts that require it to improve performance and UX.
+## 3. T3code for GUI panes
+## 4. Chromium CEF browser with Devtools
+## 5. Light embedded VS Code (for Markdown/Reviewing Code & PRs)
 
+More Features:
 - Fast & Low RAM usage 
 - Embedded Chromium Browser w Devtools and profiles
 - Embedded Light Code/MD Files Editor
 - Access your sessions with any Agent CLI live from the Android/iOS apps.
-- SSH support with live session persistence (zmx/tmux/zellij)
+- Built in SSH continuation with live session persistence (zmx/tmux/zellij)
+- The best agent CLI rich prompt editor with Image insert/preview support. Press ctrl+g to use it.
 - Native Swift macOS app shell for better performance
 - Native Ghostty for best cpu/ram use and compatibility
 - Auto sleep unused terminals to save ram (auto-restore when clicked)
@@ -16,7 +23,6 @@ Discord: https://discord.gg/xYSBPapM
 - Reopening the app always resumes your agent cli sessions
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
 - T3code Support if you prefer GUI
-- The best agent CLI rich prompt editor with Image insert/preview support Press ctrl+g to use it.
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Supports Pets so you can see session status at a glance :)
 - Works with all Agent CLIs (Claude Code, Codex CLI, OpenCode, Pi Agent, Gemini, Copilot, etc.)
