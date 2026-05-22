@@ -380,12 +380,27 @@ function getSidebarGroupDropTargetFromElement(
     return undefined;
   }
 
-  const bounds = groupElement.getBoundingClientRect();
+  /*
+   * CDXC:ProjectReorder 2026-05-22-22:18:
+   * Project reorder insertion lines should be stable while dragging across
+   * expanded projects. Resolve before/after from the visible header row instead
+   * of the full group height so session lists do not move the midpoint.
+   */
+  const boundsElement = getSidebarGroupDropBoundsElement(groupElement);
+  const bounds = boundsElement.getBoundingClientRect();
   const relativeY = clientY ?? bounds.top + bounds.height / 2;
   return {
     groupId,
     position: relativeY > bounds.top + bounds.height / 2 ? "after" : "before",
   };
+}
+
+function getSidebarGroupDropBoundsElement(groupElement: HTMLElement): HTMLElement {
+  if (typeof groupElement.querySelector !== "function") {
+    return groupElement;
+  }
+
+  return groupElement.querySelector<HTMLElement>(".group-head") ?? groupElement;
 }
 
 function hasData(candidate: unknown): candidate is { data?: unknown } {

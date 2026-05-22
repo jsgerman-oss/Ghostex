@@ -176,6 +176,37 @@ describe("getSidebarGroupDropTargetAtPoint", () => {
       position: "after",
     });
   });
+
+  test("should resolve project drop position from the header instead of expanded group height", () => {
+    const groupHeaderElement = createMockElement({
+      getBoundingClientRect: () => ({ height: 32, top: 100 }),
+    }) as HTMLElement;
+    const groupElement = createMockElement({
+      dataset: { sidebarGroupId: "project-2" },
+      getBoundingClientRect: () => ({ height: 220, top: 100 }),
+      querySelectorMap: new Map([[".group-head", groupHeaderElement]]),
+    }) as HTMLElement;
+    const targetGroupChild = createMockElement({
+      closestMap: new Map([
+        ["[data-dragging='true']", null],
+        ["[data-sidebar-group-id]", groupElement],
+      ]),
+    });
+
+    const dropTarget = getSidebarGroupDropTargetAtPoint(
+      {
+        elementFromPoint: () => targetGroupChild,
+        elementsFromPoint: () => [targetGroupChild],
+      },
+      50,
+      150,
+    );
+
+    expect(dropTarget).toEqual({
+      groupId: "project-2",
+      position: "after",
+    });
+  });
 });
 
 describe("getSidebarSessionDropTargetAtPoint", () => {
@@ -220,10 +251,12 @@ function createMockElement({
   closestMap = new Map(),
   dataset,
   getBoundingClientRect,
+  querySelectorMap = new Map(),
 }: {
   closestMap?: ReadonlyMap<string, Element | null>;
   dataset?: Record<string, string>;
   getBoundingClientRect?: () => { height: number; top: number };
+  querySelectorMap?: ReadonlyMap<string, Element | null>;
 }): Element {
   return {
     dataset,
@@ -231,5 +264,8 @@ function createMockElement({
       return closestMap.get(selector) ?? null;
     },
     getBoundingClientRect,
+    querySelector(selector: string) {
+      return querySelectorMap.get(selector) ?? null;
+    },
   } as unknown as Element;
 }

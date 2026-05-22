@@ -142,8 +142,12 @@
    * CDXC:ProjectReorder 2026-05-18-20:39:
    * Project drag reorder needs a dim drop line that marks the exact insertion
    * point without turning the target project into a loud highlighted card.
+   *
+   * CDXC:ProjectReorder 2026-05-22-20:49:
+   * The project drag insertion line should use the requested fixed neutral
+   * color #c8cdd5 so the drop target stays legible across sidebar themes.
    */
-  background: color-mix(in srgb, var(--app-foreground) 28%, transparent);
+  background: #c8cdd5;
   border-radius: 999px;
   content: "";
   height: 2px;

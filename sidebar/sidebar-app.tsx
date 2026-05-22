@@ -3394,6 +3394,10 @@ function resolveGroupDropTargetFromPoint(
       continue;
     }
 
+    if (sourceData && isNoOpGroupDropTarget(groupIds, sourceData.groupId, candidate)) {
+      continue;
+    }
+
     return candidate;
   }
 
@@ -3475,12 +3479,40 @@ function getSidebarGroupDropTargetFromDropData(
     return undefined;
   }
 
-  const bounds = groupElement.getBoundingClientRect();
+  /*
+   * CDXC:ProjectReorder 2026-05-22-22:18:
+   * Dnd-kit target data can point at an expanded project container. Use the
+   * same header-row bounds as point-based hit testing so the drop line does not
+   * jump between above and below while the pointer moves through session rows.
+   */
+  const boundsElement = getSidebarGroupDropBoundsElement(groupElement);
+  const bounds = boundsElement.getBoundingClientRect();
   const relativeY = point?.y ?? bounds.top + bounds.height / 2;
   return {
     groupId: targetData.groupId,
     position: relativeY > bounds.top + bounds.height / 2 ? "after" : "before",
   };
+}
+
+function isNoOpGroupDropTarget(
+  groupIds: readonly string[],
+  sourceGroupId: string,
+  target: SidebarGroupDropTarget,
+): boolean {
+  /*
+   * CDXC:ProjectReorder 2026-05-22-22:18:
+   * Do not show an insertion line for adjacent before/after targets that would
+   * leave the project order unchanged on drop. The preview should only mark
+   * committed position changes.
+   */
+  return haveSameSessionOrder(
+    groupIds,
+    moveGroupIdsByDropTarget(groupIds, sourceGroupId, target),
+  );
+}
+
+function getSidebarGroupDropBoundsElement(groupElement: HTMLElement): HTMLElement {
+  return groupElement.querySelector<HTMLElement>(".group-head") ?? groupElement;
 }
 
 function getTargetSessionElement(
