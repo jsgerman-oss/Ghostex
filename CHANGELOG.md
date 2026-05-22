@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.9.0 - 2026-05-23
+
+- Added hidden restorable launchers for Rovo Dev, Hermes Agent, CodeBuddy, and Qoder with matching icons and cleaner session-title restore support.
+- Added Agentation as the default browser-pane feedback tool, with a Settings option to switch the browser action back to React Grab.
+- Improved agent session restore by capturing native agent session ids through installed hooks and showing the captured id in session-card tooltips.
+- Improved terminal defaults with the GitHub Dark profile, JetBrains Mono, a lighter font weight, more scrollback, protected clipboard behavior, and one-to-one mouse scrolling.
+- Improved rich prompt editing with the renamed `gte` terminal editor option, system-inherited editing, and custom editor commands.
+- Improved terminal mouse behavior so Command-clicks and modifier changes are reported reliably to terminal apps.
+- Improved app modal and workspace chrome behavior so Escape closes full-window modals reliably and native pane controls keep receiving clicks.
+- Improved project drag previews so insertion lines stay stable while dragging across expanded project groups.
+- Added native Ghostty terminal groundwork for the iOS app and local iPhone build/install scripts.
+- Added mobile app availability notes for TestFlight and Android APK downloads.
+
 ## 3.8.0 - 2026-05-21
 
 - Added Quit controls to the titlebar Resources menu so individual resource groups or all managed sessions can be closed from one place.

@@ -9,8 +9,10 @@
 - Native terminal title bars expose improved restore and fork actions, including Codex and Claude fork command support.
 - First-prompt auto-renaming preserves meaningful terminal-synced titles instead of sending redundant generated rename commands.
 - Pi is available as a supported agent with matching sidebar iconography.
+- Rovo Dev, Hermes Agent, CodeBuddy, and Qoder are available as hidden restorable agent launchers with matching icons and title restore support.
 - Native T3 Code panes with managed runtime bootstrap, authenticated thread routing, and remote/browser access links.
 - Browser panes open browser actions as workspace panes with address navigation, reload, DevTools, React Grab, profiles, and favicon-backed sidebar cards.
+- Browser panes can run Agentation as the default feedback tool, with a Settings option to switch the same action back to React Grab.
 - Embedded code-server editor panes open project-scoped code surfaces with diff stats and native CEF hosting.
 - Embedded editor panes preserve VS Code workbench layout across app restarts through persistent Chromium storage.
 - Embedded editor panes keep VS Code sidebar and panel drag/drop targets responsive while moving views inside code-server.
@@ -19,6 +21,7 @@
 - Chromium CEF browser panes keep native browser storage and cookies across app restarts.
 - Shared Ghostty settings keep terminal configuration consistent between the native host and sidebar settings UI.
 - Zellij, tmux, and zmx session persistence providers can keep terminal sessions restart-safe, with stable zellij names, direct zmx attach behavior, sidebar provider badges, and copyable attach commands.
+- Persistence-backed terminal panes can show the provider session id in-pane, and session-card tooltips can show hook-captured native agent session ids for exact resume.
 - Settings show modified values with reset-to-default tooltips, floating indicator sizing, and left/right sidebar placement.
 - Native floating status indicators show running, attention, and available session counts with click-to-focus routing and selectable size.
 - Native editor panes keep resize, accessibility-permission, and T3 diagnostics routed through native controls.
@@ -56,6 +59,7 @@
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
 - The best agent CLI rich prompt editor included! Press ctrl+g in Claude Code/Codex CLI to use it!
 - Rich Prompt Editing with gte can be enabled from Settings and installed from Homebrew inside the app.
+- Rich Prompt Editing can inherit the system editor, use the built-in Monaco editor, use `gte`, or run a custom editor command.
 - Hotkeys use a recorder UI with direct split controls for creating real sideways and downward panes, and directional pane focus uses `Cmd+Alt+Arrow` so normal text navigation stays intact.
 - Press `Cmd+K` to open the full-window Command Palette for Ghostex actions, project actions, pane controls, Settings, and pet controls.
 - The installed Ghostex app also proxies terminal CLI commands such as `ghostex sessions`; `gtx sessions` is the short alias.
@@ -69,6 +73,7 @@
 - Combined mode's top row creates a new session in the active context, with chat creation kept in the Chats section.
 - The reference sidebar includes a combined-only project layout, searchable settings sections, improved command panel controls, and cleaner Previous Sessions rows.
 - Tips & Tricks is available inside Ghostex with quick pages for workspace basics, agents, actions, Codex setup, and remote access.
+- Tips & Tricks explains agent resume hooks and how captured native session ids make resume more reliable.
 - Sidebar action buttons always use explicit configurable icons, with a searchable icon picker and a sensible Play default for new actions.
 - Custom terminal actions reuse their command panes by action title and block duplicate titles so actions do not open the wrong command tab.
 - Sidebar display presets let you switch between Codex, Minimal, and Detailed layouts.
@@ -110,6 +115,8 @@
 - Ghostex Android includes a cleaner remote-session drawer with refresh, Machines, Settings, Exit, collapsible project groups, project reordering, and project-level new session controls.
 - Ghostex Android includes in-drawer terminal settings for common terminal behavior and display options.
 - zmx-backed terminal panes refresh more reliably after resize, mode switches, pop-out changes, and sleeping-session wake.
+- Terminal defaults use the GitHub Dark profile, JetBrains Mono, lighter text weight, larger scrollback, protected clipboard behavior, and one-to-one mouse scrolling.
+- Command-clicks and modifier changes are reported more reliably to terminal apps, improving path and link interactions inside terminal UIs.
 - Sleeping sessions wake back into the focused tab group instead of unexpectedly returning as separate split panes.
 - Cursor CLI, Antigravity CLI, and Amp CLI are built-in agents with matching icons, launch commands, title cleanup, and working/done detection.
 - Supported agents can inherit a global Accept All setting or override it per agent, with Ghostex appending the right permission-bypass flag at launch time.
@@ -118,6 +125,7 @@
 - Worktree git actions can optionally remove the temporary worktree project after the action completes.
 - Sidebar Actions are stored per project, and worktrees share their parent project's action list.
 - The Ghostex CLI lists sessions when run as bare `ghostex` or `gtx`, using the same project order as the app.
+- Native Ghostty terminal groundwork exists for the iOS app, with local scripts for building and installing iPhone test builds.
 - zmx-backed CLI attach can recreate a missing named zmx session and run the saved agent resume command when possible.
 - Embedded Code, Git, and browser panes stay visually stable while the command pane is resized.
 - Collapsed Quick and Projects sections no longer create hidden extra scroll space in compact sidebars.
