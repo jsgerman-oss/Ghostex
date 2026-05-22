@@ -2105,6 +2105,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       workspaceView?.openBrowserDevTools(sessionId: command.sessionId)
     case .injectBrowserReactGrab(let command):
       workspaceView?.injectBrowserReactGrab(sessionId: command.sessionId)
+    case .injectBrowserAgentation(let command):
+      workspaceView?.injectBrowserAgentation(sessionId: command.sessionId)
     case .showBrowserProfilePicker(let command):
       workspaceView?.showBrowserProfilePicker(sessionId: command.sessionId)
     case .showBrowserImportSettings(let command):
@@ -2818,6 +2820,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         "adjust-cell-height = \(formatGhosttyPercent(command.adjustCellHeightPercent))",
         "adjust-cell-width = \(formatGhosttyNumber(command.adjustCellWidth))",
         /**
+         CDXC:GhosttyDefaults 2026-05-22-12:29:
+         Ghostex-owned defaults should generate the requested black GitHub Dark
+         profile even when the user has no prior Ghostty config: white text,
+         cyan ANSI palette slot 6, blue selection, white bar cursor, opaque
+         splits, gray dividers, shift mouse capture, Cmd+E command palette,
+         Option-as-Alt, and SSH shell integration features.
+         */
+        "background = #000000",
+        "foreground = #ffffff",
+        "palette = 6=#39c5cf",
+        "selection-background = #07284f",
+        "cursor-style = \(command.cursorStyle)",
+        "cursor-color = #FFFFFF",
+        "unfocused-split-opacity = 1",
+        "split-divider-color = #8f8f8f",
+        "mouse-shift-capture = always",
+        "keybind = super+e=toggle_command_palette",
+        "macos-option-as-alt = true",
+        "shell-integration-features = ssh-env,ssh-terminfo",
+        /**
          CDXC:TerminalBehaviorSettings 2026-04-29-09:32
          Common ghostex settings map directly to Ghostty config keys so the
          embedded terminal and external Ghostty windows share scrollback,
@@ -2891,18 +2913,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let managedKeys: Set<String> = [
       "adjust-cell-height",
       "adjust-cell-width",
+      "background",
       "clipboard-paste-protection",
       "clipboard-trim-trailing-spaces",
       "confirm-close-surface",
       "copy-on-select",
+      "cursor-color",
+      "cursor-style",
       "cursor-style-blink",
       "font-size",
       "font-thicken",
       "font-thicken-strength",
+      "foreground",
+      "macos-option-as-alt",
       "mouse-hide-while-typing",
       "mouse-scroll-multiplier",
+      "mouse-shift-capture",
       "scrollbar",
       "scrollback-limit",
+      "selection-background",
+      "shell-integration-features",
+      "split-divider-color",
+      "unfocused-split-opacity",
     ]
     let key = readGhosttyConfigKey(line)
     if managedKeys.contains(key) {
@@ -2913,6 +2945,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     if key == "theme" {
       return command.ghosttyTheme.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    if key == "keybind" {
+      return !readGhosttyConfigValue(line)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .hasPrefix("super+e=")
+    }
+    if key == "palette" {
+      return !readGhosttyConfigValue(line)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .hasPrefix("6=")
     }
     if key != "font-variation" {
       return true
@@ -3672,6 +3716,7 @@ final class ghostexRootView: NSView {
   private let sendHostEvent: (HostEvent) -> Void
   private let nativeSettingsStore = NativeSettingsStore()
   private var isModalHostReady = false
+  private var activeAppModalKind: String?
   private var pendingModalHostOpenMessage: [String: Any]?
   private var latestModalHostSidebarState: [String: Any]?
   private var activeFloatingPromptEditor: ActiveFloatingPromptEditor?
@@ -5399,6 +5444,8 @@ final class ghostexRootView: NSView {
       workspaceView.openBrowserDevTools(sessionId: command.sessionId)
     case .injectBrowserReactGrab(let command):
       workspaceView.injectBrowserReactGrab(sessionId: command.sessionId)
+    case .injectBrowserAgentation(let command):
+      workspaceView.injectBrowserAgentation(sessionId: command.sessionId)
     case .showBrowserProfilePicker(let command):
       workspaceView.showBrowserProfilePicker(sessionId: command.sessionId)
     case .showBrowserImportSettings(let command):
@@ -5857,6 +5904,17 @@ final class ghostexRootView: NSView {
     guard event.type == .keyDown else {
       return false
     }
+    if shouldCloseAppModalHostOnEscape(event) {
+      /**
+       CDXC:AppModals 2026-05-22-16:55:
+       Full-window app modals such as Previous Sessions must close on Escape
+       even when keyboard focus remains in a terminal, titlebar, or another
+       native responder instead of the modal-host WKWebView. Keep Ctrl+G prompt
+       editor Escape handling in React because it has a two-step cancel flow.
+       */
+      closeAppModalHost(reason: "keyboardEscape")
+      return true
+    }
     let hotkeyText = Self.hotkeyText(for: event)
     if isNativeEditableFirstResponder() {
       /**
@@ -5941,6 +5999,32 @@ final class ghostexRootView: NSView {
       ])
     dispatchNativeHotkey(actionId)
     return true
+  }
+
+  private func shouldCloseAppModalHostOnEscape(_ event: NSEvent) -> Bool {
+    guard !modalHostView.isHidden,
+      activeAppModalKind != nil,
+      activeFloatingPromptEditor == nil,
+      !isPrewarmingFloatingPromptEditor,
+      event.charactersIgnoringModifiers == "\u{1b}"
+    else {
+      return false
+    }
+    return event.modifierFlags
+      .intersection([.command, .control, .option, .shift])
+      .isEmpty
+  }
+
+  private func closeAppModalHost(reason: String) {
+    AppDelegate.appendAgentDetectionDebugLog(
+      event: "nativeBridge.appModal.close.received",
+      details: "reason=\(reason) wasHidden=\(modalHostView.isHidden)"
+    )
+    dispatchModalHostMessage(["type": "close"])
+    activeAppModalKind = nil
+    pendingModalHostOpenMessage = nil
+    modalHostView.setTopLeftHitRegions(nil)
+    modalHostView.isHidden = true
   }
 
   private func isWebChromeFirstResponder() -> Bool {
@@ -6212,6 +6296,18 @@ final class ghostexRootView: NSView {
       startupOverlayView.frame.contains(point)
     {
       return startupOverlayView
+    }
+    if workspaceView.frame.contains(point),
+      let nativeChromeHitView = workspaceView.nativeChromeHitView(at: convert(point, to: workspaceView))
+    {
+      /**
+       CDXC:RootHitBoundaries 2026-05-22-22:48:
+       Visible native workspace chrome must beat the full-window React
+       titlebar webview. The titlebar DOM can temporarily expose hit regions
+       over the right pane tab band, but pane tabs and resize handles are
+       AppKit controls and should not be intercepted by WKWebView.
+       */
+      return nativeChromeHitView
     }
     if let hitView = titlebarChromeView.hitTest(convert(point, to: titlebarChromeView)) {
       return hitView
@@ -6567,6 +6663,7 @@ final class ghostexRootView: NSView {
       if isPrewarmingFloatingPromptEditor {
         return
       }
+      activeAppModalKind = message["modal"] as? String
       modalHostView.isHidden = false
       if (message["modal"] as? String) == "floatingPromptEditor" {
         PromptEditorDebugLog.append(
@@ -6578,14 +6675,7 @@ final class ghostexRootView: NSView {
         )
       }
     case "close":
-      AppDelegate.appendAgentDetectionDebugLog(
-        event: "nativeBridge.appModal.close.received",
-        details: "wasHidden=\(modalHostView.isHidden)"
-      )
-      dispatchModalHostMessage(["type": "close"])
-      pendingModalHostOpenMessage = nil
-      modalHostView.setTopLeftHitRegions(nil)
-      modalHostView.isHidden = true
+      closeAppModalHost(reason: "bridgeMessage")
     case "toast":
       /**
        CDXC:Worktrees 2026-05-18-23:07:

@@ -12,8 +12,6 @@ import type {
 } from "../shared/session-grid-contract";
 import {
   clampVisibleSessionCount,
-  createDefaultSidebarSectionCollapseState,
-  createDefaultSidebarSectionVisibility,
 } from "../shared/session-grid-contract";
 import { GROUPS_BY_FIXTURE } from "./sidebar-story-fixture-data";
 import {
@@ -168,7 +166,6 @@ export function createSidebarStoryMessage(
     activeSessionsSortMode: "manual",
     agentManagerZoomPercent: 100,
     agents: createDefaultSidebarAgentButtons(),
-    collapsedSections: createDefaultSidebarSectionCollapseState(),
     commands: createDefaultSidebarCommandButtons(),
     commandSessionIndicators: COMMAND_SESSION_INDICATORS_BY_FIXTURE[args.fixture] ?? [],
     completionBellEnabled: combinedStorySettings?.completionBellEnabled ?? false,
@@ -201,7 +198,6 @@ export function createSidebarStoryMessage(
             },
           ]
         : [],
-    sectionVisibility: createDefaultSidebarSectionVisibility(),
     settings: combinedStorySettings,
     createSessionOnSidebarDoubleClick:
       combinedStorySettings?.createSessionOnSidebarDoubleClick ??

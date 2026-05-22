@@ -51,6 +51,7 @@ enum HostCommand: Decodable {
   case showBrowserWindow
   case openBrowserDevTools(SessionCommand)
   case injectBrowserReactGrab(SessionCommand)
+  case injectBrowserAgentation(SessionCommand)
   case showBrowserProfilePicker(SessionCommand)
   case showBrowserImportSettings(SessionCommand)
   case setSidebarSide(SetSidebarSide)
@@ -128,6 +129,7 @@ enum HostCommand: Decodable {
     case showBrowserWindow
     case openBrowserDevTools
     case injectBrowserReactGrab
+    case injectBrowserAgentation
     case showBrowserProfilePicker
     case showBrowserImportSettings
     case setSidebarSide
@@ -255,6 +257,8 @@ enum HostCommand: Decodable {
       self = .openBrowserDevTools(try SessionCommand(from: decoder))
     case .injectBrowserReactGrab:
       self = .injectBrowserReactGrab(try SessionCommand(from: decoder))
+    case .injectBrowserAgentation:
+      self = .injectBrowserAgentation(try SessionCommand(from: decoder))
     case .showBrowserProfilePicker:
       self = .showBrowserProfilePicker(try SessionCommand(from: decoder))
     case .showBrowserImportSettings:
@@ -456,6 +460,13 @@ struct SetActiveTerminalSet: Decodable {
   let sessionFaviconDataUrls: [String: String]?
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
+  /**
+   CDXC:SessionPersistence 2026-05-23-00:50:
+   The sidebar owns the preference for showing provider/session ids. Decode it
+   with layout sync because AppKit owns the top-right overlay view and still
+   checks per-pane persistence metadata before rendering text.
+   */
+  let showSessionIdInTerminalPanes: Bool?
   let showProjectEditorDiffFileCount: Bool?
   let sidebarActions: TitlebarSidebarActions?
   let sessionPersistenceProvider: String?
@@ -679,6 +690,7 @@ struct RunProcess: Decodable {
 struct SyncGhosttyTerminalSettings: Decodable {
   let adjustCellHeightPercent: Double
   let adjustCellWidth: Double
+  let cursorStyle: String
   let fontFamily: String
   let fontSize: Double
   let fontVariationWeight: Int?

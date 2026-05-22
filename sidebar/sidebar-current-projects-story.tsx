@@ -15,8 +15,6 @@ import type {
 } from "../shared/session-grid-contract";
 import {
   clampVisibleSessionCount,
-  createDefaultSidebarSectionCollapseState,
-  createDefaultSidebarSectionVisibility,
 } from "../shared/session-grid-contract";
 import { createSidebarSessionItems } from "../shared/session-grid-contract-ui";
 import { createDefaultSidebarProjectDiffStats } from "../shared/project-diff-stats";
@@ -148,7 +146,6 @@ function createCurrentProjectsSidebarMessage(
       activeSessionsSortMode: "manual",
       agentManagerZoomPercent: currentSettings?.agentManagerZoomPercent ?? 100,
       agents: createDefaultSidebarAgentButtons(),
-      collapsedSections: createDefaultSidebarSectionCollapseState(),
       commands: createDefaultSidebarCommandButtons(),
       commandSessionIndicators: [],
       completionBellEnabled: currentSettings?.completionBellEnabled ?? false,
@@ -168,13 +165,6 @@ function createCurrentProjectsSidebarMessage(
       recentProjects: createCurrentRecentProjects(projects),
       renameSessionOnDoubleClick:
         currentSettings?.renameSessionOnDoubleClick ?? args.renameSessionOnDoubleClick,
-      sectionVisibility: {
-        ...createDefaultSidebarSectionVisibility(),
-        actions: false,
-        agents: true,
-        browsers: false,
-        git: true,
-      },
       settings: currentSettings,
       showCloseButtonOnSessionCards:
         currentSettings?.showCloseButtonOnSessionCards ?? args.showCloseButtonOnSessionCards,
@@ -478,6 +468,17 @@ function normalizeAgentIcon(agentName: unknown): SidebarSessionItem["agentIcon"]
       return "grok-build";
     case "amp":
       return "amp-cli";
+    case "codebuddy":
+      return "codebuddy";
+    case "hermes":
+    case "hermes-agent":
+      return "hermes-agent";
+    case "qoder":
+    case "qodercli":
+      return "qoder";
+    case "rovo":
+    case "rovodev":
+      return "rovo-dev";
     case "browser":
     case "claude":
     case "codex":

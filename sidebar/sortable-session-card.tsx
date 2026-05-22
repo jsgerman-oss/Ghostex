@@ -38,7 +38,7 @@ import {
   getSidebarSessionLifecycleState,
   type SidebarSessionItem,
 } from "../shared/session-grid-contract";
-import { DEFAULT_ghostex_SETTINGS } from "../shared/ghostex-settings";
+import { DEFAULT_ghostex_SETTINGS, type BrowserFeedbackTool } from "../shared/ghostex-settings";
 import {
   getSessionCardTitleTooltip,
   OverflowTooltipText,
@@ -67,6 +67,10 @@ const SESSION_CARD_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_SESSION_CARD_DRAG_HOLD_DELAY_MS = 130;
 const TOUCH_SESSION_CARD_DRAG_HOLD_TOLERANCE_PX = 12;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
+
+function getBrowserFeedbackToolLabel(tool: BrowserFeedbackTool): string {
+  return tool === "agentation" ? "Agentation" : "React Grab";
+}
 
 const sessionCardSensors = [
   PointerSensor.configure({
@@ -154,6 +158,7 @@ export function SortableSessionCard({
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
   const {
     hideSessionAgentIconUntilHover,
+    browserFeedbackTool,
     renameSessionOnDoubleClick,
     showCloseButton,
     showDebugSessionNumbers,
@@ -170,6 +175,8 @@ export function SortableSessionCard({
       hideSessionAgentIconUntilHover:
         state.hud.settings?.hideSessionAgentIconUntilHover ??
         DEFAULT_ghostex_SETTINGS.hideSessionAgentIconUntilHover,
+      browserFeedbackTool:
+        state.hud.settings?.browserFeedbackTool ?? DEFAULT_ghostex_SETTINGS.browserFeedbackTool,
       renameSessionOnDoubleClick: state.hud.renameSessionOnDoubleClick,
       showCloseButton: state.hud.showCloseButtonOnSessionCards,
       showDebugSessionNumbers: state.hud.debuggingMode,
@@ -582,7 +589,7 @@ export function SortableSessionCard({
   };
 
   const requestBrowserPaneAction = (
-    action: "devtools" | "react-grab" | "profile-picker" | "import-settings",
+    action: "devtools" | "feedback-tool" | "profile-picker" | "import-settings",
   ) => {
     if (!isBrowserSession) {
       return;
@@ -740,6 +747,7 @@ export function SortableSessionCard({
     });
   }
 
+  const feedbackToolLabel = getBrowserFeedbackToolLabel(browserFeedbackTool);
   const sessionActions: SessionContextMenuAction[] = [];
   if (isBrowserSession) {
     sessionActions.push(
@@ -765,9 +773,9 @@ export function SortableSessionCard({
             stroke={1.8}
           />
         ),
-        key: "browser-react-grab",
-        label: "React Grab",
-        onClick: () => requestBrowserPaneAction("react-grab"),
+        key: "browser-feedback-tool",
+        label: feedbackToolLabel,
+        onClick: () => requestBrowserPaneAction("feedback-tool"),
       },
       {
         icon: (

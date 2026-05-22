@@ -246,6 +246,29 @@ describe("getSessionCardTitleTooltip", () => {
     });
   });
 
+  test("should include captured agent session ids in the tooltip", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          agentSessionId: "codex-session-123",
+          alias: "Session 1",
+          detail: "OpenAI Codex",
+          isPrimaryTitleTerminalTitle: true,
+          primaryTitle: "Fix restore",
+          sessionNumber: undefined,
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: false,
+      }),
+    ).toEqual({
+      headingText: "Fix restore",
+      tooltip: "Fix restore\n\ncodex-session-123",
+      tooltipWhen: "always",
+    });
+  });
+
   test("should show delayed send countdown directly below the tooltip title", () => {
     expect(
       getSessionCardTitleTooltip({

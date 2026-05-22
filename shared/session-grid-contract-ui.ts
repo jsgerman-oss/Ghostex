@@ -13,13 +13,9 @@ import {
 } from "./session-grid-contract-core";
 import { createDefaultSidebarGitState, type SidebarGitState } from "./sidebar-git";
 import {
-  createDefaultSidebarSectionCollapseState,
-  createDefaultSidebarSectionVisibility,
   type SidebarActiveSessionsSortMode,
   type SidebarCommandSessionIndicator,
   type SidebarHudState,
-  type SidebarSectionCollapseState,
-  type SidebarSectionVisibility,
   type SidebarSessionItem,
 } from "./session-grid-contract-sidebar";
 import {
@@ -50,8 +46,6 @@ export function createSidebarHudState(
   commands: SidebarCommandButton[] = createDefaultSidebarCommandButtons(),
   pendingAgentIds: string[] = [],
   git: SidebarGitState = createDefaultSidebarGitState(),
-  sectionVisibility: SidebarSectionVisibility = createDefaultSidebarSectionVisibility(),
-  collapsedSections: SidebarSectionCollapseState = createDefaultSidebarSectionCollapseState(),
   /**
    * CDXC:SidebarSessions 2026-04-28-05:18
    * New sidebar HUD state must default to the reference behavior: active
@@ -74,7 +68,6 @@ export function createSidebarHudState(
     agentManagerZoomPercent,
     agents,
     buildStamp,
-    collapsedSections,
     commands,
     commandSessionIndicators,
     completionBellEnabled,
@@ -86,8 +79,13 @@ export function createSidebarHudState(
     highlightedVisibleCount: getSessionGridLayoutVisibleCount(snapshot),
     isFocusModeActive: isSessionGridFocusModeActive(snapshot),
     pendingAgentIds,
+    /**
+     * CDXC:SidebarLayout 2026-05-22-22:24:
+     * The current sidebar no longer renders legacy Actions/Agents/Browsers
+     * sections, so HUD snapshots omit section visibility and section collapse
+     * state instead of preserving dead chrome controls.
+     */
     recentProjects: [],
-    sectionVisibility,
     createSessionOnSidebarDoubleClick,
     renameSessionOnDoubleClick,
     showCloseButtonOnSessionCards,
@@ -115,6 +113,7 @@ export function createSidebarSessionItems(
     activity: "idle",
     activityLabel: undefined,
     agentIcon: session.kind === "browser" ? "browser" : undefined,
+    agentSessionId: session.kind === "terminal" ? session.agentSessionId : undefined,
     alias: session.alias,
     column: session.column,
     detail: undefined,

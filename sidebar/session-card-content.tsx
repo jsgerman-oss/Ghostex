@@ -34,14 +34,18 @@ const AGENT_SECONDARY_LABELS: Record<SidebarAgentIcon, readonly string[]> = {
   "antigravity-cli": ["agy", "antigravity", "antigravity cli"],
   browser: ["browser"],
   claude: ["claude", "claude code"],
+  codebuddy: ["codebuddy", "code buddy"],
   "cursor-cli": ["cursor", "cursor agent", "cursor cli", "cursor-agent"],
   codex: ["codex", "codex cli", "openai codex"],
   copilot: ["copilot", "github copilot"],
   "factory-droid": ["droid", "factory droid"],
   gemini: ["gemini"],
   "grok-build": ["grok", "grok build"],
+  "hermes-agent": ["hermes", "hermes agent"],
   opencode: ["open code", "opencode"],
   pi: ["pi", "π"],
+  qoder: ["qoder", "qodercli"],
+  "rovo-dev": ["rovo", "rovo dev", "rovodev"],
   t3: ["t3", "t3 code"],
 };
 
@@ -249,6 +253,7 @@ export function getSessionCardTitleTooltip({
     SidebarSessionItem,
     | "activityLabel"
     | "agentIcon"
+    | "agentSessionId"
     | "alias"
     | "delayedSendRemainingLabel"
     | "detail"
@@ -301,11 +306,18 @@ export function getSessionCardTitleTooltip({
    * Previous-session search cards need scannable restore context in their
    * title tooltip: archived agent, source project, and persistence provider
    * must be visible without exposing extra columns in the compact result row.
+   *
+   * CDXC:SessionRestore 2026-05-22-23:59:
+   * Hook-captured agent session ids are the reliable resume key for agent CLIs. Show the captured id in the normal card hover tooltip so users can confirm the exact session Ghostex will target while the existing title-based resume fallback remains available when hooks have not captured an id.
+   *
+   * CDXC:SessionRestore 2026-05-23-00:25:
+   * The hover tooltip should show the captured session id directly, without a "captured session id" label, so the tooltip stays compact and copyable.
    */
   const sessionIdTooltip =
     showDebugSessionNumbers && session.sessionNumber !== undefined
       ? `ID: ${session.sessionNumber}`
       : undefined;
+  const agentSessionIdTooltip = getCapturedAgentSessionIdTooltipText(session);
   const tooltipMetadata = [
     /*
      * CDXC:DelayedSend 2026-05-21-12:21:
@@ -318,6 +330,7 @@ export function getSessionCardTitleTooltip({
       : undefined,
     getSessionTooltipSecondaryText(session),
     ...(showSessionDetails ? getSessionDetailsTooltipLines(session) : []),
+    agentSessionIdTooltip,
     /*
      * CDXC:SessionTooltips 2026-05-20-07:30:
      * Sidebar session-card tooltips already expose the visible session ID, so
@@ -342,6 +355,13 @@ export function getSessionCardTitleTooltip({
     headingText,
     ...titleTooltipOptions,
   };
+}
+
+function getCapturedAgentSessionIdTooltipText(
+  session: Pick<SidebarSessionItem, "agentSessionId">,
+): string | undefined {
+  const agentSessionId = session.agentSessionId?.trim();
+  return agentSessionId || undefined;
 }
 
 function getFullSessionTooltipHeadingText({

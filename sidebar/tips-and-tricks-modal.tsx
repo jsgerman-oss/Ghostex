@@ -182,6 +182,46 @@ const TIPS_AND_TRICKS_PAGES: TipsPage[] = [
   {
     action: {
       description:
+        "Restart Ghostex after installing or updating an agent CLI so Ghostex can install the matching lifecycle hooks.",
+      eyebrow: "Reliable resume",
+      snippet: [
+        "~/.codex/hooks.json",
+        "~/.claude/settings.json",
+        "~/.pi/agent/extensions/ghostex.ts",
+        "~/.ghostexterm/<agent>-hook-sessions.json",
+      ],
+    },
+    icon: IconDeviceFloppy,
+    items: [
+      {
+        icon: IconDeviceFloppy,
+        text: "Agent hooks capture the native session id that Claude, Codex, Grok, OpenCode, Pi, Amp, Cursor CLI, Gemini, Antigravity, Rovo Dev, Hermes Agent, Copilot, CodeBuddy, Factory, and Qoder need for exact resume.",
+      },
+      {
+        icon: IconSettings,
+        text: "Ghostex installs hooks into the agent config files it can find after the agent CLI exists on your PATH.",
+      },
+      {
+        icon: IconTerminal2,
+        text: "Start agent sessions from Ghostex terminals so the hooks can attach the captured id to the correct session card.",
+      },
+      {
+        icon: IconHistory,
+        text: "If an id was not captured, Ghostex still falls back to the existing title-based resume flow.",
+      },
+    ],
+    /*
+     * CDXC:SessionRestore 2026-05-22-23:33:
+     * Tips & Tricks must explain that reliable agent resume depends on
+     * installed agent CLI hooks capturing each native session id. The product
+     * still keeps title-based resume as the backup when hook capture is absent.
+     */
+    kicker: "Page 5",
+    title: "Session Resume Hooks",
+  },
+  {
+    action: {
+      description:
         "After you SSH into the Mac that is running Ghostex, list sessions and attach by the alias shown in the table.",
       eyebrow: "Remote session commands",
       snippet: [

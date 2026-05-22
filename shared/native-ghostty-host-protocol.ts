@@ -269,6 +269,12 @@ export type NativeGhosttyHostCommand =
       sessionFaviconDataUrls?: Record<string, string>;
       sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;
+      /**
+       * CDXC:SessionPersistence 2026-05-23-00:50:
+       * Native pane overlays are outside React, so Settings must send the
+       * top-right provider/session visibility preference with layout sync.
+       */
+      showSessionIdInTerminalPanes?: boolean;
       showProjectEditorDiffFileCount?: boolean;
       sidebarActions?: {
         commands: SidebarCommandButton[];

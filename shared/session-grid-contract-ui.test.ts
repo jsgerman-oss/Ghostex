@@ -50,6 +50,24 @@ describe("createSidebarSessionItems", () => {
     expect(items[1]?.isFavorite).toBe(false);
   });
 
+  test("should expose captured agent session ids through sidebar session items", () => {
+    const items = createSidebarSessionItems({
+      focusedSessionId: "session-1",
+      sessions: [
+        createSessionRecord(1, 0, {
+          agentName: "codex",
+          agentSessionId: "codex-session-123",
+          title: "Fix resume",
+        }),
+      ],
+      viewMode: "grid",
+      visibleCount: 1,
+      visibleSessionIds: ["session-1"],
+    });
+
+    expect(items[0]?.agentSessionId).toBe("codex-session-123");
+  });
+
   test("should treat Ghostty ghost titles as placeholders instead of persisted session names", () => {
     /**
      * CDXC:SessionTitleSync 2026-05-07-17:27

@@ -193,8 +193,6 @@ export function createSidebarStoryMessage(
     workspace.options.commands,
     [],
     undefined,
-    undefined,
-    undefined,
     workspace.options.activeSessionsSortMode,
     false,
     false,

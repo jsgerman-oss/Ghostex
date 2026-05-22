@@ -371,16 +371,6 @@ describe("sidebar HUD state", () => {
     expect(hud.completionSound).toBe("glass");
     expect(hud.completionSoundLabel).toBe("Glass");
     expect(hud.agentManagerZoomPercent).toBe(95);
-    expect(hud.collapsedSections).toEqual({
-      actions: false,
-      agents: false,
-    });
-    expect(hud.sectionVisibility).toEqual({
-      actions: true,
-      agents: true,
-      browsers: true,
-      git: true,
-    });
     expect(hud.createSessionOnSidebarDoubleClick).toBe(false);
     expect(hud.renameSessionOnDoubleClick).toBe(false);
     expect(hud.showCloseButtonOnSessionCards).toBe(true);
@@ -403,8 +393,6 @@ describe("sidebar HUD state", () => {
       undefined,
       undefined,
       undefined,
-      undefined,
-      undefined,
       "manual",
       true,
     );
@@ -422,8 +410,6 @@ describe("sidebar HUD state", () => {
       false,
       false,
       "ping",
-      undefined,
-      undefined,
       undefined,
       undefined,
       undefined,

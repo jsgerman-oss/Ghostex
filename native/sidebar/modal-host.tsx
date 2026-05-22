@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Toaster, toast } from "sonner";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
@@ -335,7 +335,7 @@ function appendPromptEditorDebugLog(
   );
 }
 
-function closeModal() {
+function notifyNativeModalClosed() {
   postAppModalHostMessage({ type: "close" }, "AppModals:close");
 }
 
@@ -1413,6 +1413,7 @@ function AppModalHost() {
     firstUserMessage,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
+    closeModal,
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
@@ -1685,8 +1686,8 @@ function AppModalHost() {
         onGhosttySettingsAction={(action) => {
           vscode.postMessage({ type: action });
         }}
-        onInstallZapet={() => {
-          vscode.postMessage({ type: "installZapet" });
+        onInstallGte={() => {
+          vscode.postMessage({ type: "installGte" });
         }}
         onPlayCompletionSound={(sound) => {
           vscode.postMessage({ sound, type: "playCompletionSoundPreview" });
@@ -1871,6 +1872,33 @@ function useModalStateFromNative() {
   const [ghostexFolderStats, setGhostexFolderStats] = useState<SidebarGhostexFolderStatsMessage>();
   const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
   const toastTokenRef = useRef(0);
+
+  const clearActiveModalState = useCallback(() => {
+    setActiveModal(undefined);
+    setConfig({});
+    setDelayedSend(undefined);
+    setFindPreviousSession(undefined);
+    setFirstUserMessage(undefined);
+    setFloatingPromptEditor(undefined);
+    setRenameSession(undefined);
+    setT3BrowserAccess(undefined);
+    setT3ThreadId(undefined);
+    setWorktree(undefined);
+    setGhostexFolderStats(undefined);
+    setAgentsHubCatalog(undefined);
+  }, []);
+
+  const closeModal = useCallback(() => {
+    /**
+     * CDXC:AppModals 2026-05-22-16:55:
+     * Modal controls such as Previous Sessions Escape and the X button must
+     * dismiss the React dialog immediately, then notify native to hide the
+     * transparent modal-host WKWebView. Do not require the native echo before
+     * clearing visible modal state.
+     */
+    clearActiveModalState();
+    notifyNativeModalClosed();
+  }, [clearActiveModalState]);
 
   useEffect(() => {
     activeModalRef.current = activeModal;
@@ -2127,18 +2155,7 @@ function useModalStateFromNative() {
               "AppModals:debug",
             );
           }
-          setActiveModal(undefined);
-          setConfig({});
-          setDelayedSend(undefined);
-          setFindPreviousSession(undefined);
-          setFirstUserMessage(undefined);
-          setFloatingPromptEditor(undefined);
-          setRenameSession(undefined);
-          setT3BrowserAccess(undefined);
-          setT3ThreadId(undefined);
-          setWorktree(undefined);
-          setGhostexFolderStats(undefined);
-          setAgentsHubCatalog(undefined);
+          clearActiveModalState();
           return;
         }
 
@@ -2211,6 +2228,7 @@ function useModalStateFromNative() {
     firstUserMessage,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
+    closeModal,
     renameSession,
     t3BrowserAccess,
     t3ThreadId,

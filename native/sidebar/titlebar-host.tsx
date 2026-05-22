@@ -1166,9 +1166,10 @@ function App() {
     /**
      * CDXC:TitlebarResources 2026-05-21-16:38:
      * Any Quit action in the resource manager should immediately mark the row
-     * as closing and move it below active resources. Sidebar-owned sessions,
-     * browser panes, and VS Code project editors close through sidebar state;
-     * only detached process bundles use direct SIGTERM.
+     * as closing and move it below active resources. Sidebar-owned terminal
+     * sessions sleep through sidebar state so their cards remain resumable;
+     * non-terminal panes and detached process bundles still use their resource
+     * cleanup paths.
      */
     setQuittingResourceKeys((current) => {
       const next = new Set(current);
@@ -2710,6 +2711,7 @@ styleElement.textContent = `
     gap: 6px;
     letter-spacing: 0.08em;
     padding: 4px 2px 7px;
+    position: relative;
     text-transform: uppercase;
     width: 100%;
   }
@@ -2730,7 +2732,19 @@ styleElement.textContent = `
   }
   .titlebar-resource-section-quit-button {
     height: 22px;
-    margin-left: 8px;
+    position: absolute;
+    right: 2px;
+    top: 2px;
+  }
+  .titlebar-resource-section-heading:hover .titlebar-resource-section-summary,
+  .titlebar-resource-section-heading:focus-within .titlebar-resource-section-summary {
+    /*
+     * CDXC:TitlebarResources 2026-05-22-23:21:
+     * Section-level Quit actions should replace the CPU/RAM/count metrics on
+     * hover, matching resource session rows where destructive controls occupy
+     * the metrics area instead of adding another right-edge control.
+     */
+    opacity: 0;
   }
   .titlebar-resource-section-heading svg[data-collapsed="true"],
   .titlebar-resource-collapse-button svg[data-collapsed="true"] {
@@ -2744,6 +2758,7 @@ styleElement.textContent = `
     gap: 10px;
     margin-left: auto;
     text-transform: none;
+    transition: opacity 120ms ease;
   }
   .titlebar-resource-section-summary span {
     gap: 4px;

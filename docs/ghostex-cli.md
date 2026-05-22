@@ -52,8 +52,6 @@ gtx sessions
 ```sh
 bun run cli -- click-button agent codex
 bun run cli -- click-button command test
-bun run cli -- click-button section agents
-bun run cli -- toggle-section actions --collapsed true
 bun run cli -- set-visible-count 2
 bun run cli -- set-view-mode grid
 bun run cli -- move-sidebar

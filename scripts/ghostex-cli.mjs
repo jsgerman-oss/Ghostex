@@ -73,7 +73,6 @@ const COMMANDS = new Map([
   ["send-enter", bridgeAction("sendEnter", parseSessionSelector)],
   ["send-key", bridgeAction("sendKey", parseSendKey)],
   ["rename-command", bridgeAction("renameCommand", parseRename)],
-  ["toggle-section", bridgeAction("toggleSection", parseToggleSection)],
   ["set-visible-count", bridgeAction("setVisibleCount", parseVisibleCount)],
   ["set-view-mode", bridgeAction("setViewMode", parseViewMode)],
   ["open-browser", bridgeAction("openBrowser", parseUrl)],
@@ -301,7 +300,7 @@ async function floatingEditorCommand(args) {
         originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID || undefined,
         requestId,
         statusFile,
-        title: "Zapet",
+        title: "gte",
         type: "openFloatingEditor",
       }),
     );
@@ -1239,13 +1238,6 @@ function parseSendKey(rest, flags) {
   };
 }
 
-function parseToggleSection(rest, flags) {
-  return {
-    collapsed: flags.collapsed === undefined ? undefined : parseBoolean(flags.collapsed),
-    section: flags.section ?? rest[0],
-  };
-}
-
 function parseVisibleCount(rest, flags) {
   return { count: Number(flags.count ?? rest[0]) };
 }
@@ -1385,7 +1377,7 @@ function usage() {
     formatHelpCommand("create-agent <agentId> [--group-id id]", "Create a configured agent session"),
     formatHelpCommand("run-agent <agentId>", "Run a configured agent button"),
     formatHelpCommand("run-command <commandId>", "Run a configured command button"),
-    formatHelpCommand("click-button <agent|command|section> <id>", "Trigger a sidebar button"),
+    formatHelpCommand("click-button <agent|command> <id>", "Trigger a sidebar button"),
     formatHelpCommand("switch-project (--project-id|--path|--name) <value>", "Switch active project"),
     formatHelpCommand("move-project --project-id id --direction up|down", "Move a project in the desktop sidebar order"),
     formatHelpCommand("add-project <path> [--name name]", "Add a project to Ghostex"),
@@ -1407,7 +1399,6 @@ function usage() {
     formatHelpCommand("floating-monaco-editor | fme <file>", "Open a draggable Monaco editor overlay"),
     formatHelpCommand("(close|restart|fork|reload)-session <id>", "Manage a session lifecycle"),
     formatHelpCommand("sleep-session|favorite-session <id> [true|false]", "Set raw session flags"),
-    formatHelpCommand("toggle-section <actions|agents> [--collapsed true|false]", "Collapse or expand a sidebar section"),
     formatHelpCommand("set-visible-count <1|2|3|4|6|9>", "Set visible session count"),
     formatHelpCommand("set-view-mode <grid|horizontal|vertical>", "Set session layout mode"),
     formatHelpCommand("open-browser [url]", "Open the browser surface"),

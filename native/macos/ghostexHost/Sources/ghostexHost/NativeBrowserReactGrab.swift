@@ -104,3 +104,117 @@ enum NativeBrowserReactGrabInjector {
     chromiumView.executeJavaScript(combinedScript(scriptSource: scriptSource))
   }
 }
+
+enum NativeBrowserAgentationSettings {
+  static let defaultVersion = "3.0.2"
+  static let reactVersion = "18.2.0"
+
+  static func packageModuleURL(for version: String) -> URL {
+    URL(string: "https://esm.sh/agentation@\(version)?bundle&deps=react@\(reactVersion),react-dom@\(reactVersion)")!
+  }
+
+  static func reactModuleURL() -> URL {
+    URL(string: "https://esm.sh/react@\(reactVersion)")!
+  }
+
+  static func reactDOMClientModuleURL() -> URL {
+    URL(string: "https://esm.sh/react-dom@\(reactVersion)/client?deps=react@\(reactVersion)")!
+  }
+}
+
+@MainActor
+enum NativeBrowserAgentationInjector {
+  private static func combinedScript() -> String {
+    let packageURL = NativeBrowserAgentationSettings.packageModuleURL(
+      for: NativeBrowserAgentationSettings.defaultVersion
+    ).absoluteString
+    let reactURL = NativeBrowserAgentationSettings.reactModuleURL().absoluteString
+    let reactDOMClientURL = NativeBrowserAgentationSettings.reactDOMClientModuleURL().absoluteString
+
+    /**
+     CDXC:BrowserFeedbackTools 2026-05-22-09:18:
+     Agentation ships as a React component rather than the global script format
+     React Grab provides. Mount it through native JavaScript evaluation with
+     pinned ESM module URLs so the CEF browser action starts the selected tool
+     directly instead of falling back to React Grab.
+     */
+    return """
+      (function() {
+        const existing = window.__GHOSTEX_AGENTATION__;
+        if (existing && typeof existing.unmount === 'function') {
+          existing.unmount();
+          return;
+        }
+
+        const state = {
+          canceled: false,
+          container: null,
+          root: null,
+          unmount: function() {
+            this.canceled = true;
+            if (this.root) {
+              this.root.unmount();
+            }
+            if (this.container && this.container.parentNode) {
+              this.container.parentNode.removeChild(this.container);
+            }
+            delete window.__GHOSTEX_AGENTATION__;
+          }
+        };
+        window.__GHOSTEX_AGENTATION__ = state;
+
+        const mount = async function() {
+          const modules = await Promise.all([
+            import('\(reactURL)'),
+            import('\(reactDOMClientURL)'),
+            import('\(packageURL)')
+          ]);
+          if (state.canceled) {
+            return;
+          }
+          const React = modules[0].default || modules[0];
+          const ReactDOMClient = modules[1];
+          const Agentation = modules[2].Agentation;
+          if (!React || typeof React.createElement !== 'function' || !ReactDOMClient.createRoot || !Agentation) {
+            throw new Error('Agentation modules did not expose the expected React mounting API.');
+          }
+
+          const container = document.createElement('div');
+          container.id = 'ghostex-agentation-root';
+          container.setAttribute('data-agentation-root', 'true');
+          (document.body || document.documentElement).appendChild(container);
+
+          state.container = container;
+          state.root = ReactDOMClient.createRoot(container);
+          state.root.render(React.createElement(Agentation));
+        };
+
+        const start = function() {
+          mount().catch(function(error) {
+            console.warn('Agentation: injection failed', error);
+            state.unmount();
+          });
+        };
+
+        if (document.body || document.readyState !== 'loading') {
+          start();
+        } else {
+          window.addEventListener('DOMContentLoaded', start, { once: true });
+        }
+      })();
+      """
+  }
+
+  static func toggleOrInject(into webView: WKWebView) async {
+    do {
+      _ = try await webView.evaluateJavaScript(combinedScript())
+    } catch {
+      NSLog("Agentation: injection failed: %@", error.localizedDescription)
+      NSSound.beep()
+    }
+  }
+
+  static func toggleOrInject(into chromiumView: GhostexCEFBrowserView) async {
+    chromiumView.executeJavaScript(combinedScript())
+  }
+}

@@ -23,20 +23,6 @@ import type {
   VisibleSessionCount,
 } from "./session-grid-contract-core";
 
-export type SidebarCollapsibleSection = "actions" | "agents";
-
-export type SidebarSectionVisibility = {
-  actions: boolean;
-  agents: boolean;
-  browsers: boolean;
-  git: boolean;
-};
-
-export type SidebarSectionCollapseState = {
-  actions: boolean;
-  agents: boolean;
-};
-
 export type SidebarActiveSessionsSortMode = "manual" | "lastActivity";
 
 export type AgentsHubTab = "mds" | "skills" | "hooks" | "configs";
@@ -72,28 +58,17 @@ export type AgentsHubCatalogMessage = {
   type: "agentsHubCatalog";
 };
 
-export function createDefaultSidebarSectionVisibility(): SidebarSectionVisibility {
-  return {
-    actions: true,
-    agents: true,
-    browsers: true,
-    git: true,
-  };
-}
-
-export function createDefaultSidebarSectionCollapseState(): SidebarSectionCollapseState {
-  return {
-    actions: false,
-    agents: false,
-  };
-}
-
 export type SidebarSessionItem = {
   kind?: "browser" | "workspace";
   sessionKind?: "browser" | "terminal" | "t3";
   activity: "idle" | "working" | "attention";
   activityLabel?: string;
   agentIcon?: SidebarAgentIcon;
+  /**
+   * CDXC:SessionRestore 2026-05-22-23:59:
+   * Agent CLI hook installs capture the stable provider session id separately from Ghostex's visible session id. Sidebar cards carry that value so hover tooltips can show the exact resume target while title-based restore remains a backup.
+   */
+  agentSessionId?: string;
   faviconDataUrl?: string;
   firstUserMessage?: string;
   isGeneratingFirstPromptTitle?: boolean;
@@ -260,7 +235,6 @@ export type SidebarHudState = {
   agentManagerZoomPercent: number;
   agents: SidebarAgentButton[];
   buildStamp?: string;
-  collapsedSections: SidebarSectionCollapseState;
   commands: SidebarCommandButton[];
   commandSessionIndicators: SidebarCommandSessionIndicator[];
   completionBellEnabled: boolean;
@@ -292,7 +266,6 @@ export type SidebarHudState = {
    */
   recentProjects: SidebarRecentProject[];
   projectWorktrees?: SidebarProjectWorktree[];
-  sectionVisibility: SidebarSectionVisibility;
   settings?: ghostexSettings;
   createSessionOnSidebarDoubleClick: boolean;
   renameSessionOnDoubleClick: boolean;
@@ -560,7 +533,7 @@ export type SidebarToExtensionMessage =
         | "openMacOSNotificationSettings"
         | "openGhosttyConfigFile"
         | "openGhosttySettingsDocs"
-        | "installZapet"
+        | "installGte"
         | "resetGhosttySettingsToDefault";
     }
   | {
@@ -960,10 +933,11 @@ export type SidebarToExtensionMessage =
       /**
        * CDXC:BrowserPanes 2026-05-02-06:35
        * Browser session cards expose pane-specific controls copied from the
-       * native browser workflow: DevTools, React Grab, profile selection, and
-       * browser-data import. The native host owns the macOS UI and WebKit work.
+       * native browser workflow: DevTools, the Settings-selected feedback tool,
+       * profile selection, and browser-data import. The native host owns the
+       * macOS UI and WebKit/CEF work.
        */
-      action: "devtools" | "react-grab" | "profile-picker" | "import-settings";
+      action: "devtools" | "feedback-tool" | "profile-picker" | "import-settings";
       sessionId: string;
       type: "runBrowserPaneAction";
     }
@@ -997,11 +971,6 @@ export type SidebarToExtensionMessage =
       promptId?: string;
       title: string;
       type: "savePinnedPrompt";
-    }
-  | {
-      collapsed: boolean;
-      section: SidebarCollapsibleSection;
-      type: "setSidebarSectionCollapsed";
     }
   | {
       type: "moveSessionToGroup";

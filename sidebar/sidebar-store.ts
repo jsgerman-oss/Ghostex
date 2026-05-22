@@ -4,12 +4,7 @@ import { createDefaultSidebarCommandButtons } from "../shared/sidebar-commands";
 import { DEFAULT_COMPLETION_SOUND, getCompletionSoundLabel } from "../shared/completion-sound";
 import { DEFAULT_ghostex_SETTINGS } from "../shared/ghostex-settings";
 import { createDefaultSidebarGitState } from "../shared/sidebar-git";
-import {
-  createDefaultSidebarSectionCollapseState,
-  createDefaultSidebarSectionVisibility,
-} from "../shared/session-grid-contract";
 import type {
-  SidebarCollapsibleSection,
   SidebarCommandRunStateClearedMessage,
   SidebarCommandRunStateChangedMessage,
   SidebarDaemonSessionsStateMessage,
@@ -46,7 +41,6 @@ type SidebarStoreDataState = {
   previousSessions: SidebarPreviousSessionItem[];
   revision: number;
   scratchPadContent: string;
-  sectionCollapseOverrides: Partial<Record<SidebarCollapsibleSection, boolean>>;
   sessionIdsByGroup: Record<string, string[]>;
   sessionsById: Record<string, SidebarSessionItem>;
   workspaceGroupIds: string[];
@@ -63,7 +57,6 @@ type SidebarStoreActions = {
   reset: () => void;
   setDaemonSessionsState: (message: SidebarDaemonSessionsStateMessage | undefined) => void;
   setGitCommitDraft: (message: SidebarPromptGitCommitMessage | undefined) => void;
-  setSectionCollapsed: (section: SidebarCollapsibleSection, collapsed: boolean) => void;
 };
 
 export type SidebarStoreState = SidebarStoreDataState & SidebarStoreActions;
@@ -84,7 +77,6 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
       activeSessionsSortMode: "lastActivity",
       agentManagerZoomPercent: 100,
       agents: createDefaultSidebarAgentButtons(),
-      collapsedSections: createDefaultSidebarSectionCollapseState(),
       commands: createDefaultSidebarCommandButtons(),
       commandSessionIndicators: [],
       completionBellEnabled: false,
@@ -99,7 +91,6 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
       pendingAgentIds: [],
       projectSettingsProjects: [],
       recentProjects: [],
-      sectionVisibility: createDefaultSidebarSectionVisibility(),
       settings: DEFAULT_ghostex_SETTINGS,
       createSessionOnSidebarDoubleClick: false,
       renameSessionOnDoubleClick: false,
@@ -117,7 +108,6 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
     previousSessions: [],
     revision: 0,
     scratchPadContent: "",
-    sectionCollapseOverrides: {},
     sessionIdsByGroup: {},
     sessionsById: {},
     workspaceGroupIds: [],
@@ -194,33 +184,6 @@ export const useSidebarStore = create<SidebarStoreState>((set) => ({
   setGitCommitDraft: (message) => {
     set({ gitCommitDraft: message });
   },
-  setSectionCollapsed: (section, collapsed) => {
-    set((state) => {
-      if (
-        state.hud.collapsedSections[section] === collapsed &&
-        state.sectionCollapseOverrides[section] === collapsed
-      ) {
-        return state;
-      }
-
-      return {
-        hud: {
-          ...state.hud,
-          collapsedSections: {
-            ...state.hud.collapsedSections,
-            [section]: collapsed,
-          },
-        },
-        sectionCollapseOverrides:
-          state.sectionCollapseOverrides[section] === collapsed
-            ? state.sectionCollapseOverrides
-            : {
-                ...state.sectionCollapseOverrides,
-                [section]: collapsed,
-              },
-      };
-    });
-  },
 }));
 
 export function resetSidebarStore() {
@@ -251,11 +214,6 @@ function applySidebarMessageState(
     state.pendingFocusedSessionId,
   );
   const normalizedGroups = normalizeSidebarGroups(state, reconciledGroups.groups);
-  const { collapsedSections, sectionCollapseOverrides } = reconcileSectionCollapseState(
-    message.hud.collapsedSections,
-    state.sectionCollapseOverrides,
-  );
-
   return {
     commandRunStates: reconcileSidebarCommandRunFeedbackStates(
       state.commandRunStates,
@@ -265,7 +223,6 @@ function applySidebarMessageState(
     groupsById: normalizedGroups.groupsById,
     hud: {
       ...message.hud,
-      collapsedSections,
       projectSettingsProjects: message.hud.projectSettingsProjects ?? [],
       recentProjects: message.hud.recentProjects ?? [],
     },
@@ -274,7 +231,6 @@ function applySidebarMessageState(
     previousSessions: message.previousSessions,
     revision: message.revision,
     scratchPadContent: message.scratchPadContent,
-    sectionCollapseOverrides,
     sessionIdsByGroup: normalizedGroups.sessionIdsByGroup,
     sessionsById: normalizedGroups.sessionsById,
     workspaceGroupIds: normalizedGroups.workspaceGroupIds,
@@ -481,41 +437,6 @@ function reconcilePendingFocusedSession(
       };
     }),
     pendingFocusedSessionId,
-  };
-}
-
-function reconcileSectionCollapseState(
-  persistedCollapsedSections: SidebarHudState["collapsedSections"],
-  sectionCollapseOverrides: Partial<Record<SidebarCollapsibleSection, boolean>>,
-): {
-  collapsedSections: SidebarHudState["collapsedSections"];
-  sectionCollapseOverrides: Partial<Record<SidebarCollapsibleSection, boolean>>;
-} {
-  let nextOverrides = sectionCollapseOverrides;
-  let hasClonedOverrides = false;
-  const nextCollapsedSections = { ...persistedCollapsedSections };
-
-  for (const section of ["actions", "agents"] as const) {
-    const override = sectionCollapseOverrides[section];
-    if (override === undefined) {
-      continue;
-    }
-
-    if (persistedCollapsedSections[section] === override) {
-      if (!hasClonedOverrides) {
-        nextOverrides = { ...sectionCollapseOverrides };
-        hasClonedOverrides = true;
-      }
-      delete nextOverrides[section];
-      continue;
-    }
-
-    nextCollapsedSections[section] = override;
-  }
-
-  return {
-    collapsedSections: nextCollapsedSections,
-    sectionCollapseOverrides: nextOverrides,
   };
 }
 

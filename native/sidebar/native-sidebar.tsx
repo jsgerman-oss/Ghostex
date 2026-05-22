@@ -71,14 +71,12 @@ import {
   type SessionRecord,
   type SessionGridSnapshot,
   type SidebarActiveSessionsSortMode,
-  type SidebarCollapsibleSection,
   type SidebarDaemonSessionItem,
   type SidebarDaemonSessionsStateMessage,
   type SidebarT3SessionItem,
   type SidebarHydrateMessage,
   type SidebarPreviousSessionItem,
   type SidebarRecentProject,
-  type SidebarSectionCollapseState,
   type SidebarSessionGroup,
   type SidebarSessionItem,
   type SidebarTheme,
@@ -409,6 +407,7 @@ type NativeHostCommand =
 	      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
 	      sessionTitles?: Record<string, string>;
 	      petOverlayEnabled?: boolean;
+	      showSessionIdInTerminalPanes?: boolean;
 	      showProjectEditorDiffFileCount?: boolean;
       sidebarActions?: {
         commands: SidebarCommandButton[];
@@ -491,6 +490,7 @@ type NativeHostCommand =
   | {
       adjustCellHeightPercent: number;
       adjustCellWidth: number;
+      cursorStyle: string;
       fontFamily: string;
       fontSize: number;
       fontVariationWeight: number | null;
@@ -529,6 +529,7 @@ type NativeHostCommand =
   | { type: "showBrowserWindow" }
   | { sessionId: string; type: "openBrowserDevTools" }
   | { sessionId: string; type: "injectBrowserReactGrab" }
+  | { sessionId: string; type: "injectBrowserAgentation" }
   | { sessionId: string; type: "showBrowserProfilePicker" }
   | { sessionId: string; type: "showBrowserImportSettings" }
   | { side: SidebarSide; type: "setSidebarSide" }
@@ -814,7 +815,6 @@ const LEGACY_COMMANDS_STORAGE_KEYS = [
 const PROJECTS_STORAGE_KEY = "ghostex-native-projects";
 const SCRATCH_PAD_STORAGE_KEY = "ghostex-native-scratch-pad";
 const PINNED_PROMPTS_STORAGE_KEY = "ghostex-native-pinned-prompts";
-const COLLAPSED_SECTIONS_STORAGE_KEY = "ghostex-native-collapsed-sections";
 const ACTIVE_SESSIONS_SORT_MODE_STORAGE_KEY = "ghostex-native-active-sessions-sort-mode";
 const PREVIOUS_SESSIONS_STORAGE_KEY = "ghostex-native-previous-sessions";
 const LEGACY_SIDEBAR_SIDE_STORAGE_KEY = "ghostex-native-sidebar-side";
@@ -859,6 +859,7 @@ const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
  */
 const NATIVE_MIN_ATTENTION_VISIBLE_MS = 1_500;
 const ghostex_AGENT_NOTIFY_HOOK_PATH = `${nativeGhostexHomeDirectory()}/hooks/agent-shell-notify.sh`;
+const GHOSTEX_AGENT_HOOK_STATE_DIR = `${nativeHomeDirectory()}/.ghostexterm`;
 const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/ghostex.ts`;
 const FIND_PREVIOUS_SESSION_AGENT_ID = "codex";
 const FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS = 1_500;
@@ -908,7 +909,6 @@ let commands: SidebarCommandButton[] = [];
 let settings = readStoredSettings();
 let scratchPadContent = readScratchPadContent();
 let pinnedPrompts = readPinnedPrompts();
-let collapsedSections = readCollapsedSections();
 let activeSessionsSortMode = readActiveSessionsSortMode();
 let previousSessions = readPreviousSessions();
 let sidebarSide = readSidebarSide();
@@ -2492,12 +2492,15 @@ function openGhosttyConfigFile(): void {
   postNative({ type: "openGhosttyConfigFile" });
 }
 
-async function installZapetFromBrew(): Promise<void> {
+async function installGteFromBrew(): Promise<void> {
   /**
-   * CDXC:ZapetPromptEditing 2026-05-10-11:11
-   * The Settings install button installs Zapet from the user's Homebrew tap.
+   * CDXC:GtePromptEditing 2026-05-10-11:11
+   * The Settings install button installs gte from the user's Homebrew tap.
    * macOS GUI launches may not inherit a shell PATH, so resolve Homebrew from
    * the shell command before running the single brew install operation.
+   *
+   * CDXC:PromptEditorBackend 2026-05-22-09:56:
+   * The prompt editor is named gte for Ghostex Terminal Editor. Install status copy and Homebrew commands must use gte consistently.
    */
   const result = await runNativeProcess(
     "/bin/zsh",
@@ -2508,18 +2511,18 @@ async function installZapetFromBrew(): Promise<void> {
         "elif [ -x /opt/homebrew/bin/brew ]; then BREW=/opt/homebrew/bin/brew;",
         "elif [ -x /usr/local/bin/brew ]; then BREW=/usr/local/bin/brew;",
         "else echo 'Homebrew was not found on PATH, /opt/homebrew/bin, or /usr/local/bin.' >&2; exit 127; fi;",
-        '"$BREW" install maddada/tap/zapet',
+        '"$BREW" install maddada/tap/gte',
       ].join(" "),
     ],
     { timeoutMs: 5 * 60_000 },
   );
   if (result.exitCode === 0) {
-    showNativeMessage("info", "Zapet installed from Homebrew.");
+    showNativeMessage("info", "gte installed from Homebrew.");
     return;
   }
   showNativeMessage(
     "error",
-    `Zapet install failed: ${(result.stderr || result.stdout || "brew install failed").trim()}`,
+    `gte install failed: ${(result.stderr || result.stdout || "brew install failed").trim()}`,
   );
 }
 
@@ -2545,9 +2548,9 @@ function runNativeProcess(
    * This keeps Git and URL-launch workflows native while preserving the shared
    * sidebar UI contract.
    *
-   * CDXC:ZapetPromptEditing 2026-05-10-11:11
+   * CDXC:GtePromptEditing 2026-05-10-11:11
    * Homebrew installs can exceed the short default command timeout. Allow the
-   * Zapet install button to request a longer wait without changing existing
+   * gte install button to request a longer wait without changing existing
    * Git and diagnostics command timing.
    */
   const requestId = `process-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -4242,30 +4245,6 @@ function savePinnedPrompt(
       : [nextPrompt, ...pinnedPrompts],
   );
   localStorage.setItem(PINNED_PROMPTS_STORAGE_KEY, JSON.stringify(pinnedPrompts));
-  publish();
-}
-
-function readCollapsedSections(): SidebarSectionCollapseState {
-  try {
-    const candidate = JSON.parse(localStorage.getItem(COLLAPSED_SECTIONS_STORAGE_KEY) || "null");
-    if (!candidate || typeof candidate !== "object") {
-      return { actions: false, agents: false };
-    }
-    return {
-      actions: (candidate as Partial<SidebarSectionCollapseState>).actions === true,
-      agents: (candidate as Partial<SidebarSectionCollapseState>).agents === true,
-    };
-  } catch {
-    return { actions: false, agents: false };
-  }
-}
-
-function setSidebarSectionCollapsed(section: SidebarCollapsibleSection, collapsed: boolean): void {
-  collapsedSections = {
-    ...collapsedSections,
-    [section]: collapsed,
-  };
-  localStorage.setItem(COLLAPSED_SECTIONS_STORAGE_KEY, JSON.stringify(collapsedSections));
   publish();
 }
 
@@ -6875,6 +6854,9 @@ function createProjectedSidebarSessionsForGroup(
       ...session,
       activity: terminalState?.activity ?? session.activity,
       agentIcon,
+      agentSessionId:
+        terminalState?.agentSessionId ??
+        (sessionRecord?.kind === "terminal" ? sessionRecord.agentSessionId : session.agentSessionId),
       delayedSendDeadlineAt: delayedSend?.deadlineAt,
       delayedSendRemainingLabel: delayedSend?.remainingLabel,
       delayedSendRemainingMs: delayedSend?.remainingMs,
@@ -7030,20 +7012,6 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         commands,
         [],
         gitState,
-        {
-          /**
-           * CDXC:SidebarLayout 2026-05-21-11:07:
-           * The current sidebar no longer renders hidden Actions, Agents,
-           * Browsers, or project-header mounts in React. Keep this visibility
-           * projection only for older persisted state normalization while the
-           * native titlebar and settings own those surfaces.
-           */
-          actions: false,
-          agents: true,
-          browsers: false,
-          git: true,
-        },
-        collapsedSections,
         activeSessionsSortMode,
         settings.createSessionOnSidebarDoubleClick,
         settings.renameSessionOnDoubleClick,
@@ -7933,23 +7901,37 @@ function createNativeAgentSessionEnvironment(args: {
     ghostex_WORKSPACE_ID: args.project.projectId,
     ghostex_WORKSPACE_ROOT: args.project.path,
   };
-  if (settings.promptEditorBackend === "monaco" || settings.promptEditorBackend === "zpet") {
+  if (
+    settings.promptEditorBackend === "monaco" ||
+    settings.promptEditorBackend === "gte" ||
+    settings.promptEditorBackend === "custom"
+  ) {
     /**
      * CDXC:PromptEditorBackend 2026-05-11-14:38
      * Ctrl+G prompt editing is selected in Settings as a backend. Inject both
      * the immediate EDITOR value and the backend marker native uses to reapply
      * the same command after zsh startup files have run.
+     *
+     * CDXC:PromptEditorBackend 2026-05-22-10:16
+     * gte is a terminal-native editor, so selecting gte must export the plain
+     * command and let Ctrl+G run inside the launching terminal instead of
+     * opening Ghostex's floating editor overlay. Monaco remains overlay-backed.
      */
     const promptEditorCommand =
-      settings.promptEditorBackend === "zpet"
-        ? "ghostex floating-editor -- zpet"
-        : "ghostex floating-monaco-editor";
+      settings.promptEditorBackend === "gte"
+        ? "gte"
+        : settings.promptEditorBackend === "custom"
+          ? settings.customPromptEditorCommand.trim() || "code --wait"
+          : "ghostex floating-monaco-editor";
     environment.EDITOR = promptEditorCommand;
     environment.VISUAL = promptEditorCommand;
     environment.GHOSTEX_PROMPT_EDITOR_BACKEND = settings.promptEditorBackend;
+    if (settings.promptEditorBackend === "custom") {
+      environment.GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND = promptEditorCommand;
+    }
     environment.GHOSTEX_PROMPT_EDITING_ENABLED = "1";
-    environment.GHOSTEX_RICH_PROMPT_EDITING_WITH_ZAPET =
-      settings.promptEditorBackend === "zpet" ? "1" : "0";
+    environment.GHOSTEX_RICH_PROMPT_EDITING_WITH_GTE =
+      settings.promptEditorBackend === "gte" ? "1" : "0";
   }
   return environment;
 }
@@ -8037,6 +8019,7 @@ async function ensureNativeAgentFirstPromptHooks(): Promise<void> {
     codexHooksPaths: installedCodexHooksPaths.length
       ? installedCodexHooksPaths
       : [`${nativeHomeDirectory()}/.codex/hooks.json`],
+    hookStateDirectory: GHOSTEX_AGENT_HOOK_STATE_DIR,
     notifyHookPath: ghostex_AGENT_NOTIFY_HOOK_PATH,
     piExtensionPath: NATIVE_PI_EXTENSION_PATH,
   });
@@ -8047,9 +8030,10 @@ function buildEnsureNativeAgentHooksCommand(): string {
   const piExtensionPath = NATIVE_PI_EXTENSION_PATH;
   const homeDirectory = nativeHomeDirectory();
   const claudeSettingsPath = `${nativeHomeDirectory()}/.claude/settings.json`;
+  const hookStateDirectory = GHOSTEX_AGENT_HOOK_STATE_DIR;
   return [
     "set -e",
-    `mkdir -p ${quoteNativeShellArg(dirnameNativePath(notifyHookPath))} ${quoteNativeShellArg(dirnameNativePath(claudeSettingsPath))} ${quoteNativeShellArg(dirnameNativePath(piExtensionPath))}`,
+    `mkdir -p ${quoteNativeShellArg(dirnameNativePath(notifyHookPath))} ${quoteNativeShellArg(dirnameNativePath(claudeSettingsPath))} ${quoteNativeShellArg(dirnameNativePath(piExtensionPath))} ${quoteNativeShellArg(hookStateDirectory)}`,
     `cat > ${quoteNativeShellArg(notifyHookPath)} <<'ghostex_NOTIFY_HOOK'`,
     getNativeCodexNotifyHookScript(),
     "ghostex_NOTIFY_HOOK",
@@ -8057,6 +8041,15 @@ function buildEnsureNativeAgentHooksCommand(): string {
     `cat > ${quoteNativeShellArg(piExtensionPath)} <<'ghostex_PI_EXTENSION'`,
     getNativePiExtensionScript(),
     "ghostex_PI_EXTENSION",
+    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_GENERIC_AGENT_HOOK_MERGE'`,
+    getNativeGenericAgentHookMergeScript(),
+    "ghostex_GENERIC_AGENT_HOOK_MERGE",
+    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_OPENCODE_PLUGIN_INSTALL'`,
+    getNativeOpenCodePluginInstallScript(),
+    "ghostex_OPENCODE_PLUGIN_INSTALL",
+    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_AMP_PLUGIN_INSTALL'`,
+    getNativeAmpPluginInstallScript(),
+    "ghostex_AMP_PLUGIN_INSTALL",
     `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_CODEX_HOOK_MERGE_ALL'`,
     getNativeCodexHookMergeAllScript(),
     "ghostex_CODEX_HOOK_MERGE_ALL",
@@ -8067,6 +8060,13 @@ function buildEnsureNativeAgentHooksCommand(): string {
 }
 
 function getNativeCodexNotifyHookScript(): string {
+  /*
+   * CDXC:SessionRestore 2026-05-22-23:33:
+   * Ghostex must mirror cmux-style agent resume hooks by capturing the native
+   * agent session id from hook payloads. Resume commands should prefer that
+   * exact id, while the existing title-based restore path remains the backup
+   * when a hook did not capture an id.
+   */
   return `#!/bin/bash
 if [ -n "$1" ]; then
   INPUT="$1"
@@ -8075,33 +8075,28 @@ else
 fi
 
 SESSION_STATE_FILE="\${VSMUX_SESSION_STATE_FILE:-\${GHOSTEX_SESSION_STATE_FILE:-$ghostex_SESSION_STATE_FILE}}"
+HOOK_STATE_DIR=${quoteNativeShellArg(GHOSTEX_AGENT_HOOK_STATE_DIR)}
 if [ -z "$SESSION_STATE_FILE" ]; then
   printf '{"continue":true}'
   exit 0
 fi
 
-/usr/bin/python3 - "$SESSION_STATE_FILE" "$INPUT" <<'PY'
+/usr/bin/python3 - "$SESSION_STATE_FILE" "$INPUT" "$HOOK_STATE_DIR" <<'PY'
 import datetime
 import base64
 import json
 import os
 import pathlib
+import time
 import sys
 
 state_path = sys.argv[1]
 raw_input = sys.argv[2]
+hook_state_dir = pathlib.Path(sys.argv[3]).expanduser()
 try:
     payload = json.loads(raw_input)
 except Exception:
     payload = {}
-
-event_name = payload.get("hook_event_name")
-if event_name != "UserPromptSubmit":
-    sys.exit(0)
-
-prompt = str(payload.get("prompt") or "").strip()
-if not prompt:
-    sys.exit(0)
 
 state = {}
 try:
@@ -8113,18 +8108,62 @@ try:
 except FileNotFoundError:
     pass
 
-if state.get("autoTitleFromFirstPrompt") in {"1", "true", "TRUE", "True"}:
-    sys.exit(0)
+def first_string(*values):
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.strip().split())
+    return ""
 
-payload_agent = payload.get("agent")
-state["status"] = state.get("status") or "idle"
-state["agent"] = state.get("agent") or (payload_agent if isinstance(payload_agent, str) else "") or os.environ.get("VSMUX_AGENT") or os.environ.get("GHOSTEX_AGENT") or os.environ.get("ghostex_AGENT") or "codex"
-state["firstUserMessageBase64"] = state.get("firstUserMessageBase64") or base64.b64encode(prompt.encode("utf-8")).decode("ascii")
-if state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
-    path = pathlib.Path(state_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(path.suffix + ".tmp")
-    temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in [
+def first_path(*values):
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+def normalized_agent_key(value):
+    normalized = " ".join(str(value or "").strip().lower().split())
+    if normalized in {"claude", "claude code"}:
+        return "claude"
+    if normalized in {"codex", "openai codex", "codex cli"}:
+        return "codex"
+    if normalized in {"pi", "π"}:
+        return "pi"
+    if normalized in {"opencode", "open code"}:
+        return "opencode"
+    if normalized in {"grok", "grok build"}:
+        return "grok"
+    if normalized in {"amp", "amp cli"}:
+        return "amp"
+    if normalized in {"cursor", "cursor agent", "cursor cli", "cursor-agent"}:
+        return "cursor"
+    if normalized in {"gemini", "gemini cli"}:
+        return "gemini"
+    if normalized in {"agy", "antigravity", "antigravity cli"}:
+        return "antigravity"
+    if normalized in {"copilot", "github copilot"}:
+        return "copilot"
+    if normalized in {"codebuddy", "code buddy"}:
+        return "codebuddy"
+    if normalized in {"droid", "factory", "factory droid"}:
+        return "droid"
+    if normalized in {"qoder", "qodercli"}:
+        return "qoder"
+    if normalized in {"rovo", "rovo dev", "rovodev"}:
+        return "rovodev"
+    if normalized in {"hermes", "hermes agent", "hermes-agent"}:
+        return "hermes-agent"
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in normalized).strip("-") or "codex"
+
+def nested_get(source, *path):
+    current = source
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+def write_state():
+    keys = [
         "status",
         "agent",
         "agentSessionId",
@@ -8136,33 +8175,88 @@ if state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
         "lastActivityAt",
         "pendingFirstPromptAutoRenamePrompt",
         "title",
-    ]), encoding="utf-8")
+    ]
+    path = pathlib.Path(state_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
     temp_path.replace(path)
-    sys.exit(0)
 
-state["lastActivityAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-state["pendingFirstPromptAutoRenamePrompt"] = " ".join(prompt.split())
+def write_hook_store(agent_key, session_id, transcript_path):
+    workspace_id = first_string(os.environ.get("GHOSTEX_WORKSPACE_ID"), os.environ.get("VSMUX_WORKSPACE_ID"), os.environ.get("ghostex_WORKSPACE_ID"))
+    surface_id = first_string(os.environ.get("GHOSTEX_SESSION_ID"), os.environ.get("VSMUX_SESSION_ID"), os.environ.get("ghostex_SESSION_ID"))
+    if not session_id or not workspace_id or not surface_id:
+        return
+    store_path = hook_state_dir / f"{agent_key}-hook-sessions.json"
+    try:
+        data = json.loads(store_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    sessions = data.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+    sessions[session_id] = {
+        "sessionId": session_id,
+        "workspaceId": workspace_id,
+        "surfaceId": surface_id,
+        "cwd": first_path(payload.get("cwd"), os.environ.get("GHOSTEX_WORKSPACE_ROOT"), os.environ.get("VSMUX_WORKSPACE_ROOT"), os.getcwd()),
+        "transcriptPath": transcript_path or None,
+        "pid": os.getppid(),
+        "isRestorable": True,
+        "updatedAt": time.time(),
+    }
+    data["version"] = 1
+    data["sessions"] = sessions
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = store_path.with_suffix(store_path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+    temp_path.replace(store_path)
 
-keys = [
-    "status",
-    "agent",
-    "agentSessionId",
-    "agentSessionPath",
-    "firstUserMessageBase64",
-    "frozenAt",
-    "autoTitleFromFirstPrompt",
-    "historyBase64",
-    "lastActivityAt",
-    "pendingFirstPromptAutoRenamePrompt",
-    "title",
-]
-path = pathlib.Path(state_path)
-path.parent.mkdir(parents=True, exist_ok=True)
-temp_path = path.with_suffix(path.suffix + ".tmp")
-with open(temp_path, "w", encoding="utf-8") as handle:
-    for key in keys:
-        handle.write(f"{key}={state.get(key, '')}\\n")
-temp_path.replace(path)
+payload_agent = payload.get("agent")
+agent_name = first_string(payload_agent, os.environ.get("VSMUX_AGENT"), os.environ.get("GHOSTEX_AGENT"), os.environ.get("ghostex_AGENT"), state.get("agent"), "codex")
+agent_key = normalized_agent_key(agent_name)
+event_name = first_string(payload.get("hook_event_name"), payload.get("event"))
+session_id = first_string(
+    payload.get("session_id"),
+    payload.get("sessionId"),
+    payload.get("conversation_id"),
+    payload.get("conversationId"),
+    payload.get("thread_id"),
+    payload.get("threadId"),
+    nested_get(payload, "session", "id"),
+    nested_get(payload, "thread", "id"),
+    nested_get(payload, "properties", "sessionID"),
+    nested_get(payload, "properties", "sessionId"),
+    nested_get(payload, "properties", "session_id"),
+    nested_get(payload, "properties", "info", "id"),
+)
+transcript_path = first_path(payload.get("transcript_path"), payload.get("transcriptPath"), payload.get("log_path"), payload.get("logPath"))
+prompt = first_string(
+    payload.get("prompt"),
+    payload.get("text"),
+    payload.get("message"),
+    payload.get("input"),
+    nested_get(payload, "prompt", "text"),
+)
+
+state["status"] = state.get("status") or "idle"
+state["agent"] = state.get("agent") or agent_key
+if session_id:
+    state["agentSessionId"] = session_id
+if transcript_path:
+    state["agentSessionPath"] = transcript_path
+if session_id:
+    write_hook_store(agent_key, session_id, transcript_path)
+
+if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "pre_llm_call", "pre_tool_call", "on_tool_permission"} and prompt:
+    state["firstUserMessageBase64"] = state.get("firstUserMessageBase64") or base64.b64encode(prompt.encode("utf-8")).decode("ascii")
+    state["lastActivityAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    if state.get("autoTitleFromFirstPrompt") not in {"1", "true", "TRUE", "True"} and not state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
+        state["pendingFirstPromptAutoRenamePrompt"] = " ".join(prompt.split())
+
+write_state()
 PY
 
 printf '{"continue":true}'
@@ -8192,43 +8286,383 @@ if not isinstance(hooks, dict):
     hooks = {}
     data["hooks"] = hooks
 
-groups = hooks.get("UserPromptSubmit")
-if not isinstance(groups, list):
-    groups = []
-
 def is_ghostex_command(hook):
     return isinstance(hook, dict) and hook.get("command") == command
 
 matcher = "*" if agent_name == "claude" else None
 
-for group in groups:
-    if not isinstance(group, dict):
-        continue
-    group_hooks = group.get("hooks")
-    if isinstance(group_hooks, list) and any(is_ghostex_command(hook) for hook in group_hooks):
-        hooks["UserPromptSubmit"] = groups
-        hooks_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(hooks_path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2)
-            handle.write("\\n")
-        sys.exit(0)
+def merge_event(event_name):
+    groups = hooks.get(event_name)
+    if not isinstance(groups, list):
+        groups = []
 
-next_group = {
-    "hooks": [
-        {
-            "type": "command",
-            "command": command,
-        }
-    ]
-}
-if matcher is not None:
-    next_group["matcher"] = matcher
-groups.append(next_group)
-hooks["UserPromptSubmit"] = groups
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        group_hooks = group.get("hooks")
+        if isinstance(group_hooks, list) and any(is_ghostex_command(hook) for hook in group_hooks):
+            hooks[event_name] = groups
+            return
+
+    next_group = {
+        "hooks": [
+            {
+                "type": "command",
+                "command": command,
+            }
+        ]
+    }
+    if matcher is not None:
+        next_group["matcher"] = matcher
+    groups.append(next_group)
+    hooks[event_name] = groups
+
+for event_name in ["SessionStart", "UserPromptSubmit"]:
+    merge_event(event_name)
+
 hooks_path.parent.mkdir(parents=True, exist_ok=True)
 with open(hooks_path, "w", encoding="utf-8") as handle:
     json.dump(data, handle, indent=2)
     handle.write("\\n")
+`;
+}
+
+function getNativeGenericAgentHookMergeScript(): string {
+  return `import json
+import pathlib
+import shlex
+import shutil
+import sys
+
+notify_hook_path = pathlib.Path(sys.argv[1])
+home_path = pathlib.Path(sys.argv[2])
+
+def p(*parts):
+    return home_path.joinpath(*parts)
+
+targets = [
+    (p(".grok", "hooks", "ghostex-session.json"), "nested", "grok", "grok", ["SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"]),
+    (p(".gemini", "settings.json"), "nested", "gemini", "gemini", ["SessionStart", "BeforeAgent", "AfterAgent", "SessionEnd"]),
+    (p(".copilot", "config.json"), "nested", "copilot", "copilot", ["SessionStart", "Stop", "Notification", "SessionEnd"]),
+    (p(".codebuddy", "settings.json"), "nested", "codebuddy", "codebuddy", ["SessionStart", "Stop", "Notification", "SessionEnd"]),
+    (p(".factory", "settings.json"), "nested", "droid", "droid", ["SessionStart", "Stop", "Notification", "SessionEnd"]),
+    (p(".qoder", "settings.json"), "nested", "qoder", "qodercli", ["SessionStart", "Stop", "SessionEnd"]),
+    (p(".cursor", "hooks.json"), "flat", "cursor", "cursor-agent", ["beforeSubmitPrompt", "beforeShellExecution", "afterAgentResponse", "stop"]),
+    (p(".gemini", "config", "hooks.json"), "antigravity", "antigravity", "agy", ["SessionStart", "PreInvocation", "Stop", "turn-completion", "Notification", "SessionEnd"]),
+]
+
+def load_json(path):
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except FileNotFoundError:
+        data = {}
+    except Exception:
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+def command_for(agent):
+    return f"GHOSTEX_AGENT={shlex.quote(agent)} {shlex.quote(str(notify_hook_path))}"
+
+def is_ghostex_command(hook, command):
+    return isinstance(hook, dict) and hook.get("command") == command
+
+def merge_nested(data, events, command):
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+        data["hooks"] = hooks
+    for event_name in events:
+        groups = hooks.get(event_name)
+        if not isinstance(groups, list):
+            groups = []
+        found = False
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_hooks = group.get("hooks")
+            if isinstance(group_hooks, list) and any(is_ghostex_command(hook, command) for hook in group_hooks):
+                found = True
+                break
+        if not found:
+            groups.append({"hooks": [{"type": "command", "command": command, "timeout": 5000}]})
+        hooks[event_name] = groups
+
+def merge_flat(data, events, command):
+    hooks = data.get("hooks")
+    if not isinstance(hooks, dict):
+        hooks = {}
+        data["hooks"] = hooks
+    data["version"] = data.get("version") or 1
+    for event_name in events:
+        entries = hooks.get(event_name)
+        if not isinstance(entries, list):
+            entries = []
+        if not any(is_ghostex_command(entry, command) for entry in entries):
+            entries.append({"command": command})
+        hooks[event_name] = entries
+
+def merge_antigravity(data, events, command):
+    group = {}
+    for event_name in events:
+        group[event_name] = [{"type": "command", "command": command, "timeout": 5}]
+    data["ghostex"] = group
+
+def yaml_double_quote(value):
+    return '"' + str(value).replace("\\\\", "\\\\\\\\").replace('"', '\\"').replace("\\n", "\\\\n") + '"'
+
+def without_marked_block(lines, begin_marker, end_marker):
+    result = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != begin_marker:
+            result.append(lines[index])
+            index += 1
+            continue
+        index += 1
+        while index < len(lines) and lines[index].strip() != end_marker:
+            index += 1
+        if index < len(lines):
+            index += 1
+    while result and not result[-1].strip():
+        result.pop()
+    return result
+
+def install_rovo_hooks(path, command):
+    begin_marker = "# ghostex hooks rovodev begin"
+    end_marker = "# ghostex hooks rovodev end"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    lines = without_marked_block(lines, begin_marker, end_marker)
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend([
+        begin_marker,
+        "eventHooks:",
+        "  events:",
+        "    - name: on_complete",
+        "      commands:",
+        f"        - command: {yaml_double_quote(command)}",
+        "    - name: on_error",
+        "      commands:",
+        f"        - command: {yaml_double_quote(command)}",
+        "    - name: on_tool_permission",
+        "      commands:",
+        f"        - command: {yaml_double_quote(command)}",
+        end_marker,
+    ])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+
+def install_hermes_hooks(path, command):
+    begin_marker = "# ghostex hooks hermes-agent begin"
+    end_marker = "# ghostex hooks hermes-agent end"
+    shell_command = f"sh -c {shlex.quote(command)}"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        lines = []
+    lines = without_marked_block(lines, begin_marker, end_marker)
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend([
+        begin_marker,
+        "hooks:",
+        "  on_session_start:",
+        f"    - command: {yaml_double_quote(shell_command)}",
+        "      timeout: 5",
+        "  pre_llm_call:",
+        f"    - command: {yaml_double_quote(shell_command)}",
+        "      timeout: 5",
+        "  post_llm_call:",
+        f"    - command: {yaml_double_quote(shell_command)}",
+        "      timeout: 5",
+        "  on_session_end:",
+        f"    - command: {yaml_double_quote(shell_command)}",
+        "      timeout: 5",
+        "  on_session_finalize:",
+        f"    - command: {yaml_double_quote(shell_command)}",
+        "      timeout: 5",
+        "  on_session_reset:",
+        f"    - command: {yaml_double_quote(shell_command)}",
+        "      timeout: 5",
+        end_marker,
+    ])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\\n".join(lines) + "\\n", encoding="utf-8")
+
+for path, format_name, agent, binary_name, events in targets:
+    if shutil.which(binary_name) is None:
+        continue
+    command = command_for(agent)
+    data = load_json(path)
+    if format_name == "flat":
+        merge_flat(data, events, command)
+    elif format_name == "antigravity":
+        merge_antigravity(data, events, command)
+    else:
+        merge_nested(data, events, command)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(path.suffix + ".tmp")
+    temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+    temp_path.replace(path)
+    print(f"agentHooksPath={path}")
+
+if shutil.which("acli") is not None:
+    rovo_path = p(".rovodev", "config.yml")
+    install_rovo_hooks(rovo_path, command_for("rovodev"))
+    print(f"agentHooksPath={rovo_path}")
+
+hermes_dir = p(".hermes")
+if shutil.which("hermes") is not None and hermes_dir.exists():
+    hermes_path = hermes_dir / "config.yaml"
+    install_hermes_hooks(hermes_path, command_for("hermes-agent"))
+    print(f"agentHooksPath={hermes_path}")
+`;
+}
+
+function getNativeOpenCodePluginInstallScript(): string {
+  return `import json
+import pathlib
+import shutil
+import sys
+
+notify_hook_path = pathlib.Path(sys.argv[1])
+home_path = pathlib.Path(sys.argv[2])
+if shutil.which("opencode") is None:
+    sys.exit(0)
+config_dir = home_path / ".config" / "opencode"
+plugins_dir = config_dir / "plugins"
+plugin_path = plugins_dir / "ghostex-session.js"
+config_path = config_dir / "opencode.json"
+plugin_source = r'''// ghostex-opencode-session-plugin-marker v1
+import { spawn } from "node:child_process";
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function props(event) {
+  return (event && typeof event === "object" && event.properties) || {};
+}
+
+function sessionIdFor(event) {
+  const p = props(event);
+  return firstString(p.info && p.info.id, p.sessionID, p.sessionId, p.session_id, p.session && p.session.id, event && event.sessionID, event && event.sessionId, event && event.id);
+}
+
+function cwdFor(ctx, event) {
+  const p = props(event);
+  return firstString(p.info && p.info.directory, p.cwd, p.directory, ctx && ctx.directory, process.cwd());
+}
+
+function send(eventName, ctx, event) {
+  if (process.env.GHOSTEX_OPENCODE_HOOKS_DISABLED === "1") return;
+  const sessionId = sessionIdFor(event);
+  if (!sessionId) return;
+  const payload = {
+    agent: "opencode",
+    cwd: cwdFor(ctx, event),
+    event: eventName,
+    hook_event_name: eventName,
+    session_id: sessionId,
+  };
+  try {
+    const child = spawn("__GHOSTEX_NOTIFY_HOOK__", [], { stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, GHOSTEX_AGENT: "opencode" }, detached: true });
+    child.on("error", () => {});
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(payload));
+    child.unref();
+  } catch (_) {}
+}
+
+export default async function ghostexSessionPlugin(ctx) {
+  const bus = ctx && (ctx.bus || ctx.events || ctx.event);
+  const on = bus && typeof bus.on === "function" ? bus.on.bind(bus) : ctx && typeof ctx.on === "function" ? ctx.on.bind(ctx) : null;
+  if (!on) return;
+  for (const eventName of ["session.start", "session.updated", "message.updated", "permission.updated"]) {
+    on(eventName, (event) => send(eventName, ctx, event));
+  }
+}
+'''.replace("__GHOSTEX_NOTIFY_HOOK__", str(notify_hook_path))
+
+plugins_dir.mkdir(parents=True, exist_ok=True)
+plugin_path.write_text(plugin_source, encoding="utf-8")
+
+try:
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+plugins = data.get("plugin")
+if not isinstance(plugins, list):
+    plugins = []
+spec = "./plugins/ghostex-session.js"
+if spec not in plugins:
+    plugins.append(spec)
+data["plugin"] = plugins
+config_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+print(f"opencodePluginPath={plugin_path}")
+`;
+}
+
+function getNativeAmpPluginInstallScript(): string {
+  return `import pathlib
+import shutil
+import sys
+
+notify_hook_path = pathlib.Path(sys.argv[1])
+home_path = pathlib.Path(sys.argv[2])
+if shutil.which("amp") is None:
+    sys.exit(0)
+plugin_path = home_path / ".config" / "amp" / "plugins" / "ghostex-session.ts"
+plugin_source = r'''// ghostex-amp-session-extension-marker v1
+import { spawn } from "node:child_process";
+import type { PluginAPI } from "@ampcode/plugin";
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function sendHook(eventName: string, event: any, ctx: any): void {
+  if (process.env.GHOSTEX_AMP_HOOKS_DISABLED === "1") return;
+  const sessionId = firstString(event?.thread?.id, ctx?.thread?.id);
+  if (!sessionId) return;
+  const payload = {
+    agent: "amp",
+    cwd: firstString(process.env.PWD, process.cwd()) || process.cwd(),
+    event: eventName,
+    hook_event_name: eventName,
+    session_id: sessionId,
+  };
+  try {
+    const child = spawn("__GHOSTEX_NOTIFY_HOOK__", [], { stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, GHOSTEX_AGENT: "amp" }, detached: true });
+    child.on("error", () => {});
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(payload));
+    child.unref();
+  } catch (_) {}
+}
+
+export default function (amp: PluginAPI) {
+  amp.on("session.start", async (event: any, ctx: any) => sendHook("SessionStart", event, ctx));
+  amp.on("agent.start", async (event: any, ctx: any) => sendHook("UserPromptSubmit", event, ctx));
+  amp.on("agent.end", async (event: any, ctx: any) => sendHook("Stop", event, ctx));
+}
+'''.replace("__GHOSTEX_NOTIFY_HOOK__", str(notify_hook_path))
+
+plugin_path.parent.mkdir(parents=True, exist_ok=True)
+plugin_path.write_text(plugin_source, encoding="utf-8")
+print(f"ampPluginPath={plugin_path}")
 `;
 }
 
@@ -8420,31 +8854,32 @@ def is_ghostex_command(hook):
 
 def merge_hook(hooks_path):
     data, hooks = load_hooks_data(hooks_path)
-    groups = hooks.get("UserPromptSubmit")
-    if not isinstance(groups, list):
-        groups = []
+    def merge_event(event_name):
+        groups = hooks.get(event_name)
+        if not isinstance(groups, list):
+            groups = []
 
-    for group in groups:
-        if not isinstance(group, dict):
-            continue
-        group_hooks = group.get("hooks")
-        if isinstance(group_hooks, list) and any(is_ghostex_command(hook) for hook in group_hooks):
-            hooks["UserPromptSubmit"] = groups
-            hooks_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(hooks_path, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=2)
-                handle.write("\\n")
-            return
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            group_hooks = group.get("hooks")
+            if isinstance(group_hooks, list) and any(is_ghostex_command(hook) for hook in group_hooks):
+                hooks[event_name] = groups
+                return
 
-    groups.append({
-        "hooks": [
-            {
-                "type": "command",
-                "command": command,
-            }
-        ]
-    })
-    hooks["UserPromptSubmit"] = groups
+        groups.append({
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                }
+            ]
+        })
+        hooks[event_name] = groups
+
+    for event_name in ["SessionStart", "UserPromptSubmit"]:
+        merge_event(event_name)
+
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
     with open(hooks_path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=2)
@@ -8570,19 +9005,47 @@ function buildNativeResumeCommandDisplay(session: TerminalSessionRecord): string
   }
 
   const resumeTitle = agentId === "pi" ? undefined : getNativeTrustedResumeTitle(session);
+  const claudeSessionReference =
+    agentId === "claude" ? (getNativeClaudeSessionReference(session) ?? resumeTitle) : undefined;
   const codexSessionReference =
-    agentId === "codex" ? (resumeTitle ?? getNativeCodexSessionReference(session)) : undefined;
+    agentId === "codex" ? (getNativeCodexSessionReference(session) ?? resumeTitle) : undefined;
   const cursorSessionReference =
     agentId === "cursor" ? getNativeCursorSessionReference(session) : undefined;
+  const openCodeSessionReference =
+    agentId === "opencode" ? getNativeOpenCodeSessionReference(session) : undefined;
   const piSessionReference = agentId === "pi" ? getNativePiSessionReference(session) : undefined;
+  const exactSessionReference = getNativeExactAgentSessionReference(agentId, session);
 
   switch (agentId) {
+    case "amp":
+      return exactSessionReference
+        ? `${agentCommand} threads continue ${quoteShellDoubleArg(exactSessionReference)}`
+        : undefined;
+    case "antigravity":
+      return exactSessionReference
+        ? `${agentCommand} --conversation ${quoteShellDoubleArg(exactSessionReference)}`
+        : undefined;
+    case "codebuddy":
+    case "copilot":
+    case "droid":
+    case "gemini":
+    case "hermes-agent":
+    case "qoder":
+      return exactSessionReference
+        ? `${agentCommand} --resume ${quoteShellDoubleArg(exactSessionReference)}`
+        : undefined;
+    case "grok":
+      return exactSessionReference
+        ? `${agentCommand} -r ${quoteShellDoubleArg(exactSessionReference)}`
+        : undefined;
     case "codex":
       return codexSessionReference
         ? `${agentCommand} resume ${quoteShellDoubleArg(codexSessionReference)}`
         : undefined;
     case "claude":
-      return resumeTitle ? `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)}` : undefined;
+      return claudeSessionReference
+        ? `${agentCommand} --resume ${quoteShellDoubleArg(claudeSessionReference)}`
+        : undefined;
     case "cursor":
       if (cursorSessionReference) {
         return `${agentCommand} --resume ${quoteShellDoubleArg(cursorSessionReference)}`;
@@ -8591,12 +9054,19 @@ function buildNativeResumeCommandDisplay(session: TerminalSessionRecord): string
         ? `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)}  # lookup chat id in Cursor chat store`
         : undefined;
     case "opencode":
+      if (openCodeSessionReference) {
+        return `${agentCommand} --session ${quoteShellDoubleArg(openCodeSessionReference)}`;
+      }
       return resumeTitle
         ? `${agentCommand} -s ${quoteShellDoubleArg(resumeTitle)}  # lookup session id in OpenCode session list`
         : undefined;
     case "pi":
       return piSessionReference
         ? `${agentCommand} --session ${quoteShellDoubleArg(piSessionReference)}`
+        : undefined;
+    case "rovodev":
+      return exactSessionReference
+        ? `${buildNativeRovoDevResumeCommand(agentCommand, exactSessionReference)}`
         : undefined;
     default:
       return undefined;
@@ -8634,8 +9104,8 @@ function canRestoreNativeTerminalSession(session: TerminalSessionRecord): boolea
   if (agentId === "codex") {
     return Boolean(
       resolveNativeAgentCommand(agentId) &&
-        (getNativeStoredTrustedResumeTitle(session).title !== undefined ||
-          getNativeCodexSessionReference(session) !== undefined),
+        (getNativeCodexSessionReference(session) !== undefined ||
+          getNativeStoredTrustedResumeTitle(session).title !== undefined),
     );
   }
   if (agentId === "cursor") {
@@ -8645,11 +9115,21 @@ function canRestoreNativeTerminalSession(session: TerminalSessionRecord): boolea
           getNativeStoredTrustedResumeTitle(session).title !== undefined),
     );
   }
-  return (
-    (agentId === "claude" || agentId === "opencode") &&
-    Boolean(resolveNativeAgentCommand(agentId)) &&
-    getNativeStoredTrustedResumeTitle(session).title !== undefined
-  );
+  if (agentId === "claude") {
+    return Boolean(
+      resolveNativeAgentCommand(agentId) &&
+        (getNativeClaudeSessionReference(session) !== undefined ||
+          getNativeStoredTrustedResumeTitle(session).title !== undefined),
+    );
+  }
+  if (agentId === "opencode") {
+    return Boolean(
+      resolveNativeAgentCommand(agentId) &&
+        (getNativeOpenCodeSessionReference(session) !== undefined ||
+          getNativeStoredTrustedResumeTitle(session).title !== undefined),
+    );
+  }
+  return Boolean(resolveNativeAgentCommand(agentId) && getNativeExactAgentSessionReference(agentId, session));
 }
 
 function getNativePaneTitleBarActions(session: SessionRecord): NativeTerminalTitleBarAction[] {
@@ -8715,13 +9195,21 @@ function getNativePaneTitleBarActions(session: SessionRecord): NativeTerminalTit
 }
 
 type NativeResumeAgentId =
+  | "amp"
+  | "antigravity"
   | "claude"
+  | "codebuddy"
   | "codex"
   | "copilot"
   | "cursor"
+  | "droid"
   | "gemini"
+  | "grok"
+  | "hermes-agent"
   | "opencode"
-  | "pi";
+  | "pi"
+  | "qoder"
+  | "rovodev";
 
 function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string | undefined {
   const agentId = resolveNativeResumeAgentId(session.agentName);
@@ -8729,18 +9217,33 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
     agentId !== "claude" &&
     agentId !== "codex" &&
     agentId !== "cursor" &&
+    agentId !== "amp" &&
+    agentId !== "antigravity" &&
+    agentId !== "codebuddy" &&
+    agentId !== "copilot" &&
+    agentId !== "droid" &&
+    agentId !== "gemini" &&
+    agentId !== "grok" &&
+    agentId !== "hermes-agent" &&
     agentId !== "opencode" &&
-    agentId !== "pi"
+    agentId !== "pi" &&
+    agentId !== "qoder" &&
+    agentId !== "rovodev"
   ) {
     return undefined;
   }
   const agentCommand = resolveNativeAgentCommand(agentId);
   const resumeTitle = agentId === "pi" ? undefined : getNativeTrustedResumeTitle(session);
+  const claudeSessionReference =
+    agentId === "claude" ? (getNativeClaudeSessionReference(session) ?? resumeTitle) : undefined;
   const codexSessionReference =
-    agentId === "codex" ? (resumeTitle ?? getNativeCodexSessionReference(session)) : undefined;
+    agentId === "codex" ? (getNativeCodexSessionReference(session) ?? resumeTitle) : undefined;
   const cursorSessionReference =
     agentId === "cursor" ? getNativeCursorSessionReference(session) : undefined;
+  const openCodeSessionReference =
+    agentId === "opencode" ? getNativeOpenCodeSessionReference(session) : undefined;
   const piSessionReference = agentId === "pi" ? getNativePiSessionReference(session) : undefined;
+  const exactSessionReference = getNativeExactAgentSessionReference(agentId, session);
   if (!agentId || !agentCommand) {
     return undefined;
   }
@@ -8757,7 +9260,15 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
       : undefined;
   }
   if (
-    agentId === "pi" ? !piSessionReference : agentId === "codex" ? !codexSessionReference : !resumeTitle
+    agentId === "pi"
+      ? !piSessionReference
+      : agentId === "codex"
+        ? !codexSessionReference
+        : agentId === "claude"
+          ? !claudeSessionReference
+          : agentId === "opencode"
+            ? !openCodeSessionReference && !resumeTitle
+            : !exactSessionReference
   ) {
     return undefined;
   }
@@ -8769,23 +9280,54 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
    * `codex resume <title>`, and OpenCode resolves the stored title to its
    * session ID before launching so restored terminals attach to saved sessions.
    *
+   * CDXC:SessionRestore 2026-05-22-23:33:
+   * Hook-captured native session ids are more reliable than thread titles.
+   * Prefer those exact ids for Claude, Codex, and OpenCode; keep the existing
+   * title-based command path when the hooks have not captured a session id yet.
+   *
+   * CDXC:SessionRestore 2026-05-23-00:25:
+   * Ghostex mirrors cmux's broader restorable-agent matrix. Agents whose CLIs
+   * expose native resume flags must use the captured session id directly;
+   * title lookup remains limited to the older Codex, Claude, Cursor, and
+   * OpenCode fallback paths that already supported it.
+   *
    * CDXC:PiAgent 2026-05-08-09:42
    * Pi restore must use the Pi jsonl session path/id captured by the global Pi
    * extension. Titles are display labels only and are not unique enough for Pi
    * resume or fork parity with Codex.
    */
   switch (agentId) {
+    case "amp":
+      return exactSessionReference
+        ? `${agentCommand} threads continue ${quoteShellDoubleArg(exactSessionReference)}`
+        : undefined;
+    case "antigravity":
+      return exactSessionReference
+        ? `${agentCommand} --conversation ${quoteShellDoubleArg(exactSessionReference)}`
+        : undefined;
+    case "codebuddy":
+    case "copilot":
+    case "droid":
+    case "gemini":
+    case "hermes-agent":
+    case "qoder":
+      return exactSessionReference
+        ? `${agentCommand} --resume ${quoteShellDoubleArg(exactSessionReference)}`
+        : undefined;
     case "codex":
       if (!codexSessionReference) {
         return undefined;
       }
       return `${agentCommand} resume ${quoteShellDoubleArg(codexSessionReference)}`;
     case "claude":
-      if (!resumeTitle) {
+      if (!claudeSessionReference) {
         return undefined;
       }
-      return `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)}`;
+      return `${agentCommand} --resume ${quoteShellDoubleArg(claudeSessionReference)}`;
     case "opencode":
+      if (openCodeSessionReference) {
+        return `${agentCommand} --session ${quoteShellDoubleArg(openCodeSessionReference)}`;
+      }
       if (!resumeTitle) {
         return undefined;
       }
@@ -8795,6 +9337,14 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
         return undefined;
       }
       return `${agentCommand} --session ${quoteShellDoubleArg(piSessionReference)}`;
+    case "grok":
+      return exactSessionReference
+        ? `${agentCommand} -r ${quoteShellDoubleArg(exactSessionReference)}`
+        : undefined;
+    case "rovodev":
+      return exactSessionReference
+        ? buildNativeRovoDevResumeCommand(agentCommand, exactSessionReference)
+        : undefined;
     default:
       return undefined;
   }
@@ -8811,16 +9361,41 @@ function buildNativeCopyResumeCommand(
   const resumeTitle = getNativeTrustedResumeTitle(session);
 
   switch (agentId) {
+    case "amp": {
+      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
+      return sessionReference
+        ? `${agentCommand} threads continue ${quoteShellDoubleArg(sessionReference)}`
+        : undefined;
+    }
+    case "antigravity": {
+      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
+      return sessionReference
+        ? `${agentCommand} --conversation ${quoteShellDoubleArg(sessionReference)}`
+        : undefined;
+    }
+    case "codebuddy":
+    case "copilot":
+    case "droid":
+    case "gemini":
+    case "hermes-agent":
+    case "qoder": {
+      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
+      return sessionReference
+        ? `${agentCommand} --resume ${quoteShellDoubleArg(sessionReference)}`
+        : `${agentCommand} --resume`;
+    }
     case "codex": {
-      const codexSessionReference = resumeTitle ?? getNativeCodexSessionReference(session);
+      const codexSessionReference = getNativeCodexSessionReference(session) ?? resumeTitle;
       return codexSessionReference
         ? `${agentCommand} resume ${quoteShellDoubleArg(codexSessionReference)}`
         : `${agentCommand} resume`;
     }
-    case "claude":
-      return resumeTitle
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)}`
+    case "claude": {
+      const claudeSessionReference = getNativeClaudeSessionReference(session) ?? resumeTitle;
+      return claudeSessionReference
+        ? `${agentCommand} --resume ${quoteShellDoubleArg(claudeSessionReference)}`
         : `${agentCommand} --resume`;
+    }
     case "opencode":
       return buildNativeOpenCodeCopyResumeCommand(agentCommand, session);
     case "pi": {
@@ -8840,10 +9415,18 @@ function buildNativeCopyResumeCommand(
         ? buildNativeCursorResumeLookupCommand(agentCommand, projectPath, resumeTitle)
         : `${agentCommand} ls`;
     }
-    case "gemini":
-      return `${agentCommand} --list-sessions && echo 'Enter ${agentCommand} -r id' to resume a session`;
-    case "copilot":
-      return `${agentCommand} --continue && echo 'Or use ${agentCommand} --resume to pick a session, or ${agentCommand} --resume SESSION-ID if you know it'`;
+    case "grok": {
+      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
+      return sessionReference
+        ? `${agentCommand} -r ${quoteShellDoubleArg(sessionReference)}`
+        : `${agentCommand} -r`;
+    }
+    case "rovodev": {
+      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
+      return sessionReference
+        ? buildNativeRovoDevResumeCommand(agentCommand, sessionReference)
+        : buildNativeRovoDevResumeCommand(agentCommand, "");
+    }
     default:
       return undefined;
   }
@@ -8851,8 +9434,16 @@ function buildNativeCopyResumeCommand(
 
 function buildNativeCodexForkCommand(session: TerminalSessionRecord): string | undefined {
   const agentCommand = resolveNativeAgentCommand("codex");
+  const codexSessionReference = getNativeCodexSessionReference(session);
   const resumeTitle = getNativeTrustedResumeTitle(session);
-  if (!agentCommand || !resumeTitle) {
+  if (!agentCommand || (!codexSessionReference && !resumeTitle)) {
+    return undefined;
+  }
+  if (codexSessionReference) {
+    return `${agentCommand} fork ${quoteShellDoubleArg(codexSessionReference)}`;
+  }
+  const resumeTitleForLookup = resumeTitle;
+  if (!resumeTitleForLookup) {
     return undefined;
   }
 
@@ -8865,22 +9456,27 @@ function buildNativeCodexForkCommand(session: TerminalSessionRecord): string | u
    */
   const lookupCommand = [
     "CODEX_FORK_SESSION_ID=\"$(",
-    `/usr/bin/python3 -c ${quoteNativeShellArg(getNativeCodexSessionIdLookupScript())} ${quoteNativeShellArg(resumeTitle)}`,
+    `/usr/bin/python3 -c ${quoteNativeShellArg(getNativeCodexSessionIdLookupScript())} ${quoteNativeShellArg(resumeTitleForLookup)}`,
     ")\"",
     "&&",
     "test -n \"$CODEX_FORK_SESSION_ID\"",
     "&&",
     `${agentCommand} fork "$CODEX_FORK_SESSION_ID"`,
     "||",
-    `printf '%s\\n' ${quoteNativeShellArg(`Unable to find Codex session id for "${resumeTitle}".`)}`,
+    `printf '%s\\n' ${quoteNativeShellArg(`Unable to find Codex session id for "${resumeTitleForLookup}".`)}`,
   ].join(" ");
   return lookupCommand;
 }
 
 function buildNativeClaudeForkCommand(session: TerminalSessionRecord): string | undefined {
   const agentCommand = resolveNativeAgentCommand("claude");
+  const claudeSessionReference = getNativeClaudeSessionReference(session);
   const resumeTitle = getNativeTrustedResumeTitle(session);
-  if (!agentCommand || !resumeTitle) {
+  if (!agentCommand || (!claudeSessionReference && !resumeTitle)) {
+    return undefined;
+  }
+  const claudeResumeReference = claudeSessionReference ?? resumeTitle;
+  if (!claudeResumeReference) {
     return undefined;
   }
 
@@ -8890,11 +9486,20 @@ function buildNativeClaudeForkCommand(session: TerminalSessionRecord): string | 
    * Use that real CLI path for native Fork actions instead of opening an empty
    * pane, matching Claude's documented resume/fork semantics.
    */
-  return `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)} --fork-session`;
+  return `${agentCommand} --resume ${quoteShellDoubleArg(claudeResumeReference)} --fork-session`;
 }
 
 function getNativeCodexSessionReference(session: TerminalSessionRecord): string | undefined {
-  return getCodexSessionIdFromTitle(session.agentSessionId) ?? undefined;
+  const sessionIdentity = session.agentSessionId?.trim();
+  return sessionIdentity ? (getCodexSessionIdFromTitle(sessionIdentity) ?? sessionIdentity) : undefined;
+}
+
+function getNativeClaudeSessionReference(session: TerminalSessionRecord): string | undefined {
+  return session.agentSessionId?.trim() || undefined;
+}
+
+function getNativeOpenCodeSessionReference(session: TerminalSessionRecord): string | undefined {
+  return session.agentSessionId?.trim() || undefined;
 }
 
 function getNativePiSessionReference(session: TerminalSessionRecord): string | undefined {
@@ -8903,6 +9508,32 @@ function getNativePiSessionReference(session: TerminalSessionRecord): string | u
 
 function getNativeCursorSessionReference(session: TerminalSessionRecord): string | undefined {
   return getCursorChatSessionIdFromIdentity(session.agentSessionId);
+}
+
+function getNativeExactAgentSessionReference(
+  agentId: NativeResumeAgentId | undefined,
+  session: TerminalSessionRecord,
+): string | undefined {
+  if (!agentId) {
+    return undefined;
+  }
+  if (agentId === "codex") {
+    return getNativeCodexSessionReference(session);
+  }
+  if (agentId === "cursor") {
+    return getNativeCursorSessionReference(session);
+  }
+  if (agentId === "pi") {
+    return getNativePiSessionReference(session);
+  }
+  return session.agentSessionId?.trim() || undefined;
+}
+
+function buildNativeRovoDevResumeCommand(agentCommand: string, sessionReference: string): string {
+  const quotedSessionReference = quoteShellDoubleArg(sessionReference);
+  return /\brovodev\b/u.test(agentCommand)
+    ? `${agentCommand} --restore ${quotedSessionReference}`
+    : `${agentCommand} rovodev run --restore ${quotedSessionReference}`;
 }
 
 function resolveNativeSessionProjectPath(session: TerminalSessionRecord): string | undefined {
@@ -9071,6 +9702,10 @@ function buildNativeOpenCodeCopyResumeCommand(
   agentCommand: string,
   session: TerminalSessionRecord,
 ): string {
+  const openCodeSessionReference = getNativeOpenCodeSessionReference(session);
+  if (openCodeSessionReference) {
+    return `${agentCommand} --session ${quoteShellDoubleArg(openCodeSessionReference)}`;
+  }
   const resumeTitle = getNativeTrustedResumeTitle(session);
   return resumeTitle
     ? buildNativeOpenCodeResumeCommand(agentCommand, resumeTitle)
@@ -9187,12 +9822,33 @@ function resolveNativeResumeAgentId(
   if (normalizedAgentName === "π") {
     return "pi";
   }
+  if (normalizedAgentName === "agy" || normalizedAgentName === "antigravity cli") {
+    return "antigravity";
+  }
+  if (normalizedAgentName === "amp cli") {
+    return "amp";
+  }
+  if (normalizedAgentName === "code buddy") {
+    return "codebuddy";
+  }
   if (
     normalizedAgentName === "cursor agent" ||
     normalizedAgentName === "cursor cli" ||
     normalizedAgentName === "cursor-agent"
   ) {
     return "cursor";
+  }
+  if (normalizedAgentName === "droid" || normalizedAgentName === "factory droid") {
+    return "droid";
+  }
+  if (normalizedAgentName === "hermes" || normalizedAgentName === "hermes agent") {
+    return "hermes-agent";
+  }
+  if (normalizedAgentName === "qodercli") {
+    return "qoder";
+  }
+  if (normalizedAgentName === "rovo" || normalizedAgentName === "rovo dev") {
+    return "rovodev";
   }
 
   const defaultAgent = getDefaultSidebarAgentById(normalizedAgentName);
@@ -9210,13 +9866,21 @@ function resolveNativeResumeAgentId(
 
 function isNativeResumeAgentId(agentId: string | undefined): agentId is NativeResumeAgentId {
   return (
+    agentId === "amp" ||
+    agentId === "antigravity" ||
     agentId === "claude" ||
+    agentId === "codebuddy" ||
     agentId === "codex" ||
     agentId === "copilot" ||
     agentId === "cursor" ||
+    agentId === "droid" ||
     agentId === "gemini" ||
+    agentId === "grok" ||
+    agentId === "hermes-agent" ||
     agentId === "opencode" ||
-    agentId === "pi"
+    agentId === "pi" ||
+    agentId === "qoder" ||
+    agentId === "rovodev"
   );
 }
 
@@ -12527,6 +13191,12 @@ function quitResourcesFromTitlebar(sessionIds: string[], projectIds: string[]): 
    * terminal cards, Browser panes, and VS Code project-editor state disappear
    * together with their native surfaces. The titlebar sends combined session
    * ids for cross-project rows; revalidate every id against current state.
+   *
+   * CDXC:TitlebarResources 2026-05-22-23:12:
+   * Quitting an agent from the resource manager should free the terminal
+   * runtime like the session-tab Sleep action while keeping the sidebar card
+   * available for wake/resume. Only non-terminal resources still use the close
+   * path because they do not have terminal sleep state.
    */
   for (const projectId of Array.from(new Set(projectIds))) {
     if (findProject(projectId)) {
@@ -12535,7 +13205,13 @@ function quitResourcesFromTitlebar(sessionIds: string[], projectIds: string[]): 
   }
   for (const sessionId of Array.from(new Set(sessionIds))) {
     const reference = resolveSidebarSessionReference(sessionId);
-    if (findSessionRecordInProject(reference.project, reference.sessionId)) {
+    const session = findSessionRecordInProject(reference.project, reference.sessionId);
+    if (!session) {
+      continue;
+    }
+    if (session.kind === "terminal") {
+      setNativeSessionSleeping(sessionId, true);
+    } else {
       closeTerminal(sessionId);
     }
   }
@@ -14140,11 +14816,6 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         if (kind === "command") {
           return { ok: true, session: runCliCommandButton(id), state: summarizeCliState() };
         }
-        if (kind === "section") {
-          const section = id as SidebarCollapsibleSection;
-          setSidebarSectionCollapsed(section, !collapsedSections[section]);
-          return { ok: true, state: summarizeCliState() };
-        }
         if (kind === "projectEditor") {
           /**
            * CDXC:DebugCli 2026-05-08-13:13
@@ -14321,14 +14992,6 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         });
         return { ok: true, session };
       }
-      case "toggleSection":
-        setSidebarSectionCollapsed(
-          String(payload.section) as SidebarCollapsibleSection,
-          typeof payload.collapsed === "boolean"
-            ? payload.collapsed
-            : !collapsedSections[String(payload.section) as SidebarCollapsibleSection],
-        );
-        return { ok: true, state: summarizeCliState() };
       case "setVisibleCount":
         updateActiveProjectWorkspace((workspace) =>
           setVisibleCountInSimpleWorkspace(
@@ -17634,9 +18297,6 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "openSidebarGitChangedFile":
       openNativeWorkspaceInSelectedIde(resolveActiveProjectRelativePath(message.filePath));
       return;
-    case "setSidebarSectionCollapsed":
-      setSidebarSectionCollapsed(message.section, message.collapsed);
-      return;
     case "openT3SessionBrowserAccessLink":
       openNativeExternalUrl(message.url);
       return;
@@ -17654,8 +18314,20 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         case "devtools":
           postNative({ sessionId: nativeSessionId, type: "openBrowserDevTools" });
           return;
-        case "react-grab":
-          postNative({ sessionId: nativeSessionId, type: "injectBrowserReactGrab" });
+        case "feedback-tool":
+          /**
+           * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
+           * Browser pane context menus launch the feedback tool selected in
+           * Settings. Agentation is the default, and explicit React Grab
+           * selections keep using the existing injector.
+           */
+          postNative({
+            sessionId: nativeSessionId,
+            type:
+              settings.browserFeedbackTool === "agentation"
+                ? "injectBrowserAgentation"
+                : "injectBrowserReactGrab",
+          });
           return;
         case "profile-picker":
           postNative({ sessionId: nativeSessionId, type: "showBrowserProfilePicker" });
@@ -17777,8 +18449,8 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "openGhosttyConfigFile":
       openGhosttyConfigFile();
       return;
-    case "installZapet":
-      void installZapetFromBrew();
+    case "installGte":
+      void installGteFromBrew();
       return;
     case "openAccessibilityPreferences":
       postNative({ type: "openAccessibilityPreferences" });
@@ -18242,6 +18914,13 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     sessionTitleBarActions,
     sessionTitles,
     petOverlayEnabled: settings.petOverlayEnabled,
+    /**
+     * CDXC:SessionPersistence 2026-05-23-00:50:
+     * Send the default-on Settings preference directly. AppKit still renders no
+     * top-right text for ordinary terminals because those panes have no
+     * zmx/tmux/zellij provider/session metadata.
+     */
+    showSessionIdInTerminalPanes: settings.showSessionIdInTerminalPanes,
     showProjectEditorDiffFileCount: settings.showProjectEditorDiffFileCount,
     titlebarResourceGroups: createTitlebarResourceGroups(),
     type: "setActiveTerminalSet",
@@ -19274,10 +19953,25 @@ function handleNativePaneReorderRequested(
      * as the active pane instead of remaining a parked tab with no renderer.
      */
     updateActiveProjectWorkspace(() => result.snapshot);
-    if (shouldWakeDroppedSource) {
+    const droppedSourceSession = findSessionRecord(sourceSessionId) ?? sourceSessionBeforeDrop;
+    /*
+     * CDXC:PaneTabs 2026-05-22-19:30:
+     * Dragging a pane tab to a split edge must guarantee the dropped pane has a native renderer before layout sync assigns it a cell.
+     * The sidebar can mark an old restored terminal awake while the Swift host has no surface for it; issue the idempotent native create command for terminal drops instead of only handling sleeping sources.
+     */
+    if (droppedSourceSession?.kind === "terminal") {
+      ensureNativeTerminalSurfaceForPaneDrop(
+        activeProject(),
+        droppedSourceSession,
+        "pane-drop-surface-ensure",
+      );
+      if (shouldWakeDroppedSource) {
+        queueNativeLayoutFocusRequest(sourceSessionId, "paneDropWake");
+      }
+    } else if (shouldWakeDroppedSource) {
       restoreNativeSessionSurfaceForWake(
         activeProject(),
-        findSessionRecord(sourceSessionId) ?? sourceSessionBeforeDrop,
+        droppedSourceSession,
         "pane-drop-wake",
       );
       queueNativeLayoutFocusRequest(sourceSessionId, "paneDropWake");
@@ -19401,6 +20095,51 @@ function handleNativePaneTabSelected(sessionId: string): void {
   }
   queueNativeLayoutFocusRequest(sessionId, wasSleeping ? "paneTabWake" : "paneTabSelected");
   publish();
+}
+
+function ensureNativeTerminalSurfaceForPaneDrop(
+  project: NativeProject,
+  session: TerminalSessionRecord,
+  reason: string,
+): void {
+  const terminalState = terminalStateById.get(session.sessionId);
+  if (!terminalState) {
+    restoreNativeTerminalSession(project, session, reason);
+    return;
+  }
+  const nativeSessionId = rememberNativeSessionMapping(project.projectId, session.sessionId);
+  const sessionStateFilePath =
+    terminalState.sessionStateFilePath ??
+    createNativeSessionStateFilePath(project.projectId, session.sessionId);
+  const sessionPersistenceProvider =
+    terminalState.sessionPersistenceProvider ?? resolveTerminalSessionPersistenceProvider();
+  const sessionPersistenceName =
+    terminalState.sessionPersistenceName ??
+    sessionPersistenceNameForProvider(sessionPersistenceProvider, session);
+  const nativeEnvironment = createNativeAgentSessionEnvironment({
+    agentName: session.agentName,
+    project,
+    sessionId: session.sessionId,
+    sessionStateFilePath,
+  });
+  postNative({
+    activateOnCreate: false,
+    cwd: project.path,
+    env: nativeEnvironment,
+    initialInput: buildNativeRestoredTerminalInitialInput(session),
+    sessionId: nativeSessionId,
+    sessionPersistenceName,
+    sessionPersistenceProvider,
+    title: session.title,
+    type: "createTerminal",
+  });
+  appendRestoreDebugLog("nativeSidebar.ensureNativeTerminalSurfaceForPaneDrop", {
+    nativeSessionId,
+    projectId: project.projectId,
+    reason,
+    sessionId: session.sessionId,
+    title: session.title,
+  });
 }
 
 function restoreNativeSessionSurfaceForWake(

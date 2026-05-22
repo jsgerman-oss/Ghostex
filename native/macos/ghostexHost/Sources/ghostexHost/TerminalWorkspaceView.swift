@@ -71,17 +71,18 @@ private let nativeSshConnectionEnvironmentKeys = [
   "SSH_TTY",
 ]
 
-private func nativePromptEditorCommand(backend: String) -> String {
+private func nativePromptEditorCommand(backend: String, customCommand: String? = nil) -> String {
+  if backend == "gte" {
+    return "gte"
+  }
+  if backend == "custom" {
+    let trimmed = customCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? "code --wait" : trimmed
+  }
   if let executablePath = Bundle.main.executableURL?.path,
     !executablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   {
-    if backend == "zpet" {
-      return "\(nativeShellQuote(executablePath)) floating-editor -- zpet"
-    }
     return "\(nativeShellQuote(executablePath)) floating-monaco-editor"
-  }
-  if backend == "zpet" {
-    return "ghostex floating-editor -- zpet"
   }
   return "ghostex floating-monaco-editor"
 }
@@ -89,11 +90,11 @@ private func nativePromptEditorCommand(backend: String) -> String {
 private func nativePromptEditorBackend(from environment: [String: String]) -> String? {
   let backend = environment["GHOSTEX_PROMPT_EDITOR_BACKEND"]?.trimmingCharacters(
     in: .whitespacesAndNewlines)
-  if backend == "monaco" || backend == "zpet" {
+  if backend == "monaco" || backend == "gte" || backend == "custom" {
     return backend
   }
-  if environment["GHOSTEX_RICH_PROMPT_EDITING_WITH_ZAPET"] == "1" {
-    return "zpet"
+  if environment["GHOSTEX_RICH_PROMPT_EDITING_WITH_GTE"] == "1" {
+    return "gte"
   }
   if environment["GHOSTEX_PROMPT_EDITING_ENABLED"] == "1" {
     return "monaco"
@@ -124,27 +125,39 @@ private func nativeIsSshConnectionEnvironment(_ environment: [String: String]) -
   }
 }
 
-private func nativeIsGhostexPromptEditorValue(_ value: String?) -> Bool {
+private func nativeIsGhostexPromptEditorValue(
+  _ value: String?,
+  backend: String? = nil,
+  customCommand: String? = nil
+) -> Bool {
   guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
     !trimmed.isEmpty
   else {
     return false
   }
-  return trimmed.contains("floating-monaco-editor")
-    || trimmed.contains("floating-editor -- zpet")
+  if trimmed.contains("floating-monaco-editor") || trimmed.contains("floating-editor -- gte") {
+    return true
+  }
+  if backend == "custom" {
+    let custom = customCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return !custom.isEmpty && trimmed == custom
+  }
+  return backend == "gte" && trimmed == "gte"
 }
 
 private func nativePreserveSshEditorEnvironment(_ environment: inout [String: String]) -> Bool {
   guard nativeIsSshConnectionEnvironment(environment) else {
     return false
   }
+  let promptEditorBackend = nativePromptEditorBackend(from: environment)
   let hasGhostexPromptEditorOverlay =
-    nativePromptEditorBackend(from: environment) != nil
+    promptEditorBackend != nil
     || nativeIsGhostexPromptEditorValue(environment["EDITOR"])
     || nativeIsGhostexPromptEditorValue(environment["VISUAL"])
   guard hasGhostexPromptEditorOverlay else {
     return false
   }
+  let customPromptEditorCommand = environment["GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND"]
 
   /**
    CDXC:PromptEditorBackend 2026-05-17-08:46:
@@ -156,49 +169,54 @@ private func nativePreserveSshEditorEnvironment(_ environment: inout [String: St
   for key in [
     "GHOSTEX_PROMPT_EDITOR_BACKEND",
     "GHOSTEX_PROMPT_EDITING_ENABLED",
-    "GHOSTEX_RICH_PROMPT_EDITING_WITH_ZAPET",
+    "GHOSTEX_RICH_PROMPT_EDITING_WITH_GTE",
     "GHOSTEX_DEBUGGING_MODE",
-    "GHOSTEX_ZAPET_PROMPT_EDITOR_LOG",
+    "GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND",
+    "GHOSTEX_GTE_PROMPT_EDITOR_LOG",
     "ZDOTDIR",
     "GHOSTEX_ORIGINAL_ZDOTDIR",
   ] {
     environment.removeValue(forKey: key)
   }
   for key in ["EDITOR", "VISUAL"] {
-    if nativeIsGhostexPromptEditorValue(environment[key]) {
+    if nativeIsGhostexPromptEditorValue(
+      environment[key],
+      backend: promptEditorBackend,
+      customCommand: customPromptEditorCommand
+    ) {
       environment.removeValue(forKey: key)
     }
   }
   return true
 }
 
-private func nativeZapetPromptEditorCommand() -> String {
-  nativePromptEditorCommand(backend: "zpet")
+private func nativeGtePromptEditorCommand() -> String {
+  nativePromptEditorCommand(backend: "gte")
 }
 
 private func nativeMonacoPromptEditorCommand() -> String {
   nativePromptEditorCommand(backend: "monaco")
 }
 
-private func nativeZapetPromptEditorLogURL() -> URL {
+private func nativeGtePromptEditorLogURL() -> URL {
   FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library", isDirectory: true)
     .appendingPathComponent("Logs", isDirectory: true)
     .appendingPathComponent("ghostex", isDirectory: true)
-    .appendingPathComponent("zapet-prompt-editor.log")
+    .appendingPathComponent("gte-prompt-editor.log")
 }
 
-private func nativeLogZapetPromptEditor(_ event: String, details: [String: String] = [:]) {
+private func nativeLogGtePromptEditor(_ event: String, details: [String: String] = [:]) {
   /**
    CDXC:Diagnostics 2026-05-16-07:23:
-   Zapet prompt-editor breadcrumbs are persistent regular diagnostics. Do not
-   create or append zapet-prompt-editor.log unless Settings Debugging Mode is
+   Gte prompt-editor breadcrumbs are persistent regular diagnostics. Do not
+   create or append gte-prompt-editor.log unless Settings Debugging Mode is
    enabled.
    */
   guard NativeDebugLogging.isEnabled else {
     return
   }
-  let url = nativeZapetPromptEditorLogURL()
+  let url = nativeGtePromptEditorLogURL()
   let directory = url.deletingLastPathComponent()
   try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
@@ -251,7 +269,7 @@ private func nativeGhosttyTerminalEnvironment(
   if let sessionId, !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
     result["GHOSTEX_NATIVE_SESSION_ID"] = sessionId
   }
-  nativeApplyZapetPromptEditingEnvironment(&result)
+  nativeApplyGtePromptEditingEnvironment(&result)
   return result
 }
 
@@ -270,8 +288,9 @@ private func nativeGhosttyFloatingEditorEnvironment(
     "GHOSTEX_ORIGINAL_ZDOTDIR",
     "GHOSTEX_PROMPT_EDITOR_BACKEND",
     "GHOSTEX_PROMPT_EDITING_ENABLED",
-    "GHOSTEX_RICH_PROMPT_EDITING_WITH_ZAPET",
-    "GHOSTEX_ZAPET_PROMPT_EDITOR_LOG",
+    "GHOSTEX_RICH_PROMPT_EDITING_WITH_GTE",
+    "GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND",
+    "GHOSTEX_GTE_PROMPT_EDITOR_LOG",
   ] {
     result.removeValue(forKey: key)
   }
@@ -280,7 +299,7 @@ private func nativeGhosttyFloatingEditorEnvironment(
   return result
 }
 
-private func nativeApplyZapetPromptEditingEnvironment(_ environment: inout [String: String]) {
+private func nativeApplyGtePromptEditingEnvironment(_ environment: inout [String: String]) {
   if nativePreserveSshEditorEnvironment(&environment) {
     return
   }
@@ -289,36 +308,43 @@ private func nativeApplyZapetPromptEditingEnvironment(_ environment: inout [Stri
   }
 
   /**
-   CDXC:ZapetPromptEditing 2026-05-10-11:27
+   CDXC:GtePromptEditing 2026-05-10-11:27
    Zsh startup files can export EDITOR after Ghostty receives the process
-   environment. When Zapet is enabled, launch zsh through a ghostex-owned ZDOTDIR
+   environment. When gte is enabled, launch zsh through a ghostex-owned ZDOTDIR
    shim that sources the user's real startup files first, then exports the
-   Zapet editor command last so Ctrl+G/edit-command-line uses Zapet instead
+   gte editor command last so Ctrl+G/edit-command-line uses gte instead
    of the profile editor.
-   CDXC:ZapetPromptEditing 2026-05-11-17:31
+   CDXC:PromptEditorBackend 2026-05-22-09:56
+   The terminal prompt editor is named gte for Ghostex Terminal Editor. Native launch shims must export the gte command and keep logs/state under gte names so Ctrl+G behavior, diagnostics, and Settings copy use one name.
+   CDXC:PromptEditorBackend 2026-05-22-10:16
+   The gte backend is an in-terminal editor, not a native overlay. Export plain `gte` for EDITOR/VISUAL so Ctrl+G opens inside the launching terminal; keep the Ghostex floating command only for the Monaco backend.
+   CDXC:GtePromptEditing 2026-05-11-17:31
    Dev terminals can be launched from inside the production ghostex shim. Unwrap
    inherited ghostex ZDOTDIR values to the original user dotdir so zsh sources the
    user's real prompt, aliases, and startup files instead of recursively
    sourcing another ghostex shim.
   */
-  let promptEditor = nativePromptEditorCommand(backend: promptEditorBackend)
+  let promptEditor = nativePromptEditorCommand(
+    backend: promptEditorBackend,
+    customCommand: environment["GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND"]
+  )
   environment["EDITOR"] = promptEditor
   environment["VISUAL"] = promptEditor
   environment["GHOSTEX_DEBUGGING_MODE"] = NativeDebugLogging.isEnabled ? "1" : "0"
-  environment["GHOSTEX_ZAPET_PROMPT_EDITOR_LOG"] = nativeZapetPromptEditorLogURL().path
+  environment["GHOSTEX_GTE_PROMPT_EDITOR_LOG"] = nativeGtePromptEditorLogURL().path
   if let appVariant = ProcessInfo.processInfo.environment["GHOSTEX_APP_VARIANT"], !appVariant.isEmpty {
     environment["GHOSTEX_APP_VARIANT"] = appVariant
   }
   let originalZdotdir = nativeOriginalZdotdir(for: environment)
-  guard let shimZdotdir = nativeEnsureZapetZdotdirShim(promptEditorCommand: promptEditor) else {
+  guard let shimZdotdir = nativeEnsureGteZdotdirShim(promptEditorCommand: promptEditor) else {
     return
   }
   environment["GHOSTEX_ORIGINAL_ZDOTDIR"] = originalZdotdir
   environment["ZDOTDIR"] = shimZdotdir
-  nativeLogZapetPromptEditor("environment.applied", details: [
+  nativeLogGtePromptEditor("environment.applied", details: [
     "editor": promptEditor,
     "promptEditorBackend": promptEditorBackend,
-    "logPath": environment["GHOSTEX_ZAPET_PROMPT_EDITOR_LOG"] ?? "",
+    "logPath": environment["GHOSTEX_GTE_PROMPT_EDITOR_LOG"] ?? "",
     "originalZdotdir": originalZdotdir,
     "shimZdotdir": shimZdotdir,
     "visual": promptEditor,
@@ -335,29 +361,29 @@ private func nativeOriginalZdotdir(for environment: [String: String]) -> String 
     guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
       continue
     }
-    if !nativeIsZapetShimZdotdir(value) {
+    if !nativeIsGteShimZdotdir(value) {
       return value
     }
   }
   return NSHomeDirectory()
 }
 
-private func nativeIsZapetShimZdotdir(_ value: String) -> Bool {
-  URL(fileURLWithPath: value).lastPathComponent == "zapet-zdotdir"
+private func nativeIsGteShimZdotdir(_ value: String) -> Bool {
+  URL(fileURLWithPath: value).lastPathComponent == "gte-zdotdir"
 }
 
-private func nativeEnsureZapetZdotdirShim(promptEditorCommand: String) -> String? {
+private func nativeEnsureGteZdotdirShim(promptEditorCommand: String) -> String? {
   let directory = GhostexAppStorage.sharedStateDirectory.appendingPathComponent(
-    "zapet-zdotdir",
+    "gte-zdotdir",
     isDirectory: true
   )
   do {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     for startupFile in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
-      let shouldExportZapet = startupFile != ".zshenv"
-      let contents = nativeZapetZshStartupShim(
+      let shouldExportGte = startupFile != ".zshenv"
+      let contents = nativeGteZshStartupShim(
         fileName: startupFile,
-        exportZapet: shouldExportZapet,
+        exportGte: shouldExportGte,
         promptEditorCommand: promptEditorCommand
       )
       try contents.write(
@@ -368,17 +394,17 @@ private func nativeEnsureZapetZdotdirShim(promptEditorCommand: String) -> String
     }
     return directory.path
   } catch {
-    NSLog("Failed to prepare Zapet zsh startup shim: \(error.localizedDescription)")
-    nativeLogZapetPromptEditor("shim.prepare_failed", details: [
+    NSLog("Failed to prepare gte zsh startup shim: \(error.localizedDescription)")
+    nativeLogGtePromptEditor("shim.prepare_failed", details: [
       "error": error.localizedDescription
     ])
     return nil
   }
 }
 
-private func nativeZapetZshStartupShim(
+private func nativeGteZshStartupShim(
   fileName: String,
-  exportZapet: Bool,
+  exportGte: Bool,
   promptEditorCommand: String
 ) -> String {
   let originalZdotdirUpdateBlock =
@@ -392,48 +418,48 @@ private func nativeZapetZshStartupShim(
       """
     : ""
   let exportBlock =
-    exportZapet
+    exportGte
     ? """
 
       # CDXC:PromptEditorBackend 2026-05-17-08:46: SSH logins keep their existing EDITOR/VISUAL instead of being rewritten to Ghostex's local floating editor command.
       if [ -z "${SSH_CONNECTION}${SSH_CLIENT}${SSH_TTY}" ]; then
         export EDITOR=\(nativeShellQuote(promptEditorCommand))
         export VISUAL=\(nativeShellQuote(promptEditorCommand))
-        if [ "${_ghostex_zapet_debug}" = "1" ]; then
+        if [ "${_ghostex_gte_debug}" = "1" ]; then
           {
             printf '[%s] zsh-shim.export file=%s pid=%s editor=%s visual=%s pwd=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${PWD}"
-          } >> "${_ghostex_zapet_log}" 2>/dev/null
+          } >> "${_ghostex_gte_log}" 2>/dev/null
         fi
       fi
       """
     : ""
   return """
-    # CDXC:ZapetPromptEditing 2026-05-10-11:27
-    # Source the user's real zsh startup file, then let ghostex force the Zapet
+    # CDXC:GtePromptEditing 2026-05-10-11:27
+    # Source the user's real zsh startup file, then let ghostex force the gte
     # prompt editor command after profile exports that would otherwise override
     # EDITOR.
     _ghostex_shim_zdotdir="${ZDOTDIR}"
     _ghostex_original_zdotdir="${GHOSTEX_ORIGINAL_ZDOTDIR:-$HOME}"
-    _ghostex_zapet_debug="${GHOSTEX_DEBUGGING_MODE:-0}"
-    if [ "${_ghostex_zapet_debug}" = "1" ]; then
-      _ghostex_zapet_log="${GHOSTEX_ZAPET_PROMPT_EDITOR_LOG:-$HOME/Library/Logs/ghostex/zapet-prompt-editor.log}"
-      mkdir -p "${_ghostex_zapet_log:h}" 2>/dev/null
+    _ghostex_gte_debug="${GHOSTEX_DEBUGGING_MODE:-0}"
+    if [ "${_ghostex_gte_debug}" = "1" ]; then
+      _ghostex_gte_log="${GHOSTEX_GTE_PROMPT_EDITOR_LOG:-$HOME/Library/Logs/ghostex/gte-prompt-editor.log}"
+      mkdir -p "${_ghostex_gte_log:h}" 2>/dev/null
       {
         printf '[%s] zsh-shim.enter file=%s pid=%s editor_before=%s visual_before=%s zdotdir=%s original_zdotdir=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${ZDOTDIR}" "${_ghostex_original_zdotdir}"
-      } >> "${_ghostex_zapet_log}" 2>/dev/null
+      } >> "${_ghostex_gte_log}" 2>/dev/null
     fi
     if [ -r "${_ghostex_original_zdotdir}/\(fileName)" ]; then
       ZDOTDIR="${_ghostex_original_zdotdir}"
       source "${_ghostex_original_zdotdir}/\(fileName)"
       ZDOTDIR="${_ghostex_shim_zdotdir}"
     fi\(originalZdotdirUpdateBlock)\(exportBlock)
-    if [ "${_ghostex_zapet_debug}" = "1" ]; then
+    if [ "${_ghostex_gte_debug}" = "1" ]; then
       {
         printf '[%s] zsh-shim.leave file=%s pid=%s editor_after=%s visual_after=%s zdotdir=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${ZDOTDIR}"
-      } >> "${_ghostex_zapet_log}" 2>/dev/null
-      unset _ghostex_zapet_log
+      } >> "${_ghostex_gte_log}" 2>/dev/null
+      unset _ghostex_gte_log
     fi
-    unset _ghostex_zapet_debug
+    unset _ghostex_gte_debug
     unset _ghostex_shim_zdotdir
     unset _ghostex_original_zdotdir
 
@@ -1299,6 +1325,7 @@ final class TerminalWorkspaceView: NSView {
   private var sessionFaviconDataUrls = [String: String]()
   private var sessionTitleBarActions = [String: [TerminalTitleBarAction]]()
   private var sessionTitles = [String: String]()
+  private var showSessionIdInTerminalPanes = false
   private var activeProjectEditorId: String?
   private var focusedSessionId: String?
   private var lastEmittedFocusedSessionId: String?
@@ -3464,6 +3491,20 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  func injectBrowserAgentation(sessionId: String) {
+    guard let session = webPaneSessions[sessionId] else {
+      return
+    }
+    focusWebPane(sessionId: sessionId, reason: "browserAgentation")
+    Task { @MainActor in
+      if let chromiumView = session.chromiumView {
+        await NativeBrowserAgentationInjector.toggleOrInject(into: chromiumView)
+      } else if let webView = session.webView {
+        await NativeBrowserAgentationInjector.toggleOrInject(into: webView)
+      }
+    }
+  }
+
   func injectProjectEditorReactGrab(projectId: String) {
     guard let session = projectEditorPaneSessions[projectId] else {
       return
@@ -4227,6 +4268,7 @@ final class TerminalWorkspaceView: NSView {
     sessionFaviconDataUrls = command.sessionFaviconDataUrls ?? [:]
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
+    showSessionIdInTerminalPanes = command.showSessionIdInTerminalPanes == true
     activeProjectEditorId = nextActiveProjectEditorId
     let shouldRefreshPaneTabMetadata =
       previousSessionTitleBarActions != sessionTitleBarActions || previousSessionTitles != sessionTitles
@@ -4266,6 +4308,7 @@ final class TerminalWorkspaceView: NSView {
       let chromeRole: TerminalPaneChromeRole = isCommandActive ? .commands : .workspace
       session.titleBarView.setChromeRole(chromeRole)
       session.borderView.setChromeRole(chromeRole)
+      session.persistenceLabelView.setEnabledBySettings(showSessionIdInTerminalPanes)
       session.persistenceLabelView.setSuppressed(isCommandActive && !commandsPanelIsVisible)
       session.borderView.setHidesInactiveCommandBorder(isCommandActive && commandsPanelMode == "pinned")
       if let title = sessionTitles[session.sessionId] {
@@ -6617,6 +6660,38 @@ final class TerminalWorkspaceView: NSView {
     return hitView
   }
 
+  func nativeChromeHitView(at point: NSPoint) -> NSView? {
+    guard bounds.contains(point) else {
+      return nil
+    }
+    /**
+     CDXC:RootHitBoundaries 2026-05-22-22:48:
+     The root React titlebar WKWebView can report interactive DOM regions below
+     the fixed titlebar strip. Native pane tabs and resize handles in the
+     workspace must get first chance at those points so visible right-side tabs
+     do not fall through to the titlebar/sidebar web surface.
+     */
+    if let floatingEditorHitView = floatingEditorHitView(at: point) {
+      return floatingEditorHitView
+    }
+    if isProjectEditorInteractionSurfaceActive {
+      if let paneResizeHandleHitView = projectEditorResizeHandleHitView(at: point) {
+        return paneResizeHandleHitView
+      }
+      if let commandTitleBarHitView = commandPaneTitleBarHitView(at: point) {
+        return commandTitleBarHitView
+      }
+      if let projectEditorTitleBarHitView = activeProjectEditorTitleBarHitView(at: point) {
+        return projectEditorTitleBarHitView
+      }
+      return nil
+    }
+    if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
+      return paneResizeHandleHitView
+    }
+    return paneTitleBarHitView(at: point)
+  }
+
   private func projectEditorInteractionHitView(at point: NSPoint) -> NSView? {
     if let paneResizeHandleHitView = projectEditorResizeHandleHitView(at: point) {
       logProjectEditorHitTestDecision(
@@ -6755,6 +6830,21 @@ final class TerminalWorkspaceView: NSView {
     return nil
   }
 
+  private func activeProjectEditorTitleBarHitView(at point: CGPoint) -> NSView? {
+    let activeSession =
+      activeProjectEditorId.flatMap { projectEditorPaneSessions[$0] }
+      ?? visibleProjectEditorInteractionSessionIds.compactMap { projectEditorPaneSessions[$0] }.first
+    guard let activeSession,
+      let titleBarView = activeSession.titleBarView,
+      !titleBarView.isHidden,
+      titleBarView.frame.contains(point)
+    else {
+      return nil
+    }
+    let titleBarPoint = convert(point, to: titleBarView)
+    return titleBarView.hitTest(titleBarPoint) ?? titleBarView
+  }
+
   private func activeProjectEditorHitView(at point: CGPoint) -> NSView? {
     let activeSession =
       activeProjectEditorId.flatMap { projectEditorPaneSessions[$0] }
@@ -6769,10 +6859,7 @@ final class TerminalWorkspaceView: NSView {
       ])
       return nil
     }
-    if let titleBarView = activeSession.titleBarView,
-      !titleBarView.isHidden,
-      titleBarView.frame.contains(point)
-    {
+    if let hitView = activeProjectEditorTitleBarHitView(at: point) {
       /**
        CDXC:GitProjectTabs 2026-05-16-07:42:
        Git tab chrome sits above the browser host inside the project-editor
@@ -6780,14 +6867,12 @@ final class TerminalWorkspaceView: NSView {
        the hosted Chromium view so tabs, inline buttons, and the plus control
        receive real AppKit mouse events.
       */
-      let titleBarPoint = convert(point, to: titleBarView)
-      let hitView = titleBarView.hitTest(titleBarPoint) ?? titleBarView
       NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.hitTest.gitTabBar", [
         "activeProjectEditorId": activeProjectEditorId ?? NSNull(),
         "hitView": String(describing: type(of: hitView)),
         "point": describePoint(point),
-        "titleBarFrame": describeFrame(titleBarView.frame),
-        "titleBarPoint": describePoint(titleBarPoint),
+        "titleBarFrame": describeFrame(activeSession.titleBarView?.frame ?? .zero),
+        "titleBarPoint": describePoint(convert(point, to: activeSession.titleBarView)),
         "windowNumber": window?.windowNumber ?? NSNull(),
       ])
       return hitView
@@ -12511,6 +12596,16 @@ final class GhostexGhosttySurfaceView: NSView {
 
   override func flagsChanged(with event: NSEvent) {
     sendKeyEvent(event, action: GHOSTTY_ACTION_PRESS, includeText: false)
+    /**
+     CDXC:TerminalMouse 2026-05-23-00:24:
+     gte path hover needs terminal mouse clients to see modifier-only changes
+     while the pointer is already over a path. Forward the current mouse
+     position on modifier transitions so Cmd/Ctrl immediately add or clear the
+     clickable underline without waiting for the pointer to cross a new cell.
+     */
+    if let surface, ghostty_surface_mouse_captured(surface) {
+      sendMousePosition(event)
+    }
   }
 
   /**
@@ -15267,6 +15362,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private static let verticalWheelTabScrollMultiplier: CGFloat = 18
   private static let minimumDiscreteVerticalWheelTabScrollDelta: CGFloat = 96
   private static let activeTabRevealScrollMargin: CGFloat = 12
+  private static let activeTabRevealMinimumVisibleWidth: CGFloat = 60
   /**
    CDXC:PaneTabs 2026-05-14-09:23:
    Non-command pane tabs need 2px more vertical reach above and below the old tab strip. Command pane tabs keep their existing full command-titlebar height.
@@ -15288,8 +15384,12 @@ private final class TerminalSessionTitleBarView: NSView {
 
    CDXC:PaneTabs 2026-05-15-20:04:
    When activation reveals a clipped right-side tab, scroll past exact edge alignment and clamp to the real maximum offset. This avoids cases where the selected session tab technically crosses the viewport boundary but does not visibly settle all the way into view.
+
+   CDXC:PaneTabs 2026-05-22-09:14:
+   Tab activation should preserve the user's current tab-strip position when the selected tab is already visibly usable. Share horizontal offsets across title-bar instances in the same tab group, and reveal only when the active tab is offscreen or clipped down below 60px of visible width so visible tab clicks and visible session switches do not move tabs around.
    */
   private static let workspaceTabButtonHeight: CGFloat = 36
+  private static var tabScrollOffsetByGroupSignature: [String: CGFloat] = [:]
 
   private let faviconImageView = NSImageView(frame: .zero)
   private let titleLabel = NSTextField(labelWithString: "")
@@ -15423,6 +15523,10 @@ private final class TerminalSessionTitleBarView: NSView {
       return
     }
     let activeTabChanged = activeTabSessionId != nextActiveTabSessionId
+    let nextTabGroupSignature = Self.tabScrollGroupSignature(for: nextTabs)
+    if let syncedOffset = Self.tabScrollOffsetByGroupSignature[nextTabGroupSignature] {
+      tabScrollOffsetX = syncedOffset
+    }
     tabItems = nextTabs
     activeTabSessionId = nextActiveTabSessionId
     if activeTabChanged {
@@ -15469,6 +15573,17 @@ private final class TerminalSessionTitleBarView: NSView {
     updateTabGroupFocusAppearance()
     needsLayout = true
     window?.invalidateCursorRects(for: self)
+  }
+
+  private static func tabScrollGroupSignature(for tabs: [TabItem]) -> String {
+    tabs.map(\.sessionId).joined(separator: "|")
+  }
+
+  private func syncTabScrollOffsetCache() {
+    guard !tabItems.isEmpty else {
+      return
+    }
+    Self.tabScrollOffsetByGroupSignature[Self.tabScrollGroupSignature(for: tabItems)] = tabScrollOffsetX
   }
 
   func setAllowsTabClosing(_ allowsClosing: Bool) {
@@ -15715,6 +15830,7 @@ private final class TerminalSessionTitleBarView: NSView {
       : event.scrollingDeltaX
     let maxOffset = max(tabContentWidth - tabViewportFrame.width, 0)
     tabScrollOffsetX = min(max(tabScrollOffsetX - rawDelta, 0), maxOffset)
+    syncTabScrollOffsetCache()
     needsLayout = true
   }
 
@@ -16590,6 +16706,7 @@ private final class TerminalSessionTitleBarView: NSView {
       scrollActiveTabIntoView(tabWidth: tabWidth, gap: gap, availableWidth: availableWidth)
       shouldScrollActiveTabIntoViewAfterLayout = false
     }
+    syncTabScrollOffsetCache()
     tabClipView.frame = tabViewportFrame
     tabContentView.frame = CGRect(
       x: -tabScrollOffsetX,
@@ -16617,7 +16734,10 @@ private final class TerminalSessionTitleBarView: NSView {
     let visibleMinX = tabScrollOffsetX
     let visibleMaxX = tabScrollOffsetX + availableWidth
     let maxOffset = max(tabContentWidth - availableWidth, 0)
-    guard activeTabMinX < visibleMinX || activeTabMaxX > visibleMaxX else {
+    let visibleActiveTabWidth =
+      max(0, min(activeTabMaxX, visibleMaxX) - max(activeTabMinX, visibleMinX))
+    let minimumUsableVisibleWidth = min(tabWidth, Self.activeTabRevealMinimumVisibleWidth)
+    guard visibleActiveTabWidth < minimumUsableVisibleWidth else {
       return
     }
     let nextOffset: CGFloat
@@ -18792,6 +18912,7 @@ private final class TerminalPaneLeafContainerView: NSView {
 
 private final class TerminalPanePersistenceLabelView: NSTextField {
   private static let labelFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+  private var isEnabledBySettings = false
   private var isSuppressedByPaneState = false
 
   override var fittingSize: NSSize {
@@ -18871,8 +18992,24 @@ private final class TerminalPanePersistenceLabelView: NSTextField {
     superview?.needsLayout = true
   }
 
+  func setEnabledBySettings(_ isEnabled: Bool) {
+    guard isEnabledBySettings != isEnabled else {
+      return
+    }
+    /*
+     CDXC:SessionPersistence 2026-05-23-00:50:
+     The Settings preference defaults on, but this label must still require a
+     non-empty provider/session title. That keeps ordinary terminals clean while
+     zmx/tmux/zellij panes can show their attach identity.
+     */
+    isEnabledBySettings = isEnabled
+    updateVisibility()
+    needsLayout = true
+    superview?.needsLayout = true
+  }
+
   private func updateVisibility() {
-    isHidden = isSuppressedByPaneState || stringValue.isEmpty
+    isHidden = !isEnabledBySettings || isSuppressedByPaneState || stringValue.isEmpty
   }
 }
 
