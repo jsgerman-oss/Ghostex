@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.9.1 - 2026-05-23
+
+- Made `gte` the default Ctrl+G prompt editor so new installs open the terminal-native editor without extra setup.
+- Improved terminal shortcut routing so Cmd+G opens agent prompt editing, and common Mac editing shortcuts reach terminal apps such as `gte` instead of being swallowed by the app menu.
+- Improved sidebar and toast layering so sidebar navigation stays clickable while app toasts are visible and toast-only overlays no longer steal workspace clicks.
+- Improved the Delayed Send terminal countdown badge with more padding for better readability.
+- Improved iOS direct SSH attach responsiveness by batching remote terminal output, reducing render spam, and showing clearer attach progress.
+
 ## 3.9.0 - 2026-05-23
 
 - Added hidden restorable launchers for Rovo Dev, Hermes Agent, CodeBuddy, and Qoder with matching icons and cleaner session-title restore support.
