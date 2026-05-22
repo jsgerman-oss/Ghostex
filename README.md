@@ -42,14 +42,15 @@ The same Homebrew command installs the correct Apple Silicon or Intel Mac build 
 brew install --cask maddada/tap/ghostex
 ```
 
-#### Mobile apps
+### Mobile apps
 
-[![iPhone App in Test Flight](https://img.shields.io/badge/iPhone-Test%20Flight-000000?logo=apple&logoColor=white)](https://discord.gg/xYSBPapM)
-
+- Android app APK is in GitHub Releases: 
 [![Download Android APK](https://img.shields.io/badge/Android-APK-3DDC84?logo=android&logoColor=white)](https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.1.0/ghostex-1.1.0.apk)
 
-- iPhone app is in Test Flight. Join the Discord to get it.
-- Android app APK is in GitHub Releases: [ghostex-1.1.0.apk](https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.1.0/ghostex-1.1.0.apk)
+- iPhone app is in Test Flight. Click here to join the Discord to get it: 
+[![iPhone App Discord](https://img.shields.io/badge/iPhone-Test%20Flight-000000?logo=apple&logoColor=white)](https://discord.gg/xYSBPapM)
+
+
 <br />
 
 ### All Agent CLIs supported (please send an issue or PR for integrating any missing agent cli)
