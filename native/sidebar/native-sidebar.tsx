@@ -367,6 +367,7 @@ type NativeHostCommand =
   | { type: "activateApp" }
   | { sessionId: string; text: string; type: "writeTerminalText" }
   | { sessionId: string; type: "sendTerminalEnter" }
+  | { requestId: string; sessionId: string; source?: "screen" | "visible"; type: "readTerminalText" }
   | {
 	      activeSessionIds: string[];
       commandsPanelActiveSessionIds?: string[];
@@ -392,6 +393,11 @@ type NativeHostCommand =
       activeProjectEditorId?: string;
       focusRequestId?: number;
       focusedSessionId?: string;
+      /**
+       * CDXC:SessionFocusMode 2026-05-23-14:35:
+       * The React titlebar needs to know when reversible pane-tab Focus mode is active so it can expose an explicit exit control beside the mode switcher.
+       */
+      isFocusModeActive?: boolean;
       sleepingSessionIds?: string[];
       /**
        * CDXC:NativeGpu 2026-05-08-16:45
@@ -664,6 +670,14 @@ type NativeHostEvent =
   | { heightRatio: number; type: "commandsPanelHeightRatioChanged" }
   | { message: string; sessionId: string; type: "terminalError" }
   | {
+      error?: string;
+      ok: boolean;
+      requestId: string;
+      sessionId: string;
+      text?: string;
+      type: "terminalTextResult";
+    }
+  | {
       message?: string;
       projectId: string;
       status: Exclude<ProjectEditorLoadStatus, "idle">;
@@ -700,6 +714,7 @@ type NativeHostEvent =
   | { protocolVersion: 1; type: "hostReady" };
 
 type NativeProcessResult = Extract<NativeHostEvent, { type: "processResult" }>;
+type NativeTerminalTextResult = Extract<NativeHostEvent, { type: "terminalTextResult" }>;
 
 type NativeBootstrap = {
   accessibilityPermissionGranted?: boolean;
@@ -750,24 +765,6 @@ declare global {
 	      attachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
 	      detachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
 	    };
-    __ghostex_NATIVE_SIDEBAR__?: {
-      dismissSidebarContextMenu: () => void;
-      notifySidebarContextMenuClosed: () => void;
-      notifySidebarContextMenuOpened: () => void;
-      openActiveProjectEditorFromTitlebar: () => void;
-      openAgentsModeFromTitlebar: () => void;
-      openGitHubProjectFromTitlebar: () => void;
-      quitResourcesFromTitlebar: (sessionIds: string[], projectIds: string[]) => void;
-      showProjectEditorCompanionFromTitlebar: () => void;
-      sleepInactiveSessionsFromTitlebar: (sessionIds: string[]) => void;
-      openTasksPlaceholderFromTitlebar: () => void;
-      refreshWorkspaceOpenTargetAvailabilityFromTitlebar: () => void;
-      rotateActivePaneLayoutClockwiseFromTitlebar: () => void;
-      sleepPetOverlayFromPet: () => void;
-      togglePetOverlayFromTitlebar: () => void;
-      toggleCommandsPanelFromTitlebar: () => void;
-      runSidebarCommandFromTitlebar: (commandId: string) => void;
-    };
     __ghostex_NATIVE_CLI__?: {
       handleCommand: (action: string, payload: Record<string, unknown>) => Promise<unknown>;
     };
@@ -975,6 +972,14 @@ const pendingProcessResults = new Map<
     timeout: number;
   }
 >();
+const pendingTerminalTextResults = new Map<
+  string,
+  {
+    reject: (reason?: unknown) => void;
+    resolve: (result: NativeTerminalTextResult) => void;
+    timeout: number;
+  }
+>();
 const pendingGitCommitRequests = new Map<
   string,
   { action: SidebarGitAction; body?: string; hasCommit: boolean; subject: string }
@@ -996,6 +1001,11 @@ type NativeProject = {
   themeColor?: string;
   worktree?: NativeProjectWorktreeMetadata;
   worktreeCommand?: string;
+  /**
+   * CDXC:ProjectBoard 2026-05-23-14:35:
+   * Each project can define the three-letter ticket key shown on the board (for example ZMX-12) while Beads keeps hash ids internally.
+   */
+  beadsDisplayKey?: string;
   workspace: GroupedSessionWorkspaceSnapshot;
 };
 
@@ -1042,6 +1052,8 @@ type NativeProjectEditorRestoreState = {
 
 type NativeCliSessionSelector = {
   index?: number;
+  project?: string;
+  selectorTitle?: string;
   sessionId?: string;
   sessionNumber?: number;
 };
@@ -2600,6 +2612,34 @@ function runNativeProcess(
   });
 }
 
+function readNativeTerminalText(
+  nativeSessionId: string,
+  options: { source?: "screen" | "visible"; timeoutMs?: number } = {},
+): Promise<NativeTerminalTextResult> {
+  const requestId = `terminal-text-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  /**
+   * CDXC:CliTerminalReadback 2026-05-23-13:18:
+   * CLI message-read commands must query the existing native Ghostty surface
+   * for the selected visible sidebar session. The request/response map keeps
+   * readback asynchronous without creating hidden helper terminals.
+   */
+  postNative({
+    requestId,
+    sessionId: nativeSessionId,
+    source: options.source ?? "screen",
+    type: "readTerminalText",
+  });
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      pendingTerminalTextResults.delete(requestId);
+      reject(new Error(`Reading terminal text timed out for ${nativeSessionId}`));
+    }, options.timeoutMs ?? 5_000);
+    pendingTerminalTextResults.set(requestId, { reject, resolve, timeout });
+  });
+}
+
 async function refreshWorkspaceOpenTargetAvailabilityAtStartup(): Promise<void> {
   try {
     const nextAvailability = await detectWorkspaceOpenTargetAvailability();
@@ -4022,6 +4062,8 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
       worktree: normalizeNativeProjectWorktreeMetadata(project.worktree),
       worktreeCommand:
         typeof project.worktreeCommand === "string" ? project.worktreeCommand : undefined,
+      beadsDisplayKey:
+        typeof project.beadsDisplayKey === "string" ? project.beadsDisplayKey : undefined,
       workspace: normalizeSimpleGroupedSessionWorkspaceSnapshot(project.workspace),
     },
   ];
@@ -6695,6 +6737,7 @@ function createSidebarProjectSettingsProjects() {
         project.worktree === undefined,
     )
     .map((project) => ({
+      beadsDisplayKey: project.beadsDisplayKey,
       name: project.name,
       path: project.path,
       projectId: project.projectId,
@@ -12557,6 +12600,32 @@ function focusSidebarSessionMode(sessionId: string): void {
     focusTerminal(sessionId);
     return;
   }
+  const activeGroup =
+    reference.project.workspace.groups.find(
+      (group) => group.groupId === reference.project.workspace.activeGroupId,
+    ) ?? reference.project.workspace.groups[0];
+  const snapshot = activeGroup?.snapshot;
+  /**
+   * CDXC:SessionFocusMode 2026-05-23-14:35:
+   * Double-clicking a native pane tab while Focus mode is already active for that tab group must exit Focus and restore the prior Code/Git/Project surface instead of re-entering Focus.
+   */
+  if (
+    snapshot &&
+    snapshot.visibleCount === 1 &&
+    snapshot.fullscreenRestoreVisibleCount !== undefined
+  ) {
+    const focusedTabSessionIds = getFocusedWorkspaceTabSessionIds(snapshot);
+    if (focusedTabSessionIds.includes(reference.sessionId)) {
+      updateProjectWorkspace(
+        reference.project.projectId,
+        (workspace) => toggleFullscreenSessionInSimpleWorkspace(workspace),
+      );
+      restoreProjectModeAfterSessionFocus(reference.project.projectId);
+      publish();
+      focusTerminal(sessionId);
+      return;
+    }
+  }
   if (activeProjectId !== reference.project.projectId) {
     focusProject(reference.project.projectId);
   }
@@ -14291,6 +14360,29 @@ function findSidebarSessionForCli(
   if (typeof selector.index === "number") {
     return sessions[selector.index];
   }
+  const titleSelector = selector.selectorTitle?.trim().toLowerCase();
+  if (titleSelector) {
+    const projectSelector = selector.project?.trim().toLowerCase();
+    const scopedSessions = projectSelector
+      ? sidebarMessage.groups
+          .filter((group) => {
+            return group.title?.toLowerCase() === projectSelector;
+          })
+          .flatMap((group) => group.sessions)
+      : sessions;
+    /**
+     * CDXC:CliSessionSelectors 2026-05-23-13:18:
+     * Agent orchestration commands should target another sidebar session by
+     * either stable id or quoted title. Match titles exact first and substring
+     * second so human-readable thread names work without hiding sessions.
+     */
+    const sessionTitle = (session: SidebarSessionItem | undefined) =>
+      (session?.primaryTitle ?? session?.terminalTitle ?? session?.alias ?? "").toLowerCase();
+    return (
+      scopedSessions.find((session) => sessionTitle(session) === titleSelector) ??
+      scopedSessions.find((session) => sessionTitle(session).includes(titleSelector))
+    );
+  }
   const focusedSessionId = activeSnapshot().focusedSessionId;
   return focusedSessionId
     ? sessions.find((session) => session.sessionId === focusedSessionId)
@@ -14436,6 +14528,7 @@ function summarizeCreatedCliSession(session: TerminalSessionRecord | undefined) 
     candidate.snapshot.sessions.some((candidateSession) => candidateSession.sessionId === session.sessionId),
   );
   return {
+    ghostexId: createCombinedProjectSessionId(project.projectId, session.sessionId),
     groupId: group?.groupId,
     projectId: project.projectId,
     sessionId: session.sessionId,
@@ -14443,9 +14536,24 @@ function summarizeCreatedCliSession(session: TerminalSessionRecord | undefined) 
   };
 }
 
+function summarizeCliSessionRecord(session: SessionRecord | undefined) {
+  if (!session) {
+    return undefined;
+  }
+  const project = activeProject();
+  return {
+    ghostexId: createCombinedProjectSessionId(project.projectId, session.sessionId),
+    projectId: project.projectId,
+    sessionId: session.sessionId,
+    title: "title" in session ? session.title : DEFAULT_TERMINAL_SESSION_TITLE,
+  };
+}
+
 function requireCliSession(payload: Record<string, unknown>): SidebarSessionItem {
   const session = findSidebarSessionForCli({
     index: typeof payload.index === "number" ? payload.index : undefined,
+    project: typeof payload.project === "string" ? payload.project : undefined,
+    selectorTitle: typeof payload.selectorTitle === "string" ? payload.selectorTitle : undefined,
     sessionId: typeof payload.sessionId === "string" ? payload.sessionId : undefined,
     sessionNumber: typeof payload.sessionNumber === "number" ? payload.sessionNumber : undefined,
   });
@@ -15436,6 +15544,70 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
           type: "writeTerminalText",
         });
         return { ok: true, session };
+      }
+      case "sendMessage": {
+        const text = String(payload.text ?? "");
+        const submit = payload.submit !== false;
+        const hasSessionSelector =
+          typeof payload.sessionId === "string" ||
+          typeof payload.selectorTitle === "string" ||
+          typeof payload.index === "number" ||
+          typeof payload.sessionNumber === "number";
+        if (hasSessionSelector) {
+          const session = requireCliSession(payload);
+          const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
+          postNative({ sessionId: nativeSessionId, text, type: "writeTerminalText" });
+          if (submit) {
+            postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+          }
+          return { created: false, ghostexId: session.sessionId, ok: true, session };
+        }
+        const agentId = String(payload.agentId ?? "").trim();
+        if (!agentId) {
+          throw new Error("send-message requires a session selector or an agent id.");
+        }
+        /**
+         * CDXC:CliAgentMessaging 2026-05-23-13:18:
+         * When no target session is supplied, `ghostex send-message <agent>`
+         * must create a normal visible sidebar agent session and return its
+         * Ghostex id. Hidden background agent sessions are not allowed because
+         * the creator agent needs to inspect and follow up through the sidebar.
+         */
+        const createdSession = await runCliAgent(
+          agentId,
+          typeof payload.groupId === "string" ? payload.groupId : undefined,
+        );
+        if (!createdSession) {
+          throw new Error(`Could not create agent session for ${agentId}.`);
+        }
+        const nativeSessionId = nativeSessionIdForSidebarSession(createdSession.sessionId);
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, Number(payload.sendDelayMs ?? 750)),
+        );
+        postNative({ sessionId: nativeSessionId, text, type: "writeTerminalText" });
+        if (submit) {
+          postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+        }
+        return {
+          created: true,
+          ghostexId: createCombinedProjectSessionId(activeProjectId, createdSession.sessionId),
+          ok: true,
+          session: summarizeCliSessionRecord(createdSession),
+        };
+      }
+      case "readSessionText": {
+        const session = requireCliSession(payload);
+        const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
+        const result = await readNativeTerminalText(nativeSessionId, {
+          source: payload.source === "visible" ? "visible" : "screen",
+          timeoutMs: Number(payload.timeoutMs ?? 5_000),
+        });
+        return {
+          error: result.error,
+          ok: result.ok,
+          session,
+          text: result.text ?? "",
+        };
       }
       case "sendEnter": {
         const session = requireCliSession(payload);
@@ -16769,6 +16941,21 @@ function setProjectWorktreeCommand(projectId: string, command: string): void {
   );
 }
 
+function setProjectBeadsDisplayKey(projectId: string, displayKey: string): void {
+  const normalizedDisplayKey = displayKey.trim().toUpperCase().replace(/[^A-Z0-9]/gu, "").slice(0, 3);
+  projects = projects.map((project) =>
+    project.projectId === projectId
+      ? { ...project, beadsDisplayKey: normalizedDisplayKey || undefined }
+      : project,
+  );
+  writeStoredProjects("setProjectBeadsDisplayKey");
+  publish();
+  showAppToast(
+    "success",
+    normalizedDisplayKey ? "Project ticket key saved" : "Project ticket key cleared",
+  );
+}
+
 function disposeNativeRecentProjectSessionSurface(
   project: NativeProject,
   session: SessionRecord,
@@ -17458,6 +17645,19 @@ function openActiveProjectEditorFromTitlebar(): void {
   });
 }
 
+function exitFocusModeFromTitlebar(): void {
+  const projectId = activeProject().projectId;
+  const snapshot = activeSnapshot();
+  const wasSessionFocusMode =
+    snapshot.visibleCount === 1 && snapshot.fullscreenRestoreVisibleCount !== undefined;
+  if (!wasSessionFocusMode) {
+    return;
+  }
+  updateActiveProjectWorkspace((workspace) => toggleFullscreenSessionInSimpleWorkspace(workspace));
+  restoreProjectModeAfterSessionFocus(projectId);
+  publish();
+}
+
 function openAgentsModeFromTitlebar(): void {
   const project = activeProject();
   if (project.isChat === true || project.isRecentProject === true) {
@@ -17694,6 +17894,7 @@ function openTasksPlaceholderFromTitlebar(): void {
   const url = new URL("tasks-placeholder.html", window.location.href);
   url.searchParams.set("projectName", project.name);
   url.searchParams.set("projectPath", project.path);
+  url.searchParams.set("beadsDisplayKey", project.beadsDisplayKey ?? project.name);
   openProjectTasksEditorSurface(project, url.toString());
 }
 
@@ -18952,6 +19153,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "setProjectWorktreeCommand":
       setProjectWorktreeCommand(message.projectId, message.command);
       return;
+    case "setProjectBeadsDisplayKey":
+      setProjectBeadsDisplayKey(message.projectId, message.displayKey);
+      return;
     case "saveSidebarAgent":
       saveSidebarAgent(message);
       return;
@@ -19455,6 +19659,8 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
         : undefined,
     activeProjectName: currentProject.name,
     activeProjectPath: currentProject.path,
+    isFocusModeActive:
+      snapshot.visibleCount === 1 && snapshot.fullscreenRestoreVisibleCount !== undefined,
     attentionSessionIds,
     backgroundColor: settings.workspaceBackgroundColor,
     ...(focusRequestId !== undefined ? { focusRequestId } : {}),
@@ -20026,6 +20232,16 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     }
     window.clearTimeout(pending.timeout);
     pendingProcessResults.delete(hostEvent.requestId);
+    pending.resolve(hostEvent);
+    return;
+  }
+  if (hostEvent.type === "terminalTextResult") {
+    const pending = pendingTerminalTextResults.get(hostEvent.requestId);
+    if (!pending) {
+      return;
+    }
+    window.clearTimeout(pending.timeout);
+    pendingTerminalTextResults.delete(hostEvent.requestId);
     pending.resolve(hostEvent);
     return;
   }
@@ -21279,6 +21495,7 @@ window.__ghostex_NATIVE_SIDEBAR__ = {
     postNative({ type: "sidebarContextMenuOpened" });
   },
   openActiveProjectEditorFromTitlebar,
+  exitFocusModeFromTitlebar,
   openAgentsModeFromTitlebar,
   openGitHubProjectFromTitlebar: () => {
     void openGitHubProjectFromTitlebar();
