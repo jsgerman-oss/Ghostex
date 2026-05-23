@@ -354,7 +354,7 @@ export GHOSTEX_RELEASE_TERMINAL_DELEGATED=1
 exec > >(tee -a ${shellQuote(logPath)}) 2>&1
 echo "Ghostex release ${version} Terminal runner started at $(date)"
 touch ${shellQuote(startedPath)}
-status=0
+release_status=0
 {
   security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "$HOME/Library/Keychains/iCloud.keychain-db" /Library/Keychains/System.keychain 2>/dev/null || true
   security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
@@ -364,16 +364,16 @@ status=0
   gh auth status -h github.com
   bun run release:local -- ${shellQuote(version)} --no-terminal-delegate
 } || {
-  status=$?
+  release_status=$?
 }
-if [ "$status" -eq 0 ]; then
+if [ "$release_status" -eq 0 ]; then
   echo "Ghostex release ${version} finished at $(date)"
 else
-  echo "Ghostex release ${version} failed with status $status at $(date)"
+  echo "Ghostex release ${version} failed with status $release_status at $(date)"
 fi
-echo "$status" > ${shellQuote(exitPath)}
+echo "$release_status" > ${shellQuote(exitPath)}
 touch ${shellQuote(donePath)}
-exit "$status"
+exit "$release_status"
 `;
   await writeFile(runnerPath, runner, { mode: 0o755 });
   return { logPath, runnerPath, startedPath, donePath, exitPath };
@@ -381,20 +381,15 @@ exit "$status"
 
 async function launchTerminalReleaseRunner(runnerPath) {
   logStep("Launch release through login-session Terminal");
-  const applescriptPath = `${runnerPath.replace(/\.command$/, "")}.applescript`;
-  const escapedRunnerPath = runnerPath.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
-  await writeFile(
-    applescriptPath,
-    [
-      'tell application "Terminal"',
-      "  activate",
-      `  do script "/bin/zsh -l \\"${escapedRunnerPath}\\""`,
-      "end tell",
-      "",
-    ].join("\n"),
-  );
+  /**
+   * CDXC:Distribution 2026-05-23-14:05:
+   * AppleScript's `do script` breaks when generated through osascript -e because
+   * `script` is reserved. Opening the .command file in Terminal.app is the
+   * reliable login-session handoff for release builds.
+   */
   const attempts = [
-    `osascript ${shellQuote(applescriptPath)}`,
+    `open -a /System/Applications/Utilities/Terminal.app ${shellQuote(runnerPath)}`,
+    `open -a Terminal ${shellQuote(runnerPath)}`,
     "/Applications/OpenInTerminal.app/Contents/MacOS/OpenInTerminal-Lite",
     "/Applications/OpenInTerminal.app/Contents/MacOS/OpenInTerminal",
   ].map((command) => (command.endsWith("OpenInTerminal-Lite") || command.endsWith("OpenInTerminal")
@@ -413,12 +408,10 @@ async function launchTerminalReleaseRunner(runnerPath) {
       lastError = error;
     }
   }
-  throw new ReleaseError(
-    [
-      "Could not launch the Terminal.app release runner from this environment.",
-      String(lastError?.message ?? lastError ?? "unknown launch error"),
-    ].join("\n"),
+  console.warn(
+    "Could not open Terminal.app from this environment; running the login-shell release runner directly.",
   );
+  await run(`nohup /bin/zsh -l ${shellQuote(runnerPath)} </dev/null >/dev/null 2>&1 &`);
 }
 
 async function waitForReleaseStart(startedPath, logPath, runnerPath, timeoutMs = 60 * 1000) {
