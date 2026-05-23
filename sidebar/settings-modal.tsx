@@ -2332,6 +2332,7 @@ function ProjectsSettingsPanel({
   const selectedProject =
     projects.find((project) => project.projectId === selectedProjectId) ?? projects[0];
   const [command, setCommand] = useState(selectedProject?.worktreeCommand ?? "");
+  const [beadsDisplayKey, setBeadsDisplayKey] = useState(selectedProject?.beadsDisplayKey ?? "");
 
   useEffect(() => {
     if (!projects.some((project) => project.projectId === selectedProjectId)) {
@@ -2341,7 +2342,8 @@ function ProjectsSettingsPanel({
 
   useEffect(() => {
     setCommand(selectedProject?.worktreeCommand ?? "");
-  }, [selectedProject?.projectId, selectedProject?.worktreeCommand]);
+    setBeadsDisplayKey(selectedProject?.beadsDisplayKey ?? "");
+  }, [selectedProject?.beadsDisplayKey, selectedProject?.projectId, selectedProject?.worktreeCommand]);
 
   const saveCommand = () => {
     if (!selectedProject) {
@@ -2351,6 +2353,17 @@ function ProjectsSettingsPanel({
       command,
       projectId: selectedProject.projectId,
       type: "setProjectWorktreeCommand",
+    });
+  };
+
+  const saveBeadsDisplayKey = () => {
+    if (!selectedProject) {
+      return;
+    }
+    vscode?.postMessage({
+      displayKey: beadsDisplayKey,
+      projectId: selectedProject.projectId,
+      type: "setProjectBeadsDisplayKey",
     });
   };
 
@@ -2396,6 +2409,35 @@ function ProjectsSettingsPanel({
         </div>
         <Card className="settings-project-command-card">
           <CardContent className="flex flex-col gap-4 p-4">
+            {/*
+              CDXC:ProjectBoard 2026-05-23-14:35:
+              Projects settings owns the three-letter ticket key shown on the board (for example ZMX-12) while Beads keeps hash ids internally.
+            */}
+            <FieldGroup>
+              <Field>
+                <FieldLabel>Ticket key</FieldLabel>
+                <Input
+                  aria-label="Ticket key"
+                  maxLength={3}
+                  onChange={(event) =>
+                    setBeadsDisplayKey(event.currentTarget.value.toUpperCase().replace(/[^A-Z0-9]/gu, ""))
+                  }
+                  placeholder="ZMX"
+                  value={beadsDisplayKey}
+                />
+                <FieldDescription>
+                  Three-letter prefix used for Linear-style ticket numbers on the Project board.
+                </FieldDescription>
+              </Field>
+            </FieldGroup>
+            <div className="settings-management-actions">
+              <Button onClick={() => setBeadsDisplayKey("")} type="button" variant="outline">
+                Clear
+              </Button>
+              <Button onClick={saveBeadsDisplayKey} type="button">
+                Save Ticket Key
+              </Button>
+            </div>
             <FieldGroup>
               <Field>
                 <FieldLabel>Worktree command</FieldLabel>
