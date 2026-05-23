@@ -144,8 +144,12 @@
 - Sidebar navigation stays clickable while app toasts are visible, and toast-only overlays no longer steal workspace clicks.
 - Project group reordering uses a compact cursor-following drag preview so large expanded projects are easier to move.
 - Project mode includes a beads-backed kanban board for creating, moving, and commenting on project issues from the workarea.
+- Project mode tickets support full-text search, status filtering, Linear-style labels, configurable ticket keys, comments, and image previews.
 - Session focus mode can isolate one pane tab group from pane tabs or session cards and restore Code, Git, or Project surfaces on unfocus.
+- Clicking a sidebar session while the Code, Git, or Project companion pane is hidden switches back to Agents view and focuses that session.
+- Settings navigation wraps cleanly in narrow sidebar-hosted modals so tabs and section buttons stay readable.
 - Settings -> Agents shows machine-local hook install status for reliable-resume agents and can install or refresh hooks from the app.
 - Titlebar Quit actions can terminate the live resource PIDs shown in the Resources menu instead of relying only on sidebar sleep.
 - zmx-backed CLI attach can use visible-only replay for live sessions and try a saved fallback resume command when exact resume fails.
+- The Ghostex CLI can resolve flexible session selectors and read or send messages to live sessions.
 - Sidebar-hosted Settings modals use a dimmed backdrop that dismisses on click, matching full-window modal behavior.

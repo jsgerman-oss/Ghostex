@@ -2,6 +2,15 @@
 
 <!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
 
+## 3.11.0 - 2026-05-23
+
+- Added a beads-backed Project board in Project mode with kanban lanes, full-text search, status filters, comments, labels, image previews, and Linear-style ticket keys.
+- Added reversible session focus mode with pane-tab controls, session-card focus behavior, and a titlebar Exit Focus action.
+- Added Ghostex CLI session selectors plus read/send message commands for scripting live sessions from the terminal.
+- Improved Code, Git, and Project side-pane behavior so clicking a session while the companion pane is hidden returns to Agents view and focuses the selected session.
+- Improved Settings on narrow windows so top tabs and section navigation wrap cleanly instead of clipping.
+- Improved zmx and iOS remote attach stability with visible-only replay, better resume fallback behavior, and smoother direct SSH terminal rendering.
+
 ## 3.10.0 - 2026-05-23
 
 - Added a beads-backed Project board in Project mode with draggable kanban columns for creating, moving, and commenting on project issues.
