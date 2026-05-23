@@ -249,6 +249,16 @@ button,
   width: min(1104px, calc(100vw - 1rem));
 }
 
+@media (max-width: 760px) {
+  .ghostex-settings-shadcn.settings-modal-dialog {
+    border-radius: 0 !important;
+    height: 100vh;
+    max-height: 100vh;
+    max-width: 100vw;
+    width: 100vw;
+  }
+}
+
 /*
  CDXC:TipsAndTricks 2026-05-15-16:11:
  The Tips & Tricks guide should share the Settings modal footprint and shadcn

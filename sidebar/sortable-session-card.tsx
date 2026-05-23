@@ -5,6 +5,7 @@ import {
   IconDeviceMobile,
   IconDownload,
   IconExternalLink,
+  IconFocus2,
   IconGitFork,
   IconHandFinger,
   IconLayoutSidebarRightExpand,
@@ -159,7 +160,6 @@ export function SortableSessionCard({
   const {
     hideSessionAgentIconUntilHover,
     browserFeedbackTool,
-    renameSessionOnDoubleClick,
     showCloseButton,
     showDebugSessionNumbers,
     showHotkeys,
@@ -177,7 +177,6 @@ export function SortableSessionCard({
         DEFAULT_ghostex_SETTINGS.hideSessionAgentIconUntilHover,
       browserFeedbackTool:
         state.hud.settings?.browserFeedbackTool ?? DEFAULT_ghostex_SETTINGS.browserFeedbackTool,
-      renameSessionOnDoubleClick: state.hud.renameSessionOnDoubleClick,
       showCloseButton: state.hud.showCloseButtonOnSessionCards,
       showDebugSessionNumbers: state.hud.debuggingMode,
       showHotkeys: state.hud.showHotkeysOnSessionCards,
@@ -546,6 +545,21 @@ export function SortableSessionCard({
     vscode.postMessage({
       sessionId: session.sessionId,
       type: "forkSession",
+    });
+  };
+
+  const requestFocusMode = () => {
+    setContextMenuPosition(undefined);
+    /**
+     * CDXC:SessionFocusMode 2026-05-23-09:28:
+     * Double-click and context-menu Focus should zoom the clicked session's
+     * pane tab group rather than rename the session. Route through the
+     * controller so it can switch to Agents mode and later restore the prior
+     * Code/Git/Project surface on unfocus.
+     */
+    vscode.postMessage({
+      sessionId: session.sessionId,
+      type: "focusSessionMode",
     });
   };
 
@@ -922,6 +936,19 @@ export function SortableSessionCard({
       onClick: requestFullReloadSession,
     });
   }
+  sessionActions.push({
+    icon: (
+      <IconFocus2
+        aria-hidden="true"
+        className="session-context-menu-icon"
+        size={16}
+        stroke={1.8}
+      />
+    ),
+    key: "focus-mode",
+    label: "Focus",
+    onClick: requestFocusMode,
+  });
   if (canPopOutPane) {
     sessionActions.push({
       icon: session.isPoppedOut ? (
@@ -1141,13 +1168,9 @@ export function SortableSessionCard({
               requestFocusSession(event);
             }}
             onDoubleClick={(event) => {
-              if (isBrowserSession || !renameSessionOnDoubleClick) {
-                return;
-              }
-
               event.preventDefault();
               event.stopPropagation();
-              requestRename();
+              requestFocusMode();
             }}
             onContextMenu={(event: ReactMouseEvent<HTMLElement>) => {
               event.preventDefault();
