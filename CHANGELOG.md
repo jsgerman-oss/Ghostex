@@ -1,5 +1,17 @@
 # Changelog
 
+<!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
+
+## 3.10.0 - 2026-05-23
+
+- Added a beads-backed Project board in Project mode with draggable kanban columns for creating, moving, and commenting on project issues.
+- Added reversible session focus mode from pane tabs and session cards so one pane tab group can be isolated while Code, Git, or Project surfaces restore on unfocus.
+- Added agent hook status and install controls in Settings -> Agents so reliable-resume agents show machine-local hook setup and can be installed from the app.
+- Improved titlebar Quit actions so Resources can terminate the live PIDs shown in the menu instead of relying only on sidebar sleep.
+- Improved zmx attach and resume through visible-only replay for live sessions, saved fallback resume commands, and clearer failed-resume panes.
+- Improved Settings modals hosted in the sidebar with a dimmed backdrop that dismisses on click, matching full-window modal behavior.
+- Improved Ghostex iOS direct SSH attach responsiveness with batched terminal output and clearer attach progress.
+
 ## 3.9.1 - 2026-05-23
 
 - Made `gte` the default Ctrl+G prompt editor so new installs open the terminal-native editor without extra setup.
