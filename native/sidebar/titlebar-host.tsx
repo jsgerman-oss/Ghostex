@@ -148,6 +148,7 @@ type TitlebarProjectState = {
   showProjectEditorDiffFileCount: boolean;
   sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
   workspaceOpenTargets: TitlebarOpenTargetsSettings;
+  isFocusModeActive?: boolean;
 };
 
 type ResourceProcess = {
@@ -189,6 +190,7 @@ type NativeTitlebarCommand =
     }
   | { type: "openActiveProjectEditorFromTitlebar" }
   | { type: "showProjectEditorCompanionFromTitlebar" }
+  | { type: "exitFocusModeFromTitlebar" }
   | { type: "openAgentsModeFromTitlebar" }
   | { type: "openGitHubProjectFromTitlebar" }
   | { type: "openTasksPlaceholderFromTitlebar" }
@@ -1043,6 +1045,7 @@ function App() {
           sessionPersistenceProvider:
             state.sessionPersistenceProvider ?? current.sessionPersistenceProvider,
           workspaceOpenTargets: state.workspaceOpenTargets ?? current.workspaceOpenTargets,
+          isFocusModeActive: state.isFocusModeActive ?? current.isFocusModeActive,
         }));
       },
     };
@@ -1397,6 +1400,19 @@ function App() {
             />
           </div>
           <div style={styles.rightSlot}>
+            {projectState.isFocusModeActive ? (
+              <Button
+                aria-label="Exit focus mode"
+                className="titlebar-exit-focus-button"
+                data-titlebar-hit-region
+                onClick={() => postNative({ type: "exitFocusModeFromTitlebar" })}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                Exit focus
+              </Button>
+            ) : null}
             {/*
              * CDXC:ReactTitlebar 2026-05-17-02:29:
              * Top-right titlebar controls should not show hover tooltips.

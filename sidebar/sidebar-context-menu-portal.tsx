@@ -16,6 +16,7 @@ type GhostexNativeSidebarBridge = {
   notifySidebarContextMenuClosed: () => void;
   notifySidebarContextMenuOpened: () => void;
   openActiveProjectEditorFromTitlebar: () => void;
+  exitFocusModeFromTitlebar: () => void;
   openAgentsModeFromTitlebar: () => void;
   openGitHubProjectFromTitlebar: () => void;
   quitResourcesFromTitlebar: (sessionIds: string[], projectIds: string[]) => void;
