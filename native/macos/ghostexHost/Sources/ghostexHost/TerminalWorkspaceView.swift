@@ -59,6 +59,89 @@ private let nativeTerminalColorEnvironmentKeys = [
   "TERM_PROGRAM_VERSION",
 ]
 
+private let projectBeadsResponseEventName = "ghostex-project-beads-response"
+
+private struct ProjectBeadsBridgeRequest: Decodable {
+  let action: String
+  let comment: String?
+  let cwd: String
+  let description: String?
+  let issueId: String?
+  let requestId: String
+  let status: String?
+  let title: String?
+  let value: String?
+}
+
+private struct ProjectBeadsBridgeResponse: Encodable {
+  let error: String?
+  let exitCode: Int32
+  let requestId: String
+  let stderr: String
+  let stdout: String
+}
+
+private enum ProjectBeadsBridgeError: Error, LocalizedError {
+  case invalidRequest(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .invalidRequest(let message):
+      return message
+    }
+  }
+}
+
+private func projectBoardNativeProcessEnvironment() -> [String: String] {
+  /**
+   CDXC:ProjectBoard 2026-05-23-03:00:
+   Project board commands execute the upstream bd binary from a WebKit project pane.
+   GUI launches often miss Homebrew, mise, asdf, and ~/.local paths, so normalize PATH here instead of making the React board know CLI installation details.
+   */
+  var environment = ProcessInfo.processInfo.environment
+  environment["PATH"] = projectBoardNativeProcessPath(environment["PATH"])
+  return environment
+}
+
+private func projectBoardNativeProcessPath(_ path: String?) -> String {
+  let homeDirectory = NSHomeDirectory()
+  let defaultEntries = [
+    "\(homeDirectory)/.local/share/mise/shims",
+    "\(homeDirectory)/.local/bin",
+    "\(homeDirectory)/.asdf/shims",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ]
+  let existingEntries = (path ?? "").split(separator: ":").map(String.init)
+  var seen = Set<String>()
+  return (defaultEntries + existingEntries)
+    .filter { entry in
+      let normalizedEntry = entry.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !normalizedEntry.isEmpty, !seen.contains(normalizedEntry) else {
+        return false
+      }
+      seen.insert(normalizedEntry)
+      return true
+    }
+    .joined(separator: ":")
+}
+
+private func projectEditorModeFromNativeEditorId(_ nativeEditorId: String) -> String? {
+  guard nativeEditorId.hasPrefix("project-editor:"),
+    let mode = nativeEditorId.split(separator: ":").last.map(String.init),
+    ["code", "git", "tasks"].contains(mode)
+  else {
+    return nil
+  }
+  return mode
+}
+
 private let nativeGhosttyTerminalColorDisablingEnvironmentKeys = [
   "ANSI_COLORS_DISABLED",
   "NO_COLOR",
@@ -1101,15 +1184,16 @@ final class TerminalWorkspaceView: NSView {
 
   private struct ProjectEditorBrowserTab {
     let tabId: String
-    let chromiumView: GhostexCEFBrowserView
+    let chromiumView: GhostexCEFBrowserView?
     let hostView: WebPaneHostView
+    let webView: WKWebView?
     var title: String
     var url: String
   }
 
   private struct ProjectEditorPaneSession {
     var activeTabId: String
-    var chromiumView: GhostexCEFBrowserView
+    var chromiumView: GhostexCEFBrowserView?
     var hostView: WebPaneHostView
     let mode: String
     let projectId: String
@@ -1117,6 +1201,7 @@ final class TerminalWorkspaceView: NSView {
     let showsProjectTabs: Bool
     var tabs: [ProjectEditorBrowserTab]
     let titleBarView: TerminalSessionTitleBarView?
+    var webView: WKWebView?
     var title: String
     var url: String
   }
@@ -1991,22 +2076,51 @@ final class TerminalWorkspaceView: NSView {
         "activeSessionIds": Array(activeSessionIds).sorted(),
         "diagnosticSource": command.diagnosticSource ?? "",
         "hasInitialInput": command.initialInput?.isEmpty == false,
+        "initialInputPreview": command.initialInput.map { summarizeTerminalText($0) } ?? "",
         "knownSessionIds": Array(sessions.keys).sorted(),
         "requestedSessionId": command.sessionId,
         "title": command.title ?? "",
       ],
       force: forcePreviousSessionRestoreDiagnostics)
-    if sessions[command.sessionId] != nil {
+    if let existingSession = sessions[command.sessionId] {
+      let hasInitialInput = command.initialInput?.isEmpty == false
+      let shouldForceExistingInitialInputDiagnostics =
+        forcePreviousSessionRestoreDiagnostics
+        || (hasInitialInput && existingSession.sessionPersistenceProvider != nil)
+      /**
+       CDXC:SessionRestoreDiagnostics 2026-05-23-10:05:
+       Existing native surfaces must expose whether createTerminal is about to
+       paste sidebar-supplied restore input into an already alive provider
+       session. This is the exact boundary that can leak `Restoring session...`
+       and `x resume ...` into an agent CLI prompt when JS state forgot a live
+       native/zmx runtime.
+       */
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.createTerminal.existing",
         details: [
           "activeSessionIds": Array(activeSessionIds).sorted(),
           "diagnosticSource": command.diagnosticSource ?? "",
+          "hasInitialInput": hasInitialInput,
+          "initialInputPreview": command.initialInput.map { summarizeTerminalText($0) } ?? "",
           "requestedSessionId": command.sessionId,
+          "sessionPersistenceName": existingSession.sessionPersistenceName ?? "",
+          "sessionPersistenceProvider": existingSession.sessionPersistenceProvider?.rawValue ?? "off",
         ],
-        force: forcePreviousSessionRestoreDiagnostics)
+        force: shouldForceExistingInitialInputDiagnostics)
       focusTerminal(sessionId: command.sessionId, reason: "createTerminalExisting")
       if let initialInput = command.initialInput, !initialInput.isEmpty {
+        TerminalFocusDebugLog.append(
+          event: "nativeWorkspace.createTerminal.existing.initialInputWrite",
+          details: [
+            "activeSessionIds": Array(activeSessionIds).sorted(),
+            "diagnosticSource": command.diagnosticSource ?? "",
+            "requestedSessionId": command.sessionId,
+            "sessionPersistenceName": existingSession.sessionPersistenceName ?? "",
+            "sessionPersistenceProvider": existingSession.sessionPersistenceProvider?.rawValue ?? "off",
+            "textLength": initialInput.count,
+            "textPreview": summarizeTerminalText(initialInput),
+          ],
+          force: shouldForceExistingInitialInputDiagnostics)
         writeTerminalText(sessionId: command.sessionId, text: initialInput)
       }
       return
@@ -2162,6 +2276,9 @@ final class TerminalWorkspaceView: NSView {
     }
     titleBarView.onTabSleepRequested = { [weak self] tabSessionId, scope in
       self?.sendEvent(.paneTabSleepRequested(sessionId: tabSessionId, scope: scope))
+    }
+    titleBarView.onTabFocusRequested = { [weak self] tabSessionId in
+      self?.sendEvent(.paneTabFocusRequested(sessionId: tabSessionId))
     }
     titleBarView.onTabActionRequested = { [weak self] tabSessionId, action in
       self?.handlePaneTabActionRequested(sessionId: tabSessionId, action: action)
@@ -2653,6 +2770,9 @@ final class TerminalWorkspaceView: NSView {
     titleBarView.onTabSleepRequested = { [weak self] tabSessionId, scope in
       self?.sendEvent(.paneTabSleepRequested(sessionId: tabSessionId, scope: scope))
     }
+    titleBarView.onTabFocusRequested = { [weak self] tabSessionId in
+      self?.sendEvent(.paneTabFocusRequested(sessionId: tabSessionId))
+    }
     titleBarView.onTabActionRequested = { [weak self] tabSessionId, action in
       self?.handlePaneTabActionRequested(sessionId: tabSessionId, action: action)
     }
@@ -2855,13 +2975,20 @@ final class TerminalWorkspaceView: NSView {
       return
     }
 
-    guard GhostexCEFIsRuntimeAvailable() else {
+    let requestedMode = command.mode ?? projectEditorModeFromNativeEditorId(command.projectId) ?? "code"
+    guard requestedMode == "tasks" || GhostexCEFIsRuntimeAvailable() else {
       /**
        CDXC:EditorPanes 2026-05-06-14:21
        Project editors must embed code-server through Chromium without browser
        chrome. If CEF is unavailable, fail visibly instead of creating a WebKit
        substitute that would have different VS Code rendering and websocket
        behavior.
+
+       CDXC:ProjectBoard 2026-05-23-03:16:
+       Project mode is the exception to the Chromium requirement because it is
+       now a first-party bundled board backed by WKWebView. Keep the CEF guard
+       scoped to Code and Git so Project can open even when Chromium is not
+       available.
        */
       sendEvent(
         .terminalError(
@@ -2912,12 +3039,13 @@ final class TerminalWorkspaceView: NSView {
       activeTabId: initialTab.tabId,
       chromiumView: initialTab.chromiumView,
       hostView: initialTab.hostView,
-      mode: command.mode ?? "code",
+      mode: requestedMode,
       projectId: command.projectId,
       projectTitle: command.projectTitle ?? command.title,
       showsProjectTabs: command.showsProjectTabs ?? false,
       tabs: [initialTab],
       titleBarView: titleBarView,
+      webView: initialTab.webView,
       title: command.title,
       url: command.url
     )
@@ -2956,15 +3084,58 @@ final class TerminalWorkspaceView: NSView {
      session points at whichever tab is active for existing layout, focus, and
      toolbar commands.
      */
-    let chromiumView = GhostexCEFBrowserView(
-      frame: .zero,
-      initialURL: "about:blank",
-      profileIdentifier: "default")
-    chromiumView.trustedClipboardOrigin = NativeCodeServerRuntimeLauncher.origin
-    chromiumView.translatesAutoresizingMaskIntoConstraints = true
+    let useWebKitProjectView = projectEditorModeFromNativeEditorId(projectId) == "tasks"
+    let chromiumView: GhostexCEFBrowserView?
+    let webView: WKWebView?
+    let browserView: NSView
+    if useWebKitProjectView {
+      /**
+       CDXC:ProjectBoard 2026-05-23-03:00:
+       The Project mode board is a first-party local React app and should use WKWebView, not the Chromium/CEF browser path used by Code and Git.
+       WebKit gives the board a direct native message handler for whitelisted bd CLI calls while preserving the project-editor companion layout.
+       */
+      let configuration = WKWebViewConfiguration()
+      configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+      configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
+      configuration.websiteDataStore = .default()
+      let beadsBridge = ProjectBeadsBridge { [weak self] request, webView in
+        self?.handleProjectBeadsBridgeRequest(request, webView: webView)
+      }
+      configuration.userContentController.add(beadsBridge, name: ProjectBeadsBridge.messageHandlerName)
+      let projectWebView = WKWebView(frame: .zero, configuration: configuration)
+      beadsBridge.webView = projectWebView
+      if #available(macOS 13.3, *) {
+        projectWebView.isInspectable = true
+      }
+      projectWebView.translatesAutoresizingMaskIntoConstraints = true
+      projectWebView.allowsBackForwardNavigationGestures = false
+      projectWebView.navigationDelegate = self
+      projectWebView.uiDelegate = self
+      projectWebView.wantsLayer = true
+      projectWebView.layer?.masksToBounds = true
+      projectWebView.underPageBackgroundColor = NSColor(
+        calibratedRed: 0.063,
+        green: 0.067,
+        blue: 0.071,
+        alpha: 1)
+      chromiumView = nil
+      webView = projectWebView
+      browserView = projectWebView
+    } else {
+      let projectChromiumView = GhostexCEFBrowserView(
+        frame: .zero,
+        initialURL: "about:blank",
+        profileIdentifier: "default")
+      projectChromiumView.trustedClipboardOrigin = NativeCodeServerRuntimeLauncher.origin
+      projectChromiumView.translatesAutoresizingMaskIntoConstraints = true
+      chromiumView = projectChromiumView
+      webView = nil
+      browserView = projectChromiumView
+    }
     let hostView = WebPaneHostView(
-      browserView: chromiumView,
+      browserView: browserView,
       chromiumView: chromiumView,
+      webView: webView,
       showsBrowserToolbar: showsBrowserToolbar,
       showsInitialLoadingOverlay: showsInitialLoadingOverlay,
       initialAddress: url,
@@ -2987,11 +3158,14 @@ final class TerminalWorkspaceView: NSView {
       }
     )
     hostView.translatesAutoresizingMaskIntoConstraints = true
-    configureProjectEditorChromiumCallbacks(chromiumView, projectId: projectId, reason: reason)
+    if let chromiumView {
+      configureProjectEditorChromiumCallbacks(chromiumView, projectId: projectId, reason: reason)
+    }
     return ProjectEditorBrowserTab(
       tabId: tabId,
       chromiumView: chromiumView,
       hostView: hostView,
+      webView: webView,
       title: title,
       url: url)
   }
@@ -3087,9 +3261,9 @@ final class TerminalWorkspaceView: NSView {
      the visible interaction surface. Focus can happen before the next AppKit
      layout pass, so install the CEF drag monitor directly after the Chromium
      host is visible and ordered.
-     */
+    */
     syncCEFNativeDragSourceReleaseMonitor(reason: "focusProjectEditorPane")
-    _ = window?.makeFirstResponder(session.chromiumView)
+    _ = window?.makeFirstResponder(session.chromiumView ?? session.webView ?? session.hostView)
     needsLayout = true
     NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.focus.applied", [
       "projectId": projectId,
@@ -3124,6 +3298,7 @@ final class TerminalWorkspaceView: NSView {
     nextSession.activeTabId = tab.tabId
     nextSession.chromiumView = tab.chromiumView
     nextSession.hostView = tab.hostView
+    nextSession.webView = tab.webView
     nextSession.title = tab.title
     nextSession.url = tab.url
     return nextSession
@@ -3162,8 +3337,13 @@ final class TerminalWorkspaceView: NSView {
     guard let session = projectEditorPaneSessions[projectId] else {
       return nil
     }
-    return session.tabs.first(where: { $0.chromiumView === chromiumView })?.hostView
-      ?? (session.chromiumView === chromiumView ? session.hostView : nil)
+    return session.tabs.first(where: { tab in
+      guard let tabChromiumView = tab.chromiumView else {
+        return false
+      }
+      return tabChromiumView === chromiumView
+    })?.hostView
+      ?? (session.chromiumView.map { $0 === chromiumView } == true ? session.hostView : nil)
   }
 
   private func focusProjectEditorPaneFromUserInteraction(projectId: String, reason: String) {
@@ -3195,7 +3375,7 @@ final class TerminalWorkspaceView: NSView {
     if let activeTab = session.tabs.first(where: { $0.tabId == session.activeTabId }) {
       return activeTab.url
     }
-    return session.chromiumView.currentURLString ?? session.url
+    return session.chromiumView?.currentURLString ?? session.webView?.url?.absoluteString ?? session.url
   }
 
   func titlebarBrowserResourceTabs() -> [[String: Any]] {
@@ -3228,10 +3408,13 @@ final class TerminalWorkspaceView: NSView {
       ])
     }
     for session in projectEditorPaneSessions.values {
-      for tab in session.tabs where tab.chromiumView.browserIdentifier >= 0 {
-        let currentURL = tab.chromiumView.currentURLString ?? tab.url
+      for tab in session.tabs {
+        guard let chromiumView = tab.chromiumView, chromiumView.browserIdentifier >= 0 else {
+          continue
+        }
+        let currentURL = chromiumView.currentURLString ?? tab.url
         tabs.append([
-          "browserId": tab.chromiumView.browserIdentifier,
+          "browserId": chromiumView.browserIdentifier,
           "id": "project-editor:\(session.projectId):\(tab.tabId)",
           "isActive": activeProjectEditorId == session.projectId && session.activeTabId == tab.tabId,
           "kind": session.mode,
@@ -3304,7 +3487,7 @@ final class TerminalWorkspaceView: NSView {
     projectEditorPaneSessions[projectId] = nextSession
     addSubview(tab.hostView)
     moveOffscreen(tab.hostView)
-    tab.chromiumView.loadURLString(tab.url)
+    tab.chromiumView?.loadURLString(tab.url)
     tab.hostView.refreshHostedWebView(reason: reason)
     setProjectEditorTabHostVisibility(nextSession, isActive: activeProjectEditorId == projectId)
     syncProjectEditorTabBars()
@@ -3334,7 +3517,7 @@ final class TerminalWorkspaceView: NSView {
     nextSession = projectEditorSession(nextSession, activating: nextActiveTab.tabId)
     projectEditorPaneSessions[projectId] = nextSession
     if let removedTab {
-      removedTab.chromiumView.closeBrowser()
+      removedTab.chromiumView?.closeBrowser()
       removedTab.hostView.removeFromSuperview()
     }
     setProjectEditorTabHostVisibility(nextSession, isActive: activeProjectEditorId == projectId)
@@ -3374,6 +3557,7 @@ final class TerminalWorkspaceView: NSView {
         tabId: tab.tabId,
         chromiumView: tab.chromiumView,
         hostView: tab.hostView,
+        webView: tab.webView,
         title: normalizedTitle?.isEmpty == false
           ? normalizedTitle!
           : projectEditorTabTitle(for: url, fallback: tab.title),
@@ -3392,11 +3576,11 @@ final class TerminalWorkspaceView: NSView {
       "url": session.url,
     ])
     for tab in session.tabs {
-      tab.chromiumView.closeBrowser()
+      tab.chromiumView?.closeBrowser()
       tab.hostView.removeFromSuperview()
     }
     if session.tabs.isEmpty {
-      session.chromiumView.closeBrowser()
+      session.chromiumView?.closeBrowser()
       session.hostView.removeFromSuperview()
     }
     session.titleBarView?.removeFromSuperview()
@@ -3417,6 +3601,12 @@ final class TerminalWorkspaceView: NSView {
      Cmd-W must close the user's focused workspace surface, not the native app
      window. Prefer AppKit's current responder so embedded Chrome/Ghostty focus
      wins over stale sidebar state, then fall back to the last focused session id.
+
+     CDXC:PaneClose 2026-05-23-10:03:
+     Cmd-W is a session-removal command, not a local native-surface disposal.
+     Route focused terminal/web pane closes through the sidebar owner so the
+     sidebar card, workspace layout, Ghostty surface, and provider-backed zmx/tmux
+     runtime are removed together by the normal close path.
      */
     if let activeProjectEditorId, projectEditorPaneSessions[activeProjectEditorId] != nil {
       closeProjectEditorPane(projectId: activeProjectEditorId)
@@ -3438,11 +3628,11 @@ final class TerminalWorkspaceView: NSView {
     }
 
     if sessions[sessionId] != nil {
-      closeTerminal(sessionId: sessionId, requestGhosttyClose: true, reason: reason)
+      sendEvent(.paneTabCloseRequested(sessionId: sessionId, scope: .close))
       return true
     }
     if webPaneSessions[sessionId] != nil {
-      closeWebPane(sessionId: sessionId)
+      sendEvent(.paneTabCloseRequested(sessionId: sessionId, scope: .close))
       return true
     }
 
@@ -3474,7 +3664,11 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     focusProjectEditorPane(projectId: projectId, reason: "projectEditorDevTools")
-    session.chromiumView.toggleDevTools()
+    if let chromiumView = session.chromiumView {
+      chromiumView.toggleDevTools()
+    } else if let webView = session.webView, !NativeBrowserDevTools.toggle(for: webView) {
+      NSSound.beep()
+    }
   }
 
   func injectBrowserReactGrab(sessionId: String) {
@@ -3511,7 +3705,11 @@ final class TerminalWorkspaceView: NSView {
     }
     focusProjectEditorPane(projectId: projectId, reason: "projectEditorReactGrab")
     Task { @MainActor in
-      await NativeBrowserReactGrabInjector.toggleOrInject(into: session.chromiumView)
+      if let chromiumView = session.chromiumView {
+        await NativeBrowserReactGrabInjector.toggleOrInject(into: chromiumView)
+      } else if let webView = session.webView {
+        await NativeBrowserReactGrabInjector.toggleOrInject(into: webView)
+      }
     }
   }
 
@@ -4231,6 +4429,13 @@ final class TerminalWorkspaceView: NSView {
     let previousSessionTitleBarActions = sessionTitleBarActions
     let previousSessionTitles = sessionTitles
     let responderSessionIdBefore = currentResponderSessionId()
+    let passiveResponderSessionId = command.focusRequestId == nil ? responderSessionIdBefore : nil
+    let passiveResponderFocusedSessionId = passiveResponderSessionId.flatMap {
+      nextActiveSessionIds.contains($0) ? $0 : nil
+    }
+    let passiveResponderCommandSessionId = passiveResponderSessionId.flatMap {
+      nextCommandsPanelActiveSessionIds.contains($0) ? $0 : nil
+    }
     if command.focusRequestId != nil || previousFocusedSessionId != command.focusedSessionId {
       /**
        CDXC:NativeTerminalFocus 2026-05-09-15:30
@@ -4253,7 +4458,16 @@ final class TerminalWorkspaceView: NSView {
     }
     activeSessionIds = nextActiveSessionIds
     commandsPanelActiveSessionIds = nextCommandsPanelActiveSessionIds
-    commandsPanelFocusedSessionId = command.commandsPanelFocusedSessionId
+    /**
+     CDXC:NativeTerminalFocus 2026-05-23-09:13:
+     Session status updates can reorder or repaint sidebar cards while the user
+     is typing in a native terminal. Passive setActiveTerminalSet sync must not
+     copy a stale sidebar-focused id over the AppKit first responder; preserve
+     the responder-owned workspace or command pane unless a fresh focusRequestId
+     proves the user explicitly selected another session.
+     */
+    commandsPanelFocusedSessionId =
+      passiveResponderCommandSessionId ?? command.commandsPanelFocusedSessionId
     commandsPanelHeightRatio = Self.clampedCommandsPanelHeightRatio(command.commandsPanelHeightRatio)
     commandsPanelIsVisible = command.commandsPanelIsVisible == true
     commandsPanelLayout = command.commandsPanelLayout
@@ -4276,7 +4490,7 @@ final class TerminalWorkspaceView: NSView {
       needsLayout = true
     }
     syncProjectEditorTabBars()
-    focusedSessionId = command.focusedSessionId
+    focusedSessionId = passiveResponderFocusedSessionId ?? command.focusedSessionId
     terminalLayout = nextLayout
     paneGap = nextPaneGap
     if shouldRefreshPaneTabMetadata && !shouldRelayout {
@@ -4571,6 +4785,23 @@ final class TerminalWorkspaceView: NSView {
         }
       } else if webPaneSessions[focusedSessionId] != nil {
         focusWebPane(sessionId: focusedSessionId, reason: "setActiveTerminalSet")
+      } else {
+        /*
+         CDXC:SessionSurfaceRecovery 2026-05-23-09:05:
+         Active layout can still contain a session after its native Ghostty
+         surface disappeared, leaving AppKit with a selectable tab that cannot
+         become first responder. Tell the sidebar to reload or replace the
+         stale session instead of silently keeping the broken focus target.
+         */
+        TerminalFocusDebugLog.append(
+          event: "nativeWorkspace.setActiveTerminalSet.missingSurface",
+          details: [
+            "activeSessionIds": Array(activeSessionIds).sorted(),
+            "focusRequestId": focusRequestId,
+            "focusedSessionId": focusedSessionId,
+            "reason": "focusedSessionSurfaceMissing",
+          ])
+        sendEvent(.nativeSessionSurfaceMissing(sessionId: focusedSessionId))
       }
     } else {
       TerminalFocusDebugLog.append(
@@ -5802,6 +6033,179 @@ final class TerminalWorkspaceView: NSView {
     discardCursorRects()
   }
 
+  private func handleProjectBeadsBridgeRequest(
+    _ request: ProjectBeadsBridgeRequest,
+    webView: WKWebView?
+  ) {
+    /**
+     CDXC:ProjectBoard 2026-05-23-03:16:
+     The Project board runs inside WKWebView and must persist work through the upstream Beads CLI, not a forked library or custom storage.
+     Only expose the exact bd subcommands the board needs so the local web app can list, create, update, and comment on issues without gaining arbitrary shell access.
+     */
+    guard let webView else {
+      return
+    }
+    DispatchQueue.global(qos: .userInitiated).async { [weak webView] in
+      let response = Self.runProjectBeadsBridgeRequest(request)
+      DispatchQueue.main.async {
+        guard let webView else {
+          return
+        }
+        Self.dispatchProjectBeadsBridgeResponse(response, to: webView)
+      }
+    }
+  }
+
+  private static func runProjectBeadsBridgeRequest(
+    _ request: ProjectBeadsBridgeRequest
+  ) -> ProjectBeadsBridgeResponse {
+    do {
+      let cwd = try projectBeadsWorkingDirectory(request.cwd)
+      let arguments = try projectBeadsArguments(for: request)
+      let stdoutPipe = Pipe()
+      let stderrPipe = Pipe()
+      let stdoutCollector = projectBeadsPipeCollector(stdoutPipe)
+      let stderrCollector = projectBeadsPipeCollector(stderrPipe)
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+      process.arguments = ["bd"] + arguments
+      process.currentDirectoryURL = cwd
+      var environment = projectBoardNativeProcessEnvironment()
+      environment["BD_JSON_ENVELOPE"] = "1"
+      process.environment = environment
+      process.standardOutput = stdoutPipe
+      process.standardError = stderrPipe
+      try process.run()
+      process.waitUntilExit()
+      return ProjectBeadsBridgeResponse(
+        error: nil,
+        exitCode: process.terminationStatus,
+        requestId: request.requestId,
+        stderr: stderrCollector(),
+        stdout: stdoutCollector())
+    } catch {
+      return ProjectBeadsBridgeResponse(
+        error: error.localizedDescription,
+        exitCode: 127,
+        requestId: request.requestId,
+        stderr: error.localizedDescription,
+        stdout: "")
+    }
+  }
+
+  private static func projectBeadsArguments(for request: ProjectBeadsBridgeRequest) throws -> [String] {
+    switch request.action {
+    case "addComment":
+      return [
+        "comments", "add",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        try projectBeadsRequired(request.comment, field: "comment"),
+        "--json",
+      ]
+    case "configGet":
+      return ["config", "get", "status.custom", "--json"]
+    case "configSet":
+      return ["config", "set", "status.custom", try projectBeadsRequired(request.value, field: "value"), "--json"]
+    case "create":
+      return [
+        "create",
+        "--title", try projectBeadsRequired(request.title, field: "title"),
+        "--description", request.description ?? "",
+        "--priority", "2",
+        "--type", "task",
+        "--json",
+      ]
+    case "list":
+      return ["list", "--all", "--json"]
+    case "show":
+      return ["show", try projectBeadsRequired(request.issueId, field: "issueId"), "--json"]
+    case "updateDescription":
+      return [
+        "update",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        "--description", request.description ?? "",
+        "--json",
+      ]
+    case "updateStatus":
+      let status = try projectBeadsRequired(request.status, field: "status")
+      guard ["closed", "in_progress", "open", "review", "test"].contains(status) else {
+        throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads status: \(status)")
+      }
+      return [
+        "update",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        "--status", status,
+        "--json",
+      ]
+    default:
+      throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads action: \(request.action)")
+    }
+  }
+
+  private static func projectBeadsRequired(_ value: String?, field: String) throws -> String {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmed.isEmpty else {
+      throw ProjectBeadsBridgeError.invalidRequest("Missing required Beads field: \(field)")
+    }
+    return trimmed
+  }
+
+  private static func projectBeadsWorkingDirectory(_ path: String) throws -> URL {
+    let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedPath.isEmpty else {
+      throw ProjectBeadsBridgeError.invalidRequest("No active project path is available.")
+    }
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: trimmedPath, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      throw ProjectBeadsBridgeError.invalidRequest("Project path does not exist: \(trimmedPath)")
+    }
+    return URL(fileURLWithPath: trimmedPath, isDirectory: true)
+  }
+
+  private static func projectBeadsPipeCollector(_ pipe: Pipe) -> () -> String {
+    let queue = DispatchQueue(label: "app.ghostex.project-beads-pipe.\(UUID().uuidString)")
+    var data = Data()
+    let handle = pipe.fileHandleForReading
+    handle.readabilityHandler = { readableHandle in
+      let chunk = readableHandle.availableData
+      guard !chunk.isEmpty else {
+        return
+      }
+      queue.sync {
+        data.append(chunk)
+      }
+    }
+    return {
+      handle.readabilityHandler = nil
+      let remainingData = handle.readDataToEndOfFile()
+      return queue.sync {
+        if !remainingData.isEmpty {
+          data.append(remainingData)
+        }
+        return String(data: data, encoding: .utf8)?
+          .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      }
+    }
+  }
+
+  private static func dispatchProjectBeadsBridgeResponse(
+    _ response: ProjectBeadsBridgeResponse,
+    to webView: WKWebView
+  ) {
+    guard let data = try? JSONEncoder().encode(response),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    let script = """
+      window.dispatchEvent(new CustomEvent('\(projectBeadsResponseEventName)', { detail: \(json) }));
+      undefined;
+      """
+    webView.evaluateJavaScript(script, completionHandler: nil)
+  }
+
   private func loadProjectEditorPaneWhenReady(projectId: String, url: String, reason: String) {
     /**
      CDXC:EditorPanes 2026-05-09-17:24
@@ -5813,17 +6217,25 @@ final class TerminalWorkspaceView: NSView {
     guard url.hasPrefix(NativeCodeServerRuntimeLauncher.origin) else {
       /**
        CDXC:ModeSwitcher 2026-05-15-14:42:
-       Git and tasks-backed Project modes reuse the project-editor Chromium
-       surface so they can keep the Code-style left companion session pane while
-       loading non-code-server content on the right. Only VS Code URLs should
-       wait for the local code-server runtime; other project-editor
-       destinations must navigate directly instead of failing on a localhost
-       readiness check.
+       Git and tasks-backed Project modes reuse the project-editor shell so
+       they can keep the Code-style left companion session pane while loading
+       non-code-server content on the right. Only VS Code URLs should wait for
+       the local code-server runtime; other project-editor destinations must
+       navigate directly instead of failing on a localhost readiness check.
        */
       guard let session = projectEditorPaneSessions[projectId], session.url == url else {
         return
       }
-      session.chromiumView.loadURLString(url)
+      if let chromiumView = session.chromiumView {
+        chromiumView.loadURLString(url)
+      } else if let webView = session.webView, let parsedURL = URL(string: url) {
+        if parsedURL.isFileURL {
+          webView.loadFileURL(parsedURL, allowingReadAccessTo: parsedURL.deletingLastPathComponent())
+        } else {
+          webView.load(URLRequest(url: parsedURL))
+        }
+        sendEvent(.projectEditorLoadState(projectId: projectId, status: "running", message: nil))
+      }
       session.hostView.refreshHostedWebView(reason: reason)
       return
     }
@@ -5858,7 +6270,7 @@ final class TerminalWorkspaceView: NSView {
               message: message))
           return
         }
-        session.chromiumView.loadURLString(url)
+        session.chromiumView?.loadURLString(url)
         session.hostView.refreshHostedWebView(reason: reason)
       }
     }
@@ -5900,9 +6312,10 @@ final class TerminalWorkspaceView: NSView {
         url: url)
       self?.projectEditorHostView(projectId: projectId, chromiumView: chromiumView)?.refreshBrowserToolbar(
         reason: "projectEditorUrlChanged")
-      if self?.projectEditorPaneSessions[projectId]?.mode == "git",
+      if let session = self?.projectEditorPaneSessions[projectId],
+        session.mode == "git",
         self?.activeProjectEditorId == projectId,
-        self?.projectEditorPaneSessions[projectId]?.chromiumView === chromiumView
+        session.chromiumView.map({ $0 === chromiumView }) == true
       {
         /**
          CDXC:GitProjectTabs 2026-05-16-09:50:
@@ -6027,7 +6440,12 @@ final class TerminalWorkspaceView: NSView {
     guard var session = projectEditorPaneSessions[projectId],
       session.mode == "git",
       session.showsProjectTabs,
-      let tabIndex = session.tabs.firstIndex(where: { $0.chromiumView === chromiumView })
+      let tabIndex = session.tabs.firstIndex(where: { tab in
+        guard let tabChromiumView = tab.chromiumView else {
+          return false
+        }
+        return tabChromiumView === chromiumView
+      })
     else {
       return
     }
@@ -6068,6 +6486,7 @@ final class TerminalWorkspaceView: NSView {
       tabId: existingTab.tabId,
       chromiumView: existingTab.chromiumView,
       hostView: existingTab.hostView,
+      webView: existingTab.webView,
       title: resolvedTitle,
       url: resolvedURL)
     if existingTab.tabId == session.activeTabId {
@@ -7864,6 +8283,20 @@ final class TerminalWorkspaceView: NSView {
       paneHeaderDrag = nil
       uninstallPaneTabDragCaptureMonitor()
       restoreBrowserContentAfterPaneTabDrag()
+      if event.clickCount >= 2 {
+        /**
+         CDXC:SessionFocusMode 2026-05-23-09:28:
+         Double-clicking a native pane tab is a reversible Focus intent, not
+         another tab selection. Send a separate event after clearing drag state
+         so the sidebar can zoom the tab group and switch back to Agents mode.
+         */
+        NativePaneTabDragReproLog.append(event: "nativePaneTabDrag.doubleClickFocusRequested", details: [
+          "sessionId": sessionId,
+          "windowNumber": event.window?.windowNumber ?? NSNull(),
+        ])
+        sendEvent(.paneTabFocusRequested(sessionId: sessionId))
+        return
+      }
       NativePaneTabDragReproLog.append(event: "nativePaneTabDrag.clickSelected", details: [
         "sessionId": sessionId,
         "windowNumber": event.window?.windowNumber ?? NSNull(),
@@ -8210,7 +8643,9 @@ final class TerminalWorkspaceView: NSView {
     }
     for session in projectEditorPaneSessions.values where session.projectId == activeProjectEditorId {
       for tab in session.tabs where !tab.hostView.isHidden {
-        hidePaneTabDragBrowserContentView(tab.chromiumView)
+        if let chromiumView = tab.chromiumView {
+          hidePaneTabDragBrowserContentView(chromiumView)
+        }
       }
     }
   }
@@ -9761,6 +10196,64 @@ final class TerminalWorkspaceView: NSView {
     webPaneSessions.first { _, session in
       session.webView.map { $0 === webView } ?? false
     }?.key
+  }
+
+  private func projectEditorSessionEntry(
+    for webView: WKWebView
+  ) -> (projectId: String, session: ProjectEditorPaneSession)? {
+    projectEditorPaneSessions.first { _, session in
+      if session.webView.map({ $0 === webView }) == true {
+        return true
+      }
+      return session.tabs.contains { tab in
+        tab.webView.map { $0 === webView } == true
+      }
+    }.map { entry in
+      (projectId: entry.key, session: entry.value)
+    }
+  }
+
+  private func finishProjectEditorWebKitNavigation(for webView: WKWebView, reason: String) {
+    /**
+     CDXC:ProjectBoard 2026-05-23-03:36:
+     Project mode uses WKWebView inside the project-editor host, but the
+     existing WebKit delegate path only understood regular browser panes.
+     Treat Project WKWebView navigation as project-editor loading state so the
+     initial overlay is removed after the bundled board page finishes loading.
+     */
+    guard let entry = projectEditorSessionEntry(for: webView) else {
+      return
+    }
+    entry.session.hostView.setInitialLoadingOverlayVisible(false, reason: reason)
+    entry.session.hostView.refreshHostedWebView(reason: reason)
+    sendEvent(.projectEditorLoadState(projectId: entry.projectId, status: "running", message: nil))
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.webkitNavigation.finish", [
+      "projectId": entry.projectId,
+      "reason": reason,
+      "title": webView.title ?? NSNull(),
+      "url": webView.url?.absoluteString ?? NSNull(),
+    ])
+  }
+
+  private func failProjectEditorWebKitNavigation(
+    for webView: WKWebView,
+    error: Error,
+    reason: String
+  ) {
+    guard let entry = projectEditorSessionEntry(for: webView) else {
+      return
+    }
+    let message = error.localizedDescription
+    entry.session.hostView.setInitialLoadingOverlayError(message, reason: reason)
+    sendEvent(.projectEditorLoadState(projectId: entry.projectId, status: "error", message: message))
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.webkitNavigation.fail", [
+      "error": message,
+      "errorCode": (error as NSError).code,
+      "errorDomain": (error as NSError).domain,
+      "projectId": entry.projectId,
+      "reason": reason,
+      "url": webView.url?.absoluteString ?? NSNull(),
+    ])
   }
 
   private func updateWebPanePageMetadata(for webView: WKWebView, reason: String) {
@@ -11319,6 +11812,7 @@ extension TerminalWorkspaceView: WKNavigationDelegate {
       completedWebPaneLoadSessionIds.insert(sessionId)
     }
     updateWebPanePageMetadata(for: webView, reason: "navigationFinish")
+    finishProjectEditorWebKitNavigation(for: webView, reason: "navigationFinish")
     NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.navigation.finish", [
       "sessionId": sessionId ?? NSNull(),
       "title": webView.title ?? NSNull(),
@@ -11330,6 +11824,7 @@ extension TerminalWorkspaceView: WKNavigationDelegate {
     if let sessionId = sessionId(for: webView) {
       completedWebPaneLoadSessionIds.remove(sessionId)
     }
+    failProjectEditorWebKitNavigation(for: webView, error: error, reason: "navigationFail")
     NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.navigation.fail", [
       "error": error.localizedDescription,
       "errorCode": (error as NSError).code,
@@ -11346,6 +11841,7 @@ extension TerminalWorkspaceView: WKNavigationDelegate {
     if let sessionId = sessionId(for: webView) {
       completedWebPaneLoadSessionIds.remove(sessionId)
     }
+    failProjectEditorWebKitNavigation(for: webView, error: error, reason: "provisionalNavigationFail")
     NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.navigation.provisionalFail", [
       "error": error.localizedDescription,
       "errorCode": (error as NSError).code,
@@ -11439,6 +11935,31 @@ extension TerminalWorkspaceView: WKUIDelegate {
       webView.load(navigationAction.request)
     }
     return nil
+  }
+}
+
+private final class ProjectBeadsBridge: NSObject, WKScriptMessageHandler {
+  static let messageHandlerName = "ghostexProjectBeads"
+
+  weak var webView: WKWebView?
+
+  private let onRequest: (ProjectBeadsBridgeRequest, WKWebView?) -> Void
+
+  init(onRequest: @escaping (ProjectBeadsBridgeRequest, WKWebView?) -> Void) {
+    self.onRequest = onRequest
+  }
+
+  func userContentController(
+    _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
+  ) {
+    guard let dictionary = message.body as? [String: Any],
+      JSONSerialization.isValidJSONObject(dictionary),
+      let data = try? JSONSerialization.data(withJSONObject: dictionary),
+      let request = try? JSONDecoder().decode(ProjectBeadsBridgeRequest.self, from: data)
+    else {
+      return
+    }
+    onRequest(request, webView)
   }
 }
 
@@ -14471,6 +14992,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   var onTabMouseUp: ((NSEvent, String) -> Void)?
   var onTabCloseRequested: ((String, PaneTabCloseScope) -> Void)?
   var onTabSleepRequested: ((String, PaneTabSleepScope) -> Void)?
+  var onTabFocusRequested: ((String) -> Void)?
   var onTabActionRequested: ((String, TerminalTitleBarAction) -> Void)?
   private var contextMenuActions: [TerminalTitleBarAction] = []
   private var allowsClose = true
@@ -14942,6 +15464,11 @@ private final class TerminalTitleBarTabButton: NSButton {
      Reload Session, and Pop Out Pane. Keep those actions in one unseparated
      block, then place the separator before Sleep so the sleep/close tab-scope
      commands remain visually grouped below the moved actions.
+
+     CDXC:SessionFocusMode 2026-05-23-09:28:
+     Focus belongs in the native tab context menu above Pop Out Pane so users
+     can enter the same reversible tab-group zoom without relying on
+     double-click timing.
      */
     NativePaneTabDragReproLog.append(event: "nativePaneTabs.contextMenu.opened", details: [
       "buttonBounds": nativePaneTabsDebugFrame(bounds),
@@ -14951,8 +15478,16 @@ private final class TerminalTitleBarTabButton: NSButton {
     ])
     let menu = NSMenu()
     let primaryActions = primaryTabContextMenuActions()
+    var didAddFocusItem = false
     for action in primaryActions {
+      if action == .popOut || action == .restorePopOut {
+        addTabFocusMenuItem(to: menu)
+        didAddFocusItem = true
+      }
       addTabActionMenuItem(action, to: menu)
+    }
+    if !didAddFocusItem {
+      addTabFocusMenuItem(to: menu)
     }
     if !primaryActions.isEmpty {
       menu.addItem(NSMenuItem.separator())
@@ -14987,6 +15522,13 @@ private final class TerminalTitleBarTabButton: NSButton {
     menu.addItem(item)
   }
 
+  private func addTabFocusMenuItem(to menu: NSMenu) {
+    let item = NSMenuItem(title: "Focus", action: #selector(performTabFocusMenuItem(_:)), keyEquivalent: "")
+    item.target = self
+    item.image = NSImage(systemSymbolName: "scope", accessibilityDescription: "Focus")
+    menu.addItem(item)
+  }
+
   private func addTabSleepMenuItem(_ title: String, scope: PaneTabSleepScope, to menu: NSMenu) {
     let item = NSMenuItem(title: title, action: #selector(performTabSleepMenuItem(_:)), keyEquivalent: "")
     item.representedObject = scope.rawValue
@@ -15017,6 +15559,10 @@ private final class TerminalTitleBarTabButton: NSButton {
       return
     }
     onTabSleepRequested?(sessionId, scope)
+  }
+
+  @objc private func performTabFocusMenuItem(_ sender: NSMenuItem) {
+    onTabFocusRequested?(sessionId)
   }
 
   @objc private func performTabActionMenuItem(_ sender: NSMenuItem) {
@@ -15489,6 +16035,7 @@ private final class TerminalSessionTitleBarView: NSView {
   var onTabSelected: ((String) -> Void)?
   var onTabCloseRequested: ((String, PaneTabCloseScope) -> Void)?
   var onTabSleepRequested: ((String, PaneTabSleepScope) -> Void)?
+  var onTabFocusRequested: ((String) -> Void)?
   var onTabActionRequested: ((String, TerminalTitleBarAction) -> Void)?
 
   override var isFlipped: Bool {
@@ -15587,6 +16134,9 @@ private final class TerminalSessionTitleBarView: NSView {
       }
       button.onTabSleepRequested = { [weak self] sessionId, scope in
         self?.onTabSleepRequested?(sessionId, scope)
+      }
+      button.onTabFocusRequested = { [weak self] sessionId in
+        self?.onTabFocusRequested?(sessionId)
       }
       button.onTabActionRequested = { [weak self] sessionId, action in
         self?.onTabActionRequested?(sessionId, action)
