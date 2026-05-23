@@ -2,6 +2,12 @@
 
 <!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
 
+## 3.12.0 - 2026-05-23
+
+- Improved restored persistent sessions so focusing an already-running tmux, zmx, or zellij-backed terminal no longer sends restore text or resume commands into the live prompt.
+- Improved app modal click handling so Settings and Agents Hub stay fully interactive above native pane tabs and workspace chrome in narrow layouts.
+- Improved Ghostex iOS direct attach with paced terminal rendering, smoother scrollback gestures, and better responsiveness during animated terminal output.
+
 ## 3.11.0 - 2026-05-23
 
 - Added a beads-backed Project board in Project mode with kanban lanes, full-text search, status filters, comments, labels, image previews, and Linear-style ticket keys.
