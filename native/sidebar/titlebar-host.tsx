@@ -363,6 +363,47 @@ function parseResourceProcessTable(stdout: string): ResourceProcess[] {
     .filter((process): process is ResourceProcess => process !== undefined);
 }
 
+async function readResourceProcesses(): Promise<ResourceProcess[]> {
+  const result = await runNativeProcess("/bin/ps", [
+    "-axo",
+    "pid=,ppid=,pcpu=,rss=,command=",
+  ]);
+  return result.exitCode === 0 ? parseResourceProcessTable(result.stdout) : [];
+}
+
+/**
+ * CDXC:TitlebarResources 2026-05-23-10:46:
+ * Resource-manager Quit is a process-manager action, so it must terminate the
+ * exact processes shown in the dropdown while the sidebar separately preserves
+ * terminal cards as sleeping sessions. Recheck the command before SIGKILL so a
+ * delayed hard kill cannot target an unrelated process that reused the PID.
+ */
+async function terminateResourceProcesses(processes: ResourceProcess[]): Promise<void> {
+  const targets = new Map(
+    processes
+      .filter((process) => Number.isFinite(process.pid) && process.pid > 1)
+      .map((process) => [process.pid, process.command]),
+  );
+  if (targets.size === 0) {
+    return;
+  }
+
+  await runNativeProcess("/bin/kill", ["-TERM", ...Array.from(targets.keys()).map(String)]);
+  window.setTimeout(() => {
+    void (async () => {
+      const liveProcesses = await readResourceProcesses();
+      const liveTargetPids = liveProcesses
+        .filter((process) => targets.get(process.pid) === process.command)
+        .map((process) => process.pid);
+      if (liveTargetPids.length > 0) {
+        await runNativeProcess("/bin/kill", ["-KILL", ...liveTargetPids.map(String)]);
+      }
+    })().catch((error) => {
+      console.warn("Failed to finish terminating Ghostex resources", error);
+    });
+  }, 1_500);
+}
+
 function createResourceGroupViews(
   browserTabs: TitlebarBrowserTabResource[],
   resourceGroups: TitlebarResourceGroup[],
@@ -1038,13 +1079,7 @@ function App() {
 
   const refreshResources = useCallback(async () => {
     try {
-      const result = await runNativeProcess("/bin/ps", [
-        "-axo",
-        "pid=,ppid=,pcpu=,rss=,command=",
-      ]);
-      if (result.exitCode === 0) {
-        setResourceProcesses(parseResourceProcessTable(result.stdout));
-      }
+      setResourceProcesses(await readResourceProcesses());
     } catch (error) {
       console.warn("Failed to refresh Ghostex resources", error);
     }
@@ -1170,6 +1205,12 @@ function App() {
      * sessions sleep through sidebar state so their cards remain resumable;
      * non-terminal panes and detached process bundles still use their resource
      * cleanup paths.
+     *
+     * CDXC:TitlebarResources 2026-05-23-10:46:
+     * The resource manager must not rely on sidebar sleep as the only kill
+     * mechanism. It also terminates the PIDs currently shown in the dropdown so
+     * Quit and Quit All Sessions actually release RAM while the sidebar keeps
+     * the durable terminal sessions.
      */
     setQuittingResourceKeys((current) => {
       const next = new Set(current);
@@ -1178,18 +1219,6 @@ function App() {
     });
     const sessionIds = uniqueBundles.flatMap(resourceBundleSidebarSessionIds);
     const projectIds = uniqueBundles.flatMap(resourceBundleProjectEditorIds);
-    const managedPids = new Set(
-      uniqueBundles
-        .filter((bundle) => resourceBundleSidebarSessionIds(bundle).length > 0 || resourceBundleProjectEditorIds(bundle).length > 0)
-        .flatMap((bundle) => bundle.pids),
-    );
-    const pids = Array.from(
-      new Set(
-        uniqueBundles
-          .flatMap((bundle) => bundle.pids)
-          .filter((pid) => Number.isFinite(pid) && !managedPids.has(pid)),
-      ),
-    );
     if (sessionIds.length > 0 || projectIds.length > 0) {
       postNative({
         projectIds: Array.from(new Set(projectIds)),
@@ -1197,11 +1226,21 @@ function App() {
         type: "quitResourcesFromTitlebar",
       });
     }
-    if (pids.length > 0) {
-      void runNativeProcess("/bin/kill", ["-TERM", ...pids.map(String)]).finally(() => {
+    const processByPid = new Map(resourceProcesses.map((process) => [process.pid, process]));
+    const processes = Array.from(
+      new Map(
+        uniqueBundles
+          .flatMap((bundle) => bundle.pids)
+          .map((pid) => processByPid.get(pid))
+          .filter((process): process is ResourceProcess => process !== undefined)
+          .map((process) => [process.pid, process]),
+      ).values(),
+    );
+    if (processes.length > 0) {
+      void terminateResourceProcesses(processes).finally(() => {
         window.setTimeout(() => {
           void refreshResources();
-        }, 250);
+        }, 1_800);
       });
       return;
     }
@@ -1634,7 +1673,18 @@ function TitlebarResourcesMenu({
     ...browserBundles,
     ...orphanBundles,
   ];
-  const sessionBundles = [
+  /**
+   * CDXC:TitlebarResources 2026-05-23-10:52:
+   * Header actions should be two matching resource controls: one for sleeping
+   * only inactive terminal sessions, and one for quitting session resources,
+   * browser panes, and code/project web views without targeting the app runtime.
+   *
+   * CDXC:TitlebarResources 2026-05-23-10:54:
+   * Every Resources action needs an explanatory shadcn tooltip because Sleep is
+   * not a soft hide: it releases the session's live CPU/RAM while preserving
+   * the sidebar card for quick wake/resume.
+   */
+  const quittableResourceBundles = [
     ...visibleGroupViews.flatMap((view) => view.bundles),
     ...browserBundles,
     ...orphanBundles,
@@ -1651,34 +1701,72 @@ function TitlebarResourcesMenu({
             <TooltipTrigger asChild>
               <button
                 aria-label="Sleep inactive sessions"
-                className="titlebar-resources-sleep-button"
+                className="titlebar-resources-action-button"
                 data-enabled={String(inactiveAgentSleepSessionCount > 0)}
+                data-variant="sleep"
                 disabled={inactiveAgentSleepSessionCount === 0}
                 onClick={onSleepInactiveSessions}
                 type="button"
               >
                 <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+                <span>Sleep Inactive</span>
               </button>
             </TooltipTrigger>
-            <TooltipContent>Sleep inactive sessions</TooltipContent>
+            <TooltipContent className="titlebar-resource-tooltip">
+              <span className="titlebar-resource-tooltip-title">Sleep inactive sessions</span>
+              <span>
+                Stops idle agent terminals so they stop using CPU and RAM, while keeping their
+                session cards in the sidebar for easy wake/resume.
+              </span>
+            </TooltipContent>
           </Tooltip>
-          <button
-            className="titlebar-resources-quit-all-button"
-            disabled={sessionBundles.length === 0}
-            onClick={() => onQuit(sessionBundles)}
-            type="button"
-          >
-            Quit All Sessions
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                aria-label="Quit sessions, browsers, and code views"
+                className="titlebar-resources-action-button"
+                data-variant="quit"
+                disabled={quittableResourceBundles.length === 0}
+                onClick={() => onQuit(quittableResourceBundles)}
+                type="button"
+              >
+                <IconX aria-hidden="true" size={14} stroke={2} />
+                <span>Quit Resources</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="titlebar-resource-tooltip">
+              <span className="titlebar-resource-tooltip-title">Quit resources</span>
+              <span>
+                Terminates session processes, browser panes, and code/project web views. Terminal
+                sessions stay in the sidebar as sleeping sessions.
+              </span>
+            </TooltipContent>
+          </Tooltip>
           <div className="titlebar-resources-summary">
-            <span>
-              <IconCpu aria-hidden="true" size={13} stroke={1.8} />
-              {formatWholePercent(sumBundleCpu(allBundles))}
-            </span>
-            <span>
-              <IconDeviceDesktop aria-hidden="true" size={13} stroke={1.8} />
-              {formatWholeMemory(sumBundleMemory(allBundles))}
-            </span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <IconCpu aria-hidden="true" size={13} stroke={1.8} />
+                  {formatWholePercent(sumBundleCpu(allBundles))}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="titlebar-resource-tooltip">
+                <span className="titlebar-resource-tooltip-title">Live CPU</span>
+                <span>Combined CPU currently used by the resources shown in this dropdown.</span>
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <IconDeviceDesktop aria-hidden="true" size={13} stroke={1.8} />
+                  {formatWholeMemory(sumBundleMemory(allBundles))}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent className="titlebar-resource-tooltip">
+                <span className="titlebar-resource-tooltip-title">Live memory</span>
+                <span>Combined RAM currently used by the resources shown in this dropdown.</span>
+              </TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </div>
@@ -1763,35 +1851,64 @@ function TitlebarResourceSection({
   const sectionCpu = sumBundleCpu(bundles);
   const sectionMemory = sumBundleMemory(bundles);
   const sortedBundles = sortResourceBundlesForDisplay(bundles, quittingKeys);
+  const hasTerminalSession = bundles.some(
+    (bundle) => bundle.type === "session" && bundle.session?.sessionKind === "terminal",
+  );
   return (
     <section className="titlebar-resource-section">
       <div className="titlebar-resource-section-heading">
-        <button
-          className="titlebar-resource-section-toggle"
-          onClick={() => onToggle(sectionKey)}
-          type="button"
-        >
-          <IconChevronDown aria-hidden="true" data-collapsed={String(isCollapsed)} size={14} stroke={1.8} />
-          <span>{title}</span>
-          <span className="titlebar-resource-section-summary">
-            <span>
-              <IconCpu aria-hidden="true" size={12} stroke={1.8} />
-              {formatWholePercent(sectionCpu)}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              className="titlebar-resource-section-toggle"
+              onClick={() => onToggle(sectionKey)}
+              type="button"
+            >
+              <IconChevronDown aria-hidden="true" data-collapsed={String(isCollapsed)} size={14} stroke={1.8} />
+              <span>{title}</span>
+              <span className="titlebar-resource-section-summary">
+                <span>
+                  <IconCpu aria-hidden="true" size={12} stroke={1.8} />
+                  {formatWholePercent(sectionCpu)}
+                </span>
+                <span>
+                  <IconDeviceDesktop aria-hidden="true" size={12} stroke={1.8} />
+                  {formatWholeMemory(sectionMemory)}
+                </span>
+                <span className="titlebar-resource-section-count">{bundles.length}</span>
+              </span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="titlebar-resource-tooltip">
+            <span className="titlebar-resource-tooltip-title">
+              {isCollapsed ? "Expand resource group" : "Collapse resource group"}
             </span>
             <span>
-              <IconDeviceDesktop aria-hidden="true" size={12} stroke={1.8} />
-              {formatWholeMemory(sectionMemory)}
+              {title} is using {formatWholePercent(sectionCpu)} CPU and{" "}
+              {formatWholeMemory(sectionMemory)} RAM across {bundles.length} resource
+              {bundles.length === 1 ? "" : "s"}.
             </span>
-            <span className="titlebar-resource-section-count">{bundles.length}</span>
-          </span>
-        </button>
-        <button
-          className="titlebar-resource-section-quit-button"
-          onClick={() => onQuit(bundles)}
-          type="button"
-        >
-          Quit
-        </button>
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              className="titlebar-resource-section-quit-button"
+              onClick={() => onQuit(bundles)}
+              type="button"
+            >
+              Quit
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="titlebar-resource-tooltip">
+            <span className="titlebar-resource-tooltip-title">Quit this group</span>
+            <span>
+              {hasTerminalSession
+                ? "Terminates the live processes in this group. Terminal sessions stop using CPU/RAM but remain in the sidebar as sleeping sessions."
+                : "Terminates the live processes in this group and removes the associated resource surfaces when applicable."}
+            </span>
+          </TooltipContent>
+        </Tooltip>
       </div>
       {isCollapsed ? null : (
         <div className="titlebar-resource-section-body">
@@ -1837,6 +1954,24 @@ function TitlebarResourceBundle({
   const isCollapsed = isSessionCollapsedByDefault
     ? !collapsedKeys.has(bundleToggleKey)
     : collapsedKeys.has(bundleToggleKey);
+  /**
+   * CDXC:TitlebarResources 2026-05-23-10:52:
+   * Terminal-session Quit from Resources terminates the live process tree but
+   * intentionally keeps the session card in the sidebar as sleeping. Use the
+   * sleep affordance for those rows; keep the quit affordance for browser,
+   * code, app, and detached process rows that are actually removed or closed.
+   */
+  const preservesSidebarSession =
+    bundle.type === "session" && bundle.session?.sessionKind === "terminal";
+  const actionLabel = preservesSidebarSession ? `Sleep ${bundle.label}` : `Close ${bundle.label}`;
+  const actionTooltipTitle = preservesSidebarSession ? "Sleep session" : "Quit resource";
+  const actionTooltipBody = preservesSidebarSession
+    ? "Stops this session's live process tree so CPU/RAM are released, but keeps the session in the sidebar so you can wake or resume it later."
+    : bundle.type === "browser"
+      ? "Closes this browser resource and terminates the browser helper processes shown here."
+      : bundle.type === "code"
+        ? "Closes this code/project web view and terminates the backing helper process shown here."
+        : "Terminates the process shown here.";
   return (
     <div className="titlebar-resource-bundle" data-quitting={String(isQuitting)}>
       <div
@@ -1867,7 +2002,11 @@ function TitlebarResourceBundle({
           <span className="titlebar-resource-text">
             <span className="titlebar-resource-name">{bundle.label}</span>
             <span className="titlebar-resource-meta">
-              {isQuitting ? "Quitting..." : getResourceBundleMeta(bundle)}
+              {isQuitting
+                ? preservesSidebarSession
+                  ? "Sleeping..."
+                  : "Quitting..."
+                : getResourceBundleMeta(bundle)}
             </span>
           </span>
         </div>
@@ -1879,18 +2018,31 @@ function TitlebarResourceBundle({
           <IconDeviceDesktop aria-hidden="true" size={13} stroke={1.8} />
           {formatWholeMemory(bundle.memoryMb)}
         </span>
-        <button
-          aria-label={`Close ${bundle.label}`}
-          className="titlebar-resource-kill-button"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onQuit([bundle]);
-          }}
-          type="button"
-        >
-          <IconX aria-hidden="true" size={13} stroke={2} />
-        </button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              aria-label={actionLabel}
+              className="titlebar-resource-kill-button"
+              data-action={preservesSidebarSession ? "sleep" : "quit"}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onQuit([bundle]);
+              }}
+              type="button"
+            >
+              {preservesSidebarSession ? (
+                <IconMoon aria-hidden="true" size={13} stroke={1.9} />
+              ) : (
+                <IconX aria-hidden="true" size={13} stroke={2} />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="titlebar-resource-tooltip">
+            <span className="titlebar-resource-tooltip-title">{actionTooltipTitle}</span>
+            <span>{actionTooltipBody}</span>
+          </TooltipContent>
+        </Tooltip>
       </div>
       {hasChildren && !isCollapsed ? (
         <div className="titlebar-resource-children">
@@ -2571,48 +2723,74 @@ styleElement.textContent = `
     font: 750 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     min-width: 0;
   }
+  .titlebar-resource-tooltip {
+    background: rgba(24,24,24,0.98);
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+    color: rgba(255,255,255,0.78);
+    display: grid;
+    font: 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    gap: 3px;
+    max-width: 292px;
+    padding: 8px 9px;
+  }
+  .titlebar-resource-tooltip-title {
+    color: rgba(255,255,255,0.94);
+    font-weight: 760;
+  }
   .titlebar-resources-actions {
     gap: 10px;
     margin-left: auto;
   }
-  .titlebar-resources-sleep-button {
+  .titlebar-resources-action-button {
     align-items: center;
     background: rgba(255,255,255,0.08);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 6px;
     color: rgba(255,255,255,0.78);
     display: inline-flex;
+    gap: 6px;
+    font: 750 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     height: 24px;
     justify-content: center;
     opacity: 0;
-    padding: 0;
+    padding: 0 8px;
     pointer-events: none;
     transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
-    width: 24px;
+    white-space: nowrap;
   }
-  .titlebar-resources-sleep-button:disabled {
+  .titlebar-resources-action-button[data-variant="quit"] {
+    background: rgba(220,38,38,0.18);
+    border-color: rgba(248,113,113,0.28);
+    color: rgba(255,255,255,0.86);
+  }
+  .titlebar-resources-action-button:disabled {
     color: rgba(255,255,255,0.3);
     cursor: default;
   }
-  .titlebar-resources-header:hover .titlebar-resources-sleep-button,
-  .titlebar-resources-header:focus-within .titlebar-resources-sleep-button {
+  .titlebar-resources-header:hover .titlebar-resources-action-button,
+  .titlebar-resources-header:focus-within .titlebar-resources-action-button {
     /*
-     * CDXC:TitlebarResources 2026-05-21-17:03:
-     * Hide secondary resource-manager actions until the header is hovered or
-     * focused so the compact top bar shows only title and live metrics by default.
+     * CDXC:TitlebarResources 2026-05-23-10:52:
+     * The Resources header has exactly two matching actions: sleep inactive
+     * sessions and quit session/browser/code resources. Keep them hidden until
+     * hover/focus so the compact top bar still leads with live metrics.
      */
     opacity: 1;
     pointer-events: auto;
   }
-  .titlebar-resources-header:hover .titlebar-resources-sleep-button:disabled,
-  .titlebar-resources-header:focus-within .titlebar-resources-sleep-button:disabled {
+  .titlebar-resources-header:hover .titlebar-resources-action-button:disabled,
+  .titlebar-resources-header:focus-within .titlebar-resources-action-button:disabled {
     opacity: 0.55;
   }
-  .titlebar-resources-sleep-button:not(:disabled):hover {
+  .titlebar-resources-action-button[data-variant="sleep"]:not(:disabled):hover {
     background: rgba(255,255,255,0.14);
     color: rgba(255,255,255,0.92);
   }
-  .titlebar-resources-quit-all-button,
+  .titlebar-resources-action-button[data-variant="quit"]:not(:disabled):hover {
+    background: rgba(220,38,38,0.28);
+    color: rgba(255,255,255,0.96);
+  }
   .titlebar-resource-section-quit-button {
     align-items: center;
     appearance: none;
@@ -2630,8 +2808,6 @@ styleElement.textContent = `
     transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
     white-space: nowrap;
   }
-  .titlebar-resources-header:hover .titlebar-resources-quit-all-button,
-  .titlebar-resources-header:focus-within .titlebar-resources-quit-all-button,
   .titlebar-resource-section-heading:hover .titlebar-resource-section-quit-button,
   .titlebar-resource-section-heading:focus-within .titlebar-resource-section-quit-button {
     /*
@@ -2643,14 +2819,6 @@ styleElement.textContent = `
     opacity: 1;
     pointer-events: auto;
   }
-  .titlebar-resources-quit-all-button:disabled {
-    cursor: default;
-  }
-  .titlebar-resources-header:hover .titlebar-resources-quit-all-button:disabled,
-  .titlebar-resources-header:focus-within .titlebar-resources-quit-all-button:disabled {
-    opacity: 0.45;
-  }
-  .titlebar-resources-quit-all-button:not(:disabled):hover,
   .titlebar-resource-section-quit-button:hover {
     background: rgba(220,38,38,0.28);
     color: rgba(255,255,255,0.96);
@@ -2866,7 +3034,7 @@ styleElement.textContent = `
   .titlebar-resource-kill-button {
     align-items: center;
     background: rgb(220 38 38);
-    border: 0;
+    border: 1px solid transparent;
     border-radius: 5px;
     box-shadow: 0 8px 18px rgba(0,0,0,0.35);
     color: white;
@@ -2882,6 +3050,11 @@ styleElement.textContent = `
     transform: translateY(-50%) scale(0.96);
     transition: opacity 120ms ease, transform 120ms ease;
     width: 22px;
+  }
+  .titlebar-resource-kill-button[data-action="sleep"] {
+    background: rgba(255,255,255,0.14);
+    border-color: rgba(255,255,255,0.16);
+    color: rgba(255,255,255,0.9);
   }
   .titlebar-resource-row:hover > .titlebar-resource-metric,
   .titlebar-resource-row:focus-within > .titlebar-resource-metric {
