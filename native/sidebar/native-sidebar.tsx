@@ -12363,8 +12363,9 @@ function focusTerminal(sessionId: string): void {
     });
     return;
   }
-  const shouldKeepProjectEditorOpen =
-    projectEditorSurfaceByProjectId.get(reference.project.projectId)?.isOpen === true;
+  const shouldKeepProjectEditorOpen = shouldKeepProjectEditorOpenForSessionFocus(
+    reference.project.projectId,
+  );
   /**
    * CDXC:ProjectEditorCompanion 2026-05-14-09:19:
    * Session-card clicks inside an active embedded VS Code project should select
@@ -12372,6 +12373,10 @@ function focusTerminal(sessionId: string): void {
    * project-editor state open and always send the native focus command, even if
    * the clicked session is already the focused sidebar session, so a locally
    * closed companion pane can be restored.
+   * CDXC:ProjectEditorCompanion 2026-05-23-13:50:
+   * When the companion pane is hidden in Code, Git, or Project view, sidebar
+   * session clicks must return to the Agents workarea and focus the clicked
+   * session tab instead of retargeting an invisible companion pane.
    * CDXC:ProjectEditorCompanion 2026-05-14-09:40:
    * While VS Code is open, the direct native focus command is the companion
    * retargeting path. Do not enqueue the layout focus request too, because that
@@ -18107,6 +18112,14 @@ function shouldSessionFocusExitFocusedTabGroup(
   return !focusedTabSessionIds.includes(sessionId);
 }
 
+function shouldKeepProjectEditorOpenForSessionFocus(projectId: string): boolean {
+  if (projectEditorSurfaceByProjectId.get(projectId)?.isOpen !== true) {
+    return false;
+  }
+  const project = findProject(projectId);
+  return project?.projectEditorCompanionPaneHidden !== true;
+}
+
 function shouldKeepProjectEditorOpenForNewSession(projectId: string): boolean {
   /**
    * CDXC:ProjectEditorCompanion 2026-05-15-01:39:
@@ -18116,7 +18129,7 @@ function shouldKeepProjectEditorOpenForNewSession(projectId: string): boolean {
    * left companion pane. Do not call activateWorkspaceSurfaceForProject here,
    * because that method intentionally returns the workarea to the agents view.
    */
-  return projectEditorSurfaceByProjectId.get(projectId)?.isOpen === true;
+  return shouldKeepProjectEditorOpenForSessionFocus(projectId);
 }
 
 function handleProjectEditorBackRequested(nativeEditorId: string): void {

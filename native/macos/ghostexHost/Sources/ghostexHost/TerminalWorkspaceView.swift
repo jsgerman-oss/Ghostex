@@ -5480,16 +5480,12 @@ final class TerminalWorkspaceView: NSView {
     guard activeProjectEditorId != nil, isEligible else {
       return false
     }
+    /*
+     CDXC:ProjectEditorCompanion 2026-05-23-13:50:
+     When the Code/Git/Project companion pane is hidden, sidebar session clicks must leave the project-editor workarea and focus the clicked session in Agents view. Fall through to the normal focusTerminal/focusWebPane path instead of retargeting an invisible companion pane.
+     */
     if projectEditorCompanionPaneHidden {
-      projectEditorCompanionSessionId = sessionId
-      projectEditorCompanionIsVisible = false
-      focusedSessionId = sessionId
-      projectEditorCompanionResizeDrag = nil
-      needsLayout = true
-      layoutSubtreeIfNeeded()
-      updateAllTerminalBorders()
-      sendEvent(.terminalFocused(sessionId: sessionId))
-      return true
+      return false
     }
     /**
      CDXC:ProjectEditorCompanion 2026-05-14-09:19:
