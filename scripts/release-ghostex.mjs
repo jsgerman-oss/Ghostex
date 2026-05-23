@@ -381,10 +381,20 @@ exit "$status"
 
 async function launchTerminalReleaseRunner(runnerPath) {
   logStep("Launch release through login-session Terminal");
-  const terminalCommand = `/bin/zsh -l ${shellQuote(runnerPath)}`;
-  const appleScriptCommand = appleScriptString(terminalCommand);
+  const applescriptPath = `${runnerPath.replace(/\.command$/, "")}.applescript`;
+  const escapedRunnerPath = runnerPath.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  await writeFile(
+    applescriptPath,
+    [
+      'tell application "Terminal"',
+      "  activate",
+      `  do script "/bin/zsh -l \\"${escapedRunnerPath}\\""`,
+      "end tell",
+      "",
+    ].join("\n"),
+  );
   const attempts = [
-    `osascript -e 'tell application "Terminal" to activate' -e ${shellQuote(`tell application "Terminal" to do script ${appleScriptCommand}`)}`,
+    `osascript ${shellQuote(applescriptPath)}`,
     "/Applications/OpenInTerminal.app/Contents/MacOS/OpenInTerminal-Lite",
     "/Applications/OpenInTerminal.app/Contents/MacOS/OpenInTerminal",
   ].map((command) => (command.endsWith("OpenInTerminal-Lite") || command.endsWith("OpenInTerminal")
