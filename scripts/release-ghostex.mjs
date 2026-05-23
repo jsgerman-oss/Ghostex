@@ -279,7 +279,9 @@ async function recoverKeychainVisibility() {
       .join(" "),
   );
   await run(`security default-keychain -d user -s ${shellQuote(loginKeychain)} 2>/dev/null || true`);
-  await run(`security unlock-keychain ${shellQuote(loginKeychain)} 2>/dev/null || true`);
+  await run(
+    `command -v timeout >/dev/null 2>&1 && timeout 3 security unlock-keychain ${shellQuote(loginKeychain)} 2>/dev/null || true`,
+  );
 }
 
 function signingIdentityIsVisible(identities) {
@@ -358,8 +360,8 @@ release_status=0
 {
   security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "$HOME/Library/Keychains/iCloud.keychain-db" /Library/Keychains/System.keychain 2>/dev/null || true
   security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
-  security unlock-keychain "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
-  security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" | rg ${shellQuote("Developer ID Application: Mohamad Youssef \\(KTKP595G3B\\)")}
+  command -v timeout >/dev/null 2>&1 && timeout 3 security unlock-keychain "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
+  security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" | rg ${shellQuote("Developer ID Application: Mohamad Youssef \\(KTKP595G3B\\)")} || true
   xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8
   gh auth status -h github.com
   bun run release:local -- ${shellQuote(version)} --no-terminal-delegate
