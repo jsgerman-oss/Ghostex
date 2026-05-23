@@ -364,7 +364,13 @@ async function preflight(version, buildVersion, options) {
     );
   }
 
-  await run("gh auth status");
+  try {
+    await run("gh auth status");
+  } catch (error) {
+    console.warn(
+      `Warning: gh auth status failed; continuing with GH_TOKEN from git credentials.\n${String(error.message ?? error)}`,
+    );
+  }
   await run(`security find-identity -v -p codesigning | rg ${shellQuote(config.signingIdentity)}`);
   await run(`xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8`);
 
