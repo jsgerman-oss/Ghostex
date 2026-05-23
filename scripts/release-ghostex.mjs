@@ -244,12 +244,18 @@ async function ensureMainSynced() {
     throw new ReleaseError(`Release script must run on main. Current branch: ${branch}`);
   }
 
-  await runGitNetwork("git fetch origin main --tags");
   const head = await capture("git rev-parse HEAD");
   const originMain = await capture("git rev-parse origin/main");
   if (head !== originMain) {
-    throw new ReleaseError("Local main must match origin/main before the script creates the release commit.");
+    await runGitNetwork("git fetch origin main --tags");
+    const fetchedOriginMain = await capture("git rev-parse origin/main");
+    if (head !== fetchedOriginMain) {
+      throw new ReleaseError("Local main must match origin/main before the script creates the release commit.");
+    }
+    return;
   }
+
+  console.log("Local main already matches origin/main; skipping git fetch.");
 }
 
 async function captureGitNetwork(command, options = {}) {
