@@ -239,6 +239,44 @@ async function ensureGhAuth() {
   }
 }
 
+/**
+ * CDXC:Distribution 2026-05-23-13:25:
+ * Agent shells often inject stale GH_TOKEN values. Prefer the user's real gh
+ * login-session auth before falling back to git credential fill for git push.
+ */
+async function ensureGhAuthForRelease() {
+  try {
+    await run("env -u GH_TOKEN -u GITHUB_TOKEN gh auth status -h github.com");
+    return;
+  } catch {
+    await run("env -u GH_TOKEN -u GITHUB_TOKEN gh auth setup-git -h github.com || true");
+  }
+  await ensureGhAuth();
+}
+
+async function recoverKeychainVisibility() {
+  const loginKeychain = path.join(process.env.HOME ?? "", "Library/Keychains/login.keychain-db");
+  const iCloudKeychain = path.join(process.env.HOME ?? "", "Library/Keychains/iCloud.keychain-db");
+  logStep("Recover keychain visibility for signing");
+  await run(
+    [
+      "security list-keychains -d user -s",
+      shellQuote(loginKeychain),
+      existsSync(iCloudKeychain) ? shellQuote(iCloudKeychain) : null,
+      "/Library/Keychains/System.keychain",
+      "2>/dev/null || true",
+    ]
+      .filter(Boolean)
+      .join(" "),
+  );
+  await run(`security default-keychain -d user -s ${shellQuote(loginKeychain)} 2>/dev/null || true`);
+  await run(`security unlock-keychain ${shellQuote(loginKeychain)} 2>/dev/null || true`);
+}
+
+function signingIdentityIsVisible(identities) {
+  return identities.includes(releaseSigningIdentity());
+}
+
 function releaseSigningIdentity() {
   return process.env.GHOSTEX_CODE_SIGN_IDENTITY?.trim() || config.signingIdentity;
 }
@@ -258,23 +296,136 @@ async function listCodeSigningIdentities() {
 }
 
 async function ensureSigningIdentity() {
+  await recoverKeychainVisibility();
   const identity = releaseSigningIdentity();
   const identities = await listCodeSigningIdentities();
-  if (!identities.includes(identity)) {
+  if (!signingIdentityIsVisible(identities)) {
     throw new ReleaseError(
       [
         `No valid code signing identity found for release: ${identity}`,
-        "",
-        "Fix:",
-        "1. Open Keychain Access and confirm the Developer ID Application certificate is present and trusted.",
-        "2. Unlock the login keychain if macOS prompts for a password.",
-        "3. Re-run from Terminal.app if Cursor's agent shell cannot access the keychain.",
-        "4. Or export GHOSTEX_CODE_SIGN_IDENTITY with the exact identity string before release.",
         "",
         identities.trim() || "(security find-identity returned no valid identities)",
       ].join("\n"),
     );
   }
+}
+
+function terminalReleasePaths(version) {
+  return {
+    logPath: `/tmp/ghostex-release-${version}.log`,
+    runnerPath: `/tmp/ghostex-release-${version}.command`,
+  };
+}
+
+async function writeTerminalReleaseRunner(version) {
+  const { logPath, runnerPath } = terminalReleasePaths(version);
+  const identity = releaseSigningIdentity();
+  const runner = `#!/bin/zsh -l
+set -euo pipefail
+cd ${shellQuote(repoRoot)}
+unset GH_TOKEN GITHUB_TOKEN
+export GHOSTEX_CODE_SIGN_IDENTITY=${shellQuote(identity)}
+export GHOSTEX_CODE_SIGN_TIMESTAMP_FLAG=--timestamp
+{
+  echo "Ghostex release ${version} started at $(date)"
+  security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "$HOME/Library/Keychains/iCloud.keychain-db" /Library/Keychains/System.keychain 2>/dev/null || true
+  security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
+  security unlock-keychain "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
+  security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" | rg ${shellQuote("Developer ID Application: Mohamad Youssef \\(KTKP595G3B\\)")}
+  xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8
+  gh auth status -h github.com
+  bun run release:local -- ${shellQuote(version)}
+  echo "Ghostex release ${version} finished at $(date)"
+} 2>&1 | tee ${shellQuote(logPath)}
+`;
+  await writeFile(runnerPath, runner, { mode: 0o755 });
+  return { logPath, runnerPath };
+}
+
+async function launchTerminalReleaseRunner(runnerPath) {
+  logStep("Launch release through login-session Terminal");
+  const attempts = [
+    `open -b com.apple.Terminal ${shellQuote(runnerPath)}`,
+    `open ${shellQuote(runnerPath)}`,
+    "/Applications/OpenInTerminal.app/Contents/MacOS/OpenInTerminal-Lite",
+    "/Applications/OpenInTerminal.app/Contents/MacOS/OpenInTerminal",
+  ].map((command) => (command.endsWith("OpenInTerminal-Lite") || command.endsWith("OpenInTerminal")
+    ? `${shellQuote(command)} ${shellQuote(runnerPath)}`
+    : command));
+
+  let lastError;
+  for (const attempt of attempts) {
+    if (attempt.includes("OpenInTerminal") && !existsSync(attempt.split(" ")[0].replaceAll("'", ""))) {
+      continue;
+    }
+    try {
+      await run(attempt);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new ReleaseError(
+    [
+      "Could not launch the Terminal.app release runner from this environment.",
+      String(lastError?.message ?? lastError ?? "unknown launch error"),
+    ].join("\n"),
+  );
+}
+
+async function waitForReleaseLog(logPath, timeoutMs = 4 * 60 * 60 * 1000) {
+  const startedAt = Date.now();
+  while (!existsSync(logPath)) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new ReleaseError(`Timed out waiting for release log: ${logPath}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+async function monitorTerminalReleaseLog(version, logPath) {
+  logStep(`Monitor Terminal release log (${logPath})`);
+  await waitForReleaseLog(logPath);
+  let lastSize = 0;
+  let stableFor = 0;
+  while (true) {
+    const log = existsSync(logPath) ? await readFile(logPath, "utf8") : "";
+    if (/Release complete|Ghostex release .+ finished at/.test(log)) {
+      console.log(log.trim());
+      return;
+    }
+    if (/No valid code signing identity|notary profile .+ is unavailable|Command failed|error: script "release:local"/i.test(log)) {
+      throw new ReleaseError(log.trim() || `Terminal release failed. See ${logPath}`);
+    }
+    const size = Buffer.byteLength(log);
+    stableFor = size === lastSize ? stableFor + 1 : 0;
+    lastSize = size;
+    if (stableFor >= 180) {
+      throw new ReleaseError(`Terminal release appears stalled. See ${logPath}`);
+    }
+    process.stdout.write(log.slice(Math.max(0, log.length - 4000)));
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+}
+
+async function agentShellCredentialsReady() {
+  await recoverKeychainVisibility();
+  const identities = await listCodeSigningIdentities();
+  if (!signingIdentityIsVisible(identities)) {
+    return false;
+  }
+  try {
+    await ensureNotaryProfile();
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+async function delegateReleaseToTerminal(version) {
+  const { logPath, runnerPath } = await writeTerminalReleaseRunner(version);
+  await launchTerminalReleaseRunner(runnerPath);
+  await monitorTerminalReleaseLog(version, logPath);
 }
 
 async function ensureNotaryProfile() {
@@ -414,7 +565,7 @@ async function findAndVerifySparkleBinDir() {
 
 async function preflight(version, buildVersion, options) {
   logStep("Preflight");
-  await ensureGhAuth();
+  await ensureGhAuthForRelease();
   await ensureCleanWorktree();
   await ensureMainSynced();
   await ensureTagMissing(version);
@@ -430,10 +581,10 @@ async function preflight(version, buildVersion, options) {
   }
 
   try {
-    await run("gh auth status");
+    await run("env -u GH_TOKEN -u GITHUB_TOKEN gh auth status -h github.com");
   } catch (error) {
     console.warn(
-      `Warning: gh auth status failed; continuing with GH_TOKEN from git credentials.\n${String(error.message ?? error)}`,
+      `Warning: gh auth status failed in this shell; Terminal delegation may still succeed.\n${String(error.message ?? error)}`,
     );
   }
   await ensureSigningIdentity();
@@ -803,6 +954,14 @@ async function main() {
 
   console.log(`Ghostex local release: ${version}`);
   console.log(`Sparkle build version: ${buildVersion}`);
+
+  if (!(await agentShellCredentialsReady())) {
+    console.warn(
+      "Agent shell cannot access Developer ID signing or notary credentials. Delegating to Terminal.app.",
+    );
+    await delegateReleaseToTerminal(version);
+    return;
+  }
 
   await preflight(version, buildVersion, options);
   await bumpReleaseMetadata(version, buildVersion);
