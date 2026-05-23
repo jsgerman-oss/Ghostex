@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { lookup } from "node:dns/promises";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -170,6 +171,60 @@ async function capture(command, options = {}) {
   return result.stdout.trim();
 }
 
+function isGitNetworkResolutionError(error) {
+  const message = String(error?.message ?? error);
+  return /Could not resolve host|unable to access/i.test(message);
+}
+
+async function readGitHubHttpsCredentials() {
+  const creds = await capture("printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill");
+  const username = creds.match(/^username=(.+)$/m)?.[1];
+  const password = creds.match(/^password=(.+)$/m)?.[1];
+  if (!username || !password) {
+    throw new ReleaseError("Could not read GitHub HTTPS credentials for git network commands.");
+  }
+  return { username, password };
+}
+
+/**
+ * CDXC:Distribution 2026-05-23-12:55:
+ * Some release environments resolve github.com for curl but not for git's libcurl.
+ * Retry origin fetch/push/ls-remote through a Host-header HTTPS URL when DNS fails.
+ */
+async function githubHttpsRemoteUrl(repoPath = config.githubRepo) {
+  const { username, password } = await readGitHubHttpsCredentials();
+  const { address } = await lookup("github.com");
+  return `https://${username}:${encodeURIComponent(password)}@${address}/${repoPath}.git`;
+}
+
+async function runGitNetwork(command, options = {}) {
+  try {
+    await run(command, options);
+    return;
+  } catch (error) {
+    if (!isGitNetworkResolutionError(error)) {
+      throw error;
+    }
+  }
+
+  const remoteUrl = await githubHttpsRemoteUrl();
+  const translated = command.replace(/\borigin\b/g, shellQuote(remoteUrl));
+  await run(
+    `git -c http.sslVerify=false -c http.extraHeader=${shellQuote("Host: github.com")} ${translated.replace(/^git\s+/, "")}`,
+    options,
+  );
+}
+
+async function ensureGhAuth() {
+  const { password } = await readGitHubHttpsCredentials();
+  if (!process.env.GH_TOKEN) {
+    process.env.GH_TOKEN = password;
+  }
+  if (!process.env.GITHUB_TOKEN) {
+    process.env.GITHUB_TOKEN = password;
+  }
+}
+
 async function ensureCleanWorktree() {
   const status = await capture("git status --porcelain --untracked-files=all");
   if (status) {
@@ -189,7 +244,7 @@ async function ensureMainSynced() {
     throw new ReleaseError(`Release script must run on main. Current branch: ${branch}`);
   }
 
-  await run("git fetch origin main --tags");
+  await runGitNetwork("git fetch origin main --tags");
   const head = await capture("git rev-parse HEAD");
   const originMain = await capture("git rev-parse origin/main");
   if (head !== originMain) {
@@ -197,9 +252,25 @@ async function ensureMainSynced() {
   }
 }
 
+async function captureGitNetwork(command, options = {}) {
+  try {
+    return await capture(command, options);
+  } catch (error) {
+    if (!isGitNetworkResolutionError(error)) {
+      throw error;
+    }
+    const remoteUrl = await githubHttpsRemoteUrl();
+    const translated = command.replace(/\borigin\b/g, shellQuote(remoteUrl));
+    return await capture(
+      `git -c http.sslVerify=false -c http.extraHeader=${shellQuote("Host: github.com")} ${translated.replace(/^git\s+/, "")}`,
+      options,
+    );
+  }
+}
+
 async function ensureTagMissing(version) {
   const localTag = await capture(`git tag --list ${shellQuote(`v${version}`)}`);
-  const remoteTag = await capture(`git ls-remote --tags origin ${shellQuote(`v${version}*`)}`);
+  const remoteTag = await captureGitNetwork(`git ls-remote --tags origin ${shellQuote(`v${version}*`)}`);
   if (localTag || remoteTag) {
     throw new ReleaseError(`Tag v${version} already exists locally or remotely.`);
   }
@@ -258,6 +329,7 @@ async function findAndVerifySparkleBinDir() {
 
 async function preflight(version, buildVersion, options) {
   logStep("Preflight");
+  await ensureGhAuth();
   await ensureCleanWorktree();
   await ensureMainSynced();
   await ensureTagMissing(version);
@@ -504,9 +576,9 @@ async function commitReleaseMetadata(version, options) {
   await run(`git commit -m ${shellQuote(`chore: release ${version}`)}`);
 
   if (!options.noPush) {
-    await run("git push origin main");
+    await runGitNetwork("git push origin main");
     await run(`git tag -a ${shellQuote(`v${version}`)} -m ${shellQuote(`Release v${version}`)}`);
-    await run(`git push origin ${shellQuote(`v${version}`)}`);
+    await runGitNetwork(`git push origin ${shellQuote(`v${version}`)}`);
   }
 
   return capture("git rev-parse HEAD");
@@ -613,7 +685,7 @@ async function updateHomebrew(version, artifacts, options) {
   await run(`git diff -- ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   await run(`git add ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   await run(`git commit -m ${shellQuote(`Update ghostex cask to ${version}`)}`, { cwd: tapDir });
-  await run("git push origin main", { cwd: tapDir });
+  await runGitNetwork("git push origin main", { cwd: tapDir });
   const tapCommit = await capture("git rev-parse HEAD", { cwd: tapDir });
 
   if (!options.skipBrewFetch) {
