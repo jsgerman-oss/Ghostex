@@ -63,13 +63,31 @@ Button commands call the same sidebar runtime paths as the UI button handlers.
 
 ```sh
 bun run cli -- send-text s-260427-063318-da1 "hello"
+bun run cli -- send-text "Investigate logs" "hello"
 bun run cli -- send-enter s-260427-063318-da1
 bun run cli -- send-key s-260427-063318-da1 ctrl-c
 bun run cli -- send-key s-260427-063318-da1 escape
+bun run cli -- send-message "Investigate logs" "please summarize the latest output"
+bun run cli -- send-message codex "please review this branch"
 bun run cli -- rename-command s-260427-063318-da1 "Investigate logs"
 ```
 
 `rename-command` writes `/rename <title>`, waits one second, then sends Enter through the native Enter path.
+
+<!-- CDXC:CliAgentMessaging 2026-05-23-13:18: Cross-session agent orchestration needs visible sidebar sessions only. `send-message <agentId> <text>` creates a normal visible agent session when no target session selector is supplied, sends the message, and returns the new Ghostex id so the creator can read or follow up later. -->
+
+`send-text`, `send-enter`, `send-key`, `send-message`, and `rename-command` accept a session id, numeric alias, quoted title, or `project:title` selector.
+When `send-message` receives an agent id instead of a matching session selector, it creates a new visible agent session in the sidebar and returns its `ghostexId`.
+
+## Terminal Readback
+
+```sh
+bun run cli -- read-text s-260427-063318-da1 --lines 80
+bun run cli -- read-text "Investigate logs" --visible
+bun run cli -- read-messages "Project:Investigate logs" --json
+```
+
+`read-text` reads the selected Ghostty terminal surface. By default it reads the terminal screen buffer; `--visible` limits the result to the currently shown viewport.
 
 ## Session Management
 

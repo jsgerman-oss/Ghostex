@@ -69,10 +69,16 @@ const COMMANDS = new Map([
   ["rename-session", bridgeAction("renameSession", parseRename, { failOnNotOk: true })],
   ["sleep-session", bridgeAction("sleepSession", parseSessionBoolean("sleeping"))],
   ["favorite-session", bridgeAction("favoriteSession", parseSessionBoolean("favorite"))],
-  ["send-text", bridgeAction("sendText", parseSendText)],
-  ["send-enter", bridgeAction("sendEnter", parseSessionSelector)],
-  ["send-key", bridgeAction("sendKey", parseSendKey)],
-  ["rename-command", bridgeAction("renameCommand", parseRename)],
+  ["send-text", resolvedSessionBridgeAction("sendText", parseSendText)],
+  ["send-enter", resolvedSessionBridgeAction("sendEnter", parseSessionSelector)],
+  ["send-key", resolvedSessionBridgeAction("sendKey", parseSendKey)],
+  ["send-message", sendMessageCommand],
+  ["message", sendMessageCommand],
+  ["msg", sendMessageCommand],
+  ["read-text", readSessionTextCommand],
+  ["read-messages", readSessionTextCommand],
+  ["read-thread", readSessionTextCommand],
+  ["rename-command", resolvedSessionBridgeAction("renameCommand", parseRename)],
   ["set-visible-count", bridgeAction("setVisibleCount", parseVisibleCount)],
   ["set-view-mode", bridgeAction("setViewMode", parseViewMode)],
   ["open-browser", bridgeAction("openBrowser", parseUrl)],
@@ -150,6 +156,24 @@ function bridgeAction(action, parser = () => ({}), options = {}) {
      * recovery UI. Android-facing bridge commands such as rename-session must
      * convert `{ ok: false }` bridge replies into a nonzero CLI exit.
      */
+    if ((options.assertOk || options.failOnNotOk) && isFailedCliResult(result)) {
+      printJson(result);
+      process.exitCode = 1;
+      return;
+    }
+    printJson(result);
+  };
+}
+
+function resolvedSessionBridgeAction(action, parser = () => ({}), options = {}) {
+  return async (args) => {
+    const { flags, rest } = parseArgs(args);
+    const payload = parser(rest, flags);
+    const selector = sessionSelectorFromArgs(rest, flags);
+    const resolvedPayload = selector
+      ? { ...payload, sessionId: (await resolveCliSessionSelector(selector, flags)).sessionId }
+      : payload;
+    const result = await sendSidebarCliCommand(action, resolvedPayload, flags);
     if ((options.assertOk || options.failOnNotOk) && isFailedCliResult(result)) {
       printJson(result);
       process.exitCode = 1;
@@ -941,6 +965,81 @@ async function focusSmartSessionCommand(args) {
   console.log(`focused ${session.alias}: ${session.title}`);
 }
 
+async function readSessionTextCommand(args) {
+  const { flags, rest } = parseArgs(args);
+  const selector = sessionSelectorFromArgs(rest, flags);
+  const payload = {
+    source: flags.visible === true || flags.source === "visible" ? "visible" : "screen",
+    timeoutMs: flags.timeoutMs === undefined ? undefined : Number(flags.timeoutMs),
+  };
+  if (selector) {
+    payload.sessionId = (await resolveCliSessionSelector(selector, flags)).sessionId;
+  }
+  const result = await sendSidebarCliCommand("readSessionText", payload, flags);
+  if (isFailedCliResult(result)) {
+    if (flags.json) {
+      printJson(result);
+      process.exitCode = 1;
+      return;
+    }
+    throw new Error(result.error ?? "Could not read terminal text.");
+  }
+  const text = String(result.text ?? "");
+  const lines = flags.lines === undefined ? undefined : Number(flags.lines);
+  if (flags.json) {
+    printJson({ ...result, text: limitTextLines(text, lines) });
+    return;
+  }
+  process.stdout.write(limitTextLines(text, lines));
+  if (!text.endsWith("\n")) {
+    process.stdout.write("\n");
+  }
+}
+
+async function sendMessageCommand(args) {
+  const { flags, rest } = parseArgs(args);
+  const explicitSelector = sessionSelectorFromArgs([], flags);
+  let selector = explicitSelector;
+  let agentId = typeof flags.agent === "string" ? flags.agent : undefined;
+  let textStartIndex = 0;
+
+  if (!selector && !agentId && rest[0]) {
+    const firstArg = rest[0];
+    const result = await fetchSessionList(flags);
+    const matches = await resolveListedSessions(firstArg, result.sessions ?? []);
+    if (matches.length > 1) {
+      throw new Error(`Multiple sessions matched "${firstArg}":\n${formatSessionMatches(matches)}`);
+    }
+    if (matches.length === 1) {
+      selector = firstArg;
+      textStartIndex = 1;
+    } else {
+      agentId = firstArg;
+      textStartIndex = 1;
+    }
+  }
+
+  const text = String(flags.text ?? rest.slice(textStartIndex).join(" "));
+  const payload = {
+    groupId: flags.groupId,
+    sendDelayMs: flags.sendDelayMs === undefined ? undefined : Number(flags.sendDelayMs),
+    submit: flags.submit === undefined ? true : parseBoolean(flags.submit),
+    text,
+  };
+  if (selector) {
+    payload.sessionId = (await resolveCliSessionSelector(selector, flags)).sessionId;
+  } else {
+    payload.agentId = agentId;
+  }
+  const result = await sendSidebarCliCommand("sendMessage", payload, flags);
+  if (isFailedCliResult(result)) {
+    printJson(result);
+    process.exitCode = 1;
+    return;
+  }
+  printJson(result);
+}
+
 async function fetchSessionList(flags = {}, options = {}) {
   const result = await sendSidebarCliCommand("listSessions", {}, flags);
   /**
@@ -978,6 +1077,29 @@ async function writeSessionAliasCache(cache) {
 async function readSessionAliasCache() {
   const text = await readFile(SESSION_ALIAS_CACHE_PATH, "utf8").catch(() => undefined);
   return text ? parseJson(text) : undefined;
+}
+
+function sessionSelectorFromArgs(rest, flags) {
+  return String(
+    flags.sessionId ??
+      flags.selector ??
+      flags.session ??
+      flags.sessionTitle ??
+      flags.target ??
+      rest[0] ??
+      "",
+  ).trim();
+}
+
+async function resolveCliSessionSelector(selector, flags) {
+  /**
+   * CDXC:CliSessionSelectors 2026-05-23-13:18:
+   * Cross-session CLI actions need the same id/title/project:title selector
+   * behavior as attach/focus so agents can address another visible sidebar
+   * thread without knowing its raw runtime id.
+   */
+  const result = await fetchSessionList(flags);
+  return resolveOneListedSession(selector, result.sessions ?? []);
 }
 
 async function resolveOneListedSession(selector, sessions) {
@@ -1041,6 +1163,13 @@ function formatSessionMatches(sessions) {
   return sessions
     .map((session) => `${session.alias}. ${session.projectName} - ${session.title}`)
     .join("\n");
+}
+
+function limitTextLines(text, lines) {
+  if (!Number.isFinite(lines) || lines <= 0) {
+    return text;
+  }
+  return text.split(/\r?\n/).slice(-lines).join("\n");
 }
 
 function printSessionList(sessions, { grouped }) {
@@ -1263,16 +1392,20 @@ function parseSessionBoolean(name) {
 }
 
 function parseSendText(rest, flags) {
+  const hasFlagSelector =
+    flags.sessionId || flags.selector || flags.session || flags.sessionTitle || flags.target;
   return {
     ...parseSessionSelector(rest, flags),
-    text: flags.text ?? rest.slice(1).join(" "),
+    text: flags.text ?? rest.slice(hasFlagSelector ? 0 : 1).join(" "),
   };
 }
 
 function parseSendKey(rest, flags) {
+  const hasFlagSelector =
+    flags.sessionId || flags.selector || flags.session || flags.sessionTitle || flags.target;
   return {
     ...parseSessionSelector(rest, flags),
-    key: flags.key ?? rest[1],
+    key: flags.key ?? rest[hasFlagSelector ? 0 : 1],
   };
 }
 
@@ -1424,12 +1557,15 @@ function usage() {
   ].join("\n");
 
   const inputCommands = [
-    formatHelpCommand("send-text <sessionId> <text>", "Type text into a session"),
-    formatHelpCommand("send-enter <sessionId>", "Send Enter to a session"),
-    formatHelpCommand("send-key <sessionId> <key>", "Send ctrl-c, escape, tab, or arrow keys"),
+    formatHelpCommand("send-text <selector> <text>", "Type text into a session by id or quoted title"),
+    formatHelpCommand("send-enter <selector>", "Send Enter to a session by id or quoted title"),
+    formatHelpCommand("send-key <selector> <key>", "Send ctrl-c, escape, tab, or arrow keys"),
+    formatHelpCommand("send-message <selector> <text>", "Type text and Enter into an existing session"),
+    formatHelpCommand("send-message <agentId> <text>", "Create a visible agent session, send text, and return its Ghostex id"),
+    formatHelpCommand("read-text <selector> [--lines n] [--visible] [--json]", "Read terminal text by id or quoted title"),
     formatHelpCommand("rename-session <sessionId> <title> [--json]", "Rename a session"),
     formatHelpCommand("rename-session --session-id <id> --title <title> [--json]", "Flag form used by Android SSH actions"),
-    formatHelpCommand("rename-command <sessionId> <title>", "Send the agent rename command"),
+    formatHelpCommand("rename-command <selector> <title>", "Send the agent rename command"),
   ].join("\n");
 
   const uiCommands = [
