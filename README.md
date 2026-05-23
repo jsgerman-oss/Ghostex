@@ -1,7 +1,7 @@
 Discord: https://discord.gg/xYSBPapM
 
 # The best Free & Open Source alternative to Codex App
-Ghostty Terminals. Low Ram Use. Longer Battery. All Agent CLIs. T3code. 
+Ghostty Terminals. Low Ram Use. Longer Battery. All Agent CLIs. T3code.<br/>
 Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
 
 > Looking for contributers! Please join the discord if interested!
