@@ -148,9 +148,9 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: Ghostex uses a local WebSocket bridge between the sidebar and native terminal host.
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        # CDXC:NativeBuild 2026-05-23-13:29: `bun run start` should build without duplicate linker warnings. Xcode already links libc++ through the C++ toolchain setting, so keep OTHER_LDFLAGS limited to host-specific Chromium and CEF wrapper inputs.
         OTHER_LDFLAGS:
           - "$(inherited)"
-          - "-lc++"
           - "-weak_framework"
           - "\"Chromium Embedded Framework\""
           - "-lcef_dll_wrapper"

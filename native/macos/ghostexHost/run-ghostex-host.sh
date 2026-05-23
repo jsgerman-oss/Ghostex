@@ -37,6 +37,8 @@ INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 INSTALLED_APP="$INSTALL_DIR/$APP_NAME.app"
 # CDXC:LocalStart 2026-05-15-07:53: `bun run start` must launch the architecture-specific app product that `build-ghostex-host.sh` just produced. Keep the DerivedData default aligned with the build script so arm64 local starts do not copy an older app from build/, while Intel release/dev validation can still set GHOSTEX_MACOS_ARCH=x86_64 and resolve build/x86_64.
 DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build/$GHOSTEX_MACOS_ARCH}"
+# CDXC:NativeBuild 2026-05-23-13:29: Keep the post-build settings lookup on the same explicit macOS destination as the native build so `bun run start` does not emit destination ambiguity warnings on dual-architecture Macs.
+XCODE_DESTINATION="platform=macOS,arch=$GHOSTEX_MACOS_ARCH"
 
 "$SCRIPT_DIR/build-ghostex-host.sh"
 
@@ -45,6 +47,7 @@ APP_PATH="$(
 		-project "$PROJECT_PATH" \
 		-scheme ghostex \
 		-configuration "$CONFIGURATION" \
+		-destination "$XCODE_DESTINATION" \
 		-derivedDataPath "$DERIVED_DATA" \
 		ARCHS="$GHOSTEX_MACOS_ARCH" \
 		ONLY_ACTIVE_ARCH=NO \

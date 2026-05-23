@@ -22,6 +22,8 @@ case "$GHOSTEX_MACOS_ARCH" in
 		;;
 esac
 DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build/$GHOSTEX_MACOS_ARCH}"
+# CDXC:NativeBuild 2026-05-23-13:29: `bun run start` should not rely on Xcode's first matching macOS destination when both arm64 and x86_64 host destinations are present. Pin the destination to the requested build architecture so warning output stays actionable.
+XCODE_DESTINATION="platform=macOS,arch=$GHOSTEX_MACOS_ARCH"
 GHOSTEX_APP_VARIANT="${GHOSTEX_APP_VARIANT:-prod}"
 if [[ "$GHOSTEX_APP_VARIANT" == "dev" ]]; then
 	# CDXC:DevAppFlavor 2026-04-28-02:01: The dev build must generate a
@@ -443,6 +445,7 @@ xcodebuild \
 	-project "$PROJECT_PATH" \
 	-scheme ghostex \
 	-configuration "$CONFIGURATION" \
+	-destination "$XCODE_DESTINATION" \
 	-derivedDataPath "$DERIVED_DATA" \
 	ARCHS="$GHOSTEX_MACOS_ARCH" \
 	ONLY_ACTIVE_ARCH=NO \
@@ -453,6 +456,7 @@ APP_PATH="$(
 		-project "$PROJECT_PATH" \
 		-scheme ghostex \
 		-configuration "$CONFIGURATION" \
+		-destination "$XCODE_DESTINATION" \
 		-derivedDataPath "$DERIVED_DATA" \
 		ARCHS="$GHOSTEX_MACOS_ARCH" \
 		ONLY_ACTIVE_ARCH=NO \
