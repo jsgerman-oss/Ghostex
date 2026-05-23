@@ -880,8 +880,17 @@ async function validateMountedDmg(version, buildVersion, entry) {
 }
 
 async function buildAndPackage(version, buildVersion) {
-  logStep("Build both architectures in parallel");
-  const built = await Promise.all(architectures.map((entry) => buildArch(version, entry)));
+  logStep("Build both architectures");
+  /*
+   CDXC:ReleaseAutomation 2026-05-23-14:02:
+   Both architecture builds regenerate the shared native Web asset directory.
+   Build sequentially so monaco/native web asset cleanup cannot race, while
+   keeping package and notarization parallel after independent app bundles exist.
+   */
+  const built = [];
+  for (const entry of architectures) {
+    built.push(await buildArch(version, entry));
+  }
 
   for (const entry of built) {
     await validateBuiltApp(version, buildVersion, entry);
