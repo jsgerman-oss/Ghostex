@@ -964,12 +964,24 @@ async function commitReleaseMetadata(version, options) {
 
 async function extractChangelogSection(version) {
   const changelog = await readFile(path.join(repoRoot, "CHANGELOG.md"), "utf8");
-  const escaped = version.replaceAll(".", "\\.");
-  const match = changelog.match(new RegExp(`^## ${escaped} - .*\\n([\\s\\S]*?)(?=\\n## |\\n?$)`, "m"));
-  if (!match) {
+  /*
+   CDXC:ReleaseAutomation 2026-05-23-14:03:
+   Do not use a multiline regex with `$` here: in JS multiline mode it can stop
+   at the blank line after the heading and make valid release notes look empty.
+   */
+  const lines = changelog.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.startsWith(`## ${version} - `));
+  if (start === -1) {
     throw new ReleaseError(`CHANGELOG.md does not contain a top-level section for ${version}.`);
   }
-  const notes = match[1].trim();
+  const section = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.startsWith("## ")) {
+      break;
+    }
+    section.push(line);
+  }
+  const notes = section.join("\n").trim();
   if (!notes || notes.includes("CDXC:") || notes.includes("<!--")) {
     throw new ReleaseError(`CHANGELOG.md section for ${version} is empty or contains comments.`);
   }
