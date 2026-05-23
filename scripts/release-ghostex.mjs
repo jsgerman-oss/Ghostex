@@ -824,7 +824,14 @@ async function packageAndNotarize(version, artifactDir, entry) {
     `xcrun notarytool submit ${shellQuote(finalDmg)} --keychain-profile ${shellQuote(config.notaryProfile)} --wait | tee ${shellQuote(notaryLogPath)}`,
   );
   const submissionId = notaryOutput.match(/id:\s*([0-9a-f-]+)/)?.[1] ?? "unknown";
-  const status = notaryOutput.match(/status:\s*([A-Za-z]+)/)?.[1] ?? "unknown";
+  /*
+   CDXC:ReleaseAutomation 2026-05-23-13:58:
+   `notarytool --wait` prints repeated `Current status: In Progress` lines
+   before the final `status: Accepted`; parse the last status-like token so
+   accepted submissions are not rejected after a long notarization wait.
+   */
+  const statusMatches = [...notaryOutput.matchAll(/(?:Current status:|status:)\s*([A-Za-z ]+)/g)];
+  const status = statusMatches.at(-1)?.[1]?.trim() ?? "unknown";
   if (status !== "Accepted") {
     throw new ReleaseError(`${entry.arch} notarization did not finish Accepted. Status: ${status}`);
   }
