@@ -2,3 +2,6 @@
 ghostty/** -linguist-vendored
 ghostty/** -linguist-generated
 ghostty/** -linguist-documentation
+
+# Use bd merge for beads JSONL files
+.beads/issues.jsonl merge=beads
