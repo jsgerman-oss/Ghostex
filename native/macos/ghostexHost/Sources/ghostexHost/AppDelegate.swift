@@ -3649,6 +3649,39 @@ final class AppModalHostWebView: WKWebView {
   }
 }
 
+final class SidebarModalBackdropView: NSView {
+  var onDismiss: (() -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.black.withAlphaComponent(0.65).cgColor
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard !isHidden, alphaValue > 0, bounds.contains(point) else {
+      return nil
+    }
+    return self
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    onDismiss?()
+  }
+
+  override func rightMouseDown(with event: NSEvent) {
+    onDismiss?()
+  }
+
+  override func otherMouseDown(with event: NSEvent) {
+    onDismiss?()
+  }
+}
+
 final class ghostexRootView: NSView {
   private static let logger = Logger(subsystem: "com.madda.ghostex.host", category: "webview")
 
@@ -3692,6 +3725,7 @@ final class ghostexRootView: NSView {
   var sidebarWebView: WKWebView { sidebarView }
   private let sidebarView: WKWebView
   private let modalHostView: AppModalHostWebView
+  private let sidebarModalBackdropView = SidebarModalBackdropView(frame: .zero)
   private let titlebarChromeView: ReactTitlebarChromeView
   private let titlebarChromeWebView: WKWebView
   private let startupOverlayView = NSView(frame: .zero)
@@ -3881,6 +3915,9 @@ final class ghostexRootView: NSView {
     sidebarCommandRouter.onAppModalHostMessage = { [weak self] body in
       self?.handleAppModalHostMessage(body)
     }
+    sidebarModalBackdropView.onDismiss = { [weak self] in
+      self?.closeAppModalHost(reason: "sidebarBackdropClick")
+    }
     divider.onDrag = { [weak self] deltaX in
       self?.resizeSidebar(by: deltaX)
     }
@@ -3897,6 +3934,7 @@ final class ghostexRootView: NSView {
     modalHostView.setValue(false, forKey: "drawsBackground")
     titlebarChromeWebView.setValue(false, forKey: "drawsBackground")
     modalHostView.isHidden = true
+    sidebarModalBackdropView.isHidden = true
     sidebarView.navigationDelegate = self
     addSubview(workspaceView)
     /**
@@ -3914,6 +3952,7 @@ final class ghostexRootView: NSView {
      terminal chrome, and show it only while a modal is active.
      */
     addSubview(modalHostView)
+    addSubview(sidebarModalBackdropView)
     /**
      CDXC:ReactTitlebar 2026-05-12-09:58
      Titlebar controls, tooltips, and dropdowns are React-rendered in one
@@ -6026,6 +6065,18 @@ final class ghostexRootView: NSView {
     pendingModalHostOpenMessage = nil
     modalHostView.setTopLeftHitRegions(nil)
     modalHostView.isHidden = true
+    updateSidebarModalBackdrop()
+  }
+
+  private func updateSidebarModalBackdrop() {
+    /**
+     CDXC:SidebarLayering 2026-05-23-12:20:
+     Toasts keep the modal host visible without an active modal, and the
+     floating prompt editor publishes its own hit regions instead of showing a
+     backdrop. Only true backdrop modals should cover and block the sidebar.
+     */
+    let shouldShowBackdrop = activeAppModalKind != nil && activeAppModalKind != "floatingPromptEditor"
+    sidebarModalBackdropView.isHidden = !shouldShowBackdrop
   }
 
   private func isWebChromeFirstResponder() -> Bool {
@@ -6265,6 +6316,7 @@ final class ghostexRootView: NSView {
     divider.frame = frames.divider
     workspaceView.frame = frames.workspace
     modalHostView.frame = frames.modalHost
+    sidebarModalBackdropView.frame = frames.sidebar.union(frames.divider)
     titlebarChromeView.frame = frames.titlebarChrome
     promoteSidebarChrome()
     startupOverlayView.frame = bounds
@@ -6291,6 +6343,7 @@ final class ghostexRootView: NSView {
      */
     addSubview(sidebarView, positioned: .above, relativeTo: titlebarChromeView)
     addSubview(divider, positioned: .above, relativeTo: sidebarView)
+    addSubview(sidebarModalBackdropView, positioned: .above, relativeTo: divider)
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
@@ -6310,6 +6363,17 @@ final class ghostexRootView: NSView {
       startupOverlayView.frame.contains(point)
     {
       return startupOverlayView
+    }
+    if let hitView = sidebarModalBackdropView.hitTest(convert(point, to: sidebarModalBackdropView))
+    {
+      /**
+       CDXC:SidebarLayering 2026-05-23-12:20:
+       The sidebar stays above normal webview layers so toasts cannot steal
+       session-card clicks. Real backdrop modals are the exception: mirror the
+       work-area scrim over sidebar chrome and let that click dismiss the same
+       modal.
+       */
+      return hitView
     }
     if divider.frame.contains(point),
       let hitView = divider.hitTest(convert(point, to: divider))
@@ -6436,7 +6500,14 @@ final class ghostexRootView: NSView {
      click boundary: only reported React controls/menus and the fixed titlebar
      drag strip consume events; all other workspace pixels pass through.
      */
-    let modalHostFrame = CGRect(x: 0, y: 0, width: bounds.width, height: contentHeight)
+    /**
+     CDXC:SidebarLayering 2026-05-23-12:20:
+     App modals should occupy the work area, not the sidebar band. A separate
+     native sidebar backdrop mirrors modal blocking over sidebar chrome only
+     while true backdrop modals are active, which keeps toast-only modal-host
+     visibility from ever covering sidebar clicks.
+     */
+    let modalHostFrame = workspaceFrame
     let titlebarChromeFrame = bounds
     return RootLayoutFrames(
       divider: dividerFrame,
@@ -6685,6 +6756,7 @@ final class ghostexRootView: NSView {
       }
       activeAppModalKind = message["modal"] as? String
       modalHostView.isHidden = false
+      updateSidebarModalBackdrop()
       if (message["modal"] as? String) == "floatingPromptEditor" {
         PromptEditorDebugLog.append(
           event: "native.presented.modalHostShown",
@@ -6715,11 +6787,13 @@ final class ghostexRootView: NSView {
         modalHostView.setTopLeftHitRegions([])
       }
       modalHostView.isHidden = false
+      updateSidebarModalBackdrop()
     case "toastDismissed":
       if (message["keepOpen"] as? Bool) != true {
         modalHostView.setTopLeftHitRegions(nil)
         modalHostView.isHidden = true
       }
+      updateSidebarModalBackdrop()
     case "pickWorktreeImages":
       presentWorktreeImagePicker()
     case "sidebarState":
