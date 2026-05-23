@@ -44,18 +44,27 @@ import {
 } from "@/components/ui/tooltip";
 import {
   IconAsterisk,
+  IconAlertTriangle,
+  IconChevronDown,
+  IconCircleCheckFilled,
+  IconCircleX,
   IconCodeDots,
+  IconDownload,
   IconFolderOpen,
   IconGripVertical,
+  IconInfoCircle,
   IconPencil,
   IconPlayerPlay,
   IconPlus,
+  IconRefresh,
   IconTrash,
 } from "@tabler/icons-react";
 import { COMPLETION_SOUND_OPTIONS, type CompletionSoundSetting } from "../shared/completion-sound";
 import { GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES } from "../shared/ghostty-config-actions";
 import {
   resolveSidebarTheme,
+  type SidebarAgentHookStatusMessage,
+  type SidebarAgentHookStatusItem,
   type SidebarGhostexFolderStatsMessage,
   type SidebarProjectSettingsItem,
   type SidebarTheme,
@@ -375,6 +384,8 @@ export type SettingsModalPresentation = "default" | "firstLaunchSetup";
 
 export type SettingsModalProps = {
   accessibilityPermissionGranted?: boolean;
+  agentHookStatus?: SidebarAgentHookStatusMessage;
+  agentHookStatusLoading?: boolean;
   firstLaunchSetupVisibleSettings?: ReadonlySet<FirstLaunchSetupMainSettingKey>;
   initialTab?: SettingsModalTab;
   isOpen: boolean;
@@ -388,6 +399,8 @@ export type SettingsModalProps = {
   onInstallGte?: () => void;
   onPlayCompletionSound?: (sound: CompletionSoundSetting) => void;
   onRequestMacOSNotificationPermission?: () => void;
+  onInstallAgentHooks?: () => void;
+  onRequestAgentHookStatus?: () => void;
   onRequestGhostexFolderStats?: () => void;
   onTestAgentTaskCompletion?: () => void;
   projects?: SidebarProjectSettingsItem[];
@@ -400,6 +413,8 @@ export type SettingsModalProps = {
 
 export function SettingsModal({
   accessibilityPermissionGranted,
+  agentHookStatus,
+  agentHookStatusLoading = false,
   firstLaunchSetupVisibleSettings,
   initialTab = "settings",
   isOpen,
@@ -413,6 +428,8 @@ export function SettingsModal({
   onInstallGte,
   onPlayCompletionSound,
   onRequestMacOSNotificationPermission,
+  onInstallAgentHooks,
+  onRequestAgentHookStatus,
   onRequestGhostexFolderStats,
   onTestAgentTaskCompletion,
   projects = [],
@@ -465,6 +482,13 @@ export function SettingsModal({
     rememberedSettingsModalTab = nextTab;
     setActiveTabState(nextTab);
   }, [initialTab, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "agents" || agentHookStatus || agentHookStatusLoading) {
+      return;
+    }
+    onRequestAgentHookStatus?.();
+  }, [activeTab, agentHookStatus, agentHookStatusLoading, isOpen, onRequestAgentHookStatus]);
 
   /**
    * CDXC:SettingsSearch 2026-05-04-02:30
@@ -2235,6 +2259,8 @@ export function SettingsModal({
           {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="agents">
             <AgentsSettingsTab
+              agentHookStatus={agentHookStatus}
+              agentHookStatusLoading={agentHookStatusLoading}
               agentAcceptAllEnabled={draft.agentAcceptAllEnabled}
               onAgentAcceptAllEnabledChange={(checked) =>
                 applySettings({
@@ -2242,6 +2268,8 @@ export function SettingsModal({
                   agentAcceptAllEnabled: checked,
                 })
               }
+              onInstallAgentHooks={onInstallAgentHooks}
+              onRequestAgentHookStatus={onRequestAgentHookStatus}
               vscode={vscode}
             />
           </TabsContent>
@@ -2648,13 +2676,25 @@ function OpenTargetSettingsIcon({ targetId }: { targetId: string }) {
   );
 }
 
+const AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS = DEFAULT_SIDEBAR_AGENTS.filter(
+  (agent) => agent.agentId !== "t3",
+);
+
 function AgentsSettingsTab({
+  agentHookStatus,
+  agentHookStatusLoading,
   agentAcceptAllEnabled,
   onAgentAcceptAllEnabledChange,
+  onInstallAgentHooks,
+  onRequestAgentHookStatus,
   vscode,
 }: {
+  agentHookStatus?: SidebarAgentHookStatusMessage;
+  agentHookStatusLoading: boolean;
   agentAcceptAllEnabled: boolean;
   onAgentAcceptAllEnabledChange: (checked: boolean) => void;
+  onInstallAgentHooks?: () => void;
+  onRequestAgentHookStatus?: () => void;
   vscode?: WebviewApi;
 }) {
   const agents = useSidebarStore((state) => state.hud.agents);
@@ -2679,6 +2719,19 @@ function AgentsSettingsTab({
       .map((agentId) => agentById.get(agentId))
       .filter((agent): agent is SidebarAgentButton => agent !== undefined);
   }, [agents, draftAgentIds]);
+  const hookStatusByAgentId = useMemo(
+    () => new Map(agentHookStatus?.agents.map((status) => [status.agentId, status]) ?? []),
+    [agentHookStatus],
+  );
+  const installedHookCount =
+    agentHookStatus?.agents.filter((status) => status.status === "installed").length ?? 0;
+  const hookStatusSummary = agentHookStatus
+    ? agentHookStatus.errorMessage
+      ? "Unable to check hooks"
+      : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} hooks ready`
+    : agentHookStatusLoading
+      ? "Checking hooks"
+      : "Hook status not checked";
 
   const saveAgent = (draft: AgentConfigDraft) => {
     if (!vscode) {
@@ -2735,6 +2788,89 @@ function AgentsSettingsTab({
   return (
     <ScrollArea className="h-full min-h-0">
       <div className="flex flex-col gap-6 px-5 pb-5">
+        {!editorState ? (
+          <details className="group rounded-lg border border-border bg-muted/20">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 marker:hidden">
+              {/*
+               * CDXC:AgentHookSettings 2026-05-23-10:05:
+               * Settings -> Agents starts with a collapsed hook setup panel so reliable-resume requirements are discoverable without pushing normal agent ordering/editing controls down the tab. The panel must cover every current Ghostex CLI resume-hook agent, while T3 Code remains outside the hook list because its managed runtime does not use CLI hook capture.
+               */}
+              <span className="flex min-w-0 items-center gap-2">
+                <IconChevronDown
+                  aria-hidden="true"
+                  className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180"
+                />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium">Agent resume hooks</span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {hookStatusSummary}
+                  </span>
+                </span>
+              </span>
+              <AgentHookStatusIcon isLoading={agentHookStatusLoading} status={undefined} />
+            </summary>
+            <div className="flex flex-col gap-4 border-t border-border/70 px-4 pb-4 pt-3">
+              <div className="space-y-2 text-xs leading-5 text-muted-foreground">
+                <p>
+                  Install hooks so Ghostex can capture each agent&apos;s native session id and
+                  resume the exact conversation after sleep, reload, or app restart.
+                </p>
+                <p>
+                  Hooks write only session metadata into Ghostex&apos;s session-state files. The
+                  existing title-based restore path remains available when a hook has not captured
+                  an id yet.
+                </p>
+                <p>T3 Code uses Ghostex&apos;s managed runtime, so it does not need a CLI hook.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  disabled={!onInstallAgentHooks || agentHookStatusLoading}
+                  onClick={onInstallAgentHooks}
+                  type="button"
+                  variant="outline"
+                >
+                  <IconDownload aria-hidden="true" data-icon="inline-start" />
+                  Install Hooks
+                </Button>
+                <Button
+                  disabled={!onRequestAgentHookStatus || agentHookStatusLoading}
+                  onClick={onRequestAgentHookStatus}
+                  type="button"
+                  variant="ghost"
+                >
+                  <IconRefresh aria-hidden="true" data-icon="inline-start" />
+                  Refresh
+                </Button>
+              </div>
+              <div className="flex flex-col gap-2">
+                {agentHookStatus?.errorMessage ? (
+                  <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    {agentHookStatus.errorMessage}
+                  </div>
+                ) : null}
+                {AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.map((agent) => (
+                  <AgentHookStatusRow
+                    agent={{
+                      agentId: agent.agentId,
+                      command: agent.command,
+                      icon: agent.icon,
+                      isDefault: true,
+                      name: agent.name,
+                    }}
+                    isLoading={agentHookStatusLoading && !agentHookStatus}
+                    key={agent.agentId}
+                    status={hookStatusByAgentId.get(agent.agentId)}
+                  />
+                ))}
+              </div>
+              {agentHookStatus ? (
+                <div className="truncate text-[11px] text-muted-foreground">
+                  Hook state: {agentHookStatus.hookStateDirectory}
+                </div>
+              ) : null}
+            </div>
+          </details>
+        ) : null}
         {!editorState ? (
           <Field className="items-center justify-between rounded-lg border border-border bg-muted/20 px-4 py-3" orientation="horizontal">
             <FieldContent>
@@ -2816,6 +2952,111 @@ function AgentsSettingsTab({
       </div>
     </ScrollArea>
   );
+}
+
+function AgentHookStatusRow({
+  agent,
+  isLoading,
+  status,
+}: {
+  agent: SidebarAgentButton;
+  isLoading: boolean;
+  status?: SidebarAgentHookStatusItem;
+}) {
+  const statusText = getAgentHookStatusText(status, isLoading);
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-card/40 px-3 py-2">
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <span
+          aria-hidden="true"
+          className="settings-management-icon flex size-8 shrink-0 items-center justify-center bg-muted"
+        >
+          <SettingsAgentIcon agent={agent} />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium">{agent.name}</span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {status?.detail ?? agent.command ?? "Waiting for hook check"}
+          </span>
+        </span>
+      </div>
+      <span
+        className={cn(
+          "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium",
+          getAgentHookStatusClassName(status, isLoading),
+        )}
+      >
+        <AgentHookStatusIcon isLoading={isLoading} status={status} />
+        {statusText}
+      </span>
+    </div>
+  );
+}
+
+function AgentHookStatusIcon({
+  isLoading,
+  status,
+}: {
+  isLoading: boolean;
+  status?: SidebarAgentHookStatusItem;
+}) {
+  if (isLoading) {
+    return <IconRefresh aria-hidden="true" className="size-3.5 animate-spin" />;
+  }
+  if (!status) {
+    return <IconInfoCircle aria-hidden="true" className="size-3.5 text-muted-foreground" />;
+  }
+  switch (status.status) {
+    case "installed":
+      return <IconCircleCheckFilled aria-hidden="true" className="size-3.5 text-emerald-400" />;
+    case "cliMissing":
+      return <IconAlertTriangle aria-hidden="true" className="size-3.5 text-amber-400" />;
+    case "notRequired":
+      return <IconInfoCircle aria-hidden="true" className="size-3.5 text-muted-foreground" />;
+    case "missing":
+      return <IconCircleX aria-hidden="true" className="size-3.5 text-destructive" />;
+  }
+}
+
+function getAgentHookStatusText(
+  status: SidebarAgentHookStatusItem | undefined,
+  isLoading: boolean,
+): string {
+  if (isLoading) {
+    return "Checking";
+  }
+  if (!status) {
+    return "Not checked";
+  }
+  switch (status.status) {
+    case "installed":
+      return "Installed";
+    case "cliMissing":
+      return "CLI missing";
+    case "notRequired":
+      return "Not required";
+    case "missing":
+      return "Missing";
+  }
+}
+
+function getAgentHookStatusClassName(
+  status: SidebarAgentHookStatusItem | undefined,
+  isLoading: boolean,
+): string {
+  if (isLoading || !status) {
+    return "bg-muted text-muted-foreground";
+  }
+  switch (status.status) {
+    case "installed":
+      return "bg-emerald-500/10 text-emerald-300";
+    case "cliMissing":
+      return "bg-amber-500/10 text-amber-300";
+    case "notRequired":
+      return "bg-muted text-muted-foreground";
+    case "missing":
+      return "bg-destructive/10 text-destructive";
+  }
 }
 
 function SettingsAgentRow({

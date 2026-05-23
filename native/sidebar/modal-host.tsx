@@ -23,6 +23,7 @@ import { WorktreeCreateModal } from "../../sidebar/worktree-create-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
 import type {
   ExtensionToSidebarMessage,
+  SidebarAgentHookStatusMessage,
   SidebarGhostexFolderStatsMessage,
 } from "../../shared/session-grid-contract";
 import {
@@ -65,6 +66,7 @@ type AppModalKind =
 
 type T3BrowserAccessMessage = Extract<ExtensionToSidebarMessage, { type: "showT3BrowserAccess" }>;
 type AgentsHubCatalogMessage = Extract<ExtensionToSidebarMessage, { type: "agentsHubCatalog" }>;
+type AgentHookStatusMessage = Extract<ExtensionToSidebarMessage, { type: "agentHookStatus" }>;
 
 type AppModalHostMessage =
   | {
@@ -1418,8 +1420,10 @@ function AppModalHost() {
     t3BrowserAccess,
     t3ThreadId,
     worktree,
+    agentHookStatus,
     ghostexFolderStats,
   } = useModalStateFromNative();
+  const [agentHookStatusLoading, setAgentHookStatusLoading] = useState(false);
   const [ghostexFolderStatsLoading, setGhostexFolderStatsLoading] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
   const agents = useSidebarStore((state) => state.hud.agents);
@@ -1507,6 +1511,12 @@ function AppModalHost() {
       setGhostexFolderStatsLoading(false);
     }
   }, [ghostexFolderStats]);
+
+  useEffect(() => {
+    if (agentHookStatus) {
+      setAgentHookStatusLoading(false);
+    }
+  }, [agentHookStatus]);
 
   useEffect(() => {
     document.body.dataset.sidebarTheme = theme;
@@ -1675,6 +1685,8 @@ function AppModalHost() {
       />
       <SettingsModal
         accessibilityPermissionGranted={window.__ghostex_NATIVE_HOST__?.accessibilityPermissionGranted}
+        agentHookStatus={agentHookStatus}
+        agentHookStatusLoading={agentHookStatusLoading}
         initialTab={settingsInitialTab}
         isOpen={isSettingsRenderable}
         onChange={(nextSettings) => {
@@ -1713,6 +1725,14 @@ function AppModalHost() {
         onRequestGhostexFolderStats={() => {
           setGhostexFolderStatsLoading(true);
           vscode.postMessage({ type: "requestGhostexFolderStats" });
+        }}
+        onRequestAgentHookStatus={() => {
+          setAgentHookStatusLoading(true);
+          vscode.postMessage({ type: "requestAgentHookStatus" });
+        }}
+        onInstallAgentHooks={() => {
+          setAgentHookStatusLoading(true);
+          vscode.postMessage({ type: "installAgentHooks" });
         }}
         onTestAgentTaskCompletion={() => {
           vscode.postMessage({ type: "testAgentTaskCompletion" });
@@ -1869,6 +1889,7 @@ function useModalStateFromNative() {
   const [t3BrowserAccess, setT3BrowserAccess] = useState<T3BrowserAccessMessage>();
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
   const [worktree, setWorktree] = useState<WorktreeModalState>();
+  const [agentHookStatus, setAgentHookStatus] = useState<AgentHookStatusMessage>();
   const [ghostexFolderStats, setGhostexFolderStats] = useState<SidebarGhostexFolderStatsMessage>();
   const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
   const toastTokenRef = useRef(0);
@@ -2201,6 +2222,10 @@ function useModalStateFromNative() {
             setGhostexFolderStats(message.message);
             return;
           }
+          if (isAgentHookStatusMessage(message.message)) {
+            setAgentHookStatus(message.message);
+            return;
+          }
           applySidebarStateMessage(message.message);
         }
       } catch (error) {
@@ -2233,8 +2258,18 @@ function useModalStateFromNative() {
     t3BrowserAccess,
     t3ThreadId,
     worktree,
+    agentHookStatus,
     ghostexFolderStats,
   };
+}
+
+function isAgentHookStatusMessage(message: unknown): message is SidebarAgentHookStatusMessage {
+  return Boolean(
+    message &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === "agentHookStatus",
+  );
 }
 
 function isGhostexFolderStatsMessage(message: unknown): message is SidebarGhostexFolderStatsMessage {
