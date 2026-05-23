@@ -241,8 +241,12 @@ button,
  Use scoped CSS so the native modal host and Storybook share the same width without relying on newly generated utilities.
 
  CDXC:SettingsNavigation 2026-05-13-08:11: The modal should be 20% wider than the first section-sidebar layout and use a taller viewport so more settings remain visible without scrolling.
+
+ CDXC:SettingsNavigation 2026-05-23-11:05: Size top tabs and section nav from the modal width, not the viewport, so narrow sidebar webviews wrap labels instead of clipping them.
 */
 .ghostex-settings-shadcn.settings-modal-dialog {
+  container-name: settings-modal;
+  container-type: inline-size;
   height: min(860px, calc(100vh - 1rem));
   max-height: min(860px, calc(100vh - 1rem));
   max-width: min(1104px, calc(100vw - 1rem));
@@ -437,7 +441,30 @@ button,
   scroll-margin-top: 1rem;
 }
 
-@media (max-width: 720px) {
+.ghostex-settings-shadcn .settings-modal-tabs-scroll {
+  min-width: 0;
+}
+
+.ghostex-settings-shadcn .settings-modal-tabs-scroll [data-slot="tabs-list"] {
+  width: 100%;
+}
+
+@container settings-modal (max-width: 920px) {
+  .ghostex-settings-shadcn .settings-modal-tabs-scroll [data-slot="tabs-list"] {
+    display: flex !important;
+    flex-wrap: wrap;
+    height: auto !important;
+    justify-content: flex-start;
+    row-gap: 0.25rem;
+    width: 100% !important;
+  }
+
+  .ghostex-settings-shadcn .settings-modal-tabs-scroll [data-slot="tabs-trigger"] {
+    flex: 0 0 auto !important;
+  }
+}
+
+@container settings-modal (max-width: 720px) {
   .ghostex-settings-shadcn .settings-main-tab-layout {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -446,11 +473,15 @@ button,
     border-bottom: 1px solid var(--border);
     border-right: 0;
     display: flex;
-    overflow-x: auto;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+    overflow: visible;
     padding: 0 1.25rem 0.75rem;
   }
 
   .ghostex-settings-shadcn .settings-section-sidebar-button {
+    flex: 0 0 auto;
+    white-space: nowrap;
     width: auto;
   }
 }

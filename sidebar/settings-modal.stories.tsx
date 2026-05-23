@@ -83,3 +83,21 @@ export const LightOrange: Story = {
     />
   ),
 };
+
+export const NarrowModal: Story = {
+  parameters: {
+    viewport: {
+      defaultViewport: "narrowSettings",
+      viewports: {
+        narrowSettings: {
+          name: "Narrow settings modal",
+          styles: {
+            height: "900px",
+            width: "520px",
+          },
+        },
+      },
+    },
+  },
+  render: () => <SettingsModalStory />,
+};

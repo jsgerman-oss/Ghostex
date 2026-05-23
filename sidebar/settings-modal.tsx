@@ -1224,15 +1224,17 @@ export function SettingsModal({
              * entry points in the same dialog.
              */}
             {!isFirstLaunchSetup ? (
-            <TabsList className="mt-3 w-full">
-              <TabsTrigger value="settings">Settings</TabsTrigger>
-              <TabsTrigger value="ghostty">Ghostty</TabsTrigger>
-              <TabsTrigger value="projects">Projects</TabsTrigger>
-              <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
-              <TabsTrigger value="agents">Agents</TabsTrigger>
-              <TabsTrigger value="actions">Actions</TabsTrigger>
-              <TabsTrigger value="openTargets">Open In</TabsTrigger>
-            </TabsList>
+            <div className="settings-modal-tabs-scroll mt-3">
+              <TabsList>
+                <TabsTrigger value="settings">Settings</TabsTrigger>
+                <TabsTrigger value="ghostty">Ghostty</TabsTrigger>
+                <TabsTrigger value="projects">Projects</TabsTrigger>
+                <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
+                <TabsTrigger value="agents">Agents</TabsTrigger>
+                <TabsTrigger value="actions">Actions</TabsTrigger>
+                <TabsTrigger value="openTargets">Open In</TabsTrigger>
+              </TabsList>
+            </div>
             ) : null}
             {!isFirstLaunchSetup &&
             (activeTab === "settings" || activeTab === "ghostty" || activeTab === "hotkeys") ? (
