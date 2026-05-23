@@ -317,16 +317,24 @@ async function ensureMainSynced() {
 
   const head = await capture("git rev-parse HEAD");
   const originMain = await capture("git rev-parse origin/main");
-  if (head !== originMain) {
-    await runGitNetwork("git fetch origin main --tags");
-    const fetchedOriginMain = await capture("git rev-parse origin/main");
-    if (head !== fetchedOriginMain) {
-      throw new ReleaseError("Local main must match origin/main before the script creates the release commit.");
-    }
+  if (head === originMain) {
+    console.log("Local main already matches origin/main; skipping git fetch.");
     return;
   }
 
-  console.log("Local main already matches origin/main; skipping git fetch.");
+  try {
+    await run(`git merge-base --is-ancestor ${shellQuote(originMain)} ${shellQuote(head)}`);
+    console.log("Local main is ahead of origin/main; continuing without fetch.");
+    return;
+  } catch {
+    // Local main is not a simple fast-forward ahead of origin/main.
+  }
+
+  await runGitNetwork("git fetch origin main --tags");
+  const fetchedOriginMain = await capture("git rev-parse origin/main");
+  if (head !== fetchedOriginMain) {
+    throw new ReleaseError("Local main must match origin/main before the script creates the release commit.");
+  }
 }
 
 async function captureGitNetwork(command, options = {}) {
