@@ -20,6 +20,7 @@ enum HostCommand: Decodable {
   case activateApp
   case writeTerminalText(WriteTerminalText)
   case sendTerminalEnter(SessionCommand)
+  case readTerminalText(ReadTerminalText)
   case setActiveTerminalSet(SetActiveTerminalSet)
   case setSessionStatusIndicators(SetSessionStatusIndicators)
   case setPetOverlayState(SetPetOverlayState)
@@ -57,6 +58,7 @@ enum HostCommand: Decodable {
   case setSidebarSide(SetSidebarSide)
   case setReactTitlebarHitRegions(SetReactTitlebarHitRegions)
   case openActiveProjectEditorFromTitlebar
+  case exitFocusModeFromTitlebar
   case openAgentsModeFromTitlebar
   case openGitHubProjectFromTitlebar
   case showProjectEditorCompanionFromTitlebar
@@ -98,6 +100,7 @@ enum HostCommand: Decodable {
     case activateApp
     case writeTerminalText
     case sendTerminalEnter
+    case readTerminalText
     case setActiveTerminalSet
     case setSessionStatusIndicators
     case setPetOverlayState
@@ -135,6 +138,7 @@ enum HostCommand: Decodable {
     case setSidebarSide
     case setReactTitlebarHitRegions
     case openActiveProjectEditorFromTitlebar
+    case exitFocusModeFromTitlebar
     case openAgentsModeFromTitlebar
     case openGitHubProjectFromTitlebar
     case showProjectEditorCompanionFromTitlebar
@@ -194,6 +198,8 @@ enum HostCommand: Decodable {
       self = .writeTerminalText(try WriteTerminalText(from: decoder))
     case .sendTerminalEnter:
       self = .sendTerminalEnter(try SessionCommand(from: decoder))
+    case .readTerminalText:
+      self = .readTerminalText(try ReadTerminalText(from: decoder))
     case .setActiveTerminalSet:
       self = .setActiveTerminalSet(try SetActiveTerminalSet(from: decoder))
     case .setSessionStatusIndicators:
@@ -269,6 +275,8 @@ enum HostCommand: Decodable {
       self = .setReactTitlebarHitRegions(try SetReactTitlebarHitRegions(from: decoder))
     case .openActiveProjectEditorFromTitlebar:
       self = .openActiveProjectEditorFromTitlebar
+    case .exitFocusModeFromTitlebar:
+      self = .exitFocusModeFromTitlebar
     case .openAgentsModeFromTitlebar:
       self = .openAgentsModeFromTitlebar
     case .openGitHubProjectFromTitlebar:
@@ -404,6 +412,12 @@ struct WriteTerminalText: Decodable {
   let text: String
 }
 
+struct ReadTerminalText: Decodable {
+  let requestId: String
+  let sessionId: String
+  let source: String?
+}
+
 struct SetActiveTerminalSet: Decodable {
   let activeProjectEditorId: String?
   let activeProjectDiffStats: TitlebarProjectDiffStats?
@@ -435,6 +449,7 @@ struct SetActiveTerminalSet: Decodable {
   let debuggingMode: Bool?
   let focusRequestId: Int?
   let focusedSessionId: String?
+  let isFocusModeActive: Bool?
   let sleepingSessionIds: [String]?
   let layoutChanged: Bool?
   let layout: NativeTerminalLayout?
@@ -868,6 +883,7 @@ enum HostEvent: Encodable {
   case nativeSessionSurfaceMissing(sessionId: String)
   case commandsPanelHeightRatioChanged(heightRatio: Double)
   case terminalError(sessionId: String, message: String)
+  case terminalTextResult(requestId: String, sessionId: String, ok: Bool, text: String?, error: String?)
   case projectEditorBackRequested(projectId: String)
   case projectEditorCompanionPaneHiddenChanged(projectId: String, hidden: Bool)
   case projectEditorTabSelected(projectId: String, url: String?)
@@ -907,6 +923,8 @@ enum HostEvent: Encodable {
     case requestId
     case ok
     case payloadJson
+    case error
+    case text
     case sessionPersistenceName
     case scope
     case status
@@ -1023,6 +1041,20 @@ enum HostEvent: Encodable {
       try container.encode("terminalError", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
       try container.encode(message, forKey: .message)
+    case .terminalTextResult(let requestId, let sessionId, let ok, let text, let error):
+      /**
+       CDXC:CliTerminalReadback 2026-05-23-13:18:
+       Agent-to-agent automation needs to inspect another visible Ghostex
+       terminal by session id or title. Return explicit CLI readback results
+       over the host-event bus so read operations do not create hidden sessions
+       or depend on screenshots.
+       */
+      try container.encode("terminalTextResult", forKey: .type)
+      try container.encode(requestId, forKey: .requestId)
+      try container.encode(sessionId, forKey: .sessionId)
+      try container.encode(ok, forKey: .ok)
+      try container.encodeIfPresent(text, forKey: .text)
+      try container.encodeIfPresent(error, forKey: .error)
     case .projectEditorBackRequested(let projectId):
       /**
        CDXC:ProjectEditorCompanion 2026-05-14-09:19:

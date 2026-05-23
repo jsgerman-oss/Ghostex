@@ -2037,6 +2037,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       workspaceView?.writeTerminalText(sessionId: command.sessionId, text: command.text)
     case .sendTerminalEnter(let command):
       workspaceView?.sendTerminalEnter(sessionId: command.sessionId)
+    case .readTerminalText(let command):
+      if let workspaceView {
+        workspaceView.readTerminalText(command)
+      } else {
+        (window?.contentView as? ghostexRootView)?.postHostEvent(
+          .terminalTextResult(
+            requestId: command.requestId,
+            sessionId: command.sessionId,
+            ok: false,
+            text: nil,
+            error: "workspace-view-missing"
+          ))
+      }
     case .setActiveTerminalSet(let command):
       updateAppTitlebarTitle(command.appTitle)
       (window?.contentView as? ghostexRootView)?.applyReactTitlebarProjectState(command)
@@ -2128,6 +2141,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .refreshWorkspaceOpenTargetAvailabilityFromTitlebar:
       break
     case .rotateActivePaneLayoutClockwiseFromTitlebar:
+      break
+    case .exitFocusModeFromTitlebar:
       break
     case .togglePetOverlayFromTitlebar:
       break
@@ -4958,6 +4973,9 @@ final class ghostexRootView: NSView {
     if let activeProjectPath = command.activeProjectPath {
       payload["projectPath"] = activeProjectPath
     }
+    if let isFocusModeActive = command.isFocusModeActive {
+      payload["isFocusModeActive"] = isFocusModeActive
+    }
     if let debuggingMode = command.debuggingMode {
       payload["debuggingMode"] = debuggingMode
     }
@@ -5148,6 +5166,18 @@ final class ghostexRootView: NSView {
           "timeInterval": "\(Date().timeIntervalSince1970)",
         ]))
     }
+  }
+
+  private func exitFocusModeFromTitlebar() {
+    /**
+     CDXC:SessionFocusMode 2026-05-23-14:35:
+     The titlebar exit-focus control must restore the pre-focus Code/Git/Project surface through the same sidebar-owned toggle path as native pane-tab double click.
+     */
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.exitFocusModeFromTitlebar?.();
+      undefined;
+      """)
   }
 
   private func openAgentsModeFromTitlebar() {
@@ -5393,6 +5423,8 @@ final class ghostexRootView: NSView {
       workspaceView.writeTerminalText(sessionId: command.sessionId, text: command.text)
     case .sendTerminalEnter(let command):
       workspaceView.sendTerminalEnter(sessionId: command.sessionId)
+    case .readTerminalText(let command):
+      workspaceView.readTerminalText(command)
     case .setActiveTerminalSet(let command):
       setAppTitlebarTitle(command.appTitle)
       applyReactTitlebarProjectState(command)
@@ -5504,6 +5536,8 @@ final class ghostexRootView: NSView {
       needsLayout = true
     case .openActiveProjectEditorFromTitlebar:
       openActiveProjectEditorFromTitlebar()
+    case .exitFocusModeFromTitlebar:
+      exitFocusModeFromTitlebar()
     case .openAgentsModeFromTitlebar:
       openAgentsModeFromTitlebar()
     case .openGitHubProjectFromTitlebar:
