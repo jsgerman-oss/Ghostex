@@ -769,37 +769,75 @@ function buildSessionAttachCommand(session) {
   if (shouldCreateMissingZmxSessionWithResume(session)) {
     return buildZmxAttachOrResumeCommand(session);
   }
+  if (isZmxSession(session) && session.status !== "sleep" && session.attachCommand) {
+    return buildMobileZmxAttachCommand(session.providerSessionName, session.attachCommand);
+  }
   return session.status === "sleep"
     ? session.resumeCommand || session.attachCommand
     : session.attachCommand || session.resumeCommand;
 }
 
+function isZmxSession(session) {
+  return String(session.provider ?? "").trim().toLowerCase() === "zmx";
+}
+
 function shouldCreateMissingZmxSessionWithResume(session) {
   return (
-    String(session.provider ?? "").trim().toLowerCase() === "zmx" &&
+    isZmxSession(session) &&
     Boolean(String(session.providerSessionName ?? "").trim()) &&
     Boolean(String(session.resumeCommand ?? "").trim())
   );
 }
 
+function buildMobileZmxAttachCommand(sessionName, fallbackAttachCommand) {
+  const normalizedSessionName = String(sessionName ?? "").trim();
+  if (!normalizedSessionName) {
+    return fallbackAttachCommand;
+  }
+  /**
+   * CDXC:iOSRemoteAttach 2026-05-23-19:58:
+   * Mobile `ghostex attach --session-id` opens through an iPhone native Ghostty surface.
+   * Use zmx's visible-only reattach mode so the phone receives the active viewport first instead of a full scrollback replay that can monopolize UIKit/Metal before floating controls can respond.
+   */
+  return `zmx attach --visible-only ${shellQuote(normalizedSessionName)}`;
+}
+
 function buildZmxAttachOrResumeCommand(session) {
   const sessionName = String(session.providerSessionName).trim();
   const resumeCommand = String(session.resumeCommand).trim();
+  const resumeFallbackCommand = String(session.resumeFallbackCommand ?? "").trim();
   const cwd = String(session.projectPath || ".").trim() || ".";
   const script = `
 zmx_session=${shellQuote(sessionName)}
 zmx_resume_command=${shellQuote(resumeCommand)}
+zmx_resume_fallback_command=${shellQuote(resumeFallbackCommand)}
 zmx_cwd=${shellQuote(cwd)}
+export zmx_resume_command zmx_resume_fallback_command
 unset ZMX_SESSION ZMX_SESSION_PREFIX
 if ! command -v zmx >/dev/null 2>&1; then
   printf '%s\\n' 'zmx was not found on PATH.'
   exit 127
 fi
 if zmx list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
-  exec zmx attach "$zmx_session"
+  exec zmx attach --visible-only "$zmx_session"
 fi
 cd "$zmx_cwd" || exit
-exec zmx attach "$zmx_session" /bin/zsh -lc "$zmx_resume_command"
+zmx_resume_launcher='
+set +e
+/bin/zsh -lc "$zmx_resume_command"
+zmx_resume_status=$?
+if [ "$zmx_resume_status" -ne 0 ] && [ -n "$zmx_resume_fallback_command" ] && [ "$zmx_resume_fallback_command" != "$zmx_resume_command" ]; then
+  printf '"'"'%s\\n'"'"' "Exact resume failed; trying saved fallback resume command."
+  /bin/zsh -lc "$zmx_resume_fallback_command"
+  zmx_resume_status=$?
+fi
+if [ "$zmx_resume_status" -ne 0 ]; then
+  printf '"'"'\\n%s\\n'"'"' "Resume command exited with status $zmx_resume_status. Leaving this pane open for inspection."
+  exec "\${SHELL:-/bin/zsh}" -l
+fi
+exit 0
+'
+exec zmx attach --visible-only "$zmx_session" /bin/zsh -lc "$zmx_resume_launcher"
 `;
   /**
    * CDXC:AndroidRemoteSessions 2026-05-21-07:21:

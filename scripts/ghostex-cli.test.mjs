@@ -163,9 +163,42 @@ describe("ghostex CLI Android remote-session contract", () => {
     });
 
     expect(command).toContain("zmx list --short");
-    expect(command).toContain('exec zmx attach "$zmx_session"');
-    expect(command).toContain('exec zmx attach "$zmx_session" /bin/zsh -lc "$zmx_resume_command"');
+    expect(command).toContain('exec zmx attach --visible-only "$zmx_session"');
+    expect(command).toContain(
+      'exec zmx attach --visible-only "$zmx_session" /bin/zsh -lc "$zmx_resume_launcher"',
+    );
     expect(command).toContain("codex resume");
+    expect(command).toContain('exec "${SHELL:-/bin/zsh}" -l');
+    expect(command).toContain("Leaving this pane open for inspection.");
+  });
+
+  test("tries zmx resume fallback before leaving failed resume pane open", () => {
+    const command = buildSessionAttachCommand({
+      alias: 7,
+      attachCommand: "zmx attach ghostex-session-7",
+      projectPath: "/Users/madda/project",
+      provider: "zmx",
+      providerSessionName: "ghostex-session-7",
+      resumeCommand: 'codex resume "019e5383-127b-76f1-a4bf-a785b3b3bf4f"',
+      resumeFallbackCommand: 'codex resume "Ship Android"',
+      status: "idle",
+    });
+
+    expect(command).toContain("zmx_resume_fallback_command=");
+    expect(command).toContain("Exact resume failed; trying saved fallback resume command.");
+    expect(command).toContain('/bin/zsh -lc "$zmx_resume_fallback_command"');
+  });
+
+  test("uses visible-only zmx attach for live mobile sessions", () => {
+    const command = buildSessionAttachCommand({
+      alias: 8,
+      attachCommand: "zmx attach ghostex-session-8",
+      provider: "zmx",
+      providerSessionName: "ghostex-session-8",
+      status: "working",
+    });
+
+    expect(command).toBe("zmx attach --visible-only 'ghostex-session-8'");
   });
 
   test("preserves sidebar project and session order from the inventory", () => {
