@@ -58,6 +58,8 @@ Options:
   --skip-typecheck   Skip bun run typecheck.
   --skip-brew-fetch  Skip final brew fetch checks.
   --no-push          Commit release metadata but do not push, tag, publish GitHub, or update Homebrew.
+  --no-terminal-delegate
+                     Fail instead of handing off to Terminal.app when the agent shell cannot see signing/notary credentials.
   --help             Show this help.
 
 Expected state:
@@ -72,6 +74,7 @@ function parseArgs(argv) {
     skipTypecheck: false,
     skipBrewFetch: false,
     noPush: false,
+    noTerminalDelegate: false,
   };
   const positional = [];
 
@@ -86,6 +89,8 @@ function parseArgs(argv) {
       options.skipBrewFetch = true;
     } else if (arg === "--no-push") {
       options.noPush = true;
+    } else if (arg === "--no-terminal-delegate") {
+      options.noTerminalDelegate = true;
     } else if (arg.startsWith("-")) {
       throw new ReleaseError(`Unknown option: ${arg}`);
     } else {
@@ -121,6 +126,10 @@ function timestampForComment(date = new Date()) {
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function appleScriptString(value) {
+  return `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
 function logStep(message) {
@@ -314,39 +323,68 @@ function terminalReleasePaths(version) {
   return {
     logPath: `/tmp/ghostex-release-${version}.log`,
     runnerPath: `/tmp/ghostex-release-${version}.command`,
+    startedPath: `/tmp/ghostex-release-${version}.started`,
+    donePath: `/tmp/ghostex-release-${version}.done`,
+    exitPath: `/tmp/ghostex-release-${version}.exit`,
   };
 }
 
 async function writeTerminalReleaseRunner(version) {
-  const { logPath, runnerPath } = terminalReleasePaths(version);
+  const { logPath, runnerPath, startedPath, donePath, exitPath } = terminalReleasePaths(version);
   const identity = releaseSigningIdentity();
+  await rm(logPath, { force: true });
+  await rm(startedPath, { force: true });
+  await rm(donePath, { force: true });
+  await rm(exitPath, { force: true });
+  await writeFile(
+    logPath,
+    [
+      `Ghostex release ${version} prepared for Terminal.app at ${new Date().toISOString()}`,
+      `Runner: ${runnerPath}`,
+      "",
+    ].join("\n"),
+  );
   const runner = `#!/bin/zsh -l
-set -euo pipefail
+set -uo pipefail
 cd ${shellQuote(repoRoot)}
 unset GH_TOKEN GITHUB_TOKEN
 export GHOSTEX_CODE_SIGN_IDENTITY=${shellQuote(identity)}
 export GHOSTEX_CODE_SIGN_TIMESTAMP_FLAG=--timestamp
+export GHOSTEX_RELEASE_TERMINAL_DELEGATED=1
+exec > >(tee -a ${shellQuote(logPath)}) 2>&1
+echo "Ghostex release ${version} Terminal runner started at $(date)"
+touch ${shellQuote(startedPath)}
+status=0
 {
-  echo "Ghostex release ${version} started at $(date)"
   security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "$HOME/Library/Keychains/iCloud.keychain-db" /Library/Keychains/System.keychain 2>/dev/null || true
   security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
   security unlock-keychain "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
   security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" | rg ${shellQuote("Developer ID Application: Mohamad Youssef \\(KTKP595G3B\\)")}
   xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8
   gh auth status -h github.com
-  bun run release:local -- ${shellQuote(version)}
+  bun run release:local -- ${shellQuote(version)} --no-terminal-delegate
+} || {
+  status=$?
+}
+if [ "$status" -eq 0 ]; then
   echo "Ghostex release ${version} finished at $(date)"
-} 2>&1 | tee ${shellQuote(logPath)}
+else
+  echo "Ghostex release ${version} failed with status $status at $(date)"
+fi
+echo "$status" > ${shellQuote(exitPath)}
+touch ${shellQuote(donePath)}
+exit "$status"
 `;
   await writeFile(runnerPath, runner, { mode: 0o755 });
-  return { logPath, runnerPath };
+  return { logPath, runnerPath, startedPath, donePath, exitPath };
 }
 
 async function launchTerminalReleaseRunner(runnerPath) {
   logStep("Launch release through login-session Terminal");
+  const terminalCommand = `/bin/zsh -l ${shellQuote(runnerPath)}`;
+  const appleScriptCommand = appleScriptString(terminalCommand);
   const attempts = [
-    `open -b com.apple.Terminal ${shellQuote(runnerPath)}`,
-    `open ${shellQuote(runnerPath)}`,
+    `osascript -e 'tell application "Terminal" to activate' -e ${shellQuote(`tell application "Terminal" to do script ${appleScriptCommand}`)}`,
     "/Applications/OpenInTerminal.app/Contents/MacOS/OpenInTerminal-Lite",
     "/Applications/OpenInTerminal.app/Contents/MacOS/OpenInTerminal",
   ].map((command) => (command.endsWith("OpenInTerminal-Lite") || command.endsWith("OpenInTerminal")
@@ -373,37 +411,49 @@ async function launchTerminalReleaseRunner(runnerPath) {
   );
 }
 
-async function waitForReleaseLog(logPath, timeoutMs = 4 * 60 * 60 * 1000) {
+async function waitForReleaseStart(startedPath, logPath, runnerPath, timeoutMs = 60 * 1000) {
   const startedAt = Date.now();
-  while (!existsSync(logPath)) {
+  while (!existsSync(startedPath)) {
     if (Date.now() - startedAt > timeoutMs) {
-      throw new ReleaseError(`Timed out waiting for release log: ${logPath}`);
+      const log = existsSync(logPath) ? await readFile(logPath, "utf8") : "(log file was not created)";
+      throw new ReleaseError(
+        [
+          "Timed out waiting for Terminal.app to start the release runner.",
+          `Runner: ${runnerPath}`,
+          `Log: ${logPath}`,
+          "",
+          log.trim(),
+        ].join("\n"),
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 }
 
-async function monitorTerminalReleaseLog(version, logPath) {
+async function monitorTerminalReleaseLog(version, paths) {
+  const { logPath, runnerPath, startedPath, donePath, exitPath } = paths;
   logStep(`Monitor Terminal release log (${logPath})`);
-  await waitForReleaseLog(logPath);
-  let lastSize = 0;
+  await waitForReleaseStart(startedPath, logPath, runnerPath);
+  let lastLength = 0;
   let stableFor = 0;
   while (true) {
     const log = existsSync(logPath) ? await readFile(logPath, "utf8") : "";
-    if (/Release complete|Ghostex release .+ finished at/.test(log)) {
-      console.log(log.trim());
-      return;
+    const nextChunk = log.slice(lastLength);
+    if (nextChunk) {
+      process.stdout.write(nextChunk);
+      lastLength = log.length;
     }
-    if (/No valid code signing identity|notary profile .+ is unavailable|Command failed|error: script "release:local"/i.test(log)) {
-      throw new ReleaseError(log.trim() || `Terminal release failed. See ${logPath}`);
+    if (existsSync(donePath)) {
+      const exitCode = existsSync(exitPath) ? (await readFile(exitPath, "utf8")).trim() : "unknown";
+      if (exitCode === "0") {
+        return;
+      }
+      throw new ReleaseError(log.trim() || `Terminal release failed with status ${exitCode}. See ${logPath}`);
     }
-    const size = Buffer.byteLength(log);
-    stableFor = size === lastSize ? stableFor + 1 : 0;
-    lastSize = size;
+    stableFor = nextChunk ? 0 : stableFor + 1;
     if (stableFor >= 180) {
       throw new ReleaseError(`Terminal release appears stalled. See ${logPath}`);
     }
-    process.stdout.write(log.slice(Math.max(0, log.length - 4000)));
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }
@@ -423,9 +473,9 @@ async function agentShellCredentialsReady() {
 }
 
 async function delegateReleaseToTerminal(version) {
-  const { logPath, runnerPath } = await writeTerminalReleaseRunner(version);
-  await launchTerminalReleaseRunner(runnerPath);
-  await monitorTerminalReleaseLog(version, logPath);
+  const paths = await writeTerminalReleaseRunner(version);
+  await launchTerminalReleaseRunner(paths.runnerPath);
+  await monitorTerminalReleaseLog(version, paths);
 }
 
 async function ensureNotaryProfile() {
@@ -955,7 +1005,9 @@ async function main() {
   console.log(`Ghostex local release: ${version}`);
   console.log(`Sparkle build version: ${buildVersion}`);
 
-  if (!(await agentShellCredentialsReady())) {
+  await ensureCleanWorktree();
+
+  if (!options.noTerminalDelegate && !process.env.GHOSTEX_RELEASE_TERMINAL_DELEGATED && !(await agentShellCredentialsReady())) {
     console.warn(
       "Agent shell cannot access Developer ID signing or notary credentials. Delegating to Terminal.app.",
     );
