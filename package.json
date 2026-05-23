@@ -12,6 +12,7 @@
     "build:dev": "GHOSTEX_APP_VARIANT=dev native/macos/ghostexHost/build-ghostex-host.sh",
     "android:verify-release": "scripts/ghostex-android-release-readiness.sh",
     "android:verify-release:local": "scripts/ghostex-android-release-readiness.sh --local",
+    "release:local": "node scripts/release-ghostex.mjs",
     "build:sidebar-css": "tailwindcss -i sidebar/styles/shadcn.css -o sidebar/styles/shadcn.generated.css --minify",
     "cli": "node scripts/ghostex-cli.mjs",
     "storybook": "bun run build:sidebar-css && storybook dev -p 6006 --no-open",
