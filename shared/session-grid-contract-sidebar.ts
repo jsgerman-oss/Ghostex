@@ -58,6 +58,31 @@ export type AgentsHubCatalogMessage = {
   type: "agentsHubCatalog";
 };
 
+export type SidebarAgentHookStatus = "installed" | "missing" | "cliMissing" | "notRequired";
+
+export type SidebarAgentHookStatusItem = {
+  agentId: string;
+  cliCommand: string;
+  cliInstalled: boolean;
+  detail: string;
+  hookInstalled: boolean;
+  paths: string[];
+  status: SidebarAgentHookStatus;
+};
+
+/**
+ * CDXC:AgentHookSettings 2026-05-23-10:05:
+ * Settings -> Agents shows machine-local hook setup status for the same reliable-resume agents Ghostex installs at startup. Native owns filesystem inspection and returns only normalized status rows so the modal host can render the result without direct filesystem access.
+ */
+export type SidebarAgentHookStatusMessage = {
+  agents: SidebarAgentHookStatusItem[];
+  errorMessage?: string;
+  generatedAt: string;
+  hookStateDirectory: string;
+  notifyHookPath: string;
+  type: "agentHookStatus";
+};
+
 export type SidebarSessionItem = {
   kind?: "browser" | "workspace";
   sessionKind?: "browser" | "terminal" | "t3";
@@ -486,6 +511,7 @@ export type ExtensionToSidebarMessage =
   | SidebarPromptGitCommitMessage
   | SidebarShowT3BrowserAccessMessage
   | SidebarGhostexFolderStatsMessage
+  | SidebarAgentHookStatusMessage
   | SidebarShowSessionRenameModalMessage
   | SidebarShowFindPreviousSessionModalMessage
   | SidebarShowT3ThreadIdModalMessage;
@@ -501,6 +527,13 @@ export type SidebarToExtensionMessage =
        * resolves the folder path itself and never trusts a path from React.
        */
       type: "requestGhostexFolderStats" | "openGhostexFolder";
+    }
+  | {
+      /**
+       * CDXC:AgentHookSettings 2026-05-23-10:05:
+       * Settings -> Agents can refresh hook status and trigger the existing hook installer, but native remains the owner of config paths, executable checks, and hook-file mutation.
+       */
+      type: "requestAgentHookStatus" | "installAgentHooks";
     }
   | {
       settings: ghostexSettings;
@@ -735,6 +768,17 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "focusSession";
+      sessionId: string;
+    }
+  | {
+      /**
+       * CDXC:SessionFocusMode 2026-05-23-09:28:
+       * Session-card and pane-tab Focus is a reversible zoom for the clicked
+       * session's pane tab group. The native/sidebar controller owns this
+       * command because it must also switch from Code/Git/Project surfaces back
+       * to Agents while remembering the prior surface for unfocus.
+       */
+      type: "focusSessionMode";
       sessionId: string;
     }
   | {

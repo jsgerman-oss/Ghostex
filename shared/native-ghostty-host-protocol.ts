@@ -359,6 +359,17 @@ export type NativeGhosttyHostEvent =
       type: "terminalBell";
     }
   | {
+      /**
+       * CDXC:SessionSurfaceRecovery 2026-05-23-09:05:
+       * AppKit reports this when an active/focused layout id has no native
+       * terminal or web surface. The sidebar owns recovery because it can full
+       * reload restorable agent sessions or replace non-restorable records with
+       * a fresh terminal in the same slot.
+       */
+      sessionId: string;
+      type: "nativeSessionSurfaceMissing";
+    }
+  | {
       heightRatio: number;
       type: "commandsPanelHeightRatioChanged";
     }
@@ -380,6 +391,16 @@ export type NativeGhosttyHostEvent =
   | {
       sessionId: string;
       type: "paneTabSelected";
+    }
+  | {
+      /**
+       * CDXC:SessionFocusMode 2026-05-23-09:28:
+       * Native tab Focus is separate from selection because it enters the
+       * reversible session-focus mode and may temporarily switch the project
+       * workarea back to Agents before restoring Code/Git/Project on unfocus.
+       */
+      sessionId: string;
+      type: "paneTabFocusRequested";
     }
   | {
       /**
