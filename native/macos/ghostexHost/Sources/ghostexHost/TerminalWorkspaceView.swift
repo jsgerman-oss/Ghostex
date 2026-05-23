@@ -65,8 +65,16 @@ private struct ProjectBeadsBridgeRequest: Decodable {
   let action: String
   let comment: String?
   let cwd: String
+  let dependsOnId: String?
+  let depType: String?
   let description: String?
+  let estimate: Int?
   let issueId: String?
+  let label: String?
+  let labels: [String]?
+  let priority: String?
+  let prompt: String?
+  let query: String?
   let requestId: String
   let status: String?
   let title: String?
@@ -978,6 +986,47 @@ struct GhostexGhosttySurfaceModel {
     text.withCString { ptr in
       ghostty_surface_text(surface, ptr, UInt(text.utf8.count))
     }
+  }
+
+  func readText(source: String?) -> String? {
+    let pointTag: ghostty_point_tag_e =
+      source == "visible" ? GHOSTTY_POINT_VIEWPORT : GHOSTTY_POINT_SCREEN
+    let topLeft = ghostty_point_s(
+      tag: pointTag,
+      coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+      x: 0,
+      y: 0
+    )
+    let bottomRight = ghostty_point_s(
+      tag: pointTag,
+      coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+      x: 0,
+      y: 0
+    )
+    let selection = ghostty_selection_s(
+      top_left: topLeft,
+      bottom_right: bottomRight,
+      rectangle: false
+    )
+    var result = ghostty_text_s(
+      tl_px_x: 0,
+      tl_px_y: 0,
+      offset_start: 0,
+      offset_len: 0,
+      text: nil,
+      text_len: 0
+    )
+    guard ghostty_surface_read_text(surface, selection, &result) else {
+      return nil
+    }
+    defer {
+      ghostty_surface_free_text(surface, &result)
+    }
+    guard let text = result.text, result.text_len > 0 else {
+      return ""
+    }
+    let data = Data(bytes: text, count: Int(result.text_len))
+    return String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
   }
 
   @discardableResult
@@ -4276,6 +4325,35 @@ final class TerminalWorkspaceView: NSView {
     sessions[sessionId]?.view.surfaceModel?.sendText(text)
   }
 
+  func readTerminalText(_ command: ReadTerminalText) {
+    /**
+     CDXC:CliTerminalReadback 2026-05-23-13:18:
+     Ghostex CLI readback must inspect the existing visible sidebar-backed
+     Ghostty surface. Do not spawn helper terminals or shell commands for this
+     path, because agent coordination must never create hidden sessions.
+     */
+    guard let surfaceModel = sessions[command.sessionId]?.view.surfaceModel else {
+      sendEvent(
+        .terminalTextResult(
+          requestId: command.requestId,
+          sessionId: command.sessionId,
+          ok: false,
+          text: nil,
+          error: "terminal-surface-missing"
+        ))
+      return
+    }
+    let text = surfaceModel.readText(source: command.source)
+    sendEvent(
+      .terminalTextResult(
+        requestId: command.requestId,
+        sessionId: command.sessionId,
+        ok: text != nil,
+        text: text,
+        error: text == nil ? "terminal-text-unavailable" : nil
+      ))
+  }
+
   /**
    CDXC:SessionTitleSync 2026-04-26-10:04
    The sidebar stages `/rename <title>` as terminal text, then submits it with
@@ -6061,7 +6139,32 @@ final class TerminalWorkspaceView: NSView {
   ) -> ProjectBeadsBridgeResponse {
     do {
       let cwd = try projectBeadsWorkingDirectory(request.cwd)
+      if request.action == "generateTitle" {
+        let title = try projectBeadsGenerateTitle(
+          cwd: cwd,
+          prompt: try projectBeadsRequired(request.prompt, field: "prompt"))
+        let payload = try JSONSerialization.data(withJSONObject: ["title": title])
+        return ProjectBeadsBridgeResponse(
+          error: nil,
+          exitCode: 0,
+          requestId: request.requestId,
+          stderr: "",
+          stdout: String(data: payload, encoding: .utf8) ?? "")
+      }
+      if request.action == "listIssues" {
+        let issues = try projectBeadsReadIssuesJsonl(cwd: cwd)
+        let payload = try JSONSerialization.data(withJSONObject: issues)
+        return ProjectBeadsBridgeResponse(
+          error: nil,
+          exitCode: 0,
+          requestId: request.requestId,
+          stderr: "",
+          stdout: String(data: payload, encoding: .utf8) ?? "[]")
+      }
       let arguments = try projectBeadsArguments(for: request)
+      if arguments.isEmpty {
+        throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads action: \(request.action)")
+      }
       let stdoutPipe = Pipe()
       let stderrPipe = Pipe()
       let stdoutCollector = projectBeadsPipeCollector(stdoutPipe)
@@ -6107,16 +6210,31 @@ final class TerminalWorkspaceView: NSView {
     case "configSet":
       return ["config", "set", "status.custom", try projectBeadsRequired(request.value, field: "value"), "--json"]
     case "create":
-      return [
+      var createArguments = [
         "create",
         "--title", try projectBeadsRequired(request.title, field: "title"),
         "--description", request.description ?? "",
-        "--priority", "2",
+        "--priority", request.priority ?? "2",
         "--type", "task",
-        "--json",
       ]
+      if let estimate = request.estimate {
+        createArguments.append(contentsOf: ["--estimate", String(estimate)])
+      }
+      if let labels = request.labels, !labels.isEmpty {
+        createArguments.append(contentsOf: ["--labels", labels.joined(separator: ",")])
+      }
+      if let dependsOnId = request.dependsOnId?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !dependsOnId.isEmpty
+      {
+        let depType = request.depType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "blocks"
+        createArguments.append(contentsOf: ["--deps", "\(depType):\(dependsOnId)"])
+      }
+      createArguments.append("--json")
+      return createArguments
     case "list":
       return ["list", "--all", "--json"]
+    case "listIssues":
+      return []
     case "show":
       return ["show", try projectBeadsRequired(request.issueId, field: "issueId"), "--json"]
     case "updateDescription":
@@ -6137,9 +6255,178 @@ final class TerminalWorkspaceView: NSView {
         "--status", status,
         "--json",
       ]
+    case "updateTitle":
+      return [
+        "update",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        "--title", try projectBeadsRequired(request.title, field: "title"),
+        "--json",
+      ]
+    case "updatePriority":
+      return [
+        "update",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        "--priority", try projectBeadsRequired(request.priority, field: "priority"),
+        "--json",
+      ]
+    case "updateEstimate":
+      guard let estimate = request.estimate else {
+        throw ProjectBeadsBridgeError.invalidRequest("Missing required Beads field: estimate")
+      }
+      return [
+        "update",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        "--estimate", String(estimate),
+        "--json",
+      ]
+    case "setLabels":
+      var arguments = [
+        "update",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+      ]
+      if let labels = request.labels, !labels.isEmpty {
+        for label in labels {
+          arguments.append(contentsOf: ["--set-labels", label])
+        }
+      }
+      arguments.append("--json")
+      return arguments
+    case "addLabel":
+      return [
+        "label", "add",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        try projectBeadsRequired(request.label, field: "label"),
+        "--json",
+      ]
+    case "removeLabel":
+      return [
+        "label", "remove",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        try projectBeadsRequired(request.label, field: "label"),
+        "--json",
+      ]
+    case "listAllLabels":
+      return ["label", "list-all", "--json"]
+    case "depAdd":
+      let depType = request.depType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "blocks"
+      return [
+        "dep", "add",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        try projectBeadsRequired(request.dependsOnId, field: "dependsOnId"),
+        "--type", depType,
+        "--json",
+      ]
+    case "depRemove":
+      return [
+        "dep", "remove",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        try projectBeadsRequired(request.dependsOnId, field: "dependsOnId"),
+        "--json",
+      ]
+    case "search":
+      return [
+        "search",
+        try projectBeadsRequired(request.query, field: "query"),
+        "--json",
+      ]
+    case "configGetIssuePrefix":
+      return ["config", "get", "issue_prefix", "--json"]
+    case "configSetIssuePrefix":
+      return [
+        "config", "set", "issue_prefix",
+        try projectBeadsRequired(request.value, field: "value"),
+        "--json",
+      ]
     default:
       throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads action: \(request.action)")
     }
+  }
+
+  private static func projectBeadsReadIssuesJsonl(cwd: URL) throws -> [[String: Any]] {
+    let jsonlURL = cwd.appendingPathComponent(".beads/issues.jsonl")
+    guard FileManager.default.fileExists(atPath: jsonlURL.path) else {
+      return []
+    }
+    let contents = try String(contentsOf: jsonlURL, encoding: .utf8)
+    var issues: [[String: Any]] = []
+    for line in contents.split(whereSeparator: \.isNewline) {
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty,
+        let data = trimmed.data(using: .utf8),
+        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+      else {
+        continue
+      }
+      issues.append(object)
+    }
+    return issues
+  }
+
+  private static func projectBeadsGenerateTitle(cwd: URL, prompt: String) throws -> String {
+    /**
+     CDXC:ProjectBoard 2026-05-23-14:18:
+     Ticket title autogeneration must reuse the same Codex summarization policy as native session first-prompt naming so empty ticket titles stay consistent across Ghostex surfaces.
+     */
+    let sourceText = String(prompt.prefix(4_000))
+    let generationPrompt = """
+    Write a concise session title that summarizes the user's text.
+    Return plain text only.
+    Rules:
+    - keep it specific and scannable
+    - prefer 2 to 4 words when possible
+    - must be fewer than 40 characters
+    - do not abbreviate with ellipses
+    - do not use quotes, markdown, or commentary
+    - do not end with punctuation
+    - focus on the task, bug, feature, or topic
+
+    User text:
+    \(sourceText)
+
+    Output handling:
+    - Produce only the final session title.
+    - Do not wrap the result in backticks.
+    - Print only the final result to stdout.
+    """
+    let delimiter = "ghostex_SESSION_TITLE_\(Int(Date().timeIntervalSince1970))"
+    let command = """
+    codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"' - <<'\(delimiter)'
+    \(generationPrompt)
+    \(delimiter)
+    """
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    let stdoutCollector = projectBeadsPipeCollector(stdoutPipe)
+    let stderrCollector = projectBeadsPipeCollector(stderrPipe)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    process.arguments = ["-lc", command]
+    process.currentDirectoryURL = cwd
+    process.environment = projectBoardNativeProcessEnvironment()
+    process.standardOutput = stdoutPipe
+    process.standardError = stderrPipe
+    try process.run()
+    process.waitUntilExit()
+    if process.terminationStatus != 0 {
+      let stderr = stderrCollector().trimmingCharacters(in: .whitespacesAndNewlines)
+      throw ProjectBeadsBridgeError.invalidRequest(
+        stderr.isEmpty ? "Codex title generation failed." : stderr)
+    }
+    let stdout = stdoutCollector().trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let line = stdout.split(whereSeparator: \.isNewline).map(String.init).first(where: { !$0.isEmpty })
+    else {
+      throw ProjectBeadsBridgeError.invalidRequest("Codex title generation returned an empty title.")
+    }
+    let sanitized =
+      line
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .replacingOccurrences(of: #"^["'`]+|["'`]+$"#, with: "", options: .regularExpression)
+      .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+      .replacingOccurrences(of: #"[.…]+$"#, with: "", options: .regularExpression)
+    guard !sanitized.isEmpty else {
+      throw ProjectBeadsBridgeError.invalidRequest("Codex title generation returned an empty title.")
+    }
+    return String(sanitized.prefix(39))
   }
 
   private static func projectBeadsRequired(_ value: String?, field: String) throws -> String {
