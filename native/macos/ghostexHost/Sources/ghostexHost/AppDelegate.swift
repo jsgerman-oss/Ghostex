@@ -6422,6 +6422,19 @@ final class ghostexRootView: NSView {
        Sidebar input must not pass through modal-host or titlebar WKWebViews.
        Bottom-center toast overlays can remain visible over the work area, but
        project/session navigation in the sidebar always owns its frame first.
+      */
+      return hitView
+    }
+    if !modalHostView.isHidden,
+      let hitView = modalHostView.hitTest(convert(point, to: modalHostView))
+    {
+      /**
+       CDXC:AppModals 2026-05-23-13:05:
+       Real app modals must beat all workspace chrome hit targets. Otherwise
+       narrow Settings/Agents Hub layouts can visually cover native pane tabs
+       while AppKit still lets those tabs receive clicks behind the modal.
+       Toast-only hosts still pass through here because their hit regions are
+       explicitly empty.
        */
       return hitView
     }
@@ -6438,11 +6451,6 @@ final class ghostexRootView: NSView {
       return nativeChromeHitView
     }
     if let hitView = titlebarChromeView.hitTest(convert(point, to: titlebarChromeView)) {
-      return hitView
-    }
-    if !modalHostView.isHidden,
-      let hitView = modalHostView.hitTest(convert(point, to: modalHostView))
-    {
       return hitView
     }
     if workspaceView.frame.contains(point),
