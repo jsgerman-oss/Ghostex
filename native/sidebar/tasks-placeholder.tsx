@@ -3,9 +3,19 @@ import {
   IconMessageCircle,
   IconPlus,
   IconRefresh,
+  IconSearch,
+  IconX,
 } from "@tabler/icons-react";
 import { DragDropProvider, useDraggable, useDroppable } from "@dnd-kit/react";
-import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type KeyboardEvent,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,78 +33,73 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  BOARD_COLUMNS,
+  PRIORITY_OPTIONS,
+  TSHIRT_OPTIONS,
+  appendImageMarkdownToDescription,
+  beadsErrorMessage,
+  beadsStatusToBoardStatus,
+  boardStatusBeadsValue,
+  boardStatusLabel,
+  buildAgentWorkPrompt,
+  ensureWorkflowStatuses,
+  extractDescriptionImagePreviews,
+  filterBoardTickets,
+  formatShortDate,
+  getBlockedByIds,
+  getBlockingIds,
+  normalizeBeadsPayload,
+  normalizeDisplayIssueKey,
+  parseBeadsJson,
+  priorityLabel,
+  tshirtToEstimate,
+  toBoardTickets,
+  estimateToTshirt,
+  type BeadsBridgeRequest,
+  type BeadsBridgeResponse,
+  type BeadsIssue,
+  type BoardStatusKey,
+  type BoardTicket,
+  type TshirtSize,
+} from "./project-board-shared";
 import "../../sidebar/styles/shadcn.generated.css";
 
-type BoardStatusKey = "todo" | "in_progress" | "test" | "review" | "done";
 type LoadState = "idle" | "loading" | "ready" | "error";
 
-type BeadsIssue = {
-  assignee?: string;
-  comment_count?: number;
-  comments?: BeadsComment[];
-  created_at?: string;
-  description?: string;
-  id: string;
-  issue_type?: string;
-  labels?: string[];
-  priority?: number;
-  status: string;
-  title: string;
-  updated_at?: string;
-};
-
-type BeadsComment = {
-  author?: string;
-  created_at?: string;
-  text?: string;
-};
-
-type BoardTicket = BeadsIssue & {
-  boardStatus: BoardStatusKey;
-};
-
-type BeadsBridgeAction =
-  | "addComment"
-  | "configGet"
-  | "configSet"
-  | "create"
-  | "list"
-  | "show"
-  | "updateDescription"
-  | "updateStatus";
-
-type BeadsBridgeRequest = {
-  action: BeadsBridgeAction;
-  comment?: string;
-  cwd: string;
-  description?: string;
-  issueId?: string;
-  requestId: string;
-  status?: string;
-  title?: string;
-  value?: string;
-};
-
-type BeadsBridgeResponse = {
-  error?: string;
-  exitCode: number;
-  requestId: string;
-  stderr: string;
-  stdout: string;
-};
-
-type DragEndPayload = Parameters<
-  NonNullable<ComponentProps<typeof DragDropProvider>["onDragEnd"]>
->[0];
-
 type DetailDraft = {
+  blockedByIds: string[];
+  blockingIds: string[];
   comment: string;
   description: string;
   isSaving: boolean;
+  labels: string[];
+  priority: string;
+  status: BoardStatusKey;
+  title: string;
+  tshirt?: TshirtSize;
   ticket?: BoardTicket;
+};
+
+type TicketFormDraft = {
+  blockedByIds: string[];
+  blockingIds: string[];
+  description: string;
+  labels: string[];
+  priority: string;
+  title: string;
+  tshirt?: TshirtSize;
 };
 
 type ProjectBeadsWebKitWindow = Window & {
@@ -110,51 +115,49 @@ type ProjectBeadsWebKitWindow = Window & {
 const BRIDGE_REQUEST_PREFIX = "__GHOSTEX_PROJECT_BEADS_REQUEST__";
 const BRIDGE_RESPONSE_EVENT = "ghostex-project-beads-response";
 const INSTALL_BEADS_COMMAND = "brew install beads";
-/*
-  CDXC:ProjectBoard 2026-05-23-03:23:
-  The board needs Beads custom statuses for Test and Review, but upstream bd 0.29 validates updates against bare status names even when config accepts category annotations.
-  Store test/review as bare custom statuses so moving cards through the board works with the installed upstream CLI instead of writing config the updater rejects.
-*/
-const REQUIRED_CUSTOM_STATUS_CONFIG = "test,review";
-
-const columns: Array<{
-  key: BoardStatusKey;
-  label: string;
-  beadsStatus: string;
-  tone: string;
-}> = [
-  { key: "todo", label: "Todo", beadsStatus: "open", tone: "neutral" },
-  { key: "in_progress", label: "In Progress", beadsStatus: "in_progress", tone: "blue" },
-  { key: "test", label: "Test", beadsStatus: "test", tone: "amber" },
-  { key: "review", label: "Review", beadsStatus: "review", tone: "violet" },
-  { key: "done", label: "Done", beadsStatus: "closed", tone: "green" },
-];
 
 function ProjectBoardApp() {
   const projectName = new URLSearchParams(window.location.search).get("projectName") || "Project";
   const projectPath = new URLSearchParams(window.location.search).get("projectPath") || "";
+  const displayKey = normalizeDisplayIssueKey(
+    new URLSearchParams(window.location.search).get("beadsDisplayKey") ?? projectName,
+  );
   const [tickets, setTickets] = useState<BoardTicket[]>([]);
+  const [allIssues, setAllIssues] = useState<BeadsIssue[]>([]);
+  const [knownLabels, setKnownLabels] = useState<string[]>([]);
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<BoardStatusKey | "all">("all");
   const [detail, setDetail] = useState<DetailDraft>({
+    blockedByIds: [],
+    blockingIds: [],
     comment: "",
     description: "",
     isSaving: false,
+    labels: [],
+    priority: "2",
+    status: "todo",
+    title: "",
   });
   const [newTicketOpen, setNewTicketOpen] = useState(false);
-  const [newTicketTitle, setNewTicketTitle] = useState("");
-  const [newTicketDescription, setNewTicketDescription] = useState("");
+  const [newTicket, setNewTicket] = useState<TicketFormDraft>({
+    blockedByIds: [],
+    blockingIds: [],
+    description: "",
+    labels: [],
+    priority: "2",
+    title: "",
+  });
   const [isCreating, setIsCreating] = useState(false);
+  const newPromptRef = useRef<HTMLTextAreaElement>(null);
 
   const runBeads = useCallback(
     async (request: Omit<BeadsBridgeRequest, "cwd" | "requestId">) => {
       if (!projectPath) {
         throw new Error("No active project path is available.");
       }
-      const response = await sendBeadsRequest({
-        ...request,
-        cwd: projectPath,
-      });
+      const response = await sendBeadsRequest({ ...request, cwd: projectPath });
       if (response.exitCode !== 0) {
         throw new Error(beadsErrorMessage(response.stderr || response.stdout));
       }
@@ -168,56 +171,84 @@ function ProjectBoardApp() {
     setErrorMessage("");
     try {
       await ensureWorkflowStatuses(runBeads);
-      const payload = await runBeads({ action: "list" });
-      const issues = normalizeBeadsPayload<BeadsIssue[]>(payload, []);
-      setTickets(
-        issues
-          .filter((issue) => issue && typeof issue.id === "string")
-          .map((issue) => ({
-            ...issue,
-            boardStatus: beadsStatusToBoardStatus(issue.status),
-          })),
-      );
+      const payload = await runBeads({ action: "listIssues" });
+      const issues = normalizeBeadsPayload<BeadsIssue[]>(payload, Array.isArray(payload) ? payload : []);
+      setAllIssues(issues);
+      setTickets(toBoardTickets(issues, displayKey));
+      const labelsPayload = await runBeads({ action: "listAllLabels" });
+      const labels = normalizeBeadsPayload<string[]>(labelsPayload, []);
+      setKnownLabels(labels.filter((label) => typeof label === "string").sort());
       setLoadState("ready");
     } catch (error) {
       setLoadState("error");
       setErrorMessage(error instanceof Error ? error.message : "Could not load Beads issues.");
     }
-  }, [runBeads]);
+  }, [displayKey, runBeads]);
 
   useEffect(() => {
     void loadTickets();
   }, [loadTickets]);
 
+  const filteredTickets = useMemo(
+    () => filterBoardTickets(tickets, searchQuery, statusFilter),
+    [searchQuery, statusFilter, tickets],
+  );
+
   const ticketsByColumn = useMemo(() => {
-    return columns.reduce<Record<BoardStatusKey, BoardTicket[]>>(
+    return BOARD_COLUMNS.reduce<Record<BoardStatusKey, BoardTicket[]>>(
       (result, column) => {
-        result[column.key] = tickets.filter((ticket) => ticket.boardStatus === column.key);
+        result[column.key] = filteredTickets.filter((ticket) => ticket.boardStatus === column.key);
         return result;
       },
       { done: [], in_progress: [], review: [], test: [], todo: [] },
     );
-  }, [tickets]);
+  }, [filteredTickets]);
+
+  const ticketOptions = useMemo(
+    () =>
+      tickets.map((ticket) => ({
+        id: ticket.id,
+        label: `${ticket.displayId} · ${ticket.title}`,
+      })),
+    [tickets],
+  );
 
   const openTicket = async (ticket: BoardTicket) => {
     setDetail({
+      blockedByIds: getBlockedByIds(ticket),
+      blockingIds: getBlockingIds(ticket.id, allIssues),
       comment: "",
       description: ticket.description ?? "",
       isSaving: false,
+      labels: ticket.labels ?? [],
+      priority: String(ticket.priority ?? 2),
+      status: ticket.boardStatus,
+      title: ticket.title,
+      tshirt: estimateToTshirt(ticket.estimate),
       ticket,
     });
     try {
       const payload = await runBeads({ action: "show", issueId: ticket.id });
       const issue = normalizeBeadsPayload<BeadsIssue>(payload, ticket);
-      const nextTicket = {
+      const mergedIssue = allIssues.find((candidate) => candidate.id === ticket.id) ?? issue;
+      const nextTicket: BoardTicket = {
         ...ticket,
         ...issue,
+        ...mergedIssue,
         boardStatus: beadsStatusToBoardStatus(issue.status ?? ticket.status),
+        displayId: ticket.displayId,
       };
       setDetail({
+        blockedByIds: getBlockedByIds(mergedIssue),
+        blockingIds: getBlockingIds(ticket.id, allIssues),
         comment: "",
         description: nextTicket.description ?? "",
         isSaving: false,
+        labels: nextTicket.labels ?? [],
+        priority: String(nextTicket.priority ?? 2),
+        status: nextTicket.boardStatus,
+        title: nextTicket.title,
+        tshirt: estimateToTshirt(nextTicket.estimate),
         ticket: nextTicket,
       });
     } catch (error) {
@@ -226,7 +257,7 @@ function ProjectBoardApp() {
   };
 
   const moveTicket = async (ticketId: string, statusKey: BoardStatusKey) => {
-    const column = columns.find((candidate) => candidate.key === statusKey);
+    const column = BOARD_COLUMNS.find((candidate) => candidate.key === statusKey);
     const ticket = tickets.find((candidate) => candidate.id === ticketId);
     if (!column || !ticket || ticket.boardStatus === statusKey) {
       return;
@@ -244,7 +275,7 @@ function ProjectBoardApp() {
         issueId: ticketId,
         status: column.beadsStatus,
       });
-      void loadTickets();
+      await loadTickets();
     } catch (error) {
       setTickets((current) =>
         current.map((candidate) => (candidate.id === ticketId ? ticket : candidate)),
@@ -253,7 +284,7 @@ function ProjectBoardApp() {
     }
   };
 
-  const handleDragEnd = (event: DragEndPayload) => {
+  const handleDragEnd: ComponentProps<typeof DragDropProvider>["onDragEnd"] = (event) => {
     if (event.canceled) {
       return;
     }
@@ -261,6 +292,24 @@ function ProjectBoardApp() {
     const statusKey = event.operation.target?.id as BoardStatusKey | undefined;
     if (ticketId && statusKey) {
       void moveTicket(ticketId, statusKey);
+    }
+  };
+
+  const syncDependencies = async (issueId: string, blockedByIds: string[], blockingIds: string[]) => {
+    const issue = allIssues.find((candidate) => candidate.id === issueId);
+    const currentBlockedBy = issue ? getBlockedByIds(issue) : [];
+    const currentBlocking = issue ? getBlockingIds(issueId, allIssues) : [];
+    for (const dependencyId of currentBlockedBy.filter((id) => !blockedByIds.includes(id))) {
+      await runBeads({ action: "depRemove", dependsOnId: dependencyId, issueId });
+    }
+    for (const dependencyId of blockedByIds.filter((id) => !currentBlockedBy.includes(id))) {
+      await runBeads({ action: "depAdd", dependsOnId: dependencyId, issueId, depType: "blocks" });
+    }
+    for (const dependentId of currentBlocking.filter((id) => !blockingIds.includes(id))) {
+      await runBeads({ action: "depRemove", dependsOnId: issueId, issueId: dependentId });
+    }
+    for (const dependentId of blockingIds.filter((id) => !currentBlocking.includes(id))) {
+      await runBeads({ action: "depAdd", dependsOnId: issueId, issueId: dependentId, depType: "blocks" });
     }
   };
 
@@ -272,10 +321,43 @@ function ProjectBoardApp() {
     try {
       const trimmedComment = detail.comment.trim();
       await runBeads({
+        action: "updateTitle",
+        issueId: detail.ticket.id,
+        title: detail.title.trim(),
+      });
+      await runBeads({
         action: "updateDescription",
         description: detail.description,
         issueId: detail.ticket.id,
       });
+      await runBeads({
+        action: "updatePriority",
+        issueId: detail.ticket.id,
+        priority: detail.priority,
+      });
+      const estimate = tshirtToEstimate(detail.tshirt);
+      if (estimate !== undefined) {
+        await runBeads({
+          action: "updateEstimate",
+          estimate,
+          issueId: detail.ticket.id,
+        });
+      }
+      if (detail.labels.length > 0) {
+        await runBeads({
+          action: "setLabels",
+          issueId: detail.ticket.id,
+          labels: detail.labels,
+        });
+      }
+      await syncDependencies(detail.ticket.id, detail.blockedByIds, detail.blockingIds);
+      if (detail.status !== detail.ticket.boardStatus) {
+        await runBeads({
+          action: "updateStatus",
+          issueId: detail.ticket.id,
+          status: boardStatusBeadsValue(detail.status),
+        });
+      }
       if (trimmedComment) {
         await runBeads({
           action: "addComment",
@@ -283,8 +365,18 @@ function ProjectBoardApp() {
           issueId: detail.ticket.id,
         });
       }
-      await openTicket(detail.ticket);
-      void loadTickets();
+      setDetail({
+        blockedByIds: [],
+        blockingIds: [],
+        comment: "",
+        description: "",
+        isSaving: false,
+        labels: [],
+        priority: "2",
+        status: "todo",
+        title: "",
+      });
+      await loadTickets();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not save the ticket.");
       setDetail((current) => ({ ...current, isSaving: false }));
@@ -292,19 +384,50 @@ function ProjectBoardApp() {
   };
 
   const createTicket = async () => {
-    const title = newTicketTitle.trim();
-    if (!title) {
+    const prompt = newTicket.description.trim();
+    if (!prompt) {
       return;
     }
     setIsCreating(true);
     try {
-      await runBeads({
+      let title = newTicket.title.trim();
+      if (!title) {
+        const generated = normalizeBeadsPayload<{ title?: string }>(
+          await runBeads({ action: "generateTitle", prompt }),
+          {},
+        );
+        title = generated.title?.trim() || prompt.slice(0, 39);
+      }
+      const estimate = tshirtToEstimate(newTicket.tshirt);
+      const createdPayload = await runBeads({
         action: "create",
-        description: newTicketDescription,
+        description: prompt,
+        dependsOnId: newTicket.blockedByIds[0],
+        estimate,
+        labels: newTicket.labels,
+        priority: newTicket.priority,
         title,
       });
-      setNewTicketTitle("");
-      setNewTicketDescription("");
+      const created = normalizeBeadsPayload<BeadsIssue | BeadsIssue[]>(createdPayload, []);
+      const createdIssue = Array.isArray(created) ? created[0] : created;
+      if (createdIssue?.id) {
+        await syncDependencies(createdIssue.id, newTicket.blockedByIds, newTicket.blockingIds);
+        if (newTicket.labels.length > 0) {
+          await runBeads({
+            action: "setLabels",
+            issueId: createdIssue.id,
+            labels: newTicket.labels,
+          });
+        }
+      }
+      setNewTicket({
+        blockedByIds: [],
+        blockingIds: [],
+        description: "",
+        labels: [],
+        priority: "2",
+        title: "",
+      });
       setNewTicketOpen(false);
       await loadTickets();
     } catch (error) {
@@ -314,17 +437,37 @@ function ProjectBoardApp() {
     }
   };
 
+  const startTicketWork = async () => {
+    if (!detail.ticket) {
+      return;
+    }
+    try {
+      await runBeads({
+        action: "updateStatus",
+        issueId: detail.ticket.id,
+        status: "in_progress",
+      });
+      const prompt = buildAgentWorkPrompt(detail.ticket);
+      await navigator.clipboard?.writeText(prompt);
+      setErrorMessage("");
+      await loadTickets();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not start ticket work.");
+    }
+  };
+
+  useEffect(() => {
+    if (!newTicketOpen) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      newPromptRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [newTicketOpen]);
+
   return (
     <main className="project-board-shell">
-      {/*
-        CDXC:ProjectBoard 2026-05-23-03:00:
-        The Project titlebar tab now needs to be a real Linear-style board, not a placeholder.
-        Render five first-class swimlanes, allow drag/drop status updates through dnd-kit, and keep ticket prompt text plus comments in a detail dialog.
-
-        CDXC:ProjectBoard 2026-05-23-03:00:
-        The backend must use the upstream Beads CLI directly so task history remains in the repository's shared Beads/Dolt data.
-        The React surface asks native to execute whitelisted bd commands in the active project directory and shows install/init guidance when bd is unavailable or the project has not been initialized.
-      */}
       <section className="project-board-toolbar">
         <div>
           <p className="project-board-eyebrow">{projectName}</p>
@@ -347,11 +490,39 @@ function ProjectBoardApp() {
         </div>
       </section>
 
+      <section className="project-board-filters" aria-label="Ticket filters">
+        <div className="project-board-search">
+          <IconSearch aria-hidden="true" />
+          <Input
+            aria-label="Search tickets"
+            onChange={(event) => setSearchQuery(event.currentTarget.value)}
+            placeholder="Search tickets"
+            value={searchQuery}
+          />
+        </div>
+        <Select
+          onValueChange={(value) => setStatusFilter(value as BoardStatusKey | "all")}
+          value={statusFilter}
+        >
+          <SelectTrigger aria-label="Filter by status" size="sm">
+            <SelectValue placeholder="All statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            {BOARD_COLUMNS.map((column) => (
+              <SelectItem key={column.key} value={column.key}>
+                {column.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </section>
+
       {errorMessage ? <ProjectBoardNotice message={errorMessage} /> : null}
 
       <DragDropProvider onDragEnd={handleDragEnd}>
         <section className="project-board-lanes" aria-label="Project issue board">
-          {columns.map((column) => (
+          {BOARD_COLUMNS.map((column) => (
             <BoardLane
               column={column}
               key={column.key}
@@ -366,28 +537,90 @@ function ProjectBoardApp() {
         open={Boolean(detail.ticket)}
         onOpenChange={(open) => {
           if (!open) {
-            setDetail({ comment: "", description: "", isSaving: false });
+            setDetail({
+              blockedByIds: [],
+              blockingIds: [],
+              comment: "",
+              description: "",
+              isSaving: false,
+              labels: [],
+              priority: "2",
+              status: "todo",
+              title: "",
+            });
           }
         }}
       >
         <DialogContent className="project-ticket-dialog">
           <DialogHeader>
-            <DialogTitle>{detail.ticket?.title ?? "Ticket"}</DialogTitle>
+            <DialogTitle>Edit ticket</DialogTitle>
             <DialogDescription>
-              {detail.ticket?.id} · {detail.ticket ? boardStatusLabel(detail.ticket.boardStatus) : ""}
+              {detail.ticket?.displayId} · {detail.ticket?.id}
             </DialogDescription>
           </DialogHeader>
-          <div className="project-ticket-dialog-body">
+          <div
+            className="project-ticket-dialog-body"
+            onKeyDown={(event) => handleCmdEnter(event, () => void saveTicketDetail())}
+          >
+            <TicketMetaFields
+              blockedByIds={detail.blockedByIds}
+              blockingIds={detail.blockingIds}
+              knownLabels={knownLabels}
+              labels={detail.labels}
+              onBlockedByChange={(blockedByIds) =>
+                setDetail((current) => ({ ...current, blockedByIds }))
+              }
+              onBlockingChange={(blockingIds) =>
+                setDetail((current) => ({ ...current, blockingIds }))
+              }
+              onLabelsChange={(labels) => setDetail((current) => ({ ...current, labels }))}
+              onPriorityChange={(priority) => setDetail((current) => ({ ...current, priority }))}
+              onStatusChange={(status) => setDetail((current) => ({ ...current, status }))}
+              onTshirtChange={(tshirt) => setDetail((current) => ({ ...current, tshirt }))}
+              priority={detail.priority}
+              status={detail.status}
+              ticketOptions={ticketOptions.filter((option) => option.id !== detail.ticket?.id)}
+              tshirt={detail.tshirt}
+            />
+            <label className="project-ticket-field">
+              <span>Title</span>
+              <Textarea
+                className="project-ticket-title-input"
+                onChange={(event) =>
+                  setDetail((current) => ({ ...current, title: event.target.value }))
+                }
+                value={detail.title}
+              />
+            </label>
             <label className="project-ticket-field">
               <span>Prompt</span>
               <Textarea
+                className="project-ticket-prompt-input"
                 onChange={(event) =>
                   setDetail((current) => ({ ...current, description: event.target.value }))
                 }
+                onPaste={(event) => {
+                  void pasteImageFromClipboard(event).then((image) => {
+                    if (!image) {
+                      return;
+                    }
+                    event.preventDefault();
+                    setDetail((current) => ({
+                      ...current,
+                      description: appendImageMarkdownToDescription(current.description, image),
+                    }));
+                  });
+                }}
                 placeholder="Write the full prompt for this ticket."
                 value={detail.description}
               />
             </label>
+            <ImagePreviewStrip description={detail.description} />
+            <DependencySummary
+              blockedByIds={detail.blockedByIds}
+              blockingIds={detail.blockingIds}
+              tickets={tickets}
+            />
             <section className="project-ticket-comments" aria-label="Comments">
               <div className="project-ticket-section-title">Comments</div>
               <ScrollArea className="project-ticket-comment-list">
@@ -417,8 +650,11 @@ function ProjectBoardApp() {
               />
             </label>
           </div>
-          <DialogFooter>
-            <Button disabled={detail.isSaving} onClick={saveTicketDetail}>
+          <DialogFooter className="project-ticket-dialog-footer">
+            <Button onClick={() => void startTicketWork()} type="button" variant="outline">
+              Start work
+            </Button>
+            <Button disabled={detail.isSaving} onClick={() => void saveTicketDetail()}>
               {detail.isSaving ? "Saving" : "Save"}
             </Button>
           </DialogFooter>
@@ -429,29 +665,75 @@ function ProjectBoardApp() {
         <DialogContent className="project-ticket-dialog">
           <DialogHeader>
             <DialogTitle>New Ticket</DialogTitle>
-            <DialogDescription>Create a Beads issue in Todo.</DialogDescription>
+            <DialogDescription>
+              Leave the title empty to auto-generate it from the prompt. Creates in Todo.
+            </DialogDescription>
           </DialogHeader>
-          <div className="project-ticket-dialog-body">
+          <div
+            className="project-ticket-dialog-body"
+            onKeyDown={(event) => handleCmdEnter(event, () => void createTicket())}
+          >
+            <TicketMetaFields
+              blockedByIds={newTicket.blockedByIds}
+              blockingIds={newTicket.blockingIds}
+              knownLabels={knownLabels}
+              labels={newTicket.labels}
+              onBlockedByChange={(blockedByIds) =>
+                setNewTicket((current) => ({ ...current, blockedByIds }))
+              }
+              onBlockingChange={(blockingIds) =>
+                setNewTicket((current) => ({ ...current, blockingIds }))
+              }
+              onLabelsChange={(labels) => setNewTicket((current) => ({ ...current, labels }))}
+              onPriorityChange={(priority) => setNewTicket((current) => ({ ...current, priority }))}
+              onStatusChange={() => undefined}
+              onTshirtChange={(tshirt) => setNewTicket((current) => ({ ...current, tshirt }))}
+              priority={newTicket.priority}
+              status="todo"
+              showStatus={false}
+              ticketOptions={ticketOptions}
+              tshirt={newTicket.tshirt}
+            />
             <label className="project-ticket-field">
               <span>Title</span>
               <Textarea
                 className="project-ticket-title-input"
-                onChange={(event) => setNewTicketTitle(event.target.value)}
-                placeholder="Ticket title"
-                value={newTicketTitle}
+                onChange={(event) => setNewTicket((current) => ({ ...current, title: event.target.value }))}
+                placeholder="Auto-generated from prompt when left empty"
+                value={newTicket.title}
               />
             </label>
             <label className="project-ticket-field">
               <span>Prompt</span>
               <Textarea
-                onChange={(event) => setNewTicketDescription(event.target.value)}
+                className="project-ticket-prompt-input"
+                onChange={(event) =>
+                  setNewTicket((current) => ({ ...current, description: event.target.value }))
+                }
+                onPaste={(event) => {
+                  void pasteImageFromClipboard(event).then((image) => {
+                    if (!image) {
+                      return;
+                    }
+                    event.preventDefault();
+                    setNewTicket((current) => ({
+                      ...current,
+                      description: appendImageMarkdownToDescription(current.description, image),
+                    }));
+                  });
+                }}
                 placeholder="Write the full prompt for this ticket."
-                value={newTicketDescription}
+                ref={newPromptRef}
+                value={newTicket.description}
               />
             </label>
+            <ImagePreviewStrip description={newTicket.description} />
           </div>
           <DialogFooter>
-            <Button disabled={isCreating || !newTicketTitle.trim()} onClick={createTicket}>
+            <Button
+              disabled={isCreating || !newTicket.description.trim()}
+              onClick={() => void createTicket()}
+            >
               {isCreating ? "Creating" : "Create"}
             </Button>
           </DialogFooter>
@@ -461,12 +743,270 @@ function ProjectBoardApp() {
   );
 }
 
+function TicketMetaFields({
+  blockedByIds,
+  blockingIds,
+  knownLabels,
+  labels,
+  onBlockedByChange,
+  onBlockingChange,
+  onLabelsChange,
+  onPriorityChange,
+  onStatusChange,
+  onTshirtChange,
+  priority,
+  showStatus = true,
+  status,
+  ticketOptions,
+  tshirt,
+}: {
+  blockedByIds: string[];
+  blockingIds: string[];
+  knownLabels: string[];
+  labels: string[];
+  onBlockedByChange: (ids: string[]) => void;
+  onBlockingChange: (ids: string[]) => void;
+  onLabelsChange: (labels: string[]) => void;
+  onPriorityChange: (priority: string) => void;
+  onStatusChange: (status: BoardStatusKey) => void;
+  onTshirtChange: (size: TshirtSize | undefined) => void;
+  priority: string;
+  showStatus?: boolean;
+  status: BoardStatusKey;
+  ticketOptions: Array<{ id: string; label: string }>;
+  tshirt?: TshirtSize;
+}) {
+  const [labelDraft, setLabelDraft] = useState("");
+  const labelSuggestions = knownLabels.filter((label) => !labels.includes(label));
+
+  return (
+    <div className="project-ticket-meta-grid">
+      {showStatus ? (
+        <label className="project-ticket-field project-ticket-field-inline">
+          <span>Status</span>
+          <Select onValueChange={(value) => onStatusChange(value as BoardStatusKey)} value={status}>
+            <SelectTrigger size="sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {BOARD_COLUMNS.map((column) => (
+                <SelectItem key={column.key} value={column.key}>
+                  {column.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+      ) : null}
+      <label className="project-ticket-field project-ticket-field-inline">
+        <span>Priority</span>
+        <Select onValueChange={onPriorityChange} value={priority}>
+          <SelectTrigger size="sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {PRIORITY_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+      <label className="project-ticket-field project-ticket-field-inline">
+        <span>T-shirt</span>
+        <Select
+          onValueChange={(value) => onTshirtChange(value === "none" ? undefined : (value as TshirtSize))}
+          value={tshirt ?? "none"}
+        >
+          <SelectTrigger size="sm">
+            <SelectValue placeholder="None" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">None</SelectItem>
+            {TSHIRT_OPTIONS.map((option) => (
+              <SelectItem key={option.label} value={option.label}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+      <DependencyPicker
+        label="Blocked by"
+        onChange={onBlockedByChange}
+        selectedIds={blockedByIds}
+        ticketOptions={ticketOptions}
+      />
+      <DependencyPicker
+        label="Blocking"
+        onChange={onBlockingChange}
+        selectedIds={blockingIds}
+        ticketOptions={ticketOptions}
+      />
+      <div className="project-ticket-field project-ticket-labels-field">
+        <span>Labels</span>
+        <div className="project-ticket-label-list">
+          {labels.map((label) => (
+            <button
+              className="project-ticket-label-chip"
+              key={label}
+              onClick={() => onLabelsChange(labels.filter((candidate) => candidate !== label))}
+              type="button"
+            >
+              {label}
+              <IconX aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+        <div className="project-ticket-label-editor">
+          <Input
+            aria-label="Add label"
+            list="project-board-label-suggestions"
+            onChange={(event) => setLabelDraft(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                const next = labelDraft.trim();
+                if (next && !labels.includes(next)) {
+                  onLabelsChange([...labels, next]);
+                }
+                setLabelDraft("");
+              }
+            }}
+            placeholder="Add label"
+            value={labelDraft}
+          />
+          <datalist id="project-board-label-suggestions">
+            {labelSuggestions.map((label) => (
+              <option key={label} value={label} />
+            ))}
+          </datalist>
+          <Button
+            onClick={() => {
+              const next = labelDraft.trim();
+              if (next && !labels.includes(next)) {
+                onLabelsChange([...labels, next]);
+              }
+              setLabelDraft("");
+            }}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            Add
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DependencyPicker({
+  label,
+  onChange,
+  selectedIds,
+  ticketOptions,
+}: {
+  label: string;
+  onChange: (ids: string[]) => void;
+  selectedIds: string[];
+  ticketOptions: Array<{ id: string; label: string }>;
+}) {
+  const [draft, setDraft] = useState("");
+  const available = ticketOptions.filter((option) => !selectedIds.includes(option.id));
+  return (
+    <div className="project-ticket-field">
+      <span>{label}</span>
+      <div className="project-ticket-label-list">
+        {selectedIds.map((id) => {
+          const ticket = ticketOptions.find((option) => option.id === id);
+          return (
+            <button
+              className="project-ticket-label-chip"
+              key={id}
+              onClick={() => onChange(selectedIds.filter((candidate) => candidate !== id))}
+              type="button"
+            >
+              {ticket?.label ?? id}
+              <IconX aria-hidden="true" />
+            </button>
+          );
+        })}
+      </div>
+      <Select
+        onValueChange={(value) => {
+          if (value && !selectedIds.includes(value)) {
+            onChange([...selectedIds, value]);
+          }
+          setDraft("");
+        }}
+        value={draft}
+      >
+        <SelectTrigger size="sm">
+          <SelectValue placeholder={`Add ${label.toLowerCase()} ticket`} />
+        </SelectTrigger>
+        <SelectContent>
+          {available.map((option) => (
+            <SelectItem key={option.id} value={option.id}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+function DependencySummary({
+  blockedByIds,
+  blockingIds,
+  tickets,
+}: {
+  blockedByIds: string[];
+  blockingIds: string[];
+  tickets: BoardTicket[];
+}) {
+  if (blockedByIds.length === 0 && blockingIds.length === 0) {
+    return null;
+  }
+  const labelFor = (id: string) => tickets.find((ticket) => ticket.id === id)?.displayId ?? id;
+  return (
+    <div className="project-ticket-dependencies">
+      {blockedByIds.length > 0 ? (
+        <p>
+          <strong>Blocked by:</strong> {blockedByIds.map(labelFor).join(", ")}
+        </p>
+      ) : null}
+      {blockingIds.length > 0 ? (
+        <p>
+          <strong>Blocking:</strong> {blockingIds.map(labelFor).join(", ")}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ImagePreviewStrip({ description }: { description: string }) {
+  const images = extractDescriptionImagePreviews(description);
+  if (images.length === 0) {
+    return null;
+  }
+  return (
+    <div className="project-ticket-image-strip" aria-label="Image previews">
+      {images.map((src, index) => (
+        <img alt="" className="project-ticket-image-thumb" key={`${src.slice(0, 32)}-${index}`} src={src} />
+      ))}
+    </div>
+  );
+}
+
 function BoardLane({
   column,
   onOpenTicket,
   tickets,
 }: {
-  column: (typeof columns)[number];
+  column: (typeof BOARD_COLUMNS)[number];
   onOpenTicket: (ticket: BoardTicket) => void;
   tickets: BoardTicket[];
 }) {
@@ -490,13 +1030,13 @@ function BoardLane({
         </div>
         <span>{tickets.length}</span>
       </header>
-      <ScrollArea className="project-board-lane-scroll">
+      <div className="project-board-lane-scroll">
         <div className="project-board-card-stack">
           {tickets.map((ticket) => (
             <TicketCard key={ticket.id} onOpenTicket={onOpenTicket} ticket={ticket} />
           ))}
         </div>
-      </ScrollArea>
+      </div>
     </section>
   );
 }
@@ -513,6 +1053,8 @@ function TicketCard({
     id: ticket.id,
     type: "ticket",
   });
+  const blockedByCount = ticket.dependency_count ?? getBlockedByIds(ticket).length;
+  const blockingCount = ticket.dependent_count ?? 0;
 
   return (
     <Card
@@ -526,14 +1068,27 @@ function TicketCard({
     >
       <CardHeader className="project-board-card-header">
         <CardTitle>{ticket.title}</CardTitle>
-        <CardDescription>{ticket.id}</CardDescription>
+        <CardDescription>{ticket.displayId}</CardDescription>
       </CardHeader>
       <CardContent className="project-board-card-content">
         <p>{ticket.description || "No prompt yet."}</p>
+        {ticket.labels?.length ? (
+          <div className="project-board-card-labels">
+            {ticket.labels.map((label) => (
+              <span className="project-board-card-label" key={label}>
+                {label}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <Separator />
         <div className="project-board-card-meta">
-          <span className="project-board-priority">P{ticket.priority ?? 2}</span>
-          <span>{ticket.issue_type || "task"}</span>
+          <span className="project-board-priority">{priorityLabel(ticket.priority)}</span>
+          {estimateToTshirt(ticket.estimate) ? (
+            <span>{estimateToTshirt(ticket.estimate)}</span>
+          ) : null}
+          {blockedByCount > 0 ? <span>{blockedByCount} blocked</span> : null}
+          {blockingCount > 0 ? <span>{blockingCount} blocking</span> : null}
           <span className="project-board-comments">
             <IconMessageCircle />
             {ticket.comment_count ?? ticket.comments?.length ?? 0}
@@ -545,11 +1100,6 @@ function TicketCard({
 }
 
 function ProjectBoardNotice({ message }: { message: string }) {
-  /*
-    CDXC:ProjectBoard 2026-05-23-08:52:
-    Installed Beads can still return messages that mention "bd" when the project needs initialization.
-    Only classify executable launch failures as missing Beads so the board does not tell users to reinstall an already-installed CLI.
-  */
   const isMissingProject = /not initialized|no storage|not a beads|bd init|database|\.beads/i.test(message);
   const isMissingBeads =
     !isMissingProject &&
@@ -559,7 +1109,13 @@ function ProjectBoardNotice({ message }: { message: string }) {
       <CardContent>
         <IconAlertTriangle />
         <div>
-          <strong>{isMissingBeads ? "Install Beads" : isMissingProject ? "Initialize Beads" : "Project board unavailable"}</strong>
+          <strong>
+            {isMissingBeads
+              ? "Install Beads"
+              : isMissingProject
+                ? "Initialize Beads"
+                : "Project board unavailable"}
+          </strong>
           <p>{isMissingBeads ? INSTALL_BEADS_COMMAND : isMissingProject ? "bd init" : message}</p>
         </div>
       </CardContent>
@@ -567,32 +1123,32 @@ function ProjectBoardNotice({ message }: { message: string }) {
   );
 }
 
-async function ensureWorkflowStatuses(
-  runBeads: (request: Omit<BeadsBridgeRequest, "cwd" | "requestId">) => Promise<unknown>,
-) {
-  const payload = await runBeads({ action: "configGet" });
-  const currentValue = normalizeBeadsPayload<{ value?: string }>(payload, {}).value ?? "";
-  const requiredEntries = REQUIRED_CUSTOM_STATUS_CONFIG.split(",");
-  const requiredNames = new Set(requiredEntries.map((entry) => entry.split(":")[0]));
-  const currentEntries = currentValue
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  const currentNames = new Set(currentEntries.map((entry) => entry.split(":")[0]));
-  const nextEntries = currentEntries.map((entry) => {
-    const name = entry.split(":")[0];
-    return requiredNames.has(name) ? name : entry;
+function handleCmdEnter(event: KeyboardEvent, action: () => void) {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    action();
+  }
+}
+
+function pasteImageFromClipboard(event: {
+  clipboardData: DataTransfer;
+}): Promise<string | undefined> {
+  const item = [...event.clipboardData.items].find((entry) => entry.type.startsWith("image/"));
+  if (!item) {
+    return Promise.resolve(undefined);
+  }
+  const file = item.getAsFile();
+  if (!file) {
+    return Promise.resolve(undefined);
+  }
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve(typeof reader.result === "string" ? reader.result : undefined);
+    };
+    reader.onerror = () => resolve(undefined);
+    reader.readAsDataURL(file);
   });
-  for (const entry of requiredEntries) {
-    const name = entry.split(":")[0];
-    if (!currentNames.has(name)) {
-      nextEntries.push(entry);
-    }
-  }
-  const nextValue = nextEntries.join(",");
-  if (nextValue !== currentValue) {
-    await runBeads({ action: "configSet", value: nextValue });
-  }
 }
 
 function sendBeadsRequest(
@@ -603,7 +1159,7 @@ function sendBeadsRequest(
     const timeout = window.setTimeout(() => {
       window.removeEventListener(BRIDGE_RESPONSE_EVENT, onResponse);
       reject(new Error("Beads command timed out."));
-    }, 30_000);
+    }, 60_000);
     const onResponse = (event: Event) => {
       const response = (event as CustomEvent<BeadsBridgeResponse>).detail;
       if (response?.requestId !== requestId) {
@@ -621,73 +1177,17 @@ function sendBeadsRequest(
       projectBeadsBridge.postMessage(message);
       return;
     }
-    console.info(`${BRIDGE_REQUEST_PREFIX}${JSON.stringify(message)}`);
-  });
-}
-
-function parseBeadsJson(stdout: string) {
-  const trimmed = stdout.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  return JSON.parse(trimmed);
-}
-
-function normalizeBeadsPayload<T>(payload: unknown, fallback: T): T {
-  if (isRecord(payload) && "data" in payload) {
-    return payload.data as T;
-  }
-  return (payload ?? fallback) as T;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function beadsStatusToBoardStatus(status: string): BoardStatusKey {
-  switch (status) {
-    case "closed":
-      return "done";
-    case "in_progress":
-      return "in_progress";
-    case "review":
-      return "review";
-    case "test":
-      return "test";
-    default:
-      return "todo";
-  }
-}
-
-function boardStatusLabel(status: BoardStatusKey) {
-  return columns.find((column) => column.key === status)?.label ?? "Todo";
-}
-
-function beadsErrorMessage(message: string) {
-  const trimmed = message.trim();
-  if (!trimmed) {
-    return "The Beads command failed.";
-  }
-  try {
-    const payload = JSON.parse(trimmed);
-    if (payload?.error) {
-      return String(payload.error);
+    if (request.action === "listIssues" && request.cwd) {
+      void fetch(
+        `file://${request.cwd}/.beads/issues.jsonl`,
+      ).then(() => reject(new Error("Beads bridge is unavailable outside Ghostex."))).catch(() => {
+        reject(new Error("Beads bridge is unavailable outside Ghostex."));
+      });
+      return;
     }
-  } catch {
-    // Human stderr is the normal Beads failure path.
-  }
-  return trimmed;
-}
-
-function formatShortDate(value?: string) {
-  if (!value) {
-    return "";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    console.info(`${BRIDGE_REQUEST_PREFIX}${JSON.stringify(message)}`);
+    reject(new Error("Beads bridge is unavailable outside Ghostex."));
+  });
 }
 
 const styleElement = document.createElement("style");
@@ -718,24 +1218,22 @@ styleElement.textContent = `
     --radius: 0.625rem;
   }
 
-  * {
-    box-sizing: border-box;
-  }
+  * { box-sizing: border-box; }
 
   body {
     background: #101112;
     margin: 0;
     min-height: 100vh;
+    overflow: hidden;
   }
 
   .project-board-shell {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 160px),
-      #101112;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 160px), #101112;
     display: flex;
     flex-direction: column;
-    gap: 18px;
-    min-height: 100vh;
+    gap: 14px;
+    height: 100vh;
+    min-height: 0;
     overflow: hidden;
     padding: 22px 24px 24px;
   }
@@ -743,6 +1241,7 @@ styleElement.textContent = `
   .project-board-toolbar {
     align-items: center;
     display: flex;
+    flex: 0 0 auto;
     gap: 20px;
     justify-content: space-between;
     min-height: 44px;
@@ -752,8 +1251,6 @@ styleElement.textContent = `
     color: rgba(250, 250, 250, 0.96);
     font-size: 21px;
     font-weight: 650;
-    letter-spacing: 0;
-    line-height: 1.2;
     margin: 2px 0 0;
   }
 
@@ -761,8 +1258,6 @@ styleElement.textContent = `
     color: rgba(244, 244, 245, 0.48);
     font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0;
-    line-height: 1;
     margin: 0;
   }
 
@@ -772,14 +1267,39 @@ styleElement.textContent = `
     gap: 8px;
   }
 
+  .project-board-filters {
+    align-items: center;
+    display: flex;
+    flex: 0 0 auto;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .project-board-search {
+    align-items: center;
+    display: flex;
+    flex: 1 1 auto;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .project-board-search svg {
+    color: rgba(244, 244, 245, 0.42);
+    flex: 0 0 auto;
+    height: 16px;
+    width: 16px;
+  }
+
   .project-board-lanes {
     align-items: stretch;
     display: grid;
+    flex: 1 1 auto;
     gap: 12px;
     grid-template-columns: repeat(5, minmax(218px, 1fr));
     min-height: 0;
     overflow-x: auto;
-    padding-bottom: 4px;
+    overflow-y: hidden;
+    padding-bottom: 2px;
   }
 
   .project-board-lane {
@@ -788,7 +1308,7 @@ styleElement.textContent = `
     border-radius: 8px;
     display: flex;
     flex-direction: column;
-    min-height: calc(100vh - 118px);
+    min-height: 0;
     min-width: 218px;
     overflow: hidden;
   }
@@ -819,8 +1339,6 @@ styleElement.textContent = `
     color: rgba(244, 244, 245, 0.68);
     font-size: 12px;
     font-weight: 650;
-    letter-spacing: 0;
-    line-height: 1;
     margin: 0;
   }
 
@@ -832,56 +1350,66 @@ styleElement.textContent = `
     width: 7px;
   }
 
-  .project-board-lane[data-tone="blue"] .project-board-lane-dot {
-    background: #5ea4ff;
-  }
-
-  .project-board-lane[data-tone="amber"] .project-board-lane-dot {
-    background: #e7b85b;
-  }
-
-  .project-board-lane[data-tone="violet"] .project-board-lane-dot {
-    background: #b18cff;
-  }
-
-  .project-board-lane[data-tone="green"] .project-board-lane-dot {
-    background: #6fcf97;
-  }
+  .project-board-lane[data-tone="blue"] .project-board-lane-dot { background: #5ea4ff; }
+  .project-board-lane[data-tone="amber"] .project-board-lane-dot { background: #e7b85b; }
+  .project-board-lane[data-tone="violet"] .project-board-lane-dot { background: #b18cff; }
+  .project-board-lane[data-tone="green"] .project-board-lane-dot { background: #6fcf97; }
 
   .project-board-lane-scroll {
     flex: 1 1 auto;
     min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 2px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  }
+
+  .project-board-lane-scroll::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .project-board-lane-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .project-board-lane-scroll::-webkit-scrollbar-thumb {
+    background: transparent;
+    border-radius: 999px;
+  }
+
+  .project-board-lane:hover .project-board-lane-scroll::-webkit-scrollbar-thumb,
+  .project-board-lane-scroll:focus-within::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.22);
   }
 
   .project-board-card-stack {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 0 8px 10px;
+    min-width: 0;
+    padding: 0 10px 10px;
   }
 
   .project-board-card {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
-      #1a1b1d;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)), #1a1b1d;
     border-radius: 8px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     box-shadow: 0 1px 0 rgba(0, 0, 0, 0.28);
     cursor: default;
     gap: 0;
+    max-width: 100%;
+    min-width: 0;
     padding: 0;
+    width: 100%;
   }
 
-  .project-board-card:hover {
-    background-color: #202124;
-  }
-
-  .project-board-card[data-dragging="true"] {
-    opacity: 0.55;
-  }
+  .project-board-card:hover { background-color: #202124; }
+  .project-board-card[data-dragging="true"] { opacity: 0.55; }
 
   .project-board-card-header {
     gap: 5px;
+    min-width: 0;
     padding: 11px 12px 0;
   }
 
@@ -889,21 +1417,21 @@ styleElement.textContent = `
     color: rgba(250, 250, 250, 0.91);
     font-size: 13px;
     font-weight: 560;
-    letter-spacing: 0;
     line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .project-board-card-header [data-slot="card-description"] {
     color: rgba(244, 244, 245, 0.39);
     font-size: 11px;
-    letter-spacing: 0;
-    line-height: 1;
   }
 
   .project-board-card-content {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    min-width: 0;
     padding: 8px 12px 11px;
   }
 
@@ -916,15 +1444,32 @@ styleElement.textContent = `
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 3;
     overflow: hidden;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .project-board-card-labels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .project-board-card-label {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    color: rgba(244, 244, 245, 0.72);
+    font-size: 10px;
+    line-height: 1;
+    padding: 4px 7px;
   }
 
   .project-board-card-meta {
     align-items: center;
     color: rgba(244, 244, 245, 0.46);
     display: flex;
+    flex-wrap: wrap;
     font-size: 11px;
     gap: 8px;
-    justify-content: space-between;
     line-height: 1;
   }
 
@@ -937,6 +1482,7 @@ styleElement.textContent = `
     align-items: center;
     display: inline-flex;
     gap: 4px;
+    margin-left: auto;
   }
 
   .project-board-comments svg {
@@ -949,7 +1495,6 @@ styleElement.textContent = `
     border-radius: 8px;
     color: #f7dfb4;
     flex: 0 0 auto;
-    padding: 0;
   }
 
   .project-board-notice [data-slot="card-content"] {
@@ -959,29 +1504,10 @@ styleElement.textContent = `
     padding: 10px 12px;
   }
 
-  .project-board-notice svg {
-    flex: 0 0 auto;
-    height: 18px;
-    width: 18px;
-  }
-
-  .project-board-notice strong {
-    color: #ffe6b6;
-    display: block;
-    font-size: 12px;
-    line-height: 1.2;
-  }
-
-  .project-board-notice p {
-    color: rgba(255, 230, 182, 0.76);
-    font-family: "SF Mono", ui-monospace, monospace;
-    font-size: 12px;
-    margin: 2px 0 0;
-  }
-
   .project-ticket-dialog {
     border-radius: 12px;
     max-width: min(780px, calc(100vw - 44px));
+    overflow: hidden;
     width: 780px;
   }
 
@@ -989,7 +1515,19 @@ styleElement.textContent = `
     display: flex;
     flex-direction: column;
     gap: 16px;
+    max-height: min(72vh, 760px);
     min-height: 0;
+    overflow: auto;
+  }
+
+  .project-ticket-dialog-footer {
+    justify-content: space-between;
+  }
+
+  .project-ticket-meta-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .project-ticket-field {
@@ -999,16 +1537,81 @@ styleElement.textContent = `
     font-size: 12px;
     font-weight: 600;
     gap: 7px;
-    letter-spacing: 0;
+    min-width: 0;
   }
 
-  .project-ticket-field textarea {
+  .project-ticket-field-inline {
+    gap: 6px;
+  }
+
+  .project-ticket-field textarea,
+  .project-ticket-field input {
     color: rgba(250, 250, 250, 0.92);
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .project-ticket-prompt-input {
     min-height: 190px;
   }
 
   .project-ticket-title-input {
     min-height: 58px !important;
+  }
+
+  .project-ticket-label-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .project-ticket-label-chip {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.08);
+    border: 0;
+    border-radius: 999px;
+    color: rgba(244, 244, 245, 0.82);
+    cursor: pointer;
+    display: inline-flex;
+    font-size: 11px;
+    gap: 4px;
+    padding: 4px 8px;
+  }
+
+  .project-ticket-label-chip svg {
+    height: 12px;
+    width: 12px;
+  }
+
+  .project-ticket-label-editor {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+  }
+
+  .project-ticket-image-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .project-ticket-image-thumb {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    height: 72px;
+    object-fit: cover;
+    width: 72px;
+  }
+
+  .project-ticket-dependencies {
+    color: rgba(244, 244, 245, 0.62);
+    font-size: 12px;
+  }
+
+  .project-ticket-dependencies p {
+    margin: 0 0 4px;
   }
 
   .project-ticket-comments {
@@ -1021,7 +1624,6 @@ styleElement.textContent = `
     color: rgba(244, 244, 245, 0.58);
     font-size: 12px;
     font-weight: 650;
-    letter-spacing: 0;
   }
 
   .project-ticket-comment-list {
@@ -1037,39 +1639,19 @@ styleElement.textContent = `
     padding: 12px;
   }
 
-  .project-ticket-comment div {
-    align-items: baseline;
-    display: flex;
-    gap: 8px;
-  }
-
-  .project-ticket-comment strong {
-    color: rgba(250, 250, 250, 0.88);
-    font-size: 12px;
-  }
-
-  .project-ticket-comment span,
+  .project-ticket-comment p,
   .project-ticket-empty {
-    color: rgba(244, 244, 245, 0.42);
-    font-size: 12px;
-  }
-
-  .project-ticket-comment p {
     color: rgba(244, 244, 245, 0.72);
     font-size: 13px;
     line-height: 1.45;
-    margin: 6px 0 0;
+    overflow-wrap: anywhere;
     white-space: pre-wrap;
+    word-break: break-word;
   }
 
   @media (max-width: 900px) {
-    .project-board-shell {
-      padding: 18px 16px;
-    }
-
-    .project-board-lanes {
-      grid-template-columns: repeat(5, minmax(210px, 1fr));
-    }
+    .project-board-shell { padding: 18px 16px; }
+    .project-ticket-meta-grid { grid-template-columns: 1fr; }
   }
 `;
 document.head.append(styleElement);
