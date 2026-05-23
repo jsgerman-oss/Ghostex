@@ -240,6 +240,11 @@ export type NativeGhosttyHostCommand =
       debuggingMode?: boolean;
       focusRequestId?: number;
       focusedSessionId?: string;
+      /**
+       * CDXC:SessionFocusMode 2026-05-23-14:35:
+       * The React titlebar needs to know when reversible pane-tab Focus mode is active so it can expose an explicit exit control beside the mode switcher.
+       */
+      isFocusModeActive?: boolean;
       sleepingSessionIds?: string[];
       /**
        * CDXC:NativeGpu 2026-05-08-16:45
