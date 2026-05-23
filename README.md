@@ -1,7 +1,7 @@
 Discord: https://discord.gg/xYSBPapM
 
 # The best Free & Open Source alternative to Codex App
-Ghostty Terminals. Low Ram Use. Longer Battery. All Agent CLIs. T3code.<br/>
+Ghostty Terminals. Low Ram Use. Longer Battery. All Agent CLIs. T3code. Notifications. Pets.<br/>
 Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
 
 > Looking for contributers! Please join the discord if interested!
@@ -86,6 +86,12 @@ Or just download the latest dmg from the releases page
 <img width="3327" height="2065" alt="2026-05-08_CleanShot_18-38-12@2x" src="https://github.com/user-attachments/assets/f1cc7d00-7098-44fe-bc29-590ae03ea8e9" />
 
 <br />
+
+### Notifications for All Agent CLIs. Menu bar indicator and minimal floating numbers also supported.
+
+<img width="331" height="309" alt="2026-05-23_CleanShot_14-26-43" src="https://github.com/user-attachments/assets/ad0f7af5-b0e9-4b24-988c-cb6bf02c6c9f" />
+
+<br/>
 
 ## Other useful stuff:
 - Built in zmx/tmux/zellij support
