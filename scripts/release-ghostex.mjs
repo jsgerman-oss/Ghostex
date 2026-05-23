@@ -239,6 +239,63 @@ async function ensureGhAuth() {
   }
 }
 
+function releaseSigningIdentity() {
+  return process.env.GHOSTEX_CODE_SIGN_IDENTITY?.trim() || config.signingIdentity;
+}
+
+/**
+ * CDXC:Distribution 2026-05-23-13:10:
+ * Release builds must use the Developer ID identity from ghostex-release-to-brew,
+ * not ad-hoc detection, and preflight should fail with actionable keychain guidance
+ * when the login keychain is locked or the certificate is missing.
+ */
+async function listCodeSigningIdentities() {
+  const loginKeychain = path.join(process.env.HOME ?? "", "Library/Keychains/login.keychain-db");
+  if (existsSync(loginKeychain)) {
+    return capture(`security find-identity -v -p codesigning ${shellQuote(loginKeychain)}`);
+  }
+  return capture("security find-identity -v -p codesigning");
+}
+
+async function ensureSigningIdentity() {
+  const identity = releaseSigningIdentity();
+  const identities = await listCodeSigningIdentities();
+  if (!identities.includes(identity)) {
+    throw new ReleaseError(
+      [
+        `No valid code signing identity found for release: ${identity}`,
+        "",
+        "Fix:",
+        "1. Open Keychain Access and confirm the Developer ID Application certificate is present and trusted.",
+        "2. Unlock the login keychain if macOS prompts for a password.",
+        "3. Re-run from Terminal.app if Cursor's agent shell cannot access the keychain.",
+        "4. Or export GHOSTEX_CODE_SIGN_IDENTITY with the exact identity string before release.",
+        "",
+        identities.trim() || "(security find-identity returned no valid identities)",
+      ].join("\n"),
+    );
+  }
+}
+
+async function ensureNotaryProfile() {
+  try {
+    await run(`xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8`);
+  } catch (error) {
+    throw new ReleaseError(
+      [
+        `Notary profile ${config.notaryProfile} is unavailable.`,
+        "",
+        "Fix:",
+        "1. Store Apple notarization credentials:",
+        "   xcrun notarytool store-credentials notarytool-profile --key <AuthKey.p8> --key-id <KEY_ID> --issuer <ISSUER_ID>",
+        "2. Unlock the login keychain, then re-run bun run release:local -- <version>.",
+        "",
+        String(error.message ?? error),
+      ].join("\n"),
+    );
+  }
+}
+
 async function ensureCleanWorktree() {
   const status = await capture("git status --porcelain --untracked-files=all");
   if (status) {
@@ -371,8 +428,8 @@ async function preflight(version, buildVersion, options) {
       `Warning: gh auth status failed; continuing with GH_TOKEN from git credentials.\n${String(error.message ?? error)}`,
     );
   }
-  await run(`security find-identity -v -p codesigning | rg ${shellQuote(config.signingIdentity)}`);
-  await run(`xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8`);
+  await ensureSigningIdentity();
+  await ensureNotaryProfile();
 
   if (!options.skipTypecheck) {
     await run("bun run typecheck");
@@ -426,6 +483,7 @@ async function buildArch(version, entry) {
     CONFIGURATION: "Release",
     GHOSTEX_MACOS_ARCH: entry.arch,
     DERIVED_DATA: derivedData,
+    GHOSTEX_CODE_SIGN_IDENTITY: releaseSigningIdentity(),
     GHOSTEX_CODE_SIGN_TIMESTAMP_FLAG: "--timestamp",
   };
   if (entry.arch === "x86_64") {
