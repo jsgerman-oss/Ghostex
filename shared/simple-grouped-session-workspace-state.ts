@@ -258,7 +258,10 @@ export function focusSessionInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,
 ): WorkspaceMutationResult {
-  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const normalizedSnapshot = restoreFocusModeForExternalSession(
+    normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot),
+    sessionId,
+  );
   const owningGroup = getGroupForSession(normalizedSnapshot, sessionId);
   if (!owningGroup) {
     return { changed: false, snapshot: normalizedSnapshot };
@@ -268,6 +271,16 @@ export function focusSessionInSimpleWorkspace(
     (session) => session.sessionId === sessionId,
   );
   const isRestoringSleepingSession = currentSession?.isSleeping === true;
+  const focusedTabSessionIds = owningGroup.snapshot.focusedSessionId
+    ? findPaneTabGroupSessionIds(
+        owningGroup.snapshot.paneLayout,
+        owningGroup.snapshot.focusedSessionId,
+      )
+    : undefined;
+  const isFocusingWithinFocusModeTabGroup =
+    owningGroup.snapshot.visibleCount === 1 &&
+    owningGroup.snapshot.fullscreenRestoreVisibleCount !== undefined &&
+    focusedTabSessionIds?.includes(sessionId) === true;
   const nextSessions = owningGroup.snapshot.sessions.map((session) =>
     session.sessionId === sessionId ? { ...session, isSleeping: false } : session,
   );
@@ -297,6 +310,8 @@ export function focusSessionInSimpleWorkspace(
         sessionId,
         owningGroup.snapshot.focusedSessionId,
       )
+    : isFocusingWithinFocusModeTabGroup
+      ? setActiveSessionInPaneLayout(owningGroup.snapshot.paneLayout, sessionId)
     : getNextPaneLayoutForFocusedSession(
         owningGroup.snapshot.paneLayout,
         owningGroup.snapshot.visibleSessionIds,
@@ -326,6 +341,43 @@ export function focusSessionInSimpleWorkspace(
 
   return {
     changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
+    snapshot: nextSnapshot,
+  };
+}
+
+export function focusSessionExclusivelyInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+): WorkspaceMutationResult {
+  const focusedResult = focusSessionInSimpleWorkspace(snapshot, sessionId);
+  const focusedSnapshot = focusedResult.snapshot;
+  const owningGroup = getGroupForSession(focusedSnapshot, sessionId);
+  if (!owningGroup) {
+    return focusedResult;
+  }
+  const restoreVisibleCount =
+    owningGroup.snapshot.fullscreenRestoreVisibleCount ??
+    (owningGroup.snapshot.visibleCount > 1
+      ? clampSupportedVisibleCount(owningGroup.snapshot.visibleCount)
+      : undefined);
+  const nextSnapshot = updateGroup(focusedSnapshot, owningGroup.groupId, (group) => ({
+    ...group,
+    snapshot: normalizeGroupSnapshot({
+      ...group.snapshot,
+      /**
+       * CDXC:SessionFocusMode 2026-05-23-09:28:
+       * Double-click Focus is a reversible pane/tab-group zoom, not a split
+       * rewrite. Store the previous visible count on the active group so
+       * unfocus restores the user's split density while native layout scopes
+       * the visible workarea to the focused tab group.
+       */
+      fullscreenRestoreVisibleCount: restoreVisibleCount,
+      visibleCount: 1,
+    }),
+  }));
+
+  return {
+    changed: focusedResult.changed || !areSnapshotsEqual(focusedSnapshot, nextSnapshot),
     snapshot: nextSnapshot,
   };
 }
@@ -475,6 +527,54 @@ export function setSessionSleepingInSimpleWorkspace(
           ...snapshotWithSleepState,
           activeGroupId: fallbackActiveGroupId,
         });
+
+  return {
+    changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
+    snapshot: nextSnapshot,
+  };
+}
+
+export function wakePaneTabSessionInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  groupId: string,
+  sessionId: string,
+): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const group = getGroupById(normalizedSnapshot, groupId);
+  const currentSession = group?.snapshot.sessions.find(
+    (session) => session.sessionId === sessionId,
+  );
+  if (!group || !currentSession || currentSession.isSleeping !== true) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  const nextVisibleSessionIds = group.snapshot.visibleSessionIds.includes(sessionId)
+    ? group.snapshot.visibleSessionIds
+    : [...group.snapshot.visibleSessionIds, sessionId];
+
+  const nextSnapshot = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
+    ...targetGroup,
+    snapshot: normalizeGroupSnapshot({
+      ...targetGroup.snapshot,
+      focusedSessionId: sessionId,
+      /**
+       * CDXC:PaneTabs 2026-05-23-09:08:
+       * Clicking a sleeping native pane tab is a restore intent for that tab's
+       * existing split/tab group. Do not reuse the generic sidebar wake path,
+       * because that intentionally moves sleeping cards into the focused pane
+       * and can drain a right split into the left tab group.
+       */
+      sessions: targetGroup.snapshot.sessions.map((session) =>
+        session.sessionId === sessionId
+          ? { ...session, isPoppedOut: undefined, isSleeping: false }
+          : session,
+      ),
+      visibleCount: clampSupportedVisibleCount(
+        Math.max(targetGroup.snapshot.visibleCount, nextVisibleSessionIds.length),
+      ),
+      visibleSessionIds: nextVisibleSessionIds,
+    }),
+  }));
 
   return {
     changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
@@ -2577,6 +2677,72 @@ function paneLayoutContainsSession(
     case "split":
       return node.children.some((child) => paneLayoutContainsSession(child, sessionId));
   }
+}
+
+function findPaneTabGroupSessionIds(
+  node: SessionPaneLayoutNode | undefined,
+  sessionId: string,
+): string[] | undefined {
+  if (!node) {
+    return undefined;
+  }
+  if (node.kind === "leaf") {
+    return node.sessionId === sessionId ? [sessionId] : undefined;
+  }
+  if (node.kind === "tabs") {
+    return node.sessionIds.includes(sessionId) ? node.sessionIds : undefined;
+  }
+  for (const child of node.children) {
+    const tabSessionIds = findPaneTabGroupSessionIds(child, sessionId);
+    if (tabSessionIds) {
+      return tabSessionIds;
+    }
+  }
+  return undefined;
+}
+
+function restoreFocusModeForExternalSession(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+): GroupedSessionWorkspaceSnapshot {
+  const activeGroup = getActiveGroup(snapshot);
+  if (
+    !activeGroup ||
+    activeGroup.snapshot.visibleCount !== 1 ||
+    activeGroup.snapshot.fullscreenRestoreVisibleCount === undefined
+  ) {
+    return snapshot;
+  }
+  const focusedSessionId = activeGroup.snapshot.focusedSessionId;
+  if (!focusedSessionId) {
+    return snapshot;
+  }
+  const focusedTabSessionIds =
+    findPaneTabGroupSessionIds(activeGroup.snapshot.paneLayout, focusedSessionId) ?? [
+      focusedSessionId,
+    ];
+  if (focusedTabSessionIds.includes(sessionId)) {
+    return snapshot;
+  }
+  const restoreVisibleCount = activeGroup.snapshot.fullscreenRestoreVisibleCount;
+  if (restoreVisibleCount === undefined) {
+    return snapshot;
+  }
+
+  return updateGroup(snapshot, activeGroup.groupId, (group) => ({
+    ...group,
+    snapshot: normalizeGroupSnapshot({
+      ...group.snapshot,
+      /**
+       * CDXC:SessionFocusMode 2026-05-23-09:28:
+       * Selecting a session outside the focused tab group exits focus mode
+       * before selecting that session. This restores the prior split count and
+       * then lets normal paneLayout focus choose the target tab group.
+      */
+      fullscreenRestoreVisibleCount: undefined,
+      visibleCount: restoreVisibleCount,
+    }),
+  }));
 }
 
 function getPaneLayoutSessionIds(node: SessionPaneLayoutNode | undefined): string[] {
