@@ -856,6 +856,7 @@ enum HostEvent: Encodable {
   case terminalTitleBarAction(sessionId: String, action: TerminalTitleBarAction)
   case paneReorderRequested(sourceSessionId: String, targetSessionId: String, placement: PaneDropPlacement?)
   case paneTabSelected(sessionId: String)
+  case paneTabFocusRequested(sessionId: String)
   case paneTabReorderRequested(
     sourceSessionId: String, targetSessionId: String, position: PaneTabReorderPosition)
   case paneTabCloseRequested(sessionId: String, scope: PaneTabCloseScope)
@@ -864,6 +865,7 @@ enum HostEvent: Encodable {
   case terminalExited(sessionId: String, exitCode: Int?)
   case terminalFocused(sessionId: String)
   case terminalBell(sessionId: String)
+  case nativeSessionSurfaceMissing(sessionId: String)
   case commandsPanelHeightRatioChanged(heightRatio: Double)
   case terminalError(sessionId: String, message: String)
   case projectEditorBackRequested(projectId: String)
@@ -961,6 +963,15 @@ enum HostEvent: Encodable {
     case .paneTabSelected(let sessionId):
       try container.encode("paneTabSelected", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
+    case .paneTabFocusRequested(let sessionId):
+      /**
+       CDXC:SessionFocusMode 2026-05-23-09:28:
+       Native pane-tab double-clicks and tab context-menu Focus need a distinct
+       event from normal selection because the sidebar must enter reversible
+       focus mode and may switch the workarea from Code/Git/Project to Agents.
+       */
+      try container.encode("paneTabFocusRequested", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
     case .paneTabReorderRequested(let sourceSessionId, let targetSessionId, let position):
       /**
        CDXC:PaneTabs 2026-05-11-01:43
@@ -993,6 +1004,17 @@ enum HostEvent: Encodable {
       try container.encode(sessionId, forKey: .sessionId)
     case .terminalBell(let sessionId):
       try container.encode("terminalBell", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
+    case .nativeSessionSurfaceMissing(let sessionId):
+      /**
+       CDXC:SessionSurfaceRecovery 2026-05-23-09:05:
+       If layout sync asks AppKit to focus an active session id but no terminal
+       or web pane surface exists for that id, the sidebar must treat the row as
+       stale runtime state and perform the same full reload a user would choose
+       manually. Report the missing surface explicitly instead of leaving the
+       tab selected but impossible to focus.
+       */
+      try container.encode("nativeSessionSurfaceMissing", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
     case .commandsPanelHeightRatioChanged(let heightRatio):
       try container.encode("commandsPanelHeightRatioChanged", forKey: .type)
