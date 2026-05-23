@@ -140,16 +140,28 @@ function run(command, options = {}) {
   const cwd = options.cwd ?? repoRoot;
   const env = { ...process.env, ...(options.env ?? {}) };
   const stdio = options.stdio ?? "inherit";
+  const timeoutMs = options.timeoutMs;
 
   console.log(`$ ${command}`);
 
   return new Promise((resolve, reject) => {
+    let settled = false;
     const child = spawn(command, {
       cwd,
       env,
       shell: true,
       stdio,
     });
+    const timeout = timeoutMs
+      ? setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          child.kill("SIGTERM");
+          reject(new ReleaseError(`Command timed out after ${timeoutMs}ms: ${command}`));
+        }, timeoutMs)
+      : null;
 
     let stdout = "";
     let stderr = "";
@@ -163,8 +175,24 @@ function run(command, options = {}) {
       });
     }
 
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
@@ -264,28 +292,39 @@ async function ensureGhAuthForRelease() {
 }
 
 async function recoverKeychainVisibility() {
-  const loginKeychain = path.join(process.env.HOME ?? "", "Library/Keychains/login.keychain-db");
-  const iCloudKeychain = path.join(process.env.HOME ?? "", "Library/Keychains/iCloud.keychain-db");
   logStep("Recover keychain visibility for signing");
-  await run(
-    [
-      "security list-keychains -d user -s",
-      shellQuote(loginKeychain),
-      existsSync(iCloudKeychain) ? shellQuote(iCloudKeychain) : null,
-      "/Library/Keychains/System.keychain",
-      "2>/dev/null || true",
-    ]
-      .filter(Boolean)
-      .join(" "),
-  );
+  const keychains = await releaseKeychainSearchList();
+  if (keychains.length > 0) {
+    await run(`security list-keychains -d user -s ${keychains.map(shellQuote).join(" ")} 2>/dev/null || true`);
+  }
+  const loginKeychain = path.join(process.env.HOME ?? "", "Library/Keychains/login.keychain-db");
   await run(`security default-keychain -d user -s ${shellQuote(loginKeychain)} 2>/dev/null || true`);
-  await run(
-    `command -v timeout >/dev/null 2>&1 && timeout 3 security unlock-keychain ${shellQuote(loginKeychain)} 2>/dev/null || true`,
-  );
+  if (existsSync(loginKeychain)) {
+    await run(`security unlock-keychain ${shellQuote(loginKeychain)} 2>/dev/null`, { timeoutMs: 3000 }).catch(() => {});
+  }
 }
 
-function signingIdentityIsVisible(identities) {
-  return identities.includes(releaseSigningIdentity());
+async function configuredUserKeychains() {
+  try {
+    const output = await capture("security list-keychains -d user 2>/dev/null");
+    return output
+      .split("\n")
+      .map((line) => line.trim().replace(/^"|"$/g, ""))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function releaseKeychainSearchList() {
+  const home = process.env.HOME ?? "";
+  const candidates = [
+    ...(await configuredUserKeychains()),
+    path.join(home, "Library/Keychains/login.keychain-db"),
+    path.join(home, "Library/Keychains/iCloud.keychain-db"),
+    "/Library/Keychains/System.keychain",
+  ];
+  return [...new Set(candidates.filter((keychain) => keychain && existsSync(keychain)))];
 }
 
 function releaseSigningIdentity() {
@@ -299,11 +338,36 @@ function releaseSigningIdentity() {
  * when the login keychain is locked or the certificate is missing.
  */
 async function listCodeSigningIdentities() {
-  const loginKeychain = path.join(process.env.HOME ?? "", "Library/Keychains/login.keychain-db");
-  if (existsSync(loginKeychain)) {
-    return capture(`security find-identity -v -p codesigning ${shellQuote(loginKeychain)}`);
+  /*
+   CDXC:Distribution 2026-05-23-16:01:
+   Developer ID certificates are not guaranteed to live only in login.keychain-db.
+   Release preflight must inspect the aggregate keychain view and configured user keychains before deciding signing is unavailable.
+   */
+  const chunks = [];
+  try {
+    chunks.push(`== aggregate ==\n${await capture("security find-identity -v -p codesigning 2>/dev/null")}`);
+  } catch (error) {
+    chunks.push(`== aggregate failed ==\n${String(error.message ?? error)}`);
   }
-  return capture("security find-identity -v -p codesigning");
+  for (const keychain of await releaseKeychainSearchList()) {
+    try {
+      chunks.push(`== ${keychain} ==\n${await capture(`security find-identity -v -p codesigning ${shellQuote(keychain)} 2>/dev/null`)}`);
+    } catch (error) {
+      chunks.push(`== ${keychain} failed ==\n${String(error.message ?? error)}`);
+    }
+  }
+  return chunks.join("\n");
+}
+
+function signingIdentityIsVisible(identities) {
+  return Boolean(matchingSigningIdentityLine(identities));
+}
+
+function matchingSigningIdentityLine(identities) {
+  const identity = releaseSigningIdentity();
+  return identities
+    .split("\n")
+    .find((line) => line.includes(`"${identity}"`) || line.includes(identity));
 }
 
 async function ensureSigningIdentity() {
@@ -360,8 +424,8 @@ release_status=0
 {
   security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" "$HOME/Library/Keychains/iCloud.keychain-db" /Library/Keychains/System.keychain 2>/dev/null || true
   security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
-  command -v timeout >/dev/null 2>&1 && timeout 3 security unlock-keychain "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
-  security find-identity -v -p codesigning "$HOME/Library/Keychains/login.keychain-db" | rg ${shellQuote("Developer ID Application: Mohamad Youssef \\(KTKP595G3B\\)")} || true
+  perl -e 'alarm 3; exec @ARGV' security unlock-keychain "$HOME/Library/Keychains/login.keychain-db" 2>/dev/null || true
+  security find-identity -v -p codesigning | rg ${shellQuote("Developer ID Application: Mohamad Youssef \\(KTKP595G3B\\)")} || true
   xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8
   gh auth status -h github.com
   bun run release:local -- ${shellQuote(version)} --no-terminal-delegate
