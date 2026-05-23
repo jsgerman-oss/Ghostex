@@ -36,16 +36,22 @@ Ghostty Terminals. All Agent CLIs. T3code. VScode Embed. Embedded Browser. Rich 
 - Way more features to fit here
 <br/>
 
-### macOS: Install on macOS using brew or dmg in releases page
+# Installation
+
 ###### (Looking for help with Windows & Linux ports)
 
+## macOS (ARM & Intel):
 The same Homebrew command installs the correct Apple Silicon or Intel Mac build automatically.
 
 ```bash
-brew install --cask maddada/tap/ghostex
+brew install --cask maddada/tap/ghostex --force
 ```
 
-### Android & iOS apps to Live connect to sessions remotely
+Or just download the latest dmg from the releases page
+
+<br />
+
+## Android & iOS apps to Live connect to sessions remotely
 
 - Android app APK is in GitHub Releases: 
 [![Download Android APK](https://img.shields.io/badge/Android-APK-3DDC84?logo=android&logoColor=white)](https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.1.0/ghostex-1.1.0.apk)
