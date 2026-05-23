@@ -2158,19 +2158,41 @@ final class TerminalWorkspaceView: NSView {
         force: shouldForceExistingInitialInputDiagnostics)
       focusTerminal(sessionId: command.sessionId, reason: "createTerminalExisting")
       if let initialInput = command.initialInput, !initialInput.isEmpty {
-        TerminalFocusDebugLog.append(
-          event: "nativeWorkspace.createTerminal.existing.initialInputWrite",
-          details: [
-            "activeSessionIds": Array(activeSessionIds).sorted(),
-            "diagnosticSource": command.diagnosticSource ?? "",
-            "requestedSessionId": command.sessionId,
-            "sessionPersistenceName": existingSession.sessionPersistenceName ?? "",
-            "sessionPersistenceProvider": existingSession.sessionPersistenceProvider?.rawValue ?? "off",
-            "textLength": initialInput.count,
-            "textPreview": summarizeTerminalText(initialInput),
-          ],
-          force: shouldForceExistingInitialInputDiagnostics)
-        writeTerminalText(sessionId: command.sessionId, text: initialInput)
+        /**
+         CDXC:SessionRestoreDiagnostics 2026-05-23-14:17:
+         Provider-backed existing surfaces are already attached to their live
+         tmux/zmx/zellij session, so restore input is a creation-only command.
+         Focusing must not paste `Restoring session...` or agent resume scripts
+         into an already running CLI prompt.
+         */
+        if existingSession.sessionPersistenceProvider != nil {
+          TerminalFocusDebugLog.append(
+            event: "nativeWorkspace.createTerminal.existing.initialInputSkipped",
+            details: [
+              "activeSessionIds": Array(activeSessionIds).sorted(),
+              "diagnosticSource": command.diagnosticSource ?? "",
+              "requestedSessionId": command.sessionId,
+              "sessionPersistenceName": existingSession.sessionPersistenceName ?? "",
+              "sessionPersistenceProvider": existingSession.sessionPersistenceProvider?.rawValue ?? "off",
+              "textLength": initialInput.count,
+              "textPreview": summarizeTerminalText(initialInput),
+            ],
+            force: shouldForceExistingInitialInputDiagnostics)
+        } else {
+          TerminalFocusDebugLog.append(
+            event: "nativeWorkspace.createTerminal.existing.initialInputWrite",
+            details: [
+              "activeSessionIds": Array(activeSessionIds).sorted(),
+              "diagnosticSource": command.diagnosticSource ?? "",
+              "requestedSessionId": command.sessionId,
+              "sessionPersistenceName": existingSession.sessionPersistenceName ?? "",
+              "sessionPersistenceProvider": existingSession.sessionPersistenceProvider?.rawValue ?? "off",
+              "textLength": initialInput.count,
+              "textPreview": summarizeTerminalText(initialInput),
+            ],
+            force: shouldForceExistingInitialInputDiagnostics)
+          writeTerminalText(sessionId: command.sessionId, text: initialInput)
+        }
       }
       return
     }
