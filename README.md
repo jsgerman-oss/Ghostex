@@ -68,7 +68,7 @@ Or just download the latest dmg from the releases page
 
 <br />
 
-Android and iOS apps for remote controlling ANY Agent CLI running on your mac (live remote control that includes all features):
+### Android and iOS apps for remote controlling ANY Agent CLI running on your mac (live remote control that includes all features):
 
 <img width="250" alt="73681" src="https://github.com/user-attachments/assets/848a2475-a1f0-40f4-9313-c00df1893cbf" />
 
