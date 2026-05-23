@@ -880,6 +880,10 @@ function formatWholeMemory(value: number): string {
     : `${Math.trunc(Math.max(0, value))} MB`;
 }
 
+export function GhostexTitlebarHost() {
+  return <App />;
+}
+
 function App() {
   const bootstrap = window.__ghostex_NATIVE_HOST__ ?? {};
   const [projectState, setProjectState] = useState<TitlebarProjectState>(() =>
@@ -3101,4 +3105,7 @@ styleElement.textContent = `
 `;
 document.head.append(styleElement);
 
-createRoot(document.getElementById("root")!).render(<App />);
+const titlebarRootElement = document.getElementById("root");
+if (titlebarRootElement?.dataset.ghostexTitlebar !== "false") {
+  createRoot(titlebarRootElement!).render(<App />);
+}

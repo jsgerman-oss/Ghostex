@@ -11,3 +11,6 @@
 [submodule "iOS"]
 	path = iOS
 	url = https://github.com/maddada/ghostex-ios.git
+[submodule "crossplatform"]
+	path = crossplatform
+	url = /Users/madda/dev/_active/ghostex-crossplatform
