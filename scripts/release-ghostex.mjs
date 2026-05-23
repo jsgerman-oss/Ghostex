@@ -191,9 +191,23 @@ async function readGitHubHttpsCredentials() {
  * Some release environments resolve github.com for curl but not for git's libcurl.
  * Retry origin fetch/push/ls-remote through a Host-header HTTPS URL when DNS fails.
  */
+async function resolveGitHubAddress() {
+  try {
+    return (await lookup("github.com", { family: 4 })).address;
+  } catch {
+    const output = await capture(
+      "nslookup github.com 2>/dev/null | awk '/^Address: / { print $2; exit }'",
+    );
+    if (!output) {
+      throw new ReleaseError("Could not resolve github.com for git network commands.");
+    }
+    return output;
+  }
+}
+
 async function githubHttpsRemoteUrl(repoPath = config.githubRepo) {
   const { username, password } = await readGitHubHttpsCredentials();
-  const { address } = await lookup("github.com");
+  const address = await resolveGitHubAddress();
   return `https://${username}:${encodeURIComponent(password)}@${address}/${repoPath}.git`;
 }
 
