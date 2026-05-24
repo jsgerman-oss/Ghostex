@@ -12,24 +12,21 @@ Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
 ### 1. Ghostty Terminals for low RAM usage, longer Battery life, great Agent CLIs stability
 ### 2. Native swift for all the parts that require it to improve performance and UX
 ### 3. T3code for GUI panes
-### 4. Chromium CEF browser with Devtools
-### 5. Light embedded VS Code (for Markdown/Reviewing Code & PRs)
+### 4. Chromium CEF Browser (Devtools & Profiles)
+### 5. Light embedded VS Code (for MD files/Reviewing Code & PRs)
 ### 6. Android & iOS apps for connecting to sessions easily
 
 ### More Features:
-- Fast & Low RAM usage
 - Embedded Chromium Browser w Devtools and profiles
 - Embedded Light Code/MD Files Editor
-- Access your sessions with any Agent CLI live from the Android/iOS apps.
+- Access your sessions with any Agent CLI live from the Android/iOS apps
 - Built in SSH continuation with live session persistence (zmx/tmux/zellij)
 - The best agent CLI rich prompt editor with Image insert/preview support. Press ctrl+g to use it.
 - Native Swift macOS app shell for better performance
-- Native Ghostty for best cpu/ram use and compatibility
 - Auto sleep unused terminals to save ram (auto-restore when clicked)
-- Auto session naming
+- Auto session naming for all popular agents 
 - Reopening the app always resumes your agent cli sessions
 - Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
-- T3code Support if you prefer GUI
 - Menu bar working & done indicators and notification sounds for almost all agent clis
 - Supports Pets so you can see session status at a glance :)
 - Works with all Agent CLIs (Claude Code, Codex CLI, OpenCode, Pi Agent, Gemini, Copilot, etc.)
