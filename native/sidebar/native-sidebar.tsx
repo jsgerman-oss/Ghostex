@@ -22285,7 +22285,11 @@ if (!rootElement && !isStorybookPreview) {
   throw new Error("Native sidebar root element was not found.");
 }
 
-if (rootElement && !isStorybookPreview) {
+if (
+  rootElement &&
+  !isStorybookPreview &&
+  rootElement.dataset.ghostexNativeSidebar !== "false"
+) {
   installAppModalGlobalErrorLogging("AppModals:nativeSidebar");
   createRoot(rootElement).render(<NativeSidebarRoot />);
   queueMicrotask(() => {
