@@ -954,15 +954,30 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .stack {
+  /*
+   * CDXC:SidebarReferenceScroll 2026-05-24-14:05:
+   * Reference sidebar session rows must not scroll under the Recent Projects drawer.
+   * Give the drawer its own grid row so the session viewport measures only the space that remains above it.
+   */
   flex: 1 1 auto;
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   height: auto;
   min-height: 0;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-panel {
   gap: 0;
-  height: 100%;
+  /*
+   * CDXC:SidebarReferenceScroll 2026-05-24-14:05:
+   * The grid row already defines the available session-list height.
+   * Avoid a forced 100% item height because it makes the scroll surface include footer space and creates false overflow.
+   *
+   * CDXC:SidebarReferenceScroll 2026-05-24-14:05:
+   * Reference mode renders an empty .session-groups-top, and the shared CSS hides empty top rows with display:none.
+   * Use a single 1fr row here so the scroll shell does not auto-place into the shared auto toolbar row and leave unused space below it.
+   */
+  grid-template-rows: minmax(0, 1fr);
+  height: auto;
   margin-left: -12px;
   margin-right: -12px;
   min-height: 0;
@@ -1128,8 +1143,14 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
    * The first project folder should sit close to the normal Projects section
    * label so the handoff into sticky project-folder headers feels immediate
    * without making Quick's chat-section spacing tighter.
+   *
+   * CDXC:SidebarStickyHeaders 2026-05-24-11:23:
+   * Add 10px more breathing room under the Projects label before the first
+   * project folder. This only changes the Projects-to-first-project gap and
+   * leaves Quick spacing, project-to-project spacing, and sticky header
+   * positioning unchanged.
    */
-  margin-bottom: 2px;
+  margin-bottom: 12px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
