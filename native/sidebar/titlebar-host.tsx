@@ -9,11 +9,15 @@ import {
   IconCpu,
   IconDeviceDesktop,
   IconFolderOpen,
+  IconGitCommit,
+  IconGitPullRequest,
   IconLayoutSidebarLeftExpand,
+  IconLoader2,
   IconMoon,
   IconPlayerPlay,
   IconSettings,
   IconTerminal2,
+  IconUpload,
   IconUsersGroup,
   IconWorld,
   IconX,
@@ -69,6 +73,13 @@ import { EditorBrandIcon, getEditorBrandIconId } from "../../sidebar/brand-icons
 import { SidebarCommandIconGlyph } from "../../sidebar/sidebar-command-icon";
 import { createCombinedProjectSessionId, parseCombinedProjectGroupId } from "./combined-sidebar-mode";
 import "../../sidebar/styles.css";
+import {
+  buildSidebarGitMenuItems,
+  createDefaultSidebarGitState,
+  resolveSidebarGitPrimaryActionState,
+  type SidebarGitAction,
+  type SidebarGitState,
+} from "../../shared/sidebar-git";
 
 type ProjectEditorLoadStatus = "idle" | "opening" | "running" | "error";
 type TitlebarMode = "agents" | "code" | "git" | "tasks";
@@ -137,6 +148,7 @@ type TitlebarProjectState = {
   editorIsOpen: boolean;
   editorIsSleeping: boolean;
   editorStatus: ProjectEditorLoadStatus;
+  git: SidebarGitState;
   projectEditorCompanionPaneHidden: boolean;
   projectIconDataUrl?: string | null;
   projectId?: string;
@@ -199,6 +211,7 @@ type NativeTitlebarCommand =
   | { sessionIds: string[]; type: "sleepInactiveSessionsFromTitlebar" }
   | { projectIds: string[]; sessionIds: string[]; type: "quitResourcesFromTitlebar" }
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
+  | { action: SidebarGitAction; type: "runSidebarGitActionFromTitlebar" }
   | {
       targetApp: ZedOverlayTargetApp;
       type: "openWorkspaceInIde";
@@ -244,7 +257,11 @@ declare global {
 
 const LAST_OPEN_TARGET_STORAGE_KEY = "ghostex.titlebar.lastOpenTargetId";
 const LAST_ACTION_COMMAND_STORAGE_PREFIX = "ghostex.titlebar.lastActionCommandByProject:";
-const TITLEBAR_HEIGHT = 30;
+/**
+ * CDXC:NativeWindowChrome 2026-05-24-20:18:
+ * The macOS app titlebar needs 15px more vertical room than the former 30px strip. Keep the React titlebar height at 45px so web controls, hit regions, and Swift's reserved top chrome stay in lockstep.
+ */
+const TITLEBAR_HEIGHT = 45;
 const TITLEBAR_CONTROL_HEIGHT = 20;
 const TITLEBAR_CONTROL_TOP = (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT) / 2;
 const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP + 1;
@@ -894,6 +911,7 @@ function App() {
     readLastActionCommandId(createInitialProjectState(bootstrap)),
   );
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
+  const [gitMenuOpen, setGitMenuOpen] = useState(false);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
   const [resourceProcesses, setResourceProcesses] = useState<ResourceProcess[]>([]);
@@ -952,6 +970,14 @@ function App() {
   const activeAction =
     visibleActions.find((command) => command.commandId === selectedActionCommandId) ??
     visibleActions[0];
+  const gitPrimaryAction = useMemo(
+    () => resolveSidebarGitPrimaryActionState(projectState.git),
+    [projectState.git],
+  );
+  const gitMenuItems = useMemo(
+    () => buildSidebarGitMenuItems(projectState.git),
+    [projectState.git],
+  );
   const publishHitRegions = useCallback(() => {
     /**
      * CDXC:ReactTitlebar 2026-05-11-00:22
@@ -1002,6 +1028,7 @@ function App() {
     activeTarget?.id,
     activeAction?.commandId,
     actionsMenuOpen,
+    gitMenuOpen,
     openInMenuOpen,
     resourcesMenuOpen,
     resourceProcesses.length,
@@ -1027,6 +1054,7 @@ function App() {
          * to the real app surface behind an open dropdown.
          */
         setActionsMenuOpen(false);
+        setGitMenuOpen(false);
         setOpenInMenuOpen(false);
         setResourcesMenuOpen(false);
       },
@@ -1040,6 +1068,7 @@ function App() {
               : normalizeTitlebarMode(state.activeMode),
           debuggingMode: state.debuggingMode ?? current.debuggingMode,
           diffStats: state.diffStats ?? current.diffStats,
+          git: state.git ?? current.git,
           browserTabs: state.browserTabs ?? current.browserTabs,
           projectEditorCompanionPaneHidden:
             state.projectEditorCompanionPaneHidden ?? current.projectEditorCompanionPaneHidden,
@@ -1186,6 +1215,11 @@ function App() {
     setSelectedActionCommandId(command.commandId);
     persistLastActionCommandId(projectState, command.commandId);
     postNative({ commandId: command.commandId, type: "runSidebarCommandFromTitlebar" });
+  };
+
+  const runGitAction = (action: SidebarGitAction) => {
+    setGitMenuOpen(false);
+    postNative({ action, type: "runSidebarGitActionFromTitlebar" });
   };
 
   const toggleResourceCollapse = (key: string) => {
@@ -1465,6 +1499,61 @@ function App() {
                 />
               </DropdownMenuContent>
             </DropdownMenu>
+            <DropdownMenu onOpenChange={setGitMenuOpen} open={gitMenuOpen}>
+              <ButtonGroup className="titlebar-open-group titlebar-git-group" data-titlebar-hit-region>
+                <Button
+                  aria-label={gitPrimaryAction.disabledReason ?? titlebarPrimaryGitActionLabel(gitPrimaryAction.label)}
+                  className="titlebar-session-button titlebar-open-main-button titlebar-git-main-button"
+                  disabled={gitPrimaryAction.disabled}
+                  onClick={() => runGitAction(gitPrimaryAction.action)}
+                  type="button"
+                  variant="ghost"
+                >
+                  {/*
+                   * CDXC:TitlebarGit 2026-05-24-17:41:
+                   * The titlebar Git split button mirrors t3code's commit/push control and sits immediately after Resources so commit, push, and PR actions are reachable from top chrome without opening the sidebar Git row.
+                   */
+                  projectState.git.isBusy ? (
+                    <IconLoader2 aria-hidden="true" className="titlebar-git-spinner" size={14} />
+                  ) : (
+                    getTitlebarGitActionIcon(gitPrimaryAction.action)
+                  )}
+                  <span className="titlebar-git-label">
+                    {titlebarPrimaryGitActionLabel(gitPrimaryAction.label)}
+                  </span>
+                </Button>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    aria-label="Git actions menu"
+                    className="titlebar-session-button titlebar-open-chevron-button"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconChevronDown aria-hidden="true" size={14} />
+                  </Button>
+                </DropdownMenuTrigger>
+              </ButtonGroup>
+              <DropdownMenuContent
+                align="center"
+                alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
+                className="titlebar-open-menu titlebar-git-menu rounded-lg border-border/80 !bg-[#181818] p-1 text-[13px] text-foreground shadow-2xl"
+                data-titlebar-hit-region
+                sideOffset={6}
+                style={{ backgroundColor: "#181818", minWidth: 190, width: 190 }}
+              >
+                {gitMenuItems.map((item) => (
+                  <DropdownMenuItem
+                    className="titlebar-open-menu-item"
+                    disabled={item.disabled}
+                    key={item.action}
+                    onClick={() => runGitAction(item.action)}
+                  >
+                    {getTitlebarGitActionIcon(item.action)}
+                    <span>{item.label}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <DropdownMenu onOpenChange={setActionsMenuOpen} open={actionsMenuOpen}>
               <ButtonGroup className="titlebar-open-group titlebar-actions-group" data-titlebar-hit-region>
                 <Button
@@ -1639,6 +1728,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     editorIsOpen: false,
     editorIsSleeping: false,
     editorStatus: "idle",
+    git: createDefaultSidebarGitState(),
     projectEditorCompanionPaneHidden: false,
     projectName:
       (typeof bootstrap.workspaceName === "string" && bootstrap.workspaceName) ||
@@ -2340,6 +2430,27 @@ function getOpenTargetIcon(target: ResolvedOpenTarget): ReactNode {
   return <IconBox aria-hidden="true" className="size-4 text-zinc-400" />;
 }
 
+function titlebarPrimaryGitActionLabel(label: string): string {
+  return label.replace(/\bPush\b/g, "push").replace(/\bPR\b/g, "PR");
+}
+
+function getTitlebarGitActionIcon(action: SidebarGitAction): ReactNode {
+  if (action === "push") {
+    return <IconUpload aria-hidden="true" className="titlebar-git-icon" size={15} stroke={1.8} />;
+  }
+  if (action === "pr") {
+    return (
+      <IconGitPullRequest
+        aria-hidden="true"
+        className="titlebar-git-icon"
+        size={15}
+        stroke={1.8}
+      />
+    );
+  }
+  return <IconGitCommit aria-hidden="true" className="titlebar-git-icon" size={15} stroke={1.8} />;
+}
+
 function readLastOpenTargetId(): string {
   return localStorage.getItem(LAST_OPEN_TARGET_STORAGE_KEY) || "finder";
 }
@@ -2479,7 +2590,7 @@ styleElement.textContent = `
    * CDXC:ReactTitlebar 2026-05-11-09:00
    * The right titlebar controls should read as flat chrome text/icons rather
    * than framed buttons. Remove the manual installed-target refresh button and
-   * preserve the 20px centered control height so the compact 30px titlebar
+   * preserve the 20px centered control height so the taller 45px titlebar
    * keeps top/bottom breathing room.
    *
    * CDXC:ReactTitlebar 2026-05-17-00:57:
@@ -2553,6 +2664,30 @@ styleElement.textContent = `
   .titlebar-open-main-button {
     width: 28px;
     padding: 0;
+  }
+  .titlebar-git-main-button {
+    gap: 5px;
+    padding: 0 8px;
+    width: auto;
+  }
+  .titlebar-git-label {
+    max-width: 110px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .titlebar-git-icon {
+    flex: 0 0 auto;
+  }
+  .titlebar-git-spinner {
+    animation: titlebar-git-spin 1s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes titlebar-git-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .titlebar-command-panel-button {
     width: 28px;
@@ -2657,6 +2792,16 @@ styleElement.textContent = `
     background-color: #181818 !important;
     border: 1px solid rgba(255,255,255,0.14);
     box-shadow: 0 18px 42px rgba(0,0,0,0.44);
+  }
+  /**
+   * CDXC:TitlebarGit 2026-05-24-20:40:
+   * The Git split menu opens from the chevron segment, but the menu must be wide enough to show Commit, Push, and Create PR labels. Pin the menu width instead of letting Radix size it from the narrow chevron trigger.
+   */
+  .titlebar-git-menu {
+    max-width: 220px;
+    min-width: 190px !important;
+    overflow-x: visible;
+    width: 190px !important;
   }
   .titlebar-open-menu-item {
     cursor: default !important;

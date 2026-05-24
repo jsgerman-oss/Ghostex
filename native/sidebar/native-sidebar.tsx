@@ -377,6 +377,7 @@ type NativeHostCommand =
       commandsPanelLayout?: NativeTerminalLayout;
       commandsPanelMode?: "floating" | "pinned";
       activeProjectDiffStats?: SidebarProjectDiffStats;
+      activeProjectGitState?: SidebarGitState;
       activeProjectMode?: TitlebarMode;
       activeProjectEditorCompanionPaneHidden?: boolean;
       activeProjectEditorIsOpen?: boolean;
@@ -944,6 +945,10 @@ let lastNativeFocusedSidebarSessionId: string | undefined;
 let didLogStartupPaneLayoutFirstSync = false;
 const lastFocusedWorkspaceTerminalByProjectId = new Map<string, string>();
 let lastNativeT3RuntimeSessionStateKey: string | undefined;
+const NATIVE_T3_RUNTIME_PREWARM_DELAY_MS = 750;
+const NATIVE_T3_RUNTIME_PREWARM_COOLDOWN_MS = 60 * 1000;
+let pendingNativeT3RuntimePrewarmTimeout: number | undefined;
+const lastNativeT3RuntimePrewarmAtByProjectId = new Map<string, number>();
 let nativeSplitLayoutHint: NativeSplitLayoutHint | undefined;
 let lastPersistedProjectsPayloadJson: string | undefined;
 const projectEditorSleepTimeoutByProjectId = new Map<string, number>();
@@ -4623,17 +4628,6 @@ function parseGitHubPullRequest(stdout: string, success: boolean): SidebarGitSta
   }
 }
 
-function createGitCommitDraft(action: SidebarGitAction): { body?: string; subject: string } {
-  const project = activeProject();
-  const subject = `Update ${project.name}`;
-  return {
-    body: gitGenerateCommitBody
-      ? `Native ghostex commit from ${project.path}.\n\nAdditions: ${gitState.additions}\nDeletions: ${gitState.deletions}`
-      : undefined,
-    subject,
-  };
-}
-
 async function runSidebarGitAction(action: SidebarGitAction): Promise<void> {
   await refreshGitState();
   if (!gitState.isRepo) {
@@ -4725,23 +4719,30 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
    * Worktree git actions always open the review modal so the user can inspect files and decide whether the temporary worktree should be removed after commit/push/PR completion.
    */
   const hasCommit = gitState.hasWorkingTreeChanges;
-  const draft = hasCommit ? createGitCommitDraft(action) : { subject: "", body: undefined };
+  const draft = { subject: "", body: undefined };
   const requestId = `git-action-${Date.now().toString(36)}`;
   pendingGitCommitRequests.set(requestId, { action, hasCommit, ...draft });
-  sidebarBus.post({
+  const modalDraft = {
     action,
+    branch: gitState.branch,
     changedFiles: gitState.files,
     confirmLabel: resolveSidebarGitConfirmLabel(action, hasCommit),
     deleteWorktreeAfterDefault: false,
-    description: resolveSidebarGitPromptDescription(action, hasCommit),
+    description: hasCommit
+      ? "Review and confirm your commit. Leave the message blank to auto-generate one."
+      : resolveSidebarGitPromptDescription(action, hasCommit),
+    isDefaultRef: gitState.branch === "main" || gitState.branch === "master",
     isWorktree: activeProject().worktree !== undefined,
     requestId,
     showCommitMessage: hasCommit,
     suggestedBody: draft.body,
     suggestedSubject: draft.subject,
-    type: "promptGitCommit",
     worktreeName: activeProject().worktree?.name,
-  });
+  };
+  postAppModalHostMessage(
+    { gitCommitDraft: modalDraft, modal: "gitCommit", type: "open" },
+    "AppModals:gitCommit",
+  );
   gitState = { ...gitState, isBusy: false };
   publish();
   showAppToast("info", "Review git action", resolveSidebarGitConfirmLabel(action, hasCommit));
@@ -4797,8 +4798,7 @@ async function commitWorkingTree(
     promptSidebarGitActionReview(action);
     return "pending";
   }
-  const draft = createGitCommitDraft(action);
-  await commitWithMessage(draft.subject, draft.body);
+  await commitWithMessage("", undefined);
   return "committed";
 }
 
@@ -4806,17 +4806,160 @@ async function commitWithMessage(
   subject: string,
   body?: string,
   filePaths?: readonly string[],
+  options: { commitOnNewRef?: boolean } = {},
 ): Promise<void> {
   if (filePaths && filePaths.length > 0) {
     await runGit(["add", "-A", "--", ...filePaths]);
   } else {
     await runGit(["add", "-A"]);
   }
-  const args = ["commit", "-m", subject.trim() || "Update project"];
-  if (body?.trim()) {
-    args.push("-m", body.trim());
+  const message = parseSidebarGitCommitMessage(subject, body);
+  const resolvedMessage = message.subject
+    ? message
+    : await generateSidebarGitCommitMessageFromStagedChanges();
+  if (options.commitOnNewRef) {
+    const branch = await checkoutSidebarGitFeatureBranch(resolvedMessage.subject);
+    gitState = { ...gitState, branch, hasUpstream: false };
+  }
+  const args = ["commit", "-m", resolvedMessage.subject];
+  if (resolvedMessage.body) {
+    args.push("-m", resolvedMessage.body);
   }
   await runGit(args);
+}
+
+async function checkoutSidebarGitFeatureBranch(subject: string): Promise<string> {
+  const baseName = sanitizeSidebarGitBranchName(subject);
+  for (let index = 0; index < 20; index += 1) {
+    const candidate = index === 0 ? baseName : `${baseName}-${index + 1}`;
+    const exists = await runGit(["rev-parse", "--verify", "--quiet", candidate], {
+      allowFailure: true,
+    });
+    if (exists.exitCode !== 0) {
+      await runGit(["checkout", "-b", candidate]);
+      return candidate;
+    }
+  }
+  throw new Error(`Could not create a unique branch for ${baseName}.`);
+}
+
+function sanitizeSidebarGitBranchName(subject: string): string {
+  return (
+    subject
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[^\w\s-]/gu, "")
+      .trim()
+      .replace(/[\s_]+/gu, "-")
+      .replace(/-+/gu, "-")
+      .replace(/^-|-$/gu, "")
+      .slice(0, 48) || `change-${Date.now().toString(36)}`
+  );
+}
+
+function parseSidebarGitCommitMessage(
+  subject: string,
+  body?: string,
+): { body: string; subject: string } {
+  const trimmedSubject = subject.trim();
+  if (!trimmedSubject) {
+    return { body: "", subject: "" };
+  }
+  const [firstLine = "", ...restLines] = trimmedSubject.split(/\r?\n/);
+  return {
+    body: (restLines.join("\n").trim() || body?.trim() || "").trim(),
+    subject: firstLine.trim(),
+  };
+}
+
+async function generateSidebarGitCommitMessageFromStagedChanges(): Promise<{
+  body: string;
+  subject: string;
+}> {
+  /**
+   * CDXC:TitlebarGit 2026-05-24-17:41:
+   * Blank commit messages must use the same core experience as t3code: generate a concise subject and optional body from the exact staged diff after file selection, then commit that generated message instead of using a placeholder fallback.
+   */
+  showAppToast("info", "Generating commit message", activeProject().name);
+  const [summary, patch] = await Promise.all([
+    runGit(["diff", "--cached", "--stat"], { allowFailure: true }),
+    runGit(["diff", "--cached"], { allowFailure: true }),
+  ]);
+  const stagedSummary = summary.stdout.trim();
+  const stagedPatch = patch.stdout.trim();
+  if (!stagedSummary && !stagedPatch) {
+    throw new Error("No staged changes are available for commit message generation.");
+  }
+
+  const prompt = buildSidebarGitCommitMessagePrompt({
+    branch: gitState.branch,
+    generateBody: gitGenerateCommitBody,
+    stagedPatch,
+    stagedSummary,
+  });
+  const delimiter = `ghostex_GIT_COMMIT_${Date.now().toString(36)}`;
+  const command = [
+    "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"' - <<'",
+    delimiter,
+    "'\n",
+    prompt,
+    "\n",
+    delimiter,
+  ].join("");
+  const result = await runNativeProcess("/bin/zsh", ["-lc", command], {
+    cwd: activeProject().path,
+    timeoutMs: 120_000,
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      result.stderr.trim() || result.stdout.trim() || "Codex commit message generation failed.",
+    );
+  }
+  return parseSidebarGitGeneratedCommitMessage(result.stdout);
+}
+
+function buildSidebarGitCommitMessagePrompt(input: {
+  branch: string | null;
+  generateBody: boolean;
+  stagedPatch: string;
+  stagedSummary: string;
+}): string {
+  return [
+    "You write concise git commit messages.",
+    "Return only a JSON object with keys: subject, body.",
+    "Rules:",
+    "- subject must be imperative, <= 72 chars, and no trailing period",
+    input.generateBody
+      ? "- body can be empty string or short bullet points"
+      : "- body must be an empty string",
+    "- capture the primary user-visible or developer-visible change",
+    "",
+    `Branch: ${input.branch ?? "(detached)"}`,
+    "",
+    "Staged files:",
+    input.stagedSummary.slice(0, 6_000),
+    "",
+    "Staged patch:",
+    input.stagedPatch.slice(0, 40_000),
+  ].join("\n");
+}
+
+function parseSidebarGitGeneratedCommitMessage(stdout: string): { body: string; subject: string } {
+  const jsonText = stdout.match(/\{[\s\S]*\}/u)?.[0];
+  if (!jsonText) {
+    throw new Error("Codex did not return a commit message JSON object.");
+  }
+  const parsed = JSON.parse(jsonText) as Partial<{ body: unknown; subject: unknown }>;
+  const subject = String(parsed.subject ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/[.。]\s*$/u, "")
+    .trim()
+    .slice(0, 72);
+  if (!subject) {
+    throw new Error("Codex returned an empty commit subject.");
+  }
+  const body = typeof parsed.body === "string" ? parsed.body.trim() : "";
+  return { body, subject };
 }
 
 async function continueGitActionAfterCommitConfirmation(
@@ -4824,6 +4967,7 @@ async function continueGitActionAfterCommitConfirmation(
   message: string,
   filePaths?: readonly string[],
   deleteWorktreeAfter = false,
+  commitOnNewRef = false,
 ): Promise<void> {
   const pending = pendingGitCommitRequests.get(requestId);
   if (!pending) {
@@ -4835,7 +4979,9 @@ async function continueGitActionAfterCommitConfirmation(
     publish();
     showAppToast("info", resolveSidebarGitStartedTitle(pending.action), activeProject().name);
     if (pending.hasCommit) {
-      await commitWithMessage(message.trim() || pending.subject, pending.body, filePaths);
+      await commitWithMessage(message.trim() || pending.subject, pending.body, filePaths, {
+        commitOnNewRef,
+      });
     }
     if (pending.action === "push") {
       await pushCurrentBranch();
@@ -17135,6 +17281,7 @@ function focusProject(projectId: string): void {
   postZedOverlaySettings("workspace-focus");
   if (didSwitchProject) {
     scheduleSyncOpenProjectWithZed("focusProject");
+    scheduleNativeT3RuntimePrewarm(projectId, "focusProject");
   }
   void refreshGitState();
   void refreshProjectDiffStats(projectId);
@@ -17158,6 +17305,35 @@ function focusProject(projectId: string): void {
     return;
   }
   publish();
+}
+
+function scheduleNativeT3RuntimePrewarm(projectId: string, reason: string): void {
+  /**
+   * CDXC:T3Code 2026-05-24-17:35:
+   * The first T3 agent click should not pay the full Bun/server cold-start path.
+   * Prewarm the managed runtime shortly after startup and project focus; the native wrapper still self-exits after the existing idle window when no awake T3 session refreshes the heartbeat.
+   */
+  window.clearTimeout(pendingNativeT3RuntimePrewarmTimeout);
+  pendingNativeT3RuntimePrewarmTimeout = window.setTimeout(() => {
+    pendingNativeT3RuntimePrewarmTimeout = undefined;
+    const project = findProject(projectId);
+    const cwd = project?.path.trim();
+    if (!project || !cwd || project.isRecentProject === true) {
+      return;
+    }
+    const now = Date.now();
+    const lastPrewarmAt = lastNativeT3RuntimePrewarmAtByProjectId.get(project.projectId) ?? 0;
+    if (now - lastPrewarmAt < NATIVE_T3_RUNTIME_PREWARM_COOLDOWN_MS) {
+      return;
+    }
+    lastNativeT3RuntimePrewarmAtByProjectId.set(project.projectId, now);
+    appendAgentDetectionDebugLog("nativeSidebar.t3Runtime.prewarm", {
+      cwd,
+      projectId: project.projectId,
+      reason,
+    });
+    postNative({ cwd, type: "startT3CodeRuntime" });
+  }, NATIVE_T3_RUNTIME_PREWARM_DELAY_MS);
 }
 
 function createCodeServerProjectEditorUrl(projectPath: string): string {
@@ -17964,6 +18140,14 @@ function runSidebarCommandFromTitlebar(commandId: string): void {
     });
     throw error;
   }
+}
+
+function runSidebarGitActionFromTitlebar(action: SidebarGitAction): void {
+  /**
+   * CDXC:TitlebarGit 2026-05-24-17:41:
+   * Titlebar Git actions must reuse the sidebar git action pipeline so status refresh, file selection, generated commit messages, push, and PR creation have one implementation.
+   */
+  void runSidebarGitAction(action);
 }
 
 function rotateActivePaneLayoutClockwiseFromTitlebar(): void {
@@ -19064,6 +19248,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.message,
         message.filePaths,
         message.deleteWorktreeAfter,
+        message.commitOnNewRef,
       );
       return;
     case "cancelSidebarGitCommit":
@@ -19652,6 +19837,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
      * segmented control in sync with the visible surface.
      */
     activeProjectDiffStats: currentProjectEditor.diffStats,
+    activeProjectGitState: gitState,
     activeProjectEditorCompanionPaneHidden: currentProject.projectEditorCompanionPaneHidden === true,
     activeProjectMode:
       currentProjectEditorSurfaceState?.isOpen === true &&
@@ -21523,6 +21709,7 @@ window.__ghostex_NATIVE_SIDEBAR__ = {
   togglePetOverlayFromTitlebar,
   toggleCommandsPanelFromTitlebar,
   runSidebarCommandFromTitlebar,
+  runSidebarGitActionFromTitlebar,
 };
 
 window.__ghostex_NATIVE_CLI__ = {
@@ -22306,6 +22493,7 @@ if (
     } else {
       publish();
     }
+    scheduleNativeT3RuntimePrewarm(activeProjectId, "startup");
     openTipsAndTricksOnFirstLaunch();
   });
 

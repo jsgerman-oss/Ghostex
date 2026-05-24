@@ -2626,6 +2626,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           onConfirm={(requestId, message, options) => {
             setGitCommitDraft(undefined);
             vscode.postMessage({
+              commitOnNewRef: options.commitOnNewRef,
               deleteWorktreeAfter: options.deleteWorktreeAfter,
               filePaths: options.filePaths,
               message,

@@ -428,11 +428,13 @@ export type SidebarT3SessionItem = {
 
 export type SidebarPromptGitCommitMessage = {
   action: SidebarGitAction;
+  branch?: string | null;
   changedFiles?: SidebarGitChangedFile[];
   confirmLabel: string;
   deleteWorktreeAfterDefault?: boolean;
   description: string;
   isWorktree?: boolean;
+  isDefaultRef?: boolean;
   requestId: string;
   showCommitMessage?: boolean;
   suggestedBody?: string;
@@ -1086,6 +1088,7 @@ export type SidebarToExtensionMessage =
       type: "setSidebarGitGenerateCommitBodyEnabled";
     }
   | {
+      commitOnNewRef?: boolean;
       deleteWorktreeAfter?: boolean;
       filePaths?: string[];
       message: string;

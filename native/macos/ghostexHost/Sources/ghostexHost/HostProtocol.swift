@@ -70,6 +70,7 @@ enum HostCommand: Decodable {
   case sleepInactiveSessionsFromTitlebar(SleepInactiveSessionsFromTitlebar)
   case quitResourcesFromTitlebar(QuitResourcesFromTitlebar)
   case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
+  case runSidebarGitActionFromTitlebar(RunSidebarGitActionFromTitlebar)
   case configureZedOverlay(ConfigureZedOverlay)
   case openZedWorkspace(OpenZedWorkspace)
   case sidebarCliCommand(SidebarCliCommand)
@@ -150,6 +151,7 @@ enum HostCommand: Decodable {
     case sleepInactiveSessionsFromTitlebar
     case quitResourcesFromTitlebar
     case runSidebarCommandFromTitlebar
+    case runSidebarGitActionFromTitlebar
     case configureZedOverlay
     case openZedWorkspace
     case sidebarCliCommand
@@ -299,6 +301,8 @@ enum HostCommand: Decodable {
       self = .quitResourcesFromTitlebar(try QuitResourcesFromTitlebar(from: decoder))
     case .runSidebarCommandFromTitlebar:
       self = .runSidebarCommandFromTitlebar(try RunSidebarCommandFromTitlebar(from: decoder))
+    case .runSidebarGitActionFromTitlebar:
+      self = .runSidebarGitActionFromTitlebar(try RunSidebarGitActionFromTitlebar(from: decoder))
     case .configureZedOverlay:
       self = .configureZedOverlay(try ConfigureZedOverlay(from: decoder))
     case .openZedWorkspace:
@@ -421,6 +425,7 @@ struct ReadTerminalText: Decodable {
 struct SetActiveTerminalSet: Decodable {
   let activeProjectEditorId: String?
   let activeProjectDiffStats: TitlebarProjectDiffStats?
+  let activeProjectGitState: TitlebarGitState?
   let activeProjectMode: String?
   let activeProjectEditorCompanionPaneHidden: Bool?
   let activeProjectEditorIsOpen: Bool?
@@ -523,6 +528,40 @@ struct TitlebarProjectDiffStats: Decodable {
   let files: Int
   let isLoading: Bool
   let isRepo: Bool
+}
+
+struct TitlebarGitChangedFile: Decodable {
+  let additions: Int
+  let deletions: Int
+  let path: String
+}
+
+struct TitlebarGitPullRequest: Decodable {
+  let number: Int?
+  let state: String
+  let title: String
+  let url: String
+}
+
+struct TitlebarGitState: Decodable {
+  let additions: Int
+  let aheadCount: Int
+  let behindCount: Int
+  let branch: String?
+  let confirmSuggestedCommit: Bool
+  let deletions: Int
+  let files: [TitlebarGitChangedFile]
+  let generateCommitBody: Bool
+  let hasGitHubCli: Bool
+  let hasOriginRemote: Bool
+  let hasUpstream: Bool
+  let hasWorkingTreeChanges: Bool
+  let isBusy: Bool
+  let isRepo: Bool
+  let isWorktree: Bool
+  let pr: TitlebarGitPullRequest?
+  let primaryAction: String
+  let worktreeName: String?
 }
 
 struct TitlebarWorkspaceOpenTargets: Decodable {
@@ -780,6 +819,10 @@ struct SetReactTitlebarHitRegions: Decodable {
 
 struct RunSidebarCommandFromTitlebar: Decodable {
   let commandId: String
+}
+
+struct RunSidebarGitActionFromTitlebar: Decodable {
+  let action: String
 }
 
 struct SleepInactiveSessionsFromTitlebar: Decodable {

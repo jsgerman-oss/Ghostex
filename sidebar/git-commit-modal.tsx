@@ -7,11 +7,13 @@ import { summarizeChangedFiles } from "./changed-files-tree-utils";
 
 export type GitCommitModalDraft = {
   action?: SidebarGitAction;
+  branch?: string | null;
   changedFiles?: SidebarGitChangedFile[];
   confirmLabel: string;
   deleteWorktreeAfterDefault?: boolean;
   description: string;
   isWorktree?: boolean;
+  isDefaultRef?: boolean;
   requestId: string;
   showCommitMessage?: boolean;
   suggestedBody?: string;
@@ -26,7 +28,7 @@ export type GitCommitModalProps = {
   onConfirm: (
     requestId: string,
     message: string,
-    options: { deleteWorktreeAfter: boolean; filePaths?: string[] },
+    options: { commitOnNewRef?: boolean; deleteWorktreeAfter: boolean; filePaths?: string[] },
   ) => void;
 };
 
@@ -82,7 +84,7 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
   }
 
   const trimmedMessage = message.trim();
-  const canConfirm = !showCommitMessage || (trimmedMessage.length > 0 && !noneSelected);
+  const canConfirm = !showCommitMessage || !noneSelected;
   const selectedFilePaths =
     changedFiles.length > 0 && selectedFiles.length !== changedFiles.length
       ? selectedFiles.map((file) => file.path)
@@ -91,6 +93,9 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
   /*
    * CDXC:Worktrees 2026-05-18-23:07:
    * The git review modal must support three worktree-specific choices: file selection, skipping the commit-message field when only push/PR is needed, and deleting the temporary worktree after a successful action.
+   *
+   * CDXC:TitlebarGit 2026-05-24-17:41:
+   * Titlebar-launched commits should match t3code's review experience: the message box may be left blank, and confirmation then generates the commit subject/body from the staged selected files.
    */
   return createPortal(
     <div className="confirm-modal-root scroll-mask-y" role="presentation">
@@ -116,14 +121,24 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
         </button>
         <div className="confirm-modal-header confirm-modal-header-with-close">
           <div className="confirm-modal-title" id={titleId}>
-            Review Suggested Commit
+            Commit changes
           </div>
           <div className="confirm-modal-description" id={descriptionId}>
-            {draft.description}
+            {draft.description ||
+              "Review and confirm your commit. Leave the message blank to auto-generate one."}
           </div>
         </div>
         <div className="command-config-fields">
           <div className="git-commit-files-panel">
+            {draft.branch !== undefined ? (
+              <div className="git-commit-branch-row">
+                <span className="command-config-label">Branch</span>
+                <span className="git-commit-branch-name">{draft.branch ?? "(detached HEAD)"}</span>
+                {draft.isDefaultRef ? (
+                  <span className="git-commit-default-ref-warning">Warning: default refName</span>
+                ) : null}
+              </div>
+            ) : null}
             <div className="git-commit-files-header">
               <div>
                 <span className="command-config-label">Files</span>
@@ -195,7 +210,7 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
                 autoFocus
                 className="group-title-input command-config-input command-config-textarea git-commit-modal-textarea"
                 onChange={(event) => setMessage(event.currentTarget.value)}
-                placeholder="Describe the change"
+                placeholder="Leave empty to auto-generate"
                 rows={draft.suggestedBody ? 10 : 4}
                 value={message}
                 wrap="soft"
@@ -238,6 +253,22 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
           >
             {draft.confirmLabel}
           </button>
+          {showCommitMessage ? (
+            <button
+              className="secondary confirm-modal-button"
+              disabled={!canConfirm}
+              onClick={() =>
+                onConfirm(draft.requestId, trimmedMessage, {
+                  commitOnNewRef: true,
+                  deleteWorktreeAfter,
+                  filePaths: selectedFilePaths,
+                })
+              }
+              type="button"
+            >
+              Commit on new refName
+            </button>
+          ) : null}
         </div>
       </div>
     </div>,

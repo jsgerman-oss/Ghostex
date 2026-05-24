@@ -767,6 +767,21 @@ enum NativeT3RuntimeLauncher {
     guard isAppHeartbeatFresh(ageSeconds: heartbeatAgeSeconds) else {
       return false
     }
+    guard hasRecoverableManagedRuntimeAuthMaterial() else {
+      /**
+       CDXC:T3Code 2026-05-24-17:29:
+       A young T3 listener with no owner bearer and no usable desktop bootstrap
+       token cannot recover by waiting. Do not spend the 90-second startup grace
+       on unrecoverable auth state; replace the runtime so a fresh one-time
+       bootstrap can mint the owner bearer needed by the first T3 pane.
+       */
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.listener.startupGrace.missingAuthMaterial", [
+        "heartbeatAgeSeconds": heartbeatAgeSeconds ?? NSNull(),
+        "pid": pid,
+        "startupRetentionSeconds": startupUnresponsiveRetentionSeconds,
+      ])
+      return false
+    }
     guard let ageSeconds = runtimeAgeSeconds(pid: pid) else {
       NativeT3CodePaneReproLog.append("nativeT3Runtime.listener.startupGrace.missingAge", [
         "heartbeatAgeSeconds": heartbeatAgeSeconds ?? NSNull(),
@@ -1043,6 +1058,13 @@ enum NativeT3RuntimeLauncher {
     ])
   }
 
+  private static func hasRecoverableManagedRuntimeAuthMaterial() -> Bool {
+    currentOwnerBearerToken() != nil
+      || readPersistedOwnerBearerToken() != nil
+      || currentBootstrapCredential() != nil
+      || readPersistedDesktopBootstrapToken() != nil
+  }
+
   static func isManagedRuntimeURL(_ url: URL) -> Bool {
     url.host == host && url.port == port
   }
@@ -1280,6 +1302,77 @@ enum NativeT3RuntimeLauncher {
       "mtime": authStateMtime.map { ISO8601DateFormatter().string(from: $0) } ?? NSNull(),
     ])
     return ownerBearerToken
+  }
+
+  static func readPersistedDesktopBootstrapToken() -> String? {
+    let url = authStateURL()
+    let authStateMtime = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate])
+      as? Date
+    guard let data = try? Data(contentsOf: url),
+      let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      (payload["provider"] as? String) == "t3code",
+      let desktopBootstrapToken = payload["desktopBootstrapToken"] as? String,
+      !desktopBootstrapToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.bootstrapCredential.persisted.missing", [
+        "path": url.path
+      ])
+      return nil
+    }
+    /**
+     CDXC:T3Code 2026-05-24-17:11:
+     Ghostex app restarts lose NativeT3RuntimeLauncher's in-memory desktop
+     bootstrap while the managed t3code process can keep running. Recover the
+     persisted one-time bootstrap token so the restarted host can mint the
+     matching owner bearer instead of replacing a healthy provider or looping
+     on `missingCredential`.
+     */
+    NativeT3CodePaneReproLog.append("nativeT3Runtime.bootstrapCredential.persisted.read", [
+      "path": url.path,
+      "mtime": authStateMtime.map { ISO8601DateFormatter().string(from: $0) } ?? NSNull(),
+    ])
+    return desktopBootstrapToken
+  }
+
+  static func discardDesktopBootstrapCredential(_ credential: String, reason: String) {
+    bootstrapCredentialLock.lock()
+    if bootstrapCredential == credential {
+      bootstrapCredential = nil
+    }
+    bootstrapCredentialLock.unlock()
+
+    let url = authStateURL()
+    guard let data = try? Data(contentsOf: url),
+      let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      (payload["provider"] as? String) == "t3code",
+      (payload["desktopBootstrapToken"] as? String) == credential
+    else {
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.bootstrapCredential.discard.skipped", [
+        "path": url.path,
+        "reason": reason,
+      ])
+      return
+    }
+
+    var nextState: [String: Any] = ["provider": "t3code"]
+    if let ownerBearerToken = payload["ownerBearerToken"] as? String,
+      !ownerBearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    {
+      nextState["ownerBearerToken"] = ownerBearerToken
+    }
+    do {
+      try writeAuthState(nextState)
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.bootstrapCredential.discarded", [
+        "path": url.path,
+        "reason": reason,
+      ])
+    } catch {
+      NativeT3CodePaneReproLog.append("nativeT3Runtime.bootstrapCredential.discard.failed", [
+        "error": error.localizedDescription,
+        "path": url.path,
+        "reason": reason,
+      ])
+    }
   }
 
   private static func listeningProcesses(onPort port: Int) -> [NativeT3ListeningProcess] {
@@ -1694,7 +1787,8 @@ enum NativeT3RuntimeSessionBootstrap {
       completion(.failure(error("Invalid T3 environment descriptor URL.")))
       return
     }
-    requestJSON(url: url, sessionId: sessionId, method: "GET", body: nil) { result in
+    requestJSON(url: url, sessionId: sessionId, method: "GET", body: nil, requiresOwnerBearer: false) {
+      result in
       if case .success(let payload) = result {
         NativeT3CodePaneReproLog.append("nativeT3Runtime.environment.loaded", [
           "environmentId": payload["environmentId"] as? String ?? NSNull(),
@@ -1715,7 +1809,8 @@ enum NativeT3RuntimeSessionBootstrap {
       completion(.failure(error("Invalid T3 snapshot URL.")))
       return
     }
-    requestJSON(url: url, sessionId: sessionId, method: "GET", body: nil) { result in
+    requestJSON(url: url, sessionId: sessionId, method: "GET", body: nil, requiresOwnerBearer: true) {
+      result in
       if case .success(let payload) = result {
         NativeT3CodePaneReproLog.append("nativeT3Runtime.snapshot.loaded", [
           "projectCount": (payload["projects"] as? [Any])?.count ?? 0,
@@ -1782,7 +1877,14 @@ enum NativeT3RuntimeSessionBootstrap {
       return
     }
     let body = try? JSONSerialization.data(withJSONObject: command, options: [])
-    requestJSON(url: url, sessionId: sessionId, method: "POST", body: body, completion: completion)
+    requestJSON(
+      url: url,
+      sessionId: sessionId,
+      method: "POST",
+      body: body,
+      requiresOwnerBearer: true,
+      completion: completion
+    )
   }
 
   private static func requestJSON(
@@ -1790,6 +1892,7 @@ enum NativeT3RuntimeSessionBootstrap {
     sessionId: String,
     method: String,
     body: Data?,
+    requiresOwnerBearer: Bool,
     completion: @escaping (Result<[String: Any], Error>) -> Void
   ) {
     var request = URLRequest(url: url)
@@ -1803,9 +1906,25 @@ enum NativeT3RuntimeSessionBootstrap {
      desktop bootstrap before falling back to a VS Code-owned bearer. Bearer
      tokens are signed by the runtime's local key, so a VS Code bearer cannot
      manage a separately spawned native server.
+
+     CDXC:T3Code 2026-05-24-17:11:
+     Owner-only orchestration requests must fail before network I/O when the
+     native owner bearer is not ready. Letting URLSession send a stale browser
+     cookie to `/api/orchestration/snapshot` turns a startup/auth race into a
+     permanent "Only owner sessions can manage projects" pane error.
      */
-    if let ownerBearerToken = NativeT3RuntimeBrowserAuth.readOwnerBearerTokenForManagedRuntime() {
+    if requiresOwnerBearer {
       request.httpShouldHandleCookies = false
+      guard let ownerBearerToken = NativeT3RuntimeBrowserAuth.readOwnerBearerTokenForManagedRuntime()
+      else {
+        NativeT3CodePaneReproLog.append("nativeT3Runtime.api.ownerBearer.notReady", [
+          "method": method,
+          "sessionId": sessionId,
+          "url": url.absoluteString,
+        ])
+        completion(.failure(error("T3 owner bearer is not ready for \(method) \(url.path).")))
+        return
+      }
       request.setValue("Bearer \(ownerBearerToken)", forHTTPHeaderField: "authorization")
     }
     if let body {
@@ -2018,7 +2137,11 @@ enum NativeT3RuntimeBrowserAuth {
   }
 
   private static func exchangeBootstrapCredential(origin: URL, attemptsRemaining: Int) {
-    guard let credential = NativeT3RuntimeLauncher.currentBootstrapCredential() else {
+    guard
+      let credential =
+        NativeT3RuntimeLauncher.currentBootstrapCredential()
+        ?? NativeT3RuntimeLauncher.readPersistedDesktopBootstrapToken()
+    else {
       exchangeExtensionPairingCredential(
         origin: origin,
         attemptsRemaining: attemptsRemaining,
@@ -2083,10 +2206,35 @@ enum NativeT3RuntimeBrowserAuth {
       ])
       guard httpResponse.statusCode == 200, let ownerBearerToken else {
         if httpResponse.statusCode == 401 {
-          exchangeExtensionPairingCredential(
+          if let extensionOwnerBearerToken = readVSmuxOwnerBearerToken() {
+            exchangePairingCredential(
+              origin: origin,
+              ownerBearerToken: extensionOwnerBearerToken,
+              ownerBearerSource: "extensionOwnerBearer",
+              attemptsRemaining: attemptsRemaining,
+              originalReason: "bearerBootstrapStatus401"
+            )
+            return
+          }
+          /**
+           CDXC:T3Code 2026-05-24-17:29:
+           The desktop bootstrap token is one-time auth material. A 401 from the
+           managed runtime means this listener cannot become owner-authenticated
+           by retrying the same token, so discard it and stop the stale runtime
+           immediately instead of waiting through startup grace.
+           */
+          NativeT3RuntimeLauncher.discardDesktopBootstrapCredential(
+            credential,
+            reason: "bearerBootstrapStatus401"
+          )
+          NativeT3RuntimeLauncher.clearStaleRuntimeIfNeeded(
+            logPrefix: "nativeT3Runtime.browserAuth",
+            forceOwnedRuntimeStop: true
+          )
+          retryAuth(
             origin: origin,
-            attemptsRemaining: attemptsRemaining,
-            originalReason: "bearerBootstrapStatus401"
+            reason: "bearerBootstrapStatus401RuntimeReplaced",
+            attemptsRemaining: attemptsRemaining
           )
           return
         }

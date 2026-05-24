@@ -18,6 +18,7 @@ import { SessionRenameModal } from "../../sidebar/session-rename-modal";
 import { T3BrowserAccessModal } from "../../sidebar/t3-browser-access-modal";
 import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
 import { FirstLaunchSetupModal } from "../../sidebar/first-launch-setup-modal";
+import { GitCommitModal, type GitCommitModalDraft } from "../../sidebar/git-commit-modal";
 import { TipsAndTricksModal } from "../../sidebar/tips-and-tricks-modal";
 import { WorktreeCreateModal } from "../../sidebar/worktree-create-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
@@ -50,6 +51,7 @@ type AppModalKind =
   | "delayedSend"
   | "findPreviousSession"
   | "hotkeys"
+  | "gitCommit"
   | "openTargets"
   | "pinnedPrompts"
   | "floatingPromptEditor"
@@ -81,6 +83,7 @@ type AppModalHostMessage =
       projectId?: string;
       projectName?: string;
       filePath?: string;
+      gitCommitDraft?: GitCommitModalDraft;
       initialFrame?: FloatingPromptEditorFrame;
       initialText?: string;
       lockedActionType?: SidebarActionType;
@@ -1413,6 +1416,7 @@ function AppModalHost() {
     delayedSend,
     findPreviousSession,
     firstUserMessage,
+    gitCommit,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
     closeModal,
@@ -1441,6 +1445,7 @@ function AppModalHost() {
     delayedSend,
     findPreviousSession,
     firstUserMessage,
+    gitCommit,
     floatingPromptEditor,
     renameSession,
     settings,
@@ -1639,6 +1644,35 @@ function AppModalHost() {
           closeModal();
         }}
         sessionTitle={delayedSend?.title}
+      />
+      <GitCommitModal
+        draft={
+          gitCommit ?? {
+            confirmLabel: "Commit",
+            description: "",
+            changedFiles: [],
+            requestId: "",
+            showCommitMessage: true,
+            suggestedBody: undefined,
+            suggestedSubject: "",
+          }
+        }
+        isOpen={activeModal === "gitCommit" && gitCommit !== undefined}
+        onCancel={(requestId) => {
+          vscode.postMessage({ requestId, type: "cancelSidebarGitCommit" });
+          closeModal();
+        }}
+        onConfirm={(requestId, message, options) => {
+          vscode.postMessage({
+            commitOnNewRef: options.commitOnNewRef,
+            deleteWorktreeAfter: options.deleteWorktreeAfter,
+            filePaths: options.filePaths,
+            message,
+            requestId,
+            type: "confirmSidebarGitCommit",
+          });
+          closeModal();
+        }}
       />
       {/*
        * CDXC:Worktrees 2026-05-18-23:07:
@@ -1882,6 +1916,7 @@ function useModalStateFromNative() {
   const [delayedSend, setDelayedSend] = useState<DelayedSendModalState>();
   const [findPreviousSession, setFindPreviousSession] = useState<FindPreviousSessionModalState>();
   const [firstUserMessage, setFirstUserMessage] = useState<FirstUserMessageModalState>();
+  const [gitCommit, setGitCommit] = useState<GitCommitModalDraft>();
   const [floatingPromptEditor, setFloatingPromptEditor] = useState<FloatingPromptEditorState>();
   const [floatingPromptEditorCloseAndSaveRequestId, setFloatingPromptEditorCloseAndSaveRequestId] =
     useState<string>();
@@ -1900,6 +1935,7 @@ function useModalStateFromNative() {
     setDelayedSend(undefined);
     setFindPreviousSession(undefined);
     setFirstUserMessage(undefined);
+    setGitCommit(undefined);
     setFloatingPromptEditor(undefined);
     setRenameSession(undefined);
     setT3BrowserAccess(undefined);
@@ -2110,6 +2146,21 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setGitCommit(undefined);
+          } else if (message.modal === "gitCommit") {
+            if (!message.gitCommitDraft) {
+              throw new Error("Git commit modal request is missing gitCommitDraft.");
+            }
+            setGitCommit(message.gitCommitDraft);
+            setConfig({});
+            setDelayedSend(undefined);
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
+            setWorktree(undefined);
           } else if (message.modal === "commandConfig") {
             if (!message.commandDraft) {
               throw new Error("Command config modal request is missing commandDraft.");
@@ -2251,6 +2302,7 @@ function useModalStateFromNative() {
     delayedSend,
     findPreviousSession,
     firstUserMessage,
+    gitCommit,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
     closeModal,
@@ -2312,6 +2364,7 @@ function isModalRenderable({
   delayedSend,
   findPreviousSession,
   firstUserMessage,
+  gitCommit,
   floatingPromptEditor,
   renameSession,
   settings,
@@ -2324,6 +2377,7 @@ function isModalRenderable({
   delayedSend: DelayedSendModalState | undefined;
   findPreviousSession: FindPreviousSessionModalState | undefined;
   firstUserMessage: FirstUserMessageModalState | undefined;
+  gitCommit: GitCommitModalDraft | undefined;
   floatingPromptEditor: FloatingPromptEditorState | undefined;
   renameSession: RenameSessionModalState | undefined;
   settings: unknown;
@@ -2347,6 +2401,8 @@ function isModalRenderable({
       return findPreviousSession !== undefined;
     case "firstUserMessage":
       return firstUserMessage !== undefined;
+    case "gitCommit":
+      return gitCommit !== undefined;
     case "floatingPromptEditor":
       return floatingPromptEditor !== undefined;
     case "renameSession":

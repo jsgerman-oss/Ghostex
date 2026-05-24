@@ -5,6 +5,7 @@ import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "no
 import net from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { emitKeypressEvents } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -30,6 +31,37 @@ const CLI_DIR = path.join(GHOSTEX_HOME, "cli");
 const BRIDGE_TOKEN_PATH = path.join(CLI_DIR, "bridge-token");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
 const SHARED_SETTINGS_PATH = path.join(GHOSTEX_HOME, "state", "native-sidebar-settings.json");
+const QUICK_TERMINALS_PROJECT_NAME = "Quick Terminals";
+const RESET_ANSI = "\x1b[0m";
+const PICKER_TITLE = "Attach to Ghostex Session";
+const PICKER_TITLE_STYLE = "\x1b[1m\x1b[38;2;255;255;255m";
+const PROJECT_HEADER_STYLE = "\x1b[1m\x1b[38;2;130;183;255m";
+const SELECTED_SESSION_STYLE = "\x1b[1m\x1b[38;2;255;255;255m";
+const AGENT_PICKER_INDICATORS = new Map([
+  ["amp", { color: "#ffffff", label: "AMP" }],
+  ["amp-cli", { color: "#ffffff", label: "AMP" }],
+  ["antigravity", { color: "#749bff", label: "AGY" }],
+  ["antigravity-cli", { color: "#749bff", label: "AGY" }],
+  ["claude", { color: "#d97757", label: "CLD" }],
+  ["claude-code", { color: "#d97757", label: "CLD" }],
+  ["codex", { color: "#a991ff", label: "CDX" }],
+  ["codex-cli", { color: "#a991ff", label: "CDX" }],
+  ["copilot", { color: "#ffffff", label: "PLT" }],
+  ["cursor", { color: "#749bff", label: "CRS" }],
+  ["cursor-cli", { color: "#749bff", label: "CRS" }],
+  ["droid", { color: "#ff7a1a", label: "DRD" }],
+  ["factory-droid", { color: "#ff7a1a", label: "DRD" }],
+  ["gemini", { color: "#8b9aff", label: "GEM" }],
+  ["grok", { color: "#ffffff", label: "GRK" }],
+  ["grok-build", { color: "#ffffff", label: "GRK" }],
+  ["opencode", { color: "#6d96c0", label: "OPN" }],
+  ["open-code", { color: "#6d96c0", label: "OPN" }],
+  ["pi", { color: "#c8ff62", label: "PIA" }],
+  ["t3", { color: "#ff6af3", label: "T3C" }],
+  ["t3-code", { color: "#ff6af3", label: "T3C" }],
+  ["work-codex", { color: "#a991ff", label: "CDX" }],
+]);
+const DEFAULT_PICKER_AGENT_INDICATOR = { color: "#9ca3af", label: "UNK" };
 
 const COMMANDS = new Map([
   ["sessions", sessionsCommand],
@@ -121,13 +153,15 @@ function isDirectCliEntryPoint() {
 async function main() {
   const argv = process.argv.slice(2);
   /**
-   * CDXC:CliSessions 2026-05-20-12:00:
-   * Running `ghostex` or `gtx` with no subcommand should list live sessions the
-   * same way as `ghostex ls`, because a bare command name is the most common
-   * terminal check for what is running.
+   * CDXC:CliSessionPicker 2026-05-24-18:10:
+   * Running bare `ghostex` or `gtx` should open the keyboard session picker,
+   * not the compact list. The picker shows project-name separators and raw
+   * session titles in the same order returned by the macOS sidebar inventory,
+   * then attaches the selected row through the same command path as
+   * `gtx a <session id>`.
    */
   if (argv.length === 0) {
-    await sessionsCommand([]);
+    await interactiveSessionPickerCommand([]);
     return;
   }
   const [commandName, ...args] = argv;
@@ -773,6 +807,10 @@ async function attachSessionCommand(args) {
   const selector = flags.sessionId ?? rest.join(" ").trim();
   const result = await fetchSessionList(flags);
   const session = await resolveOneListedSession(selector, result.sessions ?? []);
+  await attachResolvedSession(session);
+}
+
+async function attachResolvedSession(session) {
   /**
    * CDXC:CliSessions 2026-05-17-01:33:
    * Sleeping a provider-backed agent session stops the tmux/zmx/zellij runtime to
@@ -787,6 +825,25 @@ async function attachSessionCommand(args) {
     );
   }
   await runInteractiveShellCommand(command, session.projectPath);
+}
+
+async function interactiveSessionPickerCommand(args) {
+  const { flags } = parseArgs(args);
+  const result = await fetchSessionList(flags, { writeCache: true });
+  const sessions = result.sessions ?? [];
+  if (sessions.length === 0) {
+    console.log("No running terminal sessions.");
+    return;
+  }
+  if (!isInteractiveTerminal()) {
+    printSessionPickerRows(sessions);
+    return;
+  }
+  const session = await runInteractiveSessionPicker(sessions);
+  if (!session) {
+    return;
+  }
+  await attachResolvedSession(session);
 }
 
 function buildSessionAttachCommand(session) {
@@ -1211,6 +1268,277 @@ function printSessionList(sessions, { grouped }) {
   });
 }
 
+function printSessionPickerRows(sessions) {
+  for (const row of buildSessionPickerRows(sessions)) {
+    console.log(row.text);
+  }
+}
+
+function isInteractiveTerminal(input = process.stdin, output = process.stdout) {
+  return Boolean(input.isTTY && output.isTTY);
+}
+
+function buildSessionPickerModel(sessions) {
+  /**
+   * CDXC:CliSessionPicker 2026-05-24-18:10:
+   * The bare CLI picker is a visual mirror of the macOS sidebar order: project
+   * rows are separators named only by project, while selectable session rows
+   * render only the saved title string with no alias, status, path, or wrapping
+   * metadata. Left/right navigation moves by project boundaries; enter and
+   * space select the session for the normal attach flow.
+   *
+   * CDXC:CliSessionPicker 2026-05-24-18:25:
+   * The first no-project terminal group is labeled "Quick Terminals" so
+   * scratch terminals are recognizable, section headers get a blank line plus
+   * bold colored styling, and each session title keeps an agent-specific color
+   * marker in front of the saved title.
+   *
+   * CDXC:CliSessionPicker 2026-05-24-18:31:
+   * Selected sessions recolor the full row, not only the leading agent marker,
+   * so the active target remains obvious in terminals where isolated marker
+   * color is hard to scan.
+   *
+   * CDXC:CliSessionPicker 2026-05-24-18:45:
+   * The picker opens with an explicit attach prompt and separator before the
+   * session sections. Agent marks are colored three-character indicators in
+   * square brackets, not glyphs, so every session row has a stable text width.
+   *
+   * CDXC:CliSessionPicker 2026-05-24-18:47:
+   * The picker header is a bright-white bold title with a real terminal rule
+   * below it, no blank spacer rows. Navigation wraps at list ends, and Page Up
+   * / Page Down jump five sessions at a time for faster long-list movement.
+   */
+  const groups = groupSessionsPreservingSidebarOrder(sessions).filter(
+    (project) => project.sessions.length > 0,
+  );
+  const items = [
+    {
+      kind: "title",
+      plainText: PICKER_TITLE,
+      renderText: `${PICKER_TITLE_STYLE}${PICKER_TITLE}${RESET_ANSI}`,
+    },
+    {
+      kind: "separator",
+      plainText: "─",
+      renderText: "─",
+    },
+  ];
+  const sessionItems = [];
+  let sessionIndex = 0;
+  groups.forEach((project, projectIndex) => {
+    const startSessionIndex = sessionIndex;
+    items.push({
+      kind: "project",
+      projectIndex,
+      plainText: project.projectName,
+      renderText: `${PROJECT_HEADER_STYLE}${project.projectName}${RESET_ANSI}`,
+    });
+    for (const session of project.sessions) {
+      const agentIndicator = resolveSessionPickerAgentIndicator(session);
+      const title = String(session.title ?? "");
+      const item = {
+        agentIndicator,
+        kind: "session",
+        plainText: `[${agentIndicator.label}] ${title}`,
+        projectIndex,
+        renderText: `${ansiColor(agentIndicator.color)}[${agentIndicator.label}]${RESET_ANSI} ${title}`,
+        session,
+        sessionIndex,
+      };
+      items.push(item);
+      sessionItems.push(item);
+      sessionIndex += 1;
+    }
+    project.startSessionIndex = startSessionIndex;
+    project.endSessionIndex = sessionIndex - 1;
+  });
+  return { groups, items, sessionItems };
+}
+
+function buildSessionPickerRows(sessions, selectedSessionIndex = 0) {
+  const model = buildSessionPickerModel(sessions);
+  return model.items.map((item) => ({
+    ...(item.kind === "session" ? { agentIndicator: item.agentIndicator } : {}),
+    kind: item.kind,
+    selected: item.kind === "session" && item.sessionIndex === selectedSessionIndex,
+    text: item.plainText,
+  }));
+}
+
+function moveSessionPickerSelection(model, selectedSessionIndex, direction) {
+  const sessionCount = model.sessionItems.length;
+  if (sessionCount === 0) {
+    return 0;
+  }
+  if (direction === "up") {
+    return wrapSessionPickerIndex(selectedSessionIndex - 1, sessionCount);
+  }
+  if (direction === "down") {
+    return wrapSessionPickerIndex(selectedSessionIndex + 1, sessionCount);
+  }
+  if (direction === "pageup") {
+    return wrapSessionPickerIndex(selectedSessionIndex - 5, sessionCount);
+  }
+  if (direction === "pagedown") {
+    return wrapSessionPickerIndex(selectedSessionIndex + 5, sessionCount);
+  }
+  if (direction === "left" || direction === "right") {
+    const current = model.sessionItems[selectedSessionIndex];
+    const delta = direction === "left" ? -1 : 1;
+    const targetProjectIndex = wrapSessionPickerIndex(current.projectIndex + delta, model.groups.length);
+    const targetProject = model.groups[targetProjectIndex];
+    return targetProject ? targetProject.startSessionIndex : selectedSessionIndex;
+  }
+  return selectedSessionIndex;
+}
+
+function wrapSessionPickerIndex(index, count) {
+  return ((index % count) + count) % count;
+}
+
+async function runInteractiveSessionPicker(sessions, input = process.stdin, output = process.stdout) {
+  const model = buildSessionPickerModel(sessions);
+  if (model.sessionItems.length === 0) {
+    return undefined;
+  }
+  let selectedSessionIndex = 0;
+  let viewportStart = 0;
+  const wasRaw = input.isRaw === true;
+  emitKeypressEvents(input);
+
+  return await new Promise((resolve) => {
+    const cleanup = () => {
+      input.off("keypress", onKeypress);
+      if (input.isTTY && !wasRaw) {
+        input.setRawMode(false);
+      }
+      output.write("\x1b[?7h\x1b[?25h\x1b[?1049l");
+    };
+    const selectCurrentSession = () => {
+      const selected = model.sessionItems[selectedSessionIndex]?.session;
+      cleanup();
+      resolve(selected);
+    };
+    const cancel = (exitCode) => {
+      if (exitCode !== undefined) {
+        process.exitCode = exitCode;
+      }
+      cleanup();
+      resolve(undefined);
+    };
+    const render = () => {
+      viewportStart = renderSessionPicker(model, selectedSessionIndex, viewportStart, output);
+    };
+    const onKeypress = (_chunk, key = {}) => {
+      if (key.ctrl && key.name === "c") {
+        cancel(130);
+        return;
+      }
+      if (key.name === "escape" || key.name === "q") {
+        cancel();
+        return;
+      }
+      if (key.name === "return" || key.name === "enter" || key.name === "space") {
+        selectCurrentSession();
+        return;
+      }
+      const nextSelection = moveSessionPickerSelection(model, selectedSessionIndex, key.name);
+      if (nextSelection !== selectedSessionIndex) {
+        selectedSessionIndex = nextSelection;
+        render();
+      }
+    };
+
+    output.write("\x1b[?1049h\x1b[?25l\x1b[?7l");
+    if (input.isTTY && !wasRaw) {
+      input.setRawMode(true);
+    }
+    input.resume();
+    input.on("keypress", onKeypress);
+    render();
+  });
+}
+
+function renderSessionPicker(model, selectedSessionIndex, viewportStart, output) {
+  const terminalRows = Math.max(1, Number(output.rows ?? 24));
+  const selectedLineIndex = model.items.findIndex(
+    (item) => item.kind === "session" && item.sessionIndex === selectedSessionIndex,
+  );
+  const maxViewportStart = Math.max(0, model.items.length - terminalRows);
+  let nextViewportStart = Math.min(viewportStart, maxViewportStart);
+  if (selectedLineIndex < nextViewportStart) {
+    nextViewportStart = selectedLineIndex;
+  } else if (selectedLineIndex >= nextViewportStart + terminalRows) {
+    nextViewportStart = selectedLineIndex - terminalRows + 1;
+  }
+
+  output.write("\x1b[H");
+  for (let row = 0; row < terminalRows; row += 1) {
+    const item = model.items[nextViewportStart + row];
+    let line = "";
+    if (item) {
+      const text =
+        item.kind === "separator"
+          ? `${PROJECT_HEADER_STYLE}${"─".repeat(output.columns ?? 80)}${RESET_ANSI}`
+          : item.renderText;
+      line =
+        item.kind === "session" && item.sessionIndex === selectedSessionIndex
+          ? `${SELECTED_SESSION_STYLE}${stripAnsi(text)}${RESET_ANSI}`
+          : text;
+    }
+    output.write(`\x1b[2K${line}${row === terminalRows - 1 ? "" : "\r\n"}`);
+  }
+  return nextViewportStart;
+}
+
+function resolveSessionPickerProjectName(session, isFirstGroup) {
+  if (isFirstGroup && !String(session.projectPath ?? "").trim()) {
+    return QUICK_TERMINALS_PROJECT_NAME;
+  }
+  return session.projectName || session.projectPath || QUICK_TERMINALS_PROJECT_NAME;
+}
+
+function resolveSessionPickerAgentIndicator(session) {
+  const candidates = [
+    session.agent,
+    session.agentIcon,
+    session.agentId,
+    session.agentName,
+    session.provider,
+  ];
+  for (const candidate of candidates) {
+    const key = normalizeAgentIndicatorKey(candidate);
+    if (key && AGENT_PICKER_INDICATORS.has(key)) {
+      return AGENT_PICKER_INDICATORS.get(key);
+    }
+  }
+  return DEFAULT_PICKER_AGENT_INDICATOR;
+}
+
+function normalizeAgentIndicatorKey(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-cli$/u, "-cli");
+}
+
+function ansiColor(hexColor) {
+  const match = String(hexColor).match(/^#?([0-9a-f]{6})$/iu);
+  if (!match) {
+    return "";
+  }
+  const value = match[1];
+  const red = Number.parseInt(value.slice(0, 2), 16);
+  const green = Number.parseInt(value.slice(2, 4), 16);
+  const blue = Number.parseInt(value.slice(4, 6), 16);
+  return `\x1b[38;2;${red};${green};${blue}m`;
+}
+
+function stripAnsi(value) {
+  return String(value).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
 function formatCompactSessionLine(session, { projectLabel } = {}) {
   const marker = session.isFocused ? "›" : " ";
   const headline = projectLabel
@@ -1248,8 +1576,9 @@ function groupSessionsPreservingSidebarOrder(sessions) {
   for (const session of sessions) {
     let group = groupsByProjectId.get(session.projectId);
     if (!group) {
+      const isFirstGroup = groups.length === 0;
       group = {
-        projectName: session.projectName || session.projectPath || "Project",
+        projectName: resolveSessionPickerProjectName(session, isFirstGroup),
         projectPath: session.projectPath || "",
         sessions: [],
       };
@@ -1619,7 +1948,12 @@ Selectors:
   Titles match exact first, then case-insensitive substring.
 
 Sessions:
-  Running ghostex or gtx with no subcommand lists sessions the same way as ghostex ls.
+  Running ghostex or gtx with no subcommand opens an interactive session picker.
+  In the picker, up/down selects sessions, page up/down jumps five, left/right jumps projects, and Enter/Space attaches.
+  Navigation wraps from the end of the list back to the start.
+  The picker starts with a bright "Attach to Ghostex Session" title and separator.
+  The first no-project terminal section is labeled Quick Terminals.
+  Picker section headers are bold and colored, and session rows start with an agent-colored [ABC] indicator.
   Projects and sessions follow the macOS sidebar order, including the active Last Active sort mode.
   Each project prints its path once as the section header, then compact session rows without field labels.
   --ungrouped/-u prints one flat list and prefixes each row with the project name.
@@ -1638,10 +1972,13 @@ Global flags:
 }
 
 export {
+  buildSessionPickerModel,
+  buildSessionPickerRows,
   buildSessionAttachCommand,
   formatCompactSessionLine,
   groupSessionsPreservingSidebarOrder,
   isFailedCliResult,
+  moveSessionPickerSelection,
   parseArgs,
   parseCreateSession,
   parseRename,

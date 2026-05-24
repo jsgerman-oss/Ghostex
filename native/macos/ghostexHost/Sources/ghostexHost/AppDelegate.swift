@@ -362,6 +362,10 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   static let logger = Logger(subsystem: "com.madda.ghostex.host", category: "app")
+  private static let standardWindowButtonTypes: [NSWindow.ButtonType] = [
+    .closeButton, .miniaturizeButton, .zoomButton,
+  ]
+  private static let trafficLightButtonDownOffset: CGFloat = 8
   private static let logDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS ZZZZ"
@@ -400,6 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var lastNativeInputEventRecordedAt: Date?
   private weak var attachToIdeTitlebarButton: NSButton?
   private weak var appTitlebarLabel: NSTextField?
+  private var standardWindowButtonBaseFrames: [NSWindow.ButtonType: NSRect] = [:]
   private let nativeSettingsStore = NativeSettingsStore()
   private let updaterController: SPUStandardUpdaterController
   private var t3CodeRuntimeProcess: Process?
@@ -1088,6 +1093,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func windowDidResize(_ notification: Notification) {
     persistMainWindowChrome()
+    if let window {
+      positionMainWindowTrafficLightButtons(on: window)
+    }
     /**
      CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
      Main-window resize changes the frame of every surfaced terminal pane without using TerminalWorkspaceView's split resize handlers.
@@ -1505,8 +1513,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor
     window.contentView = root
     window.delegate = self
-    window.makeKeyAndOrderFront(nil)
     self.window = window
+    positionMainWindowTrafficLightButtons(on: window)
+    window.makeKeyAndOrderFront(nil)
+    DispatchQueue.main.async { [weak self, weak window] in
+      guard let self, let window, self.window === window else {
+        return
+      }
+      self.positionMainWindowTrafficLightButtons(on: window)
+    }
     let zedOverlayController = ZedOverlayController(
       window: window,
       initialWindowSize: initialWindowFrame.size,
@@ -1709,6 +1724,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     lastVisibleMainWindowFrameForPersistence = frameForPersistence
     nativeSettingsStore.persistMainWindowChrome(frame: frameForPersistence, screen: screen)
+  }
+
+  private func positionMainWindowTrafficLightButtons(on window: NSWindow) {
+    /**
+     CDXC:NativeWindowChrome 2026-05-24-20:18:
+     The taller 45px app titlebar should keep the native macOS traffic-light buttons visually aligned with the lower React chrome controls. Move the standard close/minimize/zoom buttons down by exactly 8px from AppKit's base frames and reapply that fixed offset after AppKit relayouts instead of accumulating frame changes.
+     */
+    guard let titlebarView = window.standardWindowButton(.closeButton)?.superview else {
+      return
+    }
+    let visualDownMultiplier: CGFloat = titlebarView.isFlipped ? 1 : -1
+    for buttonType in Self.standardWindowButtonTypes {
+      guard let button = window.standardWindowButton(buttonType) else {
+        continue
+      }
+      if standardWindowButtonBaseFrames[buttonType] == nil {
+        standardWindowButtonBaseFrames[buttonType] = button.frame
+      }
+      guard var frame = standardWindowButtonBaseFrames[buttonType] else {
+        continue
+      }
+      frame.origin.y += visualDownMultiplier * Self.trafficLightButtonDownOffset
+      button.frame = frame
+    }
   }
 
   private static func screen(matchingIdentifier identifier: UInt32?) -> NSScreen? {
@@ -2154,6 +2193,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       break
     case .runSidebarCommandFromTitlebar:
       break
+    case .runSidebarGitActionFromTitlebar:
+      break
     case .configureZedOverlay(let command):
       if let workspacePath = command.workspacePath {
         self.workspacePath = workspacePath
@@ -2322,6 +2363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "cwd": command.cwd,
             "pid": process.processIdentifier,
           ])
+          workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
           return
         }
         NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.runningUnhealthy", [
@@ -2360,6 +2402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         "cwd": command.cwd,
         "port": NativeT3RuntimeLauncher.port,
       ])
+      workspaceView?.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
       return
     }
     NativeT3CodePaneReproLog.append("nativeHost.t3Runtime.start.spawn", [
@@ -2377,6 +2420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         "executable": process.executableURL?.path ?? NSNull(),
         "pid": process.processIdentifier,
       ])
+      workspaceView?.reloadManagedT3WebPanes(reason: "runtimeSpawned")
       process.terminationHandler = { [outputCapture = launch.outputCapture] terminatedProcess in
         var details = outputCapture.finish()
         details["pid"] = terminatedProcess.processIdentifier
@@ -3718,11 +3762,16 @@ final class ghostexRootView: NSView {
   private static let workspaceBarWidth: CGFloat = 54
   /**
    CDXC:ReactTitlebar 2026-05-11-08:03
-   The React titlebar should match normal compact macOS app chrome instead of
-   using a tall custom strip. Keep the native layout reservation at 30px so
-   AppKit traffic lights and web titlebar controls share a tighter height.
+   The React titlebar uses one shared native layout reservation so AppKit
+   traffic lights and web titlebar controls stay aligned from the same chrome
+   height instead of drifting between Swift and CSS.
+
+   CDXC:NativeWindowChrome 2026-05-24-20:18:
+   The app titlebar now needs 15px more vertical room than the original 30px
+   strip. Reserve 45px here so workspace layout, native hit testing, and the
+   React titlebar bundle agree on the same top chrome height.
    */
-  private static let reactTitlebarHeight: CGFloat = 30
+  private static let reactTitlebarHeight: CGFloat = 45
   private static let sidebarMinWidth: CGFloat = 220
   private static let combinedSidebarMinWidthReduction: CGFloat = 70
   private static let sidebarMaxWidth: CGFloat = 520
@@ -5006,6 +5055,45 @@ final class ghostexRootView: NSView {
         "isRepo": stats.isRepo,
       ]
     }
+    if let git = command.activeProjectGitState {
+      /**
+       CDXC:TitlebarGit 2026-05-24-17:41:
+       The titlebar Git split button must mirror the sidebar-owned git status instead of polling separately, so disabled states and commit/push/PR labels stay identical across chrome and sidebar.
+       */
+      payload["git"] = [
+        "additions": git.additions,
+        "aheadCount": git.aheadCount,
+        "behindCount": git.behindCount,
+        "branch": git.branch ?? NSNull(),
+        "confirmSuggestedCommit": git.confirmSuggestedCommit,
+        "deletions": git.deletions,
+        "files": git.files.map { file in
+          [
+            "additions": file.additions,
+            "deletions": file.deletions,
+            "path": file.path,
+          ] as [String: Any]
+        },
+        "generateCommitBody": git.generateCommitBody,
+        "hasGitHubCli": git.hasGitHubCli,
+        "hasOriginRemote": git.hasOriginRemote,
+        "hasUpstream": git.hasUpstream,
+        "hasWorkingTreeChanges": git.hasWorkingTreeChanges,
+        "isBusy": git.isBusy,
+        "isRepo": git.isRepo,
+        "isWorktree": git.isWorktree,
+        "pr": git.pr.map { pr in
+          [
+            "number": pr.number ?? NSNull(),
+            "state": pr.state,
+            "title": pr.title,
+            "url": pr.url,
+          ] as [String: Any]
+        } ?? NSNull(),
+        "primaryAction": git.primaryAction,
+        "worktreeName": git.worktreeName ?? NSNull(),
+      ]
+    }
     if let sidebarActions = command.sidebarActions {
       payload["sidebarActions"] = [
         "commands": sidebarActions.commands?.map { command in
@@ -5256,6 +5344,21 @@ final class ghostexRootView: NSView {
     sidebarView.evaluateJavaScript(
       """
       window.__ghostex_NATIVE_SIDEBAR__?.runSidebarCommandFromTitlebar?.(\(commandIdJson));
+      undefined;
+      """)
+  }
+
+  private func runSidebarGitActionFromTitlebar(_ command: RunSidebarGitActionFromTitlebar) {
+    /**
+     CDXC:TitlebarGit 2026-05-24-17:41:
+     The React titlebar owns only the compact Git split-button chrome. Forward commit/push/PR actions into the sidebar webview so one owner keeps git status, generated commit-message prompts, toasts, and PR browser opening synchronized.
+     */
+    guard let actionJson = javaScriptStringLiteral(command.action) else {
+      return
+    }
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.runSidebarGitActionFromTitlebar?.(\(actionJson));
       undefined;
       """)
   }
@@ -5560,6 +5663,8 @@ final class ghostexRootView: NSView {
       quitResourcesFromTitlebar(command)
     case .runSidebarCommandFromTitlebar(let command):
       runSidebarCommandFromTitlebar(command)
+    case .runSidebarGitActionFromTitlebar(let command):
+      runSidebarGitActionFromTitlebar(command)
     case .configureZedOverlay(let command):
       /**
        CDXC:ZedOverlay 2026-04-26-03:29
@@ -5771,6 +5876,7 @@ final class ghostexRootView: NSView {
               "cwd": command.cwd,
               "pid": process.processIdentifier,
             ])
+          workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
           return
         }
         NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.runningUnhealthy", [
@@ -5811,6 +5917,7 @@ final class ghostexRootView: NSView {
           "cwd": command.cwd,
           "port": NativeT3RuntimeLauncher.port,
         ])
+      workspaceView.reloadManagedT3WebPanes(reason: "runtimeRetainedDuringStartup")
       return
     }
     NativeT3CodePaneReproLog.append("nativeSidebar.t3Runtime.start.spawn", [
@@ -5828,6 +5935,7 @@ final class ghostexRootView: NSView {
         "executable": process.executableURL?.path ?? NSNull(),
         "pid": process.processIdentifier,
       ])
+      workspaceView.reloadManagedT3WebPanes(reason: "runtimeSpawned")
       process.terminationHandler = { [outputCapture = launch.outputCapture] terminatedProcess in
         var details = outputCapture.finish()
         details["pid"] = terminatedProcess.processIdentifier

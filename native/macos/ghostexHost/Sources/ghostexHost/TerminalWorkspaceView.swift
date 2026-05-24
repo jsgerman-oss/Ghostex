@@ -10293,6 +10293,44 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  func reloadManagedT3WebPanes(reason: String) {
+    guard let runtimeUrl = URL(string: "http://\(NativeT3RuntimeLauncher.host):\(NativeT3RuntimeLauncher.port)") else {
+      return
+    }
+    let managedSessions = webPaneSessions.values.filter { $0.isManagedT3Pane }
+    guard !managedSessions.isEmpty else {
+      return
+    }
+    /**
+     CDXC:T3Code 2026-05-24-17:38:
+     Runtime liveness repair can replace the localhost server while an existing T3 WKWebView still points at the old process.
+     Reload active managed panes through the native auth/thread-route bootstrap so the replacement runtime mints owner auth and reconnects without requiring the user to close and recreate the T3 agent.
+     */
+    for session in managedSessions {
+      guard !pendingAuthenticatedWebPaneLoadSessionIds.contains(session.sessionId) else {
+        NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.reloadManaged.pending", [
+          "reason": reason,
+          "sessionId": session.sessionId,
+        ])
+        continue
+      }
+      NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.reloadManaged.start", [
+        "currentUrl": session.currentURLString ?? NSNull(),
+        "reason": reason,
+        "sessionId": session.sessionId,
+      ])
+      loadWebPaneStatus(
+        sessionId: session.sessionId,
+        title: session.title,
+        message: "Loading T3 Code…",
+        caption: "Preparing the embedded workspace",
+        loading: true,
+        reason: reason
+      )
+      loadWebPane(sessionId: session.sessionId, url: runtimeUrl, reason: reason)
+    }
+  }
+
   private static func browserPaneURLRequest(url: URL, reason: String) -> URLRequest {
     /**
      CDXC:BrowserPanes 2026-05-03-02:18
@@ -10355,10 +10393,18 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private static func isTransientT3ThreadRouteError(_ message: String) -> Bool {
+    /**
+     CDXC:T3Code 2026-05-24-17:11:
+     Native T3 route resolution is allowed to retry while owner auth is still
+     being minted, but it must not retry by sending stale cookies to owner-only
+     APIs. Treat the explicit missing-owner-bearer guard as startup work so a
+     fresh desktop bootstrap can complete and then load the real thread route.
+     */
     message.contains("Could not connect to the server")
       || message.contains("timed out")
       || message.contains("returned 404")
       || message.contains("returned 503")
+      || message.contains("owner bearer is not ready")
   }
 
   private func loadWebPaneStatus(

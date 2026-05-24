@@ -5,10 +5,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
+  buildSessionPickerModel,
+  buildSessionPickerRows,
   buildSessionAttachCommand,
   formatCompactSessionLine,
   groupSessionsPreservingSidebarOrder,
   isFailedCliResult,
+  moveSessionPickerSelection,
   parseArgs,
   parseCreateSession,
   parseRename,
@@ -112,12 +115,213 @@ describe("ghostex CLI Android remote-session contract", () => {
     });
   });
 
-  test("documents bare ghostex and gtx commands as session listings", () => {
+  test("documents bare ghostex and gtx commands as the interactive session picker", () => {
     const help = usage();
 
-    expect(help).toContain("Running ghostex or gtx with no subcommand lists sessions");
+    expect(help).toContain("Running ghostex or gtx with no subcommand opens an interactive session picker");
+    expect(help).toContain("page up/down jumps five");
+    expect(help).toContain("Navigation wraps from the end of the list back to the start");
     expect(help).toMatch(/^\s+ghostex$/m);
     expect(help).toMatch(/^\s+gtx$/m);
+  });
+
+  test("builds picker rows with intro text, project spacing, and agent indicators", () => {
+    /**
+     * CDXC:CliSessionPicker 2026-05-24-18:10:
+     * Bare `ghostex`/`gtx` must present a keyboard picker that mirrors the
+     * macOS sidebar inventory without leaking aliases, paths, status, provider
+     * metadata, or detail rows into the selectable session labels.
+     *
+     * CDXC:CliSessionPicker 2026-05-24-18:25:
+     * The first no-project group is labeled Quick Terminals, every project
+     * header has one empty row above it, and session labels may add only the
+     * agent color marker before the saved title.
+     *
+     * CDXC:CliSessionPicker 2026-05-24-18:31:
+     * Selected sessions recolor the full row instead of only the leading agent
+     * marker so the active target stays easy to scan.
+     *
+     * CDXC:CliSessionPicker 2026-05-24-18:45:
+     * The picker starts with the attach prompt and uses colored three-character
+     * agent indicators in brackets instead of glyphs.
+     *
+     * CDXC:CliSessionPicker 2026-05-24-18:47:
+     * The header is one bright title plus one separator row, with no extra
+     * blank spacer rows before project sections.
+     */
+    const rows = buildSessionPickerRows([
+      {
+        alias: 42,
+        agent: "claude",
+        projectId: "quick",
+        projectName: "",
+        projectPath: "",
+        status: "working",
+        title: "Ship picker exactly as titled",
+      },
+      {
+        alias: 7,
+        agent: "t3",
+        projectId: "a",
+        projectName: "Alpha",
+        projectPath: "/alpha",
+        provider: "zmx",
+        title: "No wrap metadata here",
+      },
+    ]);
+
+    expect(rows).toMatchObject([
+      { kind: "title", selected: false, text: "Attach to Ghostex Session" },
+      { kind: "separator", selected: false, text: "─" },
+      { kind: "project", selected: false, text: "Quick Terminals" },
+      {
+        agentIndicator: { color: "#d97757", label: "CLD" },
+        kind: "session",
+        selected: true,
+        text: "[CLD] Ship picker exactly as titled",
+      },
+      { kind: "project", selected: false, text: "Alpha" },
+      {
+        agentIndicator: { color: "#ff6af3", label: "T3C" },
+        kind: "session",
+        selected: false,
+        text: "[T3C] No wrap metadata here",
+      },
+    ]);
+    expect(rows.map((row) => row.text).join("\n")).not.toContain("42");
+    expect(rows.map((row) => row.text).join("\n")).not.toContain("/alpha");
+    expect(rows.map((row) => row.text).join("\n")).not.toContain("working");
+  });
+
+  test("uses requested picker agent indicators", () => {
+    const rows = buildSessionPickerRows([
+      {
+        agent: "antigravity",
+        projectId: "project",
+        projectName: "Project",
+        projectPath: "/project",
+        title: "antigravity row",
+      },
+      {
+        agent: "codex",
+        projectId: "project",
+        projectName: "Project",
+        projectPath: "/project",
+        title: "codex row",
+      },
+      {
+        agent: "cursor",
+        projectId: "project",
+        projectName: "Project",
+        projectPath: "/project",
+        title: "cursor row",
+      },
+      {
+        agent: "copilot",
+        projectId: "project",
+        projectName: "Project",
+        projectPath: "/project",
+        title: "copilot row",
+      },
+      {
+        agent: "gemini",
+        projectId: "project",
+        projectName: "Project",
+        projectPath: "/project",
+        title: "gemini row",
+      },
+      {
+        agent: "grok",
+        projectId: "project",
+        projectName: "Project",
+        projectPath: "/project",
+        title: "grok row",
+      },
+      {
+        agent: "pi",
+        projectId: "project",
+        projectName: "Project",
+        projectPath: "/project",
+        title: "pi row",
+      },
+    ]);
+
+    expect(rows).toMatchObject([
+      { kind: "title" },
+      { kind: "separator" },
+      { kind: "project", text: "Project" },
+      {
+        agentIndicator: { color: "#749bff", label: "AGY" },
+        kind: "session",
+        text: "[AGY] antigravity row",
+      },
+      {
+        agentIndicator: { color: "#a991ff", label: "CDX" },
+        kind: "session",
+        text: "[CDX] codex row",
+      },
+      {
+        agentIndicator: { color: "#749bff", label: "CRS" },
+        kind: "session",
+        text: "[CRS] cursor row",
+      },
+      {
+        agentIndicator: { color: "#ffffff", label: "PLT" },
+        kind: "session",
+        text: "[PLT] copilot row",
+      },
+      {
+        agentIndicator: { color: "#8b9aff", label: "GEM" },
+        kind: "session",
+        text: "[GEM] gemini row",
+      },
+      {
+        agentIndicator: { color: "#ffffff", label: "GRK" },
+        kind: "session",
+        text: "[GRK] grok row",
+      },
+      {
+        agentIndicator: { color: "#c8ff62", label: "PIA" },
+        kind: "session",
+        text: "[PIA] pi row",
+      },
+    ]);
+  });
+
+  test("moves picker selection by session, pages, and wrapping project jumps", () => {
+    const model = buildSessionPickerModel([
+      {
+        projectId: "b",
+        projectName: "Beta",
+        title: "beta one",
+      },
+      {
+        projectId: "b",
+        projectName: "Beta",
+        title: "beta two",
+      },
+      {
+        projectId: "a",
+        projectName: "Alpha",
+        title: "alpha one",
+      },
+      {
+        projectId: "a",
+        projectName: "Alpha",
+        title: "alpha two",
+      },
+    ]);
+
+    expect(moveSessionPickerSelection(model, 0, "down")).toBe(1);
+    expect(moveSessionPickerSelection(model, 3, "down")).toBe(0);
+    expect(moveSessionPickerSelection(model, 1, "up")).toBe(0);
+    expect(moveSessionPickerSelection(model, 0, "up")).toBe(3);
+    expect(moveSessionPickerSelection(model, 0, "pagedown")).toBe(1);
+    expect(moveSessionPickerSelection(model, 1, "pageup")).toBe(0);
+    expect(moveSessionPickerSelection(model, 1, "right")).toBe(2);
+    expect(moveSessionPickerSelection(model, 3, "left")).toBe(0);
+    expect(moveSessionPickerSelection(model, 0, "left")).toBe(2);
+    expect(moveSessionPickerSelection(model, 3, "right")).toBe(0);
   });
 
   test("formats compact session rows without field labels", () => {

@@ -1791,6 +1791,31 @@
   padding: 10px;
 }
 
+.git-commit-branch-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.git-commit-branch-name {
+  color: color-mix(in srgb, var(--app-foreground) 92%, var(--app-muted) 8%);
+  font-size: 13px;
+  font-weight: 800;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-commit-default-ref-warning {
+  color: var(--app-warning, #f59e0b);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .git-commit-files-header {
   align-items: center;
   display: flex;
