@@ -417,20 +417,20 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * CDXC:PromptEditorBackend 2026-05-22-10:16
    * Monaco is popup-backed, but gte is terminal-native. A gte backend selection must resolve to the plain `gte` command so Ctrl+G edits inside the terminal that launched the editor.
    *
-   * CDXC:PromptEditorBackend 2026-05-23-01:51:
-   * The user's current Ctrl+G prompt editor setting is gte. New installs should launch gte inside the terminal by default, while explicit Monaco/custom selections remain user-owned settings.
+   * CDXC:PromptEditorBackend 2026-05-25-11:31:
+   * Monaco is the out-of-the-box Ctrl+G prompt editor again. New installs should open the floating Monaco editor for local app terminals, while the native runtime resolves Monaco-over-SSH to gte because remote terminals cannot use the local overlay.
    */
-  promptEditorBackend: "gte",
+  promptEditorBackend: "monaco",
   customPromptEditorCommand: "code --wait",
   /**
    * CDXC:GtePromptEditing 2026-05-22-09:56
    * The boolean mirrors keep the Ctrl+G prompt-editor setting easy to search while promptEditorBackend remains the source of truth for launch behavior.
    *
-   * CDXC:GtePromptEditing 2026-05-23-01:51:
-   * First-run settings mirror the default gte backend so older call sites that still read these booleans agree with promptEditorBackend.
+   * CDXC:GtePromptEditing 2026-05-25-11:31:
+   * First-run settings mirror the default Monaco backend so older call sites that still read these booleans do not enable gte unless Settings or legacy persisted keys explicitly request it.
    */
-  richPromptEditingWithGte: true,
-  useGteForCtrlGPromptEditing: true,
+  richPromptEditingWithGte: false,
+  useGteForCtrlGPromptEditing: false,
   hotkeys: DEFAULT_ghostex_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
   workspaceBackgroundColor: "#0e0e0e",

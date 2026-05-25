@@ -489,7 +489,7 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
-  test("defaults Ctrl+G prompt editing to gte and supports explicit backend choices", () => {
+  test("defaults Ctrl+G prompt editing to Monaco and supports explicit backend choices", () => {
     /**
      * CDXC:PromptEditorBackend 2026-05-11-14:38
      * Monaco is the default floating editor backend. Explicit gte opt-in keys
@@ -498,20 +498,20 @@ describe("normalizeghostexSettings", () => {
      * CDXC:PromptEditorBackend 2026-05-22-09:56
      * The terminal prompt editor is named gte for Ghostex Terminal Editor. Tests should pin gte as the persisted backend value and visible Settings option.
      *
-     * CDXC:PromptEditorBackend 2026-05-23-01:51:
-     * The user's current Ctrl+G prompt editor setting is now the built-in
-     * default, so new settings normalize to gte unless a backend is explicitly
-     * selected.
+     * CDXC:PromptEditorBackend 2026-05-25-11:31:
+     * Monaco is the built-in default again. New settings normalize to Monaco
+     * unless a backend is explicitly selected, while native SSH runtime handling
+     * can still resolve configured Monaco to gte for remote terminals.
      */
-    expect(DEFAULT_ghostex_SETTINGS.promptEditorBackend).toBe("gte");
+    expect(DEFAULT_ghostex_SETTINGS.promptEditorBackend).toBe("monaco");
     expect(normalizeghostexSettings({})).toMatchObject({
       customPromptEditorCommand: "code --wait",
-      promptEditorBackend: "gte",
-      richPromptEditingWithGte: true,
-      useGteForCtrlGPromptEditing: true,
+      promptEditorBackend: "monaco",
+      richPromptEditingWithGte: false,
+      useGteForCtrlGPromptEditing: false,
     });
     expect(normalizeghostexSettings({ richPromptEditingWithGte: false })).toMatchObject({
-      promptEditorBackend: "gte",
+      promptEditorBackend: "monaco",
       richPromptEditingWithGte: false,
       useGteForCtrlGPromptEditing: false,
     });
@@ -553,7 +553,7 @@ describe("normalizeghostexSettings", () => {
       promptEditorBackend: "custom",
     });
     expect(normalizeghostexSettings({ promptEditorBackend: "invalid" })).toMatchObject({
-      promptEditorBackend: "gte",
+      promptEditorBackend: "monaco",
     });
     expect(PROMPT_EDITOR_BACKEND_OPTIONS).toEqual([
       { label: "Inherit from system", value: "inherit" },
