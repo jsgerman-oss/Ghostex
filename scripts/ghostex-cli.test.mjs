@@ -602,7 +602,7 @@ describe("ghostex CLI Android remote-session contract", () => {
         path.resolve("scripts/ghostex-android-release-readiness.sh"),
       ], {
         env: strictAndroidReleaseEnv({
-          GHOSTEX_ANDROID_SIGNING_STORE_FILE: path.resolve("android/termux-app/README.md"),
+          GHOSTEX_ANDROID_SIGNING_STORE_FILE: path.resolve("android/README.md"),
         }),
       });
       throw new Error("strict Android release runner unexpectedly accepted an in-checkout signing file");

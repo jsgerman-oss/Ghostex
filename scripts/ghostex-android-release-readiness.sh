@@ -50,6 +50,12 @@ set -euo pipefail
 # Gradle's signing gate too, but fail the documented release command early when
 # the signing material is not a real external file.
 #
+# CDXC:AndroidReleaseSurface 2026-05-25-18:18:
+# The Android source now lives at the `android` submodule path instead of
+# `android/termux-app`. Keep the strict signing preflight and Gradle/device
+# checks rooted at that submodule so release validation does not fail before it
+# can reject in-checkout keystore paths.
+#
 
 usage() {
   cat <<'EOF'
@@ -121,7 +127,7 @@ EOF
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-android_root="$repo_root/android/termux-app"
+android_root="$repo_root/android"
 
 resolve_existing_file_path() {
   local file="$1"
@@ -182,7 +188,7 @@ EOF
   if [[ "${#invalid[@]}" -gt 0 ]]; then
     cat >&2 <<'EOF'
 Final Ghostex Android release proof requires external publish signing material.
-Use a keystore file that exists and is stored outside android/termux-app.
+Use a keystore file that exists and is stored outside the Android checkout.
 EOF
     printf 'Invalid release signing configuration:\n' >&2
     printf '  - %s\n' "${invalid[@]}" >&2
