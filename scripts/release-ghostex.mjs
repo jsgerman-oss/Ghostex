@@ -383,6 +383,26 @@ async function ensureSigningIdentity() {
       ].join("\n"),
     );
   }
+  await ensureSigningIdentityCanSign(identity);
+}
+
+/**
+ * CDXC:Distribution 2026-05-25-18:22:
+ * `security find-identity` can see a Developer ID certificate even when the
+ * embedded agent shell cannot use the private key. Probe `codesign` directly so
+ * the release delegates to Terminal.app before a long build fails on CEF files
+ * with errSecInternalComponent.
+ */
+async function ensureSigningIdentityCanSign(identity) {
+  const probeDir = await mkdtemp(path.join(tmpdir(), "ghostex-codesign-probe-"));
+  const probePath = path.join(probeDir, "probe.sh");
+  try {
+    await writeFile(probePath, "#!/bin/sh\nexit 0\n");
+    await run(`chmod +x ${shellQuote(probePath)}`);
+    await run(`/usr/bin/codesign --force --sign ${shellQuote(identity)} --timestamp=none ${shellQuote(probePath)}`);
+  } finally {
+    await rm(probeDir, { recursive: true, force: true });
+  }
 }
 
 function terminalReleasePaths(version) {
@@ -528,12 +548,8 @@ async function monitorTerminalReleaseLog(version, paths) {
 }
 
 async function agentShellCredentialsReady() {
-  await recoverKeychainVisibility();
-  const identities = await listCodeSigningIdentities();
-  if (!signingIdentityIsVisible(identities)) {
-    return false;
-  }
   try {
+    await ensureSigningIdentity();
     await ensureNotaryProfile();
   } catch {
     return false;
@@ -549,7 +565,7 @@ async function delegateReleaseToTerminal(version) {
 
 async function ensureNotaryProfile() {
   try {
-    await run(`xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8`);
+    await run(`/bin/zsh -lc ${shellQuote(`set -o pipefail; xcrun notarytool history --keychain-profile ${shellQuote(config.notaryProfile)} | head -n 8`)}`);
   } catch (error) {
     throw new ReleaseError(
       [
