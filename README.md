@@ -57,6 +57,11 @@ Or just download the latest dmg from the releases page
 - iPhone app is in Test Flight. Click here to join the Discord to get it: 
 [![iPhone App Discord](https://img.shields.io/badge/iPhone-Test%20Flight-000000?logo=apple&logoColor=white)](https://discord.gg/xYSBPapM)
 
+<br />
+
+### 2 Rich Prompt Editor Modes! Monaco based & TUI based:
+
+<img width="3322" height="2060" alt="2026-05-25_Ghostex_04-58-21@2x" src="https://github.com/user-attachments/assets/9a87f7a1-a4df-489f-9624-9153fed3111a" />
 
 <br />
 
