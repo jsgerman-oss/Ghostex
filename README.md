@@ -49,13 +49,17 @@ Or just download the latest dmg from the releases page
 
 <br />
 
-## Android & iOS apps to Live connect to sessions remotely
+## Android & iOS apps to Live connect to any Agent CLI sessions remotely
 
 - Android app APK is in GitHub Releases: 
 [![Download Android APK](https://img.shields.io/badge/Android-APK-3DDC84?logo=android&logoColor=white)](https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.1.0/ghostex-1.1.0.apk)
 
 - iPhone app is in Test Flight. Click here to join the Discord to get it: 
 [![iPhone App Discord](https://img.shields.io/badge/iPhone-Test%20Flight-000000?logo=apple&logoColor=white)](https://discord.gg/xYSBPapM)
+
+<br />
+
+<img width="250" alt="73681" src="https://github.com/user-attachments/assets/848a2475-a1f0-40f4-9313-c00df1893cbf" />
 
 <br />
 
@@ -68,12 +72,6 @@ Or just download the latest dmg from the releases page
 ### All Agent CLIs supported (please send an issue or PR for integrating any missing agent cli)
 
 <img width="1664" height="1035" alt="Untitled" src="https://github.com/user-attachments/assets/932497a7-8b68-480f-ae05-13df08571e47" />
-
-<br />
-
-### Android and iOS apps for remote controlling ANY Agent CLI running on your mac (live remote control that includes all features):
-
-<img width="250" alt="73681" src="https://github.com/user-attachments/assets/848a2475-a1f0-40f4-9313-c00df1893cbf" />
 
 <br />
 
