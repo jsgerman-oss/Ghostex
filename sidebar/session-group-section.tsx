@@ -64,7 +64,9 @@ import { useCollapsibleHeight } from "./use-collapsible-height";
 import type { WebviewApi } from "./webview-api";
 import { openAppModal } from "./app-modal-host-bridge";
 import {
+  PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT,
   PROJECT_SESSION_LIST_COLLAPSED_COUNT,
+  PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY,
   getVisibleProjectSessionIds,
   normalizeStoredProjectSessionListCollapsedState,
   type ProjectSessionListCollapsedState,
@@ -84,8 +86,6 @@ const CONTEXT_MENU_VERTICAL_PADDING_PX = 12;
 const GROUP_CONTROL_MENU_MARGIN_PX = 12;
 const GROUP_AGENT_MENU_WIDTH_PX = 220;
 const PROJECT_AGENT_LAUNCHER_STORAGE_KEY = "ghostex-sidebar-project-terminal-launcher";
-const PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY =
-  "ghostex-sidebar-project-session-list-collapsed";
 const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
@@ -400,6 +400,21 @@ export function SessionGroupSection({
   const controlMenuRef = useRef<HTMLDivElement>(null);
   const projectAgentButtonRef = useRef<HTMLButtonElement>(null);
   const debugInstanceIdRef = useRef(createSessionGroupDebugInstanceId());
+
+  useEffect(() => {
+    const refreshCollapsedState = () => {
+      setProjectSessionListCollapsedState(readProjectSessionListCollapsedState());
+    };
+
+    window.addEventListener(PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT, refreshCollapsedState);
+    return () => {
+      window.removeEventListener(
+        PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT,
+        refreshCollapsedState,
+      );
+    };
+  }, []);
+
   /**
    * CDXC:Projects 2026-05-04-14:49
    * Project group headers use folder metaphors: closed folder when collapsed
@@ -579,10 +594,15 @@ export function SessionGroupSection({
     canToggleCollapsed ? `${isCollapsed ? "Expand" : "Collapse"} ${group.title}` : group.title;
   /**
    * CDXC:ProjectHeaders 2026-05-18-14:53:
-   * Project row collapse/expand and project header action buttons keep accessible
-   * labels but do not show hover tooltips. Project header clicks toggle the
-   * project session list rather than activating the project; only the right-side
-   * action buttons keep their own click behavior, and the folder icon is visual-only.
+   * Project row collapse/expand keeps an accessible label but no hover tooltip.
+   * Project header clicks toggle the project session list rather than activating
+   * the project; only the right-side action buttons keep their own click
+   * behavior, and the folder icon is visual-only.
+   *
+   * CDXC:ProjectHeaderTooltips 2026-05-25-09:43:
+   * Project header action buttons now need compact hover labels, matching the
+   * reference-sidebar settings/header actions by rendering each tooltip to the
+   * left of its icon instead of below the project row.
    */
   const shouldSuppressProjectCollapseTooltip =
     Boolean(projectContext) && canToggleCollapsed;
@@ -1229,9 +1249,14 @@ export function SessionGroupSection({
                        * remains reachable through the native titlebar.
                        *
                        * CDXC:ProjectGroups 2026-05-18-14:53:
-                       * Project header icon actions should rely on accessible
-                       * labels only, without hover tooltips, so project rows
-                       * stay visually quiet while scanning and hovering.
+                       * Project header icon actions originally relied on
+                       * accessible labels only so project rows stayed visually
+                       * quiet while scanning and hovering.
+                       *
+                       * CDXC:ProjectHeaderTooltips 2026-05-25-09:43:
+                       * Project header icon actions now show compact local
+                       * tooltips to the left of the hovered button, matching the
+                       * settings/header hover-action pattern.
                        *
                        * CDXC:Worktrees 2026-05-18-23:07:
                        * Main project rows expose Create Worktree. Worktree rows
@@ -1244,7 +1269,8 @@ export function SessionGroupSection({
                             <button
                               aria-disabled="true"
                               aria-label={`Create PR for ${group.title}`}
-                              className="group-add-button group-worktree-pr-button"
+                              className="group-add-button group-worktree-pr-button reference-sidebar-hover-action-tooltip"
+                              data-tooltip="Create PR"
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
@@ -1261,7 +1287,8 @@ export function SessionGroupSection({
                             <button
                               aria-disabled="true"
                               aria-label={`Merge ${group.title} to main`}
-                              className="group-add-button group-worktree-merge-button"
+                              className="group-add-button group-worktree-merge-button reference-sidebar-hover-action-tooltip"
+                              data-tooltip="Merge Worktree"
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
@@ -1279,7 +1306,8 @@ export function SessionGroupSection({
                         ) : (
                           <button
                             aria-label={`Create a worktree from ${group.title}`}
-                            className="group-add-button group-worktree-button"
+                            className="group-add-button group-worktree-button reference-sidebar-hover-action-tooltip"
+                            data-tooltip="Create Worktree"
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -1297,7 +1325,8 @@ export function SessionGroupSection({
                         )}
                         <button
                           aria-label={`Create a browser pane in ${group.title}`}
-                          className="group-add-button group-browser-button"
+                          className="group-add-button group-browser-button reference-sidebar-hover-action-tooltip"
+                          data-tooltip="Create Browser Pane"
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
@@ -1314,7 +1343,8 @@ export function SessionGroupSection({
                         </button>
                         <button
                           aria-label={`Create a terminal in ${group.title}`}
-                          className="group-add-button group-project-terminal-button"
+                          className="group-add-button group-project-terminal-button reference-sidebar-hover-action-tooltip"
+                          data-tooltip="Create Terminal"
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
@@ -1336,7 +1366,8 @@ export function SessionGroupSection({
                           >
                             <button
                               aria-label={`Create ${primaryProjectAgentLabel} in ${group.title}`}
-                              className="group-agent-main-button"
+                              className="group-agent-main-button reference-sidebar-hover-action-tooltip"
+                              data-tooltip={`Create ${primaryProjectAgentLabel}`}
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
@@ -1354,8 +1385,9 @@ export function SessionGroupSection({
                               aria-expanded={openControlMenu === "project-agent"}
                               aria-haspopup="menu"
                               aria-label={`Select agent for ${group.title}`}
-                              className="group-agent-toggle-button"
+                              className="group-agent-toggle-button reference-sidebar-hover-action-tooltip"
                               data-open={String(openControlMenu === "project-agent")}
+                              data-tooltip="Select Agent"
                               onClick={() => {
                                 setOpenControlMenu((previous) =>
                                   previous === "project-agent" ? undefined : "project-agent",
@@ -1952,8 +1984,14 @@ function writeProjectSessionListCollapsedState(state: ProjectSessionListCollapse
    * Show less / Show more is per-project navigation state, not session data.
    * Persist only the collapsed project ids so new projects and projects the
    * user has never collapsed continue to start with all sessions shown.
+   *
+   * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
+   * Native worktree creation can activate Show less for the source project so
+   * only the top six sessions remain visible. Broadcast same-document updates
+   * because localStorage storage events do not fire in the writing webview.
    */
   localStorage.setItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY, JSON.stringify(state));
+  window.dispatchEvent(new Event(PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT));
 }
 
 function getPortalMenuStyle(button: HTMLButtonElement | null, menuWidth: number) {

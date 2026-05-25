@@ -29,7 +29,9 @@ type GhostexNativeSidebarBridge = {
   togglePetOverlayFromTitlebar: () => void;
   toggleCommandsPanelFromTitlebar: () => void;
   runSidebarCommandFromTitlebar: (commandId: string) => void;
-  runSidebarGitActionFromTitlebar: (action: "commit" | "push" | "pr") => void;
+  runSidebarGitActionFromTitlebar: (
+    action: "commit" | "push" | "pr" | "multiRelease" | "release",
+  ) => void;
 };
 
 const activeDismissHandlers = new Set<() => void>();

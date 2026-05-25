@@ -20,6 +20,20 @@ private let ghostexReferenceSidebarChromeBackgroundColor = NSColor(
   green: 14.0 / 255.0,
   blue: 14.0 / 255.0,
   alpha: 1.0)
+/**
+ CDXC:NativeWindowChrome 2026-05-25-07:16:
+ The app titlebar should be only 5px taller than the original compact 30px
+ strip. Keep this shared 35px height as the source for Swift layout reservation
+ and native traffic-light centering so AppKit and React chrome do not drift.
+ */
+private let ghostexAppTitlebarHeight: CGFloat = 35
+/**
+ CDXC:NativeWindowChrome 2026-05-25-07:22:
+ The traffic-light buttons should sit 5px below exact vertical center in the
+ 35px app titlebar. Keep this as a named visual-down offset so flipped and
+ non-flipped AppKit titlebar coordinate systems apply the same requirement.
+ */
+private let ghostexTrafficLightVisualDownOffset: CGFloat = 2
 
 private func normalizedNativeProcessEnvironment(overrides: [String: String]?) -> [String: String] {
   /**
@@ -365,7 +379,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private static let standardWindowButtonTypes: [NSWindow.ButtonType] = [
     .closeButton, .miniaturizeButton, .zoomButton,
   ]
-  private static let trafficLightButtonDownOffset: CGFloat = 8
   private static let logDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS ZZZZ"
@@ -404,7 +417,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var lastNativeInputEventRecordedAt: Date?
   private weak var attachToIdeTitlebarButton: NSButton?
   private weak var appTitlebarLabel: NSTextField?
-  private var standardWindowButtonBaseFrames: [NSWindow.ButtonType: NSRect] = [:]
   private let nativeSettingsStore = NativeSettingsStore()
   private let updaterController: SPUStandardUpdaterController
   private var t3CodeRuntimeProcess: Process?
@@ -1094,7 +1106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   func windowDidResize(_ notification: Notification) {
     persistMainWindowChrome()
     if let window {
-      positionMainWindowTrafficLightButtons(on: window)
+      scheduleMainWindowTrafficLightPositioning(on: window)
     }
     /**
      CDXC:ZmxPersistenceRefresh 2026-05-18-15:44:
@@ -1109,6 +1121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   func windowDidBecomeKey(_ notification: Notification) {
+    if let window {
+      scheduleMainWindowTrafficLightPositioning(on: window)
+    }
     /**
      CDXC:FocusStealDiagnostics 2026-05-15-20:09:
      App active and key-window transitions can differ during focus-steal repros. Log key/main window changes independently from application activation so the next incident shows whether Ghostex became frontmost before, after, or without the main terminal window becoming key.
@@ -1127,6 +1142,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   func windowDidBecomeMain(_ notification: Notification) {
+    if let window {
+      scheduleMainWindowTrafficLightPositioning(on: window)
+    }
     Self.appendNativeHostLifecycleLog(
       "windowDidBecomeMain windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) mainWindow=\(window?.isMainWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
@@ -1514,14 +1532,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.contentView = root
     window.delegate = self
     self.window = window
-    positionMainWindowTrafficLightButtons(on: window)
+    scheduleMainWindowTrafficLightPositioning(on: window)
     window.makeKeyAndOrderFront(nil)
-    DispatchQueue.main.async { [weak self, weak window] in
-      guard let self, let window, self.window === window else {
-        return
-      }
-      self.positionMainWindowTrafficLightButtons(on: window)
-    }
+    scheduleMainWindowTrafficLightPositioning(on: window)
     let zedOverlayController = ZedOverlayController(
       window: window,
       initialWindowSize: initialWindowFrame.size,
@@ -1585,6 +1598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     recordNativeActivationRequest(reason: "startup.makeWindow")
     NSApp.activate(ignoringOtherApps: true)
+    scheduleMainWindowTrafficLightPositioning(on: window)
   }
 
   @MainActor
@@ -1728,25 +1742,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   private func positionMainWindowTrafficLightButtons(on window: NSWindow) {
     /**
-     CDXC:NativeWindowChrome 2026-05-24-20:18:
-     The taller 45px app titlebar should keep the native macOS traffic-light buttons visually aligned with the lower React chrome controls. Move the standard close/minimize/zoom buttons down by exactly 8px from AppKit's base frames and reapply that fixed offset after AppKit relayouts instead of accumulating frame changes.
+     CDXC:NativeWindowChrome 2026-05-25-07:22:
+     The macOS traffic-light buttons should be positioned from the custom 35px titlebar center, then pushed 5px visually lower. Compute the absolute frame on every AppKit relayout so close/minimize/zoom do not snap back to AppKit's default 30px placement.
      */
-    guard let titlebarView = window.standardWindowButton(.closeButton)?.superview else {
-      return
-    }
-    let visualDownMultiplier: CGFloat = titlebarView.isFlipped ? 1 : -1
     for buttonType in Self.standardWindowButtonTypes {
-      guard let button = window.standardWindowButton(buttonType) else {
+      guard let button = window.standardWindowButton(buttonType), let titlebarView = button.superview else {
         continue
       }
-      if standardWindowButtonBaseFrames[buttonType] == nil {
-        standardWindowButtonBaseFrames[buttonType] = button.frame
+      var frame = button.frame
+      if titlebarView.isFlipped {
+        frame.origin.y =
+          (ghostexAppTitlebarHeight - frame.height) / 2
+          + ghostexTrafficLightVisualDownOffset
+      } else {
+        frame.origin.y =
+          titlebarView.bounds.height - ((ghostexAppTitlebarHeight + frame.height) / 2)
+          - ghostexTrafficLightVisualDownOffset
       }
-      guard var frame = standardWindowButtonBaseFrames[buttonType] else {
-        continue
-      }
-      frame.origin.y += visualDownMultiplier * Self.trafficLightButtonDownOffset
       button.frame = frame
+    }
+  }
+
+  private func scheduleMainWindowTrafficLightPositioning(on window: NSWindow) {
+    /**
+     CDXC:NativeWindowChrome 2026-05-25-07:22:
+     AppKit can restore standard window-button frames during activation and resize layout passes after the custom titlebar is already visible. Reapply the 35px-titlebar positioning plus 5px visual-down offset at the end of those passes so the final on-screen traffic lights remain in the requested spot.
+     */
+    positionMainWindowTrafficLightButtons(on: window)
+    DispatchQueue.main.async { [weak self, weak window] in
+      guard let self, let window, self.window === window else {
+        return
+      }
+      self.positionMainWindowTrafficLightButtons(on: window)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak window] in
+      guard let self, let window, self.window === window else {
+        return
+      }
+      self.positionMainWindowTrafficLightButtons(on: window)
     }
   }
 
@@ -1957,9 +1990,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
           activateOnCreate: true,
           cwd: FileManager.default.currentDirectoryPath,
           diagnosticSource: nil,
-          env: nil,
-          initialInput: "printf 'Failed to start Ghostex bridge: \(error.localizedDescription)\\n'\r",
-          sessionId: "bridge-error",
+	          env: nil,
+	          initialInput: "printf 'Failed to start Ghostex bridge: \(error.localizedDescription)\\n'\r",
+	          sessionId: "bridge-error",
           sessionPersistenceName: nil,
           sessionPersistenceProvider: nil,
           /**
@@ -2166,7 +2199,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .setSidebarSide(let command):
       (window?.contentView as? ghostexRootView)?.setSidebarSide(command.side)
     case .setReactTitlebarHitRegions(let command):
-      (window?.contentView as? ghostexRootView)?.setReactTitlebarHitRegions(command.regions)
+      (window?.contentView as? ghostexRootView)?.setReactTitlebarHitRegions(
+        command.regions, overlayOpen: command.overlayOpen)
     case .openActiveProjectEditorFromTitlebar:
       break
     case .openAgentsModeFromTitlebar:
@@ -3741,6 +3775,35 @@ final class SidebarModalBackdropView: NSView {
   }
 }
 
+final class WorkspaceInteractionShieldView: NSView {
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.backgroundColor = NSColor.clear.cgColor
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard !isHidden, alphaValue > 0, bounds.contains(point) else {
+      return nil
+    }
+    return self
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+
+  override func mouseDown(with event: NSEvent) {}
+
+  override func rightMouseDown(with event: NSEvent) {}
+
+  override func otherMouseDown(with event: NSEvent) {}
+}
+
 final class ghostexRootView: NSView {
   private static let logger = Logger(subsystem: "com.madda.ghostex.host", category: "webview")
 
@@ -3766,12 +3829,12 @@ final class ghostexRootView: NSView {
    traffic lights and web titlebar controls stay aligned from the same chrome
    height instead of drifting between Swift and CSS.
 
-   CDXC:NativeWindowChrome 2026-05-24-20:18:
-   The app titlebar now needs 15px more vertical room than the original 30px
-   strip. Reserve 45px here so workspace layout, native hit testing, and the
-   React titlebar bundle agree on the same top chrome height.
+   CDXC:NativeWindowChrome 2026-05-25-07:16:
+   The app titlebar should now reserve 35px, not the earlier 45px. Use the
+   shared app titlebar height so workspace layout, native hit testing, traffic
+   light centering, and the React titlebar bundle agree on the same top chrome.
    */
-  private static let reactTitlebarHeight: CGFloat = 45
+  private static let reactTitlebarHeight: CGFloat = ghostexAppTitlebarHeight
   private static let sidebarMinWidth: CGFloat = 220
   private static let combinedSidebarMinWidthReduction: CGFloat = 70
   private static let sidebarMaxWidth: CGFloat = 520
@@ -3790,6 +3853,7 @@ final class ghostexRootView: NSView {
   private let sidebarView: WKWebView
   private let modalHostView: AppModalHostWebView
   private let sidebarModalBackdropView = SidebarModalBackdropView(frame: .zero)
+  private let workspaceInteractionShieldView = WorkspaceInteractionShieldView(frame: .zero)
   private let titlebarChromeView: ReactTitlebarChromeView
   private let titlebarChromeWebView: WKWebView
   private let startupOverlayView = NSView(frame: .zero)
@@ -3829,6 +3893,8 @@ final class ghostexRootView: NSView {
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
   private var titlebarOutsideClickMonitor: Any?
+  private var isTitlebarOverlayOpen = false
+  private var lastWorkspaceInteractionShieldLogKey: String?
   private var sidebarContextMenuOpenCount = 0
   private lazy var sessionAttentionNotificationController =
     SessionAttentionNotificationController { [weak self] sessionId in
@@ -3972,6 +4038,7 @@ final class ghostexRootView: NSView {
     self.divider = PaneResizeHandleView()
     super.init(frame: .zero)
     workspaceView.setSidebarSide(sidebarSide)
+    titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
 
     sidebarCommandRouter.onCommand = { [weak self] command in
       self?.handleSidebarCommand(command)
@@ -3999,8 +4066,17 @@ final class ghostexRootView: NSView {
     titlebarChromeWebView.setValue(false, forKey: "drawsBackground")
     modalHostView.isHidden = true
     sidebarModalBackdropView.isHidden = true
+    workspaceInteractionShieldView.isHidden = true
     sidebarView.navigationDelegate = self
     addSubview(workspaceView)
+    /**
+     CDXC:OverlayInteractivity 2026-05-25-07:02:
+     Backdrop modals and titlebar dropdowns visually cover native workspace
+     tabs, so the workspace needs a native event sink while those overlays are
+     open. This clear shield blocks hover, tooltip, and click delivery to
+     AppKit pane chrome without changing the visible layering.
+     */
+    addSubview(workspaceInteractionShieldView)
     /**
      CDXC:NativeWorkspaceChrome 2026-04-26-05:40
      Ghostty surfaces can keep native subviews/layers that draw and receive
@@ -5219,8 +5295,10 @@ final class ghostexRootView: NSView {
       """)
   }
 
-  func setReactTitlebarHitRegions(_ regions: [ReactTitlebarHitRegion]) {
-    titlebarChromeView.setHitRegions(regions)
+  func setReactTitlebarHitRegions(_ regions: [ReactTitlebarHitRegion], overlayOpen: Bool) {
+    titlebarChromeView.setHitRegions(regions, overlayOpen: overlayOpen)
+    isTitlebarOverlayOpen = overlayOpen
+    updateWorkspaceInteractionShield()
     needsLayout = true
   }
 
@@ -5635,8 +5713,7 @@ final class ghostexRootView: NSView {
        overlay boundary and relayout so the native titlebar webview only covers
        the titlebar strip plus any open dropdown bounds.
        */
-      titlebarChromeView.setHitRegions(command.regions)
-      needsLayout = true
+      setReactTitlebarHitRegions(command.regions, overlayOpen: command.overlayOpen)
     case .openActiveProjectEditorFromTitlebar:
       openActiveProjectEditorFromTitlebar()
     case .exitFocusModeFromTitlebar:
@@ -6219,6 +6296,51 @@ final class ghostexRootView: NSView {
      */
     let shouldShowBackdrop = activeAppModalKind != nil && activeAppModalKind != "floatingPromptEditor"
     sidebarModalBackdropView.isHidden = !shouldShowBackdrop
+    updateWorkspaceInteractionShield()
+  }
+
+  private func updateWorkspaceInteractionShield() {
+    /**
+     CDXC:OverlayInteractivity 2026-05-25-07:02:
+     Native pane tabs must not hover, show AppKit tooltips, or receive clicks
+     behind Settings-style backdrop modals or React titlebar dropdown panels.
+     Keep the shield off for toast-only modal-host visibility and for the
+     floating prompt editor, which intentionally publishes scoped hit regions.
+
+     CDXC:OverlayInteractivity 2026-05-25-10:09:
+     Terminal panes must remain clickable after titlebar dropdowns close. React
+     now publishes explicit dropdown/menu open state, so stale measured hit
+     regions below the titlebar cannot keep the workspace shield active.
+     */
+    let backdropModalActive = isBackdropAppModalActive()
+    let shouldShieldWorkspace =
+      backdropModalActive || isTitlebarOverlayOpen
+    workspaceInteractionShieldView.isHidden = !shouldShieldWorkspace
+    workspaceView.setNativeChromeInteractivitySuppressed(shouldShieldWorkspace)
+    logWorkspaceInteractionShieldStateIfNeeded(
+      shouldShieldWorkspace: shouldShieldWorkspace,
+      backdropModalActive: backdropModalActive
+    )
+  }
+
+  private func logWorkspaceInteractionShieldStateIfNeeded(
+    shouldShieldWorkspace: Bool,
+    backdropModalActive: Bool
+  ) {
+    let modalKind = activeAppModalKind ?? "<none>"
+    let logKey =
+      "shield=\(shouldShieldWorkspace)|modal=\(modalKind)|backdrop=\(backdropModalActive)|titlebarOverlay=\(isTitlebarOverlayOpen)|regions=\(titlebarChromeView.hitRegionCount)|belowTitlebarRegions=\(titlebarChromeView.belowTitlebarHitRegionCount)"
+    guard logKey != lastWorkspaceInteractionShieldLogKey else {
+      return
+    }
+    lastWorkspaceInteractionShieldLogKey = logKey
+    AppDelegate.appendNativeHostLifecycleLog(
+      "workspaceInteractionShield.state shouldShield=\(shouldShieldWorkspace) backdropModalActive=\(backdropModalActive) activeAppModalKind=\(modalKind) titlebarOverlayOpen=\(isTitlebarOverlayOpen) titlebarHitRegionCount=\(titlebarChromeView.hitRegionCount) titlebarBelowTitlebarHitRegionCount=\(titlebarChromeView.belowTitlebarHitRegionCount) modalHostHidden=\(modalHostView.isHidden)"
+    )
+  }
+
+  private func isBackdropAppModalActive() -> Bool {
+    activeAppModalKind != nil && activeAppModalKind != "floatingPromptEditor"
   }
 
   private func isWebChromeFirstResponder() -> Bool {
@@ -6457,6 +6579,7 @@ final class ghostexRootView: NSView {
     sidebarView.frame = frames.sidebar
     divider.frame = frames.divider
     workspaceView.frame = frames.workspace
+    workspaceInteractionShieldView.frame = frames.workspace
     modalHostView.frame = frames.modalHost
     sidebarModalBackdropView.frame = frames.sidebar.union(frames.divider)
     titlebarChromeView.frame = frames.titlebarChrome
@@ -6533,16 +6656,47 @@ final class ghostexRootView: NSView {
       */
       return hitView
     }
-    if !modalHostView.isHidden,
-      let hitView = modalHostView.hitTest(convert(point, to: modalHostView))
+    if !modalHostView.isHidden {
+      let modalPoint = convert(point, to: modalHostView)
+      if let hitView = modalHostView.hitTest(modalPoint) {
+        /**
+         CDXC:AppModals 2026-05-23-13:05:
+         Real app modals must beat all workspace chrome hit targets. Otherwise
+         narrow Settings/Agents Hub layouts can visually cover native pane tabs
+         while AppKit still lets those tabs receive clicks behind the modal.
+         Toast-only hosts still pass through here because their hit regions are
+         explicitly empty.
+         */
+        return hitView
+      }
+      if isBackdropAppModalActive(), modalHostView.bounds.contains(modalPoint) {
+        /**
+         CDXC:AppModals 2026-05-25-12:10:
+         Settings and other backdrop modals are never pass-through surfaces. If
+         WebKit returns nil for transparent dialog/backdrop pixels, keep the
+         click inside the modal host instead of letting terminal panes behind it
+         receive the event.
+         */
+        return modalHostView
+      }
+    }
+    if let hitView = titlebarChromeView.hitTest(convert(point, to: titlebarChromeView)) {
+      /**
+       CDXC:ReactTitlebar 2026-05-24-14:35:
+       Open titlebar dropdowns are rendered in the full-window React titlebar
+       WKWebView and can visually cover native pane tabs. Give reported
+       titlebar/dropdown hit regions priority over workspace chrome so clicks
+       land on visible dropdown items instead of the pane tab bar behind them.
+      */
+      return hitView
+    }
+    if let hitView = workspaceInteractionShieldView.hitTest(convert(point, to: workspaceInteractionShieldView))
     {
       /**
-       CDXC:AppModals 2026-05-23-13:05:
-       Real app modals must beat all workspace chrome hit targets. Otherwise
-       narrow Settings/Agents Hub layouts can visually cover native pane tabs
-       while AppKit still lets those tabs receive clicks behind the modal.
-       Toast-only hosts still pass through here because their hit regions are
-       explicitly empty.
+       CDXC:OverlayInteractivity 2026-05-25-07:02:
+       When a modal or dropdown is open, transparent workspace pixels are still
+       part of that overlay interaction model. Swallow them here so AppKit title
+       tabs behind the overlay cannot react to hover, click, or tooltip lookup.
        */
       return hitView
     }
@@ -6551,15 +6705,11 @@ final class ghostexRootView: NSView {
     {
       /**
        CDXC:RootHitBoundaries 2026-05-22-22:48:
-       Visible native workspace chrome must beat the full-window React
-       titlebar webview. The titlebar DOM can temporarily expose hit regions
-       over the right pane tab band, but pane tabs and resize handles are
-       AppKit controls and should not be intercepted by WKWebView.
+       Visible native workspace chrome should beat transparent webview space,
+       but only after active modal and titlebar/dropdown hit regions had the
+       first chance above.
        */
       return nativeChromeHitView
-    }
-    if let hitView = titlebarChromeView.hitTest(convert(point, to: titlebarChromeView)) {
-      return hitView
     }
     if workspaceView.frame.contains(point),
       let hitView = workspaceView.hitTest(convert(point, to: workspaceView))
@@ -6905,6 +7055,9 @@ final class ghostexRootView: NSView {
         return
       }
       activeAppModalKind = message["modal"] as? String
+      if activeAppModalKind != "floatingPromptEditor" {
+        modalHostView.setTopLeftHitRegions(nil)
+      }
       modalHostView.isHidden = false
       updateSidebarModalBackdrop()
       if (message["modal"] as? String) == "floatingPromptEditor" {
@@ -8024,7 +8177,16 @@ final class ReactTitlebarChromeView: NSView {
   var titlebarHeight: CGFloat = 30
   private let webView: WKWebView
   private var hitRegions: [CGRect] = []
+  private var overlayOpen = false
   private var frameBeforeTitlebarMaximize: NSRect?
+
+  var hitRegionCount: Int {
+    hitRegions.count
+  }
+
+  var belowTitlebarHitRegionCount: Int {
+    hitRegions.filter { $0.maxY > titlebarHeight + 1 }.count
+  }
 
   init(webView: WKWebView) {
     self.webView = webView
@@ -8045,7 +8207,8 @@ final class ReactTitlebarChromeView: NSView {
     webView.frame = bounds
   }
 
-  func setHitRegions(_ regions: [ReactTitlebarHitRegion]) {
+  func setHitRegions(_ regions: [ReactTitlebarHitRegion], overlayOpen: Bool) {
+    self.overlayOpen = overlayOpen
     hitRegions = regions.map {
       CGRect(
         x: CGFloat($0.x),
@@ -8060,6 +8223,11 @@ final class ReactTitlebarChromeView: NSView {
      The WKWebView may render full-window for unclipped portals, but native
      hit-testing allows events through only when a point lands inside one of
      these reported regions or inside the fixed blank titlebar drag strip.
+
+     CDXC:ReactTitlebar 2026-05-25-10:27:
+     Below-titlebar regions are valid only while React says a titlebar dropdown
+     is open. Stale dropdown measurements must not keep routing workspace clicks
+     into the titlebar WKWebView after the dropdown closes.
      */
   }
 
@@ -8068,7 +8236,9 @@ final class ReactTitlebarChromeView: NSView {
       return false
     }
     let webPoint = CGPoint(x: point.x, y: bounds.height - point.y)
-    return hitRegions.contains(where: { $0.contains(webPoint) })
+    return hitRegions.contains { region in
+      region.contains(webPoint) && (overlayOpen || region.maxY <= titlebarHeight + 1)
+    }
   }
 
   func closeOpenDropdowns() {

@@ -17,6 +17,7 @@ import {
 } from "../shared/session-grid-contract";
 import { getSidebarAgentNameByIcon, type SidebarAgentIcon } from "../shared/sidebar-agents";
 import { AGENT_LOGOS } from "./agent-logos";
+import { SIDEBAR_TOOLTIP_DISMISS_EVENT } from "./app-tooltip";
 import { formatRelativeTime } from "./relative-time";
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
 import { useRelativeTimeTick } from "./use-relative-time-tick";
@@ -1013,7 +1014,10 @@ export function OverflowTooltipText({
   };
 
   useEffect(() => {
+    const handleSidebarTooltipDismiss = () => closeTooltip();
+    window.addEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleSidebarTooltipDismiss);
     return () => {
+      window.removeEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleSidebarTooltipDismiss);
       clearOpenTimeout();
       if (activeOverflowTooltipId === tooltipIdRef.current) {
         activeOverflowTooltipId = undefined;
@@ -1035,6 +1039,11 @@ export function OverflowTooltipText({
    * Session-card title tooltips must render below the row without overlapping
    * the trigger. Portaled Radix tooltips mis-anchor in the native sidebar
    * webview, so keep the label local to the card with a below-positioned popup.
+   *
+   * CDXC:SidebarTooltips 2026-05-25-07:16:
+   * Local session-card tooltips must also close on the shared sidebar dismiss
+   * event because app switching and fast exits can skip the trigger mouseleave
+   * event that normally clears this local open state.
    */
   return (
     <div className="session-local-tooltip-shell">

@@ -193,6 +193,16 @@ private func nativePromptEditorBackend(from environment: [String: String]) -> St
   return nil
 }
 
+private func nativeEffectivePromptEditorBackend(from environment: [String: String]) -> String? {
+  guard let backend = nativePromptEditorBackend(from: environment) else {
+    return nil
+  }
+  if backend == "monaco" && nativeIsSshConnectionEnvironment(environment) {
+    return "gte"
+  }
+  return backend
+}
+
 private func nativeHasNonEmptyEnvironmentValue(
   _ key: String,
   in environment: [String: String]
@@ -236,14 +246,16 @@ private func nativeIsGhostexPromptEditorValue(
   return backend == "gte" && trimmed == "gte"
 }
 
-private func nativePreserveSshEditorEnvironment(_ environment: inout [String: String]) -> Bool {
+private func nativeRemoveStaleSshPromptEditorEnvironment(_ environment: inout [String: String]) -> Bool {
   guard nativeIsSshConnectionEnvironment(environment) else {
     return false
   }
   let promptEditorBackend = nativePromptEditorBackend(from: environment)
+  guard promptEditorBackend == nil else {
+    return false
+  }
   let hasGhostexPromptEditorOverlay =
-    promptEditorBackend != nil
-    || nativeIsGhostexPromptEditorValue(environment["EDITOR"])
+    nativeIsGhostexPromptEditorValue(environment["EDITOR"])
     || nativeIsGhostexPromptEditorValue(environment["VISUAL"])
   guard hasGhostexPromptEditorOverlay else {
     return false
@@ -252,13 +264,12 @@ private func nativePreserveSshEditorEnvironment(_ environment: inout [String: St
 
   /**
    CDXC:PromptEditorBackend 2026-05-17-08:46:
-   SSH-connected shells must keep the editor chosen by that SSH login instead of
-   inheriting Ghostex's Ctrl+G prompt-editor command. Remove only Ghostex's
+   SSH-connected shells without an explicit Ghostex prompt-editor backend should
+   keep the editor chosen by that SSH login. Remove only stale Ghostex
    prompt-editor overlay and markers so normal EDITOR/VISUAL values continue to
    come from the login environment.
    */
   for key in [
-    "GHOSTEX_PROMPT_EDITOR_BACKEND",
     "GHOSTEX_PROMPT_EDITING_ENABLED",
     "GHOSTEX_RICH_PROMPT_EDITING_WITH_GTE",
     "GHOSTEX_DEBUGGING_MODE",
@@ -391,10 +402,10 @@ private func nativeGhosttyFloatingEditorEnvironment(
 }
 
 private func nativeApplyGtePromptEditingEnvironment(_ environment: inout [String: String]) {
-  if nativePreserveSshEditorEnvironment(&environment) {
+  if nativeRemoveStaleSshPromptEditorEnvironment(&environment) {
     return
   }
-  guard let promptEditorBackend = nativePromptEditorBackend(from: environment) else {
+  guard let promptEditorBackend = nativeEffectivePromptEditorBackend(from: environment) else {
     return
   }
 
@@ -409,6 +420,8 @@ private func nativeApplyGtePromptEditingEnvironment(_ environment: inout [String
    The terminal prompt editor is named gte for Ghostex Terminal Editor. Native launch shims must export the gte command and keep logs/state under gte names so Ctrl+G behavior, diagnostics, and Settings copy use one name.
    CDXC:PromptEditorBackend 2026-05-22-10:16
    The gte backend is an in-terminal editor, not a native overlay. Export plain `gte` for EDITOR/VISUAL so Ctrl+G opens inside the launching terminal; keep the Ghostex floating command only for the Monaco backend.
+   CDXC:PromptEditorBackend 2026-05-25-11:23
+   When Settings selects Monaco, SSH-connected terminal sessions cannot use the local floating overlay. Resolve only that runtime case to gte while preserving the saved Monaco preference for app-local rich prompt editing. Explicit gte selections must stay gte in every terminal context, including SSH.
    CDXC:GtePromptEditing 2026-05-11-17:31
    Dev terminals can be launched from inside the production ghostex shim. Unwrap
    inherited ghostex ZDOTDIR values to the original user dotdir so zsh sources the
@@ -512,15 +525,14 @@ private func nativeGteZshStartupShim(
     exportGte
     ? """
 
-      # CDXC:PromptEditorBackend 2026-05-17-08:46: SSH logins keep their existing EDITOR/VISUAL instead of being rewritten to Ghostex's local floating editor command.
-      if [ -z "${SSH_CONNECTION}${SSH_CLIENT}${SSH_TTY}" ]; then
-        export EDITOR=\(nativeShellQuote(promptEditorCommand))
-        export VISUAL=\(nativeShellQuote(promptEditorCommand))
-        if [ "${_ghostex_gte_debug}" = "1" ]; then
-          {
-            printf '[%s] zsh-shim.export file=%s pid=%s editor=%s visual=%s pwd=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${PWD}"
-          } >> "${_ghostex_gte_log}" 2>/dev/null
-        fi
+      # CDXC:PromptEditorBackend 2026-05-17-08:46: SSH logins without an explicit Ghostex prompt-editor backend keep their existing EDITOR/VISUAL instead of being rewritten to a stale local floating editor command.
+      # CDXC:PromptEditorBackend 2026-05-25-11:23: SSH sessions use the already-resolved terminal-native prompt editor command, so explicit gte and Monaco-over-SSH both export gte instead of leaving Ctrl+G pointed at an unavailable floating overlay.
+      export EDITOR=\(nativeShellQuote(promptEditorCommand))
+      export VISUAL=\(nativeShellQuote(promptEditorCommand))
+      if [ "${_ghostex_gte_debug}" = "1" ]; then
+        {
+          printf '[%s] zsh-shim.export file=%s pid=%s editor=%s visual=%s pwd=%s\\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "\(fileName)" "$$" "${EDITOR}" "${VISUAL}" "${PWD}"
+        } >> "${_ghostex_gte_log}" 2>/dev/null
       fi
       """
     : ""
@@ -1502,6 +1514,7 @@ final class TerminalWorkspaceView: NSView {
   private var floatingEditorExitPollTimer: Timer?
   private var floatingEditorStatusFile: String?
   private var floatingEditorStatusWritten = false
+  private var suppressNativeChromeInteractivity = false
 
   /**
    CDXC:EditorPanes 2026-05-06-18:51
@@ -2232,7 +2245,8 @@ final class TerminalWorkspaceView: NSView {
      CDXC:CommandPanes 2026-05-20-22:52:
      Command-pane actions need a hidden launch command so Ghostty executes the
      status wrapper as process setup rather than echoed terminal input. Provider
-     attach commands still own their first-run command path below.
+     attach commands always create normal shells; the sidebar sends provider
+     startup text only after terminalReady.
      */
     config.command = command.shellCommand
     config.initialInput = sessionPersistenceProvider == nil ? command.initialInput : nil
@@ -2246,14 +2260,13 @@ final class TerminalWorkspaceView: NSView {
 
        CDXC:SessionPersistence 2026-05-05-07:28
        App restart must reconnect to existing provider sessions without
-       replaying agent launch or resume input into the live pane. Move initial
-       input into the provider creation script so it is sent only when the named
-       session did not already exist.
+       replaying agent launch or resume input into the live pane. Provider
+       creation scripts must stay normal shells; the sidebar owns one-shot
+       startup input after terminalReady.
        */
       config.command = NativeSessionPersistenceMode.attachCommand(
         provider: sessionPersistenceProvider,
         cwd: command.cwd,
-        initialInput: command.initialInput,
         title: command.title,
         sessionName: sessionPersistenceName
       )
@@ -2317,6 +2330,7 @@ final class TerminalWorkspaceView: NSView {
       title: normalizedTerminalSessionTitle(command.title, sessionId: command.sessionId)
     )
     titleBarView.setDebugContext(ownerSessionId: command.sessionId, paneKind: "terminal")
+    titleBarView.setOverlayInteractionSuppressed(suppressNativeChromeInteractivity)
     titleBarView.translatesAutoresizingMaskIntoConstraints = false
     titleBarView.onMouseDown = { [weak self] event in
       self?.handlePaneTitleBarMouseDown(
@@ -2810,6 +2824,7 @@ final class TerminalWorkspaceView: NSView {
       actions: TerminalSessionTitleBarView.webPaneCreationActions
     )
     titleBarView.setDebugContext(ownerSessionId: command.sessionId, paneKind: "web")
+    titleBarView.setOverlayInteractionSuppressed(suppressNativeChromeInteractivity)
     titleBarView.translatesAutoresizingMaskIntoConstraints = false
     titleBarView.onMouseDown = { [weak self] event in
       self?.handlePaneTitleBarMouseDown(
@@ -3077,6 +3092,7 @@ final class TerminalWorkspaceView: NSView {
     if command.showsProjectTabs == true {
       let view = TerminalSessionTitleBarView(title: command.projectTitle ?? command.title, actions: [])
       view.setDebugContext(ownerSessionId: command.projectId, paneKind: "projectEditorGit")
+      view.setOverlayInteractionSuppressed(suppressNativeChromeInteractivity)
       view.setShowsTabAddButton(true)
       view.setAllowsTabClosing(true)
       view.onAction = { [weak self] action in
@@ -7388,6 +7404,9 @@ final class TerminalWorkspaceView: NSView {
     guard bounds.contains(point) else {
       return nil
     }
+    guard !suppressNativeChromeInteractivity else {
+      return nil
+    }
     /**
      CDXC:RootHitBoundaries 2026-05-22-22:48:
      The root React titlebar WKWebView can report interactive DOM regions below
@@ -7414,6 +7433,34 @@ final class TerminalWorkspaceView: NSView {
       return paneResizeHandleHitView
     }
     return paneTitleBarHitView(at: point)
+  }
+
+  func setNativeChromeInteractivitySuppressed(_ suppressed: Bool) {
+    guard suppressNativeChromeInteractivity != suppressed else {
+      return
+    }
+    /**
+     CDXC:OverlayInteractivity 2026-05-25-07:02:
+     App modals and titlebar dropdown portals can visually cover native pane
+     tabs while the pane title bars still own AppKit tracking areas. Suppress
+     the native chrome itself while the root overlay shield is active so hover
+     state, tab tooltips, and clicks cannot leak through transparent overlay
+     pixels.
+     */
+    suppressNativeChromeInteractivity = suppressed
+    applyNativeChromeInteractivitySuppression()
+  }
+
+  private func applyNativeChromeInteractivitySuppression() {
+    for session in sessions.values {
+      session.titleBarView.setOverlayInteractionSuppressed(suppressNativeChromeInteractivity)
+    }
+    for session in webPaneSessions.values {
+      session.titleBarView.setOverlayInteractionSuppressed(suppressNativeChromeInteractivity)
+    }
+    for session in projectEditorPaneSessions.values {
+      session.titleBarView?.setOverlayInteractionSuppressed(suppressNativeChromeInteractivity)
+    }
   }
 
   private func projectEditorInteractionHitView(at point: NSPoint) -> NSView? {
@@ -12398,34 +12445,34 @@ private enum NativeSessionPersistenceProvider: String {
 
 private enum NativeSessionPersistenceMode {
   /**
-   CDXC:SessionPersistence 2026-05-19-16:59:
-   Agent commands launched from sidebar buttons must resolve the same zshrc
-   functions and aliases as direct Ghostty agent launches. Persistence providers
-   still own first-run replay prevention, but zmx and zellij should run that
-   first command through an interactive login zsh instead of a non-interactive
-   login shell.
+   CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
+   Provider-backed terminals must always attach to ordinary tmux/zmx/zellij
+   shells. The sidebar types agent, restore, and command startup text after
+   terminalReady so exiting that process returns to the provider shell instead
+   of terminating the native Ghostty surface.
    */
-  private static let persistedInitialCommandShellFlag = "-lic"
   private static let zellijSessionNameMaxLength = 25
 
   static func attachCommand(
     provider: NativeSessionPersistenceProvider,
     cwd: String,
-    initialInput: String?,
     title: String?,
     sessionName: String
   ) -> String {
     switch provider {
     case .tmux:
-      return tmuxAttachCommand(cwd: cwd, initialInput: initialInput, sessionName: sessionName)
+      return tmuxAttachCommand(
+        cwd: cwd,
+        sessionName: sessionName)
     case .zmx:
       return zmxAttachCommand(
         cwd: cwd,
-        initialInput: initialInput,
         title: title,
         sessionName: sessionName)
     case .zellij:
-      return zellijAttachCommand(cwd: cwd, initialInput: initialInput, sessionName: sessionName)
+      return zellijAttachCommand(
+        cwd: cwd,
+        sessionName: sessionName)
     }
   }
 
@@ -12544,18 +12591,12 @@ private enum NativeSessionPersistenceMode {
 
   private static func tmuxAttachCommand(
     cwd: String,
-    initialInput: String?,
     sessionName: String
   ) -> String {
     let noticeCommand = persistenceNoticeShellCommand(provider: .tmux, sessionName: sessionName)
-    let initialCommand = shellCommandWithPersistenceNotice(
-      provider: .tmux,
-      sessionName: sessionName,
-      initialInput: initialInput)
     let script = """
       tmux_session=\(shellQuote(sessionName))
       tmux_cwd=\(shellQuote(cwd))
-      tmux_initial_command=\(shellQuote(initialCommand))
       tmux_notice_command=\(shellQuote(noticeCommand))
       tmux_created=0
       if ! command -v tmux >/dev/null 2>&1; then
@@ -12563,16 +12604,12 @@ private enum NativeSessionPersistenceMode {
         exit 127
       fi
       if ! tmux has-session -t "$tmux_session" 2>/dev/null; then
-        if [ -n "$tmux_initial_command" ]; then
-          tmux new-session -d -s "$tmux_session" -c "$tmux_cwd" /bin/zsh \(persistedInitialCommandShellFlag) "$tmux_initial_command"
-        else
-          tmux new-session -d -s "$tmux_session" -c "$tmux_cwd"
-        fi
+        tmux new-session -d -s "$tmux_session" -c "$tmux_cwd"
         tmux_created=1
       fi
       tmux set-option -t "$tmux_session" set-titles on >/dev/null
       tmux set-option -t "$tmux_session" set-titles-string '#T' >/dev/null
-      if [ "$tmux_created" = "1" ] && [ -z "$tmux_initial_command" ]; then
+      if [ "$tmux_created" = "1" ]; then
         tmux send-keys -t "$tmux_session" -l "$tmux_notice_command"
         tmux send-keys -t "$tmux_session" Enter
       fi
@@ -12586,35 +12623,28 @@ private enum NativeSessionPersistenceMode {
      clients can attach to the same named session.
 
      CDXC:TmuxMode 2026-05-05-06:31
-     Initial agent commands belong only to a newly created tmux pane. Do not use
-     Ghostty initialInput in tmux mode, because app restart should attach to the
-     running tmux pane without injecting a second resume command.
+     tmux startup must always create an ordinary shell pane. Sidebar-owned
+     startup text is sent after terminalReady, which keeps agent exit from
+     closing the pane process and still prevents restart attach from replaying
+     commands.
 
      CDXC:SessionPersistence 2026-05-15-09:36
      New provider-backed sessions must announce their persistence manager at the
-     top of the terminal before any agent launch text runs. Empty tmux sessions
-     receive the notice through send-keys, while first-run command sessions run
-     the notice inside the hidden login-shell command. Restart attach remains
-     read-only.
+     top of the terminal. New tmux sessions receive the notice through
+     send-keys; restart attach remains read-only.
 
      CDXC:CommandPanes 2026-05-20-22:52:
-     tmux-backed command panes must not send the Ghostex action wrapper as
-     literal keystrokes because tmux scrollback would show the status heredoc.
-     Start the new pane with the hidden login-shell command instead.
+     tmux-backed command panes now share the same normal-shell startup path as
+     agent panes so a completed command leaves the tmux pane attached.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
 
   private static func zmxAttachCommand(
     cwd: String,
-    initialInput: String?,
     title: String?,
     sessionName: String
   ) -> String {
-    let initialCommand = shellCommandWithPersistenceNotice(
-      provider: .zmx,
-      sessionName: sessionName,
-      initialInput: initialInput)
     let persistenceNoticeCommand = persistenceNoticeShellCommand(
       provider: .zmx,
       sessionName: sessionName)
@@ -12622,7 +12652,6 @@ private enum NativeSessionPersistenceMode {
     let script = """
       zmx_session=\(shellQuote(sessionName))
       zmx_cwd=\(shellQuote(cwd))
-      zmx_initial_command=\(shellQuote(initialCommand))
       zmx_persistence_notice_command=\(shellQuote(persistenceNoticeCommand))
       zmx_title_notice_command=\(shellQuote(titleNoticeCommand))
       \(zmxExecutableShellSetup())
@@ -12633,23 +12662,19 @@ private enum NativeSessionPersistenceMode {
         fi
         exec "$zmx_bin" attach "$zmx_session"
       fi
-      if [ -z "$zmx_initial_command" ]; then
-        cd "$zmx_cwd" || exit
-        exec "$zmx_bin" attach "$zmx_session"
-      fi
       if [ -n "$zmx_persistence_notice_command" ]; then
         /bin/zsh -lc "$zmx_persistence_notice_command"
       fi
       cd "$zmx_cwd" || exit
-      exec "$zmx_bin" attach "$zmx_session" /bin/zsh \(persistedInitialCommandShellFlag) "$zmx_initial_command"
+      exec "$zmx_bin" attach "$zmx_session"
       """
     /**
      CDXC:SessionPersistence 2026-05-05-07:28
      zmx `attach` creates a missing session and attaches to an existing one.
-     Empty terminals must use plain attach so the user sees a normal shell
-     instead of zmx task wrapper text. Initial agent commands are passed only
-     when the named session does not already exist, so app restart attaches
-     without replaying resume input into the live session.
+     Terminals must use plain attach so the user sees a normal shell instead
+     of zmx task wrapper text. The sidebar sends startup text after
+     terminalReady only for the newly created native surface, so app restart
+     attaches without replaying resume input into the live session.
 
      CDXC:SessionPersistence 2026-05-06-23:13
      Empty zmx-backed terminals must never create placeholder tasks such as
@@ -12666,28 +12691,23 @@ private enum NativeSessionPersistenceMode {
 
      CDXC:SessionPersistence 2026-05-15-09:36
      A newly created zmx agent session must print a plain-language persistence
-     notice before the agent command runs. Keep empty zmx terminals on direct
-     attach so they stay normal shells without zmx task wrapper output.
+     notice before startup text is typed. Keep zmx terminals on direct attach
+     so they stay normal shells without zmx task wrapper output.
 
      CDXC:SessionPersistence 2026-05-16-07:14:
      zmx startup should give Ghostty immediate context before the attach takes
      over: existing named sessions print the known sidebar title before attach,
-     while first-run agent sessions print the persistence notice outside zmx and
-     again inside the newly created zmx command before agent launch text.
+     while new sessions print the persistence notice outside zmx before the
+     sidebar sends one-shot startup text.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
 
   private static func zellijAttachCommand(
     cwd: String,
-    initialInput: String?,
     sessionName: String
   ) -> String {
-    let initialCommand = shellCommandWithPersistenceNotice(
-      provider: .zellij,
-      sessionName: sessionName,
-      initialInput: initialInput)
-    let layout = zellijLayout(cwd: cwd, initialCommand: initialCommand)
+    let layout = zellijLayout(cwd: cwd)
     let script = """
       zellij_session=\(shellQuote(sessionName))
       if ! command -v zellij >/dev/null 2>&1; then
@@ -12707,10 +12727,9 @@ private enum NativeSessionPersistenceMode {
     /**
      CDXC:SessionPersistence 2026-05-06-03:43
      Zellij should match tmux/zmx UX: attach to a live named session when it
-     exists, otherwise create the named session and run the pending agent resume
-     command inside that first pane. Ghostty initialInput remains disabled for
-     persistence providers so app restart never replays resume text into an
-     already running session.
+     exists, otherwise create the named session as a normal shell. The sidebar
+     sends startup text after terminalReady so app restart never replays resume
+     text into an already running session.
 
      CDXC:SessionPersistence 2026-05-06-22:16
      Zellij `--session --layout` does not create a missing session, and
@@ -12721,9 +12740,9 @@ private enum NativeSessionPersistenceMode {
      are created under the same name that restart attach will later target.
 
      CDXC:SessionPersistence 2026-05-15-09:36
-     Zellij first-run layouts should render the same persistence notice before
-     the initial agent command. Existing zellij sessions still attach directly
-     so restarts never replay notice text or agent input.
+     New Zellij layouts must stay shell-only. Existing zellij sessions
+     attach directly, and new startup commands are typed by the sidebar after
+     the provider shell is ready.
      */
     return "/bin/zsh -lc \(shellQuote(script))"
   }
@@ -12897,26 +12916,6 @@ private enum NativeSessionPersistenceMode {
       (scalar.value >= 97 && scalar.value <= 122)
   }
 
-  private static func shellCommand(fromInitialInput initialInput: String?) -> String {
-    let normalized = (initialInput ?? "")
-      .replacingOccurrences(of: "\r\n", with: "\n")
-      .replacingOccurrences(of: "\r", with: "\n")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    return normalized
-  }
-
-  private static func shellCommandWithPersistenceNotice(
-    provider: NativeSessionPersistenceProvider,
-    sessionName: String,
-    initialInput: String?
-  ) -> String {
-    let command = shellCommand(fromInitialInput: initialInput)
-    guard !command.isEmpty else {
-      return ""
-    }
-    return "\(persistenceNoticeShellCommand(provider: provider, sessionName: sessionName))\n\(command)"
-  }
-
   private static func persistenceNoticeShellCommand(
     provider: NativeSessionPersistenceProvider,
     sessionName: String
@@ -12957,22 +12956,11 @@ private enum NativeSessionPersistenceMode {
       """
   }
 
-  private static func zellijLayout(cwd: String, initialCommand: String) -> String {
-    if initialCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      return """
-        layout {
-          cwd \(zellijKdlString(cwd))
-          pane
-        }
-        """
-    }
+  private static func zellijLayout(cwd: String) -> String {
     return """
       layout {
-        pane {
-          cwd \(zellijKdlString(cwd))
-          command "/bin/zsh"
-          args \(zellijKdlString(persistedInitialCommandShellFlag)) \(zellijKdlString(initialCommand))
-        }
+        cwd \(zellijKdlString(cwd))
+        pane
       }
       """
   }
@@ -15157,6 +15145,8 @@ private final class TerminalTitleBarActionButton: NSButton {
   private static let activeBackgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.18).cgColor
 
   private var hoverTrackingArea: NSTrackingArea?
+  private var baseToolTip: String?
+  private var isOverlayInteractionSuppressed = false
   private var isPointerInside = false {
     didSet { updateActionChrome() }
   }
@@ -15211,6 +15201,29 @@ private final class TerminalTitleBarActionButton: NSButton {
     true
   }
 
+  func setOverlayInteractionSuppressed(_ suppressed: Bool) {
+    guard isOverlayInteractionSuppressed != suppressed else {
+      return
+    }
+    isOverlayInteractionSuppressed = suppressed
+    if suppressed {
+      baseToolTip = toolTip
+      toolTip = nil
+      isPointerInside = false
+      isHighlighted = false
+    } else {
+      toolTip = baseToolTip
+    }
+    updateActionChrome()
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard !isOverlayInteractionSuppressed else {
+      return nil
+    }
+    return super.hitTest(point)
+  }
+
   override func layout() {
     super.layout()
     layer?.cornerRadius = chromeCornerRadius
@@ -15232,10 +15245,18 @@ private final class TerminalTitleBarActionButton: NSButton {
   }
 
   override func mouseEntered(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      isPointerInside = false
+      return
+    }
     isPointerInside = true
   }
 
   override func mouseMoved(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      isPointerInside = false
+      return
+    }
     isPointerInside = true
   }
 
@@ -15368,6 +15389,8 @@ private final class TerminalTitleBarTabButton: NSButton {
   private var showsCommandTrailingSeparator = false
   private var pendingMouseDownInlineAction: InlineAction?
   private var hoverTrackingArea: NSTrackingArea?
+  private var baseToolTip: String?
+  private var isOverlayInteractionSuppressed = false
   private var isTabHovered = false {
     didSet {
       guard oldValue != isTabHovered else { return }
@@ -15417,7 +15440,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     let normalizedLabel = remainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
     let nextLabel = normalizedLabel?.isEmpty == false ? normalizedLabel : nil
     guard delayedSendRemainingLabel != nextLabel else {
-      toolTip = delayedSendToolTip()
+      setTabToolTip(delayedSendToolTip())
       return
     }
     /*
@@ -15425,9 +15448,9 @@ private final class TerminalTitleBarTabButton: NSButton {
      Native pane tabs need the active Delayed Send timer beside the session
      title, using the same right-side status slot as the sleeping moon, and the
      tooltip must expose the remaining countdown.
-     */
+    */
     delayedSendRemainingLabel = nextLabel
-    toolTip = delayedSendToolTip()
+    setTabToolTip(delayedSendToolTip())
     needsDisplay = true
   }
 
@@ -15494,11 +15517,29 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   func setTabHovered(_ hovered: Bool) {
-    isTabHovered = hovered
+    isTabHovered = isOverlayInteractionSuppressed ? false : hovered
   }
 
   func setHoveredInlineAction(_ action: InlineAction?) {
-    hoveredInlineAction = action
+    hoveredInlineAction = isOverlayInteractionSuppressed ? nil : action
+  }
+
+  func setTabToolTip(_ value: String?) {
+    baseToolTip = value
+    toolTip = isOverlayInteractionSuppressed ? nil : value
+  }
+
+  func setOverlayInteractionSuppressed(_ suppressed: Bool) {
+    guard isOverlayInteractionSuppressed != suppressed else {
+      return
+    }
+    isOverlayInteractionSuppressed = suppressed
+    if suppressed {
+      pendingMouseDownInlineAction = nil
+      isTabHovered = false
+      hoveredInlineAction = nil
+    }
+    toolTip = suppressed ? nil : baseToolTip
   }
 
   func setActivity(_ nextActivity: NativeTerminalActivity?) {
@@ -15670,10 +15711,18 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   override func mouseEntered(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      updateLocalHover(for: nil)
+      return
+    }
     updateLocalHover(for: convert(event.locationInWindow, from: nil))
   }
 
   override func mouseMoved(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      updateLocalHover(for: nil)
+      return
+    }
     updateLocalHover(for: convert(event.locationInWindow, from: nil))
   }
 
@@ -15687,12 +15736,21 @@ private final class TerminalTitleBarTabButton: NSButton {
     setHoveredInlineAction(nil)
   }
 
-  private func updateLocalHover(for point: NSPoint) {
+  private func updateLocalHover(for point: NSPoint?) {
+    guard let point, !isOverlayInteractionSuppressed else {
+      setTabHovered(false)
+      setHoveredInlineAction(nil)
+      return
+    }
     setTabHovered(bounds.contains(point))
     setHoveredInlineAction(inlineAction(at: point))
   }
 
   override func mouseDown(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      pendingMouseDownInlineAction = nil
+      return
+    }
     let point = convert(event.locationInWindow, from: nil)
     updateLocalHover(for: point)
     if let inlineAction = inlineAction(at: point) {
@@ -15716,6 +15774,9 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   override func mouseDragged(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
     if pendingMouseDownInlineAction != nil {
       return
     }
@@ -15729,6 +15790,10 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   override func mouseUp(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      pendingMouseDownInlineAction = nil
+      return
+    }
     if let pendingInlineAction = pendingMouseDownInlineAction {
       pendingMouseDownInlineAction = nil
       let point = convert(event.locationInWindow, from: nil)
@@ -15751,6 +15816,9 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   override func otherMouseDown(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
     if event.buttonNumber != 2 {
       super.otherMouseDown(with: event)
       return
@@ -15771,6 +15839,9 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   override func otherMouseUp(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
     if event.buttonNumber != 2 {
       super.otherMouseUp(with: event)
       return
@@ -15789,6 +15860,9 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   override func otherMouseDragged(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
     if event.buttonNumber == 2 {
       return
     }
@@ -15796,6 +15870,9 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   override func rightMouseDown(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
     /**
      CDXC:PaneTabs 2026-05-11-00:45
      Native pane tabs need single-tab and group-scoped sleep/close commands
@@ -16362,6 +16439,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private var debugPaneKind = "unknown"
   private var lastLoggedPaneTabGeometrySignature: String?
   private var hoverTrackingArea: NSTrackingArea?
+  private var isOverlayInteractionSuppressed = false
   private var isPaneHovered = false {
     didSet {
       updateActionButtonVisibility()
@@ -16414,6 +16492,34 @@ private final class TerminalSessionTitleBarView: NSView {
 
   var displayFavicon: NSImage? {
     faviconImage
+  }
+
+  func setOverlayInteractionSuppressed(_ suppressed: Bool) {
+    guard isOverlayInteractionSuppressed != suppressed else {
+      return
+    }
+    isOverlayInteractionSuppressed = suppressed
+    isPaneHovered = false
+    isPointerInsideTitleBar = false
+    updateHoveredTab(for: nil)
+    syncOverlayInteractionSuppressionForSubviews()
+    updateActionButtonVisibility()
+    if let window {
+      window.invalidateCursorRects(for: self)
+    }
+  }
+
+  private func syncOverlayInteractionSuppressionForSubviews() {
+    for button in tabButtons {
+      button.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
+    }
+    tabAddButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
+    actionMenuButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
+    projectEditorCompanionCloseButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
+    for item in actionButtons {
+      (item.button as? TerminalTitleBarActionButton)?
+        .setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
+    }
   }
 
   func setDebugContext(ownerSessionId: String, paneKind: String) {
@@ -16500,12 +16606,13 @@ private final class TerminalSessionTitleBarView: NSView {
       let button = tabButtons[index]
       button.sessionId = tab.sessionId
       button.title = tab.title
-      button.toolTip = tab.title
+      button.setTabToolTip(tab.title)
       button.setChromeRole(chromeRole)
       button.setActive(tab.sessionId == activeSessionId)
       button.setSleeping(tab.isSleeping)
       button.setDelayedSendRemainingLabel(nil)
       button.setContextMenuActions(tab.actions)
+      button.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     }
     updateTabGroupFocusAppearance()
     needsLayout = true
@@ -16710,6 +16817,9 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   override func mouseDown(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
     let point = convert(event.locationInWindow, from: nil)
     isPointerInsideTitleBar = true
     if showsTabAddButton, event.clickCount >= 2, !tabItems.isEmpty, isEmptyTitleBarDoubleClickPoint(point) {
@@ -16751,6 +16861,9 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   override func scrollWheel(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      return
+    }
     guard !tabItems.isEmpty, tabContentWidth > tabViewportFrame.width else {
       super.scrollWheel(with: event)
       return
@@ -16789,7 +16902,7 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
-    guard bounds.contains(point) else {
+    guard !isOverlayInteractionSuppressed, bounds.contains(point) else {
       return nil
     }
     /**
@@ -17173,18 +17286,33 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   override func mouseEntered(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      isPointerInsideTitleBar = false
+      updateHoveredTab(for: nil)
+      return
+    }
     isPointerInsideTitleBar = true
     updateHoveredTab(for: convert(event.locationInWindow, from: nil))
     updateCursor(for: event)
   }
 
   override func mouseMoved(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      isPointerInsideTitleBar = false
+      updateHoveredTab(for: nil)
+      return
+    }
     isPointerInsideTitleBar = true
     updateHoveredTab(for: convert(event.locationInWindow, from: nil))
     updateCursor(for: event)
   }
 
   override func mouseExited(with event: NSEvent) {
+    guard !isOverlayInteractionSuppressed else {
+      isPointerInsideTitleBar = false
+      updateHoveredTab(for: nil)
+      return
+    }
     let point = convert(event.locationInWindow, from: nil)
     if bounds.contains(point) {
       isPointerInsideTitleBar = true
@@ -17207,6 +17335,13 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   private func updateHoveredTab(for point: NSPoint?) {
+    guard !isOverlayInteractionSuppressed else {
+      for button in tabButtons {
+        button.setTabHovered(false)
+        button.setHoveredInlineAction(nil)
+      }
+      return
+    }
     let hoveredSessionId = point.flatMap { tabSessionId(at: $0) }
     for button in tabButtons {
       button.setTabHovered(button.sessionId == hoveredSessionId)

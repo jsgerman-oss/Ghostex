@@ -15,7 +15,9 @@ import {
   IconLoader2,
   IconMoon,
   IconPlayerPlay,
+  IconRocket,
   IconSettings,
+  IconStackPush,
   IconTerminal2,
   IconUpload,
   IconUsersGroup,
@@ -181,7 +183,7 @@ type ResourceProcessBundle = {
   process?: ResourceProcess;
   browserTab?: TitlebarBrowserTabResource;
   session?: TitlebarResourceSession;
-  type: "app" | "browser" | "code" | "orphan" | "session";
+  type: "browser" | "code" | "orphan" | "session";
 };
 
 type ResourceGroupView = {
@@ -219,6 +221,7 @@ type NativeTitlebarCommand =
     }
   | { type: "openWorkspaceInFinder"; workspacePath: string }
   | {
+      overlayOpen: boolean;
       regions: Array<{ height: number; width: number; x: number; y: number }>;
       type: "setReactTitlebarHitRegions";
     };
@@ -258,10 +261,10 @@ declare global {
 const LAST_OPEN_TARGET_STORAGE_KEY = "ghostex.titlebar.lastOpenTargetId";
 const LAST_ACTION_COMMAND_STORAGE_PREFIX = "ghostex.titlebar.lastActionCommandByProject:";
 /**
- * CDXC:NativeWindowChrome 2026-05-24-20:18:
- * The macOS app titlebar needs 15px more vertical room than the former 30px strip. Keep the React titlebar height at 45px so web controls, hit regions, and Swift's reserved top chrome stay in lockstep.
+ * CDXC:NativeWindowChrome 2026-05-25-07:16:
+ * The macOS app titlebar should now be 35px tall, not the earlier 45px. Keep the React titlebar height in sync with Swift's native reservation so web controls and AppKit traffic-light centering share one chrome height.
  */
-const TITLEBAR_HEIGHT = 45;
+const TITLEBAR_HEIGHT = 35;
 const TITLEBAR_CONTROL_HEIGHT = 20;
 const TITLEBAR_CONTROL_TOP = (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT) / 2;
 const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP + 1;
@@ -427,7 +430,7 @@ function createResourceGroupViews(
   browserTabs: TitlebarBrowserTabResource[],
   resourceGroups: TitlebarResourceGroup[],
   processes: ResourceProcess[],
-): { appBundles: ResourceProcessBundle[]; browserBundles: ResourceProcessBundle[]; groupViews: ResourceGroupView[]; orphanBundles: ResourceProcessBundle[] } {
+): { browserBundles: ResourceProcessBundle[]; groupViews: ResourceGroupView[]; orphanBundles: ResourceProcessBundle[] } {
   const claimedPids = new Set<number>();
   const childrenByParent = createProcessChildrenMap(processes);
   const groupedBrowserTabIds = new Set<string>();
@@ -451,14 +454,14 @@ function createResourceGroupViews(
       group,
     };
   });
-  const appBundles = createAppRuntimeBundles(processes, childrenByParent, claimedPids);
+  claimAppRuntimeProcesses(processes, childrenByParent, claimedPids);
   const browserBundles = createBrowserBundles(
     browserTabs.filter((tab) => !groupedBrowserTabIds.has(tab.id)),
     processes,
     claimedPids,
   );
   const orphanBundles = createOrphanBundles(processes, claimedPids);
-  return { appBundles, browserBundles, groupViews, orphanBundles };
+  return { browserBundles, groupViews, orphanBundles };
 }
 
 function isBrowserTabInResourceGroup(
@@ -574,11 +577,11 @@ function createProjectCodeServerBundle(
   };
 }
 
-function createAppRuntimeBundles(
+function claimAppRuntimeProcesses(
   processes: ResourceProcess[],
   childrenByParent: Map<number, ResourceProcess[]>,
   claimedPids: Set<number>,
-): ResourceProcessBundle[] {
+): void {
   const appProcesses = processes.filter(
     (process) =>
       !claimedPids.has(process.pid) &&
@@ -587,15 +590,18 @@ function createAppRuntimeBundles(
   const appPids = new Set(appProcesses.map((process) => process.pid));
   /**
    * CDXC:TitlebarResources 2026-05-16-19:53:
-   * App Runtime rows should report the memory used by the Ghostex-owned process
-   * tree, not only the tiny launcher/helper process that matched the app name.
-   * Seed from root Ghostex processes and sum their descendants so the dropdown
-   * does not misleadingly show 1 MB for an active app runtime.
+   * Ghostex-owned app processes need to be claimed as one process tree, not as
+   * individual helper matches, so they never leak into detached resource rows.
+   *
+   * CDXC:TitlebarResources 2026-05-25-16:53:
+   * The Resources dropdown should hide Ghostex's own app-runtime rows. Keep
+   * matching these processes only to reserve their PIDs before browser and
+   * orphan resource sections are built.
    */
-  return appProcesses
+  appProcesses
     .filter((process) => !appPids.has(process.ppid))
     .slice(0, 3)
-    .map((process) => {
+    .forEach((process) => {
       const tree = collectProcessTree([process], childrenByParent).filter(
         (treeProcess) =>
           !claimedPids.has(treeProcess.pid) &&
@@ -603,16 +609,6 @@ function createAppRuntimeBundles(
           (treeProcess.pid === process.pid || !isAgentRuntimeProcess(treeProcess)),
       );
       tree.forEach((treeProcess) => claimedPids.add(treeProcess.pid));
-      return {
-        childProcesses: tree.filter((treeProcess) => treeProcess.pid !== process.pid),
-        cpu: sumProcessCpu(tree),
-        key: `app:${process.pid}`,
-        label: "Ghostex",
-        memoryMb: sumProcessMemory(tree),
-        pids: tree.map((treeProcess) => treeProcess.pid),
-        process,
-        type: "app" as const,
-      };
     });
 }
 
@@ -914,6 +910,8 @@ function App() {
   const [gitMenuOpen, setGitMenuOpen] = useState(false);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
+  const titlebarOverlayOpen =
+    actionsMenuOpen || gitMenuOpen || openInMenuOpen || resourcesMenuOpen;
   const [resourceProcesses, setResourceProcesses] = useState<ResourceProcess[]>([]);
   const [collapsedResourceKeys, setCollapsedResourceKeys] = useState<Set<string>>(() => {
     /**
@@ -1002,8 +1000,12 @@ function App() {
         y: rect.y,
       };
     });
-    postNative({ regions, type: "setReactTitlebarHitRegions" });
-  }, []);
+    postNative({
+      overlayOpen: titlebarOverlayOpen,
+      regions,
+      type: "setReactTitlebarHitRegions",
+    });
+  }, [titlebarOverlayOpen]);
 
   const publishSettledHitRegions = useCallback(() => {
     publishHitRegions();
@@ -1042,6 +1044,22 @@ function App() {
     window.addEventListener("resize", publishHitRegions);
     return () => window.removeEventListener("resize", publishHitRegions);
   }, [publishHitRegions]);
+
+  useEffect(() => {
+    return () => {
+      /**
+       * CDXC:ReactTitlebar 2026-05-25-10:09:
+       * Native workspace shielding must clear when the titlebar host unmounts
+       * or reloads. Publish an explicit closed overlay state instead of making
+       * Swift infer it from stale DOM hit-region geometry.
+       */
+      postNative({
+        overlayOpen: false,
+        regions: [],
+        type: "setReactTitlebarHitRegions",
+      });
+    };
+  }, []);
 
   useEffect(() => {
     window.__ghostex_TITLEBAR__ = {
@@ -1250,8 +1268,8 @@ function App() {
      * CDXC:TitlebarResources 2026-05-23-10:46:
      * The resource manager must not rely on sidebar sleep as the only kill
      * mechanism. It also terminates the PIDs currently shown in the dropdown so
-     * Quit and Quit All Sessions actually release RAM while the sidebar keeps
-     * the durable terminal sessions.
+     * row Quit, group Quit, and Sleep All actually release RAM while the
+     * sidebar keeps durable terminal sessions.
      */
     setQuittingResourceKeys((current) => {
       const next = new Set(current);
@@ -1485,7 +1503,6 @@ function App() {
                 style={{ backgroundColor: "#181818" }}
               >
                 <TitlebarResourcesMenu
-                  appBundles={resourceViews.appBundles}
                   browserBundles={resourceViews.browserBundles}
                   collapsedKeys={collapsedResourceKeys}
                   groupViews={resourceViews.groupViews}
@@ -1539,7 +1556,7 @@ function App() {
                 className="titlebar-open-menu titlebar-git-menu rounded-lg border-border/80 !bg-[#181818] p-1 text-[13px] text-foreground shadow-2xl"
                 data-titlebar-hit-region
                 sideOffset={6}
-                style={{ backgroundColor: "#181818", minWidth: 190, width: 190 }}
+                style={{ backgroundColor: "#181818", minWidth: 240, width: 240 }}
               >
                 {gitMenuItems.map((item) => (
                   <DropdownMenuItem
@@ -1752,7 +1769,6 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
 }
 
 function TitlebarResourcesMenu({
-  appBundles,
   browserBundles,
   collapsedKeys,
   groupViews,
@@ -1764,7 +1780,6 @@ function TitlebarResourcesMenu({
   quittingKeys,
   sessionPersistenceProvider,
 }: {
-  appBundles: ResourceProcessBundle[];
   browserBundles: ResourceProcessBundle[];
   collapsedKeys: Set<string>;
   groupViews: ResourceGroupView[];
@@ -1779,26 +1794,50 @@ function TitlebarResourcesMenu({
   const visibleGroupViews = groupViews.filter((view) => view.bundles.length > 0);
   const allBundles = [
     ...visibleGroupViews.flatMap((view) => view.bundles),
-    ...appBundles,
     ...browserBundles,
     ...orphanBundles,
   ];
   /**
    * CDXC:TitlebarResources 2026-05-23-10:52:
    * Header actions should be two matching resource controls: one for sleeping
-   * only inactive terminal sessions, and one for quitting session resources,
-   * browser panes, and code/project web views without targeting the app runtime.
+   * only inactive terminal sessions, and one for sleeping all terminal session
+   * resources without targeting the app runtime.
    *
    * CDXC:TitlebarResources 2026-05-23-10:54:
    * Every Resources action needs an explanatory shadcn tooltip because Sleep is
    * not a soft hide: it releases the session's live CPU/RAM while preserving
    * the sidebar card for quick wake/resume.
+   *
+   * CDXC:TitlebarResources 2026-05-25-16:53:
+   * The Resources dropdown should manage user-owned work resources, not expose
+   * Ghostex's own app-runtime process rows. Keep app process matching available
+   * for internal PID ownership, but exclude App Runtime bundles from visible
+   * sections, visible totals, and bulk resource actions.
+   *
+   * CDXC:TitlebarResources 2026-05-25-16:59:
+   * The old yellow zmx warning duplicated the action wording and made the menu
+   * noisier than the controls themselves. Remove that note and expose the bulk
+   * terminal action as Sleep All only when session persistence is active through
+   * tmux, zmx, or zellij.
    */
-  const quittableResourceBundles = [
-    ...visibleGroupViews.flatMap((view) => view.bundles),
-    ...browserBundles,
-    ...orphanBundles,
-  ];
+  const persistentSessionMode =
+    sessionPersistenceProvider === "tmux" ||
+    sessionPersistenceProvider === "zmx" ||
+    sessionPersistenceProvider === "zellij";
+  const sleepAllSessionBundles = visibleGroupViews
+    .flatMap((view) => view.bundles)
+    .filter((bundle) => bundle.type === "session" && bundle.session?.sessionKind === "terminal");
+  /**
+   * CDXC:TitlebarResources 2026-05-24-20:58:
+   * Resource action tooltips must stay compact enough for the titlebar area.
+   * Keep explanatory copy short and apply the width cap inline because the
+   * shared TooltipContent sets its viewport cap with inline styles.
+   *
+   * CDXC:TitlebarResources 2026-05-25-09:37:
+   * Resource summary tooltips need the same compact width cap as action
+   * tooltips so Live CPU and Live memory do not stretch across the toolbar.
+   */
+  const resourceTooltipStyle = { maxWidth: 220 };
   return (
     <div className="titlebar-resources-panel">
       <div className="titlebar-resources-header">
@@ -1822,36 +1861,32 @@ function TitlebarResourcesMenu({
                 <span>Sleep Inactive</span>
               </button>
             </TooltipTrigger>
-            <TooltipContent className="titlebar-resource-tooltip">
+            <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
               <span className="titlebar-resource-tooltip-title">Sleep inactive sessions</span>
-              <span>
-                Stops idle agent terminals so they stop using CPU and RAM, while keeping their
-                session cards in the sidebar for easy wake/resume.
-              </span>
+              <span>Sleeps idle terminals and keeps them restorable in the sidebar.</span>
             </TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                aria-label="Quit sessions, browsers, and code views"
-                className="titlebar-resources-action-button"
-                data-variant="quit"
-                disabled={quittableResourceBundles.length === 0}
-                onClick={() => onQuit(quittableResourceBundles)}
-                type="button"
-              >
-                <IconX aria-hidden="true" size={14} stroke={2} />
-                <span>Quit Resources</span>
-              </button>
-            </TooltipTrigger>
-            <TooltipContent className="titlebar-resource-tooltip">
-              <span className="titlebar-resource-tooltip-title">Quit resources</span>
-              <span>
-                Terminates session processes, browser panes, and code/project web views. Terminal
-                sessions stay in the sidebar as sleeping sessions.
-              </span>
-            </TooltipContent>
-          </Tooltip>
+          {persistentSessionMode ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  aria-label="Sleep all terminal sessions"
+                  className="titlebar-resources-action-button"
+                  data-variant="sleep"
+                  disabled={sleepAllSessionBundles.length === 0}
+                  onClick={() => onQuit(sleepAllSessionBundles)}
+                  type="button"
+                >
+                  <IconMoon aria-hidden="true" size={14} stroke={1.9} />
+                  <span>Sleep All</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
+                <span className="titlebar-resource-tooltip-title">Sleep all sessions</span>
+                <span>Sleeps all terminal sessions and keeps them restorable in the sidebar.</span>
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
           <div className="titlebar-resources-summary">
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1860,9 +1895,9 @@ function TitlebarResourcesMenu({
                   {formatWholePercent(sumBundleCpu(allBundles))}
                 </span>
               </TooltipTrigger>
-              <TooltipContent className="titlebar-resource-tooltip">
+              <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
                 <span className="titlebar-resource-tooltip-title">Live CPU</span>
-                <span>Combined CPU currently used by the resources shown in this dropdown.</span>
+                <span>CPU used by resources in this dropdown.</span>
               </TooltipContent>
             </Tooltip>
             <Tooltip>
@@ -1872,9 +1907,9 @@ function TitlebarResourcesMenu({
                   {formatWholeMemory(sumBundleMemory(allBundles))}
                 </span>
               </TooltipTrigger>
-              <TooltipContent className="titlebar-resource-tooltip">
+              <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
                 <span className="titlebar-resource-tooltip-title">Live memory</span>
-                <span>Combined RAM currently used by the resources shown in this dropdown.</span>
+                <span>RAM used by resources in this dropdown.</span>
               </TooltipContent>
             </Tooltip>
           </div>
@@ -1884,11 +1919,6 @@ function TitlebarResourcesMenu({
         <div className="titlebar-resources-info-note">
           Most resources are used by Agent Terminals.
         </div>
-        {sessionPersistenceProvider === "zmx" ? (
-          <div className="titlebar-resources-zmx-note">
-            Quitting Ghostex does not quit zmx terminals. Use Quit All Sessions to clear RAM.
-          </div>
-        ) : null}
         {visibleGroupViews.length > 0 ? (
           visibleGroupViews.map((view) => (
             <TitlebarResourceSection
@@ -1905,15 +1935,6 @@ function TitlebarResourcesMenu({
         ) : (
           <div className="titlebar-resources-empty">No grouped sessions matched running processes.</div>
         )}
-        <TitlebarResourceSection
-          collapsedKeys={collapsedKeys}
-          onQuit={onQuit}
-          onToggle={onToggle}
-          quittingKeys={quittingKeys}
-          sectionKey="app-runtime"
-          title="App Runtime"
-          bundles={appBundles}
-        />
         <TitlebarResourceSection
           collapsedKeys={collapsedKeys}
           onQuit={onQuit}
@@ -1964,6 +1985,13 @@ function TitlebarResourceSection({
   const hasTerminalSession = bundles.some(
     (bundle) => bundle.type === "session" && bundle.session?.sessionKind === "terminal",
   );
+  /**
+   * CDXC:TitlebarResources 2026-05-25-14:21:
+   * Resource group tooltips share the compact width cap used by action and
+   * summary tooltips, including Quit group, so long process-management copy
+   * wraps near the hovered control instead of spanning the window.
+   */
+  const resourceTooltipStyle = { maxWidth: 220 };
   return (
     <section className="titlebar-resource-section">
       <div className="titlebar-resource-section-heading">
@@ -1989,7 +2017,7 @@ function TitlebarResourceSection({
               </span>
             </button>
           </TooltipTrigger>
-          <TooltipContent className="titlebar-resource-tooltip">
+          <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
             <span className="titlebar-resource-tooltip-title">
               {isCollapsed ? "Expand resource group" : "Collapse resource group"}
             </span>
@@ -2010,12 +2038,12 @@ function TitlebarResourceSection({
               Quit
             </button>
           </TooltipTrigger>
-          <TooltipContent className="titlebar-resource-tooltip">
+          <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
             <span className="titlebar-resource-tooltip-title">Quit this group</span>
             <span>
               {hasTerminalSession
-                ? "Terminates the live processes in this group. Terminal sessions stop using CPU/RAM but remain in the sidebar as sleeping sessions."
-                : "Terminates the live processes in this group and removes the associated resource surfaces when applicable."}
+                ? "Stops live processes; terminal sessions remain restorable."
+                : "Stops live processes and closes related surfaces."}
             </span>
           </TooltipContent>
         </Tooltip>
@@ -2069,19 +2097,25 @@ function TitlebarResourceBundle({
    * Terminal-session Quit from Resources terminates the live process tree but
    * intentionally keeps the session card in the sidebar as sleeping. Use the
    * sleep affordance for those rows; keep the quit affordance for browser,
-   * code, app, and detached process rows that are actually removed or closed.
+   * code, and detached process rows that are actually removed or closed.
    */
   const preservesSidebarSession =
     bundle.type === "session" && bundle.session?.sessionKind === "terminal";
   const actionLabel = preservesSidebarSession ? `Sleep ${bundle.label}` : `Close ${bundle.label}`;
   const actionTooltipTitle = preservesSidebarSession ? "Sleep session" : "Quit resource";
   const actionTooltipBody = preservesSidebarSession
-    ? "Stops this session's live process tree so CPU/RAM are released, but keeps the session in the sidebar so you can wake or resume it later."
+    ? "Releases CPU/RAM and keeps the session restorable in the sidebar."
     : bundle.type === "browser"
       ? "Closes this browser resource and terminates the browser helper processes shown here."
       : bundle.type === "code"
         ? "Closes this code/project web view and terminates the backing helper process shown here."
         : "Terminates the process shown here.";
+  /**
+   * CDXC:TitlebarResources 2026-05-24-20:58:
+   * Per-row action tooltips use the same compact cap as the header actions so
+   * long session labels do not make the hover surface span across the window.
+   */
+  const resourceTooltipStyle = { maxWidth: 220 };
   return (
     <div className="titlebar-resource-bundle" data-quitting={String(isQuitting)}>
       <div
@@ -2148,7 +2182,7 @@ function TitlebarResourceBundle({
               )}
             </button>
           </TooltipTrigger>
-          <TooltipContent className="titlebar-resource-tooltip">
+          <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
             <span className="titlebar-resource-tooltip-title">{actionTooltipTitle}</span>
             <span>{actionTooltipBody}</span>
           </TooltipContent>
@@ -2193,9 +2227,6 @@ function getResourceBundleAvatar(bundle: ResourceProcessBundle): string {
   }
   if (bundle.type === "browser") {
     return "B";
-  }
-  if (bundle.type === "app") {
-    return "GX";
   }
   return (bundle.session?.agentIcon ?? bundle.label).slice(0, 2).toUpperCase();
 }
@@ -2438,6 +2469,14 @@ function getTitlebarGitActionIcon(action: SidebarGitAction): ReactNode {
   if (action === "push") {
     return <IconUpload aria-hidden="true" className="titlebar-git-icon" size={15} stroke={1.8} />;
   }
+  if (action === "multiRelease") {
+    return (
+      <IconStackPush aria-hidden="true" className="titlebar-git-icon" size={15} stroke={1.8} />
+    );
+  }
+  if (action === "release") {
+    return <IconRocket aria-hidden="true" className="titlebar-git-icon" size={15} stroke={1.8} />;
+  }
   if (action === "pr") {
     return (
       <IconGitPullRequest
@@ -2590,7 +2629,7 @@ styleElement.textContent = `
    * CDXC:ReactTitlebar 2026-05-11-09:00
    * The right titlebar controls should read as flat chrome text/icons rather
    * than framed buttons. Remove the manual installed-target refresh button and
-   * preserve the 20px centered control height so the taller 45px titlebar
+   * preserve the 20px centered control height so the 35px titlebar
    * keeps top/bottom breathing room.
    *
    * CDXC:ReactTitlebar 2026-05-17-00:57:
@@ -2796,12 +2835,15 @@ styleElement.textContent = `
   /**
    * CDXC:TitlebarGit 2026-05-24-20:40:
    * The Git split menu opens from the chevron segment, but the menu must be wide enough to show Commit, Push, and Create PR labels. Pin the menu width instead of letting Radix size it from the narrow chevron trigger.
+   *
+   * CDXC:TitlebarGit 2026-05-25-10:16:
+   * Release-oriented Git actions add longer dropdown labels such as Multicommit & Release, so the pinned menu width must fit them without clipping.
    */
   .titlebar-git-menu {
-    max-width: 220px;
-    min-width: 190px !important;
+    max-width: 260px;
+    min-width: 240px !important;
     overflow-x: visible;
-    width: 190px !important;
+    width: 240px !important;
   }
   .titlebar-open-menu-item {
     cursor: default !important;
@@ -2938,8 +2980,9 @@ styleElement.textContent = `
     /*
      * CDXC:TitlebarResources 2026-05-23-10:52:
      * The Resources header has exactly two matching actions: sleep inactive
-     * sessions and quit session/browser/code resources. Keep them hidden until
-     * hover/focus so the compact top bar still leads with live metrics.
+     * sessions and, in persistence modes, sleep all terminal sessions. Keep
+     * them hidden until hover/focus so the compact top bar still leads with
+     * live metrics.
      */
     opacity: 1;
     pointer-events: auto;
@@ -3007,27 +3050,12 @@ styleElement.textContent = `
     /*
      * CDXC:TitlebarResources 2026-05-21-16:58:
      * Keep explanatory copy out of the crowded titlebar. Put the general
-     * resource-usage note in the scroll body above the zmx persistence warning.
+     * resource-usage note in the scroll body above the resource sections.
      */
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 7px;
     color: rgba(255,255,255,0.62);
-    font: 600 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-    margin-bottom: 8px;
-    padding: 8px 10px;
-  }
-  .titlebar-resources-zmx-note {
-    /*
-     * CDXC:TitlebarResources 2026-05-21-16:38:
-     * When zmx persistence is enabled, the resource manager must state that
-     * quitting Ghostex leaves durable terminals alive and direct users to Quit
-     * All Sessions when their goal is freeing RAM.
-     */
-    background: rgba(250,204,21,0.1);
-    border: 1px solid rgba(250,204,21,0.22);
-    border-radius: 7px;
-    color: rgba(255,255,255,0.82);
     font: 600 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     margin-bottom: 8px;
     padding: 8px 10px;

@@ -76,6 +76,8 @@ describe("buildSidebarGitMenuItems", () => {
       "Commit",
       "Push",
       "View PR",
+      "Multicommit & Release",
+      "Release",
     ]);
   });
 });

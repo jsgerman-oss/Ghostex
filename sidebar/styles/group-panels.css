@@ -888,6 +888,16 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   position: relative;
 }
 
+.group-header-actions .reference-sidebar-hover-action-tooltip {
+  /*
+   * CDXC:ProjectHeaderTooltips 2026-05-25-09:43:
+   * Project header action buttons reuse the local reference-sidebar tooltip
+   * surface so their labels open to the left of the icon and stay anchored
+   * inside the native sidebar webview.
+   */
+  position: relative;
+}
+
 .reference-sidebar-hover-action-tooltip::after,
 .reference-sidebar-section-action.reference-sidebar-hover-action-tooltip::after {
   background: #262626;
@@ -914,10 +924,29 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 .reference-sidebar-nav-item:hover .reference-sidebar-hover-action-tooltip:is(:hover, :focus-visible)::after,
 .reference-sidebar-hover-action-tooltip:focus-visible::after,
 .reference-sidebar-section-row:hover .reference-sidebar-hover-action-tooltip:is(:hover, :focus-visible)::after,
-.reference-sidebar-section-row:focus-within .reference-sidebar-hover-action-tooltip:focus-visible::after {
+.reference-sidebar-section-row:focus-within .reference-sidebar-hover-action-tooltip:focus-visible::after,
+.group-head:hover .group-header-actions .reference-sidebar-hover-action-tooltip:is(:hover, :focus-visible)::after,
+.group-head:focus-within .group-header-actions .reference-sidebar-hover-action-tooltip:focus-visible::after {
   opacity: 1;
   transition-delay: 0s;
   visibility: visible;
+}
+
+/*
+ * CDXC:SidebarTooltips 2026-05-25-07:16:
+ * CSS pseudo-tooltips keep following browser :hover state when WKWebView misses
+ * a leave event during app switches or fast exits. The native sidebar root sets
+ * this body flag whenever sidebar hover ownership is lost, hiding pseudo and
+ * local tooltip surfaces until pointer movement re-enters the sidebar document.
+ */
+body[data-sidebar-tooltips-suppressed="true"] .reference-sidebar-hover-action-tooltip::after,
+body[data-sidebar-tooltips-suppressed="true"]
+  .reference-sidebar-section-action.reference-sidebar-hover-action-tooltip::after,
+body[data-sidebar-tooltips-suppressed="true"] .session-local-tooltip-popup,
+body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
+  opacity: 0 !important;
+  transition-delay: 0s !important;
+  visibility: hidden !important;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]

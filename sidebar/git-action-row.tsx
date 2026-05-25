@@ -5,6 +5,8 @@ import {
   IconGitCommit,
   IconGitPullRequest,
   IconLoader2,
+  IconRocket,
+  IconStackPush,
   IconUpload,
 } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
@@ -30,7 +32,7 @@ type GitMenuPosition = {
   width: number;
 };
 
-const GIT_MENU_MAX_WIDTH_PX = 220;
+const GIT_MENU_MAX_WIDTH_PX = 260;
 const GIT_MENU_MARGIN_PX = 12;
 const GIT_MENU_OFFSET_PX = 8;
 
@@ -327,6 +329,14 @@ type GitActionIconProps = {
 };
 
 function GitActionIcon({ action }: GitActionIconProps) {
+  if (action === "multiRelease") {
+    return <IconStackPush aria-hidden="true" className="git-action-main-icon" size={16} />;
+  }
+
+  if (action === "release") {
+    return <IconRocket aria-hidden="true" className="git-action-main-icon" size={16} />;
+  }
+
   if (action === "push") {
     return <IconUpload aria-hidden="true" className="git-action-main-icon" size={16} />;
   }

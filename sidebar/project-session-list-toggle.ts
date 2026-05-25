@@ -1,4 +1,8 @@
 export const PROJECT_SESSION_LIST_COLLAPSED_COUNT = 6;
+export const PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY =
+  "ghostex-sidebar-project-session-list-collapsed";
+export const PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT =
+  "ghostex-sidebar-project-session-list-collapsed-changed";
 
 export type ProjectSessionListCollapsedState = Record<string, true>;
 

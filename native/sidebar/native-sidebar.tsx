@@ -21,7 +21,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { installAppModalGlobalErrorLogging } from "../../sidebar/app-modal-error-log";
-import { AppTooltip, TooltipProvider } from "../../sidebar/app-tooltip";
+import { AppTooltip, dismissSidebarTooltips, TooltipProvider } from "../../sidebar/app-tooltip";
 import { openAppModal, postAppModalHostMessage } from "../../sidebar/app-modal-host-bridge";
 import { dismissAllSidebarContextMenus } from "../../sidebar/sidebar-context-menu-portal";
 import { SidebarApp } from "../../sidebar/sidebar-app";
@@ -255,6 +255,13 @@ import {
   type ghostexFocusedPaneAction,
   type ghostexHotkeyActionId,
 } from "../../shared/ghostex-hotkeys";
+import { orderProjectsWithWorktrees } from "../../shared/project-worktree-order";
+import {
+  PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT,
+  PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY,
+  normalizeStoredProjectSessionListCollapsedState,
+  type ProjectSessionListCollapsedState,
+} from "../../sidebar/project-session-list-toggle";
 import { getGhosttyTerminalConfigValues } from "../../shared/ghostty-terminal-settings";
 import {
   GHOSTTY_SETTINGS_DOCS_URL,
@@ -302,10 +309,10 @@ type NativeHostCommand =
   | {
       activateOnCreate?: boolean;
       cwd: string;
-      env?: Record<string, string>;
-      diagnosticSource?: "previousSessionRestore";
-      initialInput?: string;
-      sessionId: string;
+	      env?: Record<string, string>;
+	      diagnosticSource?: "previousSessionRestore";
+	      initialInput?: string;
+	      sessionId: string;
       sessionPersistenceName?: string;
       sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
       shellCommand?: string;
@@ -549,7 +556,12 @@ type NativeHostCommand =
        * React titlebar hosts report DOM hit regions to native so AppKit can
        * keep blank chrome draggable and let future dropdown surfaces receive
        * real pointer events inside the workspace overlay.
+       *
+       * CDXC:ReactTitlebar 2026-05-25-10:09:
+       * The workspace shield follows explicit dropdown/menu open state, not
+       * whether any measured hit region happens to extend below the titlebar.
        */
+      overlayOpen: boolean;
       regions: Array<{ height: number; width: number; x: number; y: number }>;
       type: "setReactTitlebarHitRegions";
     }
@@ -866,6 +878,37 @@ const GHOSTEX_AGENT_HOOK_STATE_DIR = `${nativeHomeDirectory()}/.ghostexterm`;
 const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/ghostex.ts`;
 const FIND_PREVIOUS_SESSION_AGENT_ID = "codex";
 const FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS = 1_500;
+const GIT_MULTIPLE_COMMITS_AGENT_ID = "codex";
+/*
+ * CDXC:TitlebarGit 2026-05-25-09:41:
+ * The Git review modal's Multiple Commits action should hand the repository to Codex with a focused commit-splitting prompt instead of trying to split commits inside the modal.
+ */
+const GIT_MULTIPLE_COMMITS_PROMPT = `Please review my current changes and commit them as multiple focused commits.
+
+Commit-splitting rules:
+- Group changes by related feature, fix, or topic.
+- Do not combine unrelated work in the same commit.
+- Use file-based splitting only; do not split individual hunks.
+- Make each commit easy to revert or cherry-pick later.
+- Use clear, concise commit messages.`;
+
+/*
+ * CDXC:TitlebarGit 2026-05-25-10:16:
+ * The Git dropdown needs release-oriented agent actions separate from the commit confirmation modal: Multicommit & Release extends the split-commit prompt with publishing steps, while Release runs only the publishing workflow.
+ */
+const GIT_RELEASE_STEPS_PROMPT = `1. Push any local commits to remote.
+2. Review the commits since the last released version.
+3. Update CHANGELOG.md to mention the new changes.
+4. Publish the next minor version to the usual places we publish this app.`;
+
+const GIT_MULTICOMMIT_RELEASE_PROMPT = `${GIT_MULTIPLE_COMMITS_PROMPT}
+
+After all focused commits are created:
+${GIT_RELEASE_STEPS_PROMPT}`;
+
+const GIT_RELEASE_ONLY_PROMPT = `Please release this app using the usual release workflow.
+
+${GIT_RELEASE_STEPS_PROMPT}`;
 /**
  * CDXC:WorkspaceDock 2026-04-27-08:48
  * Workspace context-menu themes use the same concrete theme palette names as
@@ -1023,6 +1066,13 @@ type NativeProjectWorktreeMetadata = {
   parentProjectPath: string;
 };
 
+type NativeGitWorktreeListEntry = {
+  bare: boolean;
+  branch?: string;
+  detached: boolean;
+  path: string;
+};
+
 type TitlebarResourceGroup = {
   groupId: string;
   isActive: boolean;
@@ -1064,11 +1114,13 @@ type NativeCliSessionSelector = {
 };
 
 type NativeCliSessionListItem = {
+  activity: "attention" | "idle" | "working";
   agent?: string;
   alias: number;
   attachCommand?: string;
   groupId: string;
   groupTitle: string;
+  isFavorite?: boolean;
   isFocused: boolean;
   isVisible: boolean;
   lastInteractionAt: string;
@@ -1236,6 +1288,14 @@ const terminalStateById = new Map<
     terminalTitle?: string;
   }
 >();
+/**
+ * CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
+ * Provider-backed tmux/zmx/zellij terminals must be created as normal shells.
+ * Startup commands are sidebar-owned one-shot input sent after terminalReady,
+ * so exiting the launched agent or command returns to the shell instead of
+ * terminating the native pane surface.
+ */
+const pendingNativeTerminalStartupTextBySessionId = new Map<string, string>();
 const titleDerivedActivityBySessionId = new Map<string, TitleDerivedSessionActivity>();
 const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
@@ -1296,6 +1356,33 @@ const sidebarCommandCommandIdBySessionId = new Map<string, string>();
 
 function createProjectCommandSessionKey(projectId: string, commandId: string): string {
   return `${projectId}::${commandId}`;
+}
+
+function queueNativeTerminalStartupText(sessionId: string, text: string): void {
+  if (!text.trim()) {
+    pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
+    return;
+  }
+  pendingNativeTerminalStartupTextBySessionId.set(sessionId, text);
+}
+
+function takeNativeTerminalStartupText(sessionId: string): string | undefined {
+  const text = pendingNativeTerminalStartupTextBySessionId.get(sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
+  return text;
+}
+
+function shouldQueueProviderStartupTextForRestore(
+  session: TerminalSessionRecord,
+  reason: string,
+): boolean {
+  return (
+    session.isSleeping === true ||
+    reason === "focus-sleeping-session" ||
+    reason === "wake-session" ||
+    reason === "wake-group" ||
+    reason === "pane-tab-wake"
+  );
 }
 
 function getNativeSidebarCommandSession(
@@ -3664,7 +3751,9 @@ function readStoredProjects(): { activeProjectId: string; projects: NativeProjec
     const candidateProjects: NativeProject[] = Array.isArray(candidate?.projects)
       ? candidate.projects.flatMap((project: unknown) => normalizeStoredNativeProject(project))
       : [];
-    const projects = candidateProjects.length > 0 ? candidateProjects : [fallbackProject];
+    const projects = ensureVisibleWorktreeParentProjects(
+      candidateProjects.length > 0 ? candidateProjects : [fallbackProject],
+    );
     const restoredActiveProjectId =
       typeof candidate?.activeProjectId === "string" &&
       projects.some((project) => project.projectId === candidate.activeProjectId)
@@ -3858,6 +3947,36 @@ function writeStoredProjects(reason: string): void {
    * failures should create durable diagnostics.
    */
   void reason;
+}
+
+function collapseSidebarProjectSessionList(projectId: string): void {
+  const normalizedProjectId = projectId.trim();
+  if (!normalizedProjectId) {
+    return;
+  }
+
+  /**
+   * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
+   * Creating a worktree from a project should activate that project's Show less
+   * session-list mode so only the top six sessions stay visible above the new
+   * worktree project.
+   */
+  const nextState: ProjectSessionListCollapsedState = {
+    ...readSidebarProjectSessionListCollapsedState(),
+    [normalizedProjectId]: true,
+  };
+  localStorage.setItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY, JSON.stringify(nextState));
+  window.dispatchEvent(new Event(PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT));
+}
+
+function readSidebarProjectSessionListCollapsedState(): ProjectSessionListCollapsedState {
+  try {
+    return normalizeStoredProjectSessionListCollapsedState(
+      JSON.parse(localStorage.getItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY) ?? "null"),
+    );
+  } catch {
+    return {};
+  }
 }
 
 function persistSharedProjectsSnapshot(
@@ -4099,6 +4218,58 @@ function normalizeNativeProjectWorktreeMetadata(
     parentProjectId,
     parentProjectName,
     parentProjectPath,
+  };
+}
+
+function ensureVisibleWorktreeParentProjects(
+  projectsToEnsure: readonly NativeProject[],
+): NativeProject[] {
+  let nextProjects = [...projectsToEnsure];
+
+  for (const project of projectsToEnsure) {
+    if (project.isRecentProject === true || !project.worktree?.parentProjectId) {
+      continue;
+    }
+
+    const parentProjectId = project.worktree.parentProjectId;
+    const existingParentProject = nextProjects.find(
+      (candidate) => candidate.projectId === parentProjectId,
+    );
+    if (existingParentProject) {
+      if (existingParentProject.isRecentProject === true) {
+        nextProjects = nextProjects.map((candidate) =>
+          candidate.projectId === parentProjectId
+            ? { ...candidate, isRecentProject: false, recentClosedAt: undefined }
+            : candidate,
+        );
+      }
+      continue;
+    }
+
+    /**
+     * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
+     * Opening a worktree project must also show its main project immediately
+     * above it. When persisted data only contains the worktree, synthesize the
+     * main project from the worktree metadata instead of leaving an orphan row.
+     */
+    nextProjects.push(createNativeProjectFromWorktreeParent(project.worktree, project));
+  }
+
+  return orderNativeProjectsForSidebar(nextProjects);
+}
+
+function createNativeProjectFromWorktreeParent(
+  worktree: NativeProjectWorktreeMetadata,
+  childProject: NativeProject,
+): NativeProject {
+  return {
+    commandsPanel: createDefaultCommandsPanelState(),
+    name: worktree.parentProjectName,
+    path: worktree.parentProjectPath,
+    projectId: worktree.parentProjectId,
+    theme: childProject.theme ?? resolveSidebarTheme(settings.sidebarTheme, "dark"),
+    themeColor: childProject.themeColor,
+    workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
   };
 }
 
@@ -4628,7 +4799,23 @@ function parseGitHubPullRequest(stdout: string, success: boolean): SidebarGitSta
   }
 }
 
-async function runSidebarGitAction(action: SidebarGitAction): Promise<void> {
+type SidebarGitActionRunOptions = {
+  forceCommitReview?: boolean;
+};
+
+async function runSidebarGitAction(
+  action: SidebarGitAction,
+  options: SidebarGitActionRunOptions = {},
+): Promise<void> {
+  if (action === "multiRelease") {
+    await runSidebarGitPromptAction("Multicommit & Release", GIT_MULTICOMMIT_RELEASE_PROMPT);
+    return;
+  }
+  if (action === "release") {
+    await runSidebarGitPromptAction("Release", GIT_RELEASE_ONLY_PROMPT);
+    return;
+  }
+
   await refreshGitState();
   if (!gitState.isRepo) {
     showAppToast("warning", "Git unavailable", "Open a Git repository to use Git actions.");
@@ -4636,7 +4823,7 @@ async function runSidebarGitAction(action: SidebarGitAction): Promise<void> {
   }
 
   try {
-    if (shouldPromptSidebarGitAction()) {
+    if (shouldPromptSidebarGitAction(options)) {
       promptSidebarGitActionReview(action);
       return;
     }
@@ -4673,8 +4860,11 @@ async function runSidebarGitAction(action: SidebarGitAction): Promise<void> {
   }
 }
 
-function shouldPromptSidebarGitAction(): boolean {
+function shouldPromptSidebarGitAction(options: SidebarGitActionRunOptions = {}): boolean {
   if (activeProject().worktree !== undefined) {
+    return true;
+  }
+  if (gitState.hasWorkingTreeChanges && options.forceCommitReview === true) {
     return true;
   }
   if (gitState.hasWorkingTreeChanges && gitConfirmCommit) {
@@ -4773,9 +4963,131 @@ function resolveSidebarGitPromptDescription(action: SidebarGitAction, hasCommit:
     : `Push the current branch for ${projectName}, then create or open a PR.`;
 }
 
+function resolveSidebarAgentButtonById(agentId: string): SidebarAgentButton | undefined {
+  return (
+    agents.find((candidate) => candidate.agentId === agentId) ??
+    createSidebarAgentButtons(storedAgents, storedAgentOrder).find(
+      (candidate) => candidate.agentId === agentId,
+    ) ??
+    createSidebarAgentButtons([], []).find((candidate) => candidate.agentId === agentId)
+  );
+}
+
+async function runSidebarGitMultipleCommits(requestId: string): Promise<void> {
+  pendingGitCommitRequests.delete(requestId);
+  gitState = { ...gitState, isBusy: false };
+  publish();
+
+  await runSidebarGitPromptAction("Multiple Commits", GIT_MULTIPLE_COMMITS_PROMPT);
+}
+
+async function runSidebarGitPromptAction(title: string, prompt: string): Promise<void> {
+  await refreshGitState();
+  if (!gitState.isRepo) {
+    showAppToast("warning", "Git unavailable", `Open a Git repository to use ${title}.`);
+    return;
+  }
+
+  const agent = resolveSidebarAgentButtonById(GIT_MULTIPLE_COMMITS_AGENT_ID);
+  if (!agent?.command) {
+    showAppToast(
+      "error",
+      "Codex unavailable",
+      `Restore the Codex agent button to use ${title}.`,
+    );
+    return;
+  }
+
+  const projectId = activeProjectId;
+  showAppToast("info", "Opening Codex", title);
+  const session = await launchAgentTerminal(agent);
+  if (!session) {
+    showAppToast("error", "Could not open Codex", `${title} did not start.`);
+    return;
+  }
+
+  window.setTimeout(() => {
+    const nativeSessionId = nativeSessionIdForProjectSidebarSession(projectId, session.sessionId);
+    postNative({
+      sessionId: nativeSessionId,
+      text: `/rename ${title}`,
+      type: "writeTerminalText",
+    });
+    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+    window.setTimeout(() => {
+      postNative({
+        sessionId: nativeSessionId,
+        text: prompt,
+        type: "writeTerminalText",
+      });
+      postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+      showAppToast("success", `${title} started`, activeProject().name);
+    }, AUTO_SUBMIT_STAGED_RENAME_DELAY_MS);
+  }, FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS);
+}
+
 function resolveActiveProjectRelativePath(relativePath: string): string {
   const normalizedRelativePath = relativePath.replaceAll("\\", "/").replace(/^\/+/, "");
   return `${activeProject().path.replace(/\/+$/, "")}/${normalizedRelativePath}`;
+}
+
+async function openSidebarGitChangedFileDiff(filePath: string): Promise<void> {
+  const normalizedFilePath = filePath.replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!normalizedFilePath) {
+    return;
+  }
+
+  /**
+   * CDXC:TitlebarGit 2026-05-25-10:16:
+   * Commit-review file clicks should inspect the selected file's current Git patch in a large modal. Combine staged and unstaged file-based diffs so the viewer reflects what the review dialog can commit without switching users into the IDE.
+   */
+  try {
+    const [stagedDiff, unstagedDiff] = await Promise.all([
+      runGit(["diff", "--cached", "--no-ext-diff", "--", normalizedFilePath], {
+        allowFailure: true,
+      }),
+      runGit(["diff", "--no-ext-diff", "--", normalizedFilePath], { allowFailure: true }),
+    ]);
+    const patchParts = [stagedDiff.stdout.trimEnd(), unstagedDiff.stdout.trimEnd()].filter(
+      (part) => part.trim().length > 0,
+    );
+    let patch = patchParts.join("\n\n");
+
+    if (!patch.trim()) {
+      const untracked = await runGit(
+        ["ls-files", "--others", "--exclude-standard", "--", normalizedFilePath],
+        { allowFailure: true },
+      );
+      if (untracked.stdout.trim()) {
+        const noIndexDiff = await runGit(
+          ["diff", "--no-index", "--no-ext-diff", "--", "/dev/null", normalizedFilePath],
+          { allowFailure: true },
+        );
+        patch = noIndexDiff.stdout.trimEnd() || noIndexDiff.stderr.trimEnd();
+      }
+    }
+
+    const changedFile = gitState.files.find((file) => file.path === normalizedFilePath);
+    postAppModalHostMessage(
+      {
+        gitFileDiff: {
+          additions: changedFile?.additions,
+          deletions: changedFile?.deletions,
+          filePath: normalizedFilePath,
+          patch: patch.trim() || `No diff is available for ${normalizedFilePath}.`,
+        },
+        modal: "gitFileDiff",
+        type: "open",
+      },
+      "AppModals:gitFileDiff",
+    );
+  } catch (error) {
+    showAppToast(
+      "error",
+      "Could not open file diff",
+      error instanceof Error ? error.message : normalizedFilePath,
+    );
+  }
 }
 
 async function commitWorkingTreeIfNeeded(
@@ -5757,11 +6069,13 @@ function orderNativeProjectsForSidebar(projectsToOrder: readonly NativeProject[]
    * Chat workspaces are intentionally projectless, so they must remain above
    * code projects in the rail and Combined project list while preserving the
    * user's relative order inside each category.
+   *
+   * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
+   * Code-project worktrees must render directly below their main project.
+   * Reordering the main project moves the whole family, while worktree-only
+   * reorders are constrained to positions below that main project.
    */
-  return [
-    ...projectsToOrder.filter((project) => project.isChat === true),
-    ...projectsToOrder.filter((project) => project.isChat !== true),
-  ];
+  return orderProjectsWithWorktrees(projectsToOrder);
 }
 
 function activeProject(): NativeProject {
@@ -6259,6 +6573,12 @@ function createCommandTerminal(
   const sessionPersistenceProvider = activeSessionPersistenceProviderFromSettings();
   const sessionPersistenceName = sessionPersistenceProvider ? undefined : undefined;
   const hasStartupCommand = Boolean(initialInput.trim() || options.shellCommand?.trim());
+  const providerStartupText =
+    sessionPersistenceProvider && options.shellCommand?.trim()
+      ? `${options.shellCommand}\r`
+      : sessionPersistenceProvider
+        ? initialInput
+        : "";
   const commandSession = {
     ...session,
     sessionPersistenceName,
@@ -6276,6 +6596,9 @@ function createCommandTerminal(
     sessionStateFilePath,
     terminalTitle: title,
   });
+  if (providerStartupText.trim()) {
+    queueNativeTerminalStartupText(commandSession.sessionId, providerStartupText);
+  }
   postNative({
     activateOnCreate: false,
     cwd: project.path,
@@ -6288,10 +6611,11 @@ function createCommandTerminal(
      * CDXC:CommandPanes 2026-05-20-22:52:
      * Sidebar terminal actions must not paste Ghostex status bookkeeping into
      * the visible shell. Direct Ghostty panes receive a hidden process command,
-     * while persistence providers keep using their first-run command path so
-     * app restart still attaches without replaying the action.
+     * while persistence providers create a normal shell and receive one-shot
+     * startup text after terminalReady so exiting the action leaves the pane
+     * attached to tmux/zmx/zellij instead of closing the native surface.
      */
-    initialInput: sessionPersistenceProvider ? initialInput : options.shellCommand ? "" : initialInput,
+    initialInput: sessionPersistenceProvider ? "" : options.shellCommand ? "" : initialInput,
     sessionId: nativeSessionId,
     sessionPersistenceName,
     sessionPersistenceProvider,
@@ -7542,6 +7866,9 @@ function restoreNativeTerminalSession(
     sessionPersistenceProvider,
     session,
   );
+  const shouldQueueProviderStartupText =
+    Boolean(sessionPersistenceProvider && initialInput.trim()) &&
+    shouldQueueProviderStartupTextForRestore(session, reason);
   const initialActivity = session.restoreActivity === "attention" ? "attention" : "idle";
   if (
     session.sessionPersistenceProvider !== sessionPersistenceProvider ||
@@ -7624,6 +7951,16 @@ function restoreNativeTerminalSession(
     reason,
     sessionId: session.sessionId,
   });
+  if (shouldQueueProviderStartupText) {
+    /**
+     * CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
+     * Restored provider sessions get startup text only when the sidebar knows
+     * the provider runtime was intentionally torn down, such as Sleep/Wake.
+     * Startup app reattach paths must not replay prompts into an existing
+     * tmux/zmx/zellij session.
+     */
+    queueNativeTerminalStartupText(session.sessionId, initialInput);
+  }
   if (initialInput.trim()) {
     appendRestoreResumeInputDiagnosticLog("nativeSidebar.restoreResumeInput.decision", {
       agentName: session.agentName,
@@ -7654,7 +7991,7 @@ function restoreNativeTerminalSession(
     activateOnCreate: false,
     cwd: project.path,
     env: nativeEnvironment,
-    initialInput,
+    initialInput: sessionPersistenceProvider ? "" : initialInput,
     sessionId: nativeSessionId,
     sessionPersistenceName,
     sessionPersistenceProvider,
@@ -10638,6 +10975,13 @@ function createTerminal(
     sessionPersistenceProvider,
     sessionId: session.sessionId,
   });
+  if (
+    sessionPersistenceProvider &&
+    initialInput.trim() &&
+    (sessionPersistenceName === undefined || options?.diagnosticSource === "previousSessionRestore")
+  ) {
+    queueNativeTerminalStartupText(session.sessionId, initialInput);
+  }
   postNative({
     /**
      * CDXC:CrashRootCause 2026-05-04-09:19
@@ -10645,12 +10989,20 @@ function createTerminal(
      * and focus a new Ghostty surface before the sidebar publishes the current
      * visible terminal set. The sidebar workspace snapshot is the source of
      * truth for visibility, and focus is sent only after that layout command.
-    */
+     */
     activateOnCreate: false,
     cwd: project.path,
     diagnosticSource: options?.diagnosticSource,
     env: nativeEnvironment,
-    initialInput,
+    /**
+     * CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
+     * Provider-backed terminals must not embed agent or restore commands into
+     * tmux/zmx/zellij provider creation commands. Create the provider session
+     * as a normal shell, then let terminalReady send the queued startup text
+     * once so exiting the agent returns to that shell instead of ending the
+     * native pane process.
+     */
+    initialInput: sessionPersistenceProvider ? "" : initialInput,
     sessionId: nativeSessionId,
     sessionPersistenceName,
     sessionPersistenceProvider,
@@ -12361,6 +12713,7 @@ function closeTerminal(
       };
     });
     terminalStateById.delete(reference.sessionId);
+    pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
     titleDerivedActivityBySessionId.delete(reference.sessionId);
     nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
     nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
@@ -12392,6 +12745,7 @@ function closeTerminal(
     (workspace) => removeSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
   );
   terminalStateById.delete(reference.sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
@@ -13698,6 +14052,7 @@ function stopNativeSleepingSessionRuntime(sessionId: string, project = activePro
   const nativeSessionId = forgetNativeSessionMappingForProject(project.projectId, sessionId);
   clearNativeSidebarCommandSessionBySessionId(sessionId);
   terminalStateById.delete(sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
   titleDerivedActivityBySessionId.delete(sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(sessionId);
   nativeWorkingStartedAtBySessionId.delete(sessionId);
@@ -13923,6 +14278,7 @@ function replaceNativeTerminalWithFreshSession(
   );
   clearNativeSidebarCommandSessionBySessionId(reference.sessionId);
   terminalStateById.delete(reference.sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
@@ -14050,6 +14406,7 @@ function restartNativeSession(sessionId: string): void {
   }
   clearNativeSidebarCommandSessionBySessionId(reference.sessionId);
   terminalStateById.delete(reference.sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
@@ -14600,6 +14957,13 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
          * scraping debug state.
          */
         items.push({
+          /**
+           * CDXC:GhostexTui 2026-05-25-16:22:
+           * Bare `gtx` TUI polls the CLI inventory for sidebar activity so it
+           * can render working/attention dots, attached-view counts, and bell
+           * notifications using the same state as the macOS sidebar.
+           */
+          activity: projectedSession?.activity ?? terminalState?.activity ?? "idle",
           agent: terminalState?.agentName ?? session.agentName,
           alias: items.length + 1,
           attachCommand:
@@ -14608,6 +14972,13 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
               : undefined,
           groupId: group.groupId,
           groupTitle: group.title,
+          /**
+           * CDXC:GhostexTui 2026-05-25-18:08:
+           * The `gtx` TUI context menu mirrors the sidebar session menu and
+           * needs the favorite state to render Favorite/Unfavorite correctly
+           * before invoking the existing CLI favorite-session bridge action.
+           */
+          isFavorite: session.isFavorite,
           isFocused: group.snapshot.focusedSessionId === session.sessionId,
           isVisible: Boolean(projectedSession?.isVisible),
           lastInteractionAt:
@@ -15292,6 +15663,7 @@ function cleanupExitedNativeCommandPaneSession(
     };
   });
   terminalStateById.delete(reference.sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
@@ -15446,7 +15818,7 @@ function runNativeSidebarCommand(
    * CDXC:TitlebarActions 2026-05-15-16:58:
    * Titlebar terminal actions must execute inside the Commands panel. Reuse a
    * running command-pane terminal only when it is idle; otherwise create a
-   * command-pane tab and pass the command as initial input so first-run actions
+   * command-pane tab and pass the command as startup input so new actions
    * do not depend on a second immediate write before the native surface is
    * ready.
    */
@@ -15633,7 +16005,7 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         return { ok: true, projectId, revision, state: summarizeCliState() };
       }
       case "addProject":
-        addProject(
+        await addProject(
           String(payload.path),
           typeof payload.name === "string" ? payload.name : undefined,
         );
@@ -16284,6 +16656,7 @@ function closeAllNativeSessions(): void {
     const nativeSessionId = forgetNativeSessionMapping(sessionId);
     postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
     terminalStateById.delete(sessionId);
+    pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
     titleDerivedActivityBySessionId.delete(sessionId);
     clearNativeSessionAttentionTracking(sessionId);
   }
@@ -16299,15 +16672,51 @@ function closeAllNativeSessions(): void {
   publish();
 }
 
-function addProject(path: string, name = projectNameFromPath(path)): void {
+async function addProject(path: string, name = projectNameFromPath(path)): Promise<void> {
   const normalizedPath = path.replace(/\/+$/, "") || path;
   const projectId = createProjectId(normalizedPath);
+  const worktreeOpenMetadata = await resolveOpenedWorktreeProjectMetadata(normalizedPath, name);
   const existingProject = projects.find((project) => project.projectId === projectId);
-  if (existingProject?.isRecentProject === true) {
+  if (existingProject?.isRecentProject === true && !worktreeOpenMetadata) {
     restoreRecentProject(projectId);
     return;
   }
-  if (!existingProject) {
+
+  if (worktreeOpenMetadata) {
+    const projectName = name.trim() || projectNameFromPath(normalizedPath);
+    const nextProject: NativeProject = existingProject
+      ? {
+          ...existingProject,
+          isRecentProject: false,
+          name: existingProject.name?.trim() || projectName,
+          recentClosedAt: undefined,
+          worktree: worktreeOpenMetadata.worktree,
+          workspace:
+            existingProject.isRecentProject === true
+              ? wakeVisibleProjectSessions(existingProject.workspace)
+              : existingProject.workspace,
+        }
+      : {
+          commandsPanel: createDefaultCommandsPanelState(),
+          name: projectName,
+          path: normalizedPath,
+          projectId,
+          theme:
+            worktreeOpenMetadata.parentProject.theme ??
+            resolveSidebarTheme(settings.sidebarTheme, "dark"),
+          themeColor: worktreeOpenMetadata.parentProject.themeColor,
+          worktree: worktreeOpenMetadata.worktree,
+          workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+        };
+    projects = insertWorktreeProjectBelowSourceProject(
+      ensureNativeProjectPresent(projects, worktreeOpenMetadata.parentProject),
+      nextProject,
+      worktreeOpenMetadata.parentProject.projectId,
+    );
+    ensureProjectCommandsState(resolveNativeProjectCommandsOwnerId(projectId));
+    writeProjectCommandsStore();
+    writeStoredProjects("addProjectWorktree");
+  } else if (!existingProject) {
     /**
      * CDXC:ProjectList 2026-05-16-21:46
      * Sidebar-created projects should be immediately visible at the top of the
@@ -16329,12 +16738,186 @@ function addProject(path: string, name = projectNameFromPath(path)): void {
     writeProjectCommandsStore();
     writeStoredProjects("addProject");
   }
+
   focusProject(projectId);
   if (activeSnapshot().sessions.length === 0) {
     createTerminal(DEFAULT_TERMINAL_SESSION_TITLE);
     return;
   }
   publish();
+}
+
+async function resolveOpenedWorktreeProjectMetadata(
+  normalizedPath: string,
+  projectName: string,
+): Promise<
+  | {
+      parentProject: NativeProject;
+      worktree: NativeProjectWorktreeMetadata;
+    }
+  | undefined
+> {
+  const repoCheck = await runNativeProcess(
+    "/usr/bin/env",
+    ["git", "rev-parse", "--is-inside-work-tree"],
+    { cwd: normalizedPath },
+  );
+  if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
+    return undefined;
+  }
+
+  const [worktreeRootResult, worktreeListResult] = await Promise.all([
+    runNativeProcess("/usr/bin/env", ["git", "rev-parse", "--show-toplevel"], {
+      cwd: normalizedPath,
+    }),
+    runNativeProcess("/usr/bin/env", ["git", "worktree", "list", "--porcelain"], {
+      cwd: normalizedPath,
+    }),
+  ]);
+  if (worktreeRootResult.exitCode !== 0 || worktreeListResult.exitCode !== 0) {
+    return undefined;
+  }
+
+  const entries = parseNativeGitWorktreeList(worktreeListResult.stdout);
+  const mainEntry = entries.find((entry) => !entry.bare);
+  const worktreeRoot = normalizeNativePathForProjectComparison(worktreeRootResult.stdout.trim());
+  const currentEntry = entries.find(
+    (entry) => normalizeNativePathForProjectComparison(entry.path) === worktreeRoot,
+  );
+  if (!mainEntry || !currentEntry) {
+    return undefined;
+  }
+
+  const mainPath = normalizeNativePathForProjectComparison(mainEntry.path);
+  if (worktreeRoot === mainPath) {
+    return undefined;
+  }
+
+  const parentProjectId = createProjectId(mainPath);
+  const existingParentProject = projects.find(
+    (project) => project.projectId === parentProjectId,
+  );
+  const parentProject: NativeProject = existingParentProject
+    ? { ...existingParentProject, isRecentProject: false, recentClosedAt: undefined }
+    : {
+        commandsPanel: createDefaultCommandsPanelState(),
+        name: projectNameFromPath(mainPath),
+        path: mainPath,
+        projectId: parentProjectId,
+        theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
+        workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+      };
+  const worktreeName = projectNameFromPath(worktreeRoot) || projectNameFromPath(normalizedPath);
+
+  /**
+   * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
+   * Opening an existing Git worktree from Add Project must add the main
+   * worktree project too, then keep the opened worktree directly below that
+   * main project instead of treating it as an unrelated project.
+   */
+  return {
+    parentProject,
+    worktree: {
+      branch: normalizeNativeGitWorktreeBranch(currentEntry.branch),
+      createdAt: new Date().toISOString(),
+      name: worktreeName || projectName,
+      parentProjectId,
+      parentProjectName: parentProject.name,
+      parentProjectPath: parentProject.path,
+    },
+  };
+}
+
+function insertWorktreeProjectBelowSourceProject(
+  currentProjects: readonly NativeProject[],
+  worktreeProject: NativeProject,
+  sourceProjectId: string,
+): NativeProject[] {
+  const projectsWithoutWorktree = currentProjects.filter(
+    (project) => project.projectId !== worktreeProject.projectId,
+  );
+  const sourceIndex = projectsWithoutWorktree.findIndex(
+    (project) => project.projectId === sourceProjectId,
+  );
+  const insertIndex = sourceIndex >= 0 ? sourceIndex + 1 : 0;
+  const nextProjects = [...projectsWithoutWorktree];
+  nextProjects.splice(insertIndex, 0, worktreeProject);
+  return orderNativeProjectsForSidebar(nextProjects);
+}
+
+function resolveNativeWorktreeFamilyParentProject(sourceProject: NativeProject): NativeProject {
+  if (!sourceProject.worktree?.parentProjectId) {
+    return sourceProject;
+  }
+
+  const parentProject = projects.find(
+    (candidate) => candidate.projectId === sourceProject.worktree?.parentProjectId,
+  );
+  return parentProject
+    ? { ...parentProject, isRecentProject: false, recentClosedAt: undefined }
+    : createNativeProjectFromWorktreeParent(sourceProject.worktree, sourceProject);
+}
+
+function ensureNativeProjectPresent(
+  currentProjects: readonly NativeProject[],
+  projectToEnsure: NativeProject,
+): NativeProject[] {
+  const existingProject = currentProjects.find(
+    (project) => project.projectId === projectToEnsure.projectId,
+  );
+  if (!existingProject) {
+    return [...currentProjects, projectToEnsure];
+  }
+
+  return currentProjects.map((project) =>
+    project.projectId === projectToEnsure.projectId
+      ? { ...project, isRecentProject: false, recentClosedAt: undefined }
+      : project,
+  );
+}
+
+function parseNativeGitWorktreeList(stdout: string): NativeGitWorktreeListEntry[] {
+  const entries: NativeGitWorktreeListEntry[] = [];
+  let currentEntry: NativeGitWorktreeListEntry | undefined;
+
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (currentEntry) {
+        entries.push(currentEntry);
+      }
+      currentEntry = {
+        bare: false,
+        detached: false,
+        path: line.slice("worktree ".length).trim(),
+      };
+      continue;
+    }
+
+    if (!currentEntry) {
+      continue;
+    }
+    if (line === "bare") {
+      currentEntry.bare = true;
+    } else if (line === "detached") {
+      currentEntry.detached = true;
+    } else if (line.startsWith("branch ")) {
+      currentEntry.branch = line.slice("branch ".length).trim();
+    }
+  }
+
+  if (currentEntry) {
+    entries.push(currentEntry);
+  }
+  return entries.filter((entry) => entry.path.length > 0);
+}
+
+function normalizeNativeGitWorktreeBranch(branch: string | undefined): string {
+  const normalizedBranch = branch?.replace(/^refs\/heads\//u, "").trim();
+  return normalizedBranch || "detached";
+}
+
+function normalizeNativePathForProjectComparison(path: string): string {
+  return path.trim().replace(/\/+$/u, "") || path.trim();
 }
 
 async function createProjectWorktreeFromPrompt(
@@ -16364,6 +16947,11 @@ async function createProjectWorktreeFromPrompt(
     /**
      * CDXC:Worktrees 2026-05-18-23:07:
      * Creating a worktree should create a named branch, add a sibling worktree directory, focus that new project, optionally run the parent setup command, then launch the selected agent with the user's first prompt.
+     *
+     * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
+     * The new worktree project belongs directly below the project that created
+     * it, while its metadata points at the main project so every worktree in
+     * the family remains grouped under that main project during later reorders.
      */
     showAppToast("info", "Generating worktree name");
     const repoCheck = await runGitInProject(sourceProject, ["rev-parse", "--is-inside-work-tree"], {
@@ -16383,25 +16971,27 @@ async function createProjectWorktreeFromPrompt(
     });
 
     const projectId = createProjectId(target.path);
-    const projectName = `${sourceProject.name}-${target.name}`;
+    const parentProject = resolveNativeWorktreeFamilyParentProject(sourceProject);
+    const projectName = `${parentProject.name}-${target.name}`;
     const existingProject = projects.find((project) => project.projectId === projectId);
     const worktree: NativeProjectWorktreeMetadata = {
       branch: target.branch,
       createdAt: new Date().toISOString(),
       name: target.name,
-      parentProjectId: sourceProject.projectId,
-      parentProjectName: sourceProject.name,
-      parentProjectPath: sourceProject.path,
+      parentProjectId: parentProject.projectId,
+      parentProjectName: parentProject.name,
+      parentProjectPath: parentProject.path,
     };
 
-    if (existingProject) {
-      projects = [
-        { ...existingProject, isRecentProject: false, name: projectName, worktree },
-        ...projects.filter((project) => project.projectId !== projectId),
-      ];
-    } else {
-      projects = [
-        {
+    const nextWorktreeProject: NativeProject = existingProject
+      ? {
+          ...existingProject,
+          isRecentProject: false,
+          name: projectName,
+          recentClosedAt: undefined,
+          worktree,
+        }
+      : {
           commandsPanel: createDefaultCommandsPanelState(),
           name: projectName,
           path: target.path,
@@ -16410,11 +17000,14 @@ async function createProjectWorktreeFromPrompt(
           themeColor: sourceProject.themeColor,
           worktree,
           workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
-        },
-        ...projects,
-      ];
-    }
+        };
+    projects = insertWorktreeProjectBelowSourceProject(
+      ensureNativeProjectPresent(projects, parentProject),
+      nextWorktreeProject,
+      sourceProject.projectId,
+    );
     activeProjectId = projectId;
+    collapseSidebarProjectSessionList(sourceProject.projectId);
     ensureProjectCommandsState(resolveNativeProjectCommandsOwnerId(projectId));
     writeProjectCommandsStore();
     loadActiveProjectCommands();
@@ -16962,6 +17555,7 @@ function removeProject(projectId: string): void {
       }
       nativeSessionIdBySidebarSessionId.delete(session.sessionId);
       terminalStateById.delete(session.sessionId);
+      pendingNativeTerminalStartupTextBySessionId.delete(session.sessionId);
       titleDerivedActivityBySessionId.delete(session.sessionId);
       nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
       nativeWorkingStartedAtBySessionId.delete(session.sessionId);
@@ -17117,6 +17711,7 @@ function disposeNativeRecentProjectSessionSurface(
   );
   clearNativeSidebarCommandSessionBySessionId(session.sessionId);
   terminalStateById.delete(session.sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(session.sessionId);
   titleDerivedActivityBySessionId.delete(session.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
   nativeWorkingStartedAtBySessionId.delete(session.sessionId);
@@ -18146,8 +18741,11 @@ function runSidebarGitActionFromTitlebar(action: SidebarGitAction): void {
   /**
    * CDXC:TitlebarGit 2026-05-24-17:41:
    * Titlebar Git actions must reuse the sidebar git action pipeline so status refresh, file selection, generated commit messages, push, and PR creation have one implementation.
+   *
+   * CDXC:TitlebarGit 2026-05-24-20:52:
+   * Clicking a titlebar Git action that would create a commit must show the t3code-style review modal before committing, even when the sidebar's optional commit-confirmation setting is off. Push-only flows can still run without a modal when there are no working tree changes.
    */
-  void runSidebarGitAction(action);
+  void runSidebarGitAction(action, { forceCommitReview: true });
 }
 
 function rotateActivePaneLayoutClockwiseFromTitlebar(): void {
@@ -19095,6 +19693,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       );
       for (const session of group?.snapshot.sessions ?? []) {
         terminalStateById.delete(session.sessionId);
+        pendingNativeTerminalStartupTextBySessionId.delete(session.sessionId);
         titleDerivedActivityBySessionId.delete(session.sessionId);
         nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
         nativeWorkingStartedAtBySessionId.delete(session.sessionId);
@@ -19251,12 +19850,18 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.commitOnNewRef,
       );
       return;
+    case "runSidebarGitMultipleCommits":
+      void runSidebarGitMultipleCommits(message.requestId);
+      return;
     case "cancelSidebarGitCommit":
       pendingGitCommitRequests.delete(message.requestId);
       publish();
       return;
     case "openSidebarGitChangedFile":
       openNativeWorkspaceInSelectedIde(resolveActiveProjectRelativePath(message.filePath));
+      return;
+    case "openSidebarGitChangedFileDiff":
+      void openSidebarGitChangedFileDiff(message.filePath);
       return;
     case "openT3SessionBrowserAccessLink":
       openNativeExternalUrl(message.url);
@@ -20900,6 +21505,17 @@ window.addEventListener("ghostex-native-host-event", (event) => {
           terminalState.sessionPersistenceProvider,
         );
       }
+      const startupText = takeNativeTerminalStartupText(sidebarSessionId);
+      if (startupText?.trim()) {
+        /**
+         * CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
+         * Startup commands for provider-backed terminals are typed only after
+         * the native pane has attached to a normal provider shell. Consuming the
+         * queue here prevents restart/focus paths from replaying the agent or
+         * command into an existing tmux/zmx/zellij session.
+         */
+        postNative({ sessionId: hostEvent.sessionId, text: startupText, type: "writeTerminalText" });
+      }
     }
   }
   publish();
@@ -21137,7 +21753,9 @@ function ensureNativeTerminalSurfaceForPaneDrop(
     activateOnCreate: false,
     cwd: project.path,
     env: nativeEnvironment,
-    initialInput: buildNativeRestoredTerminalInitialInput(session),
+    initialInput: sessionPersistenceProvider
+      ? ""
+      : buildNativeRestoredTerminalInitialInput(session),
     sessionId: nativeSessionId,
     sessionPersistenceName,
     sessionPersistenceProvider,
@@ -21754,6 +22372,57 @@ function NativeSidebarRoot() {
     return () => {
       document.body.classList.remove("native-sidebar-body");
       document.removeEventListener("contextmenu", suppressWebviewContextMenu, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    const suppressSidebarTooltips = () => {
+      /*
+       * CDXC:SidebarTooltips 2026-05-25-07:16:
+       * WKWebView can leave React and CSS hover tooltips visible when the user
+       * alt-tabs, clicks another app, or exits the sidebar without a normal
+       * trigger-level leave event. Suppress every sidebar tooltip surface until
+       * pointer movement re-enters this sidebar document.
+       */
+      document.body.dataset.sidebarTooltipsSuppressed = "true";
+      dismissSidebarTooltips();
+    };
+    const enableSidebarTooltips = () => {
+      delete document.body.dataset.sidebarTooltipsSuppressed;
+    };
+    const suppressWhenHidden = () => {
+      if (document.visibilityState !== "visible") {
+        suppressSidebarTooltips();
+      }
+    };
+    const suppressWhenPointerLeavesDocument = (event: MouseEvent | PointerEvent) => {
+      const relatedTarget = event.relatedTarget;
+      if (!(relatedTarget instanceof Node) || !document.documentElement.contains(relatedTarget)) {
+        suppressSidebarTooltips();
+      }
+    };
+
+    window.addEventListener("blur", suppressSidebarTooltips);
+    window.addEventListener("pagehide", suppressSidebarTooltips);
+    document.addEventListener("visibilitychange", suppressWhenHidden);
+    document.addEventListener("mouseout", suppressWhenPointerLeavesDocument, true);
+    document.addEventListener("pointerout", suppressWhenPointerLeavesDocument, true);
+    document.addEventListener("pointercancel", suppressSidebarTooltips, true);
+    document.addEventListener("mouseenter", enableSidebarTooltips, true);
+    document.addEventListener("pointerenter", enableSidebarTooltips, true);
+    document.addEventListener("pointermove", enableSidebarTooltips, true);
+
+    return () => {
+      window.removeEventListener("blur", suppressSidebarTooltips);
+      window.removeEventListener("pagehide", suppressSidebarTooltips);
+      document.removeEventListener("visibilitychange", suppressWhenHidden);
+      document.removeEventListener("mouseout", suppressWhenPointerLeavesDocument, true);
+      document.removeEventListener("pointerout", suppressWhenPointerLeavesDocument, true);
+      document.removeEventListener("pointercancel", suppressSidebarTooltips, true);
+      document.removeEventListener("mouseenter", enableSidebarTooltips, true);
+      document.removeEventListener("pointerenter", enableSidebarTooltips, true);
+      document.removeEventListener("pointermove", enableSidebarTooltips, true);
+      enableSidebarTooltips();
     };
   }, []);
 

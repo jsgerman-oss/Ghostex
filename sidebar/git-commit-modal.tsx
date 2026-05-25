@@ -1,6 +1,14 @@
-import { IconX } from "@tabler/icons-react";
-import { createPortal } from "react-dom";
 import { useEffect, useId, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import type { SidebarGitAction, SidebarGitChangedFile } from "../shared/sidebar-git";
 import { ChangedFilesTree } from "./changed-files-tree";
 import { summarizeChangedFiles } from "./changed-files-tree-utils";
@@ -30,9 +38,18 @@ export type GitCommitModalProps = {
     message: string,
     options: { commitOnNewRef?: boolean; deleteWorktreeAfter: boolean; filePaths?: string[] },
   ) => void;
+  onMultipleCommits: (requestId: string) => void;
+  onOpenFileDiff: (filePath: string) => void;
 };
 
-export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommitModalProps) {
+export function GitCommitModal({
+  draft,
+  isOpen,
+  onCancel,
+  onConfirm,
+  onMultipleCommits,
+  onOpenFileDiff,
+}: GitCommitModalProps) {
   const [message, setMessage] = useState(buildDraftMessage(draft));
   const [deleteWorktreeAfter, setDeleteWorktreeAfter] = useState(
     draft.deleteWorktreeAfterDefault === true,
@@ -62,27 +79,6 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
     setIsEditingFiles(false);
   }, [draft, isOpen]);
 
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onCancel(draft.requestId);
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [draft.requestId, isOpen, onCancel]);
-
-  if (!isOpen) {
-    return null;
-  }
-
   const trimmedMessage = message.trim();
   const canConfirm = !showCommitMessage || !noneSelected;
   const selectedFilePaths =
@@ -96,46 +92,48 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
    *
    * CDXC:TitlebarGit 2026-05-24-17:41:
    * Titlebar-launched commits should match t3code's review experience: the message box may be left blank, and confirmation then generates the commit subject/body from the staged selected files.
+   *
+   * CDXC:TitlebarGit 2026-05-25-07:40:
+   * The commit review dialog should use the same shadcn Settings modal surface, typography scale, button style, checkbox treatment, and neutral dark background. User-facing copy must call the destination a branch instead of lower-level Git reference terminology.
+   *
+   * CDXC:TitlebarGit 2026-05-25-09:41:
+   * Multiple Commits hands the current repository to an agent prompt that splits commits by file/topic. Keep it in the same footer row as the normal commit actions so the Settings-style modal never shows stacked button rows.
+   *
+   * CDXC:TitlebarGit 2026-05-25-10:16:
+   * Changed-file rows in the commit review modal should open a large app-modal diff viewer instead of jumping straight to the IDE, so users can inspect the exact patch before choosing a commit action.
    */
-  return createPortal(
-    <div className="confirm-modal-root scroll-mask-y" role="presentation">
-      <button
-        className="confirm-modal-backdrop"
-        onClick={() => onCancel(draft.requestId)}
-        type="button"
-      />
-      <div
+  return (
+    <Dialog
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) {
+          onCancel(draft.requestId);
+        }
+      }}
+      open={isOpen}
+    >
+      <DialogContent
         aria-describedby={descriptionId}
         aria-labelledby={titleId}
-        aria-modal="true"
-        className="confirm-modal command-config-modal git-commit-modal scroll-mask-y"
-        role="dialog"
+        className="ghostex-settings-shadcn settings-modal-dialog command-config-modal-shadcn git-commit-modal-shadcn dark flex flex-col gap-0 overflow-hidden p-0 font-sans"
+        data-sidebar-theme="plain-dark"
       >
-        <button
-          aria-label="Close suggested commit modal"
-          className="confirm-modal-close-button"
-          onClick={() => onCancel(draft.requestId)}
-          type="button"
-        >
-          <IconX aria-hidden="true" className="toolbar-tabler-icon" stroke={1.8} />
-        </button>
-        <div className="confirm-modal-header confirm-modal-header-with-close">
-          <div className="confirm-modal-title" id={titleId}>
+        <DialogHeader className="git-commit-modal-header">
+          <DialogTitle className="text-xl" id={titleId}>
             Commit changes
-          </div>
-          <div className="confirm-modal-description" id={descriptionId}>
+          </DialogTitle>
+          <DialogDescription className="git-commit-modal-description" id={descriptionId}>
             {draft.description ||
               "Review and confirm your commit. Leave the message blank to auto-generate one."}
-          </div>
-        </div>
-        <div className="command-config-fields">
+          </DialogDescription>
+        </DialogHeader>
+        <div className="git-commit-modal-body scroll-mask-y">
           <div className="git-commit-files-panel">
             {draft.branch !== undefined ? (
               <div className="git-commit-branch-row">
                 <span className="command-config-label">Branch</span>
                 <span className="git-commit-branch-name">{draft.branch ?? "(detached HEAD)"}</span>
                 {draft.isDefaultRef ? (
-                  <span className="git-commit-default-ref-warning">Warning: default refName</span>
+                  <span className="git-commit-default-branch-note">Note: Publishing to Main</span>
                 ) : null}
               </div>
             ) : null}
@@ -191,6 +189,7 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
                         return next;
                       });
                     }}
+                    onOpenFile={onOpenFileDiff}
                   />
                 </div>
                 <div className="git-commit-files-summary">
@@ -206,9 +205,9 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
           {showCommitMessage ? (
             <label className="command-config-field">
               <span className="command-config-label">Commit Message</span>
-              <textarea
+              <Textarea
                 autoFocus
-                className="group-title-input command-config-input command-config-textarea git-commit-modal-textarea"
+                className="git-commit-modal-textarea"
                 onChange={(event) => setMessage(event.currentTarget.value)}
                 placeholder="Leave empty to auto-generate"
                 rows={draft.suggestedBody ? 10 : 4}
@@ -232,16 +231,45 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
             </label>
           ) : null}
         </div>
-        <div className="confirm-modal-actions">
-          <button
-            className="secondary confirm-modal-button"
+        <DialogFooter className="git-commit-modal-actions">
+          <Button
+            className="git-commit-modal-button"
             onClick={() => onCancel(draft.requestId)}
             type="button"
+            variant="outline"
           >
             Cancel
-          </button>
-          <button
-            className="primary confirm-modal-button"
+          </Button>
+          {showCommitMessage ? (
+            <Button
+              className="git-commit-modal-button"
+              disabled={!canConfirm}
+              onClick={() =>
+                onConfirm(draft.requestId, trimmedMessage, {
+                  commitOnNewRef: true,
+                  deleteWorktreeAfter,
+                  filePaths: selectedFilePaths,
+                })
+              }
+              type="button"
+              variant="outline"
+            >
+              Commit on new branch
+            </Button>
+          ) : null}
+          {showCommitMessage ? (
+            <Button
+              className="git-commit-modal-button"
+              disabled={!canConfirm}
+              onClick={() => onMultipleCommits(draft.requestId)}
+              type="button"
+              variant="outline"
+            >
+              Multiple Commits
+            </Button>
+          ) : null}
+          <Button
+            className="git-commit-modal-button"
             disabled={!canConfirm}
             onClick={() =>
               onConfirm(draft.requestId, trimmedMessage, {
@@ -252,27 +280,10 @@ export function GitCommitModal({ draft, isOpen, onCancel, onConfirm }: GitCommit
             type="button"
           >
             {draft.confirmLabel}
-          </button>
-          {showCommitMessage ? (
-            <button
-              className="secondary confirm-modal-button"
-              disabled={!canConfirm}
-              onClick={() =>
-                onConfirm(draft.requestId, trimmedMessage, {
-                  commitOnNewRef: true,
-                  deleteWorktreeAfter,
-                  filePaths: selectedFilePaths,
-                })
-              }
-              type="button"
-            >
-              Commit on new refName
-            </button>
-          ) : null}
-        </div>
-      </div>
-    </div>,
-    document.body,
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

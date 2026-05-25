@@ -18,6 +18,7 @@ import { SessionRenameModal } from "../../sidebar/session-rename-modal";
 import { T3BrowserAccessModal } from "../../sidebar/t3-browser-access-modal";
 import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
 import { FirstLaunchSetupModal } from "../../sidebar/first-launch-setup-modal";
+import { GitFileDiffModal, type GitFileDiffModalDraft } from "../../sidebar/git-file-diff-modal";
 import { GitCommitModal, type GitCommitModalDraft } from "../../sidebar/git-commit-modal";
 import { TipsAndTricksModal } from "../../sidebar/tips-and-tricks-modal";
 import { WorktreeCreateModal } from "../../sidebar/worktree-create-modal";
@@ -52,6 +53,7 @@ type AppModalKind =
   | "findPreviousSession"
   | "hotkeys"
   | "gitCommit"
+  | "gitFileDiff"
   | "openTargets"
   | "pinnedPrompts"
   | "floatingPromptEditor"
@@ -84,6 +86,7 @@ type AppModalHostMessage =
       projectName?: string;
       filePath?: string;
       gitCommitDraft?: GitCommitModalDraft;
+      gitFileDiff?: GitFileDiffModalDraft;
       initialFrame?: FloatingPromptEditorFrame;
       initialText?: string;
       lockedActionType?: SidebarActionType;
@@ -1417,8 +1420,10 @@ function AppModalHost() {
     findPreviousSession,
     firstUserMessage,
     gitCommit,
+    gitFileDiff,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
+    closeGitFileDiff,
     closeModal,
     renameSession,
     t3BrowserAccess,
@@ -1446,6 +1451,7 @@ function AppModalHost() {
     findPreviousSession,
     firstUserMessage,
     gitCommit,
+    gitFileDiff,
     floatingPromptEditor,
     renameSession,
     settings,
@@ -1673,6 +1679,23 @@ function AppModalHost() {
           });
           closeModal();
         }}
+        onMultipleCommits={(requestId) => {
+          vscode.postMessage({ requestId, type: "runSidebarGitMultipleCommits" });
+          closeModal();
+        }}
+        onOpenFileDiff={(filePath) => {
+          vscode.postMessage({ filePath, type: "openSidebarGitChangedFileDiff" });
+        }}
+      />
+      <GitFileDiffModal
+        draft={
+          gitFileDiff ?? {
+            filePath: "",
+            patch: "No diff is available for this file.",
+          }
+        }
+        isOpen={gitFileDiff !== undefined}
+        onClose={closeGitFileDiff}
       />
       {/*
        * CDXC:Worktrees 2026-05-18-23:07:
@@ -1917,6 +1940,7 @@ function useModalStateFromNative() {
   const [findPreviousSession, setFindPreviousSession] = useState<FindPreviousSessionModalState>();
   const [firstUserMessage, setFirstUserMessage] = useState<FirstUserMessageModalState>();
   const [gitCommit, setGitCommit] = useState<GitCommitModalDraft>();
+  const [gitFileDiff, setGitFileDiff] = useState<GitFileDiffModalDraft>();
   const [floatingPromptEditor, setFloatingPromptEditor] = useState<FloatingPromptEditorState>();
   const [floatingPromptEditorCloseAndSaveRequestId, setFloatingPromptEditorCloseAndSaveRequestId] =
     useState<string>();
@@ -1936,6 +1960,7 @@ function useModalStateFromNative() {
     setFindPreviousSession(undefined);
     setFirstUserMessage(undefined);
     setGitCommit(undefined);
+    setGitFileDiff(undefined);
     setFloatingPromptEditor(undefined);
     setRenameSession(undefined);
     setT3BrowserAccess(undefined);
@@ -1956,6 +1981,10 @@ function useModalStateFromNative() {
     clearActiveModalState();
     notifyNativeModalClosed();
   }, [clearActiveModalState]);
+
+  const closeGitFileDiff = useCallback(() => {
+    setGitFileDiff(undefined);
+  }, []);
 
   useEffect(() => {
     activeModalRef.current = activeModal;
@@ -2152,6 +2181,7 @@ function useModalStateFromNative() {
               throw new Error("Git commit modal request is missing gitCommitDraft.");
             }
             setGitCommit(message.gitCommitDraft);
+            setGitFileDiff(undefined);
             setConfig({});
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
@@ -2161,6 +2191,12 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+          } else if (message.modal === "gitFileDiff") {
+            if (!message.gitFileDiff) {
+              throw new Error("Git file diff modal request is missing gitFileDiff.");
+            }
+            setGitFileDiff(message.gitFileDiff);
+            return;
           } else if (message.modal === "commandConfig") {
             if (!message.commandDraft) {
               throw new Error("Command config modal request is missing commandDraft.");
@@ -2303,8 +2339,10 @@ function useModalStateFromNative() {
     findPreviousSession,
     firstUserMessage,
     gitCommit,
+    gitFileDiff,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
+    closeGitFileDiff,
     closeModal,
     renameSession,
     t3BrowserAccess,
@@ -2365,6 +2403,7 @@ function isModalRenderable({
   findPreviousSession,
   firstUserMessage,
   gitCommit,
+  gitFileDiff,
   floatingPromptEditor,
   renameSession,
   settings,
@@ -2378,6 +2417,7 @@ function isModalRenderable({
   findPreviousSession: FindPreviousSessionModalState | undefined;
   firstUserMessage: FirstUserMessageModalState | undefined;
   gitCommit: GitCommitModalDraft | undefined;
+  gitFileDiff: GitFileDiffModalDraft | undefined;
   floatingPromptEditor: FloatingPromptEditorState | undefined;
   renameSession: RenameSessionModalState | undefined;
   settings: unknown;
@@ -2403,6 +2443,8 @@ function isModalRenderable({
       return firstUserMessage !== undefined;
     case "gitCommit":
       return gitCommit !== undefined;
+    case "gitFileDiff":
+      return gitFileDiff !== undefined;
     case "floatingPromptEditor":
       return floatingPromptEditor !== undefined;
     case "renameSession":

@@ -813,8 +813,25 @@ struct SetReactTitlebarHitRegions: Decodable {
    AppKit. Native hit-testing uses these regions to keep blank titlebar space
    draggable and workspace content clickable while React buttons/dropdowns own
    their own events.
+
+   CDXC:ReactTitlebar 2026-05-25-10:09:
+   Workspace shielding follows React's explicit dropdown/menu open state, not
+   stale hit-region geometry. Regions still route visible titlebar overlay
+   clicks, but they are not the source of truth for blocking terminals.
    */
+  let overlayOpen: Bool
   let regions: [ReactTitlebarHitRegion]
+
+  private enum CodingKeys: String, CodingKey {
+    case overlayOpen
+    case regions
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    overlayOpen = try container.decodeIfPresent(Bool.self, forKey: .overlayOpen) ?? false
+    regions = try container.decode([ReactTitlebarHitRegion].self, forKey: .regions)
+  }
 }
 
 struct RunSidebarCommandFromTitlebar: Decodable {

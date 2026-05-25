@@ -4,7 +4,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "../components/ui/tooltip";
-import type { ComponentProps, ReactElement, ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactElement, type ReactNode } from "react";
+
+export const SIDEBAR_TOOLTIP_DISMISS_EVENT = "ghostex-sidebar-tooltip-dismiss";
+
+export function dismissSidebarTooltips() {
+  window.dispatchEvent(new Event(SIDEBAR_TOOLTIP_DISMISS_EVENT));
+}
 
 type AppTooltipProps = ComponentProps<typeof Tooltip> & {
   align?: ComponentProps<typeof TooltipContent>["align"];
@@ -31,12 +37,43 @@ export function AppTooltip({
   sideOffset = 8,
   ...tooltipProps
 }: AppTooltipProps) {
+  const {
+    defaultOpen,
+    onOpenChange,
+    open: controlledOpen,
+    ...tooltipRootProps
+  } = tooltipProps;
+  const isControlled = controlledOpen !== undefined;
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(Boolean(defaultOpen));
+  const open = isControlled ? controlledOpen : uncontrolledOpen;
+
+  const setOpen = (nextOpen: boolean) => {
+    if (!isControlled) {
+      setUncontrolledOpen(nextOpen);
+    }
+    onOpenChange?.(nextOpen);
+  };
+
+  useEffect(() => {
+    const handleDismiss = () => setOpen(false);
+    window.addEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleDismiss);
+    return () => window.removeEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleDismiss);
+  });
+
   if (content === undefined || content === null || content === "") {
     return children;
   }
 
+  /*
+   * CDXC:SidebarTooltips 2026-05-25-07:16:
+   * Native sidebar tooltips must disappear when the sidebar stops owning pointer
+   * hover because WKWebView can miss normal trigger leave events during app
+   * switching, external clicks, or fast exits into another native surface. Keep
+   * AppTooltip controllable through a shared dismiss event so all Radix tooltip
+   * instances close immediately and stay closed until the trigger opens again.
+   */
   return (
-    <Tooltip {...tooltipProps}>
+    <Tooltip {...tooltipRootProps} onOpenChange={setOpen} open={open}>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
       <TooltipContent
         align={align}

@@ -1,4 +1,4 @@
-export type SidebarGitAction = "commit" | "push" | "pr";
+export type SidebarGitAction = "commit" | "push" | "pr" | "multiRelease" | "release";
 
 export type SidebarGitChangedFile = {
   additions: number;
@@ -91,6 +91,8 @@ export function buildSidebarGitMenuItems(state: SidebarGitState): SidebarGitMenu
     buildSidebarGitMenuItem("commit", "Commit", state),
     buildSidebarGitMenuItem("push", "Push", state),
     buildSidebarGitMenuItem("pr", state.pr?.state === "open" ? "View PR" : "Create PR", state),
+    buildSidebarGitMenuItem("multiRelease", "Multicommit & Release", state),
+    buildSidebarGitMenuItem("release", "Release", state),
   ];
 }
 
@@ -140,6 +142,10 @@ export function getSidebarGitDisabledReason(
 
   if (action === "commit") {
     return state.hasWorkingTreeChanges ? undefined : "No working tree changes to commit.";
+  }
+
+  if (action === "multiRelease" || action === "release") {
+    return undefined;
   }
 
   if (!state.branch) {

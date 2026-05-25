@@ -1096,8 +1096,16 @@ export type SidebarToExtensionMessage =
       type: "confirmSidebarGitCommit";
     }
   | {
+      requestId: string;
+      type: "runSidebarGitMultipleCommits";
+    }
+  | {
       filePath: string;
       type: "openSidebarGitChangedFile";
+    }
+  | {
+      filePath: string;
+      type: "openSidebarGitChangedFileDiff";
     }
   | {
       requestId: string;

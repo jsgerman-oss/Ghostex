@@ -54,6 +54,10 @@ import {
   getWorkspaceThemeForeground,
   normalizeWorkspaceThemeColor,
 } from "../shared/workspace-dock-icons";
+import {
+  moveProjectsWithWorktrees,
+  type ProjectWorktreeOrderItem,
+} from "../shared/project-worktree-order";
 import { playCompletionSound, prepareCompletionSoundPlayback } from "./completion-sound-player";
 import { GitCommitModal } from "./git-commit-modal";
 import {
@@ -327,6 +331,25 @@ type SidebarUiCollapseState = {
   isReferenceChatsCollapsed: boolean;
   isReferenceProjectsCollapsed: boolean;
 };
+
+type SidebarProjectGroupOrderItem = ProjectWorktreeOrderItem & {
+  orderId: string;
+};
+
+type SidebarProjectGroupLookup = Record<
+  string,
+  | {
+      projectContext?: {
+        editor: {
+          projectId: string;
+        };
+        worktree?: {
+          parentProjectId: string;
+        };
+      };
+    }
+  | undefined
+>;
 
 type ReferenceSidebarSectionId = "projects" | "quick";
 
@@ -1550,6 +1573,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         const resolvedGroupDropTarget = resolveGroupDropTargetFromPoint(
           getDragNativeEvent(event),
           groupIdsRef.current,
+          groupsById,
           getSidebarDropData(event.operation.target),
           sourceData,
         );
@@ -1698,12 +1722,20 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       const resolvedGroupDropTarget = resolveGroupDropTargetFromPoint(
         nativeEvent,
         currentGroupIds,
+        groupsById,
         targetData,
         sourceData,
       );
+      const isProjectGroupOrder =
+        createProjectGroupOrderItems(currentGroupIds, groupsById).length === currentGroupIds.length;
       const nextGroupIds = resolvedGroupDropTarget
-        ? moveGroupIdsByDropTarget(currentGroupIds, sourceData.groupId, resolvedGroupDropTarget)
-        : targetData?.kind === "group"
+        ? moveGroupIdsByProjectDropTarget(
+            currentGroupIds,
+            sourceData.groupId,
+            resolvedGroupDropTarget,
+            groupsById,
+          )
+        : targetData?.kind === "group" && !isProjectGroupOrder
           ? move(currentGroupIds, event)
           : currentGroupIds;
       if (haveSameSessionOrder(authoritativeGroupIds, nextGroupIds)) {
@@ -2634,6 +2666,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
               type: "confirmSidebarGitCommit",
             });
           }}
+          onMultipleCommits={(requestId) => {
+            setGitCommitDraft(undefined);
+            vscode.postMessage({ requestId, type: "runSidebarGitMultipleCommits" });
+          }}
+          onOpenFileDiff={(filePath) => {
+            vscode.postMessage({ filePath, type: "openSidebarGitChangedFileDiff" });
+          }}
         />
         {buildStamp ? (
           <AppTooltip content="Copy build stamp">
@@ -3376,6 +3415,7 @@ function resolveSessionDropTargetFromPoint(
 function resolveGroupDropTargetFromPoint(
   nativeEvent: Event | undefined,
   groupIds: readonly string[],
+  groupsById: SidebarProjectGroupLookup,
   targetData: ReturnType<typeof getSidebarDropData>,
   sourceData: Extract<ReturnType<typeof getSidebarDropData>, { kind: "group" }> | undefined,
 ): SidebarGroupDropTarget | undefined {
@@ -3395,7 +3435,10 @@ function resolveGroupDropTargetFromPoint(
       continue;
     }
 
-    if (sourceData && isNoOpGroupDropTarget(groupIds, sourceData.groupId, candidate)) {
+    if (
+      sourceData &&
+      isNoOpGroupDropTarget(groupIds, sourceData.groupId, candidate, groupsById)
+    ) {
       continue;
     }
 
@@ -3499,17 +3542,62 @@ function isNoOpGroupDropTarget(
   groupIds: readonly string[],
   sourceGroupId: string,
   target: SidebarGroupDropTarget,
+  groupsById: SidebarProjectGroupLookup,
 ): boolean {
   /*
    * CDXC:ProjectReorder 2026-05-22-22:18:
    * Do not show an insertion line for adjacent before/after targets that would
    * leave the project order unchanged on drop. The preview should only mark
    * committed position changes.
+   *
+   * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
+   * Worktree projects cannot be dropped outside their main-project family, and
+   * a main-project drag is computed as a family move so its worktrees stay
+   * directly underneath it in the same order.
    */
   return haveSameSessionOrder(
     groupIds,
-    moveGroupIdsByDropTarget(groupIds, sourceGroupId, target),
+    moveGroupIdsByProjectDropTarget(groupIds, sourceGroupId, target, groupsById),
   );
+}
+
+function moveGroupIdsByProjectDropTarget(
+  groupIds: readonly string[],
+  sourceGroupId: string,
+  target: SidebarGroupDropTarget,
+  groupsById: SidebarProjectGroupLookup,
+): string[] {
+  const projectGroupItems = createProjectGroupOrderItems(groupIds, groupsById);
+  if (projectGroupItems.length !== groupIds.length) {
+    return moveGroupIdsByDropTarget(groupIds, sourceGroupId, target);
+  }
+
+  return moveProjectsWithWorktrees(projectGroupItems, sourceGroupId, {
+    orderId: target.groupId,
+    position: target.position,
+  }).map((project) => project.orderId);
+}
+
+function createProjectGroupOrderItems(
+  groupIds: readonly string[],
+  groupsById: SidebarProjectGroupLookup,
+): SidebarProjectGroupOrderItem[] {
+  return groupIds.flatMap((groupId) => {
+    const projectContext = groupsById[groupId]?.projectContext;
+    if (!projectContext) {
+      return [];
+    }
+
+    return [
+      {
+        orderId: groupId,
+        projectId: projectContext.editor.projectId,
+        worktree: projectContext.worktree
+          ? { parentProjectId: projectContext.worktree.parentProjectId }
+          : undefined,
+      },
+    ];
+  });
 }
 
 function getSidebarGroupDropBoundsElement(groupElement: HTMLElement): HTMLElement {
