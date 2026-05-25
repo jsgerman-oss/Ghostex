@@ -115,12 +115,12 @@ describe("ghostex CLI Android remote-session contract", () => {
     });
   });
 
-  test("documents bare ghostex and gtx commands as the interactive session picker", () => {
+  test("documents bare ghostex and gtx commands as the terminal TUI", () => {
     const help = usage();
 
-    expect(help).toContain("Running ghostex or gtx with no subcommand opens an interactive session picker");
-    expect(help).toContain("page up/down jumps five");
-    expect(help).toContain("Navigation wraps from the end of the list back to the start");
+    expect(help).toContain("Running ghostex or gtx with no subcommand opens the Ghostex terminal TUI");
+    expect(help).toContain("top switch button for project/session switching");
+    expect(help).toContain("Direct attach stays available through attach/a/resume/r without opening the TUI");
     expect(help).toMatch(/^\s+ghostex$/m);
     expect(help).toMatch(/^\s+gtx$/m);
   });
@@ -440,6 +440,7 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).toContain("android-check [--json]");
     expect(help).toContain("create-session [title] [--input text] [--project-id id] [--group-id id]");
     expect(help).toContain("kill | k <selector|all> [--json]");
+    expect(help).toContain("attach | a [selector]");
     expect(help).toContain("attach | a --session-id <id>");
     expect(help).toContain("sleep <selector|all> [--json]");
     expect(help).toContain("wake <selector|all> [--json]");

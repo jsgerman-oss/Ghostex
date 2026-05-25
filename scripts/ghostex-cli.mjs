@@ -153,15 +153,13 @@ function isDirectCliEntryPoint() {
 async function main() {
   const argv = process.argv.slice(2);
   /**
-   * CDXC:CliSessionPicker 2026-05-24-18:10:
-   * Running bare `ghostex` or `gtx` should open the keyboard session picker,
-   * not the compact list. The picker shows project-name separators and raw
-   * session titles in the same order returned by the macOS sidebar inventory,
-   * then attaches the selected row through the same command path as
-   * `gtx a <session id>`.
+   * CDXC:GhostexTui 2026-05-24-19:18:
+   * Running bare `ghostex` or `gtx` should open the full terminal TUI. Keep
+   * `gtx a <session>` and the attach aliases outside this path so direct
+   * single-session attaches remain fast and script-compatible.
    */
   if (argv.length === 0) {
-    await interactiveSessionPickerCommand([]);
+    await ghostexTuiCommand([]);
     return;
   }
   const [commandName, ...args] = argv;
@@ -803,8 +801,17 @@ async function attachSessionCommand(args) {
    * Ghostex Android attaches by stable session id and should use the same
    * documented `--session-id` form as focus, wake, sleep, kill, and rename.
    * Keep positional selectors for human usage.
+   *
+   * CDXC:CliSessionPicker 2026-05-25-16:05:
+   * `ghostex attach`, `gtx attach`, and `gtx a` without a selector should open
+   * the lightweight attach picker, not the full TUI. Bare `gtx` owns the full
+   * TUI experience while empty attach keeps the fast single-session picker.
    */
   const selector = flags.sessionId ?? rest.join(" ").trim();
+  if (!selector) {
+    await interactiveSessionPickerCommand(args);
+    return;
+  }
   const result = await fetchSessionList(flags);
   const session = await resolveOneListedSession(selector, result.sessions ?? []);
   await attachResolvedSession(session);
@@ -844,6 +851,129 @@ async function interactiveSessionPickerCommand(args) {
     return;
   }
   await attachResolvedSession(session);
+}
+
+async function ghostexTuiCommand(args) {
+  const { flags } = parseArgs(args);
+  /**
+   * CDXC:GhostexTui 2026-05-24-19:18:
+   * Bare `ghostex` / `gtx` launches the full Ghostex terminal TUI. Direct
+   * attach commands such as `gtx a <session>` stay on the Node attach path so
+   * scripts and muscle-memory single-session attaches keep their old behavior.
+   * The TUI calls back into this CLI for session inventory and attach so the
+   * macOS sidebar remains the source of truth.
+   */
+  if (!isInteractiveTerminal()) {
+    await interactiveSessionPickerCommand(args);
+    return;
+  }
+  const tui = resolveGhostexTuiLaunch(flags);
+  /**
+   * CDXC:GhostexTui 2026-05-25-15:11:
+   * The bare `gtx` launcher must pass TUI environment through `spawn({ env })`.
+   * Putting these keys at the top-level options object makes the app build try
+   * the full upstream Herdr/Ghostty path and drops the callback command the TUI
+   * uses to list and attach Ghostex sessions.
+   */
+  await runInteractiveProcess(tui.command, tui.args, {
+    env: {
+      ...process.env,
+      ...tui.env,
+      GHOSTEX_TUI_CLI_COMMAND: `${shellQuote(process.execPath)} ${shellQuote(fileURLToPath(import.meta.url))}`,
+    },
+  });
+}
+
+function resolveGhostexTuiLaunch(flags = {}) {
+  const explicitBin = String(flags.tuiBin ?? process.env.GHOSTEX_TUI_BIN ?? "").trim();
+  if (explicitBin) {
+    return { args: [], command: explicitBin, env: {} };
+  }
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  /**
+   * CDXC:GhostexTui 2026-05-25-15:11:
+   * Installed Homebrew/app CLIs run from the application resource directory,
+   * while local development runs from the source checkout. Probe both the CLI
+   * bundle root and the current checkout root so bare `gtx` can find the TUI
+   * binary or Cargo manifest instead of emitting cargo errors for a missing
+   * bundled `tui/` directory.
+   */
+  const roots = uniquePaths([
+    repoRoot,
+    process.env.GHOSTEX_SOURCE_ROOT,
+    findGhostexSourceRoot(process.cwd()),
+  ]);
+  for (const root of roots) {
+    const launch = resolveGhostexTuiLaunchFromRoot(root);
+    if (launch) {
+      return launch;
+    }
+  }
+  throw new Error(
+    "Ghostex TUI binary was not found. Build the TUI with `GHOSTEX_TUI_LIGHT=1 cargo build --bin ghostex-tui --manifest-path tui/Cargo.toml`, pass `--tui-bin <path>`, or set GHOSTEX_TUI_BIN.",
+  );
+}
+
+function resolveGhostexTuiLaunchFromRoot(root) {
+  if (!root) {
+    return undefined;
+  }
+  const debugBin = path.join(root, "tui", "target", "debug", "ghostex-tui");
+  const releaseBin = path.join(root, "tui", "target", "release", "ghostex-tui");
+  if (fileExistsSync(releaseBin)) {
+    return { args: [], command: releaseBin, env: {} };
+  }
+  if (fileExistsSync(debugBin)) {
+    return { args: [], command: debugBin, env: {} };
+  }
+  const manifestPath = path.join(root, "tui", "Cargo.toml");
+  if (!fileExistsSync(manifestPath)) {
+    return undefined;
+  }
+  return {
+    args: ["run", "--quiet", "--bin", "ghostex-tui", "--manifest-path", manifestPath],
+    command: "cargo",
+    env: { GHOSTEX_TUI_LIGHT: "1" },
+  };
+}
+
+function findGhostexSourceRoot(startPath) {
+  let current = path.resolve(startPath || process.cwd());
+  while (true) {
+    if (fileExistsSync(path.join(current, "scripts", "ghostex-cli.mjs")) && fileExistsSync(path.join(current, "tui", "Cargo.toml"))) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+function uniquePaths(paths) {
+  const seen = new Set();
+  const unique = [];
+  for (const candidate of paths) {
+    if (!candidate) {
+      continue;
+    }
+    const normalized = path.resolve(String(candidate));
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      unique.push(normalized);
+    }
+  }
+  return unique;
+}
+
+function fileExistsSync(filePath) {
+  try {
+    realpathSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function buildSessionAttachCommand(session) {
@@ -1612,9 +1742,14 @@ function formatActiveTime(value) {
 }
 
 async function runInteractiveShellCommand(command, cwd) {
+  await runInteractiveProcess("/bin/zsh", ["-lc", command], { cwd });
+}
+
+async function runInteractiveProcess(command, args, options = {}) {
   await new Promise((resolve, reject) => {
-    const child = spawn("/bin/zsh", ["-lc", command], {
-      cwd,
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
       stdio: "inherit",
     });
     child.once("error", reject);
@@ -1861,8 +1996,8 @@ function usage() {
   const sessionCommands = [
     formatHelpCommand("sessions | s | ls [--ungrouped|-u] [--json]", "List running terminal sessions"),
     formatHelpCommand("android-check [--json]", "Verify this Mac is ready for Ghostex Android"),
-    formatHelpCommand("attach | a <selector>", "Attach to a provider or agent resume command"),
-    formatHelpCommand("resume | r <selector>", "Alias for attach"),
+    formatHelpCommand("attach | a [selector]", "Attach to a provider session, or open the picker without a selector"),
+    formatHelpCommand("resume | r [selector]", "Alias for attach"),
     formatHelpCommand("attach | a --session-id <id>", "Flag form used by Android session attach"),
     formatHelpCommand("kill | k <selector|all> [--json]", "Close one session or every listed session"),
     formatHelpCommand("sleep <selector|all> [--json]", "Sleep one session or every listed session"),
@@ -1948,12 +2083,10 @@ Selectors:
   Titles match exact first, then case-insensitive substring.
 
 Sessions:
-  Running ghostex or gtx with no subcommand opens an interactive session picker.
-  In the picker, up/down selects sessions, page up/down jumps five, left/right jumps projects, and Enter/Space attaches.
-  Navigation wraps from the end of the list back to the start.
-  The picker starts with a bright "Attach to Ghostex Session" title and separator.
-  The first no-project terminal section is labeled Quick Terminals.
-  Picker section headers are bold and colored, and session rows start with an agent-colored [ABC] indicator.
+  Running ghostex or gtx with no subcommand opens the Ghostex terminal TUI.
+  The TUI shows the attached session, with a top switch button for project/session switching.
+  The switcher lists Ghostex projects and sessions in macOS sidebar order and attaches through the existing zmx path.
+  Direct attach stays available through attach/a/resume/r without opening the TUI.
   Projects and sessions follow the macOS sidebar order, including the active Last Active sort mode.
   Each project prints its path once as the section header, then compact session rows without field labels.
   --ungrouped/-u prints one flat list and prefixes each row with the project name.
