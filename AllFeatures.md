@@ -2,6 +2,13 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
+- The bare `ghostex` and `gtx` commands open the Ghostex terminal TUI by default, with direct attach still available through attach shortcuts.
+- Git release workflow actions can review changed files, create split commits, and hand off multicommit release work from the app.
+- Git review flows include a richer commit modal, changed-file diff inspection, and project/worktree ordering that keeps related work together.
+- Titlebar and workspace chrome use cleaner resource controls, tighter traffic-light alignment, and safer modal/menu click handling above native panes.
+- Cross-platform Ghostex parity covers project workflows, workspace persistence, browser/code/git panes, settings, modals, and release packaging.
+- Mobile and persistent-session stability includes clearer Android remote-session activity, more responsive iOS direct attach, and better cleanup for zmx, zellij, and other persisted terminal sessions.
+- Monaco is again the default local Ctrl+G prompt editor while SSH sessions keep terminal-native prompt editing.
 - Version 2.0 refreshes the whole UI around a simplified Codex-style workspace with cleaner top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, and updated screenshots.
 - Version 2.0 includes broad stability and performance work across native sidebar sync, AppKit relayouts, shared storage writes, diagnostic logging, and workspace visibility.
 - `ghostex sessions`, `ghostex attach`, `ghostex kill`, `ghostex sleep`, `ghostex wake`, and `ghostex focus` manage live terminal sessions from a shell.

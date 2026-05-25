@@ -2,6 +2,16 @@
 
 <!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
 
+## 3.13.0 - 2026-05-25
+
+- Added the Ghostex terminal TUI as the default `ghostex` / `gtx` experience, while keeping direct session attach available through the attach shortcuts.
+- Added Git release workflow actions for reviewing changes, creating split commits, and handing off multicommit release work from the app.
+- Improved Git review flows with a richer commit modal, changed-file diff inspection, and clearer project/worktree ordering.
+- Improved titlebar and workspace chrome behavior with cleaner resource controls, tighter traffic-light alignment, and safer modal/menu click handling above native panes.
+- Improved cross-platform Ghostex parity for project workflows, workspace persistence, browser/code/git panes, settings, modals, and release packaging.
+- Improved mobile and persistent-session stability with clearer Android remote-session activity, more responsive iOS direct attach, and better cleanup for zmx, zellij, and other persisted terminal sessions.
+- Restored Monaco as the default local Ctrl+G prompt editor while preserving terminal-native prompt editing for SSH sessions.
+
 ## 3.12.0 - 2026-05-23
 
 - Improved restored persistent sessions so focusing an already-running tmux, zmx, or zellij-backed terminal no longer sends restore text or resume commands into the live prompt.
