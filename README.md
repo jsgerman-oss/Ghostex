@@ -15,6 +15,7 @@ Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
 ### 4. Chromium CEF Browser (Devtools & Profiles)
 ### 5. Light embedded VS Code (for MD files/Reviewing Code & PRs)
 ### 6. Android & iOS apps for connecting to sessions easily
+### 7. TUI mode (ghostex cli) to connect to all your sessions from any other machine.
 
 ### More Features:
 - Embedded Chromium Browser w Devtools and profiles
@@ -63,13 +64,20 @@ The README Android APK badge must use a stable GitHub release asset URL so futur
 
 <br />
 
-<img width="250" alt="73681" src="https://github.com/user-attachments/assets/848a2475-a1f0-40f4-9313-c00df1893cbf" />
+<img width="250" alt="74733" src="https://github.com/user-attachments/assets/e7af9c54-e8ef-4e0b-a934-8b2f9ea56c70" />
+
+
+<img width="250" alt="74068" src="https://github.com/user-attachments/assets/1a93241e-b942-4c6a-94f8-629ecfc1fb27" />
+
 
 <br />
 
 ### 2 Rich Prompt Editor Modes! Monaco based & TUI based:
 
 <img width="3322" height="2060" alt="2026-05-25_Ghostex_04-58-21@2x" src="https://github.com/user-attachments/assets/9a87f7a1-a4df-489f-9624-9153fed3111a" />
+
+<img width="2048" height="1270" alt="74730" src="https://github.com/user-attachments/assets/a94c00ea-d373-4d72-acc9-b6a16318b4b3" />
+
 
 <br />
 
@@ -99,12 +107,12 @@ The README Android APK badge must use a stable GitHub release asset URL so futur
 
 ## Other useful stuff:
 - Built in zmx/tmux/zellij support
-  - Can continue via ssh then use `ghostex` or `gx` cli to attach. Beta but working well already with zmx especially.
-- Automations and cross agent messages (coming very soon)
-- Better worktrees support coming very soon (Want to nail the UX)
+  - Can continue via ssh then use `ghostex` or `gx` cli to attach.
+- Automations and cross agent messages through Ghostex CLI
+- Create worktrees and merge them back easily
 - Prompt to find any past thread in your history with just a few keywords
   - Very useful if you want to continue with an agent that already has context about a complex feature
-- Auto sync of the terminal title and status with UI
+- Auto sync the session's title and status with UI
 - Allows multiple panes and multiple groups per project, each with different split/tab layouts
 - Can be attached to your IDE: Shows a button on the attached IDE (Zed / VScode) to show Ghostex.
   - Follows your IDE size/position.
