@@ -95,7 +95,7 @@ Or just download the latest dmg from the releases page
 
 ## Other useful stuff:
 - Built in zmx/tmux/zellij support
-  - Can continue via ssh then use `ghostex` or `gtx` cli to attach. Beta but working well already with zmx especially.
+  - Can continue via ssh then use `ghostex` or `gx` cli to attach. Beta but working well already with zmx especially.
 - Automations and cross agent messages (coming very soon)
 - Better worktrees support coming very soon (Want to nail the UX)
 - Prompt to find any past thread in your history with just a few keywords

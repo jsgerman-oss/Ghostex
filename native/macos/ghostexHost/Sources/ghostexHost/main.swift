@@ -55,9 +55,10 @@ if !cliArguments.isEmpty {
    The installed executable is also what shells resolve from PATH. When users
    run a CLI command, treat argv as CLI intent and proxy to the bundled Node
    CLI before AppKit, CEF, or Ghostty can launch the GUI/browser path.
-   CDXC:CliBranding 2026-05-12-07:35
-   Public CLI commands are `ghostex` and `gtx`; old `ghostex` terminal commands
-   are intentionally not preserved as compatibility aliases.
+   CDXC:CliBranding 2026-05-26-15:11
+   Public CLI commands are `ghostex` and `gx`; the older `gtx` short alias is
+   no longer preserved because setup should install only the current concise
+   command when that binary name is available.
    LaunchServices `-psn_*` arguments are ignored above so Dock and Finder
    launches still start the app normally.
    */

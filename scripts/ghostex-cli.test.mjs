@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -115,20 +115,54 @@ describe("ghostex CLI Android remote-session contract", () => {
     });
   });
 
-  test("documents bare ghostex and gtx commands as the terminal TUI", () => {
+  test("documents bare ghostex and gx commands as the terminal TUI", () => {
     const help = usage();
 
-    expect(help).toContain("Running ghostex or gtx with no subcommand opens the Ghostex terminal TUI");
+    expect(help).toContain("Running ghostex or gx with no subcommand opens the Ghostex terminal TUI");
+    expect(help).toContain("install-browser-skill");
     expect(help).toContain("top switch button for project/session switching");
     expect(help).toContain("Direct attach stays available through attach/a/resume/r without opening the TUI");
     expect(help).toMatch(/^\s+ghostex$/m);
-    expect(help).toMatch(/^\s+gtx$/m);
+    expect(help).toMatch(/^\s+gx$/m);
+  });
+
+  test("installs the browser MCP skill for agents", async () => {
+    /**
+     * CDXC:BrowserAgentControl 2026-05-26-22:17:
+     * The first-launch CLI command installs the browser DevTools MCP skill into
+     * the agent skill directory, so the CLI needs a deterministic copy command
+     * that works from the source checkout and the bundled app resource path.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-browser-skill-"));
+    try {
+      const targetDir = path.join(tempDir, "ghostex-browser-devtools-mcp");
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "install-browser-skill",
+        "--target-dir",
+        targetDir,
+        "--json",
+      ]);
+      const payload = JSON.parse(result.stdout);
+      const skillMarkdown = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
+
+      expect(payload).toMatchObject({
+        command: "ghostex browser-devtools-mcp",
+        ok: true,
+        skill: "ghostex-browser-devtools-mcp",
+        targetDir,
+      });
+      expect(skillMarkdown).toContain("Ghostex Browser DevTools MCP");
+      expect(skillMarkdown).toContain("ghostex_console_logs");
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
   });
 
   test("builds picker rows with intro text, project spacing, and agent indicators", () => {
     /**
      * CDXC:CliSessionPicker 2026-05-24-18:10:
-     * Bare `ghostex`/`gtx` must present a keyboard picker that mirrors the
+     * Bare `ghostex`/`gx` must present a keyboard picker that mirrors the
      * macOS sidebar inventory without leaking aliases, paths, status, provider
      * metadata, or detail rows into the selectable session labels.
      *

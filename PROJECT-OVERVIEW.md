@@ -18,7 +18,7 @@ The project is positioned as a free and open source alternative to Codex App for
 - Embeds Chromium browser panes with navigation, profiles, DevTools, and project-scoped browser sessions.
 - Embeds lightweight VS Code/code-server panes for markdown, code review, git, and PR workflows.
 - Shows session status through the sidebar, menu bar indicators, notification sounds, and an optional floating pet/status overlay.
-- Exposes `ghostex` and `gtx` CLI commands for listing, attaching, sleeping, waking, focusing, and managing sessions from a shell.
+- Exposes `ghostex` and `gx` CLI commands for listing, attaching, sleeping, waking, focusing, and managing sessions from a shell.
 - Supports Android and iOS companion apps for live remote control of sessions running on the Mac.
 
 ## Main Product Areas
@@ -45,7 +45,7 @@ The Android and iOS apps connect to a Mac running Ghostex so users can attach to
 
 ### CLI and Automation
 
-The `ghostex` and `gtx` commands expose session management outside the UI. They are used for attaching to sessions, sending or reading messages, waking or sleeping terminals, and integrating Ghostex into shell-based workflows.
+The `ghostex` and `gx` commands expose session management outside the UI. They are used for attaching to sessions, sending or reading messages, waking or sleeping terminals, and integrating Ghostex into shell-based workflows.
 
 ## Repository Shape
 

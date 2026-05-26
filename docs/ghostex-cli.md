@@ -1,7 +1,7 @@
 # Ghostex CLI
 
 <!-- CDXC:CliBranding 2026-05-12-07:35: Public CLI docs use `ghostex`
-and `gtx`; legacy `ghostex` terminal commands are intentionally not documented
+and `gx`; legacy `ghostex` terminal commands are intentionally not documented
 as compatibility aliases. Internal storage paths can stay under ~/.ghostex. -->
 
 `scripts/ghostex-cli.mjs` is a local debugging CLI for driving a running Ghostex app from the terminal.
@@ -44,7 +44,7 @@ bun run cli -- focus-group group-2
 bun run cli -- switch-project --path /Users/madda/dev/_active/ghostex
 bun run cli -- add-project /Users/madda/dev/_active/agent-tiler --name agent-tiler
 ghostex sessions
-gtx sessions
+gx sessions
 ```
 
 ## Sidebar Buttons

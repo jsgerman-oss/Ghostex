@@ -388,7 +388,23 @@ cask "ghostex" do
 
   app "ghostex.app"
   binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/ghostex"
-  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/gtx"
+  preflight do
+    gx_candidates = [HOMEBREW_PREFIX/"bin/gx"]
+    ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |entry|
+      gx_candidates << Pathname(entry)/"gx" unless entry.empty?
+    end
+
+    gx_candidates.uniq.each do |gx_path|
+      next unless gx_path.exist? || gx_path.symlink?
+
+      gx_target = gx_path.symlink? ? gx_path.readlink.to_s : gx_path.to_s
+      next if gx_target.include?("ghostex.app/Contents/Resources/Web/cli/gx")
+
+      raise "Ghostex cannot install the gx CLI because #{gx_path} already exists. " \
+            "Remove or rename the existing gx command, then reinstall Ghostex."
+    end
+  end
+  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/gx"
 
   zap trash: [
     "~/Library/Application Support/com.madda.ghostex.host",
@@ -410,7 +426,7 @@ brew fetch --cask --arch=x86_64 ./Casks/ghostex.rb
 
 If `brew fetch --cask --arch=...` is not available in the local Homebrew version, validate on real arm64 and Intel machines.
 If the tap also contains a `ghostex` cask or alias, update it in the same commit so both public install commands resolve to the same architecture-specific release.
-Keep both `binary` stanzas in the cask so Homebrew automatically installs the `ghostex` command and the `gtx` short alias from the app bundle.
+Keep both `binary` stanzas in the cask so Homebrew automatically installs the `ghostex` command and the `gx` short alias from the app bundle. Keep the `gx` preflight check so Homebrew fails clearly instead of taking over an existing non-Ghostex `gx` command.
 
 Commit and push the tap only after both SHA values match the stapled DMGs:
 

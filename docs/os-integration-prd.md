@@ -54,7 +54,7 @@ The app bundle should register:
 - Script file support for `.command`, `.tool`, and `.sh`.
 - The `ghostex://` URL scheme.
 
-Do not register `gtx://` in the first version.
+Do not register `gx://` in the first version.
 
 Do not claim common external terminal schemes such as `ssh://` or `telnet://` in the first version.
 

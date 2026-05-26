@@ -1074,7 +1074,7 @@ async function updateHomebrew(version, artifacts, options) {
   const arm = artifacts.find((entry) => entry.arch === "arm64");
   const intel = artifacts.find((entry) => entry.arch === "x86_64");
 
-  cask = cask
+  cask = normalizeGhostexCliCask(cask)
     .replace(/version\s+"[^"]+"/, `version "${version}"`)
     .replace(
       /sha256 arm:\s+"[0-9a-f]+",\s*\n\s*intel:\s+"[0-9a-f]+"/,
@@ -1102,6 +1102,52 @@ async function updateHomebrew(version, artifacts, options) {
   }
 
   return { tapDir, tapCommit };
+}
+
+/**
+ * CDXC:CliBranding 2026-05-26-15:11:
+ * Homebrew releases should install `ghostex` and the new `gx` short alias, not
+ * the older `gtx` alias. Check for an existing non-Ghostex `gx` binary before
+ * linking so setup does not silently claim a command name another tool owns.
+ */
+function normalizeGhostexCliCask(cask) {
+  const ghostexBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/ghostex"';
+  const gxBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/gx"';
+  const cliPreflight = `  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name.
+  preflight do
+    gx_candidates = [HOMEBREW_PREFIX/"bin/gx"]
+    ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |entry|
+      gx_candidates << Pathname(entry)/"gx" unless entry.empty?
+    end
+
+    gx_candidates.uniq.each do |gx_path|
+      next unless gx_path.exist? || gx_path.symlink?
+
+      gx_target = gx_path.symlink? ? gx_path.readlink.to_s : gx_path.to_s
+      next if gx_target.include?("ghostex.app/Contents/Resources/Web/cli/gx")
+
+      raise "Ghostex cannot install the gx CLI because #{gx_path} already exists. " \\
+            "Remove or rename the existing gx command, then reinstall Ghostex."
+    end
+  end`;
+
+  let next = cask
+    .replace(
+      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n  preflight do[\s\S]*?\n  end(?=\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx")/g,
+      "",
+    )
+    .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gtx"\n/gm, "")
+    .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx"\n/gm, "");
+
+  if (!next.includes(`${ghostexBinary}\n`)) {
+    throw new ReleaseError("Ghostex cask is missing the primary ghostex CLI binary stanza.");
+  }
+
+  next = next.replace(`${ghostexBinary}\n`, `${ghostexBinary}\n${cliPreflight}\n${gxBinary}\n`);
+  if (!next.includes(gxBinary) || next.includes("/Web/cli/gtx")) {
+    throw new ReleaseError("Failed to normalize Ghostex cask CLI binary aliases.");
+  }
+  return next;
 }
 
 async function main() {

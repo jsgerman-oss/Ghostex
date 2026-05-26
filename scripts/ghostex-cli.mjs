@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { execFile, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -19,9 +21,14 @@ const DEV_PORT = 58744;
  * commands issued through that dev app do not touch the installed app's data.
  *
  * CDXC:CliBranding 2026-05-12-07:35
- * Public CLI commands are `ghostex` and the shorter `gtx` alias. Internal
+ * Public CLI commands are `ghostex` and the shorter `gx` alias. Internal
  * GHOSTEX_* environment names and ~/.ghostex storage remain unchanged because they
  * are implementation state, not user-facing command names.
+ *
+ * CDXC:CliBranding 2026-05-26-15:11
+ * The short command is now `gx` instead of `gtx`; setup should expose the new
+ * binary only when the user's Homebrew prefix does not already contain another
+ * `gx`.
  */
 const GHOSTEX_HOME =
   process.env.GHOSTEX_HOME?.trim() ||
@@ -31,6 +38,13 @@ const CLI_DIR = path.join(GHOSTEX_HOME, "cli");
 const BRIDGE_TOKEN_PATH = path.join(CLI_DIR, "bridge-token");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
 const SHARED_SETTINGS_PATH = path.join(GHOSTEX_HOME, "state", "native-sidebar-settings.json");
+const GHOSTEX_BROWSER_SKILL_NAME = "ghostex-browser-devtools-mcp";
+const GHOSTEX_BROWSER_SKILL_INSTALL_DIR = path.join(
+  homedir(),
+  "agents",
+  "skills",
+  GHOSTEX_BROWSER_SKILL_NAME,
+);
 const QUICK_TERMINALS_PROJECT_NAME = "Quick Terminals";
 const RESET_ANSI = "\x1b[0m";
 const PICKER_TITLE = "Attach to Ghostex Session";
@@ -118,6 +132,10 @@ const COMMANDS = new Map([
   ["open-browser", bridgeAction("openBrowser", parseUrl)],
   ["open-browser-pane", bridgeAction("openBrowserPane")],
   ["show-browser", bridgeAction("showBrowser")],
+  ["browser-devtools-mcp", browserDevToolsMcpCommand],
+  ["browser-mcp", browserDevToolsMcpCommand],
+  ["install-browser-skill", installBrowserSkillCommand],
+  ["install-browser-mcp-skill", installBrowserSkillCommand],
   ["move-sidebar", bridgeAction("moveSidebar")],
   ["assert-card", bridgeAction("assertSidebarCard", parseAssertCard, { assertOk: true })],
   ["wait-for", bridgeAction("waitFor", parseWaitFor, { assertOk: true })],
@@ -156,8 +174,8 @@ async function main() {
   const argv = process.argv.slice(2);
   /**
    * CDXC:GhostexTui 2026-05-24-19:18:
-   * Running bare `ghostex` or `gtx` should open the full terminal TUI. Keep
-   * `gtx a <session>` and the attach aliases outside this path so direct
+   * Running bare `ghostex` or `gx` should open the full terminal TUI. Keep
+   * `gx a <session>` and the attach aliases outside this path so direct
    * single-session attaches remain fast and script-compatible.
    */
   if (argv.length === 0) {
@@ -215,6 +233,899 @@ function resolvedSessionBridgeAction(action, parser = () => ({}), options = {}) 
     }
     printJson(result);
   };
+}
+
+async function browserDevToolsMcpCommand(args) {
+  await new Promise((resolve) => setImmediate(resolve));
+  const { flags } = parseArgs(args);
+  await runBrowserDevToolsMcpServer({
+    port: normalizePositiveInteger(flags.port ?? process.env.GHOSTEX_CEF_REMOTE_DEBUGGING_PORT),
+    target: stringFlag(flags.target ?? flags.page ?? flags.pageId),
+    timeoutMs: normalizePositiveInteger(flags.timeout ?? process.env.GHOSTEX_BROWSER_MCP_TIMEOUT_MS) ?? 10_000,
+  });
+}
+
+async function installBrowserSkillCommand(args) {
+  const { flags } = parseArgs(args);
+  const sourceDir = resolveGhostexBrowserSkillSourceDir();
+  const targetDir = path.resolve(
+    stringFlag(flags.targetDir ?? flags.target) ?? GHOSTEX_BROWSER_SKILL_INSTALL_DIR,
+  );
+  /**
+   * CDXC:BrowserAgentControl 2026-05-26-22:17:
+   * First-launch CLI setup should install the browser MCP skill, not only the
+   * `ghostex` executable. The CLI owns this copy step because Homebrew installs
+   * the bundled app resources and agents discover user skills under
+   * ~/agents/skills.
+   */
+  await mkdir(path.dirname(targetDir), { recursive: true });
+  await cp(sourceDir, targetDir, { force: true, recursive: true });
+
+  const result = {
+    command: "ghostex browser-devtools-mcp",
+    ok: true,
+    skill: GHOSTEX_BROWSER_SKILL_NAME,
+    sourceDir,
+    targetDir,
+  };
+  if (flags.json) {
+    printJson(result);
+    return;
+  }
+  console.log(`Installed ${GHOSTEX_BROWSER_SKILL_NAME} to ${targetDir}`);
+  console.log("Configure agents to run: ghostex browser-devtools-mcp");
+}
+
+/**
+ * CDXC:BrowserAgentControl 2026-05-26-15:40:
+ * Agents need Chrome-DevTools-style control over Ghostex's embedded CEF panes, including console visibility. CEF already exposes a loopback CDP endpoint, so the CLI hosts a small MCP-compatible stdio server that talks directly to CDP instead of adding a parallel browser automation stack or WebKit-style JavaScript fallback path.
+ */
+async function runBrowserDevToolsMcpServer(options = {}) {
+  const state = {
+    captures: new Map(),
+    clients: new Map(),
+    options,
+    refMaps: new Map(),
+    selectedPageId: options.target ?? null,
+  };
+  const transport = new McpStdioTransport(async (message) => {
+    const response = await handleBrowserMcpMessage(message, state);
+    if (response) {
+      transport.send(response);
+    }
+  });
+  transport.start();
+}
+
+async function handleBrowserMcpMessage(message, state) {
+  if (!message || typeof message !== "object") return null;
+  const { id, method, params } = message;
+  if (method === "notifications/initialized" || id === undefined || id === null) {
+    return null;
+  }
+  try {
+    if (method === "initialize") {
+      return {
+        id,
+        jsonrpc: "2.0",
+        result: {
+          capabilities: { tools: {} },
+          protocolVersion: params?.protocolVersion ?? "2024-11-05",
+          serverInfo: { name: "ghostex-browser-devtools", version: "1.0.0" },
+        },
+      };
+    }
+    if (method === "tools/list") {
+      return { id, jsonrpc: "2.0", result: { tools: browserMcpTools() } };
+    }
+    if (method === "tools/call") {
+      const result = await callBrowserMcpTool(params?.name, params?.arguments ?? {}, state);
+      return { id, jsonrpc: "2.0", result };
+    }
+    return {
+      error: { code: -32601, message: `Unknown MCP method: ${method}` },
+      id,
+      jsonrpc: "2.0",
+    };
+  } catch (error) {
+    return {
+      error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+      id,
+      jsonrpc: "2.0",
+    };
+  }
+}
+
+function browserMcpTools() {
+  const pageSelectorProperties = {
+    pageId: { description: "CDP target id. Defaults to the selected page, then the first Ghostex CEF page.", type: "string" },
+    titleContains: { description: "Select a page whose title contains this text.", type: "string" },
+    urlContains: { description: "Select a page whose URL contains this text.", type: "string" },
+  };
+  return [
+    {
+      name: "ghostex_list_pages",
+      description: "List embedded Ghostex CEF pages available over the local DevTools endpoint.",
+      inputSchema: { type: "object", properties: {} },
+    },
+    {
+      name: "ghostex_select_page",
+      description: "Select the embedded page used by subsequent Ghostex browser tools.",
+      inputSchema: { type: "object", properties: { ...pageSelectorProperties, index: { type: "number" } } },
+    },
+    {
+      name: "ghostex_navigate",
+      description: "Navigate a Ghostex embedded browser page.",
+      inputSchema: { type: "object", required: ["url"], properties: { ...pageSelectorProperties, url: { type: "string" } } },
+    },
+    {
+      name: "ghostex_evaluate",
+      description: "Evaluate JavaScript in the selected embedded browser page.",
+      inputSchema: {
+        type: "object",
+        required: ["script"],
+        properties: { ...pageSelectorProperties, awaitPromise: { type: "boolean" }, script: { type: "string" } },
+      },
+    },
+    {
+      name: "ghostex_console_logs",
+      description: "Read captured console, exception, and browser log entries for the selected embedded page.",
+      inputSchema: {
+        type: "object",
+        properties: { ...pageSelectorProperties, clear: { type: "boolean" }, limit: { type: "number" } },
+      },
+    },
+    {
+      name: "ghostex_snapshot",
+      description: "Return an agent-friendly snapshot of visible interactive elements and assign @e refs.",
+      inputSchema: { type: "object", properties: { ...pageSelectorProperties, limit: { type: "number" } } },
+    },
+    {
+      name: "ghostex_click",
+      description: "Click an element by @e ref from ghostex_snapshot or a CSS selector.",
+      inputSchema: {
+        type: "object",
+        properties: { ...pageSelectorProperties, ref: { type: "string" }, selector: { type: "string" } },
+      },
+    },
+    {
+      name: "ghostex_fill",
+      description: "Fill an input, textarea, select, or contenteditable element by @e ref or CSS selector.",
+      inputSchema: {
+        type: "object",
+        required: ["text"],
+        properties: { ...pageSelectorProperties, ref: { type: "string" }, selector: { type: "string" }, text: { type: "string" } },
+      },
+    },
+    {
+      name: "ghostex_press_key",
+      description: "Send a keyboard key to the selected embedded browser page.",
+      inputSchema: { type: "object", required: ["key"], properties: { ...pageSelectorProperties, key: { type: "string" } } },
+    },
+    {
+      name: "ghostex_screenshot",
+      description: "Capture the selected embedded browser viewport as a PNG image.",
+      inputSchema: { type: "object", properties: { ...pageSelectorProperties } },
+    },
+  ];
+}
+
+async function callBrowserMcpTool(name, args, state) {
+  switch (name) {
+    case "ghostex_list_pages":
+      return textToolResult(await browserMcpListPages(state));
+    case "ghostex_select_page":
+      return textToolResult(await browserMcpSelectPage(args, state));
+    case "ghostex_navigate":
+      return textToolResult(await browserMcpNavigate(args, state));
+    case "ghostex_evaluate":
+      return textToolResult(await browserMcpEvaluate(args, state));
+    case "ghostex_console_logs":
+      return textToolResult(await browserMcpConsoleLogs(args, state));
+    case "ghostex_snapshot":
+      return textToolResult(await browserMcpSnapshot(args, state));
+    case "ghostex_click":
+      return textToolResult(await browserMcpClick(args, state));
+    case "ghostex_fill":
+      return textToolResult(await browserMcpFill(args, state));
+    case "ghostex_press_key":
+      return textToolResult(await browserMcpPressKey(args, state));
+    case "ghostex_screenshot":
+      return imageToolResult(await browserMcpScreenshot(args, state));
+    default:
+      throw new Error(`Unknown Ghostex browser MCP tool: ${name}`);
+  }
+}
+
+function textToolResult(value) {
+  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
+}
+
+function imageToolResult(value) {
+  return {
+    content: [
+      { type: "text", text: JSON.stringify({ page: value.page, size: value.size }, null, 2) },
+      { type: "image", data: value.data, mimeType: "image/png" },
+    ],
+  };
+}
+
+async function browserMcpListPages(state) {
+  const discovery = await discoverGhostexCdpPages(state.options);
+  return {
+    port: discovery.port,
+    selectedPageId: state.selectedPageId,
+    pages: discovery.pages.map((page, index) => ({
+      index,
+      id: page.id,
+      title: page.title ?? "",
+      type: page.type ?? "",
+      url: page.url ?? "",
+      selected: page.id === state.selectedPageId,
+    })),
+  };
+}
+
+async function browserMcpSelectPage(args, state) {
+  const { page } = await resolveGhostexCdpPage(args, state);
+  state.selectedPageId = page.id;
+  return { selected: { id: page.id, title: page.title ?? "", url: page.url ?? "" } };
+}
+
+async function browserMcpNavigate(args, state) {
+  const url = stringFlag(args.url);
+  if (!url) throw new Error("ghostex_navigate requires url");
+  const { client, page } = await getGhostexCdpClient(args, state);
+  await client.call("Page.enable");
+  const result = await client.call("Page.navigate", { url: normalizeBrowserNavigationUrl(url) });
+  return { frameId: result.frameId, page: cdpPageSummary(page) };
+}
+
+async function browserMcpEvaluate(args, state) {
+  const script = stringFlag(args.script);
+  if (!script) throw new Error("ghostex_evaluate requires script");
+  const { client, page } = await getGhostexCdpClient(args, state);
+  const result = await client.call("Runtime.evaluate", {
+    awaitPromise: args.awaitPromise !== false,
+    expression: script,
+    returnByValue: true,
+  });
+  if (result.exceptionDetails) {
+    return { exception: result.exceptionDetails, ok: false, page: cdpPageSummary(page) };
+  }
+  return {
+    ok: true,
+    page: cdpPageSummary(page),
+    result: normalizeRemoteObject(result.result),
+  };
+}
+
+async function browserMcpConsoleLogs(args, state) {
+  const { client, page } = await getGhostexCdpClient(args, state);
+  await client.ensureCaptureEnabled();
+  const key = page.id;
+  const entries = state.captures.get(key) ?? [];
+  const limit = normalizePositiveInteger(args.limit) ?? 200;
+  const selected = entries.slice(Math.max(0, entries.length - limit));
+  if (args.clear === true) {
+    state.captures.set(key, []);
+  }
+  return {
+    entries: selected,
+    page: cdpPageSummary(page),
+    total: entries.length,
+  };
+}
+
+async function browserMcpSnapshot(args, state) {
+  const { client, page } = await getGhostexCdpClient(args, state);
+  const limit = normalizePositiveInteger(args.limit) ?? 120;
+  const snapshot = await evaluateFunction(client, ghostexSnapshotScript, [limit]);
+  const refMap = new Map();
+  for (const element of snapshot.elements ?? []) {
+    if (element.ref && element.selector) {
+      refMap.set(element.ref, element.selector);
+    }
+  }
+  state.refMaps.set(page.id, refMap);
+  return {
+    page: cdpPageSummary(page),
+    snapshot,
+  };
+}
+
+async function browserMcpClick(args, state) {
+  const { client, page } = await getGhostexCdpClient(args, state);
+  const selector = resolveBrowserElementSelector(args, state, page.id);
+  const result = await evaluateFunction(client, ghostexClickScript, [selector]);
+  return { clicked: result, page: cdpPageSummary(page) };
+}
+
+async function browserMcpFill(args, state) {
+  const text = stringFlag(args.text);
+  if (text == null) throw new Error("ghostex_fill requires text");
+  const { client, page } = await getGhostexCdpClient(args, state);
+  const selector = resolveBrowserElementSelector(args, state, page.id);
+  const result = await evaluateFunction(client, ghostexFillScript, [selector, text]);
+  return { filled: result, page: cdpPageSummary(page) };
+}
+
+async function browserMcpPressKey(args, state) {
+  const key = stringFlag(args.key);
+  if (!key) throw new Error("ghostex_press_key requires key");
+  const { client, page } = await getGhostexCdpClient(args, state);
+  const event = keyEventForBrowserMcp(key);
+  await client.call("Input.dispatchKeyEvent", { ...event, type: "keyDown" });
+  await client.call("Input.dispatchKeyEvent", { ...event, type: "keyUp" });
+  return { key, page: cdpPageSummary(page), pressed: true };
+}
+
+async function browserMcpScreenshot(args, state) {
+  const { client, page } = await getGhostexCdpClient(args, state);
+  await client.call("Page.enable");
+  const result = await client.call("Page.captureScreenshot", { format: "png", fromSurface: true });
+  return {
+    data: result.data,
+    page: cdpPageSummary(page),
+    size: { encoding: "base64", mimeType: "image/png" },
+  };
+}
+
+async function getGhostexCdpClient(args, state) {
+  const { page } = await resolveGhostexCdpPage(args, state);
+  state.selectedPageId = page.id;
+  let client = state.clients.get(page.id);
+  if (!client || client.isClosed) {
+    client = await GhostexCdpClient.connect(page, {
+      onEvent: (event) => recordGhostexCdpEvent(page.id, event, state),
+      timeoutMs: state.options.timeoutMs,
+    });
+    state.clients.set(page.id, client);
+  }
+  return { client, page };
+}
+
+async function resolveGhostexCdpPage(args, state) {
+  const discovery = await discoverGhostexCdpPages(state.options);
+  if (discovery.pages.length === 0) {
+    throw new Error(`No Ghostex CEF pages found on 127.0.0.1:${discovery.port}`);
+  }
+  const pageId = stringFlag(args.pageId ?? args.page ?? args.target ?? state.selectedPageId);
+  let page = pageId ? discovery.pages.find((candidate) => candidate.id === pageId) : null;
+  if (!page && typeof args.index === "number") {
+    page = discovery.pages[args.index] ?? null;
+  }
+  const titleContains = stringFlag(args.titleContains);
+  const urlContains = stringFlag(args.urlContains);
+  if (!page && titleContains) {
+    page = discovery.pages.find((candidate) => String(candidate.title ?? "").includes(titleContains)) ?? null;
+  }
+  if (!page && urlContains) {
+    page = discovery.pages.find((candidate) => String(candidate.url ?? "").includes(urlContains)) ?? null;
+  }
+  if (!page) {
+    page = discovery.pages[0];
+  }
+  if (!page?.webSocketDebuggerUrl) {
+    throw new Error(`Ghostex CEF page ${page?.id ?? "unknown"} does not expose a DevTools WebSocket URL`);
+  }
+  return { page, port: discovery.port };
+}
+
+async function discoverGhostexCdpPages(options = {}) {
+  const explicitPort = normalizePositiveInteger(options.port);
+  const ports = explicitPort
+    ? [explicitPort]
+    : uniqueNumbers([
+        normalizePositiveInteger(process.env.GHOSTEX_CEF_REMOTE_DEBUGGING_PORT),
+        9333,
+        9334,
+        9335,
+        9336,
+        9337,
+        9338,
+        9339,
+        9340,
+        9341,
+        9342,
+        9343,
+      ]);
+  let lastError = null;
+  for (const port of ports) {
+    try {
+      const targets = await httpJson(`http://127.0.0.1:${port}/json`, 450);
+      const pages = Array.isArray(targets)
+        ? targets.filter((target) => target?.type === "page" && !String(target.url ?? "").startsWith("devtools://"))
+        : [];
+      return { pages, port };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(
+    `Could not reach Ghostex CEF DevTools on ports ${ports.join(", ")}${lastError ? `: ${lastError.message}` : ""}`,
+  );
+}
+
+function recordGhostexCdpEvent(pageId, event, state) {
+  if (!event?.method) return;
+  const entries = state.captures.get(pageId) ?? [];
+  const pushEntry = (entry) => {
+    entries.push({ timestamp: new Date().toISOString(), ...entry });
+    if (entries.length > 1000) {
+      entries.splice(0, entries.length - 1000);
+    }
+    state.captures.set(pageId, entries);
+  };
+  if (event.method === "Runtime.consoleAPICalled") {
+    pushEntry({
+      args: (event.params?.args ?? []).map(normalizeRemoteObject),
+      level: event.params?.type ?? "log",
+      source: "console",
+      stackTrace: event.params?.stackTrace ?? null,
+      text: (event.params?.args ?? []).map(remoteObjectText).join(" "),
+    });
+  } else if (event.method === "Runtime.exceptionThrown") {
+    pushEntry({
+      exception: event.params?.exceptionDetails ?? null,
+      level: "error",
+      source: "exception",
+      text: event.params?.exceptionDetails?.text ?? "JavaScript exception",
+    });
+  } else if (event.method === "Log.entryAdded") {
+    pushEntry({
+      level: event.params?.entry?.level ?? "info",
+      source: event.params?.entry?.source ?? "browser",
+      text: event.params?.entry?.text ?? "",
+      url: event.params?.entry?.url ?? null,
+    });
+  }
+}
+
+async function evaluateFunction(client, fn, args) {
+  const expression = `(${fn.toString()})(...${JSON.stringify(args)})`;
+  const result = await client.call("Runtime.evaluate", {
+    awaitPromise: true,
+    expression,
+    returnByValue: true,
+  });
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.text ?? "Browser evaluation failed");
+  }
+  return result.result?.value;
+}
+
+function ghostexSnapshotScript(limit) {
+  const selectors = [
+    "a[href]",
+    "button",
+    "input",
+    "textarea",
+    "select",
+    "[role='button']",
+    "[role='link']",
+    "[role='textbox']",
+    "[contenteditable='true']",
+    "[tabindex]:not([tabindex='-1'])",
+  ].join(",");
+  const cssPath = (element) => {
+    if (!element || element.nodeType !== 1) return "";
+    const parts = [];
+    let cursor = element;
+    while (cursor && cursor.nodeType === 1 && cursor !== document.documentElement) {
+      let part = cursor.nodeName.toLowerCase();
+      if (cursor.id) {
+        part += `#${CSS.escape(cursor.id)}`;
+        parts.unshift(part);
+        break;
+      }
+      const parent = cursor.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((child) => child.nodeName === cursor.nodeName);
+        if (siblings.length > 1) {
+          part += `:nth-of-type(${siblings.indexOf(cursor) + 1})`;
+        }
+      }
+      parts.unshift(part);
+      cursor = parent;
+    }
+    return parts.join(" > ");
+  };
+  const labelFor = (element) => {
+    const aria = element.getAttribute("aria-label");
+    if (aria) return aria.trim();
+    if (element.id) {
+      const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
+      if (label?.innerText) return label.innerText.trim();
+    }
+    return (element.innerText || element.value || element.placeholder || element.title || "").trim().replace(/\s+/g, " ");
+  };
+  const elements = [];
+  for (const element of Array.from(document.querySelectorAll(selectors))) {
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    if (rect.width <= 0 || rect.height <= 0 || style.visibility === "hidden" || style.display === "none") {
+      continue;
+    }
+    elements.push({
+      bounds: { height: Math.round(rect.height), width: Math.round(rect.width), x: Math.round(rect.x), y: Math.round(rect.y) },
+      disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"),
+      label: labelFor(element).slice(0, 240),
+      placeholder: element.getAttribute("placeholder") || "",
+      ref: `@e${elements.length + 1}`,
+      role: element.getAttribute("role") || element.nodeName.toLowerCase(),
+      selector: cssPath(element),
+      tag: element.nodeName.toLowerCase(),
+      type: element.getAttribute("type") || "",
+      value: "value" in element ? String(element.value ?? "").slice(0, 240) : "",
+    });
+    if (elements.length >= limit) break;
+  }
+  return { elements, title: document.title, url: location.href };
+}
+
+function ghostexClickScript(selector) {
+  const element = document.querySelector(selector);
+  if (!element) throw new Error(`Element not found: ${selector}`);
+  element.scrollIntoView({ block: "center", inline: "center" });
+  element.focus?.();
+  element.click();
+  const rect = element.getBoundingClientRect();
+  return { bounds: { height: rect.height, width: rect.width, x: rect.x, y: rect.y }, selector };
+}
+
+function ghostexFillScript(selector, text) {
+  const element = document.querySelector(selector);
+  if (!element) throw new Error(`Element not found: ${selector}`);
+  element.scrollIntoView({ block: "center", inline: "center" });
+  element.focus?.();
+  if (element.isContentEditable) {
+    element.textContent = text;
+  } else if (element.tagName === "SELECT") {
+    element.value = text;
+  } else if ("value" in element) {
+    element.value = text;
+  } else {
+    throw new Error(`Element cannot be filled: ${selector}`);
+  }
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+  element.dispatchEvent(new Event("change", { bubbles: true }));
+  return { selector, value: text };
+}
+
+function resolveBrowserElementSelector(args, state, pageId) {
+  const selector = stringFlag(args.selector);
+  if (selector) return selector;
+  const ref = stringFlag(args.ref ?? args.element);
+  if (!ref) throw new Error("Expected selector or ref");
+  const mapped = state.refMaps.get(pageId)?.get(ref);
+  if (!mapped) {
+    throw new Error(`Unknown element ref ${ref}. Run ghostex_snapshot again for fresh refs.`);
+  }
+  return mapped;
+}
+
+function normalizeRemoteObject(value) {
+  if (!value) return null;
+  if (Object.hasOwn(value, "value")) return value.value;
+  if (value.unserializableValue) return value.unserializableValue;
+  return value.description ?? value.type ?? null;
+}
+
+function remoteObjectText(value) {
+  const normalized = normalizeRemoteObject(value);
+  return typeof normalized === "string" ? normalized : JSON.stringify(normalized);
+}
+
+function keyEventForBrowserMcp(key) {
+  const special = {
+    ArrowDown: { code: "ArrowDown", key: "ArrowDown", windowsVirtualKeyCode: 40 },
+    ArrowLeft: { code: "ArrowLeft", key: "ArrowLeft", windowsVirtualKeyCode: 37 },
+    ArrowRight: { code: "ArrowRight", key: "ArrowRight", windowsVirtualKeyCode: 39 },
+    ArrowUp: { code: "ArrowUp", key: "ArrowUp", windowsVirtualKeyCode: 38 },
+    Backspace: { code: "Backspace", key: "Backspace", windowsVirtualKeyCode: 8 },
+    Delete: { code: "Delete", key: "Delete", windowsVirtualKeyCode: 46 },
+    Enter: { code: "Enter", key: "Enter", windowsVirtualKeyCode: 13 },
+    Escape: { code: "Escape", key: "Escape", windowsVirtualKeyCode: 27 },
+    Tab: { code: "Tab", key: "Tab", windowsVirtualKeyCode: 9 },
+  };
+  if (special[key]) return special[key];
+  const text = key.length === 1 ? key : "";
+  return { code: text ? `Key${key.toUpperCase()}` : key, key, text, windowsVirtualKeyCode: text ? key.toUpperCase().charCodeAt(0) : 0 };
+}
+
+function cdpPageSummary(page) {
+  return { id: page.id, title: page.title ?? "", url: page.url ?? "" };
+}
+
+function normalizeBrowserNavigationUrl(value) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return value;
+  return `https://${value}`;
+}
+
+function stringFlag(value) {
+  if (typeof value !== "string") return value == null ? null : String(value);
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizePositiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function uniqueNumbers(values) {
+  return [...new Set(values.filter((value) => Number.isInteger(value) && value > 0))];
+}
+
+function httpJson(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: timeoutMs }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          reject(new Error(`HTTP ${response.statusCode}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on("timeout", () => request.destroy(new Error("request timed out")));
+    request.on("error", reject);
+  });
+}
+
+class GhostexCdpClient {
+  constructor(socket, options = {}) {
+    this.nextId = 1;
+    this.options = options;
+    this.pending = new Map();
+    this.socket = socket;
+    this.captureEnabled = false;
+    this.isClosed = false;
+    socket.onMessage = (message) => this.handleMessage(message);
+    socket.onClose = () => {
+      this.isClosed = true;
+      for (const { reject, timeout } of this.pending.values()) {
+        clearTimeout(timeout);
+        reject(new Error("CDP connection closed"));
+      }
+      this.pending.clear();
+    };
+  }
+
+  static async connect(page, options = {}) {
+    const socket = await SimpleWebSocket.connect(page.webSocketDebuggerUrl);
+    return new GhostexCdpClient(socket, options);
+  }
+
+  async ensureCaptureEnabled() {
+    if (this.captureEnabled) return;
+    await this.call("Runtime.enable");
+    await this.call("Log.enable");
+    await this.call("Page.enable");
+    this.captureEnabled = true;
+  }
+
+  call(method, params = {}) {
+    if (this.isClosed) {
+      return Promise.reject(new Error("CDP connection is closed"));
+    }
+    const id = this.nextId++;
+    const timeoutMs = this.options.timeoutMs ?? 10_000;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Timed out waiting for CDP method ${method}`));
+      }, timeoutMs);
+      this.pending.set(id, { reject, resolve, timeout });
+      this.socket.send(JSON.stringify({ id, method, params }));
+    });
+  }
+
+  handleMessage(message) {
+    const parsed = parseJson(message);
+    if (!parsed) return;
+    if (parsed.id != null) {
+      const pending = this.pending.get(parsed.id);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      this.pending.delete(parsed.id);
+      if (parsed.error) {
+        pending.reject(new Error(parsed.error.message ?? JSON.stringify(parsed.error)));
+      } else {
+        pending.resolve(parsed.result ?? {});
+      }
+      return;
+    }
+    this.options.onEvent?.(parsed);
+  }
+}
+
+class SimpleWebSocket {
+  constructor(socket) {
+    this.buffer = Buffer.alloc(0);
+    this.handshakeComplete = false;
+    this.isClosed = false;
+    this.onClose = null;
+    this.onMessage = null;
+    this.socket = socket;
+    socket.on("data", (chunk) => this.read(chunk));
+    socket.on("close", () => {
+      this.isClosed = true;
+      this.onClose?.();
+    });
+    socket.on("error", () => {
+      this.isClosed = true;
+      this.onClose?.();
+    });
+  }
+
+  static connect(rawUrl) {
+    const url = new URL(rawUrl);
+    const port = Number(url.port || 80);
+    return new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host: url.hostname, port }, () => {
+        const key = randomBytes(16).toString("base64");
+        const request = [
+          `GET ${url.pathname}${url.search} HTTP/1.1`,
+          `Host: ${url.host}`,
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Key: ${key}`,
+          "Sec-WebSocket-Version: 13",
+          "\r\n",
+        ].join("\r\n");
+        socket.write(request);
+      });
+      const ws = new SimpleWebSocket(socket);
+      const timeout = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("Timed out opening CDP WebSocket"));
+      }, 5_000);
+      ws.onHandshake = (headers) => {
+        clearTimeout(timeout);
+        const accept = headers["sec-websocket-accept"];
+        if (!accept) {
+          reject(new Error("Invalid WebSocket handshake"));
+          socket.destroy();
+          return;
+        }
+        resolve(ws);
+      };
+      socket.on("error", reject);
+    });
+  }
+
+  send(text) {
+    if (this.isClosed) throw new Error("WebSocket is closed");
+    const payload = Buffer.from(text, "utf8");
+    const headerLength = payload.length < 126 ? 2 : payload.length < 65536 ? 4 : 10;
+    const frame = Buffer.alloc(headerLength + 4 + payload.length);
+    frame[0] = 0x81;
+    if (payload.length < 126) {
+      frame[1] = 0x80 | payload.length;
+    } else if (payload.length < 65536) {
+      frame[1] = 0x80 | 126;
+      frame.writeUInt16BE(payload.length, 2);
+    } else {
+      frame[1] = 0x80 | 127;
+      frame.writeBigUInt64BE(BigInt(payload.length), 2);
+    }
+    const maskOffset = headerLength;
+    const mask = randomBytes(4);
+    mask.copy(frame, maskOffset);
+    for (let index = 0; index < payload.length; index += 1) {
+      frame[maskOffset + 4 + index] = payload[index] ^ mask[index % 4];
+    }
+    this.socket.write(frame);
+  }
+
+  read(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    if (!this.handshakeComplete) {
+      const headerEnd = this.buffer.indexOf("\r\n\r\n");
+      if (headerEnd < 0) return;
+      const headerText = this.buffer.slice(0, headerEnd).toString("utf8");
+      this.buffer = this.buffer.slice(headerEnd + 4);
+      const lines = headerText.split("\r\n");
+      if (!/^HTTP\/1\.1 101/.test(lines[0])) {
+        this.socket.destroy();
+        return;
+      }
+      const headers = {};
+      for (const line of lines.slice(1)) {
+        const separator = line.indexOf(":");
+        if (separator > 0) {
+          headers[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+        }
+      }
+      this.handshakeComplete = true;
+      this.onHandshake?.(headers);
+    }
+    while (this.buffer.length >= 2) {
+      const first = this.buffer[0];
+      const second = this.buffer[1];
+      const opcode = first & 0x0f;
+      const masked = (second & 0x80) !== 0;
+      let length = second & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (this.buffer.length < 4) return;
+        length = this.buffer.readUInt16BE(2);
+        offset = 4;
+      } else if (length === 127) {
+        if (this.buffer.length < 10) return;
+        length = Number(this.buffer.readBigUInt64BE(2));
+        offset = 10;
+      }
+      const maskLength = masked ? 4 : 0;
+      if (this.buffer.length < offset + maskLength + length) return;
+      const mask = masked ? this.buffer.slice(offset, offset + 4) : null;
+      offset += maskLength;
+      let payload = this.buffer.slice(offset, offset + length);
+      this.buffer = this.buffer.slice(offset + length);
+      if (mask) {
+        payload = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]));
+      }
+      if (opcode === 0x1) {
+        this.onMessage?.(payload.toString("utf8"));
+      } else if (opcode === 0x8) {
+        this.socket.end();
+      } else if (opcode === 0x9) {
+        this.socket.write(Buffer.from([0x8a, 0x00]));
+      }
+    }
+  }
+}
+
+class McpStdioTransport {
+  constructor(onMessage) {
+    this.buffer = Buffer.alloc(0);
+    this.onMessage = onMessage;
+  }
+
+  start() {
+    process.stdin.on("data", (chunk) => this.read(chunk));
+    process.stdin.resume();
+  }
+
+  send(message) {
+    const body = Buffer.from(JSON.stringify(message), "utf8");
+    process.stdout.write(`Content-Length: ${body.length}\r\n\r\n`);
+    process.stdout.write(body);
+  }
+
+  read(chunk) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    while (true) {
+      const headerEnd = this.buffer.indexOf("\r\n\r\n");
+      if (headerEnd < 0) return;
+      const header = this.buffer.slice(0, headerEnd).toString("utf8");
+      const lengthMatch = /^Content-Length:\s*(\d+)/im.exec(header);
+      if (!lengthMatch) {
+        this.buffer = Buffer.alloc(0);
+        return;
+      }
+      const length = Number(lengthMatch[1]);
+      const bodyStart = headerEnd + 4;
+      if (this.buffer.length < bodyStart + length) return;
+      const body = this.buffer.slice(bodyStart, bodyStart + length).toString("utf8");
+      this.buffer = this.buffer.slice(bodyStart + length);
+      const message = parseJson(body);
+      if (message) {
+        void this.onMessage(message);
+      }
+    }
+  }
 }
 
 async function sendSidebarCliCommand(action, payload, flags = {}) {
@@ -805,8 +1716,8 @@ async function attachSessionCommand(args) {
    * Keep positional selectors for human usage.
    *
    * CDXC:CliSessionPicker 2026-05-25-16:05:
-   * `ghostex attach`, `gtx attach`, and `gtx a` without a selector should open
-   * the lightweight attach picker, not the full TUI. Bare `gtx` owns the full
+   * `ghostex attach`, `gx attach`, and `gx a` without a selector should open
+   * the lightweight attach picker, not the full TUI. Bare `gx` owns the full
    * TUI experience while empty attach keeps the fast single-session picker.
    */
   const selector = flags.sessionId ?? rest.join(" ").trim();
@@ -859,8 +1770,8 @@ async function ghostexTuiCommand(args) {
   const { flags } = parseArgs(args);
   /**
    * CDXC:GhostexTui 2026-05-24-19:18:
-   * Bare `ghostex` / `gtx` launches the full Ghostex terminal TUI. Direct
-   * attach commands such as `gtx a <session>` stay on the Node attach path so
+   * Bare `ghostex` / `gx` launches the full Ghostex terminal TUI. Direct
+   * attach commands such as `gx a <session>` stay on the Node attach path so
    * scripts and muscle-memory single-session attaches keep their old behavior.
    * The TUI calls back into this CLI for session inventory and attach so the
    * macOS sidebar remains the source of truth.
@@ -872,7 +1783,7 @@ async function ghostexTuiCommand(args) {
   const tui = resolveGhostexTuiLaunch(flags);
   /**
    * CDXC:GhostexTui 2026-05-25-15:11:
-   * The bare `gtx` launcher must pass TUI environment through `spawn({ env })`.
+   * The bare `gx` launcher must pass TUI environment through `spawn({ env })`.
    * Putting these keys at the top-level options object makes the app build try
    * the full upstream Herdr/Ghostty path and drops the callback command the TUI
    * uses to list and attach Ghostex sessions.
@@ -896,7 +1807,7 @@ function resolveGhostexTuiLaunch(flags = {}) {
    * CDXC:GhostexTui 2026-05-25-15:11:
    * Installed Homebrew/app CLIs run from the application resource directory,
    * while local development runs from the source checkout. Probe both the CLI
-   * bundle root and the current checkout root so bare `gtx` can find the TUI
+   * bundle root and the current checkout root so bare `gx` can find the TUI
    * binary or Cargo manifest instead of emitting cargo errors for a missing
    * bundled `tui/` directory.
    */
@@ -942,7 +1853,7 @@ function resolveGhostexTuiLaunchFromRoot(root) {
 function ghostexTuiCargoEnv() {
   /**
    * CDXC:GhostexTui 2026-05-26-11:06:
-   * Bare `gtx` now needs Herdr's Ghostty-backed runtime, so Cargo fallback
+   * Bare `gx` now needs Herdr's Ghostty-backed runtime, so Cargo fallback
    * builds must not use the earlier `GHOSTEX_TUI_LIGHT=1` vt100-only path.
    * On macOS 26.4+, unpatched Zig 0.15.2 cannot link libc from Xcode 26 SDKs;
    * prefer Homebrew's patched `zig@0.15` keg when it exists so first-run
@@ -968,6 +1879,26 @@ function findGhostexSourceRoot(startPath) {
     }
     current = parent;
   }
+}
+
+function resolveGhostexBrowserSkillSourceDir() {
+  const cliDir = path.dirname(fileURLToPath(import.meta.url));
+  const explicitSource = stringFlag(process.env.GHOSTEX_BROWSER_SKILL_SOURCE);
+  const sourceRoot = findGhostexSourceRoot(process.cwd());
+  const candidates = uniquePaths([
+    explicitSource,
+    path.join(cliDir, "skills", GHOSTEX_BROWSER_SKILL_NAME),
+    path.join(path.resolve(cliDir, ".."), ".agents", "skills", GHOSTEX_BROWSER_SKILL_NAME),
+    sourceRoot && path.join(sourceRoot, ".agents", "skills", GHOSTEX_BROWSER_SKILL_NAME),
+  ]);
+  for (const candidate of candidates) {
+    if (fileExistsSync(path.join(candidate, "SKILL.md"))) {
+      return candidate;
+    }
+  }
+  throw new Error(
+    `Could not find ${GHOSTEX_BROWSER_SKILL_NAME}. Reinstall Ghostex or set GHOSTEX_BROWSER_SKILL_SOURCE to the skill directory.`,
+  );
 }
 
 function uniquePaths(paths) {
@@ -1307,7 +2238,7 @@ async function resolveOneListedSession(selector, sessions) {
     return matches[0];
   }
   if (matches.length === 0) {
-    throw new Error(`No matching session found for "${selector}". Run "ghostex sessions" or "gtx sessions" to list sessions.`);
+    throw new Error(`No matching session found for "${selector}". Run "ghostex sessions" or "gx sessions" to list sessions.`);
   }
   throw new Error(`Multiple sessions matched "${selector}":\n${formatSessionMatches(matches)}`);
 }
@@ -2055,6 +2986,8 @@ function usage() {
     formatHelpCommand("open-browser [url]", "Open the browser surface"),
     formatHelpCommand("open-browser-pane", "Open a browser pane"),
     formatHelpCommand("show-browser", "Show the browser surface"),
+    formatHelpCommand("browser-devtools-mcp [--port n]", "Run a stdio MCP server for embedded CEF DevTools control"),
+    formatHelpCommand("install-browser-skill [--json]", "Install the Ghostex browser MCP skill for agents"),
     formatHelpCommand("move-sidebar", "Move the sidebar"),
   ].join("\n");
 
@@ -2070,9 +3003,9 @@ function usage() {
 
 Usage:
   ghostex
-  gtx
+  gx
   ghostex <command> [args...] [--flags]
-  gtx <command> [args...] [--flags]
+  gx <command> [args...] [--flags]
   bun scripts/ghostex-cli.mjs <command> [args...] [--flags]
 
 Commands:
@@ -2092,11 +3025,11 @@ ${evidenceCommands}
 
 Selectors:
   <selector> can be an alias, session id, title, or project:title.
-  Numeric aliases come from the last "ghostex sessions" or "gtx sessions" list.
+  Numeric aliases come from the last "ghostex sessions" or "gx sessions" list.
   Titles match exact first, then case-insensitive substring.
 
 Sessions:
-  Running ghostex or gtx with no subcommand opens the Ghostex terminal TUI.
+  Running ghostex or gx with no subcommand opens the Ghostex terminal TUI.
   The TUI shows the attached session, with a top switch button for project/session switching.
   The switcher lists Ghostex projects and sessions in macOS sidebar order and attaches through the existing zmx path.
   Direct attach stays available through attach/a/resume/r without opening the TUI.

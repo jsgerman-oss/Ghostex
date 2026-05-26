@@ -64,8 +64,12 @@ const MAX_GHOSTTY_SCROLLBACK_LIMIT_MB = 200;
 /**
  * CDXC:Branding 2026-05-12-07:35
  * Public app copy uses Ghostex, and public terminal commands use `ghostex`
- * with `gtx` as the short alias. The codebase can keep ghostex in type names,
+ * with `gx` as the short alias. The codebase can keep ghostex in type names,
  * storage/protocol keys, file paths, and implementation identifiers.
+ *
+ * CDXC:Branding 2026-05-26-15:11
+ * New installs should expose `gx` instead of the older `gtx` command, and setup
+ * should not claim `gx` when another tool already owns that binary name.
  *
  * CDXC:Branding 2026-05-15-11:54
  * The project rename now applies to source-facing identifiers, docs, scripts,

@@ -134,17 +134,23 @@ mkdir -p "$WEB_DIR/cli"
 # CDXC:CliSessions 2026-05-10-03:28: Shells resolve the installed macOS
 # executable as a terminal command. Bundle the Node CLI beside the web assets
 # so main.swift can proxy command argv before the AppKit app starts.
-# CDXC:CliBranding 2026-05-12-07:35: Public CLI commands are now `ghostex`
-# and `gtx`; the bundled script filename follows that public CLI name while
+# CDXC:CliBranding 2026-05-26-15:11: Public CLI commands are now `ghostex`
+# and `gx`; the bundled script filename follows the long public CLI name while
 # internal GHOSTEX_* environment names and storage paths remain implementation
-# details.
-# CDXC:CliBranding 2026-05-15-17:41: The macOS app bundle should ship executable
-# `ghostex` and `gtx` launchers automatically so Homebrew can install both public
-# commands without asking users to add shell aliases by hand.
+# details. The macOS app bundle should ship executable `ghostex` and `gx`
+# launchers automatically so Homebrew can install both public commands without
+# asking users to add shell aliases by hand.
 cp "$REPO_ROOT/scripts/ghostex-cli.mjs" "$WEB_DIR/cli/ghostex-cli.mjs"
 cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/ghostex"
-cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/gtx"
-chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gtx"
+cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/gx"
+chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
+# CDXC:BrowserAgentControl 2026-05-26-22:17: First-launch CLI setup installs
+# the Ghostex browser DevTools MCP skill after Homebrew installs the app bundle.
+# Bundle the skill beside the CLI so `ghostex install-browser-skill` can copy the
+# exact version that matches the installed `ghostex browser-devtools-mcp`
+# command into ~/agents/skills.
+mkdir -p "$WEB_DIR/cli/skills"
+cp -R "$REPO_ROOT/.agents/skills/ghostex-browser-devtools-mcp" "$WEB_DIR/cli/skills/ghostex-browser-devtools-mcp"
 # CDXC:ZmxPersistence 2026-05-20-09:57: zmx pane refresh is now a zmx IPC feature, so Ghostex must bundle the pinned submodule binary instead of depending on whichever zmx happens to be on PATH. Build the submodule for the requested macOS architecture and copy it into app resources where TerminalWorkspaceView can launch it directly.
 if [[ ! -f "$ZMX_ROOT/build.zig" ]]; then
 	cat >&2 <<EOF
