@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_PATH="${1:-}"
-CODE_SIGN_IDENTITY="${GHOSTEX_CODE_SIGN_IDENTITY:-}"
+CODE_SIGN_IDENTITY="${GHOSTEX_CODE_SIGN_IDENTITY:--}"
 # CDXC:Distribution 2026-04-27-08:37: Notarized Homebrew releases need Apple
 # Developer ID signatures with a secure timestamp. Dev builds keep the older
 # no-timestamp default unless the release command opts into --timestamp.
@@ -19,25 +19,20 @@ if [[ ! -d "$APP_PATH" ]]; then
 fi
 
 if [[ -z "$CODE_SIGN_IDENTITY" ]]; then
-	# CDXC:NativeHost 2026-04-27-05:50: Dev builds must keep a stable Apple
-	# code-signing requirement so macOS Accessibility permissions survive each
-	# `bun start` rebuild. Auto-select the local Developer ID certificate instead
-	# of committing a maintainer-specific identity into the public project file.
-	CODE_SIGN_IDENTITY="$(
-		security find-identity -v -p codesigning 2>/dev/null |
-			awk -F '"' '/Developer ID Application:/ { print $2; exit }'
-	)"
-fi
-
-if [[ -z "$CODE_SIGN_IDENTITY" ]]; then
 	cat >&2 <<'EOF'
-No Developer ID Application signing identity was found.
+GHOSTEX_CODE_SIGN_IDENTITY cannot be empty.
 
-Install an Apple Developer ID Application certificate, or run with:
-  GHOSTEX_CODE_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)" bun start
+Run local development with the default ad-hoc identity, or set:
+  GHOSTEX_CODE_SIGN_IDENTITY="Developer ID Application: Name (TEAMID)"
 EOF
 	exit 1
 fi
+
+# CDXC:LocalStart 2026-05-26-08:40: `bun run start` is a local developer
+# launch path, not a release signing path. Default to ad-hoc signing so the
+# native app and bundled CEF runtime can be re-signed from shells that cannot
+# access the Developer ID private key; release automation must opt into
+# Developer ID by setting GHOSTEX_CODE_SIGN_IDENTITY explicitly.
 
 echo "Signing $APP_PATH"
 echo "Identity: $CODE_SIGN_IDENTITY"
