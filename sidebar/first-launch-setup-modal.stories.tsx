@@ -1,8 +1,14 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { FirstLaunchSetupModal } from "./first-launch-setup-modal";
+import {
+  FirstLaunchSetupModal,
+  type FirstLaunchSetupPage,
+} from "./first-launch-setup-modal";
 import { DEFAULT_ghostex_SETTINGS, type ghostexSettings } from "../shared/ghostex-settings";
-import type { SidebarAgentHookStatusMessage } from "../shared/session-grid-contract";
+import type {
+  SidebarAgentHookStatusMessage,
+  SidebarGhostexCliStatusMessage,
+} from "../shared/session-grid-contract";
 import { DEFAULT_SIDEBAR_AGENTS } from "../shared/sidebar-agents";
 
 const initialHookStatus: SidebarAgentHookStatusMessage = {
@@ -29,6 +35,18 @@ const initialHookStatus: SidebarAgentHookStatusMessage = {
   type: "agentHookStatus",
 };
 
+const installedCliStatus: SidebarGhostexCliStatusMessage = {
+  browserSkillInstalled: true,
+  browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-devtools-mcp/SKILL.md",
+  detail: "ghostex is available on PATH. gx is not currently linked, so Ghostex will keep using the primary command until the alias can be installed safely. Browser MCP skill is installed for agents.",
+  generatedAt: "2026-05-26T13:12:00.000Z",
+  ghostexPath: "/opt/homebrew/bin/ghostex",
+  gxBlockedByExistingCommand: false,
+  gxUsable: false,
+  installed: true,
+  type: "ghostexCliStatus",
+};
+
 function installedHookStatus(): SidebarAgentHookStatusMessage {
   return {
     ...initialHookStatus,
@@ -45,7 +63,13 @@ function installedHookStatus(): SidebarAgentHookStatusMessage {
   };
 }
 
-function FirstLaunchSetupModalStory() {
+function FirstLaunchSetupModalStory({
+  cliInstalled = true,
+  initialPage = "hooks",
+}: {
+  cliInstalled?: boolean;
+  initialPage?: FirstLaunchSetupPage;
+}) {
   const [settings, setSettings] = useState<ghostexSettings>(DEFAULT_ghostex_SETTINGS);
   const [agentHookStatus, setAgentHookStatus] =
     useState<SidebarAgentHookStatusMessage>(initialHookStatus);
@@ -64,6 +88,8 @@ function FirstLaunchSetupModalStory() {
       <FirstLaunchSetupModal
         agentHookStatus={agentHookStatus}
         agentHookStatusLoading={agentHookStatusLoading}
+        ghostexCliStatus={cliInstalled ? installedCliStatus : undefined}
+        initialPage={initialPage}
         isOpen
         onChange={setSettings}
         onClose={() => undefined}
@@ -84,11 +110,35 @@ const meta = {
   parameters: {
     layout: "fullscreen",
   },
-  render: () => <FirstLaunchSetupModalStory />,
+  render: (args) => (
+    <FirstLaunchSetupModalStory
+      cliInstalled={args.cliInstalled}
+      initialPage={args.initialPage}
+    />
+  ),
 } satisfies Meta;
 
 export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Intro: Story = {};
+export const Intro: Story = {
+  args: {
+    cliInstalled: true,
+    initialPage: "hooks",
+  },
+};
+
+export const Cli: Story = {
+  args: {
+    cliInstalled: true,
+    initialPage: "cli",
+  },
+};
+
+export const CliNeedsInstall: Story = {
+  args: {
+    cliInstalled: false,
+    initialPage: "cli",
+  },
+};

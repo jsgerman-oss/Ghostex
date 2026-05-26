@@ -83,6 +83,25 @@ export type SidebarAgentHookStatusMessage = {
   type: "agentHookStatus";
 };
 
+export type SidebarGhostexCliStatusMessage = {
+  /**
+   * CDXC:BrowserAgentControl 2026-05-26-22:17:
+   * First-launch CLI setup treats the browser DevTools MCP skill as part of the
+   * installed CLI experience because agents need both the executable and the
+   * skill instructions before they can inspect embedded CEF logs and pages.
+   */
+  browserSkillInstalled: boolean;
+  browserSkillPath?: string;
+  detail: string;
+  generatedAt: string;
+  ghostexPath?: string;
+  gxBlockedByExistingCommand: boolean;
+  gxPath?: string;
+  gxUsable: boolean;
+  installed: boolean;
+  type: "ghostexCliStatus";
+};
+
 export type SidebarSessionItem = {
   kind?: "browser" | "workspace";
   sessionKind?: "browser" | "terminal" | "t3";
@@ -515,6 +534,7 @@ export type ExtensionToSidebarMessage =
   | SidebarShowT3BrowserAccessMessage
   | SidebarGhostexFolderStatsMessage
   | SidebarAgentHookStatusMessage
+  | SidebarGhostexCliStatusMessage
   | SidebarShowSessionRenameModalMessage
   | SidebarShowFindPreviousSessionModalMessage
   | SidebarShowT3ThreadIdModalMessage;
@@ -535,8 +555,13 @@ export type SidebarToExtensionMessage =
       /**
        * CDXC:AgentHookSettings 2026-05-23-10:05:
        * Settings -> Agents can refresh hook status and trigger the existing hook installer, but native remains the owner of config paths, executable checks, and hook-file mutation.
+       *
+       * CDXC:FirstLaunchSetup 2026-05-26-17:12:
+       * First launch CLI setup must distinguish a missing CLI from an app that
+       * was already installed through Homebrew. Native owns PATH inspection so
+       * the production modal and Storybook mock can share the same UI contract.
        */
-      type: "requestAgentHookStatus" | "installAgentHooks";
+      type: "requestAgentHookStatus" | "installAgentHooks" | "requestGhostexCliStatus";
     }
   | {
       settings: ghostexSettings;

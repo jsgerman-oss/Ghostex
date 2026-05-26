@@ -240,18 +240,18 @@ const TIPS_AND_TRICKS_PAGES: TipsPage[] = [
         "ssh madda@my-mac",
         "",
         "# List Ghostex sessions and note the left-column alias",
-        "gtx sessions",
+        "gx sessions",
         "",
         "# Attach to session 1",
-        "gtx a 1",
+        "gx a 1",
         "",
         "# Wake, focus, or sleep sessions from the phone",
-        "gtx wake 1",
-        "gtx focus 1",
-        "gtx sleep 1",
+        "gx wake 1",
+        "gx focus 1",
+        "gx sleep 1",
         "",
         "# Use a title when the alias is not handy",
-        'gtx a "project:session title"',
+        'gx a "project:session title"',
       ],
     },
     icon: IconWorld,
@@ -274,13 +274,13 @@ const TIPS_AND_TRICKS_PAGES: TipsPage[] = [
       },
       {
         icon: IconStack,
-        text: "Keep Ghostex open on the Mac so gtx can list live sessions; zmx, tmux, or zellij keeps the terminal session itself durable.",
+        text: "Keep Ghostex open on the Mac so gx can list live sessions; zmx, tmux, or zellij keeps the terminal session itself durable.",
       },
     ],
     /**
      * CDXC:RemoteAccess 2026-05-15-23:03:
      * Tips & Tricks needs a Remote Access page that teaches phone-based session
-     * continuation through Tailscale, SSH, Termux, and the public `gtx` CLI
+     * continuation through Tailscale, SSH, Termux, and the public `gx` CLI
      * alias. The page must position persistence as the prerequisite for
      * attaching to any running Ghostex terminal session remotely.
      */

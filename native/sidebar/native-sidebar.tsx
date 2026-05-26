@@ -82,6 +82,7 @@ import {
   type SidebarTheme,
   type SidebarToExtensionMessage,
   type SidebarAgentHookStatusMessage,
+  type SidebarGhostexCliStatusMessage,
   type SidebarGhostexFolderStatsMessage,
   type TerminalSessionPersistenceProvider,
   type TerminalSessionRecord,
@@ -331,6 +332,7 @@ type NativeHostCommand =
       type: "createTerminal";
     }
   | {
+      browserFeedbackTool?: "react-grab" | "agentation";
       cwd?: string;
       projectId?: string;
       sessionId: string;
@@ -370,6 +372,7 @@ type NativeHostCommand =
     }
   | { type: "stopCodeServerRuntime" }
   | {
+      browserFeedbackTool?: "react-grab" | "agentation";
       companionPaneHidden?: boolean;
       mode?: ProjectEditorSurfaceMode;
       projectId: string;
@@ -384,6 +387,7 @@ type NativeHostCommand =
   | { projectId: string; type: "closeProjectEditorPane" }
   | { type: "activateApp" }
   | { sessionId: string; text: string; type: "writeTerminalText" }
+  | { sessionId: string; text: string; type: "writeTerminalScript" }
   | { sessionId: string; type: "sendTerminalEnter" }
   | { requestId: string; sessionId: string; source?: "screen" | "visible"; type: "readTerminalText" }
   | {
@@ -1430,6 +1434,14 @@ function takeNativeTerminalStartupText(sessionId: string): string | undefined {
   return text;
 }
 
+function isNativeRestoreStartupScript(text: string): boolean {
+  return text.includes("__ghostex_restore_resume_status=");
+}
+
+function normalizeNativeRestoreStartupScript(text: string): string {
+  return text.replace(/\r$/u, "");
+}
+
 function providerRuntimeSessionKey(projectId: string, sessionId: string): string {
   return `${projectId}:${sessionId}`;
 }
@@ -1499,8 +1511,29 @@ function shouldQueueProviderStartupTextForRestore(
     reason === "focus-sleeping-session" ||
     reason === "wake-session" ||
     reason === "wake-group" ||
+    reason === "wake-command-session" ||
+    reason === "command-pane-tab-wake" ||
+    reason === "pane-drop-wake" ||
     reason === "pane-tab-wake"
   );
+}
+
+function shouldIncludeSessionInNativePaneTabs(projectId: string, session: SessionRecord): boolean {
+  if (session.kind !== "terminal") {
+    return true;
+  }
+  const providerInfo = getTerminalProviderRuntimeInfo(session);
+  if (providerInfo?.provider !== "zmx") {
+    return true;
+  }
+  /**
+   * CDXC:SessionPersistence 2026-05-26-16:21:
+   * Native pane tabs for zmx-backed terminal records represent an attachable
+   * zmx runtime, not just durable Ghostex sidebar history. Hide confirmed
+   * missing zmx sessions from AppKit tab strips while keeping providerless
+   * persistence-off sessions on the older Ghostex-owned tab behavior.
+   */
+  return getProviderRuntimeStateForSession(projectId, session) !== "missing";
 }
 
 function getNativeSidebarCommandSession(
@@ -1799,6 +1832,11 @@ function postGhostexFolderStats(message: SidebarGhostexFolderStatsMessage): void
 }
 
 function postAgentHookStatus(message: SidebarAgentHookStatusMessage): void {
+  sidebarBus.post(message);
+  postAppModalHost({ message, type: "sidebarState" });
+}
+
+function postGhostexCliStatus(message: SidebarGhostexCliStatusMessage): void {
   sidebarBus.post(message);
   postAppModalHost({ message, type: "sidebarState" });
 }
@@ -2341,6 +2379,42 @@ function collectSessionPaneLayoutSessionIds(node: SessionPaneLayoutNode | undefi
   }
 }
 
+function collectActivePaneOwnerSessionIds(node: SessionPaneLayoutNode | undefined): string[] {
+  if (!node) {
+    return [];
+  }
+  switch (node.kind) {
+    case "leaf":
+      return [node.sessionId];
+    case "tabs": {
+      const activeSessionId =
+        node.activeSessionId && node.sessionIds.includes(node.activeSessionId)
+          ? node.activeSessionId
+          : node.sessionIds[0];
+      return activeSessionId ? [activeSessionId] : [];
+    }
+    case "split":
+      return node.children.flatMap((child) => collectActivePaneOwnerSessionIds(child));
+  }
+}
+
+function isCurrentWorkspaceNativeFocusTarget(
+  snapshot: SessionGridSnapshot,
+  sessionId: string,
+): boolean {
+  /**
+   * CDXC:NativeTerminalFocus 2026-05-26-04:32:
+   * Native terminalFocused is authoritative only for panes the sidebar currently
+   * considers visible. Awake background tab sessions can still have live AppKit
+   * Ghostty views; accepting their stale focus events would replace the visible
+   * split slot and force layout repair to reshuffle tabs.
+   */
+  return (
+    snapshot.visibleSessionIds.includes(sessionId) ||
+    collectActivePaneOwnerSessionIds(snapshot.paneLayout).includes(sessionId)
+  );
+}
+
 function summarizeNativePaneLayout(layout: NativeTerminalLayout | undefined, depth = 0): unknown {
   if (!layout) {
     return undefined;
@@ -2635,6 +2709,7 @@ function createNativeBrowserSession(
     visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
   });
   postNative({
+    browserFeedbackTool: settings.browserFeedbackTool,
     cwd: project.path,
     sessionId: nativeSessionId,
     title: session.title || title || "Browser",
@@ -8260,6 +8335,33 @@ function restoreNativeTerminalSession(
   });
 }
 
+function clearStaleTerminalRuntimeStateBeforeWake(
+  projectId: string,
+  sessionId: string,
+  reason: string,
+): void {
+  if (!terminalStateById.has(sessionId)) {
+    return;
+  }
+  /**
+   * CDXC:SessionSleep 2026-05-26-22:36:
+   * Clicking a sleeping session tab/card is an explicit native-surface wake intent. A stale terminalState entry can survive after the native Ghostty surface was closed, so the wake path must clear that runtime-only state before restore; otherwise the sidebar marks the model awake but never recreates the pane or stages the resume command.
+   */
+  terminalStateById.delete(sessionId);
+  pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
+  titleDerivedActivityBySessionId.delete(sessionId);
+  nativeActivitySuppressedUntilBySessionId.delete(sessionId);
+  nativeWorkingStartedAtBySessionId.delete(sessionId);
+  clearNativeSessionAttentionTracking(sessionId);
+  nativeAttentionNotificationLastSentAtBySessionId.delete(sessionId);
+  clearDelayedSendTimer(sessionId, projectId);
+  appendTerminalFocusDebugLog("nativeSidebar.staleTerminalRuntimeStateClearedForWake", {
+    projectId,
+    reason,
+    sessionId,
+  });
+}
+
 function createWorkspaceBarState(): WorkspaceBarStateMessage {
   /**
    * CDXC:WorkspaceDock 2026-04-29-09:16
@@ -8901,6 +9003,97 @@ async function requestNativeAgentHookStatus(): Promise<void> {
       errorMessage,
     );
     postAgentHookStatus(createNativeAgentHookStatusErrorMessage(errorMessage));
+  }
+}
+
+async function requestNativeGhostexCliStatus(): Promise<void> {
+  /**
+   * CDXC:FirstLaunchSetup 2026-05-26-17:12:
+   * CLI setup status belongs in native because PATH and Homebrew symlink
+   * ownership are machine-local. Treat `ghostex` as the primary installed
+   * signal, and report `gx` as usable only when it resolves to Ghostex's app
+   * bundle so setup does not claim another tool's command.
+   *
+   * CDXC:BrowserAgentControl 2026-05-26-22:17:
+   * First-launch setup also needs to know whether the Ghostex browser MCP skill
+   * is installed under ~/agents/skills so page two can ask for the skill copy,
+   * not a redundant Homebrew reinstall, when only agent browser setup is
+   * missing.
+   */
+  const result = await runNativeProcess("/usr/bin/python3", [
+    "-c",
+    String.raw`
+import json
+import os
+import shutil
+from datetime import datetime, timezone
+
+ghostex_path = shutil.which("ghostex")
+gx_path = shutil.which("gx")
+gx_realpath = os.path.realpath(gx_path) if gx_path else None
+gx_usable = bool(gx_realpath and "ghostex.app/Contents/Resources/Web/cli/gx" in gx_realpath)
+gx_blocked = bool(gx_path and not gx_usable)
+browser_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-browser-devtools-mcp", "SKILL.md")
+browser_skill_installed = os.path.isfile(browser_skill_path)
+
+if ghostex_path:
+    if gx_usable:
+        detail = "ghostex and gx are available on PATH."
+    elif gx_blocked:
+        detail = "ghostex is available on PATH. gx already belongs to another command, so Ghostex will keep using ghostex."
+    else:
+        detail = "ghostex is available on PATH. gx is not currently linked, so Ghostex will keep using the primary command until the alias can be installed safely."
+else:
+    detail = "Ghostex CLI was not found on PATH."
+
+if ghostex_path:
+    if browser_skill_installed:
+        detail = detail + " Browser MCP skill is installed for agents."
+    else:
+        detail = detail + " Browser MCP skill is not installed yet."
+
+print(json.dumps({
+    "browserSkillInstalled": browser_skill_installed,
+    "browserSkillPath": browser_skill_path if browser_skill_installed else None,
+    "detail": detail,
+    "generatedAt": datetime.now(timezone.utc).isoformat(),
+    "ghostexPath": ghostex_path,
+    "gxBlockedByExistingCommand": gx_blocked,
+    "gxPath": gx_path,
+    "gxUsable": gx_usable,
+    "installed": bool(ghostex_path),
+    "type": "ghostexCliStatus",
+}))
+`,
+  ]);
+
+  if (result.exitCode !== 0) {
+    const errorMessage =
+      result.stderr.trim() || result.stdout.trim() || "Unable to inspect Ghostex CLI status.";
+    postGhostexCliStatus({
+      detail: errorMessage,
+      generatedAt: new Date().toISOString(),
+      browserSkillInstalled: false,
+      gxBlockedByExistingCommand: false,
+      gxUsable: false,
+      installed: false,
+      type: "ghostexCliStatus",
+    });
+    return;
+  }
+
+  try {
+    postGhostexCliStatus(JSON.parse(result.stdout) as SidebarGhostexCliStatusMessage);
+  } catch (error) {
+    postGhostexCliStatus({
+      detail: error instanceof Error ? error.message : "Unable to parse Ghostex CLI status.",
+      generatedAt: new Date().toISOString(),
+      browserSkillInstalled: false,
+      gxBlockedByExistingCommand: false,
+      gxUsable: false,
+      installed: false,
+      type: "ghostexCliStatus",
+    });
   }
 }
 
@@ -10180,6 +10373,11 @@ function wrapNativeRestoredTerminalResumeCommand(
    * cannot find the session. Keep the restored pane open and try the older
    * title-based fallback when one is available instead of leaving users with a
    * failed exact-id command only.
+   *
+   * CDXC:SessionRestore 2026-05-26-15:52:
+   * The restore wrapper stays as a plain script for native temp-file staging.
+   * Native evaluates that file in the current interactive shell so aliases and
+   * functions such as `x` work while the terminal only echoes a short command.
    */
   const lines = [
     `printf '%s\\n' ${quoteNativeShellArg("Restoring session...")}`,
@@ -12082,6 +12280,7 @@ function restoreNativeBrowserSession(
    */
   const nativeSessionId = rememberNativeSessionMapping(project.projectId, session.sessionId);
   postNative({
+    browserFeedbackTool: settings.browserFeedbackTool,
     cwd: project.path,
     sessionId: nativeSessionId,
     title: session.title || browserPaneTitleFromUrl(session.browser.url),
@@ -13400,6 +13599,7 @@ function focusTerminal(sessionId: string): void {
   );
   const sessionRecord = findSessionRecord(reference.sessionId);
   const terminalState = terminalStateById.get(reference.sessionId);
+  const wasSleepingTerminal = sessionRecord?.kind === "terminal" && sessionRecord.isSleeping === true;
   const sessionPersistenceProvider =
     terminalState?.sessionPersistenceProvider ??
     (sessionRecord?.kind === "terminal" ? sessionRecord.sessionPersistenceProvider : undefined);
@@ -13574,7 +13774,14 @@ function focusTerminal(sessionId: string): void {
    * previous+restored active-surface window during rapid card clicks.
    */
   let restoredSleepingTerminal = false;
-  if (session && !terminalStateById.has(reference.sessionId)) {
+  if (session && (wasSleepingTerminal || !terminalStateById.has(reference.sessionId))) {
+    if (wasSleepingTerminal) {
+      clearStaleTerminalRuntimeStateBeforeWake(
+        reference.project.projectId,
+        reference.sessionId,
+        "focus-sleeping-session",
+      );
+    }
     const providerRuntimeState = getProviderRuntimeStateForSession(
       reference.project.projectId,
       session,
@@ -14744,11 +14951,27 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
   if (!session) {
     return;
   }
-  updateProjectWorkspace(
-    reference.project.projectId,
-    (workspace) =>
-      setSessionSleepingInSimpleWorkspace(workspace, reference.sessionId, sleeping).snapshot,
-  );
+  const wasSleeping = session.isSleeping === true;
+  if (session.surface === "commands") {
+    updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((candidate) =>
+        candidate.sessionId === reference.sessionId
+          ? {
+              ...candidate,
+              isPoppedOut: sleeping ? undefined : candidate.isPoppedOut,
+              isSleeping: sleeping,
+            }
+          : candidate,
+      ),
+    }));
+  } else {
+    updateProjectWorkspace(
+      reference.project.projectId,
+      (workspace) =>
+        setSessionSleepingInSimpleWorkspace(workspace, reference.sessionId, sleeping).snapshot,
+    );
+  }
   if (sleeping) {
     const providerInfo = getTerminalProviderRuntimeInfo(session);
     if (providerInfo) {
@@ -14763,24 +14986,41 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
       forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
     }
     stopNativeSleepingSessionRuntime(reference.sessionId, reference.project);
-  } else if (!terminalStateById.has(reference.sessionId)) {
+  } else if (wasSleeping || !terminalStateById.has(reference.sessionId)) {
+    if (wasSleeping) {
+      clearStaleTerminalRuntimeStateBeforeWake(
+        reference.project.projectId,
+        reference.sessionId,
+        session.surface === "commands" ? "wake-command-session" : "wake-session",
+      );
+    }
     forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
-    const nextSession = findTerminalSessionInProject(reference.project, reference.sessionId);
+    const nextProject = findProject(reference.project.projectId) ?? reference.project;
+    const nextSession = findTerminalSessionInProject(nextProject, reference.sessionId);
     if (nextSession) {
-      restoreNativeTerminalSession(reference.project, nextSession, "wake-session");
+      restoreNativeTerminalSession(
+        nextProject,
+        nextSession,
+        nextSession.surface === "commands" ? "wake-command-session" : "wake-session",
+      );
     }
   }
   publish();
 }
 
 function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
-  const thresholdTime = Date.now() - 7 * 60 * 1_000;
   /**
    * CDXC:TitlebarResources 2026-05-16-19:53:
    * The titlebar sleep shortcut may be clicked from stale dropdown data, so the
    * sidebar revalidates each target against current project/session state.
    * Sleep only idle, awake agent terminals older than seven minutes and never
    * sleep sessions that are currently working or requesting attention.
+   *
+   * CDXC:TitlebarResources 2026-05-26-17:16:
+   * Revalidation must match the Resources button: sleep every awake idle
+   * terminal id the titlebar sends, including terminals without detected agent
+   * metadata or old Last Active timestamps. Keep working and attention sessions
+   * awake because those states indicate active output or user review.
    */
   for (const sessionId of Array.from(new Set(sessionIds))) {
     const reference = resolveSidebarSessionReference(sessionId);
@@ -14794,16 +15034,6 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
     const terminalState = terminalStateById.get(reference.sessionId);
     const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
     if (activity === "working" || activity === "attention") {
-      continue;
-    }
-    const agentName = terminalState?.agentName ?? session.agentName;
-    if (!agentName?.trim()) {
-      continue;
-    }
-    const lastInteractionTime = Date.parse(
-      projectedSession?.lastInteractionAt ?? terminalState?.lastActivityAt ?? session.createdAt,
-    );
-    if (!Number.isFinite(lastInteractionTime) || lastInteractionTime >= thresholdTime) {
       continue;
     }
     setNativeSessionSleeping(sessionId, true);
@@ -14881,6 +15111,13 @@ function setNativeGroupSleeping(groupId: string, sleeping: boolean): void {
           session.kind === "terminal" && session.isSleeping !== true,
       )
     : [];
+  const sessionsToWake = sleeping
+    ? []
+    : group.snapshot.sessions.filter(
+        (session): session is TerminalSessionRecord =>
+          session.kind === "terminal" && session.isSleeping === true,
+      );
+  const sessionIdsToForceWake = new Set(sessionsToWake.map((session) => session.sessionId));
   updateActiveProjectWorkspace(
     (workspace) =>
       setGroupSleepingInSimpleWorkspace(
@@ -14899,7 +15136,17 @@ function setNativeGroupSleeping(groupId: string, sleeping: boolean): void {
       (candidate) => candidate.groupId === groupId,
     );
     for (const session of nextGroup?.snapshot.sessions ?? []) {
-      if (session.kind === "terminal" && !terminalStateById.has(session.sessionId)) {
+      if (session.kind !== "terminal") {
+        continue;
+      }
+      if (sessionIdsToForceWake.has(session.sessionId)) {
+        clearStaleTerminalRuntimeStateBeforeWake(
+          activeProject().projectId,
+          session.sessionId,
+          "wake-group",
+        );
+      }
+      if (sessionIdsToForceWake.has(session.sessionId) || !terminalStateById.has(session.sessionId)) {
         restoreNativeTerminalSession(activeProject(), session, "wake-group");
       }
     }
@@ -15601,7 +15848,7 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
       const manualSessionIds = terminalProjectedSessions.map((projectedSession) => projectedSession.sessionId);
       /**
        * CDXC:CliSessions 2026-05-20-12:20:
-       * The human `ghostex` / `gtx` session list must follow the same project,
+       * The human `ghostex` / `gx` session list must follow the same project,
        * group, and per-group session order the macOS sidebar renders, including
        * the active Last Active sort mode. Build the CLI inventory from the
        * display layout instead of raw workspace storage order.
@@ -15649,7 +15896,7 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
         items.push({
           /**
            * CDXC:GhostexTui 2026-05-25-16:22:
-           * Bare `gtx` TUI polls the CLI inventory for sidebar activity so it
+           * Bare `gx` TUI polls the CLI inventory for sidebar activity so it
            * can render working/attention dots, attached-view counts, and bell
            * notifications using the same state as the macOS sidebar.
            */
@@ -15664,7 +15911,7 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
           groupTitle: group.title,
           /**
            * CDXC:GhostexTui 2026-05-25-18:08:
-           * The `gtx` TUI context menu mirrors the sidebar session menu and
+           * The `gx` TUI context menu mirrors the sidebar session menu and
            * needs the favorite state to render Favorite/Unfavorite correctly
            * before invoking the existing CLI favorite-session bridge action.
            */
@@ -19278,6 +19525,7 @@ function wakeProjectEditorSurface(project: NativeProject, mode?: ProjectEditorSu
     });
   }
   postNative({
+    browserFeedbackTool: settings.browserFeedbackTool,
     companionPaneHidden: project.projectEditorCompanionPaneHidden === true,
     mode: nextMode,
     projectId: nativeEditorId,
@@ -19575,6 +19823,7 @@ function openProjectGitEditorSurface(project: NativeProject, githubUrl: string):
   });
   rememberAwakeProjectEditorMode(project.projectId, "git");
   postNative({
+    browserFeedbackTool: settings.browserFeedbackTool,
     companionPaneHidden: project.projectEditorCompanionPaneHidden === true,
     mode: "git",
     projectId: nativeEditorId,
@@ -19652,6 +19901,7 @@ function openProjectTasksEditorSurface(project: NativeProject, tasksUrl: string)
   });
   rememberAwakeProjectEditorMode(project.projectId, "tasks");
   postNative({
+    browserFeedbackTool: settings.browserFeedbackTool,
     companionPaneHidden: project.projectEditorCompanionPaneHidden === true,
     mode: "tasks",
     projectId: nativeEditorId,
@@ -20442,6 +20692,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "installAgentHooks":
       void installNativeAgentHooksFromSettings();
+      return;
+    case "requestGhostexCliStatus":
+      void requestNativeGhostexCliStatus();
       return;
     case "openBrowserChat":
       void createNativeBrowserChat();
@@ -21263,17 +21516,23 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
    * full stored session list can resurrect hidden sessions when pane
    * drag-and-drop changes only the visible split placement.
    */
-  const allVisibleSessions = getNativePaneSessionsForSnapshot(snapshot, visibleSessionRecordsById);
+  const allVisibleSessions = getNativePaneSessionsForSnapshot(
+    snapshot,
+    visibleSessionRecordsById,
+  ).filter((session) => shouldIncludeSessionInNativePaneTabs(currentProject.projectId, session));
   const focusModeTabSessionIds = getFocusedWorkspaceTabSessionIds(snapshot);
   const visibleSessions =
     focusModeTabSessionIds.length > 0
       ? allVisibleSessions.filter((session) => focusModeTabSessionIds.includes(session.sessionId))
       : allVisibleSessions;
+  const visibleSidebarSessionIds = new Set(visibleSessions.map((session) => session.sessionId));
   const awakeVisibleSessions = visibleSessions.filter((session) => session.isSleeping !== true);
   const visibleSessionIds = awakeVisibleSessions
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
   const commandPanelSessions = commandsPanel.sessions;
-  const commandPanelVisibleSessions = commandPanelSessions;
+  const commandPanelVisibleSessions = commandPanelSessions.filter((session) =>
+    shouldIncludeSessionInNativePaneTabs(currentProject.projectId, session),
+  );
   const commandPanelActiveSessions = commandPanelVisibleSessions.filter(
     (session) => session.isSleeping !== true,
   );
@@ -21435,10 +21694,14 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     new Set(commandPanelActiveSessionIds),
     clampVisibleSessionCount(Math.max(1, commandPanelVisibleSessions.length)),
   );
-  const focusedNativeSessionId = snapshot.focusedSessionId
+  const focusedNativeSessionId = snapshot.focusedSessionId && visibleSidebarSessionIds.has(snapshot.focusedSessionId)
     ? nativeSessionIdForSidebarSession(snapshot.focusedSessionId)
     : undefined;
-  const commandsPanelFocusedNativeSessionId = commandsPanel.activeSessionId
+  const commandPanelVisibleSessionIds = new Set(
+    commandPanelVisibleSessions.map((session) => session.sessionId),
+  );
+  const commandsPanelFocusedNativeSessionId =
+    commandsPanel.activeSessionId && commandPanelVisibleSessionIds.has(commandsPanel.activeSessionId)
     ? nativeSessionIdForSidebarSession(commandsPanel.activeSessionId)
     : undefined;
   const shouldConsumeFocusRequest =
@@ -22311,7 +22574,8 @@ window.addEventListener("ghostex-native-host-event", (event) => {
      * terminal-only state guard so clicking a WKWebView updates the active
      * sidebar card instead of only drawing the AppKit border.
     */
-    const previousFocusedSessionId = activeSnapshot().focusedSessionId;
+    const snapshotBeforeNativeFocus = activeSnapshot();
+    const previousFocusedSessionId = snapshotBeforeNativeFocus.focusedSessionId;
     lastNativeFocusedSidebarSessionId = sidebarSessionId;
     /**
      * CDXC:NativeTerminalFocus 2026-05-09-15:30
@@ -22325,7 +22589,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       incomingSessionId: sidebarSessionId,
       nativeSessionId: hostEvent.sessionId,
       previousFocusedSessionId,
-      visibleSessionIds: activeSnapshot().visibleSessionIds,
+      visibleSessionIds: snapshotBeforeNativeFocus.visibleSessionIds,
     });
     appendPaneLayoutTraceDebugLog("terminalFocused.received", {
       activeProjectId,
@@ -22344,6 +22608,24 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }));
       acknowledgeNativeTerminalAttention(sidebarSessionId, "native-focus");
       publish();
+      return;
+    }
+    if (!isCurrentWorkspaceNativeFocusTarget(snapshotBeforeNativeFocus, sidebarSessionId)) {
+      appendTerminalFocusDebugLog("nativeFocusTrace.sidebarTerminalFocusedStaleIgnored", {
+        activePaneOwnerSessionIds: collectActivePaneOwnerSessionIds(snapshotBeforeNativeFocus.paneLayout),
+        activeProjectId,
+        focusedSessionIdBefore: previousFocusedSessionId,
+        incomingSessionId: sidebarSessionId,
+        nativeSessionId: hostEvent.sessionId,
+        paneLayout: summarizeSessionPaneLayout(snapshotBeforeNativeFocus.paneLayout),
+        visibleSessionIds: snapshotBeforeNativeFocus.visibleSessionIds,
+      });
+      appendPaneLayoutTraceDebugLog("terminalFocused.staleIgnored", {
+        activeProjectId,
+        incomingSessionId: sidebarSessionId,
+        nativeSessionId: hostEvent.sessionId,
+        targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(activeProject().workspace),
+      });
       return;
     }
     rememberFocusedWorkspaceTerminal(activeProject(), sidebarSessionId, "nativeWorkspaceFocus");
@@ -22600,7 +22882,15 @@ window.addEventListener("ghostex-native-host-event", (event) => {
           !terminalState.sessionPersistenceProvider ||
           hostEvent.persistenceSessionCreated !== false
         ) {
-          postNative({ sessionId: hostEvent.sessionId, text: startupText, type: "writeTerminalText" });
+          if (isNativeRestoreStartupScript(startupText)) {
+            postNative({
+              sessionId: hostEvent.sessionId,
+              text: normalizeNativeRestoreStartupScript(startupText),
+              type: "writeTerminalScript",
+            });
+          } else {
+            postNative({ sessionId: hostEvent.sessionId, text: startupText, type: "writeTerminalText" });
+          }
         }
       }
     }
@@ -22674,13 +22964,17 @@ function handleNativePaneReorderRequested(
      * The sidebar can mark an old restored terminal awake while the Swift host has no surface for it; issue the idempotent native create command for terminal drops instead of only handling sleeping sources.
      */
     if (droppedSourceSession?.kind === "terminal") {
-      ensureNativeTerminalSurfaceForPaneDrop(
-        activeProject(),
-        droppedSourceSession,
-        "pane-drop-surface-ensure",
-      );
       if (shouldWakeDroppedSource) {
+        restoreNativeSessionSurfaceForWake(activeProject(), droppedSourceSession, "pane-drop-wake", {
+          forceTerminalRestore: true,
+        });
         queueNativeLayoutFocusRequest(sourceSessionId, "paneDropWake");
+      } else {
+        ensureNativeTerminalSurfaceForPaneDrop(
+          activeProject(),
+          droppedSourceSession,
+          "pane-drop-surface-ensure",
+        );
       }
     } else if (shouldWakeDroppedSource) {
       restoreNativeSessionSurfaceForWake(
@@ -22743,16 +23037,37 @@ function handleNativePaneReorderRequested(
 function handleNativePaneTabSelected(sessionId: string): void {
   const acknowledgedAttention = acknowledgeNativeTerminalAttention(sessionId, "native-focus");
   if (activeCommandPanelContainsSession(sessionId)) {
+    const selectedCommandSessionBefore = findTerminalSession(sessionId);
+    const wasSleepingCommandSession = selectedCommandSessionBefore?.isSleeping === true;
     /**
      * CDXC:SessionAttention 2026-05-16-23:35:
      * Clicking an already-selected command or workspace tab must still acknowledge green attention. Tab selection can be a layout no-op, so acknowledge before the unchanged guard and let the delayed attention timer preserve the 1.5-second visual floor when needed.
+     *
+     * CDXC:SessionSleep 2026-05-26-22:36:
+     * Command-pane sleeping tabs use the same wake contract as workspace tabs:
+     * selecting the tab must clear stale terminal runtime state and recreate
+     * the native surface before focus, not only mark the command tab active.
      */
     updateActiveProjectCommandsPanel((panel) => ({
       ...panel,
       activeSessionId: sessionId,
       isVisible: true,
       paneLayout: setActiveCommandSessionInPaneLayout(panel.paneLayout, sessionId),
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === sessionId && session.isSleeping === true
+          ? { ...session, isPoppedOut: undefined, isSleeping: false }
+          : session,
+      ),
     }));
+    if (wasSleepingCommandSession) {
+      const restoredCommandSession = findTerminalSession(sessionId) ?? selectedCommandSessionBefore;
+      restoreNativeSessionSurfaceForWake(
+        activeProject(),
+        restoredCommandSession,
+        "command-pane-tab-wake",
+        { forceTerminalRestore: true },
+      );
+    }
     queueNativeLayoutFocusRequest(sessionId, "commandPaneTabSelected");
     publish();
     return;
@@ -22805,7 +23120,9 @@ function handleNativePaneTabSelected(sessionId: string): void {
   });
   if (wasSleeping) {
     const restoredSession = findSessionRecord(sessionId) ?? selectedSessionBefore;
-    restoreNativeSessionSurfaceForWake(activeProject(), restoredSession, "pane-tab-wake");
+    restoreNativeSessionSurfaceForWake(activeProject(), restoredSession, "pane-tab-wake", {
+      forceTerminalRestore: true,
+    });
   }
   queueNativeLayoutFocusRequest(sessionId, wasSleeping ? "paneTabWake" : "paneTabSelected");
   publish();
@@ -22862,6 +23179,7 @@ function restoreNativeSessionSurfaceForWake(
   project: NativeProject,
   session: SessionRecord | undefined,
   reason: string,
+  options: { forceTerminalRestore?: boolean } = {},
 ): void {
   if (session?.kind === "t3") {
     restoreNativeT3Session(project, session, reason);
@@ -22871,7 +23189,13 @@ function restoreNativeSessionSurfaceForWake(
     restoreNativeBrowserSession(project, session, reason);
     return;
   }
-  if (session?.kind === "terminal" && !terminalStateById.has(session.sessionId)) {
+  if (session?.kind !== "terminal") {
+    return;
+  }
+  if (options.forceTerminalRestore) {
+    clearStaleTerminalRuntimeStateBeforeWake(project.projectId, session.sessionId, reason);
+  }
+  if (options.forceTerminalRestore || !terminalStateById.has(session.sessionId)) {
     restoreNativeTerminalSession(project, session, reason);
   }
 }

@@ -26,6 +26,7 @@ import type { SidebarActionType } from "../../shared/sidebar-commands";
 import type {
   ExtensionToSidebarMessage,
   SidebarAgentHookStatusMessage,
+  SidebarGhostexCliStatusMessage,
   SidebarGhostexFolderStatsMessage,
 } from "../../shared/session-grid-contract";
 import {
@@ -71,6 +72,7 @@ type AppModalKind =
 type T3BrowserAccessMessage = Extract<ExtensionToSidebarMessage, { type: "showT3BrowserAccess" }>;
 type AgentsHubCatalogMessage = Extract<ExtensionToSidebarMessage, { type: "agentsHubCatalog" }>;
 type AgentHookStatusMessage = Extract<ExtensionToSidebarMessage, { type: "agentHookStatus" }>;
+type GhostexCliStatusMessage = Extract<ExtensionToSidebarMessage, { type: "ghostexCliStatus" }>;
 
 type AppModalHostMessage =
   | {
@@ -112,6 +114,12 @@ type AppModalHostMessage =
   | { paths: string[]; type: "worktreeImageFilesPicked" }
   | { details?: string; event: string; type: "debugLog" }
   | { requestId: string; type: "floatingPromptEditorCloseAndSave" }
+  | {
+      frame: FloatingPromptEditorFrame;
+      imagePreviewOpen?: boolean;
+      requestId: string;
+      type: "floatingPromptEditorHitRegion";
+    }
   | {
       error?: string;
       imagePath?: string;
@@ -948,13 +956,18 @@ function FloatingPromptEditorModal({
      * over the visible editor panel. Publish the live panel rectangle after
      * each move or resize so terminal panes and pins behind the transparent
      * modal WKWebView remain clickable and scrollable outside that rectangle.
+     * Image preview is the exception: its backdrop and close button are outside
+     * the panel, so native must block the full modal-host surface while it is
+     * open.
      */
+    const imagePreviewOpen = openImagePreview !== undefined;
     appendPromptEditorDebugLog("react.hitRegion.publish", {
       frameHeight: frame.height,
       frameLeft: frame.left,
       frameTop: frame.top,
       frameWidth: frame.width,
       hasEditorRef: editorRef.current !== null,
+      imagePreviewOpen,
       innerHeight: window.innerHeight,
       innerWidth: window.innerWidth,
       requestId: editor.requestId,
@@ -962,12 +975,13 @@ function FloatingPromptEditorModal({
     postAppModalHostMessage(
       {
         frame,
+        imagePreviewOpen,
         requestId: editor.requestId,
         type: "floatingPromptEditorHitRegion",
       },
       "PromptEditor:hitRegion",
     );
-  }, [editor?.requestId, frame.height, frame.left, frame.top, frame.width, isOpen]);
+  }, [editor?.requestId, frame.height, frame.left, frame.top, frame.width, isOpen, openImagePreview]);
 
   useEffect(() => {
     return () => {
@@ -1430,9 +1444,11 @@ function AppModalHost() {
     t3ThreadId,
     worktree,
     agentHookStatus,
+    ghostexCliStatus,
     ghostexFolderStats,
   } = useModalStateFromNative();
   const [agentHookStatusLoading, setAgentHookStatusLoading] = useState(false);
+  const [ghostexCliStatusLoading, setGhostexCliStatusLoading] = useState(false);
   const [ghostexFolderStatsLoading, setGhostexFolderStatsLoading] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
   const agents = useSidebarStore((state) => state.hud.agents);
@@ -1528,6 +1544,31 @@ function AppModalHost() {
       setAgentHookStatusLoading(false);
     }
   }, [agentHookStatus]);
+
+  useEffect(() => {
+    if (ghostexCliStatus) {
+      setGhostexCliStatusLoading(false);
+    }
+  }, [ghostexCliStatus]);
+
+  useEffect(() => {
+    if (activeModal !== "firstLaunchSetup") {
+      setGhostexCliStatusLoading(false);
+      return;
+    }
+    if (ghostexCliStatus || ghostexCliStatusLoading) {
+      return;
+    }
+    /**
+     * CDXC:FirstLaunchSetup 2026-05-26-17:12:
+     * The production first-launch modal should reflect an existing Homebrew CLI
+     * install before asking the user to install again. Request native PATH
+     * inspection when the setup flow opens and render Storybook through the same
+     * status prop.
+     */
+    setGhostexCliStatusLoading(true);
+    vscode.postMessage({ type: "requestGhostexCliStatus" });
+  }, [activeModal, ghostexCliStatus, ghostexCliStatusLoading]);
 
   useEffect(() => {
     document.body.dataset.sidebarTheme = theme;
@@ -1813,6 +1854,8 @@ function AppModalHost() {
       <FirstLaunchSetupModal
         agentHookStatus={agentHookStatus}
         agentHookStatusLoading={agentHookStatusLoading}
+        ghostexCliStatus={ghostexCliStatus}
+        ghostexCliStatusLoading={ghostexCliStatusLoading}
         isOpen={activeModal === "firstLaunchSetup"}
         onChange={(nextSettings) => {
           vscode.postMessage({
@@ -1959,6 +2002,7 @@ function useModalStateFromNative() {
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
   const [worktree, setWorktree] = useState<WorktreeModalState>();
   const [agentHookStatus, setAgentHookStatus] = useState<AgentHookStatusMessage>();
+  const [ghostexCliStatus, setGhostexCliStatus] = useState<GhostexCliStatusMessage>();
   const [ghostexFolderStats, setGhostexFolderStats] = useState<SidebarGhostexFolderStatsMessage>();
   const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
   const toastTokenRef = useRef(0);
@@ -2323,6 +2367,10 @@ function useModalStateFromNative() {
             setAgentHookStatus(message.message);
             return;
           }
+          if (isGhostexCliStatusMessage(message.message)) {
+            setGhostexCliStatus(message.message);
+            return;
+          }
           applySidebarStateMessage(message.message);
         }
       } catch (error) {
@@ -2359,6 +2407,7 @@ function useModalStateFromNative() {
     t3ThreadId,
     worktree,
     agentHookStatus,
+    ghostexCliStatus,
     ghostexFolderStats,
   };
 }
@@ -2369,6 +2418,15 @@ function isAgentHookStatusMessage(message: unknown): message is SidebarAgentHook
       typeof message === "object" &&
       "type" in message &&
       message.type === "agentHookStatus",
+  );
+}
+
+function isGhostexCliStatusMessage(message: unknown): message is SidebarGhostexCliStatusMessage {
+  return Boolean(
+    message &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === "ghostexCliStatus",
   );
 }
 
