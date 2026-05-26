@@ -68,6 +68,21 @@ describe("normalizeghostexHotkeySettings", () => {
     );
   });
 
+  test("matches WebKit shifted digit characters for positional action hotkeys", () => {
+    /**
+     * CDXC:ActionsHotkeys 2026-05-26-13:21:
+     * Ctrl+Shift+1 should launch action slot 1 even when the sidebar DOM path
+     * receives KeyboardEvent.key as "!" instead of the unshifted digit AppKit
+     * uses for the same physical shortcut.
+     */
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+!")).toBe(
+      "runActionSlot1",
+    );
+    expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+%")).toBe(
+      "runActionSlot5",
+    );
+  });
+
   test("matches focused pane action hotkeys", () => {
     expect(getghostexHotkeyActionIdForKey(DEFAULT_ghostex_HOTKEYS, "ctrl+shift+b")).toBe(
       "openBrowserPane",
@@ -156,5 +171,10 @@ describe("normalizeghostexHotkeySettings", () => {
 describe("normalizeHotkeyText", () => {
   test("accepts TanStack recorder Mod output", () => {
     expect(normalizeHotkeyText("Mod+Alt+1")).toBe("cmd+alt+1");
+  });
+
+  test("normalizes shifted digit glyphs to physical digit hotkeys", () => {
+    expect(normalizeHotkeyText("Ctrl+Shift+!")).toBe("ctrl+shift+1");
+    expect(normalizeHotkeyText("Cmd+Ctrl+Shift+%")).toBe("cmd+ctrl+shift+5");
   });
 });

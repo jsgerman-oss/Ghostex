@@ -206,6 +206,12 @@ export type NativeGhosttyHostCommand =
       type: "writeTerminalText";
     }
   | {
+      provider: "tmux" | "zmx" | "zellij";
+      requestId: string;
+      sessionName: string;
+      type: "checkPersistenceSession";
+    }
+  | {
       layout: NativeTerminalLayout;
       type: "setTerminalLayout";
     }
@@ -322,11 +328,20 @@ export type NativeGhosttyHostCommand =
 export type NativeGhosttyHostEvent =
   | {
       foregroundPid?: number;
+      persistenceSessionCreated?: boolean;
       sessionId: string;
       sessionPersistenceName?: string;
       tmuxSessionName?: string;
       ttyName?: string;
       type: "terminalReady";
+    }
+  | {
+      error?: string;
+      exists: boolean;
+      provider: "tmux" | "zmx" | "zellij";
+      requestId: string;
+      sessionName: string;
+      type: "persistenceSessionState";
     }
   | {
       sessionId: string;

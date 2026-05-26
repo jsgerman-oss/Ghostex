@@ -376,24 +376,28 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
-  test("keeps session persistence provider opt-in", () => {
+  test("defaults session persistence to recommended zmx provider", () => {
     /**
      * CDXC:SessionPersistence 2026-05-05-07:28
-     * Session persistence must not change existing launch behavior until the
-     * user selects a provider in Settings. Legacy tmuxMode=true settings should
-     * migrate to the tmux provider, and zmx/zellij must persist as provider
-     * choices with the same restart-safe attach/recreate contract.
+     * Legacy tmuxMode=true settings should migrate to the tmux provider, and
+     * zmx/zellij must persist as provider choices with the same restart-safe
+     * attach/recreate contract.
      *
      * CDXC:SessionPersistence 2026-05-23-00:50:
      * The top-right provider/session overlay preference is enabled by default,
      * but non-persistent terminal panes still have no provider session label to
      * render.
+     *
+     * CDXC:SessionPersistence 2026-05-26-13:41:
+     * First-run settings should enable zmx by default, label it as recommended
+     * in Settings, and hide tmux/zellij from the dropdown while preserving
+     * their normalization support for existing settings and sessions.
      */
-    expect(DEFAULT_ghostex_SETTINGS.sessionPersistenceProvider).toBe("off");
+    expect(DEFAULT_ghostex_SETTINGS.sessionPersistenceProvider).toBe("zmx");
     expect(DEFAULT_ghostex_SETTINGS.showSessionIdInTerminalPanes).toBe(true);
     expect(DEFAULT_ghostex_SETTINGS.tmuxMode).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
-      sessionPersistenceProvider: "off",
+      sessionPersistenceProvider: "zmx",
       showSessionIdInTerminalPanes: true,
       tmuxMode: false,
     });
@@ -427,7 +431,21 @@ describe("normalizeghostexSettings", () => {
       sessionPersistenceProvider: "zmx",
       showSessionIdInTerminalPanes: false,
     });
-    expect(SESSION_PERSISTENCE_PROVIDER_OPTIONS).toContainEqual({
+    expect(SESSION_PERSISTENCE_PROVIDER_OPTIONS).toEqual([
+      {
+        label: "Off",
+        value: "off",
+      },
+      {
+        label: "zmx (recommended)",
+        value: "zmx",
+      },
+    ]);
+    expect(SESSION_PERSISTENCE_PROVIDER_OPTIONS).not.toContainEqual({
+      label: "tmux",
+      value: "tmux",
+    });
+    expect(SESSION_PERSISTENCE_PROVIDER_OPTIONS).not.toContainEqual({
       label: "zellij",
       value: "zellij",
     });

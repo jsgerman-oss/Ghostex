@@ -90,6 +90,8 @@ const COMMANDS = new Map([
   ["run-command", bridgeAction("runCommand", parseCommandButton)],
   ["click-button", bridgeAction("clickButton", parseClickButton)],
   ["focus-session", bridgeAction("focusSession", parseSessionSelector)],
+  ["acknowledge-session-attention", bridgeAction("acknowledgeSessionAttention", parseSessionSelector)],
+  ["ack-session-attention", bridgeAction("acknowledgeSessionAttention", parseSessionSelector)],
   ["focus-group", bridgeAction("focusGroup", parseGroup)],
   ["switch-project", bridgeAction("switchProject", parseProject)],
   ["move-project", bridgeAction("moveProject", parseProjectMove, { failOnNotOk: true })],
@@ -2027,6 +2029,7 @@ function usage() {
     formatHelpCommand("move-project --project-id id --direction up|down", "Move a project in the desktop sidebar order"),
     formatHelpCommand("add-project <path> [--name name]", "Add a project to Ghostex"),
     formatHelpCommand("focus-session <id|--index n|--session-number n>", "Focus a session by raw selector"),
+    formatHelpCommand("acknowledge-session-attention <selector>", "Mark a session's shared attention event as seen"),
     formatHelpCommand("focus-group <groupId>", "Focus a project group"),
   ].join("\n");
 

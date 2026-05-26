@@ -343,17 +343,20 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   sessionStatusIndicatorSize: "medium",
   /**
    * CDXC:SessionPersistence 2026-05-05-07:28
-   * Terminal persistence is opt-in and provider-selected. Off preserves the
-   * direct Ghostty launch path; tmux, zmx, and zellij wrap new terminal/agent
+   * Terminal persistence is provider-selected. Off preserves the direct
+   * Ghostty launch path; tmux, zmx, and zellij wrap new terminal/agent
    * sessions in a named persistence session so app restart can reattach or
    * recreate+resume.
    *
    * CDXC:SessionPersistence 2026-05-06-03:43
-   * zellij must appear as the same user-facing persistence provider choice as
-   * tmux/zmx. It remains opt-in and uses the same durable session name contract
-   * for restart attach and missing-session recreate+resume behavior.
+   * zellij uses the same durable session name contract as tmux/zmx for restart
+   * attach and missing-session recreate+resume behavior even when hidden from
+   * the current Settings dropdown.
+   *
+   * CDXC:SessionPersistence 2026-05-26-13:41:
+   * New installs should start with zmx persistence enabled by default because zmx is the recommended provider for continuing Ghostex-created sessions from other devices.
    */
-  sessionPersistenceProvider: "off",
+  sessionPersistenceProvider: "zmx",
   /**
    * CDXC:SessionPersistence 2026-05-23-00:50:
    * The session-id pane overlay preference is enabled by default, but the
@@ -522,10 +525,12 @@ export const SESSION_PERSISTENCE_PROVIDER_OPTIONS: ReadonlyArray<{
   label: string;
   value: SessionPersistenceProvider;
 }> = [
+  /**
+   * CDXC:SessionPersistence 2026-05-26-13:41:
+   * Settings should recommend zmx and keep tmux/zellij out of the provider dropdown while code still accepts those persisted providers for existing sessions and internal launch paths.
+   */
   { label: "Off", value: "off" },
-  { label: "tmux", value: "tmux" },
-  { label: "zmx", value: "zmx" },
-  { label: "zellij", value: "zellij" },
+  { label: "zmx (recommended)", value: "zmx" },
 ];
 
 export const SIDEBAR_SIDE_OPTIONS: ReadonlyArray<{

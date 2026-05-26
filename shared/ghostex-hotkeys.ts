@@ -337,13 +337,14 @@ export function getghostexHotkeyActionIdForKey(
   hotkeys: ghostexHotkeySettings,
   hotkeyText: string,
 ): ghostexHotkeyActionId | undefined {
-  const matchedDefinition = Object.entries(hotkeys).find(([, value]) => value === hotkeyText);
+  const normalizedHotkeyText = normalizeHotkeyText(hotkeyText);
+  const matchedDefinition = Object.entries(hotkeys).find(([, value]) => value === normalizedHotkeyText);
   if (matchedDefinition) {
     return matchedDefinition[0] as ghostexHotkeyActionId;
   }
   return GHOSTEX_HOTKEY_DEFINITIONS.find(
     (definition) =>
-      definition.alternateDefaultKeys?.includes(hotkeyText) && hotkeys[definition.id] !== "",
+      definition.alternateDefaultKeys?.includes(normalizedHotkeyText) && hotkeys[definition.id] !== "",
   )?.id;
 }
 
@@ -356,7 +357,42 @@ export function normalizeHotkeyText(value: string): string {
     .replace(/⌃|control/g, "ctrl")
     .replace(/⇧|shift/g, "shift")
     .replace(/\bmod\b/g, "cmd")
-    .replace(/\s+/g, " ");
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map(normalizeHotkeyChordText)
+    .join(" ");
+}
+
+const SHIFTED_DIGIT_KEYS: Record<string, string> = {
+  "!": "1",
+  "@": "2",
+  "#": "3",
+  $: "4",
+  "%": "5",
+  "^": "6",
+  "&": "7",
+  "*": "8",
+  "(": "9",
+  ")": "0",
+};
+
+function normalizeHotkeyChordText(chord: string): string {
+  const parts = chord.split("+").filter(Boolean);
+  const key = parts.at(-1);
+  if (!key) {
+    return chord;
+  }
+  if (parts.includes("shift") && SHIFTED_DIGIT_KEYS[key]) {
+    /**
+     * CDXC:ActionsHotkeys 2026-05-26-13:20:
+     * Browser/WebKit keydown events report Ctrl+Shift+1 as "ctrl+shift+!" while
+     * AppKit and Settings store the same physical action shortcut as "ctrl+shift+1".
+     * Normalize shifted digit glyphs at the shared matcher so action-slot
+     * hotkeys run from sidebar, browser, and terminal focus without duplicate bindings.
+     */
+    parts[parts.length - 1] = SHIFTED_DIGIT_KEYS[key];
+  }
+  return parts.join("+");
 }
 
 function capitalize(value: string): string {

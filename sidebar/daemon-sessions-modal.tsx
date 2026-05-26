@@ -1,4 +1,4 @@
-import { IconRefresh, IconX } from "@tabler/icons-react";
+import { IconChevronRight, IconRefresh, IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmationModal } from "./confirmation-modal";
@@ -14,8 +14,22 @@ export type DaemonSessionsModalProps = {
 export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsModalProps) {
   const state = useSidebarStore((storeState) => storeState.daemonSessionsState);
   const [searchQuery, setSearchQuery] = useState("");
+  const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({});
   const [isKillDaemonConfirmOpen, setIsKillDaemonConfirmOpen] = useState(false);
   const [isKillT3ServerConfirmOpen, setIsKillT3ServerConfirmOpen] = useState(false);
+
+  /**
+   * CDXC:RunningSessionsModal 2026-05-26-14:11:
+   * Running modal records should open collapsed so users can scan daemon status, shared T3 code, and active session rows before expanding a row for metadata or kill actions.
+   */
+  const isPanelExpanded = (panelId: string): boolean => expandedPanels[panelId] === true;
+
+  const togglePanel = (panelId: string) => {
+    setExpandedPanels((current) => ({
+      ...current,
+      [panelId]: current[panelId] !== true,
+    }));
+  };
 
   useEffect(() => {
     if (!isOpen) {
@@ -45,6 +59,7 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
   useEffect(() => {
     if (!isOpen) {
       setSearchQuery("");
+      setExpandedPanels({});
       setIsKillDaemonConfirmOpen(false);
       setIsKillT3ServerConfirmOpen(false);
     }
@@ -160,38 +175,81 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
           <div className="daemon-sessions-modal-body scroll-mask-y">
             {state ? (
               <>
-                <section className="daemon-sessions-summary">
-                  <div className="daemon-sessions-summary-row">
-                    <span className="daemon-sessions-summary-label">Daemon</span>
-                    <span className="daemon-sessions-summary-value">
+                <section
+                  className="daemon-sessions-summary"
+                  data-collapsed={String(!isPanelExpanded("daemon-summary"))}
+                >
+                  <button
+                    aria-controls="daemon-summary-panel"
+                    aria-expanded={isPanelExpanded("daemon-summary")}
+                    className="daemon-collapsible-heading daemon-sessions-summary-heading"
+                    onClick={() => {
+                      togglePanel("daemon-summary");
+                    }}
+                    type="button"
+                  >
+                    <CollapseChevron isExpanded={isPanelExpanded("daemon-summary")} />
+                    <span className="daemon-sessions-section-title">Daemon</span>
+                    <span className="daemon-sessions-heading-meta">
                       {state.daemon
                         ? `PID ${String(state.daemon.pid)} on port ${String(state.daemon.port)}`
                         : "Not running"}
                     </span>
-                  </div>
-                  <div className="daemon-sessions-summary-row">
-                    <span className="daemon-sessions-summary-label">Protocol</span>
-                    <span className="daemon-sessions-summary-value">
-                      {state.daemon ? String(state.daemon.protocolVersion) : "N/A"}
-                    </span>
-                  </div>
-                  <div className="daemon-sessions-summary-row">
-                    <span className="daemon-sessions-summary-label">Started</span>
-                    <span className="daemon-sessions-summary-value">
-                      {state.daemon ? formatTimestamp(state.daemon.startedAt) : "N/A"}
-                    </span>
-                  </div>
-                  <div className="daemon-sessions-summary-row">
-                    <span className="daemon-sessions-summary-label">Visible rows</span>
-                    <span className="daemon-sessions-summary-value">
-                      {String(filteredT3Sessions.length + filteredSessions.length)} of{" "}
-                      {String((state.t3Sessions?.length ?? 0) + state.sessions.length)}
-                    </span>
+                  </button>
+                  <div
+                    className="daemon-collapsible-body"
+                    hidden={!isPanelExpanded("daemon-summary")}
+                    id="daemon-summary-panel"
+                  >
+                    <div className="daemon-sessions-summary-row">
+                      <span className="daemon-sessions-summary-label">Daemon</span>
+                      <span className="daemon-sessions-summary-value">
+                        {state.daemon
+                          ? `PID ${String(state.daemon.pid)} on port ${String(state.daemon.port)}`
+                          : "Not running"}
+                      </span>
+                    </div>
+                    <div className="daemon-sessions-summary-row">
+                      <span className="daemon-sessions-summary-label">Protocol</span>
+                      <span className="daemon-sessions-summary-value">
+                        {state.daemon ? String(state.daemon.protocolVersion) : "N/A"}
+                      </span>
+                    </div>
+                    <div className="daemon-sessions-summary-row">
+                      <span className="daemon-sessions-summary-label">Started</span>
+                      <span className="daemon-sessions-summary-value">
+                        {state.daemon ? formatTimestamp(state.daemon.startedAt) : "N/A"}
+                      </span>
+                    </div>
+                    <div className="daemon-sessions-summary-row">
+                      <span className="daemon-sessions-summary-label">Visible rows</span>
+                      <span className="daemon-sessions-summary-value">
+                        {String(filteredT3Sessions.length + filteredSessions.length)} of{" "}
+                        {String((state.t3Sessions?.length ?? 0) + state.sessions.length)}
+                      </span>
+                    </div>
                   </div>
                 </section>
-                <section className="daemon-sessions-section">
+                <section
+                  className="daemon-sessions-section"
+                  data-collapsed={String(!isPanelExpanded("shared-t3-code"))}
+                >
                   <div className="daemon-sessions-section-header">
-                    <div className="daemon-sessions-section-title">Shared T3 Code</div>
+                    <button
+                      aria-controls="shared-t3-code-panel"
+                      aria-expanded={isPanelExpanded("shared-t3-code")}
+                      className="daemon-collapsible-heading"
+                      onClick={() => {
+                        togglePanel("shared-t3-code");
+                      }}
+                      type="button"
+                    >
+                      <CollapseChevron isExpanded={isPanelExpanded("shared-t3-code")} />
+                      <span className="daemon-sessions-section-title">Shared T3 Code</span>
+                      <span className="daemon-sessions-heading-meta">
+                        {String(filteredT3Sessions.length)} visible
+                      </span>
+                    </button>
                     <button
                       className="secondary daemon-sessions-toolbar-button daemon-sessions-toolbar-button-danger"
                       disabled={!state.t3Server}
@@ -203,182 +261,236 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
                       Kill Server
                     </button>
                   </div>
-                  <article
-                    className="daemon-session-card daemon-session-card-t3-server"
-                    data-current-workspace="true"
+                  <div
+                    className="daemon-collapsible-body"
+                    hidden={!isPanelExpanded("shared-t3-code")}
+                    id="shared-t3-code-panel"
                   >
-                    <div className="daemon-session-card-header">
-                      <div className="daemon-session-card-title-wrap">
-                        <div className="daemon-session-card-title">Managed T3 runtime</div>
-                        <div className="daemon-session-card-subtitle">
-                          Share route is served by VS Code. The runtime on port 3774 starts on
-                          demand.
+                    <article
+                      className="daemon-session-card daemon-session-card-t3-server"
+                      data-current-workspace="true"
+                    >
+                      <div className="daemon-session-card-header">
+                        <div className="daemon-session-card-title-wrap">
+                          <div className="daemon-session-card-title">Managed T3 runtime</div>
+                          <div className="daemon-session-card-subtitle">
+                            Share route is served by VS Code. The runtime on port 3774 starts on
+                            demand.
+                          </div>
+                        </div>
+                        <div className="daemon-session-card-badges">
+                          <span className="daemon-session-badge">
+                            {state.t3Server ? "runtime running" : "runtime stopped"}
+                          </span>
                         </div>
                       </div>
-                      <div className="daemon-session-card-badges">
-                        <span className="daemon-session-badge">
-                          {state.t3Server ? "runtime running" : "runtime stopped"}
-                        </span>
+                      <div className="daemon-session-card-details">
+                        <Detail label="Share URL Port">45438</Detail>
+                        <Detail label="Runtime Port">
+                          {state.t3Server ? String(state.t3Server.port) : "3774"}
+                        </Detail>
+                        <Detail label="PID">
+                          {state.t3Server
+                            ? String(state.t3Server.pid)
+                            : state.t3Sessions.length > 0
+                              ? "Starts on demand"
+                              : "N/A"}
+                        </Detail>
+                        <Detail label="Started">
+                          {state.t3Server?.startedAt
+                            ? formatTimestamp(state.t3Server.startedAt)
+                            : state.t3Server
+                              ? "Detected from live port"
+                              : "Not running"}
+                        </Detail>
+                        <Detail label="Sessions">{String(state.t3Sessions.length)}</Detail>
                       </div>
-                    </div>
-                    <div className="daemon-session-card-details">
-                      <Detail label="Share URL Port">45438</Detail>
-                      <Detail label="Runtime Port">
-                        {state.t3Server ? String(state.t3Server.port) : "3774"}
-                      </Detail>
-                      <Detail label="PID">
-                        {state.t3Server
-                          ? String(state.t3Server.pid)
-                          : state.t3Sessions.length > 0
-                            ? "Starts on demand"
-                            : "N/A"}
-                      </Detail>
-                      <Detail label="Started">
-                        {state.t3Server?.startedAt
-                          ? formatTimestamp(state.t3Server.startedAt)
-                          : state.t3Server
-                            ? "Detected from live port"
-                            : "Not running"}
-                      </Detail>
-                      <Detail label="Sessions">{String(state.t3Sessions.length)}</Detail>
-                    </div>
-                  </article>
-                  {filteredT3Sessions.length > 0 ? (
-                    <div className="daemon-sessions-list">
-                      {filteredT3Sessions.map((session) => (
-                        <article
-                          className="daemon-session-card"
-                          data-current-workspace={String(session.isCurrentWorkspace)}
-                          key={`t3:${session.sessionId}`}
-                        >
-                          <div className="daemon-session-card-header">
-                            <div className="daemon-session-card-title-wrap">
-                              <div className="daemon-session-card-title">
-                                {session.title?.trim() || session.sessionId}
-                              </div>
-                              <div className="daemon-session-card-subtitle">
-                                {session.sessionId}
-                              </div>
-                            </div>
-                            <div className="daemon-session-card-badges">
-                              {session.isFocused ? (
-                                <span className="daemon-session-badge daemon-session-badge-current">
-                                  Focused
-                                </span>
-                              ) : null}
-                              <span className="daemon-session-badge">
-                                {session.isSleeping
-                                  ? "sleeping"
-                                  : session.isRunning
-                                    ? "running"
-                                    : "stopped"}
-                              </span>
-                              <span className="daemon-session-badge">{session.activity}</span>
-                            </div>
-                          </div>
-                          <div className="daemon-session-card-details">
-                            <Detail label="Workspace">{session.workspaceId}</Detail>
-                            <Detail label="Root">{session.workspaceRoot ?? "Pending"}</Detail>
-                            <Detail label="Thread">{session.threadId ?? "Pending"}</Detail>
-                            <Detail label="Last Active">
-                              {session.lastInteractionAt
-                                ? formatTimestamp(session.lastInteractionAt)
-                                : "N/A"}
-                            </Detail>
-                            <Detail label="Title">{session.title?.trim() || "N/A"}</Detail>
-                            <Detail label="Detail">{session.detail ?? "N/A"}</Detail>
-                          </div>
-                          <div className="daemon-session-card-actions">
-                            <button
-                              className="secondary daemon-session-action-button daemon-session-action-button-danger"
-                              onClick={() => {
-                                vscode.postMessage({
-                                  sessionId: session.sessionId,
-                                  type: "killT3RuntimeSession",
-                                });
-                              }}
-                              type="button"
+                    </article>
+                    {filteredT3Sessions.length > 0 ? (
+                      <div className="daemon-sessions-list">
+                        {filteredT3Sessions.map((session) => {
+                          const panelId = `t3-session:${session.sessionId}`;
+                          const isExpanded = isPanelExpanded(panelId);
+                          return (
+                            <article
+                              className="daemon-session-card"
+                              data-current-workspace={String(session.isCurrentWorkspace)}
+                              data-collapsed={String(!isExpanded)}
+                              key={`t3:${session.sessionId}`}
                             >
-                              Kill Session
-                            </button>
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="group-empty-state daemon-sessions-empty-state daemon-sessions-t3-empty">
-                      {searchQuery.trim()
-                        ? "No T3 sessions match that search."
-                        : state.t3Server
-                          ? "No T3 sessions are currently open in this workspace."
-                          : "No shared T3 server is currently running."}
-                    </div>
-                  )}
+                              <div className="daemon-session-card-header">
+                                <button
+                                  aria-controls={`${panelId}-panel`}
+                                  aria-expanded={isExpanded}
+                                  className="daemon-session-card-heading-button"
+                                  onClick={() => {
+                                    togglePanel(panelId);
+                                  }}
+                                  type="button"
+                                >
+                                  <CollapseChevron isExpanded={isExpanded} />
+                                  <span className="daemon-session-card-title-wrap">
+                                    <span className="daemon-session-card-title">
+                                      {session.title?.trim() || session.sessionId}
+                                    </span>
+                                    <span className="daemon-session-card-subtitle">
+                                      {session.sessionId}
+                                    </span>
+                                  </span>
+                                </button>
+                                <div className="daemon-session-card-badges">
+                                  {session.isFocused ? (
+                                    <span className="daemon-session-badge daemon-session-badge-current">
+                                      Focused
+                                    </span>
+                                  ) : null}
+                                  <span className="daemon-session-badge">
+                                    {session.isSleeping
+                                      ? "sleeping"
+                                      : session.isRunning
+                                        ? "running"
+                                        : "stopped"}
+                                  </span>
+                                  <span className="daemon-session-badge">{session.activity}</span>
+                                </div>
+                              </div>
+                              <div
+                                className="daemon-collapsible-body"
+                                hidden={!isExpanded}
+                                id={`${panelId}-panel`}
+                              >
+                                <div className="daemon-session-card-details">
+                                  <Detail label="Workspace">{session.workspaceId}</Detail>
+                                  <Detail label="Root">{session.workspaceRoot ?? "Pending"}</Detail>
+                                  <Detail label="Thread">{session.threadId ?? "Pending"}</Detail>
+                                  <Detail label="Last Active">
+                                    {session.lastInteractionAt
+                                      ? formatTimestamp(session.lastInteractionAt)
+                                      : "N/A"}
+                                  </Detail>
+                                  <Detail label="Title">{session.title?.trim() || "N/A"}</Detail>
+                                  <Detail label="Detail">{session.detail ?? "N/A"}</Detail>
+                                </div>
+                                <div className="daemon-session-card-actions">
+                                  <button
+                                    className="secondary daemon-session-action-button daemon-session-action-button-danger"
+                                    onClick={() => {
+                                      vscode.postMessage({
+                                        sessionId: session.sessionId,
+                                        type: "killT3RuntimeSession",
+                                      });
+                                    }}
+                                    type="button"
+                                  >
+                                    Kill Session
+                                  </button>
+                                </div>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="group-empty-state daemon-sessions-empty-state daemon-sessions-t3-empty">
+                        {searchQuery.trim()
+                          ? "No T3 sessions match that search."
+                          : state.t3Server
+                            ? "No T3 sessions are currently open in this workspace."
+                            : "No shared T3 server is currently running."}
+                      </div>
+                    )}
+                  </div>
                 </section>
                 {state.errorMessage ? (
                   <div className="daemon-sessions-error-banner">{state.errorMessage}</div>
                 ) : null}
                 {filteredSessions.length > 0 ? (
                   <div className="daemon-sessions-list">
-                    {filteredSessions.map((session) => (
-                      <article
-                        className="daemon-session-card"
-                        data-current-workspace={String(session.isCurrentWorkspace)}
-                        key={`${session.workspaceId}:${session.sessionId}:${session.startedAt}`}
-                      >
-                        <div className="daemon-session-card-header">
-                          <div className="daemon-session-card-title-wrap">
-                            <div className="daemon-session-card-title">
-                              {session.title?.trim() || session.sessionId}
-                            </div>
-                            <div className="daemon-session-card-subtitle">{session.sessionId}</div>
-                          </div>
-                          <div className="daemon-session-card-badges">
-                            {session.isCurrentWorkspace ? (
-                              <span className="daemon-session-badge daemon-session-badge-current">
-                                Current Workspace
+                    {filteredSessions.map((session) => {
+                      const panelId = `daemon-session:${session.workspaceId}:${session.sessionId}:${session.startedAt}`;
+                      const isExpanded = isPanelExpanded(panelId);
+                      return (
+                        <article
+                          className="daemon-session-card"
+                          data-current-workspace={String(session.isCurrentWorkspace)}
+                          data-collapsed={String(!isExpanded)}
+                          key={`${session.workspaceId}:${session.sessionId}:${session.startedAt}`}
+                        >
+                          <div className="daemon-session-card-header">
+                            <button
+                              aria-controls={`${panelId}-panel`}
+                              aria-expanded={isExpanded}
+                              className="daemon-session-card-heading-button"
+                              onClick={() => {
+                                togglePanel(panelId);
+                              }}
+                              type="button"
+                            >
+                              <CollapseChevron isExpanded={isExpanded} />
+                              <span className="daemon-session-card-title-wrap">
+                                <span className="daemon-session-card-title">
+                                  {session.title?.trim() || session.sessionId}
+                                </span>
+                                <span className="daemon-session-card-subtitle">
+                                  {session.sessionId}
+                                </span>
                               </span>
-                            ) : null}
-                            <span className="daemon-session-badge">{session.status}</span>
-                            <span className="daemon-session-badge">{session.agentStatus}</span>
+                            </button>
+                            <div className="daemon-session-card-badges">
+                              {session.isCurrentWorkspace ? (
+                                <span className="daemon-session-badge daemon-session-badge-current">
+                                  Current Workspace
+                                </span>
+                              ) : null}
+                              <span className="daemon-session-badge">{session.status}</span>
+                              <span className="daemon-session-badge">{session.agentStatus}</span>
+                            </div>
                           </div>
-                        </div>
-                        <div className="daemon-session-card-details">
-                          <Detail label="Workspace">{session.workspaceId}</Detail>
-                          <Detail label="CWD">{session.cwd}</Detail>
-                          <Detail label="Shell">{session.shell}</Detail>
-                          <Detail label="Agent">{session.agentName ?? "Unknown"}</Detail>
-                          <Detail label="Restore">{session.restoreState}</Detail>
-                          <Detail label="Size">{`${String(session.cols)} x ${String(session.rows)}`}</Detail>
-                          <Detail label="Started">{formatTimestamp(session.startedAt)}</Detail>
-                          <Detail label="Ended">
-                            {session.endedAt ? formatTimestamp(session.endedAt) : "Active"}
-                          </Detail>
-                          <Detail label="Exit Code">
-                            {session.exitCode !== undefined ? String(session.exitCode) : "N/A"}
-                          </Detail>
-                          <Detail label="Title">{session.title?.trim() || "N/A"}</Detail>
-                        </div>
-                        {session.errorMessage ? (
-                          <div className="daemon-session-card-error">{session.errorMessage}</div>
-                        ) : null}
-                        <div className="daemon-session-card-actions">
-                          <button
-                            className="secondary daemon-session-action-button daemon-session-action-button-danger"
-                            onClick={() => {
-                              vscode.postMessage({
-                                sessionId: session.sessionId,
-                                type: "killDaemonSession",
-                                workspaceId: session.workspaceId,
-                              });
-                            }}
-                            type="button"
+                          <div
+                            className="daemon-collapsible-body"
+                            hidden={!isExpanded}
+                            id={`${panelId}-panel`}
                           >
-                            Kill Session
-                          </button>
-                        </div>
-                      </article>
-                    ))}
+                            <div className="daemon-session-card-details">
+                              <Detail label="Workspace">{session.workspaceId}</Detail>
+                              <Detail label="CWD">{session.cwd}</Detail>
+                              <Detail label="Shell">{session.shell}</Detail>
+                              <Detail label="Agent">{session.agentName ?? "Unknown"}</Detail>
+                              <Detail label="Restore">{session.restoreState}</Detail>
+                              <Detail label="Size">{`${String(session.cols)} x ${String(session.rows)}`}</Detail>
+                              <Detail label="Started">{formatTimestamp(session.startedAt)}</Detail>
+                              <Detail label="Ended">
+                                {session.endedAt ? formatTimestamp(session.endedAt) : "Active"}
+                              </Detail>
+                              <Detail label="Exit Code">
+                                {session.exitCode !== undefined ? String(session.exitCode) : "N/A"}
+                              </Detail>
+                              <Detail label="Title">{session.title?.trim() || "N/A"}</Detail>
+                            </div>
+                            {session.errorMessage ? (
+                              <div className="daemon-session-card-error">
+                                {session.errorMessage}
+                              </div>
+                            ) : null}
+                            <div className="daemon-session-card-actions">
+                              <button
+                                className="secondary daemon-session-action-button daemon-session-action-button-danger"
+                                onClick={() => {
+                                  vscode.postMessage({
+                                    sessionId: session.sessionId,
+                                    type: "killDaemonSession",
+                                    workspaceId: session.workspaceId,
+                                  });
+                                }}
+                                type="button"
+                              >
+                                Kill Session
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="group-empty-state daemon-sessions-empty-state">
@@ -436,6 +548,18 @@ function Detail({ children, label }: DetailProps) {
       <div className="daemon-session-detail-label">{label}</div>
       <div className="daemon-session-detail-value">{children}</div>
     </div>
+  );
+}
+
+function CollapseChevron({ isExpanded }: { isExpanded: boolean }) {
+  return (
+    <IconChevronRight
+      aria-hidden="true"
+      className="daemon-collapsible-chevron"
+      data-expanded={String(isExpanded)}
+      size={14}
+      stroke={2}
+    />
   );
 }
 

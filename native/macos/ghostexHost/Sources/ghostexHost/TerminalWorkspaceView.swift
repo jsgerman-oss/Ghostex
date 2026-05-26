@@ -60,6 +60,7 @@ private let nativeTerminalColorEnvironmentKeys = [
 ]
 
 private let projectBeadsResponseEventName = "ghostex-project-beads-response"
+private let projectBoardResponseEventName = "ghostex-project-board-response"
 
 private struct ProjectBeadsBridgeRequest: Decodable {
   let action: String
@@ -1050,8 +1051,15 @@ struct GhostexGhosttySurfaceModel {
 }
 
 private final class GhostexGhosttySurfaceHostView: NSView {
+  private static let scrollButtonSize = CGSize(width: 37.5, height: 37.5)
+  private static let scrollButtonRightInset: CGFloat = 17
+  private static let scrollButtonBottomInset: CGFloat = 12
+  private static let scrollButtonGap: CGFloat = 8.5
+  private static let scrollButtonVisibilityThresholdPoints: CGFloat = 200
   private let scrollView = NSScrollView()
   private let documentView = NSView()
+  private let scrollToBottomButton = TerminalPaneScrollButton(direction: .bottom)
+  private let scrollToTopButton = TerminalPaneScrollButton(direction: .top)
   let surfaceView: GhostexGhosttySurfaceView
   private var observers: [NSObjectProtocol] = []
   private var isLiveScrolling = false
@@ -1078,6 +1086,20 @@ private final class GhostexGhosttySurfaceHostView: NSView {
     scrollView.documentView = documentView
     documentView.addSubview(surfaceView)
     addSubview(scrollView)
+    /*
+     CDXC:NativeTerminalScroll 2026-05-26-13:58:
+     Native terminal panes need the same in-pane scroll-to-bottom and
+     scroll-to-top overlay UX as the prior VSmux terminal panes. Keep the
+     controls inside the Ghostty NSScrollView host so they follow split layout,
+     sit above terminal content, and invoke Ghostty's native viewport actions
+     instead of synthesizing wheel input.
+     */
+    scrollToBottomButton.target = self
+    scrollToBottomButton.action = #selector(scrollToBottomButtonPressed)
+    scrollToTopButton.target = self
+    scrollToTopButton.action = #selector(scrollToTopButtonPressed)
+    addSubview(scrollToBottomButton)
+    addSubview(scrollToTopButton)
     scrollView.contentView.postsBoundsChangedNotifications = true
     observers.append(NotificationCenter.default.addObserver(
       forName: NSView.boundsDidChangeNotification,
@@ -1133,6 +1155,7 @@ private final class GhostexGhosttySurfaceHostView: NSView {
   override func layout() {
     super.layout()
     scrollView.frame = bounds
+    layoutScrollButtons()
     surfaceView.frame.size = scrollView.bounds.size
     documentView.frame.size.width = scrollView.bounds.width
     synchronizeScrollView()
@@ -1156,6 +1179,7 @@ private final class GhostexGhosttySurfaceHostView: NSView {
       }
     }
     scrollView.reflectScrolledClipView(scrollView.contentView)
+    updateScrollButtonVisibility()
   }
 
   private func handleLiveScroll() {
@@ -1167,6 +1191,7 @@ private final class GhostexGhosttySurfaceHostView: NSView {
     guard row != lastSentRow else { return }
     lastSentRow = row
     _ = surfaceView.surfaceModel?.perform(action: "scroll_to_row:\(row)")
+    updateScrollButtonVisibility()
   }
 
   private func documentHeight() -> CGFloat {
@@ -1183,6 +1208,70 @@ private final class GhostexGhosttySurfaceHostView: NSView {
   override func mouseMoved(with event: NSEvent) {
     guard NSScroller.preferredScrollerStyle == .legacy else { return }
     scrollView.flashScrollers()
+  }
+
+  private func layoutScrollButtons() {
+    let size = Self.scrollButtonSize
+    let x = max(bounds.maxX - Self.scrollButtonRightInset - size.width, bounds.minX)
+    let bottomY = bounds.minY + Self.scrollButtonBottomInset
+    scrollToBottomButton.frame = CGRect(origin: CGPoint(x: x, y: bottomY), size: size)
+    scrollToTopButton.frame = CGRect(
+      origin: CGPoint(x: x, y: bottomY + size.height + Self.scrollButtonGap),
+      size: size)
+  }
+
+  private func updateScrollButtonVisibility() {
+    guard !isHidden, bounds.width >= 80, bounds.height >= 96 else {
+      setScrollButton(scrollToBottomButton, visible: false)
+      setScrollButton(scrollToTopButton, visible: false)
+      return
+    }
+
+    let visibleRect = scrollView.contentView.documentVisibleRect
+    let documentHeight = documentView.frame.height
+    let distanceFromBottom = max(visibleRect.minY, 0)
+    let distanceFromTop = max(documentHeight - visibleRect.maxY, 0)
+    let shouldShowBottom = distanceFromBottom > Self.scrollButtonVisibilityThresholdPoints
+    let shouldShowTop =
+      distanceFromTop > Self.scrollButtonVisibilityThresholdPoints &&
+      distanceFromBottom > Self.scrollButtonVisibilityThresholdPoints
+
+    setScrollButton(scrollToBottomButton, visible: shouldShowBottom)
+    setScrollButton(scrollToTopButton, visible: shouldShowTop)
+  }
+
+  private func setScrollButton(_ button: TerminalPaneScrollButton, visible: Bool) {
+    guard button.isVisible != visible else {
+      return
+    }
+    button.isVisible = visible
+  }
+
+  @objc private func scrollToBottomButtonPressed() {
+    window?.makeFirstResponder(surfaceView)
+    guard let scrollbar = surfaceView.scrollbar else {
+      return
+    }
+    scrollTerminal(toRow: max(Int(scrollbar.total) - Int(scrollbar.len), 0))
+  }
+
+  @objc private func scrollToTopButtonPressed() {
+    window?.makeFirstResponder(surfaceView)
+    scrollTerminal(toRow: 0)
+  }
+
+  private func scrollTerminal(toRow row: Int) {
+    let cellHeight = surfaceView.cellSize.height
+    guard cellHeight > 0 else {
+      return
+    }
+    let visibleHeight = scrollView.contentView.documentVisibleRect.height
+    let y = max(documentView.frame.height - visibleHeight - (CGFloat(row) * cellHeight), 0)
+    scrollView.contentView.scroll(to: CGPoint(x: 0, y: y))
+    scrollView.reflectScrolledClipView(scrollView.contentView)
+    lastSentRow = row
+    _ = surfaceView.surfaceModel?.perform(action: "scroll_to_row:\(row)")
+    updateScrollButtonVisibility()
   }
 }
 
@@ -2118,6 +2207,37 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
+  func checkPersistenceSession(_ command: CheckPersistenceSession) {
+    guard let provider = NativeSessionPersistenceProvider(rawValue: command.provider) else {
+      sendEvent(
+        .persistenceSessionState(
+          requestId: command.requestId,
+          provider: command.provider,
+          sessionName: command.sessionName,
+          exists: false,
+          error: "unsupported-provider"
+        ))
+      return
+    }
+    let sendEvent = self.sendEvent
+    DispatchQueue.global(qos: .utility).async {
+      let result = NativeSessionPersistenceMode.sessionExists(
+        provider: provider,
+        sessionName: command.sessionName
+      )
+      DispatchQueue.main.async {
+        sendEvent(
+          .persistenceSessionState(
+            requestId: command.requestId,
+            provider: command.provider,
+            sessionName: command.sessionName,
+            exists: result.exists,
+            error: result.error
+          ))
+      }
+    }
+  }
+
   func createTerminal(_ command: CreateTerminal) {
     let activateOnCreate = command.activateOnCreate ?? true
     let forcePreviousSessionRestoreDiagnostics = command.diagnosticSource == "previousSessionRestore"
@@ -2238,6 +2358,22 @@ final class TerminalWorkspaceView: NSView {
     } else {
       sessionPersistenceName = nil
     }
+    let persistenceSessionExisted =
+      sessionPersistenceProvider.flatMap { provider in
+        sessionPersistenceName.map { sessionName in
+          NativeSessionPersistenceMode.sessionExists(
+            provider: provider,
+            sessionName: sessionName
+          ).exists
+        }
+      }
+    /**
+     CDXC:SessionPersistence 2026-05-26-17:20:
+     Sidebar sleeping state means "no native pane is mounted"; it no longer
+     implies the tmux/zmx/zellij backend is missing. Probe provider liveness
+     before attach so terminalReady can tell the sidebar whether queued restore
+     text is safe to run only for newly created provider sessions.
+     */
     var config = GhostexGhosttySurfaceConfiguration()
     config.workingDirectory = command.cwd
     config.environmentVariables = nativeGhosttyTerminalEnvironment(command.env, sessionId: command.sessionId)
@@ -2488,7 +2624,10 @@ final class TerminalWorkspaceView: NSView {
         sessionId: command.sessionId,
         ttyName: ttyName,
         foregroundPid: foregroundPid,
-        sessionPersistenceName: sessionPersistenceName
+        sessionPersistenceName: sessionPersistenceName,
+        persistenceSessionCreated: sessionPersistenceProvider == nil
+          ? nil
+          : persistenceSessionExisted.map { !$0 }
       ))
     sendEvent(.terminalCwdChanged(sessionId: command.sessionId, cwd: command.cwd))
     startExitPollingIfNeeded()
@@ -3188,7 +3327,13 @@ final class TerminalWorkspaceView: NSView {
       let beadsBridge = ProjectBeadsBridge { [weak self] request, webView in
         self?.handleProjectBeadsBridgeRequest(request, webView: webView)
       }
+      let projectBoardBridge = ProjectBoardBridge { [weak self] request in
+        self?.sendEvent(.projectBoardRequest(request))
+      }
       configuration.userContentController.add(beadsBridge, name: ProjectBeadsBridge.messageHandlerName)
+      configuration.userContentController.add(
+        projectBoardBridge,
+        name: ProjectBoardBridge.messageHandlerName)
       let projectWebView = WKWebView(frame: .zero, configuration: configuration)
       beadsBridge.webView = projectWebView
       if #available(macOS 13.3, *) {
@@ -6153,6 +6298,10 @@ final class TerminalWorkspaceView: NSView {
      CDXC:ProjectBoard 2026-05-23-03:16:
      The Project board runs inside WKWebView and must persist work through the upstream Beads CLI, not a forked library or custom storage.
      Only expose the exact bd subcommands the board needs so the local web app can list, create, update, and comment on issues without gaining arbitrary shell access.
+
+     CDXC:ProjectBoard 2026-05-26-10:08:
+     Project board ticket deletion must route through Beads deletion so dependencies, labels, events, and deletion manifests stay consistent with bd CLI behavior.
+     Keep the bridge allowlist explicit and require a concrete issue id before running the destructive command.
      */
     guard let webView else {
       return
@@ -6265,6 +6414,13 @@ final class TerminalWorkspaceView: NSView {
       }
       createArguments.append("--json")
       return createArguments
+    case "delete":
+      return [
+        "delete",
+        try projectBeadsRequired(request.issueId, field: "issueId"),
+        "--force",
+        "--json",
+      ]
     case "list":
       return ["list", "--all", "--json"]
     case "listIssues":
@@ -6522,6 +6678,24 @@ final class TerminalWorkspaceView: NSView {
     }
     let script = """
       window.dispatchEvent(new CustomEvent('\(projectBeadsResponseEventName)', { detail: \(json) }));
+      undefined;
+      """
+    webView.evaluateJavaScript(script, completionHandler: nil)
+  }
+
+  func dispatchProjectBoardBridgeResponse(_ response: ProjectBoardResponse) {
+    let projectId = response.projectId ?? activeProjectEditorId
+    let targetSession =
+      projectId.flatMap { projectEditorPaneSessions[$0] }
+      ?? projectEditorPaneSessions.values.first { session in
+        session.mode == "tasks"
+      }
+    guard let webView = targetSession?.webView else {
+      return
+    }
+    let payloadJson = response.payloadJson
+    let script = """
+      window.dispatchEvent(new CustomEvent('\(projectBoardResponseEventName)', { detail: \(payloadJson) }));
       undefined;
       """
     webView.evaluateJavaScript(script, completionHandler: nil)
@@ -12361,6 +12535,29 @@ private final class ProjectBeadsBridge: NSObject, WKScriptMessageHandler {
   }
 }
 
+private final class ProjectBoardBridge: NSObject, WKScriptMessageHandler {
+  static let messageHandlerName = "ghostexProjectBoard"
+
+  private let onRequest: (ProjectBoardBridgeRequest) -> Void
+
+  init(onRequest: @escaping (ProjectBoardBridgeRequest) -> Void) {
+    self.onRequest = onRequest
+  }
+
+  func userContentController(
+    _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
+  ) {
+    guard let dictionary = message.body as? [String: Any],
+      JSONSerialization.isValidJSONObject(dictionary),
+      let data = try? JSONSerialization.data(withJSONObject: dictionary),
+      let request = try? JSONDecoder().decode(ProjectBoardBridgeRequest.self, from: data)
+    else {
+      return
+    }
+    onRequest(request)
+  }
+}
+
 private final class T3CodePaneDiagnosticsBridge: NSObject, WKScriptMessageHandler {
   static let messageHandlerName = "ghostexT3CodePaneDiagnostics"
 
@@ -12444,6 +12641,8 @@ private enum NativeSessionPersistenceProvider: String {
 }
 
 private enum NativeSessionPersistenceMode {
+  typealias SessionExistsResult = (exists: Bool, error: String?)
+
   /**
    CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
    Provider-backed terminals must always attach to ordinary tmux/zmx/zellij
@@ -12452,6 +12651,65 @@ private enum NativeSessionPersistenceMode {
    of terminating the native Ghostty surface.
    */
   private static let zellijSessionNameMaxLength = 25
+
+  static func sessionExists(
+    provider: NativeSessionPersistenceProvider,
+    sessionName: String
+  ) -> SessionExistsResult {
+    let normalizedName = normalizedSessionName(sessionName, provider: provider) ?? sessionName
+    let quotedName = shellQuote(normalizedName)
+    let script: String
+    switch provider {
+    case .tmux:
+      script = """
+        if ! command -v tmux >/dev/null 2>&1; then
+          printf '%s\\n' 'tmux was not found on PATH.' >&2
+          exit 127
+        fi
+        tmux has-session -t \(quotedName) >/dev/null 2>&1
+        """
+    case .zmx:
+      script = """
+        unset ZMX_SESSION ZMX_SESSION_PREFIX
+        \(zmxExecutableShellSetup())
+        "$zmx_bin" list --short 2>/dev/null | grep -F -x -- \(quotedName) >/dev/null 2>&1
+        """
+    case .zellij:
+      script = """
+        if ! command -v zellij >/dev/null 2>&1; then
+          printf '%s\\n' 'zellij was not found on PATH.' >&2
+          exit 127
+        fi
+        zellij list-sessions --short --no-formatting 2>/dev/null | grep -F -x -- \(quotedName) >/dev/null 2>&1
+        """
+    }
+    return runShellExistenceCheck(script)
+  }
+
+  private static func runShellExistenceCheck(_ script: String) -> SessionExistsResult {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    process.arguments = ["-lc", script]
+    process.standardInput = FileHandle.nullDevice
+    let stderrPipe = Pipe()
+    process.standardError = stderrPipe
+    do {
+      try process.run()
+      process.waitUntilExit()
+      let stderr =
+        String(data: stderrPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if process.terminationStatus == 0 {
+        return (true, nil)
+      }
+      if process.terminationStatus == 1 {
+        return (false, nil)
+      }
+      return (false, stderr.isEmpty ? "exit-\(process.terminationStatus)" : stderr)
+    } catch {
+      return (false, error.localizedDescription)
+    }
+  }
 
   static func attachCommand(
     provider: NativeSessionPersistenceProvider,
@@ -19963,6 +20221,160 @@ private final class PoppedOutPanePlaceholderView: NSView {
 
   @objc private func reattach() {
     onReattach()
+  }
+}
+
+private final class TerminalPaneScrollButton: NSButton {
+  enum Direction {
+    case bottom
+    case top
+  }
+
+  private static let normalBackgroundColor = NSColor(
+    calibratedRed: 18 / 255,
+    green: 20 / 255,
+    blue: 26 / 255,
+    alpha: 0.82
+  ).cgColor
+  private static let hoverBackgroundColor = NSColor(
+    calibratedRed: 30 / 255,
+    green: 35 / 255,
+    blue: 46 / 255,
+    alpha: 0.92
+  ).cgColor
+  private static let borderColor = NSColor(calibratedWhite: 0.88, alpha: 0.2).cgColor
+  private static let hoverBorderColor = NSColor(calibratedWhite: 0.88, alpha: 0.34).cgColor
+  private static let glyphColor = NSColor(calibratedWhite: 0.96, alpha: 0.96)
+
+  let direction: Direction
+  private var hoverTrackingArea: NSTrackingArea?
+  private var isPointerInside = false {
+    didSet { updateChrome() }
+  }
+  var isVisible = false {
+    didSet {
+      isEnabled = isVisible
+      isHidden = !isVisible
+      alphaValue = isVisible ? 1 : 0
+    }
+  }
+
+  override var isHighlighted: Bool {
+    didSet { updateChrome() }
+  }
+
+  override var mouseDownCanMoveWindow: Bool {
+    false
+  }
+
+  init(direction: Direction) {
+    self.direction = direction
+    super.init(frame: .zero)
+    configure()
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    isVisible ? super.hitTest(point) : nil
+  }
+
+  private func configure() {
+    /**
+     CDXC:NativeTerminalScroll 2026-05-26-13:58:
+     Scroll jump controls should read as quiet terminal overlays, not title-bar
+     actions. Use icon-only circular AppKit buttons with hover/pressed chrome so
+     long scrollback can be navigated without adding permanent pane chrome or
+     stealing keyboard focus from the Ghostty surface.
+     */
+    title = ""
+    isBordered = false
+    imagePosition = .imageOnly
+    wantsLayer = true
+    layer?.backgroundColor = Self.normalBackgroundColor
+    layer?.borderColor = Self.borderColor
+    layer?.borderWidth = 1
+    layer?.cornerRadius = 18.75
+    layer?.masksToBounds = false
+    layer?.shadowColor = NSColor.black.cgColor
+    layer?.shadowOffset = CGSize(width: 0, height: -10)
+    layer?.shadowOpacity = 0.32
+    layer?.shadowRadius = 22
+    toolTip = direction == .bottom ? "Scroll terminal to bottom" : "Scroll terminal to top"
+    isEnabled = false
+    isHidden = true
+    alphaValue = 0
+  }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    if let hoverTrackingArea {
+      removeTrackingArea(hoverTrackingArea)
+    }
+    let trackingArea = NSTrackingArea(
+      rect: .zero,
+      options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited],
+      owner: self,
+      userInfo: nil
+    )
+    hoverTrackingArea = trackingArea
+    addTrackingArea(trackingArea)
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    isPointerInside = true
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    isPointerInside = false
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    drawScrollGlyph()
+  }
+
+  private func updateChrome() {
+    let active = isPointerInside || isHighlighted
+    layer?.backgroundColor = active ? Self.hoverBackgroundColor : Self.normalBackgroundColor
+    layer?.borderColor = active ? Self.hoverBorderColor : Self.borderColor
+  }
+
+  private func drawScrollGlyph() {
+    let centerX = bounds.midX
+    let centerY = bounds.midY
+    let path = NSBezierPath()
+    path.lineWidth = 2.2
+    path.lineCapStyle = .round
+    path.lineJoinStyle = .round
+
+    switch direction {
+    case .bottom:
+      path.move(to: CGPoint(x: centerX - 5, y: centerY + 2))
+      path.line(to: CGPoint(x: centerX, y: centerY - 4))
+      path.line(to: CGPoint(x: centerX + 5, y: centerY + 2))
+      path.move(to: CGPoint(x: centerX, y: centerY + 6))
+      path.line(to: CGPoint(x: centerX, y: centerY - 4))
+      path.move(to: CGPoint(x: centerX - 6, y: centerY - 8))
+      path.line(to: CGPoint(x: centerX + 6, y: centerY - 8))
+    case .top:
+      path.move(to: CGPoint(x: centerX - 5, y: centerY - 2))
+      path.line(to: CGPoint(x: centerX, y: centerY + 4))
+      path.line(to: CGPoint(x: centerX + 5, y: centerY - 2))
+      path.move(to: CGPoint(x: centerX, y: centerY - 6))
+      path.line(to: CGPoint(x: centerX, y: centerY + 4))
+      path.move(to: CGPoint(x: centerX - 6, y: centerY + 8))
+      path.line(to: CGPoint(x: centerX + 6, y: centerY + 8))
+    }
+
+    Self.glyphColor.setStroke()
+    path.stroke()
   }
 }
 

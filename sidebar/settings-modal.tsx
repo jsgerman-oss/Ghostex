@@ -1,6 +1,16 @@
 import { DragDropProvider, type DragDropEventHandlers } from "@dnd-kit/react";
 import { isSortableOperation, useSortable } from "@dnd-kit/react/sortable";
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  type UIEvent as ReactUIEvent,
+} from "react";
 import Fuse from "fuse.js";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -356,6 +366,7 @@ type HotkeySettingsSectionDefinition = {
 };
 
 let rememberedSettingsModalTab: SettingsModalTab | undefined;
+const rememberedSettingsModalScrollTopByTab: Partial<Record<SettingsModalTab, number>> = {};
 
 function getInitialSettingsModalTab(initialTab: SettingsModalTab): SettingsModalTab {
   /**
@@ -370,8 +381,30 @@ function getInitialSettingsModalTab(initialTab: SettingsModalTab): SettingsModal
   return rememberedSettingsModalTab ?? initialTab;
 }
 
+function isSearchableSettingsModalTab(tab: SettingsModalTab): tab is "settings" | "ghostty" | "hotkeys" {
+  return tab === "settings" || tab === "ghostty" || tab === "hotkeys";
+}
+
 function hasActiveHotkeyRecorder(): boolean {
   return Boolean(document.querySelector("[data-hotkey-recorder='true'][data-recording='true']"));
+}
+
+function isEditableSettingsModalEventTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target.isContentEditable) {
+    return true;
+  }
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
+function getActiveSettingsModalScrollViewport(dialogElement: HTMLElement | null): HTMLElement | null {
+  return (
+    dialogElement
+      ?.querySelector<HTMLElement>("[role='tabpanel'][data-state='active']")
+      ?.querySelector<HTMLElement>("[data-slot='scroll-area-viewport']") ?? null
+  );
 }
 
 export type GhosttySettingsAction =
@@ -447,6 +480,8 @@ export function SettingsModal({
   const [activeTab, setActiveTabState] = useState<SettingsModalTab>(() =>
     getInitialSettingsModalTab(initialTab),
   );
+  const dialogContentRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingSettingsRef = useRef<ghostexSettings | undefined>(undefined);
   const pendingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const browserSectionRef = useRef<HTMLDivElement>(null);
@@ -465,7 +500,64 @@ export function SettingsModal({
   const hasRequestedStorageStatsRef = useRef(false);
   const modalTheme = resolveSidebarTheme(draft.sidebarTheme, getSidebarThemeVariant(theme));
   const isModalDarkTheme = getSidebarThemeVariant(modalTheme) === "dark";
+  const rememberActiveScrollPosition = () => {
+    const viewport = getActiveSettingsModalScrollViewport(dialogContentRef.current);
+    if (viewport) {
+      rememberedSettingsModalScrollTopByTab[activeTab] = viewport.scrollTop;
+    }
+  };
+  const focusSearchInput = () => {
+    if (isFirstLaunchSetup || !isSearchableSettingsModalTab(activeTab)) {
+      return;
+    }
+    searchInputRef.current?.focus({ preventScroll: true });
+  };
+  const getActiveSearchQuery = () => {
+    if (activeTab === "hotkeys") {
+      return hotkeysSearchQuery;
+    }
+    if (activeTab === "ghostty") {
+      return ghosttySearchQuery;
+    }
+    return settingsSearchQuery;
+  };
+  const setActiveSearchQuery = (nextQuery: string) => {
+    if (activeTab === "hotkeys") {
+      setHotkeysSearchQuery(nextQuery);
+      return;
+    }
+    if (activeTab === "ghostty") {
+      setGhosttySearchQuery(nextQuery);
+      return;
+    }
+    setSettingsSearchQuery(nextQuery);
+  };
+  const handleSettingsModalScrollCapture = (event: ReactUIEvent<HTMLDivElement>) => {
+    if (event.target instanceof HTMLElement && event.target.dataset.slot === "scroll-area-viewport") {
+      rememberedSettingsModalScrollTopByTab[activeTab] = event.target.scrollTop;
+    }
+  };
+  const handleSettingsModalKeyDownCapture = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (
+      event.defaultPrevented ||
+      event.nativeEvent.isComposing ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      isFirstLaunchSetup ||
+      !isSearchableSettingsModalTab(activeTab) ||
+      event.key.length !== 1 ||
+      isEditableSettingsModalEventTarget(event.target)
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    setActiveSearchQuery(`${getActiveSearchQuery()}${event.key}`);
+    requestAnimationFrame(focusSearchInput);
+  };
   const setActiveTab = (nextTab: SettingsModalTab) => {
+    rememberActiveScrollPosition();
     rememberedSettingsModalTab = nextTab;
     setActiveTabState(nextTab);
   };
@@ -479,9 +571,35 @@ export function SettingsModal({
       return;
     }
     const nextTab = getInitialSettingsModalTab(initialTab);
+    rememberActiveScrollPosition();
     rememberedSettingsModalTab = nextTab;
     setActiveTabState(nextTab);
   }, [initialTab, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    /**
+     * CDXC:SettingsNavigation 2026-05-26-18:47:
+     * During one app session, reopening Settings should return to the same tab
+     * and scroll position the user left. Keep that state in module memory so it
+     * survives modal remounts but resets naturally when the app restarts.
+     *
+     * CDXC:SettingsSearch 2026-05-26-18:47:
+     * When a searchable Settings tab opens, ordinary typing should enter the
+     * active tab's search box even if Radix focus starts on a tab, button, or
+     * another non-text control. Text fields and recorders keep their own input.
+     */
+    const animationFrame = requestAnimationFrame(() => {
+      const viewport = getActiveSettingsModalScrollViewport(dialogContentRef.current);
+      if (viewport) {
+        viewport.scrollTop = rememberedSettingsModalScrollTopByTab[activeTab] ?? 0;
+      }
+      focusSearchInput();
+    });
+    return () => cancelAnimationFrame(animationFrame);
+  }, [activeTab, isFirstLaunchSetup, isOpen]);
 
   useEffect(() => {
     if (!isOpen || activeTab !== "agents" || agentHookStatus || agentHookStatusLoading) {
@@ -776,7 +894,7 @@ export function SettingsModal({
         key: "sessionPersistenceProvider",
         options: SESSION_PERSISTENCE_PROVIDER_OPTIONS,
         subtitle:
-          "Enable only when you need ssh from other devices to continue Ghostex-created sessions.",
+          "Choose whether new terminal and agent sessions should use zmx persistence.",
         title: "Session Persistence (Beta)",
       },
       ...(draft.sessionPersistenceProvider === "off"
@@ -1183,6 +1301,7 @@ export function SettingsModal({
     <Dialog
       onOpenChange={(nextOpen) => {
         if (!nextOpen) {
+          rememberActiveScrollPosition();
           flushPendingSettings();
           onClose();
         }
@@ -1195,11 +1314,20 @@ export function SettingsModal({
           isModalDarkTheme && "dark",
         )}
         data-sidebar-theme={modalTheme}
+        onKeyDownCapture={handleSettingsModalKeyDownCapture}
         onEscapeKeyDown={(event) => {
           if (hasActiveHotkeyRecorder()) {
             event.preventDefault();
           }
         }}
+        onOpenAutoFocus={(event) => {
+          if (!isFirstLaunchSetup && isSearchableSettingsModalTab(activeTab)) {
+            event.preventDefault();
+            requestAnimationFrame(focusSearchInput);
+          }
+        }}
+        onScrollCapture={handleSettingsModalScrollCapture}
+        ref={dialogContentRef}
       >
         <TooltipProvider delayDuration={300}>
           <Tabs
@@ -1247,6 +1375,7 @@ export function SettingsModal({
                       : "Search settings"
                 }
                 className="mt-3 h-10 px-3 text-sm"
+                ref={searchInputRef}
                 onChange={(event) => {
                   const nextQuery = event.currentTarget.value;
                   if (activeTab === "hotkeys") {
@@ -1801,6 +1930,7 @@ export function SettingsModal({
                 <Button
                   className="h-10 px-5 text-sm"
                   onClick={() => {
+                    rememberActiveScrollPosition();
                     flushPendingSettings();
                     onClose();
                   }}
@@ -1993,12 +2123,15 @@ export function SettingsModal({
 
                          CDXC:SessionPersistence 2026-05-08-14:04
                           Label the setting as beta and explain that users should
-                          enable it only when they care about ssh from other devices
-                          continuing sessions created through ghostex. Recommend zmx with
-                          zmx-session-manager because it leaves Agent CLI tools
-                          unaffected while minor issues remain. */
+                          use zmx with zmx-session-manager when they care about ssh from
+                          other devices continuing sessions created through ghostex.
+                          Recommend zmx because it leaves Agent CLI tools unaffected
+                          while minor issues remain.
+
+                         CDXC:SessionPersistence 2026-05-26-13:41:
+                          zmx is now the default and recommended Settings option. Hide tmux and zellij from the dropdown without removing their code paths, so existing persisted provider sessions still normalize and launch. */
                       <SelectField
-                        description="Enable this feature only if you care about using ssh from other devices to continue working on sessions created using Ghostex. My favorite option is using zmx with zmx-session-manager because it doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
+                        description="Use zmx with zmx-session-manager when you care about using ssh from other devices to continue working on sessions created using Ghostex. It doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
                         label="Session Persistence (Beta)"
                         {...getSettingModificationProps("sessionPersistenceProvider")}
                         onChange={(value) =>

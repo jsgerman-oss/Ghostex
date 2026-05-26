@@ -64,6 +64,8 @@ import {
   DEFAULT_SIDEBAR_COMMAND_ICON_COLOR,
 } from "../../shared/sidebar-command-icons";
 import type { CommandConfigDraft } from "../../sidebar/command-config-modal";
+import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "../../sidebar/agent-logos";
+import type { SidebarAgentIcon } from "../../shared/sidebar-agents";
 import { normalizeghostexSettings, type ZedOverlayTargetApp } from "../../shared/ghostex-settings";
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
@@ -1985,11 +1987,25 @@ function TitlebarResourceSection({
   const hasTerminalSession = bundles.some(
     (bundle) => bundle.type === "session" && bundle.session?.sessionKind === "terminal",
   );
+  const sectionActionBundles = hasTerminalSession
+    ? bundles.filter((bundle) => bundle.type === "session" && bundle.session?.sessionKind === "terminal")
+    : bundles;
+  const sectionActionLabel = hasTerminalSession ? "Sleep Project" : "Quit";
+  const sectionActionTooltipTitle = hasTerminalSession ? "Sleep project" : "Quit this group";
+  const sectionActionTooltipBody = hasTerminalSession
+    ? "Sleeps this project's terminal sessions and keeps them restorable in the sidebar."
+    : "Stops live processes and closes related surfaces.";
   /**
    * CDXC:TitlebarResources 2026-05-25-14:21:
    * Resource group tooltips share the compact width cap used by action and
    * summary tooltips, including Quit group, so long process-management copy
    * wraps near the hovered control instead of spanning the window.
+   *
+   * CDXC:TitlebarResources 2026-05-26-13:11:
+   * Project resource groups that include terminal sessions should expose the
+   * group action as Sleep Project, not Quit. Limit that action to terminal
+   * session bundles so browser/code resources are not closed by a sleep-labeled
+   * control.
    */
   const resourceTooltipStyle = { maxWidth: 220 };
   return (
@@ -2032,19 +2048,16 @@ function TitlebarResourceSection({
           <TooltipTrigger asChild>
             <button
               className="titlebar-resource-section-quit-button"
-              onClick={() => onQuit(bundles)}
+              data-action={hasTerminalSession ? "sleep" : "quit"}
+              onClick={() => onQuit(sectionActionBundles)}
               type="button"
             >
-              Quit
+              {sectionActionLabel}
             </button>
           </TooltipTrigger>
           <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
-            <span className="titlebar-resource-tooltip-title">Quit this group</span>
-            <span>
-              {hasTerminalSession
-                ? "Stops live processes; terminal sessions remain restorable."
-                : "Stops live processes and closes related surfaces."}
-            </span>
+            <span className="titlebar-resource-tooltip-title">{sectionActionTooltipTitle}</span>
+            <span>{sectionActionTooltipBody}</span>
           </TooltipContent>
         </Tooltip>
       </div>
@@ -2218,17 +2231,43 @@ function getResourceChildProcessName(
   return bundle.type === "browser" ? getBrowserProcessDisplayName(process) : getProcessDisplayName(process);
 }
 
-function getResourceBundleAvatar(bundle: ResourceProcessBundle): string {
-  if (bundle.session?.sessionKind === "browser") {
-    return "B";
+function getResourceBundleAvatar(bundle: ResourceProcessBundle): ReactNode {
+  const agentIcon = bundle.session?.agentIcon;
+  if (isSidebarAgentIcon(agentIcon)) {
+    /**
+     * CDXC:TitlebarResources 2026-05-26-13:24:
+     * Resource rows should use the same shared agent-logo mask assets as Agents
+     * Hub profile chips instead of two-letter text abbreviations. This keeps
+     * Codex, Claude, T3, browser, and other agent identities visually aligned
+     * across the sidebar and resource manager.
+     */
+    return (
+      <span
+        aria-hidden="true"
+        className="titlebar-resource-avatar-logo"
+        data-agent-icon={agentIcon}
+        style={{
+          backgroundColor: AGENT_LOGO_COLORS[agentIcon],
+          maskImage: `url("${AGENT_LOGOS[agentIcon]}")`,
+          WebkitMaskImage: `url("${AGENT_LOGOS[agentIcon]}")`,
+        }}
+      />
+    );
   }
   if (bundle.type === "code") {
-    return "V";
+    return <IconCode aria-hidden="true" size={15} stroke={1.9} />;
   }
   if (bundle.type === "browser") {
-    return "B";
+    return <IconWorld aria-hidden="true" size={15} stroke={1.9} />;
   }
-  return (bundle.session?.agentIcon ?? bundle.label).slice(0, 2).toUpperCase();
+  if (bundle.session?.sessionKind === "terminal") {
+    return <IconTerminal2 aria-hidden="true" size={15} stroke={1.9} />;
+  }
+  return <IconBox aria-hidden="true" size={15} stroke={1.9} />;
+}
+
+function isSidebarAgentIcon(candidate: unknown): candidate is SidebarAgentIcon {
+  return typeof candidate === "string" && Object.prototype.hasOwnProperty.call(AGENT_LOGOS, candidate);
 }
 
 function getResourceBundleMeta(bundle: ResourceProcessBundle): string {
@@ -2342,16 +2381,21 @@ function TitlebarModeSwitcher({
 
         CDXC:ModeSwitcher 2026-05-15-14:47:
         The animation must closely match shadcn-space Tabs-01: each tab is a
-        rounded-full button with the active pill rendered as the selected
-        button's shared-layout motion background. Avoid a clipped segmented
-        track because it changes the motion shape and makes the spring look
-        unlike the referenced component.
+        single button with the active segment rendered as the selected button's
+        shared-layout motion background. Avoid a clipped segmented track
+        because it changes the motion shape and makes the spring look unlike
+        the referenced component.
 
         CDXC:ModeSwitcher 2026-05-15-14:54:
         The active pill must visibly travel from the previously active mode to
         the newly selected mode. Keep tab overflow visible so Framer Motion's
         shared-layout element is not clipped to the destination button, which
         would make Agents-to-Tasks look like a direct jump.
+
+        CDXC:ModeSwitcher 2026-05-26-13:52:
+        Titlebar mode tabs should match the sidebar session button roundness
+        instead of using fully rounded pills, so the top navigation and session
+        controls share one chrome language.
       */}
       {modes.map((mode) => {
         const isActive = mode.value === activeMode;
@@ -2737,6 +2781,13 @@ styleElement.textContent = `
     padding: 0;
   }
   .titlebar-mode-switcher {
+    /**
+     * CDXC:ModeSwitcher 2026-05-26-13:52:
+     * Match the top mode-tab radius to sidebar session buttons. The session
+     * card uses calc(10px * var(--sidebar-density-scale)); keep the titlebar
+     * tab highlight on the same radius so it is less pill-shaped.
+     */
+    --titlebar-mode-tab-radius: calc(10px * var(--sidebar-density-scale));
     align-items: center;
     display: flex;
     flex: 0 1 auto;
@@ -2752,7 +2803,7 @@ styleElement.textContent = `
     align-items: center;
     background: transparent;
     border: 0;
-    border-radius: 999px;
+    border-radius: var(--titlebar-mode-tab-radius);
     color: rgba(255,255,255,0.68);
     cursor: default;
     display: inline-flex;
@@ -2776,7 +2827,7 @@ styleElement.textContent = `
   }
   .titlebar-mode-tab-active {
     background: rgba(255,255,255,0.2);
-    border-radius: 999px;
+    border-radius: var(--titlebar-mode-tab-radius);
     inset: 0;
     position: absolute;
   }
@@ -3016,6 +3067,10 @@ styleElement.textContent = `
     transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
     white-space: nowrap;
   }
+  .titlebar-resource-section-quit-button[data-action="sleep"] {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.13);
+  }
   .titlebar-resource-section-heading:hover .titlebar-resource-section-quit-button,
   .titlebar-resource-section-heading:focus-within .titlebar-resource-section-quit-button {
     /*
@@ -3023,11 +3078,20 @@ styleElement.textContent = `
      * Resource-manager Quit controls should stay available without crowding the
      * header or section chrome. Reveal destructive buttons only while the row is
      * hovered or keyboard-focused.
+     *
+     * CDXC:TitlebarResources 2026-05-26-13:11:
+     * Sleep Project is a non-destructive project-group action, but it should
+     * use the same hover reveal slot as section Quit so resource metrics remain
+     * stable until the user targets the group action area.
      */
     opacity: 1;
     pointer-events: auto;
   }
-  .titlebar-resource-section-quit-button:hover {
+  .titlebar-resource-section-quit-button[data-action="sleep"]:hover {
+    background: rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.92);
+  }
+  .titlebar-resource-section-quit-button[data-action="quit"]:hover {
     background: rgba(220,38,38,0.28);
     color: rgba(255,255,255,0.96);
   }
@@ -3190,6 +3254,25 @@ styleElement.textContent = `
     height: 28px;
     justify-content: center;
     width: 28px;
+  }
+  .titlebar-resource-avatar svg {
+    color: rgba(255,255,255,0.82);
+  }
+  .titlebar-resource-avatar-logo {
+    /*
+     * CDXC:TitlebarResources 2026-05-26-13:24:
+     * Resource avatars use the Agents Hub mask-logo rendering path, so rows get
+     * recognizable agent icons without changing the fixed avatar column size.
+     */
+    display: block;
+    height: 15px;
+    mask-position: center;
+    mask-repeat: no-repeat;
+    mask-size: contain;
+    width: 15px;
+    -webkit-mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-size: contain;
   }
   .titlebar-resource-text {
     display: grid;

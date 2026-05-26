@@ -1015,6 +1015,61 @@
   padding: 12px;
 }
 
+.daemon-collapsible-heading,
+.daemon-session-card-heading-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  display: inline-flex;
+  flex: 1;
+  gap: 8px;
+  justify-content: flex-start;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.daemon-collapsible-heading:focus-visible,
+.daemon-session-card-heading-button:focus-visible {
+  border-radius: 8px;
+  outline: 1px solid color-mix(in srgb, var(--app-button-background) 62%, transparent);
+  outline-offset: 4px;
+}
+
+.daemon-collapsible-chevron {
+  color: color-mix(in srgb, var(--app-foreground) 72%, var(--app-muted) 28%);
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+
+.daemon-collapsible-chevron[data-expanded="true"] {
+  transform: rotate(90deg);
+}
+
+.daemon-collapsible-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.daemon-collapsible-body[hidden] {
+  display: none;
+}
+
+.daemon-sessions-summary .daemon-collapsible-body {
+  gap: 8px;
+}
+
+.daemon-sessions-heading-meta {
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .daemon-sessions-section {
   display: grid;
   gap: 12px;
@@ -1072,12 +1127,20 @@
 }
 
 .daemon-session-card {
+  /**
+   * CDXC:RunningSessionsModal 2026-05-26-14:11:
+   * Collapsed-by-default running rows keep only their command header visible until the user expands the record for operational details.
+   */
   background: color-mix(in srgb, var(--app-card-active) 88%, transparent);
   border: 1px solid color-mix(in srgb, var(--app-border) 92%, transparent);
   border-radius: 16px;
   display: grid;
   gap: 12px;
   padding: 13px;
+}
+
+.daemon-session-card[data-collapsed="true"] {
+  gap: 0;
 }
 
 .daemon-session-card[data-current-workspace="true"] {

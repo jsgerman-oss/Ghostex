@@ -55,6 +55,7 @@ export type BeadsBridgeAction =
   | "configSet"
   | "configSetIssuePrefix"
   | "create"
+  | "delete"
   | "depAdd"
   | "depRemove"
   | "generateTitle"

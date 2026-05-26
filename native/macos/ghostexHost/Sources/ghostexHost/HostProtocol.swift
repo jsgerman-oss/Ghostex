@@ -21,6 +21,7 @@ enum HostCommand: Decodable {
   case writeTerminalText(WriteTerminalText)
   case sendTerminalEnter(SessionCommand)
   case readTerminalText(ReadTerminalText)
+  case checkPersistenceSession(CheckPersistenceSession)
   case setActiveTerminalSet(SetActiveTerminalSet)
   case setSessionStatusIndicators(SetSessionStatusIndicators)
   case setPetOverlayState(SetPetOverlayState)
@@ -37,6 +38,7 @@ enum HostCommand: Decodable {
   case appendSidebarRefreshDebugLog(AppendSidebarRefreshDebugLog)
   case appendWorkspaceDockIndicatorDebugLog(AppendWorkspaceDockIndicatorDebugLog)
   case persistSharedSidebarStorage(PersistSharedSidebarStorage)
+  case projectBoardResponse(ProjectBoardResponse)
   case playSound(PlaySound)
   case runProcess(RunProcess)
   case syncGhosttyTerminalSettings(SyncGhosttyTerminalSettings)
@@ -102,6 +104,7 @@ enum HostCommand: Decodable {
     case writeTerminalText
     case sendTerminalEnter
     case readTerminalText
+    case checkPersistenceSession
     case setActiveTerminalSet
     case setSessionStatusIndicators
     case setPetOverlayState
@@ -118,6 +121,7 @@ enum HostCommand: Decodable {
     case appendSidebarRefreshDebugLog
     case appendWorkspaceDockIndicatorDebugLog
     case persistSharedSidebarStorage
+    case projectBoardResponse
     case playSound
     case runProcess
     case syncGhosttyTerminalSettings
@@ -202,6 +206,8 @@ enum HostCommand: Decodable {
       self = .sendTerminalEnter(try SessionCommand(from: decoder))
     case .readTerminalText:
       self = .readTerminalText(try ReadTerminalText(from: decoder))
+    case .checkPersistenceSession:
+      self = .checkPersistenceSession(try CheckPersistenceSession(from: decoder))
     case .setActiveTerminalSet:
       self = .setActiveTerminalSet(try SetActiveTerminalSet(from: decoder))
     case .setSessionStatusIndicators:
@@ -235,6 +241,8 @@ enum HostCommand: Decodable {
         try AppendWorkspaceDockIndicatorDebugLog(from: decoder))
     case .persistSharedSidebarStorage:
       self = .persistSharedSidebarStorage(try PersistSharedSidebarStorage(from: decoder))
+    case .projectBoardResponse:
+      self = .projectBoardResponse(try ProjectBoardResponse(from: decoder))
     case .playSound:
       self = .playSound(try PlaySound(from: decoder))
     case .runProcess:
@@ -359,6 +367,25 @@ struct SessionCommand: Decodable {
   let sessionId: String
 }
 
+struct ProjectBoardResponse: Decodable {
+  let payloadJson: String
+  let projectId: String?
+  let requestId: String
+}
+
+struct ProjectBoardBridgeRequest: Decodable {
+  let action: String
+  let agentId: String?
+  let beadDisplayId: String?
+  let beadId: String?
+  let prompt: String?
+  let projectId: String?
+  let projectPath: String?
+  let requestId: String
+  let sessionId: String?
+  let ticketTitle: String?
+}
+
 struct StartT3CodeRuntime: Decodable {
   let cwd: String
 }
@@ -420,6 +447,12 @@ struct ReadTerminalText: Decodable {
   let requestId: String
   let sessionId: String
   let source: String?
+}
+
+struct CheckPersistenceSession: Decodable {
+  let provider: String
+  let requestId: String
+  let sessionName: String
 }
 
 struct SetActiveTerminalSet: Decodable {
@@ -924,7 +957,9 @@ enum NativeTerminalLayout: Decodable {
 enum HostEvent: Encodable {
   case hostReady
   case nativeHotkey(actionId: String)
-  case terminalReady(sessionId: String, ttyName: String?, foregroundPid: Int?, sessionPersistenceName: String?)
+  case terminalReady(
+    sessionId: String, ttyName: String?, foregroundPid: Int?, sessionPersistenceName: String?,
+    persistenceSessionCreated: Bool?)
   case terminalTitleChanged(sessionId: String, title: String, sessionPersistenceName: String?)
   case browserFaviconChanged(sessionId: String, faviconDataUrl: String?)
   case browserUrlChanged(sessionId: String, url: String)
@@ -944,10 +979,13 @@ enum HostEvent: Encodable {
   case commandsPanelHeightRatioChanged(heightRatio: Double)
   case terminalError(sessionId: String, message: String)
   case terminalTextResult(requestId: String, sessionId: String, ok: Bool, text: String?, error: String?)
+  case persistenceSessionState(
+    requestId: String, provider: String, sessionName: String, exists: Bool, error: String?)
   case projectEditorBackRequested(projectId: String)
   case projectEditorCompanionPaneHiddenChanged(projectId: String, hidden: Bool)
   case projectEditorTabSelected(projectId: String, url: String?)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
+  case projectBoardRequest(ProjectBoardBridgeRequest)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
   case petOverlayActivityClicked(projectId: String, sessionId: String)
   case sessionAttentionNotificationClicked(sessionId: String)
@@ -966,6 +1004,9 @@ enum HostEvent: Encodable {
     case message
     case protocolVersion
     case action
+    case agentId
+    case beadDisplayId
+    case beadId
     case placement
     case actionId
     case sessionId
@@ -983,11 +1024,18 @@ enum HostEvent: Encodable {
     case requestId
     case ok
     case payloadJson
+    case projectPath
+    case prompt
     case error
+    case exists
+    case persistenceSessionCreated
+    case provider
     case text
+    case sessionName
     case sessionPersistenceName
     case scope
     case status
+    case ticketTitle
     case position
     case sourceSessionId
     case targetSessionId
@@ -1010,12 +1058,15 @@ enum HostEvent: Encodable {
       */
       try container.encode("nativeHotkey", forKey: .type)
       try container.encode(actionId, forKey: .actionId)
-    case .terminalReady(let sessionId, let ttyName, let foregroundPid, let sessionPersistenceName):
+    case .terminalReady(
+      let sessionId, let ttyName, let foregroundPid, let sessionPersistenceName,
+      let persistenceSessionCreated):
       try container.encode("terminalReady", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
       try container.encodeIfPresent(ttyName, forKey: .ttyName)
       try container.encodeIfPresent(foregroundPid, forKey: .foregroundPid)
       try container.encodeIfPresent(sessionPersistenceName, forKey: .sessionPersistenceName)
+      try container.encodeIfPresent(persistenceSessionCreated, forKey: .persistenceSessionCreated)
     case .terminalTitleChanged(let sessionId, let title, let sessionPersistenceName):
       try container.encode("terminalTitleChanged", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
@@ -1115,6 +1166,13 @@ enum HostEvent: Encodable {
       try container.encode(ok, forKey: .ok)
       try container.encodeIfPresent(text, forKey: .text)
       try container.encodeIfPresent(error, forKey: .error)
+    case .persistenceSessionState(let requestId, let provider, let sessionName, let exists, let error):
+      try container.encode("persistenceSessionState", forKey: .type)
+      try container.encode(requestId, forKey: .requestId)
+      try container.encode(provider, forKey: .provider)
+      try container.encode(sessionName, forKey: .sessionName)
+      try container.encode(exists, forKey: .exists)
+      try container.encodeIfPresent(error, forKey: .error)
     case .projectEditorBackRequested(let projectId):
       /**
        CDXC:ProjectEditorCompanion 2026-05-14-09:19:
@@ -1157,6 +1215,24 @@ enum HostEvent: Encodable {
       try container.encode(projectId, forKey: .projectId)
       try container.encode(status, forKey: .status)
       try container.encodeIfPresent(message, forKey: .message)
+    case .projectBoardRequest(let request):
+      /**
+       CDXC:ProjectBoard 2026-05-26-10:16:
+       The Project WKWebView cannot own Ghostex session state. Forward its
+       conversation-link actions over the typed host-event bus so the sidebar
+       remains the single owner of project/session persistence and focusing.
+      */
+      try container.encode("projectBoardRequest", forKey: .type)
+      try container.encode(request.action, forKey: .action)
+      try container.encodeIfPresent(request.agentId, forKey: .agentId)
+      try container.encodeIfPresent(request.beadDisplayId, forKey: .beadDisplayId)
+      try container.encodeIfPresent(request.beadId, forKey: .beadId)
+      try container.encodeIfPresent(request.prompt, forKey: .prompt)
+      try container.encodeIfPresent(request.projectId, forKey: .projectId)
+      try container.encodeIfPresent(request.projectPath, forKey: .projectPath)
+      try container.encode(request.requestId, forKey: .requestId)
+      try container.encodeIfPresent(request.sessionId, forKey: .sessionId)
+      try container.encodeIfPresent(request.ticketTitle, forKey: .ticketTitle)
     case .sessionStatusIndicatorClicked(let status):
       /**
        CDXC:SessionStatusIndicators 2026-05-05-19:47

@@ -2122,6 +2122,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             error: "workspace-view-missing"
           ))
       }
+    case .checkPersistenceSession(let command):
+      if let workspaceView {
+        workspaceView.checkPersistenceSession(command)
+      } else {
+        (window?.contentView as? ghostexRootView)?.postHostEvent(
+          .persistenceSessionState(
+            requestId: command.requestId,
+            provider: command.provider,
+            sessionName: command.sessionName,
+            exists: false,
+            error: "workspace-view-missing"
+          ))
+      }
     case .setActiveTerminalSet(let command):
       updateAppTitlebarTitle(command.appTitle)
       (window?.contentView as? ghostexRootView)?.applyReactTitlebarProjectState(command)
@@ -2158,6 +2171,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       Self.appendWorkspaceDockIndicatorDebugLog(event: command.event, details: command.details)
     case .persistSharedSidebarStorage(let command):
       Self.persistSharedSidebarStorage(command)
+    case .projectBoardResponse(let command):
+      workspaceView?.dispatchProjectBoardBridgeResponse(command)
     case .playSound(let command):
       NativeSoundPlayer.shared.play(command)
     case .runProcess(let command):
@@ -5606,6 +5621,8 @@ final class ghostexRootView: NSView {
       workspaceView.sendTerminalEnter(sessionId: command.sessionId)
     case .readTerminalText(let command):
       workspaceView.readTerminalText(command)
+    case .checkPersistenceSession(let command):
+      workspaceView.checkPersistenceSession(command)
     case .setActiveTerminalSet(let command):
       setAppTitlebarTitle(command.appTitle)
       applyReactTitlebarProjectState(command)
@@ -5643,6 +5660,8 @@ final class ghostexRootView: NSView {
         event: command.event, details: command.details)
     case .persistSharedSidebarStorage(let command):
       AppDelegate.persistSharedSidebarStorage(command)
+    case .projectBoardResponse(let command):
+      workspaceView.dispatchProjectBoardBridgeResponse(command)
     case .playSound(let command):
       /**
        CDXC:NativeSound 2026-04-29-16:30
@@ -6525,8 +6544,34 @@ final class ghostexRootView: NSView {
     guard let characters, !characters.isEmpty else {
       return nil
     }
-    return characters.lowercased()
+    let normalizedCharacters = characters.lowercased()
+    if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift),
+      let unshiftedDigit = shiftedDigitHotkeyKeys[normalizedCharacters]
+    {
+      /**
+       CDXC:ActionsHotkeys 2026-05-26-14:32:
+       AppKit reports Ctrl+Shift+1 with keyCode 18 but charactersIgnoringModifiers
+       can still be the shifted glyph. Normalize shifted digit glyphs to the
+       same physical digit hotkey stored in Settings so action-slot shortcuts
+       are consumed before Ghostty receives them.
+       */
+      return unshiftedDigit
+    }
+    return normalizedCharacters
   }
+
+  private static let shiftedDigitHotkeyKeys: [String: String] = [
+    "!": "1",
+    "@": "2",
+    "#": "3",
+    "$": "4",
+    "%": "5",
+    "^": "6",
+    "&": "7",
+    "*": "8",
+    "(": "9",
+    ")": "0",
+  ]
 
   private func showMessage(_ command: ShowMessage) {
     let alert = NSAlert()

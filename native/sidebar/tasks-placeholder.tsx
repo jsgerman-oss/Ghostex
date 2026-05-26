@@ -1,9 +1,13 @@
 import {
   IconAlertTriangle,
+  IconExternalLink,
+  IconLink,
   IconMessageCircle,
   IconPlus,
   IconRefresh,
   IconSearch,
+  IconTrash,
+  IconUnlink,
   IconX,
 } from "@tabler/icons-react";
 import { DragDropProvider, useDraggable, useDroppable } from "@dnd-kit/react";
@@ -74,6 +78,13 @@ import {
   type BoardTicket,
   type TshirtSize,
 } from "./project-board-shared";
+import {
+  type ProjectBoardAgentOption,
+  type ProjectBoardBridgeRequest,
+  type ProjectBoardBridgeResponse,
+  type ProjectBoardConversationLinkView,
+  type ProjectBoardConversationState,
+} from "../../shared/bead-conversation-links";
 import "../../sidebar/styles/shadcn.generated.css";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -83,6 +94,7 @@ type DetailDraft = {
   blockingIds: string[];
   comment: string;
   description: string;
+  isDeleting: boolean;
   isSaving: boolean;
   labels: string[];
   priority: string;
@@ -102,11 +114,21 @@ type TicketFormDraft = {
   tshirt?: TshirtSize;
 };
 
+type ConversationActionState =
+  | { kind: "associate"; beadId: string }
+  | { kind: "jump"; linkId: string }
+  | { kind: "start"; beadId: string }
+  | { kind: "unlink"; linkId: string }
+  | undefined;
+
 type ProjectBeadsWebKitWindow = Window & {
   webkit?: {
     messageHandlers?: {
       ghostexProjectBeads?: {
         postMessage: (message: BeadsBridgeRequest) => void;
+      };
+      ghostexProjectBoard?: {
+        postMessage: (message: ProjectBoardBridgeRequest) => void;
       };
     };
   };
@@ -114,11 +136,13 @@ type ProjectBeadsWebKitWindow = Window & {
 
 const BRIDGE_REQUEST_PREFIX = "__GHOSTEX_PROJECT_BEADS_REQUEST__";
 const BRIDGE_RESPONSE_EVENT = "ghostex-project-beads-response";
+const PROJECT_BOARD_RESPONSE_EVENT = "ghostex-project-board-response";
 const INSTALL_BEADS_COMMAND = "brew install beads";
 const PROJECT_BOARD_AUTO_REFRESH_INTERVAL_MS = 8_000;
 const PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS = 60_000;
 const PROJECT_BOARD_MAX_DEPENDENCY_OPTIONS = 600;
 const PROJECT_BOARD_MAX_VISIBLE_TICKETS_PER_COLUMN = 120;
+const PROJECT_BOARD_GENERATING_TITLE = "Generating title...";
 
 type BoardRefreshMode = "background" | "initial" | "manual" | "mutation";
 
@@ -127,50 +151,83 @@ type BoardRefreshOptions = {
   mode?: BoardRefreshMode;
 };
 
+function createEmptyDetailDraft(): DetailDraft {
+  return {
+    blockedByIds: [],
+    blockingIds: [],
+    comment: "",
+    description: "",
+    isDeleting: false,
+    isSaving: false,
+    labels: [],
+    priority: "2",
+    status: "todo",
+    title: "",
+  };
+}
+
+function createEmptyTicketFormDraft(): TicketFormDraft {
+  return {
+    blockedByIds: [],
+    blockingIds: [],
+    description: "",
+    labels: [],
+    priority: "2",
+    title: "",
+  };
+}
+
 function ProjectBoardApp() {
   const projectName = new URLSearchParams(window.location.search).get("projectName") || "Project";
   const projectPath = new URLSearchParams(window.location.search).get("projectPath") || "";
+  const projectId = new URLSearchParams(window.location.search).get("projectId") || "";
   const displayKey = normalizeDisplayIssueKey(
     new URLSearchParams(window.location.search).get("beadsDisplayKey") ?? projectName,
   );
   const [tickets, setTickets] = useState<BoardTicket[]>([]);
   const [allIssues, setAllIssues] = useState<BeadsIssue[]>([]);
   const [knownLabels, setKnownLabels] = useState<string[]>([]);
+  const [conversationState, setConversationState] = useState<ProjectBoardConversationState>({
+    agents: [],
+    links: [],
+    sessions: [],
+  });
+  const [selectedAgentId, setSelectedAgentId] = useState("");
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<BoardStatusKey | "all">("all");
-  const [detail, setDetail] = useState<DetailDraft>({
-    blockedByIds: [],
-    blockingIds: [],
-    comment: "",
-    description: "",
-    isSaving: false,
-    labels: [],
-    priority: "2",
-    status: "todo",
-    title: "",
-  });
+  const [detail, setDetail] = useState<DetailDraft>(createEmptyDetailDraft);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
-  const [newTicket, setNewTicket] = useState<TicketFormDraft>({
-    blockedByIds: [],
-    blockingIds: [],
-    description: "",
-    labels: [],
-    priority: "2",
-    title: "",
-  });
+  const [newTicket, setNewTicket] = useState<TicketFormDraft>(createEmptyTicketFormDraft);
   const [isCreating, setIsCreating] = useState(false);
+  const [deleteConfirmingTicketId, setDeleteConfirmingTicketId] = useState("");
   /*
    * CDXC:ProjectBoard 2026-05-26-05:38:
    * The Project page must observe Beads changes made by the user's app actions or nearby bd CLI commands without forcing manual Refresh.
    * Poll only while the page is visible, coalesce overlapping refreshes, refresh labels less often than issues, and cap mounted lane/dependency rows so thousand-bead projects do not repeatedly rebuild an unbounded DOM.
+   *
+   * CDXC:ProjectBoard 2026-05-26-10:08:
+   * Creating a ticket with an empty title must not keep the modal blocked while Codex generates a title.
+   * Create the Beads issue first with an explicit "Generating title..." card title, close the modal, refresh the board, then replace that temporary title after generation finishes.
+   *
+   * CDXC:ProjectBoard 2026-05-26-10:08:
+   * Users need to delete tickets from the Project board UI. Keep deletion in the edit dialog, require a second destructive click for confirmation, and refresh from Beads after bd deletes the issue.
+   *
+   * CDXC:ProjectBoard 2026-05-26-10:16:
+   * A bead can be linked to the agent conversation that is working on it, and multiple beads may point at one conversation.
+   * Refresh conversation links alongside Beads data so card jump buttons keep tracking captured session metadata while the Project page stays open.
+   *
+   * CDXC:ProjectBoard 2026-05-26-10:20:
+   * Conversation actions can launch terminals, focus sessions, or mutate persisted links.
+   * Track the active action so duplicate clicks do not create duplicate agent sessions or race link/archive state while the board is responding.
    */
   const isRefreshingRef = useRef(false);
   const issuesSignatureRef = useRef("");
   const labelsSignatureRef = useRef("");
   const lastLabelsRefreshAtRef = useRef(0);
   const newPromptRef = useRef<HTMLTextAreaElement>(null);
+  const [conversationAction, setConversationAction] = useState<ConversationActionState>();
 
   const runBeads = useCallback(
     async (request: Omit<BeadsBridgeRequest, "cwd" | "requestId">) => {
@@ -185,6 +242,24 @@ function ProjectBoardApp() {
     },
     [projectPath],
   );
+
+  const loadConversationState = useCallback(async () => {
+    try {
+      const response = await sendProjectBoardRequest({
+        action: "getState",
+        projectId,
+        projectPath,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not load linked conversations.");
+      }
+      const payload = response.payload ?? { agents: [], links: [], sessions: [] };
+      setConversationState(payload);
+      setSelectedAgentId((current) => current || payload.defaultAgentId || payload.agents[0]?.agentId || "");
+    } catch (error) {
+      console.warn("Project board conversation state unavailable.", error);
+    }
+  }, [projectId, projectPath]);
 
   const loadTickets = useCallback(async (options: BoardRefreshOptions = {}) => {
     const mode = options.mode ?? "manual";
@@ -244,7 +319,8 @@ function ProjectBoardApp() {
 
   useEffect(() => {
     void loadTickets({ includeLabels: true, mode: "initial" });
-  }, [loadTickets]);
+    void loadConversationState();
+  }, [loadConversationState, loadTickets]);
 
   useEffect(() => {
     const refreshIfVisible = (includeLabels = false) => {
@@ -257,6 +333,7 @@ function ProjectBoardApp() {
           Date.now() - lastLabelsRefreshAtRef.current >= PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS,
         mode: "background",
       });
+      void loadConversationState();
     };
     const intervalId = window.setInterval(
       () => refreshIfVisible(false),
@@ -270,7 +347,7 @@ function ProjectBoardApp() {
       document.removeEventListener("visibilitychange", handleVisible);
       window.removeEventListener("focus", handleVisible);
     };
-  }, [loadTickets]);
+  }, [loadConversationState, loadTickets]);
 
   const filteredTickets = useMemo(
     () => filterBoardTickets(tickets, searchQuery, statusFilter),
@@ -287,6 +364,17 @@ function ProjectBoardApp() {
     );
   }, [filteredTickets]);
 
+  const linksByBeadId = useMemo(() => {
+    const result = new Map<string, ProjectBoardConversationLinkView[]>();
+    const newestFirstLinks = [...conversationState.links].sort(compareConversationLinksNewestFirst);
+    for (const link of newestFirstLinks) {
+      const current = result.get(link.beadId) ?? [];
+      current.push(link);
+      result.set(link.beadId, current);
+    }
+    return result;
+  }, [conversationState.links]);
+
   const ticketOptions = useMemo(
     () =>
       prioritizeDependencyTickets(tickets)
@@ -299,11 +387,13 @@ function ProjectBoardApp() {
   );
 
   const openTicket = async (ticket: BoardTicket) => {
+    setDeleteConfirmingTicketId("");
     setDetail({
       blockedByIds: getBlockedByIds(ticket),
       blockingIds: getBlockingIds(ticket.id, allIssues),
       comment: "",
       description: ticket.description ?? "",
+      isDeleting: false,
       isSaving: false,
       labels: ticket.labels ?? [],
       priority: String(ticket.priority ?? 2),
@@ -328,6 +418,7 @@ function ProjectBoardApp() {
         blockingIds: getBlockingIds(ticket.id, allIssues),
         comment: "",
         description: nextTicket.description ?? "",
+        isDeleting: false,
         isSaving: false,
         labels: nextTicket.labels ?? [],
         priority: String(nextTicket.priority ?? 2),
@@ -450,17 +541,8 @@ function ProjectBoardApp() {
           issueId: detail.ticket.id,
         });
       }
-      setDetail({
-        blockedByIds: [],
-        blockingIds: [],
-        comment: "",
-        description: "",
-        isSaving: false,
-        labels: [],
-        priority: "2",
-        status: "todo",
-        title: "",
-      });
+      setDeleteConfirmingTicketId("");
+      setDetail(createEmptyDetailDraft());
       await loadTickets({ includeLabels: true, mode: "mutation" });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not save the ticket.");
@@ -469,52 +551,70 @@ function ProjectBoardApp() {
   };
 
   const createTicket = async () => {
-    const prompt = newTicket.description.trim();
+    if (isCreating) {
+      return;
+    }
+    const draft = {
+      ...newTicket,
+      blockedByIds: [...newTicket.blockedByIds],
+      blockingIds: [...newTicket.blockingIds],
+      labels: [...newTicket.labels],
+    };
+    const prompt = draft.description.trim();
     if (!prompt) {
       return;
     }
     setIsCreating(true);
     try {
-      let title = newTicket.title.trim();
-      if (!title) {
-        const generated = normalizeBeadsPayload<{ title?: string }>(
-          await runBeads({ action: "generateTitle", prompt }),
-          {},
-        );
-        title = generated.title?.trim() || prompt.slice(0, 39);
-      }
-      const estimate = tshirtToEstimate(newTicket.tshirt);
+      const requestedTitle = draft.title.trim();
+      const shouldGenerateTitle = !requestedTitle;
+      const title = shouldGenerateTitle ? PROJECT_BOARD_GENERATING_TITLE : requestedTitle;
+      const estimate = tshirtToEstimate(draft.tshirt);
       const createdPayload = await runBeads({
         action: "create",
         description: prompt,
-        dependsOnId: newTicket.blockedByIds[0],
+        dependsOnId: draft.blockedByIds[0],
         estimate,
-        labels: newTicket.labels,
-        priority: newTicket.priority,
+        labels: draft.labels,
+        priority: draft.priority,
         title,
       });
       const created = normalizeBeadsPayload<BeadsIssue | BeadsIssue[]>(createdPayload, []);
       const createdIssue = Array.isArray(created) ? created[0] : created;
       if (createdIssue?.id) {
-        await syncDependencies(createdIssue.id, newTicket.blockedByIds, newTicket.blockingIds);
-        if (newTicket.labels.length > 0) {
+        await syncDependencies(createdIssue.id, draft.blockedByIds, draft.blockingIds);
+        if (draft.labels.length > 0) {
           await runBeads({
             action: "setLabels",
             issueId: createdIssue.id,
-            labels: newTicket.labels,
+            labels: draft.labels,
           });
         }
       }
-      setNewTicket({
-        blockedByIds: [],
-        blockingIds: [],
-        description: "",
-        labels: [],
-        priority: "2",
-        title: "",
-      });
+      setNewTicket(createEmptyTicketFormDraft());
       setNewTicketOpen(false);
       await loadTickets({ includeLabels: true, mode: "mutation" });
+      setIsCreating(false);
+      if (shouldGenerateTitle && createdIssue?.id) {
+        try {
+          const generated = normalizeBeadsPayload<{ title?: string }>(
+            await runBeads({ action: "generateTitle", prompt }),
+            {},
+          );
+          const generatedTitle = generated.title?.trim();
+          if (!generatedTitle) {
+            throw new Error("Codex title generation returned an empty title.");
+          }
+          await runBeads({
+            action: "updateTitle",
+            issueId: createdIssue.id,
+            title: generatedTitle,
+          });
+          await loadTickets({ includeLabels: false, mode: "mutation" });
+        } catch (error) {
+          setErrorMessage(error instanceof Error ? error.message : "Could not generate the ticket title.");
+        }
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not create the ticket.");
     } finally {
@@ -522,22 +622,147 @@ function ProjectBoardApp() {
     }
   };
 
+  const deleteTicket = async () => {
+    if (!detail.ticket || detail.isDeleting) {
+      return;
+    }
+    const ticket = detail.ticket;
+    setDetail((current) => ({ ...current, isDeleting: true }));
+    setTickets((current) => current.filter((candidate) => candidate.id !== ticket.id));
+    try {
+      await runBeads({ action: "delete", issueId: ticket.id });
+      setDeleteConfirmingTicketId("");
+      setDetail(createEmptyDetailDraft());
+      await loadTickets({ includeLabels: true, mode: "mutation" });
+    } catch (error) {
+      setTickets((current) =>
+        current.some((candidate) => candidate.id === ticket.id) ? current : [...current, ticket],
+      );
+      setErrorMessage(error instanceof Error ? error.message : "Could not delete the ticket.");
+      setDetail((current) => ({ ...current, isDeleting: false }));
+    }
+  };
+
   const startTicketWork = async () => {
     if (!detail.ticket) {
       return;
     }
+    const ticket = detail.ticket;
+    setConversationAction({ beadId: ticket.id, kind: "start" });
     try {
+      const prompt = buildAgentWorkPrompt(ticket);
+      const response = await sendProjectBoardRequest({
+        action: "startWork",
+        agentId: selectedAgentId || conversationState.defaultAgentId,
+        beadDisplayId: ticket.displayId,
+        beadId: ticket.id,
+        projectId,
+        projectPath,
+        prompt,
+        ticketTitle: ticket.title,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not start ticket work.");
+      }
+      if (response.payload) {
+        setConversationState(response.payload);
+      }
       await runBeads({
         action: "updateStatus",
-        issueId: detail.ticket.id,
+        issueId: ticket.id,
         status: "in_progress",
       });
-      const prompt = buildAgentWorkPrompt(detail.ticket);
-      await navigator.clipboard?.writeText(prompt);
       setErrorMessage("");
       await loadTickets({ includeLabels: false, mode: "mutation" });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not start ticket work.");
+    } finally {
+      setConversationAction((current) =>
+        current?.kind === "start" && current.beadId === ticket.id ? undefined : current,
+      );
+    }
+  };
+
+  const associateFocusedSession = async () => {
+    if (!detail.ticket) {
+      return;
+    }
+    const ticket = detail.ticket;
+    setConversationAction({ beadId: ticket.id, kind: "associate" });
+    try {
+      const response = await sendProjectBoardRequest({
+        action: "associateFocusedSession",
+        beadDisplayId: ticket.displayId,
+        beadId: ticket.id,
+        projectId,
+        projectPath,
+        ticketTitle: ticket.title,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not associate the focused session.");
+      }
+      if (response.payload) {
+        setConversationState(response.payload);
+      }
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not associate the focused session.");
+    } finally {
+      setConversationAction((current) =>
+        current?.kind === "associate" && current.beadId === ticket.id ? undefined : current,
+      );
+    }
+  };
+
+  const jumpToConversation = async (link: ProjectBoardConversationLinkView) => {
+    setConversationAction({ kind: "jump", linkId: link.id });
+    try {
+      const response = await sendProjectBoardRequest({
+        action: "jumpToConversation",
+        beadId: link.beadId,
+        projectId,
+        projectPath,
+        sessionId: link.ghostexSessionId,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not jump to the linked conversation.");
+      }
+      if (response.payload) {
+        setConversationState(response.payload);
+      }
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not jump to the linked conversation.");
+    } finally {
+      setConversationAction((current) =>
+        current?.kind === "jump" && current.linkId === link.id ? undefined : current,
+      );
+    }
+  };
+
+  const unlinkConversation = async (link: ProjectBoardConversationLinkView) => {
+    setConversationAction({ kind: "unlink", linkId: link.id });
+    try {
+      const response = await sendProjectBoardRequest({
+        action: "unlinkConversation",
+        beadId: link.beadId,
+        projectId,
+        projectPath,
+        sessionId: link.ghostexSessionId,
+      });
+      if (!response.ok) {
+        throw new Error(response.error || "Could not unlink the conversation.");
+      }
+      if (response.payload) {
+        setConversationState(response.payload);
+      }
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not unlink the conversation.");
+    } finally {
+      setConversationAction((current) =>
+        current?.kind === "unlink" && current.linkId === link.id ? undefined : current,
+      );
     }
   };
 
@@ -562,7 +787,10 @@ function ProjectBoardApp() {
           <Button
             aria-label="Refresh board"
             disabled={loadState === "loading"}
-            onClick={() => void loadTickets({ includeLabels: true, mode: "manual" })}
+            onClick={() => {
+              void loadTickets({ includeLabels: true, mode: "manual" });
+              void loadConversationState();
+            }}
             size="icon-sm"
             variant="ghost"
           >
@@ -610,7 +838,10 @@ function ProjectBoardApp() {
           {BOARD_COLUMNS.map((column) => (
             <BoardLane
               column={column}
+              conversationAction={conversationAction}
               key={column.key}
+              linksByBeadId={linksByBeadId}
+              onJumpToConversation={jumpToConversation}
               onOpenTicket={openTicket}
               tickets={ticketsByColumn[column.key]}
             />
@@ -622,17 +853,8 @@ function ProjectBoardApp() {
         open={Boolean(detail.ticket)}
         onOpenChange={(open) => {
           if (!open) {
-            setDetail({
-              blockedByIds: [],
-              blockingIds: [],
-              comment: "",
-              description: "",
-              isSaving: false,
-              labels: [],
-              priority: "2",
-              status: "todo",
-              title: "",
-            });
+            setDeleteConfirmingTicketId("");
+            setDetail(createEmptyDetailDraft());
           }
         }}
       >
@@ -706,6 +928,19 @@ function ProjectBoardApp() {
               blockingIds={detail.blockingIds}
               tickets={tickets}
             />
+            {detail.ticket ? (
+              <ConversationSection
+                agents={conversationState.agents}
+                action={conversationAction}
+                focusedSessionId={conversationState.focusedTerminalSessionId}
+                links={linksByBeadId.get(detail.ticket.id) ?? []}
+                onAssociateFocusedSession={() => void associateFocusedSession()}
+                onJumpToConversation={(link) => void jumpToConversation(link)}
+                onSelectedAgentChange={setSelectedAgentId}
+                onUnlinkConversation={(link) => void unlinkConversation(link)}
+                selectedAgentId={selectedAgentId}
+              />
+            ) : null}
             <section className="project-ticket-comments" aria-label="Comments">
               <div className="project-ticket-section-title">Comments</div>
               <ScrollArea className="project-ticket-comment-list">
@@ -736,10 +971,42 @@ function ProjectBoardApp() {
             </label>
           </div>
           <DialogFooter className="project-ticket-dialog-footer">
-            <Button onClick={() => void startTicketWork()} type="button" variant="outline">
-              Start work
+            <Button
+              disabled={detail.isDeleting || detail.isSaving}
+              onClick={() => {
+                if (deleteConfirmingTicketId === detail.ticket?.id) {
+                  void deleteTicket();
+                  return;
+                }
+                setDeleteConfirmingTicketId(detail.ticket?.id ?? "");
+              }}
+              type="button"
+              variant="destructive"
+            >
+              <IconTrash data-icon="inline-start" />
+              {deleteConfirmingTicketId === detail.ticket?.id
+                ? detail.isDeleting
+                  ? "Deleting"
+                  : "Confirm delete"
+                : "Delete"}
             </Button>
-            <Button disabled={detail.isSaving} onClick={() => void saveTicketDetail()}>
+            <Button
+              disabled={
+                detail.isDeleting ||
+                detail.isSaving ||
+                conversationState.agents.length === 0 ||
+                Boolean(conversationAction)
+              }
+              onClick={() => void startTicketWork()}
+              type="button"
+              variant="outline"
+            >
+              <IconLink data-icon="inline-start" />
+              {conversationAction?.kind === "start" && conversationAction.beadId === detail.ticket?.id
+                ? "Starting"
+                : "Start work"}
+            </Button>
+            <Button disabled={detail.isDeleting || detail.isSaving} onClick={() => void saveTicketDetail()}>
               {detail.isSaving ? "Saving" : "Save"}
             </Button>
           </DialogFooter>
@@ -1086,12 +1353,129 @@ function ImagePreviewStrip({ description }: { description: string }) {
   );
 }
 
+function ConversationSection({
+  action,
+  agents,
+  focusedSessionId,
+  links,
+  onAssociateFocusedSession,
+  onJumpToConversation,
+  onSelectedAgentChange,
+  onUnlinkConversation,
+  selectedAgentId,
+}: {
+  action: ConversationActionState;
+  agents: ProjectBoardAgentOption[];
+  focusedSessionId?: string;
+  links: ProjectBoardConversationLinkView[];
+  onAssociateFocusedSession: () => void;
+  onJumpToConversation: (link: ProjectBoardConversationLinkView) => void;
+  onSelectedAgentChange: (agentId: string) => void;
+  onUnlinkConversation: (link: ProjectBoardConversationLinkView) => void;
+  selectedAgentId: string;
+}) {
+  const isAssociating = action?.kind === "associate";
+  const hasActiveConversationAction = Boolean(action);
+  return (
+    <section className="project-ticket-conversations" aria-label="Linked conversations">
+      <div className="project-ticket-section-title">Conversation</div>
+      <div className="project-ticket-conversation-controls">
+        <Select disabled={agents.length === 0} onValueChange={onSelectedAgentChange} value={selectedAgentId}>
+          <SelectTrigger aria-label="Agent for Start work" size="sm">
+            <SelectValue placeholder="Choose agent" />
+          </SelectTrigger>
+          <SelectContent>
+            {agents.map((agent) => (
+              <SelectItem key={agent.agentId} value={agent.agentId}>
+                {agent.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          disabled={!focusedSessionId || hasActiveConversationAction}
+          onClick={onAssociateFocusedSession}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          <IconLink data-icon="inline-start" />
+          {isAssociating ? "Associating" : "Associate focused"}
+        </Button>
+      </div>
+      {links.length > 0 ? (
+        <div className="project-ticket-conversation-list">
+          {links.map((link) => {
+            return (
+              <div className="project-ticket-conversation-row" key={link.id}>
+                <div>
+                  <strong>{conversationLinkLabel(link)}</strong>
+                  <span>{conversationLinkStatusText(link)}</span>
+                </div>
+                <div className="project-ticket-conversation-actions">
+                  <Button
+                    aria-label="Jump to linked conversation"
+                    disabled={!link.isLive || hasActiveConversationAction}
+                    onClick={() => onJumpToConversation(link)}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconExternalLink />
+                  </Button>
+                  <Button
+                    aria-label="Unlink conversation"
+                    disabled={hasActiveConversationAction}
+                    onClick={() => onUnlinkConversation(link)}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconUnlink />
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="project-ticket-empty">No linked conversation yet.</p>
+      )}
+    </section>
+  );
+}
+
+function conversationLinkLabel(link: ProjectBoardConversationLinkView): string {
+  return link.sessionTitle || link.agentName || link.agentId || link.agentSessionId || "Agent session";
+}
+
+function conversationLinkStatusText(link: ProjectBoardConversationLinkView): string {
+  const sessionStatus = link.isSleeping ? "Sleeping" : link.isLive ? "Live" : "Missing";
+  const agentSessionPreview = link.agentSessionId ? ` · ${link.agentSessionId.slice(0, 8)}` : "";
+  return `${sessionStatus}${agentSessionPreview}`;
+}
+
+function compareConversationLinksNewestFirst(
+  left: ProjectBoardConversationLinkView,
+  right: ProjectBoardConversationLinkView,
+): number {
+  const leftTime = Date.parse(left.updatedAt);
+  const rightTime = Date.parse(right.updatedAt);
+  return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+}
+
 function BoardLane({
   column,
+  conversationAction,
+  linksByBeadId,
+  onJumpToConversation,
   onOpenTicket,
   tickets,
 }: {
   column: (typeof BOARD_COLUMNS)[number];
+  conversationAction: ConversationActionState;
+  linksByBeadId: Map<string, ProjectBoardConversationLinkView[]>;
+  onJumpToConversation: (link: ProjectBoardConversationLinkView) => void;
   onOpenTicket: (ticket: BoardTicket) => void;
   tickets: BoardTicket[];
 }) {
@@ -1120,7 +1504,14 @@ function BoardLane({
       <div className="project-board-lane-scroll">
         <div className="project-board-card-stack">
           {visibleTickets.map((ticket) => (
-            <TicketCard key={ticket.id} onOpenTicket={onOpenTicket} ticket={ticket} />
+            <TicketCard
+              conversationAction={conversationAction}
+              key={ticket.id}
+              links={linksByBeadId.get(ticket.id) ?? []}
+              onJumpToConversation={onJumpToConversation}
+              onOpenTicket={onOpenTicket}
+              ticket={ticket}
+            />
           ))}
           {hiddenTicketCount > 0 ? (
             <div className="project-board-lane-limit" role="status">
@@ -1134,9 +1525,15 @@ function BoardLane({
 }
 
 function TicketCard({
+  conversationAction,
+  links,
+  onJumpToConversation,
   onOpenTicket,
   ticket,
 }: {
+  conversationAction: ConversationActionState;
+  links: ProjectBoardConversationLinkView[];
+  onJumpToConversation: (link: ProjectBoardConversationLinkView) => void;
   onOpenTicket: (ticket: BoardTicket) => void;
   ticket: BoardTicket;
 }) {
@@ -1147,6 +1544,11 @@ function TicketCard({
   });
   const blockedByCount = ticket.dependency_count ?? getBlockedByIds(ticket).length;
   const blockingCount = ticket.dependent_count ?? 0;
+  const primaryLink = links[0];
+  const additionalLinkCount = primaryLink ? links.length - 1 : 0;
+  const jumpDisabled =
+    !primaryLink?.isLive ||
+    Boolean(conversationAction);
 
   return (
     <Card
@@ -1186,6 +1588,28 @@ function TicketCard({
             {ticket.comment_count ?? ticket.comments?.length ?? 0}
           </span>
         </div>
+        {primaryLink ? (
+          <div className="project-board-card-conversation">
+            <span>
+              <IconLink />
+              {conversationLinkLabel(primaryLink)}
+              {additionalLinkCount > 0 ? ` +${additionalLinkCount}` : ""}
+            </span>
+            <Button
+              aria-label="Jump to linked conversation"
+              disabled={jumpDisabled}
+              onClick={(event) => {
+                event.stopPropagation();
+                onJumpToConversation(primaryLink);
+              }}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+            >
+              <IconExternalLink />
+            </Button>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );
@@ -1317,6 +1741,38 @@ function sendBeadsRequest(
     }
     console.info(`${BRIDGE_REQUEST_PREFIX}${JSON.stringify(message)}`);
     reject(new Error("Beads bridge is unavailable outside Ghostex."));
+  });
+}
+
+function sendProjectBoardRequest(
+  request: Omit<ProjectBoardBridgeRequest, "requestId">,
+): Promise<ProjectBoardBridgeResponse> {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener(PROJECT_BOARD_RESPONSE_EVENT, onResponse);
+      reject(new Error("Project board bridge timed out."));
+    }, 60_000);
+    const onResponse = (event: Event) => {
+      const response = (event as CustomEvent<ProjectBoardBridgeResponse>).detail;
+      if (response?.requestId !== requestId) {
+        return;
+      }
+      window.clearTimeout(timeout);
+      window.removeEventListener(PROJECT_BOARD_RESPONSE_EVENT, onResponse);
+      resolve(response);
+    };
+    window.addEventListener(PROJECT_BOARD_RESPONSE_EVENT, onResponse);
+    const message = { ...request, requestId };
+    const projectBoardBridge = (window as ProjectBeadsWebKitWindow).webkit?.messageHandlers
+      ?.ghostexProjectBoard;
+    if (projectBoardBridge) {
+      projectBoardBridge.postMessage(message);
+      return;
+    }
+    window.clearTimeout(timeout);
+    window.removeEventListener(PROJECT_BOARD_RESPONSE_EVENT, onResponse);
+    reject(new Error("Project board bridge is unavailable outside Ghostex."));
   });
 }
 
@@ -1629,6 +2085,37 @@ styleElement.textContent = `
     width: 13px;
   }
 
+  .project-board-card-conversation {
+    align-items: center;
+    background: rgba(80, 160, 255, 0.08);
+    border: 1px solid rgba(120, 180, 255, 0.15);
+    border-radius: 7px;
+    color: rgba(218, 235, 255, 0.86);
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    min-height: 30px;
+    min-width: 0;
+    padding: 4px 5px 4px 8px;
+  }
+
+  .project-board-card-conversation span {
+    align-items: center;
+    display: inline-flex;
+    font-size: 11px;
+    gap: 5px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-board-card-conversation svg {
+    flex: 0 0 auto;
+    height: 13px;
+    width: 13px;
+  }
+
   .project-board-notice {
     background: #201b14;
     border-radius: 8px;
@@ -1753,6 +2240,64 @@ styleElement.textContent = `
     margin: 0 0 4px;
   }
 
+  .project-ticket-conversations {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .project-ticket-conversation-controls {
+    align-items: center;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(150px, 1fr) auto;
+  }
+
+  .project-ticket-conversation-list {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .project-ticket-conversation-row {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 42px;
+    padding: 7px 8px 7px 10px;
+  }
+
+  .project-ticket-conversation-row strong,
+  .project-ticket-conversation-row span {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-ticket-conversation-row strong {
+    color: rgba(250, 250, 250, 0.9);
+    font-size: 12px;
+    font-weight: 620;
+  }
+
+  .project-ticket-conversation-row span {
+    color: rgba(244, 244, 245, 0.46);
+    font-size: 11px;
+    margin-top: 2px;
+  }
+
+  .project-ticket-conversation-actions {
+    align-items: center;
+    display: flex;
+    gap: 4px;
+  }
+
   .project-ticket-comments {
     display: flex;
     flex-direction: column;
@@ -1790,6 +2335,7 @@ styleElement.textContent = `
 
   @media (max-width: 900px) {
     .project-board-shell { padding: 18px 16px; }
+    .project-ticket-conversation-controls { grid-template-columns: 1fr; }
     .project-ticket-meta-grid { grid-template-columns: 1fr; }
   }
 `;

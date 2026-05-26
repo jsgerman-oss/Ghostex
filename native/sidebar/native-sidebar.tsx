@@ -96,6 +96,16 @@ import {
   type CommandsPanelState,
 } from "../../shared/session-grid-contract";
 import { createDisplaySessionLayout } from "../../shared/active-sessions-sort";
+import {
+  createBeadConversationLinkId,
+  normalizeBeadConversationLinks,
+  type BeadConversationLink,
+  type ProjectBoardAgentOption,
+  type ProjectBoardBridgeRequest,
+  type ProjectBoardConversationLinkView,
+  type ProjectBoardConversationState,
+  type ProjectBoardSessionOption,
+} from "../../shared/bead-conversation-links";
 import { focusDirectionInSnapshot } from "../../shared/session-grid-state-create-focus";
 import { normalizeSessionRecord } from "../../shared/session-grid-state-helpers";
 import {
@@ -252,6 +262,7 @@ import {
 import {
   getghostexHotkeyActionById,
   getghostexHotkeyActionIdForKey,
+  normalizeHotkeyText,
   type ghostexFocusedPaneAction,
   type ghostexHotkeyActionId,
 } from "../../shared/ghostex-hotkeys";
@@ -376,6 +387,12 @@ type NativeHostCommand =
   | { sessionId: string; type: "sendTerminalEnter" }
   | { requestId: string; sessionId: string; source?: "screen" | "visible"; type: "readTerminalText" }
   | {
+      provider: TerminalSessionPersistenceProvider;
+      requestId: string;
+      sessionName: string;
+      type: "checkPersistenceSession";
+    }
+  | {
 	      activeSessionIds: string[];
       commandsPanelActiveSessionIds?: string[];
       commandsPanelFocusedSessionId?: string;
@@ -487,6 +504,12 @@ type NativeHostCommand =
       key: "previousSessions" | "projects" | "settings";
       payloadJson: string;
       type: "persistSharedSidebarStorage";
+    }
+  | {
+      payloadJson: string;
+      projectId?: string;
+      requestId: string;
+      type: "projectBoardResponse";
     }
   | { fileName: string; type: "playSound"; volume?: number }
   | {
@@ -641,10 +664,19 @@ type NativePaneTabSleepScope = "sleep" | "sleepLeft" | "sleepOthers" | "sleepRig
 type NativeHostEvent =
   | {
       foregroundPid?: number;
+      persistenceSessionCreated?: boolean;
       sessionId: string;
       sessionPersistenceName?: string;
       ttyName?: string;
       type: "terminalReady";
+    }
+  | {
+      error?: string;
+      exists: boolean;
+      provider: TerminalSessionPersistenceProvider;
+      requestId: string;
+      sessionName: string;
+      type: "persistenceSessionState";
     }
   | {
       sessionId: string;
@@ -696,6 +728,7 @@ type NativeHostEvent =
       status: Exclude<ProjectEditorLoadStatus, "idle">;
       type: "projectEditorLoadState";
     }
+  | (ProjectBoardBridgeRequest & { type: "projectBoardRequest" })
   | {
       projectId: string;
       type: "projectEditorTabSelected";
@@ -727,6 +760,10 @@ type NativeHostEvent =
   | { protocolVersion: 1; type: "hostReady" };
 
 type NativeProcessResult = Extract<NativeHostEvent, { type: "processResult" }>;
+type NativePersistenceSessionStateResult = Extract<
+  NativeHostEvent,
+  { type: "persistenceSessionState" }
+>;
 type NativeTerminalTextResult = Extract<NativeHostEvent, { type: "terminalTextResult" }>;
 
 type NativeBootstrap = {
@@ -868,6 +905,7 @@ const DELAYED_SEND_MAX_DELAY_MS = 2_147_483_647;
 const DELAYED_SEND_RESTORE_FIRE_GRACE_MS = 2_000;
 const NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS = 7_000;
 const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
+const NATIVE_PERSISTED_WORKING_STALE_MS = 30 * 60 * 1_000;
 /**
  * CDXC:SessionAttention 2026-05-16-23:35:
  * Green attention borders and status dots must remain visible for at least 1.5 seconds after appearing. A click during that floor records the acknowledgement immediately but delays clearing the shared attention state until the minimum visible duration has elapsed.
@@ -938,6 +976,7 @@ const WORKSPACE_DOCK_THEME_OPTIONS: ReadonlyArray<{ label: string; value: Sideba
  */
 const GENERATED_SESSION_TITLE_MAX_LENGTH = 39;
 const GENERATED_SESSION_TITLE_SOURCE_MAX_LENGTH = 250;
+const PROJECT_BOARD_AGENT_PROMPT_STAGING_DELAY_MS = 2_500;
 let storedAgents: StoredSidebarAgent[] = [];
 let storedAgentOrder: string[] = [];
 let agents: SidebarAgentButton[] = [];
@@ -1020,6 +1059,14 @@ const pendingProcessResults = new Map<
     timeout: number;
   }
 >();
+const pendingPersistenceSessionStateResults = new Map<
+  string,
+  {
+    reject: (reason?: unknown) => void;
+    resolve: (result: NativePersistenceSessionStateResult) => void;
+    timeout: number;
+  }
+>();
 const pendingTerminalTextResults = new Map<
   string,
   {
@@ -1052,8 +1099,14 @@ type NativeProject = {
   /**
    * CDXC:ProjectBoard 2026-05-23-14:35:
    * Each project can define the three-letter ticket key shown on the board (for example ZMX-12) while Beads keeps hash ids internally.
+   *
+   * CDXC:ProjectBoard 2026-05-26-10:16:
+   * Bead-to-agent-conversation links are Ghostex project metadata because
+   * they route to local sessions and captured agent ids. They intentionally do
+   * not live in Beads fields so many beads can point at one conversation.
    */
   beadsDisplayKey?: string;
+  beadConversationLinks?: BeadConversationLink[];
   workspace: GroupedSessionWorkspaceSnapshot;
 };
 
@@ -1288,6 +1341,11 @@ const terminalStateById = new Map<
     terminalTitle?: string;
   }
 >();
+type ProviderRuntimeState = "missing" | "running" | "unknown";
+const providerRuntimeStateByProjectSessionId = new Map<
+  string,
+  { checkedAt: number; provider: TerminalSessionPersistenceProvider; sessionName: string; state: ProviderRuntimeState }
+>();
 /**
  * CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
  * Provider-backed tmux/zmx/zellij terminals must be created as normal shells.
@@ -1372,10 +1430,70 @@ function takeNativeTerminalStartupText(sessionId: string): string | undefined {
   return text;
 }
 
+function providerRuntimeSessionKey(projectId: string, sessionId: string): string {
+  return `${projectId}:${sessionId}`;
+}
+
+function getTerminalProviderRuntimeInfo(
+  session: TerminalSessionRecord,
+): { provider: TerminalSessionPersistenceProvider; sessionName: string } | undefined {
+  const provider = session.sessionPersistenceProvider ?? (session.tmuxSessionName ? "tmux" : undefined);
+  const sessionName = session.sessionPersistenceName ?? session.tmuxSessionName;
+  return provider && sessionName ? { provider, sessionName } : undefined;
+}
+
+function getProviderRuntimeStateForSession(
+  projectId: string,
+  session: TerminalSessionRecord,
+): ProviderRuntimeState {
+  const terminalState = terminalStateById.get(session.sessionId);
+  if (terminalState?.lifecycleState === "running" && terminalState.sessionPersistenceProvider) {
+    return "running";
+  }
+  const providerInfo = getTerminalProviderRuntimeInfo(session);
+  if (!providerInfo) {
+    return "unknown";
+  }
+  const cached = providerRuntimeStateByProjectSessionId.get(
+    providerRuntimeSessionKey(projectId, session.sessionId),
+  );
+  if (
+    cached &&
+    cached.provider === providerInfo.provider &&
+    cached.sessionName === providerInfo.sessionName
+  ) {
+    return cached.state;
+  }
+  return "unknown";
+}
+
+function rememberProviderRuntimeState(
+  projectId: string,
+  sessionId: string,
+  provider: TerminalSessionPersistenceProvider,
+  sessionName: string,
+  state: ProviderRuntimeState,
+): void {
+  providerRuntimeStateByProjectSessionId.set(providerRuntimeSessionKey(projectId, sessionId), {
+    checkedAt: Date.now(),
+    provider,
+    sessionName,
+    state,
+  });
+}
+
+function forgetProviderRuntimeState(projectId: string, sessionId: string): void {
+  providerRuntimeStateByProjectSessionId.delete(providerRuntimeSessionKey(projectId, sessionId));
+}
+
 function shouldQueueProviderStartupTextForRestore(
   session: TerminalSessionRecord,
+  projectId: string,
   reason: string,
 ): boolean {
+  if (getProviderRuntimeStateForSession(projectId, session) === "running") {
+    return false;
+  }
   return (
     session.isSleeping === true ||
     reason === "focus-sleeping-session" ||
@@ -2732,6 +2850,29 @@ function readNativeTerminalText(
   });
 }
 
+function checkNativePersistenceSession(
+  provider: TerminalSessionPersistenceProvider,
+  sessionName: string,
+  options: { timeoutMs?: number } = {},
+): Promise<NativePersistenceSessionStateResult> {
+  const requestId = `persistence-session-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  postNative({
+    provider,
+    requestId,
+    sessionName,
+    type: "checkPersistenceSession",
+  });
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      pendingPersistenceSessionStateResults.delete(requestId);
+      reject(new Error(`${provider} ${sessionName} liveness check timed out`));
+    }, options.timeoutMs ?? 5_000);
+    pendingPersistenceSessionStateResults.set(requestId, { reject, resolve, timeout });
+  });
+}
+
 async function refreshWorkspaceOpenTargetAvailabilityAtStartup(): Promise<void> {
   try {
     const nextAvailability = await detectWorkspaceOpenTargetAvailability();
@@ -3412,10 +3553,28 @@ function markNativeSessionSemanticActivityAt(
   return true;
 }
 
+function persistNativeSessionObservedStatus(
+  sessionId: string,
+  status: "attention" | "idle" | "working",
+  source: string,
+): void {
+  const terminalState = terminalStateById.get(sessionId);
+  if (!terminalState?.sessionStateFilePath) {
+    return;
+  }
+  void persistNativeSessionSemanticActivityAt(
+    terminalState.sessionStateFilePath,
+    new Date().toISOString(),
+    status,
+    sessionId,
+    source,
+  );
+}
+
 async function persistNativeSessionSemanticActivityAt(
   sessionStateFilePath: string,
   timestamp: string,
-  activity: "attention" | "working",
+  activity: "attention" | "idle" | "working",
   sessionId: string,
   source: string,
 ): Promise<void> {
@@ -3936,6 +4095,85 @@ function collectStartupSurfacedPaneSessionIds(
   }
 }
 
+async function refreshProviderRuntimeStates(reason: string): Promise<void> {
+  const targets: Array<{
+    projectId: string;
+    provider: TerminalSessionPersistenceProvider;
+    session: TerminalSessionRecord;
+    sessionName: string;
+  }> = [];
+  for (const project of projects) {
+    for (const session of project.commandsPanel.sessions) {
+      const providerInfo = getTerminalProviderRuntimeInfo(session);
+      if (providerInfo && !terminalStateById.has(session.sessionId)) {
+        targets.push({ projectId: project.projectId, session, ...providerInfo });
+      }
+    }
+    for (const group of project.workspace.groups) {
+      for (const session of group.snapshot.sessions) {
+        if (session.kind !== "terminal" || terminalStateById.has(session.sessionId)) {
+          continue;
+        }
+        const providerInfo = getTerminalProviderRuntimeInfo(session);
+        if (providerInfo) {
+          targets.push({ projectId: project.projectId, session, ...providerInfo });
+        }
+      }
+    }
+  }
+  if (targets.length === 0) {
+    return;
+  }
+  /**
+   * CDXC:SessionPersistence 2026-05-26-17:20:
+   * Restart can leave provider-backed sessions with no native pane while their
+   * zmx/tmux/zellij backend is still alive. Query native for backend liveness
+   * separately from `isSleeping` so the sidebar can show live detached sessions
+   * and attach without replaying agent resume text.
+   */
+  const results = await Promise.allSettled(
+    targets.map(async (target) => {
+      const result = await checkNativePersistenceSession(target.provider, target.sessionName);
+      return { result, target };
+    }),
+  );
+  let changed = false;
+  for (const settled of results) {
+    if (settled.status !== "fulfilled") {
+      continue;
+    }
+    const { result, target } = settled.value;
+    const state: ProviderRuntimeState = result.error ? "unknown" : result.exists ? "running" : "missing";
+    const key = providerRuntimeSessionKey(target.projectId, target.session.sessionId);
+    const previous = providerRuntimeStateByProjectSessionId.get(key);
+    if (
+      previous?.provider === target.provider &&
+      previous?.sessionName === target.sessionName &&
+      previous.state === state
+    ) {
+      continue;
+    }
+    rememberProviderRuntimeState(
+      target.projectId,
+      target.session.sessionId,
+      target.provider,
+      target.sessionName,
+      state,
+    );
+    changed = true;
+  }
+  if (changed) {
+    appendRestoreDebugLog("nativeSidebar.providerRuntimeStates.refreshed", {
+      checkedCount: targets.length,
+      reason,
+      runningCount: [...providerRuntimeStateByProjectSessionId.values()].filter(
+        (entry) => entry.state === "running",
+      ).length,
+    });
+    publish();
+  }
+}
+
 function writeStoredProjects(reason: string): void {
   persistSharedProjectsSnapshot(activeProjectId, projects, reason);
   /**
@@ -4188,6 +4426,10 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
         typeof project.worktreeCommand === "string" ? project.worktreeCommand : undefined,
       beadsDisplayKey:
         typeof project.beadsDisplayKey === "string" ? project.beadsDisplayKey : undefined,
+      beadConversationLinks: normalizeBeadConversationLinks(
+        project.beadConversationLinks,
+        projectId,
+      ),
       workspace: normalizeSimpleGroupedSessionWorkspaceSnapshot(project.workspace),
     },
   ];
@@ -6214,6 +6456,7 @@ function resolveSidebarGroupReference(groupId: string): {
 }
 
 function setTerminalSessionAgentName(sessionId: string, agentName: string | undefined): void {
+  syncProjectBoardConversationLinksForSession(sessionId, { agentName });
   if (activeCommandPanelContainsSession(sessionId)) {
     const nextAgentName = agentName?.replace(/\s+/g, " ").trim() || undefined;
     updateActiveProjectCommandsPanel((panel) => ({
@@ -6234,6 +6477,7 @@ function setTerminalSessionAgentSessionMetadata(
   sessionId: string,
   metadata: { agentSessionId?: string; agentSessionPath?: string },
 ): void {
+  syncProjectBoardConversationLinksForSession(sessionId, metadata);
   if (activeCommandPanelContainsSession(sessionId)) {
     updateActiveProjectCommandsPanel((panel) => ({
       ...panel,
@@ -7382,6 +7626,11 @@ function createProjectedSidebarSessionsForGroup(
     const hasTrustedStoredResumeTitle =
       sessionRecord?.kind === "terminal" &&
       getNativeStoredTrustedResumeTitle(sessionRecord).title !== undefined;
+    const providerRuntimeState =
+      sessionRecord?.kind === "terminal"
+        ? getProviderRuntimeStateForSession(projectId, sessionRecord)
+        : "unknown";
+    const isDetachedProviderRuntimeRunning = providerRuntimeState === "running";
     const primaryTitle = shouldPreferTerminalTitle
       ? visibleTerminalTitle
       : visiblePrimaryTitle
@@ -7403,9 +7652,12 @@ function createProjectedSidebarSessionsForGroup(
       delayedSendRemainingLabel: delayedSend?.remainingLabel,
       delayedSendRemainingMs: delayedSend?.remainingMs,
       firstUserMessage: sessionRecord?.firstUserMessage ?? terminalState?.firstUserMessage,
-      lifecycleState: terminalState?.lifecycleState ?? session.lifecycleState,
+      isSleeping: isDetachedProviderRuntimeRunning ? false : session.isSleeping,
+      lifecycleState:
+        terminalState?.lifecycleState ??
+        (isDetachedProviderRuntimeRunning ? "running" : session.lifecycleState),
       isGeneratingFirstPromptTitle: terminalState?.firstPromptAutoRenameInProgress === true,
-      isRunning: terminalState?.lifecycleState === "running",
+      isRunning: terminalState?.lifecycleState === "running" || isDetachedProviderRuntimeRunning,
       isPrimaryTitleTerminalTitle:
         (Boolean(visibleTerminalTitle) && (!visiblePrimaryTitle || shouldPreferTerminalTitle)) ||
         (!visibleTerminalTitle && hasTrustedStoredResumeTitle),
@@ -7868,7 +8120,7 @@ function restoreNativeTerminalSession(
   );
   const shouldQueueProviderStartupText =
     Boolean(sessionPersistenceProvider && initialInput.trim()) &&
-    shouldQueueProviderStartupTextForRestore(session, reason);
+    shouldQueueProviderStartupTextForRestore(session, project.projectId, reason);
   const initialActivity = session.restoreActivity === "attention" ? "attention" : "idle";
   if (
     session.sessionPersistenceProvider !== sessionPersistenceProvider ||
@@ -8947,6 +9199,10 @@ def nested_get(source, *path):
 def write_state():
     keys = [
         "status",
+        "statusUpdatedAt",
+        "attentionEventId",
+        "attentionAcknowledgedAt",
+        "attentionAcknowledgedEventId",
         "agent",
         "agentSessionId",
         "agentSessionPath",
@@ -9023,7 +9279,24 @@ prompt = first_string(
     nested_get(payload, "prompt", "text"),
 )
 
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+def update_status(status):
+    timestamp = now_iso()
+    state["status"] = status
+    state["statusUpdatedAt"] = timestamp
+    state["lastActivityAt"] = timestamp
+    if status == "attention":
+        state["attentionEventId"] = f"{timestamp}:attention"
+        state["attentionAcknowledgedAt"] = ""
+        state["attentionAcknowledgedEventId"] = ""
+    elif status == "working":
+        state["attentionAcknowledgedAt"] = timestamp
+        state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
+
 state["status"] = state.get("status") or "idle"
+state["statusUpdatedAt"] = state.get("statusUpdatedAt") or state.get("lastActivityAt", "")
 state["agent"] = state.get("agent") or agent_key
 if session_id:
     state["agentSessionId"] = session_id
@@ -9032,9 +9305,16 @@ if transcript_path:
 if session_id:
     write_hook_store(agent_key, session_id, transcript_path)
 
+if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "pre_llm_call", "pre_tool_call"}:
+    update_status("working")
+elif event_name in {"Stop", "AfterAgent", "afterAgentResponse", "turn-completion", "Notification", "stop", "on_tool_permission", "PermissionRequest"}:
+    update_status("attention")
+elif event_name in {"SessionEnd", "session_shutdown", "release"}:
+    update_status("idle")
+
 if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "pre_llm_call", "pre_tool_call", "on_tool_permission"} and prompt:
     state["firstUserMessageBase64"] = state.get("firstUserMessageBase64") or base64.b64encode(prompt.encode("utf-8")).decode("ascii")
-    state["lastActivityAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    state["lastActivityAt"] = state.get("lastActivityAt") or now_iso()
     if state.get("autoTitleFromFirstPrompt") not in {"1", "true", "TRUE", "True"} and not state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
         state["pendingFirstPromptAutoRenamePrompt"] = " ".join(prompt.split())
 
@@ -9456,6 +9736,10 @@ import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works
 const BRAILLE_FRAMES = ["⠸", "⠴", "⠼", "⠧", "⠦", "⠏", "⠋", "⠇", "⠙", "⠹"] as const;
 const STATE_KEYS = [
   "status",
+  "statusUpdatedAt",
+  "attentionEventId",
+  "attentionAcknowledgedAt",
+  "attentionAcknowledgedEventId",
   "agent",
   "agentSessionId",
   "agentSessionPath",
@@ -9510,6 +9794,22 @@ function writeState(filePath: string, state: Record<string, string>): void {
   fs.renameSync(tempPath, filePath);
 }
 
+function updateStatus(state: Record<string, string>, status: "attention" | "idle" | "working"): string {
+  const timestamp = new Date().toISOString();
+  state.status = status;
+  state.statusUpdatedAt = timestamp;
+  state.lastActivityAt = timestamp;
+  if (status === "attention") {
+    state.attentionEventId = timestamp + ":attention";
+    state.attentionAcknowledgedAt = "";
+    state.attentionAcknowledgedEventId = "";
+  } else if (status === "working") {
+    state.attentionAcknowledgedAt = timestamp;
+    state.attentionAcknowledgedEventId = state.attentionEventId || "";
+  }
+  return timestamp;
+}
+
 function baseTitle(pi: ExtensionAPI, ctx: ExtensionContext): string {
   const cwd = path.basename(ctx.cwd || process.cwd());
   const session = pi.getSessionName();
@@ -9522,12 +9822,21 @@ function syncSessionState(pi: ExtensionAPI, ctx: ExtensionContext, updates: Reco
     return;
   }
   const state = readState(filePath);
-  state.status = updates.status || state.status || "idle";
+  const nextStatus = updates.status as "attention" | "idle" | "working" | undefined;
+  if (nextStatus === "attention" || nextStatus === "idle" || nextStatus === "working") {
+    updateStatus(state, nextStatus);
+  } else {
+    state.status = state.status || "idle";
+    state.statusUpdatedAt = state.statusUpdatedAt || state.lastActivityAt || "";
+  }
   state.agent = "pi";
   state.agentSessionId = ctx.sessionManager.getSessionId() || state.agentSessionId || "";
   state.agentSessionPath = ctx.sessionManager.getSessionFile() || state.agentSessionPath || "";
   state.title = pi.getSessionName() || state.title || "";
   for (const [key, value] of Object.entries(updates)) {
+    if (key === "status" || key === "lastActivityAt") {
+      continue;
+    }
     state[key] = value;
   }
   writeState(filePath, state);
@@ -9590,12 +9899,12 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_start", async (_event, ctx) => {
-    syncSessionState(pi, ctx, { status: "working", lastActivityAt: new Date().toISOString() });
+    syncSessionState(pi, ctx, { status: "working" });
     startAnimation(ctx);
   });
 
   pi.on("agent_end", async (_event, ctx) => {
-    syncSessionState(pi, ctx, { status: "idle", lastActivityAt: new Date().toISOString() });
+    syncSessionState(pi, ctx, { status: "attention" });
     stopAnimation(ctx);
   });
 
@@ -9659,7 +9968,7 @@ def merge_hook(hooks_path):
         })
         hooks[event_name] = groups
 
-    for event_name in ["SessionStart", "UserPromptSubmit"]:
+    for event_name in ["SessionStart", "UserPromptSubmit", "Stop", "Notification", "SessionEnd"]:
         merge_event(event_name)
 
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
@@ -12013,6 +12322,9 @@ type NativePersistedSessionState = {
   agentName?: string;
   agentSessionId?: string;
   agentSessionPath?: string;
+  attentionAcknowledgedAt?: string;
+  attentionAcknowledgedEventId?: string;
+  attentionEventId?: string;
   commandExitCode?: number;
   commandRunId?: string;
   firstUserMessage?: string;
@@ -12020,6 +12332,7 @@ type NativePersistedSessionState = {
   lastActivityAt?: string;
   pendingFirstPromptAutoRenamePrompt?: string;
   status?: "attention" | "idle" | "working";
+  statusUpdatedAt?: string;
   title?: string;
 };
 
@@ -12285,6 +12598,24 @@ function syncNativePersistedCommandPaneActivity(
   return true;
 }
 
+function getNativeCurrentTitleDerivedActivity(
+  sessionId: string,
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
+): TitleDerivedSessionActivity | undefined {
+  const previousDerivedActivity = titleDerivedActivityBySessionId.get(sessionId);
+  const terminalTitle = terminalState.terminalTitle?.trim();
+  if (!terminalTitle) {
+    return previousDerivedActivity;
+  }
+
+  return getTitleDerivedSessionActivityFromTransition(
+    terminalTitle,
+    terminalTitle,
+    previousDerivedActivity,
+    terminalState.agentName,
+  );
+}
+
 function syncNativePersistedAgentActivity(
   sessionId: string,
   terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
@@ -12298,12 +12629,76 @@ function syncNativePersistedAgentActivity(
   /*
   CDXC:GhostexTui 2026-05-26-12:22:
   GTX TUI attaches through zmx, so the macOS app may not receive fresh terminal
-  title events while an agent is viewed from the TUI. Import normal agent
-  working/attention/idle hook status from the persisted session-state poller, not only
-  command-pane status, so `gtx sessions --json` and the TUI's five-second
-  polling see the same working/attention/idle transitions as the sidebar.
+  title events while an agent is viewed from the TUI. The shared session-state
+  file is the source for cross-surface working/attention visibility, but
+  attention must be event/acknowledgement based so clicking a desktop card or
+  attaching from the TUI marks the same event seen everywhere.
+
+  CDXC:GhostexTui 2026-05-26-12:58:
+  Persisted working is only authoritative while fresh. A stale working file can
+  otherwise keep both the macOS sidebar and GTX TUI orange after a hook missed
+  the final idle/attention event. Live terminal-title working remains valid even
+  when the persisted heartbeat ages out.
+
+  CDXC:SharedSessionStatus 2026-05-26-13:10:
+  A mounted terminal's current title-derived idle/attention signal must clear a
+  shared `working` file immediately. Codex and other agent processes remain
+  alive while ready, so a recent persisted working timestamp is only a
+  cross-surface bridge when the live terminal is not already showing a
+  non-working state.
   */
   if (persistedState.status === "working") {
+    const liveTitleActivity = getNativeCurrentTitleDerivedActivity(sessionId, terminalState);
+    const hasLiveWorkingTitle = liveTitleActivity?.activity === "working";
+    if (liveTitleActivity && liveTitleActivity.activity !== "working") {
+      const previousActivity = terminalState.activity;
+      titleDerivedActivityBySessionId.set(sessionId, liveTitleActivity);
+      terminalState.agentName = liveTitleActivity.agentName;
+      setTerminalSessionAgentName(sessionId, liveTitleActivity.agentName);
+      nativeWorkingStartedAtBySessionId.delete(sessionId);
+
+      if (liveTitleActivity.activity === "attention") {
+        terminalState.activity = "attention";
+        persistNativeSessionObservedStatus(sessionId, "attention", "live-title-cleared-working");
+        if (previousActivity !== "attention") {
+          handleNativeSessionEnteredAttention(sessionId, "live-title-cleared-working");
+        }
+        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.workingClearedByLiveTitle", {
+          liveActivity: liveTitleActivity.activity,
+          previousActivity,
+          sessionId,
+          statusUpdatedAt: persistedState.statusUpdatedAt,
+        });
+        return true;
+      }
+
+      terminalState.activity = "idle";
+      clearNativeSessionAttentionTracking(sessionId);
+      persistTerminalSessionRestoreActivity(sessionId, undefined);
+      persistNativeSessionObservedStatus(sessionId, "idle", "live-title-cleared-working");
+      appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.workingClearedByLiveTitle", {
+        liveActivity: liveTitleActivity.activity,
+        previousActivity,
+        sessionId,
+        statusUpdatedAt: persistedState.statusUpdatedAt,
+      });
+      return previousActivity !== "idle";
+    }
+
+    if (!isNativePersistedWorkingFresh(persistedState) && !hasLiveWorkingTitle) {
+      if (terminalState.activity === "working") {
+        terminalState.activity = "idle";
+        nativeWorkingStartedAtBySessionId.delete(sessionId);
+        persistTerminalSessionRestoreActivity(sessionId, undefined);
+        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.workingExpired", {
+          sessionId,
+          statusUpdatedAt: persistedState.statusUpdatedAt,
+        });
+        return true;
+      }
+      return false;
+    }
+
     const suppressedUntil = getNativeActivitySuppressedUntil(sessionId);
     if (
       suppressedUntil !== undefined &&
@@ -12332,7 +12727,6 @@ function syncNativePersistedAgentActivity(
     terminalState.activity = "working";
     clearNativeSessionAttentionTracking(sessionId);
     persistTerminalSessionRestoreActivity(sessionId, "working");
-    markNativeSessionSemanticActivityAt(sessionId, "working", "persisted-session-state");
     appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.working", {
       previousActivity,
       sessionId,
@@ -12342,14 +12736,29 @@ function syncNativePersistedAgentActivity(
 
   const previousActivity = terminalState.activity;
   if (persistedState.status === "attention") {
+    if (isNativePersistedAttentionAcknowledged(persistedState)) {
+      nativeWorkingStartedAtBySessionId.delete(sessionId);
+      if (previousActivity === "attention") {
+        terminalState.activity = "idle";
+        persistTerminalSessionRestoreActivity(sessionId, undefined);
+        clearNativeSessionAttentionTracking(sessionId);
+        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attentionAcknowledged", {
+          attentionEventId: persistedState.attentionEventId,
+          sessionId,
+        });
+        return true;
+      }
+      return false;
+    }
+
     nativeWorkingStartedAtBySessionId.delete(sessionId);
     if (previousActivity === "attention") {
       return false;
     }
     terminalState.activity = "attention";
-    markNativeSessionSemanticActivityAt(sessionId, "attention", "persisted-session-state");
     handleNativeSessionEnteredAttention(sessionId, "persisted-session-state");
     appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attention", {
+      attentionEventId: persistedState.attentionEventId,
       previousActivity,
       sessionId,
     });
@@ -12357,35 +12766,14 @@ function syncNativePersistedAgentActivity(
   }
 
   if (previousActivity === "working") {
-    const now = Date.now();
-    const workingStartedAt = nativeWorkingStartedAtBySessionId.get(sessionId);
-    const workingDurationMs =
-      workingStartedAt === undefined ? undefined : Math.max(0, now - workingStartedAt);
     nativeWorkingStartedAtBySessionId.delete(sessionId);
-    if (
-      workingStartedAt === undefined ||
-      (workingDurationMs ?? 0) < NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS
-    ) {
-      terminalState.activity = "idle";
-      persistTerminalSessionRestoreActivity(sessionId, undefined);
-      appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attentionSuppressed", {
-        sessionId,
-        workingDurationMs,
-      });
-      return true;
-    }
-    terminalState.activity = "attention";
-    markNativeSessionSemanticActivityAt(sessionId, "attention", "persisted-session-state");
-    handleNativeSessionEnteredAttention(sessionId, "persisted-session-state");
-    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attention", {
+    terminalState.activity = "idle";
+    persistTerminalSessionRestoreActivity(sessionId, undefined);
+    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.idle", {
+      previousActivity,
       sessionId,
-      workingDurationMs,
     });
     return true;
-  }
-
-  if (previousActivity === "attention") {
-    return false;
   }
 
   nativeWorkingStartedAtBySessionId.delete(sessionId);
@@ -12399,6 +12787,32 @@ function syncNativePersistedAgentActivity(
     return true;
   }
   return false;
+}
+
+function isNativePersistedWorkingFresh(persistedState: NativePersistedSessionState): boolean {
+  const timestamp = getNativeTimestampValue(
+    persistedState.statusUpdatedAt ?? persistedState.lastActivityAt,
+  );
+  return timestamp > 0 && Date.now() - timestamp <= NATIVE_PERSISTED_WORKING_STALE_MS;
+}
+
+function isNativePersistedAttentionAcknowledged(
+  persistedState: NativePersistedSessionState,
+): boolean {
+  if (persistedState.status !== "attention") {
+    return false;
+  }
+  if (
+    persistedState.attentionEventId &&
+    persistedState.attentionAcknowledgedEventId === persistedState.attentionEventId
+  ) {
+    return true;
+  }
+  const acknowledgedAt = getNativeTimestampValue(persistedState.attentionAcknowledgedAt);
+  const updatedAt = getNativeTimestampValue(
+    persistedState.statusUpdatedAt ?? persistedState.lastActivityAt,
+  );
+  return acknowledgedAt > 0 && updatedAt > 0 && acknowledgedAt >= updatedAt;
 }
 
 function syncNativePersistedAgentSessionState(
@@ -12481,6 +12895,10 @@ if " ".join(state.get("pendingFirstPromptAutoRenamePrompt", "").split()) != fail
 state["pendingFirstPromptAutoRenamePrompt"] = ""
 keys = [
     "status",
+    "statusUpdatedAt",
+    "attentionEventId",
+    "attentionAcknowledgedAt",
+    "attentionAcknowledgedEventId",
     "agent",
     "agentSessionId",
     "agentSessionPath",
@@ -12510,6 +12928,10 @@ activity = sys.argv[3]
 
 keys = [
     "status",
+    "statusUpdatedAt",
+    "attentionEventId",
+    "attentionAcknowledgedAt",
+    "attentionAcknowledgedEventId",
     "agent",
     "agentSessionId",
     "agentSessionPath",
@@ -12549,7 +12971,66 @@ if existing_timestamp is not None and existing_timestamp > next_timestamp:
     sys.exit(0)
 
 state["status"] = activity
+state["statusUpdatedAt"] = timestamp
 state["lastActivityAt"] = timestamp
+if activity == "attention":
+    state["attentionEventId"] = f"{timestamp}:attention"
+    state["attentionAcknowledgedAt"] = ""
+    state["attentionAcknowledgedEventId"] = ""
+elif activity == "working":
+    state["attentionAcknowledgedAt"] = timestamp
+    state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
+elif activity == "idle":
+    state["attentionAcknowledgedAt"] = timestamp
+    state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
+state_path.parent.mkdir(parents=True, exist_ok=True)
+temp_path = state_path.with_suffix(state_path.suffix + ".tmp")
+temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
+temp_path.replace(state_path)
+`;
+}
+
+function getAcknowledgeNativeSessionAttentionScript(): string {
+  return `import pathlib
+import sys
+
+state_path = pathlib.Path(sys.argv[1])
+timestamp = sys.argv[2]
+
+keys = [
+    "status",
+    "statusUpdatedAt",
+    "attentionEventId",
+    "attentionAcknowledgedAt",
+    "attentionAcknowledgedEventId",
+    "agent",
+    "agentSessionId",
+    "agentSessionPath",
+    "firstUserMessageBase64",
+    "frozenAt",
+    "autoTitleFromFirstPrompt",
+    "historyBase64",
+    "lastActivityAt",
+    "pendingFirstPromptAutoRenamePrompt",
+    "title",
+]
+
+state = {}
+try:
+    lines = state_path.read_text(encoding="utf-8").splitlines()
+except FileNotFoundError:
+    sys.exit(0)
+
+for line in lines:
+    key, separator, value = line.partition("=")
+    if separator:
+        state[key] = value
+
+if state.get("status") != "attention":
+    sys.exit(0)
+
+state["attentionAcknowledgedAt"] = timestamp
+state["attentionAcknowledgedEventId"] = state.get("attentionEventId", "")
 state_path.parent.mkdir(parents=True, exist_ok=True)
 temp_path = state_path.with_suffix(state_path.suffix + ".tmp")
 temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
@@ -12571,6 +13052,12 @@ function parseNativePersistedSessionState(rawState: string): NativePersistedSess
     }
     if (key === "agent") {
       state.agentName = value;
+    } else if (key === "attentionAcknowledgedAt") {
+      state.attentionAcknowledgedAt = normalizeNativeIsoTimestamp(value);
+    } else if (key === "attentionAcknowledgedEventId") {
+      state.attentionAcknowledgedEventId = value;
+    } else if (key === "attentionEventId") {
+      state.attentionEventId = value;
     } else if (key === "agentSessionId") {
       state.agentSessionId = value;
     } else if (key === "agentSessionPath") {
@@ -12595,6 +13082,8 @@ function parseNativePersistedSessionState(rawState: string): NativePersistedSess
       (value === "attention" || value === "idle" || value === "working")
     ) {
       state.status = value;
+    } else if (key === "statusUpdatedAt") {
+      state.statusUpdatedAt = normalizeNativeIsoTimestamp(value);
     } else if (key === "title") {
       state.title = getVisibleTerminalTitle(value);
     }
@@ -12842,6 +13331,7 @@ function closeTerminal(
       };
     });
     terminalStateById.delete(reference.sessionId);
+    forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
     pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
     titleDerivedActivityBySessionId.delete(reference.sessionId);
     nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
@@ -12874,6 +13364,7 @@ function closeTerminal(
     (workspace) => removeSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
   );
   terminalStateById.delete(reference.sessionId);
+  forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
@@ -13084,7 +13575,17 @@ function focusTerminal(sessionId: string): void {
    */
   let restoredSleepingTerminal = false;
   if (session && !terminalStateById.has(reference.sessionId)) {
-    restoreNativeTerminalSession(activeProject(), session, "focus-sleeping-session");
+    const providerRuntimeState = getProviderRuntimeStateForSession(
+      reference.project.projectId,
+      session,
+    );
+    restoreNativeTerminalSession(
+      activeProject(),
+      session,
+      providerRuntimeState === "running"
+        ? "focus-live-provider-session"
+        : "focus-sleeping-session",
+    );
     restoredSleepingTerminal = true;
   }
   if (sessionPersistenceProvider === "zmx") {
@@ -13492,7 +13993,7 @@ function keyboardEventToNativeHotkeyText(event: KeyboardEvent): string | undefin
     event.shiftKey ? "shift" : "",
     key,
   ].filter(Boolean);
-  return parts.length > 1 ? parts.join("+") : key;
+  return normalizeHotkeyText(parts.length > 1 ? parts.join("+") : key);
 }
 
 function normalizeNativeHotkeyKey(key: string): string | undefined {
@@ -13817,7 +14318,7 @@ function promptRenameFocusedNativeHotkeySession(): void {
 
 function acknowledgeNativeTerminalAttention(
   sessionId: string,
-  reason: "native-focus" | "sidebar-focus",
+  reason: "native-focus" | "sidebar-focus" | "tui-attach",
 ): boolean {
   const terminalState = terminalStateById.get(sessionId);
   if (terminalState?.activity !== "attention") {
@@ -13858,7 +14359,7 @@ function acknowledgeNativeTerminalAttention(
 
 function completeNativeTerminalAttentionAcknowledgement(
   sessionId: string,
-  reason: "native-focus" | "sidebar-focus",
+  reason: "native-focus" | "sidebar-focus" | "tui-attach",
   attentionEnteredAt?: number,
 ): boolean {
   const terminalState = terminalStateById.get(sessionId);
@@ -13891,6 +14392,14 @@ function completeNativeTerminalAttentionAcknowledgement(
   }
   terminalState.activity = "idle";
   persistTerminalSessionRestoreActivity(sessionId, undefined);
+  if (terminalState.sessionStateFilePath) {
+    void persistNativeSessionAttentionAcknowledged(
+      terminalState.sessionStateFilePath,
+      new Date().toISOString(),
+      sessionId,
+      reason,
+    );
+  }
   nativeAttentionEnteredAtBySessionId.delete(sessionId);
   clearNativeSessionAttentionAcknowledgementTimer(sessionId);
   appendAgentDetectionDebugLog("nativeSidebar.sessionAttentionAcknowledged", {
@@ -13902,6 +14411,39 @@ function completeNativeTerminalAttentionAcknowledgement(
     sessionId,
   });
   return true;
+}
+
+async function persistNativeSessionAttentionAcknowledged(
+  sessionStateFilePath: string,
+  timestamp: string,
+  sessionId: string,
+  source: string,
+): Promise<void> {
+  const command = [
+    `/usr/bin/python3 - ${quoteNativeShellArg(sessionStateFilePath)} ${quoteNativeShellArg(timestamp)} <<'GHOSTEX_ACK_ATTENTION'`,
+    getAcknowledgeNativeSessionAttentionScript(),
+    "GHOSTEX_ACK_ATTENTION",
+  ].join("\n");
+  try {
+    const result = await runNativeProcess("/bin/zsh", ["-lc", command]);
+    if (result.exitCode !== 0) {
+      appendAgentDetectionDebugLog("nativeSidebar.attentionAcknowledgePersistFailed", {
+        error: result.stderr.trim() || result.stdout.trim() || "persist attention acknowledgement failed",
+        sessionId,
+        sessionStateFilePath,
+        source,
+        timestamp,
+      });
+    }
+  } catch (error) {
+    appendAgentDetectionDebugLog("nativeSidebar.attentionAcknowledgePersistFailed", {
+      error: error instanceof Error ? error.message : String(error),
+      sessionId,
+      sessionStateFilePath,
+      source,
+      timestamp,
+    });
+  }
 }
 
 function findSessionGroupId(sessionId: string): string | undefined {
@@ -14208,8 +14750,21 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
       setSessionSleepingInSimpleWorkspace(workspace, reference.sessionId, sleeping).snapshot,
   );
   if (sleeping) {
+    const providerInfo = getTerminalProviderRuntimeInfo(session);
+    if (providerInfo) {
+      rememberProviderRuntimeState(
+        reference.project.projectId,
+        reference.sessionId,
+        providerInfo.provider,
+        providerInfo.sessionName,
+        "missing",
+      );
+    } else {
+      forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
+    }
     stopNativeSleepingSessionRuntime(reference.sessionId, reference.project);
   } else if (!terminalStateById.has(reference.sessionId)) {
+    forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
     const nextSession = findTerminalSessionInProject(reference.project, reference.sessionId);
     if (nextSession) {
       restoreNativeTerminalSession(reference.project, nextSession, "wake-session");
@@ -15076,7 +15631,13 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
           terminalState?.sessionPersistenceName ??
           session.sessionPersistenceName ??
           session.tmuxSessionName;
-        const status = getNativeCliSessionStatus(session, projectedSession, terminalState);
+        const providerRuntimeState = getProviderRuntimeStateForSession(project.projectId, session);
+        const status = getNativeCliSessionStatus(
+          session,
+          projectedSession,
+          terminalState,
+          providerRuntimeState,
+        );
         /**
          * CDXC:CliSessions 2026-05-07-21:22
          * The human CLI session area needs one stable live-session inventory
@@ -15142,7 +15703,11 @@ function getNativeCliSessionStatus(
         lifecycleState: "done" | "error" | "running" | "sleeping";
       }
     | undefined,
+  providerRuntimeState: ProviderRuntimeState = "unknown",
 ): NativeCliSessionListItem["status"] {
+  if (providerRuntimeState === "running") {
+    return projectedSession?.activity ?? terminalState?.activity ?? "idle";
+  }
   if (session.isSleeping === true || terminalState?.lifecycleState === "sleeping") {
     return "sleep";
   }
@@ -15520,10 +16085,11 @@ function getNativeSidebarCommandStatusStampText(
     "    pass",
     "",
     "state['status'] = status",
+    "state['statusUpdatedAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')",
     "state['commandRunId'] = run_id",
     "state['commandExitCode'] = exit_code",
-    "state['lastActivityAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')",
-    "for key in ['status', 'commandRunId', 'commandExitCode', 'lastActivityAt']:",
+    "state['lastActivityAt'] = state['statusUpdatedAt']",
+    "for key in ['status', 'statusUpdatedAt', 'commandRunId', 'commandExitCode', 'lastActivityAt']:",
     "    if key not in order:",
     "        order.append(key)",
     "state_path.parent.mkdir(parents=True, exist_ok=True)",
@@ -16073,6 +16639,22 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         const session = requireCliSession(payload);
         focusSidebarSession(session.sessionId);
         return { ok: true, session, state: summarizeCliState() };
+      }
+      case "acknowledgeSessionAttention": {
+        const session = requireCliSession(payload);
+        const reference = resolveSidebarSessionReference(session.sessionId);
+        const acknowledged = acknowledgeNativeTerminalAttention(reference.sessionId, "tui-attach");
+        const terminalState = terminalStateById.get(reference.sessionId);
+        if (!acknowledged && terminalState?.sessionStateFilePath) {
+          await persistNativeSessionAttentionAcknowledged(
+            terminalState.sessionStateFilePath,
+            new Date().toISOString(),
+            reference.sessionId,
+            "tui-attach",
+          );
+        }
+        publish();
+        return { acknowledged, ok: true, session, state: summarizeCliState() };
       }
       case "focusGroup": {
         const groupReference = resolveSidebarGroupReference(String(payload.groupId));
@@ -17830,6 +18412,346 @@ function setProjectBeadsDisplayKey(projectId: string, displayKey: string): void 
   );
 }
 
+function updateProjectBeadConversationLinks(
+  projectId: string,
+  update: (links: BeadConversationLink[]) => BeadConversationLink[],
+  reason: string,
+): void {
+  projects = projects.map((project) =>
+    project.projectId === projectId
+      ? { ...project, beadConversationLinks: update(project.beadConversationLinks ?? []) }
+      : project,
+  );
+  writeStoredProjects(reason);
+}
+
+function resolveProjectBoardProject(
+  request: Pick<ProjectBoardBridgeRequest, "projectId" | "projectPath">,
+): NativeProject | undefined {
+  const projectId = request.projectId?.trim();
+  if (projectId) {
+    const directProject = findProject(projectId);
+    if (directProject) {
+      return directProject;
+    }
+    const parsedProject = findProject(projectIdFromProjectEditorId(projectId));
+    if (parsedProject) {
+      return parsedProject;
+    }
+  }
+  const normalizedPath = request.projectPath?.trim().replace(/\/+$/u, "");
+  if (normalizedPath) {
+    return projects.find((project) => project.path.replace(/\/+$/u, "") === normalizedPath);
+  }
+  return activeProject();
+}
+
+function createProjectBoardConversationState(
+  project: NativeProject,
+): ProjectBoardConversationState {
+  const sessionOptions = createProjectBoardSessionOptions(project);
+  const sessionById = new Map(sessionOptions.map((session) => [session.sessionId, session]));
+  const activeLinks = (project.beadConversationLinks ?? []).filter(
+    (link) => link.status !== "archived",
+  );
+  return {
+    activeSessionId: activeProjectId === project.projectId ? activeSnapshot().focusedSessionId : undefined,
+    agents: createProjectBoardAgentOptions(),
+    defaultAgentId: resolveProjectBoardDefaultAgentId(),
+    focusedTerminalSessionId: sessionOptions.find((session) => session.isFocused)?.sessionId,
+    links: activeLinks.map<ProjectBoardConversationLinkView>((link) => {
+      const session = sessionById.get(link.ghostexSessionId);
+      return {
+        ...link,
+        agentId: link.agentId ?? session?.agentId,
+        isFocused: session?.isFocused,
+        isLive: Boolean(session),
+        isSleeping: session?.isSleeping,
+        sessionTitle: session?.label,
+      };
+    }),
+    projectId: project.projectId,
+    sessions: sessionOptions,
+  };
+}
+
+function createProjectBoardAgentOptions(): ProjectBoardAgentOption[] {
+  return agents
+    .filter((agent) => agent.agentId !== "t3" && Boolean(agent.command?.trim()))
+    .map((agent) => ({ agentId: agent.agentId, label: agent.name.trim() || agent.agentId }));
+}
+
+function resolveProjectBoardDefaultAgentId(): string | undefined {
+  const options = createProjectBoardAgentOptions();
+  return options.find((agent) => agent.agentId === "codex")?.agentId ?? options[0]?.agentId;
+}
+
+function createProjectBoardSessionOptions(project: NativeProject): ProjectBoardSessionOption[] {
+  const focusedSessionId =
+    activeProjectId === project.projectId
+      ? project.workspace.groups.find((group) => group.groupId === project.workspace.activeGroupId)
+          ?.snapshot.focusedSessionId
+      : undefined;
+  return project.workspace.groups.flatMap((group) =>
+    group.snapshot.sessions.flatMap((session): ProjectBoardSessionOption[] => {
+      if (session.kind !== "terminal") {
+        return [];
+      }
+      return [
+        {
+          agentId: session.agentName,
+          isFocused: session.sessionId === focusedSessionId,
+          isSleeping: session.isSleeping === true,
+          label: getSessionCardPrimaryTitle(session) ?? session.title,
+          sessionId: session.sessionId,
+        },
+      ];
+    }),
+  );
+}
+
+function upsertProjectBoardConversationLink(
+  project: NativeProject,
+  args: { beadDisplayId?: string; beadId: string; session: TerminalSessionRecord },
+): BeadConversationLink {
+  const now = new Date().toISOString();
+  const terminalState = terminalStateById.get(args.session.sessionId);
+  const nextLink: BeadConversationLink = {
+    agentId: terminalState?.agentName ?? args.session.agentName,
+    agentName: terminalState?.agentName ?? args.session.agentName,
+    agentSessionId: terminalState?.agentSessionId ?? args.session.agentSessionId,
+    agentSessionPath: terminalState?.agentSessionPath ?? args.session.agentSessionPath,
+    beadDisplayId: args.beadDisplayId,
+    beadId: args.beadId,
+    createdAt: now,
+    ghostexSessionId: args.session.sessionId,
+    id: createBeadConversationLinkId(project.projectId, args.beadId, args.session.sessionId),
+    projectId: project.projectId,
+    sessionPersistenceName:
+      terminalState?.sessionPersistenceName ?? args.session.sessionPersistenceName,
+    sessionPersistenceProvider:
+      terminalState?.sessionPersistenceProvider ?? args.session.sessionPersistenceProvider,
+    status: "active",
+    updatedAt: now,
+  };
+  updateProjectBeadConversationLinks(
+    project.projectId,
+    (links) => {
+      const existing = links.find((link) => link.id === nextLink.id);
+      if (!existing) {
+        return [...links, nextLink];
+      }
+      return links.map((link) =>
+        link.id === nextLink.id ? { ...existing, ...nextLink, createdAt: existing.createdAt } : link,
+      );
+    },
+    "upsertProjectBoardConversationLink",
+  );
+  return nextLink;
+}
+
+function archiveProjectBoardConversationLink(
+  project: NativeProject,
+  beadId: string,
+  sessionId: string,
+): void {
+  const now = new Date().toISOString();
+  updateProjectBeadConversationLinks(
+    project.projectId,
+    (links) =>
+      links.map((link) =>
+        link.beadId === beadId && link.ghostexSessionId === sessionId
+          ? { ...link, status: "archived", updatedAt: now }
+          : link,
+      ),
+    "archiveProjectBoardConversationLink",
+  );
+}
+
+function syncProjectBoardConversationLinksForSession(
+  sessionId: string,
+  metadata: Partial<Pick<BeadConversationLink, "agentName" | "agentSessionId" | "agentSessionPath">>,
+): void {
+  let changed = false;
+  const now = new Date().toISOString();
+  projects = projects.map((project) => {
+    const links = project.beadConversationLinks ?? [];
+    if (!links.some((link) => link.ghostexSessionId === sessionId)) {
+      return project;
+    }
+    changed = true;
+    return {
+      ...project,
+      beadConversationLinks: links.map((link) =>
+        link.ghostexSessionId === sessionId
+          ? {
+              ...link,
+              agentName: metadata.agentName ?? link.agentName,
+              agentSessionId: metadata.agentSessionId ?? link.agentSessionId,
+              agentSessionPath: metadata.agentSessionPath ?? link.agentSessionPath,
+              updatedAt: now,
+            }
+          : link,
+      ),
+    };
+  });
+  if (changed) {
+    writeStoredProjects("syncProjectBoardConversationLinksForSession");
+  }
+}
+
+async function handleProjectBoardRequest(request: ProjectBoardBridgeRequest): Promise<void> {
+  const project = resolveProjectBoardProject(request);
+  if (!project) {
+    postProjectBoardResponse(request, undefined, "Project not found.");
+    return;
+  }
+  try {
+    switch (request.action) {
+      case "getState":
+        postProjectBoardResponse(request, createProjectBoardConversationState(project));
+        return;
+      case "associateFocusedSession":
+        handleProjectBoardAssociateFocusedSession(project, request);
+        return;
+      case "jumpToConversation":
+        handleProjectBoardJumpToConversation(project, request);
+        return;
+      case "startWork":
+        await handleProjectBoardStartWork(project, request);
+        return;
+      case "unlinkConversation":
+        handleProjectBoardUnlinkConversation(project, request);
+        return;
+    }
+  } catch (error) {
+    postProjectBoardResponse(
+      request,
+      undefined,
+      error instanceof Error ? error.message : "Project board conversation action failed.",
+    );
+  }
+}
+
+function handleProjectBoardAssociateFocusedSession(
+  project: NativeProject,
+  request: ProjectBoardBridgeRequest,
+): void {
+  const beadId = requireProjectBoardBeadId(request);
+  const focusedSessionId = createProjectBoardConversationState(project).focusedTerminalSessionId;
+  if (!focusedSessionId) {
+    throw new Error("Focus an agent session before associating this bead.");
+  }
+  const session = findTerminalSessionInProject(project, focusedSessionId);
+  if (!session) {
+    throw new Error("The focused session is not an agent terminal.");
+  }
+  upsertProjectBoardConversationLink(project, {
+    beadDisplayId: request.beadDisplayId,
+    beadId,
+    session,
+  });
+  const nextProject = findProject(project.projectId) ?? project;
+  publish();
+  postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
+}
+
+async function handleProjectBoardStartWork(
+  project: NativeProject,
+  request: ProjectBoardBridgeRequest,
+): Promise<void> {
+  const beadId = requireProjectBoardBeadId(request);
+  const prompt = request.prompt?.trim();
+  if (!prompt) {
+    throw new Error("No bead prompt is available.");
+  }
+  const agentId = request.agentId?.trim() || resolveProjectBoardDefaultAgentId();
+  const agent = agentId ? resolveSidebarAgentButtonById(agentId) : undefined;
+  if (!agent?.command?.trim()) {
+    throw new Error("Choose a configured agent before starting work.");
+  }
+  if (activeProjectId !== project.projectId) {
+    focusProject(project.projectId);
+  }
+  const groupId = activeProject().workspace.activeGroupId;
+  const visiblePlacement = createFocusedTabGroupPlacement(groupId);
+  const session = await launchAgentTerminal(agent, groupId, { visiblePlacement });
+  if (!session || session.kind !== "terminal") {
+    throw new Error("Could not create an agent session for this bead.");
+  }
+  upsertProjectBoardConversationLink(activeProject(), {
+    beadDisplayId: request.beadDisplayId,
+    beadId,
+    session,
+  });
+  const nativeSessionId = nativeSessionIdForProjectSidebarSession(project.projectId, session.sessionId);
+  window.setTimeout(() => {
+    postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
+    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+  }, PROJECT_BOARD_AGENT_PROMPT_STAGING_DELAY_MS);
+  const nextProject = findProject(project.projectId) ?? activeProject();
+  publish();
+  postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
+}
+
+function handleProjectBoardJumpToConversation(
+  project: NativeProject,
+  request: ProjectBoardBridgeRequest,
+): void {
+  const sessionId = request.sessionId?.trim();
+  if (!sessionId) {
+    throw new Error("No linked conversation is selected.");
+  }
+  const session = findTerminalSessionInProject(project, sessionId);
+  if (!session) {
+    throw new Error("The linked Ghostex session is no longer available.");
+  }
+  focusTerminal(createCombinedProjectSessionId(project.projectId, session.sessionId));
+  const nextProject = findProject(project.projectId) ?? project;
+  postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
+}
+
+function handleProjectBoardUnlinkConversation(
+  project: NativeProject,
+  request: ProjectBoardBridgeRequest,
+): void {
+  const beadId = requireProjectBoardBeadId(request);
+  const sessionId = request.sessionId?.trim();
+  if (!sessionId) {
+    throw new Error("No linked conversation is selected.");
+  }
+  archiveProjectBoardConversationLink(project, beadId, sessionId);
+  const nextProject = findProject(project.projectId) ?? project;
+  publish();
+  postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
+}
+
+function requireProjectBoardBeadId(request: ProjectBoardBridgeRequest): string {
+  const beadId = request.beadId?.trim();
+  if (!beadId) {
+    throw new Error("No bead id is available.");
+  }
+  return beadId;
+}
+
+function postProjectBoardResponse(
+  request: ProjectBoardBridgeRequest,
+  payload?: ProjectBoardConversationState,
+  error?: string,
+): void {
+  postNative({
+    payloadJson: JSON.stringify({
+      error,
+      ok: !error,
+      payload,
+      requestId: request.requestId,
+    }),
+    projectId: request.projectId,
+    requestId: request.requestId,
+    type: "projectBoardResponse",
+  });
+}
+
 function disposeNativeRecentProjectSessionSurface(
   project: NativeProject,
   session: SessionRecord,
@@ -18799,6 +19721,7 @@ function openTasksPlaceholderFromTitlebar(): void {
   const url = new URL("tasks-placeholder.html", window.location.href);
   url.searchParams.set("projectName", project.name);
   url.searchParams.set("projectPath", project.path);
+  url.searchParams.set("projectId", createNativeProjectEditorId(project.projectId, "tasks"));
   url.searchParams.set("beadsDisplayKey", project.beadsDisplayKey ?? project.name);
   openProjectTasksEditorSurface(project, url.toString());
 }
@@ -21168,6 +22091,16 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     pending.resolve(hostEvent);
     return;
   }
+  if (hostEvent.type === "persistenceSessionState") {
+    const pending = pendingPersistenceSessionStateResults.get(hostEvent.requestId);
+    if (!pending) {
+      return;
+    }
+    window.clearTimeout(pending.timeout);
+    pendingPersistenceSessionStateResults.delete(hostEvent.requestId);
+    pending.resolve(hostEvent);
+    return;
+  }
   if (hostEvent.type === "terminalTextResult") {
     const pending = pendingTerminalTextResults.get(hostEvent.requestId);
     if (!pending) {
@@ -21219,6 +22152,10 @@ window.addEventListener("ghostex-native-host-event", (event) => {
   }
   if (hostEvent.type === "projectEditorTabSelected") {
     handleProjectEditorTabSelected(hostEvent.projectId, hostEvent.url);
+    return;
+  }
+  if (hostEvent.type === "projectBoardRequest") {
+    void handleProjectBoardRequest(hostEvent);
     return;
   }
   if (hostEvent.type === "commandsPanelHeightRatioChanged") {
@@ -21634,6 +22571,16 @@ window.addEventListener("ghostex-native-host-event", (event) => {
           terminalState.sessionPersistenceProvider,
         );
       }
+      if (terminalState.sessionPersistenceProvider && terminalState.sessionPersistenceName) {
+        const reference = resolveSidebarSessionReference(sidebarSessionId);
+        rememberProviderRuntimeState(
+          reference.project.projectId,
+          reference.sessionId,
+          terminalState.sessionPersistenceProvider,
+          terminalState.sessionPersistenceName,
+          "running",
+        );
+      }
       const startupText = takeNativeTerminalStartupText(sidebarSessionId);
       if (startupText?.trim()) {
         /**
@@ -21642,8 +22589,19 @@ window.addEventListener("ghostex-native-host-event", (event) => {
          * the native pane has attached to a normal provider shell. Consuming the
          * queue here prevents restart/focus paths from replaying the agent or
          * command into an existing tmux/zmx/zellij session.
+         *
+         * CDXC:SessionPersistence 2026-05-26-17:20:
+         * Native reports whether the provider session was created for this
+         * attach. If it attached an existing zmx/tmux/zellij backend, discard
+         * queued restore text so `Restoring session...` and agent resume
+         * commands are never pasted into a live prompt.
          */
-        postNative({ sessionId: hostEvent.sessionId, text: startupText, type: "writeTerminalText" });
+        if (
+          !terminalState.sessionPersistenceProvider ||
+          hostEvent.persistenceSessionCreated !== false
+        ) {
+          postNative({ sessionId: hostEvent.sessionId, text: startupText, type: "writeTerminalText" });
+        }
       }
     }
   }
@@ -23291,6 +24249,7 @@ if (
     } else {
       publish();
     }
+    void refreshProviderRuntimeStates("startup");
     scheduleNativeT3RuntimePrewarm(activeProjectId, "startup");
     openTipsAndTricksOnFirstLaunch();
   });
