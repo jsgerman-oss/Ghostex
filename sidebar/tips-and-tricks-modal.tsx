@@ -39,6 +39,7 @@ import {
   type SidebarThemeVariant,
 } from "../shared/session-grid-contract";
 import type { ghostexSettings } from "../shared/ghostex-settings";
+import ghostexIntroImage from "./assets/first-launch/ghostex-intro.png";
 
 export type TipsAndTricksModalProps = {
   isOpen: boolean;
@@ -63,6 +64,8 @@ type TipsPageItem = {
 type TipsPage = {
   action?: TipsPageAction;
   icon: TipsIcon;
+  imageAlt?: string;
+  imageSrc?: string;
   items: TipsPageItem[];
   kicker: string;
   title: string;
@@ -70,11 +73,13 @@ type TipsPage = {
 
 const TIPS_AND_TRICKS_PAGES: TipsPage[] = [
   {
+    imageAlt: "Ghostex workspace preview with agent session cards, terminal panes, and status indicators",
+    imageSrc: ghostexIntroImage,
     icon: IconLayoutDashboard,
     items: [
       {
         icon: IconTerminal2,
-        text: "Manage multiple CLI coding agent sessions from one native workspace.",
+        text: "Manage multiple CLI coding agent sessions from one native macOS workspace.",
       },
       {
         icon: IconStack,
@@ -93,8 +98,14 @@ const TIPS_AND_TRICKS_PAGES: TipsPage[] = [
         text: "Reopen this guide any time from Tips & Tricks in the sidebar overflow menu.",
       },
     ],
-    kicker: "Page 1",
-    title: "Workspace Basics",
+    /*
+     * CDXC:FirstLaunchSetup 2026-05-26-06:23
+     * Tips & Tricks and first-launch setup need a cohesive opening page that
+     * introduces Ghostex with the same generated workspace visual used by the
+     * production onboarding modal, so Storybook does not drift from the app.
+     */
+    kicker: "Welcome",
+    title: "Meet Ghostex",
   },
   {
     icon: IconApps,
@@ -362,6 +373,12 @@ export function TipsAndTricksModal({
             <div className="tips-and-tricks-title">{page.title}</div>
           </div>
         </div>
+
+        {page.imageSrc ? (
+          <div className="tips-and-tricks-visual-shell">
+            <img className="tips-and-tricks-visual" src={page.imageSrc} alt={page.imageAlt ?? ""} />
+          </div>
+        ) : null}
 
         <ScrollArea className="tips-and-tricks-body">
           <div className="tips-and-tricks-body-inner">

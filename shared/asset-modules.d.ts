@@ -18,3 +18,14 @@ declare module "*.webp" {
   const webpUrl: string;
   export default webpUrl;
 }
+
+declare module "*.png" {
+  const pngUrl: string;
+  export default pngUrl;
+  /*
+   * CDXC:FirstLaunchSetup 2026-05-26-06:23
+   * First-launch onboarding uses generated raster artwork inside the production
+   * modal and Storybook renders that same component. Keep PNG imports typed so
+   * the image asset can be bundled instead of referenced through a mock-only path.
+   */
+}

@@ -1811,6 +1811,8 @@ function AppModalHost() {
         theme={theme}
       />
       <FirstLaunchSetupModal
+        agentHookStatus={agentHookStatus}
+        agentHookStatusLoading={agentHookStatusLoading}
         isOpen={activeModal === "firstLaunchSetup"}
         onChange={(nextSettings) => {
           vscode.postMessage({
@@ -1819,6 +1821,14 @@ function AppModalHost() {
           });
         }}
         onClose={closeModal}
+        onInstallAgentHooks={() => {
+          setAgentHookStatusLoading(true);
+          vscode.postMessage({ type: "installAgentHooks" });
+        }}
+        onRequestAgentHookStatus={() => {
+          setAgentHookStatusLoading(true);
+          vscode.postMessage({ type: "requestAgentHookStatus" });
+        }}
         settings={settings}
         theme={theme}
         vscode={vscode}
