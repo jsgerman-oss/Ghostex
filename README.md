@@ -64,17 +64,11 @@ The README Android APK badge must use a stable GitHub release asset URL so futur
 
 <br />
 
-<img width="250" alt="74733" src="https://github.com/user-attachments/assets/e7af9c54-e8ef-4e0b-a934-8b2f9ea56c70" />
-
-
-<img width="250" alt="74068" src="https://github.com/user-attachments/assets/1a93241e-b942-4c6a-94f8-629ecfc1fb27" />
-
+<img width="250" alt="74733" src="https://github.com/user-attachments/assets/e7af9c54-e8ef-4e0b-a934-8b2f9ea56c70" /> <img width="250" alt="74068" src="https://github.com/user-attachments/assets/563dbb8a-5a9d-4db7-8946-1dfc383e09c8" />
 
 <br />
 
 ### 2 Rich Prompt Editor Modes! Monaco based & TUI based:
-
-<img width="3322" height="2060" alt="2026-05-25_Ghostex_04-58-21@2x" src="https://github.com/user-attachments/assets/9a87f7a1-a4df-489f-9624-9153fed3111a" />
 
 <img width="2048" height="1270" alt="74730" src="https://github.com/user-attachments/assets/a94c00ea-d373-4d72-acc9-b6a16318b4b3" />
 
