@@ -1117,11 +1117,11 @@ function normalizeGhostexCliCask(cask) {
   preflight do
     gx_candidates = [HOMEBREW_PREFIX/"bin/gx"]
     ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).each do |entry|
-      gx_candidates << Pathname(entry)/"gx" unless entry.empty?
+      gx_candidates << (Pathname(entry)/"gx") unless entry.empty?
     end
 
     gx_candidates.uniq.each do |gx_path|
-      next unless gx_path.exist? || gx_path.symlink?
+      next if [gx_path.exist?, gx_path.symlink?].none?
 
       gx_target = gx_path.symlink? ? gx_path.readlink.to_s : gx_path.to_s
       next if gx_target.include?("ghostex.app/Contents/Resources/Web/cli/gx")
@@ -1133,7 +1133,7 @@ function normalizeGhostexCliCask(cask) {
 
   let next = cask
     .replace(
-      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n  preflight do[\s\S]*?\n  end(?=\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx")/g,
+      /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n  preflight do[\s\S]*?\n  end(?=\n\n  zap trash:|\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx")/g,
       "",
     )
     .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gtx"\n/gm, "")
@@ -1143,7 +1143,7 @@ function normalizeGhostexCliCask(cask) {
     throw new ReleaseError("Ghostex cask is missing the primary ghostex CLI binary stanza.");
   }
 
-  next = next.replace(`${ghostexBinary}\n`, `${ghostexBinary}\n${cliPreflight}\n${gxBinary}\n`);
+  next = next.replace(`${ghostexBinary}\n`, `${ghostexBinary}\n${gxBinary}\n\n${cliPreflight}\n`);
   if (!next.includes(gxBinary) || next.includes("/Web/cli/gtx")) {
     throw new ReleaseError("Failed to normalize Ghostex cask CLI binary aliases.");
   }
