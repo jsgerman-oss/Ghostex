@@ -2,7 +2,14 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
-- The bare `ghostex` and `gtx` commands open the Ghostex terminal TUI by default, with direct attach still available through attach shortcuts.
+- The bare `ghostex` and `gx` commands open the Ghostex terminal TUI by default, with direct attach still available through attach shortcuts.
+- Ghostex browser DevTools MCP lets agents inspect embedded browser panes, read console logs, take snapshots and screenshots, click, fill forms, press keys, and navigate pages through the bundled CLI skill.
+- First-launch setup includes CLI, mobile app, and browser-skill guidance, with installed-CLI detection so Homebrew users are not asked to reinstall unnecessarily.
+- Browser pane feedback tooling honors the selected Agentation or React Grab setting, and Agentation opens directly into feedback mode from the browser toolbar.
+- Sleeping-session wake and focus behavior keeps pane tabs, command tabs, focus mode, and restored zmx/tmux/zellij sessions in the expected pane instead of reshuffling visible layouts.
+- Sidebar polish includes unified tooltip styling, closer Storybook/native layout matching, literal Show less limits for long project lists, and broader Sleep Inactive coverage for idle terminals.
+- Ghostex Android refreshes session status for notifications even when the drawer is closed, shows sleeping-session icons, persists project disclosure, and supports long-list Show more / Show less controls.
+- Ghostex iOS supports Ghostex-branded local device installs, safer debug builds without CloudKit entitlement crashes, and a two-row customizable terminal accessory bar.
 - First-launch setup introduces Ghostex with workspace artwork, agent hook readiness, and install/refresh actions for supported agents.
 - Git release workflow actions can review changed files, create split commits, and hand off multicommit release work from the app.
 - Git review flows include a richer commit modal, changed-file diff inspection, and project/worktree ordering that keeps related work together.
@@ -58,7 +65,7 @@
 - Native macOS app shell for better performance (No node runtime)
 - Native Ghostty terminals for best compatibility with Agent CLIs and low cpu/ram use (No bugs due to xterm.js or ghostty-web)
 - The same Homebrew install command automatically selects Apple Silicon or Intel Mac builds.
-- The app installs both `ghostex` and `gtx` CLI commands through Homebrew for listing, attaching, waking, focusing, and sleeping sessions.
+- The app installs both `ghostex` and `gx` CLI commands through Homebrew for listing, attaching, waking, focusing, and sleeping sessions.
 - Inspired by Codex App's UX
 - Embedded browser is chromium not webkit (unlike cmux). Includes devtools & profiles!
 - Auto sleep unused terminals to save ram (auto-restore when clicked)
@@ -72,8 +79,8 @@
 - Rich Prompt Editing can inherit the system editor, use the built-in Monaco editor, use `gte`, or run a custom editor command.
 - Hotkeys use a recorder UI with direct split controls for creating real sideways and downward panes, and directional pane focus uses `Cmd+Alt+Arrow` so normal text navigation stays intact.
 - Press `Cmd+K` to open the full-window Command Palette for Ghostex actions, project actions, pane controls, Settings, and pet controls.
-- The installed Ghostex app also proxies terminal CLI commands such as `ghostex sessions`; `gtx sessions` is the short alias.
-- `ghostex` and `gtx` list sessions in the same Last Active order as the sidebar and include grouped, easier-to-scan help output.
+- The installed Ghostex app also proxies terminal CLI commands such as `ghostex sessions`; `gx sessions` is the short alias.
+- `ghostex` and `gx` list sessions in the same Last Active order as the sidebar and include grouped, easier-to-scan help output.
 - The macOS title bar follows the active project, and project headers now separate agent launch from plain terminal creation.
 - The native titlebar includes Agents, Code, Git, and Project modes for switching workspace surfaces without crowding the sidebar, with a visible active-pill transition between modes.
 - The titlebar Resources menu shows live CPU and memory use by project, session, Ghostex runtime, and browser tabs, with a shortcut to sleep inactive agent sessions.
@@ -113,7 +120,7 @@
 - Open In menus and Settings use recognizable editor brand icons for Cursor, VS Code, Zed, Antigravity, VSCodium, and JetBrains-family editors.
 - Long project session lists include Show less / Show more controls so large projects stay easier to scan.
 - Configurable hotkeys are available for pane actions and the first five custom Actions, including browser pane, rotate panes, merge tabs, delayed send, fork, reload, and pop out.
-- Sleeping persisted sessions release the underlying provider runtime, and `ghostex` / `gtx` attach resumes sleeping sessions correctly.
+- Sleeping persisted sessions release the underlying provider runtime, and `ghostex` / `gx` attach resumes sleeping sessions correctly.
 - The titlebar Resources menu shows browser memory rows by actual tab title and URL instead of raw browser process labels.
 - Wake/Sleep Pet now lives in the sidebar overflow menu next to session tools, keeping the native titlebar focused on workspace actions.
 - Rich prompt editor focus stays in the editor when clicking blank editor chrome, making prompt editing more reliable.
@@ -136,7 +143,7 @@
 - Project worktrees can be created from a prompt, opened as their own project, seeded with an agent, and reviewed with changed-file selection before commit, push, or PR actions.
 - Worktree git actions can optionally remove the temporary worktree project after the action completes.
 - Sidebar Actions are stored per project, and worktrees share their parent project's action list.
-- The Ghostex CLI lists sessions when run as bare `ghostex` or `gtx`, using the same project order as the app.
+- The Ghostex CLI lists sessions when run as bare `ghostex` or `gx`, using the same project order as the app.
 - Native Ghostty terminal groundwork exists for the iOS app, with local scripts for building and installing iPhone test builds.
 - Ghostex iOS direct SSH attach batches remote terminal output and shows attach progress so native terminal sessions stay responsive.
 - Ghostex iOS direct attach paces Ghostty rendering and scrollback so animated terminal output stays responsive to touch.

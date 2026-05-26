@@ -2,6 +2,17 @@
 
 <!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
 
+## 3.14.0 - 2026-05-27
+
+- Changed the short Ghostex CLI command from `gtx` to `gx`, with Homebrew setup checking for an existing non-Ghostex `gx` command before linking the alias.
+- Added Ghostex browser DevTools MCP support so agents can inspect embedded browser panes, read console logs, take snapshots and screenshots, and interact with pages through the bundled CLI skill.
+- Expanded first-launch setup with CLI, mobile app, and browser-skill guidance, including installed-CLI detection so Homebrew users are not asked to reinstall unnecessarily.
+- Improved browser feedback tooling so browser panes honor the selected Agentation or React Grab tool and Agentation opens directly into feedback mode.
+- Improved sleeping-session wake and focus behavior so pane tabs, command tabs, focus mode, and restored zmx/tmux/zellij sessions reopen in the expected pane instead of reshuffling visible layouts.
+- Improved sidebar polish with unified tooltip styling, tighter Storybook/native layout matching, literal Show less limits for long project lists, and broader Sleep Inactive coverage for idle terminals.
+- Improved Android companion behavior with background session-status refresh, attention notifications, sleeping-session icons, persisted project disclosure, and long-list Show more / Show less controls.
+- Improved iOS companion builds with Ghostex-branded local device installs, safer CloudKit handling for debug builds, and a two-row customizable terminal accessory bar.
+
 ## 3.13.0 - 2026-05-25
 
 - Added the Ghostex terminal TUI as the default `ghostex` / `gtx` experience, while keeping direct session attach available through the attach shortcuts.
