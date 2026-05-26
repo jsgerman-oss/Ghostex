@@ -115,6 +115,17 @@ type ProjectBeadsWebKitWindow = Window & {
 const BRIDGE_REQUEST_PREFIX = "__GHOSTEX_PROJECT_BEADS_REQUEST__";
 const BRIDGE_RESPONSE_EVENT = "ghostex-project-beads-response";
 const INSTALL_BEADS_COMMAND = "brew install beads";
+const PROJECT_BOARD_AUTO_REFRESH_INTERVAL_MS = 8_000;
+const PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS = 60_000;
+const PROJECT_BOARD_MAX_DEPENDENCY_OPTIONS = 600;
+const PROJECT_BOARD_MAX_VISIBLE_TICKETS_PER_COLUMN = 120;
+
+type BoardRefreshMode = "background" | "initial" | "manual" | "mutation";
+
+type BoardRefreshOptions = {
+  includeLabels?: boolean;
+  mode?: BoardRefreshMode;
+};
 
 function ProjectBoardApp() {
   const projectName = new URLSearchParams(window.location.search).get("projectName") || "Project";
@@ -150,6 +161,15 @@ function ProjectBoardApp() {
     title: "",
   });
   const [isCreating, setIsCreating] = useState(false);
+  /*
+   * CDXC:ProjectBoard 2026-05-26-05:38:
+   * The Project page must observe Beads changes made by the user's app actions or nearby bd CLI commands without forcing manual Refresh.
+   * Poll only while the page is visible, coalesce overlapping refreshes, refresh labels less often than issues, and cap mounted lane/dependency rows so thousand-bead projects do not repeatedly rebuild an unbounded DOM.
+   */
+  const isRefreshingRef = useRef(false);
+  const issuesSignatureRef = useRef("");
+  const labelsSignatureRef = useRef("");
+  const lastLabelsRefreshAtRef = useRef(0);
   const newPromptRef = useRef<HTMLTextAreaElement>(null);
 
   const runBeads = useCallback(
@@ -166,27 +186,90 @@ function ProjectBoardApp() {
     [projectPath],
   );
 
-  const loadTickets = useCallback(async () => {
-    setLoadState("loading");
-    setErrorMessage("");
+  const loadTickets = useCallback(async (options: BoardRefreshOptions = {}) => {
+    const mode = options.mode ?? "manual";
+    const includeLabels = options.includeLabels ?? mode !== "background";
+    if (isRefreshingRef.current) {
+      if (mode === "background") {
+        return;
+      }
+      await waitForProjectBoardRefreshIdle(() => isRefreshingRef.current);
+    }
+    isRefreshingRef.current = true;
+    if (mode !== "background") {
+      setLoadState("loading");
+      setErrorMessage("");
+    }
     try {
-      await ensureWorkflowStatuses(runBeads);
+      if (mode === "initial" || mode === "manual") {
+        await ensureWorkflowStatuses(runBeads);
+      }
       const payload = await runBeads({ action: "listIssues" });
       const issues = normalizeBeadsPayload<BeadsIssue[]>(payload, Array.isArray(payload) ? payload : []);
-      setAllIssues(issues);
-      setTickets(toBoardTickets(issues, displayKey));
-      const labelsPayload = await runBeads({ action: "listAllLabels" });
-      const labels = normalizeBeadsPayload<string[]>(labelsPayload, []);
-      setKnownLabels(labels.filter((label) => typeof label === "string").sort());
-      setLoadState("ready");
+      const issuesSignature = `${displayKey}:${createIssuesSignature(issues)}`;
+      if (issuesSignature !== issuesSignatureRef.current) {
+        issuesSignatureRef.current = issuesSignature;
+        setAllIssues(issues);
+        setTickets(toBoardTickets(issues, displayKey));
+      }
+      if (includeLabels) {
+        const labelsPayload = await runBeads({ action: "listAllLabels" });
+        const labels = normalizeBeadsPayload<string[]>(labelsPayload, [])
+          .filter((label) => typeof label === "string")
+          .sort();
+        const labelsSignature = labels.join("\u001f");
+        if (labelsSignature !== labelsSignatureRef.current) {
+          labelsSignatureRef.current = labelsSignature;
+          setKnownLabels(labels);
+        }
+        lastLabelsRefreshAtRef.current = Date.now();
+      }
+      if (mode !== "background") {
+        setLoadState("ready");
+      } else {
+        setErrorMessage("");
+        setLoadState((current) => (current === "loading" ? current : "ready"));
+      }
     } catch (error) {
-      setLoadState("error");
-      setErrorMessage(error instanceof Error ? error.message : "Could not load Beads issues.");
+      if (mode !== "background") {
+        setLoadState("error");
+        setErrorMessage(error instanceof Error ? error.message : "Could not load Beads issues.");
+      } else {
+        console.warn("Project board auto refresh failed.", error);
+      }
+    } finally {
+      isRefreshingRef.current = false;
     }
   }, [displayKey, runBeads]);
 
   useEffect(() => {
-    void loadTickets();
+    void loadTickets({ includeLabels: true, mode: "initial" });
+  }, [loadTickets]);
+
+  useEffect(() => {
+    const refreshIfVisible = (includeLabels = false) => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      void loadTickets({
+        includeLabels:
+          includeLabels ||
+          Date.now() - lastLabelsRefreshAtRef.current >= PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS,
+        mode: "background",
+      });
+    };
+    const intervalId = window.setInterval(
+      () => refreshIfVisible(false),
+      PROJECT_BOARD_AUTO_REFRESH_INTERVAL_MS,
+    );
+    const handleVisible = () => refreshIfVisible(false);
+    document.addEventListener("visibilitychange", handleVisible);
+    window.addEventListener("focus", handleVisible);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", handleVisible);
+      window.removeEventListener("focus", handleVisible);
+    };
   }, [loadTickets]);
 
   const filteredTickets = useMemo(
@@ -206,10 +289,12 @@ function ProjectBoardApp() {
 
   const ticketOptions = useMemo(
     () =>
-      tickets.map((ticket) => ({
-        id: ticket.id,
-        label: `${ticket.displayId} · ${ticket.title}`,
-      })),
+      prioritizeDependencyTickets(tickets)
+        .slice(0, PROJECT_BOARD_MAX_DEPENDENCY_OPTIONS)
+        .map((ticket) => ({
+          id: ticket.id,
+          label: `${ticket.displayId} · ${ticket.title}`,
+        })),
     [tickets],
   );
 
@@ -275,7 +360,7 @@ function ProjectBoardApp() {
         issueId: ticketId,
         status: column.beadsStatus,
       });
-      await loadTickets();
+      await loadTickets({ includeLabels: false, mode: "mutation" });
     } catch (error) {
       setTickets((current) =>
         current.map((candidate) => (candidate.id === ticketId ? ticket : candidate)),
@@ -376,7 +461,7 @@ function ProjectBoardApp() {
         status: "todo",
         title: "",
       });
-      await loadTickets();
+      await loadTickets({ includeLabels: true, mode: "mutation" });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not save the ticket.");
       setDetail((current) => ({ ...current, isSaving: false }));
@@ -429,7 +514,7 @@ function ProjectBoardApp() {
         title: "",
       });
       setNewTicketOpen(false);
-      await loadTickets();
+      await loadTickets({ includeLabels: true, mode: "mutation" });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not create the ticket.");
     } finally {
@@ -450,7 +535,7 @@ function ProjectBoardApp() {
       const prompt = buildAgentWorkPrompt(detail.ticket);
       await navigator.clipboard?.writeText(prompt);
       setErrorMessage("");
-      await loadTickets();
+      await loadTickets({ includeLabels: false, mode: "mutation" });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "Could not start ticket work.");
     }
@@ -477,7 +562,7 @@ function ProjectBoardApp() {
           <Button
             aria-label="Refresh board"
             disabled={loadState === "loading"}
-            onClick={() => void loadTickets()}
+            onClick={() => void loadTickets({ includeLabels: true, mode: "manual" })}
             size="icon-sm"
             variant="ghost"
           >
@@ -1015,6 +1100,8 @@ function BoardLane({
     data: { statusKey: column.key },
     id: column.key,
   });
+  const visibleTickets = tickets.slice(0, PROJECT_BOARD_MAX_VISIBLE_TICKETS_PER_COLUMN);
+  const hiddenTicketCount = tickets.length - visibleTickets.length;
 
   return (
     <section
@@ -1032,9 +1119,14 @@ function BoardLane({
       </header>
       <div className="project-board-lane-scroll">
         <div className="project-board-card-stack">
-          {tickets.map((ticket) => (
+          {visibleTickets.map((ticket) => (
             <TicketCard key={ticket.id} onOpenTicket={onOpenTicket} ticket={ticket} />
           ))}
+          {hiddenTicketCount > 0 ? (
+            <div className="project-board-lane-limit" role="status">
+              Showing {visibleTickets.length} of {tickets.length}. Use search or status filters to narrow this lane.
+            </div>
+          ) : null}
         </div>
       </div>
     </section>
@@ -1128,6 +1220,44 @@ function handleCmdEnter(event: KeyboardEvent, action: () => void) {
     event.preventDefault();
     action();
   }
+}
+
+function waitForProjectBoardRefreshIdle(isBusy: () => boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (!isBusy()) {
+        resolve();
+        return;
+      }
+      window.setTimeout(tick, 25);
+    };
+    tick();
+  });
+}
+
+function createIssuesSignature(issues: BeadsIssue[]): string {
+  return issues
+    .map((issue) =>
+      [
+        issue.id,
+        issue.status,
+        issue.updated_at ?? "",
+        issue.title,
+        String(issue.priority ?? ""),
+        String(issue.estimate ?? ""),
+        String(issue.comment_count ?? issue.comments?.length ?? ""),
+        String(issue.dependency_count ?? ""),
+        String(issue.dependent_count ?? ""),
+        (issue.labels ?? []).join(","),
+      ].join("\u001f"),
+    )
+    .join("\u001e");
+}
+
+function prioritizeDependencyTickets(tickets: BoardTicket[]): BoardTicket[] {
+  const activeTickets = tickets.filter((ticket) => ticket.boardStatus !== "done");
+  const doneTickets = tickets.filter((ticket) => ticket.boardStatus === "done");
+  return [...activeTickets, ...doneTickets];
 }
 
 function pasteImageFromClipboard(event: {
@@ -1389,6 +1519,15 @@ styleElement.textContent = `
     gap: 8px;
     min-width: 0;
     padding: 0 10px 10px;
+  }
+
+  .project-board-lane-limit {
+    border: 1px dashed rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    color: rgba(244, 244, 245, 0.48);
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 10px 12px;
   }
 
   .project-board-card {
