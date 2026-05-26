@@ -521,7 +521,7 @@ export const CombinedSearchKeepsPreviousSessionsBelowProjects: Story = {
   },
 };
 
-export const TypingAnywhereStartsSearchAndEscapePrefersModals: Story = {
+export const TypingSidebarChromeDoesNotStartSearchAndEscapePrefersModals: Story = {
   args: {
     fixture: "sort-toggle-demo",
     highlightedVisibleCount: 2,
@@ -535,17 +535,38 @@ export const TypingAnywhereStartsSearchAndEscapePrefersModals: Story = {
 
     await waitForReadyMessage();
 
-    await step(
-      "typing on a non-input target opens search without dropping characters",
-      async () => {
-        await userEvent.click(canvas.getByRole("button", { name: /older draft first/i }));
-        await userEvent.keyboard("re");
+    await step("typing on a non-input target does not open search", async () => {
+      /*
+       * CDXC:SidebarKeyboard 2026-05-26-15:29:
+       * Sidebar chrome can hold focus after mouse navigation, but ordinary text
+       * input must not start session search. The key event should remain
+       * unhandled so the native host can use its default invalid-key feedback.
+       */
+      await userEvent.click(canvas.getByRole("button", { name: /older draft first/i }));
+      await userEvent.keyboard("re");
 
-        await expect(
-          canvas.getByRole("textbox", { name: "Search current and previous sessions" }),
-        ).toHaveValue("re");
-      },
-    );
+      await expect(
+        canvas.queryByRole("textbox", { name: "Search current and previous sessions" }),
+      ).toBeNull();
+    });
+
+    await step("typing away from the open search input leaves search unchanged", async () => {
+      await userEvent.click(canvas.getByRole("button", { name: "Search" }));
+      const searchInput = canvas.getByRole("textbox", {
+        name: "Search current and previous sessions",
+      });
+      await userEvent.type(searchInput, "re");
+      await waitFor(() => {
+        expect(storyDocument.activeElement).toBe(searchInput);
+      });
+      searchInput.blur();
+      await waitFor(() => {
+        expect(storyDocument.activeElement).not.toBe(searchInput);
+      });
+      await userEvent.keyboard("x");
+
+      await expect(searchInput).toHaveValue("re");
+    });
 
     await step("escape closes a modal before it closes search", async () => {
       storyWindow?.postMessage(

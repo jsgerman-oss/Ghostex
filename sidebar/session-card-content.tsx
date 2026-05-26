@@ -1044,17 +1044,42 @@ export function OverflowTooltipText({
    * Local session-card tooltips must also close on the shared sidebar dismiss
    * event because app switching and fast exits can skip the trigger mouseleave
    * event that normally clears this local open state.
+   *
+   * CDXC:SessionTooltips 2026-05-26-22:29:
+   * Session title tooltips should keep metadata and provider/session id rows at
+   * their existing base weight while making only the first title row slightly
+   * bolder, so the title scans as the primary label without making ids heavier.
    */
   return (
     <div className="session-local-tooltip-shell">
       {trigger}
       {isOpen && tooltipContent ? (
         <div className="session-local-tooltip-popup" role="tooltip">
-          {tooltipContent}
+          {renderSessionLocalTooltipContent(tooltipContent)}
         </div>
       ) : null}
     </div>
   );
+}
+
+function renderSessionLocalTooltipContent(content: string): ReactNode {
+  const lines = content
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return content;
+  }
+
+  return lines.map((line, index) => (
+    <span
+      className={index === 0 ? "session-local-tooltip-title" : "session-local-tooltip-meta"}
+      key={`${index}-${line}`}
+    >
+      {line}
+    </span>
+  ));
 }
 
 function chainEventHandlers<Event>(

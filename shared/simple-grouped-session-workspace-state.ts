@@ -1156,7 +1156,24 @@ export function selectPaneTabInSimpleWorkspace(
   sessionId: string,
 ): WorkspaceMutationResult {
   const group = getGroupById(snapshot, groupId);
-  if (!group || !group.snapshot.visibleSessionIds.includes(sessionId)) {
+  if (!group) {
+    return { changed: false, snapshot };
+  }
+  if (!group.snapshot.visibleSessionIds.includes(sessionId)) {
+    const focusedTabSessionIds =
+      group.snapshot.visibleCount === 1 &&
+      group.snapshot.fullscreenRestoreVisibleCount !== undefined &&
+      group.snapshot.focusedSessionId
+        ? findPaneTabGroupSessionIds(group.snapshot.paneLayout, group.snapshot.focusedSessionId)
+        : undefined;
+    if (focusedTabSessionIds?.includes(sessionId) === true) {
+      /**
+       * CDXC:SessionFocusMode 2026-05-26-22:47:
+       * Focus mode stores only the focused tab in visibleSessionIds while native chrome still shows sibling tabs from the preserved pane tab group.
+       * A native same-group tab click must therefore select and focus that sibling without exiting focus mode instead of being rejected as a hidden session.
+       */
+      return focusSessionInSimpleWorkspace(snapshot, sessionId);
+    }
     return { changed: false, snapshot };
   }
   const nextLayout = setActiveSessionInPaneLayout(group.snapshot.paneLayout, sessionId);

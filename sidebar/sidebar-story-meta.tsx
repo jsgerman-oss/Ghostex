@@ -97,15 +97,31 @@ export const SIDEBAR_STORY_DECORATORS = [
 ];
 
 export function renderSidebarStory(args: SidebarStoryArgs) {
-  return <SidebarStoryHarnessWithCurrentSettings args={args} />;
+  return (
+    <NativeSidebarStoryShell>
+      <SidebarStoryHarnessWithCurrentSettings args={args} />
+    </NativeSidebarStoryShell>
+  );
 }
 
 export function renderCombinedSidebarStory(args: SidebarStoryArgs) {
   return (
+    <NativeSidebarStoryShell>
+      <SidebarStoryHarnessWithCurrentSettings args={args} />
+    </NativeSidebarStoryShell>
+  );
+}
+
+function NativeSidebarStoryShell({ children }: { children: JSX.Element }) {
+  return (
     <div className="native-sidebar-shell" data-sidebar-mode="combined">
-      <main className="native-sidebar-main">
-        <SidebarStoryHarnessWithCurrentSettings args={args} />
-      </main>
+      {/*
+       * CDXC:StorybookSidebarReality 2026-05-26-22:52:
+       * Sidebar stories must render under the same native shell as the app.
+       * Otherwise Storybook can show different button widths, edge padding,
+       * and project folder icon clipping than the real sidebar webview.
+       */}
+      <main className="native-sidebar-main">{children}</main>
     </div>
   );
 }
@@ -121,6 +137,20 @@ function SidebarStoryFrame({ children }: { children: JSX.Element }) {
     typeof currentSettings?.sidebarWidth === "number" && Number.isFinite(currentSettings.sidebarWidth)
       ? Math.max(220, Math.min(420, currentSettings.sidebarWidth))
       : 260;
+
+  useEffect(() => {
+    /*
+     * CDXC:StorybookSidebarReality 2026-05-26-22:52:
+     * Storybook uses its own body classes, but native sidebar CSS relies on
+     * native-sidebar-body for the root viewport contract. Apply it while a
+     * sidebar story is mounted so Storybook and the app share the same chrome.
+     */
+    document.body.classList.add("native-sidebar-body");
+
+    return () => {
+      document.body.classList.remove("native-sidebar-body");
+    };
+  }, []);
 
   return (
     <div

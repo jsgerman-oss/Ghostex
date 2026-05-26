@@ -2321,6 +2321,53 @@ describe("createSessionInSimpleWorkspace", () => {
     });
   });
 
+  test("should select a hidden sibling tab while staying in focus mode", () => {
+    const focusedSessionId = sessionIdForDisplay(0);
+    const siblingSessionId = sessionIdForDisplay(1);
+    const workspace = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId,
+            fullscreenRestoreVisibleCount: 4,
+            paneLayout: {
+              activeSessionId: focusedSessionId,
+              kind: "tabs",
+              sessionIds: [focusedSessionId, siblingSessionId],
+            },
+            sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+            viewMode: "grid",
+            visibleCount: 1,
+            visibleSessionIds: [focusedSessionId],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 2,
+      nextSessionNumber: 3,
+    });
+
+    const result = selectPaneTabInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      siblingSessionId,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(siblingSessionId);
+    expect(result.snapshot.groups[0]?.snapshot.fullscreenRestoreVisibleCount).toBe(4);
+    expect(result.snapshot.groups[0]?.snapshot.visibleCount).toBe(1);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([siblingSessionId]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      activeSessionId: siblingSessionId,
+      kind: "tabs",
+      sessionIds: [focusedSessionId, siblingSessionId],
+    });
+  });
+
   test("should reorder sessions inside an existing pane tab group", () => {
     const workspace = createWorkspaceSnapshot({
       activeGroupId: DEFAULT_MAIN_GROUP_ID,

@@ -727,7 +727,14 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 .reference-sidebar-primary-nav {
   display: grid;
   gap: 0;
-  margin: 14px -5px 0;
+  /*
+   * CDXC:SidebarReferenceBounds 2026-05-26-22:59:
+   * Storybook and the native sidebar must keep primary buttons inside the
+   * sidebar-reference-layout content box. Horizontal negative margins made
+   * buttons wider than the padded area and pushed folder icons into the left
+   * gutter in Storybook.
+   */
+  margin: 14px 0 0;
   min-width: 0;
   padding: 0;
 }
@@ -900,12 +907,13 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 
 .reference-sidebar-hover-action-tooltip::after,
 .reference-sidebar-section-action.reference-sidebar-hover-action-tooltip::after {
-  background: #262626;
+  background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
+  border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12));
   border-radius: 16px;
-  color: #ffffff;
+  box-shadow: var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0, 0, 0, 0.35));
+  color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
   content: attr(data-tooltip);
-  font-size: 12px;
-  line-height: 1.3;
+  font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);
   opacity: 0;
   padding: 6px 12px;
   pointer-events: none;
@@ -1004,13 +1012,19 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
    * CDXC:SidebarReferenceScroll 2026-05-24-14:05:
    * Reference mode renders an empty .session-groups-top, and the shared CSS hides empty top rows with display:none.
    * Use a single 1fr row here so the scroll shell does not auto-place into the shared auto toolbar row and leave unused space below it.
-   */
+  */
   grid-template-rows: minmax(0, 1fr);
   height: auto;
-  margin-left: -12px;
-  margin-right: -12px;
+  /*
+   * CDXC:SidebarReferenceBounds 2026-05-26-22:59:
+   * Session and project rows should measure against the same padded content
+   * width as the top nav. Do not expand the scroll panel back across the
+   * sidebar-reference-layout gutter.
+   */
+  margin-left: 0;
+  margin-right: 0;
   min-height: 0;
-  width: calc(100% + 24px);
+  width: 100%;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-top {
@@ -1155,7 +1169,7 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   align-items: center;
   background: var(--app-background);
   display: flex;
-  margin: 48px 15px 10px 17px;
+  margin: 48px 3px 10px 5px;
   min-height: 22px;
   /*
    * CDXC:SidebarStickyHeaders 2026-05-20-08:08:

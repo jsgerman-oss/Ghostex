@@ -99,11 +99,7 @@ import {
   reconcileCollapsedGroupsById,
 } from "./group-collapse";
 import { SessionGroupSection } from "./session-group-section";
-import {
-  applyTextEditingKey,
-  isEditableKeyboardTarget,
-  isTextEditingKey,
-} from "./text-input-keyboard";
+import { isEditableKeyboardTarget } from "./text-input-keyboard";
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
 import { AppTooltip, TooltipProvider } from "./app-tooltip";
 import { useScrollGlowState } from "./use-scroll-glow-state";
@@ -2085,34 +2081,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         return;
       }
 
-      if (isSessionSearchOpen && isTextEditingKey(event)) {
-        const nextSearchState = applyTextEditingKey(
-          {
-            value: sessionSearchQuery,
-          },
-          event.key,
-          event,
-        );
-        if (!nextSearchState) {
-          return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-        setSessionSearchQuery(nextSearchState.value);
-        return;
-      }
-
-      if (!isSidebarSearchActivationKey(event)) {
-        return;
-      }
-
-      event.preventDefault();
-      event.stopPropagation();
-      setIsSessionSearchOpen(true);
-      setSessionSearchQuery((previous) =>
-        isSessionSearchOpen ? `${previous}${event.key}` : event.key,
-      );
+      /*
+       * CDXC:SidebarKeyboard 2026-05-26-15:29:
+       * Ordinary typing while focus is on sidebar chrome should not open or edit session search.
+       * Leave non-editable sidebar keypresses unhandled so the host can provide its default invalid-key feedback instead of capturing the user's text in the sidebar.
+       */
     };
 
     document.addEventListener("keydown", handleKeyDown, true);
@@ -3851,16 +3824,6 @@ function createDisplayedGroupIds(
   }
 
   return groupIds.filter((groupId) => (sessionIdsByGroup[groupId] ?? []).length > 0);
-}
-
-function isSidebarSearchActivationKey(event: KeyboardEvent): boolean {
-  return (
-    event.key.length === 1 &&
-    !event.altKey &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    /^[\p{L}\p{N}]$/u.test(event.key)
-  );
 }
 
 function isCommandPaletteHotkey(event: KeyboardEvent): boolean {

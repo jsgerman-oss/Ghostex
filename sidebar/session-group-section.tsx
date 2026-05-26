@@ -1324,9 +1324,9 @@ export function SessionGroupSection({
                           </button>
                         )}
                         <button
-                          aria-label={`Create a browser pane in ${group.title}`}
+                          aria-label={`Create a browser tab in ${group.title}`}
                           className="group-add-button group-browser-button reference-sidebar-hover-action-tooltip"
-                          data-tooltip="Create Browser Pane"
+                          data-tooltip="New Browser Tab"
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();

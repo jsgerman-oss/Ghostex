@@ -174,12 +174,15 @@
 }
 
 .session-local-tooltip-popup {
-  background: #262626;
+  background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
+  border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12));
   border-radius: 16px;
-  color: #ffffff;
-  font-size: 12px;
+  box-shadow: var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0, 0, 0, 0.35));
+  color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
+  display: grid;
+  font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);
+  gap: 6px;
   left: 50%;
-  line-height: 1.3;
   max-width: min(90vw, calc(100vw - 16px));
   overflow-wrap: anywhere;
   padding: 6px 12px;
@@ -192,27 +195,35 @@
   z-index: var(--ghostex-tooltip-z-index, 1400);
 }
 
+.session-local-tooltip-title {
+  color: var(--ghostex-tooltip-strong-foreground, rgba(255, 255, 255, 0.94));
+  font-weight: 650;
+}
+
+.session-local-tooltip-meta {
+  font-weight: inherit;
+}
+
 .tooltip-popup {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 5px 8px;
   max-width: 90vw;
-  border: 1px solid var(--app-border);
+  border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12));
   border-radius: 10px;
-  background: var(--app-tooltip-background);
-  color: var(--app-tooltip-foreground);
-  font-size: 14px;
-  line-height: 1.3;
+  background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
+  color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
+  font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);
   white-space: pre-line;
-  box-shadow: 0 10px 24px color-mix(in srgb, black 22%, transparent);
+  box-shadow: var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0, 0, 0, 0.35));
 }
 
 .tooltip-arrow {
   display: inline-flex;
   font-size: 8px;
   line-height: 1;
-  color: var(--app-tooltip-background);
+  color: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
 }
 
 @keyframes session-status-dot-pulse {

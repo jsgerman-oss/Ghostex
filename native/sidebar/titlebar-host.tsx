@@ -273,7 +273,6 @@ const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP + 1;
 const TITLEBAR_CENTER_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_RIGHT_CONTROLS_TOP = TITLEBAR_CONTROL_TOP + 1;
 const RESOURCE_POLL_INTERVAL_MS = 5_000;
-const INACTIVE_AGENT_SLEEP_THRESHOLD_MS = 7 * 60 * 1_000;
 /**
  * CDXC:ReactTitlebar 2026-05-11-09:17
  * Titlebar split-button menus are triggered from their chevrons but should
@@ -799,31 +798,29 @@ function sumBundleMemory(bundles: ResourceProcessBundle[]): number {
   return bundles.reduce((sum, bundle) => sum + bundle.memoryMb, 0);
 }
 
-function createInactiveAgentSleepSessionIds(resourceGroups: TitlebarResourceGroup[]): string[] {
-  const thresholdTime = Date.now() - INACTIVE_AGENT_SLEEP_THRESHOLD_MS;
+function createInactiveTerminalSleepSessionIds(resourceGroups: TitlebarResourceGroup[]): string[] {
   /**
    * CDXC:TitlebarResources 2026-05-16-19:53:
    * The dropdown sleep shortcut is intentionally conservative: only awake,
    * idle agent terminal sessions older than seven minutes are eligible. Working
    * and attention sessions must stay awake because those states indicate active
    * output or a user-visible response waiting for review.
+   *
+   * CDXC:TitlebarResources 2026-05-26-17:16:
+   * Sleep Inactive should sleep every awake idle terminal represented in the
+   * Resources dropdown, not only old agent-detected rows. Keep working,
+   * attention, and already sleeping sessions awake, but do not require agent
+   * metadata or a seven-minute age gate.
    */
   return resourceGroups.flatMap((group) =>
     group.sessions
       .filter((session) => {
-        if (
+        return !(
           session.sessionKind !== "terminal" ||
-          !session.agentIcon ||
           session.isSleeping === true ||
           session.activity === "working" ||
           session.activity === "attention"
-        ) {
-          return false;
-        }
-        const lastInteractionTime = session.lastInteractionAt
-          ? Date.parse(session.lastInteractionAt)
-          : Number.NaN;
-        return Number.isFinite(lastInteractionTime) && lastInteractionTime < thresholdTime;
+        );
       })
       .map((session) =>
         session.projectId
@@ -931,8 +928,8 @@ function App() {
     () => createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses),
     [projectState.browserTabs, projectState.resourceGroups, resourceProcesses],
   );
-  const inactiveAgentSleepSessionIds = useMemo(
-    () => createInactiveAgentSleepSessionIds(projectState.resourceGroups),
+  const inactiveTerminalSleepSessionIds = useMemo(
+    () => createInactiveTerminalSleepSessionIds(projectState.resourceGroups),
     [projectState.resourceGroups],
   );
 
@@ -1027,6 +1024,12 @@ function App() {
   }, [publishHitRegions]);
 
   useLayoutEffect(() => {
+    /**
+     * CDXC:SessionFocusMode 2026-05-26-22:47:
+     * The Exit focus button is conditional titlebar chrome. Republish native
+     * hit regions whenever focus mode enters or exits so AppKit routes clicks
+     * to the new button instead of treating its frame as draggable titlebar.
+     */
     return publishSettledHitRegions();
   }, [
     activeTarget?.id,
@@ -1038,6 +1041,7 @@ function App() {
     resourceProcesses.length,
     projectState.projectEditorCompanionPaneHidden,
     projectState.projectIconDataUrl,
+    projectState.isFocusModeActive,
     projectState.projectName,
     publishSettledHitRegions,
   ]);
@@ -1310,12 +1314,12 @@ function App() {
     }, 250);
   };
 
-  const sleepInactiveAgentSessions = () => {
-    if (inactiveAgentSleepSessionIds.length === 0) {
+  const sleepInactiveTerminalSessions = () => {
+    if (inactiveTerminalSleepSessionIds.length === 0) {
       return;
     }
     postNative({
-      sessionIds: inactiveAgentSleepSessionIds,
+      sessionIds: inactiveTerminalSleepSessionIds,
       type: "sleepInactiveSessionsFromTitlebar",
     });
   };
@@ -1508,9 +1512,9 @@ function App() {
                   browserBundles={resourceViews.browserBundles}
                   collapsedKeys={collapsedResourceKeys}
                   groupViews={resourceViews.groupViews}
-                  inactiveAgentSleepSessionCount={inactiveAgentSleepSessionIds.length}
+                  inactiveTerminalSleepSessionCount={inactiveTerminalSleepSessionIds.length}
                   onQuit={quitResourceBundles}
-                  onSleepInactiveSessions={sleepInactiveAgentSessions}
+                  onSleepInactiveSessions={sleepInactiveTerminalSessions}
                   onToggle={toggleResourceCollapse}
                   orphanBundles={resourceViews.orphanBundles}
                   quittingKeys={quittingResourceKeys}
@@ -1774,7 +1778,7 @@ function TitlebarResourcesMenu({
   browserBundles,
   collapsedKeys,
   groupViews,
-  inactiveAgentSleepSessionCount,
+  inactiveTerminalSleepSessionCount,
   onQuit,
   onSleepInactiveSessions,
   onToggle,
@@ -1785,7 +1789,7 @@ function TitlebarResourcesMenu({
   browserBundles: ResourceProcessBundle[];
   collapsedKeys: Set<string>;
   groupViews: ResourceGroupView[];
-  inactiveAgentSleepSessionCount: number;
+  inactiveTerminalSleepSessionCount: number;
   onQuit: (bundles: ResourceProcessBundle[]) => void;
   onSleepInactiveSessions: () => void;
   onToggle: (key: string) => void;
@@ -1853,9 +1857,9 @@ function TitlebarResourcesMenu({
               <button
                 aria-label="Sleep inactive sessions"
                 className="titlebar-resources-action-button"
-                data-enabled={String(inactiveAgentSleepSessionCount > 0)}
+                data-enabled={String(inactiveTerminalSleepSessionCount > 0)}
                 data-variant="sleep"
-                disabled={inactiveAgentSleepSessionCount === 0}
+                disabled={inactiveTerminalSleepSessionCount === 0}
                 onClick={onSleepInactiveSessions}
                 type="button"
               >
@@ -1919,7 +1923,9 @@ function TitlebarResourcesMenu({
       </div>
       <div className="titlebar-resources-scroll">
         <div className="titlebar-resources-info-note">
-          Most resources are used by Agent Terminals.
+          This Agent Manager uses Ghostty terminals which are lighter on RAM & CPU that other tools.<br />
+          Still, long conversations with agents will always take up lots of RAM.<br />
+          You can easily sleep all inactive terminals here & configure auto sleep in settings!
         </div>
         {visibleGroupViews.length > 0 ? (
           visibleGroupViews.map((view) => (
@@ -2855,6 +2861,35 @@ styleElement.textContent = `
     gap: 4px;
     margin-left: 1px;
   }
+  .titlebar-exit-focus-button {
+    /**
+     * CDXC:SessionFocusMode 2026-05-26-22:22:
+     * The titlebar focus exit control should visually belong with Agents/Code/Git/Project.
+     * Match the mode-tab height, font size, weight, and radius so focus mode does not introduce a separate button scale in the native titlebar.
+     */
+    appearance: none;
+    -webkit-appearance: none;
+    background: rgba(255,255,255,0.2) !important;
+    border: 0 !important;
+    border-radius: var(--titlebar-mode-tab-radius, calc(10px * var(--sidebar-density-scale, 1))) !important;
+    box-shadow: none !important;
+    color: rgba(255,255,255,0.98) !important;
+    cursor: default;
+    display: inline-flex;
+    font: 650 12px/18px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif !important;
+    height: 22px !important;
+    letter-spacing: 0;
+    margin-top: -1px;
+    min-width: 0;
+    padding: 0 10px !important;
+    white-space: nowrap;
+  }
+  .titlebar-exit-focus-button:hover,
+  .titlebar-exit-focus-button:focus-visible {
+    background: rgba(255,255,255,0.24) !important;
+    color: rgba(255,255,255,1) !important;
+    outline: none;
+  }
   .titlebar-resource-button {
     padding: 0;
     width: 28px;
@@ -2982,18 +3017,18 @@ styleElement.textContent = `
     min-width: 0;
   }
   .titlebar-resource-tooltip {
-    background: rgba(24,24,24,0.98);
-    border: 1px solid rgba(255,255,255,0.12);
-    box-shadow: 0 12px 30px rgba(0,0,0,0.35);
-    color: rgba(255,255,255,0.78);
+    background: var(--ghostex-tooltip-background, rgba(24,24,24,0.98));
+    border: 1px solid var(--ghostex-tooltip-border, rgba(255,255,255,0.12));
+    box-shadow: var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0,0,0,0.35));
+    color: var(--ghostex-tooltip-foreground, rgba(255,255,255,0.78));
     display: grid;
-    font: 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);
     gap: 3px;
     max-width: 292px;
     padding: 8px 9px;
   }
   .titlebar-resource-tooltip-title {
-    color: rgba(255,255,255,0.94);
+    color: var(--ghostex-tooltip-strong-foreground, rgba(255,255,255,0.94));
     font-weight: 760;
   }
   .titlebar-resources-actions {

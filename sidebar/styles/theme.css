@@ -15,6 +15,14 @@
   --app-input-background: #0f151d;
   --app-tooltip-background: #151d29;
   --app-tooltip-foreground: #edf4ff;
+  /* CDXC:Tooltips 2026-05-26-22:00: All app tooltip surfaces should match the Resources manager dropdown tooltip: near-black background, dim white foreground, subtle white border, and the same elevated shadow.
+     CDXC:Tooltips 2026-05-26-22:29: Tooltip typography should also match the Resources manager dropdown, including its system font stack, weight, and line height. */
+  --ghostex-tooltip-background: rgba(24, 24, 24, 0.98);
+  --ghostex-tooltip-foreground: rgba(255, 255, 255, 0.78);
+  --ghostex-tooltip-strong-foreground: rgba(255, 255, 255, 0.94);
+  --ghostex-tooltip-border: rgba(255, 255, 255, 0.12);
+  --ghostex-tooltip-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  --ghostex-tooltip-font: 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   --working-primary: color-mix(in srgb, #2f6feb 60%, #ffb454 40%);
   --working-secondary: color-mix(in srgb, #ffd27a 62%, #2f6feb 38%);
   --attention-primary: color-mix(in srgb, #5ea0ff 68%, #2f6feb 32%);

@@ -38,6 +38,11 @@ export function getVisibleProjectSessionIds({
    * Project groups with more than six sessions need a per-project Show less /
    * Show more toggle. Default to all sessions, and only trim rendering after
    * the user explicitly collapses that project list.
+   *
+   * CDXC:ProjectSessionLists 2026-05-26-22:27:
+   * Show less must be literal: render only the first six sessions in project
+   * order. Live zmx-backed rows still remain in sidebar inventory and Show more,
+   * but they must not expand the collapsed card list past the user-requested cap.
    */
   if (
     !isProjectGroup ||

@@ -278,7 +278,7 @@ export function WorktreeCreateModal({
               Add Images
             </Button>
             <Button disabled={!canCreate} type="submit">
-              Create Worktree
+              New Worktree
             </Button>
           </DialogFooter>
         </form>

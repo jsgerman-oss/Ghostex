@@ -1305,11 +1305,17 @@
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .reference-chat-group-list,
 .sidebar-reference-layout[data-reference-sidebar="true"] .reference-project-group-list {
-  margin-left: 7px;
-  margin-right: 7px;
+  /*
+   * CDXC:SidebarReferenceBounds 2026-05-26-22:59:
+   * Project and session buttons should align with the sidebar content edge
+   * instead of extending into the left padding. Keep the list at the parent
+   * content width so Storybook matches the real sidebar row bounds.
+   */
+  margin-left: 0;
+  margin-right: 0;
   padding-left: 0;
   padding-right: 0;
-  width: calc(100% - 14px);
+  width: 100%;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .reference-project-group-list {
