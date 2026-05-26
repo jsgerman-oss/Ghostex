@@ -12019,7 +12019,7 @@ type NativePersistedSessionState = {
   hasAutoTitleFromFirstPrompt?: boolean;
   lastActivityAt?: string;
   pendingFirstPromptAutoRenamePrompt?: string;
-  status?: "idle" | "working";
+  status?: "attention" | "idle" | "working";
   title?: string;
 };
 
@@ -12060,6 +12060,12 @@ async function processNativeFirstPromptAutoRename(
     session,
     persistedState,
   );
+  const didUpdatePersistedAgentActivity = syncNativePersistedAgentActivity(
+    sessionId,
+    terminalState,
+    session,
+    persistedState,
+  );
   const didUpdateAgentSessionState = syncNativePersistedAgentSessionState(
     sessionId,
     terminalState,
@@ -12093,7 +12099,11 @@ async function processNativeFirstPromptAutoRename(
     persistTerminalSessionLastActivityAt(sessionId, persistedState.lastActivityAt);
     publish();
   }
-  if (didUpdateCommandPaneActivity || didUpdateAgentSessionState) {
+  if (
+    didUpdateCommandPaneActivity ||
+    didUpdatePersistedAgentActivity ||
+    didUpdateAgentSessionState
+  ) {
     publish();
   }
   const pendingPrompt = persistedState.pendingFirstPromptAutoRenamePrompt?.trim();
@@ -12273,6 +12283,122 @@ function syncNativePersistedCommandPaneActivity(
     runId: undefined,
   });
   return true;
+}
+
+function syncNativePersistedAgentActivity(
+  sessionId: string,
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
+  session: TerminalSessionRecord,
+  persistedState: NativePersistedSessionState,
+): boolean {
+  if (session.surface === "commands" || persistedState.status === undefined) {
+    return false;
+  }
+
+  /*
+  CDXC:GhostexTui 2026-05-26-12:22:
+  GTX TUI attaches through zmx, so the macOS app may not receive fresh terminal
+  title events while an agent is viewed from the TUI. Import normal agent
+  working/attention/idle hook status from the persisted session-state poller, not only
+  command-pane status, so `gtx sessions --json` and the TUI's five-second
+  polling see the same working/attention/idle transitions as the sidebar.
+  */
+  if (persistedState.status === "working") {
+    const suppressedUntil = getNativeActivitySuppressedUntil(sessionId);
+    if (
+      suppressedUntil !== undefined &&
+      Number.isFinite(suppressedUntil) &&
+      Date.now() < suppressedUntil
+    ) {
+      if (terminalState.activity !== "idle") {
+        terminalState.activity = "idle";
+        persistTerminalSessionRestoreActivity(sessionId, undefined);
+        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.workingSuppressed", {
+          sessionId,
+          suppressedUntil: new Date(suppressedUntil).toISOString(),
+        });
+        return true;
+      }
+      return false;
+    }
+
+    const previousActivity = terminalState.activity;
+    if (!nativeWorkingStartedAtBySessionId.has(sessionId)) {
+      nativeWorkingStartedAtBySessionId.set(sessionId, Date.now());
+    }
+    if (previousActivity === "working") {
+      return false;
+    }
+    terminalState.activity = "working";
+    clearNativeSessionAttentionTracking(sessionId);
+    persistTerminalSessionRestoreActivity(sessionId, "working");
+    markNativeSessionSemanticActivityAt(sessionId, "working", "persisted-session-state");
+    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.working", {
+      previousActivity,
+      sessionId,
+    });
+    return true;
+  }
+
+  const previousActivity = terminalState.activity;
+  if (persistedState.status === "attention") {
+    nativeWorkingStartedAtBySessionId.delete(sessionId);
+    if (previousActivity === "attention") {
+      return false;
+    }
+    terminalState.activity = "attention";
+    markNativeSessionSemanticActivityAt(sessionId, "attention", "persisted-session-state");
+    handleNativeSessionEnteredAttention(sessionId, "persisted-session-state");
+    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attention", {
+      previousActivity,
+      sessionId,
+    });
+    return true;
+  }
+
+  if (previousActivity === "working") {
+    const now = Date.now();
+    const workingStartedAt = nativeWorkingStartedAtBySessionId.get(sessionId);
+    const workingDurationMs =
+      workingStartedAt === undefined ? undefined : Math.max(0, now - workingStartedAt);
+    nativeWorkingStartedAtBySessionId.delete(sessionId);
+    if (
+      workingStartedAt === undefined ||
+      (workingDurationMs ?? 0) < NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS
+    ) {
+      terminalState.activity = "idle";
+      persistTerminalSessionRestoreActivity(sessionId, undefined);
+      appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attentionSuppressed", {
+        sessionId,
+        workingDurationMs,
+      });
+      return true;
+    }
+    terminalState.activity = "attention";
+    markNativeSessionSemanticActivityAt(sessionId, "attention", "persisted-session-state");
+    handleNativeSessionEnteredAttention(sessionId, "persisted-session-state");
+    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attention", {
+      sessionId,
+      workingDurationMs,
+    });
+    return true;
+  }
+
+  if (previousActivity === "attention") {
+    return false;
+  }
+
+  nativeWorkingStartedAtBySessionId.delete(sessionId);
+  if (previousActivity !== "idle") {
+    terminalState.activity = "idle";
+    persistTerminalSessionRestoreActivity(sessionId, undefined);
+    appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.idle", {
+      previousActivity,
+      sessionId,
+    });
+    return true;
+  }
+  return false;
 }
 
 function syncNativePersistedAgentSessionState(
@@ -12464,7 +12590,10 @@ function parseNativePersistedSessionState(rawState: string): NativePersistedSess
       state.lastActivityAt = normalizeNativeIsoTimestamp(value);
     } else if (key === "pendingFirstPromptAutoRenamePrompt") {
       state.pendingFirstPromptAutoRenamePrompt = value;
-    } else if (key === "status" && (value === "idle" || value === "working")) {
+    } else if (
+      key === "status" &&
+      (value === "attention" || value === "idle" || value === "working")
+    ) {
       state.status = value;
     } else if (key === "title") {
       state.title = getVisibleTerminalTitle(value);

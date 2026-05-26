@@ -367,9 +367,9 @@ describe("ghostex CLI Android remote-session contract", () => {
     });
 
     expect(command).toContain("zmx list --short");
-    expect(command).toContain('exec zmx attach --visible-only "$zmx_session"');
+    expect(command).toContain('exec zmx attach "$zmx_session"');
     expect(command).toContain(
-      'exec zmx attach --visible-only "$zmx_session" /bin/zsh -lc "$zmx_resume_launcher"',
+      'exec zmx attach "$zmx_session" /bin/zsh -lc "$zmx_resume_launcher"',
     );
     expect(command).toContain("codex resume");
     expect(command).toContain('exec "${SHELL:-/bin/zsh}" -l');
@@ -393,7 +393,7 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(command).toContain('/bin/zsh -lc "$zmx_resume_fallback_command"');
   });
 
-  test("uses visible-only zmx attach for live mobile sessions", () => {
+  test("uses full zmx replay for live attach sessions", () => {
     const command = buildSessionAttachCommand({
       alias: 8,
       attachCommand: "zmx attach ghostex-session-8",
@@ -402,7 +402,7 @@ describe("ghostex CLI Android remote-session contract", () => {
       status: "working",
     });
 
-    expect(command).toBe("zmx attach --visible-only 'ghostex-session-8'");
+    expect(command).toBe("zmx attach ghostex-session-8");
   });
 
   test("preserves sidebar project and session order from the inventory", () => {

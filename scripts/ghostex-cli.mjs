@@ -910,7 +910,7 @@ function resolveGhostexTuiLaunch(flags = {}) {
     }
   }
   throw new Error(
-    "Ghostex TUI binary was not found. Build the TUI with `GHOSTEX_TUI_LIGHT=1 cargo build --bin ghostex-tui --manifest-path tui/Cargo.toml`, pass `--tui-bin <path>`, or set GHOSTEX_TUI_BIN.",
+    "Ghostex TUI binary was not found. Build the TUI with `ZIG=/opt/homebrew/opt/zig@0.15/bin/zig cargo build --bin ghostex-tui --manifest-path tui/Cargo.toml`, pass `--tui-bin <path>`, or set GHOSTEX_TUI_BIN.",
   );
 }
 
@@ -933,8 +933,25 @@ function resolveGhostexTuiLaunchFromRoot(root) {
   return {
     args: ["run", "--quiet", "--bin", "ghostex-tui", "--manifest-path", manifestPath],
     command: "cargo",
-    env: { GHOSTEX_TUI_LIGHT: "1" },
+    env: ghostexTuiCargoEnv(),
   };
+}
+
+function ghostexTuiCargoEnv() {
+  /**
+   * CDXC:GhostexTui 2026-05-26-11:06:
+   * Bare `gtx` now needs Herdr's Ghostty-backed runtime, so Cargo fallback
+   * builds must not use the earlier `GHOSTEX_TUI_LIGHT=1` vt100-only path.
+   * On macOS 26.4+, unpatched Zig 0.15.2 cannot link libc from Xcode 26 SDKs;
+   * prefer Homebrew's patched `zig@0.15` keg when it exists so first-run
+   * fallback builds can produce the real Ghostty terminal backend.
+   */
+  const env = {};
+  const patchedHomebrewZig = "/opt/homebrew/opt/zig@0.15/bin/zig";
+  if (fileExistsSync(patchedHomebrewZig)) {
+    env.ZIG = patchedHomebrewZig;
+  }
+  return env;
 }
 
 function findGhostexSourceRoot(startPath) {
@@ -981,7 +998,13 @@ function buildSessionAttachCommand(session) {
     return buildZmxAttachOrResumeCommand(session);
   }
   if (isZmxSession(session) && session.status !== "sleep" && session.attachCommand) {
-    return buildMobileZmxAttachCommand(session.providerSessionName, session.attachCommand);
+    /**
+     * CDXC:CliSessions 2026-05-26-11:29:
+     * Live zmx attaches should use the stored provider attach command for every
+     * client, including GTX TUI and mobile, so reattach restores the full zmx
+     * terminal state and scrollback instead of only the current viewport.
+     */
+    return session.attachCommand;
   }
   return session.status === "sleep"
     ? session.resumeCommand || session.attachCommand
@@ -998,19 +1021,6 @@ function shouldCreateMissingZmxSessionWithResume(session) {
     Boolean(String(session.providerSessionName ?? "").trim()) &&
     Boolean(String(session.resumeCommand ?? "").trim())
   );
-}
-
-function buildMobileZmxAttachCommand(sessionName, fallbackAttachCommand) {
-  const normalizedSessionName = String(sessionName ?? "").trim();
-  if (!normalizedSessionName) {
-    return fallbackAttachCommand;
-  }
-  /**
-   * CDXC:iOSRemoteAttach 2026-05-23-19:58:
-   * Mobile `ghostex attach --session-id` opens through an iPhone native Ghostty surface.
-   * Use zmx's visible-only reattach mode so the phone receives the active viewport first instead of a full scrollback replay that can monopolize UIKit/Metal before floating controls can respond.
-   */
-  return `zmx attach --visible-only ${shellQuote(normalizedSessionName)}`;
 }
 
 function buildZmxAttachOrResumeCommand(session) {
@@ -1030,7 +1040,7 @@ if ! command -v zmx >/dev/null 2>&1; then
   exit 127
 fi
 if zmx list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
-  exec zmx attach --visible-only "$zmx_session"
+  exec zmx attach "$zmx_session"
 fi
 cd "$zmx_cwd" || exit
 zmx_resume_launcher='
@@ -1048,7 +1058,7 @@ if [ "$zmx_resume_status" -ne 0 ]; then
 fi
 exit 0
 '
-exec zmx attach --visible-only "$zmx_session" /bin/zsh -lc "$zmx_resume_launcher"
+exec zmx attach "$zmx_session" /bin/zsh -lc "$zmx_resume_launcher"
 `;
   /**
    * CDXC:AndroidRemoteSessions 2026-05-21-07:21:
