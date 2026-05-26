@@ -1053,7 +1053,7 @@ struct GhostexGhosttySurfaceModel {
 private final class GhostexGhosttySurfaceHostView: NSView {
   private static let scrollButtonSize = CGSize(width: 37.5, height: 37.5)
   private static let scrollButtonRightInset: CGFloat = 17
-  private static let scrollButtonBottomInset: CGFloat = 12
+  private static let scrollButtonBottomInset: CGFloat = 17
   private static let scrollButtonGap: CGFloat = 8.5
   private static let scrollButtonVisibilityThresholdPoints: CGFloat = 200
   private let scrollView = NSScrollView()
@@ -1093,6 +1093,11 @@ private final class GhostexGhosttySurfaceHostView: NSView {
      controls inside the Ghostty NSScrollView host so they follow split layout,
      sit above terminal content, and invoke Ghostty's native viewport actions
      instead of synthesizing wheel input.
+
+     CDXC:NativeTerminalScroll 2026-05-26-14:05:
+     The scroll controls should sit 5px higher than the first pass and use plain
+     chevrons, with the top action drawing an upward chevron and the bottom
+     action drawing a downward chevron.
      */
     scrollToBottomButton.target = self
     scrollToBottomButton.action = #selector(scrollToBottomButtonPressed)
@@ -1365,6 +1370,18 @@ final class TerminalWorkspaceView: NSView {
     let trackCount: Int
   }
 
+  private enum PaneContentHitRole: Equatable {
+    case commands
+    case workspace
+  }
+
+  private struct PaneContentHitRegion {
+    let path: String
+    let rect: CGRect
+    let role: PaneContentHitRole
+    let sessionId: String
+  }
+
   private struct PaneResizeDrag {
     let availableLength: CGFloat
     let boundaryIndex: Int
@@ -1570,6 +1587,7 @@ final class TerminalWorkspaceView: NSView {
   private var sidebarSide: SidebarSide = .left
   private var programmaticFocusDepth = 0
   private var terminalLayout: NativeTerminalLayout?
+  private var paneContentHitRegions: [PaneContentHitRegion] = []
   private var paneResizeHits: [PaneResizeHit] = []
   private var paneResizeRatiosByPath: [String: [CGFloat]] = [:]
   private var paneResizeDrag: PaneResizeDrag?
@@ -2781,15 +2799,21 @@ final class TerminalWorkspaceView: NSView {
    Native ghostex therefore mounts a WKWebView surface in the same pane layout so
    the T3 button embeds the app instead of typing `npx --yes t3` into Ghostty.
    */
+  private static func normalizedBrowserFeedbackTool(_ value: String?) -> String {
+    value == "react-grab" ? "react-grab" : "agentation"
+  }
+
   func createWebPane(_ command: CreateWebPane) {
     let initialUrl = URL(string: command.url)
     let isManagedT3Pane = initialUrl.map(NativeT3RuntimeLauncher.isManagedRuntimeURL) ?? false
+    let browserFeedbackTool = Self.normalizedBrowserFeedbackTool(command.browserFeedbackTool)
     if let existingSession = webPaneSessions[command.sessionId] {
       NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.create.reused", [
         "sessionId": command.sessionId,
         "threadId": command.threadId ?? NSNull(),
         "url": command.url,
       ])
+      existingSession.hostView.setBrowserFeedbackTool(browserFeedbackTool)
       if existingSession.isManagedT3Pane, isManagedT3Pane {
         webPaneSessions[command.sessionId] = WebPaneSession(
           browserTitleObservation: existingSession.browserTitleObservation,
@@ -2913,14 +2937,19 @@ final class TerminalWorkspaceView: NSView {
       webView: webView,
       showsBrowserToolbar: !isManagedT3Pane,
       initialAddress: command.url,
+      browserFeedbackTool: browserFeedbackTool,
       onFocus: { [weak self] in
         self?.focusWebPane(sessionId: command.sessionId, reason: "browserToolbar")
       },
       onOpenDevTools: { [weak self] in
         self?.openBrowserDevTools(sessionId: command.sessionId)
       },
-      onInjectReactGrab: { [weak self] in
-        self?.injectBrowserReactGrab(sessionId: command.sessionId)
+      onInjectFeedbackTool: { [weak self] in
+        if browserFeedbackTool == "react-grab" {
+          self?.injectBrowserReactGrab(sessionId: command.sessionId)
+        } else {
+          self?.injectBrowserAgentation(sessionId: command.sessionId)
+        }
       },
       onShowProfilePicker: { [weak self] in
         self?.showBrowserProfilePicker(sessionId: command.sessionId)
@@ -2955,6 +2984,29 @@ final class TerminalWorkspaceView: NSView {
       }
       chromiumView.navigationStateChangedHandler = { [weak hostView] _, _, _ in
         hostView?.refreshBrowserToolbar(reason: "chromiumNavigationStateChanged")
+      }
+      /**
+       CDXC:BrowserFeedbackTools 2026-05-26-22:09:
+       Agentation import/render failures happen asynchronously inside the page
+       after CEF accepts the injected JavaScript. Normal browser panes therefore
+       need the same console forwarding as project-editor CEF panes so the
+       toolbar action can be diagnosed from app logs.
+       */
+      chromiumView.consoleMessageHandler = { [weak self, weak chromiumView] message, source, line in
+        guard let self else {
+          return
+        }
+        NativeT3CodePaneReproLog.append("nativeWorkspace.browserPane.cef.console", [
+          "currentUrl": chromiumView?.currentURLString ?? NSNull(),
+          "line": line,
+          "message": message,
+          "sessionId": command.sessionId,
+          "source": source,
+          "windowNumber": self.window?.windowNumber ?? NSNull(),
+        ])
+        if message.contains("[Ghostex Agentation]") || message.contains("Agentation") {
+          NSLog("Browser CEF console [%@:%ld] %@", source, line, message)
+        }
       }
     }
 
@@ -3181,8 +3233,12 @@ final class TerminalWorkspaceView: NSView {
     applyProjectEditorCompanionPaneHiddenPreference(
       command.companionPaneHidden,
       reason: "createProjectEditorPane")
+    let browserFeedbackTool = Self.normalizedBrowserFeedbackTool(command.browserFeedbackTool)
     if let existingSession = projectEditorPaneSessions[command.projectId] {
       var nextSession = existingSession
+      for tab in nextSession.tabs {
+        tab.hostView.setBrowserFeedbackTool(browserFeedbackTool)
+      }
       nextSession = updateProjectEditorSessionActiveTab(
         nextSession,
         url: command.url,
@@ -3258,6 +3314,7 @@ final class TerminalWorkspaceView: NSView {
       tabId: createProjectEditorGitTabId(),
       title: projectEditorTabTitle(for: command.url, fallback: command.title),
       url: command.url,
+      browserFeedbackTool: browserFeedbackTool,
       showsBrowserToolbar: command.showsBrowserToolbar ?? false,
       showsInitialLoadingOverlay: true,
       reason: "createProjectEditorPaneNew")
@@ -3292,6 +3349,7 @@ final class TerminalWorkspaceView: NSView {
     tabId: String,
     title: String,
     url: String,
+    browserFeedbackTool: String,
     showsBrowserToolbar: Bool,
     showsInitialLoadingOverlay: Bool,
     reason: String
@@ -3371,6 +3429,7 @@ final class TerminalWorkspaceView: NSView {
       showsBrowserToolbar: showsBrowserToolbar,
       showsInitialLoadingOverlay: showsInitialLoadingOverlay,
       initialAddress: url,
+      browserFeedbackTool: browserFeedbackTool,
       onFocus: { [weak self] in
         self?.focusProjectEditorPaneFromUserInteraction(
           projectId: projectId,
@@ -3379,8 +3438,12 @@ final class TerminalWorkspaceView: NSView {
       onOpenDevTools: { [weak self] in
         self?.openProjectEditorDevTools(projectId: projectId)
       },
-      onInjectReactGrab: { [weak self] in
-        self?.injectProjectEditorReactGrab(projectId: projectId)
+      onInjectFeedbackTool: { [weak self] in
+        if browserFeedbackTool == "react-grab" {
+          self?.injectProjectEditorReactGrab(projectId: projectId)
+        } else {
+          self?.injectProjectEditorAgentation(projectId: projectId)
+        }
       },
       onShowProfilePicker: { [weak self] in
         self?.showProjectEditorProfilePicker(projectId: projectId)
@@ -3710,6 +3773,7 @@ final class TerminalWorkspaceView: NSView {
       tabId: createProjectEditorGitTabId(),
       title: title ?? projectEditorTabTitle(for: url, fallback: "GitHub"),
       url: url,
+      browserFeedbackTool: session.hostView.browserFeedbackToolRawValue,
       showsBrowserToolbar: true,
       showsInitialLoadingOverlay: true,
       reason: reason)
@@ -3919,14 +3983,35 @@ final class TerminalWorkspaceView: NSView {
 
   func injectBrowserAgentation(sessionId: String) {
     guard let session = webPaneSessions[sessionId] else {
+      NSLog("Agentation: missing browser session %@", sessionId)
+      NativeT3CodePaneReproLog.append("nativeWorkspace.browserPane.agentation.missingSession", [
+        "sessionId": sessionId,
+      ])
       return
     }
     focusWebPane(sessionId: sessionId, reason: "browserAgentation")
     Task { @MainActor in
       if let chromiumView = session.chromiumView {
+        NSLog("Agentation: dispatching to browser CEF session %@", sessionId)
+        NativeT3CodePaneReproLog.append("nativeWorkspace.browserPane.agentation.dispatch", [
+          "currentUrl": chromiumView.currentURLString ?? NSNull(),
+          "renderer": "cef",
+          "sessionId": sessionId,
+        ])
         await NativeBrowserAgentationInjector.toggleOrInject(into: chromiumView)
       } else if let webView = session.webView {
+        NSLog("Agentation: dispatching to browser WKWebView session %@", sessionId)
+        NativeT3CodePaneReproLog.append("nativeWorkspace.browserPane.agentation.dispatch", [
+          "currentUrl": webView.url?.absoluteString ?? NSNull(),
+          "renderer": "webkit",
+          "sessionId": sessionId,
+        ])
         await NativeBrowserAgentationInjector.toggleOrInject(into: webView)
+      } else {
+        NSLog("Agentation: browser session %@ has no web renderer", sessionId)
+        NativeT3CodePaneReproLog.append("nativeWorkspace.browserPane.agentation.missingRenderer", [
+          "sessionId": sessionId,
+        ])
       }
     }
   }
@@ -3941,6 +4026,41 @@ final class TerminalWorkspaceView: NSView {
         await NativeBrowserReactGrabInjector.toggleOrInject(into: chromiumView)
       } else if let webView = session.webView {
         await NativeBrowserReactGrabInjector.toggleOrInject(into: webView)
+      }
+    }
+  }
+
+  func injectProjectEditorAgentation(projectId: String) {
+    guard let session = projectEditorPaneSessions[projectId] else {
+      NSLog("Agentation: missing project editor session %@", projectId)
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.agentation.missingSession", [
+        "projectId": projectId,
+      ])
+      return
+    }
+    focusProjectEditorPane(projectId: projectId, reason: "projectEditorAgentation")
+    Task { @MainActor in
+      if let chromiumView = session.chromiumView {
+        NSLog("Agentation: dispatching to project editor CEF session %@", projectId)
+        NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.agentation.dispatch", [
+          "currentUrl": chromiumView.currentURLString ?? NSNull(),
+          "projectId": projectId,
+          "renderer": "cef",
+        ])
+        await NativeBrowserAgentationInjector.toggleOrInject(into: chromiumView)
+      } else if let webView = session.webView {
+        NSLog("Agentation: dispatching to project editor WKWebView session %@", projectId)
+        NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.agentation.dispatch", [
+          "currentUrl": webView.url?.absoluteString ?? NSNull(),
+          "projectId": projectId,
+          "renderer": "webkit",
+        ])
+        await NativeBrowserAgentationInjector.toggleOrInject(into: webView)
+      } else {
+        NSLog("Agentation: project editor session %@ has no web renderer", projectId)
+        NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.agentation.missingRenderer", [
+          "projectId": projectId,
+        ])
       }
     }
   }
@@ -4506,6 +4626,57 @@ final class TerminalWorkspaceView: NSView {
         "visibleSessionIds": orderedVisibleSessionIds(),
       ])
     sessions[sessionId]?.view.surfaceModel?.sendText(text)
+  }
+
+  func writeTerminalScript(sessionId: String, text: String) {
+    do {
+      let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ghostex-restore-scripts", isDirectory: true)
+      try FileManager.default.createDirectory(
+        at: directory, withIntermediateDirectories: true,
+        attributes: [FileAttributeKey.posixPermissions: 0o700])
+      let scriptURL = directory.appendingPathComponent("restore-\(UUID().uuidString).zsh")
+      try text.write(to: scriptURL, atomically: true, encoding: .utf8)
+      try FileManager.default.setAttributes(
+        [FileAttributeKey.posixPermissions: 0o600],
+        ofItemAtPath: scriptURL.path)
+      let quotedPath = shellQuote(scriptURL.path)
+      /**
+       CDXC:SessionRestore 2026-05-26-15:52:
+       Wake restore scripts must execute in the already-open interactive shell
+       so user aliases/functions such as `x` are available, but the terminal
+       should only echo a short staging command. Source the private temp file
+       directly from the current shell instead of spawning cat plus eval or
+       launching a fresh non-interactive zsh.
+       */
+      let command =
+        ". \(quotedPath); /bin/rm -f -- \(quotedPath)\r"
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.writeTerminalScript",
+        details: [
+          "activeSessionIds": Array(activeSessionIds).sorted(),
+          "requestedSessionId": sessionId,
+          "responderBefore": responderSnapshot(),
+          "scriptLength": text.count,
+          "visibleSessionIds": orderedVisibleSessionIds(),
+        ])
+      sessions[sessionId]?.view.surfaceModel?.sendText(command)
+    } catch {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.writeTerminalScript.failed",
+        details: [
+          "error": String(describing: error),
+          "requestedSessionId": sessionId,
+          "scriptLength": text.count,
+        ],
+        force: true)
+      let message = "printf '%s\\n' \(shellQuote("Ghostex could not stage the restore script: \(error.localizedDescription)"))\r"
+      sessions[sessionId]?.view.surfaceModel?.sendText(message)
+    }
+  }
+
+  private func shellQuote(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
   }
 
   func readTerminalText(_ command: ReadTerminalText) {
@@ -5106,6 +5277,7 @@ final class TerminalWorkspaceView: NSView {
       layoutFloatingEditorOverlay()
     }
     paneResizeHits.removeAll()
+    paneContentHitRegions.removeAll()
     let commandSessionIds = orderedVisibleCommandSessionIds()
     let hasCommandsPanelSessions = !commandSessionIds.isEmpty
     let shouldShowExpandedCommandsPanel = commandsPanelIsVisible && hasCommandsPanelSessions
@@ -7085,6 +7257,7 @@ final class TerminalWorkspaceView: NSView {
     switch node {
     case .leaf(let sessionId):
       setPaneTabs([sessionId], activeSessionId: sessionId, on: sessionId)
+      recordPaneContentHitRegion(sessionId: sessionId, paneRect: rect, path: path)
       setFrame(rect, for: sessionId)
     case .tabs(let activeSessionId, let sessionIds):
       let tabSessionIds = sessionIds.filter { isPaneSessionVisible($0) || sleepingSessionIds.contains($0) }
@@ -7096,6 +7269,7 @@ final class TerminalWorkspaceView: NSView {
         movePaneSessionOffscreen(sessionId)
       }
       setPaneTabs(tabSessionIds, activeSessionId: selectedSessionId, on: selectedSessionId)
+      recordPaneContentHitRegion(sessionId: selectedSessionId, paneRect: rect, path: path)
       setFrame(rect, for: selectedSessionId)
     case .split(let direction, let ratio, let children):
       let visibleChildren = children.filter {
@@ -7164,6 +7338,32 @@ final class TerminalWorkspaceView: NSView {
         paneResizeRatiosByPath[path] = ratios
       }
     }
+  }
+
+  private func recordPaneContentHitRegion(sessionId: String, paneRect: CGRect, path: String) {
+    /**
+     CDXC:NativeTerminalFocus 2026-05-26-04:32:
+     Terminal content clicks must be owned by the pane geometry from the current
+     layout pass, not by AppKit subview order. Awake-but-hidden tab siblings can
+     keep live Ghostty views, so hit testing by container frames alone can focus a
+     stale session and make the sidebar rewrite the visible split.
+     */
+    let titleBarHeight = min(titleBarHeight(for: sessionId), max(paneRect.height, 0))
+    let contentRect = CGRect(
+      x: paneRect.minX,
+      y: paneRect.minY,
+      width: paneRect.width,
+      height: max(paneRect.height - titleBarHeight, 0)
+    )
+    guard contentRect.width > 0, contentRect.height > 0 else {
+      return
+    }
+    paneContentHitRegions.append(
+      PaneContentHitRegion(
+        path: path,
+        rect: contentRect,
+        role: path.hasPrefix("commands") ? .commands : .workspace,
+        sessionId: sessionId))
   }
 
   private func layoutGrid(_ sessionIds: [String], in rect: CGRect) {
@@ -8009,26 +8209,91 @@ final class TerminalWorkspaceView: NSView {
   }
 
   private func paneContentHitView(at point: CGPoint) -> NSView? {
-    for sessionId in orderedVisibleCommandPaneOwnerSessionIds().reversed() {
-      if let session = sessions[sessionId],
-        let hitView = terminalPaneContentHitView(session, at: point)
-      {
-        return hitView
-      }
+    if let commandHitView = paneContentHitView(at: point, role: .commands) {
+      return commandHitView
     }
-    for sessionId in orderedVisiblePaneOwnerSessionIds().reversed() {
-      if let session = sessions[sessionId],
-        let hitView = terminalPaneContentHitView(session, at: point)
-      {
-        return hitView
-      }
-      if let session = webPaneSessions[sessionId],
-        let hitView = webPaneContentHitView(session, at: point)
-      {
-        return hitView
-      }
+    if let workspaceHitView = paneContentHitView(at: point, role: .workspace) {
+      return workspaceHitView
     }
     return nil
+  }
+
+  private func paneContentHitView(at point: CGPoint, role: PaneContentHitRole) -> NSView? {
+    guard let region = paneContentHitRegions.reversed().first(where: {
+      $0.role == role && $0.rect.contains(point)
+    }) else {
+      return nil
+    }
+    let hitView: NSView?
+    let fallbackHitView: NSView?
+    if let session = sessions[region.sessionId] {
+      hitView = terminalPaneContentHitView(session, at: point)
+      fallbackHitView = session.scrollView
+    } else if let session = webPaneSessions[region.sessionId] {
+      hitView = webPaneContentHitView(session, at: point)
+      fallbackHitView = session.hostView
+    } else {
+      hitView = nil
+      fallbackHitView = nil
+    }
+    let returnedHitView = hitView ?? fallbackHitView
+    logPaneContentHitRouteIfNeeded(
+      point: point,
+      region: region,
+      returnedHitView: returnedHitView)
+    return returnedHitView
+  }
+
+  private func logPaneContentHitRouteIfNeeded(
+    point: CGPoint,
+    region: PaneContentHitRegion,
+    returnedHitView: NSView?
+  ) {
+    let legacyCandidateSessionIds = paneContentLegacyCandidateSessionIds(
+      at: point,
+      role: region.role)
+    let legacyFirstSessionId = legacyCandidateSessionIds.first
+    let returnedSessionId = returnedHitView.flatMap { sessionId(containing: $0) }
+    guard legacyFirstSessionId != region.sessionId || returnedSessionId != region.sessionId else {
+      return
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.paneContentHitRoutedByLayout",
+      details: [
+        "legacyCandidateSessionIds": legacyCandidateSessionIds,
+        "legacyFirstSessionId": nullableString(legacyFirstSessionId),
+        "layoutRegionPath": region.path,
+        "layoutRegionRect": describeFrame(region.rect),
+        "layoutRegionRole": region.role == .commands ? "commands" : "workspace",
+        "layoutRegionSessionId": region.sessionId,
+        "point": describePoint(point),
+        "returnedHitView": returnedHitView.map { String(describing: type(of: $0)) } ?? "nil",
+        "returnedSessionId": nullableString(returnedSessionId),
+      ],
+      force: true)
+  }
+
+  private func paneContentLegacyCandidateSessionIds(
+    at point: CGPoint,
+    role: PaneContentHitRole
+  ) -> [String] {
+    let sessionIds =
+      role == .commands
+      ? orderedVisibleCommandPaneOwnerSessionIds().reversed()
+      : orderedVisiblePaneOwnerSessionIds().reversed()
+    return sessionIds.filter { sessionId in
+      if let session = sessions[sessionId] {
+        return !session.containerView.isHidden
+          && session.containerView.window != nil
+          && session.containerView.frame.contains(point)
+      }
+      if let session = webPaneSessions[sessionId] {
+        return !session.containerView.isHidden
+          && session.containerView.window != nil
+          && session.containerView.frame.contains(point)
+      }
+      return false
+    }
   }
 
   private func terminalPaneContentHitView(_ session: TerminalSession, at point: CGPoint) -> NSView? {
@@ -18966,6 +19231,48 @@ final class ProjectEditorInitialLoadingOverlayView: NSView {
 }
 
 final class WebPaneHostView: NSView, NSTextFieldDelegate {
+  /**
+   CDXC:BrowserFeedbackTools 2026-05-26-15:36:
+   The native browser toolbar must honor the Settings-selected feedback tool.
+   The previous toolbar button hard-coded React Grab, so users who selected
+   Agentation still launched React Grab after app restart.
+   */
+  private enum BrowserFeedbackTool: String {
+    case agentation
+    case reactGrab = "react-grab"
+
+    static func normalized(_ value: String?) -> BrowserFeedbackTool {
+      value == BrowserFeedbackTool.reactGrab.rawValue ? .reactGrab : .agentation
+    }
+
+    var fallbackTitle: String {
+      switch self {
+      case .agentation:
+        return "AG"
+      case .reactGrab:
+        return "RG"
+      }
+    }
+
+    var logAction: String {
+      switch self {
+      case .agentation:
+        return "agentation"
+      case .reactGrab:
+        return "reactGrab"
+      }
+    }
+
+    var tooltip: String {
+      switch self {
+      case .agentation:
+        return "Agentation"
+      case .reactGrab:
+        return "React Grab"
+      }
+    }
+  }
+
   private enum BrowserPaneThemeMode: String {
     case system
     case light
@@ -19007,10 +19314,11 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   private let initialLoadingOverlayView: ProjectEditorInitialLoadingOverlayView?
   private let onFocus: (() -> Void)?
   private let onOpenDevTools: (() -> Void)?
-  private let onInjectReactGrab: (() -> Void)?
+  private let onInjectFeedbackTool: (() -> Void)?
   private let onShowProfilePicker: (() -> Void)?
   private let onShowImportSettings: (() -> Void)?
   private let toolbarView = NSView(frame: .zero)
+  private var browserFeedbackTool: BrowserFeedbackTool
   var chromiumLiveResizeBackingHeight: CGFloat? {
     didSet {
       if chromiumLiveResizeBackingHeight != oldValue {
@@ -19042,8 +19350,8 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
   )
   private let reactGrabButton = WebPaneHostView.makeToolbarButton(
     systemSymbolName: "cursorarrow.click.2",
-    fallbackTitle: "RG",
-    tooltip: "React Grab"
+    fallbackTitle: "AG",
+    tooltip: "Agentation"
   )
   private let profileButton = WebPaneHostView.makeToolbarButton(
     systemSymbolName: "person.crop.circle",
@@ -19066,9 +19374,10 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     showsBrowserToolbar: Bool = false,
     showsInitialLoadingOverlay: Bool = false,
     initialAddress: String? = nil,
+    browserFeedbackTool: String? = nil,
     onFocus: (() -> Void)? = nil,
     onOpenDevTools: (() -> Void)? = nil,
-    onInjectReactGrab: (() -> Void)? = nil,
+    onInjectFeedbackTool: (() -> Void)? = nil,
     onShowProfilePicker: (() -> Void)? = nil,
     onShowImportSettings: (() -> Void)? = nil
   ) {
@@ -19076,11 +19385,12 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     self.chromiumView = chromiumView
     self.webView = webView
     self.showsBrowserToolbar = showsBrowserToolbar
+    self.browserFeedbackTool = BrowserFeedbackTool.normalized(browserFeedbackTool)
     self.initialLoadingOverlayView =
       showsInitialLoadingOverlay ? ProjectEditorInitialLoadingOverlayView(frame: .zero) : nil
     self.onFocus = onFocus
     self.onOpenDevTools = onOpenDevTools
-    self.onInjectReactGrab = onInjectReactGrab
+    self.onInjectFeedbackTool = onInjectFeedbackTool
     self.onShowProfilePicker = onShowProfilePicker
     self.onShowImportSettings = onShowImportSettings
     super.init(frame: .zero)
@@ -19205,6 +19515,15 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
 
   func refreshBrowserToolbar(reason: String) {
     updateBrowserToolbarState()
+  }
+
+  var browserFeedbackToolRawValue: String {
+    browserFeedbackTool.rawValue
+  }
+
+  func setBrowserFeedbackTool(_ value: String?) {
+    browserFeedbackTool = BrowserFeedbackTool.normalized(value)
+    updateBrowserFeedbackToolButton()
   }
 
   func refreshHostedWebView(reason: String) {
@@ -19433,7 +19752,8 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     forwardButton.action = #selector(goForward)
     reloadButton.action = #selector(reloadPage)
     devToolsButton.action = #selector(openDevTools)
-    reactGrabButton.action = #selector(injectReactGrab)
+    reactGrabButton.action = #selector(injectFeedbackTool)
+    updateBrowserFeedbackToolButton()
     profileButton.action = #selector(showProfilePicker)
     appearanceButton.action = #selector(showAppearanceMenu)
 
@@ -19499,8 +19819,8 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
 
     /**
      CDXC:BrowserPanes 2026-05-02-17:13
-     The browser address row should match the reference chrome exactly: React
-     Grab, profile, theme, and DevTools live to the right of the URL field.
+     The browser address row should match the reference chrome exactly: the
+     selected feedback tool, profile, theme, and DevTools live to the right of the URL field.
      Import remains a profile-menu action instead of a fifth always-visible
      toolbar button so the pane chrome does not drift from the expected layout.
      */
@@ -19689,14 +20009,27 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     scheduleBrowserToolbarActionDiagnostics(action: "devTools")
   }
 
-  @objc private func injectReactGrab() {
-    logBrowserToolbarActionDiagnostics(action: "reactGrab", phase: "before", details: [
+  private func updateBrowserFeedbackToolButton() {
+    reactGrabButton.toolTip = browserFeedbackTool.tooltip
+    if reactGrabButton.image == nil {
+      reactGrabButton.title = browserFeedbackTool.fallbackTitle
+    }
+  }
+
+  @objc private func injectFeedbackTool() {
+    let action = browserFeedbackTool.logAction
+    NSLog(
+      "Browser feedback toolbar action: %@ url=%@",
+      browserFeedbackTool.rawValue,
+      currentURLString() ?? "<nil>")
+    logBrowserToolbarActionDiagnostics(action: action, phase: "before", details: [
       "currentURL": currentURLString() ?? NSNull(),
+      "feedbackTool": browserFeedbackTool.rawValue,
       "windowNumber": window?.windowNumber ?? NSNull(),
     ])
-    onInjectReactGrab?()
-    logBrowserToolbarActionDiagnostics(action: "reactGrab", phase: "after")
-    scheduleBrowserToolbarActionDiagnostics(action: "reactGrab")
+    onInjectFeedbackTool?()
+    logBrowserToolbarActionDiagnostics(action: action, phase: "after")
+    scheduleBrowserToolbarActionDiagnostics(action: action)
   }
 
   @objc private func showProfilePicker() {
@@ -19793,7 +20126,7 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
       return "addressField"
     }
     if reactGrabButton.frame.contains(point) {
-      return "reactGrabButton"
+      return "feedbackToolButton"
     }
     if profileButton.frame.contains(point) {
       return "profileButton"
@@ -20292,6 +20625,11 @@ private final class TerminalPaneScrollButton: NSButton {
      actions. Use icon-only circular AppKit buttons with hover/pressed chrome so
      long scrollback can be navigated without adding permanent pane chrome or
      stealing keyboard focus from the Ghostty surface.
+
+     CDXC:NativeTerminalScroll 2026-05-26-14:05:
+     The overlay icons should be chevrons only. Draw direction from the button
+     action, not from the visual stack position, so scroll-to-top is chevron-up
+     and scroll-to-bottom is chevron-down.
      */
     title = ""
     isBordered = false
@@ -20356,21 +20694,13 @@ private final class TerminalPaneScrollButton: NSButton {
 
     switch direction {
     case .bottom:
-      path.move(to: CGPoint(x: centerX - 5, y: centerY + 2))
+      path.move(to: CGPoint(x: centerX - 6, y: centerY + 3))
       path.line(to: CGPoint(x: centerX, y: centerY - 4))
-      path.line(to: CGPoint(x: centerX + 5, y: centerY + 2))
-      path.move(to: CGPoint(x: centerX, y: centerY + 6))
-      path.line(to: CGPoint(x: centerX, y: centerY - 4))
-      path.move(to: CGPoint(x: centerX - 6, y: centerY - 8))
-      path.line(to: CGPoint(x: centerX + 6, y: centerY - 8))
+      path.line(to: CGPoint(x: centerX + 6, y: centerY + 3))
     case .top:
-      path.move(to: CGPoint(x: centerX - 5, y: centerY - 2))
+      path.move(to: CGPoint(x: centerX - 6, y: centerY - 3))
       path.line(to: CGPoint(x: centerX, y: centerY + 4))
-      path.line(to: CGPoint(x: centerX + 5, y: centerY - 2))
-      path.move(to: CGPoint(x: centerX, y: centerY - 6))
-      path.line(to: CGPoint(x: centerX, y: centerY + 4))
-      path.move(to: CGPoint(x: centerX - 6, y: centerY + 8))
-      path.line(to: CGPoint(x: centerX + 6, y: centerY + 8))
+      path.line(to: CGPoint(x: centerX + 6, y: centerY - 3))
     }
 
     Self.glyphColor.setStroke()

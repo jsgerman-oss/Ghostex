@@ -2107,6 +2107,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       activateAppWindow()
     case .writeTerminalText(let command):
       workspaceView?.writeTerminalText(sessionId: command.sessionId, text: command.text)
+    case .writeTerminalScript(let command):
+      workspaceView?.writeTerminalScript(sessionId: command.sessionId, text: command.text)
     case .sendTerminalEnter(let command):
       workspaceView?.sendTerminalEnter(sessionId: command.sessionId)
     case .readTerminalText(let command):
@@ -3717,14 +3719,19 @@ private final class NativeSettingsStore {
 
 final class AppModalHostWebView: WKWebView {
   private var topLeftHitRegions: [CGRect]?
+  private var capturesAllHitTesting = false
 
-  func setTopLeftHitRegions(_ regions: [CGRect]?) {
+  func setTopLeftHitRegions(_ regions: [CGRect]?, capturesAllHitTesting: Bool = false) {
     topLeftHitRegions = regions
+    self.capturesAllHitTesting = capturesAllHitTesting
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
     guard bounds.contains(point) else {
       return nil
+    }
+    if capturesAllHitTesting {
+      return super.hitTest(point) ?? self
     }
     guard let topLeftHitRegions else {
       return super.hitTest(point)
@@ -4556,7 +4563,10 @@ final class ghostexRootView: NSView {
     ]
   }
 
-  private func updateFloatingPromptEditorHitRegion(frame: [String: CGFloat]) {
+  private func updateFloatingPromptEditorHitRegion(
+    frame: [String: CGFloat],
+    imagePreviewOpen: Bool = false
+  ) {
     guard let left = frame["left"],
       let top = frame["top"],
       let width = frame["width"],
@@ -4566,11 +4576,12 @@ final class ghostexRootView: NSView {
       return
     }
     let region = CGRect(x: left, y: top, width: width, height: height)
-    modalHostView.setTopLeftHitRegions([region])
+    modalHostView.setTopLeftHitRegions([region], capturesAllHitTesting: imagePreviewOpen)
     PromptEditorDebugLog.append(
       event: "native.hitRegion.applied",
       details: [
         "height": height,
+        "imagePreviewOpen": imagePreviewOpen,
         "left": left,
         "modalHostBoundsHeight": modalHostView.bounds.height,
         "modalHostBoundsWidth": modalHostView.bounds.width,
@@ -4605,11 +4616,12 @@ final class ghostexRootView: NSView {
       "top": Self.cgFloatValue(frame["top"]),
       "width": Self.cgFloatValue(frame["width"]),
     ].compactMapValues { $0 }
+    let imagePreviewOpen = message["imagePreviewOpen"] as? Bool == true
     let clampedFrame = clampedFloatingPromptEditorFrame(hitRegion)
     if !isPrewarmingFloatingPromptEditor {
       persistFloatingPromptEditorFrame(clampedFrame)
     }
-    updateFloatingPromptEditorHitRegion(frame: clampedFrame)
+    updateFloatingPromptEditorHitRegion(frame: clampedFrame, imagePreviewOpen: imagePreviewOpen)
   }
 
   private static func cgFloatValue(_ value: Any?) -> CGFloat? {
@@ -5617,6 +5629,8 @@ final class ghostexRootView: NSView {
       activateAppWindow()
     case .writeTerminalText(let command):
       workspaceView.writeTerminalText(sessionId: command.sessionId, text: command.text)
+    case .writeTerminalScript(let command):
+      workspaceView.writeTerminalScript(sessionId: command.sessionId, text: command.text)
     case .sendTerminalEnter(let command):
       workspaceView.sendTerminalEnter(sessionId: command.sessionId)
     case .readTerminalText(let command):

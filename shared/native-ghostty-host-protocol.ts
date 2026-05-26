@@ -93,6 +93,7 @@ export type NativeGhosttyHostCommand =
       type: "createTerminal";
     }
   | {
+      browserFeedbackTool?: "react-grab" | "agentation";
       cwd?: string;
       projectId?: string;
       sessionId: string;
@@ -179,9 +180,10 @@ export type NativeGhosttyHostCommand =
       /**
        * CDXC:GitProjectTabs 2026-05-16-07:42:
        * Git mode needs visible project-scoped browser chrome: reuse the native
-       * browser address toolbar and the main work-area tab strip for each open
-       * project's Git view while leaving Code and Project editor panes plain.
+      * browser address toolbar and the main work-area tab strip for each open
+      * project's Git view while leaving Code and Project editor panes plain.
        */
+      browserFeedbackTool?: "react-grab" | "agentation";
       mode?: "code" | "git" | "tasks";
       companionPaneHidden?: boolean;
       projectId: string;
@@ -204,6 +206,11 @@ export type NativeGhosttyHostCommand =
       sessionId: string;
       text: string;
       type: "writeTerminalText";
+    }
+  | {
+      sessionId: string;
+      text: string;
+      type: "writeTerminalScript";
     }
   | {
       provider: "tmux" | "zmx" | "zellij";

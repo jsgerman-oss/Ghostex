@@ -137,11 +137,45 @@ enum NativeBrowserAgentationInjector {
      React Grab provides. Mount it through native JavaScript evaluation with
      pinned ESM module URLs so the CEF browser action starts the selected tool
      directly instead of falling back to React Grab.
+
+     CDXC:BrowserFeedbackTools 2026-05-26-22:09:
+     Agentation loads asynchronously through page-side module imports, so native
+     JavaScript evaluation can return before import or render failures happen.
+     Emit explicit console checkpoints that the normal CEF console bridge records
+     while debugging why the toolbar button appears to do nothing.
+
+     CDXC:BrowserFeedbackTools 2026-05-26-22:21:
+     The native browser toolbar action should feel like React Grab: one click
+     should inject Agentation and enter its feedback mode. Agentation 3.0.2
+     mounts as a collapsed page control through a document.body portal and
+     exposes no public auto-open prop, so after rendering we click its titled
+     start button and log the outcome.
      */
     return """
       (function() {
+        const logPrefix = '[Ghostex Agentation]';
+        const log = function(message, detail) {
+          if (detail === undefined) {
+            console.info(logPrefix + ' ' + message);
+          } else {
+            console.info(logPrefix + ' ' + message, detail);
+          }
+        };
+        const warn = function(message, detail) {
+          if (detail === undefined) {
+            console.warn(logPrefix + ' ' + message);
+          } else {
+            console.warn(logPrefix + ' ' + message, detail);
+          }
+        };
+        log('script-entered', {
+          href: String(window.location && window.location.href || ''),
+          readyState: document.readyState,
+          hasBody: !!document.body
+        });
         const existing = window.__GHOSTEX_AGENTATION__;
         if (existing && typeof existing.unmount === 'function') {
+          log('existing-instance-unmount');
           existing.unmount();
           return;
         }
@@ -163,13 +197,71 @@ enum NativeBrowserAgentationInjector {
         };
         window.__GHOSTEX_AGENTATION__ = state;
 
+        const findStartButton = function() {
+          const root = state.container || document.getElementById('ghostex-agentation-root');
+          return document.querySelector('[data-agentation-toolbar] [title="Start feedback mode"][role="button"]')
+            || document.querySelector('[data-agentation-toolbar][title="Start feedback mode"][role="button"]')
+            || document.querySelector('[title="Start feedback mode"][role="button"]')
+            || (root && root.querySelector('[title="Start feedback mode"][role="button"]'))
+            || document.querySelector('[data-agentation-toolbar][title="Start feedback mode"]')
+            || document.querySelector('[title="Start feedback mode"]')
+            || (root && root.querySelector('[title="Start feedback mode"]'));
+        };
+
+        const autoActivate = function(attempt) {
+          if (state.canceled) {
+            return;
+          }
+          const startButton = findStartButton();
+          if (startButton && typeof startButton.click === 'function') {
+            startButton.click();
+            state.activated = true;
+            log('auto-activate-clicked', { attempt: attempt });
+            return;
+          }
+          if (attempt < 20) {
+            window.setTimeout(function() {
+              autoActivate(attempt + 1);
+            }, 50);
+            return;
+          }
+          warn('auto-activate-not-found', {
+            attempts: attempt + 1,
+            hasContainer: !!state.container
+          });
+        };
+
+        const scheduleAutoActivate = function() {
+          const run = function() {
+            autoActivate(0);
+          };
+          if (typeof window.requestAnimationFrame === 'function') {
+            window.requestAnimationFrame(function() {
+              window.requestAnimationFrame(run);
+            });
+          } else {
+            window.setTimeout(run, 0);
+          }
+        };
+
         const mount = async function() {
+          log('import-start', {
+            agentation: '\(packageURL)',
+            react: '\(reactURL)',
+            reactDOMClient: '\(reactDOMClientURL)'
+          });
           const modules = await Promise.all([
             import('\(reactURL)'),
             import('\(reactDOMClientURL)'),
             import('\(packageURL)')
           ]);
+          log('import-complete', {
+            agentationExports: Object.keys(modules[2] || {}),
+            reactDOMClientExports: Object.keys(modules[1] || {}),
+            reactExports: Object.keys(modules[0] || {})
+          });
           if (state.canceled) {
+            warn('mount-canceled-after-import');
             return;
           }
           const React = modules[0].default || modules[0];
@@ -183,22 +275,37 @@ enum NativeBrowserAgentationInjector {
           container.id = 'ghostex-agentation-root';
           container.setAttribute('data-agentation-root', 'true');
           (document.body || document.documentElement).appendChild(container);
+          log('container-appended', {
+            bodyChildCount: document.body ? document.body.childElementCount : null
+          });
 
           state.container = container;
           state.root = ReactDOMClient.createRoot(container);
           state.root.render(React.createElement(Agentation));
+          log('render-called');
+          scheduleAutoActivate();
         };
 
         const start = function() {
           mount().catch(function(error) {
-            console.warn('Agentation: injection failed', error);
+            console.error(logPrefix + ' injection-failed', {
+              message: error && error.message ? error.message : String(error),
+              name: error && error.name ? error.name : null,
+              stack: error && error.stack ? error.stack : null
+            });
+            state.lastError = {
+              message: error && error.message ? error.message : String(error),
+              name: error && error.name ? error.name : null
+            };
             state.unmount();
           });
         };
 
         if (document.body || document.readyState !== 'loading') {
+          log('start-now');
           start();
         } else {
+          log('wait-dom-content-loaded');
           window.addEventListener('DOMContentLoaded', start, { once: true });
         }
       })();
@@ -206,8 +313,10 @@ enum NativeBrowserAgentationInjector {
   }
 
   static func toggleOrInject(into webView: WKWebView) async {
+    NSLog("Agentation: injecting into WKWebView")
     do {
       _ = try await webView.evaluateJavaScript(combinedScript())
+      NSLog("Agentation: WKWebView evaluateJavaScript completed")
     } catch {
       NSLog("Agentation: injection failed: %@", error.localizedDescription)
       NSSound.beep()
@@ -215,6 +324,7 @@ enum NativeBrowserAgentationInjector {
   }
 
   static func toggleOrInject(into chromiumView: GhostexCEFBrowserView) async {
+    NSLog("Agentation: injecting into CEF browser")
     chromiumView.executeJavaScript(combinedScript())
   }
 }

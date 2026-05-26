@@ -19,6 +19,7 @@ enum HostCommand: Decodable {
   case closeProjectEditorPane(ProjectEditorCommand)
   case activateApp
   case writeTerminalText(WriteTerminalText)
+  case writeTerminalScript(WriteTerminalScript)
   case sendTerminalEnter(SessionCommand)
   case readTerminalText(ReadTerminalText)
   case checkPersistenceSession(CheckPersistenceSession)
@@ -102,6 +103,7 @@ enum HostCommand: Decodable {
     case closeProjectEditorPane
     case activateApp
     case writeTerminalText
+    case writeTerminalScript
     case sendTerminalEnter
     case readTerminalText
     case checkPersistenceSession
@@ -202,6 +204,8 @@ enum HostCommand: Decodable {
       self = .activateApp
     case .writeTerminalText:
       self = .writeTerminalText(try WriteTerminalText(from: decoder))
+    case .writeTerminalScript:
+      self = .writeTerminalScript(try WriteTerminalScript(from: decoder))
     case .sendTerminalEnter:
       self = .sendTerminalEnter(try SessionCommand(from: decoder))
     case .readTerminalText:
@@ -341,6 +345,7 @@ struct CreateTerminal: Decodable {
 }
 
 struct CreateWebPane: Decodable {
+  let browserFeedbackTool: String?
   let cwd: String?
   let projectId: String?
   let sessionId: String
@@ -424,6 +429,7 @@ struct StartCodeServerRuntime: Decodable {
 }
 
 struct CreateProjectEditorPane: Decodable {
+  let browserFeedbackTool: String?
   let companionPaneHidden: Bool?
   let mode: String?
   let projectId: String
@@ -439,6 +445,11 @@ struct ProjectEditorCommand: Decodable {
 }
 
 struct WriteTerminalText: Decodable {
+  let sessionId: String
+  let text: String
+}
+
+struct WriteTerminalScript: Decodable {
   let sessionId: String
   let text: String
 }
