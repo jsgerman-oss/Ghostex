@@ -5,8 +5,11 @@
 ## 3.13.0 - 2026-05-25
 
 - Added the Ghostex terminal TUI as the default `ghostex` / `gtx` experience, while keeping direct session attach available through the attach shortcuts.
+- Added a first-launch setup experience with Ghostex workspace artwork, agent hook readiness, and install/refresh actions for supported agents.
 - Added Git release workflow actions for reviewing changes, creating split commits, and handing off multicommit release work from the app.
 - Improved Git review flows with a richer commit modal, changed-file diff inspection, and clearer project/worktree ordering.
+- Improved Project board refresh behavior so ticket moves, edits, copied work prompts, and nearby Beads changes show up without manual refresh while large boards stay capped for smoother scrolling.
+- Improved the Ghostex terminal TUI with the Herdr-backed terminal runtime, hotkey overlay polish, full zmx replay, and synced working/attention/idle status from persisted sessions.
 - Improved titlebar and workspace chrome behavior with cleaner resource controls, tighter traffic-light alignment, and safer modal/menu click handling above native panes.
 - Improved cross-platform Ghostex parity for project workflows, workspace persistence, browser/code/git panes, settings, modals, and release packaging.
 - Improved mobile and persistent-session stability with clearer Android remote-session activity, more responsive iOS direct attach, and better cleanup for zmx, zellij, and other persisted terminal sessions.

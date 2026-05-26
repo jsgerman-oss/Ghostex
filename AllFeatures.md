@@ -3,8 +3,11 @@
 
 - Native Sparkle updates for macOS releases.
 - The bare `ghostex` and `gtx` commands open the Ghostex terminal TUI by default, with direct attach still available through attach shortcuts.
+- First-launch setup introduces Ghostex with workspace artwork, agent hook readiness, and install/refresh actions for supported agents.
 - Git release workflow actions can review changed files, create split commits, and hand off multicommit release work from the app.
 - Git review flows include a richer commit modal, changed-file diff inspection, and project/worktree ordering that keeps related work together.
+- Project board tickets auto-refresh after moves, edits, copied work prompts, and nearby Beads changes while large boards stay capped for smoother scrolling.
+- The Ghostex terminal TUI uses the Herdr-backed terminal runtime, includes hotkey overlay polish, requests full zmx replay, and syncs working/attention/idle status from persisted sessions.
 - Titlebar and workspace chrome use cleaner resource controls, tighter traffic-light alignment, and safer modal/menu click handling above native panes.
 - Cross-platform Ghostex parity covers project workflows, workspace persistence, browser/code/git panes, settings, modals, and release packaging.
 - Mobile and persistent-session stability includes clearer Android remote-session activity, more responsive iOS direct attach, and better cleanup for zmx, zellij, and other persisted terminal sessions.
