@@ -7835,6 +7835,20 @@ final class ReactTitlebarChromeView: NSView {
     guard isPointInFixedTitlebarStrip(point) else {
       return
     }
+    if !containsInteractiveHitRegion(point) {
+      /*
+       CDXC:ProjectEditorCompanion 2026-05-27-08:42:
+       The Companion Sidepane restore button repro showed clicks landing in
+       ReactTitlebarChromeView instead of the titlebar WKWebView. Record the
+       blank-titlebar click point and closest React hit regions so the next
+       repro can prove whether the button rect was missing, stale, or simply
+       missed by the pointer.
+       */
+      let webPoint = CGPoint(x: point.x, y: bounds.height - point.y)
+      AppDelegate.appendNativeHostLifecycleLog(
+        "reactTitlebar.blankStripMouseDown eventNumber=\(event.eventNumber) point=(\(formatPoint(point))) webPoint=(\(formatPoint(webPoint))) overlayOpen=\(overlayOpen) hitRegionCount=\(hitRegions.count) closestHitRegions=\(closestHitRegionDescription(to: webPoint))"
+      )
+    }
     if event.clickCount >= 2 {
       toggleWindowMaximizedToVisibleScreen()
       return
@@ -7859,6 +7873,28 @@ final class ReactTitlebarChromeView: NSView {
     }
     let stripMinY = max(bounds.height - titlebarHeight, 0)
     return point.y >= stripMinY
+  }
+
+  private func formatPoint(_ point: CGPoint) -> String {
+    "x=\(String(format: "%.1f", point.x)),y=\(String(format: "%.1f", point.y))"
+  }
+
+  private func formatRect(_ rect: CGRect) -> String {
+    "x=\(String(format: "%.1f", rect.minX)),y=\(String(format: "%.1f", rect.minY)),w=\(String(format: "%.1f", rect.width)),h=\(String(format: "%.1f", rect.height))"
+  }
+
+  private func closestHitRegionDescription(to point: CGPoint) -> String {
+    hitRegions.enumerated()
+      .map { index, region -> (String, CGFloat) in
+        let closestX = min(max(point.x, region.minX), region.maxX)
+        let closestY = min(max(point.y, region.minY), region.maxY)
+        let distance = hypot(point.x - closestX, point.y - closestY)
+        return ("#\(index){\(formatRect(region)),contains=\(region.contains(point)),distance=\(String(format: "%.1f", distance))}", distance)
+      }
+      .sorted { $0.1 < $1.1 }
+      .prefix(4)
+      .map(\.0)
+      .joined(separator: ";")
   }
 
   private func toggleWindowMaximizedToVisibleScreen() {

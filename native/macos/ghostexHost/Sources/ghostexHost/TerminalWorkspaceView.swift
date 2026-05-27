@@ -2844,6 +2844,19 @@ final class TerminalWorkspaceView: NSView {
           pendingAuthenticatedWebPaneLoadSessionIds.remove(command.sessionId)
           loadWebPane(sessionId: command.sessionId, url: url, reason: "createWebPaneExistingReroute")
         }
+      } else if !existingSession.isManagedT3Pane, !isManagedT3Pane, let url = initialUrl {
+        /*
+         CDXC:BrowserAgentControl 2026-05-27-06:43:
+         Agent browser-open commands should reuse a same-origin CEF pane by
+         navigating it instead of creating another tab. The sidebar can send
+         createWebPane for an existing browser session id, so normal browser
+         panes must reroute just like managed T3 panes.
+         */
+        existingSession.titleBarView.setTitle(
+          normalizedTerminalSessionTitle(command.title, sessionId: command.sessionId))
+        completedWebPaneLoadSessionIds.remove(command.sessionId)
+        pendingAuthenticatedWebPaneLoadSessionIds.remove(command.sessionId)
+        loadWebPane(sessionId: command.sessionId, url: url, reason: "createWebPaneExistingBrowserReroute")
       }
       focusWebPane(sessionId: command.sessionId, reason: "createWebPaneExisting")
       return
@@ -5729,18 +5742,48 @@ final class TerminalWorkspaceView: NSView {
      and applies to every mode-scoped editor pane for that project. Native must
      honor it during editor creation and layout sync so Code, Git, and Project
      surfaces do not reopen the companion after the user closed it.
+
+     CDXC:ProjectEditorCompanion 2026-05-27-08:42:
+     Repro clicks can clear the hidden preference while the project editor is
+     still opening. Log this low-volume state transition so the titlebar click,
+     sidebar publish, and AppKit layout decision can be matched exactly.
      */
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companionHiddenPreference.apply", [
+      "activeProjectEditorId": nullableString(activeProjectEditorId),
+      "companionIsVisibleBefore": projectEditorCompanionIsVisible,
+      "companionSessionIdBefore": nullableString(projectEditorCompanionSessionId),
+      "hidden": hidden,
+      "preferredSessionIdBefore": nullableString(preferredProjectEditorCompanionSessionId()),
+      "reason": reason,
+    ])
     projectEditorCompanionPaneHidden = hidden
     if hidden {
       projectEditorCompanionIsVisible = false
       projectEditorCompanionResizeDrag = nil
       needsLayout = true
+      NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companionHiddenPreference.applied", [
+        "activeProjectEditorId": nullableString(activeProjectEditorId),
+        "companionIsVisibleAfter": projectEditorCompanionIsVisible,
+        "companionSessionIdAfter": nullableString(projectEditorCompanionSessionId),
+        "hidden": hidden,
+        "needsLayout": needsLayout,
+        "reason": reason,
+      ])
       return
     }
     if activeProjectEditorId != nil, !projectEditorCompanionIsVisible {
       openDefaultProjectEditorCompanionPane(reason: reason)
       needsLayout = true
     }
+    NativeT3CodePaneReproLog.append("nativeWorkspace.projectEditor.companionHiddenPreference.applied", [
+      "activeProjectEditorId": nullableString(activeProjectEditorId),
+      "companionIsVisibleAfter": projectEditorCompanionIsVisible,
+      "companionSessionIdAfter": nullableString(projectEditorCompanionSessionId),
+      "hidden": hidden,
+      "needsLayout": needsLayout,
+      "preferredSessionIdAfter": nullableString(preferredProjectEditorCompanionSessionId()),
+      "reason": reason,
+    ])
   }
 
   private func openDefaultProjectEditorCompanionPane(reason: String) {
