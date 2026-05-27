@@ -851,6 +851,7 @@ const AGENT_ORDER_STORAGE_KEY = "ghostex-native-agent-order";
  * are removed after seeding defaults for every known project.
  */
 const PROJECT_COMMANDS_STORAGE_KEY = "ghostex-native-project-commands";
+const COMMANDS_PANEL_SESSION_GROUP_ID = "commands-panel";
 const LEGACY_COMMANDS_STORAGE_KEYS = [
   "ghostex-native-commands",
   "ghostex-native-command-order",
@@ -1353,6 +1354,16 @@ const providerRuntimeStateByProjectSessionId = new Map<
  * terminating the native pane surface.
  */
 const pendingNativeTerminalStartupTextBySessionId = new Map<string, string>();
+const NATIVE_TERMINAL_SURFACE_CREATION_PENDING_MS = 5_000;
+type PendingNativeTerminalSurfaceCreationState = {
+  nativeSessionId: string;
+  needsFocusAfterReady: boolean;
+  projectId: string;
+  reason: string;
+  startedAt: number;
+};
+const pendingNativeTerminalSurfaceCreationBySessionId =
+  new Map<string, PendingNativeTerminalSurfaceCreationState>();
 const titleDerivedActivityBySessionId = new Map<string, TitleDerivedSessionActivity>();
 const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
@@ -1427,6 +1438,58 @@ function takeNativeTerminalStartupText(sessionId: string): string | undefined {
   const text = pendingNativeTerminalStartupTextBySessionId.get(sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
   return text;
+}
+
+function markNativeTerminalSurfaceCreationPending(
+  projectId: string,
+  sessionId: string,
+  nativeSessionId: string,
+  reason: string,
+): void {
+  /**
+   * CDXC:SessionSurfaceRecovery 2026-05-27-10:24:
+   * Native createTerminal is asynchronous. A layout sync can ask AppKit to
+   * focus the newly restored pane before Ghostty has attached its view, so
+   * missing-surface recovery must treat that report as an in-flight create
+   * instead of replacing the restorable session with a fresh empty terminal.
+   */
+  pendingNativeTerminalSurfaceCreationBySessionId.set(sessionId, {
+    nativeSessionId,
+    needsFocusAfterReady: false,
+    projectId,
+    reason,
+    startedAt: Date.now(),
+  });
+}
+
+function takeNativeTerminalSurfaceCreationPending(
+  sessionId: string,
+): PendingNativeTerminalSurfaceCreationState | undefined {
+  const pending = pendingNativeTerminalSurfaceCreationBySessionId.get(sessionId);
+  pendingNativeTerminalSurfaceCreationBySessionId.delete(sessionId);
+  return pending;
+}
+
+function clearNativeTerminalSurfaceCreationPending(sessionId: string): void {
+  pendingNativeTerminalSurfaceCreationBySessionId.delete(sessionId);
+}
+
+function noteNativeTerminalSurfaceMissingDuringPendingCreate(
+  projectId: string,
+  sessionId: string,
+  nativeSessionId: string,
+): PendingNativeTerminalSurfaceCreationState | undefined {
+  const pending = pendingNativeTerminalSurfaceCreationBySessionId.get(sessionId);
+  if (!pending || pending.projectId !== projectId || pending.nativeSessionId !== nativeSessionId) {
+    return undefined;
+  }
+  const elapsedMs = Date.now() - pending.startedAt;
+  if (elapsedMs < 0 || elapsedMs > NATIVE_TERMINAL_SURFACE_CREATION_PENDING_MS) {
+    pendingNativeTerminalSurfaceCreationBySessionId.delete(sessionId);
+    return undefined;
+  }
+  pending.needsFocusAfterReady = true;
+  return pending;
 }
 
 function isNativeRestoreStartupScript(text: string): boolean {
@@ -7761,9 +7824,40 @@ function replaceActiveSnapshot(snapshot: SessionGridSnapshot): void {
   }));
 }
 
+function createProjectSessionGroupsForProjection(project: NativeProject): SessionGroupRecord[] {
+  const commandPanelSessions = project.commandsPanel.sessions;
+  if (commandPanelSessions.length === 0) {
+    return project.workspace.groups;
+  }
+  /**
+   * CDXC:ZmxSessionTracking 2026-05-27-06:28:
+   * Commands-panel terminals are still project-owned zmx/native sessions. They
+   * must flow through the same sidebar, CLI, resource, and batch-action
+   * projections as workspace terminals so a live provider runtime cannot exist
+   * without a visible project session card.
+   */
+  const commandPanelGroup: SessionGroupRecord = {
+    groupId: COMMANDS_PANEL_SESSION_GROUP_ID,
+    snapshot: {
+      focusedSessionId: project.commandsPanel.isVisible
+        ? project.commandsPanel.activeSessionId
+        : undefined,
+      paneLayout: project.commandsPanel.paneLayout,
+      sessions: commandPanelSessions,
+      visibleCount: clampVisibleSessionCount(commandPanelSessions.length),
+      visibleSessionIds: project.commandsPanel.isVisible
+        ? commandPanelSessions.map((session) => session.sessionId)
+        : [],
+      viewMode: "horizontal",
+    },
+    title: "Commands",
+  };
+  return [...project.workspace.groups, commandPanelGroup];
+}
+
 function createProjectedSidebarGroupsForProject(project: NativeProject): SidebarSessionGroup[] {
   const workspace = project.workspace;
-  return workspace.groups.map((group) => ({
+  return createProjectSessionGroupsForProjection(project).map((group) => ({
     groupId: group.groupId,
     isActive: group.groupId === workspace.activeGroupId,
     isFocusModeActive: group.snapshot.visibleCount === 1,
@@ -8725,6 +8819,7 @@ function restoreNativeTerminalSession(
       title: session.title,
     });
   }
+  markNativeTerminalSurfaceCreationPending(project.projectId, session.sessionId, nativeSessionId, reason);
   postNative({
     /**
      * CDXC:CrashRootCause 2026-05-04-11:53
@@ -11444,6 +11539,7 @@ type LaunchAgentTerminalOptions = {
   diagnosticSource?: "previousSessionRestore";
   focusAfterCreate?: boolean;
   initialPresentation?: "background" | "focused";
+  queueProviderStartupText?: boolean;
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
   splitDirection?: "horizontal" | "vertical";
@@ -11969,10 +12065,26 @@ function createTerminal(
   if (
     sessionPersistenceProvider &&
     initialInput.trim() &&
-    (sessionPersistenceName === undefined || options?.diagnosticSource === "previousSessionRestore")
+    (options?.queueProviderStartupText === true ||
+      sessionPersistenceName === undefined ||
+      options?.diagnosticSource === "previousSessionRestore")
   ) {
+    /**
+     * CDXC:AgentTerminalLifecycle 2026-05-27-10:24:
+     * Provider-backed reload/restart replacements can still create a new zmx
+     * shell even when they reuse a known persistence name. Explicit reload
+     * callers must be able to queue restore text; terminalReady remains the
+     * guard that discards it when native attached an already-running provider
+     * session.
+     */
     queueNativeTerminalStartupText(session.sessionId, initialInput);
   }
+  markNativeTerminalSurfaceCreationPending(
+    project.projectId,
+    session.sessionId,
+    nativeSessionId,
+    options?.diagnosticSource ?? "create-terminal",
+  );
   postNative({
     /**
      * CDXC:CrashRootCause 2026-05-04-09:19
@@ -15521,13 +15633,12 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
 
 function sleepInactiveProjectSessions(projectId: string): void {
   /**
-   * CDXC:ProjectSleep 2026-05-27-01:50:
+   * CDXC:ProjectSleep 2026-05-27-06:28:
    * A combined sidebar project row is a projection over all workspace groups,
    * not a native group id. Sleep Inactive must therefore enumerate the project's
-   * current workspace sessions and sleep only awake inactive terminals. Running,
-   * working, and attention sessions remain awake because they represent live
-   * output or user review that should not be interrupted by a project-level
-   * batch action.
+   * current project sessions, including command-panel zmx terminals. Live/idle
+   * zmx sessions are eligible; only working and attention sessions remain awake
+   * because they represent active output or user review.
    */
   const project = findProject(projectId);
   if (!project) {
@@ -15547,13 +15658,6 @@ function sleepInactiveProjectSessions(projectId: string): void {
       const projectedSession = projectedSessionsById.get(session.sessionId);
       const terminalState = terminalStateById.get(session.sessionId);
       const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
-      const isRunning =
-        projectedSession?.isRunning === true ||
-        projectedSession?.lifecycleState === "running" ||
-        terminalState?.lifecycleState === "running";
-      if (isRunning) {
-        continue;
-      }
       if (activity === "working" || activity === "attention") {
         continue;
       }
@@ -15562,6 +15666,21 @@ function sleepInactiveProjectSessions(projectId: string): void {
         true,
       );
     }
+  }
+  for (const session of project.commandsPanel.sessions) {
+    if (session.isSleeping === true) {
+      continue;
+    }
+    const projectedSession = projectedSessionsById.get(session.sessionId);
+    const terminalState = terminalStateById.get(session.sessionId);
+    const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
+    if (activity === "working" || activity === "attention") {
+      continue;
+    }
+    setNativeSessionSleeping(
+      createCombinedProjectSessionId(project.projectId, session.sessionId),
+      true,
+    );
   }
 }
 
@@ -15572,6 +15691,11 @@ function wakeProjectSleepingSessions(projectId: string): void {
    * sidebar row does not resolve to a concrete workspace group. Wake each
    * sleeping workspace terminal through the session sleep path so stale native
    * runtime state is cleared and zmx restore logic stays centralized.
+   *
+   * CDXC:ProjectSleep 2026-05-27-06:28:
+   * Commands-panel terminals are now part of the project session projection, so
+   * project Wake includes sleeping command zmx sessions instead of leaving them
+   * stranded outside the sidebar batch action.
    */
   const project = findProject(projectId);
   if (!project) {
@@ -15583,6 +15707,11 @@ function wakeProjectSleepingSessions(projectId: string): void {
         (session): session is TerminalSessionRecord =>
           session.kind === "terminal" && session.isSleeping === true,
       )
+      .map((session) => createCombinedProjectSessionId(project.projectId, session.sessionId)),
+  );
+  sessionIds.push(
+    ...project.commandsPanel.sessions
+      .filter((session) => session.isSleeping === true)
       .map((session) => createCombinedProjectSessionId(project.projectId, session.sessionId)),
   );
   if (sessionIds.length === 0) {
@@ -15603,6 +15732,11 @@ function fullReloadProjectZmxSessions(projectId: string): void {
    * not a history restore. Reload only workspace terminals that are awake,
    * attached to a native zmx terminal, and idle; skip working and attention
    * statuses so active agent work is not interrupted.
+   *
+   * CDXC:ProjectReload 2026-05-27-06:28:
+   * Commands-panel zmx terminals are project sessions too. Include them in the
+   * same attached/idle reload pass so titlebar action panes cannot drift out of
+   * project-level tracking.
    */
   const project = findProject(projectId);
   if (!project) {
@@ -15615,7 +15749,7 @@ function fullReloadProjectZmxSessions(projectId: string): void {
   );
   const sessionIdsToReload: string[] = [];
 
-  for (const group of project.workspace.groups) {
+  for (const group of createProjectSessionGroupsForProjection(project)) {
     for (const session of group.snapshot.sessions) {
       if (session.kind !== "terminal" || session.isSleeping === true) {
         continue;
@@ -15854,6 +15988,21 @@ function recoverMissingNativeSessionSurface(nativeSessionId: string): void {
     return;
   }
   if (session.kind === "terminal") {
+    const pendingSurfaceCreate = noteNativeTerminalSurfaceMissingDuringPendingCreate(
+      reference.project.projectId,
+      reference.sessionId,
+      nativeSessionId,
+    );
+    if (pendingSurfaceCreate) {
+      appendTerminalFocusDebugLog("nativeSidebar.missingSurfaceRecovery.pendingCreateIgnored", {
+        elapsedMs: Date.now() - pendingSurfaceCreate.startedAt,
+        nativeSessionId,
+        pendingReason: pendingSurfaceCreate.reason,
+        projectId: reference.project.projectId,
+        sessionId: reference.sessionId,
+      });
+      return;
+    }
     if (canRestoreNativeTerminalSession(session)) {
       restartNativeSession(createCombinedProjectSessionId(reference.project.projectId, reference.sessionId));
       return;
@@ -15900,6 +16049,7 @@ function restartNativeSession(sessionId: string): void {
       session.agentName,
       {
         agentSessionId: session.agentSessionId,
+        queueProviderStartupText: true,
         sessionPersistenceName: sessionPersistenceNameForProvider(
           sessionPersistenceProvider,
           session,
@@ -15928,6 +16078,7 @@ function restartNativeSession(sessionId: string): void {
     session.agentName,
     {
       agentSessionId: session.agentSessionId,
+      queueProviderStartupText: true,
       sessionPersistenceName: sessionPersistenceNameForProvider(
         sessionPersistenceProvider,
         session,
@@ -16439,7 +16590,7 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
     (project) => project.isRecentProject !== true,
   );
   for (const project of orderedProjects) {
-    for (const group of project.workspace.groups) {
+    for (const group of createProjectSessionGroupsForProjection(project)) {
       const projectedSessions = createProjectedSidebarSessionsForGroup(group, project.projectId);
       const terminalProjectedSessions = projectedSessions.filter((projectedSession) => {
         const sessionRecord = group.snapshot.sessions.find(
@@ -17612,15 +17763,27 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
       case "favoriteSession": {
         const session = requireCliSession(payload);
         const reference = resolveSidebarSessionReference(session.sessionId);
-        updateProjectWorkspace(
-          reference.project.projectId,
-          (workspace) =>
-            setSessionFavoriteInSimpleWorkspace(
-              workspace,
-              reference.sessionId,
-              payload.favorite !== false,
-            ).snapshot,
-        );
+        const sessionRecord = findTerminalSessionInProject(reference.project, reference.sessionId);
+        if (sessionRecord?.surface === "commands") {
+          updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+            ...panel,
+            sessions: panel.sessions.map((candidate) =>
+              candidate.sessionId === reference.sessionId
+                ? { ...candidate, isFavorite: payload.favorite !== false }
+                : candidate,
+            ),
+          }));
+        } else {
+          updateProjectWorkspace(
+            reference.project.projectId,
+            (workspace) =>
+              setSessionFavoriteInSimpleWorkspace(
+                workspace,
+                reference.sessionId,
+                payload.favorite !== false,
+              ).snapshot,
+          );
+        }
         publish();
         return { ok: true, state: summarizeCliState() };
       }
@@ -21667,12 +21830,24 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "setSessionFavorite":
       {
         const reference = resolveSidebarSessionReference(message.sessionId);
-        updateProjectWorkspace(
-          reference.project.projectId,
-          (workspace) =>
-            setSessionFavoriteInSimpleWorkspace(workspace, reference.sessionId, message.favorite)
-              .snapshot,
-        );
+        const session = findTerminalSessionInProject(reference.project, reference.sessionId);
+        if (session?.surface === "commands") {
+          updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+            ...panel,
+            sessions: panel.sessions.map((candidate) =>
+              candidate.sessionId === reference.sessionId
+                ? { ...candidate, isFavorite: message.favorite }
+                : candidate,
+            ),
+          }));
+        } else {
+          updateProjectWorkspace(
+            reference.project.projectId,
+            (workspace) =>
+              setSessionFavoriteInSimpleWorkspace(workspace, reference.sessionId, message.favorite)
+                .snapshot,
+          );
+        }
       }
       publish();
       return;
@@ -23482,6 +23657,13 @@ window.addEventListener("ghostex-native-host-event", (event) => {
   } else {
     const terminalState = terminalStateById.get(sidebarSessionId);
     if (!terminalState) {
+      if (
+        hostEvent.type === "terminalReady" ||
+        hostEvent.type === "terminalExited" ||
+        hostEvent.type === "terminalError"
+      ) {
+        clearNativeTerminalSurfaceCreationPending(sidebarSessionId);
+      }
       appendSessionTitleDebugLog("nativeSidebar.nativeEventIgnored", {
         nativeSessionId: hostEvent.sessionId,
         reason: "terminal-state-missing",
@@ -23597,6 +23779,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
         return;
       }
     } else if (hostEvent.type === "terminalExited") {
+      clearNativeTerminalSurfaceCreationPending(sidebarSessionId);
       if (
         handleRecentZmxAttachExitWithFullReload(
           sidebarSessionId,
@@ -23615,6 +23798,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
         return;
       }
     } else if (hostEvent.type === "terminalError") {
+      clearNativeTerminalSurfaceCreationPending(sidebarSessionId);
       const previousActivity = terminalState.activity;
       terminalState.lifecycleState = "error";
       terminalState.activity = "attention";
@@ -23648,6 +23832,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
         handleNativeSessionEnteredAttention(sidebarSessionId, "terminal-bell");
       }
     } else if (hostEvent.type === "terminalReady") {
+      const pendingSurfaceCreate = takeNativeTerminalSurfaceCreationPending(sidebarSessionId);
       terminalState.lifecycleState = "running";
       if (hostEvent.sessionPersistenceName !== undefined) {
         terminalState.sessionPersistenceName = hostEvent.sessionPersistenceName;
@@ -23696,6 +23881,9 @@ window.addEventListener("ghostex-native-host-event", (event) => {
             postNative({ sessionId: hostEvent.sessionId, text: startupText, type: "writeTerminalText" });
           }
         }
+      }
+      if (pendingSurfaceCreate?.needsFocusAfterReady) {
+        queueNativeLayoutFocusRequest(sidebarSessionId, "terminalReadyAfterPendingSurfaceCreate");
       }
     }
   }

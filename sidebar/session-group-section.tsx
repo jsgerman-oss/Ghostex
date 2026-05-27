@@ -529,13 +529,18 @@ export function SessionGroupSection({
   const actualSessionCount = storedSessionIds.length;
   const allSessionsSleeping =
     groupSessions.length > 0 && groupSessions.every((session) => session.isSleeping);
+  /**
+   * CDXC:ProjectSleep 2026-05-27-06:28:
+   * Sleep Inactive means awake plus idle/unknown activity, not "no live zmx
+   * runtime." Live zmx-backed terminals should still be sleepable when they are
+   * not working and not waiting for attention.
+   */
   const hasInactiveProjectSessionsToSleep =
     Boolean(projectContext) &&
     groupSessions.some(
       (session) =>
         session.sessionKind === "terminal" &&
         session.isSleeping !== true &&
-        session.isRunning !== true &&
         session.activity !== "working" &&
         session.activity !== "attention",
     );
