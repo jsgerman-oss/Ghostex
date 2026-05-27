@@ -2,6 +2,12 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
+- Ghostex-named agent skills install from the app and CLI: `$ghostex-browser-use`, `$ghostex-computer-use`, `$ghostex-agent-orchestration`, and `$ghostex-generate-title`.
+- `ghostex browser open` and `gx browser open` can scope browser panes to a project/worktree and reuse same-origin or exact tabs instead of creating duplicates.
+- Settings -> Integrations and first-launch setup use the public Ghostex Browser Use and Ghostex Computer Use names, with Desktop Control readiness tied to both Cua Driver and the Ghostex Computer Use skill.
+- Recent Projects rows have right-click actions for Copy Path, Open in Finder, and Remove Project.
+- The titlebar keep-awake control has Power Settings access, compact icon-only states, and an option to hide the titlebar control.
+- Project header diff stats can show larger four-digit changed-line counts before capping.
 - The bare `ghostex` and `gx` commands open the Ghostex terminal TUI by default, with direct attach still available through attach shortcuts.
 - Ghostex browser DevTools MCP lets agents inspect embedded browser panes, read console logs, take snapshots and screenshots, click, fill forms, press keys, and navigate pages through the bundled CLI skill.
 - First-launch setup includes CLI, mobile app, and browser-skill guidance, with installed-CLI detection so Homebrew users are not asked to reinstall unnecessarily.

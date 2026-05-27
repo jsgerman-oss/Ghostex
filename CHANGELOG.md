@@ -2,6 +2,16 @@
 
 <!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
 
+## 3.15.0 - 2026-05-27
+
+- Added Ghostex-named agent skills for Browser Use, Computer Use, Agent Orchestration, and Generate Title, with CLI install commands and bundled app resources so agents can discover the right Ghostex workflows after Homebrew install.
+- Improved first-launch setup and Settings -> Integrations with the public Ghostex Browser Use and Ghostex Computer Use names, including Desktop Control readiness checks for both Cua Driver and the Ghostex Computer Use skill.
+- Improved `ghostex browser open` / `gx browser open` so agent-created browser panes are scoped to the current project or worktree and reuse existing same-origin or exact tabs instead of creating duplicates.
+- Added Recent Projects right-click actions for Copy Path, Open in Finder, and Remove Project.
+- Added Power Settings access from the titlebar keep-awake menu, icon-only keep-awake controls, and an option to hide the keep-awake titlebar control.
+- Improved project headers by allowing larger four-digit changed-line counts before compact diff stats are capped.
+- Removed legacy IDE and Canary attachment paths so browser and workspace actions stay centered on Ghostex's own panes.
+
 ## 3.14.0 - 2026-05-27
 
 - Changed the short Ghostex CLI command from `gtx` to `gx`, with Homebrew setup checking for an existing non-Ghostex `gx` command before linking the alias.
