@@ -288,6 +288,8 @@ type MainSettingsSectionId =
   | "sounds"
   | "storage";
 
+export type MainSettingsInitialSectionId = MainSettingsSectionId;
+
 const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
   MainSettingsSectionId,
   readonly FirstLaunchSetupMainSettingKey[]
@@ -339,6 +341,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "showProjectEditorDiffFileCount",
   ],
   power: [
+    "hideKeepAwakeTitlebarControl",
     "keepAwakeDefaultDurationMinutes",
     "keepAwakeAllowDisplaySleep",
     "keepAwakeActivateOnLaunch",
@@ -415,6 +418,13 @@ function getActiveSettingsModalScrollViewport(dialogElement: HTMLElement | null)
   );
 }
 
+function getMainSettingsSectionRef(
+  sectionId: MainSettingsSectionId,
+  refs: Record<MainSettingsSectionId, RefObject<HTMLDivElement | null>>,
+): RefObject<HTMLDivElement | null> {
+  return refs[sectionId];
+}
+
 export type GhosttySettingsAction =
   | "applyRecommendedGhosttySettings"
   | "openGhosttyConfigFile"
@@ -428,6 +438,7 @@ export type SettingsModalProps = {
   agentHookStatus?: SidebarAgentHookStatusMessage;
   agentHookStatusLoading?: boolean;
   firstLaunchSetupVisibleSettings?: ReadonlySet<FirstLaunchSetupMainSettingKey>;
+  initialSection?: MainSettingsInitialSectionId;
   initialTab?: SettingsModalTab;
   isOpen: boolean;
   presentation?: SettingsModalPresentation;
@@ -465,6 +476,7 @@ export function SettingsModal({
   agentHookStatus,
   agentHookStatusLoading = false,
   firstLaunchSetupVisibleSettings,
+  initialSection,
   initialTab = "settings",
   isOpen,
   onChange,
@@ -639,9 +651,14 @@ export function SettingsModal({
     /**
      * CDXC:IntegrationsSetup 2026-05-27-04:17:
      * Settings -> Integrations is the single ongoing setup page for CLI,
-     * Browser Control, agent hooks, Desktop Control, and macOS permissions.
+     * Ghostex Browser Use, agent hooks, Ghostex Computer Use, and macOS permissions.
      * Request machine-local statuses only when the tab opens so Settings does
      * not run filesystem checks while the user is editing unrelated settings.
+     *
+     * CDXC:ComputerAgentControl 2026-05-27-06:58:
+     * Settings should present the public skill names Ghostex Browser Use and
+     * Ghostex Computer Use. Desktop Control is ready only when Cua Driver and
+     * the `$ghostex-computer-use` skill are both installed.
      */
     if (!agentHookStatus && !agentHookStatusLoading) {
       onRequestAgentHookStatus?.();
@@ -713,6 +730,11 @@ export function SettingsModal({
       },
     ]),
     power: getSettingsSectionSearch(settingsSearchQuery, "Power", [
+      {
+        key: "hideKeepAwakeTitlebarControl",
+        subtitle: "Hide the keep-awake control from the title bar.",
+        title: "Hide title-bar keep-awake control",
+      },
       {
         key: "keepAwakeDefaultDurationMinutes",
         options: KEEP_AWAKE_DURATION_OPTIONS.map((option) => ({
@@ -1108,19 +1130,19 @@ export function SettingsModal({
       id: "terminal",
       ref: ghosttyTerminalSectionRef,
       searchResult: settingsSearch.terminal,
-      title: "Terminal",
+      title: "General",
     },
     {
       id: "terminalBehavior",
       ref: ghosttyBehaviorSectionRef,
       searchResult: settingsSearch.terminalBehavior,
-      title: "Terminal Behavior",
+      title: "Behavior",
     },
     {
       id: "terminalScrolling",
       ref: ghosttyScrollingSectionRef,
       searchResult: settingsSearch.terminalScrolling,
-      title: "Terminal Scrolling",
+      title: "Scrolling",
     },
   ];
   const hasVisibleMainSettings = mainSettingsSectionNavigation.some((section) =>
@@ -1154,6 +1176,34 @@ export function SettingsModal({
     }
     return shouldShowSettingsSection(sectionResult);
   };
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "settings" || initialSection === undefined) {
+      return;
+    }
+    /**
+     * CDXC:SettingsNavigation 2026-05-27-07:32:
+     * Titlebar entry points such as Power Settings should land on the matching
+     * Settings section, not only open the modal at the previously remembered
+     * scroll position.
+     */
+    const targetSectionRef = getMainSettingsSectionRef(initialSection, {
+      browser: browserSectionRef,
+      editor: editorSectionRef,
+      power: powerSectionRef,
+      sessionCards: sessionCardsSectionRef,
+      sidebar: sidebarSectionRef,
+      sounds: soundsSectionRef,
+      statusIndicators: statusIndicatorsSectionRef,
+      storage: storageSectionRef,
+      workspace: workspaceSectionRef,
+      agents: agentsOnboardingSectionRef,
+    });
+    const animationFrame = requestAnimationFrame(() => {
+      targetSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => cancelAnimationFrame(animationFrame);
+  }, [activeTab, initialSection, isOpen]);
   useEffect(() => {
     if (!isOpen) {
       hasRequestedStorageStatsRef.current = false;
@@ -1809,6 +1859,15 @@ export function SettingsModal({
 
             {mainSectionVisible("power", settingsSearch.power) ? (
             <SettingsSection sectionRef={powerSectionRef} title="Power">
+              {mainSettingVisible(settingsSearch.power, "hideKeepAwakeTitlebarControl") ? (
+              <ToggleField
+                checked={draft.hideKeepAwakeTitlebarControl}
+                description="Hide the keep-awake control from the title bar."
+                label="Hide title-bar keep-awake control"
+                {...getSettingModificationProps("hideKeepAwakeTitlebarControl")}
+                onChange={(checked) => updateDraft("hideKeepAwakeTitlebarControl", checked)}
+              />
+              ) : null}
               {mainSettingVisible(settingsSearch.power, "keepAwakeDefaultDurationMinutes") ? (
               <SelectField
                 description="Choose the duration used by the title-bar keep-awake button."
@@ -2661,7 +2720,7 @@ function ProjectsSettingsPanel({
                   value={command}
                 />
                 <FieldDescription>
-                  Runs in the new worktree folder before the agent prompt is attached.
+                  Runs in the new worktree folder before the project is added (Useful for .envs/installing dependencies/etc.)
                 </FieldDescription>
               </Field>
             </FieldGroup>
@@ -2978,7 +3037,9 @@ function IntegrationsSettingsTab({
       : "Not checked";
   const cliReady = ghostexCliStatus?.installed === true;
   const browserControlReady = ghostexCliStatus?.browserSkillInstalled === true;
-  const desktopControlReady = ghostexCliStatus?.cuaDriverInstalled === true;
+  const desktopControlReady =
+    ghostexCliStatus?.cuaDriverInstalled === true &&
+    ghostexCliStatus?.computerUseSkillInstalled === true;
 
   return (
     <ScrollArea className="h-full min-h-0">
@@ -2986,13 +3047,13 @@ function IntegrationsSettingsTab({
         {/*
          * CDXC:IntegrationsSetup 2026-05-27-04:17:
          * Settings owns one Integrations tab for post-onboarding setup. Keep
-         * CLI, Browser Control, agent hooks, Cua Driver, and macOS privacy
+         * CLI, Ghostex Browser Use, agent hooks, Cua Driver, and macOS privacy
          * permissions on the same page so users can recover skipped first-launch
          * steps without hunting through unrelated tabs.
          */}
         <SettingsSection title="Integrations">
           <IntegrationSettingsRow
-            description="Install the Ghostex command-line bridge for mobile apps and CLI-backed integration setup. Browser Control can also use gx when that alias is available and not taken by another command."
+            description="Install the Ghostex command-line bridge for mobile apps and CLI-backed integration setup. Ghostex Browser Use can also use gx when that alias is available and not taken by another command."
             icon={IconTerminal2}
             status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : cliReady ? "Installed" : "Not installed"}
             tone={cliReady ? "success" : "warning"}
@@ -3019,11 +3080,11 @@ function IntegrationsSettingsTab({
           </IntegrationSettingsRow>
 
           <IntegrationSettingsRow
-            description="Install the agentic Browser Control skill so agents can inspect Ghostex browser panes, read console logs, take screenshots, and interact with pages."
+            description="Install the Ghostex Browser Use skill so agents can inspect Ghostex browser panes, read console logs, take screenshots, and interact with pages."
             icon={IconBrowser}
             status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : browserControlReady ? "Installed" : "Not installed"}
             tone={browserControlReady ? "success" : "warning"}
-            title="Browser Control"
+            title="Ghostex Browser Use"
           >
             <Button
               disabled={
@@ -3037,7 +3098,7 @@ function IntegrationsSettingsTab({
               variant={browserControlReady ? "outline" : "default"}
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {browserControlReady ? "Installed" : "Install Browser Control"}
+              {browserControlReady ? "Installed" : "Install Ghostex Browser Use"}
             </Button>
           </IntegrationSettingsRow>
 
@@ -3069,11 +3130,11 @@ function IntegrationsSettingsTab({
           </IntegrationSettingsRow>
 
           <IntegrationSettingsRow
-            description="Install Cua Driver so agents can control native macOS desktop apps. You can skip it until a workflow needs desktop control."
+            description="Install Cua Driver and the Ghostex Computer Use skill so agents can control native macOS desktop apps. You can skip it until a workflow needs desktop control."
             icon={IconDeviceDesktop}
             status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : desktopControlReady ? "Installed" : "Not installed"}
             tone={desktopControlReady ? "success" : "warning"}
-            title="Desktop Control"
+            title="Ghostex Computer Use"
           >
             <Button
               disabled={ghostexCliStatusLoading || desktopControlReady || !onInstallCuaDriver}
@@ -3082,7 +3143,7 @@ function IntegrationsSettingsTab({
               variant={desktopControlReady ? "outline" : "default"}
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {desktopControlReady ? "Installed" : "Install Desktop Control"}
+              {desktopControlReady ? "Installed" : "Install Ghostex Computer Use"}
             </Button>
           </IntegrationSettingsRow>
 

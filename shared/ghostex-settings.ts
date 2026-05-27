@@ -111,6 +111,7 @@ export type ghostexSettings = {
   keepAwakeDeactivateOnLowPowerMode: boolean;
   keepAwakeDeactivateOnUserSwitch: boolean;
   keepAwakeDefaultDurationMinutes: KeepAwakeDurationMinutes;
+  hideKeepAwakeTitlebarControl: boolean;
   showMacOSAttentionNotifications: boolean;
   hideFloatingSessionStatusIndicators: boolean;
   hideMenuBarSessionStatusIndicators: boolean;
@@ -310,6 +311,13 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   keepAwakeDeactivateOnLowPowerMode: false,
   keepAwakeDeactivateOnUserSwitch: true,
   keepAwakeDefaultDurationMinutes: 0,
+  /**
+   * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
+   * The titlebar keep-awake affordance is optional chrome. Keep it visible by
+   * default, but persist a Power setting that can remove the titlebar control
+   * completely for users who do not use Mac sleep management from Ghostex.
+   */
+  hideKeepAwakeTitlebarControl: false,
   /**
    * CDXC:SessionAttentionNotifications 2026-05-10-16:46
    * macOS attention notifications are enabled by default so a background
@@ -789,6 +797,16 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       ),
     ),
     /**
+     * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
+     * Normalize the hide preference independently from the caffeinate rules so
+     * hiding titlebar chrome does not rewrite existing power automation settings.
+     */
+    hideKeepAwakeTitlebarControl: readBoolean(
+      source,
+      "hideKeepAwakeTitlebarControl",
+      DEFAULT_ghostex_SETTINGS.hideKeepAwakeTitlebarControl,
+    ),
+    /**
      * CDXC:SessionAttentionNotifications 2026-05-10-16:46
      * Older settings files should opt into macOS attention notifications, and
      * explicit false must be preserved for users who disable system banners.
@@ -1094,7 +1112,7 @@ function normalizeTerminalCursorStyle(value: string | undefined): TerminalCursor
   return value === "block" || value === "underline" ? value : "bar";
 }
 
-function normalizeBrowserOpenMode(_value: string | undefined): BrowserOpenMode {
+function normalizeBrowserOpenMode(value: string | undefined): BrowserOpenMode {
   return "browser-pane";
 }
 

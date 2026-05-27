@@ -10,6 +10,7 @@ import {
   IconCaretRightFilled,
   IconChevronDown,
   IconChevronRight,
+  IconCopy,
   IconEye,
   IconFilter2,
   IconFolder,
@@ -28,6 +29,7 @@ import {
   IconSearch,
   IconSettings,
   IconTerminal2,
+  IconTrash,
   IconUsersGroup,
   IconWorld,
   type TablerIcon,
@@ -64,6 +66,7 @@ import {
   SidebarPreviousSessionsSearchGroup,
   SidebarSessionSearchField,
 } from "./sidebar-session-search-overlay";
+import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 import {
   createSidebarSessionSearchResults,
   createSidebarSessionSearchSelection,
@@ -126,6 +129,12 @@ type SessionIdsByGroup = Record<string, string[]>;
 type FloatingMenuPosition = {
   right: number;
   top: number;
+};
+
+type RecentProjectContextMenuPosition = {
+  projectId: string;
+  x: number;
+  y: number;
 };
 
 type SidebarGroupDragPreview = {
@@ -508,6 +517,8 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const hasEstablishedStartupGroupCollapseBaselineRef = useRef(false);
   const previousNormalizedSessionSearchQueryRef = useRef("");
   const refreshDebugInstanceIdRef = useRef(createSidebarRefreshDebugInstanceId());
+  const [recentProjectContextMenuPosition, setRecentProjectContextMenuPosition] =
+    useState<RecentProjectContextMenuPosition>();
   const pointerDownSessionTargetRef = useRef<SidebarPointerDownSessionTarget | undefined>(
     undefined,
   );
@@ -2112,10 +2123,39 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const restoreRecentProject = (projectId: string) => {
     setRecentProjectsQuery("");
     setIsRecentProjectsOpen(false);
+    setRecentProjectContextMenuPosition(undefined);
     vscode.postMessage({
       projectId,
       type: "restoreRecentProject",
     });
+  };
+
+  const openRecentProjectContextMenu = (
+    event: ReactMouseEvent<HTMLElement>,
+    projectId: string,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setRecentProjectContextMenuPosition({
+      projectId,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  };
+
+  const copyRecentProjectPath = (projectId: string) => {
+    setRecentProjectContextMenuPosition(undefined);
+    vscode.postMessage({ projectId, type: "copyRecentProjectPath" });
+  };
+
+  const openRecentProjectInFinder = (projectId: string) => {
+    setRecentProjectContextMenuPosition(undefined);
+    vscode.postMessage({ projectId, type: "openRecentProjectInFinder" });
+  };
+
+  const removeRecentProject = (projectId: string) => {
+    setRecentProjectContextMenuPosition(undefined);
+    vscode.postMessage({ projectId, type: "removeRecentProject" });
   };
 
   const toggleActiveSessionsSortMode = () => {
@@ -2531,7 +2571,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
               aria-expanded={isRecentProjectsOpen}
               className="recent-projects-drawer-toggle group-head"
               data-collapsible="true"
-              onClick={() => setIsRecentProjectsOpen((previous) => !previous)}
+              onClick={() => {
+                setRecentProjectContextMenuPosition(undefined);
+                setIsRecentProjectsOpen((previous) => !previous);
+              }}
               type="button"
             >
               <span className="group-title-wrap">
@@ -2592,7 +2635,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                       <AppTooltip content={project.path} key={project.projectId}>
                         <button
                           className="recent-projects-row group-head"
+                          data-context-menu-open={String(
+                            recentProjectContextMenuPosition?.projectId === project.projectId,
+                          )}
                           onClick={() => restoreRecentProject(project.projectId)}
+                          onContextMenu={(event) =>
+                            openRecentProjectContextMenu(event, project.projectId)
+                          }
                           type="button"
                         >
                           <span className="group-title-wrap">
@@ -2625,6 +2674,61 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                   )}
                 </div>
             </div>
+            {recentProjectContextMenuPosition ? (
+              <SidebarContextMenuPortal
+                menuStyle={{
+                  left: `${recentProjectContextMenuPosition.x}px`,
+                  top: `${recentProjectContextMenuPosition.y}px`,
+                }}
+                onDismiss={() => setRecentProjectContextMenuPosition(undefined)}
+                vscode={vscode}
+              >
+                {/*
+                 * CDXC:RecentProjects 2026-05-27-07:04:
+                 * Right-clicking a Recent Projects row should expose only the
+                 * parked-project actions: Copy Path, Open in Finder, then a
+                 * separator before Remove Project.
+                 */}
+                <button
+                  className="session-context-menu-item"
+                  onClick={() =>
+                    copyRecentProjectPath(recentProjectContextMenuPosition.projectId)
+                  }
+                  role="menuitem"
+                  type="button"
+                >
+                  <IconCopy aria-hidden="true" className="session-context-menu-icon" size={14} />
+                  Copy Path
+                </button>
+                <button
+                  className="session-context-menu-item"
+                  onClick={() =>
+                    openRecentProjectInFinder(recentProjectContextMenuPosition.projectId)
+                  }
+                  role="menuitem"
+                  type="button"
+                >
+                  <IconFolderOpen
+                    aria-hidden="true"
+                    className="session-context-menu-icon"
+                    size={14}
+                  />
+                  Open in Finder
+                </button>
+                <div className="session-context-menu-divider" role="separator" />
+                <button
+                  className="session-context-menu-item session-context-menu-item-danger"
+                  onClick={() =>
+                    removeRecentProject(recentProjectContextMenuPosition.projectId)
+                  }
+                  role="menuitem"
+                  type="button"
+                >
+                  <IconTrash aria-hidden="true" className="session-context-menu-icon" size={14} />
+                  Remove Project
+                </button>
+              </SidebarContextMenuPortal>
+            ) : null}
           </section>
         ) : null}
         <GitCommitModal

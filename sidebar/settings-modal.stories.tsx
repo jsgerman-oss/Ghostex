@@ -47,9 +47,10 @@ function SettingsModalStory({
   });
   const [ghostexCliStatus, setGhostexCliStatus] = useState<SidebarGhostexCliStatusMessage>({
     browserSkillInstalled: false,
+    computerUseSkillInstalled: false,
     cuaAppInstalled: false,
     cuaDriverInstalled: false,
-    detail: "ghostex is available on PATH. Browser Control and Desktop Control are not installed yet.",
+    detail: "ghostex is available on PATH. Ghostex Browser Use and Ghostex Computer Use are not installed yet.",
     generatedAt: "2026-05-27T04:17:00.000Z",
     ghostexPath: "/opt/homebrew/bin/ghostex",
     gxBlockedByExistingCommand: false,
@@ -88,12 +89,14 @@ function SettingsModalStory({
           setGhostexCliStatus({
             ...ghostexCliStatus,
             browserSkillInstalled: true,
-            browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-devtools-mcp/SKILL.md",
+            browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-use/SKILL.md",
           })
         }
         onInstallCuaDriver={() =>
           setGhostexCliStatus({
             ...ghostexCliStatus,
+            computerUseSkillInstalled: true,
+            computerUseSkillPath: "/Users/madda/agents/skills/ghostex-computer-use/SKILL.md",
             cuaAppInstalled: true,
             cuaDriverInstalled: true,
             cuaDriverPath: "/Users/madda/.local/bin/cua-driver",

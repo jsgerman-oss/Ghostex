@@ -1,11 +1,11 @@
 import {
   IconBox,
   IconBrandGithub,
-  IconChartPie2Filled,
   IconCheck,
   IconChevronDown,
   IconChecklist,
   IconCode,
+  IconCoffee,
   IconCpu,
   IconDeviceDesktop,
   IconFolderOpen,
@@ -74,8 +74,8 @@ import {
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
   type CustomWorkspaceOpenTarget,
-  type WorkspaceOpenTargetAvailability,
   type WorkspaceIdeTargetApp,
+  type WorkspaceOpenTargetAvailability,
   type WorkspaceOpenTargetDefinition,
 } from "../../shared/workspace-open-targets";
 import { EditorBrandIcon, getEditorBrandIconId } from "../../sidebar/brand-icons";
@@ -122,6 +122,7 @@ type TitlebarKeepAwakeSettings = {
   deactivateOnLowPowerMode: boolean;
   deactivateOnUserSwitch: boolean;
   defaultDurationMinutes: KeepAwakeDurationMinutes;
+  hideTitlebarControl: boolean;
 };
 
 type TitlebarResourceGroup = {
@@ -948,7 +949,7 @@ function App() {
   const [quittingResourceKeys, setQuittingResourceKeys] = useState<Set<string>>(() => new Set());
   const [optimisticMode, setOptimisticMode] = useState<TitlebarMode>();
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const lastCompanionRestoreDispatchAtRef = useRef(0);
+  const lastCompanionHitRegionSignatureRef = useRef("");
   const activeMode = optimisticMode ?? projectState.activeMode;
   const resourceViews = useMemo(
     () => createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses),
@@ -1025,12 +1026,64 @@ function App() {
         y: rect.y,
       };
     });
+    const companionRestoreButton = document.querySelector<HTMLElement>(
+      ".titlebar-companion-restore-button",
+    );
+    if (companionRestoreButton && projectState.projectEditorCompanionPaneHidden) {
+      /*
+       * CDXC:ProjectEditorCompanion 2026-05-27-08:42:
+       * Repros showed the restore button sometimes appeared to ignore clicks,
+       * but native logs only showed blank titlebar hits. Log the measured React
+       * hit rect when it changes so missed AppKit clicks can be compared to the
+       * actual DOM button geometry without logging every pointer event.
+       */
+      const rect = companionRestoreButton.getBoundingClientRect();
+      const signature = [
+        activeMode,
+        projectState.editorIsOpen ? "open" : "closed",
+        projectState.editorIsSleeping ? "sleeping" : "awake",
+        projectState.projectId,
+        Math.round(rect.x),
+        Math.round(rect.y),
+        Math.round(rect.width),
+        Math.round(rect.height),
+        titlebarOverlayOpen ? "overlay" : "plain",
+      ].join("|");
+      if (signature !== lastCompanionHitRegionSignatureRef.current) {
+        lastCompanionHitRegionSignatureRef.current = signature;
+        appendTitlebarCodeLagDebugLog(
+          projectState.debuggingMode,
+          "titlebarCompanionRestore.hitRegionMeasured",
+          {
+            activeMode,
+            editorIsOpen: projectState.editorIsOpen,
+            editorIsSleeping: projectState.editorIsSleeping,
+            projectEditorCompanionPaneHidden: projectState.projectEditorCompanionPaneHidden,
+            projectId: projectState.projectId,
+            rect: {
+              height: rect.height,
+              width: rect.width,
+              x: rect.x,
+              y: rect.y,
+            },
+            titlebarOverlayOpen,
+          },
+        );
+      }
+    }
     postNative({
       overlayOpen: titlebarOverlayOpen,
       regions,
       type: "setReactTitlebarHitRegions",
     });
-  }, [titlebarOverlayOpen]);
+  }, [
+    activeMode,
+    projectState.editorIsOpen,
+    projectState.editorIsSleeping,
+    projectState.projectEditorCompanionPaneHidden,
+    projectState.projectId,
+    titlebarOverlayOpen,
+  ]);
 
   const publishSettledHitRegions = useCallback(() => {
     publishHitRegions();
@@ -1404,6 +1457,23 @@ function App() {
     void startKeepAwake();
   };
 
+  const openPowerSettings = () => {
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialSection: "power",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
+  useEffect(() => {
+    if (!projectState.keepAwake.hideTitlebarControl && !keepAwakeMenuOpen) {
+      return;
+    }
+    if (projectState.keepAwake.hideTitlebarControl && keepAwakeMenuOpen) {
+      setKeepAwakeMenuOpen(false);
+    }
+  }, [keepAwakeMenuOpen, projectState.keepAwake.hideTitlebarControl]);
+
   useEffect(() => {
     if (!projectState.keepAwake.activateOnLaunch || keepAwakeRuntime) {
       return;
@@ -1520,26 +1590,13 @@ function App() {
     postNative({ type: "openTasksPlaceholderFromTitlebar" });
   };
 
-  const showProjectEditorCompanion = (source: "click" | "pointerDown") => {
-    const now = performance.now();
-    if (now - lastCompanionRestoreDispatchAtRef.current < 250) {
-      appendTitlebarCodeLagDebugLog(
-        projectState.debuggingMode,
-        "titlebarCompanionRestore.duplicateSuppressed",
-        {
-          projectId: projectState.projectId,
-          source,
-        },
-      );
-      return;
-    }
-    lastCompanionRestoreDispatchAtRef.current = now;
+  const showProjectEditorCompanion = () => {
     appendTitlebarCodeLagDebugLog(projectState.debuggingMode, "titlebarCompanionRestore.dispatch", {
       activeMode,
       editorIsOpen: projectState.editorIsOpen,
       projectEditorCompanionPaneHidden: projectState.projectEditorCompanionPaneHidden,
       projectId: projectState.projectId,
-      source,
+      source: "click",
     });
     postNative({ type: "showProjectEditorCompanionFromTitlebar" });
   };
@@ -1584,19 +1641,7 @@ function App() {
                       aria-label="Show Companion Sidepane"
                       className="titlebar-session-button titlebar-companion-restore-button"
                       data-titlebar-hit-region
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        showProjectEditorCompanion("click");
-                      }}
-                      onPointerDown={(event) => {
-                        if (event.button !== 0) {
-                          return;
-                        }
-                        event.preventDefault();
-                        event.stopPropagation();
-                        showProjectEditorCompanion("pointerDown");
-                      }}
+                      onClick={showProjectEditorCompanion}
                       type="button"
                       variant="ghost"
                     >
@@ -1676,6 +1721,7 @@ function App() {
              * Keep accessible labels on the buttons and visible labels inside
              * dropdown menus, while avoiding extra titlebar hover chrome.
              */}
+            {!projectState.keepAwake.hideTitlebarControl ? (
             <DropdownMenu onOpenChange={setKeepAwakeMenuOpen} open={keepAwakeMenuOpen}>
               <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
                 <Button
@@ -1686,10 +1732,17 @@ function App() {
                   type="button"
                   variant={keepAwakeRuntime ? "outline" : "ghost"}
                 >
-                  <IconDeviceDesktop aria-hidden="true" size={14} stroke={1.8} />
-                  <span className="titlebar-git-label">
-                    {keepAwakeRuntime ? keepAwakeRuntimeLabel(keepAwakeRuntime) : "Awake"}
-                  </span>
+                  {/*
+                   * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
+                   * Keep-awake titlebar chrome must be icon-only so it cannot
+                   * clip in the narrow right-side slot. Coffee means Ghostex is
+                   * keeping the Mac awake; moon means clicking will allow sleep.
+                   */}
+                  {keepAwakeRuntime ? (
+                    <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
+                  ) : (
+                    <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+                  )}
                 </Button>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -1718,7 +1771,7 @@ function App() {
                       void startKeepAwake(option.value);
                     }}
                   >
-                    <IconDeviceDesktop aria-hidden="true" size={14} stroke={1.8} />
+                    <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
                     <span className="min-w-0 flex-1 truncate">Keep awake {option.label.toLowerCase()}</span>
                     {keepAwakeRuntime?.durationMinutes === option.value ? (
                       <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
@@ -1734,18 +1787,14 @@ function App() {
                 <DropdownMenuSeparator className="bg-border/70" />
                 <DropdownMenuItem
                   className="titlebar-open-menu-item"
-                  onClick={() =>
-                    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
-                      modal: "settings",
-                      type: "open",
-                    })
-                  }
+                  onClick={openPowerSettings}
                 >
                   <IconSettings aria-hidden="true" size={16} />
                   <span>Power Settings</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            ) : null}
             <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -1759,11 +1808,14 @@ function App() {
                    * CDXC:TitlebarResources 2026-05-17-02:03:
                    * The Resources button is the first right-side titlebar
                    * control after moving the pet wake/sleep toggle into the
-                   * sidebar overflow menu. Use IconChartPie2Filled so this
-                   * control reads as aggregate resource usage instead of
-                   * only CPU.
+                   * sidebar overflow menu.
+                   *
+                   * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
+                   * The keep-awake button now owns coffee/moon state icons, so
+                   * Resources uses the old desktop glyph as the stable manager
+                   * icon requested for this titlebar control swap.
                    */}
-                  <IconChartPie2Filled aria-hidden="true" size={16} />
+                  <IconDeviceDesktop aria-hidden="true" size={16} />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent
@@ -2052,6 +2104,7 @@ function createTitlebarKeepAwakeSettings(
     deactivateOnLowPowerMode: settings.keepAwakeDeactivateOnLowPowerMode,
     deactivateOnUserSwitch: settings.keepAwakeDeactivateOnUserSwitch,
     defaultDurationMinutes: settings.keepAwakeDefaultDurationMinutes,
+    hideTitlebarControl: settings.hideKeepAwakeTitlebarControl,
   };
 }
 
@@ -2081,19 +2134,6 @@ function readStoredKeepAwakeRuntime(): KeepAwakeRuntimeState | undefined {
   } catch {
     return undefined;
   }
-}
-
-function keepAwakeRuntimeLabel(runtime: KeepAwakeRuntimeState): string {
-  if (runtime.fireAtMs === undefined) {
-    return "Awake";
-  }
-  const remainingMinutes = Math.max(1, Math.ceil((runtime.fireAtMs - Date.now()) / 60_000));
-  if (remainingMinutes >= 60) {
-    const hours = Math.floor(remainingMinutes / 60);
-    const minutes = remainingMinutes % 60;
-    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-  }
-  return `${remainingMinutes}m`;
 }
 
 async function readKeepAwakePowerSnapshot(): Promise<
@@ -2213,7 +2253,7 @@ function TitlebarResourcesMenu({
     <div className="titlebar-resources-panel">
       <div className="titlebar-resources-header">
         <div className="titlebar-resources-title">
-          <IconChartPie2Filled aria-hidden="true" size={18} />
+          <IconDeviceDesktop aria-hidden="true" size={18} />
           <span>Resources</span>
         </div>
         <div className="titlebar-resources-actions">
@@ -2288,7 +2328,7 @@ function TitlebarResourcesMenu({
       </div>
       <div className="titlebar-resources-scroll">
         <div className="titlebar-resources-info-note">
-          This Agent Manager uses Ghostty terminals which are lighter on RAM & CPU that other tools.<br />
+          This Agent Manager uses Ghostty terminals which are lighter on RAM & CPU than web/electron terminals.<br />
           Still, long conversations with agents will always take up lots of RAM.<br />
           You can easily sleep all inactive terminals here & configure auto sleep in settings!
         </div>
@@ -3148,9 +3188,7 @@ styleElement.textContent = `
     padding: 0;
   }
   .titlebar-companion-restore-button {
-    height: 26px;
-    margin-top: -3px;
-    width: 38px;
+    width: 28px;
     padding: 0;
   }
   .titlebar-mode-switcher {

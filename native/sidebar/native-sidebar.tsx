@@ -2744,12 +2744,150 @@ function findBrowserSessionInProjectByUrl(
   return undefined;
 }
 
+type NativeBrowserReuseMode = "exact" | "none" | "similar";
+
+function normalizeNativeBrowserReuseMode(value: unknown): NativeBrowserReuseMode {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "exact" || normalized === "none" ? normalized : "similar";
+}
+
+function browserUrlOriginKey(url: string): string | undefined {
+  try {
+    const parsed = new URL(normalizeBrowserPaneUrl(url));
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function findBrowserSessionInProjectForReuse(
+  project: NativeProject,
+  url: string,
+  reuseMode: NativeBrowserReuseMode,
+): { groupId: string; session: BrowserSessionRecord } | undefined {
+  if (reuseMode === "none") {
+    return undefined;
+  }
+  const exact = findBrowserSessionInProjectByUrl(project, url);
+  if (exact || reuseMode === "exact") {
+    return exact;
+  }
+  const originKey = browserUrlOriginKey(url);
+  if (!originKey) {
+    return undefined;
+  }
+  for (const group of project.workspace.groups) {
+    const session = group.snapshot.sessions.find(
+      (candidate): candidate is BrowserSessionRecord =>
+        candidate.kind === "browser" && browserUrlOriginKey(candidate.browser.url) === originKey,
+    );
+    if (session) {
+      return { groupId: group.groupId, session };
+    }
+  }
+  return undefined;
+}
+
 function focusExistingBrowserModeSession(project: NativeProject, sessionId: string): void {
   if (activeProjectId !== project.projectId) {
     focusProject(project.projectId);
   }
   activateWorkspaceSurfaceForProject(project.projectId);
   focusTerminal(sessionId);
+}
+
+function navigateExistingBrowserSession(
+  project: NativeProject,
+  session: BrowserSessionRecord,
+  url: string,
+): BrowserSessionRecord {
+  const normalizedUrl = normalizeBrowserPaneUrl(url);
+  const title = browserPaneTitleFromUrl(normalizedUrl);
+  if (activeProjectId !== project.projectId) {
+    focusProject(project.projectId);
+  }
+  activateWorkspaceSurfaceForProject(project.projectId);
+  updateActiveProjectWorkspace((workspace) => {
+    const urlResult = setBrowserSessionUrlInSimpleWorkspace(
+      workspace,
+      session.sessionId,
+      normalizedUrl,
+    );
+    return setSessionTitleInSimpleWorkspace(urlResult.snapshot, session.sessionId, title, {
+      titleSource: "browser-auto",
+    }).snapshot;
+  });
+  const nativeSessionId = nativeSessionIdForProjectSidebarSession(project.projectId, session.sessionId);
+  postNative({
+    browserFeedbackTool: settings.browserFeedbackTool,
+    cwd: project.path,
+    sessionId: nativeSessionId,
+    title,
+    type: "createWebPane",
+    url: normalizedUrl,
+  });
+  postNative({ sessionId: nativeSessionId, type: "focusWebPane" });
+  publish();
+  return { ...session, browser: { ...session.browser, url: normalizedUrl }, title };
+}
+
+function resolveNativeBrowserCliProject(payload: Record<string, unknown>): NativeProject {
+  const projectId = typeof payload.projectId === "string" ? payload.projectId.trim() : "";
+  if (projectId) {
+    const project = findProject(projectId) ?? findProject(projectIdFromProjectEditorId(projectId));
+    if (project) {
+      return project;
+    }
+  }
+  const projectPath = typeof payload.projectPath === "string" ? payload.projectPath.trim().replace(/\/+$/u, "") : "";
+  if (projectPath) {
+    const project = projects.find(
+      (candidate) => candidate.path.trim().replace(/\/+$/u, "") === projectPath,
+    );
+    if (project) {
+      return project;
+    }
+  }
+  const projectName = typeof payload.projectName === "string" ? payload.projectName.trim().toLowerCase() : "";
+  if (projectName) {
+    const project = projects.find((candidate) => nativeAppTitleForProject(candidate).toLowerCase() === projectName);
+    if (project) {
+      return project;
+    }
+  }
+  return activeProject();
+}
+
+function openNativeBrowserPaneFromCli(payload: Record<string, unknown>): {
+  reused: boolean;
+  session: BrowserSessionRecord | undefined;
+} {
+  /**
+   * CDXC:BrowserAgentControl 2026-05-27-06:43:
+   * Agent-created browser panes must be scoped to the agent's project/worktree,
+   * not whichever Ghostex project the user most recently focused. Reuse exact
+   * or same-origin tabs inside that project by default so repeated agent calls
+   * navigate an existing pane instead of creating duplicate browser tabs.
+   */
+  const project = resolveNativeBrowserCliProject(payload);
+  const url = typeof payload.url === "string" ? payload.url : DEFAULT_BROWSER_LAUNCH_URL;
+  const normalizedUrl = normalizeBrowserPaneUrl(url);
+  const reuseMode = normalizeNativeBrowserReuseMode(payload.reuse);
+  const existing = findBrowserSessionInProjectForReuse(project, normalizedUrl, reuseMode);
+  if (existing) {
+    return {
+      reused: true,
+      session: navigateExistingBrowserSession(project, existing.session, normalizedUrl),
+    };
+  }
+  if (activeProjectId !== project.projectId) {
+    focusProject(project.projectId);
+  }
+  const groupId = typeof payload.groupId === "string" ? payload.groupId : undefined;
+  return {
+    reused: false,
+    session: createNativeBrowserSession(normalizedUrl, groupId),
+  };
 }
 
 function openTitlebarBrowserMode(url: string, title: string): void {
@@ -2877,6 +3015,9 @@ async function installNativeGhostexCliFromBrew(): Promise<void> {
   if (result.exitCode === 0) {
     showNativeMessage("info", "Ghostex CLI installed.");
     await installNativeBrowserControlSkill(false);
+    await installNativeComputerUseSkill(false);
+    await installNativeAgentOrchestrationSkill(false);
+    await installNativeGenerateTitleSkill(false);
     await requestNativeGhostexCliStatus();
     return;
   }
@@ -2902,16 +3043,119 @@ async function installNativeBrowserControlSkill(showSuccessMessage = true): Prom
   );
   if (result.exitCode === 0) {
     if (showSuccessMessage) {
-      showNativeMessage("info", "Browser Control installed.");
+      showNativeMessage("info", "Ghostex Browser Use installed.");
     }
     await requestNativeGhostexCliStatus();
     return;
   }
   showNativeMessage(
     "error",
-    `Browser Control install failed: ${(result.stderr || result.stdout || "install-skill failed").trim()}`,
+    `Ghostex Browser Use install failed: ${(result.stderr || result.stdout || "install-skill failed").trim()}`,
   );
   await requestNativeGhostexCliStatus();
+}
+
+async function installNativeComputerUseSkill(showSuccessMessage = true): Promise<boolean> {
+  /**
+   * CDXC:ComputerAgentControl 2026-05-27-06:58:
+   * Ghostex Desktop Control is not only the Cua Driver binary; agents also need
+   * the `$ghostex-computer-use` wrapper skill installed so the public Ghostex
+   * skill name maps to Cua Driver's CLI-first workflow.
+   */
+  const result = await runNativeProcess(
+    "/bin/zsh",
+    [
+      "-lc",
+      [
+        "if command -v ghostex >/dev/null 2>&1; then GHOSTEX=$(command -v ghostex);",
+        "else echo 'Ghostex CLI was not found on PATH.' >&2; exit 127; fi;",
+        '"$GHOSTEX" computer-use install-skill',
+      ].join(" "),
+    ],
+    { timeoutMs: 2 * 60_000 },
+  );
+  if (result.exitCode === 0) {
+    if (showSuccessMessage) {
+      showNativeMessage("info", "Ghostex Computer Use installed.");
+    }
+    await requestNativeGhostexCliStatus();
+    return true;
+  }
+  showNativeMessage(
+    "error",
+    `Ghostex Computer Use install failed: ${(result.stderr || result.stdout || "install-skill failed").trim()}`,
+  );
+  await requestNativeGhostexCliStatus();
+  return false;
+}
+
+async function installNativeAgentOrchestrationSkill(showSuccessMessage = true): Promise<boolean> {
+  /**
+   * CDXC:AgentOrchestration 2026-05-27-07:15:
+   * CLI setup should install `$ghostex-agent-orchestration` so agents discover
+   * Ghostex's supported pane/session commands for creating panes, sending
+   * cross-agent messages, checking status, and reading last lines via
+   * `ghostex read-text`.
+   */
+  const result = await runNativeProcess(
+    "/bin/zsh",
+    [
+      "-lc",
+      [
+        "if command -v ghostex >/dev/null 2>&1; then GHOSTEX=$(command -v ghostex);",
+        "else echo 'Ghostex CLI was not found on PATH.' >&2; exit 127; fi;",
+        '"$GHOSTEX" agent-orchestration install-skill',
+      ].join(" "),
+    ],
+    { timeoutMs: 2 * 60_000 },
+  );
+  if (result.exitCode === 0) {
+    if (showSuccessMessage) {
+      showNativeMessage("info", "Ghostex Agent Orchestration installed.");
+    }
+    await requestNativeGhostexCliStatus();
+    return true;
+  }
+  showNativeMessage(
+    "error",
+    `Ghostex Agent Orchestration install failed: ${(result.stderr || result.stdout || "install-skill failed").trim()}`,
+  );
+  await requestNativeGhostexCliStatus();
+  return false;
+}
+
+async function installNativeGenerateTitleSkill(showSuccessMessage = true): Promise<boolean> {
+  /**
+   * CDXC:GenerateTitleSkill 2026-05-27-07:28:
+   * Install `$ghostex-generate-title` with the CLI so each Ghostex agent session
+   * can generate a title under 47 characters and stage `/rename <title>` into
+   * its own terminal without pressing Enter.
+   */
+  const result = await runNativeProcess(
+    "/bin/zsh",
+    [
+      "-lc",
+      [
+        "if command -v ghostex >/dev/null 2>&1; then GHOSTEX=$(command -v ghostex);",
+        "else echo 'Ghostex CLI was not found on PATH.' >&2; exit 127; fi;",
+        '"$GHOSTEX" generate-title install-skill',
+      ].join(" "),
+    ],
+    { timeoutMs: 2 * 60_000 },
+  );
+  if (result.exitCode === 0) {
+    if (showSuccessMessage) {
+      showNativeMessage("info", "Ghostex Generate Title installed.");
+    }
+    await requestNativeGhostexCliStatus();
+    return true;
+  }
+  showNativeMessage(
+    "error",
+    `Ghostex Generate Title install failed: ${(result.stderr || result.stdout || "install-skill failed").trim()}`,
+  );
+  await requestNativeGhostexCliStatus();
+  return false;
 }
 
 async function installNativeCuaDriver(): Promise<void> {
@@ -2932,7 +3176,10 @@ async function installNativeCuaDriver(): Promise<void> {
     { timeoutMs: 10 * 60_000 },
   );
   if (result.exitCode === 0) {
-    showNativeMessage("info", "Desktop Control installed. Grant macOS permissions if prompted.");
+    const skillInstalled = await installNativeComputerUseSkill(false);
+    if (skillInstalled) {
+      showNativeMessage("info", "Desktop Control installed. Grant macOS permissions if prompted.");
+    }
     await requestNativeGhostexCliStatus();
     return;
   }
@@ -9154,11 +9401,14 @@ async function requestNativeGhostexCliStatus(): Promise<void> {
    * signal, and report `gx` as usable only when it resolves to Ghostex's app
    * bundle so setup does not claim another tool's command.
    *
-   * CDXC:BrowserAgentControl 2026-05-26-22:17:
-   * First-launch setup also needs to know whether the Ghostex browser MCP skill
-   * is installed under ~/agents/skills so page two can ask for the skill copy,
-   * not a redundant Homebrew reinstall, when only agent browser setup is
-   * missing.
+   * CDXC:BrowserAgentControl 2026-05-27-06:58:
+   * First-launch setup must check the renamed Ghostex Browser Use skill, not
+   * the legacy ghostex-browser-devtools-mcp path that caused duplicate Codex
+   * skill discovery.
+   *
+   * CDXC:ComputerAgentControl 2026-05-27-06:58:
+   * Desktop Control is ready for agents only when both Cua Driver and the
+   * `$ghostex-computer-use` wrapper skill are installed.
    */
   const result = await runNativeProcess("/usr/bin/python3", [
     "-c",
@@ -9173,11 +9423,14 @@ gx_path = shutil.which("gx")
 gx_realpath = os.path.realpath(gx_path) if gx_path else None
 gx_usable = bool(gx_realpath and "ghostex.app/Contents/Resources/Web/cli/gx" in gx_realpath)
 gx_blocked = bool(gx_path and not gx_usable)
-browser_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-browser-devtools-mcp", "SKILL.md")
+browser_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-browser-use", "SKILL.md")
 browser_skill_installed = os.path.isfile(browser_skill_path)
+computer_use_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-computer-use", "SKILL.md")
+computer_use_skill_installed = os.path.isfile(computer_use_skill_path)
 cua_driver_path = shutil.which("cua-driver")
 cua_app_installed = os.path.isdir("/Applications/CuaDriver.app")
 cua_driver_installed = bool(cua_driver_path or cua_app_installed)
+desktop_control_installed = bool(cua_driver_installed and computer_use_skill_installed)
 
 if ghostex_path:
     if gx_usable:
@@ -9191,11 +9444,17 @@ else:
 
 if ghostex_path:
     if browser_skill_installed:
-        detail = detail + " Browser Control skill is installed for agents."
+        detail = detail + " Ghostex Browser Use skill is installed for agents."
     else:
-        detail = detail + " Browser Control skill is not installed yet."
+        detail = detail + " Ghostex Browser Use skill is not installed yet."
 
-if cua_driver_installed:
+if ghostex_path:
+    if computer_use_skill_installed:
+        detail = detail + " Ghostex Computer Use skill is installed for agents."
+    else:
+        detail = detail + " Ghostex Computer Use skill is not installed yet."
+
+if desktop_control_installed:
     detail = detail + " Desktop Control is installed."
 else:
     detail = detail + " Desktop Control is not installed yet."
@@ -9203,6 +9462,8 @@ else:
 print(json.dumps({
     "browserSkillInstalled": browser_skill_installed,
     "browserSkillPath": browser_skill_path if browser_skill_installed else None,
+    "computerUseSkillInstalled": computer_use_skill_installed,
+    "computerUseSkillPath": computer_use_skill_path if computer_use_skill_installed else None,
     "cuaAppInstalled": cua_app_installed,
     "cuaDriverInstalled": cua_driver_installed,
     "cuaDriverPath": cua_driver_path,
@@ -9225,6 +9486,7 @@ print(json.dumps({
       detail: errorMessage,
       generatedAt: new Date().toISOString(),
       browserSkillInstalled: false,
+      computerUseSkillInstalled: false,
       cuaAppInstalled: false,
       cuaDriverInstalled: false,
       gxBlockedByExistingCommand: false,
@@ -9242,6 +9504,7 @@ print(json.dumps({
       detail: error instanceof Error ? error.message : "Unable to parse Ghostex CLI status.",
       generatedAt: new Date().toISOString(),
       browserSkillInstalled: false,
+      computerUseSkillInstalled: false,
       cuaAppInstalled: false,
       cuaDriverInstalled: false,
       gxBlockedByExistingCommand: false,
@@ -17410,25 +17673,20 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         publish();
         return { ok: true, state: summarizeCliState() };
       case "openBrowser":
-        return {
-          ok: true,
-          session: openNativeBrowserWindow(
-            typeof payload.url === "string" ? payload.url : DEFAULT_BROWSER_LAUNCH_URL,
-          ),
-        };
+        return { ok: true, ...openNativeBrowserPaneFromCli(payload) };
       case "openBrowserPane":
         /**
          * CDXC:ChromiumBrowserPanes 2026-05-04-17:04
          * CEF pane testing needs a non-UI path that exercises the same
          * in-workspace browser creation as the sidebar button when macOS
          * accessibility automation is unavailable in local agent sessions.
+         *
+         * CDXC:BrowserAgentControl 2026-05-27-06:43:
+         * CLI browser pane creation should honor project/worktree flags and
+         * same-origin reuse so agents do not create panes in the wrong active
+         * project or repeatedly open duplicates of the same app.
          */
-        return {
-          ok: true,
-          session: createNativeBrowserSession(
-            typeof payload.url === "string" ? payload.url : DEFAULT_BROWSER_LAUNCH_URL,
-          ),
-        };
+        return { ok: true, ...openNativeBrowserPaneFromCli(payload) };
       case "moveSidebar":
         moveSidebarToOtherSide();
         return { ok: true, state: summarizeCliState() };
@@ -18884,6 +19142,17 @@ function restoreRecentProject(projectId: string): void {
   publish();
 }
 
+function findRecentProjectForContextMenu(projectId: string): NativeProject | undefined {
+  /**
+   * CDXC:RecentProjects 2026-05-27-07:04:
+   * Recent Projects context-menu actions are only valid for parked projects.
+   * Resolve the current native project record by id at action time so copy,
+   * Finder, and removal commands cannot act on stale client path text.
+   */
+  const project = findProject(projectId);
+  return project?.isRecentProject === true ? project : undefined;
+}
+
 function setProjectWorktreeCommand(projectId: string, command: string): void {
   const normalizedCommand = command.trim();
   projects = projects.map((project) =>
@@ -20009,6 +20278,23 @@ function showProjectEditorCompanionFromTitlebar(): void {
   if (project.isChat === true || project.isRecentProject === true) {
     return;
   }
+  const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
+  appendTitlebarCodeLagDebugLog("titlebarCompanionRestore.sidebarReceived", {
+    activeProjectId,
+    projectEditorCompanionPaneHidden: project.projectEditorCompanionPaneHidden === true,
+    projectId: project.projectId,
+    surfaceIsOpen: surfaceState?.isOpen === true,
+    surfaceIsSleeping: surfaceState?.isSleeping === true,
+    surfaceMode: surfaceState?.mode,
+    surfaceStatus: surfaceState?.status,
+  });
+  /**
+   * CDXC:ProjectEditorCompanion 2026-05-27-08:42:
+   * Restore-button repros need a JS handoff breadcrumb between the titlebar
+   * click and native layout sync. Keep the behavior unchanged: the titlebar
+   * only clears the project-owned hidden preference, then publish sends the
+   * normal setActiveTerminalSet state to AppKit.
+   */
   setProjectEditorCompanionPaneHidden(
     project.projectId,
     false,
@@ -20986,10 +21272,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "openBrowserPane":
       /**
-       * CDXC:ChromiumBrowserPanes 2026-05-04-17:00
+       * CDXC:ChromiumBrowserPanes 2026-05-27-07:24
        * The dedicated sidebar test button must create the Chromium pane
-       * directly, not route through browserOpenMode where legacy Canary remains
-       * a valid user setting for browser command actions.
+       * directly because Chrome Canary attachment is no longer a browser
+       * action target.
        */
       createNativeBrowserSession(message.url ?? DEFAULT_BROWSER_LAUNCH_URL);
       return;
@@ -21152,6 +21438,27 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "restoreRecentProject":
       restoreRecentProject(message.projectId);
       return;
+    case "copyRecentProjectPath": {
+      const project = findRecentProjectForContextMenu(message.projectId);
+      if (project) {
+        void navigator.clipboard?.writeText(project.path).catch(() => undefined);
+      }
+      return;
+    }
+    case "openRecentProjectInFinder": {
+      const project = findRecentProjectForContextMenu(message.projectId);
+      if (project) {
+        openNativeWorkspaceInFinder(project.path);
+      }
+      return;
+    }
+    case "removeRecentProject": {
+      const project = findRecentProjectForContextMenu(message.projectId);
+      if (project) {
+        removeProject(project.projectId);
+      }
+      return;
+    }
     case "openWorkspaceProjectInFinderForGroup": {
       const groupReference = resolveSidebarGroupReference(message.groupId);
       openNativeWorkspaceInFinder(groupReference.project.path);

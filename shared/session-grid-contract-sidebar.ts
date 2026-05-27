@@ -11,8 +11,8 @@ import type {
 import type { SidebarGitAction, SidebarGitChangedFile, SidebarGitState } from "./sidebar-git";
 import type { SidebarProjectDiffStats } from "./project-diff-stats";
 import type { ghostexSettings } from "./ghostex-settings";
-import type { WorkspaceIdeTargetApp } from "./workspace-open-targets";
 import type { ghostexHotkeyActionId } from "./ghostex-hotkeys";
+import type { WorkspaceIdeTargetApp } from "./workspace-open-targets";
 import type { SidebarPinnedPrompt } from "./sidebar-pinned-prompts";
 import type {
   SessionLifecycleState,
@@ -87,17 +87,24 @@ export type SidebarAgentHookStatusMessage = {
 export type SidebarGhostexCliStatusMessage = {
   /**
    * CDXC:BrowserAgentControl 2026-05-26-22:17:
-   * First-launch CLI setup treats the browser DevTools MCP skill as part of the
+   * First-launch CLI setup treats the Ghostex Browser Use skill as part of the
    * installed CLI experience because agents need both the executable and the
    * skill instructions before they can inspect embedded CEF logs and pages.
    *
    * CDXC:IntegrationsSetup 2026-05-27-04:17:
    * Settings -> Integrations and the first-launch flow need one native-owned
-   * status payload for CLI, Browser Control, and Desktop Control. Native owns
+   * status payload for CLI, Ghostex Browser Use, and Ghostex Computer Use. Native owns
    * PATH and app-bundle checks so React can warn without guessing from UI state.
+   *
+   * CDXC:ComputerAgentControl 2026-05-27-06:58:
+   * Desktop Control readiness includes the `$ghostex-computer-use` wrapper
+   * skill, because Cua Driver alone does not teach agents the Ghostex-named
+   * computer-use workflow.
    */
   browserSkillInstalled: boolean;
   browserSkillPath?: string;
+  computerUseSkillInstalled: boolean;
+  computerUseSkillPath?: string;
   cuaAppInstalled: boolean;
   cuaDriverInstalled: boolean;
   cuaDriverPath?: string;
@@ -866,6 +873,20 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "restoreRecentProject";
+      projectId: string;
+    }
+  | {
+      /**
+       * CDXC:RecentProjects 2026-05-27-07:04:
+       * Recent Projects rows have their own right-click menu because they are
+       * parked projects without a rendered project group id. Route filesystem
+       * and removal actions by trusted project id so the sidebar does not send
+       * raw paths back to native.
+       */
+      type:
+        | "copyRecentProjectPath"
+        | "openRecentProjectInFinder"
+        | "removeRecentProject";
       projectId: string;
     }
   | {

@@ -1532,6 +1532,28 @@
   box-shadow: none;
 }
 
+/*
+ * CDXC:RecentProjects 2026-05-27-07:04:
+ * Recent Projects rows should use the same hover-only surface as reference
+ * sidebar project headers. The reference layout hides generic group-head
+ * pseudo-surfaces, so opt parked project rows back into that project-header
+ * hover treatment and keep it visible while their context menu is open.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-row.group-head::before {
+  border-radius: 8px;
+  display: block;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-row.group-head:hover::before,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-row.group-head:focus-visible::before,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .recent-projects-row.group-head[data-context-menu-open="true"]::before {
+  background: color-mix(in srgb, var(--app-foreground) 6%, transparent);
+  box-shadow: none;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-title-handle {
   max-width: 100%;
 }

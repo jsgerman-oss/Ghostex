@@ -13,7 +13,11 @@ import { FirstUserMessageModal } from "../../sidebar/first-user-message-modal";
 import { PinnedPromptsModal } from "../../sidebar/pinned-prompts-modal";
 import { PreviousSessionsModal } from "../../sidebar/previous-sessions-modal";
 import { ScratchPadModal } from "../../sidebar/scratch-pad-modal";
-import { SettingsModal, type SettingsModalTab } from "../../sidebar/settings-modal";
+import {
+  SettingsModal,
+  type MainSettingsInitialSectionId,
+  type SettingsModalTab,
+} from "../../sidebar/settings-modal";
 import { SessionRenameModal } from "../../sidebar/session-rename-modal";
 import { T3BrowserAccessModal } from "../../sidebar/t3-browser-access-modal";
 import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
@@ -89,6 +93,7 @@ type AppModalHostMessage =
       gitCommitDraft?: GitCommitModalDraft;
       gitFileDiff?: GitFileDiffModalDraft;
       initialFrame?: FloatingPromptEditorFrame;
+      initialSection?: MainSettingsInitialSectionId;
       initialText?: string;
       lockedActionType?: SidebarActionType;
       language?: string;
@@ -1445,6 +1450,7 @@ function AppModalHost() {
     agentHookStatus,
     ghostexCliStatus,
     ghostexFolderStats,
+    settingsInitialSection,
   } = useModalStateFromNative();
   const [agentHookStatusLoading, setAgentHookStatusLoading] = useState(false);
   const [ghostexCliStatusLoading, setGhostexCliStatusLoading] = useState(false);
@@ -1800,6 +1806,7 @@ function AppModalHost() {
         accessibilityPermissionGranted={window.__ghostex_NATIVE_HOST__?.accessibilityPermissionGranted}
         agentHookStatus={agentHookStatus}
         agentHookStatusLoading={agentHookStatusLoading}
+        initialSection={settingsInitialSection}
         initialTab={settingsInitialTab}
         isOpen={isSettingsRenderable}
         onChange={(nextSettings) => {
@@ -2056,6 +2063,8 @@ function useModalStateFromNative() {
   const [agentHookStatus, setAgentHookStatus] = useState<AgentHookStatusMessage>();
   const [ghostexCliStatus, setGhostexCliStatus] = useState<GhostexCliStatusMessage>();
   const [ghostexFolderStats, setGhostexFolderStats] = useState<SidebarGhostexFolderStatsMessage>();
+  const [settingsInitialSection, setSettingsInitialSection] =
+    useState<MainSettingsInitialSectionId>();
   const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
   const toastTokenRef = useRef(0);
 
@@ -2074,6 +2083,7 @@ function useModalStateFromNative() {
     setWorktree(undefined);
     setGhostexFolderStats(undefined);
     setAgentsHubCatalog(undefined);
+    setSettingsInitialSection(undefined);
   }, []);
 
   const closeModal = useCallback(() => {
@@ -2345,6 +2355,11 @@ function useModalStateFromNative() {
           }
           if (message.modal === "settings") {
             setGhostexFolderStats(undefined);
+            setSettingsInitialSection(
+              typeof message.initialSection === "string" ? message.initialSection : undefined,
+            );
+          } else {
+            setSettingsInitialSection(undefined);
           }
           if (message.modal !== "agentsHub") {
             setAgentsHubCatalog(undefined);
@@ -2461,6 +2476,7 @@ function useModalStateFromNative() {
     agentHookStatus,
     ghostexCliStatus,
     ghostexFolderStats,
+    settingsInitialSection,
   };
 }
 
