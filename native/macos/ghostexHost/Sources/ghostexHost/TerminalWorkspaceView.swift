@@ -1098,6 +1098,11 @@ private final class GhostexGhosttySurfaceHostView: NSView {
      The scroll controls should sit 5px higher than the first pass and use plain
      chevrons, with the top action drawing an upward chevron and the bottom
      action drawing a downward chevron.
+
+     CDXC:NativeTerminalScroll 2026-05-27-04:18:
+     The scroll-to-top and scroll-to-bottom controls must trade stack positions
+     with their icons and actions intact, so the lower overlay button is the
+     top jump and the upper overlay button is the bottom jump.
      */
     scrollToBottomButton.target = self
     scrollToBottomButton.action = #selector(scrollToBottomButtonPressed)
@@ -1219,8 +1224,8 @@ private final class GhostexGhosttySurfaceHostView: NSView {
     let size = Self.scrollButtonSize
     let x = max(bounds.maxX - Self.scrollButtonRightInset - size.width, bounds.minX)
     let bottomY = bounds.minY + Self.scrollButtonBottomInset
-    scrollToBottomButton.frame = CGRect(origin: CGPoint(x: x, y: bottomY), size: size)
-    scrollToTopButton.frame = CGRect(
+    scrollToTopButton.frame = CGRect(origin: CGPoint(x: x, y: bottomY), size: size)
+    scrollToBottomButton.frame = CGRect(
       origin: CGPoint(x: x, y: bottomY + size.height + Self.scrollButtonGap),
       size: size)
   }
