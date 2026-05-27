@@ -146,9 +146,12 @@ cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/gx"
 chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
 # CDXC:BrowserAgentControl 2026-05-26-22:17: First-launch CLI setup installs
 # the Ghostex browser DevTools MCP skill after Homebrew installs the app bundle.
-# Bundle the skill beside the CLI so `ghostex install-browser-skill` can copy the
-# exact version that matches the installed `ghostex browser-devtools-mcp`
+# Bundle the skill beside the CLI so `ghostex browser install-skill` can copy the
+# exact version that matches the installed `ghostex browser mcp`
 # command into ~/agents/skills.
+# CDXC:BrowserAgentControl 2026-05-27-01:59: Browser control is now documented
+# through the `ghostex browser ...` namespace, so bundled CLI resources must
+# continue shipping the skill used by `ghostex browser install-skill`.
 mkdir -p "$WEB_DIR/cli/skills"
 cp -R "$REPO_ROOT/.agents/skills/ghostex-browser-devtools-mcp" "$WEB_DIR/cli/skills/ghostex-browser-devtools-mcp"
 # CDXC:ZmxPersistence 2026-05-20-09:57: zmx pane refresh is now a zmx IPC feature, so Ghostex must bundle the pinned submodule binary instead of depending on whichever zmx happens to be on PATH. Build the submodule for the requested macOS architecture and copy it into app resources where TerminalWorkspaceView can launch it directly.

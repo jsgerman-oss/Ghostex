@@ -132,6 +132,7 @@ const COMMANDS = new Map([
   ["open-browser", bridgeAction("openBrowser", parseUrl)],
   ["open-browser-pane", bridgeAction("openBrowserPane")],
   ["show-browser", bridgeAction("showBrowser")],
+  ["browser", browserCommand],
   ["browser-devtools-mcp", browserDevToolsMcpCommand],
   ["browser-mcp", browserDevToolsMcpCommand],
   ["install-browser-skill", installBrowserSkillCommand],
@@ -191,7 +192,7 @@ async function main() {
   if (!command) {
     throw new Error(`Unknown command: ${commandName}\n\n${usage()}`);
   }
-  if (args.includes("-h") || args.includes("--help")) {
+  if (commandName !== "browser" && (args.includes("-h") || args.includes("--help"))) {
     helpCommand();
     return;
   }
@@ -245,6 +246,50 @@ async function browserDevToolsMcpCommand(args) {
   });
 }
 
+async function browserCommand(args) {
+  const [subcommand = "help", ...rest] = args;
+  /**
+   * CDXC:BrowserAgentControl 2026-05-27-01:59:
+   * Agents should discover embedded CEF control through `gx browser --help`.
+   * Keep browser MCP, skill install, pane opening, and browser visibility under
+   * the `browser` namespace so "browser" is the durable keyword for this control
+   * surface instead of a scattered set of top-level command names.
+   */
+  if (rest.includes("-h") || rest.includes("--help")) {
+    console.log(browserUsage());
+    return;
+  }
+  switch (subcommand) {
+    case "help":
+    case "-h":
+    case "--help":
+      console.log(browserUsage());
+      return;
+    case "mcp":
+    case "devtools-mcp":
+    case "browser-devtools-mcp":
+      await browserDevToolsMcpCommand(rest);
+      return;
+    case "install-skill":
+    case "install-browser-skill":
+    case "install-mcp-skill":
+      await installBrowserSkillCommand(rest);
+      return;
+    case "open":
+      await bridgeAction("openBrowser", parseUrl)(rest);
+      return;
+    case "open-pane":
+    case "pane":
+      await bridgeAction("openBrowserPane")(rest);
+      return;
+    case "show":
+      await bridgeAction("showBrowser")(rest);
+      return;
+    default:
+      throw new Error(`Unknown browser command: ${subcommand}\n\n${browserUsage()}`);
+  }
+}
+
 async function installBrowserSkillCommand(args) {
   const { flags } = parseArgs(args);
   const sourceDir = resolveGhostexBrowserSkillSourceDir();
@@ -262,7 +307,7 @@ async function installBrowserSkillCommand(args) {
   await cp(sourceDir, targetDir, { force: true, recursive: true });
 
   const result = {
-    command: "ghostex browser-devtools-mcp",
+    command: "ghostex browser mcp",
     ok: true,
     skill: GHOSTEX_BROWSER_SKILL_NAME,
     sourceDir,
@@ -273,7 +318,7 @@ async function installBrowserSkillCommand(args) {
     return;
   }
   console.log(`Installed ${GHOSTEX_BROWSER_SKILL_NAME} to ${targetDir}`);
-  console.log("Configure agents to run: ghostex browser-devtools-mcp");
+  console.log("Configure agents to run: ghostex browser mcp");
 }
 
 /**
@@ -2983,11 +3028,7 @@ function usage() {
     formatHelpCommand("sleep-session|favorite-session <id> [true|false]", "Set raw session flags"),
     formatHelpCommand("set-visible-count <1|2|3|4|6|9>", "Set visible session count"),
     formatHelpCommand("set-view-mode <grid|horizontal|vertical>", "Set session layout mode"),
-    formatHelpCommand("open-browser [url]", "Open the browser surface"),
-    formatHelpCommand("open-browser-pane", "Open a browser pane"),
-    formatHelpCommand("show-browser", "Show the browser surface"),
-    formatHelpCommand("browser-devtools-mcp [--port n]", "Run a stdio MCP server for embedded CEF DevTools control"),
-    formatHelpCommand("install-browser-skill [--json]", "Install the Ghostex browser MCP skill for agents"),
+    formatHelpCommand("browser --help", "Show embedded CEF browser control and MCP setup"),
     formatHelpCommand("move-sidebar", "Move the sidebar"),
   ].join("\n");
 
@@ -3050,7 +3091,75 @@ Global flags:
 `;
 }
 
+function browserUsage() {
+  /**
+   * CDXC:BrowserAgentControl 2026-05-27-01:59:
+   * `gx browser --help` is the agent-facing entry point for embedded CEF
+   * control. Document the MCP command, install command, tool names, and common
+   * debugging workflow here so agents do not need to infer browser setup from
+   * the general Ghostex CLI help.
+   */
+  const setupCommands = [
+    formatHelpCommand("browser mcp [--port n] [--target id|--page id]", "Run the stdio MCP server for CEF DevTools control"),
+    formatHelpCommand("browser install-skill [--json]", "Install the Ghostex browser MCP skill into ~/agents/skills"),
+    formatHelpCommand("browser open [url]", "Open or navigate the Ghostex browser surface"),
+    formatHelpCommand("browser open-pane", "Create a browser pane in the current workspace"),
+    formatHelpCommand("browser show", "Reveal the browser surface"),
+  ].join("\n");
+
+  const mcpTools = [
+    formatHelpCommand("ghostex_list_pages", "List CEF DevTools targets and current page ids"),
+    formatHelpCommand("ghostex_select_page", "Choose the target page for later tool calls"),
+    formatHelpCommand("ghostex_navigate", "Navigate the selected CEF page"),
+    formatHelpCommand("ghostex_console_logs", "Read console messages, Log entries, and exceptions captured after attach"),
+    formatHelpCommand("ghostex_snapshot", "Get an accessibility-like DOM snapshot with @e element refs"),
+    formatHelpCommand("ghostex_click / ghostex_fill", "Interact with @e refs or CSS selectors"),
+    formatHelpCommand("ghostex_press_key", "Send Enter, Tab, Escape, arrows, or printable keys"),
+    formatHelpCommand("ghostex_evaluate", "Run JavaScript in the selected page for inspection"),
+    formatHelpCommand("ghostex_screenshot", "Capture a PNG screenshot as base64 MCP image content"),
+  ].join("\n");
+
+  return `Ghostex Browser - control embedded CEF panes from agents
+
+Usage:
+  gx browser --help
+  gx browser mcp [--port n] [--target id|--page id] [--timeout ms]
+  gx browser install-skill [--json]
+  gx browser open [url]
+  gx browser open-pane
+  gx browser show
+
+Agent MCP config:
+  [mcp_servers.ghostex-browser]
+  command = "ghostex"
+  args = ["browser", "mcp"]
+
+Commands:
+${setupCommands}
+
+MCP tools exposed to the agent:
+${mcpTools}
+
+Recommended agent workflow:
+  1. Run ghostex_list_pages to find browser targets.
+  2. Run ghostex_select_page when more than one page is open.
+  3. Run ghostex_console_logs before reproducing a bug, then again after the action.
+  4. Run ghostex_snapshot and use @e refs with ghostex_click or ghostex_fill.
+  5. Use ghostex_screenshot for visual proof and ghostex_evaluate for focused inspection.
+
+Connection details:
+  The MCP server talks directly to Ghostex's embedded CEF Chrome DevTools Protocol endpoint.
+  It scans the default Ghostex CEF ports automatically. Pass --port or set
+  GHOSTEX_CEF_REMOTE_DEBUGGING_PORT only when the app is using a non-default port.
+
+Legacy aliases:
+  browser-devtools-mcp and browser-mcp still run the MCP server.
+  install-browser-skill still installs the skill, but new docs should use browser install-skill.
+`;
+}
+
 export {
+  browserUsage,
   buildSessionPickerModel,
   buildSessionPickerRows,
   buildSessionAttachCommand,

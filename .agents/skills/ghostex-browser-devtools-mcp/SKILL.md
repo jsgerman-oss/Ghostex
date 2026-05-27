@@ -5,7 +5,7 @@ description: >-
   Ghostex embedded CEF browser panes through the Ghostex browser DevTools MCP
   server. It covers CLI installation, MCP config, page selection, console logs,
   DOM snapshots, clicks, fills, key presses, screenshots, and the CEF remote
-  debugging port used by `ghostex browser-devtools-mcp`.
+  debugging port used by `ghostex browser mcp`.
 ---
 
 # Ghostex Browser DevTools MCP
@@ -18,7 +18,7 @@ such as console logs, page snapshots, clicks, fills, navigation, or screenshots.
 
 - Ghostex must be running with at least one embedded CEF browser pane open.
 - The Ghostex CLI must be installed: `brew install --cask maddada/tap/ghostex --force`.
-- The browser skill should be installed by the CLI: `ghostex install-browser-skill`.
+- The browser skill should be installed by the CLI: `ghostex browser install-skill`.
 
 ## MCP Server
 
@@ -27,7 +27,7 @@ Configure the agent to launch the MCP server over stdio:
 ```toml
 [mcp_servers.ghostex-browser]
 command = "ghostex"
-args = ["browser-devtools-mcp"]
+args = ["browser", "mcp"]
 ```
 
 If the CEF remote debugging port is not one of Ghostex's default ports, pass it
@@ -36,7 +36,7 @@ explicitly:
 ```toml
 [mcp_servers.ghostex-browser]
 command = "ghostex"
-args = ["browser-devtools-mcp", "--port", "9333"]
+args = ["browser", "mcp", "--port", "9333"]
 ```
 
 The same value can be provided as `GHOSTEX_CEF_REMOTE_DEBUGGING_PORT`.

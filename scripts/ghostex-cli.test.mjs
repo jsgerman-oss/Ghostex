@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
+  browserUsage,
   buildSessionPickerModel,
   buildSessionPickerRows,
   buildSessionAttachCommand,
@@ -119,7 +120,8 @@ describe("ghostex CLI Android remote-session contract", () => {
     const help = usage();
 
     expect(help).toContain("Running ghostex or gx with no subcommand opens the Ghostex terminal TUI");
-    expect(help).toContain("install-browser-skill");
+    expect(help).toContain("browser --help");
+    expect(help).not.toContain("browser-devtools-mcp [--port n]");
     expect(help).toContain("top switch button for project/session switching");
     expect(help).toContain("Direct attach stays available through attach/a/resume/r without opening the TUI");
     expect(help).toMatch(/^\s+ghostex$/m);
@@ -138,7 +140,8 @@ describe("ghostex CLI Android remote-session contract", () => {
       const targetDir = path.join(tempDir, "ghostex-browser-devtools-mcp");
       const result = await execFileAsync(process.execPath, [
         path.resolve("scripts/ghostex-cli.mjs"),
-        "install-browser-skill",
+        "browser",
+        "install-skill",
         "--target-dir",
         targetDir,
         "--json",
@@ -147,7 +150,7 @@ describe("ghostex CLI Android remote-session contract", () => {
       const skillMarkdown = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
 
       expect(payload).toMatchObject({
-        command: "ghostex browser-devtools-mcp",
+        command: "ghostex browser mcp",
         ok: true,
         skill: "ghostex-browser-devtools-mcp",
         targetDir,
@@ -157,6 +160,22 @@ describe("ghostex CLI Android remote-session contract", () => {
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
+  });
+
+  test("documents browser control under gx browser help", async () => {
+    const help = browserUsage();
+    const cliHelpResult = await execFileAsync(process.execPath, [
+      path.resolve("scripts/ghostex-cli.mjs"),
+      "browser",
+      "--help",
+    ]);
+
+    expect(cliHelpResult.stdout).toBe(`${help}\n`);
+    expect(help).toContain("gx browser mcp");
+    expect(help).toContain('args = ["browser", "mcp"]');
+    expect(help).toContain("ghostex_console_logs");
+    expect(help).toContain("ghostex_snapshot");
+    expect(help).toContain("browser install-skill");
   });
 
   test("builds picker rows with intro text, project spacing, and agent indicators", () => {
