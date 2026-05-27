@@ -66,7 +66,12 @@ import {
 import type { CommandConfigDraft } from "../../sidebar/command-config-modal";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "../../sidebar/agent-logos";
 import type { SidebarAgentIcon } from "../../shared/sidebar-agents";
-import { normalizeghostexSettings, type ZedOverlayTargetApp } from "../../shared/ghostex-settings";
+import {
+  KEEP_AWAKE_DURATION_OPTIONS,
+  normalizeghostexSettings,
+  type KeepAwakeDurationMinutes,
+  type ZedOverlayTargetApp,
+} from "../../shared/ghostex-settings";
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
   type CustomWorkspaceOpenTarget,
@@ -106,6 +111,17 @@ type TitlebarOpenTargetsSettings = {
 
 type TitlebarSidebarActionsSettings = {
   commands: SidebarCommandButton[];
+};
+
+type TitlebarKeepAwakeSettings = {
+  activateOnExternalDisplay: boolean;
+  activateOnLaunch: boolean;
+  allowDisplaySleep: boolean;
+  batteryThresholdPercent: number;
+  deactivateBelowBatteryThreshold: boolean;
+  deactivateOnLowPowerMode: boolean;
+  deactivateOnUserSwitch: boolean;
+  defaultDurationMinutes: KeepAwakeDurationMinutes;
 };
 
 type TitlebarResourceGroup = {
@@ -153,6 +169,7 @@ type TitlebarProjectState = {
   editorIsSleeping: boolean;
   editorStatus: ProjectEditorLoadStatus;
   git: SidebarGitState;
+  keepAwake: TitlebarKeepAwakeSettings;
   projectEditorCompanionPaneHidden: boolean;
   projectIconDataUrl?: string | null;
   projectId?: string;
@@ -262,6 +279,8 @@ declare global {
 
 const LAST_OPEN_TARGET_STORAGE_KEY = "ghostex.titlebar.lastOpenTargetId";
 const LAST_ACTION_COMMAND_STORAGE_PREFIX = "ghostex.titlebar.lastActionCommandByProject:";
+const KEEP_AWAKE_RUNTIME_STORAGE_KEY = "ghostex.titlebar.keepAwakeRuntime";
+const KEEP_AWAKE_POWER_CHECK_INTERVAL_MS = 30_000;
 /**
  * CDXC:NativeWindowChrome 2026-05-25-07:16:
  * The macOS app titlebar should now be 35px tall, not the earlier 45px. Keep the React titlebar height in sync with Swift's native reservation so web controls and AppKit traffic-light centering share one chrome height.
@@ -281,6 +300,13 @@ const RESOURCE_POLL_INTERVAL_MS = 5_000;
  * sidebar interaction model.
  */
 const TITLEBAR_SPLIT_MENU_CENTER_OFFSET = -14;
+
+type KeepAwakeRuntimeState = {
+  durationMinutes: KeepAwakeDurationMinutes;
+  fireAtMs?: number;
+  pid: number;
+  startedAtMs: number;
+};
 
 const pendingProcessResults = new Map<
   string,
@@ -907,10 +933,14 @@ function App() {
   );
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   const [gitMenuOpen, setGitMenuOpen] = useState(false);
+  const [keepAwakeMenuOpen, setKeepAwakeMenuOpen] = useState(false);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
   const titlebarOverlayOpen =
-    actionsMenuOpen || gitMenuOpen || openInMenuOpen || resourcesMenuOpen;
+    actionsMenuOpen || gitMenuOpen || keepAwakeMenuOpen || openInMenuOpen || resourcesMenuOpen;
+  const [keepAwakeRuntime, setKeepAwakeRuntime] = useState<KeepAwakeRuntimeState | undefined>(
+    () => readStoredKeepAwakeRuntime(),
+  );
   const [resourceProcesses, setResourceProcesses] = useState<ResourceProcess[]>([]);
   const [collapsedResourceKeys, setCollapsedResourceKeys] = useState<Set<string>>(() => {
     /**
@@ -1037,6 +1067,8 @@ function App() {
     activeAction?.commandId,
     actionsMenuOpen,
     gitMenuOpen,
+    keepAwakeMenuOpen,
+    keepAwakeRuntime?.pid,
     openInMenuOpen,
     resourcesMenuOpen,
     resourceProcesses.length,
@@ -1080,6 +1112,7 @@ function App() {
          */
         setActionsMenuOpen(false);
         setGitMenuOpen(false);
+        setKeepAwakeMenuOpen(false);
         setOpenInMenuOpen(false);
         setResourcesMenuOpen(false);
       },
@@ -1094,6 +1127,7 @@ function App() {
           debuggingMode: state.debuggingMode ?? current.debuggingMode,
           diffStats: state.diffStats ?? current.diffStats,
           git: state.git ?? current.git,
+          keepAwake: state.keepAwake ?? current.keepAwake,
           browserTabs: state.browserTabs ?? current.browserTabs,
           projectEditorCompanionPaneHidden:
             state.projectEditorCompanionPaneHidden ?? current.projectEditorCompanionPaneHidden,
@@ -1325,6 +1359,139 @@ function App() {
     });
   };
 
+  const stopKeepAwake = useCallback(async () => {
+    const runtime = keepAwakeRuntime;
+    setKeepAwakeRuntime(undefined);
+    localStorage.removeItem(KEEP_AWAKE_RUNTIME_STORAGE_KEY);
+    if (!runtime) {
+      return;
+    }
+    try {
+      await runNativeProcess("/bin/kill", [String(runtime.pid)]);
+    } catch (error) {
+      console.warn("Failed to stop keep-awake process", error);
+    }
+  }, [keepAwakeRuntime]);
+
+  const startKeepAwake = useCallback(
+    async (durationMinutes: KeepAwakeDurationMinutes = projectState.keepAwake.defaultDurationMinutes) => {
+      if (keepAwakeRuntime) {
+        await stopKeepAwake();
+      }
+      const flags = projectState.keepAwake.allowDisplaySleep ? "-i" : "-di";
+      const timeout = durationMinutes > 0 ? ` -t ${durationMinutes * 60}` : "";
+      const result = await runNativeProcess("/bin/sh", [
+        "-lc",
+        `(/usr/bin/nohup /usr/bin/caffeinate ${flags}${timeout} >/dev/null 2>&1 & echo $!)`,
+      ]);
+      const pid = Number(result.stdout.trim().split(/\s+/u)[0]);
+      if (result.exitCode !== 0 || !Number.isFinite(pid) || pid <= 0) {
+        console.warn("Failed to start keep-awake process", result.stderr || result.stdout);
+        return;
+      }
+      const nextRuntime: KeepAwakeRuntimeState = {
+        durationMinutes,
+        fireAtMs: durationMinutes > 0 ? Date.now() + durationMinutes * 60_000 : undefined,
+        pid,
+        startedAtMs: Date.now(),
+      };
+      setKeepAwakeRuntime(nextRuntime);
+      localStorage.setItem(KEEP_AWAKE_RUNTIME_STORAGE_KEY, JSON.stringify(nextRuntime));
+    },
+    [keepAwakeRuntime, projectState.keepAwake.allowDisplaySleep, projectState.keepAwake.defaultDurationMinutes, stopKeepAwake],
+  );
+
+  const toggleKeepAwake = () => {
+    if (keepAwakeRuntime) {
+      void stopKeepAwake();
+      return;
+    }
+    void startKeepAwake();
+  };
+
+  useEffect(() => {
+    if (!projectState.keepAwake.activateOnLaunch || keepAwakeRuntime) {
+      return;
+    }
+    void startKeepAwake();
+  }, [keepAwakeRuntime, projectState.keepAwake.activateOnLaunch, startKeepAwake]);
+
+  useEffect(() => {
+    if (!keepAwakeRuntime) {
+      return;
+    }
+    const checkRuntime = async () => {
+      if (keepAwakeRuntime.fireAtMs !== undefined && Date.now() >= keepAwakeRuntime.fireAtMs) {
+        await stopKeepAwake();
+        return;
+      }
+      const pidCheck = await runNativeProcess("/bin/kill", ["-0", String(keepAwakeRuntime.pid)]);
+      if (pidCheck.exitCode !== 0) {
+        setKeepAwakeRuntime(undefined);
+        localStorage.removeItem(KEEP_AWAKE_RUNTIME_STORAGE_KEY);
+      }
+    };
+    void checkRuntime();
+    const interval = window.setInterval(() => {
+      void checkRuntime();
+    }, KEEP_AWAKE_POWER_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [keepAwakeRuntime, stopKeepAwake]);
+
+  useEffect(() => {
+    if (
+      !keepAwakeRuntime &&
+      !projectState.keepAwake.activateOnExternalDisplay &&
+      !projectState.keepAwake.deactivateBelowBatteryThreshold &&
+      !projectState.keepAwake.deactivateOnLowPowerMode
+    ) {
+      return;
+    }
+    const checkPowerRules = async () => {
+      const snapshot = await readKeepAwakePowerSnapshot();
+      if (!snapshot) {
+        return;
+      }
+      if (
+        keepAwakeRuntime &&
+        projectState.keepAwake.deactivateBelowBatteryThreshold &&
+        snapshot.batteryPercent !== undefined &&
+        snapshot.batteryPercent <= projectState.keepAwake.batteryThresholdPercent
+      ) {
+        await stopKeepAwake();
+        return;
+      }
+      if (
+        keepAwakeRuntime &&
+        projectState.keepAwake.deactivateOnLowPowerMode &&
+        snapshot.lowPowerMode === true
+      ) {
+        await stopKeepAwake();
+        return;
+      }
+      if (
+        !keepAwakeRuntime &&
+        projectState.keepAwake.activateOnExternalDisplay &&
+        snapshot.externalDisplayConnected
+      ) {
+        await startKeepAwake();
+      }
+    };
+    void checkPowerRules();
+    const interval = window.setInterval(() => {
+      void checkPowerRules();
+    }, KEEP_AWAKE_POWER_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [
+    keepAwakeRuntime,
+    projectState.keepAwake.activateOnExternalDisplay,
+    projectState.keepAwake.batteryThresholdPercent,
+    projectState.keepAwake.deactivateBelowBatteryThreshold,
+    projectState.keepAwake.deactivateOnLowPowerMode,
+    startKeepAwake,
+    stopKeepAwake,
+  ]);
+
   const openAgentsMode = () => {
     setOptimisticMode("agents");
     postNative({ type: "openAgentsModeFromTitlebar" });
@@ -1514,6 +1681,76 @@ function App() {
              * Keep accessible labels on the buttons and visible labels inside
              * dropdown menus, while avoiding extra titlebar hover chrome.
              */}
+            <DropdownMenu onOpenChange={setKeepAwakeMenuOpen} open={keepAwakeMenuOpen}>
+              <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
+                <Button
+                  aria-label={keepAwakeRuntime ? "Allow Mac sleep" : "Keep Mac awake"}
+                  className="titlebar-session-button titlebar-open-main-button"
+                  data-active={String(Boolean(keepAwakeRuntime))}
+                  onClick={toggleKeepAwake}
+                  type="button"
+                  variant={keepAwakeRuntime ? "outline" : "ghost"}
+                >
+                  <IconDeviceDesktop aria-hidden="true" size={14} stroke={1.8} />
+                  <span className="titlebar-git-label">
+                    {keepAwakeRuntime ? keepAwakeRuntimeLabel(keepAwakeRuntime) : "Awake"}
+                  </span>
+                </Button>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    aria-label="Keep awake menu"
+                    className="titlebar-session-button titlebar-open-chevron-button"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <IconChevronDown aria-hidden="true" size={14} />
+                  </Button>
+                </DropdownMenuTrigger>
+              </ButtonGroup>
+              <DropdownMenuContent
+                align="center"
+                alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
+                className="titlebar-open-menu min-w-[220px] rounded-lg border-border/80 !bg-[#181818] p-1 text-[13px] text-foreground shadow-2xl"
+                data-titlebar-hit-region
+                sideOffset={6}
+                style={{ backgroundColor: "#181818" }}
+              >
+                {KEEP_AWAKE_DURATION_OPTIONS.map((option) => (
+                  <DropdownMenuItem
+                    className="titlebar-open-menu-item"
+                    key={option.value}
+                    onClick={() => {
+                      void startKeepAwake(option.value);
+                    }}
+                  >
+                    <IconDeviceDesktop aria-hidden="true" size={14} stroke={1.8} />
+                    <span className="min-w-0 flex-1 truncate">Keep awake {option.label.toLowerCase()}</span>
+                    {keepAwakeRuntime?.durationMinutes === option.value ? (
+                      <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
+                    ) : null}
+                  </DropdownMenuItem>
+                ))}
+                {keepAwakeRuntime ? (
+                  <DropdownMenuItem className="titlebar-open-menu-item" onClick={() => void stopKeepAwake()}>
+                    <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+                    <span>Allow sleep now</span>
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuSeparator className="bg-border/70" />
+                <DropdownMenuItem
+                  className="titlebar-open-menu-item"
+                  onClick={() =>
+                    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+                      modal: "settings",
+                      type: "open",
+                    })
+                  }
+                >
+                  <IconSettings aria-hidden="true" size={16} />
+                  <span>Power Settings</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
               <DropdownMenuTrigger asChild>
                 <Button
@@ -1785,6 +2022,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     editorIsSleeping: false,
     editorStatus: "idle",
     git: createDefaultSidebarGitState(),
+    keepAwake: createTitlebarKeepAwakeSettings(settings),
     projectEditorCompanionPaneHidden: false,
     projectName:
       (typeof bootstrap.workspaceName === "string" && bootstrap.workspaceName) ||
@@ -1805,6 +2043,105 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       hiddenTargetIds: settings.workspaceOpenTargetHiddenIds,
     },
   };
+}
+
+function createTitlebarKeepAwakeSettings(
+  settings: ReturnType<typeof normalizeghostexSettings>,
+): TitlebarKeepAwakeSettings {
+  return {
+    activateOnExternalDisplay: settings.keepAwakeActivateOnExternalDisplay,
+    activateOnLaunch: settings.keepAwakeActivateOnLaunch,
+    allowDisplaySleep: settings.keepAwakeAllowDisplaySleep,
+    batteryThresholdPercent: settings.keepAwakeBatteryThresholdPercent,
+    deactivateBelowBatteryThreshold: settings.keepAwakeDeactivateBelowBatteryThreshold,
+    deactivateOnLowPowerMode: settings.keepAwakeDeactivateOnLowPowerMode,
+    deactivateOnUserSwitch: settings.keepAwakeDeactivateOnUserSwitch,
+    defaultDurationMinutes: settings.keepAwakeDefaultDurationMinutes,
+  };
+}
+
+function readStoredKeepAwakeRuntime(): KeepAwakeRuntimeState | undefined {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(KEEP_AWAKE_RUNTIME_STORAGE_KEY) || "null");
+    if (!isRecord(parsed)) {
+      return undefined;
+    }
+    const pid = typeof parsed.pid === "number" ? parsed.pid : Number.NaN;
+    const durationMinutes = typeof parsed.durationMinutes === "number"
+      ? parsed.durationMinutes
+      : Number.NaN;
+    if (
+      !Number.isFinite(pid) ||
+      pid <= 0 ||
+      !KEEP_AWAKE_DURATION_OPTIONS.some((option) => option.value === durationMinutes)
+    ) {
+      return undefined;
+    }
+    return {
+      durationMinutes: durationMinutes as KeepAwakeDurationMinutes,
+      fireAtMs: typeof parsed.fireAtMs === "number" ? parsed.fireAtMs : undefined,
+      pid,
+      startedAtMs: typeof parsed.startedAtMs === "number" ? parsed.startedAtMs : Date.now(),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function keepAwakeRuntimeLabel(runtime: KeepAwakeRuntimeState): string {
+  if (runtime.fireAtMs === undefined) {
+    return "Awake";
+  }
+  const remainingMinutes = Math.max(1, Math.ceil((runtime.fireAtMs - Date.now()) / 60_000));
+  if (remainingMinutes >= 60) {
+    const hours = Math.floor(remainingMinutes / 60);
+    const minutes = remainingMinutes % 60;
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  return `${remainingMinutes}m`;
+}
+
+async function readKeepAwakePowerSnapshot(): Promise<
+  | {
+      batteryPercent?: number;
+      externalDisplayConnected: boolean;
+      lowPowerMode?: boolean;
+    }
+  | undefined
+> {
+  try {
+    const result = await runNativeProcess("/bin/sh", [
+      "-lc",
+      [
+        "battery=$(/usr/bin/pmset -g batt 2>/dev/null | /usr/bin/awk -F';' '/InternalBattery/ {gsub(/[^0-9]/, \"\", $1); print $1; exit}')",
+        "low=$(/usr/bin/pmset -g 2>/dev/null | /usr/bin/awk '/lowpowermode/ {print $2; exit}')",
+        "displays=$(/usr/sbin/system_profiler SPDisplaysDataType 2>/dev/null | /usr/bin/awk '/Resolution:/ {count++} END {print count+0}')",
+        "/bin/echo \"battery=${battery:-};low=${low:-};displays=${displays:-0}\"",
+      ].join("; "),
+    ]);
+    if (result.exitCode !== 0) {
+      return undefined;
+    }
+    const fields = new Map(
+      result.stdout
+        .trim()
+        .split(";")
+        .map((field) => {
+          const [key, value = ""] = field.split("=");
+          return [key, value] as const;
+        }),
+    );
+    const batteryPercent = Number(fields.get("battery"));
+    const displays = Number(fields.get("displays"));
+    return {
+      batteryPercent: Number.isFinite(batteryPercent) ? batteryPercent : undefined,
+      externalDisplayConnected: Number.isFinite(displays) && displays > 1,
+      lowPowerMode: fields.get("low") === "1",
+    };
+  } catch (error) {
+    console.warn("Failed to read keep-awake power state", error);
+    return undefined;
+  }
 }
 
 function TitlebarResourcesMenu({

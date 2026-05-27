@@ -5,6 +5,7 @@ import {
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
   GHOSTTY_THEME_SETTING_OPTIONS,
+  KEEP_AWAKE_DURATION_OPTIONS,
   applySidebarSettingsPreset,
   getDefaultEditorCommandForSettings,
   getSidebarSettingsPresetId,
@@ -173,6 +174,34 @@ describe("normalizeghostexSettings", () => {
     });
     expect(normalizeghostexSettings({ hideLastActiveTimeOnSessionCards: true })).toMatchObject({
       hideLastActiveTimeOnSessionCards: true,
+    });
+  });
+
+  test("keeps title-bar keep-awake settings English and bounded", () => {
+    expect(DEFAULT_ghostex_SETTINGS.keepAwakeDefaultDurationMinutes).toBe(0);
+    expect(KEEP_AWAKE_DURATION_OPTIONS).toEqual([
+      { label: "Indefinitely", value: 0 },
+      { label: "5 minutes", value: 5 },
+      { label: "10 minutes", value: 10 },
+      { label: "15 minutes", value: 15 },
+      { label: "30 minutes", value: 30 },
+      { label: "1 hour", value: 60 },
+      { label: "2 hours", value: 120 },
+      { label: "5 hours", value: 300 },
+    ]);
+    expect(
+      normalizeghostexSettings({
+        keepAwakeAllowDisplaySleep: true,
+        keepAwakeBatteryThresholdPercent: 4,
+        keepAwakeDefaultDurationMinutes: 15,
+      }),
+    ).toMatchObject({
+      keepAwakeAllowDisplaySleep: true,
+      keepAwakeBatteryThresholdPercent: 10,
+      keepAwakeDefaultDurationMinutes: 15,
+    });
+    expect(normalizeghostexSettings({ keepAwakeDefaultDurationMinutes: 999 })).toMatchObject({
+      keepAwakeDefaultDurationMinutes: 0,
     });
   });
 

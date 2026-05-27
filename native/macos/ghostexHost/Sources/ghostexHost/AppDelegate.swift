@@ -5197,6 +5197,18 @@ final class ghostexRootView: NSView {
         "worktreeName": git.worktreeName ?? NSNull(),
       ]
     }
+    if let keepAwake = command.keepAwake {
+      payload["keepAwake"] = [
+        "activateOnExternalDisplay": keepAwake.activateOnExternalDisplay,
+        "activateOnLaunch": keepAwake.activateOnLaunch,
+        "allowDisplaySleep": keepAwake.allowDisplaySleep,
+        "batteryThresholdPercent": keepAwake.batteryThresholdPercent,
+        "deactivateBelowBatteryThreshold": keepAwake.deactivateBelowBatteryThreshold,
+        "deactivateOnLowPowerMode": keepAwake.deactivateOnLowPowerMode,
+        "deactivateOnUserSwitch": keepAwake.deactivateOnUserSwitch,
+        "defaultDurationMinutes": keepAwake.defaultDurationMinutes,
+      ]
+    }
     if let sidebarActions = command.sidebarActions {
       payload["sidebarActions"] = [
         "commands": sidebarActions.commands?.map { command in

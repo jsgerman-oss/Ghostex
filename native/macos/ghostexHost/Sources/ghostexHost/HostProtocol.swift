@@ -502,6 +502,7 @@ struct SetActiveTerminalSet: Decodable {
   let sleepingSessionIds: [String]?
   let layoutChanged: Bool?
   let layout: NativeTerminalLayout?
+  let keepAwake: TitlebarKeepAwakeSettings?
   let paneGap: Double?
   let petOverlayEnabled: Bool?
   /**
@@ -546,6 +547,17 @@ struct TitlebarResourceGroup: Decodable {
   let projectPath: String
   let sessions: [TitlebarResourceSession]
   let title: String
+}
+
+struct TitlebarKeepAwakeSettings: Decodable {
+  let activateOnExternalDisplay: Bool
+  let activateOnLaunch: Bool
+  let allowDisplaySleep: Bool
+  let batteryThresholdPercent: Double
+  let deactivateBelowBatteryThreshold: Bool
+  let deactivateOnLowPowerMode: Bool
+  let deactivateOnUserSwitch: Bool
+  let defaultDurationMinutes: Int
 }
 
 struct TitlebarResourceSession: Decodable {

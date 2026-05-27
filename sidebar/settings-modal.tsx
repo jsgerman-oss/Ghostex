@@ -95,6 +95,7 @@ import {
   GHOSTTY_COPY_ON_SELECT_OPTIONS,
   GHOSTTY_SCROLLBAR_OPTIONS,
   GHOSTTY_THEME_SETTING_OPTIONS,
+  KEEP_AWAKE_DURATION_OPTIONS,
   PROMPT_EDITOR_BACKEND_OPTIONS,
   type PromptEditorBackend,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
@@ -112,6 +113,7 @@ import {
   type GhosttyConfirmCloseSurface,
   type GhosttyCopyOnSelect,
   type GhosttyScrollbar,
+  type KeepAwakeDurationMinutes,
   type SessionPersistenceProvider,
   type SessionStatusIndicatorSize,
   type SidebarSettingsPresetId,
@@ -286,6 +288,7 @@ type MainSettingsSectionId =
   | "workspace"
   | "browser"
   | "editor"
+  | "power"
   | "ideAttachment"
   | "sounds"
   | "storage";
@@ -339,6 +342,16 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "codeServerUseVscodeInsidersUserConfig",
     "hideProjectHeaderDiffStats",
     "showProjectEditorDiffFileCount",
+  ],
+  power: [
+    "keepAwakeDefaultDurationMinutes",
+    "keepAwakeAllowDisplaySleep",
+    "keepAwakeActivateOnLaunch",
+    "keepAwakeActivateOnExternalDisplay",
+    "keepAwakeDeactivateBelowBatteryThreshold",
+    "keepAwakeBatteryThresholdPercent",
+    "keepAwakeDeactivateOnLowPowerMode",
+    "keepAwakeDeactivateOnUserSwitch",
   ],
   ideAttachment: [
     "accessibilityPermission",
@@ -513,6 +526,7 @@ export function SettingsModal({
   const ghosttyScrollingSectionRef = useRef<HTMLDivElement>(null);
   const ghosttyTerminalSectionRef = useRef<HTMLDivElement>(null);
   const ideAttachmentSectionRef = useRef<HTMLDivElement>(null);
+  const powerSectionRef = useRef<HTMLDivElement>(null);
   const statusIndicatorsSectionRef = useRef<HTMLDivElement>(null);
   const sessionCardsSectionRef = useRef<HTMLDivElement>(null);
   const agentsOnboardingSectionRef = useRef<HTMLDivElement>(null);
@@ -715,6 +729,52 @@ export function SettingsModal({
         key: "showProjectEditorDiffFileCount",
         subtitle: "Show changed-file counts in project header git stats.",
         title: "Show editor file count",
+      },
+    ]),
+    power: getSettingsSectionSearch(settingsSearchQuery, "Power", [
+      {
+        key: "keepAwakeDefaultDurationMinutes",
+        options: KEEP_AWAKE_DURATION_OPTIONS.map((option) => ({
+          label: option.label,
+          value: String(option.value),
+        })),
+        subtitle: "Choose the duration used by the title-bar keep-awake button.",
+        title: "Default keep-awake duration",
+      },
+      {
+        key: "keepAwakeAllowDisplaySleep",
+        subtitle: "Keep the Mac awake but allow the display to turn off.",
+        title: "Allow display sleep",
+      },
+      {
+        key: "keepAwakeActivateOnLaunch",
+        subtitle: "Start preventing sleep when Ghostex launches.",
+        title: "Activate on launch",
+      },
+      {
+        key: "keepAwakeActivateOnExternalDisplay",
+        subtitle: "Start preventing sleep when an external display is connected.",
+        title: "Activate on external display",
+      },
+      {
+        key: "keepAwakeDeactivateBelowBatteryThreshold",
+        subtitle: "Stop preventing sleep when battery capacity drops below the threshold.",
+        title: "Deactivate below battery threshold",
+      },
+      {
+        key: "keepAwakeBatteryThresholdPercent",
+        subtitle: "Battery percentage used by the threshold rule.",
+        title: "Battery threshold",
+      },
+      {
+        key: "keepAwakeDeactivateOnLowPowerMode",
+        subtitle: "Stop preventing sleep when macOS Low Power Mode is enabled.",
+        title: "Deactivate in Low Power Mode",
+      },
+      {
+        key: "keepAwakeDeactivateOnUserSwitch",
+        subtitle: "Stop preventing sleep when this user session is no longer active.",
+        title: "Deactivate on user switch",
       },
     ]),
     ideAttachment: getSettingsSectionSearch(settingsSearchQuery, "IDE Attachment", [
@@ -1081,6 +1141,7 @@ export function SettingsModal({
       title: "Workspace",
     },
     { id: "editor", ref: editorSectionRef, searchResult: settingsSearch.editor, title: "Editor" },
+    { id: "power", ref: powerSectionRef, searchResult: settingsSearch.power, title: "Power" },
     { id: "sounds", ref: soundsSectionRef, searchResult: settingsSearch.sounds, title: "Sounds" },
     /*
      * CDXC:IDEAttachment 2026-05-15-19:50:
@@ -1811,6 +1872,94 @@ export function SettingsModal({
                 label="Show editor file count"
                 {...getSettingModificationProps("showProjectEditorDiffFileCount")}
                 onChange={(checked) => updateDraft("showProjectEditorDiffFileCount", checked)}
+              />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
+            {mainSectionVisible("power", settingsSearch.power) ? (
+            <SettingsSection sectionRef={powerSectionRef} title="Power">
+              {mainSettingVisible(settingsSearch.power, "keepAwakeDefaultDurationMinutes") ? (
+              <SelectField
+                description="Choose the duration used by the title-bar keep-awake button."
+                label="Default keep-awake duration"
+                {...getSettingModificationProps("keepAwakeDefaultDurationMinutes")}
+                onChange={(value) =>
+                  updateDraft("keepAwakeDefaultDurationMinutes", Number(value) as KeepAwakeDurationMinutes)
+                }
+                options={KEEP_AWAKE_DURATION_OPTIONS.map((option) => ({
+                  label: option.label,
+                  value: String(option.value),
+                }))}
+                value={String(draft.keepAwakeDefaultDurationMinutes)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.power, "keepAwakeAllowDisplaySleep") ? (
+              <ToggleField
+                checked={draft.keepAwakeAllowDisplaySleep}
+                description="Keep the Mac awake but allow the display to turn off."
+                label="Allow display sleep"
+                {...getSettingModificationProps("keepAwakeAllowDisplaySleep")}
+                onChange={(checked) => updateDraft("keepAwakeAllowDisplaySleep", checked)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.power, "keepAwakeActivateOnLaunch") ? (
+              <ToggleField
+                checked={draft.keepAwakeActivateOnLaunch}
+                description="Start preventing sleep when Ghostex launches."
+                label="Activate on launch"
+                {...getSettingModificationProps("keepAwakeActivateOnLaunch")}
+                onChange={(checked) => updateDraft("keepAwakeActivateOnLaunch", checked)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.power, "keepAwakeActivateOnExternalDisplay") ? (
+              <ToggleField
+                checked={draft.keepAwakeActivateOnExternalDisplay}
+                description="Start preventing sleep when an external display is connected."
+                label="Activate on external display"
+                {...getSettingModificationProps("keepAwakeActivateOnExternalDisplay")}
+                onChange={(checked) => updateDraft("keepAwakeActivateOnExternalDisplay", checked)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.power, "keepAwakeDeactivateBelowBatteryThreshold") ? (
+              <ToggleField
+                checked={draft.keepAwakeDeactivateBelowBatteryThreshold}
+                description="Stop preventing sleep when battery capacity drops below the threshold."
+                label="Deactivate below battery threshold"
+                {...getSettingModificationProps("keepAwakeDeactivateBelowBatteryThreshold")}
+                onChange={(checked) => updateDraft("keepAwakeDeactivateBelowBatteryThreshold", checked)}
+              />
+              ) : null}
+              {draft.keepAwakeDeactivateBelowBatteryThreshold &&
+              mainSettingVisible(settingsSearch.power, "keepAwakeBatteryThresholdPercent") ? (
+              <SliderNumberField
+                description="Battery percentage used by the threshold rule."
+                label="Battery threshold"
+                {...getSettingModificationProps("keepAwakeBatteryThresholdPercent")}
+                max={90}
+                min={10}
+                onCommit={(value) => updateDraft("keepAwakeBatteryThresholdPercent", value)}
+                onChange={(value) => updateDraftDebounced("keepAwakeBatteryThresholdPercent", value)}
+                step={5}
+                value={draft.keepAwakeBatteryThresholdPercent}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.power, "keepAwakeDeactivateOnLowPowerMode") ? (
+              <ToggleField
+                checked={draft.keepAwakeDeactivateOnLowPowerMode}
+                description="Stop preventing sleep when macOS Low Power Mode is enabled."
+                label="Deactivate in Low Power Mode"
+                {...getSettingModificationProps("keepAwakeDeactivateOnLowPowerMode")}
+                onChange={(checked) => updateDraft("keepAwakeDeactivateOnLowPowerMode", checked)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.power, "keepAwakeDeactivateOnUserSwitch") ? (
+              <ToggleField
+                checked={draft.keepAwakeDeactivateOnUserSwitch}
+                description="Stop preventing sleep when this user session is no longer active."
+                label="Deactivate on user switch"
+                {...getSettingModificationProps("keepAwakeDeactivateOnUserSwitch")}
+                onChange={(checked) => updateDraft("keepAwakeDeactivateOnUserSwitch", checked)}
               />
               ) : null}
             </SettingsSection>

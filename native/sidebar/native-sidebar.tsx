@@ -444,6 +444,16 @@ type NativeHostCommand =
       sessionDelayedSendRemainingLabels?: Record<string, string>;
 	      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
 	      sessionTitles?: Record<string, string>;
+      keepAwake?: {
+        activateOnExternalDisplay: boolean;
+        activateOnLaunch: boolean;
+        allowDisplaySleep: boolean;
+        batteryThresholdPercent: number;
+        deactivateBelowBatteryThreshold: boolean;
+        deactivateOnLowPowerMode: boolean;
+        deactivateOnUserSwitch: boolean;
+        defaultDurationMinutes: ghostexSettings["keepAwakeDefaultDurationMinutes"];
+      };
 	      petOverlayEnabled?: boolean;
 	      showSessionIdInTerminalPanes?: boolean;
 	      showProjectEditorDiffFileCount?: boolean;
@@ -22350,6 +22360,16 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     sessionFaviconDataUrls,
     sessionActivities,
     sleepingSessionIds,
+    keepAwake: {
+      activateOnExternalDisplay: settings.keepAwakeActivateOnExternalDisplay,
+      activateOnLaunch: settings.keepAwakeActivateOnLaunch,
+      allowDisplaySleep: settings.keepAwakeAllowDisplaySleep,
+      batteryThresholdPercent: settings.keepAwakeBatteryThresholdPercent,
+      deactivateBelowBatteryThreshold: settings.keepAwakeDeactivateBelowBatteryThreshold,
+      deactivateOnLowPowerMode: settings.keepAwakeDeactivateOnLowPowerMode,
+      deactivateOnUserSwitch: settings.keepAwakeDeactivateOnUserSwitch,
+      defaultDurationMinutes: settings.keepAwakeDefaultDurationMinutes,
+    },
     sidebarActions: {
       commands,
     },

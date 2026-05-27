@@ -56,6 +56,7 @@ export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
 export type ZedOverlayTargetApp = "zed" | "zed-preview" | "vscode" | "vscode-insiders";
+export type KeepAwakeDurationMinutes = 0 | 5 | 10 | 15 | 30 | 60 | 120 | 300;
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
 const MIN_GHOSTTY_SCROLLBACK_LIMIT_MB = 1;
@@ -103,6 +104,14 @@ export type ghostexSettings = {
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
   hideLastActiveTimeOnSessionCards: boolean;
+  keepAwakeActivateOnExternalDisplay: boolean;
+  keepAwakeActivateOnLaunch: boolean;
+  keepAwakeAllowDisplaySleep: boolean;
+  keepAwakeBatteryThresholdPercent: number;
+  keepAwakeDeactivateBelowBatteryThreshold: boolean;
+  keepAwakeDeactivateOnLowPowerMode: boolean;
+  keepAwakeDeactivateOnUserSwitch: boolean;
+  keepAwakeDefaultDurationMinutes: KeepAwakeDurationMinutes;
   showMacOSAttentionNotifications: boolean;
   hideFloatingSessionStatusIndicators: boolean;
   hideMenuBarSessionStatusIndicators: boolean;
@@ -314,6 +323,14 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   hideLastActiveTimeOnSessionCards:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideLastActiveTimeOnSessionCards,
+  keepAwakeActivateOnExternalDisplay: false,
+  keepAwakeActivateOnLaunch: false,
+  keepAwakeAllowDisplaySleep: false,
+  keepAwakeBatteryThresholdPercent: 20,
+  keepAwakeDeactivateBelowBatteryThreshold: false,
+  keepAwakeDeactivateOnLowPowerMode: false,
+  keepAwakeDeactivateOnUserSwitch: true,
+  keepAwakeDefaultDurationMinutes: 0,
   /**
    * CDXC:SessionAttentionNotifications 2026-05-10-16:46
    * macOS attention notifications are enabled by default so a background
@@ -555,6 +572,20 @@ export const SESSION_STATUS_INDICATOR_SIZE_OPTIONS: ReadonlyArray<{
   { label: "Small", value: "small" },
 ];
 
+export const KEEP_AWAKE_DURATION_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: KeepAwakeDurationMinutes;
+}> = [
+  { label: "Indefinitely", value: 0 },
+  { label: "5 minutes", value: 5 },
+  { label: "10 minutes", value: 10 },
+  { label: "15 minutes", value: 15 },
+  { label: "30 minutes", value: 30 },
+  { label: "1 hour", value: 60 },
+  { label: "2 hours", value: 120 },
+  { label: "5 hours", value: 300 },
+];
+
 export const GHOSTTY_COPY_ON_SELECT_OPTIONS: ReadonlyArray<{
   label: string;
   value: GhosttyCopyOnSelect;
@@ -771,6 +802,53 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "hideLastActiveTimeOnSessionCards",
       DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards,
+    ),
+    keepAwakeActivateOnExternalDisplay: readBoolean(
+      source,
+      "keepAwakeActivateOnExternalDisplay",
+      DEFAULT_ghostex_SETTINGS.keepAwakeActivateOnExternalDisplay,
+    ),
+    keepAwakeActivateOnLaunch: readBoolean(
+      source,
+      "keepAwakeActivateOnLaunch",
+      DEFAULT_ghostex_SETTINGS.keepAwakeActivateOnLaunch,
+    ),
+    keepAwakeAllowDisplaySleep: readBoolean(
+      source,
+      "keepAwakeAllowDisplaySleep",
+      DEFAULT_ghostex_SETTINGS.keepAwakeAllowDisplaySleep,
+    ),
+    keepAwakeBatteryThresholdPercent: clampNumber(
+      readNumber(
+        source,
+        "keepAwakeBatteryThresholdPercent",
+        DEFAULT_ghostex_SETTINGS.keepAwakeBatteryThresholdPercent,
+      ),
+      10,
+      90,
+      DEFAULT_ghostex_SETTINGS.keepAwakeBatteryThresholdPercent,
+    ),
+    keepAwakeDeactivateBelowBatteryThreshold: readBoolean(
+      source,
+      "keepAwakeDeactivateBelowBatteryThreshold",
+      DEFAULT_ghostex_SETTINGS.keepAwakeDeactivateBelowBatteryThreshold,
+    ),
+    keepAwakeDeactivateOnLowPowerMode: readBoolean(
+      source,
+      "keepAwakeDeactivateOnLowPowerMode",
+      DEFAULT_ghostex_SETTINGS.keepAwakeDeactivateOnLowPowerMode,
+    ),
+    keepAwakeDeactivateOnUserSwitch: readBoolean(
+      source,
+      "keepAwakeDeactivateOnUserSwitch",
+      DEFAULT_ghostex_SETTINGS.keepAwakeDeactivateOnUserSwitch,
+    ),
+    keepAwakeDefaultDurationMinutes: normalizeKeepAwakeDurationMinutes(
+      readNumber(
+        source,
+        "keepAwakeDefaultDurationMinutes",
+        DEFAULT_ghostex_SETTINGS.keepAwakeDefaultDurationMinutes,
+      ),
     ),
     /**
      * CDXC:SessionAttentionNotifications 2026-05-10-16:46
@@ -1152,6 +1230,12 @@ function normalizeSessionPersistenceProvider(
   value: string | undefined,
 ): SessionPersistenceProvider {
   return value === "tmux" || value === "zmx" || value === "zellij" ? value : "off";
+}
+
+function normalizeKeepAwakeDurationMinutes(value: number): KeepAwakeDurationMinutes {
+  return KEEP_AWAKE_DURATION_OPTIONS.some((option) => option.value === value)
+    ? (value as KeepAwakeDurationMinutes)
+    : DEFAULT_ghostex_SETTINGS.keepAwakeDefaultDurationMinutes;
 }
 
 function normalizePromptEditorBackend(source: Record<string, unknown>): PromptEditorBackend {
