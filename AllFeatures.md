@@ -2,6 +2,9 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
+- Command-panel terminals participate in project session tracking, CLI session lists, project batch actions, and favorite controls.
+- Project Sleep Inactive, Wake, and Reload actions include idle zmx-backed command terminals while keeping working or attention sessions awake.
+- Restored and restarted terminal panes wait for native surface creation to finish before Ghostex tries missing-surface recovery.
 - Cursor Agent resume recognizes Cursor transcript paths captured by hooks, even if the pane had an older inherited agent identity.
 - Agent activity status suppresses startup noise during launch, resume, fork, and manual agent detection so sessions are less likely to get stuck showing attention.
 - Project header diff stats default to tracked-only Starship-style counts, with an Editor setting to show untracked line totals only when tracked changes are +0 -0.

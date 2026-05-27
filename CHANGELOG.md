@@ -2,6 +2,12 @@
 
 <!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
 
+## 3.17.0 - 2026-05-27
+
+- Improved command-panel terminals so they appear in project session tracking, CLI session lists, project batch actions, and favorite controls instead of drifting outside the normal project session model.
+- Improved project Sleep Inactive, Wake, and Reload actions so idle zmx-backed command terminals are included while working or attention sessions stay awake.
+- Improved restored and restarted terminal handling so Ghostex waits for native terminal surfaces to finish attaching before treating a temporary missing-surface report as a failed pane.
+
 ## 3.16.0 - 2026-05-27
 
 - Improved Cursor Agent resume so transcript paths captured from Cursor hooks are recognized as Cursor sessions even when a terminal previously inherited another agent identity.
