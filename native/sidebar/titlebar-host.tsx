@@ -923,6 +923,7 @@ function App() {
   const [quittingResourceKeys, setQuittingResourceKeys] = useState<Set<string>>(() => new Set());
   const [optimisticMode, setOptimisticMode] = useState<TitlebarMode>();
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const lastCompanionRestoreDispatchAtRef = useRef(0);
   const activeMode = optimisticMode ?? projectState.activeMode;
   const resourceViews = useMemo(
     () => createResourceGroupViews(projectState.browserTabs, projectState.resourceGroups, resourceProcesses),
@@ -1357,7 +1358,27 @@ function App() {
     postNative({ type: "openTasksPlaceholderFromTitlebar" });
   };
 
-  const showProjectEditorCompanion = () => {
+  const showProjectEditorCompanion = (source: "click" | "pointerDown") => {
+    const now = performance.now();
+    if (now - lastCompanionRestoreDispatchAtRef.current < 250) {
+      appendTitlebarCodeLagDebugLog(
+        projectState.debuggingMode,
+        "titlebarCompanionRestore.duplicateSuppressed",
+        {
+          projectId: projectState.projectId,
+          source,
+        },
+      );
+      return;
+    }
+    lastCompanionRestoreDispatchAtRef.current = now;
+    appendTitlebarCodeLagDebugLog(projectState.debuggingMode, "titlebarCompanionRestore.dispatch", {
+      activeMode,
+      editorIsOpen: projectState.editorIsOpen,
+      projectEditorCompanionPaneHidden: projectState.projectEditorCompanionPaneHidden,
+      projectId: projectState.projectId,
+      source,
+    });
     postNative({ type: "showProjectEditorCompanionFromTitlebar" });
   };
 
@@ -1398,10 +1419,22 @@ function App() {
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      aria-label="Show Agent Side Pane"
+                      aria-label="Show Companion Sidepane"
                       className="titlebar-session-button titlebar-companion-restore-button"
                       data-titlebar-hit-region
-                      onClick={showProjectEditorCompanion}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        showProjectEditorCompanion("click");
+                      }}
+                      onPointerDown={(event) => {
+                        if (event.button !== 0) {
+                          return;
+                        }
+                        event.preventDefault();
+                        event.stopPropagation();
+                        showProjectEditorCompanion("pointerDown");
+                      }}
                       type="button"
                       variant="ghost"
                     >
@@ -1414,7 +1447,7 @@ function App() {
                       <IconLayoutSidebarLeftExpand aria-hidden="true" size={16} stroke={1.8} />
                     </Button>
                   </TooltipTrigger>
-                  <TooltipContent>Show Agent Side Pane</TooltipContent>
+                  <TooltipContent>Show Companion Sidepane</TooltipContent>
                 </Tooltip>
               </div>
             ) : null}
@@ -2783,7 +2816,9 @@ styleElement.textContent = `
     padding: 0;
   }
   .titlebar-companion-restore-button {
-    width: 28px;
+    height: 26px;
+    margin-top: -3px;
+    width: 38px;
     padding: 0;
   }
   .titlebar-mode-switcher {
