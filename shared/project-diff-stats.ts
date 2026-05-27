@@ -61,6 +61,29 @@ export function mergeSidebarProjectDiffStats(
   };
 }
 
+/**
+ * CDXC:ProjectDiffStats 2026-05-27-09:25:
+ * Project-header git stats should match Starship-style tracked diffs
+ * (`git diff --numstat HEAD`) by default. Only fold untracked `wc -l` totals in
+ * when the user enables the opt-in setting and there are no tracked line changes.
+ */
+export function resolveSidebarProjectDiffStats({
+  showUntrackedWhenNoTrackedChanges,
+  trackedStats,
+  untrackedStats,
+}: {
+  showUntrackedWhenNoTrackedChanges: boolean;
+  trackedStats: SidebarProjectDiffStats;
+  untrackedStats: SidebarProjectDiffStats;
+}): SidebarProjectDiffStats {
+  const hasTrackedLineChanges = trackedStats.additions > 0 || trackedStats.deletions > 0;
+  if (hasTrackedLineChanges || !showUntrackedWhenNoTrackedChanges) {
+    return trackedStats;
+  }
+
+  return mergeSidebarProjectDiffStats(trackedStats, untrackedStats);
+}
+
 export function parseGitZeroDelimitedPaths(stdout: string): string[] {
   return stdout.split("\0").filter((path) => path.length > 0);
 }

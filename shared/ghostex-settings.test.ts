@@ -69,6 +69,18 @@ describe("normalizeghostexSettings", () => {
     ]);
   });
 
+  test("keeps untracked project diff lines off unless explicitly enabled", () => {
+    expect(DEFAULT_ghostex_SETTINGS.showUntrackedProjectDiffWhenNoTrackedChanges).toBe(false);
+    expect(normalizeghostexSettings({})).toMatchObject({
+      showUntrackedProjectDiffWhenNoTrackedChanges: false,
+    });
+    expect(
+      normalizeghostexSettings({ showUntrackedProjectDiffWhenNoTrackedChanges: true }),
+    ).toMatchObject({
+      showUntrackedProjectDiffWhenNoTrackedChanges: true,
+    });
+  });
+
   test("hides project-header git file counts by default", () => {
     /**
      * CDXC:ProjectDiffStats 2026-05-15-14:33:

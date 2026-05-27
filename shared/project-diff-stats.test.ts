@@ -5,6 +5,7 @@ import {
   parseGitNumstatDiffStats,
   parseGitZeroDelimitedPaths,
   parseWcLineCountStdout,
+  resolveSidebarProjectDiffStats,
 } from "./project-diff-stats";
 
 describe("parseGitNumstatDiffStats", () => {
@@ -54,5 +55,46 @@ describe("mergeSidebarProjectDiffStats", () => {
       isLoading: false,
       isRepo: true,
     });
+  });
+});
+
+describe("resolveSidebarProjectDiffStats", () => {
+  const trackedStats = parseGitNumstatDiffStats("9\t11\tsrc/app.ts\n");
+  const untrackedStats = {
+    ...createDefaultSidebarProjectDiffStats(),
+    additions: 40,
+    files: 2,
+    isRepo: true,
+  };
+
+  test("returns tracked-only stats by default", () => {
+    expect(
+      resolveSidebarProjectDiffStats({
+        showUntrackedWhenNoTrackedChanges: false,
+        trackedStats,
+        untrackedStats,
+      }),
+    ).toEqual(trackedStats);
+  });
+
+  test("keeps tracked-only stats when tracked line changes exist", () => {
+    expect(
+      resolveSidebarProjectDiffStats({
+        showUntrackedWhenNoTrackedChanges: true,
+        trackedStats,
+        untrackedStats,
+      }),
+    ).toEqual(trackedStats);
+  });
+
+  test("merges untracked stats only when tracked diff is +0 -0 and opt-in is enabled", () => {
+    const emptyTrackedStats = parseGitNumstatDiffStats("");
+    expect(
+      resolveSidebarProjectDiffStats({
+        showUntrackedWhenNoTrackedChanges: true,
+        trackedStats: emptyTrackedStats,
+        untrackedStats,
+      }),
+    ).toEqual(mergeSidebarProjectDiffStats(emptyTrackedStats, untrackedStats));
   });
 });

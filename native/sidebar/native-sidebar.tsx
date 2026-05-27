@@ -116,8 +116,8 @@ import {
 } from "../../shared/sidebar-git";
 import {
   createDefaultSidebarProjectDiffStats,
-  mergeSidebarProjectDiffStats,
   parseGitNumstatDiffStats,
+  resolveSidebarProjectDiffStats,
   parseGitZeroDelimitedPaths,
   parseWcLineCountStdout,
   type SidebarProjectDiffStats,
@@ -187,6 +187,7 @@ import {
   appendCursorCliResumeFlag,
   getCursorChatSessionIdFromIdentity,
   getCursorChatSessionLookupScript,
+  isCursorAgentTranscriptPath,
 } from "../../shared/cursor-cli-session";
 import { quoteShellDoubleArg } from "../../shared/shell-quote";
 import { FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY } from "../../shared/first-launch-setup-settings";
@@ -889,7 +890,15 @@ const FIRST_PROMPT_AUTO_RENAME_POLL_MS = 2_000;
 const AUTO_SUBMIT_STAGED_RENAME_DELAY_MS = 1_000;
 const DELAYED_SEND_MAX_DELAY_MS = 2_147_483_647;
 const DELAYED_SEND_RESTORE_FIRE_GRACE_MS = 2_000;
-const NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS = 7_000;
+/**
+ * CDXC:SessionAttention 2026-05-27-09:17:
+ * New/resumed/forked agent panes and manually started agents in plain
+ * terminals can briefly publish working/done title markers while bootstrapping.
+ * Suppress derived activity for 12 seconds from launch, resume, or first agent
+ * detection so startup noise does not show sticky attention that only clears
+ * after clicking the pane.
+ */
+const NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS = 12_000;
 const NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
 const NATIVE_PERSISTED_WORKING_STALE_MS = 30 * 60 * 1_000;
 /**
@@ -3607,6 +3616,12 @@ function saveSettings(nextSettings: ghostexSettings): void {
   syncNativeSidebarSide(settings.sidebarSide, previousSettings.sidebarSide);
   syncGhosttyTerminalSettings(settings, previousSettings);
   syncCodeServerRuntimeSettings(settings, previousSettings);
+  if (
+    previousSettings.showUntrackedProjectDiffWhenNoTrackedChanges !==
+    settings.showUntrackedProjectDiffWhenNoTrackedChanges
+  ) {
+    void refreshVisibleProjectDiffStats();
+  }
   publish();
   previewNativeSoundSettingChange(previousSettings, settings);
 }
@@ -3763,8 +3778,15 @@ function syncGhosttyTerminalSettings(
 }
 
 function saveSettingsFromNative(nextSettings: ghostexSettings): void {
+  const previousSettings = settings;
   settings = normalizeghostexSettings(nextSettings);
   persistSharedSettingsSnapshot(settings);
+  if (
+    previousSettings.showUntrackedProjectDiffWhenNoTrackedChanges !==
+    settings.showUntrackedProjectDiffWhenNoTrackedChanges
+  ) {
+    void refreshVisibleProjectDiffStats();
+  }
   publish();
 }
 
@@ -5307,26 +5329,36 @@ async function refreshProjectDiffStats(projectId: string): Promise<void> {
       return;
     }
 
-    const [trackedDiff, untrackedFiles] = await Promise.all([
-      runGitInProject(project, ["diff", "--numstat", "HEAD"], { allowFailure: true }),
-      runGitInProject(project, ["ls-files", "--others", "--exclude-standard", "-z"], {
-        allowFailure: true,
-      }),
-    ]);
+    const trackedDiff = await runGitInProject(project, ["diff", "--numstat", "HEAD"], {
+      allowFailure: true,
+    });
     const trackedStats = parseGitNumstatDiffStats(trackedDiff.stdout);
-    const untrackedPaths = parseGitZeroDelimitedPaths(untrackedFiles.stdout);
-    const untrackedStats: SidebarProjectDiffStats = {
-      additions: await countUntrackedProjectLines(project, untrackedPaths),
-      deletions: 0,
-      files: untrackedPaths.length,
-      isLoading: false,
-      isRepo: true,
-    };
+    const hasTrackedLineChanges = trackedStats.additions > 0 || trackedStats.deletions > 0;
+    const shouldLoadUntrackedStats =
+      settings.showUntrackedProjectDiffWhenNoTrackedChanges && !hasTrackedLineChanges;
 
-    projectDiffStatsByProjectId.set(
-      projectId,
-      mergeSidebarProjectDiffStats(trackedStats, untrackedStats),
-    );
+    let resolvedStats = trackedStats;
+    if (shouldLoadUntrackedStats) {
+      const untrackedFiles = await runGitInProject(
+        project,
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+        { allowFailure: true },
+      );
+      const untrackedPaths = parseGitZeroDelimitedPaths(untrackedFiles.stdout);
+      resolvedStats = resolveSidebarProjectDiffStats({
+        showUntrackedWhenNoTrackedChanges: true,
+        trackedStats,
+        untrackedStats: {
+          additions: await countUntrackedProjectLines(project, untrackedPaths),
+          deletions: 0,
+          files: untrackedPaths.length,
+          isLoading: false,
+          isRepo: true,
+        },
+      });
+    }
+
+    projectDiffStatsByProjectId.set(projectId, resolvedStats);
   } catch (error) {
     appendRestoreDebugLog("nativeSidebar.projectDiff.refreshFailed", {
       error: error instanceof Error ? error.message : String(error),
@@ -9863,8 +9895,11 @@ def write_hook_store(agent_key, session_id, transcript_path):
     temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
     temp_path.replace(store_path)
 
+# CDXC:CursorCLI 2026-05-27-09:06:
+# Cursor Agent's global hook command exports GHOSTEX_AGENT=cursor even when a manually-started pane inherited another agent value. Prefer that explicit hook identity so Cursor transcript metadata cannot be persisted as Codex.
 payload_agent = payload.get("agent")
-agent_name = first_string(payload_agent, os.environ.get("VSMUX_AGENT"), os.environ.get("GHOSTEX_AGENT"), os.environ.get("ghostex_AGENT"), state.get("agent"), "codex")
+explicit_agent_name = first_string(payload_agent, os.environ.get("GHOSTEX_AGENT"), os.environ.get("ghostex_AGENT"))
+agent_name = first_string(explicit_agent_name, os.environ.get("VSMUX_AGENT"), state.get("agent"), "codex")
 agent_key = normalized_agent_key(agent_name)
 event_name = first_string(payload.get("hook_event_name"), payload.get("event"))
 session_id = first_string(
@@ -9908,7 +9943,7 @@ def update_status(status):
 
 state["status"] = state.get("status") or "idle"
 state["statusUpdatedAt"] = state.get("statusUpdatedAt") or state.get("lastActivityAt", "")
-state["agent"] = state.get("agent") or agent_key
+state["agent"] = agent_key if explicit_agent_name else (state.get("agent") or agent_key)
 if session_id:
     state["agentSessionId"] = session_id
 if transcript_path:
@@ -10616,7 +10651,7 @@ function quoteNativeShellArg(value: string): string {
 
 function suppressNativeSessionActivityIndicators(
   sessionId: string,
-  reason: "agent-launch" | "restore-resume-command",
+  reason: "agent-detected" | "agent-launch" | "restore-resume-command",
 ): void {
   const suppressedUntil = Date.now() + NATIVE_INITIAL_ACTIVITY_SUPPRESSION_MS;
   nativeActivitySuppressedUntilBySessionId.set(sessionId, suppressedUntil);
@@ -10667,7 +10702,19 @@ function getNativeEffectiveTitleActivity(
   const suppressedUntil = getNativeActivitySuppressedUntil(sessionId);
   if (suppressedUntil !== undefined && Number.isFinite(suppressedUntil) && now < suppressedUntil) {
     nativeWorkingStartedAtBySessionId.delete(sessionId);
-    return { ...nextDerivedActivity, activity: "idle" };
+    /**
+     * CDXC:SessionAttention 2026-05-27-09:17:
+     * Bootstrap suppression must not preserve hasSeenWorking from spinner
+     * titles. Keeping that flag lets a later idle title become false attention
+     * after the window expires, which is the sticky-green status users see
+     * after resume, fork, or manual Codex startup.
+     */
+    return {
+      activity: "idle",
+      agentName: nextDerivedActivity.agentName,
+      hasSeenWorking: false,
+      isAcknowledged: true,
+    };
   }
 
   if (nextDerivedActivity.activity === "working") {
@@ -10700,7 +10747,7 @@ function getNativeEffectiveTitleActivity(
 }
 
 function buildNativeResumeCommandDisplay(session: TerminalSessionRecord): string | undefined {
-  const agentId = resolveNativeResumeAgentId(session.agentName);
+  const agentId = resolveNativeResumeAgentIdForSession(session);
   const agentCommand = resolveNativeAgentCommand(agentId);
   if (!agentId || !agentCommand) {
     return undefined;
@@ -10835,7 +10882,7 @@ function buildNativeRestoredTerminalInitialInput(session: TerminalSessionRecord)
 }
 
 function canRestoreNativeTerminalSession(session: TerminalSessionRecord): boolean {
-  const agentId = resolveNativeResumeAgentId(session.agentName);
+  const agentId = resolveNativeResumeAgentIdForSession(session);
   if (agentId === "pi") {
     return Boolean(resolveNativeAgentCommand(agentId) && getNativePiSessionReference(session));
   }
@@ -10949,8 +10996,24 @@ type NativeResumeAgentId =
   | "qoder"
   | "rovodev";
 
+function resolveNativeResumeAgentIdForSession(
+  session: Pick<TerminalSessionRecord, "agentName" | "agentSessionPath">,
+): NativeResumeAgentId | undefined {
+  /**
+   * CDXC:SessionRestore 2026-05-27-09:06:
+   * Manual `cursor-agent` starts inside an existing terminal can inherit a stale
+   * terminal agent env value from the pane. When Cursor's hook has captured a
+   * Cursor transcript path, resume must treat that path as the authoritative
+   * agent identity instead of using the older stored `agentName`.
+   */
+  if (isCursorAgentTranscriptPath(session.agentSessionPath)) {
+    return "cursor";
+  }
+  return resolveNativeResumeAgentId(session.agentName);
+}
+
 function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string | undefined {
-  const agentId = resolveNativeResumeAgentId(session.agentName);
+  const agentId = resolveNativeResumeAgentIdForSession(session);
   if (
     agentId !== "claude" &&
     agentId !== "codex" &&
@@ -11091,7 +11154,7 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
 function buildNativeCopyResumeCommand(
   session: TerminalSessionRecord,
 ): string | undefined {
-  const agentId = resolveNativeResumeAgentId(session.agentName);
+  const agentId = resolveNativeResumeAgentIdForSession(session);
   const agentCommand = resolveNativeAgentCommand(agentId);
   if (!agentId || !agentCommand) {
     return undefined;
@@ -11173,7 +11236,7 @@ function buildNativeCopyResumeCommand(
 function buildNativeCopyResumeFallbackCommand(
   session: TerminalSessionRecord,
 ): string | undefined {
-  const agentId = resolveNativeResumeAgentId(session.agentName);
+  const agentId = resolveNativeResumeAgentIdForSession(session);
   const agentCommand = resolveNativeAgentCommand(agentId);
   const resumeTitle = getNativeTrustedResumeTitle(session);
   if (!agentId || !agentCommand || !resumeTitle) {
@@ -11286,7 +11349,10 @@ function getNativePiSessionReference(session: TerminalSessionRecord): string | u
 }
 
 function getNativeCursorSessionReference(session: TerminalSessionRecord): string | undefined {
-  return getCursorChatSessionIdFromIdentity(session.agentSessionId);
+  return (
+    getCursorChatSessionIdFromIdentity(session.agentSessionId) ??
+    getCursorChatSessionIdFromIdentity(session.agentSessionPath)
+  );
 }
 
 function getNativeExactAgentSessionReference(
@@ -13437,9 +13503,19 @@ function syncNativePersistedAgentSessionState(
   terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
   persistedState: NativePersistedSessionState,
 ): boolean {
-  const nextAgentName = persistedState.agentName?.trim() || undefined;
   const nextAgentSessionId = persistedState.agentSessionId?.trim() || undefined;
   const nextAgentSessionPath = persistedState.agentSessionPath?.trim() || undefined;
+  /**
+   * CDXC:CursorCLI 2026-05-27-09:06:
+   * Cursor transcript paths are stronger evidence than an inherited terminal
+   * agent name. Promote them while syncing hook state so sidebar icons and
+   * future restore commands converge on Cursor after manual `cursor-agent`
+   * starts.
+   */
+  const nextAgentName =
+    (isCursorAgentTranscriptPath(nextAgentSessionPath) ? "cursor" : undefined) ??
+    persistedState.agentName?.trim() ??
+    undefined;
   let didChange = false;
 
   if (nextAgentName && terminalState.agentName !== nextAgentName) {
@@ -16422,6 +16498,8 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
          * Node CLI can render tables and exec the correct local command without
          * scraping debug state.
          */
+        const effectiveAgentName =
+          resolveNativeResumeAgentIdForSession(session) ?? terminalState?.agentName ?? session.agentName;
         items.push({
           /**
            * CDXC:GhostexTui 2026-05-25-16:22:
@@ -16430,7 +16508,7 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
            * notifications using the same state as the macOS sidebar.
            */
           activity: projectedSession?.activity ?? terminalState?.activity ?? "idle",
-          agent: terminalState?.agentName ?? session.agentName,
+          agent: effectiveAgentName,
           alias: items.length + 1,
           attachCommand:
             provider && providerSessionName && status !== "sleep"
@@ -23424,6 +23502,22 @@ window.addEventListener("ghostex-native-host-event", (event) => {
         previousDerivedActivity,
         knownAgentNameBeforeDetection,
       );
+      const previousDetectedAgentName =
+        knownAgentNameBeforeDetection ?? previousDerivedActivity?.agentName;
+      if (
+        nextDerivedActivity &&
+        previousDetectedAgentName !== nextDerivedActivity.agentName
+      ) {
+        /**
+         * CDXC:SessionAttention 2026-05-27-09:17:
+         * Plain terminals can become agent sessions long after pane creation
+         * when a user manually starts Codex, Claude, or another detected CLI.
+         * Start the same bootstrap suppression on first title-based agent
+         * detection so delayed manual startup gets the 12-second grace window
+         * that launch/resume/fork paths already receive.
+         */
+        suppressNativeSessionActivityIndicators(sidebarSessionId, "agent-detected");
+      }
       const effectiveDerivedActivity = nextDerivedActivity
         ? getNativeEffectiveTitleActivity(sidebarSessionId, nextDerivedActivity)
         : undefined;

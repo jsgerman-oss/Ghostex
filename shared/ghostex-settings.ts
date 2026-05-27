@@ -94,6 +94,7 @@ export type ghostexSettings = {
   defaultEditorCommand: DefaultEditorCommand;
   hideProjectHeaderDiffStats: boolean;
   showProjectEditorDiffFileCount: boolean;
+  showUntrackedProjectDiffWhenNoTrackedChanges: boolean;
   completionBellEnabled: boolean;
   completionSound: CompletionSoundSetting;
   createSessionOnSidebarDoubleClick: boolean;
@@ -270,6 +271,13 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   showProjectEditorDiffFileCount:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.showProjectEditorDiffFileCount,
+  /**
+   * CDXC:ProjectDiffStats 2026-05-27-09:25:
+   * Match Starship-style tracked line counts by default. Users can opt in to
+   * show untracked line totals only when tracked `git diff --numstat HEAD` is
+   * +0 -0.
+   */
+  showUntrackedProjectDiffWhenNoTrackedChanges: false,
   completionBellEnabled: false,
   completionSound: DEFAULT_COMPLETION_SOUND,
   createSessionOnSidebarDoubleClick: false,
@@ -697,6 +705,11 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "showProjectEditorDiffFileCount",
       DEFAULT_ghostex_SETTINGS.showProjectEditorDiffFileCount,
+    ),
+    showUntrackedProjectDiffWhenNoTrackedChanges: readBoolean(
+      source,
+      "showUntrackedProjectDiffWhenNoTrackedChanges",
+      DEFAULT_ghostex_SETTINGS.showUntrackedProjectDiffWhenNoTrackedChanges,
     ),
     completionBellEnabled: readBoolean(
       source,

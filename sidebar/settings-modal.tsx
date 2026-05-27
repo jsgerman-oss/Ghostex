@@ -339,6 +339,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "codeServerUseVscodeInsidersUserConfig",
     "hideProjectHeaderDiffStats",
     "showProjectEditorDiffFileCount",
+    "showUntrackedProjectDiffWhenNoTrackedChanges",
   ],
   power: [
     "hideKeepAwakeTitlebarControl",
@@ -727,6 +728,12 @@ export function SettingsModal({
         key: "showProjectEditorDiffFileCount",
         subtitle: "Show changed-file counts in project header git stats.",
         title: "Show editor file count",
+      },
+      {
+        key: "showUntrackedProjectDiffWhenNoTrackedChanges",
+        subtitle:
+          "When tracked git diff is +0 -0, show untracked line counts in project headers (Starship-style prompts ignore untracked lines).",
+        title: "Show untracked lines without tracked changes",
       },
     ]),
     power: getSettingsSectionSearch(settingsSearchQuery, "Power", [
@@ -1852,6 +1859,20 @@ export function SettingsModal({
                 label="Show editor file count"
                 {...getSettingModificationProps("showProjectEditorDiffFileCount")}
                 onChange={(checked) => updateDraft("showProjectEditorDiffFileCount", checked)}
+              />
+              ) : null}
+              {mainSettingVisible(
+                settingsSearch.editor,
+                "showUntrackedProjectDiffWhenNoTrackedChanges",
+              ) ? (
+              <ToggleField
+                checked={draft.showUntrackedProjectDiffWhenNoTrackedChanges}
+                description="When tracked git diff is +0 -0, show untracked line counts in project headers."
+                label="Show untracked lines without tracked changes"
+                {...getSettingModificationProps("showUntrackedProjectDiffWhenNoTrackedChanges")}
+                onChange={(checked) =>
+                  updateDraft("showUntrackedProjectDiffWhenNoTrackedChanges", checked)
+                }
               />
               ) : null}
             </SettingsSection>
