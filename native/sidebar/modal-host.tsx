@@ -1831,10 +1831,10 @@ function AppModalHost() {
         }}
         onOpenAccessibilityPreferences={() => {
           /**
-           * CDXC:AccessibilityPermissions 2026-05-08-13:08
+           * CDXC:AccessibilityPermissions 2026-05-27-07:24
            * The settings modal button should open macOS Accessibility settings
-           * directly. It must not reuse the attach-enable prompt path because
-           * viewing status is not consent to enable IDE attachment.
+           * directly for desktop integrations without enabling any removed
+           * IDE attachment behavior.
            */
           vscode.postMessage({ type: "openAccessibilityPreferences" });
         }}

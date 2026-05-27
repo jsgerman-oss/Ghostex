@@ -70,12 +70,12 @@ import {
   KEEP_AWAKE_DURATION_OPTIONS,
   normalizeghostexSettings,
   type KeepAwakeDurationMinutes,
-  type ZedOverlayTargetApp,
 } from "../../shared/ghostex-settings";
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
   type CustomWorkspaceOpenTarget,
   type WorkspaceOpenTargetAvailability,
+  type WorkspaceIdeTargetApp,
   type WorkspaceOpenTargetDefinition,
 } from "../../shared/workspace-open-targets";
 import { EditorBrandIcon, getEditorBrandIconId } from "../../sidebar/brand-icons";
@@ -234,7 +234,7 @@ type NativeTitlebarCommand =
   | { commandId: string; type: "runSidebarCommandFromTitlebar" }
   | { action: SidebarGitAction; type: "runSidebarGitActionFromTitlebar" }
   | {
-      targetApp: ZedOverlayTargetApp;
+      targetApp: WorkspaceIdeTargetApp;
       type: "openWorkspaceInIde";
       workspacePath: string;
     }
@@ -268,11 +268,6 @@ declare global {
     __ghostex_TITLEBAR__?: {
       closeOpenDropdowns: () => void;
       setActiveProjectState: (state: Partial<TitlebarProjectState>) => void;
-      setZedOverlay?: (state: {
-        enabled: boolean;
-        hideTitlebarButton: boolean;
-        targetApp: ZedOverlayTargetApp;
-      }) => void;
     };
   }
 }

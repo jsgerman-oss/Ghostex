@@ -51,8 +51,6 @@ enum HostCommand: Decodable {
   case openExternalUrl(OpenExternalUrl)
   case openWorkspaceInFinder(OpenWorkspaceInFinder)
   case openWorkspaceInIde(OpenWorkspaceInIde)
-  case openBrowserWindow(OpenBrowserWindow)
-  case showBrowserWindow
   case openBrowserDevTools(SessionCommand)
   case injectBrowserReactGrab(SessionCommand)
   case injectBrowserAgentation(SessionCommand)
@@ -74,8 +72,6 @@ enum HostCommand: Decodable {
   case quitResourcesFromTitlebar(QuitResourcesFromTitlebar)
   case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
   case runSidebarGitActionFromTitlebar(RunSidebarGitActionFromTitlebar)
-  case configureZedOverlay(ConfigureZedOverlay)
-  case openZedWorkspace(OpenZedWorkspace)
   case sidebarCliCommand(SidebarCliCommand)
   case sidebarContextMenuOpened
   case sidebarContextMenuClosed
@@ -135,8 +131,6 @@ enum HostCommand: Decodable {
     case openExternalUrl
     case openWorkspaceInFinder
     case openWorkspaceInIde
-    case openBrowserWindow
-    case showBrowserWindow
     case openBrowserDevTools
     case injectBrowserReactGrab
     case injectBrowserAgentation
@@ -158,8 +152,6 @@ enum HostCommand: Decodable {
     case quitResourcesFromTitlebar
     case runSidebarCommandFromTitlebar
     case runSidebarGitActionFromTitlebar
-    case configureZedOverlay
-    case openZedWorkspace
     case sidebarCliCommand
     case sidebarContextMenuOpened
     case sidebarContextMenuClosed
@@ -269,10 +261,6 @@ enum HostCommand: Decodable {
       self = .openWorkspaceInFinder(try OpenWorkspaceInFinder(from: decoder))
     case .openWorkspaceInIde:
       self = .openWorkspaceInIde(try OpenWorkspaceInIde(from: decoder))
-    case .openBrowserWindow:
-      self = .openBrowserWindow(try OpenBrowserWindow(from: decoder))
-    case .showBrowserWindow:
-      self = .showBrowserWindow
     case .openBrowserDevTools:
       self = .openBrowserDevTools(try SessionCommand(from: decoder))
     case .injectBrowserReactGrab:
@@ -315,10 +303,6 @@ enum HostCommand: Decodable {
       self = .runSidebarCommandFromTitlebar(try RunSidebarCommandFromTitlebar(from: decoder))
     case .runSidebarGitActionFromTitlebar:
       self = .runSidebarGitActionFromTitlebar(try RunSidebarGitActionFromTitlebar(from: decoder))
-    case .configureZedOverlay:
-      self = .configureZedOverlay(try ConfigureZedOverlay(from: decoder))
-    case .openZedWorkspace:
-      self = .openZedWorkspace(try OpenZedWorkspace(from: decoder))
     case .sidebarCliCommand:
       self = .sidebarCliCommand(try SidebarCliCommand(from: decoder))
     case .sidebarContextMenuOpened:
@@ -839,16 +823,12 @@ struct OpenWorkspaceInFinder: Decodable {
 
 struct OpenWorkspaceInIde: Decodable {
   /**
-   CDXC:WorkspaceActions 2026-05-04-08:22
-   Opening a project in an IDE must carry the Settings-selected target app so
-   Swift can reuse the existing native launcher for Zed and VS Code variants.
+   CDXC:WorkspaceActions 2026-05-27-07:24
+   Opening a project in an IDE carries the explicit target app from the command.
+   It no longer depends on the removed IDE attachment settings or overlay controller.
    */
-  let targetApp: ZedOverlayTargetApp
+  let targetApp: WorkspaceIdeTargetApp
   let workspacePath: String
-}
-
-struct OpenBrowserWindow: Decodable {
-  let url: String
 }
 
 struct SetSidebarSide: Decodable {
@@ -912,17 +892,11 @@ enum SidebarSide: String, Decodable {
   case right
 }
 
-struct ConfigureZedOverlay: Decodable {
-  let enabled: Bool
-  let hideTitlebarButton: Bool?
-  let reason: String?
-  let targetApp: ZedOverlayTargetApp
-  let workspacePath: String?
-}
-
-struct OpenZedWorkspace: Decodable {
-  let targetApp: ZedOverlayTargetApp
-  let workspacePath: String
+enum WorkspaceIdeTargetApp: String, Decodable {
+  case zed
+  case zedPreview = "zed-preview"
+  case vscode
+  case vscodeInsiders = "vscode-insiders"
 }
 
 struct SidebarCliCommand: Decodable {

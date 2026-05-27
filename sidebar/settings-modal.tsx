@@ -88,7 +88,6 @@ import {
 } from "../shared/session-grid-contract";
 import {
   BROWSER_FEEDBACK_TOOL_OPTIONS,
-  BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
   GHOSTTY_CONFIRM_CLOSE_SURFACE_OPTIONS,
@@ -103,12 +102,10 @@ import {
   SIDEBAR_SETTINGS_PRESETS,
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
-  ZED_OVERLAY_TARGET_APP_OPTIONS,
   applySidebarSettingsPreset,
   getSidebarSettingsPresetId,
   normalizeghostexSettings,
   type BrowserFeedbackTool,
-  type BrowserOpenMode,
   type DefaultEditorCommand,
   type GhosttyConfirmCloseSurface,
   type GhosttyCopyOnSelect,
@@ -119,7 +116,6 @@ import {
   type SidebarSettingsPresetId,
   type SidebarSide,
   type TerminalCursorStyle,
-  type ZedOverlayTargetApp,
   type ghostexSettings,
 } from "../shared/ghostex-settings";
 import {
@@ -289,7 +285,6 @@ type MainSettingsSectionId =
   | "browser"
   | "editor"
   | "power"
-  | "ideAttachment"
   | "sounds"
   | "storage";
 
@@ -312,7 +307,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
    * Browser-related controls belong in one Browser section on the main
    * Settings tab: URL open target and browser-pane feedback tool selection.
    */
-  browser: ["browserOpenMode", "browserFeedbackTool"],
+  browser: ["browserFeedbackTool"],
   /*
    * CDXC:StatusIndicators 2026-05-20-12:00:
    * Status Indicators groups desktop session badges and the optional sidebar pet
@@ -352,13 +347,6 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "keepAwakeBatteryThresholdPercent",
     "keepAwakeDeactivateOnLowPowerMode",
     "keepAwakeDeactivateOnUserSwitch",
-  ],
-  ideAttachment: [
-    "accessibilityPermission",
-    "zedOverlayEnabled",
-    "zedOverlayHideTitlebarButton",
-    "zedOverlayTargetApp",
-    "syncOpenProjectWithZed",
   ],
   sounds: [
     "completionBellEnabled",
@@ -525,7 +513,6 @@ export function SettingsModal({
   const ghosttyBehaviorSectionRef = useRef<HTMLDivElement>(null);
   const ghosttyScrollingSectionRef = useRef<HTMLDivElement>(null);
   const ghosttyTerminalSectionRef = useRef<HTMLDivElement>(null);
-  const ideAttachmentSectionRef = useRef<HTMLDivElement>(null);
   const powerSectionRef = useRef<HTMLDivElement>(null);
   const statusIndicatorsSectionRef = useRef<HTMLDivElement>(null);
   const sessionCardsSectionRef = useRef<HTMLDivElement>(null);
@@ -682,12 +669,6 @@ export function SettingsModal({
   const settingsSearch = {
     browser: getSettingsSectionSearch(settingsSearchQuery, "Browser", [
       {
-        key: "browserOpenMode",
-        options: BROWSER_OPEN_MODE_OPTIONS,
-        subtitle: "Choose where browser actions open URLs.",
-        title: "Open URLs With",
-      },
-      {
         key: "browserFeedbackTool",
         options: BROWSER_FEEDBACK_TOOL_OPTIONS,
         subtitle: "Choose the feedback tool launched from browser pane menus.",
@@ -775,34 +756,6 @@ export function SettingsModal({
         key: "keepAwakeDeactivateOnUserSwitch",
         subtitle: "Stop preventing sleep when this user session is no longer active.",
         title: "Deactivate on user switch",
-      },
-    ]),
-    ideAttachment: getSettingsSectionSearch(settingsSearchQuery, "IDE Attachment", [
-      {
-        key: "accessibilityPermission",
-        subtitle: "Check macOS Accessibility status and open the privacy settings page.",
-        title: "Accessibility Permission",
-      },
-      {
-        key: "zedOverlayEnabled",
-        subtitle: "Attach Ghostex as an overlay to the selected IDE.",
-        title: "Attach Ghostex to IDE",
-      },
-      {
-        key: "zedOverlayHideTitlebarButton",
-        subtitle: "Hide the native Attach/Detach IDE button from the Ghostex title bar.",
-        title: "Hide title-bar attach button",
-      },
-      {
-        key: "zedOverlayTargetApp",
-        options: ZED_OVERLAY_TARGET_APP_OPTIONS,
-        subtitle: "Select which IDE should receive the overlay.",
-        title: "Target IDE",
-      },
-      {
-        key: "syncOpenProjectWithZed",
-        subtitle: "Open the active Ghostex project in the attached IDE after switching workspaces.",
-        title: "Sync active project with IDE",
       },
     ]),
     sessionCards: getSettingsSectionSearch(settingsSearchQuery, "Session Cards", [
@@ -1143,16 +1096,6 @@ export function SettingsModal({
     { id: "editor", ref: editorSectionRef, searchResult: settingsSearch.editor, title: "Editor" },
     { id: "power", ref: powerSectionRef, searchResult: settingsSearch.power, title: "Power" },
     { id: "sounds", ref: soundsSectionRef, searchResult: settingsSearch.sounds, title: "Sounds" },
-    /*
-     * CDXC:IDEAttachment 2026-05-15-19:50:
-     * The main Settings tab should place IDE Attachment immediately above Storage so attachment controls stay near the low-frequency system/storage controls instead of interrupting the primary sidebar workflow settings.
-     */
-    {
-      id: "ideAttachment",
-      ref: ideAttachmentSectionRef,
-      searchResult: settingsSearch.ideAttachment,
-      title: "IDE Attachment",
-    },
     { id: "storage", ref: storageSectionRef, searchResult: settingsSearch.storage, title: "Storage" },
   ];
   const ghosttySettingsSectionNavigation: Array<{
@@ -1698,20 +1641,7 @@ export function SettingsModal({
 
             {mainSectionVisible("browser", settingsSearch.browser) ? (
             <SettingsSection sectionRef={browserSectionRef} title="Browser">
-              {/* CDXC:BrowserPanes 2026-05-02-06:35: Users can keep the
-                  existing Chrome Canary native-window integration or route
-                  browser actions into workspace browser panes that behave like
-                  normal session cards inside sidebar groups. */}
-              {mainSettingVisible(settingsSearch.browser, "browserOpenMode") ? (
-              <SelectField
-                description="Choose where browser actions open URLs."
-                label="Open URLs With"
-                {...getSettingModificationProps("browserOpenMode")}
-                onChange={(value) => updateDraft("browserOpenMode", value as BrowserOpenMode)}
-                options={BROWSER_OPEN_MODE_OPTIONS}
-                value={draft.browserOpenMode}
-              />
-              ) : null}
+              {/* CDXC:BrowserPanes 2026-05-27-07:24: Settings no longer exposes Chrome Canary attachment. Browser actions always open in workspace browser panes, leaving this section focused on pane behavior controls. */}
               {/* CDXC:BrowserFeedbackTools 2026-05-22-09:18:
                   Browser-pane context menus should expose one feedback action whose injected tool is user-selectable: Agentation by default for structured visual annotations, or React Grab when explicitly selected. */}
               {mainSettingVisible(settingsSearch.browser, "browserFeedbackTool") ? (
@@ -2031,80 +1961,6 @@ export function SettingsModal({
                 onChange={(value) => updateDraft("actionCompletionSound", value)}
                 onPlay={onPlayCompletionSound}
                 value={draft.actionCompletionSound}
-              />
-              ) : null}
-            </SettingsSection>
-            ) : null}
-
-            {mainSectionVisible("ideAttachment", settingsSearch.ideAttachment) ? (
-            <SettingsSection sectionRef={ideAttachmentSectionRef} title="IDE Attachment">
-              {/* CDXC:AccessibilityPermissions 2026-05-08-13:08: Settings must
-                  show the current macOS Accessibility status and provide a
-                  one-click path to the matching System Settings pane without
-                  presenting the permission dialog unless attachment is enabled. */}
-              {mainSettingVisible(settingsSearch.ideAttachment, "accessibilityPermission") ? (
-              <div className="flex flex-col gap-2">
-                {/* CDXC:AccessibilityPermissions 2026-05-15-13:23: Missing macOS Accessibility status belongs next to the Accessibility Permission setting, not as a top-of-modal warning. Keep it gray so it reads as contextual status instead of a global amber alert. */}
-                <ActionButtonField
-                  description={getAccessibilityPermissionDescription(accessibilityPermissionGranted)}
-                  label="Accessibility Permission"
-                  onClick={() => onOpenAccessibilityPreferences?.()}
-                >
-                  {getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
-                </ActionButtonField>
-                {accessibilityPermissionGranted === false ? (
-                  <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                    Accessibility is off. IDE attachment won't work until it is allowed in macOS.
-                  </div>
-                ) : null}
-              </div>
-              ) : null}
-              {/* CDXC:IDEAttachment 2026-04-26-22:38: Settings select the IDE
-                  that the workspace header link button attaches to. The
-                  persisted keys remain zedOverlay* so existing installs keep
-                  their saved attach state and target. */}
-              {mainSettingVisible(settingsSearch.ideAttachment, "zedOverlayEnabled") ? (
-              <ToggleField
-                checked={draft.zedOverlayEnabled}
-                description="Attach Ghostex as an overlay to the selected IDE."
-                label="Attach Ghostex to IDE"
-                {...getSettingModificationProps("zedOverlayEnabled")}
-                onChange={(checked) => updateDraft("zedOverlayEnabled", checked)}
-              />
-              ) : null}
-              {mainSettingVisible(settingsSearch.ideAttachment, "zedOverlayHideTitlebarButton") ? (
-              <ToggleField
-                checked={draft.zedOverlayHideTitlebarButton}
-                description="Hide the native Attach/Detach IDE button from the Ghostex title bar."
-                label="Hide title-bar attach button"
-                {...getSettingModificationProps("zedOverlayHideTitlebarButton")}
-                onChange={(checked) => updateDraft("zedOverlayHideTitlebarButton", checked)}
-              />
-              ) : null}
-              {mainSettingVisible(settingsSearch.ideAttachment, "zedOverlayTargetApp") ? (
-              <SelectField
-                description="Select which IDE should receive the overlay."
-                label="Target IDE"
-                {...getSettingModificationProps("zedOverlayTargetApp")}
-                onChange={(value) =>
-                  updateDraft("zedOverlayTargetApp", value as ZedOverlayTargetApp)
-                }
-                options={ZED_OVERLAY_TARGET_APP_OPTIONS}
-                value={draft.zedOverlayTargetApp}
-              />
-              ) : null}
-              {/* CDXC:IDEAttachment 2026-05-06-12:49: Project sync is a
-                  separate default-on setting from attachment. When enabled,
-                  Ghostex opens the active project in the attached IDE after
-                  workspace switches instead of waiting for a title-bar button
-                  click. */}
-              {mainSettingVisible(settingsSearch.ideAttachment, "syncOpenProjectWithZed") ? (
-              <ToggleField
-                checked={draft.syncOpenProjectWithZed}
-                description="Open the active Ghostex project in the attached IDE after switching workspaces."
-                label="Sync active project with IDE"
-                {...getSettingModificationProps("syncOpenProjectWithZed")}
-                onChange={(checked) => updateDraft("syncOpenProjectWithZed", checked)}
               />
               ) : null}
             </SettingsSection>
@@ -5204,12 +5060,12 @@ function formatSliderNumber(value: number, step: number): string {
 
 function getAccessibilityPermissionDescription(granted: boolean | undefined): string {
   if (granted === true) {
-    return "Allowed in macOS. IDE attachment can read and follow the selected IDE window.";
+    return "Allowed in macOS. Desktop integrations can inspect and control app windows.";
   }
   if (granted === false) {
     return "Not allowed in macOS. Open Accessibility settings to add Ghostex.";
   }
-  return "Status is unavailable in this environment. Open macOS Accessibility settings if attachment cannot follow the IDE.";
+  return "Status is unavailable in this environment. Open macOS Accessibility settings if desktop integrations cannot control apps.";
 }
 
 function getAccessibilityPermissionButtonLabel(granted: boolean | undefined): string {

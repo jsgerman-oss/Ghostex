@@ -398,14 +398,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     ProcessInfo.processInfo.environment["ghostex_WORKSPACE_PATH"]
     ?? FileManager.default.currentDirectoryPath
   private weak var workspaceView: TerminalWorkspaceView?
-  private var zedOverlayController: ZedOverlayController?
-  private var browserOverlayController: BrowserOverlayController?
   private var sessionStatusIndicatorController: SessionStatusIndicatorController?
   private var petOverlayController: PetOverlayController?
-  private var hasPresentedAccessibilityPermissionDialog = false
-  private var pendingZedOverlayConfiguration: ConfigureZedOverlay?
-  private var hasUserDetachedZedOverlay = false
-  private var isMainWindowHiddenByIdeAttachment = false
   private var lastVisibleMainWindowFrameForPersistence: NSRect?
   private var pendingGhosttyConfigReloadTimer: Timer?
   private var isFlushingCEFBeforeTerminate = false
@@ -415,7 +409,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var lastNativeActivationRequest: NativeActivationRequest?
   private var lastNativeInputEventPayload: [String: Any]?
   private var lastNativeInputEventRecordedAt: Date?
-  private weak var attachToIdeTitlebarButton: NSButton?
   private weak var appTitlebarLabel: NSTextField?
   private let nativeSettingsStore = NativeSettingsStore()
   private let updaterController: SPUStandardUpdaterController
@@ -530,22 +523,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func applicationWillBecomeActive(_ notification: Notification) {
     /**
-     CDXC:IDEAttachment 2026-04-29-03:08
-     Dock-click surfacing needs native activation breadcrumbs outside the
-     overlay controller so a repro can distinguish "macOS never activated
-     ghostex" from "the overlay activation branch made the wrong ordering call."
+     CDXC:NativeActivation 2026-05-27-07:24
+     Keep app activation breadcrumbs for focus diagnostics after removing the
+     old IDE and Chrome Canary attachment controllers.
      */
     Self.appendNativeHostLifecycleLog(
       "applicationWillBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
     logNativeActivationLifecycleEvent("nativeHost.activation.willBecomeActive")
-    BrowserOverlayRestoreReproLog.append(
-      "appDelegate.applicationWillBecomeActive",
-      [
-        "frontmostApplication": NSWorkspace.shared.frontmostApplication?.localizedName as Any,
-        "keyWindow": window?.isKeyWindow as Any,
-        "windowVisible": window?.isVisible as Any,
-      ])
   }
 
   func applicationDidBecomeActive(_ notification: Notification) {
@@ -553,17 +538,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       "applicationDidBecomeActive pid=\(ProcessInfo.processInfo.processIdentifier) windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") lastActivationRequest=\(describeLastNativeActivationRequest()) recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
     logNativeActivationLifecycleEvent("nativeHost.activation.didBecomeActive")
-    BrowserOverlayRestoreReproLog.append(
-      "appDelegate.applicationDidBecomeActive",
-      [
-        "frontmostApplication": NSWorkspace.shared.frontmostApplication?.localizedName as Any,
-        "keyWindow": window?.isKeyWindow as Any,
-        "windowFrame": window.map {
-          "x=\($0.frame.minX),y=\($0.frame.minY),w=\($0.frame.width),h=\($0.frame.height)"
-        } as Any,
-        "windowLevel": window?.level.rawValue as Any,
-        "windowVisible": window?.isVisible as Any,
-      ])
   }
 
   func applicationDidResignActive(_ notification: Notification) {
@@ -1448,9 +1422,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self?.bridge?.send(event)
         (self?.window?.contentView as? ghostexRootView)?.postHostEvent(event)
       },
-      configureZedOverlay: { [weak self] command in
-        self?.handle(.configureZedOverlay(command))
-      },
       syncGhosttyTerminalSettings: { [weak self] command in
         self?.handle(.syncGhosttyTerminalSettings(command))
       },
@@ -1463,20 +1434,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       openAccessibilityPreferences: { [weak self] in
         self?.handle(.openAccessibilityPreferences)
       },
-      openBrowserWindow: { [weak self] command in
-        self?.handle(.openBrowserWindow(command))
-      },
-      openZedWorkspace: { [weak self] command in
-        self?.handle(.openZedWorkspace(command))
-      },
       openWorkspaceInFinder: { [weak self] command in
         self?.handle(.openWorkspaceInFinder(command))
       },
       openWorkspaceInIde: { [weak self] command in
         self?.handle(.openWorkspaceInIde(command))
-      },
-      showBrowserWindow: { [weak self] in
-        self?.handle(.showBrowserWindow)
       },
       setAppTitlebarTitle: { [weak self] title in
         self?.updateAppTitlebarTitle(title)
@@ -1535,67 +1497,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     scheduleMainWindowTrafficLightPositioning(on: window)
     window.makeKeyAndOrderFront(nil)
     scheduleMainWindowTrafficLightPositioning(on: window)
-    let zedOverlayController = ZedOverlayController(
-      window: window,
-      initialWindowSize: initialWindowFrame.size,
-      willHideAttachment: { [weak self] visibleFrame in
-        self?.isMainWindowHiddenByIdeAttachment = true
-        self?.lastVisibleMainWindowFrameForPersistence = visibleFrame
-        self?.persistMainWindowChrome()
-      },
-      didActivateAttachment: { [weak self] in
-        self?.browserOverlayController?.markBrowserNoLongerShownInAttachment(
-          reason: "ghostexActivated"
-        )
-      },
-      didHideAttachment: { [weak self] in
-        self?.browserOverlayController?.logAttachmentEvent(
-          "appDelegate.didHideAttachment.beforeMoveBrowser")
-        self?.browserOverlayController?.moveBrowserOffscreen()
-        self?.browserOverlayController?.logAttachmentEvent(
-          "appDelegate.didHideAttachment.afterMoveBrowser")
-      },
-      didShowAttachment: { [weak self] in
-        self?.isMainWindowHiddenByIdeAttachment = false
-        self?.persistMainWindowChrome()
-        self?.browserOverlayController?.logAttachmentEvent(
-          "appDelegate.didShowAttachment.beforeRestoreBrowser")
-        self?.browserOverlayController?.restoreBrowserIfNeeded()
-        self?.browserOverlayController?.logAttachmentEvent(
-          "appDelegate.didShowAttachment.afterRestoreBrowser")
-      },
-      didRequestDetach: { [weak self] targetApp in
-        self?.detachZedOverlayFromNativeButton(targetApp: targetApp)
-      }
-    )
-    self.zedOverlayController = zedOverlayController
-    self.browserOverlayController = BrowserOverlayController(
-      window: window,
-      workareaFrameProvider: { [weak root] in
-        root?.workspaceScreenFrame()
-      },
-      setCompanionBrowserActive: { [weak zedOverlayController] active in
-        zedOverlayController?.setCompanionApplicationBundleIdentifiers(
-          active ? [BrowserOverlayController.chromeCanaryBundleIdentifier] : []
-        )
-      }
-    )
-    if let pendingZedOverlayConfiguration {
-      zedOverlayController.configure(pendingZedOverlayConfiguration)
-      updateAttachToIdeTitlebarButton(
-        enabled: pendingZedOverlayConfiguration.enabled,
-        hideTitlebarButton: pendingZedOverlayConfiguration.hideTitlebarButton ?? false,
-        targetApp: pendingZedOverlayConfiguration.targetApp
-      )
-      self.pendingZedOverlayConfiguration = nil
-    } else if let initialZedOverlayConfiguration = initialZedOverlayConfiguration() {
-      zedOverlayController.configure(initialZedOverlayConfiguration)
-      updateAttachToIdeTitlebarButton(
-        enabled: initialZedOverlayConfiguration.enabled,
-        hideTitlebarButton: initialZedOverlayConfiguration.hideTitlebarButton ?? false,
-        targetApp: initialZedOverlayConfiguration.targetApp
-      )
-    }
     recordNativeActivationRequest(reason: "startup.makeWindow")
     NSApp.activate(ignoringOtherApps: true)
     scheduleMainWindowTrafficLightPositioning(on: window)
@@ -1723,16 +1624,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     let frame = window.frame
     /**
-     CDXC:NativeWindowChrome 2026-05-07-08:17
-     IDE attachment can tuck the real NSWindow offscreen while the user still
-     thinks of the prior visible window frame as ghostex's location. Persist that
-     last visible frame during hidden attachment states so launch restore never
-     reopens at an intentional offscreen helper coordinate.
+     CDXC:NativeWindowChrome 2026-05-27-07:24
+     Main-window persistence now records the actual visible AppKit window frame.
+     The offscreen IDE-attachment helper state was removed with the attachment controllers.
      */
-    let frameForPersistence =
-      isMainWindowHiddenByIdeAttachment
-      ? lastVisibleMainWindowFrameForPersistence ?? frame
-      : frame
+    let frameForPersistence = frame
     guard let screen = Self.screen(containingLargestVisibleAreaOf: frameForPersistence) else {
       return
     }
@@ -1852,109 +1748,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private func normalizedAppTitlebarTitle(_ title: String?) -> String {
     let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return normalizedTitle.isEmpty ? "Ghostex" : normalizedTitle
-  }
-
-  @MainActor private func installAttachToIdeTitlebarButton(on window: NSWindow) {
-    /**
-     CDXC:IDEAttachment 2026-04-27-00:54
-     The attach action belongs at the center of the native title bar and
-     should read as a text button, matching the rounded AppKit style of the
-     floating Show Ghostex/Show IDE buttons instead of using a blue link icon.
-     Its label names the currently selected IDE in the shortest requested
-     form and switches between Attach/Detach from the persisted
-     attach-enabled state.
-     */
-    let stored = nativeSettingsStore.readZedOverlay()
-    let targetApp = stored.targetApp ?? .zedPreview
-    let button = NSButton(
-      title: attachToIdeTitlebarButtonTitle(enabled: stored.enabled ?? false, targetApp: targetApp),
-      target: self,
-      action: #selector(handleAttachToIdeTitlebarButton)
-    )
-    button.isHidden = stored.hideTitlebarButton ?? false
-    button.bezelStyle = .rounded
-    button.controlSize = .small
-    button.font = .systemFont(ofSize: 12, weight: .semibold)
-    button.toolTip = "Attach to IDE"
-    button.setButtonType(.momentaryPushIn)
-    button.translatesAutoresizingMaskIntoConstraints = false
-
-    guard let titlebarView = window.standardWindowButton(.closeButton)?.superview else {
-      return
-    }
-    titlebarView.addSubview(button)
-    let centerYAnchor =
-      window.standardWindowButton(.closeButton)?.centerYAnchor ?? titlebarView.centerYAnchor
-    NSLayoutConstraint.activate([
-      button.centerXAnchor.constraint(equalTo: titlebarView.centerXAnchor),
-      button.centerYAnchor.constraint(equalTo: centerYAnchor),
-      button.heightAnchor.constraint(equalToConstant: 24),
-      button.widthAnchor.constraint(greaterThanOrEqualToConstant: 132),
-    ])
-    if let appTitlebarLabel {
-      appTitlebarLabel.trailingAnchor.constraint(lessThanOrEqualTo: button.leadingAnchor, constant: -12)
-        .isActive = true
-    }
-    attachToIdeTitlebarButton = button
-  }
-
-  @objc @MainActor private func handleAttachToIdeTitlebarButton() {
-    let stored = nativeSettingsStore.readZedOverlay()
-    let targetApp = stored.targetApp ?? .zedPreview
-    let nextEnabled = !(stored.enabled ?? false)
-    let command = ConfigureZedOverlay(
-      enabled: nextEnabled,
-      hideTitlebarButton: stored.hideTitlebarButton,
-      reason: nil,
-      targetApp: targetApp,
-      workspacePath: workspacePath
-    )
-    handle(.configureZedOverlay(command))
-    if nextEnabled {
-      (window?.contentView as? ghostexRootView)?.applyNativeZedOverlayAttached(targetApp: targetApp)
-    } else {
-      (window?.contentView as? ghostexRootView)?.applyNativeZedOverlayDetached(targetApp: targetApp)
-    }
-  }
-
-  @MainActor private func updateAttachToIdeTitlebarButton(
-    enabled: Bool,
-    hideTitlebarButton: Bool,
-    targetApp: ZedOverlayTargetApp
-  ) {
-    attachToIdeTitlebarButton?.title = attachToIdeTitlebarButtonTitle(
-      enabled: enabled,
-      targetApp: targetApp
-    )
-    (window?.contentView as? ghostexRootView)?.applyNativeTitlebarZedOverlay(
-      enabled: enabled,
-      hideTitlebarButton: hideTitlebarButton,
-      targetApp: targetApp
-    )
-    /**
-     CDXC:IDEAttachment 2026-05-01-13:52
-     Settings can hide the native title-bar Attach/Detach IDE button without
-     changing whether ghostex is attached. Keep the button object installed so the
-     setting can show it again immediately without rebuilding title-bar chrome.
-     */
-    attachToIdeTitlebarButton?.isHidden = hideTitlebarButton
-  }
-
-  private func attachToIdeTitlebarButtonTitle(
-    enabled: Bool,
-    targetApp: ZedOverlayTargetApp
-  ) -> String {
-    let action = enabled ? "Detach" : "Attach"
-    switch targetApp {
-    case .zed:
-      return "\(action) Zed"
-    case .zedPreview:
-      return "\(action) Zed"
-    case .vscode:
-      return "\(action) VS Code"
-    case .vscodeInsiders:
-      return "\(action) VS Code"
-    }
   }
 
   @MainActor
@@ -2199,10 +1992,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       openWorkspaceInFinder(command)
     case .openWorkspaceInIde(let command):
       openWorkspaceInIde(command)
-    case .openBrowserWindow(let command):
-      browserOverlayController?.open(command)
-    case .showBrowserWindow:
-      browserOverlayController?.showRunningChromeCanary()
     case .openBrowserDevTools(let command):
       workspaceView?.openBrowserDevTools(sessionId: command.sessionId)
     case .injectBrowserReactGrab(let command):
@@ -2246,73 +2035,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       break
     case .runSidebarGitActionFromTitlebar:
       break
-    case .configureZedOverlay(let command):
-      if let workspacePath = command.workspacePath {
-        self.workspacePath = workspacePath
-      }
-      if command.enabled, hasUserDetachedZedOverlay, command.reason == "workspace-focus" {
-        /**
-         CDXC:IDEAttachment 2026-05-01-13:32
-         Workspace selection must not undo an explicit IDE detach. The sidebar
-         posts configureZedOverlay during focus changes to sync the selected
-         workspace path; if its in-memory settings are stale, reject only that
-         workspace-focus reattach while preserving explicit Settings/titlebar
-         attach commands.
-         */
-        BrowserOverlayRestoreReproLog.append(
-          "appDelegate.configureZedOverlay.skippedWorkspaceReattach",
-          [
-            "reason": command.reason as Any,
-            "targetApp": command.targetApp.rawValue,
-            "workspacePath": command.workspacePath as Any,
-          ])
-        return
-      }
-      if command.enabled {
-        hasUserDetachedZedOverlay = false
-      } else {
-        hasUserDetachedZedOverlay = true
-      }
-      if command.enabled, command.reason == "settings-enable" {
-        /**
-         CDXC:AccessibilityPermissions 2026-05-08-13:08
-         Settings is the consent point for IDE attachment. When attachment is
-         switched on from Settings, ask for Accessibility immediately; other
-         settings saves, startup syncs, and workspace focus messages must not
-         create a permission prompt.
-         */
-        presentAccessibilityPermissionDialogIfNeeded()
-      }
-      updateAttachToIdeTitlebarButton(
-        enabled: command.enabled,
-        hideTitlebarButton: command.hideTitlebarButton ?? false,
-        targetApp: command.targetApp
-      )
-      nativeSettingsStore.persistZedOverlay(command)
-      guard let zedOverlayController else {
-        /**
-         CDXC:ZedOverlay 2026-04-26-03:29
-         The sidebar webview can send saved Zed overlay settings while
-         the AppKit window is still being assembled. Preserve that
-         command and apply it once the native overlay controller exists.
-         */
-        pendingZedOverlayConfiguration = command
-        return
-      }
-      zedOverlayController.configure(command)
-    case .openZedWorkspace(let command):
-      guard !hasUserDetachedZedOverlay else {
-        BrowserOverlayRestoreReproLog.append(
-          "appDelegate.openZedWorkspace.skippedDetached",
-          [
-            "targetApp": command.targetApp.rawValue,
-            "workspacePath": command.workspacePath,
-          ])
-        return
-      }
-      self.workspacePath = command.workspacePath
-      zedOverlayController?.openWorkspace(
-        targetApp: command.targetApp, workspacePath: command.workspacePath)
     case .sidebarCliCommand(let command):
       runSidebarCliCommand(command)
     case .sidebarContextMenuOpened:
@@ -2623,47 +2345,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window?.makeKeyAndOrderFront(nil)
   }
 
-  @MainActor private func presentAccessibilityPermissionDialogIfNeeded() {
-    guard !hasPresentedAccessibilityPermissionDialog, !AXIsProcessTrusted() else {
-      return
-    }
-    hasPresentedAccessibilityPermissionDialog = true
-    recordNativeActivationRequest(reason: "accessibilityPermissionDialog")
-    NSApp.activate(ignoringOtherApps: true)
-    window?.makeKeyAndOrderFront(nil)
-
-    /**
-     CDXC:AccessibilityPermissions 2026-05-08-13:08
-     Accessibility permission must be requested only after the user explicitly
-     enables IDE attachment in Settings. Startup should not ask because default
-     Ghostex sessions do not need Accessibility until attachment is active.
-     CDXC:Branding 2026-05-12-07:35
-     Public permission prompts use Ghostex while implementation identifiers
-     keep the ghostex storage and bundle naming used by existing installs.
-     */
-    let alert = NSAlert()
-    alert.messageText = "Accessibility Permissions Required"
-    alert.informativeText =
-      "Ghostex uses Accessibility to attach to Zed, VS Code, or other supported IDE windows. Click OK to open System Settings and enable Accessibility for Ghostex. A restart may be required after granting permission."
-    alert.alertStyle = .warning
-    alert.addButton(withTitle: "OK")
-    alert.addButton(withTitle: "Cancel")
-
-    if let primaryButton = alert.buttons.first {
-      primaryButton.keyEquivalent = "\r"
-      primaryButton.bezelColor = .controlAccentColor
-    }
-    if alert.buttons.count > 1 {
-      alert.buttons[1].keyEquivalent = "\u{1b}"
-    }
-
-    let result = alert.runModal()
-    guard result == .alertFirstButtonReturn else {
-      return
-    }
-    openAccessibilityPreferences()
-  }
-
   private func openAccessibilityPreferences() {
     guard
       let url = URL(
@@ -2781,48 +2462,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       return #"{"error":"json-encoding-failed"}"#
     }
     return text
-  }
-
-  @MainActor private func detachZedOverlayFromNativeButton(targetApp: ZedOverlayTargetApp) {
-    /**
-     CDXC:ZedOverlay 2026-04-26-10:54
-     The native Detach button must behave like turning off the sidebar
-     attach checkbox: persist the disabled attach setting, apply standalone
-     window behavior immediately, and update the sidebar settings UI.
-     */
-    let command = ConfigureZedOverlay(
-      enabled: false,
-      hideTitlebarButton: nativeSettingsStore.readZedOverlay().hideTitlebarButton,
-      reason: nil,
-      targetApp: targetApp,
-      workspacePath: workspacePath
-    )
-    handle(.configureZedOverlay(command))
-    (window?.contentView as? ghostexRootView)?.applyNativeZedOverlayDetached(targetApp: targetApp)
-  }
-
-  private func initialZedOverlayConfiguration() -> ConfigureZedOverlay? {
-    let environment = ProcessInfo.processInfo.environment
-    let stored = nativeSettingsStore.readZedOverlay()
-    let enabledValue =
-      environment["ghostex_ZED_OVERLAY_ENABLED"].map { value in
-        value == "1" || value.lowercased() == "true"
-      } ?? stored.enabled
-    guard let enabledValue else {
-      return nil
-    }
-    let targetApp =
-      environment["ghostex_ZED_OVERLAY_TARGET_APP"]
-      .flatMap(ZedOverlayTargetApp.init(rawValue:))
-      ?? stored.targetApp
-      ?? .zedPreview
-    return ConfigureZedOverlay(
-      enabled: enabledValue,
-      hideTitlebarButton: stored.hideTitlebarButton,
-      reason: nil,
-      targetApp: targetApp,
-      workspacePath: workspacePath
-    )
   }
 
   private func syncGhosttyTerminalSettings(_ command: SyncGhosttyTerminalSettings) {
@@ -3166,13 +2805,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     /**
-     CDXC:WorkspaceActions 2026-05-04-08:22
+     CDXC:WorkspaceActions 2026-05-27-07:24
      Project right-click "Open in IDE" is an explicit command and must use the
-     IDE selected in Settings even when IDE attachment or sync-open is disabled.
-     Reuse the native IDE launcher so Zed, Zed Preview, VS Code, and Insiders
-     keep their existing command-line workspace behavior.
+     command target directly now that IDE attachment settings and overlay
+     controllers are removed. Keep the command-line launcher so Zed, Zed
+     Preview, VS Code, and Insiders retain their existing workspace behavior.
      */
-    zedOverlayController?.openWorkspace(targetApp: command.targetApp, workspacePath: path)
+    runOpenWorkspaceProcess(targetApp: command.targetApp, workspacePath: path)
+  }
+
+  private func runOpenWorkspaceProcess(targetApp: WorkspaceIdeTargetApp, workspacePath path: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = workspaceOpenCommandArguments(targetApp: targetApp, workspacePath: path)
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    do {
+      try process.run()
+    } catch {
+      Self.logger.error("Failed to open workspace in IDE: \(error.localizedDescription)")
+    }
+  }
+
+  private func workspaceOpenCommandArguments(
+    targetApp: WorkspaceIdeTargetApp,
+    workspacePath: String
+  ) -> [String] {
+    switch targetApp {
+    case .zed, .zedPreview:
+      return ["zed", workspacePath, "--existing"]
+    case .vscode:
+      return ["code", workspacePath, "--reuse-window"]
+    case .vscodeInsiders:
+      return ["code-insiders", workspacePath, "--reuse-window"]
+    }
   }
 
   private func openGhosttyConfigFile() {
@@ -3281,12 +2948,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       }
     }
   }
-}
-
-private struct NativeZedOverlaySettings {
-  let enabled: Bool?
-  let hideTitlebarButton: Bool?
-  let targetApp: ZedOverlayTargetApp?
 }
 
 private struct NativeSidebarChromeSettings {
@@ -3403,45 +3064,6 @@ private final class NativeSettingsStore {
     "focusRight": ["cmd+right"],
     "focusUp": ["cmd+up"],
   ]
-
-  /**
-   CDXC:ZedOverlay 2026-04-26-04:14
-   The all-native host must keep the Zed overlay setting in native app state,
-   not only WKWebView localStorage. Reading and writing the same settings file
-   used by the packaged app keeps the overlay button enabled after restarts.
-   */
-  func readZedOverlay() -> NativeZedOverlaySettings {
-    guard let settings = readSettingsDictionary() else {
-      return NativeZedOverlaySettings(enabled: nil, hideTitlebarButton: nil, targetApp: nil)
-    }
-    return NativeZedOverlaySettings(
-      enabled: settings["zedOverlayEnabled"] as? Bool,
-      hideTitlebarButton: settings["zedOverlayHideTitlebarButton"] as? Bool,
-      targetApp: (settings["zedOverlayTargetApp"] as? String).flatMap(
-        ZedOverlayTargetApp.init(rawValue:))
-    )
-  }
-
-  func persistZedOverlay(_ command: ConfigureZedOverlay) {
-    do {
-      let url = settingsURL()
-      var settings = readSettingsDictionary() ?? [:]
-      settings["zedOverlayEnabled"] = command.enabled
-      if let hideTitlebarButton = command.hideTitlebarButton {
-        settings["zedOverlayHideTitlebarButton"] = hideTitlebarButton
-      }
-      settings["zedOverlayTargetApp"] = command.targetApp.rawValue
-      let data = try JSONSerialization.data(
-        withJSONObject: settings, options: [.prettyPrinted, .sortedKeys])
-      try FileManager.default.createDirectory(
-        at: url.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-      )
-      try data.write(to: url, options: [.atomic])
-    } catch {
-      Self.logger.error("Failed to persist Zed overlay settings: \(error.localizedDescription)")
-    }
-  }
 
   /**
    CDXC:NativeSidebarChrome 2026-04-26-07:16
@@ -3870,6 +3492,13 @@ final class ghostexRootView: NSView {
   private static let floatingPromptEditorFrameDefaultsKey = "ghostex.floatingPromptEditor.frame.v1"
   private static let floatingPromptEditorPrewarmRequestId = "ghostex-floating-prompt-editor-prewarm"
 
+  private static func javascriptStringLiteral(_ value: String) -> String? {
+    guard let data = try? JSONEncoder().encode(value) else {
+      return nil
+    }
+    return String(data: data, encoding: .utf8)
+  }
+
   let workspaceView: TerminalWorkspaceView
   var sidebarWebView: WKWebView { sidebarView }
   private let sidebarView: WKWebView
@@ -3884,16 +3513,12 @@ final class ghostexRootView: NSView {
   private let sidebarCommandRouter = SidebarCommandRouter()
   private let divider: PaneResizeHandleView
   private let eventEncoder = JSONEncoder()
-  private let configureZedOverlay: (ConfigureZedOverlay) -> Void
   private let syncGhosttyTerminalSettings: (SyncGhosttyTerminalSettings) -> Void
   private let applyGhosttyConfigSettings: (ApplyGhosttyConfigSettings) -> Void
   private let openGhosttyConfigFile: () -> Void
   private let openAccessibilityPreferences: () -> Void
-  private let openBrowserWindow: (OpenBrowserWindow) -> Void
-  private let openZedWorkspace: (OpenZedWorkspace) -> Void
   private let openWorkspaceInFinder: (OpenWorkspaceInFinder) -> Void
   private let openWorkspaceInIde: (OpenWorkspaceInIde) -> Void
-  private let showBrowserWindow: () -> Void
   private let setAppTitlebarTitle: (String?) -> Void
   private let setSessionStatusIndicators: (SetSessionStatusIndicators) -> Void
   private let setPetOverlayState: (SetPetOverlayState) -> Void
@@ -3941,16 +3566,12 @@ final class ghostexRootView: NSView {
   init(
     ghostty: GhostexGhosttyApp,
     sendEvent: @escaping (HostEvent) -> Void,
-    configureZedOverlay: @escaping (ConfigureZedOverlay) -> Void,
     syncGhosttyTerminalSettings: @escaping (SyncGhosttyTerminalSettings) -> Void,
     applyGhosttyConfigSettings: @escaping (ApplyGhosttyConfigSettings) -> Void,
     openGhosttyConfigFile: @escaping () -> Void,
     openAccessibilityPreferences: @escaping () -> Void,
-    openBrowserWindow: @escaping (OpenBrowserWindow) -> Void,
-    openZedWorkspace: @escaping (OpenZedWorkspace) -> Void,
     openWorkspaceInFinder: @escaping (OpenWorkspaceInFinder) -> Void,
     openWorkspaceInIde: @escaping (OpenWorkspaceInIde) -> Void,
-    showBrowserWindow: @escaping () -> Void,
     setAppTitlebarTitle: @escaping (String?) -> Void,
     setSessionStatusIndicators: @escaping (SetSessionStatusIndicators) -> Void,
     setPetOverlayState: @escaping (SetPetOverlayState) -> Void
@@ -3966,16 +3587,12 @@ final class ghostexRootView: NSView {
       }
     )
     self.scriptBridge = SidebarScriptBridge(router: sidebarCommandRouter)
-    self.configureZedOverlay = configureZedOverlay
     self.syncGhosttyTerminalSettings = syncGhosttyTerminalSettings
     self.applyGhosttyConfigSettings = applyGhosttyConfigSettings
     self.openGhosttyConfigFile = openGhosttyConfigFile
     self.openAccessibilityPreferences = openAccessibilityPreferences
-    self.openBrowserWindow = openBrowserWindow
-    self.openZedWorkspace = openZedWorkspace
     self.openWorkspaceInFinder = openWorkspaceInFinder
     self.openWorkspaceInIde = openWorkspaceInIde
-    self.showBrowserWindow = showBrowserWindow
     self.setAppTitlebarTitle = setAppTitlebarTitle
     self.setSessionStatusIndicators = setSessionStatusIndicators
     self.setPetOverlayState = setPetOverlayState
@@ -4004,24 +3621,6 @@ final class ghostexRootView: NSView {
       "sharedSidebarStorage": GhostexAppStorage.readSharedSidebarStorage(),
       "workspaceName": workspaceName.isEmpty ? "Ghostex" : workspaceName,
     ]
-    let storedZedOverlay = nativeSettingsStore.readZedOverlay()
-    if let enabled = storedZedOverlay.enabled {
-      bootstrap["zedOverlayEnabled"] = enabled
-    }
-    if let targetApp = storedZedOverlay.targetApp {
-      bootstrap["zedOverlayTargetApp"] = targetApp.rawValue
-    }
-    if let hideTitlebarButton = storedZedOverlay.hideTitlebarButton {
-      bootstrap["zedOverlayHideTitlebarButton"] = hideTitlebarButton
-    }
-    if let zedOverlayEnabled = ProcessInfo.processInfo.environment["ghostex_ZED_OVERLAY_ENABLED"] {
-      bootstrap["zedOverlayEnabled"] =
-        zedOverlayEnabled == "1" || zedOverlayEnabled.lowercased() == "true"
-    }
-    if let zedOverlayTargetApp = ProcessInfo.processInfo.environment["ghostex_ZED_OVERLAY_TARGET_APP"]
-    {
-      bootstrap["zedOverlayTargetApp"] = zedOverlayTargetApp
-    }
     if let data = try? JSONSerialization.data(withJSONObject: bootstrap),
       let json = String(data: data, encoding: .utf8)
     {
@@ -5043,61 +4642,6 @@ final class ghostexRootView: NSView {
     sendHostEvent(event)
   }
 
-  private func javaScriptStringLiteral(_ value: String) -> String? {
-    guard let data = try? JSONEncoder().encode(value) else {
-      return nil
-    }
-    return String(data: data, encoding: .utf8)
-  }
-
-  func applyNativeZedOverlayDetached(targetApp: ZedOverlayTargetApp) {
-    guard let json = javaScriptStringLiteral(targetApp.rawValue) else {
-      return
-    }
-    sidebarView.evaluateJavaScript(
-      """
-      window.__ghostex_NATIVE_SETTINGS__?.detachZedOverlay(\(json));
-      """)
-  }
-
-  func applyNativeZedOverlayAttached(targetApp: ZedOverlayTargetApp) {
-    guard let json = javaScriptStringLiteral(targetApp.rawValue) else {
-      return
-    }
-    sidebarView.evaluateJavaScript(
-      """
-      window.__ghostex_NATIVE_SETTINGS__?.attachZedOverlay(\(json));
-      """)
-  }
-
-  func applyNativeTitlebarZedOverlay(
-    enabled: Bool,
-    hideTitlebarButton: Bool,
-    targetApp: ZedOverlayTargetApp
-  ) {
-    /**
-     CDXC:ReactTitlebar 2026-05-09-17:11
-     Native Settings and attachment flows can change IDE attachment state
-     outside the titlebar webview. Push the authoritative state back into
-     React so the titlebar button mirrors the native overlay controller.
-     */
-    guard
-      let data = try? JSONSerialization.data(withJSONObject: [
-        "enabled": enabled,
-        "hideTitlebarButton": hideTitlebarButton,
-        "targetApp": targetApp.rawValue,
-      ]),
-      let json = String(data: data, encoding: .utf8)
-    else {
-      return
-    }
-    titlebarChromeWebView.evaluateJavaScript(
-      """
-      window.__ghostex_TITLEBAR__?.setZedOverlay(\(json));
-      undefined;
-      """)
-  }
-
   func applyReactTitlebarProjectState(_ command: SetActiveTerminalSet) {
     /**
      CDXC:ReactTitlebar 2026-05-11-00:22
@@ -5455,7 +4999,7 @@ final class ghostexRootView: NSView {
      Encode command ids as JSON string literals so terminal actions reach the
      command-pane runner.
      */
-    guard let commandIdJson = javaScriptStringLiteral(command.commandId) else {
+    guard let commandIdJson = Self.javascriptStringLiteral(command.commandId) else {
       return
     }
     sidebarView.evaluateJavaScript(
@@ -5470,7 +5014,7 @@ final class ghostexRootView: NSView {
      CDXC:TitlebarGit 2026-05-24-17:41:
      The React titlebar owns only the compact Git split-button chrome. Forward commit/push/PR actions into the sidebar webview so one owner keeps git status, generated commit-message prompts, toasts, and PR browser opening synchronized.
      */
-    guard let actionJson = javaScriptStringLiteral(command.action) else {
+    guard let actionJson = Self.javascriptStringLiteral(command.action) else {
       return
     }
     sidebarView.evaluateJavaScript(
@@ -5722,22 +5266,6 @@ final class ghostexRootView: NSView {
       openWorkspaceInFinder(command)
     case .openWorkspaceInIde(let command):
       openWorkspaceInIde(command)
-    case .openBrowserWindow(let command):
-      /**
-       CDXC:BrowserOverlay 2026-04-26-05:14
-       Browser action buttons are routed out of the sidebar webview and
-       into AppDelegate so the native host can launch and position Chrome
-       Canary above the active ghostex attachment window.
-       */
-      openBrowserWindow(command)
-    case .showBrowserWindow:
-      /**
-       CDXC:BrowserOverlay 2026-04-26-07:37
-       The restored Browsers sidebar section uses this command to raise
-       the already-running Canary window through AppDelegate, preserving
-       native workarea placement without creating a new browser tab.
-       */
-      showBrowserWindow()
     case .openBrowserDevTools(let command):
       workspaceView.openBrowserDevTools(sessionId: command.sessionId)
     case .injectBrowserReactGrab(let command):
@@ -5787,23 +5315,6 @@ final class ghostexRootView: NSView {
       runSidebarCommandFromTitlebar(command)
     case .runSidebarGitActionFromTitlebar(let command):
       runSidebarGitActionFromTitlebar(command)
-    case .configureZedOverlay(let command):
-      /**
-       CDXC:ZedOverlay 2026-04-26-03:29
-       Zed overlay configuration comes from the sidebar webview, but the
-       native overlay controller lives in AppDelegate beside the window it
-       moves. Forward this command instead of consuming it in the sidebar
-       router so the native button can be positioned over Zed Preview.
-       */
-      configureZedOverlay(command)
-    case .openZedWorkspace(let command):
-      /**
-       CDXC:ZedOverlay 2026-04-28-05:29
-       Sidebar workspace-open commands must use the same native overlay
-       path as bridge commands so the selected Zed-family target receives
-       the workspace request instead of leaving HostCommand non-exhaustive.
-       */
-      openZedWorkspace(command)
     case .sidebarCliCommand:
       /**
        CDXC:DebugCli 2026-04-27-07:18
@@ -6623,20 +6134,6 @@ final class ghostexRootView: NSView {
     sidebarSide = side
     workspaceView.setSidebarSide(side)
     needsLayout = true
-  }
-
-  func workspaceScreenFrame() -> NSRect? {
-    guard let window = workspaceView.window else {
-      return nil
-    }
-    /**
-     CDXC:BrowserOverlay 2026-04-26-05:22
-     Chrome Canary should cover only the ghostex workarea, leaving the
-     workspace switcher rail and sidebar visible for project/session
-     context while the browser is open above the attached app.
-     */
-    let windowFrame = workspaceView.convert(workspaceView.bounds, to: nil)
-    return window.convertToScreen(windowFrame)
   }
 
   required init?(coder: NSCoder) {

@@ -59,7 +59,7 @@ osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || tru
 pkill -x "$APP_NAME" 2>/dev/null || true
 sleep 0.3
 
-# CDXC:ZedOverlay 2026-04-26-04:16: Install dev builds to a stable
+# CDXC:MacOSPermissions 2026-05-27-07:24: Install dev builds to a stable
 # /Applications app path before launching so macOS Accessibility permission
 # stays attached to the same signed app identity across rebuilds.
 rm -rf "$INSTALLED_APP"

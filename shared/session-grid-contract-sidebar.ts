@@ -10,7 +10,8 @@ import type {
 } from "./sidebar-commands";
 import type { SidebarGitAction, SidebarGitChangedFile, SidebarGitState } from "./sidebar-git";
 import type { SidebarProjectDiffStats } from "./project-diff-stats";
-import type { ZedOverlayTargetApp, ghostexSettings } from "./ghostex-settings";
+import type { ghostexSettings } from "./ghostex-settings";
+import type { WorkspaceIdeTargetApp } from "./workspace-open-targets";
 import type { ghostexHotkeyActionId } from "./ghostex-hotkeys";
 import type { SidebarPinnedPrompt } from "./sidebar-pinned-prompts";
 import type {
@@ -775,10 +776,9 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
-       * CDXC:ChromiumBrowserPanes 2026-05-04-17:00
-       * The sidebar Chromium test button must always create an in-workspace
-       * browser pane, independent of the legacy browserOpenMode setting that
-       * can still target Chrome Canary for other browser actions.
+       * CDXC:ChromiumBrowserPanes 2026-05-27-07:24
+       * Browser actions always create in-workspace browser panes now that the
+       * legacy Chrome Canary attachment route has been removed.
        */
       url?: string;
       type: "openBrowserPane";
@@ -912,7 +912,7 @@ export type SidebarToExtensionMessage =
        * being inferred from Settings, so choosing VS Code or Zed immediately
        * opens the project in that exact app.
        */
-      targetApp: Extract<ZedOverlayTargetApp, "vscode" | "zed">;
+      targetApp: Extract<WorkspaceIdeTargetApp, "vscode" | "zed">;
       type: "openActiveWorkspaceProjectInIde";
     }
   | {
@@ -1027,9 +1027,6 @@ export type SidebarToExtensionMessage =
        */
       sessionId: string;
       type: "popOutPane";
-    }
-  | {
-      type: "attachToIde";
     }
   | {
       type: "fullReloadGroup";

@@ -25,7 +25,7 @@ The project is positioned as a free and open source alternative to Codex App for
 
 ### Native macOS Host
 
-The macOS app shell owns the native window, title bar, pane layout, Ghostty terminal hosting, browser/editor hosting, menu bar integration, notifications, Sparkle updates, and system-level integrations such as IDE attachment.
+The macOS app shell owns the native window, title bar, pane layout, Ghostty terminal hosting, browser/editor hosting, menu bar integration, notifications, and Sparkle updates.
 
 ### Sidebar and Workspace UI
 

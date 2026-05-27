@@ -16,65 +16,34 @@ import {
   SIDEBAR_SETTINGS_PRESET_SETTINGS,
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
-  ZED_OVERLAY_TARGET_APP_OPTIONS,
 } from "./ghostex-settings";
 import { DEFAULT_PET_ID } from "./pets";
 
 describe("normalizeghostexSettings", () => {
-  test("defaults the Zed overlay settings", () => {
+  test("normalizes browser actions to browser panes", () => {
+    /**
+     * CDXC:BrowserPanes 2026-05-27-07:24
+     * Browser actions no longer support Chrome Canary attachment. Legacy stored
+     * values must normalize to browser panes so removed settings cannot restore
+     * the old external browser route.
+     */
+    expect(DEFAULT_ghostex_SETTINGS.browserOpenMode).toBe("browser-pane");
     expect(normalizeghostexSettings({})).toMatchObject({
-      syncOpenProjectWithZed: DEFAULT_ghostex_SETTINGS.syncOpenProjectWithZed,
-      zedOverlayEnabled: DEFAULT_ghostex_SETTINGS.zedOverlayEnabled,
-      zedOverlayHideTitlebarButton: DEFAULT_ghostex_SETTINGS.zedOverlayHideTitlebarButton,
-      zedOverlayTargetApp: DEFAULT_ghostex_SETTINGS.zedOverlayTargetApp,
-    });
-  });
-
-  test("keeps the IDE title-bar button visible by default", () => {
-    /**
-     * CDXC:IDEAttachment 2026-05-01-13:52
-     * Hiding the native Attach/Detach IDE title-bar button is opt-in. The
-     * default must remain visible so existing users keep the current control.
-     */
-    expect(DEFAULT_ghostex_SETTINGS.zedOverlayHideTitlebarButton).toBe(false);
-    expect(normalizeghostexSettings({ zedOverlayHideTitlebarButton: true })).toMatchObject({
-      zedOverlayHideTitlebarButton: true,
-    });
-  });
-
-  test("keeps active project IDE sync enabled by default", () => {
-    /**
-     * CDXC:IDEAttachment 2026-05-06-12:49
-     * The sync setting must default on so project activation in either sidebar
-     * mode can debounce one attached-IDE workspace sync from the sidebar.
-     */
-    expect(DEFAULT_ghostex_SETTINGS.syncOpenProjectWithZed).toBe(true);
-    expect(normalizeghostexSettings({ syncOpenProjectWithZed: false })).toMatchObject({
-      syncOpenProjectWithZed: false,
-    });
-  });
-
-  test("defaults browser actions to Chrome Canary and keeps browser panes opt-in", () => {
-    /**
-     * CDXC:BrowserPanes 2026-05-02-06:35
-     * Chrome Canary remains the default browser action target. Browser panes are
-     * selected explicitly so the existing browser-window workflow is not
-     * replaced by a persisted-settings migration.
-     */
-    expect(DEFAULT_ghostex_SETTINGS.browserOpenMode).toBe("chrome-canary");
-    expect(normalizeghostexSettings({})).toMatchObject({
-      browserOpenMode: "chrome-canary",
+      browserOpenMode: "browser-pane",
     });
     expect(normalizeghostexSettings({ browserOpenMode: "browser-pane" })).toMatchObject({
       browserOpenMode: "browser-pane",
     });
-    expect(normalizeghostexSettings({ browserOpenMode: "Safari" })).toMatchObject({
-      browserOpenMode: "chrome-canary",
+    expect(normalizeghostexSettings({ browserOpenMode: "chrome-canary" })).toMatchObject({
+      browserOpenMode: "browser-pane",
     });
-    expect(BROWSER_OPEN_MODE_OPTIONS).toContainEqual({
+    expect(normalizeghostexSettings({ browserOpenMode: "Safari" })).toMatchObject({
+      browserOpenMode: "browser-pane",
+    });
+    expect(BROWSER_OPEN_MODE_OPTIONS).toEqual([{
       label: "Browser Panes",
       value: "browser-pane",
-    });
+    }]);
   });
 
   test("defaults browser feedback tools to Agentation and allows React Grab", () => {
@@ -690,51 +659,4 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
-  test("keeps valid Zed overlay settings", () => {
-    expect(
-      normalizeghostexSettings({
-        zedOverlayEnabled: true,
-        zedOverlayTargetApp: "zed",
-      }),
-    ).toMatchObject({
-      zedOverlayEnabled: true,
-      zedOverlayTargetApp: "zed",
-    });
-  });
-
-  test("rejects invalid Zed overlay target apps", () => {
-    expect(
-      normalizeghostexSettings({
-        zedOverlayTargetApp: "Cursor",
-      }),
-    ).toMatchObject({
-      zedOverlayTargetApp: DEFAULT_ghostex_SETTINGS.zedOverlayTargetApp,
-    });
-  });
-
-  test("keeps VS Code IDE attachment targets", () => {
-    expect(
-      normalizeghostexSettings({
-        zedOverlayTargetApp: "vscode",
-      }).zedOverlayTargetApp,
-    ).toBe("vscode");
-    expect(
-      normalizeghostexSettings({
-        zedOverlayTargetApp: "vscode-insiders",
-      }).zedOverlayTargetApp,
-    ).toBe("vscode-insiders");
-  });
-
-  test("keeps IDE attachment dropdown labels distinguishable", () => {
-    /**
-     * CDXC:IDEAttachment 2026-04-28-00:05
-     * The settings dropdown must show Zed Preview explicitly, even though
-     * native title-bar buttons use the shorter "Attach Zed" text.
-     */
-    expect(ZED_OVERLAY_TARGET_APP_OPTIONS).toContainEqual({ label: "Zed", value: "zed" });
-    expect(ZED_OVERLAY_TARGET_APP_OPTIONS).toContainEqual({
-      label: "Zed Preview",
-      value: "zed-preview",
-    });
-  });
 });

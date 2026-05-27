@@ -55,7 +55,6 @@
 - Native pane header drag-to-reorder across terminal, T3, and browser panes.
 - Native T3 runtime retention keeps supervised T3 Code panes alive through startup/auth races and syncs thread changes back into the sidebar.
 - Codex first-prompt auto-title hooks are installed into profile homes as well as the default Codex home.
-- Native IDE attachment controls with an optional hidden title-bar attach button.
 - Standard macOS app menu with Settings and Check for Updates.
 - Focus-safe native layout sync avoids stealing typing focus during passive terminal status updates.
 - Embedded Ghostty terminals strip inherited color-disabling environment keys so agent CLIs keep color output.

@@ -155,10 +155,6 @@ export type WorkspacePanelFlashCompletionSessionMessage = {
   type: "flashCompletionSession";
 };
 
-export type WorkspacePanelAttachToIdeMessage = {
-  type: "attachToIde";
-};
-
 export type WorkspacePanelClipboardFilePayload = {
   buffer: ArrayBuffer;
   name: string;
@@ -356,7 +352,11 @@ export type WorkspacePanelToExtensionMessage =
   | WorkspacePanelResetTerminalFontSizeMessage
   | WorkspacePanelAdjustT3ZoomPercentMessage
   | WorkspacePanelResetT3ZoomPercentMessage
-  | WorkspacePanelAttachToIdeMessage
+  /*
+   * CDXC:WorkspaceActions 2026-05-27-07:32:
+   * Workspace panels no longer emit the removed IDE-attachment message. Project
+   * IDE opening is routed through explicit titlebar/native open-target commands.
+   */
   | WorkspacePanelForkSessionMessage
   | WorkspacePanelSetSessionSleepingMessage
   | WorkspacePanelSyncPaneOrderMessage

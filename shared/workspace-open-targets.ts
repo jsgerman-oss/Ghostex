@@ -1,6 +1,5 @@
-import type { ZedOverlayTargetApp } from "./ghostex-settings";
-
 export type WorkspaceOpenTargetLaunchStyle = "direct-path" | "goto" | "line-column";
+export type WorkspaceIdeTargetApp = "zed" | "zed-preview" | "vscode" | "vscode-insiders";
 
 export type BuiltInWorkspaceOpenTargetId =
   | "cursor"
@@ -32,7 +31,7 @@ export type WorkspaceOpenTargetDefinition = {
   label: string;
   launchStyle: WorkspaceOpenTargetLaunchStyle;
   macOSAppNames?: readonly [string, ...string[]];
-  targetApp?: ZedOverlayTargetApp;
+  targetApp?: WorkspaceIdeTargetApp;
 };
 
 export type CustomWorkspaceOpenTarget = {

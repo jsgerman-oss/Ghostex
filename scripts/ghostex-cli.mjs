@@ -131,7 +131,6 @@ const COMMANDS = new Map([
   ["set-view-mode", bridgeAction("setViewMode", parseViewMode)],
   ["open-browser", bridgeAction("openBrowser", parseUrl)],
   ["open-browser-pane", bridgeAction("openBrowserPane")],
-  ["show-browser", bridgeAction("showBrowser")],
   ["browser", browserCommand],
   ["browser-devtools-mcp", browserDevToolsMcpCommand],
   ["browser-mcp", browserDevToolsMcpCommand],
@@ -281,9 +280,6 @@ async function browserCommand(args) {
     case "open-pane":
     case "pane":
       await bridgeAction("openBrowserPane")(rest);
-      return;
-    case "show":
-      await bridgeAction("showBrowser")(rest);
       return;
     default:
       throw new Error(`Unknown browser command: ${subcommand}\n\n${browserUsage()}`);
@@ -3104,7 +3100,6 @@ function browserUsage() {
     formatHelpCommand("browser install-skill [--json]", "Install the Ghostex browser MCP skill into ~/agents/skills"),
     formatHelpCommand("browser open [url]", "Open or navigate the Ghostex browser surface"),
     formatHelpCommand("browser open-pane", "Create a browser pane in the current workspace"),
-    formatHelpCommand("browser show", "Reveal the browser surface"),
   ].join("\n");
 
   const mcpTools = [
@@ -3127,7 +3122,6 @@ Usage:
   gx browser install-skill [--json]
   gx browser open [url]
   gx browser open-pane
-  gx browser show
 
 Agent MCP config:
   [mcp_servers.ghostex-browser]

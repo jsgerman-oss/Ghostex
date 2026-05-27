@@ -38,7 +38,7 @@ export type GhosttyConfirmCloseSurface = "false" | "true" | "always";
 export type GhosttyCopyOnSelect = "false" | "true" | "clipboard";
 export type GhosttyScrollbar = "system" | "never";
 export type TerminalCursorStyle = "bar" | "block" | "underline";
-export type BrowserOpenMode = "chrome-canary" | "browser-pane";
+export type BrowserOpenMode = "browser-pane";
 export type BrowserFeedbackTool = "react-grab" | "agentation";
 export type DefaultEditorCommand =
   | "code"
@@ -55,7 +55,6 @@ export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large
 export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
-export type ZedOverlayTargetApp = "zed" | "zed-preview" | "vscode" | "vscode-insiders";
 export type KeepAwakeDurationMinutes = 0 | 5 | 10 | 15 | 30 | 60 | 120 | 300;
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
@@ -153,15 +152,6 @@ export type ghostexSettings = {
   workspaceOpenTargetAvailability: WorkspaceOpenTargetAvailability;
   workspaceOpenTargetHiddenIds: string[];
   workspacePaneGap: number;
-  /**
-   * CDXC:IDEAttachment 2026-05-06-12:49
-   * Keep the persisted Zed-named key for compatibility, but treat it as the
-   * default-on setting that lets workspace activation sync to the attached IDE.
-   */
-  syncOpenProjectWithZed: boolean;
-  zedOverlayEnabled: boolean;
-  zedOverlayHideTitlebarButton: boolean;
-  zedOverlayTargetApp: ZedOverlayTargetApp;
 };
 
 export const SIDEBAR_SETTINGS_PRESET_KEYS = [
@@ -222,16 +212,6 @@ export const SIDEBAR_SETTINGS_PRESETS: ReadonlyArray<{
   { id: "detailed", label: "Detailed", settings: SIDEBAR_SETTINGS_PRESET_SETTINGS.detailed },
 ];
 
-/**
- * CDXC:IDEAttachment 2026-04-26-22:38
- * Users can attach ghostex to the IDE selected in settings. Keep the existing
- * persisted Zed overlay keys for compatibility while widening the target list
- * to include VS Code and VS Code Insiders.
- *
- * CDXC:IDEAttachment 2026-05-01-13:52
- * The native title-bar Attach/Detach IDE button remains visible by default,
- * but users can hide it from Settings without disabling IDE attachment.
- */
 export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   actionCompletionSound: "shamisenreverb",
   agentAcceptAllEnabled: false,
@@ -248,12 +228,11 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   browserFeedbackTool: "agentation",
   /**
-   * CDXC:BrowserPanes 2026-05-02-06:35
-   * Browser-pane support is opt-in so existing installs keep launching browser
-   * actions through the established Chrome Canary placement flow until the user
-   * chooses in-app browser panes from Settings.
+   * CDXC:BrowserPanes 2026-05-27-07:24
+   * Browser actions should no longer expose or route through Chrome Canary attachment.
+   * Normalize all browser-action launches to in-workspace browser panes so Settings and native startup do not preserve the old external Canary path.
    */
-  browserOpenMode: "chrome-canary",
+  browserOpenMode: "browser-pane",
   /**
    * CDXC:EditorPanes 2026-05-06-15:00
    * Embedded code-server editor panes should reuse the user's local VS Code
@@ -479,15 +458,6 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * draggable gap has enough visual weight on all sides.
    */
   workspacePaneGap: 13,
-  /**
-   * CDXC:IDEAttachment 2026-05-06-12:49
-   * New installs should auto-sync the active ghostex project to the attached IDE
-   * after workspace activation unless the user disables this setting.
-   */
-  syncOpenProjectWithZed: true,
-  zedOverlayEnabled: false,
-  zedOverlayHideTitlebarButton: false,
-  zedOverlayTargetApp: "zed-preview",
 };
 
 export const SIDEBAR_THEME_SETTING_OPTIONS: ReadonlyArray<{
@@ -514,10 +484,7 @@ export const TERMINAL_ENGINE_SETTING_OPTIONS: ReadonlyArray<{
 export const BROWSER_OPEN_MODE_OPTIONS: ReadonlyArray<{
   label: string;
   value: BrowserOpenMode;
-}> = [
-  { label: "Chrome Canary", value: "chrome-canary" },
-  { label: "Browser Panes", value: "browser-pane" },
-];
+}> = [{ label: "Browser Panes", value: "browser-pane" }];
 
 export const BROWSER_FEEDBACK_TOOL_OPTIONS: ReadonlyArray<{
   label: string;
@@ -636,34 +603,6 @@ export const GHOSTTY_THEME_SETTING_OPTIONS: ReadonlyArray<{
   ...GHOSTTY_THEME_OPTIONS.map((theme) => ({ label: theme, value: theme })),
 ];
 
-export const ZED_OVERLAY_TARGET_APP_OPTIONS: ReadonlyArray<{
-  label: string;
-  value: ZedOverlayTargetApp;
-}> = [
-  { label: "Zed", value: "zed" },
-  /**
-   * CDXC:IDEAttachment 2026-04-28-00:05
-   * Settings must distinguish regular Zed from Zed Preview because the
-   * attach target is persisted separately from the shortened title-bar labels.
-   */
-  { label: "Zed Preview", value: "zed-preview" },
-  { label: "VS Code", value: "vscode" },
-  { label: "VS Code Insiders", value: "vscode-insiders" },
-];
-
-export function getZedOverlayTargetAppLabel(targetApp: ZedOverlayTargetApp): string {
-  /**
-   * CDXC:WorkspaceActions 2026-05-04-08:22
-   * Project context menus must name the IDE selected in Settings before
-   * opening a workspace there, so the menu label and native command target
-   * are derived from the same persisted target value.
-   */
-  return (
-    ZED_OVERLAY_TARGET_APP_OPTIONS.find((option) => option.value === targetApp)?.label ??
-    ZED_OVERLAY_TARGET_APP_OPTIONS[0]!.label
-  );
-}
-
 export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
   const source = isRecord(candidate) ? candidate : {};
   const promptEditorBackend = normalizePromptEditorBackend(source);
@@ -698,10 +637,9 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       readString(source, "browserFeedbackTool", DEFAULT_ghostex_SETTINGS.browserFeedbackTool),
     ),
     /**
-     * CDXC:BrowserPanes 2026-05-02-06:35
-     * The setting chooses the browser action target: Chrome Canary keeps the
-     * native external browser integration, while Browser Panes creates normal
-     * workspace session cards backed by native WKWebView panes.
+     * CDXC:BrowserPanes 2026-05-27-07:24
+     * Existing settings files may still contain the deleted Chrome Canary value.
+     * Treat every stored value as Browser Panes so the old attachment route cannot reappear after reload.
      */
     browserOpenMode: normalizeBrowserOpenMode(
       readString(source, "browserOpenMode", DEFAULT_ghostex_SETTINGS.browserOpenMode),
@@ -1127,30 +1065,6 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       48,
       DEFAULT_ghostex_SETTINGS.workspacePaneGap,
     ),
-    /**
-     * CDXC:ZedOverlayWorkspace 2026-04-28-05:18
-     * Project-to-Zed syncing is a user-facing behavior setting and defaults
-     * on, so switching ghostex workspaces can drive the editor project after the
-     * sidebar's debounce instead of doing that work from the Show Zed button.
-     */
-    syncOpenProjectWithZed: readBoolean(
-      source,
-      "syncOpenProjectWithZed",
-      DEFAULT_ghostex_SETTINGS.syncOpenProjectWithZed,
-    ),
-    zedOverlayEnabled: readBoolean(
-      source,
-      "zedOverlayEnabled",
-      DEFAULT_ghostex_SETTINGS.zedOverlayEnabled,
-    ),
-    zedOverlayHideTitlebarButton: readBoolean(
-      source,
-      "zedOverlayHideTitlebarButton",
-      DEFAULT_ghostex_SETTINGS.zedOverlayHideTitlebarButton,
-    ),
-    zedOverlayTargetApp: normalizeZedOverlayTargetApp(
-      readString(source, "zedOverlayTargetApp", DEFAULT_ghostex_SETTINGS.zedOverlayTargetApp),
-    ),
   };
 }
 
@@ -1180,8 +1094,8 @@ function normalizeTerminalCursorStyle(value: string | undefined): TerminalCursor
   return value === "block" || value === "underline" ? value : "bar";
 }
 
-function normalizeBrowserOpenMode(value: string | undefined): BrowserOpenMode {
-  return value === "browser-pane" ? "browser-pane" : DEFAULT_ghostex_SETTINGS.browserOpenMode;
+function normalizeBrowserOpenMode(_value: string | undefined): BrowserOpenMode {
+  return "browser-pane";
 }
 
 function normalizeBrowserFeedbackTool(value: string | undefined): BrowserFeedbackTool {
@@ -1283,15 +1197,6 @@ function normalizeGhosttyConfirmCloseSurface(
 
 function normalizeGhosttyScrollbar(value: string | undefined): GhosttyScrollbar {
   return value === "never" ? "never" : "system";
-}
-
-function normalizeZedOverlayTargetApp(value: string | undefined): ZedOverlayTargetApp {
-  return value === "zed" ||
-    value === "zed-preview" ||
-    value === "vscode" ||
-    value === "vscode-insiders"
-    ? value
-    : DEFAULT_ghostex_SETTINGS.zedOverlayTargetApp;
 }
 
 function clampNumber(value: number, min: number, max: number, fallback: number): number {

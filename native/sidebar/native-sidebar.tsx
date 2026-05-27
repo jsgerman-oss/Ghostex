@@ -242,10 +242,8 @@ import {
 import {
   DEFAULT_ghostex_SETTINGS,
   getDefaultEditorCommandForSettings,
-  getZedOverlayTargetAppLabel,
   normalizeghostexSettings,
   type SidebarSide,
-  type ZedOverlayTargetApp,
   type ghostexSettings,
 } from "../../shared/ghostex-settings";
 import { createAgentsHubExternalEditorCommand } from "../../shared/agents-hub-editor-command";
@@ -255,6 +253,7 @@ import {
   normalizeWorkspaceOpenTargetAvailability,
   type BuiltInWorkspaceOpenTargetId,
   type CustomWorkspaceOpenTarget,
+  type WorkspaceIdeTargetApp,
 } from "../../shared/workspace-open-targets";
 import {
   getCompletionSoundFileName,
@@ -575,12 +574,10 @@ type NativeHostCommand =
   | { type: "openExternalUrl"; url: string }
   | { type: "openWorkspaceInFinder"; workspacePath: string }
   | {
-      targetApp: ZedOverlayTargetApp;
+      targetApp: WorkspaceIdeTargetApp;
       type: "openWorkspaceInIde";
       workspacePath: string;
     }
-  | { type: "openBrowserWindow"; url: string }
-  | { type: "showBrowserWindow" }
   | { sessionId: string; type: "openBrowserDevTools" }
   | { sessionId: string; type: "injectBrowserReactGrab" }
   | { sessionId: string; type: "injectBrowserAgentation" }
@@ -601,19 +598,6 @@ type NativeHostCommand =
       overlayOpen: boolean;
       regions: Array<{ height: number; width: number; x: number; y: number }>;
       type: "setReactTitlebarHitRegions";
-    }
-  | {
-      enabled: boolean;
-      hideTitlebarButton: boolean;
-      reason?: "settings-enable" | "settings-save" | "startup" | "workspace-focus";
-      targetApp: ZedOverlayTargetApp;
-      type: "configureZedOverlay";
-      workspacePath: string;
-    }
-  | {
-      targetApp: ZedOverlayTargetApp;
-      type: "openZedWorkspace";
-      workspacePath: string;
     }
   | { type: "sidebarContextMenuOpened" }
   | { type: "sidebarContextMenuClosed" };
@@ -791,9 +775,6 @@ type NativeBootstrap = {
   };
   ghostexHomeDir?: string;
   workspaceName?: string;
-  zedOverlayEnabled?: boolean;
-  zedOverlayHideTitlebarButton?: boolean;
-  zedOverlayTargetApp?: ZedOverlayTargetApp;
 };
 
 declare global {
@@ -825,10 +806,6 @@ declare global {
       setProjectTheme: (projectId: string, theme: SidebarTheme) => void;
       setProjectThemeColor: (projectId: string, themeColor: string) => void;
     };
-	    __ghostex_NATIVE_SETTINGS__?: {
-	      attachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
-	      detachZedOverlay: (targetApp: ZedOverlayTargetApp) => void;
-	    };
     __ghostex_NATIVE_CLI__?: {
       handleCommand: (action: string, payload: Record<string, unknown>) => Promise<unknown>;
     };
@@ -889,10 +866,6 @@ const GIT_CONFIRM_COMMIT_STORAGE_KEY = "ghostex-native-git-confirm-commit";
 const GIT_GENERATE_COMMIT_BODY_STORAGE_KEY = "ghostex-native-git-generate-commit-body";
 const TIPS_AND_TRICKS_SEEN_STORAGE_KEY = "ghostex-native-tips-and-tricks-seen";
 const WORKSPACE_DOCK_STATE_EVENT = "ghostex-workspace-dock-state";
-const CHROME_CANARY_PROCESS_NAME = "Google Chrome Canary";
-const CHROME_CANARY_RUNNING_POLL_MS = 2_000;
-const CHROME_CANARY_BROWSER_GROUP_ID = "browser-chrome-canary";
-const CHROME_CANARY_BROWSER_SESSION_ID = "browser-chrome-canary-window";
 const COMBINED_CHATS_GROUP_ID = "combined-chats";
 const PLUGINS_BROWSER_CHAT_URL = "https://skills.sh/";
 const NATIVE_T3_REMOTE_ACCESS_ORIGIN = "http://127.0.0.1:3774";
@@ -907,7 +880,6 @@ const NATIVE_T3_REMOTE_ACCESS_AUTH_RETRY_MS = 500;
  */
 const NATIVE_T3_TITLE_SYNC_RETRY_DELAYS_MS = [500, 1_500, 3_000] as const;
 const FIRST_PROMPT_AUTO_RENAME_POLL_MS = 2_000;
-const SYNC_OPEN_PROJECT_WITH_ZED_DEBOUNCE_MS = 2_000;
 /**
  * CDXC:SessionTitleSync 2026-04-26-09:52
  * Codex needs the staged `/rename <title>` text to settle in the prompt before
@@ -1066,7 +1038,6 @@ const projectEditorSurfaceByProjectId = new Map<
     url?: string;
   }
 >();
-let isChromeCanaryRunning = false;
 const pendingProcessResults = new Map<
   string,
   {
@@ -1336,7 +1307,6 @@ let sidebarCardFocusTraceSequence = 0;
 let latestSidebarCardFocusTrace:
   | { details?: unknown; nativeReceivedAt: number; requestId: number; sessionId?: string }
   | undefined;
-let pendingZedProjectSyncTimeout: number | undefined;
 const sidebarBus = new SurfaceMessageBus<ExtensionToSidebarMessage>();
 const terminalStateById = new Map<
   string,
@@ -2614,13 +2584,13 @@ function openNativeWorkspaceInFinder(workspacePath: string): void {
 
 function openNativeWorkspaceInSelectedIde(
   workspacePath: string,
-  targetApp: ZedOverlayTargetApp = settings.zedOverlayTargetApp,
+  targetApp: WorkspaceIdeTargetApp = "zed",
 ): void {
   /**
-   * CDXC:WorkspaceActions 2026-05-04-08:22
+   * CDXC:WorkspaceActions 2026-05-27-07:24
    * Project right-click IDE opens are explicit user commands. They use the
-   * Settings-selected IDE target directly and do not require IDE attachment or
-   * sync-open settings to be enabled first.
+   * requested IDE target directly and no longer depend on the deleted IDE
+   * attachment setting.
    *
    * CDXC:SidebarActions 2026-05-05-03:11
    * Sidebar Open In can choose a concrete IDE per click. Accepting an explicit
@@ -2634,22 +2604,8 @@ function openNativeWorkspaceInSelectedIde(
   });
 }
 
-function openChromeCanaryBrowserWindow(url: string): void {
-  /**
-   * CDXC:BrowserOverlay 2026-04-26-05:14
-   * Browser-type actions should not use the user's default browser. They launch
-   * Chrome Canary through the native host so Swift can place that browser
-   * window above the currently attached ghostex window.
-   */
-  postNative({ type: "openBrowserWindow", url });
-}
-
 function openNativeBrowserWindow(url: string): BrowserSessionRecord | undefined {
-  if (settings.browserOpenMode === "browser-pane") {
-    return createNativeBrowserSession(url);
-  }
-  openChromeCanaryBrowserWindow(url);
-  return undefined;
+  return createNativeBrowserSession(url);
 }
 
 function normalizeBrowserPaneUrl(url: string): string {
@@ -2705,11 +2661,10 @@ function createNativeBrowserSession(
     visiblePlacement: summarizeVisiblePlacement(options?.visiblePlacement),
   });
   /**
-   * CDXC:BrowserPanes 2026-05-02-06:35
+   * CDXC:BrowserPanes 2026-05-27-07:24
    * Browser-pane mode turns every browser action into a first-class workspace
    * browser session. The card lives beside terminal and T3 cards in the active
-   * group instead of appearing in the old dedicated Chrome Canary Browsers
-   * section, matching the requested pane-based workflow.
+   * group now that the old Chrome Canary attachment section has been removed.
    *
    * CDXC:ModeSwitcher 2026-05-15-14:42:
    * Mode-switcher Git and tasks-backed Project surfaces use project-editor CEF
@@ -2986,17 +2941,6 @@ async function installNativeCuaDriver(): Promise<void> {
     `Desktop Control install failed: ${(result.stderr || result.stdout || "installer failed").trim()}`,
   );
   await requestNativeGhostexCliStatus();
-}
-
-function showNativeBrowserWindow(): void {
-  /**
-   * CDXC:BrowserOverlay 2026-04-26-07:37
-   * When Chrome Canary is already running, the sidebar Browsers section exposes
-   * one " Chrome Canary" control for every ghostex session. The control asks
-   * Swift to raise and resize the existing Canary window above the ghostex
-   * workarea, without opening a replacement URL or using a browser fallback.
-   */
-  postNative({ type: "showBrowserWindow" });
 }
 
 function runNativeProcess(
@@ -3341,35 +3285,6 @@ function parseDuFolderStatLine(
   };
 }
 
-async function refreshChromeCanaryRunningState(): Promise<void> {
-  /**
-   * CDXC:BrowserOverlay 2026-04-26-07:37
-   * The native sidebar should bring back the existing Browsers section only
-   * while Chrome Canary is actually running. Poll the macOS process table from
-   * the native process bridge so every project/session gets the same one-button
-   * Canary control without inventing persistent browser sessions.
-   */
-  const result = await runNativeProcess("/usr/bin/pgrep", ["-qx", CHROME_CANARY_PROCESS_NAME]);
-  const nextIsRunning = result.exitCode === 0;
-  if (isChromeCanaryRunning === nextIsRunning) {
-    return;
-  }
-
-  isChromeCanaryRunning = nextIsRunning;
-  publish();
-}
-
-function startChromeCanaryRunningMonitor(): void {
-  void refreshChromeCanaryRunningState().catch((error) => {
-    console.warn("Failed to refresh Chrome Canary running state.", error);
-  });
-  window.setInterval(() => {
-    void refreshChromeCanaryRunningState().catch((error) => {
-      console.warn("Failed to refresh Chrome Canary running state.", error);
-    });
-  }, CHROME_CANARY_RUNNING_POLL_MS);
-}
-
 function startFirstPromptAutoRenameMonitor(): void {
   void ensureNativeAgentFirstPromptHooks().catch((error) => {
     appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.hookInstallFailed", {
@@ -3402,19 +3317,7 @@ function readStoredSettings(): ghostexSettings {
     if (!sharedSettingsJson) {
       persistSharedSettingsSnapshot(storedSettings);
     }
-    const bootstrap = window.__ghostex_NATIVE_HOST__;
-    return normalizeghostexSettings({
-      ...storedSettings,
-      ...(bootstrap?.zedOverlayEnabled === undefined
-        ? {}
-        : { zedOverlayEnabled: bootstrap.zedOverlayEnabled }),
-      ...(bootstrap?.zedOverlayTargetApp === undefined
-        ? {}
-        : { zedOverlayTargetApp: bootstrap.zedOverlayTargetApp }),
-      ...(bootstrap?.zedOverlayHideTitlebarButton === undefined
-        ? {}
-        : { zedOverlayHideTitlebarButton: bootstrap.zedOverlayHideTitlebarButton }),
-    });
+    return storedSettings;
   } catch {
     return DEFAULT_ghostex_SETTINGS;
   }
@@ -3453,17 +3356,9 @@ function readLegacyStoredSidebarSide(): SidebarSide | undefined {
 function saveSettings(nextSettings: ghostexSettings): void {
   const previousSettings = settings;
   settings = normalizeghostexSettings(nextSettings);
-  if (!settings.zedOverlayEnabled || !settings.syncOpenProjectWithZed) {
-    clearPendingZedProjectSync();
-  }
   persistSharedSettingsSnapshot(settings);
   syncNativeSidebarSide(settings.sidebarSide, previousSettings.sidebarSide);
   syncGhosttyTerminalSettings(settings, previousSettings);
-  postZedOverlaySettings(
-    !previousSettings.zedOverlayEnabled && settings.zedOverlayEnabled
-      ? "settings-enable"
-      : "settings-save",
-  );
   syncCodeServerRuntimeSettings(settings, previousSettings);
   publish();
   previewNativeSoundSettingChange(previousSettings, settings);
@@ -3621,16 +3516,7 @@ function syncGhosttyTerminalSettings(
 }
 
 function saveSettingsFromNative(nextSettings: ghostexSettings): void {
-  /**
-   * CDXC:ZedOverlay 2026-04-26-10:54
-   * Native Detach has already persisted and applied the disabled Zed attach
-   * state. Mirror that state into sidebar localStorage and React state without
-   * posting a duplicate configure command back to the native host.
-  */
   settings = normalizeghostexSettings(nextSettings);
-  if (!settings.zedOverlayEnabled || !settings.syncOpenProjectWithZed) {
-    clearPendingZedProjectSync();
-  }
   persistSharedSettingsSnapshot(settings);
   publish();
 }
@@ -6486,8 +6372,6 @@ function activatePreviousSessionProject(previousSession: SidebarPreviousSessionI
   const projectId = previousSession.projectId?.trim();
   const existingProject = projectId ? findProject(projectId) : undefined;
   if (existingProject) {
-    const didSwitchProject = activeProjectId !== existingProject.projectId;
-    const didRestoreRecentProject = existingProject.isRecentProject === true;
     projects = projects.map((project) =>
       project.projectId === existingProject.projectId
         ? { ...project, isRecentProject: false, recentClosedAt: undefined }
@@ -6495,10 +6379,6 @@ function activatePreviousSessionProject(previousSession: SidebarPreviousSessionI
     );
     activeProjectId = existingProject.projectId;
     writeStoredProjects("restorePreviousSessionProject");
-    postZedOverlaySettings("workspace-focus");
-    if (didSwitchProject || didRestoreRecentProject) {
-      scheduleSyncOpenProjectWithZed("restorePreviousSessionProject");
-    }
     void refreshGitState();
     return activeProject();
   }
@@ -6523,8 +6403,6 @@ function activatePreviousSessionProject(previousSession: SidebarPreviousSessionI
   ];
   activeProjectId = restoredProjectId;
   writeStoredProjects("restorePreviousSessionProject");
-  postZedOverlaySettings("workspace-focus");
-  scheduleSyncOpenProjectWithZed("restorePreviousSessionProject");
   void refreshGitState();
   return activeProject();
 }
@@ -6639,79 +6517,6 @@ projectCommandsByProjectId = readProjectCommandsStore();
 migrateWorktreeProjectCommandsToOwners();
 seedProjectCommandsForProjects(projects.map((project) => project.projectId));
 loadActiveProjectCommands();
-
-function postZedOverlaySettings(
-  reason: "settings-enable" | "settings-save" | "startup" | "workspace-focus" = "settings-save",
-): void {
-  /**
-   * CDXC:IDEAttachment 2026-04-26-22:38
-   * Attach commands always use the IDE selected in settings. VS Code targets
-   * are posted through the existing native overlay channel so the native host
-   * can resolve their process names and `code`/`code-insiders` commands.
-   *
-   * CDXC:IDEAttachment 2026-05-01-13:32
-   * Workspace selection is only a settings sync, not a user request to attach.
-   * Include the reason so native detach can reject stale workspace-focus
-   * `enabled: true` messages while still allowing explicit Settings attach.
-   *
-   * CDXC:AccessibilityPermissions 2026-05-08-13:08
-   * The first Settings transition from detached to attached is the only webview
-   * settings save that should ask macOS for Accessibility. Subsequent saves
-   * keep syncing attachment configuration without reopening the permission
-   * prompt.
-   */
-  postNative({
-    enabled: settings.zedOverlayEnabled,
-    hideTitlebarButton: settings.zedOverlayHideTitlebarButton,
-    reason,
-    targetApp: settings.zedOverlayTargetApp,
-    type: "configureZedOverlay",
-    workspacePath: activeProject().path,
-  });
-}
-
-function clearPendingZedProjectSync(): void {
-  if (!pendingZedProjectSyncTimeout) {
-    return;
-  }
-  window.clearTimeout(pendingZedProjectSyncTimeout);
-  pendingZedProjectSyncTimeout = undefined;
-}
-
-function scheduleSyncOpenProjectWithZed(reason: string): void {
-  clearPendingZedProjectSync();
-  if (!settings.zedOverlayEnabled || !settings.syncOpenProjectWithZed) {
-    return;
-  }
-
-  const scheduledProject = activeProject();
-  /**
-   * CDXC:IDEAttachment 2026-05-06-12:49
-   * Switching ghostex workspaces syncs the selected project into the attached IDE
-   * after a 2s trailing debounce. Rapid workspace activations coalesce into one
-   * editor-open request for the final active project, and the user can disable
-   * this separately from attachment.
-   */
-  pendingZedProjectSyncTimeout = window.setTimeout(() => {
-    pendingZedProjectSyncTimeout = undefined;
-    if (
-      !settings.zedOverlayEnabled ||
-      !settings.syncOpenProjectWithZed ||
-      activeProjectId !== scheduledProject.projectId
-    ) {
-      return;
-    }
-    postNative({
-      targetApp: settings.zedOverlayTargetApp,
-      type: "openZedWorkspace",
-      workspacePath: scheduledProject.path,
-    });
-  }, SYNC_OPEN_PROJECT_WITH_ZED_DEBOUNCE_MS);
-  appendRestoreDebugLog("nativeSidebar.zedProjectSync.scheduled", {
-    projectId: scheduledProject.projectId,
-    reason,
-  });
-}
 
 function createProjectId(path: string): string {
   return `project-${hashString(path)}`;
@@ -7675,50 +7480,6 @@ function replaceActiveSnapshot(snapshot: SessionGridSnapshot): void {
       group.groupId === workspace.activeGroupId ? { ...group, snapshot } : group,
     ),
   }));
-}
-
-function buildChromeCanaryBrowserGroup(): SidebarSessionGroup {
-  /**
-   * CDXC:BrowserOverlay 2026-04-27-05:32
-   * The running Chrome Canary control should read as one browser button with
-   * only its text label visible. Leave agentIcon empty so the shared session
-   * card does not add both leading and trailing browser glyphs around it.
-   */
-  const session: SidebarSessionItem = {
-    activity: "idle",
-    activityLabel: undefined,
-    agentIcon: undefined,
-    alias: "Chrome Canary",
-    column: 0,
-    detail: "Place the running Canary window over Ghostex",
-    isFocused: false,
-    isFavorite: false,
-    isReloading: false,
-    isRunning: true,
-    isVisible: true,
-    kind: "browser",
-    lastInteractionAt: undefined,
-    lifecycleState: "running",
-    primaryTitle: "Chrome Canary",
-    row: 0,
-    sessionId: CHROME_CANARY_BROWSER_SESSION_ID,
-    sessionKind: "browser",
-    sessionNumber: undefined,
-    shortcutLabel: "",
-    terminalTitle: undefined,
-  };
-
-  return {
-    groupId: CHROME_CANARY_BROWSER_GROUP_ID,
-    isActive: false,
-    isFocusModeActive: false,
-    kind: "browser",
-    layoutVisibleCount: 1,
-    sessions: [session],
-    title: "Browsers",
-    viewMode: "grid",
-    visibleCount: 1,
-  };
 }
 
 function createProjectedSidebarGroupsForProject(project: NativeProject): SidebarSessionGroup[] {
@@ -14312,25 +14073,10 @@ function handleRecentZmxAttachExitWithFullReload(
 }
 
 function focusSidebarSession(sessionId: string): void {
-  /**
-   * CDXC:BrowserOverlay 2026-04-27-10:23
-   * The sidebar Chrome Canary card is a browser-window control, not a terminal
-   * session. Any sidebar focus path, including debug CLI replay, must route it
-   * to Swift's Canary show command so clicking it reveals the existing Canary
-   * window the same way the browser new-tab button reveals a Canary window.
-   */
-  if (sessionId === CHROME_CANARY_BROWSER_SESSION_ID) {
-    showNativeBrowserWindow();
-    return;
-  }
   focusTerminal(sessionId);
 }
 
 function focusSidebarSessionMode(sessionId: string): void {
-  if (sessionId === CHROME_CANARY_BROWSER_SESSION_ID) {
-    showNativeBrowserWindow();
-    return;
-  }
   const reference = resolveSidebarSessionReference(sessionId);
   if (commandPanelContainsSession(reference.project, reference.sessionId)) {
     focusTerminal(sessionId);
@@ -17664,10 +17410,12 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         publish();
         return { ok: true, state: summarizeCliState() };
       case "openBrowser":
-        openNativeBrowserWindow(
-          typeof payload.url === "string" ? payload.url : DEFAULT_BROWSER_LAUNCH_URL,
-        );
-        return { ok: true };
+        return {
+          ok: true,
+          session: openNativeBrowserWindow(
+            typeof payload.url === "string" ? payload.url : DEFAULT_BROWSER_LAUNCH_URL,
+          ),
+        };
       case "openBrowserPane":
         /**
          * CDXC:ChromiumBrowserPanes 2026-05-04-17:04
@@ -17681,9 +17429,6 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
             typeof payload.url === "string" ? payload.url : DEFAULT_BROWSER_LAUNCH_URL,
           ),
         };
-      case "showBrowser":
-        showNativeBrowserWindow();
-        return { ok: true };
       case "moveSidebar":
         moveSidebarToOtherSide();
         return { ok: true, state: summarizeCliState() };
@@ -18490,8 +18235,6 @@ async function createProjectWorktreeFromPrompt(
     writeProjectCommandsStore();
     loadActiveProjectCommands();
     writeStoredProjects("createProjectWorktree");
-    postZedOverlaySettings("workspace-focus");
-    scheduleSyncOpenProjectWithZed("createProjectWorktree");
     await refreshGitState();
     publish();
 
@@ -19048,8 +18791,6 @@ function removeProject(projectId: string): void {
       nextProjects[Math.min(projectIndex, nextProjects.length - 1)]?.projectId ??
       nextProjects[0]!.projectId;
     loadActiveProjectCommands();
-    postZedOverlaySettings("workspace-focus");
-    scheduleSyncOpenProjectWithZed("removeProject");
     void refreshGitState();
   }
   writeStoredProjects("removeProject");
@@ -19097,8 +18838,6 @@ function closeProjectToRecent(projectId: string): void {
     if (nextVisibleProject) {
       activeProjectId = nextVisibleProject.projectId;
       loadActiveProjectCommands();
-      postZedOverlaySettings("workspace-focus");
-      scheduleSyncOpenProjectWithZed("closeProjectToRecent");
       void refreshGitState();
     }
   }
@@ -19135,10 +18874,6 @@ function restoreRecentProject(projectId: string): void {
     loadActiveProjectCommands();
   }
   writeStoredProjects("restoreRecentProject");
-  postZedOverlaySettings("workspace-focus");
-  if (didSwitchProject) {
-    scheduleSyncOpenProjectWithZed("restoreRecentProject");
-  }
   void refreshGitState();
 
   if (sessionCount === 0) {
@@ -19691,9 +19426,7 @@ function focusProject(projectId: string): void {
     loadActiveProjectCommands();
   }
   writeStoredProjects("focusProject");
-  postZedOverlaySettings("workspace-focus");
   if (didSwitchProject) {
-    scheduleSyncOpenProjectWithZed("focusProject");
     scheduleNativeT3RuntimePrewarm(projectId, "focusProject");
   }
   void refreshGitState();
@@ -21494,12 +21227,6 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       );
       return;
     }
-    case "attachToIde":
-      saveSettings({
-        ...settings,
-        zedOverlayEnabled: true,
-      });
-      return;
     case "fullReloadGroup": {
       const group = activeProject().workspace.groups.find(
         (candidate) => candidate.groupId === message.groupId,
@@ -24380,23 +24107,6 @@ window.__ghostex_NATIVE_WORKSPACE_BAR__ = {
   setProjectThemeColor,
 };
 
-window.__ghostex_NATIVE_SETTINGS__ = {
-  attachZedOverlay(targetApp) {
-    saveSettingsFromNative({
-      ...settings,
-      zedOverlayEnabled: true,
-      zedOverlayTargetApp: targetApp,
-    });
-  },
-  detachZedOverlay(targetApp) {
-    saveSettingsFromNative({
-      ...settings,
-      zedOverlayEnabled: false,
-      zedOverlayTargetApp: targetApp,
-    });
-  },
-};
-
 window.__ghostex_NATIVE_SIDEBAR__ = {
   dismissSidebarContextMenu: dismissAllSidebarContextMenus,
   notifySidebarContextMenuClosed: () => {
@@ -24569,7 +24279,6 @@ export function WorkspaceDock({
   const [recentThemeColors, setRecentThemeColors] = useState(readWorkspaceThemeColorHistory);
   const dockRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<WorkspaceDockDragState | undefined>(undefined);
-  const selectedIdeLabel = getZedOverlayTargetAppLabel(settings.zedOverlayTargetApp);
   const workspaceActions: WorkspaceDockActions = {
     focusProject,
     openProjectInFinder: (projectId) => {
@@ -24935,10 +24644,9 @@ export function WorkspaceDock({
                 Open in Finder
               </button>
               {/*
-               * CDXC:WorkspaceActions 2026-05-04-08:22
-               * Right-clicking a project in the workspace dock must expose the
-               * same direct open actions as combined project cards. The IDE
-               * action names and targets the Settings-selected IDE.
+               * CDXC:WorkspaceActions 2026-05-27-07:24
+               * The workspace dock no longer reads an IDE attachment setting.
+               * Keep this quick action as a direct Zed open while the titlebar Open In menu handles explicit editor choices.
                */}
               <button
                 className="session-context-menu-item"
@@ -24950,7 +24658,7 @@ export function WorkspaceDock({
                 type="button"
               >
                 <IconCode aria-hidden="true" className="session-context-menu-icon" size={14} />
-                Open in {selectedIdeLabel}
+                Open in Zed
               </button>
               <div className="session-context-menu-divider" role="separator" />
               <button
@@ -25244,8 +24952,6 @@ if (
   createRoot(rootElement).render(<NativeSidebarRoot />);
   queueMicrotask(() => {
     postNative({ side: sidebarSide, type: "setSidebarSide" });
-    postZedOverlaySettings("startup");
-    startChromeCanaryRunningMonitor();
     startFirstPromptAutoRenameMonitor();
     void refreshGitState();
     void refreshVisibleProjectDiffStats();
