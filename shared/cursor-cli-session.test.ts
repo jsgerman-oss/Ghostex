@@ -7,6 +7,7 @@ import {
   appendCursorCliResumeFlag,
   getCursorChatSessionIdFromIdentity,
   getCursorChatSessionLookupScript,
+  isCursorAgentTranscriptPath,
   isCursorChatSessionId,
 } from "./cursor-cli-session";
 
@@ -17,12 +18,30 @@ describe("cursor-cli-session", () => {
     expect(getCursorChatSessionIdFromIdentity("C62D8F4D-E93B-4932-817E-1EEFD9188DE4")).toBe(
       "c62d8f4d-e93b-4932-817e-1eefd9188de4",
     );
+    expect(
+      getCursorChatSessionIdFromIdentity(
+        "/Users/madda/.cursor/projects/Users-madda-dev-active-zmux/agent-transcripts/C62D8F4D-E93B-4932-817E-1EEFD9188DE4/C62D8F4D-E93B-4932-817E-1EEFD9188DE4.jsonl",
+      ),
+    ).toBe("c62d8f4d-e93b-4932-817e-1eefd9188de4");
   });
 
   test("should append --resume after the configured launch command", () => {
     expect(appendCursorCliResumeFlag("cursor-agent --yolo", "c62d8f4d-e93b-4932-817e-1eefd9188de4")).toBe(
       'cursor-agent --yolo --resume "c62d8f4d-e93b-4932-817e-1eefd9188de4"',
     );
+  });
+
+  test("should identify Cursor transcript paths", () => {
+    expect(
+      isCursorAgentTranscriptPath(
+        "/Users/madda/.cursor/projects/Users-madda-dev-active-zmux/agent-transcripts/9a81fa27-6dcf-49dd-be3f-802169e708e2/9a81fa27-6dcf-49dd-be3f-802169e708e2.jsonl",
+      ),
+    ).toBe(true);
+    expect(
+      isCursorAgentTranscriptPath(
+        "/Users/madda/.codex/sessions/2026/05/27/rollout-2026-05-27T09-05-02-019e67d2-6482-7461-b1bf-32cb31d27f0d.jsonl",
+      ),
+    ).toBe(false);
   });
 
   test("should resolve the latest matching chat id for a project title", () => {

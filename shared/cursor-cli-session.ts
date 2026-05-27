@@ -21,7 +21,29 @@ export function getCursorChatSessionIdFromIdentity(value: string | undefined): s
   if (!normalizedValue) {
     return undefined;
   }
-  return isCursorChatSessionId(normalizedValue) ? normalizedValue.toLowerCase() : undefined;
+  if (CURSOR_CHAT_SESSION_ID_PATTERN.test(normalizedValue)) {
+    return normalizedValue.toLowerCase();
+  }
+  const transcriptMatch = normalizedValue.match(
+    /(?:^|[/\\])agent-transcripts(?:[/\\])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/\\])/iu,
+  );
+  return transcriptMatch?.[1]?.toLowerCase();
+}
+
+/**
+ * CDXC:CursorCLI 2026-05-27-09:06:
+ * Cursor Agent hooks persist transcript paths under Cursor's project-scoped
+ * `agent-transcripts` directory. Treat that path shape as authoritative Cursor
+ * identity when older records have a stale inherited agent name.
+ */
+export function isCursorAgentTranscriptPath(value: string | undefined): boolean {
+  const normalizedValue = value?.trim();
+  return Boolean(
+    normalizedValue &&
+      /(?:^|[/\\])\.cursor(?:[/\\])projects(?:[/\\]).+(?:[/\\])agent-transcripts(?:[/\\])/iu.test(
+        normalizedValue,
+      ),
+  );
 }
 
 /**
