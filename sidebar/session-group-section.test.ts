@@ -74,28 +74,28 @@ describe("formatProjectEditorDiffStatsLabel", () => {
   test("caps the compact project diff counts for stable sidebar width", () => {
     expect(
       formatProjectEditorDiffStatsLabel({
-        additions: 1200,
-        deletions: 1001,
+        additions: 12000,
+        deletions: 10001,
         files: 120,
         isLoading: false,
         isRepo: true,
       }),
-    ).toBe("+999 -999");
+    ).toBe("+9999 -9999");
   });
 
   test("includes the capped file count when enabled", () => {
     expect(
       formatProjectEditorDiffStatsLabel(
         {
-          additions: 1200,
-          deletions: 1001,
+          additions: 12000,
+          deletions: 10001,
           files: 120,
           isLoading: false,
           isRepo: true,
         },
         true,
       ),
-    ).toBe("99 +999 -999");
+    ).toBe("99 +9999 -9999");
   });
 });
 

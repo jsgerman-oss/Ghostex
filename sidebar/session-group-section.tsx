@@ -106,7 +106,12 @@ function isNestedInteractiveContextMenuTarget(event: ReactMouseEvent<HTMLElement
     event.currentTarget.contains(interactiveTarget)
   );
 }
-const PROJECT_EDITOR_DISPLAY_MAX_LINES = 999;
+/**
+ * CDXC:ProjectDiffStats 2026-05-27-10:44:
+ * Cap git +/− line counts shown in project headers at four digits so very large
+ * diffs stay readable in the sidebar without widening the status label.
+ */
+const PROJECT_EDITOR_DISPLAY_MAX_LINES = 9999;
 const PROJECT_CONTEXT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: SidebarTheme }> = [
   { label: "Dark Gray", value: "plain-dark" },
   { label: "Dark Green", value: "dark-green" },
