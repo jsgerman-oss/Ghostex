@@ -38,13 +38,13 @@ const CLI_DIR = path.join(GHOSTEX_HOME, "cli");
 const BRIDGE_TOKEN_PATH = path.join(CLI_DIR, "bridge-token");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
 const SHARED_SETTINGS_PATH = path.join(GHOSTEX_HOME, "state", "native-sidebar-settings.json");
-const GHOSTEX_BROWSER_SKILL_NAME = "ghostex-browser-devtools-mcp";
-const GHOSTEX_BROWSER_SKILL_INSTALL_DIR = path.join(
-  homedir(),
-  "agents",
-  "skills",
-  GHOSTEX_BROWSER_SKILL_NAME,
-);
+const GHOSTEX_AGENT_SKILL_INSTALL_ROOT = path.join(homedir(), "agents", "skills");
+const GHOSTEX_BROWSER_SKILL_NAME = "ghostex-browser-use";
+const GHOSTEX_BROWSER_LEGACY_SKILL_NAMES = ["ghostex-browser-devtools-mcp"];
+const GHOSTEX_COMPUTER_USE_SKILL_NAME = "ghostex-computer-use";
+const GHOSTEX_AGENT_ORCHESTRATION_SKILL_NAME = "ghostex-agent-orchestration";
+const GHOSTEX_GENERATE_TITLE_SKILL_NAME = "ghostex-generate-title";
+const GHOSTEX_GENERATE_TITLE_LEGACY_SKILL_NAMES = ["madda-generate-title"];
 const QUICK_TERMINALS_PROJECT_NAME = "Quick Terminals";
 const RESET_ANSI = "\x1b[0m";
 const PICKER_TITLE = "Attach to Ghostex Session";
@@ -136,6 +136,12 @@ const COMMANDS = new Map([
   ["browser-mcp", browserDevToolsMcpCommand],
   ["install-browser-skill", installBrowserSkillCommand],
   ["install-browser-mcp-skill", installBrowserSkillCommand],
+  ["computer-use", computerUseCommand],
+  ["install-computer-use-skill", installComputerUseSkillCommand],
+  ["agent-orchestration", agentOrchestrationCommand],
+  ["install-agent-orchestration-skill", installAgentOrchestrationSkillCommand],
+  ["generate-title", generateTitleCommand],
+  ["install-generate-title-skill", installGenerateTitleSkillCommand],
   ["move-sidebar", bridgeAction("moveSidebar")],
   ["assert-card", bridgeAction("assertSidebarCard", parseAssertCard, { assertOk: true })],
   ["wait-for", bridgeAction("waitFor", parseWaitFor, { assertOk: true })],
@@ -191,7 +197,10 @@ async function main() {
   if (!command) {
     throw new Error(`Unknown command: ${commandName}\n\n${usage()}`);
   }
-  if (commandName !== "browser" && (args.includes("-h") || args.includes("--help"))) {
+  if (
+    !["agent-orchestration", "browser", "computer-use", "generate-title"].includes(commandName) &&
+    (args.includes("-h") || args.includes("--help"))
+  ) {
     helpCommand();
     return;
   }
@@ -275,11 +284,11 @@ async function browserCommand(args) {
       await installBrowserSkillCommand(rest);
       return;
     case "open":
-      await bridgeAction("openBrowser", parseUrl)(rest);
+      await bridgeAction("openBrowserPane", parseBrowserOpen)(rest);
       return;
     case "open-pane":
     case "pane":
-      await bridgeAction("openBrowserPane")(rest);
+      await bridgeAction("openBrowserPane", parseBrowserOpen)(rest);
       return;
     default:
       throw new Error(`Unknown browser command: ${subcommand}\n\n${browserUsage()}`);
@@ -287,14 +296,141 @@ async function browserCommand(args) {
 }
 
 async function installBrowserSkillCommand(args) {
+  /**
+   * CDXC:BrowserAgentControl 2026-05-27-06:58:
+   * Agents should invoke Ghostex embedded browser control as
+   * `$ghostex-browser-use`, not the implementation-shaped
+   * `$ghostex-browser-devtools-mcp`. Installing the renamed skill also removes
+   * the legacy shared install so Codex does not discover both names.
+   */
+  await installGhostexAgentSkill({
+    args,
+    command: "ghostex browser mcp",
+    envVars: ["GHOSTEX_BROWSER_USE_SKILL_SOURCE", "GHOSTEX_BROWSER_SKILL_SOURCE"],
+    legacySkillNames: GHOSTEX_BROWSER_LEGACY_SKILL_NAMES,
+    skillName: GHOSTEX_BROWSER_SKILL_NAME,
+  });
+}
+
+async function computerUseCommand(args) {
+  const [subcommand = "help", ...rest] = args;
+  if (rest.includes("-h") || rest.includes("--help")) {
+    console.log(computerUseUsage());
+    return;
+  }
+  switch (subcommand) {
+    case "help":
+    case "-h":
+    case "--help":
+      console.log(computerUseUsage());
+      return;
+    case "install-skill":
+      await installComputerUseSkillCommand(rest);
+      return;
+    default:
+      throw new Error(`Unknown computer-use command: ${subcommand}\n\n${computerUseUsage()}`);
+  }
+}
+
+async function installComputerUseSkillCommand(args) {
+  /**
+   * CDXC:ComputerAgentControl 2026-05-27-06:58:
+   * Desktop Control setup must install an agent-facing `$ghostex-computer-use`
+   * skill in addition to Cua Driver so users can request computer use through a
+   * Ghostex-named wrapper instead of remembering the lower-level `$cua-driver`
+   * skill name.
+   */
+  await installGhostexAgentSkill({
+    args,
+    command: "cua-driver",
+    envVars: ["GHOSTEX_COMPUTER_USE_SKILL_SOURCE"],
+    skillName: GHOSTEX_COMPUTER_USE_SKILL_NAME,
+  });
+}
+
+async function agentOrchestrationCommand(args) {
+  const [subcommand = "help", ...rest] = args;
+  if (rest.includes("-h") || rest.includes("--help")) {
+    console.log(agentOrchestrationUsage());
+    return;
+  }
+  switch (subcommand) {
+    case "help":
+    case "-h":
+    case "--help":
+      console.log(agentOrchestrationUsage());
+      return;
+    case "install-skill":
+      await installAgentOrchestrationSkillCommand(rest);
+      return;
+    default:
+      throw new Error(`Unknown agent-orchestration command: ${subcommand}\n\n${agentOrchestrationUsage()}`);
+  }
+}
+
+async function installAgentOrchestrationSkillCommand(args) {
+  /**
+   * CDXC:AgentOrchestration 2026-05-27-07:15:
+   * Agents need a Ghostex-native orchestration skill that teaches the CLI
+   * workflow for creating panes, sending messages to other agent sessions,
+   * checking status, and reading terminal output through `ghostex read-text`
+   * instead of reaching for raw zmx commands directly.
+   */
+  await installGhostexAgentSkill({
+    args,
+    command: "ghostex --help",
+    envVars: ["GHOSTEX_AGENT_ORCHESTRATION_SKILL_SOURCE"],
+    skillName: GHOSTEX_AGENT_ORCHESTRATION_SKILL_NAME,
+  });
+}
+
+async function generateTitleCommand(args) {
+  const [subcommand = "help", ...rest] = args;
+  if (rest.includes("-h") || rest.includes("--help")) {
+    console.log(generateTitleUsage());
+    return;
+  }
+  switch (subcommand) {
+    case "help":
+    case "-h":
+    case "--help":
+      console.log(generateTitleUsage());
+      return;
+    case "install-skill":
+      await installGenerateTitleSkillCommand(rest);
+      return;
+    default:
+      throw new Error(`Unknown generate-title command: ${subcommand}\n\n${generateTitleUsage()}`);
+  }
+}
+
+async function installGenerateTitleSkillCommand(args) {
+  /**
+   * CDXC:GenerateTitleSkill 2026-05-27-07:28:
+   * The old `$madda-generate-title` behavior is now a Ghostex skill. Agents must
+   * produce titles shorter than 47 characters, then write `/rename <title>` into
+   * their own Ghostex session with `send-text` and without pressing Enter. The
+   * default install removes the legacy personal skill name so Codex discovers
+   * the Ghostex-named skill instead.
+   */
+  await installGhostexAgentSkill({
+    args,
+    command: "ghostex send-text --session-id \"$GHOSTEX_SESSION_ID\" --text \"/rename <title>\"",
+    envVars: ["GHOSTEX_GENERATE_TITLE_SKILL_SOURCE"],
+    legacySkillNames: GHOSTEX_GENERATE_TITLE_LEGACY_SKILL_NAMES,
+    skillName: GHOSTEX_GENERATE_TITLE_SKILL_NAME,
+  });
+}
+
+async function installGhostexAgentSkill({ args, command, envVars, legacySkillNames = [], skillName }) {
   const { flags } = parseArgs(args);
-  const sourceDir = resolveGhostexBrowserSkillSourceDir();
-  const targetDir = path.resolve(
-    stringFlag(flags.targetDir ?? flags.target) ?? GHOSTEX_BROWSER_SKILL_INSTALL_DIR,
-  );
+  const sourceDir = resolveGhostexAgentSkillSourceDir(skillName, envVars);
+  const defaultTargetDir = ghostexAgentSkillInstallDir(skillName);
+  const targetDir = path.resolve(stringFlag(flags.targetDir ?? flags.target) ?? defaultTargetDir);
+  const installsDefaultTarget = targetDir === defaultTargetDir;
   /**
    * CDXC:BrowserAgentControl 2026-05-26-22:17:
-   * First-launch CLI setup should install the browser MCP skill, not only the
+   * First-launch CLI setup should install the agent skill, not only the
    * `ghostex` executable. The CLI owns this copy step because Homebrew installs
    * the bundled app resources and agents discover user skills under
    * ~/agents/skills.
@@ -302,10 +438,20 @@ async function installBrowserSkillCommand(args) {
   await mkdir(path.dirname(targetDir), { recursive: true });
   await cp(sourceDir, targetDir, { force: true, recursive: true });
 
+  const removedLegacySkillDirs = [];
+  if (installsDefaultTarget) {
+    for (const legacySkillName of legacySkillNames) {
+      const legacyDir = ghostexAgentSkillInstallDir(legacySkillName);
+      await rm(legacyDir, { force: true, recursive: true });
+      removedLegacySkillDirs.push(legacyDir);
+    }
+  }
+
   const result = {
-    command: "ghostex browser mcp",
+    command,
     ok: true,
-    skill: GHOSTEX_BROWSER_SKILL_NAME,
+    removedLegacySkillDirs,
+    skill: skillName,
     sourceDir,
     targetDir,
   };
@@ -313,8 +459,11 @@ async function installBrowserSkillCommand(args) {
     printJson(result);
     return;
   }
-  console.log(`Installed ${GHOSTEX_BROWSER_SKILL_NAME} to ${targetDir}`);
-  console.log("Configure agents to run: ghostex browser mcp");
+  console.log(`Installed ${skillName} to ${targetDir}`);
+  if (removedLegacySkillDirs.length > 0) {
+    console.log(`Removed legacy skill installs: ${removedLegacySkillDirs.join(", ")}`);
+  }
+  console.log(`Configure agents to run: ${command}`);
 }
 
 /**
@@ -1922,15 +2071,19 @@ function findGhostexSourceRoot(startPath) {
   }
 }
 
-function resolveGhostexBrowserSkillSourceDir() {
+function ghostexAgentSkillInstallDir(skillName) {
+  return path.join(GHOSTEX_AGENT_SKILL_INSTALL_ROOT, skillName);
+}
+
+function resolveGhostexAgentSkillSourceDir(skillName, envVars = []) {
   const cliDir = path.dirname(fileURLToPath(import.meta.url));
-  const explicitSource = stringFlag(process.env.GHOSTEX_BROWSER_SKILL_SOURCE);
+  const explicitSources = envVars.map((envVar) => stringFlag(process.env[envVar]));
   const sourceRoot = findGhostexSourceRoot(process.cwd());
   const candidates = uniquePaths([
-    explicitSource,
-    path.join(cliDir, "skills", GHOSTEX_BROWSER_SKILL_NAME),
-    path.join(path.resolve(cliDir, ".."), ".agents", "skills", GHOSTEX_BROWSER_SKILL_NAME),
-    sourceRoot && path.join(sourceRoot, ".agents", "skills", GHOSTEX_BROWSER_SKILL_NAME),
+    ...explicitSources,
+    path.join(cliDir, "skills", skillName),
+    path.join(path.resolve(cliDir, ".."), ".agents", "skills", skillName),
+    sourceRoot && path.join(sourceRoot, ".agents", "skills", skillName),
   ]);
   for (const candidate of candidates) {
     if (fileExistsSync(path.join(candidate, "SKILL.md"))) {
@@ -1938,7 +2091,7 @@ function resolveGhostexBrowserSkillSourceDir() {
     }
   }
   throw new Error(
-    `Could not find ${GHOSTEX_BROWSER_SKILL_NAME}. Reinstall Ghostex or set GHOSTEX_BROWSER_SKILL_SOURCE to the skill directory.`,
+    `Could not find ${skillName}. Reinstall Ghostex or set ${envVars[0] ?? "GHOSTEX_SKILL_SOURCE"} to the skill directory.`,
   );
 }
 
@@ -2869,6 +3022,17 @@ function parseUrl(rest, flags) {
   return { url: flags.url ?? rest[0] };
 }
 
+function parseBrowserOpen(rest, flags) {
+  return {
+    groupId: flags.groupId,
+    projectId: flags.projectId,
+    projectName: flags.projectName ?? flags.name,
+    projectPath: flags.projectPath ?? flags.path ?? (parseBoolean(flags.activeProject) ? undefined : process.cwd()),
+    reuse: flags.new ? "none" : flags.reuse ?? "similar",
+    url: flags.url ?? rest[0],
+  };
+}
+
 function parseAssertCard(rest, flags) {
   return {
     ...parseSessionSelector(rest, flags),
@@ -3025,6 +3189,9 @@ function usage() {
     formatHelpCommand("set-visible-count <1|2|3|4|6|9>", "Set visible session count"),
     formatHelpCommand("set-view-mode <grid|horizontal|vertical>", "Set session layout mode"),
     formatHelpCommand("browser --help", "Show embedded CEF browser control and MCP setup"),
+    formatHelpCommand("computer-use --help", "Show Ghostex Computer Use skill setup for Cua Driver"),
+    formatHelpCommand("agent-orchestration --help", "Show Ghostex Agent Orchestration skill setup"),
+    formatHelpCommand("generate-title --help", "Show Ghostex Generate Title skill setup"),
     formatHelpCommand("move-sidebar", "Move the sidebar"),
   ].join("\n");
 
@@ -3094,12 +3261,18 @@ function browserUsage() {
    * control. Document the MCP command, install command, tool names, and common
    * debugging workflow here so agents do not need to infer browser setup from
    * the general Ghostex CLI help.
+   *
+   * CDXC:BrowserAgentControl 2026-05-27-06:43:
+   * Browser help must prevent agents from creating duplicate tabs and from
+   * opening panes in whichever project is currently active. Document project
+   * scoping flags, cwd-based defaults, reuse behavior, and page-id reuse so
+   * agents keep working in their own worktree and reuse similar browser tabs.
    */
   const setupCommands = [
     formatHelpCommand("browser mcp [--port n] [--target id|--page id]", "Run the stdio MCP server for CEF DevTools control"),
-    formatHelpCommand("browser install-skill [--json]", "Install the Ghostex browser MCP skill into ~/agents/skills"),
-    formatHelpCommand("browser open [url]", "Open or navigate the Ghostex browser surface"),
-    formatHelpCommand("browser open-pane", "Create a browser pane in the current workspace"),
+    formatHelpCommand("browser install-skill [--json]", "Install the $ghostex-browser-use skill into ~/agents/skills"),
+    formatHelpCommand("browser open [url] [project/reuse flags]", "Open or reuse an embedded browser pane"),
+    formatHelpCommand("browser open-pane [url] [project/reuse flags]", "Alias for browser open"),
   ].join("\n");
 
   const mcpTools = [
@@ -3114,15 +3287,14 @@ function browserUsage() {
     formatHelpCommand("ghostex_screenshot", "Capture a PNG screenshot as base64 MCP image content"),
   ].join("\n");
 
-  return `Ghostex Browser - control embedded CEF panes from agents
+  return `Ghostex Browser Use - control embedded CEF panes from agents
 
 Usage:
   gx browser --help
   gx browser mcp [--port n] [--target id|--page id] [--timeout ms]
   gx browser install-skill [--json]
-  gx browser open [url]
-  gx browser open-pane
-
+  gx browser open [url] [--project-path path|--project-id id] [--reuse similar|exact|none]
+  gx browser open-pane [url] [--project-path path|--project-id id] [--reuse similar|exact|none]
 Agent MCP config:
   [mcp_servers.ghostex-browser]
   command = "ghostex"
@@ -3130,6 +3302,20 @@ Agent MCP config:
 
 Commands:
 ${setupCommands}
+
+Project scoping:
+  browser open/open-pane default to the CLI process cwd as --project-path.
+  Agents running in a worktree should keep that default, or pass --project-path "$PWD".
+  Use --project-id when you already know the Ghostex project id from ghostex sessions --json.
+  Use --group-id to place the browser in a specific project group.
+  Use --active-project only for intentional manual control of the currently focused Ghostex project.
+
+Tab reuse:
+  browser open/open-pane default to --reuse similar, so an existing browser pane in the same project with the same origin is reused instead of creating a duplicate tab.
+  Use --reuse exact when only the exact same URL should be reused.
+  Use --reuse none or --new only when a separate browser pane is required.
+  When a pane is reused for a different URL on the same origin, Ghostex focuses that pane and navigates it instead of creating another tab.
+  After creating or selecting a page, keep the returned session id and the MCP page id from ghostex_list_pages; pass --target <pageId> to gx browser mcp or call ghostex_select_page before follow-up actions.
 
 MCP tools exposed to the agent:
 ${mcpTools}
@@ -3152,12 +3338,100 @@ Legacy aliases:
 `;
 }
 
+function generateTitleUsage() {
+  /**
+   * CDXC:GenerateTitleSkill 2026-05-27-07:28:
+   * Help documents only installation because title generation itself happens in
+   * the `$ghostex-generate-title` skill. The skill owns the 47-character title
+   * limit and the no-submit `/rename <title>` self-write contract.
+   */
+  return `Ghostex Generate Title - install the agent skill for naming Ghostex sessions
+
+Usage:
+  gx generate-title --help
+  gx generate-title install-skill [--json]
+
+Agent skill:
+  Use $ghostex-generate-title when a task needs a concise Ghostex session title.
+
+What the skill does:
+  Generate one title shorter than 47 characters.
+  Then write /rename <title> into the current Ghostex session with send-text.
+  Do not press Enter for the rename command.
+
+Self-session command:
+  ghostex send-text --session-id "$GHOSTEX_SESSION_ID" --text "/rename <title>"
+`;
+}
+
+function agentOrchestrationUsage() {
+  /**
+   * CDXC:AgentOrchestration 2026-05-27-07:15:
+   * The orchestration skill is intentionally lightweight: it installs guidance
+   * that tells agents to read `ghostex --help` first, then use the supported
+   * Ghostex CLI commands for session creation, cross-agent messaging, status
+   * checks, and last-lines reads.
+   */
+  return `Ghostex Agent Orchestration - install the agent skill for Ghostex CLI coordination
+
+Usage:
+  gx agent-orchestration --help
+  gx agent-orchestration install-skill [--json]
+
+Agent skill:
+  Use $ghostex-agent-orchestration when a task needs Ghostex session or agent
+  coordination from the CLI.
+
+What the skill teaches:
+  Read ghostex --help first, then use commands such as sessions --json,
+  create-session, create-agent, send-message, read-text --lines, focus, sleep,
+  wake, kill, wait-for, and assert-card.
+
+Boundary:
+  Use Ghostex CLI commands instead of raw zmx/tmux control when coordinating
+  panes inside Ghostex.
+`;
+}
+
+function computerUseUsage() {
+  /**
+   * CDXC:ComputerAgentControl 2026-05-27-06:58:
+   * Ghostex needs an agent-facing Computer Use entry point that maps Desktop
+   * Control setup to the underlying Cua Driver workflow. Keep this help focused
+   * on installing `$ghostex-computer-use`; native app automation itself stays in
+   * Cua Driver so agents do not invent a second desktop-control interface.
+   */
+  return `Ghostex Computer Use - install the agent skill for native macOS app control
+
+Usage:
+  gx computer-use --help
+  gx computer-use install-skill [--json]
+
+Agent skill:
+  Use $ghostex-computer-use when a task needs native macOS app automation.
+  The skill is a Ghostex-named wrapper around $cua-driver, so agents get the
+  Cua Driver workflow without requiring the user to remember the lower-level name.
+
+Desktop Control requirements:
+  Install Desktop Control from Ghostex setup or Settings > Integrations.
+  Cua Driver must be installed, and macOS Accessibility plus Screen Recording
+  permissions must be granted before desktop automation can work.
+
+Boundary:
+  Use $ghostex-computer-use for native macOS apps.
+  Use $ghostex-browser-use and gx browser --help for embedded Ghostex browser panes.
+`;
+}
+
 export {
+  agentOrchestrationUsage,
   browserUsage,
   buildSessionPickerModel,
   buildSessionPickerRows,
   buildSessionAttachCommand,
+  computerUseUsage,
   formatCompactSessionLine,
+  generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
   isFailedCliResult,
   moveSessionPickerSelection,

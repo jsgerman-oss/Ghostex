@@ -5,11 +5,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
+  agentOrchestrationUsage,
   browserUsage,
   buildSessionPickerModel,
   buildSessionPickerRows,
   buildSessionAttachCommand,
+  computerUseUsage,
   formatCompactSessionLine,
+  generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
   isFailedCliResult,
   moveSessionPickerSelection,
@@ -128,16 +131,21 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).toMatch(/^\s+gx$/m);
   });
 
-  test("installs the browser MCP skill for agents", async () => {
+  test("installs the Ghostex Browser Use skill for agents", async () => {
     /**
      * CDXC:BrowserAgentControl 2026-05-26-22:17:
-     * The first-launch CLI command installs the browser DevTools MCP skill into
+     * The first-launch CLI command installs the Ghostex Browser Use skill into
      * the agent skill directory, so the CLI needs a deterministic copy command
      * that works from the source checkout and the bundled app resource path.
+     *
+     * CDXC:BrowserAgentControl 2026-05-27-06:58:
+     * The installed skill id is `$ghostex-browser-use`; the legacy
+     * `$ghostex-browser-devtools-mcp` name caused duplicate Codex discovery
+     * when a shared installed skill and repo skill were both present.
      */
     const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-browser-skill-"));
     try {
-      const targetDir = path.join(tempDir, "ghostex-browser-devtools-mcp");
+      const targetDir = path.join(tempDir, "ghostex-browser-use");
       const result = await execFileAsync(process.execPath, [
         path.resolve("scripts/ghostex-cli.mjs"),
         "browser",
@@ -152,11 +160,116 @@ describe("ghostex CLI Android remote-session contract", () => {
       expect(payload).toMatchObject({
         command: "ghostex browser mcp",
         ok: true,
-        skill: "ghostex-browser-devtools-mcp",
+        skill: "ghostex-browser-use",
         targetDir,
       });
-      expect(skillMarkdown).toContain("Ghostex Browser DevTools MCP");
+      expect(skillMarkdown).toContain("Ghostex Browser Use");
       expect(skillMarkdown).toContain("ghostex_console_logs");
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("installs the Ghostex Computer Use skill for agents", async () => {
+    /**
+     * CDXC:ComputerAgentControl 2026-05-27-06:58:
+     * Desktop Control setup installs `$ghostex-computer-use` as a wrapper over
+     * `$cua-driver` so users can ask for Ghostex computer use without knowing
+     * the lower-level skill name.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-computer-use-skill-"));
+    try {
+      const targetDir = path.join(tempDir, "ghostex-computer-use");
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "computer-use",
+        "install-skill",
+        "--target-dir",
+        targetDir,
+        "--json",
+      ]);
+      const payload = JSON.parse(result.stdout);
+      const skillMarkdown = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
+
+      expect(payload).toMatchObject({
+        command: "cua-driver",
+        ok: true,
+        skill: "ghostex-computer-use",
+        targetDir,
+      });
+      expect(skillMarkdown).toContain("Ghostex Computer Use");
+      expect(skillMarkdown).toContain("$cua-driver");
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("installs the Ghostex Agent Orchestration skill for agents", async () => {
+    /**
+     * CDXC:AgentOrchestration 2026-05-27-07:15:
+     * Agents need `$ghostex-agent-orchestration` installed so they can discover
+     * Ghostex CLI commands for creating panes, messaging sessions, checking
+     * status, and reading last lines through `ghostex read-text`.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-agent-orchestration-skill-"));
+    try {
+      const targetDir = path.join(tempDir, "ghostex-agent-orchestration");
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "agent-orchestration",
+        "install-skill",
+        "--target-dir",
+        targetDir,
+        "--json",
+      ]);
+      const payload = JSON.parse(result.stdout);
+      const skillMarkdown = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
+
+      expect(payload).toMatchObject({
+        command: "ghostex --help",
+        ok: true,
+        skill: "ghostex-agent-orchestration",
+        targetDir,
+      });
+      expect(skillMarkdown).toContain("Ghostex Agent Orchestration");
+      expect(skillMarkdown).toContain("ghostex --help");
+      expect(skillMarkdown).toContain("ghostex read-text <selector> --lines 80 --json");
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
+  test("installs the Ghostex Generate Title skill for agents", async () => {
+    /**
+     * CDXC:GenerateTitleSkill 2026-05-27-07:28:
+     * `$ghostex-generate-title` replaces the personal title skill with a
+     * Ghostex workflow: title under 47 characters, then stage `/rename <title>`
+     * into the current session with `send-text` and no Enter.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-generate-title-skill-"));
+    try {
+      const targetDir = path.join(tempDir, "ghostex-generate-title");
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "generate-title",
+        "install-skill",
+        "--target-dir",
+        targetDir,
+        "--json",
+      ]);
+      const payload = JSON.parse(result.stdout);
+      const skillMarkdown = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
+
+      expect(payload).toMatchObject({
+        ok: true,
+        skill: "ghostex-generate-title",
+        targetDir,
+      });
+      expect(payload.command).toContain("ghostex send-text");
+      expect(skillMarkdown).toContain("Ghostex Generate Title");
+      expect(skillMarkdown).toContain("under 47 characters");
+      expect(skillMarkdown).toContain('ghostex send-text --session-id "$GHOSTEX_SESSION_ID" --text "/rename <generated title>"');
+      expect(skillMarkdown).toContain("Do not press Enter");
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
@@ -172,10 +285,57 @@ describe("ghostex CLI Android remote-session contract", () => {
 
     expect(cliHelpResult.stdout).toBe(`${help}\n`);
     expect(help).toContain("gx browser mcp");
+    expect(help).toContain("gx browser open [url] [--project-path path|--project-id id] [--reuse similar|exact|none]");
     expect(help).toContain('args = ["browser", "mcp"]');
     expect(help).toContain("ghostex_console_logs");
     expect(help).toContain("ghostex_snapshot");
     expect(help).toContain("browser install-skill");
+    expect(help).toContain("default to the CLI process cwd as --project-path");
+    expect(help).toContain("default to --reuse similar");
+    expect(help).toContain("keep the returned session id and the MCP page id");
+  });
+
+  test("documents Ghostex Computer Use under gx computer-use help", async () => {
+    const help = computerUseUsage();
+    const cliHelpResult = await execFileAsync(process.execPath, [
+      path.resolve("scripts/ghostex-cli.mjs"),
+      "computer-use",
+      "--help",
+    ]);
+
+    expect(cliHelpResult.stdout).toBe(`${help}\n`);
+    expect(help).toContain("gx computer-use install-skill");
+    expect(help).toContain("$ghostex-computer-use");
+    expect(help).toContain("$cua-driver");
+  });
+
+  test("documents Ghostex Agent Orchestration under gx agent-orchestration help", async () => {
+    const help = agentOrchestrationUsage();
+    const cliHelpResult = await execFileAsync(process.execPath, [
+      path.resolve("scripts/ghostex-cli.mjs"),
+      "agent-orchestration",
+      "--help",
+    ]);
+
+    expect(cliHelpResult.stdout).toBe(`${help}\n`);
+    expect(help).toContain("gx agent-orchestration install-skill");
+    expect(help).toContain("$ghostex-agent-orchestration");
+    expect(help).toContain("read-text --lines");
+  });
+
+  test("documents Ghostex Generate Title under gx generate-title help", async () => {
+    const help = generateTitleUsage();
+    const cliHelpResult = await execFileAsync(process.execPath, [
+      path.resolve("scripts/ghostex-cli.mjs"),
+      "generate-title",
+      "--help",
+    ]);
+
+    expect(cliHelpResult.stdout).toBe(`${help}\n`);
+    expect(help).toContain("gx generate-title install-skill");
+    expect(help).toContain("$ghostex-generate-title");
+    expect(help).toContain("shorter than 47 characters");
+    expect(help).toContain("Do not press Enter");
   });
 
   test("builds picker rows with intro text, project spacing, and agent indicators", () => {

@@ -145,15 +145,24 @@ cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/ghostex"
 cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/gx"
 chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
 # CDXC:BrowserAgentControl 2026-05-26-22:17: First-launch CLI setup installs
-# the Ghostex browser DevTools MCP skill after Homebrew installs the app bundle.
+# the Ghostex Browser Use skill after Homebrew installs the app bundle.
 # Bundle the skill beside the CLI so `ghostex browser install-skill` can copy the
 # exact version that matches the installed `ghostex browser mcp`
 # command into ~/agents/skills.
 # CDXC:BrowserAgentControl 2026-05-27-01:59: Browser control is now documented
 # through the `ghostex browser ...` namespace, so bundled CLI resources must
 # continue shipping the skill used by `ghostex browser install-skill`.
+# CDXC:ComputerAgentControl 2026-05-27-06:58: Bundle the public
+# `$ghostex-browser-use`, `$ghostex-computer-use`,
+# `$ghostex-agent-orchestration`, and `$ghostex-generate-title` skills so
+# first-launch and Settings can install Ghostex-named agent wrappers without
+# relying on a source checkout, raw zmx, or the lower-level `$cua-driver` skill
+# name.
 mkdir -p "$WEB_DIR/cli/skills"
-cp -R "$REPO_ROOT/.agents/skills/ghostex-browser-devtools-mcp" "$WEB_DIR/cli/skills/ghostex-browser-devtools-mcp"
+cp -R "$REPO_ROOT/.agents/skills/ghostex-browser-use" "$WEB_DIR/cli/skills/ghostex-browser-use"
+cp -R "$REPO_ROOT/.agents/skills/ghostex-computer-use" "$WEB_DIR/cli/skills/ghostex-computer-use"
+cp -R "$REPO_ROOT/.agents/skills/ghostex-agent-orchestration" "$WEB_DIR/cli/skills/ghostex-agent-orchestration"
+cp -R "$REPO_ROOT/.agents/skills/ghostex-generate-title" "$WEB_DIR/cli/skills/ghostex-generate-title"
 # CDXC:ZmxPersistence 2026-05-20-09:57: zmx pane refresh is now a zmx IPC feature, so Ghostex must bundle the pinned submodule binary instead of depending on whichever zmx happens to be on PATH. Build the submodule for the requested macOS architecture and copy it into app resources where TerminalWorkspaceView can launch it directly.
 if [[ ! -f "$ZMX_ROOT/build.zig" ]]; then
 	cat >&2 <<EOF

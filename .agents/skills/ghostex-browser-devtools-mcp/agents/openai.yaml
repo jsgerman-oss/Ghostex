@@ -1,7 +1,0 @@
-interface:
-  display_name: "Ghostex Browser DevTools MCP"
-  short_description: "Control Ghostex CEF panes with DevTools MCP"
-  default_prompt: "Use $ghostex-browser-devtools-mcp to configure `ghostex browser mcp` access to Ghostex embedded browser panes."
-
-policy:
-  allow_implicit_invocation: true
