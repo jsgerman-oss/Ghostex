@@ -1029,6 +1029,8 @@ let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
 let lastNativeFocusedSidebarSessionId: string | undefined;
 let didLogStartupPaneLayoutFirstSync = false;
+const lastPostedWorkspaceNativeLayoutShapeByProjectId = new Map<string, PaneLayoutShapeSummary>();
+const nativeLayoutCollapseAllowedUntilByProjectId = new Map<string, number>();
 const lastFocusedWorkspaceTerminalByProjectId = new Map<string, string>();
 let lastNativeT3RuntimeSessionStateKey: string | undefined;
 const NATIVE_T3_RUNTIME_PREWARM_DELAY_MS = 750;
@@ -1081,7 +1083,7 @@ const pendingTerminalTextResults = new Map<
 >();
 const pendingGitCommitRequests = new Map<
   string,
-  { action: SidebarGitAction; body?: string; hasCommit: boolean; subject: string }
+  { action: SidebarGitAction; body?: string; hasCommit: boolean; projectId: string; subject: string }
 >();
 
 type NativeProject = {
@@ -1100,6 +1102,7 @@ type NativeProject = {
   themeColor?: string;
   worktree?: NativeProjectWorktreeMetadata;
   worktreeCommand?: string;
+  worktreeMergeAgentId?: string;
   /**
    * CDXC:ProjectBoard 2026-05-23-14:35:
    * Each project can define the three-letter ticket key shown on the board (for example ZMX-12) while Beads keeps hash ids internally.
@@ -1346,6 +1349,9 @@ const terminalStateById = new Map<
   }
 >();
 type ProviderRuntimeState = "missing" | "running" | "unknown";
+type ProviderRuntimeStateLookupOptions = {
+  includeMountedNativeSession?: boolean;
+};
 const providerRuntimeStateByProjectSessionId = new Map<
   string,
   { checkedAt: number; provider: TerminalSessionPersistenceProvider; sessionName: string; state: ProviderRuntimeState }
@@ -1457,9 +1463,14 @@ function getTerminalProviderRuntimeInfo(
 function getProviderRuntimeStateForSession(
   projectId: string,
   session: TerminalSessionRecord,
+  options: ProviderRuntimeStateLookupOptions = {},
 ): ProviderRuntimeState {
   const terminalState = terminalStateById.get(session.sessionId);
-  if (terminalState?.lifecycleState === "running" && terminalState.sessionPersistenceProvider) {
+  if (
+    options.includeMountedNativeSession !== false &&
+    terminalState?.lifecycleState === "running" &&
+    terminalState.sessionPersistenceProvider
+  ) {
     return "running";
   }
   const providerInfo = getTerminalProviderRuntimeInfo(session);
@@ -1501,21 +1512,28 @@ function forgetProviderRuntimeState(projectId: string, sessionId: string): void 
 function shouldQueueProviderStartupTextForRestore(
   session: TerminalSessionRecord,
   projectId: string,
-  reason: string,
 ): boolean {
-  if (getProviderRuntimeStateForSession(projectId, session) === "running") {
+  /**
+   * CDXC:SessionPersistence 2026-05-27-06:28:
+   * Restore startup decisions need provider-runtime liveness, not pane
+   * lifecycle. After a laptop restart, native can mount a fresh zmx shell for a
+   * persisted awake pane; treating that mounted pane as provider "running"
+   * suppresses the agent resume command and leaves an empty terminal.
+   */
+  const providerRuntimeState = getProviderRuntimeStateForSession(projectId, session, {
+    includeMountedNativeSession: false,
+  });
+  if (providerRuntimeState === "running") {
     return false;
   }
-  return (
-    session.isSleeping === true ||
-    reason === "focus-sleeping-session" ||
-    reason === "wake-session" ||
-    reason === "wake-group" ||
-    reason === "wake-command-session" ||
-    reason === "command-pane-tab-wake" ||
-    reason === "pane-drop-wake" ||
-    reason === "pane-tab-wake"
-  );
+  /**
+   * CDXC:SessionPersistence 2026-05-27-06:28:
+   * Queue restore input whenever provider liveness is missing or unknown. The
+   * native terminalReady event still suppresses the queued input when attach
+   * finds an existing tmux/zmx/zellij session, so live sessions are protected
+   * while cold-recreated provider shells resume the stored agent.
+   */
+  return providerRuntimeState === "missing" || providerRuntimeState === "unknown";
 }
 
 function shouldIncludeSessionInNativePaneTabs(projectId: string, session: SessionRecord): boolean {
@@ -2200,6 +2218,23 @@ function summarizeNativeLayoutLeafSessionIds(layout: NativeTerminalLayout | unde
   return layout.children.flatMap(summarizeNativeLayoutLeafSessionIds);
 }
 
+function collectActiveNativePaneOwnerSessionIds(layout: NativeTerminalLayout | undefined): string[] {
+  if (!layout) {
+    return [];
+  }
+  if (layout.kind === "leaf") {
+    return [layout.sessionId];
+  }
+  if (layout.kind === "tabs") {
+    const activeSessionId =
+      layout.activeSessionId && layout.sessionIds.includes(layout.activeSessionId)
+        ? layout.activeSessionId
+        : layout.sessionIds[0];
+    return activeSessionId ? [activeSessionId] : [];
+  }
+  return layout.children.flatMap(collectActiveNativePaneOwnerSessionIds);
+}
+
 function appendPaneLayoutTraceDebugLog(
   event: string,
   details?: unknown,
@@ -2852,6 +2887,97 @@ async function installGteFromBrew(): Promise<void> {
   );
 }
 
+async function installNativeGhostexCliFromBrew(): Promise<void> {
+  /**
+   * CDXC:IntegrationsSetup 2026-05-27-04:17:
+   * The first-launch CLI step is optional, but its install button should be a
+   * one-click native action. Use Homebrew cask install because .dmg installs do
+   * not guarantee a PATH-visible CLI, then refresh the shared integration
+   * status so the modal can immediately switch to the installed state.
+   */
+  const result = await runNativeProcess(
+    "/bin/zsh",
+    [
+      "-lc",
+      [
+        "if command -v brew >/dev/null 2>&1; then BREW=$(command -v brew);",
+        "elif [ -x /opt/homebrew/bin/brew ]; then BREW=/opt/homebrew/bin/brew;",
+        "elif [ -x /usr/local/bin/brew ]; then BREW=/usr/local/bin/brew;",
+        "else echo 'Homebrew was not found on PATH, /opt/homebrew/bin, or /usr/local/bin.' >&2; exit 127; fi;",
+        '"$BREW" install --cask maddada/tap/ghostex --force',
+      ].join(" "),
+    ],
+    { timeoutMs: 10 * 60_000 },
+  );
+  if (result.exitCode === 0) {
+    showNativeMessage("info", "Ghostex CLI installed.");
+    await installNativeBrowserControlSkill(false);
+    await requestNativeGhostexCliStatus();
+    return;
+  }
+  showNativeMessage(
+    "error",
+    `Ghostex CLI install failed: ${(result.stderr || result.stdout || "brew install failed").trim()}`,
+  );
+  await requestNativeGhostexCliStatus();
+}
+
+async function installNativeBrowserControlSkill(showSuccessMessage = true): Promise<void> {
+  const result = await runNativeProcess(
+    "/bin/zsh",
+    [
+      "-lc",
+      [
+        "if command -v ghostex >/dev/null 2>&1; then GHOSTEX=$(command -v ghostex);",
+        "else echo 'Ghostex CLI was not found on PATH.' >&2; exit 127; fi;",
+        '"$GHOSTEX" browser install-skill',
+      ].join(" "),
+    ],
+    { timeoutMs: 2 * 60_000 },
+  );
+  if (result.exitCode === 0) {
+    if (showSuccessMessage) {
+      showNativeMessage("info", "Browser Control installed.");
+    }
+    await requestNativeGhostexCliStatus();
+    return;
+  }
+  showNativeMessage(
+    "error",
+    `Browser Control install failed: ${(result.stderr || result.stdout || "install-skill failed").trim()}`,
+  );
+  await requestNativeGhostexCliStatus();
+}
+
+async function installNativeCuaDriver(): Promise<void> {
+  /**
+   * CDXC:IntegrationsSetup 2026-05-27-04:17:
+   * Desktop Control setup should feel like one install action, not copied shell
+   * instructions. Native runs the official trycua/cua installer and then
+   * refreshes Cua Driver status; macOS permission grant buttons remain separate
+   * because Accessibility and Screen Recording are user-controlled privacy
+   * settings.
+   */
+  const result = await runNativeProcess(
+    "/bin/bash",
+    [
+      "-lc",
+      'curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh | /bin/bash',
+    ],
+    { timeoutMs: 10 * 60_000 },
+  );
+  if (result.exitCode === 0) {
+    showNativeMessage("info", "Desktop Control installed. Grant macOS permissions if prompted.");
+    await requestNativeGhostexCliStatus();
+    return;
+  }
+  showNativeMessage(
+    "error",
+    `Desktop Control install failed: ${(result.stderr || result.stdout || "installer failed").trim()}`,
+  );
+  await requestNativeGhostexCliStatus();
+}
+
 function showNativeBrowserWindow(): void {
   /**
    * CDXC:BrowserOverlay 2026-04-26-07:37
@@ -3502,15 +3628,12 @@ function saveSettingsFromNative(nextSettings: ghostexSettings): void {
 function openTipsAndTricksOnFirstLaunch(): void {
   if (localStorage.getItem(TIPS_AND_TRICKS_SEEN_STORAGE_KEY) !== "true") {
     /**
-     * CDXC:TipsAndTricks 2026-05-15-16:11:
-     * First app launch should show the same Tips & Tricks shadcn modal that the
-     * sidebar overflow menu opens. Persist the seen flag only after the native
-     * modal bridge accepts the open request so an unavailable modal host remains
-     * visible as a startup integration failure.
+     * CDXC:FirstLaunchSetup 2026-05-27-02:41:
+     * Tips & Tricks was merged into first-launch setup, so first run should open
+     * the single teaching/setup modal directly while still marking the legacy
+     * tips flag to avoid reopening older installs that have already moved on.
      */
-    openAppModal({ modal: "tipsAndTricks", type: "open" });
     localStorage.setItem(TIPS_AND_TRICKS_SEEN_STORAGE_KEY, "true");
-    return;
   }
 
   openFirstLaunchSetupOnFirstLaunch();
@@ -4499,6 +4622,10 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
       worktree: normalizeNativeProjectWorktreeMetadata(project.worktree),
       worktreeCommand:
         typeof project.worktreeCommand === "string" ? project.worktreeCommand : undefined,
+      worktreeMergeAgentId:
+        typeof project.worktreeMergeAgentId === "string"
+          ? project.worktreeMergeAgentId
+          : undefined,
       beadsDisplayKey:
         typeof project.beadsDisplayKey === "string" ? project.beadsDisplayKey : undefined,
       beadConversationLinks: normalizeBeadConversationLinks(
@@ -4757,6 +4884,7 @@ function summarizeNativeProject(project: NativeProject) {
     themeColor: project.themeColor,
     worktree: project.worktree,
     worktreeCommand: project.worktreeCommand,
+    worktreeMergeAgentId: project.worktreeMergeAgentId,
   };
 }
 
@@ -5118,6 +5246,7 @@ function parseGitHubPullRequest(stdout: string, success: boolean): SidebarGitSta
 
 type SidebarGitActionRunOptions = {
   forceCommitReview?: boolean;
+  groupId?: string;
 };
 
 async function runSidebarGitAction(
@@ -5131,6 +5260,16 @@ async function runSidebarGitAction(
   if (action === "release") {
     await runSidebarGitPromptAction("Release", GIT_RELEASE_ONLY_PROMPT);
     return;
+  }
+
+  if (options.groupId) {
+    const groupReference = resolveSidebarGroupReference(options.groupId);
+    if (groupReference.isChatCollection) {
+      return;
+    }
+    if (activeProjectId !== groupReference.project.projectId) {
+      focusProject(groupReference.project.projectId);
+    }
   }
 
   await refreshGitState();
@@ -5228,7 +5367,12 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
   const hasCommit = gitState.hasWorkingTreeChanges;
   const draft = { subject: "", body: undefined };
   const requestId = `git-action-${Date.now().toString(36)}`;
-  pendingGitCommitRequests.set(requestId, { action, hasCommit, ...draft });
+  pendingGitCommitRequests.set(requestId, {
+    action,
+    hasCommit,
+    projectId: activeProject().projectId,
+    ...draft,
+  });
   const modalDraft = {
     action,
     branch: gitState.branch,
@@ -5240,6 +5384,7 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
       : resolveSidebarGitPromptDescription(action, hasCommit),
     isDefaultRef: gitState.branch === "main" || gitState.branch === "master",
     isWorktree: activeProject().worktree !== undefined,
+    mergeAgentId: resolveProjectWorktreeMergeAgentId(activeProject()),
     requestId,
     showCommitMessage: hasCommit,
     suggestedBody: draft.body,
@@ -5288,6 +5433,45 @@ function resolveSidebarAgentButtonById(agentId: string): SidebarAgentButton | un
     ) ??
     createSidebarAgentButtons([], []).find((candidate) => candidate.agentId === agentId)
   );
+}
+
+function resolveProjectWorktreeMergeAgentId(project: NativeProject): string | undefined {
+  const parentProject = project.worktree?.parentProjectId
+    ? findProject(project.worktree.parentProjectId)
+    : project;
+  const storedAgentId =
+    parentProject?.worktreeMergeAgentId?.trim() || project.worktreeMergeAgentId?.trim();
+  if (storedAgentId && resolveSidebarAgentButtonById(storedAgentId)?.command?.trim()) {
+    return storedAgentId;
+  }
+  return agents.find((agent) => agent.command?.trim())?.agentId;
+}
+
+function rememberProjectWorktreeMergeAgent(project: NativeProject, agentId: string): void {
+  /**
+   * CDXC:WorktreeMerge 2026-05-27-06:25:
+   * Direct worktree merge remembers the selected conflict-resolution agent on the
+   * main project, not the temporary worktree, so future worktrees in the same
+   * project family keep using the user's preferred merge agent.
+   */
+  const parentProjectId = project.worktree?.parentProjectId ?? project.projectId;
+  projects = projects.map((candidate) =>
+    candidate.projectId === parentProjectId
+      ? { ...candidate, worktreeMergeAgentId: agentId }
+      : candidate,
+  );
+  writeStoredProjects("rememberWorktreeMergeAgent");
+}
+
+function focusPendingGitProject(projectId: string): NativeProject {
+  const project = findProject(projectId);
+  if (!project) {
+    throw new Error("The Git action project is no longer available.");
+  }
+  if (activeProjectId !== project.projectId) {
+    focusProject(project.projectId);
+  }
+  return project;
 }
 
 async function runSidebarGitMultipleCommits(requestId: string): Promise<void> {
@@ -5604,6 +5788,7 @@ async function continueGitActionAfterCommitConfirmation(
   }
   pendingGitCommitRequests.delete(requestId);
   try {
+    focusPendingGitProject(pending.projectId);
     gitState = { ...gitState, isBusy: true };
     publish();
     showAppToast("info", resolveSidebarGitStartedTitle(pending.action), activeProject().name);
@@ -5633,6 +5818,190 @@ async function continueGitActionAfterCommitConfirmation(
       error instanceof Error ? error.message : "Git action failed.",
     );
   }
+}
+
+async function continueGitDirectMergeAfterConfirmation(
+  requestId: string,
+  message: string,
+  filePaths: readonly string[] | undefined,
+  deleteWorktreeAfter: boolean,
+  conflictAgentId: string,
+): Promise<void> {
+  const pending = pendingGitCommitRequests.get(requestId);
+  if (!pending) {
+    return;
+  }
+  pendingGitCommitRequests.delete(requestId);
+  try {
+    const worktreeProject = focusPendingGitProject(pending.projectId);
+    if (!worktreeProject.worktree) {
+      throw new Error("Direct merge is only available from a worktree project.");
+    }
+    const conflictAgent = resolveSidebarAgentButtonById(conflictAgentId);
+    if (!conflictAgent?.command?.trim()) {
+      throw new Error("Choose an agent with a configured command before merging.");
+    }
+    rememberProjectWorktreeMergeAgent(worktreeProject, conflictAgentId);
+    gitState = { ...gitState, isBusy: true };
+    publish();
+    showAppToast("info", "Preparing direct merge", worktreeProject.name);
+    if (pending.hasCommit) {
+      await commitWithMessage(message.trim() || pending.subject, pending.body, filePaths);
+    }
+    const result = await mergeActiveWorktreeIntoMain({
+      conflictAgent,
+      deleteWorktreeAfter,
+      worktreeProject,
+    });
+    if (result === "conflicts") {
+      gitState = { ...gitState, isBusy: false };
+      publish();
+      return;
+    }
+    await refreshGitState();
+    showAppToast("success", "Worktree merged to main", worktreeProject.name);
+  } catch (error) {
+    gitState = { ...gitState, isBusy: false };
+    publish();
+    showAppToast(
+      "error",
+      "Direct merge failed",
+      error instanceof Error ? error.message : "Could not merge worktree.",
+    );
+  }
+}
+
+async function mergeActiveWorktreeIntoMain(input: {
+  conflictAgent: SidebarAgentButton;
+  deleteWorktreeAfter: boolean;
+  worktreeProject: NativeProject;
+}): Promise<"merged" | "conflicts"> {
+  const { conflictAgent, deleteWorktreeAfter, worktreeProject } = input;
+  const worktree = worktreeProject.worktree;
+  if (!worktree) {
+    throw new Error("Direct merge requires a worktree project.");
+  }
+  const branch = gitState.branch || worktree.branch;
+  if (!branch) {
+    throw new Error("Create and checkout a branch before merging.");
+  }
+
+  const parentProject = findProject(worktree.parentProjectId) ?? createNativeProjectFromWorktreeParent(worktree, worktreeProject);
+  projects = ensureNativeProjectPresent(projects, parentProject);
+  const mainCheck = await runGitInProject(parentProject, ["rev-parse", "--verify", "main"], {
+    allowFailure: true,
+  });
+  if (mainCheck.exitCode !== 0) {
+    throw new Error('The parent project does not have a local "main" branch.');
+  }
+
+  const parentStatus = await runGitInProject(parentProject, ["status", "--porcelain"], {
+    allowFailure: true,
+  });
+  if (parentStatus.stdout.trim()) {
+    throw new Error("Commit or stash changes in the main project before merging this worktree.");
+  }
+
+  showAppToast("info", "Checking out main", parentProject.name);
+  await runGitInProject(parentProject, ["checkout", "main"]);
+  showAppToast("info", "Merging worktree", branch);
+  const mergeResult = await runGitInProject(parentProject, ["merge", branch], {
+    allowFailure: true,
+  });
+  if (mergeResult.exitCode !== 0) {
+    await launchMergeConflictAgent({
+      agent: conflictAgent,
+      branch,
+      mergeOutput: mergeResult.stderr.trim() || mergeResult.stdout.trim(),
+      parentProject,
+      worktreeProject,
+    });
+    return "conflicts";
+  }
+
+  if (deleteWorktreeAfter) {
+    await removeWorktreeProjectAfterSuccessfulDirectMerge(worktreeProject, parentProject);
+  }
+  return "merged";
+}
+
+async function launchMergeConflictAgent(input: {
+  agent: SidebarAgentButton;
+  branch: string;
+  mergeOutput: string;
+  parentProject: NativeProject;
+  worktreeProject: NativeProject;
+}): Promise<void> {
+  const { agent, branch, mergeOutput, parentProject, worktreeProject } = input;
+  focusProject(parentProject.projectId);
+  const groupId = activeProject().workspace.activeGroupId;
+  const session = await launchAgentTerminal(agent, groupId, {
+    visiblePlacement: createFocusedTabGroupPlacement(groupId),
+  });
+  if (!session) {
+    throw new Error("Could not open the selected merge conflict agent.");
+  }
+  const prompt = buildMergeConflictPrompt({
+    branch,
+    mergeOutput,
+    parentProject,
+    worktreeProject,
+  });
+  window.setTimeout(() => {
+    postNative({
+      sessionId: nativeSessionIdForProjectSidebarSession(parentProject.projectId, session.sessionId),
+      text: prompt,
+      type: "writeTerminalText",
+    });
+  }, FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS);
+  showAppToast("warning", "Merge conflicts need resolution", agent.name);
+}
+
+function buildMergeConflictPrompt(input: {
+  branch: string;
+  mergeOutput: string;
+  parentProject: NativeProject;
+  worktreeProject: NativeProject;
+}): string {
+  const output = input.mergeOutput.trim();
+  return [
+    "Please handle the current Git merge conflicts on the main branch.",
+    "",
+    `Repository: ${input.parentProject.path}`,
+    "Target branch: main",
+    `Merged worktree branch: ${input.branch}`,
+    `Worktree: ${input.worktreeProject.name} (${input.worktreeProject.path})`,
+    "",
+    "Resolve the conflicts without losing any code, behavior, or UX from either side.",
+    "Inspect the conflict markers, preserve the important intent from main and the worktree branch, run the relevant checks you can run locally, stage the resolved files, and leave the final state ready for review.",
+    output ? `\nMerge output:\n${output}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function removeWorktreeProjectAfterSuccessfulDirectMerge(
+  worktreeProject: NativeProject,
+  parentProject: NativeProject,
+): Promise<void> {
+  showAppToast("info", "Removing worktree", worktreeProject.name);
+  const removeResult = await runGitInProject(parentProject, ["worktree", "remove", worktreeProject.path], {
+    allowFailure: true,
+  });
+  if (removeResult.exitCode !== 0) {
+    showAppToast(
+      "error",
+      "Could not remove worktree",
+      removeResult.stderr.trim() || removeResult.stdout.trim() || "git worktree remove failed.",
+    );
+    return;
+  }
+  projects = projects.filter((candidate) => candidate.projectId !== worktreeProject.projectId);
+  activeProjectId = parentProject.projectId;
+  writeStoredProjects("removeWorktreeAfterDirectMerge");
+  await runGitInProject(parentProject, ["worktree", "prune"], { allowFailure: true });
+  publish();
+  showAppToast("success", "Worktree removed", worktreeProject.name);
 }
 
 async function pushCurrentBranch(): Promise<void> {
@@ -8195,7 +8564,7 @@ function restoreNativeTerminalSession(
   );
   const shouldQueueProviderStartupText =
     Boolean(sessionPersistenceProvider && initialInput.trim()) &&
-    shouldQueueProviderStartupTextForRestore(session, project.projectId, reason);
+    shouldQueueProviderStartupTextForRestore(session, project.projectId);
   const initialActivity = session.restoreActivity === "attention" ? "attention" : "idle";
   if (
     session.sessionPersistenceProvider !== sessionPersistenceProvider ||
@@ -8280,11 +8649,11 @@ function restoreNativeTerminalSession(
   });
   if (shouldQueueProviderStartupText) {
     /**
-     * CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
-     * Restored provider sessions get startup text only when the sidebar knows
-     * the provider runtime was intentionally torn down, such as Sleep/Wake.
-     * Startup app reattach paths must not replay prompts into an existing
-     * tmux/zmx/zellij session.
+     * CDXC:AgentTerminalLifecycle 2026-05-27-06:28:
+     * Restored provider sessions queue resume text when provider liveness is
+     * not confirmed running. Native terminalReady owns the final created-vs-
+     * attached check, so existing zmx sessions stay untouched while newly
+     * created provider shells resume the agent instead of staying empty.
      */
     queueNativeTerminalStartupText(session.sessionId, initialInput);
   }
@@ -9035,6 +9404,9 @@ gx_usable = bool(gx_realpath and "ghostex.app/Contents/Resources/Web/cli/gx" in 
 gx_blocked = bool(gx_path and not gx_usable)
 browser_skill_path = os.path.join(os.path.expanduser("~"), "agents", "skills", "ghostex-browser-devtools-mcp", "SKILL.md")
 browser_skill_installed = os.path.isfile(browser_skill_path)
+cua_driver_path = shutil.which("cua-driver")
+cua_app_installed = os.path.isdir("/Applications/CuaDriver.app")
+cua_driver_installed = bool(cua_driver_path or cua_app_installed)
 
 if ghostex_path:
     if gx_usable:
@@ -9048,13 +9420,21 @@ else:
 
 if ghostex_path:
     if browser_skill_installed:
-        detail = detail + " Browser MCP skill is installed for agents."
+        detail = detail + " Browser Control skill is installed for agents."
     else:
-        detail = detail + " Browser MCP skill is not installed yet."
+        detail = detail + " Browser Control skill is not installed yet."
+
+if cua_driver_installed:
+    detail = detail + " Desktop Control is installed."
+else:
+    detail = detail + " Desktop Control is not installed yet."
 
 print(json.dumps({
     "browserSkillInstalled": browser_skill_installed,
     "browserSkillPath": browser_skill_path if browser_skill_installed else None,
+    "cuaAppInstalled": cua_app_installed,
+    "cuaDriverInstalled": cua_driver_installed,
+    "cuaDriverPath": cua_driver_path,
     "detail": detail,
     "generatedAt": datetime.now(timezone.utc).isoformat(),
     "ghostexPath": ghostex_path,
@@ -9074,6 +9454,8 @@ print(json.dumps({
       detail: errorMessage,
       generatedAt: new Date().toISOString(),
       browserSkillInstalled: false,
+      cuaAppInstalled: false,
+      cuaDriverInstalled: false,
       gxBlockedByExistingCommand: false,
       gxUsable: false,
       installed: false,
@@ -9089,6 +9471,8 @@ print(json.dumps({
       detail: error instanceof Error ? error.message : "Unable to parse Ghostex CLI status.",
       generatedAt: new Date().toISOString(),
       browserSkillInstalled: false,
+      cuaAppInstalled: false,
+      cuaDriverInstalled: false,
       gxBlockedByExistingCommand: false,
       gxUsable: false,
       installed: false,
@@ -15040,6 +15424,132 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
   }
 }
 
+function sleepInactiveProjectSessions(projectId: string): void {
+  /**
+   * CDXC:ProjectSleep 2026-05-27-01:50:
+   * A combined sidebar project row is a projection over all workspace groups,
+   * not a native group id. Sleep Inactive must therefore enumerate the project's
+   * current workspace sessions and sleep only awake inactive terminals. Running,
+   * working, and attention sessions remain awake because they represent live
+   * output or user review that should not be interrupted by a project-level
+   * batch action.
+   */
+  const project = findProject(projectId);
+  if (!project) {
+    return;
+  }
+  const projectedSessionsById = new Map(
+    createProjectedSidebarGroupsForProject(project)
+      .flatMap((group) => group.sessions)
+      .map((session) => [session.sessionId, session]),
+  );
+
+  for (const group of project.workspace.groups) {
+    for (const session of group.snapshot.sessions) {
+      if (session.kind !== "terminal" || session.isSleeping === true) {
+        continue;
+      }
+      const projectedSession = projectedSessionsById.get(session.sessionId);
+      const terminalState = terminalStateById.get(session.sessionId);
+      const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
+      const isRunning =
+        projectedSession?.isRunning === true ||
+        projectedSession?.lifecycleState === "running" ||
+        terminalState?.lifecycleState === "running";
+      if (isRunning) {
+        continue;
+      }
+      if (activity === "working" || activity === "attention") {
+        continue;
+      }
+      setNativeSessionSleeping(
+        createCombinedProjectSessionId(project.projectId, session.sessionId),
+        true,
+      );
+    }
+  }
+}
+
+function wakeProjectSleepingSessions(projectId: string): void {
+  /**
+   * CDXC:ProjectSleep 2026-05-27-02:18:
+   * Combined project-row Wake must operate on the whole project because the
+   * sidebar row does not resolve to a concrete workspace group. Wake each
+   * sleeping workspace terminal through the session sleep path so stale native
+   * runtime state is cleared and zmx restore logic stays centralized.
+   */
+  const project = findProject(projectId);
+  if (!project) {
+    return;
+  }
+  const sessionIds = project.workspace.groups.flatMap((group) =>
+    group.snapshot.sessions
+      .filter(
+        (session): session is TerminalSessionRecord =>
+          session.kind === "terminal" && session.isSleeping === true,
+      )
+      .map((session) => createCombinedProjectSessionId(project.projectId, session.sessionId)),
+  );
+  if (sessionIds.length === 0) {
+    return;
+  }
+  if (activeProjectId !== project.projectId) {
+    focusProject(project.projectId);
+  }
+  for (const sessionId of sessionIds) {
+    setNativeSessionSleeping(sessionId, false);
+  }
+}
+
+function fullReloadProjectZmxSessions(projectId: string): void {
+  /**
+   * CDXC:ProjectReload 2026-05-27-02:18:
+   * Project-row Full reload is a batch action for live zmx-backed terminals,
+   * not a history restore. Reload only workspace terminals that are awake,
+   * attached to a native zmx terminal, and idle; skip working and attention
+   * statuses so active agent work is not interrupted.
+   */
+  const project = findProject(projectId);
+  if (!project) {
+    return;
+  }
+  const projectedSessionsById = new Map(
+    createProjectedSidebarGroupsForProject(project)
+      .flatMap((group) => group.sessions)
+      .map((session) => [session.sessionId, session]),
+  );
+  const sessionIdsToReload: string[] = [];
+
+  for (const group of project.workspace.groups) {
+    for (const session of group.snapshot.sessions) {
+      if (session.kind !== "terminal" || session.isSleeping === true) {
+        continue;
+      }
+      const terminalState = terminalStateById.get(session.sessionId);
+      const provider =
+        terminalState?.sessionPersistenceProvider ??
+        session.sessionPersistenceProvider ??
+        (session.tmuxSessionName ? "tmux" : undefined);
+      if (provider !== "zmx" || terminalState?.lifecycleState !== "running") {
+        continue;
+      }
+      const projectedSession = projectedSessionsById.get(session.sessionId);
+      const activity = projectedSession?.activity ?? terminalState.activity ?? "idle";
+      if (activity === "working" || activity === "attention") {
+        continue;
+      }
+      if (!buildNativeRestoredTerminalInitialInput(session).trim()) {
+        continue;
+      }
+      sessionIdsToReload.push(createCombinedProjectSessionId(project.projectId, session.sessionId));
+    }
+  }
+
+  for (const sessionId of sessionIdsToReload) {
+    restartNativeSession(sessionId);
+  }
+}
+
 function quitResourcesFromTitlebar(sessionIds: string[], projectIds: string[]): void {
   /**
    * CDXC:TitlebarResources 2026-05-21-16:38:
@@ -20696,6 +21206,15 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "requestGhostexCliStatus":
       void requestNativeGhostexCliStatus();
       return;
+    case "installGhostexCli":
+      void installNativeGhostexCliFromBrew();
+      return;
+    case "installBrowserControl":
+      void installNativeBrowserControlSkill();
+      return;
+    case "installCuaDriver":
+      void installNativeCuaDriver();
+      return;
     case "openBrowserChat":
       void createNativeBrowserChat();
       return;
@@ -20753,7 +21272,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "openWorkspaceWelcome":
-      openAppModal({ modal: "tipsAndTricks", type: "open" });
+      openAppModal({ modal: "firstLaunchSetup", type: "open" });
+      return;
+    case "openExternalUrl":
+      openNativeExternalUrl(message.url);
       return;
     case "pickWorkspaceFolder":
       postNative({ type: "pickWorkspaceFolder" });
@@ -20982,6 +21504,11 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       }
       return;
     }
+    case "fullReloadProjectZmxSessions": {
+      const groupReference = resolveSidebarGroupReference(message.groupId);
+      fullReloadProjectZmxSessions(groupReference.project.projectId);
+      return;
+    }
     case "copyResumeCommand":
       copyResumeCommand(message.sessionId);
       return;
@@ -21033,6 +21560,16 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         return;
       }
       setNativeGroupSleeping(groupReference.groupId, message.sleeping);
+      return;
+    }
+    case "sleepInactiveProjectSessions": {
+      const groupReference = resolveSidebarGroupReference(message.groupId);
+      sleepInactiveProjectSessions(groupReference.project.projectId);
+      return;
+    }
+    case "wakeProjectSleepingSessions": {
+      const groupReference = resolveSidebarGroupReference(message.groupId);
+      wakeProjectSleepingSessions(groupReference.project.projectId);
       return;
     }
     case "moveSessionToGroup": {
@@ -21132,7 +21669,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       void relinkNativeT3SessionThread(message.sessionId, message.threadId);
       return;
     case "runSidebarGitAction":
-      void runSidebarGitAction(message.action);
+      void runSidebarGitAction(message.action, { groupId: message.groupId });
       return;
     case "setSidebarGitPrimaryAction":
       setGitPrimaryAction(message.action);
@@ -21153,6 +21690,15 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.filePaths,
         message.deleteWorktreeAfter,
         message.commitOnNewRef,
+      );
+      return;
+    case "confirmSidebarGitDirectMerge":
+      void continueGitDirectMergeAfterConfirmation(
+        message.requestId,
+        message.message,
+        message.filePaths,
+        message.deleteWorktreeAfter === true,
+        message.conflictAgentId,
       );
       return;
     case "runSidebarGitMultipleCommits":
@@ -21308,9 +21854,6 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "updateSettings":
       saveSettings(message.settings);
       return;
-    case "tipsAndTricksClosed":
-      openFirstLaunchSetupOnFirstLaunch();
-      return;
     case "applyRecommendedGhosttySettings":
       applyRecommendedGhosttySettings();
       return;
@@ -21328,6 +21871,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "openAccessibilityPreferences":
       postNative({ type: "openAccessibilityPreferences" });
+      return;
+    case "openScreenRecordingPreferences":
+      openNativeExternalUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture");
       return;
     case "requestMacOSNotificationPermission":
       postNative({ type: "requestMacOSNotificationPermission" });
@@ -21529,6 +22075,9 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const awakeVisibleSessions = visibleSessions.filter((session) => session.isSleeping !== true);
   const visibleSessionIds = awakeVisibleSessions
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
+  const focusedNativeSessionId = snapshot.focusedSessionId && visibleSidebarSessionIds.has(snapshot.focusedSessionId)
+    ? nativeSessionIdForSidebarSession(snapshot.focusedSessionId)
+    : undefined;
   const commandPanelSessions = commandsPanel.sessions;
   const commandPanelVisibleSessions = commandPanelSessions.filter((session) =>
     shouldIncludeSessionInNativePaneTabs(currentProject.projectId, session),
@@ -21539,6 +22088,13 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const commandPanelActiveSessionIds = commandPanelActiveSessions.map((session) =>
     nativeSessionIdForSidebarSession(session.sessionId),
   );
+  const commandPanelVisibleSessionIds = new Set(
+    commandPanelVisibleSessions.map((session) => session.sessionId),
+  );
+  const commandsPanelFocusedNativeSessionId =
+    commandsPanel.activeSessionId && commandPanelVisibleSessionIds.has(commandsPanel.activeSessionId)
+    ? nativeSessionIdForSidebarSession(commandsPanel.activeSessionId)
+    : undefined;
   const workspaceSleepingSessionIds = visibleSessions
     .filter((session) => session.isSleeping === true)
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
@@ -21651,10 +22207,13 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     new Set(visibleSessionIds),
     clampVisibleSessionCount(visibleSessions.length),
     getActiveNativeSplitLayoutHint(snapshot),
+    focusedNativeSessionId,
   );
+  const nativeLayoutShape = summarizePaneLayoutShape(layout);
+  const paneLayoutShape = summarizePaneLayoutShape(snapshot.paneLayout);
+  const nativeLayoutActivePaneOwnerSessionIds = collectActiveNativePaneOwnerSessionIds(layout);
   if (!didLogStartupPaneLayoutFirstSync) {
     didLogStartupPaneLayoutFirstSync = true;
-    const nativeLayoutShape = summarizePaneLayoutShape(layout);
     appendStartupPaneLayoutDebugLog("firstLayoutSync", {
       activeProjectId,
       activeSidebarSessionIds: awakeVisibleSessions.map((session) => session.sessionId),
@@ -21673,7 +22232,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
       nativeLayoutShape,
       paneLayout: summarizeSessionPaneLayout(snapshot.paneLayout),
       paneLayoutSessionIds: collectSessionPaneLayoutSessionIds(snapshot.paneLayout),
-      paneLayoutShape: summarizePaneLayoutShape(snapshot.paneLayout),
+      paneLayoutShape,
       sessionFocusModeTabSessionIds: focusModeTabSessionIds,
       parkedSidebarSessionIds: visibleSessions
         .filter((session) => session.isSleeping === true)
@@ -21693,17 +22252,9 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     new Set(commandPanelActiveSessions.map((session) => session.sessionId)),
     new Set(commandPanelActiveSessionIds),
     clampVisibleSessionCount(Math.max(1, commandPanelVisibleSessions.length)),
+    undefined,
+    commandsPanelFocusedNativeSessionId,
   );
-  const focusedNativeSessionId = snapshot.focusedSessionId && visibleSidebarSessionIds.has(snapshot.focusedSessionId)
-    ? nativeSessionIdForSidebarSession(snapshot.focusedSessionId)
-    : undefined;
-  const commandPanelVisibleSessionIds = new Set(
-    commandPanelVisibleSessions.map((session) => session.sessionId),
-  );
-  const commandsPanelFocusedNativeSessionId =
-    commandsPanel.activeSessionId && commandPanelVisibleSessionIds.has(commandsPanel.activeSessionId)
-    ? nativeSessionIdForSidebarSession(commandsPanel.activeSessionId)
-    : undefined;
   const shouldConsumeFocusRequest =
     pendingNativeLayoutFocusRequest !== undefined &&
     ((pendingNativeLayoutFocusRequest.sessionId === snapshot.focusedSessionId &&
@@ -21825,6 +22376,71 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   };
   const layoutSyncResult = postNativeLayoutSync(command, options);
   const didPostNativeLayoutSync = layoutSyncResult.didPost;
+  if (layoutSyncResult.didPost) {
+    const isFocusModeActive =
+      snapshot.visibleCount === 1 && snapshot.fullscreenRestoreVisibleCount !== undefined;
+    const previousNativeLayoutShape = lastPostedWorkspaceNativeLayoutShapeByProjectId.get(
+      currentProject.projectId,
+    );
+    const collapseAllowedUntil =
+      nativeLayoutCollapseAllowedUntilByProjectId.get(currentProject.projectId) ?? 0;
+    /**
+     * CDXC:WorkspaceLayout 2026-05-27-04:36:
+     * A browser pane covering the full workarea usually means sidebar paneLayout
+     * and the native active pane owner diverged. Persist only invariant failures
+     * so repro logs capture the bad layout edge without making every normal
+     * layout sync noisy.
+     */
+    if (
+      focusedNativeSessionId &&
+      !nativeLayoutActivePaneOwnerSessionIds.includes(focusedNativeSessionId)
+    ) {
+      appendPaneLayoutTraceDebugLog("layoutSync.focusOwnerMismatch", {
+        activeNativeSessionIds: visibleSessionIds,
+        activePaneOwnerSessionIds: nativeLayoutActivePaneOwnerSessionIds,
+        activeProjectId,
+        focusedNativeSessionId,
+        focusedSidebarSessionId: snapshot.focusedSessionId,
+        focusRequestId,
+        nativeLayout: summarizeNativePaneLayout(layout),
+        nativeLayoutShape,
+        paneLayout: summarizeSessionPaneLayout(snapshot.paneLayout),
+        paneLayoutShape,
+        pendingFocusRequest: pendingNativeLayoutFocusRequest,
+        projectId: currentProject.projectId,
+        sidebarGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
+          currentProject.workspace,
+          currentProject.workspace.activeGroupId,
+        ),
+      }, { force: true });
+    }
+    if (
+      previousNativeLayoutShape &&
+      previousNativeLayoutShape.splitCount > 0 &&
+      nativeLayoutShape.splitCount === 0 &&
+      !isFocusModeActive &&
+      Date.now() > collapseAllowedUntil
+    ) {
+      appendPaneLayoutTraceDebugLog("layoutSync.unexpectedSplitCollapse", {
+        activeNativeSessionIds: visibleSessionIds,
+        activeProjectId,
+        focusedNativeSessionId,
+        focusedSidebarSessionId: snapshot.focusedSessionId,
+        focusRequestId,
+        nativeLayout: summarizeNativePaneLayout(layout),
+        nativeLayoutShape,
+        paneLayout: summarizeSessionPaneLayout(snapshot.paneLayout),
+        paneLayoutShape,
+        previousNativeLayoutShape,
+        projectId: currentProject.projectId,
+        sidebarGroup: summarizeWorkspaceGroupForPaneLayoutTrace(
+          currentProject.workspace,
+          currentProject.workspace.activeGroupId,
+        ),
+      }, { force: true });
+    }
+    lastPostedWorkspaceNativeLayoutShapeByProjectId.set(currentProject.projectId, nativeLayoutShape);
+  }
   if (command.activeProjectMode === "code" && layoutSyncResult.didPost) {
     appendTitlebarCodeLagDebugLog("titlebarCodeLag.sidebarLayoutSyncPosted", {
       activeProjectEditorId: command.activeProjectEditorId,
@@ -21914,6 +22530,7 @@ function buildLayout(
   activeSessionIds: ReadonlySet<string>,
   visibleCount: VisibleSessionCount,
   splitHint?: NativeResolvedSplitLayoutHint,
+  preferredActiveSessionId?: string,
 ): NativeTerminalLayout | undefined {
   const visible = sessionIds.filter((sessionId) => activeSessionIds.has(sessionId)).slice(0, visibleCount);
   const persistedLayout = paneLayout
@@ -21942,6 +22559,12 @@ function buildLayout(
      * Native layout synthesis must not create new split panes to recover from
      * stale paneLayout membership. Missing active sessions are a state bug to
      * log and repair as tabs; only explicit split actions may add split leaves.
+     *
+     * CDXC:WorkspaceLayout 2026-05-27-04:36:
+     * Repairing paneLayout membership must not make the last appended browser or
+     * terminal the active native tab. Preserve the sidebar-focused session as
+     * the only allowed active-tab promotion so a repaired Google/browser tab
+     * cannot expand to the full workarea while another session is selected.
      */
     const missingSessionEntries = sessionIds.flatMap((sessionId, index) => {
       const sidebarSessionId = sidebarSessionIds[index];
@@ -21981,12 +22604,17 @@ function buildLayout(
         ),
         missingParkedSessionIds,
         persistedLayout: summarizeNativePaneLayout(persistedLayout),
+        preferredActiveSessionId,
         sidebarSessionIds,
         splitHint,
       },
       { force: true },
     );
-    return addMissingSessionsToNativeTabGroup(layoutWithParkedTabs, missingActiveSessionIds);
+    return addMissingSessionsToNativeTabGroup(
+      layoutWithParkedTabs,
+      missingActiveSessionIds,
+      preferredActiveSessionId,
+    );
   }
   if (visible.length === 0) {
     return undefined;
@@ -21999,7 +22627,10 @@ function buildLayout(
      * unless the current command carries an explicit split layout hint.
      */
     return {
-      activeSessionId: visible.at(-1),
+      activeSessionId:
+        preferredActiveSessionId && visible.includes(preferredActiveSessionId)
+          ? preferredActiveSessionId
+          : visible.at(-1),
       kind: "tabs",
       sessionIds: dedupeNativeSessionIds(visible),
     };
@@ -22026,6 +22657,7 @@ function buildLayout(
 function addMissingSessionsToNativeTabGroup(
   layout: NativeTerminalLayout,
   missingSessionIds: readonly string[],
+  preferredActiveSessionId?: string,
 ): NativeTerminalLayout {
   const uniqueMissingSessionIds = missingSessionIds.filter(
     (sessionId, index, sessionIds) =>
@@ -22034,36 +22666,50 @@ function addMissingSessionsToNativeTabGroup(
   if (uniqueMissingSessionIds.length === 0) {
     return layout;
   }
-  const result = addMissingSessionsToExistingNativeTabGroup(layout, uniqueMissingSessionIds);
+  const result = addMissingSessionsToExistingNativeTabGroup(
+    layout,
+    uniqueMissingSessionIds,
+    preferredActiveSessionId,
+  );
   if (result.didAdd) {
     return result.layout;
   }
-  return convertFirstNativeLeafToTabGroup(layout, uniqueMissingSessionIds);
+  return convertFirstNativeLeafToTabGroup(layout, uniqueMissingSessionIds, preferredActiveSessionId);
 }
 
 function addMissingSessionsToExistingNativeTabGroup(
   layout: NativeTerminalLayout,
   missingSessionIds: readonly string[],
+  preferredActiveSessionId?: string,
 ): { didAdd: boolean; layout: NativeTerminalLayout } {
   switch (layout.kind) {
     case "leaf":
       return { didAdd: false, layout };
-    case "tabs":
+    case "tabs": {
+      const sessionIds = dedupeNativeSessionIds([...layout.sessionIds, ...missingSessionIds]);
       return {
         didAdd: true,
         layout: {
           ...layout,
-          activeSessionId: missingSessionIds.at(-1) ?? layout.activeSessionId,
-          sessionIds: dedupeNativeSessionIds([...layout.sessionIds, ...missingSessionIds]),
+          activeSessionId:
+            preferredActiveSessionId && sessionIds.includes(preferredActiveSessionId)
+              ? preferredActiveSessionId
+              : layout.activeSessionId,
+          sessionIds,
         },
       };
+    }
     case "split": {
       let didAdd = false;
       const children = layout.children.map((child) => {
         if (didAdd) {
           return child;
         }
-        const result = addMissingSessionsToExistingNativeTabGroup(child, missingSessionIds);
+        const result = addMissingSessionsToExistingNativeTabGroup(
+          child,
+          missingSessionIds,
+          preferredActiveSessionId,
+        );
         didAdd = result.didAdd;
         return result.layout;
       });
@@ -22075,14 +22721,20 @@ function addMissingSessionsToExistingNativeTabGroup(
 function convertFirstNativeLeafToTabGroup(
   layout: NativeTerminalLayout,
   missingSessionIds: readonly string[],
+  preferredActiveSessionId?: string,
 ): NativeTerminalLayout {
   switch (layout.kind) {
-    case "leaf":
+    case "leaf": {
+      const sessionIds = dedupeNativeSessionIds([layout.sessionId, ...missingSessionIds]);
       return {
-        activeSessionId: missingSessionIds.at(-1) ?? layout.sessionId,
+        activeSessionId:
+          preferredActiveSessionId && sessionIds.includes(preferredActiveSessionId)
+            ? preferredActiveSessionId
+            : layout.sessionId,
         kind: "tabs",
-        sessionIds: dedupeNativeSessionIds([layout.sessionId, ...missingSessionIds]),
+        sessionIds,
       };
+    }
     case "tabs":
       return layout;
     case "split": {
@@ -22091,7 +22743,11 @@ function convertFirstNativeLeafToTabGroup(
         if (didConvert) {
           return child;
         }
-        const nextChild = convertFirstNativeLeafToTabGroup(child, missingSessionIds);
+        const nextChild = convertFirstNativeLeafToTabGroup(
+          child,
+          missingSessionIds,
+          preferredActiveSessionId,
+        );
         didConvert = nextChild !== child;
         return nextChild;
       });
@@ -23612,6 +24268,13 @@ function handleNativeTerminalTitleBarAction(
         sessionId,
         targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(result.snapshot, groupId),
       });
+      /**
+       * CDXC:WorkspaceLayout 2026-05-27-04:36:
+       * Merge All Tabs is the intentional path that collapses native split
+       * geometry into one tab group. Suppress only the immediate invariant log
+       * for that command; unrelated later split loss should still be recorded.
+       */
+      nativeLayoutCollapseAllowedUntilByProjectId.set(activeProjectId, Date.now() + 2000);
       queueNativeLayoutFocusRequest(sessionId, "mergeAllTabs");
       publish();
       return;

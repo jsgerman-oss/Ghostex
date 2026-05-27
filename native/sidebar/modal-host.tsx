@@ -20,7 +20,6 @@ import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
 import { FirstLaunchSetupModal } from "../../sidebar/first-launch-setup-modal";
 import { GitFileDiffModal, type GitFileDiffModalDraft } from "../../sidebar/git-file-diff-modal";
 import { GitCommitModal, type GitCommitModalDraft } from "../../sidebar/git-commit-modal";
-import { TipsAndTricksModal } from "../../sidebar/tips-and-tricks-modal";
 import { WorktreeCreateModal } from "../../sidebar/worktree-create-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
 import type {
@@ -1552,7 +1551,7 @@ function AppModalHost() {
   }, [ghostexCliStatus]);
 
   useEffect(() => {
-    if (activeModal !== "firstLaunchSetup") {
+    if (activeModal !== "firstLaunchSetup" && activeModal !== "tipsAndTricks") {
       setGhostexCliStatusLoading(false);
       return;
     }
@@ -1565,6 +1564,10 @@ function AppModalHost() {
      * install before asking the user to install again. Request native PATH
      * inspection when the setup flow opens and render Storybook through the same
      * status prop.
+     *
+     * CDXC:FirstLaunchSetup 2026-05-27-02:41:
+     * Tips & Tricks now opens the first-launch modal, so the legacy modal id must
+     * receive the same CLI status request while old menu messages are still in use.
      */
     setGhostexCliStatusLoading(true);
     vscode.postMessage({ type: "requestGhostexCliStatus" });
@@ -1693,6 +1696,7 @@ function AppModalHost() {
         sessionTitle={delayedSend?.title}
       />
       <GitCommitModal
+        agents={agents}
         draft={
           gitCommit ?? {
             confirmLabel: "Commit",
@@ -1717,6 +1721,17 @@ function AppModalHost() {
             message,
             requestId,
             type: "confirmSidebarGitCommit",
+          });
+          closeModal();
+        }}
+        onDirectMerge={(requestId, message, options) => {
+          vscode.postMessage({
+            conflictAgentId: options.conflictAgentId,
+            deleteWorktreeAfter: options.deleteWorktreeAfter,
+            filePaths: options.filePaths,
+            message,
+            requestId,
+            type: "confirmSidebarGitDirectMerge",
           });
           closeModal();
         }}
@@ -1799,6 +1814,18 @@ function AppModalHost() {
         onInstallGte={() => {
           vscode.postMessage({ type: "installGte" });
         }}
+        onInstallGhostexCli={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installGhostexCli" });
+        }}
+        onInstallBrowserControl={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installBrowserControl" });
+        }}
+        onInstallCuaDriver={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installCuaDriver" });
+        }}
         onPlayCompletionSound={(sound) => {
           vscode.postMessage({ sound, type: "playCompletionSoundPreview" });
         }}
@@ -1814,8 +1841,14 @@ function AppModalHost() {
         onOpenMacOSNotificationSettings={() => {
           vscode.postMessage({ type: "openMacOSNotificationSettings" });
         }}
+        onOpenScreenRecordingPreferences={() => {
+          vscode.postMessage({ type: "openScreenRecordingPreferences" });
+        }}
         onOpenGhostexFolder={() => {
           vscode.postMessage({ type: "openGhostexFolder" });
+        }}
+        onOpenFirstLaunchSetup={() => {
+          vscode.postMessage({ type: "openWorkspaceWelcome" });
         }}
         onRequestMacOSNotificationPermission={() => {
           vscode.postMessage({ type: "requestMacOSNotificationPermission" });
@@ -1828,6 +1861,10 @@ function AppModalHost() {
           setAgentHookStatusLoading(true);
           vscode.postMessage({ type: "requestAgentHookStatus" });
         }}
+        onRequestGhostexCliStatus={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "requestGhostexCliStatus" });
+        }}
         onInstallAgentHooks={() => {
           setAgentHookStatusLoading(true);
           vscode.postMessage({ type: "installAgentHooks" });
@@ -1839,24 +1876,17 @@ function AppModalHost() {
         projects={projectSettingsProjects}
         settings={settings}
         vscode={vscode}
+        ghostexCliStatus={ghostexCliStatus}
+        ghostexCliStatusLoading={ghostexCliStatusLoading}
         ghostexFolderStats={ghostexFolderStats}
         ghostexFolderStatsLoading={ghostexFolderStatsLoading}
-      />
-      <TipsAndTricksModal
-        isOpen={activeModal === "tipsAndTricks"}
-        onClose={() => {
-          closeModal();
-          vscode.postMessage({ type: "tipsAndTricksClosed" });
-        }}
-        settings={settings}
-        theme={theme}
       />
       <FirstLaunchSetupModal
         agentHookStatus={agentHookStatus}
         agentHookStatusLoading={agentHookStatusLoading}
         ghostexCliStatus={ghostexCliStatus}
         ghostexCliStatusLoading={ghostexCliStatusLoading}
-        isOpen={activeModal === "firstLaunchSetup"}
+        isOpen={activeModal === "firstLaunchSetup" || activeModal === "tipsAndTricks"}
         onChange={(nextSettings) => {
           vscode.postMessage({
             settings: nextSettings,
@@ -1868,9 +1898,31 @@ function AppModalHost() {
           setAgentHookStatusLoading(true);
           vscode.postMessage({ type: "installAgentHooks" });
         }}
+        onInstallGhostexCli={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installGhostexCli" });
+        }}
+        onInstallBrowserControl={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installBrowserControl" });
+        }}
+        onInstallCuaDriver={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installCuaDriver" });
+        }}
+        onOpenAccessibilityPreferences={() => {
+          vscode.postMessage({ type: "openAccessibilityPreferences" });
+        }}
+        onOpenScreenRecordingPreferences={() => {
+          vscode.postMessage({ type: "openScreenRecordingPreferences" });
+        }}
         onRequestAgentHookStatus={() => {
           setAgentHookStatusLoading(true);
           vscode.postMessage({ type: "requestAgentHookStatus" });
+        }}
+        onRequestGhostexCliStatus={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "requestGhostexCliStatus" });
         }}
         settings={settings}
         theme={theme}

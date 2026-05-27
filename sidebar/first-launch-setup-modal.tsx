@@ -1,19 +1,37 @@
 import {
   IconArrowRight,
+  IconApps,
   IconAlertTriangle,
   IconArrowLeft,
   IconBellRinging,
+  IconBolt,
+  IconBrowser,
   IconBrandAndroid,
   IconBrandApple,
+  IconBrandOpenai,
   IconCircleCheck,
   IconCircleCheckFilled,
   IconCircleX,
+  IconCode,
   IconDeviceMobile,
+  IconDeviceFloppy,
   IconDownload,
+  IconFolders,
+  IconGitPullRequest,
+  IconHistory,
   IconInfoCircle,
+  IconKeyboard,
+  IconLayoutDashboard,
+  IconMoon,
+  IconPencil,
   IconRefresh,
+  IconSettings,
   IconSparkles,
+  IconStack,
   IconTerminal2,
+  IconTools,
+  IconUsersGroup,
+  IconWorld,
 } from "@tabler/icons-react";
 import { useEffect, useState, type ComponentType } from "react";
 import { Button } from "@/components/ui/button";
@@ -30,10 +48,22 @@ import type {
 import type { ghostexSettings } from "../shared/ghostex-settings";
 import { DEFAULT_SIDEBAR_AGENTS } from "../shared/sidebar-agents";
 import type { WebviewApi } from "./webview-api";
+import discordLogo from "./assets/first-launch/discord.svg";
 import ghostexIntroImage from "./assets/first-launch/ghostex-intro.png";
-import ghostexMobileAndroidImage from "./assets/first-launch/ghostex-mobile-android.png";
+import ghostexMobileDevicesImage from "./assets/first-launch/ghostex-mobile-devices.png";
 
-export type FirstLaunchSetupPage = "hooks" | "cli";
+export type FirstLaunchSetupPage =
+  | "welcome"
+  | "hooks"
+  | "cli"
+  | "browserControl"
+  | "desktopCua"
+  | "workspace"
+  | "agentsSessions"
+  | "actionsBrowsers"
+  | "codexEditor"
+  | "sessionResume"
+  | "remoteAccess";
 
 export type FirstLaunchSetupModalProps = {
   agentHookStatus?: SidebarAgentHookStatusMessage;
@@ -45,7 +75,13 @@ export type FirstLaunchSetupModalProps = {
   onClose: () => void;
   onChange: (settings: ghostexSettings) => void;
   onInstallAgentHooks?: () => void;
+  onInstallBrowserControl?: () => void;
+  onInstallCuaDriver?: () => void;
+  onInstallGhostexCli?: () => void;
+  onOpenAccessibilityPreferences?: () => void;
+  onOpenScreenRecordingPreferences?: () => void;
   onRequestAgentHookStatus?: () => void;
+  onRequestGhostexCliStatus?: () => void;
   settings?: ghostexSettings;
   theme?: SidebarTheme;
   vscode?: WebviewApi;
@@ -56,6 +92,30 @@ type FirstLaunchBenefit = {
   text: string;
   title: string;
 };
+
+type FirstLaunchGuideAction = {
+  description: string;
+  eyebrow: string;
+  snippet?: string[];
+};
+
+type FirstLaunchGuideItem = {
+  icon: ComponentType<{ className?: string; size?: number; stroke?: number }>;
+  text: string;
+};
+
+type FirstLaunchGuidePage = {
+  action?: FirstLaunchGuideAction;
+  icon: ComponentType<{ className?: string; size?: number; stroke?: number }>;
+  imageAlt?: string;
+  imageSrc?: string;
+  items: FirstLaunchGuideItem[];
+  kicker: string;
+  page: FirstLaunchSetupPage;
+  title: string;
+};
+
+type FirstLaunchContinueWarning = "hooks" | "cli" | "browserControl" | "desktopCua";
 
 const FIRST_LAUNCH_INTRO_BENEFITS: readonly FirstLaunchBenefit[] = [
   {
@@ -80,10 +140,335 @@ const FIRST_LAUNCH_HOOK_SUPPORTED_AGENTS = DEFAULT_SIDEBAR_AGENTS.filter(
 );
 
 const FIRST_LAUNCH_CLI_COMMAND =
-  "brew install --cask maddada/tap/ghostex --force && ghostex install-browser-skill";
+  "brew install --cask maddada/tap/ghostex --force && ghostex browser install-skill";
 const FIRST_LAUNCH_ANDROID_APK_URL =
   "https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.2.0/ghostex-1.2.0.apk";
 const FIRST_LAUNCH_IOS_DISCORD_URL = "https://discord.gg/xYSBPapM";
+const FIRST_LAUNCH_DISCORD_URL = "https://discord.gg/xYSBPapM";
+const FIRST_LAUNCH_SETUP_PAGES: readonly FirstLaunchSetupPage[] = [
+  "welcome",
+  "hooks",
+  "cli",
+  "browserControl",
+  "desktopCua",
+  "workspace",
+  "agentsSessions",
+  "actionsBrowsers",
+  "codexEditor",
+  "sessionResume",
+  "remoteAccess",
+];
+
+const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
+  {
+    action: {
+      description:
+        "Install Browser Control so agents can inspect and drive Ghostex embedded browser panes when they need page state, screenshots, logs, clicks, or keyboard input.",
+      eyebrow: "Agentic browser control",
+      snippet: [
+        "ghostex browser --help",
+        "gx browser --help",
+        "ghostex browser mcp",
+        "ghostex browser open https://example.com",
+      ],
+    },
+    icon: IconBrowser,
+    items: [
+      {
+        icon: IconBrowser,
+        text: "Run ghostex browser --help or gx browser --help to see the Browser Control commands and MCP setup.",
+      },
+      {
+        icon: IconTerminal2,
+        text: "Use ghostex browser mcp when an agent needs DevTools access to Ghostex browser panes.",
+      },
+      {
+        icon: IconInfoCircle,
+        text: "Browser Control exposes page listing, target selection, navigation, console logs, snapshots, click/fill, key presses, evaluation, and screenshots.",
+      },
+      {
+        icon: IconTools,
+        text: "The recommended debugging loop is: list pages, select the right page, read console logs, take a snapshot, interact with element refs, then capture a screenshot for proof.",
+      },
+    ],
+    kicker: "Browser Control",
+    page: "browserControl",
+    title: "Set up agentic Browser Control",
+  },
+  {
+    action: {
+      description:
+        "Install Desktop Control so agents can operate native macOS apps for you. Ghostex handles the installer; macOS may still ask you to grant permissions.",
+      eyebrow: "One-click setup",
+    },
+    icon: IconTools,
+    items: [
+      {
+        icon: IconDownload,
+        text: "The installer adds Cua Driver to the Mac and connects it to the command agents use for desktop control.",
+      },
+      {
+        icon: IconSettings,
+        text: "Grant Accessibility and Screen Recording when macOS asks; those permissions let the driver see and control desktop apps.",
+      },
+      {
+        icon: IconInfoCircle,
+        text: "You can skip this now. Desktop Control will not work until Cua Driver and the macOS permissions are ready.",
+      },
+      {
+        icon: IconBrowser,
+        text: "Use Desktop Control for native apps. Use Browser Control for browser panes inside Ghostex.",
+      },
+    ],
+    kicker: "Desktop Control",
+    page: "desktopCua",
+    title: "Set up desktop control",
+  },
+  {
+    imageAlt: "Ghostex workspace preview with agent session cards, terminal panes, and status indicators",
+    imageSrc: ghostexIntroImage,
+    icon: IconLayoutDashboard,
+    items: [
+      {
+        icon: IconTerminal2,
+        text: "Manage multiple CLI coding agent sessions from one native macOS workspace.",
+      },
+      {
+        icon: IconStack,
+        text: "Keep agents, browser pages, terminal work, prompts, and Git flow visible together.",
+      },
+      {
+        icon: IconFolders,
+        text: "Jump between sessions, project groups, and worktrees without losing the current context.",
+      },
+      {
+        icon: IconSparkles,
+        text: "Use Ghostex as the always-on workspace for parallel agent work, not just a terminal list.",
+      },
+      {
+        icon: IconHistory,
+        text: "Reopen this guide any time from the sidebar overflow menu.",
+      },
+    ],
+    kicker: "Welcome",
+    page: "workspace",
+    title: "Meet Ghostex",
+  },
+  {
+    icon: IconApps,
+    items: [
+      {
+        icon: IconCode,
+        text: "Use T3 Code when you want GUI-based coding sessions; it also supports splitting.",
+      },
+      {
+        icon: IconSettings,
+        text: "Add custom CLI agents from Settings, then launch them from the sidebar.",
+      },
+      {
+        icon: IconMoon,
+        text: "Sleep sessions to keep them in the sidebar without keeping every terminal fully active.",
+      },
+      {
+        icon: IconPencil,
+        text: "Paste long text into rename and Ghostex will turn it into a cleaner session name.",
+      },
+    ],
+    kicker: "Agents",
+    page: "agentsSessions",
+    title: "Agents & Sessions",
+  },
+  {
+    icon: IconBolt,
+    items: [
+      {
+        icon: IconBolt,
+        text: "Actions are quick buttons for things like Dev, Build, Test, and Setup.",
+      },
+      {
+        icon: IconTerminal2,
+        text: "Terminal actions open a fresh terminal and run your command there.",
+      },
+      {
+        icon: IconBrowser,
+        text: "Browser actions open a URL and show it inside the Browsers group.",
+      },
+      {
+        icon: IconTools,
+        text: "Right-click agents and actions to configure, debug, edit, or remove them.",
+      },
+      {
+        icon: IconGitPullRequest,
+        text: "Send GitHub issues and PRs for problems, improvements, agent integrations, and indicator support.",
+      },
+    ],
+    kicker: "Workflows",
+    page: "actionsBrowsers",
+    title: "Actions & Browsers",
+  },
+  {
+    action: {
+      description:
+        "Recommended in your <user>/.codex/config.toml so Codex titles stay readable in multi-session workspaces.",
+      eyebrow: "Codex",
+      snippet: [
+        "[tui]",
+        'terminal_title = ["spinner", "thread"]',
+        'status_line = ["thread-title", "model-with-reasoning", "current-dir", "context-usage", "used-tokens", "weekly-limit"]',
+      ],
+    },
+    icon: IconBrandOpenai,
+    items: [
+      {
+        icon: IconBrandOpenai,
+        text: "Keep Codex and Ghostex aligned so session titles stay recognizable.",
+      },
+      {
+        icon: IconKeyboard,
+        text: "Press Ctrl+G in Claude Code, Codex CLI, and similar tools to edit prompts in a focused modal.",
+      },
+      {
+        icon: IconDeviceFloppy,
+        text: "Press Ctrl+G again from that prompt modal to save, close it, and return to the terminal.",
+      },
+      {
+        icon: IconTerminal2,
+        text: "After changing shell config, open a new terminal so CLI tools pick up the updated EDITOR value.",
+      },
+    ],
+    kicker: "Editor setup",
+    page: "codexEditor",
+    title: "Codex & Editor Setup",
+  },
+  {
+    action: {
+      description:
+        "Restart Ghostex after installing or updating an agent CLI so Ghostex can install the matching lifecycle hooks.",
+      eyebrow: "Reliable resume",
+      snippet: [
+        "~/.codex/hooks.json",
+        "~/.claude/settings.json",
+        "~/.pi/agent/extensions/ghostex.ts",
+        "~/.ghostexterm/<agent>-hook-sessions.json",
+      ],
+    },
+    icon: IconDeviceFloppy,
+    items: [
+      {
+        icon: IconDeviceFloppy,
+        text: "Agent hooks capture the native session id that Claude, Codex, Grok, OpenCode, Pi, Amp, Cursor CLI, Gemini, Antigravity, Rovo Dev, Hermes Agent, Copilot, CodeBuddy, Factory, and Qoder need for exact resume.",
+      },
+      {
+        icon: IconSettings,
+        text: "Ghostex installs hooks into the agent config files it can find after the agent CLI exists on your PATH.",
+      },
+      {
+        icon: IconTerminal2,
+        text: "Start agent sessions from Ghostex terminals so the hooks can attach the captured id to the correct session card.",
+      },
+      {
+        icon: IconHistory,
+        text: "If an id was not captured, Ghostex still falls back to the existing title-based resume flow.",
+      },
+    ],
+    kicker: "Resume",
+    page: "sessionResume",
+    title: "Session Resume Hooks",
+  },
+  {
+    action: {
+      description:
+        "After you SSH into the Mac that is running Ghostex, list sessions and attach by the alias shown in the table.",
+      eyebrow: "Remote session commands",
+      snippet: [
+        "# From Termux, connect to your Mac over Tailscale",
+        "ssh madda@my-mac",
+        "",
+        "# List Ghostex sessions and note the left-column alias",
+        "gx sessions",
+        "",
+        "# Attach to session 1",
+        "gx a 1",
+        "",
+        "# Wake, focus, or sleep sessions from the phone",
+        "gx wake 1",
+        "gx focus 1",
+        "gx sleep 1",
+        "",
+        "# Use a title when the alias is not handy",
+        'gx a "project:session title"',
+      ],
+    },
+    icon: IconWorld,
+    items: [
+      {
+        icon: IconWorld,
+        text: "Install Tailscale on the Mac and phone, sign into the same tailnet, then enable SSH into the Mac.",
+      },
+      {
+        icon: IconSettings,
+        text: "In Ghostex Settings, enable Session Persistence and choose zmx for the smoothest remote attach flow.",
+      },
+      {
+        icon: IconTerminal2,
+        text: "On Android, install Termux from F-Droid, install openssh, then SSH to the Mac's Tailscale name or IP.",
+      },
+      {
+        icon: IconMoon,
+        text: "Keep the Mac awake while remote so your phone can reach it through Tailscale.",
+      },
+      {
+        icon: IconStack,
+        text: "Keep Ghostex open on the Mac so gx can list live sessions; zmx, tmux, or zellij keeps the terminal session itself durable.",
+      },
+    ],
+    kicker: "Remote Access",
+    page: "remoteAccess",
+    title: "Connecting to Any Terminal Session Remotely",
+  },
+];
+const FIRST_LAUNCH_GUIDE_PAGE_BY_ID = new Map(
+  FIRST_LAUNCH_GUIDE_PAGES.map((page) => [page.page, page]),
+);
+
+const FIRST_LAUNCH_CONTINUE_WARNINGS: Record<
+  FirstLaunchContinueWarning,
+  {
+    actionLabel: string;
+    description: string;
+    installLabel: string;
+    title: string;
+  }
+> = {
+  hooks: {
+    actionLabel: "Continue without hooks",
+    description:
+      "Ghostex will not notify you when agents enter In Progress or Needs Attention, and it will not automatically name agent sessions from the first message until hooks are installed. You can install them later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
+    installLabel: "Install Hooks",
+    title: "Continue without agent hooks?",
+  },
+  cli: {
+    actionLabel: "Continue without CLI",
+    description:
+      "Mobile apps, CLI-backed setup actions, and Browser Control installation will not work until the Ghostex CLI is installed. You can install it later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
+    installLabel: "Install CLI",
+    title: "Continue without the Ghostex CLI?",
+  },
+  browserControl: {
+    actionLabel: "Continue without Browser Control",
+    description:
+      "Agents will not be able to inspect or operate Ghostex browser panes through Browser Control until the skill is installed. You can install it later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
+    installLabel: "Install Browser Control",
+    title: "Continue without Browser Control?",
+  },
+  desktopCua: {
+    actionLabel: "Continue without Desktop Control",
+    description:
+      "Agents will not be able to control native macOS desktop apps until Desktop Control is installed and macOS Accessibility and Screen Recording permissions are granted. You can finish this later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
+    installLabel: "Install Desktop Control",
+    title: "Continue without Desktop Control?",
+  },
+};
 
 type FirstLaunchHookStatusGroupId = "installed" | "missing" | "cliMissing" | "unknown";
 
@@ -148,24 +533,72 @@ type FirstLaunchHookStatusGroup = {
  * CDXC:BrowserAgentControl 2026-05-26-22:17:
  * The second first-launch page should install the Ghostex browser MCP skill
  * together with the CLI, because agents need a local skill that explains how
- * to configure `ghostex browser-devtools-mcp` for CEF control, console logs,
+ * to configure `ghostex browser mcp` for CEF control, console logs,
  * snapshots, screenshots, and form interactions.
+ *
+ * CDXC:BrowserAgentControl 2026-05-27-01:59:
+ * Browser control setup should teach the `ghostex browser ...` namespace
+ * because "browser" is now the durable CLI keyword for agent-facing embedded
+ * CEF control. The first-launch install command therefore uses
+ * `ghostex browser install-skill` instead of the older top-level alias.
+ *
+ * CDXC:FirstLaunchSetup 2026-05-27-02:41:
+ * Tips & Tricks is no longer a separate modal. The first-launch modal is the
+ * single app-teaching surface, so it includes every guide page from the old
+ * Tips & Tricks flow after the required hooks and CLI/browser setup pages.
+ *
+ * CDXC:FirstLaunchSetup 2026-05-27-03:30:
+ * The third page teaches Browser Control as the agent-facing entry point for
+ * embedded CEF panes. The fourth page teaches Cua Driver separately for native
+ * desktop app control without exposing a scary shell-first setup.
+ *
+ * CDXC:IntegrationsSetup 2026-05-27-04:17:
+ * CLI, Browser Control, hooks, and Desktop Control are optional onboarding
+ * integrations. If an integration is missing, Continue must show a warning
+ * first and only advance after the user confirms they want to proceed without
+ * it. Partial hook installs are acceptable; only zero installed hooks trigger
+ * the hook warning.
+ *
+ * CDXC:FirstLaunchWelcome 2026-05-27-05:04:
+ * First launch should start with a candid product welcome before setup tasks.
+ * The page explains Ghostex as an intuitive Agent Development Environment that
+ * combines Ghostty-backed terminals with Codex-app UX, states why native
+ * terminals and Chromium increase complexity, and invites users to Discord for
+ * support, questions, and contributions.
+ *
+ * CDXC:FirstLaunchWelcome 2026-05-27-05:39:
+ * The welcome page is now the first setup page, so the footer must not show a
+ * self-targeting Back button or Skip button until the user advances into actual
+ * setup tasks.
+ *
+ * CDXC:FirstLaunchWelcome 2026-05-27-05:55:
+ * The first page's Discord CTA should be centered and use the official SVGL
+ * Discord mark. The developer note should invite people to chit chat, support,
+ * ask questions, report rough edges, or contribute while promising best-effort
+ * issue fixes as soon as possible.
  */
 export function FirstLaunchSetupModal({
   agentHookStatus,
   agentHookStatusLoading = false,
   ghostexCliStatus,
   ghostexCliStatusLoading = false,
-  initialPage = "hooks",
+  initialPage = "welcome",
   isOpen,
   onClose,
   onInstallAgentHooks,
+  onInstallBrowserControl,
+  onInstallCuaDriver,
+  onInstallGhostexCli,
+  onOpenAccessibilityPreferences,
+  onOpenScreenRecordingPreferences,
   onRequestAgentHookStatus,
+  onRequestGhostexCliStatus,
   settings: _settings,
   theme = "dark-blue",
   vscode: _vscode,
 }: FirstLaunchSetupModalProps) {
   const [activePage, setActivePage] = useState<FirstLaunchSetupPage>(initialPage);
+  const [continueWarning, setContinueWarning] = useState<FirstLaunchContinueWarning>();
 
   useEffect(() => {
     if (!isOpen || agentHookStatus || agentHookStatusLoading) {
@@ -182,6 +615,7 @@ export function FirstLaunchSetupModal({
   useEffect(() => {
     if (isOpen) {
       setActivePage(initialPage);
+      setContinueWarning(undefined);
     }
   }, [initialPage, isOpen]);
 
@@ -189,7 +623,43 @@ export function FirstLaunchSetupModal({
   const hookStatusByAgentId = new Map(
     agentHookStatus?.agents.map((status) => [status.agentId, status]) ?? [],
   );
-  const activePageIndex = activePage === "hooks" ? 0 : 1;
+  const installedHookCount =
+    agentHookStatus?.agents.filter(
+      (status) => status.status === "installed" || status.status === "notRequired",
+    ).length ?? 0;
+  const activePageIndex = Math.max(0, FIRST_LAUNCH_SETUP_PAGES.indexOf(activePage));
+  const isLastPage = activePageIndex === FIRST_LAUNCH_SETUP_PAGES.length - 1;
+  const previousPage = FIRST_LAUNCH_SETUP_PAGES[Math.max(0, activePageIndex - 1)];
+  const nextPage =
+    FIRST_LAUNCH_SETUP_PAGES[Math.min(FIRST_LAUNCH_SETUP_PAGES.length - 1, activePageIndex + 1)];
+  const activeContinueWarning = getFirstLaunchContinueWarning({
+    activePage,
+    agentHookStatus,
+    ghostexCliStatus,
+    ghostexCliStatusLoading,
+    installedHookCount,
+  });
+
+  const navigateToPage = (page: FirstLaunchSetupPage) => {
+    setContinueWarning(undefined);
+    setActivePage(page);
+  };
+
+  const advance = () => {
+    if (isLastPage) {
+      onClose();
+      return;
+    }
+    navigateToPage(nextPage);
+  };
+
+  const handleContinue = () => {
+    if (activeContinueWarning && continueWarning !== activeContinueWarning) {
+      setContinueWarning(activeContinueWarning);
+      return;
+    }
+    advance();
+  };
 
   return (
     <Dialog
@@ -210,68 +680,79 @@ export function FirstLaunchSetupModal({
         <DialogHeader className="first-launch-setup-header">
           <DialogTitle className="text-xl">Welcome to Ghostex</DialogTitle>
           <div className="first-launch-setup-progress" aria-hidden="true">
-            <span className="first-launch-setup-progress-dot" data-active={activePageIndex === 0} />
-            <span className="first-launch-setup-progress-dot" data-active={activePageIndex === 1} />
-            <span className="first-launch-setup-progress-dot" data-active="false" />
+            {FIRST_LAUNCH_SETUP_PAGES.map((page) => (
+              <span
+                className="first-launch-setup-progress-dot"
+                data-active={page === activePage}
+                key={page}
+              />
+            ))}
           </div>
         </DialogHeader>
 
         <div className="first-launch-setup-body">
-          {activePage === "hooks" ? (
+          {activePage === "welcome" ? (
+            <FirstLaunchWelcomePage />
+          ) : activePage === "hooks" ? (
             <FirstLaunchHooksPage
               agentHookStatusLoading={agentHookStatusLoading}
               hookStatusByAgentId={hookStatusByAgentId}
               hookTone={hookTone}
+              onInstallAgentHooks={onInstallAgentHooks}
+              onRequestAgentHookStatus={onRequestAgentHookStatus}
             />
-          ) : (
+          ) : activePage === "cli" ? (
             <FirstLaunchCliPage
               ghostexCliStatus={ghostexCliStatus}
               ghostexCliStatusLoading={ghostexCliStatusLoading}
+              onInstallBrowserControl={onInstallBrowserControl}
+              onInstallGhostexCli={onInstallGhostexCli}
+              onRequestGhostexCliStatus={onRequestGhostexCliStatus}
+            />
+          ) : (
+            <FirstLaunchGuidePageView
+              ghostexCliStatus={ghostexCliStatus}
+              ghostexCliStatusLoading={ghostexCliStatusLoading}
+              onInstallBrowserControl={onInstallBrowserControl}
+              onInstallCuaDriver={onInstallCuaDriver}
+              onOpenAccessibilityPreferences={onOpenAccessibilityPreferences}
+              onOpenScreenRecordingPreferences={onOpenScreenRecordingPreferences}
+              page={FIRST_LAUNCH_GUIDE_PAGE_BY_ID.get(activePage)}
             />
           )}
+          {continueWarning ? (
+            <FirstLaunchContinueWarningView
+              kind={continueWarning}
+              onContinue={advance}
+              onInstallAgentHooks={onInstallAgentHooks}
+              onInstallBrowserControl={onInstallBrowserControl}
+              onInstallCuaDriver={onInstallCuaDriver}
+              onInstallGhostexCli={onInstallGhostexCli}
+            />
+          ) : null}
         </div>
 
         <div className="first-launch-setup-footer">
           <div className="first-launch-setup-footer-actions" role="group" aria-label="Setup actions">
-            {activePage === "hooks" ? (
-              <>
-                <Button
-                  disabled={!onRequestAgentHookStatus || agentHookStatusLoading}
-                  aria-label="Refresh agent hook status"
-                  className="first-launch-setup-hooks-refresh-button"
-                  onClick={onRequestAgentHookStatus}
-                  title="Refresh agent hook status"
-                  type="button"
-                  variant="outline"
-                >
-                  <IconRefresh aria-hidden="true" />
-                </Button>
-                <Button
-                  disabled={!onInstallAgentHooks || agentHookStatusLoading}
-                  onClick={onInstallAgentHooks}
-                  type="button"
-                  variant="outline"
-                >
-                  <IconDownload aria-hidden="true" data-icon="inline-start" />
-                  Install Hooks
-                </Button>
-              </>
+            {activePageIndex === 0 ? (
+              null
             ) : (
-              <Button onClick={() => setActivePage("hooks")} type="button" variant="outline">
+              <Button onClick={() => navigateToPage(previousPage)} type="button" variant="outline">
                 <IconArrowLeft aria-hidden="true" data-icon="inline-start" />
                 Back
               </Button>
             )}
-            <Button onClick={onClose} type="button" variant="ghost">
-              Skip for now
-            </Button>
-            {activePage === "hooks" ? (
-              <Button onClick={() => setActivePage("cli")} type="button">
-                Continue
-                <IconArrowRight aria-hidden="true" data-icon="inline-end" />
+            {activePageIndex === 0 ? null : (
+              <Button onClick={onClose} type="button" variant="ghost">
+                Skip for now
+              </Button>
+            )}
+            {isLastPage ? (
+              <Button onClick={handleContinue} type="button">
+                Let's start!
               </Button>
             ) : (
-              <Button onClick={onClose} type="button">
+              <Button onClick={handleContinue} type="button">
                 Continue
                 <IconArrowRight aria-hidden="true" data-icon="inline-end" />
               </Button>
@@ -283,14 +764,85 @@ export function FirstLaunchSetupModal({
   );
 }
 
+function FirstLaunchWelcomePage() {
+  return (
+    <section className="first-launch-setup-welcome" aria-labelledby="first-launch-welcome-title">
+      <div className="first-launch-setup-welcome-hero">
+        <div className="first-launch-setup-kicker">Welcome</div>
+        <h2 className="first-launch-setup-welcome-title" id="first-launch-welcome-title">
+          Welcome to Ghostex, the most intuitive ADE.
+        </h2>
+        <p className="first-launch-setup-welcome-lede">
+          Ghostex brings Ghostty-backed terminals into a Codex-app style UX, so you get the
+          reliability and fidelity of real native terminals with the project, agent, browser, and
+          session workflows people expect from a modern agent development environment.
+        </p>
+      </div>
+
+      <div className="first-launch-setup-welcome-grid">
+        <article className="first-launch-setup-welcome-card">
+          <span className="first-launch-setup-welcome-card-icon">
+            <IconTerminal2 aria-hidden="true" size={18} />
+          </span>
+          <h3>Why Ghostty terminals?</h3>
+          <p>
+            Ghostty-backed terminals are much lighter on RAM than web-based terminals and render
+            agent aliases cleanly. That makes Ghostex harder to build, but it keeps long-running
+            agent work fast and readable.
+          </p>
+        </article>
+        <article className="first-launch-setup-welcome-card">
+          <span className="first-launch-setup-welcome-card-icon">
+            <IconBrowser aria-hidden="true" size={18} />
+          </span>
+          <h3>Why Chromium browser panes?</h3>
+          <p>
+            Ghostex uses Chromium instead of Safari&apos;s engine because Chrome DevTools are better
+            for agent debugging, and Chromium gives you a closer preview of what most web users will
+            see in Chrome-family browsers.
+          </p>
+        </article>
+        <article className="first-launch-setup-welcome-card first-launch-setup-welcome-card-wide">
+          <span className="first-launch-setup-welcome-card-icon">
+            <IconUsersGroup aria-hidden="true" size={18} />
+          </span>
+          <h3>A note from the developer</h3>
+          <p>
+            Ghostex is built by one developer. I&apos;d be really grateful if you joined Discord to chit
+            chat, support, ask questions, report rough edges, or contribute.<br />
+            Please cut me a little
+            slack if you hit any issues 😅. I will try my best to get all issues fixed as soon as I can. <br />
+            The app is mostly stable as I use nothing but Ghostex to build Ghostex.
+          </p>
+        </article>
+      </div>
+
+      <a
+        className="first-launch-setup-discord-link"
+        href={FIRST_LAUNCH_DISCORD_URL}
+        rel="noreferrer"
+        target="_blank"
+      >
+        <img alt="" aria-hidden="true" src={discordLogo} />
+        Join the Ghostex Discord
+        <IconArrowRight aria-hidden="true" size={16} />
+      </a>
+    </section>
+  );
+}
+
 function FirstLaunchHooksPage({
   agentHookStatusLoading,
   hookStatusByAgentId,
   hookTone,
+  onInstallAgentHooks,
+  onRequestAgentHookStatus,
 }: {
   agentHookStatusLoading: boolean;
   hookStatusByAgentId: ReadonlyMap<string, SidebarAgentHookStatusItem>;
   hookTone: SidebarAgentHookStatus | "checking" | "unknown";
+  onInstallAgentHooks?: () => void;
+  onRequestAgentHookStatus?: () => void;
 }) {
   return (
     <>
@@ -384,18 +936,93 @@ function FirstLaunchHooksPage({
               </section>
             ))}
           </div>
+          <div className="first-launch-setup-hooks-actions">
+            <Button
+              disabled={!onRequestAgentHookStatus || agentHookStatusLoading}
+              aria-label="Refresh agent hook status"
+              className="first-launch-setup-hooks-refresh-button"
+              onClick={onRequestAgentHookStatus}
+              title="Refresh agent hook status"
+              type="button"
+              variant="outline"
+            >
+              <IconRefresh aria-hidden="true" />
+            </Button>
+            <Button
+              disabled={!onInstallAgentHooks || agentHookStatusLoading}
+              onClick={onInstallAgentHooks}
+              type="button"
+              variant="outline"
+            >
+              <IconDownload aria-hidden="true" data-icon="inline-start" />
+              Install Hooks
+            </Button>
+          </div>
         </div>
       </section>
     </>
   );
 }
 
+function FirstLaunchContinueWarningView({
+  kind,
+  onContinue,
+  onInstallAgentHooks,
+  onInstallBrowserControl,
+  onInstallCuaDriver,
+  onInstallGhostexCli,
+}: {
+  kind: FirstLaunchContinueWarning;
+  onContinue: () => void;
+  onInstallAgentHooks?: () => void;
+  onInstallBrowserControl?: () => void;
+  onInstallCuaDriver?: () => void;
+  onInstallGhostexCli?: () => void;
+}) {
+  const warning = FIRST_LAUNCH_CONTINUE_WARNINGS[kind];
+  const installAction =
+    kind === "hooks"
+      ? onInstallAgentHooks
+      : kind === "cli"
+        ? onInstallGhostexCli
+        : kind === "browserControl"
+          ? onInstallBrowserControl
+          : onInstallCuaDriver;
+
+  return (
+    <section className="first-launch-setup-warning" role="alert">
+      <div className="first-launch-setup-warning-icon">
+        <IconAlertTriangle aria-hidden="true" size={18} />
+      </div>
+      <div className="first-launch-setup-warning-copy">
+        <h3>{warning.title}</h3>
+        <p>{warning.description}</p>
+        <div className="first-launch-setup-warning-actions">
+          <Button disabled={!installAction} onClick={installAction} type="button" variant="outline">
+            <IconDownload aria-hidden="true" data-icon="inline-start" />
+            {warning.installLabel}
+          </Button>
+          <Button onClick={onContinue} type="button" variant="ghost">
+            {warning.actionLabel}
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function FirstLaunchCliPage({
   ghostexCliStatus,
   ghostexCliStatusLoading,
+  onInstallBrowserControl,
+  onInstallGhostexCli,
+  onRequestGhostexCliStatus,
 }: {
   ghostexCliStatus?: SidebarGhostexCliStatusMessage;
   ghostexCliStatusLoading: boolean;
+  onInstallBrowserControl?: () => void;
+  onInstallGhostexCli?: () => void;
+  onRequestGhostexCliStatus?: () => void;
 }) {
   const isInstalled = ghostexCliStatus?.installed === true;
   const isBrowserSkillInstalled = ghostexCliStatus?.browserSkillInstalled === true;
@@ -414,7 +1041,7 @@ function FirstLaunchCliPage({
         ? ghostexCliStatus.gxUsable
           ? "ghostex / gx + browser MCP skill"
           : "ghostex + browser MCP skill"
-        : "ghostex install-browser-skill"
+        : "ghostex browser install-skill"
       : FIRST_LAUNCH_CLI_COMMAND;
 
   return (
@@ -425,17 +1052,17 @@ function FirstLaunchCliPage({
       >
         <h2 className="first-launch-setup-title" id="first-launch-cli-title">
           {isInstalled && isBrowserSkillInstalled
-            ? "Ghostex CLI and browser skill are installed."
+            ? "Ghostex CLI is installed already."
             : isInstalled
-              ? "Install the browser MCP skill."
-              : "Install the Ghostex CLI for mobile and browser access."}
+              ? "Ghostex CLI is installed already."
+              : "Install the Ghostex CLI when you want mobile access."}
         </h2>
         <p className="first-launch-setup-description">
           {isInstalled && isBrowserSkillInstalled
-            ? "Your Mac already has the Ghostex CLI and the agent browser skill. Mobile apps can attach to sessions, and agents can connect to embedded CEF panes through the DevTools MCP server."
+            ? "Your Mac already has the Ghostex CLI and Browser Control skill. Mobile apps can attach to sessions, and agents can connect to embedded browser panes."
             : isInstalled
-              ? "Your Mac already has the Ghostex CLI. Install the browser MCP skill so agents know how to connect to embedded CEF panes, inspect console logs, and interact with pages."
-              : "The Android and iOS apps connect back to your Mac through the Ghostex CLI, and the same setup installs the browser MCP skill agents use for embedded CEF panes."}
+              ? "The CLI is ready. You can add Browser Control on the next page so agents know how to inspect console logs, snapshots, screenshots, clicks, fills, and key presses."
+              : "The Android and iOS apps connect back to your Mac through the Ghostex CLI. You can continue without it, but mobile access and CLI-backed integrations will not work until it is installed."}
         </p>
 
         <div className="first-launch-setup-command-card" data-installed={isInstalled}>
@@ -451,6 +1078,37 @@ function FirstLaunchCliPage({
           {ghostexCliStatus?.detail ? (
             <p className="first-launch-setup-cli-status-detail">{ghostexCliStatus.detail}</p>
           ) : null}
+          <div className="first-launch-setup-command-actions">
+            <Button
+              disabled={ghostexCliStatusLoading || !onInstallGhostexCli}
+              onClick={onInstallGhostexCli}
+              type="button"
+              variant={isInstalled ? "outline" : "default"}
+            >
+              <IconDownload aria-hidden="true" data-icon="inline-start" />
+              {isInstalled ? "Reinstall CLI" : "Install CLI"}
+            </Button>
+            {!isBrowserSkillInstalled ? (
+              <Button
+                disabled={ghostexCliStatusLoading || !onInstallBrowserControl || !isInstalled}
+                onClick={onInstallBrowserControl}
+                type="button"
+                variant="outline"
+              >
+                <IconBrowser aria-hidden="true" data-icon="inline-start" />
+                Install Browser Control
+              </Button>
+            ) : null}
+            <Button
+              disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
+              onClick={onRequestGhostexCliStatus}
+              type="button"
+              variant="ghost"
+            >
+              <IconRefresh aria-hidden="true" data-icon="inline-start" />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         <ul className="first-launch-setup-mobile-benefits" aria-label="CLI and browser agent features">
@@ -472,8 +1130,8 @@ function FirstLaunchCliPage({
           <li>
             <IconInfoCircle aria-hidden="true" size={18} />
             <span>
-              <strong>Browser MCP skill.</strong> Agents can add{" "}
-              <code>ghostex browser-devtools-mcp</code> to inspect CEF console logs, snapshots,
+              <strong>Browser Control skill.</strong> Agents can add{" "}
+              <code>ghostex browser mcp</code> to inspect CEF console logs, snapshots,
               screenshots, clicks, fills, and key presses.
             </span>
           </li>
@@ -494,13 +1152,151 @@ function FirstLaunchCliPage({
       <aside className="first-launch-setup-mobile-visual">
         <div className="first-launch-setup-phone-frame">
           <img
-            alt="Ghostex Android app showing projects and agent sessions"
+            alt="Ghostex mobile apps showing projects and agent sessions on overlapping iPhone and Android devices"
             className="first-launch-setup-mobile-art"
-            src={ghostexMobileAndroidImage}
+            src={ghostexMobileDevicesImage}
           />
         </div>
       </aside>
     </div>
+  );
+}
+
+function FirstLaunchGuidePageView({
+  ghostexCliStatus,
+  ghostexCliStatusLoading,
+  onInstallBrowserControl,
+  onInstallCuaDriver,
+  onOpenAccessibilityPreferences,
+  onOpenScreenRecordingPreferences,
+  page,
+}: {
+  ghostexCliStatus?: SidebarGhostexCliStatusMessage;
+  ghostexCliStatusLoading: boolean;
+  onInstallBrowserControl?: () => void;
+  onInstallCuaDriver?: () => void;
+  onOpenAccessibilityPreferences?: () => void;
+  onOpenScreenRecordingPreferences?: () => void;
+  page?: FirstLaunchGuidePage;
+}) {
+  if (!page) {
+    return null;
+  }
+
+  const PageIcon = page.icon;
+  const snippetText = page.action?.snippet?.join("\n");
+  const browserControlInstalled = ghostexCliStatus?.browserSkillInstalled === true;
+  const cuaDriverInstalled = ghostexCliStatus?.cuaDriverInstalled === true;
+
+  return (
+    <section className="first-launch-setup-guide-page" aria-labelledby={`first-launch-${page.page}-title`}>
+      <div className="first-launch-setup-guide-hero">
+        <span className="first-launch-setup-guide-icon-shell">
+          <PageIcon aria-hidden="true" className="first-launch-setup-guide-icon" size={26} />
+        </span>
+        <div className="first-launch-setup-guide-copy">
+          <div className="first-launch-setup-kicker">{page.kicker}</div>
+          <h2 className="first-launch-setup-title" id={`first-launch-${page.page}-title`}>
+            {page.title}
+          </h2>
+        </div>
+      </div>
+
+      {page.imageSrc ? (
+        <div className="first-launch-setup-guide-visual-shell">
+          <img
+            alt={page.imageAlt ?? ""}
+            className="first-launch-setup-guide-visual"
+            src={page.imageSrc}
+          />
+        </div>
+      ) : null}
+
+      <div className="first-launch-setup-guide-content">
+        {page.action ? (
+          <div className="first-launch-setup-guide-callout">
+            <div className="first-launch-setup-command-label">{page.action.eyebrow}</div>
+            <p>{page.action.description}</p>
+            {snippetText ? (
+              <pre className="first-launch-setup-guide-snippet">
+                <code>{snippetText}</code>
+              </pre>
+            ) : null}
+            {page.page === "browserControl" ? (
+              <div className="first-launch-setup-command-actions">
+                <Button
+                  disabled={
+                    ghostexCliStatusLoading ||
+                    browserControlInstalled ||
+                    !ghostexCliStatus?.installed ||
+                    !onInstallBrowserControl
+                  }
+                  onClick={onInstallBrowserControl}
+                  type="button"
+                  variant={browserControlInstalled ? "outline" : "default"}
+                >
+                  {browserControlInstalled ? (
+                    <IconCircleCheckFilled aria-hidden="true" data-icon="inline-start" />
+                  ) : (
+                    <IconDownload aria-hidden="true" data-icon="inline-start" />
+                  )}
+                  {browserControlInstalled ? "Browser Control Installed" : "Install Browser Control"}
+                </Button>
+              </div>
+            ) : null}
+            {page.page === "desktopCua" ? (
+              <div className="first-launch-setup-command-actions">
+                <Button
+                  disabled={ghostexCliStatusLoading || cuaDriverInstalled || !onInstallCuaDriver}
+                  onClick={onInstallCuaDriver}
+                  type="button"
+                  variant={cuaDriverInstalled ? "outline" : "default"}
+                >
+                  {cuaDriverInstalled ? (
+                    <IconCircleCheckFilled aria-hidden="true" data-icon="inline-start" />
+                  ) : (
+                    <IconDownload aria-hidden="true" data-icon="inline-start" />
+                  )}
+                  {cuaDriverInstalled ? "Desktop Control Installed" : "Install Desktop Control"}
+                </Button>
+                <Button
+                  disabled={!onOpenAccessibilityPreferences}
+                  onClick={onOpenAccessibilityPreferences}
+                  type="button"
+                  variant="outline"
+                >
+                  <IconSettings aria-hidden="true" data-icon="inline-start" />
+                  Accessibility
+                </Button>
+                <Button
+                  disabled={!onOpenScreenRecordingPreferences}
+                  onClick={onOpenScreenRecordingPreferences}
+                  type="button"
+                  variant="outline"
+                >
+                  <IconSettings aria-hidden="true" data-icon="inline-start" />
+                  Screen Recording
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <ul className="first-launch-setup-guide-list">
+          {page.items.map((item) => {
+            const ItemIcon = item.icon;
+            return (
+              <li className="first-launch-setup-guide-list-item" key={item.text}>
+                <span className="first-launch-setup-guide-list-icon">
+                  <ItemIcon aria-hidden="true" size={14} />
+                </span>
+                <span>{item.text}</span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </section>
   );
 }
 
@@ -553,6 +1349,45 @@ function getFirstLaunchHookStatusGroups(
   }
 
   return groups.filter((group) => group.agents.length > 0);
+}
+
+function getFirstLaunchContinueWarning({
+  activePage,
+  agentHookStatus,
+  ghostexCliStatus,
+  ghostexCliStatusLoading,
+  installedHookCount,
+}: {
+  activePage: FirstLaunchSetupPage;
+  agentHookStatus?: SidebarAgentHookStatusMessage;
+  ghostexCliStatus?: SidebarGhostexCliStatusMessage;
+  ghostexCliStatusLoading: boolean;
+  installedHookCount: number;
+}): FirstLaunchContinueWarning | undefined {
+  if (activePage === "hooks" && agentHookStatus && installedHookCount === 0) {
+    return "hooks";
+  }
+  if (activePage === "cli" && !ghostexCliStatusLoading && ghostexCliStatus?.installed !== true) {
+    return "cli";
+  }
+  if (
+    activePage === "browserControl" &&
+    !ghostexCliStatusLoading &&
+    ghostexCliStatus?.browserSkillInstalled !== true
+  ) {
+    if (ghostexCliStatus?.installed !== true) {
+      return "cli";
+    }
+    return "browserControl";
+  }
+  if (
+    activePage === "desktopCua" &&
+    !ghostexCliStatusLoading &&
+    ghostexCliStatus?.cuaDriverInstalled !== true
+  ) {
+    return "desktopCua";
+  }
+  return undefined;
 }
 
 function getFirstLaunchHookTone(

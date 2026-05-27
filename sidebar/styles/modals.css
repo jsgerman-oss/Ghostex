@@ -1998,6 +1998,18 @@
   border-radius: 18px;
 }
 
+.git-commit-direct-merge-panel {
+  background: color-mix(in srgb, var(--input) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--input) 82%, transparent);
+  border-radius: 18px;
+  padding: 14px;
+}
+
+.git-commit-merge-agent-select {
+  min-height: 44px;
+  width: min(360px, 100%);
+}
+
 .git-commit-modal-shadcn .changed-files-tree-row {
   border-radius: 10px;
   color: color-mix(in srgb, var(--foreground) 86%, var(--muted-foreground) 14%);

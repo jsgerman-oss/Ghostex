@@ -55,10 +55,12 @@ import {
 import {
   IconAsterisk,
   IconAlertTriangle,
+  IconBrowser,
   IconChevronDown,
   IconCircleCheckFilled,
   IconCircleX,
   IconCodeDots,
+  IconDeviceDesktop,
   IconDownload,
   IconFolderOpen,
   IconGripVertical,
@@ -67,6 +69,9 @@ import {
   IconPlayerPlay,
   IconPlus,
   IconRefresh,
+  IconSettings,
+  IconTerminal2,
+  IconTools,
   IconTrash,
 } from "@tabler/icons-react";
 import { COMPLETION_SOUND_OPTIONS, type CompletionSoundSetting } from "../shared/completion-sound";
@@ -75,6 +80,7 @@ import {
   resolveSidebarTheme,
   type SidebarAgentHookStatusMessage,
   type SidebarAgentHookStatusItem,
+  type SidebarGhostexCliStatusMessage,
   type SidebarGhostexFolderStatsMessage,
   type SidebarProjectSettingsItem,
   type SidebarTheme,
@@ -265,6 +271,7 @@ type SettingModificationProps = {
 export type SettingsModalTab =
   | "settings"
   | "ghostty"
+  | "integrations"
   | "projects"
   | "agents"
   | "actions"
@@ -427,19 +434,27 @@ export type SettingsModalProps = {
   onClose: () => void;
   onOpenAccessibilityPreferences?: () => void;
   onOpenMacOSNotificationSettings?: () => void;
+  onOpenFirstLaunchSetup?: () => void;
+  onOpenScreenRecordingPreferences?: () => void;
   onOpenGhostexFolder?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
+  onInstallBrowserControl?: () => void;
+  onInstallCuaDriver?: () => void;
   onInstallGte?: () => void;
+  onInstallGhostexCli?: () => void;
   onPlayCompletionSound?: (sound: CompletionSoundSetting) => void;
   onRequestMacOSNotificationPermission?: () => void;
   onInstallAgentHooks?: () => void;
   onRequestAgentHookStatus?: () => void;
+  onRequestGhostexCliStatus?: () => void;
   onRequestGhostexFolderStats?: () => void;
   onTestAgentTaskCompletion?: () => void;
   projects?: SidebarProjectSettingsItem[];
   settings?: ghostexSettings;
   theme?: SidebarTheme;
   vscode?: WebviewApi;
+  ghostexCliStatus?: SidebarGhostexCliStatusMessage;
+  ghostexCliStatusLoading?: boolean;
   ghostexFolderStats?: SidebarGhostexFolderStatsMessage;
   ghostexFolderStatsLoading?: boolean;
 };
@@ -456,19 +471,27 @@ export function SettingsModal({
   presentation = "default",
   onOpenAccessibilityPreferences,
   onOpenMacOSNotificationSettings,
+  onOpenFirstLaunchSetup,
+  onOpenScreenRecordingPreferences,
   onOpenGhostexFolder,
   onGhosttySettingsAction,
+  onInstallBrowserControl,
+  onInstallCuaDriver,
   onInstallGte,
+  onInstallGhostexCli,
   onPlayCompletionSound,
   onRequestMacOSNotificationPermission,
   onInstallAgentHooks,
   onRequestAgentHookStatus,
+  onRequestGhostexCliStatus,
   onRequestGhostexFolderStats,
   onTestAgentTaskCompletion,
   projects = [],
   settings,
   theme = "dark-blue",
   vscode,
+  ghostexCliStatus,
+  ghostexCliStatusLoading = false,
   ghostexFolderStats,
   ghostexFolderStatsLoading = false,
 }: SettingsModalProps) {
@@ -607,6 +630,34 @@ export function SettingsModal({
     }
     onRequestAgentHookStatus?.();
   }, [activeTab, agentHookStatus, agentHookStatusLoading, isOpen, onRequestAgentHookStatus]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "integrations") {
+      return;
+    }
+    /**
+     * CDXC:IntegrationsSetup 2026-05-27-04:17:
+     * Settings -> Integrations is the single ongoing setup page for CLI,
+     * Browser Control, agent hooks, Desktop Control, and macOS permissions.
+     * Request machine-local statuses only when the tab opens so Settings does
+     * not run filesystem checks while the user is editing unrelated settings.
+     */
+    if (!agentHookStatus && !agentHookStatusLoading) {
+      onRequestAgentHookStatus?.();
+    }
+    if (!ghostexCliStatus && !ghostexCliStatusLoading) {
+      onRequestGhostexCliStatus?.();
+    }
+  }, [
+    activeTab,
+    agentHookStatus,
+    agentHookStatusLoading,
+    ghostexCliStatus,
+    ghostexCliStatusLoading,
+    isOpen,
+    onRequestAgentHookStatus,
+    onRequestGhostexCliStatus,
+  ]);
 
   /**
    * CDXC:SettingsSearch 2026-05-04-02:30
@@ -1356,6 +1407,7 @@ export function SettingsModal({
               <TabsList>
                 <TabsTrigger value="settings">Settings</TabsTrigger>
                 <TabsTrigger value="ghostty">Ghostty</TabsTrigger>
+                <TabsTrigger value="integrations">Integrations</TabsTrigger>
                 <TabsTrigger value="projects">Projects</TabsTrigger>
                 <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
                 <TabsTrigger value="agents">Agents</TabsTrigger>
@@ -2387,6 +2439,26 @@ export function SettingsModal({
           </TabsContent>
           ) : null}
           {!isFirstLaunchSetup ? (
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="integrations">
+            <IntegrationsSettingsTab
+              accessibilityPermissionGranted={accessibilityPermissionGranted}
+              agentHookStatus={agentHookStatus}
+              agentHookStatusLoading={agentHookStatusLoading}
+              ghostexCliStatus={ghostexCliStatus}
+              ghostexCliStatusLoading={ghostexCliStatusLoading}
+              onInstallAgentHooks={onInstallAgentHooks}
+              onInstallBrowserControl={onInstallBrowserControl}
+              onInstallCuaDriver={onInstallCuaDriver}
+              onInstallGhostexCli={onInstallGhostexCli}
+              onOpenAccessibilityPreferences={onOpenAccessibilityPreferences}
+              onOpenFirstLaunchSetup={onOpenFirstLaunchSetup}
+              onOpenScreenRecordingPreferences={onOpenScreenRecordingPreferences}
+              onRequestAgentHookStatus={onRequestAgentHookStatus}
+              onRequestGhostexCliStatus={onRequestGhostexCliStatus}
+            />
+          </TabsContent>
+          ) : null}
+          {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="projects">
             <ProjectsSettingsPanel projects={projects} vscode={vscode} />
           </TabsContent>
@@ -2856,6 +2928,253 @@ function OpenTargetSettingsIcon({ targetId }: { targetId: string }) {
 const AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS = DEFAULT_SIDEBAR_AGENTS.filter(
   (agent) => agent.agentId !== "t3",
 );
+
+function IntegrationsSettingsTab({
+  accessibilityPermissionGranted,
+  agentHookStatus,
+  agentHookStatusLoading,
+  ghostexCliStatus,
+  ghostexCliStatusLoading,
+  onInstallAgentHooks,
+  onInstallBrowserControl,
+  onInstallCuaDriver,
+  onInstallGhostexCli,
+  onOpenAccessibilityPreferences,
+  onOpenFirstLaunchSetup,
+  onOpenScreenRecordingPreferences,
+  onRequestAgentHookStatus,
+  onRequestGhostexCliStatus,
+}: {
+  accessibilityPermissionGranted?: boolean;
+  agentHookStatus?: SidebarAgentHookStatusMessage;
+  agentHookStatusLoading: boolean;
+  ghostexCliStatus?: SidebarGhostexCliStatusMessage;
+  ghostexCliStatusLoading: boolean;
+  onInstallAgentHooks?: () => void;
+  onInstallBrowserControl?: () => void;
+  onInstallCuaDriver?: () => void;
+  onInstallGhostexCli?: () => void;
+  onOpenAccessibilityPreferences?: () => void;
+  onOpenFirstLaunchSetup?: () => void;
+  onOpenScreenRecordingPreferences?: () => void;
+  onRequestAgentHookStatus?: () => void;
+  onRequestGhostexCliStatus?: () => void;
+}) {
+  const installedHookCount =
+    agentHookStatus?.agents.filter(
+      (status) => status.status === "installed" || status.status === "notRequired",
+    ).length ?? 0;
+  const hookSummary = agentHookStatus
+    ? agentHookStatus.errorMessage
+      ? "Unable to check"
+      : `${installedHookCount}/${AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS.length} installed`
+    : agentHookStatusLoading
+      ? "Checking"
+      : "Not checked";
+  const cliReady = ghostexCliStatus?.installed === true;
+  const browserControlReady = ghostexCliStatus?.browserSkillInstalled === true;
+  const desktopControlReady = ghostexCliStatus?.cuaDriverInstalled === true;
+
+  return (
+    <ScrollArea className="h-full min-h-0">
+      <div className="flex flex-col gap-6 px-5 pb-5">
+        {/*
+         * CDXC:IntegrationsSetup 2026-05-27-04:17:
+         * Settings owns one Integrations tab for post-onboarding setup. Keep
+         * CLI, Browser Control, agent hooks, Cua Driver, and macOS privacy
+         * permissions on the same page so users can recover skipped first-launch
+         * steps without hunting through unrelated tabs.
+         */}
+        <SettingsSection title="Integrations">
+          <IntegrationSettingsRow
+            description="Install the Ghostex command-line bridge for mobile apps and CLI-backed integration setup. Browser Control can also use gx when that alias is available and not taken by another command."
+            icon={IconTerminal2}
+            status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : cliReady ? "Installed" : "Not installed"}
+            tone={cliReady ? "success" : "warning"}
+            title="Ghostex CLI"
+          >
+            <Button
+              disabled={ghostexCliStatusLoading || !onInstallGhostexCli}
+              onClick={onInstallGhostexCli}
+              type="button"
+              variant={cliReady ? "outline" : "default"}
+            >
+              <IconDownload aria-hidden="true" data-icon="inline-start" />
+              {cliReady ? "Reinstall CLI" : "Install CLI"}
+            </Button>
+            <Button
+              disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
+              onClick={onRequestGhostexCliStatus}
+              type="button"
+              variant="ghost"
+            >
+              <IconRefresh aria-hidden="true" data-icon="inline-start" />
+              Refresh
+            </Button>
+          </IntegrationSettingsRow>
+
+          <IntegrationSettingsRow
+            description="Install the agentic Browser Control skill so agents can inspect Ghostex browser panes, read console logs, take screenshots, and interact with pages."
+            icon={IconBrowser}
+            status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : browserControlReady ? "Installed" : "Not installed"}
+            tone={browserControlReady ? "success" : "warning"}
+            title="Browser Control"
+          >
+            <Button
+              disabled={
+                ghostexCliStatusLoading ||
+                browserControlReady ||
+                !cliReady ||
+                !onInstallBrowserControl
+              }
+              onClick={onInstallBrowserControl}
+              type="button"
+              variant={browserControlReady ? "outline" : "default"}
+            >
+              <IconDownload aria-hidden="true" data-icon="inline-start" />
+              {browserControlReady ? "Installed" : "Install Browser Control"}
+            </Button>
+          </IntegrationSettingsRow>
+
+          <IntegrationSettingsRow
+            description="Install agent hooks for supported CLIs so Ghostex can show In Progress and Needs Attention notifications and name sessions from the first message."
+            icon={IconTools}
+            status={hookSummary}
+            tone={installedHookCount > 0 ? "success" : "warning"}
+            title="Agent Hooks"
+          >
+            <Button
+              disabled={agentHookStatusLoading || !onInstallAgentHooks}
+              onClick={onInstallAgentHooks}
+              type="button"
+              variant={installedHookCount > 0 ? "outline" : "default"}
+            >
+              <IconDownload aria-hidden="true" data-icon="inline-start" />
+              Install Hooks
+            </Button>
+            <Button
+              disabled={agentHookStatusLoading || !onRequestAgentHookStatus}
+              onClick={onRequestAgentHookStatus}
+              type="button"
+              variant="ghost"
+            >
+              <IconRefresh aria-hidden="true" data-icon="inline-start" />
+              Refresh
+            </Button>
+          </IntegrationSettingsRow>
+
+          <IntegrationSettingsRow
+            description="Install Cua Driver so agents can control native macOS desktop apps. You can skip it until a workflow needs desktop control."
+            icon={IconDeviceDesktop}
+            status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : desktopControlReady ? "Installed" : "Not installed"}
+            tone={desktopControlReady ? "success" : "warning"}
+            title="Desktop Control"
+          >
+            <Button
+              disabled={ghostexCliStatusLoading || desktopControlReady || !onInstallCuaDriver}
+              onClick={onInstallCuaDriver}
+              type="button"
+              variant={desktopControlReady ? "outline" : "default"}
+            >
+              <IconDownload aria-hidden="true" data-icon="inline-start" />
+              {desktopControlReady ? "Installed" : "Install Desktop Control"}
+            </Button>
+          </IntegrationSettingsRow>
+
+          <IntegrationSettingsRow
+            description="Cua Driver needs Accessibility to click and type in apps, and Screen Recording to understand what is visible on the desktop."
+            icon={IconSettings}
+            status={getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
+            tone={accessibilityPermissionGranted ? "success" : "warning"}
+            title="Cua Permissions"
+          >
+            <Button
+              disabled={!onOpenAccessibilityPreferences}
+              onClick={onOpenAccessibilityPreferences}
+              type="button"
+              variant="outline"
+            >
+              Accessibility
+            </Button>
+            <Button
+              disabled={!onOpenScreenRecordingPreferences}
+              onClick={onOpenScreenRecordingPreferences}
+              type="button"
+              variant="outline"
+            >
+              Screen Recording
+            </Button>
+          </IntegrationSettingsRow>
+
+          <IntegrationSettingsRow
+            description="Reopen the first-launch setup flow any time for the guided version of these integrations and app tips."
+            icon={IconInfoCircle}
+            status="Available"
+            tone="neutral"
+            title="Setup Flow"
+          >
+            <Button
+              disabled={!onOpenFirstLaunchSetup}
+              onClick={onOpenFirstLaunchSetup}
+              type="button"
+              variant="outline"
+            >
+              Open Setup Flow
+            </Button>
+          </IntegrationSettingsRow>
+        </SettingsSection>
+      </div>
+    </ScrollArea>
+  );
+}
+
+function IntegrationSettingsRow({
+  children,
+  description,
+  icon: Icon,
+  status,
+  title,
+  tone,
+}: {
+  children: ReactNode;
+  description: string;
+  icon: typeof IconInfoCircle;
+  status: string;
+  title: string;
+  tone: "success" | "warning" | "neutral";
+}) {
+  return (
+    <Field className="rounded-lg border border-border bg-muted/20 px-4 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 gap-3">
+          <span className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+            <Icon aria-hidden="true" size={17} />
+          </span>
+          <FieldContent>
+            <div className="flex flex-wrap items-center gap-2">
+              <FieldTitle className="text-sm">{title}</FieldTitle>
+              <span
+                className={cn(
+                  "inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+                  tone === "success" &&
+                    "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+                  tone === "warning" && "border-amber-500/40 bg-amber-500/10 text-amber-200",
+                  tone === "neutral" && "border-border bg-card text-muted-foreground",
+                )}
+              >
+                {status}
+              </span>
+            </div>
+            <FieldDescription className="text-xs text-muted-foreground">
+              {description}
+            </FieldDescription>
+          </FieldContent>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2 sm:justify-end">{children}</div>
+      </div>
+    </Field>
+  );
+}
 
 function AgentsSettingsTab({
   agentHookStatus,

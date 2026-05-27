@@ -9,7 +9,6 @@ import {
   IconFolder,
   IconFolderOpen,
   IconGitBranch,
-  IconGitMerge,
   IconGitPullRequest,
   IconMessageCircle,
   IconMoon,
@@ -525,6 +524,16 @@ export function SessionGroupSection({
   const actualSessionCount = storedSessionIds.length;
   const allSessionsSleeping =
     groupSessions.length > 0 && groupSessions.every((session) => session.isSleeping);
+  const hasInactiveProjectSessionsToSleep =
+    Boolean(projectContext) &&
+    groupSessions.some(
+      (session) =>
+        session.sessionKind === "terminal" &&
+        session.isSleeping !== true &&
+        session.isRunning !== true &&
+        session.activity !== "working" &&
+        session.activity !== "attention",
+    );
   const canFullReloadGroup = groupSessions.length > 0;
   const collapsedIndicatorActivity = sessionSummary.indicatorActivity;
   const hasCollapsedSummary = collapsedIndicatorActivity !== undefined;
@@ -787,6 +796,17 @@ export function SessionGroupSection({
     });
   };
 
+  const requestCreateWorktreePullRequest = () => {
+    if (!projectContext?.worktree) {
+      return;
+    }
+    vscode.postMessage({
+      action: "pr",
+      groupId: group.groupId,
+      type: "runSidebarGitAction",
+    });
+  };
+
   const requestRunProjectAgent = (agent: SidebarAgentButton | undefined) => {
     setOpenControlMenu(undefined);
     if (!projectContext || !agent) {
@@ -842,6 +862,22 @@ export function SessionGroupSection({
     });
   };
 
+  const requestSleepInactiveProjectSessions = () => {
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      groupId: group.groupId,
+      type: "sleepInactiveProjectSessions",
+    });
+  };
+
+  const requestWakeProjectSleepingSessions = () => {
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      groupId: group.groupId,
+      type: "wakeProjectSleepingSessions",
+    });
+  };
+
   const requestFullReloadGroup = () => {
     if (!canFullReloadGroup) {
       return;
@@ -850,7 +886,7 @@ export function SessionGroupSection({
     setContextMenuPosition(undefined);
     vscode.postMessage({
       groupId: group.groupId,
-      type: "fullReloadGroup",
+      type: projectContext ? "fullReloadProjectZmxSessions" : "fullReloadGroup",
     });
   };
 
@@ -1260,42 +1296,30 @@ export function SessionGroupSection({
                        *
                        * CDXC:Worktrees 2026-05-18-23:07:
                        * Main project rows expose Create Worktree. Worktree rows
-                       * replace that with disabled PR and merge affordances until
-                       * those follow-up actions are wired to real commands.
+                       * originally showed disabled PR and merge affordances until
+                       * those follow-up actions were wired to real commands.
+                       *
+                       * CDXC:WorktreeMerge 2026-05-27-06:25:
+                       * Worktree rows keep one Git affordance: Create PR opens the
+                       * T3-style review flow for commit/push/PR, and that modal now
+                       * owns the optional direct merge-to-main path so the header does
+                       * not imply two competing worktree completion flows.
                       */
                       <>
                         {projectContext.worktree ? (
                           <>
                             <button
-                              aria-disabled="true"
                               aria-label={`Create PR for ${group.title}`}
                               className="group-add-button group-worktree-pr-button reference-sidebar-hover-action-tooltip"
                               data-tooltip="Create PR"
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
+                                requestCreateWorktreePullRequest();
                               }}
                               type="button"
                             >
                               <IconGitPullRequest
-                                aria-hidden="true"
-                                className="group-add-icon"
-                                size={14}
-                                stroke={2}
-                              />
-                            </button>
-                            <button
-                              aria-disabled="true"
-                              aria-label={`Merge ${group.title} to main`}
-                              className="group-add-button group-worktree-merge-button reference-sidebar-hover-action-tooltip"
-                              data-tooltip="Merge Worktree"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                              }}
-                              type="button"
-                            >
-                              <IconGitMerge
                                 aria-hidden="true"
                                 className="group-add-icon"
                                 size={14}
@@ -1307,7 +1331,7 @@ export function SessionGroupSection({
                           <button
                             aria-label={`Create a worktree from ${group.title}`}
                             className="group-add-button group-worktree-button reference-sidebar-hover-action-tooltip"
-                            data-tooltip="Create Worktree"
+                            data-tooltip="New Worktree"
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
@@ -1686,6 +1710,16 @@ export function SessionGroupSection({
                      * first, then group lifecycle actions, and end with Close
                      * Project. Close Project parks the project in Recent
                      * Projects without deleting saved sessions.
+                     * CDXC:ProjectSleep 2026-05-27-01:50:
+                     * Project rows expose Sleep Inactive instead of a generic
+                     * Sleep label because the action must preserve running,
+                     * working, and attention sessions while sleeping inactive
+                     * sessions across every workspace group in the project.
+                     * CDXC:ProjectReload 2026-05-27-02:18:
+                     * Project-row Wake and Full reload use project-scoped
+                     * messages because the rendered row owns a synthetic group
+                     * id. Full reload is intentionally narrower than group
+                     * reload: native only reloads idle attached zmx terminals.
                      * CDXC:WorkspaceTheme 2026-05-09-17:18
                      * The Theme submenu is unused in the UI for now because
                      * theming has been disabled in this app for now. Keep the
@@ -1721,7 +1755,14 @@ export function SessionGroupSection({
                     <div className="session-context-menu-divider" role="separator" />
                     <button
                       className="session-context-menu-item"
-                      onClick={() => requestSetGroupSleeping(!allSessionsSleeping)}
+                      disabled={!allSessionsSleeping && !hasInactiveProjectSessionsToSleep}
+                      onClick={() => {
+                        if (allSessionsSleeping) {
+                          requestWakeProjectSleepingSessions();
+                          return;
+                        }
+                        requestSleepInactiveProjectSessions();
+                      }}
                       role="menuitem"
                       type="button"
                     >
@@ -1738,7 +1779,7 @@ export function SessionGroupSection({
                           size={14}
                         />
                       )}
-                      {allSessionsSleeping ? "Wake" : "Sleep"}
+                      {allSessionsSleeping ? "Wake" : "Sleep Inactive"}
                     </button>
                     {canFullReloadGroup ? (
                       <button

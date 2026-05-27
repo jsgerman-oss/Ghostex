@@ -89,9 +89,17 @@ export type SidebarGhostexCliStatusMessage = {
    * First-launch CLI setup treats the browser DevTools MCP skill as part of the
    * installed CLI experience because agents need both the executable and the
    * skill instructions before they can inspect embedded CEF logs and pages.
+   *
+   * CDXC:IntegrationsSetup 2026-05-27-04:17:
+   * Settings -> Integrations and the first-launch flow need one native-owned
+   * status payload for CLI, Browser Control, and Desktop Control. Native owns
+   * PATH and app-bundle checks so React can warn without guessing from UI state.
    */
   browserSkillInstalled: boolean;
   browserSkillPath?: string;
+  cuaAppInstalled: boolean;
+  cuaDriverInstalled: boolean;
+  cuaDriverPath?: string;
   detail: string;
   generatedAt: string;
   ghostexPath?: string;
@@ -454,6 +462,7 @@ export type SidebarPromptGitCommitMessage = {
   description: string;
   isWorktree?: boolean;
   isDefaultRef?: boolean;
+  mergeAgentId?: string;
   requestId: string;
   showCommitMessage?: boolean;
   suggestedBody?: string;
@@ -545,6 +554,16 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
+       * CDXC:SidebarDiscord 2026-05-27-05:04:
+       * Sidebar surfaces can link to the public Ghostex Discord for support,
+       * questions, and contributors. Native owns URL opening so the sidebar
+       * does not depend on webview popup behavior.
+       */
+      type: "openExternalUrl";
+      url: string;
+    }
+  | {
+      /**
        * CDXC:SettingsStorage 2026-05-09-15:25
        * The settings modal can request ~/.ghostex folder stats lazily, but native
        * resolves the folder path itself and never trusts a path from React.
@@ -564,16 +583,17 @@ export type SidebarToExtensionMessage =
       type: "requestAgentHookStatus" | "installAgentHooks" | "requestGhostexCliStatus";
     }
   | {
-      settings: ghostexSettings;
-      type: "updateSettings";
+      /**
+       * CDXC:IntegrationsSetup 2026-05-27-04:17:
+       * First launch and Settings -> Integrations expose one-click install
+       * actions for optional integrations. Native runs the actual commands and
+       * refreshes the shared integration status afterward.
+       */
+      type: "installGhostexCli" | "installBrowserControl" | "installCuaDriver";
     }
   | {
-      /**
-       * CDXC:FirstLaunchSetup 2026-05-19-11:20:
-       * The modal host emits this after Tips & Tricks closes so native can
-       * chain into the filtered first-launch setup modal on the first run.
-       */
-      type: "tipsAndTricksClosed";
+      settings: ghostexSettings;
+      type: "updateSettings";
     }
   | {
       /**
@@ -590,6 +610,7 @@ export type SidebarToExtensionMessage =
       type:
         | "applyRecommendedGhosttySettings"
         | "openAccessibilityPreferences"
+        | "openScreenRecordingPreferences"
         | "requestMacOSNotificationPermission"
         | "openMacOSNotificationSettings"
         | "openGhosttyConfigFile"
@@ -941,6 +962,27 @@ export type SidebarToExtensionMessage =
       sleeping: boolean;
     }
   | {
+      /**
+       * CDXC:ProjectSleep 2026-05-27-01:50:
+       * Combined project rows do not map to one native workspace group. Their
+       * context-menu sleep action must be project-scoped and must only sleep
+       * inactive sessions so running, working, and attention sessions stay
+       * awake.
+       */
+      type: "sleepInactiveProjectSessions";
+      groupId: string;
+    }
+  | {
+      /**
+       * CDXC:ProjectSleep 2026-05-27-02:18:
+       * Combined project-row Wake must wake sleeping terminal sessions across
+       * every workspace group because the row does not carry a concrete native
+       * workspace group id.
+       */
+      type: "wakeProjectSleepingSessions";
+      groupId: string;
+    }
+  | {
       type: "copyResumeCommand";
       sessionId: string;
     }
@@ -991,6 +1033,17 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "fullReloadGroup";
+      groupId: string;
+    }
+  | {
+      /**
+       * CDXC:ProjectReload 2026-05-27-02:18:
+       * Combined project rows need a project-scoped full reload because their
+       * sidebar group id is synthetic. Reload only idle attached zmx terminals
+       * so project-level reload never interrupts working or attention sessions
+       * and never tries to restore sleeping/detached history records.
+       */
+      type: "fullReloadProjectZmxSessions";
       groupId: string;
     }
   | {
@@ -1095,6 +1148,7 @@ export type SidebarToExtensionMessage =
     }
   | {
       action: SidebarGitAction;
+      groupId?: string;
       type: "runSidebarGitAction";
     }
   | {
@@ -1119,6 +1173,14 @@ export type SidebarToExtensionMessage =
       message: string;
       requestId: string;
       type: "confirmSidebarGitCommit";
+    }
+  | {
+      conflictAgentId: string;
+      deleteWorktreeAfter?: boolean;
+      filePaths?: string[];
+      message: string;
+      requestId: string;
+      type: "confirmSidebarGitDirectMerge";
     }
   | {
       requestId: string;

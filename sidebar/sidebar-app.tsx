@@ -368,6 +368,7 @@ const SIDEBAR_STARTUP_INTERACTION_BLOCK_MS = 1500;
 const SIDEBAR_STARTUP_REPRO_WINDOW_MS = 15_000;
 const SIDEBAR_POINTER_DRAG_REORDER_THRESHOLD_PX = 8;
 const SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY = "ghostex-sidebar-ui-collapse-state";
+const GHOSTEX_DISCORD_URL = "https://discord.gg/xYSBPapM";
 const MIN_SESSION_SEARCH_QUERY_LENGTH = 2;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
 const DEBUG_BUILD_STAMP_STYLE: CSSProperties = {
@@ -542,6 +543,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const {
     activeSessionsSortMode,
     agentManagerZoomPercent,
+    agents,
     createSessionOnSidebarDoubleClick,
     customThemeColor,
     debuggingMode,
@@ -559,6 +561,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     useShallow((state) => ({
       activeSessionsSortMode: state.hud.activeSessionsSortMode,
       agentManagerZoomPercent: state.hud.agentManagerZoomPercent,
+      agents: state.hud.agents,
       createSessionOnSidebarDoubleClick: state.hud.createSessionOnSidebarDoubleClick,
       customThemeColor: state.hud.customThemeColor,
       debuggingMode: state.hud.debuggingMode,
@@ -2128,12 +2131,23 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const openWorkspaceWelcome = () => {
     setIsOverflowMenuOpen(false);
     /**
-     * CDXC:TipsAndTricks 2026-05-15-16:11:
-     * The overflow-menu Tips & Tricks action opens the native full-window
-     * shadcn modal directly so it matches Settings instead of routing to an
-     * external project page.
+     * CDXC:FirstLaunchSetup 2026-05-27-02:41:
+     * Tips & Tricks now routes to the first-launch setup modal because Ghostex
+     * should have one teaching/setup surface instead of separate guide and
+     * onboarding dialogs.
      */
-    openAppModal({ modal: "tipsAndTricks", type: "open" });
+    openAppModal({ modal: "firstLaunchSetup", type: "open" });
+  };
+
+  const openDiscord = () => {
+    setIsOverflowMenuOpen(false);
+    /**
+     * CDXC:SidebarDiscord 2026-05-27-05:04:
+     * The top sidebar overflow menu should keep a bottom Discord entry so users
+     * can ask questions, report setup issues, or contribute without reopening
+     * onboarding.
+     */
+    vscode.postMessage({ type: "openExternalUrl", url: GHOSTEX_DISCORD_URL });
   };
 
   const pickWorkspaceFolder = () => {
@@ -2230,6 +2244,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     isPinnedPromptsOpen,
     isScratchPadOpen,
     onMoveSidebar: moveSidebar,
+    onOpenDiscord: openDiscord,
     onOpenHelp: openWorkspaceWelcome,
     onOpenHotkeys: openHotkeys,
     onShowRunning: openRunningSessions,
@@ -2613,6 +2628,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           </section>
         ) : null}
         <GitCommitModal
+          agents={agents}
           draft={
             gitCommitDraft ?? {
               confirmLabel: "Commit",
@@ -2637,6 +2653,17 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
               message,
               requestId,
               type: "confirmSidebarGitCommit",
+            });
+          }}
+          onDirectMerge={(requestId, message, options) => {
+            setGitCommitDraft(undefined);
+            vscode.postMessage({
+              conflictAgentId: options.conflictAgentId,
+              deleteWorktreeAfter: options.deleteWorktreeAfter,
+              filePaths: options.filePaths,
+              message,
+              requestId,
+              type: "confirmSidebarGitDirectMerge",
             });
           }}
           onMultipleCommits={(requestId) => {
@@ -3167,6 +3194,7 @@ type RenderSidebarTopControlsOptions = {
   isPinnedPromptsOpen: boolean;
   isScratchPadOpen: boolean;
   onMoveSidebar: () => void;
+  onOpenDiscord: () => void;
   onOpenHelp: () => void;
   onOpenHotkeys: () => void;
   onShowRunning: () => void;
@@ -3184,6 +3212,7 @@ function renderFloatingOverflowMenu({
   isPinnedPromptsOpen,
   isScratchPadOpen,
   onMoveSidebar: _onMoveSidebar,
+  onOpenDiscord,
   onOpenHelp,
   onOpenHotkeys,
   onShowRunning,
@@ -3341,6 +3370,23 @@ function renderFloatingOverflowMenu({
                     stroke={1.8}
                   />
                   Tips &amp; Tricks
+                </button>
+              </div>
+              <div className="session-context-menu-divider" role="separator" />
+              <div className="session-context-menu-group">
+                <button
+                  className="session-context-menu-item"
+                  onClick={onOpenDiscord}
+                  role="menuitem"
+                  type="button"
+                >
+                  <IconUsersGroup
+                    aria-hidden="true"
+                    className="session-context-menu-icon"
+                    size={14}
+                    stroke={1.8}
+                  />
+                  Join Discord
                 </button>
               </div>
             </div>,
