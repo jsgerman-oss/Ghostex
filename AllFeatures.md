@@ -2,6 +2,9 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
+- Cursor Agent resume recognizes Cursor transcript paths captured by hooks, even if the pane had an older inherited agent identity.
+- Agent activity status suppresses startup noise during launch, resume, fork, and manual agent detection so sessions are less likely to get stuck showing attention.
+- Project header diff stats default to tracked-only Starship-style counts, with an Editor setting to show untracked line totals only when tracked changes are +0 -0.
 - Ghostex-named agent skills install from the app and CLI: `$ghostex-browser-use`, `$ghostex-computer-use`, `$ghostex-agent-orchestration`, and `$ghostex-generate-title`.
 - `ghostex browser open` and `gx browser open` can scope browser panes to a project/worktree and reuse same-origin or exact tabs instead of creating duplicates.
 - Settings -> Integrations and first-launch setup use the public Ghostex Browser Use and Ghostex Computer Use names, with Desktop Control readiness tied to both Cua Driver and the Ghostex Computer Use skill.

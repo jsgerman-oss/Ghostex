@@ -2,6 +2,12 @@
 
 <!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
 
+## 3.16.0 - 2026-05-27
+
+- Improved Cursor Agent resume so transcript paths captured from Cursor hooks are recognized as Cursor sessions even when a terminal previously inherited another agent identity.
+- Improved agent activity status during launch, resume, fork, and manual startup so transient spinner or done titles are less likely to leave sessions stuck in attention state.
+- Added an Editor setting to show untracked line counts in project-header diff stats only when there are no tracked line changes, while keeping tracked-only Starship-style counts as the default.
+
 ## 3.15.0 - 2026-05-27
 
 - Added Ghostex-named agent skills for Browser Use, Computer Use, Agent Orchestration, and Generate Title, with CLI install commands and bundled app resources so agents can discover the right Ghostex workflows after Homebrew install.
