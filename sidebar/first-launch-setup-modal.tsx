@@ -48,7 +48,6 @@ import type {
 import type { ghostexSettings } from "../shared/ghostex-settings";
 import { DEFAULT_SIDEBAR_AGENTS } from "../shared/sidebar-agents";
 import type { WebviewApi } from "./webview-api";
-import discordLogo from "./assets/first-launch/discord.svg";
 import ghostexIntroImage from "./assets/first-launch/ghostex-intro.png";
 import ghostexMobileDevicesImage from "./assets/first-launch/ghostex-mobile-devices.png";
 
@@ -140,7 +139,7 @@ const FIRST_LAUNCH_HOOK_SUPPORTED_AGENTS = DEFAULT_SIDEBAR_AGENTS.filter(
 );
 
 const FIRST_LAUNCH_CLI_COMMAND =
-  "brew install --cask maddada/tap/ghostex --force && ghostex browser install-skill";
+  "brew install --cask maddada/tap/ghostex --force && ghostex browser install-skill && ghostex computer-use install-skill && ghostex agent-orchestration install-skill && ghostex generate-title install-skill";
 const FIRST_LAUNCH_ANDROID_APK_URL =
   "https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.2.0/ghostex-1.2.0.apk";
 const FIRST_LAUNCH_IOS_DISCORD_URL = "https://discord.gg/xYSBPapM";
@@ -163,7 +162,7 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
   {
     action: {
       description:
-        "Install Browser Control so agents can inspect and drive Ghostex embedded browser panes when they need page state, screenshots, logs, clicks, or keyboard input.",
+        "Install Ghostex Browser Use so agents can inspect and drive Ghostex embedded browser panes when they need page state, screenshots, logs, clicks, or keyboard input.",
       eyebrow: "Agentic browser control",
       snippet: [
         "ghostex browser --help",
@@ -176,7 +175,7 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
     items: [
       {
         icon: IconBrowser,
-        text: "Run ghostex browser --help or gx browser --help to see the Browser Control commands and MCP setup.",
+        text: "Run ghostex browser --help or gx browser --help to see the Ghostex Browser Use commands and MCP setup.",
       },
       {
         icon: IconTerminal2,
@@ -184,28 +183,28 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
       },
       {
         icon: IconInfoCircle,
-        text: "Browser Control exposes page listing, target selection, navigation, console logs, snapshots, click/fill, key presses, evaluation, and screenshots.",
+        text: "Ghostex Browser Use exposes page listing, target selection, navigation, console logs, snapshots, click/fill, key presses, evaluation, and screenshots.",
       },
       {
         icon: IconTools,
         text: "The recommended debugging loop is: list pages, select the right page, read console logs, take a snapshot, interact with element refs, then capture a screenshot for proof.",
       },
     ],
-    kicker: "Browser Control",
+    kicker: "Ghostex Browser Use",
     page: "browserControl",
-    title: "Set up agentic Browser Control",
+    title: "Set up Ghostex Browser Use",
   },
   {
     action: {
       description:
-        "Install Desktop Control so agents can operate native macOS apps for you. Ghostex handles the installer; macOS may still ask you to grant permissions.",
+        "Install Desktop Control so agents can operate native macOS apps through Ghostex Computer Use. Ghostex handles the installer; macOS may still ask you to grant permissions.",
       eyebrow: "One-click setup",
     },
     icon: IconTools,
     items: [
       {
         icon: IconDownload,
-        text: "The installer adds Cua Driver to the Mac and connects it to the command agents use for desktop control.",
+        text: "The installer adds Cua Driver and installs the $ghostex-computer-use wrapper skill agents use for desktop control.",
       },
       {
         icon: IconSettings,
@@ -213,16 +212,16 @@ const FIRST_LAUNCH_GUIDE_PAGES: readonly FirstLaunchGuidePage[] = [
       },
       {
         icon: IconInfoCircle,
-        text: "You can skip this now. Desktop Control will not work until Cua Driver and the macOS permissions are ready.",
+        text: "You can skip this now. Desktop Control will not work until Cua Driver, the Ghostex Computer Use skill, and the macOS permissions are ready.",
       },
       {
         icon: IconBrowser,
-        text: "Use Desktop Control for native apps. Use Browser Control for browser panes inside Ghostex.",
+        text: "Use Ghostex Computer Use for native apps. Use Ghostex Browser Use for browser panes inside Ghostex.",
       },
     ],
-    kicker: "Desktop Control",
+    kicker: "Ghostex Computer Use",
     page: "desktopCua",
-    title: "Set up desktop control",
+    title: "Set up Ghostex Computer Use",
   },
   {
     imageAlt: "Ghostex workspace preview with agent session cards, terminal panes, and status indicators",
@@ -450,23 +449,23 @@ const FIRST_LAUNCH_CONTINUE_WARNINGS: Record<
   cli: {
     actionLabel: "Continue without CLI",
     description:
-      "Mobile apps, CLI-backed setup actions, and Browser Control installation will not work until the Ghostex CLI is installed. You can install it later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
+      "Mobile apps, CLI-backed setup actions, and Ghostex Browser Use installation will not work until the Ghostex CLI is installed. You can install it later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
     installLabel: "Install CLI",
     title: "Continue without the Ghostex CLI?",
   },
   browserControl: {
-    actionLabel: "Continue without Browser Control",
+    actionLabel: "Continue without Ghostex Browser Use",
     description:
-      "Agents will not be able to inspect or operate Ghostex browser panes through Browser Control until the skill is installed. You can install it later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
-    installLabel: "Install Browser Control",
-    title: "Continue without Browser Control?",
+      "Agents will not be able to inspect or operate Ghostex browser panes through Ghostex Browser Use until the skill is installed. You can install it later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
+    installLabel: "Install Ghostex Browser Use",
+    title: "Continue without Ghostex Browser Use?",
   },
   desktopCua: {
-    actionLabel: "Continue without Desktop Control",
+    actionLabel: "Continue without Ghostex Computer Use",
     description:
-      "Agents will not be able to control native macOS desktop apps until Desktop Control is installed and macOS Accessibility and Screen Recording permissions are granted. You can finish this later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
-    installLabel: "Install Desktop Control",
-    title: "Continue without Desktop Control?",
+      "Agents will not be able to control native macOS desktop apps until Ghostex Computer Use, Cua Driver, Accessibility, and Screen Recording are ready. You can finish this later from Settings > Integrations or by launching this setup flow from the sidebar overflow menu.",
+    installLabel: "Install Ghostex Computer Use",
+    title: "Continue without Ghostex Computer Use?",
   },
 };
 
@@ -531,7 +530,7 @@ type FirstLaunchHookStatusGroup = {
  * status, and describe `gx` as usable only when Ghostex owns that alias.
  *
  * CDXC:BrowserAgentControl 2026-05-26-22:17:
- * The second first-launch page should install the Ghostex browser MCP skill
+ * The second first-launch page should install the Ghostex Browser Use skill
  * together with the CLI, because agents need a local skill that explains how
  * to configure `ghostex browser mcp` for CEF control, console logs,
  * snapshots, screenshots, and form interactions.
@@ -548,16 +547,32 @@ type FirstLaunchHookStatusGroup = {
  * Tips & Tricks flow after the required hooks and CLI/browser setup pages.
  *
  * CDXC:FirstLaunchSetup 2026-05-27-03:30:
- * The third page teaches Browser Control as the agent-facing entry point for
+ * The third page teaches Ghostex Browser Use as the agent-facing entry point for
  * embedded CEF panes. The fourth page teaches Cua Driver separately for native
  * desktop app control without exposing a scary shell-first setup.
  *
  * CDXC:IntegrationsSetup 2026-05-27-04:17:
- * CLI, Browser Control, hooks, and Desktop Control are optional onboarding
+ * CLI, Ghostex Browser Use, hooks, and Ghostex Computer Use are optional onboarding
  * integrations. If an integration is missing, Continue must show a warning
  * first and only advance after the user confirms they want to proceed without
  * it. Partial hook installs are acceptable; only zero installed hooks trigger
  * the hook warning.
+ *
+ * CDXC:ComputerAgentControl 2026-05-27-06:58:
+ * Desktop Control setup must install Cua Driver and the `$ghostex-computer-use`
+ * wrapper skill. Treat Desktop Control as incomplete until both are present, so
+ * users do not finish onboarding with native-app automation installed but
+ * undiscoverable by agents.
+ *
+ * CDXC:AgentOrchestration 2026-05-27-07:15:
+ * CLI setup also installs `$ghostex-agent-orchestration`, because agents should
+ * learn Ghostex's supported pane/session commands for cross-agent messaging,
+ * status checks, and terminal reads through `ghostex --help` instead of raw zmx.
+ *
+ * CDXC:GenerateTitleSkill 2026-05-27-07:28:
+ * CLI setup installs `$ghostex-generate-title` so every Ghostex agent session can
+ * generate a title under 47 characters and stage `/rename <title>` into its own
+ * prompt without submitting it.
  *
  * CDXC:FirstLaunchWelcome 2026-05-27-05:04:
  * First launch should start with a candid product welcome before setup tasks.
@@ -573,9 +588,15 @@ type FirstLaunchHookStatusGroup = {
  *
  * CDXC:FirstLaunchWelcome 2026-05-27-05:55:
  * The first page's Discord CTA should be centered and use the official SVGL
- * Discord mark. The developer note should invite people to chit chat, support,
- * ask questions, report rough edges, or contribute while promising best-effort
- * issue fixes as soon as possible.
+ * Discord mark inline rather than as a bundled image URL so the native app shell
+ * cannot render it as an empty image placeholder. The CTA sits centered in the
+ * remaining body space between the note card and footer.
+ *
+ * CDXC:FirstLaunchWelcome 2026-05-27-07:42:
+ * The first-page headline should be short enough to stay on one line at modal
+ * width: "Fast Ghostty terminals, Codex inspired Features!" Keep the explanatory
+ * subtitle at 18px medium weight, and put each card icon beside its heading to
+ * reduce vertical height.
  */
 export function FirstLaunchSetupModal({
   agentHookStatus,
@@ -768,9 +789,8 @@ function FirstLaunchWelcomePage() {
   return (
     <section className="first-launch-setup-welcome" aria-labelledby="first-launch-welcome-title">
       <div className="first-launch-setup-welcome-hero">
-        <div className="first-launch-setup-kicker">Welcome</div>
         <h2 className="first-launch-setup-welcome-title" id="first-launch-welcome-title">
-          Welcome to Ghostex, the most intuitive ADE.
+          Fast Ghostty terminals, Codex inspired Features!
         </h2>
         <p className="first-launch-setup-welcome-lede">
           Ghostex brings Ghostty-backed terminals into a Codex-app style UX, so you get the
@@ -781,21 +801,24 @@ function FirstLaunchWelcomePage() {
 
       <div className="first-launch-setup-welcome-grid">
         <article className="first-launch-setup-welcome-card">
-          <span className="first-launch-setup-welcome-card-icon">
-            <IconTerminal2 aria-hidden="true" size={18} />
-          </span>
-          <h3>Why Ghostty terminals?</h3>
+          <div className="first-launch-setup-welcome-card-heading">
+            <span className="first-launch-setup-welcome-card-icon">
+              <IconTerminal2 aria-hidden="true" size={18} />
+            </span>
+            <h3>Why Ghostty terminals?</h3>
+          </div>
           <p>
-            Ghostty-backed terminals are much lighter on RAM than web-based terminals and render
-            agent aliases cleanly. That makes Ghostex harder to build, but it keeps long-running
-            agent work fast and readable.
+            Ghostty terminals are much lighter on RAM than web-based terminals and render
+            agent CLIs cleanly. Ghostex is harder to build due to this requirement, but it's a must to get the best experience. Don't settle for mediocrity.
           </p>
         </article>
         <article className="first-launch-setup-welcome-card">
-          <span className="first-launch-setup-welcome-card-icon">
-            <IconBrowser aria-hidden="true" size={18} />
-          </span>
-          <h3>Why Chromium browser panes?</h3>
+          <div className="first-launch-setup-welcome-card-heading">
+            <span className="first-launch-setup-welcome-card-icon">
+              <IconBrowser aria-hidden="true" size={18} />
+            </span>
+            <h3>Why Chromium browser panes?</h3>
+          </div>
           <p>
             Ghostex uses Chromium instead of Safari&apos;s engine because Chrome DevTools are better
             for agent debugging, and Chromium gives you a closer preview of what most web users will
@@ -803,10 +826,12 @@ function FirstLaunchWelcomePage() {
           </p>
         </article>
         <article className="first-launch-setup-welcome-card first-launch-setup-welcome-card-wide">
-          <span className="first-launch-setup-welcome-card-icon">
-            <IconUsersGroup aria-hidden="true" size={18} />
-          </span>
-          <h3>A note from the developer</h3>
+          <div className="first-launch-setup-welcome-card-heading">
+            <span className="first-launch-setup-welcome-card-icon">
+              <IconUsersGroup aria-hidden="true" size={18} />
+            </span>
+            <h3>A note from the developer</h3>
+          </div>
           <p>
             Ghostex is built by one developer. I&apos;d be really grateful if you joined Discord to chit
             chat, support, ask questions, report rough edges, or contribute.<br />
@@ -823,11 +848,27 @@ function FirstLaunchWelcomePage() {
         rel="noreferrer"
         target="_blank"
       >
-        <img alt="" aria-hidden="true" src={discordLogo} />
+        <DiscordLogoIcon />
         Join the Ghostex Discord
         <IconArrowRight aria-hidden="true" size={16} />
       </a>
     </section>
+  );
+}
+
+function DiscordLogoIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="first-launch-setup-discord-logo"
+      viewBox="0 0 256 199"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M216.856 16.597A208.502 208.502 0 0 0 164.042 0c-2.275 4.113-4.933 9.645-6.766 14.046-19.692-2.961-39.203-2.961-58.533 0-1.832-4.4-4.55-9.933-6.846-14.046a207.809 207.809 0 0 0-52.855 16.638C5.618 67.147-3.443 116.4 1.087 164.956c22.169 16.555 43.653 26.612 64.775 33.193A161.094 161.094 0 0 0 79.735 175.3a136.413 136.413 0 0 1-21.846-10.632 108.636 108.636 0 0 0 5.356-4.237c42.122 19.702 87.89 19.702 129.51 0a131.66 131.66 0 0 0 5.355 4.237 136.07 136.07 0 0 1-21.886 10.653c4.006 8.02 8.638 15.67 13.873 22.848 21.142-6.58 42.646-16.637 64.815-33.213 5.316-56.288-9.08-105.09-38.056-148.36ZM85.474 135.095c-12.645 0-23.015-11.805-23.015-26.18s10.149-26.2 23.015-26.2c12.867 0 23.236 11.804 23.015 26.2.02 14.375-10.148 26.18-23.015 26.18Zm85.051 0c-12.645 0-23.014-11.805-23.014-26.18s10.148-26.2 23.014-26.2c12.867 0 23.236 11.804 23.015 26.2 0 14.375-10.148 26.18-23.015 26.18Z"
+        fill="#5865F2"
+      />
+    </svg>
   );
 }
 
@@ -1039,8 +1080,8 @@ function FirstLaunchCliPage({
     : isInstalled
       ? isBrowserSkillInstalled
         ? ghostexCliStatus.gxUsable
-          ? "ghostex / gx + browser MCP skill"
-          : "ghostex + browser MCP skill"
+          ? "ghostex / gx + Ghostex Browser Use"
+          : "ghostex + Ghostex Browser Use"
         : "ghostex browser install-skill"
       : FIRST_LAUNCH_CLI_COMMAND;
 
@@ -1059,9 +1100,9 @@ function FirstLaunchCliPage({
         </h2>
         <p className="first-launch-setup-description">
           {isInstalled && isBrowserSkillInstalled
-            ? "Your Mac already has the Ghostex CLI and Browser Control skill. Mobile apps can attach to sessions, and agents can connect to embedded browser panes."
+            ? "Your Mac already has the Ghostex CLI and Ghostex Browser Use skill. Mobile apps can attach to sessions, and agents can connect to embedded browser panes."
             : isInstalled
-              ? "The CLI is ready. You can add Browser Control on the next page so agents know how to inspect console logs, snapshots, screenshots, clicks, fills, and key presses."
+              ? "The CLI is ready. You can add Ghostex Browser Use on the next page so agents know how to inspect console logs, snapshots, screenshots, clicks, fills, and key presses."
               : "The Android and iOS apps connect back to your Mac through the Ghostex CLI. You can continue without it, but mobile access and CLI-backed integrations will not work until it is installed."}
         </p>
 
@@ -1096,7 +1137,7 @@ function FirstLaunchCliPage({
                 variant="outline"
               >
                 <IconBrowser aria-hidden="true" data-icon="inline-start" />
-                Install Browser Control
+                Install Ghostex Browser Use
               </Button>
             ) : null}
             <Button
@@ -1130,7 +1171,7 @@ function FirstLaunchCliPage({
           <li>
             <IconInfoCircle aria-hidden="true" size={18} />
             <span>
-              <strong>Browser Control skill.</strong> Agents can add{" "}
+              <strong>Ghostex Browser Use.</strong> Agents can add{" "}
               <code>ghostex browser mcp</code> to inspect CEF console logs, snapshots,
               screenshots, clicks, fills, and key presses.
             </span>
@@ -1186,7 +1227,9 @@ function FirstLaunchGuidePageView({
   const PageIcon = page.icon;
   const snippetText = page.action?.snippet?.join("\n");
   const browserControlInstalled = ghostexCliStatus?.browserSkillInstalled === true;
-  const cuaDriverInstalled = ghostexCliStatus?.cuaDriverInstalled === true;
+  const desktopControlInstalled =
+    ghostexCliStatus?.cuaDriverInstalled === true &&
+    ghostexCliStatus?.computerUseSkillInstalled === true;
 
   return (
     <section className="first-launch-setup-guide-page" aria-labelledby={`first-launch-${page.page}-title`}>
@@ -1240,24 +1283,24 @@ function FirstLaunchGuidePageView({
                   ) : (
                     <IconDownload aria-hidden="true" data-icon="inline-start" />
                   )}
-                  {browserControlInstalled ? "Browser Control Installed" : "Install Browser Control"}
+                  {browserControlInstalled ? "Ghostex Browser Use Installed" : "Install Ghostex Browser Use"}
                 </Button>
               </div>
             ) : null}
             {page.page === "desktopCua" ? (
               <div className="first-launch-setup-command-actions">
                 <Button
-                  disabled={ghostexCliStatusLoading || cuaDriverInstalled || !onInstallCuaDriver}
+                  disabled={ghostexCliStatusLoading || desktopControlInstalled || !onInstallCuaDriver}
                   onClick={onInstallCuaDriver}
                   type="button"
-                  variant={cuaDriverInstalled ? "outline" : "default"}
+                  variant={desktopControlInstalled ? "outline" : "default"}
                 >
-                  {cuaDriverInstalled ? (
+                  {desktopControlInstalled ? (
                     <IconCircleCheckFilled aria-hidden="true" data-icon="inline-start" />
                   ) : (
                     <IconDownload aria-hidden="true" data-icon="inline-start" />
                   )}
-                  {cuaDriverInstalled ? "Desktop Control Installed" : "Install Desktop Control"}
+                  {desktopControlInstalled ? "Ghostex Computer Use Installed" : "Install Ghostex Computer Use"}
                 </Button>
                 <Button
                   disabled={!onOpenAccessibilityPreferences}
@@ -1383,7 +1426,8 @@ function getFirstLaunchContinueWarning({
   if (
     activePage === "desktopCua" &&
     !ghostexCliStatusLoading &&
-    ghostexCliStatus?.cuaDriverInstalled !== true
+    (ghostexCliStatus?.cuaDriverInstalled !== true ||
+      ghostexCliStatus?.computerUseSkillInstalled !== true)
   ) {
     return "desktopCua";
   }

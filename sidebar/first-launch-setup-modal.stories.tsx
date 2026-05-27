@@ -37,7 +37,9 @@ const initialHookStatus: SidebarAgentHookStatusMessage = {
 
 const installedCliStatus: SidebarGhostexCliStatusMessage = {
   browserSkillInstalled: true,
-  browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-devtools-mcp/SKILL.md",
+  browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-use/SKILL.md",
+  computerUseSkillInstalled: true,
+  computerUseSkillPath: "/Users/madda/agents/skills/ghostex-computer-use/SKILL.md",
   cuaAppInstalled: true,
   cuaDriverInstalled: true,
   cuaDriverPath: "/Users/madda/.local/bin/cua-driver",
@@ -52,9 +54,10 @@ const installedCliStatus: SidebarGhostexCliStatusMessage = {
 
 const missingCliStatus: SidebarGhostexCliStatusMessage = {
   browserSkillInstalled: false,
+  computerUseSkillInstalled: false,
   cuaAppInstalled: false,
   cuaDriverInstalled: false,
-  detail: "Ghostex CLI was not found on PATH. Browser Control and Desktop Control are not installed yet.",
+  detail: "Ghostex CLI was not found on PATH. Ghostex Browser Use and Ghostex Computer Use are not installed yet.",
   generatedAt: "2026-05-27T04:17:00.000Z",
   gxBlockedByExistingCommand: false,
   gxUsable: false,
@@ -119,8 +122,8 @@ function FirstLaunchSetupModalStory({
             setGhostexCliStatus({
               ...ghostexCliStatus,
               browserSkillInstalled: true,
-              browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-devtools-mcp/SKILL.md",
-              detail: "Browser Control skill is installed for agents.",
+              browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-use/SKILL.md",
+              detail: "Ghostex Browser Use skill is installed for agents.",
             });
             setGhostexCliStatusLoading(false);
           }, 500);
@@ -131,9 +134,11 @@ function FirstLaunchSetupModalStory({
             setGhostexCliStatus({
               ...ghostexCliStatus,
               cuaAppInstalled: true,
+              computerUseSkillInstalled: true,
+              computerUseSkillPath: "/Users/madda/agents/skills/ghostex-computer-use/SKILL.md",
               cuaDriverInstalled: true,
               cuaDriverPath: "/Users/madda/.local/bin/cua-driver",
-              detail: "Desktop Control is installed.",
+              detail: "Ghostex Computer Use is installed.",
             });
             setGhostexCliStatusLoading(false);
           }, 500);
@@ -144,6 +149,7 @@ function FirstLaunchSetupModalStory({
             setGhostexCliStatus({
               ...installedCliStatus,
               browserSkillInstalled: ghostexCliStatus.browserSkillInstalled,
+              computerUseSkillInstalled: ghostexCliStatus.computerUseSkillInstalled,
             });
             setGhostexCliStatusLoading(false);
           }, 500);
