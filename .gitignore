@@ -6,6 +6,7 @@ artifacts/
 release/*.dmg
 release/*.zip
 downloads/*.apk
+tmp/imagegen/
 .ghostex/
 .vsmux/
 .antigravitycli/
@@ -32,6 +33,10 @@ native/macos/ghostexHost/ghostex.xcodeproj/
 # CDXC:Distribution 2026-05-27-10:11: Android APK downloads are also release
 # artifacts. Keep local APK copies out of source commits for the same reason as
 # macOS DMGs and ZIPs.
+# CDXC:RepoSafety 2026-05-27-10:44: Image-generation scratch outputs under
+# tmp/imagegen are intermediate asset experiments, not source assets. Commit
+# only the selected asset destination so releases stay source-only and
+# reproducible.
 # CDXC:RepoSafety 2026-05-02-00:11: The ghostex release-to-brew skill is local
 # agent workflow documentation and must remain available on this machine without
 # appearing in the public GitHub repository tree.
