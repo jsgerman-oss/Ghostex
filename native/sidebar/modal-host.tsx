@@ -1419,7 +1419,10 @@ function FloatingPromptEditorModal({
           </button>
           <img
             alt=""
-            onClick={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpenImagePreview(undefined);
+            }}
             onPointerDown={(event) => event.stopPropagation()}
             src={imagePreviewDataUrls[openImagePreview.path]}
           />
@@ -2096,6 +2099,10 @@ function AppModalHost() {
        * Native/sidebar status feedback should appear as dark Ghostex toasts,
        * not Sonner's bright default surface, so non-blocking Delayed Send and
        * worktree/git notices stay visually consistent with the dark app chrome.
+       *
+       * CDXC:AppModals 2026-05-28-13:52:
+       * Toast overlay chrome should use the same #0e0e0e background as modal
+       * and menu overlays instead of the older #181818 surface.
        */}
       <Toaster
         position="bottom-center"
@@ -2103,7 +2110,7 @@ function AppModalHost() {
         theme="dark"
         toastOptions={{
           style: {
-            background: "#181818",
+            background: "#0e0e0e",
             border: "1px solid rgba(255, 255, 255, 0.14)",
             color: "#f4f4f5",
           },

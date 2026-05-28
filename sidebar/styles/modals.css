@@ -68,7 +68,12 @@
 }
 
 .floating-prompt-editor-panel {
-  background: #151515;
+  /*
+   * CDXC:PromptEditor 2026-05-28-13:52:
+   * Floating prompt editor modal chrome should use the same #0e0e0e
+   * background as the rest of the app-modal family.
+   */
+  background: #0e0e0e;
   border: 1px solid rgb(255 255 255 / 18%);
   border-radius: 8px;
   box-sizing: border-box;
@@ -83,7 +88,7 @@
 
 .floating-prompt-editor-titlebar {
   align-items: center;
-  background: #242424;
+  background: #0e0e0e;
   box-sizing: border-box;
   cursor: grab;
   display: block;
@@ -470,13 +475,17 @@
 }
 
 .confirm-modal {
-  background: var(--app-card);
+  background: #0e0e0e;
   border: 1px solid color-mix(in srgb, var(--app-border) 84%, transparent);
   /*
    * CDXC:AppModals 2026-05-16-08:10:
    * Legacy React modal background shells must match the Settings modal
    * background radius so confirm, picker, previous-session, and management
    * dialogs share the same outer corner geometry as Radix dialogs.
+   *
+   * CDXC:AppModals 2026-05-28-13:52:
+   * All legacy confirm-modal shells should use #0e0e0e so previous-session,
+   * pinned-prompt, first-message, T3, and confirmation dialogs match Settings.
    */
   border-radius: var(--app-modal-background-radius, 7px);
   box-shadow:
@@ -812,6 +821,13 @@
 }
 
 .daemon-sessions-modal {
+  /*
+   * CDXC:AppModals 2026-05-28-13:22:
+   * Running sessions should use the same #0e0e0e modal background as the
+   * newer Settings-family surfaces while preserving row/card contrast inside
+   * the operational list.
+   */
+  background: #0e0e0e;
   gap: 14px;
   max-height: calc(100vh - 24px);
   max-width: min(840px, 100%);
@@ -1567,6 +1583,13 @@
 }
 
 .scratch-pad-modal {
+  /*
+   * CDXC:ScratchPad 2026-05-28-13:22:
+   * Scratch Pad should visually belong to the #0e0e0e app-modal family. Keep
+   * both the shell and editable note surface on that background so the main
+   * writing area does not read as a separate lighter modal.
+   */
+  background: #0e0e0e;
   gap: 14px;
   grid-template-rows: auto minmax(0, 1fr);
   height: min(90vh, calc(100vh - 24px));
@@ -1595,7 +1618,7 @@
 }
 
 .scratch-pad-textarea {
-  background: color-mix(in srgb, var(--app-card-active) 92%, transparent);
+  background: #0e0e0e;
   border: 1px solid color-mix(in srgb, var(--app-button-background) 32%, var(--app-border));
   border-radius: 14px;
   height: 100%;
@@ -1745,6 +1768,13 @@
 }
 
 .command-config-modal-shadcn {
+  /*
+   * CDXC:AppModals 2026-05-28-13:52:
+   * Shadcn editor/config dialogs that do not opt into ghostex-settings-shadcn
+   * still need the unified #0e0e0e modal background.
+   */
+  background: #0e0e0e;
+  background-color: #0e0e0e;
   color-scheme: dark;
   font-family: var(--app-font-family, var(--vscode-font-family, ui-sans-serif, system-ui));
   /* CDXC:AppModals 2026-05-08-11:26

@@ -15,8 +15,11 @@
 /**
  * CDXC:ContextMenus 2026-05-11-01:39
  * Sidebar and app context menus should behave like native menus: menu items
- * keep the default cursor instead of the hand pointer, and every menu surface
- * uses the same #181818 background regardless of the theme/card color below.
+ * keep the default cursor instead of the hand pointer.
+ *
+ * CDXC:AppModals 2026-05-28-13:52:
+ * Menu overlay surfaces should use the same #0e0e0e background as modal
+ * surfaces regardless of the theme/card color below.
  */
 [data-slot="dropdown-menu-content"],
 [data-slot="dropdown-menu-sub-content"],
@@ -24,8 +27,8 @@
 .git-action-menu,
 .quick-action-menu,
 .session-context-menu {
-  background: #181818 !important;
-  background-color: #181818 !important;
+  background: #0e0e0e !important;
+  background-color: #0e0e0e !important;
 }
 
 [data-slot="dropdown-menu-checkbox-item"],
