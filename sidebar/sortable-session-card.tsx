@@ -114,11 +114,14 @@ type SessionContextMenuAction = {
 export type SortableSessionCardProps = {
   completionFlashNonce?: number;
   dragDisabled?: boolean;
+  dropDisabled?: boolean;
+  forcedDropPosition?: "before" | "after";
   groupId: string;
   index: number;
   isSearchSelected?: boolean;
   onFocusRequested?: (groupId: string, sessionId: string) => void;
   sessionId: string;
+  showGroupDropTargetChrome?: boolean;
   showGroupConnector?: boolean;
   showDropPositionIndicator?: boolean;
   vscode: WebviewApi;
@@ -149,16 +152,20 @@ function clampContextMenuPosition(
 export function SortableSessionCard({
   completionFlashNonce = 0,
   dragDisabled = false,
+  dropDisabled = dragDisabled,
+  forcedDropPosition,
   groupId,
   index,
   isSearchSelected = false,
   onFocusRequested,
   sessionId,
+  showGroupDropTargetChrome = true,
   showGroupConnector = false,
   showDropPositionIndicator = true,
   vscode,
 }: SortableSessionCardProps) {
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
+  const canFocusMode = useSidebarStore((state) => state.groupsById[groupId]?.canFocusMode === true);
   const {
     hideSessionAgentIconUntilHover,
     hideBrowserFaviconUntilHover,
@@ -253,7 +260,7 @@ export function SortableSessionCard({
     type: "session",
   });
   const isSessionReorderDisabled =
-    !session || dragDisabled || isBrowserSession || contextMenuPosition !== undefined;
+    !session || dropDisabled || contextMenuPosition !== undefined;
   const beforeDropTarget = useDroppable({
     accept: "session",
     data: createSessionDropTargetData({
@@ -288,13 +295,15 @@ export function SortableSessionCard({
   });
   const dropPosition = sortable.isDragging
     ? undefined
-    : beforeDropTarget.isDropTarget
-      ? "before"
-      : afterDropTarget.isDropTarget
-        ? "after"
-        : undefined;
+    : forcedDropPosition ??
+      (beforeDropTarget.isDropTarget
+        ? "before"
+        : afterDropTarget.isDropTarget
+          ? "after"
+          : undefined);
   const visibleDropPosition = showDropPositionIndicator ? dropPosition : undefined;
-  const isVisibleDropTarget = showDropPositionIndicator && Boolean(sortable.isDropTarget);
+  const isVisibleDropTarget = showDropPositionIndicator && Boolean(visibleDropPosition);
+  const shouldShowGroupDropTargetChrome = showGroupDropTargetChrome && isVisibleDropTarget;
 
   if (!session) {
     return null;
@@ -983,19 +992,26 @@ export function SortableSessionCard({
       onClick: requestFullReloadSession,
     });
   }
-  sessionActions.push({
-    icon: (
-      <IconFocus2
-        aria-hidden="true"
-        className="session-context-menu-icon"
-        size={16}
-        stroke={1.8}
-      />
-    ),
-    key: "focus-mode",
-    label: "Focus",
-    onClick: requestFocusMode,
-  });
+  if (canFocusMode) {
+    /**
+     * CDXC:SessionFocusMode 2026-05-28-12:52:
+     * Sidebar context-menu Focus should only appear when the group has split panes to zoom.
+     * A single pane with multiple tabs still uses normal tab selection, so hiding Focus here keeps the menu aligned with double-click behavior.
+     */
+    sessionActions.push({
+      icon: (
+        <IconFocus2
+          aria-hidden="true"
+          className="session-context-menu-icon"
+          size={16}
+          stroke={1.8}
+        />
+      ),
+      key: "focus-mode",
+      label: "Focus",
+      onClick: requestFocusMode,
+    });
+  }
   if (canPopOutPane) {
     sessionActions.push({
       icon: session.isPoppedOut ? (
@@ -1116,7 +1132,7 @@ export function SortableSessionCard({
           data-activity={session.activity}
           data-dragging={String(Boolean(sortable.isDragging))}
           data-drop-position={visibleDropPosition}
-          data-drop-target={String(isVisibleDropTarget)}
+          data-drop-target={String(shouldShowGroupDropTargetChrome)}
           data-focused={String(session.isFocused)}
           data-group-connector={String(showGroupConnector)}
           data-has-agent-icon={String(hasSessionCardIcon)}
@@ -1157,7 +1173,7 @@ export function SortableSessionCard({
             data-has-agent-icon={String(hasSessionCardIcon)}
             data-dragging={String(Boolean(sortable.isDragging))}
             data-drop-position={visibleDropPosition}
-            data-drop-target={String(isVisibleDropTarget)}
+            data-drop-target={String(shouldShowGroupDropTargetChrome)}
             data-focused={String(session.isFocused)}
             data-group-connector={String(showGroupConnector)}
             data-lifecycle-state={lifecycleState}

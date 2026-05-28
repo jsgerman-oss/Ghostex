@@ -451,6 +451,7 @@ function toSidebarGroupRecord(group: SidebarSessionGroup): SidebarGroupRecord {
      * project folder icons when Chats is expanded or collapsed.
      */
     isChatCollection: group.isChatCollection,
+    canFocusMode: group.canFocusMode,
     isFocusModeActive: group.isFocusModeActive,
     kind: group.kind,
     layoutVisibleCount: group.layoutVisibleCount,
@@ -466,6 +467,7 @@ function haveSameSidebarGroupRecord(left: SidebarGroupRecord, right: SidebarGrou
     left.groupId === right.groupId &&
     left.isActive === right.isActive &&
     left.isChatCollection === right.isChatCollection &&
+    left.canFocusMode === right.canFocusMode &&
     left.isFocusModeActive === right.isFocusModeActive &&
     left.kind === right.kind &&
     left.layoutVisibleCount === right.layoutVisibleCount &&

@@ -818,9 +818,15 @@
    * Pinned sessions use the existing leading agent slot for the idle pin glyph
    * so project rows gain a persistent pinned affordance without shifting card
    * text or adding a second icon column.
+   *
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * The pinned glyph should read as quiet sidebar chrome, not favorite state:
+   * use the same neutral #4f5359 family as muted session metadata and rotate it
+   * clockwise 45 degrees to match the requested pinned marker direction.
    */
-  color: color-mix(in srgb, #ffdf75 76%, #c78b12 24%);
+  color: #4f5359;
   opacity: 1;
+  rotate: 45deg;
 }
 
 .session-frame[data-dragging="true"] .session-delayed-send-agent-icon {
@@ -1909,10 +1915,11 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-pinned-agent-icon {
-  color: color-mix(in srgb, #ffdf75 76%, #c78b12 24%);
+  color: #4f5359;
   height: var(--reference-session-icon-size);
   left: var(--reference-session-leading-inset);
   opacity: 1;
+  rotate: 45deg;
   top: 50%;
   translate: 0 -50%;
   width: var(--reference-session-icon-size);

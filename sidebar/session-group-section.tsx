@@ -53,6 +53,7 @@ import {
   createSessionDropTargetData,
   createSessionDropTargetId,
   type SidebarGroupDropTarget,
+  type SidebarSessionDropTarget,
 } from "./sidebar-dnd";
 import { getGroupSessionSummary, type GroupSessionSummary } from "./group-session-summary";
 import { shouldShowSessionGroupConnector } from "./session-group-connector";
@@ -315,7 +316,9 @@ export type SessionGroupSectionProps = {
   onFocusRequested?: (groupId: string, sessionId: string) => void;
   orderedSessionIds?: readonly string[];
   selectedSearchSessionId?: string;
+  allowPinnedSessionReorder?: boolean;
   enableProjectSessionListToggle?: boolean;
+  pinnedSessionDropIndicator?: SidebarSessionDropTarget;
   sessionDropIndicatorGroupId?: string;
   sessionDraggingDisabled?: boolean;
   showHeaderActions?: boolean;
@@ -376,7 +379,9 @@ export function SessionGroupSection({
   onFocusRequested,
   orderedSessionIds: orderedSessionIdsProp,
   selectedSearchSessionId,
+  allowPinnedSessionReorder = false,
   enableProjectSessionListToggle = true,
+  pinnedSessionDropIndicator,
   sessionDropIndicatorGroupId,
   sessionDraggingDisabled = false,
   showHeaderActions = true,
@@ -441,6 +446,12 @@ export function SessionGroupSection({
    * boundaries without taking away project-group reordering.
    */
   const areSessionDropTargetsDisabled = draggingDisabled || sessionDraggingDisabled;
+  /**
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * Reference project rows still disable general session dragging, but
+   * pinned-session reorder needs active drop targets across the same project
+   * list so a dragged pinned row can be released over any row in that project.
+   */
   const debuggingMode = useSidebarStore((state) => state.hud.debuggingMode);
   const agents = useSidebarStore((state) => state.hud.agents);
   const hideProjectHeaderDiffStats = useSidebarStore(
@@ -468,8 +479,15 @@ export function SessionGroupSection({
       type: "sidebarDebugLog",
     });
   });
+  /**
+   * CDXC:PinnedSessions 2026-05-28-14:29:
+   * Reference-sidebar pinned session dragging is a row-to-row reorder inside
+   * one project. Do not let the project section itself accept session drags,
+   * because the group drop surface competes with pinned row insertion lines
+   * and creates flickering project-wide background feedback.
+   */
   const sortable = useSortable({
-    accept: ["group", "session"],
+    accept: allowPinnedSessionReorder ? "group" : ["group", "session"],
     collisionPriority: CollisionPriority.Low,
     data: createGroupDropData(groupId),
     disabled: isChatCollection || draggingDisabled,
@@ -574,7 +592,7 @@ export function SessionGroupSection({
   const isGroupDropTarget =
     sortable.isDropTarget ||
     emptyGroupDropTarget.isDropTarget ||
-    sessionDropIndicatorGroupId === groupId;
+    (pinnedSessionDropIndicator === undefined && sessionDropIndicatorGroupId === groupId);
   /**
    * CDXC:ProjectReorder 2026-05-18-20:39:
    * Dragging a project in the reference sidebar must show a dim insertion line
@@ -1548,13 +1566,29 @@ export function SessionGroupSection({
                 {visibleSessionIds.map((sessionId, sessionIndex) => (
                   <SortableSessionCard
                     completionFlashNonce={completionFlashNonceBySessionId?.[sessionId] ?? 0}
-                    dragDisabled={areSessionDropTargetsDisabled}
+                    dragDisabled={
+                      draggingDisabled ||
+                      (sessionDraggingDisabled &&
+                        !(allowPinnedSessionReorder && sessionsById[sessionId]?.isPinned === true)
+                      )
+                    }
+                    dropDisabled={
+                      draggingDisabled || (sessionDraggingDisabled && !allowPinnedSessionReorder)
+                    }
                     groupId={group.groupId}
+                    forcedDropPosition={
+                      pinnedSessionDropIndicator?.kind === "session" &&
+                      pinnedSessionDropIndicator.groupId === group.groupId &&
+                      pinnedSessionDropIndicator.sessionId === sessionId
+                        ? pinnedSessionDropIndicator.position
+                        : undefined
+                    }
                     index={sessionIndex}
                     isSearchSelected={selectedSearchSessionId === sessionId}
                     key={sessionId}
                     onFocusRequested={onFocusRequested}
                     sessionId={sessionId}
+                    showGroupDropTargetChrome={!allowPinnedSessionReorder}
                     showGroupConnector={showSessionGroupConnector}
                     showDropPositionIndicator={showSessionDropPositionIndicators}
                     vscode={vscode}
