@@ -15,6 +15,7 @@ tmp/imagegen/
 .vscode/
 .fresh/
 AGENTS.md
+.agents/skills/
 .agents/skills/ghostex-release-to-brew/SKILL.md
 storybook-static/
 native/macos/ghostexHost/Web/
