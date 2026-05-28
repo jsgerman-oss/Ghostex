@@ -129,6 +129,21 @@ export type BaseSessionRecord = {
   row: number;
   column: number;
   createdAt: string;
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:32:
+   * Auto Sleep must distinguish semantic agent activity from runtime lifecycle.
+   * Persist the most recent start/wake time on terminal and browser-capable
+   * session records so an old idle agent does not immediately sleep again after
+   * the user wakes it.
+   */
+  lastStartedAt?: string;
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:32:
+   * Browser-like panes sleep from user access time, not agent activity, because
+   * viewing a browser/project/editor pane is the meaningful interaction even
+   * when the page itself is quiet.
+   */
+  lastAccessedAt?: string;
 };
 
 export type TerminalSessionRecord = BaseSessionRecord & {

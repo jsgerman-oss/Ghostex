@@ -435,6 +435,8 @@ export function createSessionRecord(
   );
   const alias = createSessionAlias(sessionNumber, slotIndex, displayId);
   const createdAt = new Date().toISOString();
+  const lastStartedAt = createdAt;
+  const lastAccessedAt = createdAt;
   const title = options?.title?.trim() || DEFAULT_TERMINAL_SESSION_TITLE;
   const titleSource = normalizeSessionTitleSource(options?.titleSource, title);
 
@@ -446,6 +448,8 @@ export function createSessionRecord(
       createdAt,
       displayId,
       kind: "browser",
+      lastAccessedAt,
+      lastStartedAt,
       row: position.row,
       sessionId,
       slotIndex,
@@ -461,6 +465,8 @@ export function createSessionRecord(
       createdAt,
       displayId,
       kind: "t3",
+      lastAccessedAt,
+      lastStartedAt,
       row: position.row,
       sessionId,
       slotIndex,
@@ -481,6 +487,8 @@ export function createSessionRecord(
     delayedSendDeadlineAt: normalizeTerminalDelayedSendDeadlineAt(options?.delayedSendDeadlineAt),
     displayId,
     kind: "terminal",
+    lastAccessedAt,
+    lastStartedAt,
     row: position.row,
     sessionId,
     slotIndex,

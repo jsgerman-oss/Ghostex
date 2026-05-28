@@ -235,28 +235,38 @@ describe("normalizeghostexSettings", () => {
     expect(normalizeghostexSettings({})).toMatchObject({
       autoSleepAgentIdleMinutes: 60,
       autoSleepAgentSessionsEnabled: false,
+      autoSleepBrowserIdleMinutes: 30,
+      autoSleepBrowserSessionsEnabled: false,
       autoSleepCodeEditorEnabled: true,
       autoSleepCodeEditorIdleMinutes: 5,
       autoSleepFavoriteAgentSessions: false,
       autoSleepFocusedAgentSessions: false,
       autoSleepGitEditorEnabled: true,
       autoSleepGitEditorIdleMinutes: 5,
+      autoSleepProjectEditorEnabled: true,
+      autoSleepProjectEditorIdleMinutes: 5,
       autoSleepRequireAgentResumeCommand: true,
     });
     expect(
       normalizeghostexSettings({
         autoSleepAgentIdleMinutes: 999,
         autoSleepAgentSessionsEnabled: true,
+        autoSleepBrowserIdleMinutes: 120,
+        autoSleepBrowserSessionsEnabled: true,
         autoSleepCodeEditorIdleMinutes: 999,
         autoSleepGitEditorEnabled: false,
         autoSleepGitEditorIdleMinutes: 30,
+        autoSleepProjectEditorIdleMinutes: 999,
       }),
     ).toMatchObject({
       autoSleepAgentIdleMinutes: 60,
       autoSleepAgentSessionsEnabled: true,
+      autoSleepBrowserIdleMinutes: 120,
+      autoSleepBrowserSessionsEnabled: true,
       autoSleepCodeEditorIdleMinutes: 5,
       autoSleepGitEditorEnabled: false,
       autoSleepGitEditorIdleMinutes: 30,
+      autoSleepProjectEditorIdleMinutes: 5,
     });
   });
 

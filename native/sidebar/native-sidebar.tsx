@@ -145,6 +145,7 @@ import {
   setBrowserSessionFaviconDataUrlInSimpleWorkspace,
   setBrowserSessionUrlInSimpleWorkspace,
   setSessionFavoriteInSimpleWorkspace,
+  setSessionLifecycleTimestampsInSimpleWorkspace,
   setSessionPoppedOutInSimpleWorkspace,
   setSessionSleepingInSimpleWorkspace,
   setSessionTitleInSimpleWorkspace,
@@ -1057,6 +1058,7 @@ const projectEditorSurfaceByProjectId = new Map<
     errorMessage?: string;
     isOpen: boolean;
     isSleeping: boolean;
+    lastAccessedAt?: string;
     mode: ProjectEditorSurfaceMode;
     nativeEditorId: string;
     status: ProjectEditorLoadStatus;
@@ -1365,6 +1367,7 @@ const terminalStateById = new Map<
     firstPromptAutoRenameProcessedPrompt?: string;
     firstUserMessage?: string;
     lastActivityAt?: string;
+    lastStartedAt?: string;
     lifecycleState: "done" | "error" | "running" | "sleeping";
     protectStoredTitleFromAutomation?: boolean;
     sessionPersistenceName?: string;
@@ -2951,8 +2954,16 @@ function navigateExistingBrowserSession(
       session.sessionId,
       normalizedUrl,
     );
-    return setSessionTitleInSimpleWorkspace(urlResult.snapshot, session.sessionId, title, {
-      titleSource: "browser-auto",
+    const titleResult = setSessionTitleInSimpleWorkspace(
+      urlResult.snapshot,
+      session.sessionId,
+      title,
+      {
+        titleSource: "browser-auto",
+      },
+    ).snapshot;
+    return setSessionLifecycleTimestampsInSimpleWorkspace(titleResult, session.sessionId, {
+      lastAccessedAt: new Date().toISOString(),
     }).snapshot;
   });
   const nativeSessionId = nativeSessionIdForProjectSidebarSession(project.projectId, session.sessionId);
@@ -3813,7 +3824,10 @@ function syncAutoSleepSettings(
     previousSettings.autoSleepCodeEditorEnabled !== nextSettings.autoSleepCodeEditorEnabled ||
     previousSettings.autoSleepCodeEditorIdleMinutes !== nextSettings.autoSleepCodeEditorIdleMinutes ||
     previousSettings.autoSleepGitEditorEnabled !== nextSettings.autoSleepGitEditorEnabled ||
-    previousSettings.autoSleepGitEditorIdleMinutes !== nextSettings.autoSleepGitEditorIdleMinutes;
+    previousSettings.autoSleepGitEditorIdleMinutes !== nextSettings.autoSleepGitEditorIdleMinutes ||
+    previousSettings.autoSleepProjectEditorEnabled !== nextSettings.autoSleepProjectEditorEnabled ||
+    previousSettings.autoSleepProjectEditorIdleMinutes !==
+      nextSettings.autoSleepProjectEditorIdleMinutes;
   if (editorPolicyChanged) {
     /**
      * CDXC:AutoSleep 2026-05-28-08:06:
@@ -3833,6 +3847,12 @@ function syncAutoSleepSettings(
       nextSettings.autoSleepRequireAgentResumeCommand ||
     previousSettings.autoSleepFocusedAgentSessions !== nextSettings.autoSleepFocusedAgentSessions ||
     previousSettings.autoSleepFavoriteAgentSessions !== nextSettings.autoSleepFavoriteAgentSessions
+  ) {
+    runNativeAutoSleepMonitor("settings-change");
+  }
+  if (
+    previousSettings.autoSleepBrowserSessionsEnabled !== nextSettings.autoSleepBrowserSessionsEnabled ||
+    previousSettings.autoSleepBrowserIdleMinutes !== nextSettings.autoSleepBrowserIdleMinutes
   ) {
     runNativeAutoSleepMonitor("settings-change");
   }
@@ -5131,6 +5151,7 @@ function restoreProjectEditorSurfaceStates(
       errorMessage: undefined,
       isOpen: true,
       isSleeping: !isActiveProject,
+      lastAccessedAt: new Date().toISOString(),
       mode: "code",
       nativeEditorId: createNativeProjectEditorId(project.projectId, "code"),
       status: isActiveProject ? "opening" : "idle",
@@ -7430,6 +7451,64 @@ function persistTerminalSessionLastActivityAt(sessionId: string, lastActivityAt:
   );
 }
 
+function persistNativeSessionLifecycleTimestamps(
+  projectId: string,
+  sessionId: string,
+  timestamps: {
+    lastAccessedAt?: string;
+    lastStartedAt?: string;
+  },
+): void {
+  const nextLastAccessedAt =
+    timestamps.lastAccessedAt === undefined
+      ? undefined
+      : normalizeNativeIsoTimestamp(timestamps.lastAccessedAt);
+  const nextLastStartedAt =
+    timestamps.lastStartedAt === undefined
+      ? undefined
+      : normalizeNativeIsoTimestamp(timestamps.lastStartedAt);
+  if (nextLastAccessedAt === undefined && nextLastStartedAt === undefined) {
+    return;
+  }
+  const project = findProject(projectId);
+  if (!project) {
+    return;
+  }
+  const hasCommandSession = project.commandsPanel.sessions.some(
+    (session) => session.sessionId === sessionId,
+  );
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:32:
+   * Session start/wake and access are separate from agent Last Active. Persist
+   * them on both command-panel terminal records and workspace browser/terminal
+   * records so sleep policy survives app restart without treating a card click
+   * as agent work.
+   */
+  if (hasCommandSession) {
+    updateProjectCommandsPanel(projectId, (panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === sessionId
+          ? {
+              ...session,
+              lastAccessedAt: nextLastAccessedAt ?? session.lastAccessedAt,
+              lastStartedAt: nextLastStartedAt ?? session.lastStartedAt,
+            }
+          : session,
+      ),
+    }));
+    return;
+  }
+  updateProjectWorkspace(
+    projectId,
+    (workspace) =>
+      setSessionLifecycleTimestampsInSimpleWorkspace(workspace, sessionId, {
+        lastAccessedAt: nextLastAccessedAt,
+        lastStartedAt: nextLastStartedAt,
+      }).snapshot,
+  );
+}
+
 function persistTerminalSessionRestoreActivity(
   sessionId: string,
   restoreActivity: TerminalSessionRecord["restoreActivity"],
@@ -7754,6 +7833,7 @@ function createCommandTerminal(
   );
   terminalStateById.set(commandSession.sessionId, {
     activity: hasStartupCommand ? "working" : "idle",
+    lastStartedAt: commandSession.lastStartedAt,
     lifecycleState: "running",
     sessionPersistenceName,
     sessionPersistenceProvider,
@@ -9046,6 +9126,7 @@ function restoreNativeTerminalSession(
     shouldQueueProviderStartupTextForRestore(session, project.projectId);
   const shouldAcknowledgeWakeAttention =
     shouldAcknowledgePersistedAttentionForWakeRestore(reason);
+  const startedAt = new Date().toISOString();
   const initialActivity =
     !shouldAcknowledgeWakeAttention && session.restoreActivity === "attention"
       ? "attention"
@@ -9099,7 +9180,12 @@ function restoreNativeTerminalSession(
     sessionPersistenceProvider,
     sessionStateFilePath,
     lastActivityAt: session.lastActivityAt,
+    lastStartedAt: startedAt,
     terminalTitle: session.title,
+  });
+  persistNativeSessionLifecycleTimestamps(project.projectId, session.sessionId, {
+    lastAccessedAt: startedAt,
+    lastStartedAt: startedAt,
   });
   if (initialActivity === "attention") {
     nativeAttentionEnteredAtBySessionId.set(session.sessionId, Date.now());
@@ -13235,6 +13321,11 @@ function restoreNativeBrowserSession(
    * as newly opened browser actions. This keeps app restarts from turning
    * browser session cards into inert sidebar entries.
    */
+  const startedAt = new Date().toISOString();
+  persistNativeSessionLifecycleTimestamps(project.projectId, session.sessionId, {
+    lastAccessedAt: startedAt,
+    lastStartedAt: startedAt,
+  });
   const nativeSessionId = rememberNativeSessionMapping(project.projectId, session.sessionId);
   postNative({
     browserFeedbackTool: settings.browserFeedbackTool,
@@ -14636,6 +14727,11 @@ function focusTerminal(sessionId: string): void {
   );
   const sessionRecord = findSessionRecord(reference.sessionId);
   const terminalState = terminalStateById.get(reference.sessionId);
+  if (sessionRecord?.kind === "terminal" || sessionRecord?.kind === "browser") {
+    persistNativeSessionLifecycleTimestamps(reference.project.projectId, reference.sessionId, {
+      lastAccessedAt: new Date().toISOString(),
+    });
+  }
   const wasSleepingTerminal = sessionRecord?.kind === "terminal" && sessionRecord.isSleeping === true;
   const sessionPersistenceProvider =
     terminalState?.sessionPersistenceProvider ??
@@ -16030,6 +16126,41 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
   publish();
 }
 
+function setNativeBrowserSessionSleeping(
+  projectId: string,
+  sessionId: string,
+  sleeping: boolean,
+): void {
+  const project = findProject(projectId);
+  const session = project ? findSessionRecordInProject(project, sessionId) : undefined;
+  if (!project || session?.kind !== "browser") {
+    return;
+  }
+  const wasSleeping = session.isSleeping === true;
+  updateProjectWorkspace(
+    project.projectId,
+    (workspace) => setSessionSleepingInSimpleWorkspace(workspace, session.sessionId, sleeping).snapshot,
+  );
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:32:
+   * Browser sessions are sleepable web panes, not terminal runtimes. Closing the
+   * native web pane is enough for sleep; waking routes through the existing
+   * browser restore path and stamps start/access timestamps for the next policy
+   * decision.
+   */
+  if (sleeping) {
+    const nativeSessionId = forgetNativeSessionMappingForProject(project.projectId, session.sessionId);
+    postNative({ sessionId: nativeSessionId, type: "closeWebPane" });
+  } else if (wasSleeping || !nativeSessionIdBySidebarSessionId.has(session.sessionId)) {
+    const nextProject = findProject(project.projectId) ?? project;
+    const nextSession = findSessionRecordInProject(nextProject, session.sessionId);
+    if (nextSession?.kind === "browser") {
+      restoreNativeBrowserSession(nextProject, nextSession, "wake-browser-session");
+    }
+  }
+  publish();
+}
+
 function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
   /**
    * CDXC:TitlebarResources 2026-05-16-19:53:
@@ -16113,6 +16244,234 @@ function sleepInactiveProjectSessions(projectId: string): void {
       true,
     );
   }
+}
+
+function startNativeAutoSleepMonitor(): void {
+  if (nativeAutoSleepMonitorIntervalId !== undefined) {
+    return;
+  }
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:06:
+   * Auto Sleep runs from the native-sidebar owner because it has the canonical
+   * project/session model, live terminal activity, and existing manual sleep
+   * operations for both provider-backed agents and project editor surfaces.
+   */
+  nativeAutoSleepMonitorIntervalId = window.setInterval(
+    () => runNativeAutoSleepMonitor("interval"),
+    AUTO_SLEEP_MONITOR_INTERVAL_MS,
+  );
+}
+
+function runNativeAutoSleepMonitor(source: "interval" | "settings-change" | "startup"): void {
+  if (!settings.autoSleepAgentSessionsEnabled && !settings.autoSleepBrowserSessionsEnabled) {
+    return;
+  }
+  const nowMs = Date.now();
+  const terminalSessionIdsToSleep: string[] = [];
+  const browserSessionsToSleep: Array<{ projectId: string; sessionId: string }> = [];
+  for (const project of projects) {
+    if (project.isRecentProject === true) {
+      continue;
+    }
+    const projectedSessionsById = new Map(
+      createProjectedSidebarGroupsForProject(project)
+        .flatMap((group) => group.sessions)
+        .map((session) => [session.sessionId, session]),
+    );
+    for (const group of createProjectSessionGroupsForProjection(project)) {
+      for (const session of group.snapshot.sessions) {
+        if (session.kind === "browser") {
+          if (
+            shouldAutoSleepBrowserSession({
+              nowMs,
+              project,
+              session,
+            })
+          ) {
+            browserSessionsToSleep.push({
+              projectId: project.projectId,
+              sessionId: session.sessionId,
+            });
+          }
+          continue;
+        }
+        if (session.kind !== "terminal") {
+          continue;
+        }
+        if (
+          shouldAutoSleepAgentSession({
+            nowMs,
+            project,
+            projectedSession: projectedSessionsById.get(session.sessionId),
+            session,
+          })
+        ) {
+          terminalSessionIdsToSleep.push(createCombinedProjectSessionId(project.projectId, session.sessionId));
+        }
+      }
+    }
+  }
+  if (terminalSessionIdsToSleep.length === 0 && browserSessionsToSleep.length === 0) {
+    return;
+  }
+  if (isNativeSidebarDebugLoggingEnabled()) {
+    console.info("[ghostex-native-sidebar] auto-sleep sessions", {
+      browserCount: browserSessionsToSleep.length,
+      source,
+      terminalCount: terminalSessionIdsToSleep.length,
+    });
+  }
+  for (const sessionId of terminalSessionIdsToSleep) {
+    setNativeSessionSleeping(sessionId, true);
+  }
+  for (const session of browserSessionsToSleep) {
+    setNativeBrowserSessionSleeping(session.projectId, session.sessionId, true);
+  }
+}
+
+function shouldAutoSleepAgentSession({
+  nowMs,
+  project,
+  projectedSession,
+  session,
+}: {
+  nowMs: number;
+  project: NativeProject;
+  projectedSession?: SidebarSessionItem;
+  session: TerminalSessionRecord;
+}): boolean {
+  if (session.isSleeping === true) {
+    return false;
+  }
+  if (!settings.autoSleepAgentSessionsEnabled) {
+    return false;
+  }
+  const terminalState = terminalStateById.get(session.sessionId);
+  if (!terminalState || terminalState.lifecycleState !== "running") {
+    return false;
+  }
+  const sessionForRestore = mergeNativeTerminalRuntimeMetadata(session, terminalState);
+  if (!resolveNativeResumeAgentIdForSession(sessionForRestore)) {
+    return false;
+  }
+  const activity = projectedSession?.activity ?? terminalState.activity ?? "idle";
+  if (activity !== "idle") {
+    return false;
+  }
+  if (session.isFavorite === true && !settings.autoSleepFavoriteAgentSessions) {
+    return false;
+  }
+  if (!settings.autoSleepFocusedAgentSessions && isFocusedAgentAutoSleepSession(project, session)) {
+    return false;
+  }
+  if (
+    settings.autoSleepRequireAgentResumeCommand &&
+    !canRestoreNativeTerminalSession(sessionForRestore)
+  ) {
+    return false;
+  }
+  const lastActivityMs = nativeAutoSleepLastActivityMs(session, terminalState);
+  if (lastActivityMs === undefined) {
+    return false;
+  }
+  return nowMs - lastActivityMs >= settings.autoSleepAgentIdleMinutes * AUTO_SLEEP_MINUTE_MS;
+}
+
+function shouldAutoSleepBrowserSession({
+  nowMs,
+  project,
+  session,
+}: {
+  nowMs: number;
+  project: NativeProject;
+  session: BrowserSessionRecord;
+}): boolean {
+  if (!settings.autoSleepBrowserSessionsEnabled || session.isSleeping === true) {
+    return false;
+  }
+  if (isFocusedSidebarSession(project, session.sessionId)) {
+    return false;
+  }
+  const lastAccessedMs = nativeSessionTimestampMs(session.lastAccessedAt ?? session.createdAt);
+  if (lastAccessedMs === undefined) {
+    return false;
+  }
+  return nowMs - lastAccessedMs >= settings.autoSleepBrowserIdleMinutes * AUTO_SLEEP_MINUTE_MS;
+}
+
+function mergeNativeTerminalRuntimeMetadata(
+  session: TerminalSessionRecord,
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
+): TerminalSessionRecord {
+  return {
+    ...session,
+    agentName: terminalState.agentName ?? session.agentName,
+    agentSessionId: terminalState.agentSessionId ?? session.agentSessionId,
+    agentSessionPath: terminalState.agentSessionPath ?? session.agentSessionPath,
+    lastStartedAt: terminalState.lastStartedAt ?? session.lastStartedAt,
+    lastActivityAt: terminalState.lastActivityAt ?? session.lastActivityAt,
+  };
+}
+
+function nativeAutoSleepLastActivityMs(
+  session: TerminalSessionRecord,
+  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
+): number | undefined {
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:32:
+   * Agent terminals are often woken or started for inspection without producing
+   * new agent output. Use the newer of semantic Last Active and start/wake time
+   * so a legitimately old idle conversation does not immediately re-sleep after
+   * the user brings it back.
+   */
+  return maxNativeTimestampMs([
+    terminalState.lastActivityAt,
+    session.lastActivityAt,
+    terminalState.lastStartedAt,
+    session.lastStartedAt,
+    session.createdAt,
+  ]);
+}
+
+function maxNativeTimestampMs(values: Array<string | undefined>): number | undefined {
+  let result: number | undefined;
+  for (const value of values) {
+    const timestampMs = nativeSessionTimestampMs(value);
+    if (timestampMs === undefined) {
+      continue;
+    }
+    result = result === undefined ? timestampMs : Math.max(result, timestampMs);
+  }
+  return result;
+}
+
+function nativeSessionTimestampMs(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isFocusedAgentAutoSleepSession(
+  project: NativeProject,
+  session: TerminalSessionRecord,
+): boolean {
+  return isFocusedSidebarSession(project, session.sessionId);
+}
+
+function isFocusedSidebarSession(project: NativeProject, sessionId: string): boolean {
+  if (activeProjectId !== project.projectId) {
+    return false;
+  }
+  const activeGroup = project.workspace.groups.find(
+    (group) => group.groupId === project.workspace.activeGroupId,
+  );
+  return (
+    activeGroup?.snapshot.focusedSessionId === sessionId ||
+    (project.commandsPanel.isVisible === true &&
+      project.commandsPanel.activeSessionId === sessionId)
+  );
 }
 
 function wakeProjectSleepingSessions(projectId: string): void {
@@ -19468,11 +19827,12 @@ function focusQuickFileEditorProject(project: NativeProject): void {
   const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
   const targetPath = project.quickSymlinkPath ?? project.quickOriginalPath;
   focusProject(project.projectId);
-  projectEditorSurfaceByProjectId.set(project.projectId, {
-    errorMessage: undefined,
-    isOpen: true,
-    isSleeping: false,
-    mode: "code",
+	  projectEditorSurfaceByProjectId.set(project.projectId, {
+	    errorMessage: undefined,
+	    isOpen: true,
+	    isSleeping: false,
+	    lastAccessedAt: new Date().toISOString(),
+	    mode: "code",
     nativeEditorId: nativeProjectEditorIdForProject(project, "code"),
     status: surfaceState?.status === "running" ? "running" : "opening",
     title: "Quick Files",
@@ -19551,11 +19911,12 @@ async function openNativeProjectEditorForFile(
    * surface with a file-specific URL even when the project editor is already
    * running, because OS open/edit commands are explicit navigation requests.
    */
-  projectEditorSurfaceByProjectId.set(project.projectId, {
-    errorMessage: undefined,
-    isOpen: true,
-    isSleeping: false,
-    mode: "code",
+	  projectEditorSurfaceByProjectId.set(project.projectId, {
+	    errorMessage: undefined,
+	    isOpen: true,
+	    isSleeping: false,
+	    lastAccessedAt: new Date().toISOString(),
+	    mode: "code",
     nativeEditorId: nativeProjectEditorIdForProject(project, "code"),
     status: "opening",
     title: projectEditorTitle(project),
@@ -19624,11 +19985,12 @@ async function openLooseQuickFile(target: NativeOpenPathTarget): Promise<NativeP
   project.quickSymlinkPath = symlinkPath;
   project.quickWaitToken = target.waitToken;
   writeStoredProjects("openLooseQuickFile");
-  projectEditorSurfaceByProjectId.set(project.projectId, {
-    errorMessage: undefined,
-    isOpen: true,
-    isSleeping: false,
-    mode: "code",
+	  projectEditorSurfaceByProjectId.set(project.projectId, {
+	    errorMessage: undefined,
+	    isOpen: true,
+	    isSleeping: false,
+	    lastAccessedAt: new Date().toISOString(),
+	    mode: "code",
     nativeEditorId: quickFileSharedNativeEditorId(),
     status: "opening",
     title: "Quick Files",
@@ -21397,12 +21759,20 @@ function cancelProjectEditorSleepTimer(projectId: string): void {
 
 function getProjectEditorAutoSleepTimeoutMs(mode: ProjectEditorSurfaceMode): number | undefined {
   const enabled =
-    mode === "git" ? settings.autoSleepGitEditorEnabled : settings.autoSleepCodeEditorEnabled;
+    mode === "git"
+      ? settings.autoSleepGitEditorEnabled
+      : mode === "tasks"
+        ? settings.autoSleepProjectEditorEnabled
+        : settings.autoSleepCodeEditorEnabled;
   if (!enabled) {
     return undefined;
   }
   const idleMinutes =
-    mode === "git" ? settings.autoSleepGitEditorIdleMinutes : settings.autoSleepCodeEditorIdleMinutes;
+    mode === "git"
+      ? settings.autoSleepGitEditorIdleMinutes
+      : mode === "tasks"
+        ? settings.autoSleepProjectEditorIdleMinutes
+        : settings.autoSleepCodeEditorIdleMinutes;
   return idleMinutes * AUTO_SLEEP_MINUTE_MS;
 }
 
@@ -21416,9 +21786,11 @@ function scheduleProjectEditorSleep(projectId: string): void {
   if (timeoutMs === undefined) {
     return;
   }
+  const lastAccessedMs = nativeSessionTimestampMs(surfaceState.lastAccessedAt) ?? Date.now();
+  const remainingTimeoutMs = Math.max(0, timeoutMs - (Date.now() - lastAccessedMs));
   const timeout = window.setTimeout(() => {
     sleepProjectEditorSurface(projectId);
-  }, timeoutMs);
+  }, remainingTimeoutMs);
   projectEditorSleepTimeoutByProjectId.set(projectId, timeout);
 }
 
@@ -21526,11 +21898,12 @@ function wakeProjectEditorSurface(project: NativeProject, mode?: ProjectEditorSu
     });
   }
   cancelProjectEditorSleepTimer(project.projectId);
-  projectEditorSurfaceByProjectId.set(project.projectId, {
-    errorMessage: undefined,
-    isOpen: surfaceState?.isOpen === true,
-    isSleeping: false,
-    mode: nextMode,
+	  projectEditorSurfaceByProjectId.set(project.projectId, {
+	    errorMessage: undefined,
+	    isOpen: surfaceState?.isOpen === true,
+	    isSleeping: false,
+	    lastAccessedAt: new Date().toISOString(),
+	    mode: nextMode,
     nativeEditorId,
     status: hasAwakeProjectEditorMode(project.projectId, nextMode) ? "running" : "opening",
     title: projectEditorSurfaceTitleForMode(project, nextMode),
@@ -21668,12 +22041,13 @@ function openProjectEditorForGroup(groupId: string): void {
     if (surfaceState.status === "running") {
       cancelProjectEditorOpenTimer(project.projectId);
     }
-    projectEditorSurfaceByProjectId.set(project.projectId, {
-      ...surfaceState,
-      errorMessage: undefined,
-      isOpen: true,
-      isSleeping: false,
-    });
+	    projectEditorSurfaceByProjectId.set(project.projectId, {
+	      ...surfaceState,
+	      errorMessage: undefined,
+	      isOpen: true,
+	      isSleeping: false,
+	      lastAccessedAt: new Date().toISOString(),
+	    });
     setProjectEditorPersistedOpen(project.projectId, true, "focusProjectEditor");
     appendTitlebarCodeLagDebugLog("titlebarCodeLag.sidebarOpenForGroupBeforeExistingFocusPost", {
       elapsedMs: performance.now() - startedAtMs,
@@ -21697,11 +22071,12 @@ function openProjectEditorForGroup(groupId: string): void {
    * bind a project-owned CEF view to the folder URL and keep that view alive
    * across later project switches.
    */
-  projectEditorSurfaceByProjectId.set(project.projectId, {
-    errorMessage: undefined,
-    isOpen: true,
-    isSleeping: false,
-    mode: "code",
+	  projectEditorSurfaceByProjectId.set(project.projectId, {
+	    errorMessage: undefined,
+	    isOpen: true,
+	    isSleeping: false,
+	    lastAccessedAt: new Date().toISOString(),
+	    mode: "code",
     nativeEditorId: nativeProjectEditorIdForProject(project, "code"),
     status: "opening",
     title: projectEditorTitle(project),
@@ -21846,12 +22221,13 @@ function openProjectGitEditorSurface(project: NativeProject, githubUrl: string):
     if (surfaceState.status === "running") {
       cancelProjectEditorOpenTimer(project.projectId);
     }
-    projectEditorSurfaceByProjectId.set(project.projectId, {
-      ...surfaceState,
-      errorMessage: undefined,
-      isOpen: true,
-      isSleeping: false,
-    });
+	    projectEditorSurfaceByProjectId.set(project.projectId, {
+	      ...surfaceState,
+	      errorMessage: undefined,
+	      isOpen: true,
+	      isSleeping: false,
+	      lastAccessedAt: new Date().toISOString(),
+	    });
     postNative({ projectId: surfaceState.nativeEditorId, type: "focusProjectEditorPane" });
     publish();
     return;
@@ -21877,11 +22253,12 @@ function openProjectGitEditorSurface(project: NativeProject, githubUrl: string):
   } else {
     scheduleProjectEditorOpenTimeout(project.projectId);
   }
-  projectEditorSurfaceByProjectId.set(project.projectId, {
-    errorMessage: undefined,
-    isOpen: true,
-    isSleeping: false,
-    mode: "git",
+	  projectEditorSurfaceByProjectId.set(project.projectId, {
+	    errorMessage: undefined,
+	    isOpen: true,
+	    isSleeping: false,
+	    lastAccessedAt: new Date().toISOString(),
+	    mode: "git",
     nativeEditorId,
     status: isAwakeGitPane ? "running" : "opening",
     title: "GitHub",
@@ -21922,12 +22299,13 @@ function openProjectTasksEditorSurface(project: NativeProject, tasksUrl: string)
     if (surfaceState.status === "running") {
       cancelProjectEditorOpenTimer(project.projectId);
     }
-    projectEditorSurfaceByProjectId.set(project.projectId, {
-      ...surfaceState,
-      errorMessage: undefined,
-      isOpen: true,
-      isSleeping: false,
-    });
+	    projectEditorSurfaceByProjectId.set(project.projectId, {
+	      ...surfaceState,
+	      errorMessage: undefined,
+	      isOpen: true,
+	      isSleeping: false,
+	      lastAccessedAt: new Date().toISOString(),
+	    });
     postNative({ projectId: surfaceState.nativeEditorId, type: "focusProjectEditorPane" });
     publish();
     return;
@@ -21955,11 +22333,12 @@ function openProjectTasksEditorSurface(project: NativeProject, tasksUrl: string)
   } else {
     scheduleProjectEditorOpenTimeout(project.projectId);
   }
-  projectEditorSurfaceByProjectId.set(project.projectId, {
-    errorMessage: undefined,
-    isOpen: true,
-    isSleeping: false,
-    mode: "tasks",
+	  projectEditorSurfaceByProjectId.set(project.projectId, {
+	    errorMessage: undefined,
+	    isOpen: true,
+	    isSleeping: false,
+	    lastAccessedAt: new Date().toISOString(),
+	    mode: "tasks",
     nativeEditorId,
     status: isAwakeTasksPane ? "running" : "opening",
     title: "Project",
@@ -22201,10 +22580,11 @@ function activateWorkspaceSurfaceForProject(projectId: string): void {
   if (!surfaceState?.isOpen) {
     return;
   }
-  projectEditorSurfaceByProjectId.set(projectId, {
-    ...surfaceState,
-    isOpen: false,
-  });
+	  projectEditorSurfaceByProjectId.set(projectId, {
+	    ...surfaceState,
+	    isOpen: false,
+	    lastAccessedAt: new Date().toISOString(),
+	  });
   setProjectEditorPersistedOpen(projectId, false, "activateWorkspaceSurface");
   scheduleProjectEditorSleep(projectId);
 }
@@ -22369,6 +22749,7 @@ function handleProjectEditorTabSelected(nativeEditorId: string, url?: string): v
       errorMessage: undefined,
       isOpen: true,
       isSleeping: false,
+      lastAccessedAt: new Date().toISOString(),
       mode: "code",
       nativeEditorId,
       status: surfaceState?.status ?? "running",
@@ -22403,6 +22784,7 @@ function handleProjectEditorTabSelected(nativeEditorId: string, url?: string): v
     errorMessage: undefined,
     isOpen: true,
     isSleeping: false,
+    lastAccessedAt: new Date().toISOString(),
     mode: parsed.mode,
     nativeEditorId,
     status: isSameNativeEditor && surfaceState ? surfaceState.status : "running",
@@ -24895,9 +25277,20 @@ window.addEventListener("ghostex-native-host-event", (event) => {
        */
       updateProjectWorkspace(
         browserReference.project.projectId,
-        (workspace) =>
-          setBrowserSessionUrlInSimpleWorkspace(workspace, browserReference.sessionId, hostEvent.url)
-            .snapshot,
+        (workspace) => {
+          const urlResult = setBrowserSessionUrlInSimpleWorkspace(
+            workspace,
+            browserReference.sessionId,
+            hostEvent.url,
+          ).snapshot;
+          return setSessionLifecycleTimestampsInSimpleWorkspace(
+            urlResult,
+            browserReference.sessionId,
+            {
+              lastAccessedAt: new Date().toISOString(),
+            },
+          ).snapshot;
+        },
       );
       publish();
       return;
@@ -26959,6 +27352,7 @@ if (
     postNative({ side: sidebarSide, type: "setSidebarSide" });
     startFirstPromptAutoRenameMonitor();
     startQuickFileMissingMonitor();
+    startNativeAutoSleepMonitor();
     void refreshGitState();
     void refreshVisibleProjectDiffStats();
     if (restoreActiveProjectEditorAtStartup()) {
@@ -26969,6 +27363,7 @@ if (
       publish();
     }
     void refreshProviderRuntimeStates("startup");
+    runNativeAutoSleepMonitor("startup");
     scheduleNativeT3RuntimePrewarm(activeProjectId, "startup");
     openTipsAndTricksOnFirstLaunch();
     showOSIntegrationOnboardingOnFirstLaunch();

@@ -352,6 +352,10 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "autoSleepCodeEditorIdleMinutes",
     "autoSleepGitEditorEnabled",
     "autoSleepGitEditorIdleMinutes",
+    "autoSleepProjectEditorEnabled",
+    "autoSleepProjectEditorIdleMinutes",
+    "autoSleepBrowserSessionsEnabled",
+    "autoSleepBrowserIdleMinutes",
     "autoSleepAgentSessionsEnabled",
     "autoSleepAgentIdleMinutes",
     "autoSleepRequireAgentResumeCommand",
@@ -778,7 +782,7 @@ export function SettingsModal({
     autoSleep: getSettingsSectionSearch(settingsSearchQuery, "Auto Sleep", [
       {
         key: "autoSleepCodeEditorEnabled",
-        subtitle: "Sleep inactive VS Code and project panes after the selected idle period.",
+        subtitle: "Sleep inactive VS Code panes after the selected idle period.",
         title: "Sleep inactive VS Code panes",
       },
       {
@@ -787,7 +791,7 @@ export function SettingsModal({
           label: option.label,
           value: String(option.value),
         })),
-        subtitle: "Idle time before inactive VS Code and project panes sleep.",
+        subtitle: "Idle time before inactive VS Code panes sleep.",
         title: "VS Code idle time",
       },
       {
@@ -803,6 +807,34 @@ export function SettingsModal({
         })),
         subtitle: "Idle time before inactive Git panes sleep.",
         title: "Git idle time",
+      },
+      {
+        key: "autoSleepProjectEditorEnabled",
+        subtitle: "Sleep inactive Project panes after the selected idle period.",
+        title: "Sleep inactive Project panes",
+      },
+      {
+        key: "autoSleepProjectEditorIdleMinutes",
+        options: AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+          label: option.label,
+          value: String(option.value),
+        })),
+        subtitle: "Idle time before inactive Project panes sleep.",
+        title: "Project idle time",
+      },
+      {
+        key: "autoSleepBrowserSessionsEnabled",
+        subtitle: "Sleep inactive browser panes after the selected idle period.",
+        title: "Sleep inactive browser panes",
+      },
+      {
+        key: "autoSleepBrowserIdleMinutes",
+        options: AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+          label: option.label,
+          value: String(option.value),
+        })),
+        subtitle: "Idle time before inactive browser panes sleep.",
+        title: "Browser idle time",
       },
       {
         key: "autoSleepAgentSessionsEnabled",
@@ -2000,11 +2032,11 @@ export function SettingsModal({
 
             {mainSectionVisible("autoSleep", settingsSearch.autoSleep) ? (
             <SettingsSection sectionRef={autoSleepSectionRef} title="Auto Sleep">
-              {/* CDXC:AutoSleep 2026-05-28-08:06: Auto Sleep controls belong in one Settings section so VS Code/project panes, Git panes, and agent terminals can be tuned independently without hiding the relationship between the policies. */}
+              {/* CDXC:AutoSleep 2026-05-28-08:32: Auto Sleep controls belong in one Settings section so VS Code, Git, Project, browser, and agent sessions can be tuned independently without hiding the relationship between the policies. */}
               {mainSettingVisible(settingsSearch.autoSleep, "autoSleepCodeEditorEnabled") ? (
               <ToggleField
                 checked={draft.autoSleepCodeEditorEnabled}
-                description="Sleep inactive VS Code and project panes after the selected idle period."
+                description="Sleep inactive VS Code panes after the selected idle period."
                 label="Sleep inactive VS Code panes"
                 {...getSettingModificationProps("autoSleepCodeEditorEnabled")}
                 onChange={(checked) => updateDraft("autoSleepCodeEditorEnabled", checked)}
@@ -2013,7 +2045,7 @@ export function SettingsModal({
               {draft.autoSleepCodeEditorEnabled &&
               mainSettingVisible(settingsSearch.autoSleep, "autoSleepCodeEditorIdleMinutes") ? (
               <SelectField
-                description="Idle time before inactive VS Code and project panes sleep."
+                description="Idle time before inactive VS Code panes sleep."
                 label="VS Code idle time"
                 {...getSettingModificationProps("autoSleepCodeEditorIdleMinutes")}
                 onChange={(value) =>
@@ -2049,6 +2081,56 @@ export function SettingsModal({
                   value: String(option.value),
                 }))}
                 value={String(draft.autoSleepGitEditorIdleMinutes)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.autoSleep, "autoSleepProjectEditorEnabled") ? (
+              <ToggleField
+                checked={draft.autoSleepProjectEditorEnabled}
+                description="Sleep inactive Project panes after the selected idle period."
+                label="Sleep inactive Project panes"
+                {...getSettingModificationProps("autoSleepProjectEditorEnabled")}
+                onChange={(checked) => updateDraft("autoSleepProjectEditorEnabled", checked)}
+              />
+              ) : null}
+              {draft.autoSleepProjectEditorEnabled &&
+              mainSettingVisible(settingsSearch.autoSleep, "autoSleepProjectEditorIdleMinutes") ? (
+              <SelectField
+                description="Idle time before inactive Project panes sleep."
+                label="Project idle time"
+                {...getSettingModificationProps("autoSleepProjectEditorIdleMinutes")}
+                onChange={(value) =>
+                  updateDraft("autoSleepProjectEditorIdleMinutes", Number(value) as AutoSleepIdleMinutes)
+                }
+                options={AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+                  label: option.label,
+                  value: String(option.value),
+                }))}
+                value={String(draft.autoSleepProjectEditorIdleMinutes)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.autoSleep, "autoSleepBrowserSessionsEnabled") ? (
+              <ToggleField
+                checked={draft.autoSleepBrowserSessionsEnabled}
+                description="Sleep inactive browser panes after the selected idle period."
+                label="Sleep inactive browser panes"
+                {...getSettingModificationProps("autoSleepBrowserSessionsEnabled")}
+                onChange={(checked) => updateDraft("autoSleepBrowserSessionsEnabled", checked)}
+              />
+              ) : null}
+              {draft.autoSleepBrowserSessionsEnabled &&
+              mainSettingVisible(settingsSearch.autoSleep, "autoSleepBrowserIdleMinutes") ? (
+              <SelectField
+                description="Idle time before inactive browser panes sleep."
+                label="Browser idle time"
+                {...getSettingModificationProps("autoSleepBrowserIdleMinutes")}
+                onChange={(value) =>
+                  updateDraft("autoSleepBrowserIdleMinutes", Number(value) as AutoSleepIdleMinutes)
+                }
+                options={AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+                  label: option.label,
+                  value: String(option.value),
+                }))}
+                value={String(draft.autoSleepBrowserIdleMinutes)}
               />
               ) : null}
               {mainSettingVisible(settingsSearch.autoSleep, "autoSleepAgentSessionsEnabled") ? (

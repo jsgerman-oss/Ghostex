@@ -808,6 +808,42 @@ export function setBrowserSessionFaviconDataUrlInSimpleWorkspace(
   });
 }
 
+export function setSessionLifecycleTimestampsInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+  timestamps: {
+    lastAccessedAt?: string;
+    lastStartedAt?: string;
+  },
+): WorkspaceMutationResult {
+  const nextLastAccessedAt = normalizeSessionLifecycleTimestamp(timestamps.lastAccessedAt);
+  const nextLastStartedAt = normalizeSessionLifecycleTimestamp(timestamps.lastStartedAt);
+  if (nextLastAccessedAt === undefined && nextLastStartedAt === undefined) {
+    return { changed: false, snapshot: normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot) };
+  }
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:32:
+   * Auto Sleep needs durable lifecycle timestamps for terminal and browser-class
+   * sessions. Keep the mutation generic because browser panes sleep by access
+   * time while agent terminals sleep by the newer of semantic activity and
+   * start/wake time.
+   */
+  return updateSession(snapshot, sessionId, (session) => {
+    if (
+      session.lastAccessedAt === (nextLastAccessedAt ?? session.lastAccessedAt) &&
+      session.lastStartedAt === (nextLastStartedAt ?? session.lastStartedAt)
+    ) {
+      return session;
+    }
+
+    return {
+      ...session,
+      lastAccessedAt: nextLastAccessedAt ?? session.lastAccessedAt,
+      lastStartedAt: nextLastStartedAt ?? session.lastStartedAt,
+    };
+  });
+}
+
 export function setTerminalSessionAgentNameInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,
@@ -3305,6 +3341,14 @@ function updateSession(
 }
 
 function normalizeTerminalSessionLastActivityAt(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized || Number.isNaN(Date.parse(normalized))) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeSessionLifecycleTimestamp(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   if (!normalized || Number.isNaN(Date.parse(normalized))) {
     return undefined;

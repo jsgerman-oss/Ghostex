@@ -115,18 +115,22 @@ export type ghostexSettings = {
   hideLastActiveTimeOnSessionCards: boolean;
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
-   * Auto Sleep is a settings-owned policy for retiring idle VS Code/project
-   * editor, Git, and agent sessions through the same sleep paths as manual
-   * Sleep. Keep each surface independently configurable so users can preserve
-   * the existing editor behavior while opting agent terminals in separately.
+   * Auto Sleep is a settings-owned policy for retiring idle VS Code, Git,
+   * Project, browser, and agent sessions through their native sleep paths.
+   * Keep each surface independently configurable so users can preserve existing
+   * editor behavior while opting agent terminals in separately.
    */
   autoSleepAgentSessionsEnabled: boolean;
   autoSleepAgentIdleMinutes: AutoSleepIdleMinutes;
+  autoSleepBrowserSessionsEnabled: boolean;
+  autoSleepBrowserIdleMinutes: AutoSleepIdleMinutes;
   autoSleepCodeEditorEnabled: boolean;
   autoSleepCodeEditorIdleMinutes: AutoSleepIdleMinutes;
   autoSleepFocusedAgentSessions: boolean;
   autoSleepGitEditorEnabled: boolean;
   autoSleepGitEditorIdleMinutes: AutoSleepIdleMinutes;
+  autoSleepProjectEditorEnabled: boolean;
+  autoSleepProjectEditorIdleMinutes: AutoSleepIdleMinutes;
   autoSleepRequireAgentResumeCommand: boolean;
   autoSleepFavoriteAgentSessions: boolean;
   keepAwakeActivateOnExternalDisplay: boolean;
@@ -352,16 +356,20 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
    * Preserve the existing five-minute auto-sleep behavior for background
-   * VS Code/project and Git panes. Agent auto-sleep starts opt-in because it
-   * closes live provider sessions and should require an explicit user choice.
+   * VS Code, Project, and Git panes. Browser and agent auto-sleep start opt-in
+   * because they close live user-created session surfaces.
    */
   autoSleepAgentSessionsEnabled: false,
   autoSleepAgentIdleMinutes: 60,
+  autoSleepBrowserSessionsEnabled: false,
+  autoSleepBrowserIdleMinutes: 30,
   autoSleepCodeEditorEnabled: true,
   autoSleepCodeEditorIdleMinutes: 5,
   autoSleepFocusedAgentSessions: false,
   autoSleepGitEditorEnabled: true,
   autoSleepGitEditorIdleMinutes: 5,
+  autoSleepProjectEditorEnabled: true,
+  autoSleepProjectEditorIdleMinutes: 5,
   autoSleepRequireAgentResumeCommand: true,
   autoSleepFavoriteAgentSessions: false,
   keepAwakeActivateOnExternalDisplay: false,
@@ -866,6 +874,19 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       ),
       DEFAULT_ghostex_SETTINGS.autoSleepAgentIdleMinutes,
     ),
+    autoSleepBrowserSessionsEnabled: readBoolean(
+      source,
+      "autoSleepBrowserSessionsEnabled",
+      DEFAULT_ghostex_SETTINGS.autoSleepBrowserSessionsEnabled,
+    ),
+    autoSleepBrowserIdleMinutes: normalizeAutoSleepIdleMinutes(
+      readNumber(
+        source,
+        "autoSleepBrowserIdleMinutes",
+        DEFAULT_ghostex_SETTINGS.autoSleepBrowserIdleMinutes,
+      ),
+      DEFAULT_ghostex_SETTINGS.autoSleepBrowserIdleMinutes,
+    ),
     autoSleepCodeEditorEnabled: readBoolean(
       source,
       "autoSleepCodeEditorEnabled",
@@ -896,6 +917,19 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
         DEFAULT_ghostex_SETTINGS.autoSleepGitEditorIdleMinutes,
       ),
       DEFAULT_ghostex_SETTINGS.autoSleepGitEditorIdleMinutes,
+    ),
+    autoSleepProjectEditorEnabled: readBoolean(
+      source,
+      "autoSleepProjectEditorEnabled",
+      DEFAULT_ghostex_SETTINGS.autoSleepProjectEditorEnabled,
+    ),
+    autoSleepProjectEditorIdleMinutes: normalizeAutoSleepIdleMinutes(
+      readNumber(
+        source,
+        "autoSleepProjectEditorIdleMinutes",
+        DEFAULT_ghostex_SETTINGS.autoSleepProjectEditorIdleMinutes,
+      ),
+      DEFAULT_ghostex_SETTINGS.autoSleepProjectEditorIdleMinutes,
     ),
     autoSleepRequireAgentResumeCommand: readBoolean(
       source,

@@ -257,6 +257,8 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
         workspaceRoot: session.t3.workspaceRoot,
       }),
       isPoppedOut,
+      lastAccessedAt: normalizeSessionLifecycleTimestamp(session.lastAccessedAt),
+      lastStartedAt: normalizeSessionLifecycleTimestamp(session.lastStartedAt),
       title,
       titleSource,
     };
@@ -276,6 +278,8 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
       displayId,
       isPoppedOut,
       kind: "browser",
+      lastAccessedAt: normalizeSessionLifecycleTimestamp(session.lastAccessedAt),
+      lastStartedAt: normalizeSessionLifecycleTimestamp(session.lastStartedAt),
       title,
       titleSource,
     };
@@ -302,9 +306,11 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
     displayId,
     isPoppedOut,
     kind: "terminal",
+    lastAccessedAt: normalizeSessionLifecycleTimestamp(session.lastAccessedAt),
     lastActivityAt: normalizeTerminalSessionLastActivityAt(
       session.kind === "terminal" ? session.lastActivityAt : undefined,
     ),
+    lastStartedAt: normalizeSessionLifecycleTimestamp(session.lastStartedAt),
     restoreActivity: normalizeTerminalRestoreActivity(
       session.kind === "terminal" ? session.restoreActivity : undefined,
     ),
@@ -323,6 +329,20 @@ export function normalizeSessionRecord(session: SessionRecord): SessionRecord {
     title,
     titleSource,
   };
+}
+
+function normalizeSessionLifecycleTimestamp(value: string | undefined): string | undefined {
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:32:
+   * Started/accessed timestamps are persisted sleep-policy inputs. Drop malformed
+   * values during snapshot normalization so auto-sleep never compares invalid
+   * dates against real activity.
+   */
+  const normalized = value?.trim();
+  if (!normalized || Number.isNaN(Date.parse(normalized))) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function normalizeTerminalSessionLastActivityAt(value: string | undefined): string | undefined {
