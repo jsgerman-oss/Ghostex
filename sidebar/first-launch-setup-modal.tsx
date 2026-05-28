@@ -142,8 +142,8 @@ const FIRST_LAUNCH_CLI_COMMAND =
   "brew install --cask maddada/tap/ghostex --force && ghostex browser install-skill && ghostex computer-use install-skill && ghostex agent-orchestration install-skill && ghostex generate-title install-skill";
 const FIRST_LAUNCH_ANDROID_APK_URL =
   "https://github.com/maddada/Ghostex/releases/download/ghostex-android-v1.2.0/ghostex-1.2.0.apk";
-const FIRST_LAUNCH_IOS_DISCORD_URL = "https://discord.gg/xYSBPapM";
-const FIRST_LAUNCH_DISCORD_URL = "https://discord.gg/xYSBPapM";
+const FIRST_LAUNCH_IOS_DISCORD_URL = "https://discord.gg/df7b3G92CS";
+const FIRST_LAUNCH_DISCORD_URL = "https://discord.gg/df7b3G92CS";
 const FIRST_LAUNCH_SETUP_PAGES: readonly FirstLaunchSetupPage[] = [
   "welcome",
   "hooks",
