@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { trimPromptEditorTrailingSpaces } from "../shared/prompt-editor-text";
 import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import type { SidebarGitAction, SidebarGitChangedFile } from "../shared/sidebar-git";
 import { ChangedFilesTree } from "./changed-files-tree";
@@ -118,13 +119,37 @@ export function GitCommitModal({
     });
   }, [commandAgents, draft, isOpen]);
 
-  const trimmedMessage = message.trim();
+  /**
+   * CDXC:TitlebarGit 2026-05-28-07:47:
+   * Commit messages should not carry trailing spaces at line ends. Normalize
+   * pasted text in the textarea and normalize again before confirm, while a
+   * fully blank message still reaches native as empty so auto-generation works.
+   */
+  const normalizedMessage = trimPromptEditorTrailingSpaces(message);
+  const trimmedMessage = normalizedMessage.trim();
   const canConfirm = !showCommitMessage || !noneSelected;
   const canRunDirectMerge = canConfirm && selectedMergeAgentId.length > 0;
   const selectedFilePaths =
     changedFiles.length > 0 && selectedFiles.length !== changedFiles.length
       ? selectedFiles.map((file) => file.path)
       : undefined;
+
+  const handleMessagePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const pastedText = event.clipboardData.getData("text/plain");
+    const trimmedText = trimPromptEditorTrailingSpaces(pastedText);
+    if (!pastedText || trimmedText === pastedText) {
+      return;
+    }
+    const textarea = event.currentTarget;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    event.preventDefault();
+    setMessage(`${message.slice(0, start)}${trimmedText}${message.slice(end)}`);
+    window.requestAnimationFrame(() => {
+      const nextSelection = start + trimmedText.length;
+      textarea.setSelectionRange(nextSelection, nextSelection);
+    });
+  };
 
   /*
    * CDXC:Worktrees 2026-05-18-23:07:
@@ -255,6 +280,7 @@ export function GitCommitModal({
                   autoFocus
                   className="git-commit-modal-textarea"
                   onChange={(event) => setMessage(event.currentTarget.value)}
+                  onPaste={handleMessagePaste}
                   placeholder="Leave empty to auto-generate"
                   rows={draft.suggestedBody ? 10 : 4}
                   value={message}

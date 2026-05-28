@@ -28,11 +28,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { trimPromptEditorTrailingSpaces } from "../shared/prompt-editor-text";
 import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import { postAppModalHostMessage } from "./app-modal-host-bridge";
 
 export type WorktreeCreateModalProps = {
   agents: SidebarAgentButton[];
+  defaultAgentId?: string;
   isOpen: boolean;
   onCancel: () => void;
   onConfirm: (draft: { agentId: string; prompt: string }) => void;
@@ -41,6 +43,7 @@ export type WorktreeCreateModalProps = {
 
 export function WorktreeCreateModal({
   agents,
+  defaultAgentId,
   isOpen,
   onCancel,
   onConfirm,
@@ -60,6 +63,16 @@ export function WorktreeCreateModal({
   /**
    * CDXC:Worktrees 2026-05-18-23:07:
    * New worktrees need an agent plus a first prompt. Image paste and native file picking insert Markdown links into that prompt so visual context travels with the first agent instruction.
+   *
+   * CDXC:PromptAgents 2026-05-28-07:15:
+   * The first selectable worktree agent should start from Settings' default
+   * prompt agent when that agent is visible and configured, while preserving
+   * any valid in-modal selection during the current modal session.
+   *
+   * CDXC:Worktrees 2026-05-28-07:47:
+   * The first prompt is prompt-editor text. Plain-text paste and submit should
+   * remove spaces at line ends before the prompt is sent to the selected agent,
+   * while image paste keeps inserting durable Markdown links.
    */
   useEffect(() => {
     if (!isOpen) {
@@ -69,11 +82,13 @@ export function WorktreeCreateModal({
     setPrompt("");
     setImageCount(0);
     setSelectedAgentId((currentAgentId) =>
-      commandAgents.some((agent) => agent.agentId === currentAgentId)
+      commandAgents.find((agent) => agent.agentId === defaultAgentId)?.agentId ??
+      (commandAgents.some((agent) => agent.agentId === currentAgentId)
         ? currentAgentId
-        : commandAgents[0]?.agentId ?? "",
+        : commandAgents[0]?.agentId ??
+          "")
     );
-  }, [commandAgents, isOpen]);
+  }, [commandAgents, defaultAgentId, isOpen]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -88,7 +103,8 @@ export function WorktreeCreateModal({
     };
   }, [isOpen]);
 
-  const trimmedPrompt = prompt.trim();
+  const normalizedPrompt = trimPromptEditorTrailingSpaces(prompt);
+  const trimmedPrompt = normalizedPrompt.trim();
   const canCreate = Boolean(trimmedPrompt && selectedAgentId);
 
   const insertImageLinks = (files: readonly File[]) => {
@@ -160,12 +176,19 @@ export function WorktreeCreateModal({
     const imageFiles = Array.from(event.clipboardData.files).filter((file): file is File =>
       file.type.startsWith("image/"),
     );
-    if (imageFiles.length === 0) {
+    if (imageFiles.length > 0) {
+      event.preventDefault();
+      insertImageLinks(imageFiles);
       return;
     }
 
+    const pastedText = event.clipboardData.getData("text/plain");
+    const trimmedText = trimPromptEditorTrailingSpaces(pastedText);
+    if (!pastedText || trimmedText === pastedText) {
+      return;
+    }
     event.preventDefault();
-    insertImageLinks(imageFiles);
+    insertPromptText(trimmedText);
   };
 
   useEffect(() => {

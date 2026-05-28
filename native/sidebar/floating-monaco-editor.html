@@ -37,10 +37,34 @@
         },
       });
 
+      /*
+       * CDXC:PromptEditor 2026-05-28-07:47:
+       * Opening the standalone Monaco prompt editor and pasting plain text into
+       * it should remove spaces at line ends, matching the rich modal editor
+       * so direct native overlays do not preserve invisible trailing whitespace.
+       */
+      function trimPromptEditorTrailingSpaces(text) {
+        return text.replace(/[ \t]+(?=\r\n|\n|\r|$)/g, "");
+      }
+
+      function endPositionAfterInsertedText(start, text) {
+        const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+        if (lines.length === 1) {
+          return {
+            column: start.column + text.length,
+            lineNumber: start.lineNumber,
+          };
+        }
+        return {
+          column: lines[lines.length - 1].length + 1,
+          lineNumber: start.lineNumber + lines.length - 1,
+        };
+      }
+
       require(["vs/editor/editor.main"], function () {
         const initialText =
           typeof window.__GHOSTEX_MONACO_INITIAL_TEXT__ === "string"
-            ? window.__GHOSTEX_MONACO_INITIAL_TEXT__
+            ? trimPromptEditorTrailingSpaces(window.__GHOSTEX_MONACO_INITIAL_TEXT__)
             : "";
         const language =
           typeof window.__GHOSTEX_MONACO_LANGUAGE__ === "string" && window.__GHOSTEX_MONACO_LANGUAGE__
@@ -96,6 +120,41 @@
         window.ghostexMonacoGetValue = function () {
           return editor.getValue();
         };
+
+        document.getElementById("editor").addEventListener(
+          "paste",
+          function (event) {
+            const pastedText = event.clipboardData ? event.clipboardData.getData("text/plain") : "";
+            const trimmedText = trimPromptEditorTrailingSpaces(pastedText);
+            if (!pastedText || trimmedText === pastedText) {
+              return;
+            }
+            const selection = editor.getSelection();
+            if (!selection) {
+              return;
+            }
+            const startPosition = {
+              column: selection.startColumn,
+              lineNumber: selection.startLineNumber,
+            };
+            const endPosition = endPositionAfterInsertedText(startPosition, trimmedText);
+            event.preventDefault();
+            event.stopPropagation();
+            editor.pushUndoStop();
+            editor.executeEdits("ghostex-trimmed-text-paste", [
+              {
+                forceMoveMarkers: true,
+                range: selection,
+                text: trimmedText,
+              },
+            ]);
+            editor.setPosition(endPosition);
+            editor.revealPositionInCenterIfOutsideViewport(endPosition);
+            editor.pushUndoStop();
+            editor.focus();
+          },
+          true,
+        );
 
         editor.focus();
       });

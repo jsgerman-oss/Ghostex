@@ -1,6 +1,7 @@
 import { IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
+import { trimPromptEditorTrailingSpaces } from "../shared/prompt-editor-text";
 import { useSidebarStore } from "./sidebar-store";
 
 export type ScratchPadModalProps = {
@@ -35,20 +36,30 @@ export function ScratchPadModal({ isOpen, onClose, onDebug, onSave }: ScratchPad
     });
   };
 
+  /**
+   * CDXC:ScratchPad 2026-05-28-07:47:
+   * Scratch Pad is freeform text, but saved and pasted note content should not
+   * preserve invisible spaces at line ends. Normalize at paste/save boundaries
+   * instead of changing every keystroke while the user is composing text.
+   */
   const flushDraft = () => {
-    if (draftContent === lastSavedContentRef.current) {
+    const normalizedContent = trimPromptEditorTrailingSpaces(draftContent);
+    if (normalizedContent !== draftContent) {
+      setDraftContent(normalizedContent);
+    }
+    if (normalizedContent === lastSavedContentRef.current) {
       postDebug("flushDraft.skipped", {
         reason: "unchanged",
-        valueLength: draftContent.length,
+        valueLength: normalizedContent.length,
       });
       return;
     }
 
-    lastSavedContentRef.current = draftContent;
+    lastSavedContentRef.current = normalizedContent;
     postDebug("flushDraft.saved", {
-      valueLength: draftContent.length,
+      valueLength: normalizedContent.length,
     });
-    onSave(draftContent);
+    onSave(normalizedContent);
   };
 
   const closeModal = () => {
@@ -81,19 +92,47 @@ export function ScratchPadModal({ isOpen, onClose, onDebug, onSave }: ScratchPad
   }, [content, isOpen]);
 
   useEffect(() => {
-    if (!isOpen || draftContent === lastSavedContentRef.current) {
+    const normalizedContent = trimPromptEditorTrailingSpaces(draftContent);
+    if (!isOpen || normalizedContent === lastSavedContentRef.current) {
       return;
     }
 
     const timeoutId = window.setTimeout(() => {
-      lastSavedContentRef.current = draftContent;
-      onSave(draftContent);
+      lastSavedContentRef.current = normalizedContent;
+      onSave(normalizedContent);
     }, 180);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
   }, [draftContent, isOpen, onSave]);
+
+  const insertDraftText = (text: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setDraftContent((current) => `${current}${text}`);
+      return;
+    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const nextContent = `${draftContent.slice(0, start)}${text}${draftContent.slice(end)}`;
+    setDraftContent(nextContent);
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      const nextSelection = start + text.length;
+      textarea.setSelectionRange(nextSelection, nextSelection);
+    });
+  };
+
+  const handlePaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const pastedText = event.clipboardData.getData("text/plain");
+    const trimmedText = trimPromptEditorTrailingSpaces(pastedText);
+    if (!pastedText || trimmedText === pastedText) {
+      return;
+    }
+    event.preventDefault();
+    insertDraftText(trimmedText);
+  };
 
   useEffect(() => {
     if (!isOpen) {
@@ -253,6 +292,7 @@ export function ScratchPadModal({ isOpen, onClose, onDebug, onSave }: ScratchPad
                 valueLength: event.currentTarget.value.length,
               });
             }}
+            onPaste={handlePaste}
             placeholder="Workspace notes that autosave as you type."
             ref={textareaRef}
             spellCheck={false}

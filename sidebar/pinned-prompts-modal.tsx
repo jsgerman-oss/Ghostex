@@ -1,6 +1,7 @@
 import { IconCopy, IconPencil, IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
+import { trimPromptEditorTrailingSpaces } from "../shared/prompt-editor-text";
 import type { SidebarPinnedPrompt } from "../shared/session-grid-contract";
 import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
@@ -227,6 +228,33 @@ function PinnedPromptEditorModal({ draft, isOpen, onClose, onSave }: PinnedPromp
     return null;
   }
 
+  const insertContentText = (text: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setDraftContent((current) => `${current}${text}`);
+      return;
+    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const nextContent = `${draftContent.slice(0, start)}${text}${draftContent.slice(end)}`;
+    setDraftContent(nextContent);
+    window.requestAnimationFrame(() => {
+      textarea.focus();
+      const nextSelection = start + text.length;
+      textarea.setSelectionRange(nextSelection, nextSelection);
+    });
+  };
+
+  const handleContentPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const pastedText = event.clipboardData.getData("text/plain");
+    const trimmedText = trimPromptEditorTrailingSpaces(pastedText);
+    if (!pastedText || trimmedText === pastedText) {
+      return;
+    }
+    event.preventDefault();
+    insertContentText(trimmedText);
+  };
+
   return createPortal(
     <div className="confirm-modal-root confirm-modal-root-nested scroll-mask-y" role="presentation">
       <button className="confirm-modal-backdrop" onClick={onClose} type="button" />
@@ -273,6 +301,7 @@ function PinnedPromptEditorModal({ draft, isOpen, onClose, onSave }: PinnedPromp
             onChange={(event) => {
               setDraftContent(event.target.value);
             }}
+            onPaste={handleContentPaste}
             placeholder="Write a prompt you want available in every project."
             ref={textareaRef}
             spellCheck={false}
@@ -287,8 +316,14 @@ function PinnedPromptEditorModal({ draft, isOpen, onClose, onSave }: PinnedPromp
             className="primary confirm-modal-button"
             disabled={!draftTitle.trim() || !draftContent.trim()}
             onClick={() => {
+              /**
+               * CDXC:PromptEditor 2026-05-28-07:47:
+               * Pinned prompt templates are saved prompts, so plain-text paste
+               * and Save should remove trailing line spaces before the template
+               * is stored or copied back into future agent prompts.
+               */
               onSave({
-                content: draftContent,
+                content: trimPromptEditorTrailingSpaces(draftContent),
                 promptId: draft.promptId,
                 title: draftTitle,
               });
