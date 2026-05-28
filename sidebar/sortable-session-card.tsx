@@ -12,6 +12,8 @@ import {
   IconMessageCircle,
   IconMoon,
   IconPencil,
+  IconPinned,
+  IconPinnedOff,
   IconPlayerPlay,
   IconRefresh,
   IconSparkles,
@@ -305,6 +307,7 @@ export function SortableSessionCard({
   const lifecycleState = getSidebarSessionLifecycleState(session);
   const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
   const hasSessionCardIcon =
+    session.isPinned === true ||
     Boolean(session.delayedSendRemainingLabel) ||
     Boolean(session.agentIcon) ||
     showTerminalSessionIcon ||
@@ -726,6 +729,15 @@ export function SortableSessionCard({
     });
   };
 
+  const requestSetPinned = (pinned: boolean) => {
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      pinned,
+      sessionId: session.sessionId,
+      type: "setSessionPinned",
+    });
+  };
+
   const primaryActions: SessionContextMenuAction[] = [];
   if (!isBrowserSession) {
     primaryActions.push({
@@ -742,6 +754,32 @@ export function SortableSessionCard({
       onClick: requestRename,
     });
   }
+  primaryActions.push({
+    icon: session.isPinned ? (
+      <IconPinnedOff
+        aria-hidden="true"
+        className="session-context-menu-icon"
+        size={16}
+        stroke={1.8}
+      />
+    ) : (
+      <IconPinned
+        aria-hidden="true"
+        className="session-context-menu-icon"
+        size={16}
+        stroke={1.8}
+      />
+    ),
+    /**
+     * CDXC:PinnedSessions 2026-05-28-12:04:
+     * Pinning is a live sidebar-order control, not Favorite. Expose it as its
+     * own context-menu action so users can pin any project session without
+     * changing previous-session favorites or auto-sleep favorite rules.
+     */
+    key: "pin",
+    label: session.isPinned ? "Unpin" : "Pin",
+    onClick: () => requestSetPinned(!session.isPinned),
+  });
   if (canFavoriteSession) {
     primaryActions.push({
       icon: (
@@ -1087,6 +1125,7 @@ export function SortableSessionCard({
             isBrowserSession && Boolean(session.faviconDataUrl) && hideBrowserFaviconUntilHover,
           )}
           data-lifecycle-state={lifecycleState}
+          data-pinned={String(session.isPinned === true)}
           data-running={String(lifecycleState === "running")}
           data-sleeping={String(Boolean(session.isSleeping))}
           data-visible={String(session.isVisible)}
@@ -1128,6 +1167,7 @@ export function SortableSessionCard({
             )}
             data-running={String(lifecycleState === "running")}
             data-search-selected={String(isSearchSelected)}
+            data-pinned={String(session.isPinned === true)}
             data-sleeping={String(Boolean(session.isSleeping))}
             data-sidebar-session-id={session.sessionId}
             data-visible={String(session.isVisible)}
@@ -1203,6 +1243,7 @@ export function SortableSessionCard({
               delayedSendRemainingLabel={session.delayedSendRemainingLabel}
               faviconDataUrl={session.faviconDataUrl}
               isFavorite={session.isFavorite}
+              isPinned={session.isPinned}
               isReloading={session.isReloading}
               onDelayedSendClick={requestDelayedSend}
               sessionPersistenceName={session.sessionPersistenceName}

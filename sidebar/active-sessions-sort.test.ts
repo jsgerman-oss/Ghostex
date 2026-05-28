@@ -51,6 +51,37 @@ describe("createDisplaySessionLayout", () => {
     ]);
   });
 
+  test("should place pinned sessions above browser and activity ordering", () => {
+    const layout = createDisplaySessionLayout({
+      sessionIdsByGroup: {
+        "group-1": ["session-1", "session-2", "session-3", "session-4", "session-5"],
+      },
+      sessionsById: {
+        "session-1": createSession("session-1", "2026-04-07T12:00:00.000Z", "attention"),
+        "session-2": createSession("session-2", "2026-04-07T09:00:00.000Z", "idle", {
+          sessionKind: "browser",
+        }),
+        "session-3": createSession("session-3", "2026-04-07T08:00:00.000Z", "idle", {
+          isPinned: true,
+        }),
+        "session-4": createSession("session-4", "2026-04-07T11:00:00.000Z", "working", {
+          isPinned: true,
+        }),
+        "session-5": createSession("session-5", "2026-04-07T10:00:00.000Z", "working"),
+      },
+      sortMode: "lastActivity",
+      workspaceGroupIds: ["group-1"],
+    });
+
+    expect(layout.sessionIdsByGroup["group-1"]).toEqual([
+      "session-3",
+      "session-4",
+      "session-2",
+      "session-1",
+      "session-5",
+    ]);
+  });
+
   test("should keep groups manual while sorting sessions in each group by last activity", () => {
     const layout = createDisplaySessionLayout({
       sessionIdsByGroup: {
@@ -182,7 +213,7 @@ function createSession(
   sessionId: string,
   lastInteractionAt: string | undefined,
   activity: SidebarSessionItem["activity"] = "idle",
-  options: Pick<SidebarSessionItem, "kind" | "sessionKind"> = {},
+  options: Pick<SidebarSessionItem, "isPinned" | "kind" | "sessionKind"> = {},
 ): SidebarSessionItem {
   return {
     activity,

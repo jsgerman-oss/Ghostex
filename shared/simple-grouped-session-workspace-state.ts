@@ -640,6 +640,36 @@ export function setSessionFavoriteInSimpleWorkspace(
   }));
 }
 
+export function setSessionPinnedInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+  pinned: boolean,
+): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const owningGroup = getGroupForSession(normalizedSnapshot, sessionId);
+  if (!owningGroup) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  const currentSession = owningGroup.snapshot.sessions.find(
+    (session) => session.sessionId === sessionId,
+  );
+  if (!currentSession || currentSession.isPinned === pinned) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  /**
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * Pinning belongs to the session record inside its project workspace. Keep
+   * the mutation narrow so pin/unpin updates live sidebar ordering without
+   * changing focus, group membership, or favorite state.
+   */
+  return updateSession(normalizedSnapshot, sessionId, (session) => ({
+    ...session,
+    isPinned: pinned,
+  }));
+}
+
 export function setGroupSleepingInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   groupId: string,

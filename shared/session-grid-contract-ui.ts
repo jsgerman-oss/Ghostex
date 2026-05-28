@@ -129,6 +129,13 @@ export function createSidebarSessionItems(
      * Unfavorite after publish.
      */
     isFavorite: session.isFavorite === true,
+    /**
+     * CDXC:PinnedSessions 2026-05-28-12:04:
+     * Project the canonical pinned flag into sidebar items separately from
+     * favorite state so live pinned ordering and favorite history behavior stay
+     * independent.
+     */
+    isPinned: session.isPinned === true,
     isFocused: snapshot.focusedSessionId === session.sessionId,
     isPoppedOut: session.isSleeping === true ? undefined : session.isPoppedOut === true || undefined,
     isSleeping: session.isSleeping === true,

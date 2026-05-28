@@ -153,6 +153,13 @@ export type SidebarSessionItem = {
   isReloading?: boolean;
   lifecycleState?: SessionLifecycleState;
   isFavorite?: boolean;
+  /**
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * Sidebar rows carry project-local pin state so the React display sorter can
+   * keep pinned sessions at the top of their project and render pin chrome
+   * without overloading Favorite.
+   */
+  isPinned?: boolean;
   lastInteractionAt?: string;
   sessionId: string;
   sessionNumber?: string;
@@ -1024,6 +1031,11 @@ export type SidebarToExtensionMessage =
   | {
       favorite: boolean;
       type: "setSessionFavorite";
+      sessionId: string;
+    }
+  | {
+      pinned: boolean;
+      type: "setSessionPinned";
       sessionId: string;
     }
   | {

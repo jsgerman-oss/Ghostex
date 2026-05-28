@@ -23,6 +23,7 @@ import {
   reorderSessionInPaneTabGroupInSimpleWorkspace,
   rotatePaneLayoutClockwiseInSimpleWorkspace,
   setSessionFavoriteInSimpleWorkspace,
+  setSessionPinnedInSimpleWorkspace,
   setGroupSleepingInSimpleWorkspace,
   setSessionSleepingInSimpleWorkspace,
   setT3SessionMetadataInSimpleWorkspace,
@@ -3194,6 +3195,41 @@ describe("setSessionFavoriteInSimpleWorkspace", () => {
     expect(result.changed).toBe(true);
     expect(result.snapshot.groups[0]?.snapshot.sessions[1]?.isFavorite).toBe(true);
     expect(result.snapshot.groups[0]?.snapshot.sessions[0]?.isFavorite).toBeUndefined();
+  });
+});
+
+describe("setSessionPinnedInSimpleWorkspace", () => {
+  test("should persist the pinned flag on the target session without changing favorite state", () => {
+    const snapshot = createWorkspaceSnapshot({
+      activeGroupId: DEFAULT_MAIN_GROUP_ID,
+      groups: [
+        {
+          groupId: DEFAULT_MAIN_GROUP_ID,
+          snapshot: {
+            focusedSessionId: sessionIdForDisplay(0),
+            fullscreenRestoreVisibleCount: undefined,
+            sessions: [
+              createSessionRecord(1, 0),
+              { ...createSessionRecord(2, 1), isFavorite: true },
+            ],
+            viewMode: "grid",
+            visibleCount: 2,
+            visibleSessionIds: [sessionIdForDisplay(0), sessionIdForDisplay(1)],
+          },
+          title: "Main",
+        },
+      ],
+      nextGroupNumber: 2,
+      nextSessionDisplayId: 2,
+      nextSessionNumber: 3,
+    });
+
+    const result = setSessionPinnedInSimpleWorkspace(snapshot, sessionIdForDisplay(1), true);
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.sessions[1]?.isPinned).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.sessions[1]?.isFavorite).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.sessions[0]?.isPinned).toBeUndefined();
   });
 });
 

@@ -1,4 +1,11 @@
-import { IconClock, IconLoader2, IconTerminal2, IconWorld, IconX } from "@tabler/icons-react";
+import {
+  IconClock,
+  IconLoader2,
+  IconPinned,
+  IconTerminal2,
+  IconWorld,
+  IconX,
+} from "@tabler/icons-react";
 import {
   cloneElement,
   useEffect,
@@ -580,6 +587,7 @@ type SessionAgentIconProps = {
   delayedSendRemainingLabel?: string;
   faviconDataUrl?: string;
   isFavorite?: boolean;
+  isPinned?: boolean;
   isGeneratingFirstPromptTitle?: boolean;
   isReloading?: boolean;
   sessionPersistenceName?: string;
@@ -693,12 +701,13 @@ export function SessionFloatingAgentIcon({
   delayedSendRemainingLabel,
   faviconDataUrl,
   isFavorite = false,
+  isPinned = false,
   onDelayedSendClick,
   sessionPersistenceName,
   sessionPersistenceProvider,
   showTerminalIcon = false,
 }: SessionAgentIconProps & { onDelayedSendClick?: () => void }) {
-  if (delayedSendRemainingLabel) {
+  if (delayedSendRemainingLabel && !isPinned) {
     return (
       <DelayedSendSidebarIcon
         className="session-floating-agent-tabler-icon session-delayed-send-agent-icon"
@@ -710,6 +719,15 @@ export function SessionFloatingAgentIcon({
 
   return (
     <>
+      {delayedSendRemainingLabel ? (
+        <DelayedSendSidebarIcon
+          className="session-floating-agent-tabler-icon session-delayed-send-agent-icon"
+          onClick={onDelayedSendClick}
+          remainingLabel={delayedSendRemainingLabel}
+        />
+      ) : isPinned ? (
+        <PinnedSessionSidebarIcon />
+      ) : null}
       <SessionAgentIconDecoration
         agentIcon={agentIcon}
         className="session-floating-agent-icon"
@@ -725,6 +743,23 @@ export function SessionFloatingAgentIcon({
         slot="floating"
       />
     </>
+  );
+}
+
+function PinnedSessionSidebarIcon() {
+  /**
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * Pinned rows need a persistent left-side pin glyph while idle, but that
+   * glyph must share the existing agent-icon slot so hover can reveal the
+   * agent/browser/terminal identity without adding another leading column.
+   */
+  return (
+    <IconPinned
+      aria-hidden="true"
+      className="session-floating-agent-tabler-icon session-pinned-agent-icon"
+      size={15}
+      stroke={1.9}
+    />
   );
 }
 

@@ -24,7 +24,7 @@ export function createDisplaySessionLayout({
   const manualSessionIdsByGroup = Object.fromEntries(
     workspaceGroupIds.map((groupId) => [
       groupId,
-      orderBrowserSessionsFirst(sessionIdsByGroup[groupId] ?? [], sessionsById),
+      orderProjectSessionsForDisplay(sessionIdsByGroup[groupId] ?? [], sessionsById),
     ]),
   );
   if (sortMode === "manual") {
@@ -37,9 +37,10 @@ export function createDisplaySessionLayout({
   const sortedSessionIdsByGroup = Object.fromEntries(
     workspaceGroupIds.map((groupId) => [
       groupId,
-      orderBrowserSessionsFirst(
-        sortSessionIdsByLastActivity(manualSessionIdsByGroup[groupId] ?? [], sessionsById),
+      orderProjectSessionsForDisplay(
+        sessionIdsByGroup[groupId] ?? [],
         sessionsById,
+        { sortUnpinnedByLastActivity: true },
       ),
     ]),
   );
@@ -55,6 +56,35 @@ export function getDisplaySessionIdsInOrder(options: CreateDisplaySessionLayoutO
   return displayLayout.groupIds.flatMap(
     (groupId) => displayLayout.sessionIdsByGroup[groupId] ?? [],
   );
+}
+
+function orderProjectSessionsForDisplay(
+  sessionIds: readonly string[],
+  sessionsById: Record<string, SidebarSessionItem>,
+  options: { sortUnpinnedByLastActivity?: boolean } = {},
+): string[] {
+  /**
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * Pinned sessions must stay at the top of their owning project regardless of
+   * the active session sort mode. Preserve the existing order inside pinned and
+   * unpinned partitions so users can rearrange pinned rows while non-pinned
+   * activity/browser ordering remains predictable.
+   */
+  const pinnedSessionIds: string[] = [];
+  const otherSessionIds: string[] = [];
+
+  for (const sessionId of sessionIds) {
+    if (sessionsById[sessionId]?.isPinned === true) {
+      pinnedSessionIds.push(sessionId);
+    } else {
+      otherSessionIds.push(sessionId);
+    }
+  }
+
+  const orderedOtherSessionIds = options.sortUnpinnedByLastActivity
+    ? sortSessionIdsByLastActivity(otherSessionIds, sessionsById)
+    : otherSessionIds;
+  return [...pinnedSessionIds, ...orderBrowserSessionsFirst(orderedOtherSessionIds, sessionsById)];
 }
 
 function sortSessionIdsByLastActivity(

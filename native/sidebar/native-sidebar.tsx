@@ -146,6 +146,7 @@ import {
   setBrowserSessionUrlInSimpleWorkspace,
   setSessionFavoriteInSimpleWorkspace,
   setSessionLifecycleTimestampsInSimpleWorkspace,
+  setSessionPinnedInSimpleWorkspace,
   setSessionPoppedOutInSimpleWorkspace,
   setSessionSleepingInSimpleWorkspace,
   setSessionTitleInSimpleWorkspace,
@@ -3682,11 +3683,13 @@ function parseDuFolderStatLine(
 }
 
 function startFirstPromptAutoRenameMonitor(): void {
-  void ensureNativeAgentFirstPromptHooks().catch((error) => {
-    appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.hookInstallFailed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
+  /**
+   * CDXC:IntegrationsConsent 2026-05-28-12:07:
+   * App startup must not install or mutate agent hook/config files without
+   * explicit user consent. First-prompt auto-rename may poll hook state written
+   * by already-installed hooks, but hook installation is only triggered by the
+   * Install Hooks action in first-launch setup or Settings > Integrations.
+   */
   void pollNativeFirstPromptAutoRenameSessions().catch((error) => {
     appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.pollFailed", {
       error: error instanceof Error ? error.message : String(error),
@@ -18584,6 +18587,33 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         publish();
         return { ok: true, state: summarizeCliState() };
       }
+      case "pinSession": {
+        const session = requireCliSession(payload);
+        const reference = resolveSidebarSessionReference(session.sessionId);
+        const sessionRecord = findTerminalSessionInProject(reference.project, reference.sessionId);
+        if (sessionRecord?.surface === "commands") {
+          updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+            ...panel,
+            sessions: panel.sessions.map((candidate) =>
+              candidate.sessionId === reference.sessionId
+                ? { ...candidate, isPinned: payload.pinned !== false }
+                : candidate,
+            ),
+          }));
+        } else {
+          updateProjectWorkspace(
+            reference.project.projectId,
+            (workspace) =>
+              setSessionPinnedInSimpleWorkspace(
+                workspace,
+                reference.sessionId,
+                payload.pinned !== false,
+              ).snapshot,
+          );
+        }
+        publish();
+        return { ok: true, state: summarizeCliState() };
+      }
       case "sendText": {
         const session = requireCliSession(payload);
         postNative({
@@ -23608,6 +23638,30 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
             reference.project.projectId,
             (workspace) =>
               setSessionFavoriteInSimpleWorkspace(workspace, reference.sessionId, message.favorite)
+                .snapshot,
+          );
+        }
+      }
+      publish();
+      return;
+    case "setSessionPinned":
+      {
+        const reference = resolveSidebarSessionReference(message.sessionId);
+        const session = findTerminalSessionInProject(reference.project, reference.sessionId);
+        if (session?.surface === "commands") {
+          updateProjectCommandsPanel(reference.project.projectId, (panel) => ({
+            ...panel,
+            sessions: panel.sessions.map((candidate) =>
+              candidate.sessionId === reference.sessionId
+                ? { ...candidate, isPinned: message.pinned }
+                : candidate,
+            ),
+          }));
+        } else {
+          updateProjectWorkspace(
+            reference.project.projectId,
+            (workspace) =>
+              setSessionPinnedInSimpleWorkspace(workspace, reference.sessionId, message.pinned)
                 .snapshot,
           );
         }

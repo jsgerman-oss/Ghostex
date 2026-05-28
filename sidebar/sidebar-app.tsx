@@ -1825,6 +1825,38 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     }
 
     if (!isManualActiveSessionsSort) {
+      if (sessionsById[sourceData.sessionId]?.isPinned === true) {
+        const authoritativeSessionIds = authoritativeSessionIdsByGroup[nextGroupId] ?? [];
+        const previousSessionIds = previousSessionIdsByGroup[nextGroupId] ?? [];
+        const nextDisplaySessionIds = nextSessionIdsByGroup[nextGroupId] ?? [];
+        const nextPinnedSessionIds = nextDisplaySessionIds.filter(
+          (sessionId) => sessionsById[sessionId]?.isPinned === true,
+        );
+        const previousPinnedSessionIds = previousSessionIds.filter(
+          (sessionId) => sessionsById[sessionId]?.isPinned === true,
+        );
+        if (
+          !haveSameSessionOrder(previousPinnedSessionIds, nextPinnedSessionIds) &&
+          haveSameSessionSet(previousPinnedSessionIds, nextPinnedSessionIds)
+        ) {
+          /**
+           * CDXC:PinnedSessions 2026-05-28-12:04:
+           * Last-activity mode still needs pinned rows to be manually
+           * rearrangeable within a project. Persist only the pinned partition
+           * order, then keep non-pinned sessions in their authoritative order
+           * so activity sorting remains display-only for the rest of the group.
+           */
+          vscode.postMessage({
+            groupId: nextGroupId,
+            sessionIds: createPinnedFirstSessionOrder(
+              authoritativeSessionIds.length > 0 ? authoritativeSessionIds : previousSessionIds,
+              nextPinnedSessionIds,
+              sessionsById,
+            ),
+            type: "syncSessionOrder",
+          });
+        }
+      }
       return;
     }
 
@@ -3268,6 +3300,31 @@ function haveSameSessionOrder(left: readonly string[], right: readonly string[])
   }
 
   return left.every((sessionId, index) => sessionId === right[index]);
+}
+
+function haveSameSessionSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const rightIds = new Set(right);
+  return left.every((sessionId) => rightIds.has(sessionId));
+}
+
+function createPinnedFirstSessionOrder(
+  previousSessionIds: readonly string[],
+  pinnedSessionIds: readonly string[],
+  sessionsById: Record<string, { isPinned?: boolean } | undefined>,
+): string[] {
+  const pinnedSessionIdSet = new Set(pinnedSessionIds);
+  const unpinnedSessionIds = previousSessionIds.filter(
+    (sessionId) => sessionsById[sessionId]?.isPinned !== true,
+  );
+
+  return [
+    ...pinnedSessionIds.filter((sessionId) => pinnedSessionIdSet.has(sessionId)),
+    ...unpinnedSessionIds,
+  ];
 }
 
 function findCreatedGroupId(

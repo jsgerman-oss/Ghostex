@@ -812,6 +812,17 @@
   width: calc(17px * var(--sidebar-density-scale));
 }
 
+.session-pinned-agent-icon {
+  /*
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * Pinned sessions use the existing leading agent slot for the idle pin glyph
+   * so project rows gain a persistent pinned affordance without shifting card
+   * text or adding a second icon column.
+   */
+  color: color-mix(in srgb, #ffdf75 76%, #c78b12 24%);
+  opacity: 1;
+}
+
 .session-frame[data-dragging="true"] .session-delayed-send-agent-icon {
   opacity: 0 !important;
 }
@@ -1054,6 +1065,19 @@
 .session-frame:hover .session-floating-reloading-icon,
 .session-frame:hover .session-persistence-provider-badge[data-slot="floating"] {
   opacity: 0.74;
+}
+
+.session-frame[data-pinned="true"]:is(:hover, :has(.session:hover), :has(.session:focus-visible), :has(.session:focus-within))
+  .session-pinned-agent-icon,
+.session-frame[data-pinned="true"]:is(:hover, :has(.session:hover), :has(.session:focus-visible), :has(.session:focus-within))
+  .session-delayed-send-agent-icon {
+  /*
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * A pinned row shows the pin at rest, or the delayed-send clock at rest when
+   * a timer exists. Hover/focus should reveal the session's agent identity in
+   * that same left slot, so suppress the pin/timer only for that interaction.
+   */
+  opacity: 0 !important;
 }
 
 .session-frame:hover .session-floating-agent-icon[data-favorite="true"],
@@ -1856,6 +1880,13 @@
   opacity: 1 !important;
 }
 
+.session-frame[data-pinned="true"][data-agent-icon-hover-only="true"]:not(:hover):not(
+    :has(.session:hover)
+  ):not(:has(.session:focus-visible)):not(:has(.session:focus-within))
+  .session-pinned-agent-icon {
+  opacity: 1 !important;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-floating-agent-tabler-icon.session-delayed-send-agent-icon {
   align-items: center;
@@ -1875,6 +1906,35 @@
   > svg {
   height: 18px;
   width: 18px;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-pinned-agent-icon {
+  color: color-mix(in srgb, #ffdf75 76%, #c78b12 24%);
+  height: var(--reference-session-icon-size);
+  left: var(--reference-session-leading-inset);
+  opacity: 1;
+  top: 50%;
+  translate: 0 -50%;
+  width: var(--reference-session-icon-size);
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-pinned="true"]:is(
+    :hover,
+    :has(.session:hover),
+    :has(.session:focus-visible),
+    :has(.session:focus-within)
+  )
+  .session-pinned-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-pinned="true"]:is(
+    :hover,
+    :has(.session:hover),
+    :has(.session:focus-visible),
+    :has(.session:focus-within)
+  )
+  .session-delayed-send-agent-icon {
+  opacity: 0 !important;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot {

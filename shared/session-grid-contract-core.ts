@@ -118,6 +118,13 @@ export type BaseSessionRecord = {
   alias: string;
   isFavorite?: boolean;
   /**
+   * CDXC:PinnedSessions 2026-05-28-12:04:
+   * Pinned sessions are project-scoped ordering state, separate from Favorite
+   * so pinning a live sidebar row does not affect previous-session filters or
+   * favorite auto-sleep policy.
+   */
+  isPinned?: boolean;
+  /**
    * CDXC:PanePopOut 2026-05-11-09:35
    * Popped-out panes keep their terminal/browser/T3 runtime alive in a native
    * ghostex window while the original workspace slot stays visible as a reattach

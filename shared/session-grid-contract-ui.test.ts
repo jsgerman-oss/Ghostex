@@ -52,6 +52,25 @@ describe("createSidebarSessionItems", () => {
     expect(items[1]?.isFavorite).toBe(false);
   });
 
+  test("should expose pinned state through sidebar session items", () => {
+    const pinnedSession = {
+      ...createSessionRecord(1, 0, { title: "Pinned plan" }),
+      isPinned: true,
+    };
+    const normalSession = createSessionRecord(2, 1, { title: "Normal plan" });
+
+    const items = createSidebarSessionItems({
+      focusedSessionId: "session-1",
+      sessions: [pinnedSession, normalSession],
+      viewMode: "grid",
+      visibleCount: 2,
+      visibleSessionIds: ["session-1", "session-2"],
+    });
+
+    expect(items[0]?.isPinned).toBe(true);
+    expect(items[1]?.isPinned).toBe(false);
+  });
+
   test("should expose captured agent session ids through sidebar session items", () => {
     const items = createSidebarSessionItems({
       focusedSessionId: "session-1",
