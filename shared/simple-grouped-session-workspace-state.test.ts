@@ -15,6 +15,7 @@ import {
   focusSessionExclusivelyInSimpleWorkspace,
   focusGroupInSimpleWorkspace,
   focusSessionInSimpleWorkspace,
+  focusVisibleDirectionInSimpleWorkspace,
   mergeAllTabsInPaneLayoutInSimpleWorkspace,
   moveSessionInPaneLayoutInSimpleWorkspace,
   moveSessionToGroupInSimpleWorkspace,
@@ -185,6 +186,98 @@ describe("createTimestampedSessionId", () => {
   });
 });
 
+describe("focusVisibleDirectionInSimpleWorkspace", () => {
+  test("should move focus between visible pane sessions without changing visible session tabs", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const rightSessionId = sessionIdForDisplay(1);
+    const paneLayout: SessionPaneLayoutNode = {
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        { kind: "leaf", sessionId: rightSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const result = focusVisibleDirectionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: leftSessionId,
+              paneLayout,
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [leftSessionId, rightSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 2,
+        nextSessionNumber: 3,
+      }),
+      "right",
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(result.changed).toBe(true);
+    expect(group?.focusedSessionId).toBe(rightSessionId);
+    expect(group?.paneLayout).toEqual(paneLayout);
+    expect(group?.visibleSessionIds).toEqual([leftSessionId, rightSessionId]);
+  });
+
+  test("should not reveal hidden sessions when directional focus leaves the visible pane set", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const focusedSessionId = sessionIdForDisplay(1);
+    const hiddenRightSessionId = sessionIdForDisplay(2);
+    const paneLayout: SessionPaneLayoutNode = {
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        { kind: "leaf", sessionId: focusedSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const result = focusVisibleDirectionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId,
+              paneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [leftSessionId, focusedSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      "right",
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(result.changed).toBe(false);
+    expect(group?.focusedSessionId).toBe(focusedSessionId);
+    expect(group?.paneLayout).toEqual(paneLayout);
+    expect(group?.visibleSessionIds).toEqual([leftSessionId, focusedSessionId]);
+    expect(group?.visibleSessionIds).not.toContain(hiddenRightSessionId);
+  });
+});
+
 describe("focusSessionInSimpleWorkspace", () => {
   test("should exit focus mode before focusing a session outside the focused tab group", () => {
     const focusedTabSessionId = sessionIdForDisplay(0);
@@ -345,6 +438,96 @@ describe("focusSessionInSimpleWorkspace", () => {
           kind: "tabs",
           sessionIds: [rightSessionId, rightSiblingSessionId],
         },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should not enter focus mode for a single pane tab group", () => {
+    const firstSessionId = sessionIdForDisplay(0);
+    const secondSessionId = sessionIdForDisplay(1);
+    const result = focusSessionExclusivelyInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: firstSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                activeSessionId: firstSessionId,
+                kind: "tabs",
+                sessionIds: [firstSessionId, secondSessionId],
+              },
+              sessions: [createSessionRecord(1, 0), createSessionRecord(2, 1)],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [firstSessionId, secondSessionId],
+            },
+            title: "Main",
+          },
+        ],
+      }),
+      secondSessionId,
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(group?.focusedSessionId).toBe(secondSessionId);
+    expect(group?.fullscreenRestoreVisibleCount).toBeUndefined();
+    expect(group?.visibleCount).toBe(2);
+    expect(group?.visibleSessionIds).toEqual([firstSessionId, secondSessionId]);
+    expect(group?.paneLayout).toEqual({
+      activeSessionId: secondSessionId,
+      kind: "tabs",
+      sessionIds: [firstSessionId, secondSessionId],
+    });
+  });
+
+  test("should not enter focus mode when the only other split pane is sleeping", () => {
+    const awakeSessionId = sessionIdForDisplay(0);
+    const sleepingSessionId = sessionIdForDisplay(1);
+    const result = focusSessionExclusivelyInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: awakeSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: awakeSessionId },
+                  { kind: "leaf", sessionId: sleepingSessionId },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                { ...createSessionRecord(2, 1), isSleeping: true },
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [awakeSessionId, sleepingSessionId],
+            },
+            title: "Main",
+          },
+        ],
+      }),
+      awakeSessionId,
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(group?.focusedSessionId).toBe(awakeSessionId);
+    expect(group?.fullscreenRestoreVisibleCount).toBeUndefined();
+    expect(group?.visibleCount).toBe(2);
+    expect(group?.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: awakeSessionId },
+        { kind: "leaf", sessionId: sleepingSessionId },
       ],
       direction: "horizontal",
       kind: "split",

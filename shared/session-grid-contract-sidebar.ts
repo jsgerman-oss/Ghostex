@@ -239,6 +239,14 @@ export type SidebarSessionGroup = {
    * and route its add button to creating a new chat folder.
    */
   isChatCollection?: boolean;
+  /**
+   * CDXC:SessionFocusMode 2026-05-28-12:52:
+   * Focus is a split-pane zoom, not a tab selector. Sidebar groups must carry actual pane topology so session context menus can hide Focus when a project has only one pane, even if that pane has multiple tabs.
+   *
+   * CDXC:SessionFocusMode 2026-05-28-15:35:
+   * The topology signal must reflect awake rendered pane owners, not only persisted paneLayout children, so sleeping-only split panes do not leave Focus visible while the user sees one native pane.
+   */
+  canFocusMode?: boolean;
   isFocusModeActive: boolean;
   layoutVisibleCount: VisibleSessionCount;
   projectContext?: {

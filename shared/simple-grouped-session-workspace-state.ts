@@ -13,6 +13,8 @@ import {
   getSlotPosition,
   type GroupedSessionWorkspaceSnapshot,
   type SessionGroupRecord,
+  type SessionGridDirection,
+  type SessionGridSnapshot,
   type SessionPaneLayoutNode,
   type SessionPaneSplitDirection,
   type SessionRecord,
@@ -25,6 +27,7 @@ import {
   type CreateSessionRecordOptions,
 } from "./session-grid-contract";
 import { normalizeWorkspaceSessionDisplayIds } from "./grouped-session-workspace-state-helpers";
+import { focusVisibleDirectionInSnapshot } from "./session-grid-state-create-focus";
 import { normalizeSessionRecord, reindexSessionsInOrder } from "./session-grid-state-helpers";
 import { reorderGroupSessions } from "./session-order-reorder";
 import { normalizeT3SessionMetadata } from "./t3-session-metadata";
@@ -254,6 +257,36 @@ export function focusGroupByIndexInSimpleWorkspace(
   return focusGroupInSimpleWorkspace(snapshot, targetGroup.groupId);
 }
 
+export function focusVisibleDirectionInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  direction: SessionGridDirection,
+): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const activeGroup = getActiveGroup(normalizedSnapshot);
+  if (!activeGroup) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  const result = focusVisibleDirectionInSnapshot(activeGroup.snapshot, direction);
+  if (!result.changed) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  /**
+   * CDXC:PaneFocus 2026-05-28-14:29:
+   * Native macOS Cmd+Alt+Arrow focus is constrained to the active group's visible pane set.
+   * Preserve visibleSessionIds exactly so directional focus never replaces a visible native session tab with a hidden/background session.
+   */
+  const nextSnapshot = updateGroup(normalizedSnapshot, activeGroup.groupId, (group) => ({
+    ...group,
+    snapshot: result.snapshot,
+  }));
+  return {
+    changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
+    snapshot: nextSnapshot,
+  };
+}
+
 export function focusSessionInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,
@@ -353,6 +386,17 @@ export function focusSessionExclusivelyInSimpleWorkspace(
   const focusedSnapshot = focusedResult.snapshot;
   const owningGroup = getGroupForSession(focusedSnapshot, sessionId);
   if (!owningGroup) {
+    return focusedResult;
+  }
+  if (!hasMultiplePaneOwners(owningGroup.snapshot)) {
+    /**
+     * CDXC:SessionFocusMode 2026-05-28-09:41:
+     * Double-click Focus is only meaningful when a project has split panes to collapse.
+     * A single pane may contain multiple top tabs, but focusing it should stay a normal tab selection without creating reversible focus mode or an Exit focus titlebar button.
+     *
+     * CDXC:SessionFocusMode 2026-05-28-15:35:
+     * Sleeping split panes are persisted topology, not rendered panes. If every other pane owner is sleeping, Focus should stay a normal selection because the user visually has one pane and there is nothing visible to zoom.
+     */
     return focusedResult;
   }
   const restoreVisibleCount =
@@ -2839,6 +2883,46 @@ function getPaneLayoutSessionIds(node: SessionPaneLayoutNode | undefined): strin
       return node.sessionIds;
     case "split":
       return node.children.flatMap((child) => getPaneLayoutSessionIds(child));
+  }
+}
+
+export function hasMultiplePaneOwners(snapshot: SessionGridSnapshot): boolean {
+  const awakeSessionIds = new Set(
+    snapshot.sessions
+      .filter((session) => session.isSleeping !== true)
+      .map((session) => session.sessionId),
+  );
+  const paneOwnerSessionIds = getRenderedPaneOwnerSessionIds(
+    snapshot.paneLayout,
+    awakeSessionIds,
+  );
+  if (paneOwnerSessionIds.length > 0) {
+    return paneOwnerSessionIds.length > 1;
+  }
+  return snapshot.visibleSessionIds.filter((sessionId) => awakeSessionIds.has(sessionId)).length > 1;
+}
+
+function getRenderedPaneOwnerSessionIds(
+  node: SessionPaneLayoutNode | undefined,
+  awakeSessionIds: ReadonlySet<string>,
+): string[] {
+  if (!node) {
+    return [];
+  }
+  switch (node.kind) {
+    case "leaf":
+      return awakeSessionIds.has(node.sessionId) ? [node.sessionId] : [];
+    case "tabs": {
+      const activeSessionId =
+        node.activeSessionId && awakeSessionIds.has(node.activeSessionId)
+          ? node.activeSessionId
+          : node.sessionIds.find((sessionId) => awakeSessionIds.has(sessionId));
+      return activeSessionId ? [activeSessionId] : [];
+    }
+    case "split":
+      return node.children.flatMap((child) =>
+        getRenderedPaneOwnerSessionIds(child, awakeSessionIds),
+      );
   }
 }
 

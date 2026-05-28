@@ -73,6 +73,46 @@ export function focusDirectionInSnapshot(
   return focusSessionInSnapshot(normalizedSnapshot, nextSession.sessionId);
 }
 
+export function focusVisibleDirectionInSnapshot(
+  snapshot: SessionGridSnapshot,
+  direction: SessionGridDirection,
+): { changed: boolean; snapshot: SessionGridSnapshot } {
+  const normalizedSnapshot = normalizeSessionGridSnapshot(snapshot);
+  const visibleSessionIds = new Set(normalizedSnapshot.visibleSessionIds);
+  const visibleSessions = normalizedSnapshot.sessions.filter((session) =>
+    visibleSessionIds.has(session.sessionId),
+  );
+  const currentSession = normalizedSnapshot.focusedSessionId
+    ? visibleSessions.find((session) => session.sessionId === normalizedSnapshot.focusedSessionId)
+    : undefined;
+  if (!currentSession) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  const nextSession = findDirectionalNeighbor(visibleSessions, currentSession, direction);
+  if (!nextSession) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  /**
+   * CDXC:PaneFocus 2026-05-28-14:29:
+   * macOS directional focus hotkeys are spatial focus moves within the already visible native pane set.
+   * They must not reuse generic session reveal behavior, because that swaps hidden/offscreen sessions into visibleSessionIds and changes the visible session tabs.
+   */
+  return {
+    changed: normalizedSnapshot.focusedSessionId !== nextSession.sessionId,
+    snapshot: normalizeSessionGridSnapshot({
+      ...normalizedSnapshot,
+      focusedSessionId: nextSession.sessionId,
+      paneLayout: setActiveSessionInPaneLayout(
+        normalizedSnapshot.paneLayout,
+        nextSession.sessionId,
+      ),
+      visibleSessionIds: normalizedSnapshot.visibleSessionIds,
+    }),
+  };
+}
+
 export function focusSessionInSnapshot(
   snapshot: SessionGridSnapshot,
   sessionId: string,
@@ -91,4 +131,27 @@ export function focusSessionInSnapshot(
       visibleSessionIds: revealSessionId(normalizedSnapshot, sessionId),
     }),
   };
+}
+
+function setActiveSessionInPaneLayout(
+  layout: SessionGridSnapshot["paneLayout"],
+  sessionId: string,
+): SessionGridSnapshot["paneLayout"] {
+  if (!layout) {
+    return undefined;
+  }
+  if (layout.kind === "tabs") {
+    return layout.sessionIds.includes(sessionId)
+      ? { ...layout, activeSessionId: sessionId }
+      : layout;
+  }
+  if (layout.kind === "split") {
+    return {
+      ...layout,
+      children: layout.children.map(
+        (child) => setActiveSessionInPaneLayout(child, sessionId) ?? child,
+      ),
+    };
+  }
+  return layout;
 }
