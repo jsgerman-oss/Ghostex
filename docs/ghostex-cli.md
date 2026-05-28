@@ -76,7 +76,7 @@ bun run cli -- rename-command s-260427-063318-da1 "Investigate logs"
 
 <!-- CDXC:CliAgentMessaging 2026-05-23-13:18: Cross-session agent orchestration needs visible sidebar sessions only. `send-message <agentId> <text>` creates a normal visible agent session when no target session selector is supplied, sends the message, and returns the new Ghostex id so the creator can read or follow up later. -->
 
-`send-text`, `send-enter`, `send-key`, `send-message`, and `rename-command` accept a session id, numeric alias, quoted title, or `project:title` selector.
+`send-text`, `send-enter`, `send-key`, `send-message`, and `rename-command` accept a session id, numeric alias, provider session name (`g-MMDD-HHMMSS`), `provider/g-MMDD-HHMMSS`, quoted title, or `project:title` selector.
 When `send-message` receives an agent id instead of a matching session selector, it creates a new visible agent session in the sidebar and returns its `ghostexId`.
 
 ## Terminal Readback

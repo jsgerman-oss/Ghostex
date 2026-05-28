@@ -24,6 +24,7 @@ import {
   parseRename,
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
+  resolveListedSessions,
   usage,
 } from "./ghostex-cli.mjs";
 
@@ -198,7 +199,7 @@ describe("ghostex CLI Android remote-session contract", () => {
         skill: "ghostex-browser-use",
         targetDir,
       });
-      expect(skillMarkdown).toContain("Ghostex Browser Use");
+      expect(skillMarkdown).toContain("# ghostex-browser-use");
       expect(skillMarkdown).toContain("ghostex_console_logs");
     } finally {
       await rm(tempDir, { force: true, recursive: true });
@@ -232,7 +233,7 @@ describe("ghostex CLI Android remote-session contract", () => {
         skill: "ghostex-computer-use",
         targetDir,
       });
-      expect(skillMarkdown).toContain("Ghostex Computer Use");
+      expect(skillMarkdown).toContain("# ghostex-computer-use");
       expect(skillMarkdown).toContain("$cua-driver");
     } finally {
       await rm(tempDir, { force: true, recursive: true });
@@ -266,7 +267,7 @@ describe("ghostex CLI Android remote-session contract", () => {
         skill: "ghostex-agent-orchestration",
         targetDir,
       });
-      expect(skillMarkdown).toContain("Ghostex Agent Orchestration");
+      expect(skillMarkdown).toContain("# ghostex-agent-orchestration");
       expect(skillMarkdown).toContain("ghostex --help");
       expect(skillMarkdown).toContain("ghostex read-text <selector> --lines 80 --json");
     } finally {
@@ -301,7 +302,7 @@ describe("ghostex CLI Android remote-session contract", () => {
         targetDir,
       });
       expect(payload.command).toContain("ghostex send-text");
-      expect(skillMarkdown).toContain("Ghostex Generate Title");
+      expect(skillMarkdown).toContain("# ghostex-generate-title");
       expect(skillMarkdown).toContain("under 47 characters");
       expect(skillMarkdown).toContain('ghostex send-text --session-id "$GHOSTEX_SESSION_ID" --text "/rename <generated title>"');
       expect(skillMarkdown).toContain("Do not press Enter");
@@ -570,6 +571,44 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(moveSessionPickerSelection(model, 3, "left")).toBe(0);
     expect(moveSessionPickerSelection(model, 0, "left")).toBe(2);
     expect(moveSessionPickerSelection(model, 3, "right")).toBe(0);
+  });
+
+  test("resolves provider session names for cross-session CLI selectors", async () => {
+    /**
+     * CDXC:CliSessionSelectors 2026-05-28-10:55:
+     * GHOSTEX_SESSION_ID uses the provider persistence name. send-text and other
+     * session bridge commands must resolve that id before title matching so
+     * generate-title can target the current pane without the combined-session id.
+     */
+    const sessions = [
+      {
+        alias: 1,
+        projectName: "zmux",
+        provider: "zmx",
+        providerSessionName: "g-0527-090339",
+        sessionId: "combined-session:project-a:g-0527-090339",
+        title: "Sidebar Max Counter Display",
+      },
+      {
+        alias: 2,
+        projectName: "DockDoor",
+        provider: "zmx",
+        providerSessionName: "g-0528-083815",
+        sessionId: "combined-session:project-b:g-0528-083815",
+        title: "Terminal Session",
+      },
+    ];
+
+    await expect(resolveListedSessions("g-0527-090339", sessions)).resolves.toEqual([sessions[0]]);
+    await expect(resolveListedSessions("zmx/g-0528-083815", sessions)).resolves.toEqual([
+      sessions[1],
+    ]);
+    await expect(
+      resolveListedSessions("combined-session:project-a:g-0527-090339", sessions),
+    ).resolves.toEqual([sessions[0]]);
+    await expect(resolveListedSessions("g-0527-090339", [sessions[0], sessions[0]])).resolves.toEqual(
+      [sessions[0], sessions[0]],
+    );
   });
 
   test("formats compact session rows without field labels", () => {

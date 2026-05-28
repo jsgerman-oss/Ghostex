@@ -2468,7 +2468,7 @@ async function resolveOneListedSession(selector, sessions) {
 async function resolveListedSessions(selector, sessions) {
   const normalizedSelector = selector.trim();
   if (!normalizedSelector) {
-    throw new Error("Provide a session alias, id, title, or project:title selector.");
+    throw new Error("Provide a session alias, id, provider session name, title, or project:title selector.");
   }
   if (/^\d+$/.test(normalizedSelector)) {
     const alias = Number(normalizedSelector);
@@ -2487,6 +2487,17 @@ async function resolveListedSessions(selector, sessions) {
   if (exactId) {
     return [exactId];
   }
+  /**
+   * CDXC:CliSessionSelectors 2026-05-28-10:55:
+   * Terminals export GHOSTEX_SESSION_ID as the provider persistence name
+   * (for example `g-0527-090339`). Cross-session CLI actions must resolve that
+   * id before falling back to title matching so generate-title and agent
+   * orchestration can target the current pane reliably.
+   */
+  const providerMatches = rankProviderSessionMatches(sessions, normalizedSelector);
+  if (providerMatches.length > 0) {
+    return providerMatches;
+  }
   const projectSeparatorIndex = normalizedSelector.indexOf(":");
   if (projectSeparatorIndex > 0) {
     const projectSelector = normalizedSelector.slice(0, projectSeparatorIndex).trim().toLowerCase();
@@ -2501,6 +2512,29 @@ async function resolveListedSessions(selector, sessions) {
     );
   }
   return rankSessionTitleMatches(sessions, normalizedSelector.toLowerCase());
+}
+
+function rankProviderSessionMatches(sessions, selector) {
+  const normalizedSelector = selector.trim();
+  if (!normalizedSelector) {
+    return [];
+  }
+
+  const slashIndex = normalizedSelector.indexOf("/");
+  if (slashIndex > 0) {
+    const provider = normalizedSelector.slice(0, slashIndex).trim().toLowerCase();
+    const providerSessionName = normalizedSelector.slice(slashIndex + 1).trim();
+    if (!provider || !providerSessionName) {
+      return [];
+    }
+    return sessions.filter(
+      (session) =>
+        session.provider?.toLowerCase() === provider &&
+        session.providerSessionName === providerSessionName,
+    );
+  }
+
+  return sessions.filter((session) => session.providerSessionName === normalizedSelector);
 }
 
 function rankSessionTitleMatches(sessions, selector) {
@@ -3346,7 +3380,7 @@ Evidence:
 ${evidenceCommands}
 
 Selectors:
-  <selector> can be an alias, session id, title, or project:title.
+  <selector> can be an alias, session id, provider session name, title, or project:title.
   Numeric aliases come from the last "ghostex sessions" or "gx sessions" list.
   Titles match exact first, then case-insensitive substring.
 
@@ -3561,5 +3595,6 @@ export {
   parseRename,
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
+  resolveListedSessions,
   usage,
 };

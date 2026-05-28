@@ -158,11 +158,18 @@ chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
 # first-launch and Settings can install Ghostex-named agent wrappers without
 # relying on a source checkout, raw zmx, or the lower-level `$cua-driver` skill
 # name.
+# CDXC:AgentSkills 2026-05-28-10:38: Keep bundled Ghostex runtime skills under
+# scripts/skills instead of .agents/skills. Codex discovers .agents/skills
+# directly, so keeping installable source copies there duplicates the same skill
+# beside the user's shared ~/agents/skills install.
+# CDXC:AgentSkills 2026-05-28-13:12: Bundled Ghostex skill titles should match
+# their invocation slugs exactly, such as ghostex-browser-use, so the skill picker
+# does not show a separate marketing-style title from the actual `$skill-name`.
 mkdir -p "$WEB_DIR/cli/skills"
-cp -R "$REPO_ROOT/.agents/skills/ghostex-browser-use" "$WEB_DIR/cli/skills/ghostex-browser-use"
-cp -R "$REPO_ROOT/.agents/skills/ghostex-computer-use" "$WEB_DIR/cli/skills/ghostex-computer-use"
-cp -R "$REPO_ROOT/.agents/skills/ghostex-agent-orchestration" "$WEB_DIR/cli/skills/ghostex-agent-orchestration"
-cp -R "$REPO_ROOT/.agents/skills/ghostex-generate-title" "$WEB_DIR/cli/skills/ghostex-generate-title"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-browser-use" "$WEB_DIR/cli/skills/ghostex-browser-use"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-computer-use" "$WEB_DIR/cli/skills/ghostex-computer-use"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-agent-orchestration" "$WEB_DIR/cli/skills/ghostex-agent-orchestration"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-generate-title" "$WEB_DIR/cli/skills/ghostex-generate-title"
 # CDXC:ZmxPersistence 2026-05-20-09:57: zmx pane refresh is now a zmx IPC feature, so Ghostex must bundle the pinned submodule binary instead of depending on whichever zmx happens to be on PATH. Build the submodule for the requested macOS architecture and copy it into app resources where TerminalWorkspaceView can launch it directly.
 if [[ ! -f "$ZMX_ROOT/build.zig" ]]; then
 	cat >&2 <<EOF
