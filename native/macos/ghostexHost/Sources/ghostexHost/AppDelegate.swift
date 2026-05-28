@@ -34,6 +34,12 @@ private let ghostexAppTitlebarHeight: CGFloat = 35
  non-flipped AppKit titlebar coordinate systems apply the same requirement.
  */
 private let ghostexTrafficLightVisualDownOffset: CGFloat = 2
+private let ghostexOSIntegrationEditorExtensions = [
+  "txt", "md", "markdown", "json", "jsonc", "yaml", "yml", "toml", "ini", "env", "xml", "csv",
+  "html", "css", "scss", "js", "jsx", "ts", "tsx", "sh", "bash", "zsh", "fish", "py", "rb", "go",
+  "rs", "swift", "java", "kt", "c", "h", "cpp", "hpp", "cs", "php", "lua", "sql",
+]
+private let ghostexOSIntegrationScriptExtensions = ["command", "tool", "sh"]
 
 private func normalizedNativeProcessEnvironment(overrides: [String: String]?) -> [String: String] {
   /**
@@ -417,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var t3RuntimeLivenessTimer: Timer?
   private var codeServerRuntimeProcess: Process?
   private var codeServerRuntimeStartedAt: Date?
+  private var pendingOSIntegrationCommands: [(action: String, payloadJson: String)] = []
   private lazy var sessionAttentionNotificationController =
     SessionAttentionNotificationController { [weak self] sessionId in
       Task { @MainActor in
@@ -472,10 +479,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       installAppHotkeyEventMonitor()
       startBridge()
       startSparkleBackgroundUpdateCheck()
+      scheduleOSIntegrationFlushRetry()
     }
     tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
       self?.ghostty.appTick()
     }
+  }
+
+  @MainActor func application(_ application: NSApplication, open urls: [URL]) {
+    for url in urls {
+      handleOSIntegrationURL(url)
+    }
+  }
+
+  @MainActor func application(_ sender: NSApplication, openFiles filenames: [String]) {
+    /**
+     CDXC:OSIntegration 2026-05-27-18:06:
+     Launch Services file/folder opens must enter the same sidebar open-request
+     router as the CLI. Native only captures macOS intake and keeps script/URL
+     prompts in AppKit; React/sidebar remains the owner of project, Quick, and
+     embedded Code state.
+     */
+    let editPaths = filenames.filter { !presentScriptOpenDialogIfNeeded(path: $0) }
+    if !editPaths.isEmpty {
+      dispatchOSIntegrationCommand(
+        action: "openPaths",
+        payload: [
+          "mode": "open",
+          "targets": editPaths.map { ["path": $0, "raw": $0] },
+        ])
+    }
+    sender.reply(toOpenOrPrint: .success)
+  }
+
+  @MainActor func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+    if presentScriptOpenDialogIfNeeded(path: filename) {
+      return true
+    }
+    dispatchOSIntegrationCommand(
+      action: "openPaths",
+		      payload: [
+	        "mode": "open",
+	        "targets": [["path": filename, "raw": filename]],
+	      ])
+    return true
   }
 
   func applicationWillTerminate(_ notification: Notification) {
@@ -932,6 +979,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     event: String, details: String?, force: Bool = false
   ) {
     TerminalFocusDebugLog.append(
+      event: event,
+      details: [
+        "details": nullableLogString(details),
+        "source": "native-sidebar",
+      ],
+      force: force)
+  }
+
+  fileprivate static func appendLayoutLayeringDebugLog(
+    event: String, details: String?, force: Bool = false
+  ) {
+    NativeLayoutLayeringDebugLog.append(
       event: event,
       details: [
         "details": nullableLogString(details),
@@ -1952,6 +2011,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       showMessage(command)
     case .appendAgentDetectionDebugLog(let command):
       Self.appendAgentDetectionDebugLog(event: command.event, details: command.details)
+    case .appendLayoutLayeringDebugLog(let command):
+      Self.appendLayoutLayeringDebugLog(
+        event: command.event, details: command.details, force: command.force == true)
     case .appendTerminalFocusDebugLog(let command):
       Self.appendTerminalFocusDebugLog(
         event: command.event, details: command.details, force: command.force == true)
@@ -1986,6 +2048,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       sessionAttentionNotificationController.requestPermissionFromSettings()
     case .openMacOSNotificationSettings:
       SessionAttentionNotificationController.openMacOSNotificationSettings()
+    case .setOSIntegrationDefaults(let command):
+      guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+        showMessage(.init(level: .error, message: "Ghostex bundle identifier is missing."))
+        return
+      }
+      let failures = AppDelegate.osIntegrationDefaultFailures(
+        target: command.target,
+        bundleIdentifier: bundleIdentifier)
+      if failures.isEmpty {
+        showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+      } else {
+        showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
+      }
+      sendOSIntegrationStatus()
+    case .requestOSIntegrationStatus:
+      sendOSIntegrationStatus()
     case .openExternalUrl(let command):
       openExternalUrl(command)
     case .openWorkspaceInFinder(let command):
@@ -2448,6 +2526,305 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
   }
 
+  @MainActor private func handleOSIntegrationURL(_ url: URL) {
+    guard url.scheme?.lowercased() == "ghostex" else {
+      return
+    }
+    let action = (url.host ?? "").lowercased()
+    let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+    let value: (String) -> String? = { name in
+      items.first { $0.name == name }?.value
+    }
+    if action == "terminal" {
+      var payload: [String: Any] = [:]
+      if let command = value("command") {
+        payload["command"] = command
+      }
+      if let cwd = value("cwd") {
+        payload["cwd"] = cwd
+      }
+      if let title = value("title") {
+        payload["title"] = title
+      }
+      dispatchOSIntegrationCommand(action: "createQuickTerminal", payload: payload)
+      return
+    }
+    if action == "open" || action == "edit" {
+      let path = value("path") ?? value("file")
+      guard let path, !path.isEmpty else {
+        return
+      }
+      var target: [String: Any] = ["path": path, "raw": path]
+      if let line = value("line").flatMap(Int.init) {
+        target["line"] = line
+      }
+      if let column = value("column").flatMap(Int.init) {
+        target["column"] = column
+      }
+      dispatchOSIntegrationCommand(
+        action: "openPaths",
+        payload: ["mode": action == "edit" ? "edit" : "open", "targets": [target]])
+    }
+  }
+
+  @MainActor private func presentScriptOpenDialogIfNeeded(path: String) -> Bool {
+    let url = URL(fileURLWithPath: path)
+    guard ["command", "tool", "sh"].contains(url.pathExtension.lowercased()) else {
+      return false
+    }
+    /**
+     CDXC:OSIntegration 2026-05-27-18:06:
+     Opening .command, .tool, or .sh files through Launch Services must never
+     execute immediately. Ghostex asks whether to Run in a Quick terminal, Edit
+     through the normal path classifier, or Cancel.
+     */
+    let alert = NSAlert()
+    alert.messageText = "Open Script"
+    alert.informativeText = path
+    alert.addButton(withTitle: "Run")
+    alert.addButton(withTitle: "Edit")
+    alert.addButton(withTitle: "Cancel")
+    let response = alert.runModal()
+    if response == .alertFirstButtonReturn {
+      dispatchOSIntegrationCommand(
+        action: "createQuickTerminal",
+        payload: [
+          "command": scriptRunCommand(path: path),
+          "cwd": url.deletingLastPathComponent().path,
+          "title": url.lastPathComponent,
+        ])
+      return true
+    }
+    if response == .alertSecondButtonReturn {
+      dispatchOSIntegrationCommand(
+        action: "openPaths",
+        payload: ["mode": "edit", "targets": [["path": path, "raw": path]]])
+      return true
+    }
+    return true
+  }
+
+  private func scriptRunCommand(path: String) -> String {
+    let url = URL(fileURLWithPath: path)
+    let attributes = (try? FileManager.default.attributesOfItem(atPath: path)) ?? [:]
+    let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
+    let executable = permissions & 0o111 != 0
+    if executable {
+      return "./\(Self.shellQuote(url.lastPathComponent))"
+    }
+    let shell = ProcessInfo.processInfo.environment["SHELL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedShell = shell?.isEmpty == false ? shell! : "/bin/zsh"
+    return "\(Self.shellQuote(resolvedShell)) \(Self.shellQuote(path))"
+  }
+
+  private static func shellQuote(_ value: String) -> String {
+    return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+  }
+
+  @MainActor private func setOSIntegrationDefaults(_ command: SetOSIntegrationDefaults) {
+    /**
+     CDXC:OSIntegration 2026-05-27-18:06:
+     Default editor, terminal-link, and script-runner ownership is opt-in from
+     Settings. Registration makes Ghostex available in Open With; this method is
+     the explicit user action that mutates Launch Services defaults.
+     */
+    guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+      showMessage(.init(level: .error, message: "Ghostex bundle identifier is missing."))
+      return
+    }
+    let target = command.target
+    var failures: [String] = []
+    failures.append(contentsOf: Self.osIntegrationDefaultFailures(target: target, bundleIdentifier: bundleIdentifier))
+    if failures.isEmpty {
+      showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+    } else {
+      showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
+    }
+    sendOSIntegrationStatus()
+  }
+
+  @MainActor private func sendOSIntegrationStatus() {
+    /**
+     CDXC:OSIntegration 2026-05-27-18:06:
+     Settings -> OS Integration must show both availability and current
+     Launch Services defaults. Native owns these diagnostics because React
+     cannot reliably inspect Info.plist registrations or LS default handlers
+     from a sandboxed webview.
+     */
+    let bundleIdentifier = Bundle.main.bundleIdentifier ?? ""
+    let event = Self.osIntegrationStatusEvent(bundleIdentifier: bundleIdentifier)
+    bridge?.send(event)
+    (window?.contentView as? ghostexRootView)?.postHostEvent(event)
+  }
+
+  fileprivate static func osIntegrationDefaultFailures(
+    target: String,
+    bundleIdentifier: String
+  ) -> [String] {
+    var failures: [String] = []
+    if target == "editor" || target == "all" {
+      failures.append(contentsOf: setDefaultEditorHandlers(bundleIdentifier: bundleIdentifier))
+    }
+    if target == "terminalLinks" || target == "all" {
+      let status = LSSetDefaultHandlerForURLScheme("ghostex" as CFString, bundleIdentifier as CFString)
+      if status != noErr {
+        failures.append("ghostex:// (\(status))")
+      }
+    }
+    if target == "scriptRunner" || target == "all" {
+      failures.append(contentsOf: setDefaultScriptHandlers(bundleIdentifier: bundleIdentifier))
+    }
+    return failures
+  }
+
+  fileprivate static func setDefaultEditorHandlers(bundleIdentifier: String) -> [String] {
+    return ghostexOSIntegrationEditorExtensions.compactMap { fileExtension in
+      guard let contentType = UTType(filenameExtension: fileExtension) else {
+        return fileExtension
+      }
+      let status = LSSetDefaultRoleHandlerForContentType(
+        contentType.identifier as CFString,
+        LSRolesMask.editor,
+        bundleIdentifier as CFString)
+      return status == noErr ? nil : "\(fileExtension) (\(status))"
+    }
+  }
+
+  fileprivate static func setDefaultScriptHandlers(bundleIdentifier: String) -> [String] {
+    return ghostexOSIntegrationScriptExtensions.compactMap { fileExtension in
+      guard let contentType = UTType(filenameExtension: fileExtension) else {
+        return fileExtension
+      }
+      let status = LSSetDefaultRoleHandlerForContentType(
+        contentType.identifier as CFString,
+        LSRolesMask.shell,
+        bundleIdentifier as CFString)
+      return status == noErr ? nil : "\(fileExtension) (\(status))"
+    }
+  }
+
+  fileprivate static func osIntegrationStatusPayload(bundleIdentifier: String) -> [String: Any] {
+    let info = Bundle.main.infoDictionary ?? [:]
+    let documentTypes = info["CFBundleDocumentTypes"] as? [[String: Any]] ?? []
+    let urlTypes = info["CFBundleURLTypes"] as? [[String: Any]] ?? []
+    let hasEditableRegistration = documentTypes.contains { type in
+      (type["CFBundleTypeRole"] as? String) == "Editor"
+        && ((type["CFBundleTypeExtensions"] as? [String])?.contains("*") == true
+          || ((type["LSItemContentTypes"] as? [String])?.isEmpty == false))
+    }
+    let hasScriptRegistration = documentTypes.contains { type in
+      (type["CFBundleTypeRole"] as? String) == "Shell"
+        && ghostexOSIntegrationScriptExtensions.allSatisfy { fileExtension in
+          (type["CFBundleTypeExtensions"] as? [String])?.contains(fileExtension) == true
+        }
+    }
+    let hasGhostexURLRegistration = urlTypes.contains { type in
+      (type["CFBundleURLSchemes"] as? [String])?.contains("ghostex") == true
+    }
+    let terminalLinkDefaultBundleId =
+      LSCopyDefaultHandlerForURLScheme("ghostex" as CFString)?.takeRetainedValue() as String?
+    return [
+      "bundleIdentifier": bundleIdentifier,
+      "editorDefaults": defaultRoleHandlers(
+        extensions: ["txt", "md", "json", "js", "ts", "sh"],
+        role: LSRolesMask.editor),
+      "generatedAt": ISO8601DateFormatter().string(from: Date()),
+      "registeredEditableFiles": hasEditableRegistration,
+      "registeredGhostexURLScheme": hasGhostexURLRegistration,
+      "registeredScriptRunner": hasScriptRegistration,
+      "scriptDefaults": defaultRoleHandlers(
+        extensions: ghostexOSIntegrationScriptExtensions,
+        role: LSRolesMask.shell),
+      "terminalLinkDefaultBundleId": terminalLinkDefaultBundleId as Any,
+      "type": "osIntegrationStatus",
+    ]
+  }
+
+  fileprivate static func osIntegrationStatusEvent(bundleIdentifier: String) -> HostEvent {
+    return .osIntegrationStatus(
+      payloadJson: jsonObjectString(osIntegrationStatusPayload(bundleIdentifier: bundleIdentifier)))
+  }
+
+  fileprivate static func defaultRoleHandlers(
+    extensions: [String],
+    role: LSRolesMask
+  ) -> [String: String] {
+    var handlers: [String: String] = [:]
+    for fileExtension in extensions {
+      guard let contentType = UTType(filenameExtension: fileExtension) else {
+        continue
+      }
+      if let handler = LSCopyDefaultRoleHandlerForContentType(
+        contentType.identifier as CFString,
+        role
+      )?.takeRetainedValue() as String? {
+        handlers[fileExtension] = handler
+      }
+    }
+    return handlers
+  }
+
+  @MainActor private func dispatchOSIntegrationCommand(action: String, payload: [String: Any]) {
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let payloadJson = String(data: data, encoding: .utf8)
+    else {
+      showMessage(.init(level: .error, message: "Could not encode OS Integration request."))
+      return
+    }
+    dispatchOSIntegrationCommand(action: action, payloadJson: payloadJson)
+  }
+
+  @MainActor private func dispatchOSIntegrationCommand(action: String, payloadJson: String) {
+    guard let sidebarView = (window?.contentView as? ghostexRootView)?.sidebarWebView,
+      let actionJson = Self.javascriptStringLiteral(action),
+      let payloadJsonLiteral = Self.javascriptStringLiteral(payloadJson)
+    else {
+      pendingOSIntegrationCommands.append((action: action, payloadJson: payloadJson))
+      return
+    }
+    let script = """
+      (async () => {
+        const handler = window.__ghostex_NATIVE_CLI__;
+        if (!handler || typeof handler.handleCommand !== 'function') {
+          return 'sidebar-cli-handler-missing';
+        }
+        return JSON.stringify(await handler.handleCommand(\(actionJson), JSON.parse(\(payloadJsonLiteral))));
+      })();
+      """
+    sidebarView.evaluateJavaScript(script) { [weak self] result, error in
+      if let error {
+        Self.logger.error("OS Integration sidebar dispatch failed: \(error.localizedDescription, privacy: .public)")
+        self?.pendingOSIntegrationCommands.append((action: action, payloadJson: payloadJson))
+        return
+      }
+      if let text = result as? String, text.contains(#""ok":false"#) {
+        Self.logger.error("OS Integration sidebar command failed: \(text, privacy: .public)")
+      }
+    }
+  }
+
+  @MainActor private func flushPendingOSIntegrationCommands() {
+    guard !pendingOSIntegrationCommands.isEmpty else {
+      return
+    }
+    let pending = pendingOSIntegrationCommands
+    pendingOSIntegrationCommands.removeAll()
+    for command in pending {
+      dispatchOSIntegrationCommand(action: command.action, payloadJson: command.payloadJson)
+    }
+  }
+
+  @MainActor private func scheduleOSIntegrationFlushRetry() {
+    for delay in [0.5, 1.5, 3.0, 6.0] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        MainActor.assumeIsolated {
+          self?.flushPendingOSIntegrationCommands()
+        }
+      }
+    }
+  }
+
   private static func javascriptStringLiteral(_ value: String) -> String? {
     guard let data = try? JSONEncoder().encode(value) else {
       return nil
@@ -2457,6 +2834,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   fileprivate static func jsonObjectString(_ value: [String: String]) -> String {
     guard let data = try? JSONEncoder().encode(value),
+      let text = String(data: data, encoding: .utf8)
+    else {
+      return #"{"error":"json-encoding-failed"}"#
+    }
+    return text
+  }
+
+  fileprivate static func jsonObjectString(_ value: [String: Any]) -> String {
+    guard JSONSerialization.isValidJSONObject(value),
+      let data = try? JSONSerialization.data(withJSONObject: value),
       let text = String(data: data, encoding: .utf8)
     else {
       return #"{"error":"json-encoding-failed"}"#
@@ -5215,6 +5602,9 @@ final class ghostexRootView: NSView {
       showMessage(command)
     case .appendAgentDetectionDebugLog(let command):
       AppDelegate.appendAgentDetectionDebugLog(event: command.event, details: command.details)
+    case .appendLayoutLayeringDebugLog(let command):
+      AppDelegate.appendLayoutLayeringDebugLog(
+        event: command.event, details: command.details, force: command.force == true)
     case .appendTerminalFocusDebugLog(let command):
       AppDelegate.appendTerminalFocusDebugLog(
         event: command.event, details: command.details, force: command.force == true)
@@ -5260,6 +5650,22 @@ final class ghostexRootView: NSView {
       sessionAttentionNotificationController.requestPermissionFromSettings()
     case .openMacOSNotificationSettings:
       SessionAttentionNotificationController.openMacOSNotificationSettings()
+    case .setOSIntegrationDefaults(let command):
+      guard let bundleIdentifier = Bundle.main.bundleIdentifier else {
+        showMessage(.init(level: .error, message: "Ghostex bundle identifier is missing."))
+        return
+      }
+      let failures = AppDelegate.osIntegrationDefaultFailures(
+        target: command.target,
+        bundleIdentifier: bundleIdentifier)
+      if failures.isEmpty {
+        showMessage(.init(level: .info, message: "Updated macOS OS Integration defaults."))
+      } else {
+        showMessage(.init(level: .error, message: "Could not set defaults: \(failures.joined(separator: ", "))"))
+      }
+      postHostEvent(AppDelegate.osIntegrationStatusEvent(bundleIdentifier: bundleIdentifier))
+    case .requestOSIntegrationStatus:
+      postHostEvent(AppDelegate.osIntegrationStatusEvent(bundleIdentifier: Bundle.main.bundleIdentifier ?? ""))
     case .openExternalUrl(let command):
       openExternalUrl(command)
     case .openWorkspaceInFinder(let command):

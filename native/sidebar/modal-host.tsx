@@ -24,6 +24,10 @@ import { T3ThreadIdModal } from "../../sidebar/t3-thread-id-modal";
 import { FirstLaunchSetupModal } from "../../sidebar/first-launch-setup-modal";
 import { GitFileDiffModal, type GitFileDiffModalDraft } from "../../sidebar/git-file-diff-modal";
 import { GitCommitModal, type GitCommitModalDraft } from "../../sidebar/git-commit-modal";
+import {
+  WorktreeDeleteModal,
+  type WorktreeDeleteModalDraft,
+} from "../../sidebar/worktree-delete-modal";
 import { WorktreeCreateModal } from "../../sidebar/worktree-create-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
 import type {
@@ -31,6 +35,7 @@ import type {
   SidebarAgentHookStatusMessage,
   SidebarGhostexCliStatusMessage,
   SidebarGhostexFolderStatsMessage,
+  SidebarOSIntegrationStatusMessage,
 } from "../../shared/session-grid-contract";
 import {
   getWorkspaceThemeForeground,
@@ -42,6 +47,7 @@ import {
 } from "../../sidebar/app-modal-error-log";
 import { postAppModalHostMessage } from "../../sidebar/app-modal-host-bridge";
 import { useSidebarStore } from "../../sidebar/sidebar-store";
+import { trimPromptEditorTrailingSpaces } from "../../shared/prompt-editor-text";
 import type { WebviewApi } from "../../sidebar/webview-api";
 import "../../sidebar/styles.css";
 
@@ -58,6 +64,7 @@ type AppModalKind =
   | "hotkeys"
   | "gitCommit"
   | "gitFileDiff"
+  | "deleteWorktree"
   | "openTargets"
   | "pinnedPrompts"
   | "floatingPromptEditor"
@@ -76,6 +83,7 @@ type T3BrowserAccessMessage = Extract<ExtensionToSidebarMessage, { type: "showT3
 type AgentsHubCatalogMessage = Extract<ExtensionToSidebarMessage, { type: "agentsHubCatalog" }>;
 type AgentHookStatusMessage = Extract<ExtensionToSidebarMessage, { type: "agentHookStatus" }>;
 type GhostexCliStatusMessage = Extract<ExtensionToSidebarMessage, { type: "ghostexCliStatus" }>;
+type OSIntegrationStatusMessage = Extract<ExtensionToSidebarMessage, { type: "osIntegrationStatus" }>;
 
 type AppModalHostMessage =
   | {
@@ -92,6 +100,7 @@ type AppModalHostMessage =
       filePath?: string;
       gitCommitDraft?: GitCommitModalDraft;
       gitFileDiff?: GitFileDiffModalDraft;
+      worktreeDeleteDraft?: WorktreeDeleteModalDraft;
       initialFrame?: FloatingPromptEditorFrame;
       initialSection?: MainSettingsInitialSectionId;
       initialText?: string;
@@ -489,7 +498,7 @@ function rangeFromPosition(position: MonacoPosition): MonacoRange {
 }
 
 function endPositionAfterInsertedText(start: MonacoPosition, text: string): MonacoPosition {
-  const lines = text.split("\n");
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   if (lines.length === 1) {
     return {
       column: start.column + text.length,
@@ -823,19 +832,42 @@ function FloatingPromptEditorModal({
       return;
     }
 
-    const insertImageMarkdown = (imagePath: string) => {
+    const insertTextIntoEditor = (source: string, text: string) => {
       const monacoEditor = editorRef.current;
       const position = monacoEditor?.getPosition();
       if (!monacoEditor || !position) {
-        return;
+        return false;
       }
-      const markdown = `[Image #${getNextPromptEditorImageIndex(monacoEditor.getValue())}](${imagePath})`;
       const range = monacoEditor.getSelection() ?? rangeFromPosition(position);
       const startPosition = {
         column: range.startColumn,
         lineNumber: range.startLineNumber,
       };
-      const endPosition = endPositionAfterInsertedText(startPosition, markdown);
+      const endPosition = endPositionAfterInsertedText(startPosition, text);
+      monacoEditor.pushUndoStop?.();
+      const didApplyEdit = monacoEditor.executeEdits(source, [
+        {
+          forceMoveMarkers: true,
+          range,
+          text,
+        },
+      ]);
+      if (!didApplyEdit) {
+        return false;
+      }
+      monacoEditor.setPosition?.(endPosition);
+      monacoEditor.revealPositionInCenterIfOutsideViewport?.(endPosition);
+      monacoEditor.pushUndoStop?.();
+      monacoEditor.focus?.();
+      return true;
+    };
+
+    const insertImageMarkdown = (imagePath: string) => {
+      const monacoEditor = editorRef.current;
+      if (!monacoEditor) {
+        return;
+      }
+      const markdown = `[Image #${getNextPromptEditorImageIndex(monacoEditor.getValue())}](${imagePath})`;
       /**
        * CDXC:PromptEditor 2026-05-16-21:21:
        * Pasting an image into the rich prompt editor should insert a Markdown
@@ -847,28 +879,28 @@ function FloatingPromptEditorModal({
        * Native always copies or saves image data under ~/.ghostex/i first so
        * long source paths do not wrap across multiple prompt-editor lines.
        */
-      monacoEditor.pushUndoStop?.();
-      monacoEditor.executeEdits("ghostex-image-paste", [
-        {
-          forceMoveMarkers: true,
-          range,
-          text: markdown,
-        },
-      ]);
-      monacoEditor.setPosition?.(endPosition);
-      monacoEditor.revealPositionInCenterIfOutsideViewport?.(endPosition);
-      monacoEditor.pushUndoStop?.();
-      monacoEditor.focus?.();
+      insertTextIntoEditor("ghostex-image-paste", markdown);
     };
 
     const handlePaste = (event: ClipboardEvent) => {
       if (
         event.defaultPrevented ||
-        !hasImagePastePayload(event) ||
         !containerRef.current ||
         !(event.target instanceof Node) ||
         !containerRef.current.contains(event.target)
       ) {
+        return;
+      }
+      if (!hasImagePastePayload(event)) {
+        const pastedText = event.clipboardData?.getData("text/plain") ?? "";
+        const trimmedText = trimPromptEditorTrailingSpaces(pastedText);
+        if (!pastedText || trimmedText === pastedText) {
+          return;
+        }
+        if (insertTextIntoEditor("ghostex-trimmed-text-paste", trimmedText)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
         return;
       }
       event.preventDefault();
@@ -1439,6 +1471,7 @@ function AppModalHost() {
     firstUserMessage,
     gitCommit,
     gitFileDiff,
+    worktreeDelete,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
     closeGitFileDiff,
@@ -1450,11 +1483,13 @@ function AppModalHost() {
     agentHookStatus,
     ghostexCliStatus,
     ghostexFolderStats,
+    osIntegrationStatus,
     settingsInitialSection,
   } = useModalStateFromNative();
   const [agentHookStatusLoading, setAgentHookStatusLoading] = useState(false);
   const [ghostexCliStatusLoading, setGhostexCliStatusLoading] = useState(false);
   const [ghostexFolderStatsLoading, setGhostexFolderStatsLoading] = useState(false);
+  const [osIntegrationStatusLoading, setOSIntegrationStatusLoading] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
   const agents = useSidebarStore((state) => state.hud.agents);
   const commands = useSidebarStore((state) => state.hud.commands);
@@ -1473,6 +1508,7 @@ function AppModalHost() {
     firstUserMessage,
     gitCommit,
     gitFileDiff,
+    worktreeDelete,
     floatingPromptEditor,
     renameSession,
     settings,
@@ -1555,6 +1591,12 @@ function AppModalHost() {
       setGhostexCliStatusLoading(false);
     }
   }, [ghostexCliStatus]);
+
+  useEffect(() => {
+    if (osIntegrationStatus) {
+      setOSIntegrationStatusLoading(false);
+    }
+  }, [osIntegrationStatus]);
 
   useEffect(() => {
     if (activeModal !== "firstLaunchSetup" && activeModal !== "tipsAndTricks") {
@@ -1759,12 +1801,35 @@ function AppModalHost() {
         isOpen={gitFileDiff !== undefined}
         onClose={closeGitFileDiff}
       />
+      <WorktreeDeleteModal
+        draft={
+          worktreeDelete ?? {
+            branch: null,
+            groupId: "",
+            hasChanges: false,
+            projectId: "",
+            statusSummary: "",
+            worktreeName: "worktree",
+          }
+        }
+        isOpen={activeModal === "deleteWorktree" && worktreeDelete !== undefined}
+        onCancel={closeModal}
+        onCommit={(groupId) => {
+          vscode.postMessage({ groupId, type: "commitWorktreeBeforeDelete" });
+          closeModal();
+        }}
+        onDelete={(projectId) => {
+          vscode.postMessage({ projectId, type: "confirmDeleteWorktree" });
+          closeModal();
+        }}
+      />
       {/*
        * CDXC:Worktrees 2026-05-18-23:07:
        * Creating a project worktree is a full-window modal flow because it selects an agent, collects a first prompt, and can attach image file paths before native creates the branch/worktree.
        */}
       <WorktreeCreateModal
         agents={agents}
+        defaultAgentId={settings?.defaultPromptAgentId}
         isOpen={activeModal === "worktree" && worktree !== undefined}
         onCancel={closeModal}
         onConfirm={(draft) => {
@@ -1833,6 +1898,10 @@ function AppModalHost() {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "installCuaDriver" });
         }}
+        onSetOSIntegrationDefaults={(target) => {
+          setOSIntegrationStatusLoading(true);
+          vscode.postMessage({ target, type: "setOSIntegrationDefaults" });
+        }}
         onPlayCompletionSound={(sound) => {
           vscode.postMessage({ sound, type: "playCompletionSoundPreview" });
         }}
@@ -1872,6 +1941,10 @@ function AppModalHost() {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "requestGhostexCliStatus" });
         }}
+        onRequestOSIntegrationStatus={() => {
+          setOSIntegrationStatusLoading(true);
+          vscode.postMessage({ type: "requestOSIntegrationStatus" });
+        }}
         onInstallAgentHooks={() => {
           setAgentHookStatusLoading(true);
           vscode.postMessage({ type: "installAgentHooks" });
@@ -1887,6 +1960,8 @@ function AppModalHost() {
         ghostexCliStatusLoading={ghostexCliStatusLoading}
         ghostexFolderStats={ghostexFolderStats}
         ghostexFolderStatsLoading={ghostexFolderStatsLoading}
+        osIntegrationStatus={osIntegrationStatus}
+        osIntegrationStatusLoading={osIntegrationStatusLoading}
       />
       <FirstLaunchSetupModal
         agentHookStatus={agentHookStatus}
@@ -2053,6 +2128,7 @@ function useModalStateFromNative() {
   const [firstUserMessage, setFirstUserMessage] = useState<FirstUserMessageModalState>();
   const [gitCommit, setGitCommit] = useState<GitCommitModalDraft>();
   const [gitFileDiff, setGitFileDiff] = useState<GitFileDiffModalDraft>();
+  const [worktreeDelete, setWorktreeDelete] = useState<WorktreeDeleteModalDraft>();
   const [floatingPromptEditor, setFloatingPromptEditor] = useState<FloatingPromptEditorState>();
   const [floatingPromptEditorCloseAndSaveRequestId, setFloatingPromptEditorCloseAndSaveRequestId] =
     useState<string>();
@@ -2063,6 +2139,7 @@ function useModalStateFromNative() {
   const [agentHookStatus, setAgentHookStatus] = useState<AgentHookStatusMessage>();
   const [ghostexCliStatus, setGhostexCliStatus] = useState<GhostexCliStatusMessage>();
   const [ghostexFolderStats, setGhostexFolderStats] = useState<SidebarGhostexFolderStatsMessage>();
+  const [osIntegrationStatus, setOSIntegrationStatus] = useState<OSIntegrationStatusMessage>();
   const [settingsInitialSection, setSettingsInitialSection] =
     useState<MainSettingsInitialSectionId>();
   const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
@@ -2076,12 +2153,14 @@ function useModalStateFromNative() {
     setFirstUserMessage(undefined);
     setGitCommit(undefined);
     setGitFileDiff(undefined);
+    setWorktreeDelete(undefined);
     setFloatingPromptEditor(undefined);
     setRenameSession(undefined);
     setT3BrowserAccess(undefined);
     setT3ThreadId(undefined);
     setWorktree(undefined);
     setGhostexFolderStats(undefined);
+    setOSIntegrationStatus(undefined);
     setAgentsHubCatalog(undefined);
     setSettingsInitialSection(undefined);
   }, []);
@@ -2145,6 +2224,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "firstUserMessage") {
             if (typeof message.message !== "string" || !message.message.trim()) {
               throw new Error("First message modal request is missing message text.");
@@ -2161,6 +2241,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "floatingPromptEditor") {
             if (
               typeof message.requestId !== "string" ||
@@ -2169,6 +2250,7 @@ function useModalStateFromNative() {
             ) {
               throw new Error("Floating prompt editor request is missing required state.");
             }
+            const initialText = trimPromptEditorTrailingSpaces(message.initialText);
             /**
              * CDXC:PromptEditor 2026-05-13-09:48
              * Ctrl+G Monaco prompt editing is rendered in the full-window
@@ -2180,18 +2262,23 @@ function useModalStateFromNative() {
              * Prompt editor buffers are always Markdown, regardless of caller
              * hints, so wrapped prose and Markdown tokenization stay consistent
              * in the floating pane.
+             *
+             * CDXC:PromptEditor 2026-05-28-07:47:
+             * The editor should open with trailing line spaces already removed,
+             * matching paste sanitization so users do not inherit invisible
+             * whitespace from the captured prompt buffer.
              */
             appendPromptEditorDebugLog("react.openMessage", {
               filePath: message.filePath,
               hasInitialFrame: message.initialFrame !== undefined,
-              initialTextLength: message.initialText.length,
+              initialTextLength: initialText.length,
               isPrewarm: message.prewarm === true,
               requestId: message.requestId,
             });
             setFloatingPromptEditor({
               filePath: message.filePath,
               initialFrame: message.initialFrame,
-              initialText: message.initialText,
+              initialText,
               isPrewarm: message.prewarm === true,
               language: "markdown",
               requestId: message.requestId,
@@ -2206,6 +2293,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "delayedSend") {
             if (!message.sessionId) {
               throw new Error("Delayed Send modal request is missing sessionId.");
@@ -2230,6 +2318,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "findPreviousSession") {
             setFindPreviousSession({
               initialQuery:
@@ -2243,6 +2332,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "t3BrowserAccess") {
             if (!message.access) {
               throw new Error("T3 browser access modal request is missing access details.");
@@ -2262,6 +2352,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "t3ThreadId") {
             if (!message.sessionId || typeof message.threadId !== "string") {
               throw new Error("T3 thread id modal request is missing sessionId or threadId.");
@@ -2278,6 +2369,7 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "worktree") {
             setWorktree({
               projectId: typeof message.projectId === "string" ? message.projectId : undefined,
@@ -2291,6 +2383,22 @@ function useModalStateFromNative() {
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
+            setGitCommit(undefined);
+            setWorktreeDelete(undefined);
+          } else if (message.modal === "deleteWorktree") {
+            if (!message.worktreeDeleteDraft) {
+              throw new Error("Delete worktree modal request is missing worktreeDeleteDraft.");
+            }
+            setWorktreeDelete(message.worktreeDeleteDraft);
+            setConfig({});
+            setDelayedSend(undefined);
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
+            setWorktree(undefined);
             setGitCommit(undefined);
           } else if (message.modal === "gitCommit") {
             if (!message.gitCommitDraft) {
@@ -2307,6 +2415,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "gitFileDiff") {
             if (!message.gitFileDiff) {
               throw new Error("Git file diff modal request is missing gitFileDiff.");
@@ -2329,6 +2438,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else if (message.modal === "agentConfig") {
             if (!message.agentDraft) {
               throw new Error("Agent config modal request is missing agentDraft.");
@@ -2342,6 +2452,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           } else {
             setConfig({});
             setDelayedSend(undefined);
@@ -2352,6 +2463,7 @@ function useModalStateFromNative() {
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
+            setWorktreeDelete(undefined);
           }
           if (message.modal === "settings") {
             setGhostexFolderStats(undefined);
@@ -2438,6 +2550,10 @@ function useModalStateFromNative() {
             setGhostexCliStatus(message.message);
             return;
           }
+          if (isOSIntegrationStatusMessage(message.message)) {
+            setOSIntegrationStatus(message.message);
+            return;
+          }
           applySidebarStateMessage(message.message);
         }
       } catch (error) {
@@ -2465,6 +2581,7 @@ function useModalStateFromNative() {
     firstUserMessage,
     gitCommit,
     gitFileDiff,
+    worktreeDelete,
     floatingPromptEditor,
     floatingPromptEditorCloseAndSaveRequestId,
     closeGitFileDiff,
@@ -2476,6 +2593,7 @@ function useModalStateFromNative() {
     agentHookStatus,
     ghostexCliStatus,
     ghostexFolderStats,
+    osIntegrationStatus,
     settingsInitialSection,
   };
 }
@@ -2504,6 +2622,15 @@ function isGhostexFolderStatsMessage(message: unknown): message is SidebarGhoste
       typeof message === "object" &&
       "type" in message &&
       message.type === "ghostexFolderStats",
+  );
+}
+
+function isOSIntegrationStatusMessage(message: unknown): message is SidebarOSIntegrationStatusMessage {
+  return Boolean(
+    message &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === "osIntegrationStatus",
   );
 }
 
@@ -2540,6 +2667,7 @@ function isModalRenderable({
   firstUserMessage,
   gitCommit,
   gitFileDiff,
+  worktreeDelete,
   floatingPromptEditor,
   renameSession,
   settings,
@@ -2554,6 +2682,7 @@ function isModalRenderable({
   firstUserMessage: FirstUserMessageModalState | undefined;
   gitCommit: GitCommitModalDraft | undefined;
   gitFileDiff: GitFileDiffModalDraft | undefined;
+  worktreeDelete: WorktreeDeleteModalDraft | undefined;
   floatingPromptEditor: FloatingPromptEditorState | undefined;
   renameSession: RenameSessionModalState | undefined;
   settings: unknown;
@@ -2581,6 +2710,8 @@ function isModalRenderable({
       return gitCommit !== undefined;
     case "gitFileDiff":
       return gitFileDiff !== undefined;
+    case "deleteWorktree":
+      return worktreeDelete !== undefined;
     case "floatingPromptEditor":
       return floatingPromptEditor !== undefined;
     case "renameSession":

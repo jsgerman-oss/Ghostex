@@ -18,6 +18,7 @@ import {
   IconRefresh,
   IconSettings,
   IconTerminal2,
+  IconTrash,
   IconWorld,
   IconX,
 } from "@tabler/icons-react";
@@ -743,11 +744,16 @@ export function SessionGroupSection({
       return;
     }
 
-    vscode.postMessage({
-      groupId: group.groupId,
-      title: nextTitle,
-      type: "renameGroup",
-    });
+    if (projectContext) {
+      vscode.postMessage({
+        groupId: group.groupId,
+        title: nextTitle,
+        type: "renameWorkspaceProjectForGroup",
+      });
+      return;
+    }
+
+    vscode.postMessage({ groupId: group.groupId, title: nextTitle, type: "renameGroup" });
   };
 
   const requestFocusGroup = () => {
@@ -937,6 +943,14 @@ export function SessionGroupSection({
     });
   };
 
+  const openProjectInIde = () => {
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      groupId: group.groupId,
+      type: "openWorkspaceProjectInIdeForGroup",
+    });
+  };
+
   const refreshProjectDiffStats = () => {
     if (!projectContext) {
       return;
@@ -986,6 +1000,30 @@ export function SessionGroupSection({
     vscode.postMessage({
       groupId: group.groupId,
       type: "closeWorkspaceProjectForGroup",
+    });
+  };
+
+  const removeWorktreeProject = () => {
+    if (!projectContext?.worktree || !projectContext.canRemoveProject) {
+      return;
+    }
+
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      groupId: group.groupId,
+      type: "removeWorkspaceProjectForGroup",
+    });
+  };
+
+  const promptDeleteWorktree = () => {
+    if (!projectContext?.worktree) {
+      return;
+    }
+
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      groupId: group.groupId,
+      type: "promptDeleteWorktreeForGroup",
     });
   };
 
@@ -1711,6 +1749,80 @@ export function SessionGroupSection({
                         ))}
                       </div>
                     ) : null}
+                  </>
+                ) : projectContext.worktree ? (
+                  <>
+                    {/*
+                     * CDXC:WorktreeDelete 2026-05-28-07:46:
+                     * Worktree project rows have their own compact context menu: open/reveal/rename first, then destructive worktree-specific actions. Delete removes the Git worktree checkout after confirmation; Remove only drops the Ghostex project row.
+                     */}
+                    <button
+                      className="session-context-menu-item"
+                      onClick={openProjectInIde}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <IconCode
+                        aria-hidden="true"
+                        className="session-context-menu-icon"
+                        size={14}
+                      />
+                      Open
+                    </button>
+                    <button
+                      className="session-context-menu-item"
+                      onClick={openProjectInFinder}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <IconFolderOpen
+                        aria-hidden="true"
+                        className="session-context-menu-icon"
+                        size={14}
+                      />
+                      Reveal in Finder
+                    </button>
+                    <button
+                      className="session-context-menu-item"
+                      onClick={() => {
+                        setContextMenuPosition(undefined);
+                        setIsEditing(true);
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <IconPencil
+                        aria-hidden="true"
+                        className="session-context-menu-icon"
+                        size={14}
+                      />
+                      Rename
+                    </button>
+                    <div className="session-context-menu-divider" role="separator" />
+                    <div aria-hidden="true" className="session-context-menu-spacer" />
+                    <button
+                      className="session-context-menu-item session-context-menu-item-danger"
+                      onClick={promptDeleteWorktree}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <IconTrash
+                        aria-hidden="true"
+                        className="session-context-menu-icon"
+                        size={14}
+                      />
+                      Delete Worktree
+                    </button>
+                    <button
+                      className="session-context-menu-item session-context-menu-item-danger"
+                      disabled={!projectContext.canRemoveProject}
+                      onClick={removeWorktreeProject}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <IconX aria-hidden="true" className="session-context-menu-icon" size={14} />
+                      Remove Worktree
+                    </button>
                   </>
                 ) : (
                   <>

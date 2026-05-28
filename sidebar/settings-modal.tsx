@@ -82,6 +82,7 @@ import {
   type SidebarAgentHookStatusItem,
   type SidebarGhostexCliStatusMessage,
   type SidebarGhostexFolderStatsMessage,
+  type SidebarOSIntegrationStatusMessage,
   type SidebarProjectSettingsItem,
   type SidebarTheme,
   type SidebarThemeVariant,
@@ -270,6 +271,7 @@ export type SettingsModalTab =
   | "settings"
   | "ghostty"
   | "integrations"
+  | "osIntegration"
   | "projects"
   | "agents"
   | "actions"
@@ -323,6 +325,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
   ],
   sessionCards: [
     "hideSessionAgentIconUntilHover",
+    "hideBrowserFaviconUntilHover",
     "showCloseButtonOnSessionCards",
     "hideLastActiveTimeOnSessionCards",
   ],
@@ -461,6 +464,8 @@ export type SettingsModalProps = {
   onRequestAgentHookStatus?: () => void;
   onRequestGhostexCliStatus?: () => void;
   onRequestGhostexFolderStats?: () => void;
+  onRequestOSIntegrationStatus?: () => void;
+  onSetOSIntegrationDefaults?: (target: "editor" | "terminalLinks" | "scriptRunner" | "all") => void;
   onTestAgentTaskCompletion?: () => void;
   projects?: SidebarProjectSettingsItem[];
   settings?: ghostexSettings;
@@ -470,6 +475,8 @@ export type SettingsModalProps = {
   ghostexCliStatusLoading?: boolean;
   ghostexFolderStats?: SidebarGhostexFolderStatsMessage;
   ghostexFolderStatsLoading?: boolean;
+  osIntegrationStatus?: SidebarOSIntegrationStatusMessage;
+  osIntegrationStatusLoading?: boolean;
 };
 
 export function SettingsModal({
@@ -499,6 +506,8 @@ export function SettingsModal({
   onRequestAgentHookStatus,
   onRequestGhostexCliStatus,
   onRequestGhostexFolderStats,
+  onRequestOSIntegrationStatus,
+  onSetOSIntegrationDefaults,
   onTestAgentTaskCompletion,
   projects = [],
   settings,
@@ -508,6 +517,8 @@ export function SettingsModal({
   ghostexCliStatusLoading = false,
   ghostexFolderStats,
   ghostexFolderStatsLoading = false,
+  osIntegrationStatus,
+  osIntegrationStatusLoading = false,
 }: SettingsModalProps) {
   const isFirstLaunchSetup = presentation === "firstLaunchSetup";
   const [draft, setDraft] = useState<ghostexSettings>(normalizeghostexSettings(settings));
@@ -612,6 +623,19 @@ export function SettingsModal({
     rememberedSettingsModalTab = nextTab;
     setActiveTabState(nextTab);
   }, [initialTab, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "osIntegration" || osIntegrationStatus || osIntegrationStatusLoading) {
+      return;
+    }
+    onRequestOSIntegrationStatus?.();
+  }, [
+    activeTab,
+    isOpen,
+    onRequestOSIntegrationStatus,
+    osIntegrationStatus,
+    osIntegrationStatusLoading,
+  ]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -792,6 +816,11 @@ export function SettingsModal({
         key: "hideSessionAgentIconUntilHover",
         subtitle: "Hide session agent icons until a session row is hovered.",
         title: "Hide agent icon until hover",
+      },
+      {
+        key: "hideBrowserFaviconUntilHover",
+        subtitle: "Hide browser page favicons until a session row is hovered.",
+        title: "Hide browser favicon until hover",
       },
       {
         key: "showCloseButtonOnSessionCards",
@@ -988,7 +1017,7 @@ export function SettingsModal({
         options: SESSION_PERSISTENCE_PROVIDER_OPTIONS,
         subtitle:
           "Choose whether new terminal and agent sessions should use zmx persistence.",
-        title: "Session Persistence (Beta)",
+        title: "Session Persistence",
       },
       ...(draft.sessionPersistenceProvider === "off"
         ? []
@@ -1468,6 +1497,7 @@ export function SettingsModal({
               <TabsList>
                 <TabsTrigger value="settings">Settings</TabsTrigger>
                 <TabsTrigger value="ghostty">Ghostty</TabsTrigger>
+                <TabsTrigger value="osIntegration">OS Integration</TabsTrigger>
                 <TabsTrigger value="integrations">Integrations</TabsTrigger>
                 <TabsTrigger value="projects">Projects</TabsTrigger>
                 <TabsTrigger value="hotkeys">Hotkeys</TabsTrigger>
@@ -1726,6 +1756,15 @@ export function SettingsModal({
                 label="Hide agent icon until hover"
                 {...getSettingModificationProps("hideSessionAgentIconUntilHover")}
                 onChange={(checked) => updateDraft("hideSessionAgentIconUntilHover", checked)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.sessionCards, "hideBrowserFaviconUntilHover") ? (
+              <ToggleField
+                checked={draft.hideBrowserFaviconUntilHover}
+                description="Hide browser page favicons until a session row is hovered."
+                label="Hide browser favicon until hover"
+                {...getSettingModificationProps("hideBrowserFaviconUntilHover")}
+                onChange={(checked) => updateDraft("hideBrowserFaviconUntilHover", checked)}
               />
               ) : null}
               {mainSettingVisible(settingsSearch.sessionCards, "showCloseButtonOnSessionCards") ? (
@@ -2259,17 +2298,17 @@ export function SettingsModal({
                           tmux/zmx instead of adding a separate mode-specific control.
 
                          CDXC:SessionPersistence 2026-05-08-14:04
-                          Label the setting as beta and explain that users should
-                          use zmx with zmx-session-manager when they care about ssh from
-                          other devices continuing sessions created through ghostex.
-                          Recommend zmx because it leaves Agent CLI tools unaffected
-                          while minor issues remain.
+                          Explain that users should use zmx with zmx-session-manager when they care about ssh from
+                          other devices continuing sessions created through ghostex. Recommend zmx because it leaves Agent CLI tools unaffected while minor issues remain.
 
                          CDXC:SessionPersistence 2026-05-26-13:41:
-                          zmx is now the default and recommended Settings option. Hide tmux and zellij from the dropdown without removing their code paths, so existing persisted provider sessions still normalize and launch. */
+                          zmx is now the default and recommended Settings option. Hide tmux and zellij from the dropdown without removing their code paths, so existing persisted provider sessions still normalize and launch.
+
+                         CDXC:SessionPersistence 2026-05-28-04:24:
+                          The Session Persistence setting should no longer be marked as Beta in Settings copy or search results. */
                       <SelectField
                         description="Use zmx with zmx-session-manager when you care about using ssh from other devices to continue working on sessions created using Ghostex. It doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
-                        label="Session Persistence (Beta)"
+                        label="Session Persistence"
                         {...getSettingModificationProps("sessionPersistenceProvider")}
                         onChange={(value) =>
                           updateDraft(
@@ -2524,6 +2563,16 @@ export function SettingsModal({
           </TabsContent>
           ) : null}
           {!isFirstLaunchSetup ? (
+          <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="osIntegration">
+            <OSIntegrationSettingsTab
+              loading={osIntegrationStatusLoading}
+              onRequestStatus={onRequestOSIntegrationStatus}
+              onSetDefaults={onSetOSIntegrationDefaults}
+              status={osIntegrationStatus}
+            />
+          </TabsContent>
+          ) : null}
+          {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="integrations">
             <IntegrationsSettingsTab
               accessibilityPermissionGranted={accessibilityPermissionGranted}
@@ -2554,10 +2603,17 @@ export function SettingsModal({
               agentHookStatus={agentHookStatus}
               agentHookStatusLoading={agentHookStatusLoading}
               agentAcceptAllEnabled={draft.agentAcceptAllEnabled}
+              defaultPromptAgentId={draft.defaultPromptAgentId}
               onAgentAcceptAllEnabledChange={(checked) =>
                 applySettings({
                   ...draft,
                   agentAcceptAllEnabled: checked,
+                })
+              }
+              onDefaultPromptAgentIdChange={(agentId) =>
+                applySettings({
+                  ...draft,
+                  defaultPromptAgentId: agentId,
                 })
               }
               onInstallAgentHooks={onInstallAgentHooks}
@@ -3010,6 +3066,155 @@ function OpenTargetSettingsIcon({ targetId }: { targetId: string }) {
   );
 }
 
+function OSIntegrationSettingsTab({
+  loading,
+  onRequestStatus,
+  onSetDefaults,
+  status,
+}: {
+  loading?: boolean;
+  onRequestStatus?: () => void;
+  onSetDefaults?: (target: "editor" | "terminalLinks" | "scriptRunner" | "all") => void;
+  status?: SidebarOSIntegrationStatusMessage;
+}) {
+  const ghostexBundleId = status?.bundleIdentifier;
+  const editorDefaultCount =
+    status && ghostexBundleId
+      ? Object.values(status.editorDefaults).filter((bundleId) => bundleId === ghostexBundleId)
+          .length
+      : 0;
+  const scriptDefaultCount =
+    status && ghostexBundleId
+      ? Object.values(status.scriptDefaults).filter((bundleId) => bundleId === ghostexBundleId)
+          .length
+      : 0;
+  const terminalDefault =
+    Boolean(status?.terminalLinkDefaultBundleId && status.terminalLinkDefaultBundleId === ghostexBundleId);
+  return (
+    <ScrollArea className="h-full min-h-0">
+      <div className="flex flex-col gap-6 px-5 pb-5">
+        <SettingsSection title="Defaults">
+          {/*
+           * CDXC:OSIntegration 2026-05-27-18:06:
+           * Ghostex registers as an available macOS editor and script handler
+           * at install/build time, but Settings is the only place that changes
+           * default editor, terminal-link, or script-runner ownership.
+           */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Button
+              className="h-10 justify-start px-4"
+              disabled={!onSetDefaults}
+              onClick={() => onSetDefaults?.("editor")}
+              type="button"
+              variant="outline"
+            >
+              <IconCodeDots aria-hidden="true" data-icon="inline-start" />
+              Set as Default Editor
+            </Button>
+            <Button
+              className="h-10 justify-start px-4"
+              disabled={!onSetDefaults}
+              onClick={() => onSetDefaults?.("terminalLinks")}
+              type="button"
+              variant="outline"
+            >
+              <IconTerminal2 aria-hidden="true" data-icon="inline-start" />
+              Set Terminal Links
+            </Button>
+            <Button
+              className="h-10 justify-start px-4"
+              disabled={!onSetDefaults}
+              onClick={() => onSetDefaults?.("scriptRunner")}
+              type="button"
+              variant="outline"
+            >
+              <IconPlayerPlay aria-hidden="true" data-icon="inline-start" />
+              Set Script Runner
+            </Button>
+            <Button
+              className="h-10 justify-start px-4"
+              disabled={!onSetDefaults}
+              onClick={() => onSetDefaults?.("all")}
+              type="button"
+            >
+              <IconCircleCheckFilled aria-hidden="true" data-icon="inline-start" />
+              Set All
+            </Button>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="CLI">
+          <div className="grid gap-2 rounded-lg border border-border bg-muted/20 p-3 font-mono text-xs text-muted-foreground">
+            <div>ghostex open ./folder</div>
+            <div>ghostex edit --wait file.ts:12:3</div>
+            <div>ghostex terminal --cwd /tmp --title Scratch -- echo hi</div>
+            <div>ghostex ./file.txt</div>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Diagnostics">
+          <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+            <div className="flex items-center justify-between gap-3">
+              <span>{loading && !status ? "Checking macOS handlers..." : "macOS handler status"}</span>
+              <Button
+                className="h-8 px-3"
+                disabled={loading || !onRequestStatus}
+                onClick={onRequestStatus}
+                type="button"
+                variant="outline"
+              >
+                <IconRefresh aria-hidden="true" data-icon="inline-start" />
+                Refresh
+              </Button>
+            </div>
+            {status ? (
+              <div className="grid gap-2">
+                <OSIntegrationDiagnosticRow
+                  label="Available editor"
+                  value={status.registeredEditableFiles ? "Registered" : "Missing"}
+                />
+                <OSIntegrationDiagnosticRow
+                  label="Available script runner"
+                  value={status.registeredScriptRunner ? "Registered" : "Missing"}
+                />
+                <OSIntegrationDiagnosticRow
+                  label="ghostex:// links"
+                  value={
+                    status.registeredGhostexURLScheme
+                      ? terminalDefault
+                        ? "Default"
+                        : `Default: ${status.terminalLinkDefaultBundleId ?? "None"}`
+                      : "Missing"
+                  }
+                />
+                <OSIntegrationDiagnosticRow
+                  label="Editor defaults"
+                  value={`${editorDefaultCount}/${Object.keys(status.editorDefaults).length} sampled`}
+                />
+                <OSIntegrationDiagnosticRow
+                  label="Script defaults"
+                  value={`${scriptDefaultCount}/${Object.keys(status.scriptDefaults).length} sampled`}
+                />
+              </div>
+            ) : (
+              <div>Ghostex has not checked Launch Services yet.</div>
+            )}
+          </div>
+        </SettingsSection>
+      </div>
+    </ScrollArea>
+  );
+}
+
+function OSIntegrationDiagnosticRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span>{label}</span>
+      <span className="text-right font-medium text-foreground">{value}</span>
+    </div>
+  );
+}
+
 const AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS = DEFAULT_SIDEBAR_AGENTS.filter(
   (agent) => agent.agentId !== "t3",
 );
@@ -3267,7 +3472,9 @@ function AgentsSettingsTab({
   agentHookStatus,
   agentHookStatusLoading,
   agentAcceptAllEnabled,
+  defaultPromptAgentId,
   onAgentAcceptAllEnabledChange,
+  onDefaultPromptAgentIdChange,
   onInstallAgentHooks,
   onRequestAgentHookStatus,
   vscode,
@@ -3275,7 +3482,9 @@ function AgentsSettingsTab({
   agentHookStatus?: SidebarAgentHookStatusMessage;
   agentHookStatusLoading: boolean;
   agentAcceptAllEnabled: boolean;
+  defaultPromptAgentId: string;
   onAgentAcceptAllEnabledChange: (checked: boolean) => void;
+  onDefaultPromptAgentIdChange: (agentId: string) => void;
   onInstallAgentHooks?: () => void;
   onRequestAgentHookStatus?: () => void;
   vscode?: WebviewApi;
@@ -3302,6 +3511,21 @@ function AgentsSettingsTab({
       .map((agentId) => agentById.get(agentId))
       .filter((agent): agent is SidebarAgentButton => agent !== undefined);
   }, [agents, draftAgentIds]);
+  const promptAgentOptions = useMemo(
+    () =>
+      agents
+        .filter((agent) => agent.agentId !== "t3" && Boolean(agent.command?.trim()))
+        .map((agent) => ({ label: agent.name.trim() || agent.agentId, value: agent.agentId })),
+    [agents],
+  );
+  const selectedDefaultPromptAgentId = promptAgentOptions.some(
+    (option) => option.value === defaultPromptAgentId,
+  )
+    ? defaultPromptAgentId
+    : promptAgentOptions.find((option) => option.value === DEFAULT_ghostex_SETTINGS.defaultPromptAgentId)
+        ?.value ??
+      promptAgentOptions[0]?.value ??
+      "";
   const hookStatusByAgentId = useMemo(
     () => new Map(agentHookStatus?.agents.map((status) => [status.agentId, status]) ?? []),
     [agentHookStatus],
@@ -3453,6 +3677,24 @@ function AgentsSettingsTab({
               ) : null}
             </div>
           </details>
+        ) : null}
+        {!editorState && promptAgentOptions.length > 0 ? (
+          <SelectField
+            description="Choose the agent used by Git helper prompts, Prompt to Find Session, project board Start Work, and the default worktree first-prompt selection."
+            isModified={defaultPromptAgentId !== DEFAULT_ghostex_SETTINGS.defaultPromptAgentId}
+            label="Default Prompt Agent"
+            onChange={onDefaultPromptAgentIdChange}
+            onResetToDefault={() =>
+              onDefaultPromptAgentIdChange(DEFAULT_ghostex_SETTINGS.defaultPromptAgentId)
+            }
+            options={promptAgentOptions}
+            value={selectedDefaultPromptAgentId}
+          />
+        ) : !editorState ? (
+          <StaticNoteField
+            description="Configure at least one CLI agent before selecting a default prompt agent."
+            label="Default Prompt Agent"
+          />
         ) : null}
         {!editorState ? (
           <Field className="items-center justify-between rounded-lg border border-border bg-muted/20 px-4 py-3" orientation="horizontal">

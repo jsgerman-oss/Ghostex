@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { appendFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -98,6 +98,12 @@ const COMMANDS = new Map([
   ["fme", floatingMonacoEditorCommand],
   ["state", bridgeAction("state")],
   ["dump-state", bridgeAction("dumpState")],
+  ["open", bridgeAction("openPaths", parseOpenPaths, { failOnNotOk: true })],
+  ["o", bridgeAction("openPaths", parseOpenPaths, { failOnNotOk: true })],
+  ["edit", bridgeAction("openPaths", parseEditPaths, { failOnNotOk: true })],
+  ["e", bridgeAction("openPaths", parseEditPaths, { failOnNotOk: true })],
+  ["terminal", bridgeAction("createQuickTerminal", parseQuickTerminal, { failOnNotOk: true })],
+  ["t", bridgeAction("createQuickTerminal", parseQuickTerminal, { failOnNotOk: true })],
   ["create-session", bridgeAction("createSession", parseCreateSession, { failOnNotOk: true })],
   ["create-agent", bridgeAction("createAgentSession", parseAgent)],
   ["run-agent", bridgeAction("runAgent", parseAgent)],
@@ -195,6 +201,16 @@ async function main() {
   }
   const command = COMMANDS.get(commandName);
   if (!command) {
+    if (isExistingBarePathArgument(commandName)) {
+      /**
+       * CDXC:OSIntegration 2026-05-27-18:06:
+       * Ghostex should behave like VS Code for CLI path opens: `ghostex ./file`
+       * and `ghostex ./folder` open existing filesystem targets, while a bare
+       * unknown word that is not a path remains an explicit CLI typo.
+       */
+      await bridgeAction("openPaths", parseOpenPaths, { failOnNotOk: true })(argv);
+      return;
+    }
     throw new Error(`Unknown command: ${commandName}\n\n${usage()}`);
   }
   if (
@@ -210,7 +226,12 @@ async function main() {
 function bridgeAction(action, parser = () => ({}), options = {}) {
   return async (args) => {
     const { flags, rest } = parseArgs(args);
-    const result = await sendSidebarCliCommand(action, parser(rest, flags), flags);
+    const payload = parser(rest, flags);
+    const bridgeFlags =
+      payload && typeof payload === "object" && payload.wait === true && flags.timeout === undefined
+        ? { ...flags, timeout: 0 }
+        : flags;
+    const result = await sendSidebarCliCommand(action, payload, bridgeFlags);
     /**
      * CDXC:AndroidRemoteSessions 2026-05-17-14:24:
      * Android remote actions use SSH exit status to decide whether to show
@@ -1329,18 +1350,24 @@ async function sendSidebarCliCommand(action, payload, flags = {}) {
   const socket = await connectBridge(port);
   try {
     return await new Promise((resolve, reject) => {
-      const timeout = setTimeout(
-        () => {
-          reject(new Error(`Timed out waiting for Ghostex sidebar CLI result (${action}).`));
-        },
-        Number(flags.timeout ?? 15_000),
-      );
+      const timeoutMs = Number(flags.timeout ?? 15_000);
+      const timeout =
+        timeoutMs > 0
+          ? setTimeout(
+              () => {
+                reject(new Error(`Timed out waiting for Ghostex sidebar CLI result (${action}).`));
+              },
+              timeoutMs,
+            )
+          : undefined;
       addSocketMessageListener(socket, (data) => {
         const event = parseJson(String(data));
         if (event?.type !== "sidebarCliResult" || event.requestId !== requestId) {
           return;
         }
-        clearTimeout(timeout);
+        if (timeout) {
+          clearTimeout(timeout);
+        }
         const payload = parseJson(event.payloadJson) ?? { rawPayloadJson: event.payloadJson };
         resolve({ ...payload, bridgeOk: event.ok });
       });
@@ -3033,6 +3060,89 @@ function parseBrowserOpen(rest, flags) {
   };
 }
 
+function parseOpenPaths(rest, flags) {
+  const targets = rest.length > 0 ? rest : flags.path ? [flags.path] : [];
+  return {
+    mode: "open",
+    targets: targets.map((target) => parseOpenPathTarget(target)),
+  };
+}
+
+function parseEditPaths(rest, flags) {
+  const waitConsumedTarget = typeof flags.wait === "string" ? flags.wait : undefined;
+  const targets =
+    rest.length > 0
+      ? rest
+      : flags.goto
+        ? [flags.goto]
+        : flags.path
+          ? [flags.path]
+          : waitConsumedTarget
+            ? [waitConsumedTarget]
+            : [];
+  const wait = flags.wait === true || waitConsumedTarget !== undefined || parseBoolean(flags.wait ?? false);
+  return {
+    mode: "edit",
+    targets: targets.map((target) => parseOpenPathTarget(target, wait)),
+    wait,
+  };
+}
+
+function parseQuickTerminal(rest, flags) {
+  const commandSeparatorIndex = rest.indexOf("--");
+  const commandRest = commandSeparatorIndex >= 0 ? rest.slice(commandSeparatorIndex + 1) : rest;
+  return {
+    command: commandRest.length > 0 ? commandRest.join(" ") : undefined,
+    cwd: flags.cwd ?? flags.path,
+    title: flags.title ?? flags.name,
+  };
+}
+
+function parseOpenPathTarget(value, wait = false) {
+  const raw = String(value ?? "").trim();
+  const parsed = parseVsCodePathPosition(raw);
+  const target = {
+    column: parsed.column,
+    line: parsed.line,
+    path: path.resolve(parsed.path),
+    raw,
+  };
+  if (wait) {
+    /**
+     * CDXC:OSIntegration 2026-05-27-18:06:
+     * `ghostex edit --wait` waits for a concrete opened editor item, so each
+     * target carries a stable per-command wait token across the native bridge.
+     */
+    target.waitToken = `wait-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+  return target;
+}
+
+function parseVsCodePathPosition(value) {
+  /**
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * Default-editor CLI opens need VS Code-style `file:line:column` targets so
+   * external tools can hand Ghostex positioned file references without learning
+   * a Ghostex-specific flag shape.
+   */
+  const match = /^(?<path>.+?)(?::(?<line>[1-9]\d*))?(?::(?<column>[1-9]\d*))?$/u.exec(value);
+  if (!match?.groups?.path) {
+    return { path: value };
+  }
+  const candidatePath = match.groups.path;
+  const line = match.groups.line ? Number(match.groups.line) : undefined;
+  const column = match.groups.column ? Number(match.groups.column) : undefined;
+  return { column, line, path: candidatePath };
+}
+
+function isExistingBarePathArgument(value) {
+  if (!value || value.startsWith("-")) {
+    return false;
+  }
+  const parsed = parseVsCodePathPosition(value);
+  return existsSync(path.resolve(parsed.path));
+}
+
 function parseAssertCard(rest, flags) {
   return {
     ...parseSessionSelector(rest, flags),
@@ -3156,6 +3266,9 @@ function usage() {
 
   const workspaceCommands = [
     formatHelpCommand("state | dump-state", "Print sidebar state as JSON"),
+    formatHelpCommand("open | o <path...>", "Open files or folders in Ghostex"),
+    formatHelpCommand("edit | e [--wait] [--goto] <file...>", "Open files in embedded Code"),
+    formatHelpCommand("terminal | t [--cwd path] [--title title] [-- command...]", "Create a Quick terminal"),
     formatHelpCommand("create-session [title] [--input text] [--project-id id] [--group-id id]", "Create a terminal session"),
     formatHelpCommand("create-agent <agentId> [--group-id id]", "Create a configured agent session"),
     formatHelpCommand("run-agent <agentId>", "Run a configured agent button"),
@@ -3206,10 +3319,11 @@ function usage() {
   return `Ghostex CLI - manage running Ghostex terminal sessions
 
 Usage:
-  ghostex
-  gx
-  ghostex <command> [args...] [--flags]
-  gx <command> [args...] [--flags]
+	  ghostex
+	  gx
+	  ghostex <path...>
+	  ghostex <command> [args...] [--flags]
+	  gx <command> [args...] [--flags]
   bun scripts/ghostex-cli.mjs <command> [args...] [--flags]
 
 Commands:
@@ -3437,7 +3551,11 @@ export {
   moveSessionPickerSelection,
   parseArgs,
   parseCreateSession,
+  parseEditPaths,
+  parseOpenPaths,
+  parseQuickTerminal,
   parseRename,
+  parseVsCodePathPosition,
   readAndroidReadinessSettings,
   usage,
 };

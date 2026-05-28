@@ -130,9 +130,9 @@ export const DEFAULT_SIDEBAR_AGENTS = [
   },
   /**
    * CDXC:SessionRestore 2026-05-23-00:25:
-   * Match cmux's restorable-agent surface for Rovo Dev, Hermes Agent,
-   * CodeBuddy, and Qoder, but keep these less-common launchers hidden until
-   * the user explicitly enables or configures them.
+   * Keep Rovo Dev, Hermes Agent, CodeBuddy, and Qoder in the restorable-agent
+   * surface, but keep these less-common launchers hidden until the user
+   * explicitly enables or configures them.
    */
   {
     agentId: "rovodev",

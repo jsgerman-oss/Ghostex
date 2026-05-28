@@ -72,6 +72,32 @@ targets:
         # Bluetooth without this usage string, so every generated app plist must
         # include it before CEF browser panes are enabled.
         NSBluetoothAlwaysUsageDescription: Ghostex uses Bluetooth only when a website in a Chromium browser pane requests browser features such as passkeys, security keys, or Bluetooth devices.
+        # CDXC:OSIntegration 2026-05-27-18:06: The generated app bundle must register Ghostex as an available macOS editor, script handler, and ghostex:// URL target without taking over defaults on install. Settings owns explicit Launch Services default changes.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Editable Files
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.text
+              - public.source-code
+              - public.script
+              - public.data
+            CFBundleTypeExtensions:
+              - "*"
+          - CFBundleTypeName: Script Files
+            CFBundleTypeRole: Shell
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.shell-script
+              - public.unix-executable
+            CFBundleTypeExtensions:
+              - command
+              - tool
+              - sh
+        CFBundleURLTypes:
+          - CFBundleURLName: Ghostex
+            CFBundleURLSchemes:
+              - ghostex
     sources:
       - path: Sources/Shared
       - path: Sources/ghostexHost

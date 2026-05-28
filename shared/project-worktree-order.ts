@@ -1,5 +1,6 @@
 export type ProjectWorktreeOrderItem = {
   isChat?: boolean;
+  isQuick?: boolean;
   orderId?: string;
   projectId: string;
   worktree?: {
@@ -21,8 +22,8 @@ export type ProjectWorktreeDropTarget = {
 export function orderProjectsWithWorktrees<T extends ProjectWorktreeOrderItem>(
   projects: readonly T[],
 ): T[] {
-  const chatProjects = projects.filter((project) => project.isChat === true);
-  const codeProjects = projects.filter((project) => project.isChat !== true);
+  const chatProjects = projects.filter((project) => project.isChat === true || project.isQuick === true);
+  const codeProjects = projects.filter((project) => project.isChat !== true && project.isQuick !== true);
   return [...chatProjects, ...orderCodeProjectsWithWorktrees(codeProjects)];
 }
 

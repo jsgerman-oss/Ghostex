@@ -84,6 +84,7 @@ import {
   type SidebarAgentHookStatusMessage,
   type SidebarGhostexCliStatusMessage,
   type SidebarGhostexFolderStatsMessage,
+  type SidebarOSIntegrationStatusMessage,
   type TerminalSessionPersistenceProvider,
   type TerminalSessionRecord,
   type T3SessionRecord,
@@ -509,6 +510,7 @@ type NativeHostCommand =
   | { projectId: string; type: "pickWorkspaceIcon" }
   | { type: "showMessage"; level: "info" | "warning" | "error"; message: string }
   | { details?: string; event: string; type: "appendAgentDetectionDebugLog" }
+  | { details?: string; event: string; force?: boolean; type: "appendLayoutLayeringDebugLog" }
   | { details?: string; event: string; force?: boolean; type: "appendTerminalFocusDebugLog" }
   | { details?: string; event: string; type: "appendRestoreDebugLog" }
   | { details?: string; event: string; force?: boolean; type: "appendSessionTitleDebugLog" }
@@ -572,6 +574,8 @@ type NativeHostCommand =
   | { type: "openAccessibilityPreferences" }
   | { type: "requestMacOSNotificationPermission" }
   | { type: "openMacOSNotificationSettings" }
+  | { target: "editor" | "terminalLinks" | "scriptRunner" | "all"; type: "setOSIntegrationDefaults" }
+  | { type: "requestOSIntegrationStatus" }
   | { type: "openExternalUrl"; url: string }
   | { type: "openWorkspaceInFinder"; workspacePath: string }
   | {
@@ -728,6 +732,7 @@ type NativeHostEvent =
       type: "projectEditorLoadState";
     }
   | (ProjectBoardBridgeRequest & { type: "projectBoardRequest" })
+  | { payloadJson: string; type: "osIntegrationStatus" }
   | {
       projectId: string;
       type: "projectEditorTabSelected";
@@ -867,6 +872,7 @@ const GIT_PRIMARY_ACTION_STORAGE_KEY = "ghostex-native-git-primary-action";
 const GIT_CONFIRM_COMMIT_STORAGE_KEY = "ghostex-native-git-confirm-commit";
 const GIT_GENERATE_COMMIT_BODY_STORAGE_KEY = "ghostex-native-git-generate-commit-body";
 const TIPS_AND_TRICKS_SEEN_STORAGE_KEY = "ghostex-native-tips-and-tricks-seen";
+const OS_INTEGRATION_ONBOARDING_SEEN_STORAGE_KEY = "ghostex-os-integration-onboarding-seen";
 const WORKSPACE_DOCK_STATE_EVENT = "ghostex-workspace-dock-state";
 const COMBINED_CHATS_GROUP_ID = "combined-chats";
 const PLUGINS_BROWSER_CHAT_URL = "https://skills.sh/";
@@ -910,12 +916,18 @@ const NATIVE_MIN_ATTENTION_VISIBLE_MS = 1_500;
 const ghostex_AGENT_NOTIFY_HOOK_PATH = `${nativeGhostexHomeDirectory()}/hooks/agent-shell-notify.sh`;
 const GHOSTEX_AGENT_HOOK_STATE_DIR = `${nativeHomeDirectory()}/.ghostexterm`;
 const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/ghostex.ts`;
-const FIND_PREVIOUS_SESSION_AGENT_ID = "codex";
+const DEFAULT_PROMPT_AGENT_ID = "codex";
 const FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS = 1_500;
-const GIT_MULTIPLE_COMMITS_AGENT_ID = "codex";
 /*
  * CDXC:TitlebarGit 2026-05-25-09:41:
- * The Git review modal's Multiple Commits action should hand the repository to Codex with a focused commit-splitting prompt instead of trying to split commits inside the modal.
+ * The Git review modal's Multiple Commits action should hand the repository to
+ * an agent with a focused commit-splitting prompt instead of trying to split
+ * commits inside the modal.
+ *
+ * CDXC:PromptAgents 2026-05-28-07:15:
+ * Git prompt actions use Settings' default prompt agent so users can choose
+ * Codex, Claude Code, Cursor, or a custom CLI for generated commit/release
+ * workflows without changing the action prompts themselves.
  */
 const GIT_MULTIPLE_COMMITS_PROMPT = `Please review my current changes and commit them as multiple focused commits.
 
@@ -1082,12 +1094,18 @@ type NativeProject = {
   icon?: WorkspaceDockIcon;
   iconDataUrl?: string;
   isChat?: boolean;
+  isQuick?: boolean;
   isRecentProject?: boolean;
   name: string;
   path: string;
   projectEditorCompanionPaneHidden?: boolean;
   projectEditor?: NativeProjectEditorRestoreState;
   projectId: string;
+  quickKind?: "browser" | "editor" | "terminal";
+  quickOriginalMissing?: boolean;
+  quickOriginalPath?: string;
+  quickSymlinkPath?: string;
+  quickWaitToken?: string;
   recentClosedAt?: string;
   theme?: SidebarTheme;
   themeColor?: string;
@@ -1107,6 +1125,19 @@ type NativeProject = {
   beadConversationLinks?: BeadConversationLink[];
   workspace: GroupedSessionWorkspaceSnapshot;
 };
+
+function isQuickProject(project: Pick<NativeProject, "isChat" | "isQuick">): boolean {
+  return project.isQuick === true || project.isChat === true;
+}
+
+function quickKindForProject(
+  project: Pick<NativeProject, "isChat" | "isQuick" | "quickKind">,
+): "browser" | "editor" | "terminal" | undefined {
+  if (!isQuickProject(project)) {
+    return undefined;
+  }
+  return project.quickKind ?? "terminal";
+}
 
 type NativeProjectWorktreeMetadata = {
   branch: string;
@@ -1911,6 +1942,11 @@ function postGhostexCliStatus(message: SidebarGhostexCliStatusMessage): void {
   postAppModalHost({ message, type: "sidebarState" });
 }
 
+function postOSIntegrationStatus(message: SidebarOSIntegrationStatusMessage): void {
+  sidebarBus.post(message);
+  postAppModalHost({ message, type: "sidebarState" });
+}
+
 function appendSessionTitleDebugLog(event: string, details?: unknown): void {
   if (!isNativeSidebarDebugLoggingEnabled()) {
     return;
@@ -2005,6 +2041,32 @@ function appendTerminalFocusDebugLog(
     event,
     ...(options.force ? { force: true } : {}),
     type: "appendTerminalFocusDebugLog",
+  });
+}
+
+function appendLayoutLayeringDebugLog(
+  event: string,
+  details?: unknown,
+  options: { force?: boolean } = {},
+): void {
+  /**
+   * CDXC:WorkspaceLayeringDiagnostics 2026-05-28-04:36:
+   * Layout and layering bugs need a clean repro file separate from terminal
+   * focus noise. Send paneLayout synthesis, native hit-test routing, and
+   * browser/editor overlap breadcrumbs through a dedicated native log command
+   * while preserving the same Debugging Mode gate as ordinary diagnostics.
+   */
+  if (!isNativeSidebarDebugLoggingEnabled()) {
+    return;
+  }
+  if (!options.force && !shouldPersistNativeSidebarDiagnostic(event)) {
+    return;
+  }
+  postNative({
+    details: details === undefined ? undefined : safeSerializeForNativeLog(details),
+    event,
+    ...(options.force ? { force: true } : {}),
+    type: "appendLayoutLayeringDebugLog",
   });
 }
 
@@ -2292,7 +2354,7 @@ function appendPaneLayoutTraceDebugLog(
   details?: unknown,
   options: { force?: boolean } = {},
 ): void {
-  appendTerminalFocusDebugLog(`nativePaneLayoutTrace.${event}`, details, options);
+  appendLayoutLayeringDebugLog(`nativePaneLayoutTrace.${event}`, details, options);
 }
 
 function appendStartupPaneLayoutDebugLog(event: string, details?: unknown): void {
@@ -2304,7 +2366,7 @@ function appendStartupPaneLayoutDebugLog(event: string, details?: unknown): void
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event: `nativePaneLayoutStartup.${event}`,
     force: true,
-    type: "appendTerminalFocusDebugLog",
+    type: "appendLayoutLayeringDebugLog",
   });
 }
 
@@ -3882,6 +3944,24 @@ function openFirstLaunchSetupOnFirstLaunch(): void {
   localStorage.setItem(FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY, "true");
 }
 
+function showOSIntegrationOnboardingOnFirstLaunch(): void {
+  if (localStorage.getItem(OS_INTEGRATION_ONBOARDING_SEEN_STORAGE_KEY) === "true") {
+    return;
+  }
+  /*
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * First successful launches should tell users that Ghostex can become their
+   * macOS editor/terminal target, but onboarding must be dismissible forever
+   * and must never mutate defaults without a Settings button click.
+   */
+  localStorage.setItem(OS_INTEGRATION_ONBOARDING_SEEN_STORAGE_KEY, "true");
+  showAppToast(
+    "info",
+    "OS Integration available",
+    "Open Settings > OS Integration to set Ghostex as your editor or terminal target.",
+  );
+}
+
 function persistSharedSettingsSnapshot(nextSettings: ghostexSettings): void {
   const payloadJson = JSON.stringify(nextSettings);
   localStorage.setItem(SETTINGS_STORAGE_KEY, payloadJson);
@@ -4326,6 +4406,24 @@ function refreshCommands(): void {
   commands = createNativeSidebarCommandButtons();
 }
 
+function removeEmptyStoredQuickTerminalProjects(projects: NativeProject[]): NativeProject[] {
+  /*
+   * CDXC:OSIntegration 2026-05-27-11:26:
+   * Projectless default-terminal launches are disposable Quick containers. If
+   * one was persisted after its final terminal closed, drop it on startup while
+   * preserving legacy chat projects that still use `isChat` storage.
+   */
+  return projects.filter(
+    (project) =>
+      !(
+        project.isQuick === true &&
+        project.isChat !== true &&
+        quickKindForProject(project) === "terminal" &&
+        !workspaceHasOpenSessions(project.workspace)
+      ),
+  );
+}
+
 function readStoredProjects(): { activeProjectId: string; projects: NativeProject[] } {
   const fallbackProject = createInitialProject();
   try {
@@ -4336,8 +4434,9 @@ function readStoredProjects(): { activeProjectId: string; projects: NativeProjec
     const candidateProjects: NativeProject[] = Array.isArray(candidate?.projects)
       ? candidate.projects.flatMap((project: unknown) => normalizeStoredNativeProject(project))
       : [];
+    const visibleCandidateProjects = removeEmptyStoredQuickTerminalProjects(candidateProjects);
     const projects = ensureVisibleWorktreeParentProjects(
-      candidateProjects.length > 0 ? candidateProjects : [fallbackProject],
+      visibleCandidateProjects.length > 0 ? visibleCandidateProjects : [fallbackProject],
     );
     const restoredActiveProjectId =
       typeof candidate?.activeProjectId === "string" &&
@@ -4834,12 +4933,25 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
       iconDataUrl: normalizeWorkspaceDockIconDataUrl(project.iconDataUrl),
       commandsPanel: normalizeStoredCommandsPanelState(project.commandsPanel),
       isChat: project.isChat === true,
+      isQuick: project.isQuick === true || project.isChat === true,
       isRecentProject: project.isRecentProject === true,
       name: project.name?.trim() || projectNameFromPath(path),
       path,
       projectEditorCompanionPaneHidden: project.projectEditorCompanionPaneHidden === true,
       projectEditor: normalizeStoredProjectEditorRestoreState(project.projectEditor),
       projectId,
+      quickKind:
+        project.quickKind === "browser" || project.quickKind === "editor" || project.quickKind === "terminal"
+          ? project.quickKind
+          : project.isChat === true
+            ? "terminal"
+            : undefined,
+      quickOriginalMissing: project.quickOriginalMissing === true,
+      quickOriginalPath:
+        typeof project.quickOriginalPath === "string" ? project.quickOriginalPath : undefined,
+      quickSymlinkPath:
+        typeof project.quickSymlinkPath === "string" ? project.quickSymlinkPath : undefined,
+      quickWaitToken: typeof project.quickWaitToken === "string" ? project.quickWaitToken : undefined,
       recentClosedAt:
         typeof project.recentClosedAt === "string" &&
         !Number.isNaN(Date.parse(project.recentClosedAt))
@@ -5638,6 +5750,118 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
   showAppToast("info", "Review git action", resolveSidebarGitConfirmLabel(action, hasCommit));
 }
 
+async function promptDeleteWorktreeForGroup(groupId: string): Promise<void> {
+  const groupReference = resolveSidebarGroupReference(groupId);
+  const project = groupReference.project;
+  const worktree = project.worktree;
+  if (!worktree) {
+    showAppToast("warning", "Not a worktree", "Only worktree projects can be deleted.");
+    return;
+  }
+
+  try {
+    const [branch, porcelain, status] = await Promise.all([
+      runGitInProject(project, ["branch", "--show-current"], { allowFailure: true }),
+      runGitInProject(project, ["status", "--porcelain"], { allowFailure: true }),
+      runGitInProject(project, ["status", "--untracked-files=all"], { allowFailure: true }),
+    ]);
+    if (porcelain.exitCode !== 0 || status.exitCode !== 0) {
+      throw new Error(
+        status.stderr.trim() ||
+          status.stdout.trim() ||
+          porcelain.stderr.trim() ||
+          "Could not read worktree status.",
+      );
+    }
+
+    /**
+     * CDXC:WorktreeDelete 2026-05-28-07:46:
+     * Delete Worktree opens only after native collects a fresh git status summary. Dirty checkouts must show that summary and offer a Commit button before the destructive removal can run.
+     */
+    postAppModalHostMessage(
+      {
+        modal: "deleteWorktree",
+        type: "open",
+        worktreeDeleteDraft: {
+          branch: branch.stdout.trim() || worktree.branch || null,
+          groupId,
+          hasChanges: porcelain.stdout.trim().length > 0,
+          projectId: project.projectId,
+          statusSummary: status.stdout.trim(),
+          worktreeName: project.name || worktree.name,
+        },
+      },
+      "AppModals:deleteWorktree",
+    );
+  } catch (error) {
+    showAppToast(
+      "error",
+      "Could not inspect worktree",
+      error instanceof Error ? error.message : "git status failed.",
+    );
+  }
+}
+
+async function deleteWorktreeProject(projectId: string): Promise<void> {
+  const project = findProject(projectId);
+  if (!project?.worktree) {
+    showAppToast("warning", "Worktree unavailable", "The selected worktree no longer exists.");
+    return;
+  }
+  const parentProject =
+    findProject(project.worktree.parentProjectId) ??
+    createNativeProjectFromWorktreeParent(project.worktree, project);
+  try {
+    const status = await runGitInProject(project, ["status", "--porcelain"], {
+      allowFailure: true,
+    });
+    if (status.exitCode !== 0) {
+      throw new Error(status.stderr.trim() || status.stdout.trim() || "Could not read worktree status.");
+    }
+    const removeArgs = ["worktree", "remove"];
+    if (status.stdout.trim()) {
+      removeArgs.push("--force");
+    }
+    removeArgs.push(project.path);
+    showAppToast("info", "Deleting worktree", project.name);
+    const removeResult = await runGitInProject(parentProject, removeArgs, { allowFailure: true });
+    if (removeResult.exitCode !== 0) {
+      throw new Error(
+        removeResult.stderr.trim() || removeResult.stdout.trim() || "git worktree remove failed.",
+      );
+    }
+    removeWorktreeProjectRecord(project, findProject(project.worktree.parentProjectId), "deleteWorktree");
+    await runGitInProject(parentProject, ["worktree", "prune"], { allowFailure: true });
+    showAppToast("success", "Worktree deleted", project.name);
+  } catch (error) {
+    showAppToast(
+      "error",
+      "Could not delete worktree",
+      error instanceof Error ? error.message : "git worktree remove failed.",
+    );
+  }
+}
+
+function removeWorktreeProjectRecord(
+  worktreeProject: NativeProject,
+  parentProject: NativeProject | undefined,
+  reason: string,
+): void {
+  const parentProjectId = worktreeProject.worktree?.parentProjectId;
+  projects = projects.filter((candidate) => candidate.projectId !== worktreeProject.projectId);
+  if (activeProjectId === worktreeProject.projectId) {
+    activeProjectId =
+      (parentProjectId && projects.some((candidate) => candidate.projectId === parentProjectId)
+        ? parentProjectId
+        : parentProject?.projectId) ??
+      projects[0]?.projectId ??
+      activeProjectId;
+    loadActiveProjectCommands();
+  }
+  writeStoredProjects(reason);
+  publish();
+}
+
 function resolveSidebarGitConfirmLabel(action: SidebarGitAction, hasCommit: boolean): string {
   if (action === "commit") {
     return "Commit";
@@ -5673,6 +5897,30 @@ function resolveSidebarAgentButtonById(agentId: string): SidebarAgentButton | un
   );
 }
 
+function createDefaultPromptAgentOptions(): ProjectBoardAgentOption[] {
+  return agents
+    .filter((agent) => agent.agentId !== "t3" && Boolean(agent.command?.trim()))
+    .map((agent) => ({ agentId: agent.agentId, label: agent.name.trim() || agent.agentId }));
+}
+
+function resolveDefaultPromptAgentId(): string | undefined {
+  const requestedAgentId = settings.defaultPromptAgentId.trim() || DEFAULT_PROMPT_AGENT_ID;
+  const requestedAgent = resolveSidebarAgentButtonById(requestedAgentId);
+  if (requestedAgent?.command?.trim()) {
+    return requestedAgent.agentId;
+  }
+  const codexAgent = resolveSidebarAgentButtonById(DEFAULT_PROMPT_AGENT_ID);
+  if (codexAgent?.command?.trim()) {
+    return codexAgent.agentId;
+  }
+  return agents.find((agent) => agent.agentId !== "t3" && agent.command?.trim())?.agentId;
+}
+
+function resolveDefaultPromptAgent(): SidebarAgentButton | undefined {
+  const agentId = resolveDefaultPromptAgentId();
+  return agentId ? resolveSidebarAgentButtonById(agentId) : undefined;
+}
+
 function resolveProjectWorktreeMergeAgentId(project: NativeProject): string | undefined {
   const parentProject = project.worktree?.parentProjectId
     ? findProject(project.worktree.parentProjectId)
@@ -5682,7 +5930,7 @@ function resolveProjectWorktreeMergeAgentId(project: NativeProject): string | un
   if (storedAgentId && resolveSidebarAgentButtonById(storedAgentId)?.command?.trim()) {
     return storedAgentId;
   }
-  return agents.find((agent) => agent.command?.trim())?.agentId;
+  return resolveDefaultPromptAgentId();
 }
 
 function rememberProjectWorktreeMergeAgent(project: NativeProject, agentId: string): void {
@@ -5727,21 +5975,21 @@ async function runSidebarGitPromptAction(title: string, prompt: string): Promise
     return;
   }
 
-  const agent = resolveSidebarAgentButtonById(GIT_MULTIPLE_COMMITS_AGENT_ID);
+  const agent = resolveDefaultPromptAgent();
   if (!agent?.command) {
     showAppToast(
       "error",
-      "Codex unavailable",
-      `Restore the Codex agent button to use ${title}.`,
+      "Agent unavailable",
+      `Choose a configured default prompt agent to use ${title}.`,
     );
     return;
   }
 
   const projectId = activeProjectId;
-  showAppToast("info", "Opening Codex", title);
+  showAppToast("info", `Opening ${agent.name}`, title);
   const session = await launchAgentTerminal(agent);
   if (!session) {
-    showAppToast("error", "Could not open Codex", `${title} did not start.`);
+    showAppToast("error", `Could not open ${agent.name}`, `${title} did not start.`);
     return;
   }
 
@@ -6935,7 +7183,7 @@ function nativeAppTitleForProject(project: NativeProject): string {
    * Public window and notification copy uses Ghostex while native sidebar
    * storage, bridge events, and internal implementation names remain ghostex.
    */
-  if (project.isChat === true) {
+  if (isQuickProject(project)) {
     return "Ghostex";
   }
   return project.name.trim() || projectNameFromPath(project.path) || "Ghostex";
@@ -7021,6 +7269,17 @@ function findSessionRecordInProject(
   return undefined;
 }
 
+function resolveNativeHostEventSessionReference(nativeSessionId: string): {
+  project: NativeProject;
+  sessionId: string;
+} {
+  const durableReference = parseDurableNativeSessionId(nativeSessionId);
+  if (durableReference) {
+    return durableReference;
+  }
+  return resolveSidebarSessionReference(sidebarSessionIdForNativeSession(nativeSessionId));
+}
+
 function resolveSidebarSessionReference(sessionId: string): {
   project: NativeProject;
   sessionId: string;
@@ -7042,8 +7301,8 @@ function resolveSidebarGroupReference(groupId: string): {
     return {
       isChatCollection: true,
       project:
-        projects.find((project) => project.isChat === true && project.projectId === activeProjectId) ??
-        projects.find((project) => project.isChat === true) ??
+        projects.find((project) => isQuickProject(project) && project.projectId === activeProjectId) ??
+        projects.find((project) => isQuickProject(project)) ??
         activeProject(),
     };
   }
@@ -7182,6 +7441,28 @@ function setTerminalSessionRestoreActivity(
   }
   const { restoreActivity: _removedRestoreActivity, ...sessionWithoutRestoreActivity } = session;
   return sessionWithoutRestoreActivity;
+}
+
+function shouldAcknowledgePersistedAttentionForWakeRestore(reason: string): boolean {
+  /*
+  CDXC:SessionAttention 2026-05-28-06:10:
+  Waking a sleeping terminal is an explicit "show me this session" action. If
+  the shared session-state file still contains an older attention event, mark
+  that event seen during wake so the restored pane does not immediately play a
+  completion sound or show a macOS notification for work the user is opening.
+  Startup restore is intentionally excluded so unattended attention still
+  remains visible after app launch.
+  */
+  return (
+    reason === "focus-sleeping-session" ||
+    reason === "focus-live-provider-session" ||
+    reason === "wake-session" ||
+    reason === "wake-command-session" ||
+    reason === "wake-group" ||
+    reason === "pane-tab-wake" ||
+    reason === "pane-drop-wake" ||
+    reason === "command-pane-tab-wake"
+  );
 }
 
 function resolveTerminalSessionReferenceForPersistence(sessionId: string): {
@@ -7832,9 +8113,13 @@ function createProjectSessionGroupsForProjection(project: NativeProject): Sessio
   /**
    * CDXC:ZmxSessionTracking 2026-05-27-06:28:
    * Commands-panel terminals are still project-owned zmx/native sessions. They
-   * must flow through the same sidebar, CLI, resource, and batch-action
-   * projections as workspace terminals so a live provider runtime cannot exist
-   * without a visible project session card.
+   * must flow through CLI, resource, and batch-action projections as workspace
+   * terminals so a live provider runtime cannot exist without project tracking.
+   *
+   * CDXC:ZmxSessionTracking 2026-05-28-05:46:
+   * Command panes should not appear as normal sidebar session cards. Keep their
+   * synthetic group available for non-sidebar projections, then filter it from
+   * the visible combined project group.
    */
   const commandPanelGroup: SessionGroupRecord = {
     groupId: COMMANDS_PANEL_SESSION_GROUP_ID,
@@ -7890,13 +8175,16 @@ function createCombinedSidebarGroups(): SidebarSessionGroup[] {
    * longer exposes a per-project separated presentation.
    */
   const orderedProjects = orderNativeProjectsForSidebar(projects);
-  const chatProjects = orderedProjects.filter((project) => project.isChat === true);
+  const chatProjects = orderedProjects.filter((project) => isQuickProject(project));
   const projectGroups = orderedProjects
-    .filter((project) => project.isChat !== true && project.isRecentProject !== true)
+    .filter((project) => !isQuickProject(project) && project.isRecentProject !== true)
     .map((project) => createCombinedProjectSidebarGroup(project));
 
   const activeChatProject = chatProjects.find((project) => project.projectId === activeProjectId);
-  const chatSessions = chatProjects.flatMap((project) => {
+  const chatSessions = chatProjects.flatMap((project, index) => {
+    if (quickKindForProject(project) === "editor") {
+      return [createQuickFileSidebarSession(project, index)];
+    }
     const session = createProjectedSidebarGroupsForProject(project).flatMap(
       (group) => group.sessions,
     )[0];
@@ -7945,11 +8233,18 @@ function createTitlebarResourceGroups(): TitlebarResourceGroup[] {
   const orderedProjects = orderNativeProjectsForSidebar(projects).filter(
     (project) => project.isRecentProject !== true,
   );
-  const chatProjects = orderedProjects.filter((project) => project.isChat === true);
-  const quickSessions = chatProjects.flatMap((project) =>
-    createProjectedSidebarGroupsForProject(project).flatMap((group) =>
-      group.sessions.map((session) => createTitlebarResourceSession(project.projectId, session)),
-    ),
+  const chatProjects = orderedProjects.filter((project) => isQuickProject(project));
+  const quickSessions = chatProjects.flatMap((project, index) =>
+    quickKindForProject(project) === "editor"
+      ? [
+          createTitlebarResourceSession(
+            project.projectId,
+            createQuickFileSidebarSession(project, index),
+          ),
+        ]
+      : createProjectedSidebarGroupsForProject(project).flatMap((group) =>
+          group.sessions.map((session) => createTitlebarResourceSession(project.projectId, session)),
+        ),
   );
   const groups: TitlebarResourceGroup[] = [];
   if (quickSessions.length > 0) {
@@ -7964,7 +8259,7 @@ function createTitlebarResourceGroups(): TitlebarResourceGroup[] {
   }
 
   for (const project of orderedProjects) {
-    if (project.isChat === true) {
+    if (isQuickProject(project)) {
       continue;
     }
     groups.push({
@@ -8034,7 +8329,7 @@ function createSidebarProjectSettingsProjects() {
   return orderNativeProjectsForSidebar(projects)
     .filter(
       (project) =>
-        project.isChat !== true &&
+        !isQuickProject(project) &&
         project.isRecentProject !== true &&
         project.worktree === undefined,
     )
@@ -8054,12 +8349,14 @@ function createCombinedProjectSidebarGroup(project: NativeProject): SidebarSessi
     projectedGroups[0];
   const isActiveProject = project.projectId === activeProjectId;
   const sessions = projectedGroups.flatMap((group) =>
-    group.sessions.map((session) => ({
-      ...session,
-      isFocused: isActiveProject && session.isFocused,
-      isVisible: isActiveProject && session.isVisible,
-      sessionId: createCombinedProjectSessionId(project.projectId, session.sessionId),
-    })),
+    group.groupId === COMMANDS_PANEL_SESSION_GROUP_ID
+      ? []
+      : group.sessions.map((session) => ({
+          ...session,
+          isFocused: isActiveProject && session.isFocused,
+          isVisible: isActiveProject && session.isVisible,
+          sessionId: createCombinedProjectSessionId(project.projectId, session.sessionId),
+        })),
   );
 
   return {
@@ -8709,7 +9006,12 @@ function restoreNativeTerminalSession(
   const shouldQueueProviderStartupText =
     Boolean(sessionPersistenceProvider && initialInput.trim()) &&
     shouldQueueProviderStartupTextForRestore(session, project.projectId);
-  const initialActivity = session.restoreActivity === "attention" ? "attention" : "idle";
+  const shouldAcknowledgeWakeAttention =
+    shouldAcknowledgePersistedAttentionForWakeRestore(reason);
+  const initialActivity =
+    !shouldAcknowledgeWakeAttention && session.restoreActivity === "attention"
+      ? "attention"
+      : "idle";
   if (
     session.sessionPersistenceProvider !== sessionPersistenceProvider ||
     session.sessionPersistenceName !== sessionPersistenceName
@@ -8763,8 +9065,16 @@ function restoreNativeTerminalSession(
   });
   if (initialActivity === "attention") {
     nativeAttentionEnteredAtBySessionId.set(session.sessionId, Date.now());
-  } else if (session.restoreActivity === "working") {
+  } else if (shouldAcknowledgeWakeAttention || session.restoreActivity === "working") {
     persistTerminalSessionRestoreActivity(session.sessionId, undefined);
+  }
+  if (shouldAcknowledgeWakeAttention) {
+    void persistNativeSessionAttentionAcknowledged(
+      sessionStateFilePath,
+      new Date().toISOString(),
+      session.sessionId,
+      "restore-wake",
+    );
   }
   appendAgentDetectionDebugLog("nativeSidebar.restoreTerminalState.created", {
     agentName: session.agentName,
@@ -8772,6 +9082,7 @@ function restoreNativeTerminalSession(
     initialInputPreview: initialInput.trim().slice(0, 120),
     nativeSessionId,
     reason,
+    shouldAcknowledgeWakeAttention,
     sessionId: session.sessionId,
     sessionStateFilePath,
     sessionPersistenceName,
@@ -8896,7 +9207,7 @@ function createWorkspaceBarState(): WorkspaceBarStateMessage {
       icon: project.icon ?? normalizeLegacyWorkspaceDockIcon(project),
       iconDataUrl: project.iconDataUrl,
       isActive: project.projectId === activeProjectId,
-      isChat: project.isChat,
+      isChat: isQuickProject(project),
       isWorktree: project.worktree !== undefined,
       path: project.path,
       projectId: project.projectId,
@@ -9834,10 +10145,9 @@ function buildEnsureNativeAgentHooksCommand(): string {
 function getNativeCodexNotifyHookScript(): string {
   /*
    * CDXC:SessionRestore 2026-05-22-23:33:
-   * Ghostex must mirror cmux-style agent resume hooks by capturing the native
-   * agent session id from hook payloads. Resume commands should prefer that
-   * exact id, while the existing title-based restore path remains the backup
-   * when a hook did not capture an id.
+   * Ghostex must capture native agent session ids from hook payloads.
+   * Resume commands should prefer that exact id, while the existing title-based
+   * restore path remains the backup when a hook did not capture an id.
    */
   return `#!/bin/bash
 if [ -n "$1" ]; then
@@ -11182,7 +11492,7 @@ function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string |
    * title-based command path when the hooks have not captured a session id yet.
    *
    * CDXC:SessionRestore 2026-05-23-00:25:
-   * Ghostex mirrors cmux's broader restorable-agent matrix. Agents whose CLIs
+   * Ghostex supports the broader restorable-agent matrix. Agents whose CLIs
    * expose native resume flags must use the captured session id directly;
    * title lookup remains limited to the older Codex, Claude, Cursor, and
    * OpenCode fallback paths that already supported it.
@@ -11539,6 +11849,7 @@ type LaunchAgentTerminalOptions = {
   diagnosticSource?: "previousSessionRestore";
   focusAfterCreate?: boolean;
   initialPresentation?: "background" | "focused";
+  initialPromptText?: string;
   queueProviderStartupText?: boolean;
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
@@ -11561,9 +11872,21 @@ async function launchAgentTerminal(
       launchCommand = appendCursorCliResumeFlag(launchCommand, agentSessionId);
     }
   }
+  const initialPromptText = options?.initialPromptText?.trim();
+  /**
+   * CDXC:Worktrees 2026-05-28-06:12:
+   * Worktree creation must stage the user's first prompt as one-shot startup
+   * input after the agent launch command instead of writing it later through a
+   * timer. Provider-backed terminals already consume and clear queued startup
+   * text on terminalReady, so attaching to an existing zmx/tmux/zellij session
+   * cannot replay the original worktree prompt.
+   */
+  const initialInput = initialPromptText
+    ? `${launchCommand}\r${initialPromptText}`
+    : `${launchCommand}\r`;
   return createTerminal(
     createAgentSessionDefaultTitle(agent.name),
-    `${launchCommand}\r`,
+    initialInput,
     groupId,
     agent.agentId,
     {
@@ -11863,7 +12186,7 @@ function createTerminal(
   if (!shouldKeepProjectEditorOpenForNewSession(project.projectId)) {
     activateWorkspaceSurfaceForProject(project.projectId);
   }
-  if (project.isChat === true) {
+  if (quickKindForProject(project) === "terminal") {
     const existingChatSession = findFirstTerminalSessionInProject(project);
     if (existingChatSession) {
       /**
@@ -12201,7 +12524,7 @@ function createNativeSessionInCurrentContext(): void {
    * add the terminal as a selected tab in the focused pane's existing tab group
    * so double-click creation never opens a new split group or resizes panes.
    */
-  if (activeProject().isChat === true) {
+  if (quickKindForProject(activeProject()) === "terminal") {
     void createNativeChat();
     return;
   }
@@ -13546,6 +13869,47 @@ function syncNativePersistedAgentActivity(
       return false;
     }
 
+    const suppressedUntil = getNativeActivitySuppressedUntil(sessionId);
+    if (
+      suppressedUntil !== undefined &&
+      Number.isFinite(suppressedUntil) &&
+      Date.now() < suppressedUntil
+    ) {
+      /*
+      CDXC:SessionAttention 2026-05-28-06:10:
+      Resume suppression applies to persisted attention as well as title and
+      bell events. During the wake grace window, a stale unacknowledged
+      session-state attention event should be acknowledged and kept idle
+      instead of re-entering attention and notifying the user for the restore
+      command itself.
+      */
+      nativeWorkingStartedAtBySessionId.delete(sessionId);
+      clearNativeSessionAttentionTracking(sessionId);
+      if (terminalState.sessionStateFilePath) {
+        void persistNativeSessionAttentionAcknowledged(
+          terminalState.sessionStateFilePath,
+          new Date().toISOString(),
+          sessionId,
+          "persisted-attention-suppressed",
+        );
+      }
+      const hadRestoreActivity =
+        session.restoreActivity === "attention" || session.restoreActivity === "working";
+      if (previousActivity !== "idle" || hadRestoreActivity) {
+        terminalState.activity = "idle";
+        persistTerminalSessionRestoreActivity(sessionId, undefined);
+        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.attentionSuppressed", {
+          attentionEventId: persistedState.attentionEventId,
+          hadRestoreActivity,
+          previousActivity,
+          sessionId,
+          suppressedUntil: new Date(suppressedUntil).toISOString(),
+        });
+        return true;
+      }
+      return false;
+    }
+
     nativeWorkingStartedAtBySessionId.delete(sessionId);
     if (previousActivity === "attention") {
       return false;
@@ -14115,6 +14479,10 @@ function closeTerminal(
   options: { preservePersistenceSession?: boolean } = {},
 ): void {
   const reference = resolveSidebarSessionReference(sessionId);
+  if (isQuickFileEditorSidebarReference(reference)) {
+    removeProject(reference.project.projectId);
+    return;
+  }
   const sessionRecord = findSessionRecordInProject(reference.project, reference.sessionId);
   if (sessionRecord?.kind === "terminal" && sessionRecord.surface === "commands") {
     const nativeSessionId = forgetNativeSessionMappingForProject(
@@ -14158,15 +14526,25 @@ function closeTerminal(
     resolvedSessionId: reference.sessionId,
     sessionKind: sessionRecord?.kind,
   });
+  const shouldRemoveQuickTerminalContainer =
+    quickKindForProject(reference.project) === "terminal" && sessionRecord?.kind === "terminal";
   const nativeSessionId = forgetNativeSessionMappingForProject(
     reference.project.projectId,
     reference.sessionId,
   );
   clearNativeSidebarCommandSessionBySessionId(reference.sessionId);
-  rememberPreviousSession(reference.sessionId, reference.project);
+  if (!shouldRemoveQuickTerminalContainer) {
+    rememberPreviousSession(reference.sessionId, reference.project);
+  }
+  let shouldRemoveProjectAfterClose = false;
   updateProjectWorkspace(
     reference.project.projectId,
-    (workspace) => removeSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
+    (workspace) => {
+      const nextWorkspace = removeSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot;
+      shouldRemoveProjectAfterClose =
+        shouldRemoveQuickTerminalContainer && !workspaceHasOpenSessions(nextWorkspace);
+      return nextWorkspace;
+    },
   );
   terminalStateById.delete(reference.sessionId);
   forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
@@ -14185,6 +14563,17 @@ function closeTerminal(
         ? "closeWebPane"
         : "closeTerminal",
   });
+  if (shouldRemoveProjectAfterClose) {
+    /*
+     * CDXC:OSIntegration 2026-05-27-11:26:
+     * Default-terminal launches create projectless Quick terminal containers for
+     * one-off shells. When the last terminal in that container closes, remove
+     * the Quick project itself so the sidebar does not keep an empty one-off
+     * entry or a closed-session history row.
+     */
+    removeProject(reference.project.projectId);
+    return;
+  }
   publish();
   appendSidebarRefreshDebugLog("nativeSidebar.closeSession.afterPublish", {
     nativeSessionId,
@@ -14197,6 +14586,10 @@ function closeTerminal(
 
 function focusTerminal(sessionId: string): void {
   const reference = resolveSidebarSessionReference(sessionId);
+  if (isQuickFileEditorSidebarReference(reference)) {
+    focusQuickFileEditorProject(reference.project);
+    return;
+  }
   const sidebarCardFocusTrace = getRecentSidebarCardFocusTrace(reference.sessionId);
   const forceSidebarCardFocusTrace = sidebarCardFocusTrace !== undefined;
   const focusTargetBefore = summarizeSidebarSessionFocusTarget(
@@ -16900,10 +17293,15 @@ async function runCliAgent(agentId: string, groupId?: string): Promise<SessionRe
 /**
  * CDXC:PreviousSessions 2026-04-28-05:12
  * Native ghostex must mirror the reference Prompt to Find Session workflow:
- * receive the modal's remembered-topic query, launch a terminal Codex session,
+ * receive the modal's remembered-topic query, launch a terminal agent session,
  * rename that helper session, then stage the local-session search prompt.
+ *
+ * CDXC:PromptAgents 2026-05-28-07:15:
+ * Prompt to Find Session should use the same Settings-selected default prompt
+ * agent as Git helper prompts and project-board Start Work instead of
+ * hardcoding Codex.
  */
-function promptFindPreviousSession(queryInput?: string): void {
+async function promptFindPreviousSession(queryInput?: string): Promise<void> {
   const query = queryInput?.trim();
   appendAgentDetectionDebugLog("nativeSidebar.promptFindPreviousSession.received", {
     hasQuery: Boolean(query),
@@ -16917,21 +17315,16 @@ function promptFindPreviousSession(queryInput?: string): void {
   const agent = resolveFindPreviousSessionAgent();
   if (!agent) {
     appendAgentDetectionDebugLog("nativeSidebar.promptFindPreviousSession.missingAgent", {
-      requestedAgentId: FIND_PREVIOUS_SESSION_AGENT_ID,
+      requestedAgentId: settings.defaultPromptAgentId,
     });
     showNativeMessage(
       "info",
-      "Ghostex could not find Codex for Find a session. Restore the Codex agent button.",
+      "Ghostex could not find a configured default prompt agent for Find a session.",
     );
     return;
   }
 
-  const session = createTerminal(
-    createAgentSessionDefaultTitle(agent.name),
-    `${resolveAgentLaunchCommand(agent)}\r`,
-    undefined,
-    agent.agentId,
-  );
+  const session = await launchAgentTerminal(agent);
   if (!session) {
     appendAgentDetectionDebugLog("nativeSidebar.promptFindPreviousSession.createSessionFailed", {
       agentId: agent.agentId,
@@ -16970,15 +17363,7 @@ function promptFindPreviousSession(queryInput?: string): void {
 }
 
 function resolveFindPreviousSessionAgent(): SidebarAgentButton | undefined {
-  return (
-    agents.find((candidate) => candidate.agentId === FIND_PREVIOUS_SESSION_AGENT_ID) ??
-    createSidebarAgentButtons(storedAgents, storedAgentOrder).find(
-      (candidate) => candidate.agentId === FIND_PREVIOUS_SESSION_AGENT_ID,
-    ) ??
-    createSidebarAgentButtons([], []).find(
-      (candidate) => candidate.agentId === FIND_PREVIOUS_SESSION_AGENT_ID,
-    )
-  );
+  return resolveDefaultPromptAgent();
 }
 
 function runCliCommandButton(commandId: string): TerminalSessionRecord | undefined {
@@ -17572,13 +17957,28 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         return { ok: true, state: summarizeCliState() };
       case "listSessions":
         return { ok: true, revision, sessions: listNativeCliSessions() };
+      case "openPaths":
+        return openNativePathTargetsFromCli(payload);
+      case "createQuickTerminal": {
+        const session = await createNativeQuickTerminal({
+          command: typeof payload.command === "string" ? payload.command : undefined,
+          cwd: typeof payload.cwd === "string" ? payload.cwd : undefined,
+          title: typeof payload.title === "string" ? payload.title : undefined,
+        });
+        return {
+          ok: true,
+          revision,
+          session: summarizeCreatedCliSession(session),
+          state: summarizeCliState(),
+        };
+      }
       case "createSession": {
         const groupId = typeof payload.groupId === "string" ? payload.groupId : undefined;
         const projectId = typeof payload.projectId === "string" ? payload.projectId : undefined;
         if (projectId && findProject(projectId) && activeProjectId !== projectId) {
           focusProject(projectId);
         }
-        if (groupId === COMBINED_CHATS_GROUP_ID || (!groupId && activeProject().isChat === true)) {
+        if (groupId === COMBINED_CHATS_GROUP_ID || (!groupId && quickKindForProject(activeProject()) === "terminal")) {
           await createNativeChat(typeof payload.title === "string" ? payload.title : undefined);
           return { kind: "chat", ok: true, revision };
         }
@@ -18754,19 +19154,8 @@ async function createProjectWorktreeFromPrompt(
     }
 
     showAppToast("info", "Opening agent", agent.name);
-    const session = await launchAgentTerminal(agent);
-    if (session) {
-      window.setTimeout(() => {
-        postNative({
-          sessionId: nativeSessionIdForProjectSidebarSession(projectId, session.sessionId),
-          text: prompt,
-          type: "writeTerminalText",
-        });
-        showAppToast("success", "Worktree ready", projectName);
-      }, FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS);
-    } else {
-      showAppToast("success", "Worktree ready", projectName);
-    }
+    await launchAgentTerminal(agent, undefined, { initialPromptText: prompt });
+    showAppToast("success", "Worktree ready", projectName);
   } catch (error) {
     showAppToast(
       "error",
@@ -18826,9 +19215,11 @@ async function createNativeChat(title = "chat"): Promise<void> {
       {
         commandsPanel: createDefaultCommandsPanelState(),
         isChat: true,
+        isQuick: true,
         name: nativeChatTitleFromDate(createdAt),
         path: chatPath,
         projectId,
+        quickKind: "terminal",
         theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
         workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
       },
@@ -18841,6 +19232,776 @@ async function createNativeChat(title = "chat"): Promise<void> {
     return;
   }
   publish();
+}
+
+async function createNativeQuickTerminal(options: {
+  command?: string;
+  cwd?: string;
+  title?: string;
+} = {}): Promise<TerminalSessionRecord | undefined> {
+  /*
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * `ghostex terminal` is the explicit default-terminal integration surface.
+   * Create a projectless Quick terminal rooted at the requested cwd instead of
+   * mutating the active code project or relying on broad macOS terminal defaults.
+   */
+  const requestedCwd = options.cwd?.trim() || nativeHomeDirectory();
+  const cwd = await resolveExistingDirectoryForOpenRequest(requestedCwd);
+  const createdAt = new Date();
+  const title = options.title?.trim() || projectNameFromPath(cwd) || DEFAULT_TERMINAL_SESSION_TITLE;
+  const projectId = createProjectId(`quick-terminal:${createdAt.toISOString()}:${cwd}`);
+  projects = orderNativeProjectsForSidebar([
+    ...projects,
+    {
+      commandsPanel: createDefaultCommandsPanelState(),
+      isQuick: true,
+      name: title,
+      path: cwd,
+      projectId,
+      quickKind: "terminal",
+      theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
+      workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+    },
+  ]);
+  writeStoredProjects("createQuickTerminal");
+  focusProject(projectId);
+  const commandText = options.command?.trim();
+  const session = createTerminal(title, commandText ? `${commandText}\r` : "");
+  if (!session) {
+    publish();
+  }
+  return session;
+}
+
+type NativeOpenPathTarget = {
+  column?: number;
+  line?: number;
+  path: string;
+  raw?: string;
+  waitToken?: string;
+};
+
+type NativeProjectFileWaitTarget = Required<Pick<NativeOpenPathTarget, "path" | "waitToken">> &
+  Pick<NativeOpenPathTarget, "column" | "line">;
+
+const QUICK_FILE_EDITOR_PROJECT_ID_PREFIX = "quick-file:";
+const QUICK_FILE_SHARED_EDITOR_PROJECT_ID = "quick-files";
+const QUICK_FILE_EDITOR_SIDEBAR_SESSION_ID = "__quick-file-editor__";
+const QUICK_FILE_MISSING_POLL_MS = 5_000;
+const CODE_SERVER_PROJECT_FILE_WAIT_SESSION_RETRY_MS = 500;
+const CODE_SERVER_PROJECT_FILE_WAIT_SESSION_TIMEOUT_MS = 30_000;
+let quickFileMissingPollInFlight = false;
+const quickFileWaitResolvers = new Map<string, (value: { ok: true; path: string }) => void>();
+
+async function resolveExistingDirectoryForOpenRequest(path: string): Promise<string> {
+  const normalizedPath = normalizeNativeOpenPath(path);
+  const directoryCheck = await runNativeProcess("/bin/test", ["-d", normalizedPath], {
+    timeoutMs: 5_000,
+  });
+  return directoryCheck.exitCode === 0 ? normalizedPath : nativeHomeDirectory();
+}
+
+function normalizeNativeOpenPath(path: string): string {
+  const trimmed = path.trim();
+  if (trimmed === "~") {
+    return nativeHomeDirectory();
+  }
+  if (trimmed.startsWith("~/")) {
+    return `${nativeHomeDirectory()}${trimmed.slice(1)}`;
+  }
+  return trimmed.replace(/\/+$/, "") || trimmed;
+}
+
+async function getNativeOpenPathKind(path: string): Promise<"directory" | "file" | undefined> {
+  const normalizedPath = normalizeNativeOpenPath(path);
+  const directoryCheck = await runNativeProcess("/bin/test", ["-d", normalizedPath], {
+    timeoutMs: 5_000,
+  });
+  if (directoryCheck.exitCode === 0) {
+    return "directory";
+  }
+  const fileCheck = await runNativeProcess("/bin/test", ["-f", normalizedPath], { timeoutMs: 5_000 });
+  return fileCheck.exitCode === 0 ? "file" : undefined;
+}
+
+async function resolveGitRootForNativeOpenPath(path: string): Promise<string | undefined> {
+  const result = await runNativeProcess(
+    "/usr/bin/env",
+    ["git", "-C", path, "rev-parse", "--show-toplevel"],
+    { timeoutMs: 10_000 },
+  );
+  const root = result.stdout.trim();
+  return result.exitCode === 0 && root ? root : undefined;
+}
+
+function isDeniedBroadFileParent(path: string): boolean {
+  const home = nativeHomeDirectory().replace(/\/+$/, "");
+  const normalizedPath = normalizeNativeOpenPath(path);
+  return new Set([
+    "/",
+    "/Users",
+    home,
+    `${home}/Desktop`,
+    `${home}/Downloads`,
+    `${home}/Documents`,
+  ]).has(normalizedPath);
+}
+
+async function isLargeNativeOpenParent(path: string): Promise<boolean> {
+  const script = [
+    "set -e",
+    `count=$(/usr/bin/find ${quoteNativeShellArg(path)} \\( -name .git -o -name node_modules -o -name dist -o -name build -o -name .next -o -name coverage \\) -prune -o -type f -print | /usr/bin/head -n 10001 | /usr/bin/wc -l)`,
+    'test "${count//[[:space:]]/}" -gt 10000',
+  ].join("\n");
+  const result = await runNativeProcess("/bin/zsh", ["-lc", script], { timeoutMs: 30_000 });
+  return result.exitCode === 0;
+}
+
+async function shouldRouteFileParentToQuick(path: string): Promise<boolean> {
+  if (isDeniedBroadFileParent(path)) {
+    return true;
+  }
+  return isLargeNativeOpenParent(path);
+}
+
+function createQuickFileProjectId(originalPath: string): string {
+  return createProjectId(`${QUICK_FILE_EDITOR_PROJECT_ID_PREFIX}${originalPath}`);
+}
+
+function quickFileSharedNativeEditorId(): string {
+  return createNativeProjectEditorId(QUICK_FILE_SHARED_EDITOR_PROJECT_ID, "code");
+}
+
+function quickFileOriginalPath(project: NativeProject): string {
+  return project.quickOriginalPath?.trim() || project.path;
+}
+
+function quickFileDisplayName(project: NativeProject): string {
+  return projectNameFromPath(quickFileOriginalPath(project)) || project.name || "File";
+}
+
+function workspaceHasOpenSessions(workspace: GroupedSessionWorkspaceSnapshot): boolean {
+  return workspace.groups.some((group) => group.snapshot.sessions.length > 0);
+}
+
+function createQuickFileSidebarSession(project: NativeProject, index = 0): SidebarSessionItem {
+  const originalPath = quickFileOriginalPath(project);
+  const missing = project.quickOriginalMissing === true;
+  /*
+   * CDXC:OSIntegration 2026-05-27-11:26:
+   * Loose Quick files are not real terminal sessions, but every opened file
+   * needs its own closeable/focusable Quick sidebar row while sharing one
+   * embedded Code surface. Model the row as a synthetic session so the existing
+   * sidebar interactions can stay project-scoped without creating one webview
+   * per loose file.
+   */
+  return {
+    activity: missing ? "attention" : "idle",
+    activityLabel: missing ? "Missing" : undefined,
+    alias: quickFileDisplayName(project),
+    column: 0,
+    detail: missing ? `Missing - ${originalPath}` : originalPath,
+    isFocused: project.projectId === activeProjectId,
+    isRunning: false,
+    isVisible: project.projectId === activeProjectId,
+    kind: "workspace",
+    lifecycleState: missing ? "error" : "done",
+    primaryTitle: quickFileDisplayName(project),
+    row: index + 1,
+    sessionId: createCombinedProjectSessionId(
+      project.projectId,
+      QUICK_FILE_EDITOR_SIDEBAR_SESSION_ID,
+    ),
+    shortcutLabel: "",
+  };
+}
+
+function isQuickFileEditorSidebarReference(reference: {
+  project: NativeProject;
+  sessionId: string;
+}): boolean {
+  return (
+    reference.sessionId === QUICK_FILE_EDITOR_SIDEBAR_SESSION_ID &&
+    quickKindForProject(reference.project) === "editor"
+  );
+}
+
+function focusQuickFileEditorProject(project: NativeProject): void {
+  const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
+  const targetPath = project.quickSymlinkPath ?? project.quickOriginalPath;
+  focusProject(project.projectId);
+  projectEditorSurfaceByProjectId.set(project.projectId, {
+    errorMessage: undefined,
+    isOpen: true,
+    isSleeping: false,
+    mode: "code",
+    nativeEditorId: nativeProjectEditorIdForProject(project, "code"),
+    status: surfaceState?.status === "running" ? "running" : "opening",
+    title: "Quick Files",
+    url: targetPath
+      ? createCodeServerProjectEditorUrl(project.path, { path: targetPath })
+      : surfaceState?.url ?? createCodeServerProjectEditorUrl(project.path),
+  });
+  wakeProjectEditorSurface(project, "code");
+  postNative({
+    projectId: nativeProjectEditorIdForProject(project, "code"),
+    type: "focusProjectEditorPane",
+  });
+  publish();
+}
+
+function nativeProjectEditorIdForProject(
+  project: Pick<NativeProject, "isChat" | "isQuick" | "projectId" | "quickKind">,
+  mode: ProjectEditorSurfaceMode,
+): string {
+  /*
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * Loose Quick file rows are separate sidebar items, but they must share one
+   * embedded VS Code webview rooted at ~/.ghostex/quick-files. Keep the shared
+   * native editor id centralized so wake/focus/close paths do not accidentally
+   * create one Chromium surface per loose file.
+   */
+  if (mode === "code" && quickKindForProject(project) === "editor") {
+    return quickFileSharedNativeEditorId();
+  }
+  return createNativeProjectEditorId(project.projectId, mode);
+}
+
+async function removeQuickFileSymlink(project: NativeProject): Promise<void> {
+  const symlinkPath = project.quickSymlinkPath?.trim();
+  if (!symlinkPath) {
+    return;
+  }
+  /*
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * Loose Quick file rows own only their mirrored symlink under
+   * ~/.ghostex/quick-files. Closing that row must remove the symlink without
+   * touching the original file, so a later Quick open cannot reuse stale state.
+   */
+  await runNativeProcess("/bin/rm", ["-f", symlinkPath], { timeoutMs: 5_000 });
+}
+
+function resolveQuickFileWait(project: NativeProject): void {
+  const waitToken = project.quickWaitToken?.trim();
+  if (!waitToken) {
+    return;
+  }
+  const resolver = quickFileWaitResolvers.get(waitToken);
+  if (!resolver) {
+    return;
+  }
+  quickFileWaitResolvers.delete(waitToken);
+  resolver({ ok: true, path: project.quickOriginalPath ?? project.path });
+}
+
+async function openNativeProjectEditorForFile(
+  projectPath: string,
+  target?: NativeOpenPathTarget,
+): Promise<void> {
+  await addProject(projectPath);
+  const project = findProject(createProjectId(projectPath));
+  if (!project) {
+    return;
+  }
+  if (activeProjectId !== project.projectId) {
+    focusProject(project.projectId);
+  }
+  /*
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * Opening a file that belongs to a project should route through the existing
+   * project Code surface and let VS Code own its normal file tabs. Re-wake the
+   * surface with a file-specific URL even when the project editor is already
+   * running, because OS open/edit commands are explicit navigation requests.
+   */
+  projectEditorSurfaceByProjectId.set(project.projectId, {
+    errorMessage: undefined,
+    isOpen: true,
+    isSleeping: false,
+    mode: "code",
+    nativeEditorId: nativeProjectEditorIdForProject(project, "code"),
+    status: "opening",
+    title: projectEditorTitle(project),
+    url: createCodeServerProjectEditorUrl(project.path, target),
+  });
+  setProjectEditorPersistedOpen(project.projectId, true, "openProjectEditorFile");
+  wakeProjectEditorSurface(project, "code");
+  postNative({
+    projectId: nativeProjectEditorIdForProject(project, "code"),
+    type: "focusProjectEditorPane",
+  });
+  void refreshProjectDiffStats(project.projectId);
+  publish();
+}
+
+async function openLooseQuickFile(target: NativeOpenPathTarget): Promise<NativeProject | undefined> {
+  const quickRoot = `${nativeGhostexHomeDirectory().replace(/\/+$/, "")}/quick-files`;
+  const originalPath = normalizeNativeOpenPath(target.path);
+  const symlinkPath = `${quickRoot}${originalPath}`;
+  const symlinkDirectory = dirnameNativePath(symlinkPath);
+  const linkCommand = [
+    `mkdir -p ${quoteNativeShellArg(symlinkDirectory)}`,
+    `if [ -L ${quoteNativeShellArg(symlinkPath)} ]; then target=$(/bin/readlink ${quoteNativeShellArg(symlinkPath)}); if [ "$target" != ${quoteNativeShellArg(originalPath)} ]; then rm -f ${quoteNativeShellArg(symlinkPath)}; fi; elif [ -e ${quoteNativeShellArg(symlinkPath)} ]; then rm -f ${quoteNativeShellArg(symlinkPath)}; fi`,
+    `if [ ! -L ${quoteNativeShellArg(symlinkPath)} ]; then ln -s ${quoteNativeShellArg(originalPath)} ${quoteNativeShellArg(symlinkPath)}; fi`,
+  ].join("\n");
+  const result = await runNativeProcess("/bin/zsh", ["-lc", linkCommand], { timeoutMs: 10_000 });
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || "Could not prepare Quick file.");
+  }
+  /*
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * Loose file opens must not auto-add broad folders such as ~/Downloads as
+   * Projects. Root the shared Quick Code surface at ~/.ghostex/quick-files and
+   * mirror the real file through a symlink so edits still affect the original.
+   */
+  const projectId = createQuickFileProjectId(originalPath);
+  let project = findProject(projectId);
+  if (!project) {
+    projects = orderNativeProjectsForSidebar([
+      ...projects,
+      {
+        commandsPanel: createDefaultCommandsPanelState(),
+        isQuick: true,
+        name: projectNameFromPath(originalPath),
+        path: quickRoot,
+        projectId,
+        quickKind: "editor",
+        quickOriginalMissing: false,
+        quickOriginalPath: originalPath,
+        quickSymlinkPath: symlinkPath,
+        quickWaitToken: target.waitToken,
+        theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
+        workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+      },
+    ]);
+    project = findProject(projectId);
+  }
+  if (!project) {
+    return undefined;
+  }
+  focusProject(projectId);
+  project.isQuick = true;
+  project.quickKind = "editor";
+  project.quickOriginalMissing = false;
+  project.quickOriginalPath = originalPath;
+  project.quickSymlinkPath = symlinkPath;
+  project.quickWaitToken = target.waitToken;
+  writeStoredProjects("openLooseQuickFile");
+  projectEditorSurfaceByProjectId.set(project.projectId, {
+    errorMessage: undefined,
+    isOpen: true,
+    isSleeping: false,
+    mode: "code",
+    nativeEditorId: quickFileSharedNativeEditorId(),
+    status: "opening",
+    title: "Quick Files",
+    url: createCodeServerProjectEditorUrl(quickRoot, {
+      column: target.column,
+      line: target.line,
+      path: symlinkPath,
+    }),
+  });
+  wakeProjectEditorSurface(project);
+  postNative({ projectId: quickFileSharedNativeEditorId(), type: "focusProjectEditorPane" });
+  publish();
+  return project;
+}
+
+async function refreshQuickFileMissingStates(reason: string): Promise<void> {
+  if (quickFileMissingPollInFlight) {
+    return;
+  }
+  const quickFileProjects = projects.filter(
+    (project) => quickKindForProject(project) === "editor" && project.quickOriginalPath?.trim(),
+  );
+  if (quickFileProjects.length === 0) {
+    return;
+  }
+  quickFileMissingPollInFlight = true;
+  try {
+    const statuses = await Promise.all(
+      quickFileProjects.map(async (project) => {
+        const originalPath = quickFileOriginalPath(project);
+        const result = await runNativeProcess("/bin/test", ["-e", originalPath], {
+          timeoutMs: 5_000,
+        });
+        return {
+          missing: result.exitCode !== 0,
+          projectId: project.projectId,
+        };
+      }),
+    );
+    let changed = false;
+    for (const status of statuses) {
+      const project = findProject(status.projectId);
+      if (!project || quickKindForProject(project) !== "editor") {
+        continue;
+      }
+      if (project.quickOriginalMissing !== status.missing) {
+        project.quickOriginalMissing = status.missing;
+        changed = true;
+      }
+    }
+    if (changed) {
+      /*
+       * CDXC:OSIntegration 2026-05-27-11:26:
+       * Quick loose-file rows must remain visible after the original file moves
+       * or is deleted so the user can close the row deliberately. Poll the
+       * original path and mark the synthetic row missing instead of silently
+       * removing sidebar state or recreating a stale symlink target.
+       */
+      writeStoredProjects(`refreshQuickFileMissingStates:${reason}`);
+      publish();
+    }
+  } finally {
+    quickFileMissingPollInFlight = false;
+  }
+}
+
+function startQuickFileMissingMonitor(): void {
+  void refreshQuickFileMissingStates("startup");
+  window.setInterval(() => {
+    void refreshQuickFileMissingStates("poll");
+  }, QUICK_FILE_MISSING_POLL_MS);
+}
+
+function codeServerSessionSocketPath(): string {
+  return `${nativeGhostexHomeDirectory().replace(/\/+$/, "")}/code-server-runtime/user-data/code-server-ipc.sock`;
+}
+
+function codeServerWaitMarkerPath(waitToken: string): string {
+  return `${nativeGhostexHomeDirectory().replace(/\/+$/, "")}/edit-waits/${waitToken}.wait`;
+}
+
+function codeServerIpcOpenArg(target: NativeProjectFileWaitTarget): string {
+  if (!target.line) {
+    return target.path;
+  }
+  return `${target.path}:${target.line}${target.column ? `:${target.column}` : ""}`;
+}
+
+function codeServerIpcWaitScript(): string {
+  return String.raw`
+const fs = require("fs");
+const http = require("http");
+const path = require("path");
+
+const [sessionSocket, filePath, openArg, waitMarkerFilePath] = process.argv.slice(1);
+
+function request(socketPath, requestPath, method, body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        headers: body ? { "content-type": "application/json" } : undefined,
+        method,
+        path: requestPath,
+        socketPath,
+      },
+      (res) => {
+        let raw = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(raw);
+            return;
+          }
+          reject(new Error(method + " " + requestPath + " failed with " + res.statusCode + ": " + raw));
+        });
+      },
+    );
+    req.on("error", reject);
+    if (body) {
+      req.write(body);
+    }
+    req.end();
+  });
+}
+
+(async () => {
+  const rawSession = await request(
+    sessionSocket,
+    "/session?filePath=" + encodeURIComponent(filePath),
+    "GET",
+  );
+  const session = JSON.parse(rawSession);
+  if (!session.socketPath) {
+    throw new Error("No code-server editor session is registered for " + filePath);
+  }
+  fs.mkdirSync(path.dirname(waitMarkerFilePath), { recursive: true });
+  fs.writeFileSync(waitMarkerFilePath, "");
+  await request(
+    session.socketPath,
+    "/",
+    "POST",
+    JSON.stringify({
+      type: "open",
+      folderURIs: [],
+      fileURIs: [openArg],
+      gotoLineMode: true,
+      forceReuseWindow: true,
+      waitMarkerFilePath,
+    }),
+  );
+  process.stdout.write(JSON.stringify({ ok: true, socketPath: session.socketPath, waitMarkerFilePath }));
+})().catch((error) => {
+  try {
+    if (typeof waitMarkerFilePath === "string" && fs.existsSync(waitMarkerFilePath)) {
+      fs.unlinkSync(waitMarkerFilePath);
+    }
+  } catch {}
+  process.stderr.write(error?.stack || error?.message || String(error));
+  process.exit(1);
+});
+`;
+}
+
+function codeServerIpcCloseFileScript(): string {
+  return String.raw`
+const http = require("http");
+
+const [sessionSocket, filePath] = process.argv.slice(1);
+
+function request(socketPath, requestPath, method, body) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        headers: body ? { "content-type": "application/json" } : undefined,
+        method,
+        path: requestPath,
+        socketPath,
+      },
+      (res) => {
+        let raw = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(raw);
+            return;
+          }
+          reject(new Error(method + " " + requestPath + " failed with " + res.statusCode + ": " + raw));
+        });
+      },
+    );
+    req.on("error", reject);
+    if (body) {
+      req.write(body);
+    }
+    req.end();
+  });
+}
+
+(async () => {
+  const rawSession = await request(
+    sessionSocket,
+    "/session?filePath=" + encodeURIComponent(filePath),
+    "GET",
+  );
+  const session = JSON.parse(rawSession);
+  if (!session.socketPath) {
+    return;
+  }
+  await request(
+    session.socketPath,
+    "/",
+    "POST",
+    JSON.stringify({
+      type: "open",
+      folderURIs: [],
+      fileURIs: [filePath],
+      forceReuseWindow: true,
+      removeMode: true,
+    }),
+  );
+})().catch((error) => {
+  process.stderr.write(error?.stack || error?.message || String(error));
+  process.exit(1);
+});
+`;
+}
+
+async function closeCodeServerQuickFileTab(project: NativeProject): Promise<void> {
+  const symlinkPath = project.quickSymlinkPath?.trim();
+  if (!symlinkPath) {
+    return;
+  }
+  /*
+   * CDXC:OSIntegration 2026-05-27-11:26:
+   * Closing a loose Quick row must close that file's VS Code tab, not just
+   * remove Ghostex sidebar metadata. Ask the registered Quick Code workbench
+   * through code-server's IPC socket before deleting the symlink, because the
+   * tab resource is the mirrored symlink path inside ~/.ghostex/quick-files.
+   */
+  await runNativeProcess(
+    "/usr/bin/env",
+    ["node", "-e", codeServerIpcCloseFileScript(), codeServerSessionSocketPath(), symlinkPath],
+    { timeoutMs: 10_000 },
+  );
+}
+
+async function closeQuickFileEditorProjectResources(project: NativeProject): Promise<void> {
+  try {
+    await closeCodeServerQuickFileTab(project);
+  } finally {
+    await removeQuickFileSymlink(project);
+  }
+}
+
+async function postCodeServerWaitOpen(target: NativeProjectFileWaitTarget): Promise<string> {
+  const waitMarkerPath = codeServerWaitMarkerPath(target.waitToken);
+  /*
+   * CDXC:OSIntegration 2026-05-27-11:26:
+   * Project-backed `ghostex edit --wait` should use VS Code's own CLI wait
+   * marker instead of Ghostex pane lifetime. The embedded code-server checkout
+   * registers each workbench IPC socket by workspace, so Ghostex can ask the
+   * matching VS Code instance to open the file with a wait marker and then wait
+   * until VS Code deletes that marker when the editor closes.
+   */
+  const startedAt = Date.now();
+  let lastError = "";
+  while (Date.now() - startedAt < CODE_SERVER_PROJECT_FILE_WAIT_SESSION_TIMEOUT_MS) {
+    const result = await runNativeProcess(
+      "/usr/bin/env",
+      [
+        "node",
+        "-e",
+        codeServerIpcWaitScript(),
+        codeServerSessionSocketPath(),
+        target.path,
+        codeServerIpcOpenArg(target),
+        waitMarkerPath,
+      ],
+      { timeoutMs: 10_000 },
+    );
+    if (result.exitCode === 0) {
+      return waitMarkerPath;
+    }
+    lastError = result.stderr.trim() || result.stdout.trim();
+    await delay(CODE_SERVER_PROJECT_FILE_WAIT_SESSION_RETRY_MS);
+  }
+  throw new Error(lastError || `Timed out waiting for code-server to register ${target.path}`);
+}
+
+async function waitForCodeServerMarkerDeleted(markerPath: string): Promise<void> {
+  while (true) {
+    const result = await runNativeProcess("/bin/test", ["-e", markerPath], { timeoutMs: 5_000 });
+    if (result.exitCode !== 0) {
+      return;
+    }
+    await delay(1_000);
+  }
+}
+
+async function waitForProjectFileEditorCloses(
+  targets: NativeProjectFileWaitTarget[],
+): Promise<void> {
+  const markerPaths = await Promise.all(targets.map((target) => postCodeServerWaitOpen(target)));
+  await Promise.all(markerPaths.map((markerPath) => waitForCodeServerMarkerDeleted(markerPath)));
+}
+
+async function openNativePathTargetsFromCli(payload: Record<string, unknown>) {
+  const targets = Array.isArray(payload.targets)
+    ? payload.targets
+        .map((target): NativeOpenPathTarget | undefined => {
+          if (!target || typeof target !== "object") {
+            return undefined;
+          }
+          const source = target as Partial<NativeOpenPathTarget>;
+          return typeof source.path === "string" && source.path.trim()
+            ? {
+                column: typeof source.column === "number" ? source.column : undefined,
+                line: typeof source.line === "number" ? source.line : undefined,
+                path: source.path,
+                raw: typeof source.raw === "string" ? source.raw : undefined,
+                waitToken: typeof source.waitToken === "string" ? source.waitToken : undefined,
+              }
+            : undefined;
+        })
+        .filter((target): target is NativeOpenPathTarget => target !== undefined)
+    : [];
+  if (targets.length === 0) {
+    throw new Error("No paths were provided.");
+  }
+
+  const opened: Array<{ kind: string; path: string; projectPath?: string }> = [];
+  const quickWaitTokens: string[] = [];
+  const projectFileWaitTargets: NativeProjectFileWaitTarget[] = [];
+  for (const target of targets) {
+    const path = normalizeNativeOpenPath(target.path);
+    const kind = await getNativeOpenPathKind(path);
+    if (!kind) {
+      throw new Error(`Path does not exist: ${target.raw || target.path}`);
+    }
+    if (kind === "directory") {
+      const gitRoot = await resolveGitRootForNativeOpenPath(path);
+      const projectPath = gitRoot ?? path;
+      await addProject(projectPath);
+      opened.push({ kind: "project", path, projectPath });
+      continue;
+    }
+
+    const parentPath = dirnameNativePath(path);
+    const gitRoot = await resolveGitRootForNativeOpenPath(parentPath);
+    if (gitRoot) {
+      await openNativeProjectEditorForFile(gitRoot, { ...target, path });
+      if (target.waitToken) {
+        projectFileWaitTargets.push({
+          column: target.column,
+          line: target.line,
+          path,
+          waitToken: target.waitToken,
+        });
+      }
+      opened.push({ kind: "project-file", path, projectPath: gitRoot });
+      continue;
+    }
+    if (await shouldRouteFileParentToQuick(parentPath)) {
+      await openLooseQuickFile({ ...target, path });
+      if (target.waitToken) {
+        quickWaitTokens.push(target.waitToken);
+      }
+      opened.push({ kind: "quick-file", path });
+      continue;
+    }
+    await openNativeProjectEditorForFile(parentPath, { ...target, path });
+    if (target.waitToken) {
+      projectFileWaitTargets.push({
+        column: target.column,
+        line: target.line,
+        path,
+        waitToken: target.waitToken,
+      });
+    }
+    opened.push({ kind: "project-file", path, projectPath: parentPath });
+  }
+  if (payload.wait === true && (projectFileWaitTargets.length > 0 || quickWaitTokens.length > 0)) {
+    /*
+     * CDXC:OSIntegration 2026-05-27-18:06:
+     * `ghostex edit --wait` should wait for the specific loose Quick file row
+     * to close, not for the app window. Keep the CLI bridge request open until
+     * the matching Quick row lifecycle resolves its wait token.
+     * Project-file waits are registered in parallel so mixed Quick/project edit
+     * requests cannot miss a Quick close while VS Code is attaching its wait
+     * marker.
+     */
+    const quickWaitPromises = quickWaitTokens.map(
+      (waitToken) =>
+        new Promise<{ ok: true; path: string }>((resolve) => {
+          quickFileWaitResolvers.set(waitToken, resolve);
+        }),
+    );
+    await Promise.all([
+      projectFileWaitTargets.length > 0
+        ? waitForProjectFileEditorCloses(projectFileWaitTargets)
+        : Promise.resolve(),
+      ...quickWaitPromises,
+    ]);
+  }
+  return { ok: true, opened, revision, state: summarizeCliState() };
 }
 
 async function createNativePluginsBrowserChat(): Promise<void> {
@@ -18868,9 +20029,11 @@ async function createNativePluginsBrowserChat(): Promise<void> {
       {
         commandsPanel: createDefaultCommandsPanelState(),
         isChat: true,
+        isQuick: true,
         name: "Plugins",
         path: chatPath,
         projectId,
+        quickKind: "browser",
         theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
         workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
       },
@@ -19232,9 +20395,11 @@ async function createNativeBrowserChat(): Promise<void> {
       {
         commandsPanel: createDefaultCommandsPanelState(),
         isChat: true,
+        isQuick: true,
         name: "Browser",
         path: chatPath,
         projectId,
+        quickKind: "browser",
         theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
         workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
       },
@@ -19255,6 +20420,10 @@ function removeProject(projectId: string): void {
     return;
   }
   const project = projects[projectIndex]!;
+  if (quickKindForProject(project) === "editor") {
+    resolveQuickFileWait(project);
+    void closeQuickFileEditorProjectResources(project);
+  }
   disposeProjectEditorSurface(project.projectId);
   /**
    * CDXC:WorkspaceDock 2026-04-27-08:45
@@ -19302,6 +20471,10 @@ function closeProjectToRecent(projectId: string): void {
     return;
   }
   const project = projects[projectIndex]!;
+  if (quickKindForProject(project) === "editor") {
+    removeProject(projectId);
+    return;
+  }
   if (project.isChat === true) {
     return;
   }
@@ -19488,14 +20661,11 @@ function createProjectBoardConversationState(
 }
 
 function createProjectBoardAgentOptions(): ProjectBoardAgentOption[] {
-  return agents
-    .filter((agent) => agent.agentId !== "t3" && Boolean(agent.command?.trim()))
-    .map((agent) => ({ agentId: agent.agentId, label: agent.name.trim() || agent.agentId }));
+  return createDefaultPromptAgentOptions();
 }
 
 function resolveProjectBoardDefaultAgentId(): string | undefined {
-  const options = createProjectBoardAgentOptions();
-  return options.find((agent) => agent.agentId === "codex")?.agentId ?? options[0]?.agentId;
+  return resolveDefaultPromptAgentId();
 }
 
 function createProjectBoardSessionOptions(project: NativeProject): ProjectBoardSessionOption[] {
@@ -19954,8 +21124,11 @@ function focusProject(projectId: string): void {
       }
     }
     publish();
+    const project = findProject(projectId);
     postNative({
-      projectId: createNativeProjectEditorId(projectId, editorSurfaceState.mode),
+      projectId: project
+        ? nativeProjectEditorIdForProject(project, editorSurfaceState.mode)
+        : editorSurfaceState.nativeEditorId,
       type: "focusProjectEditorPane",
     });
     return;
@@ -19992,9 +21165,21 @@ function scheduleNativeT3RuntimePrewarm(projectId: string, reason: string): void
   }, NATIVE_T3_RUNTIME_PREWARM_DELAY_MS);
 }
 
-function createCodeServerProjectEditorUrl(projectPath: string): string {
+function createCodeServerProjectEditorUrl(
+  projectPath: string,
+  target?: { column?: number; line?: number; path?: string },
+): string {
   const url = new URL(CODE_SERVER_EDITOR_ORIGIN);
   url.searchParams.set("folder", projectPath);
+  if (target?.path) {
+    url.searchParams.set("file", target.path);
+  }
+  if (target?.line) {
+    url.searchParams.set("line", String(target.line));
+  }
+  if (target?.column) {
+    url.searchParams.set("column", String(target.column));
+  }
   return url.toString();
 }
 
@@ -20103,37 +21288,64 @@ function scheduleProjectEditorOpenTimeout(projectId: string): void {
   projectEditorOpenTimeoutByProjectId.set(projectId, timeout);
 }
 
+function projectIdsForNativeProjectEditor(nativeEditorId: string): string[] {
+  if (nativeEditorId !== quickFileSharedNativeEditorId()) {
+    return [projectIdFromProjectEditorId(nativeEditorId)];
+  }
+  /*
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * Native load events for the shared Quick Code pane arrive under the
+   * `quick-files` editor id, while React stores sidebar row state per loose
+   * file. Fan that status out to the Quick rows currently attached to the
+   * shared surface so every row reflects the one webview lifecycle.
+   */
+  return Array.from(projectEditorSurfaceByProjectId.entries())
+    .filter(([, surfaceState]) => surfaceState.nativeEditorId === nativeEditorId)
+    .map(([projectId]) => projectId);
+}
+
 function setProjectEditorLoadState(
   nativeEditorId: string,
   status: Exclude<ProjectEditorLoadStatus, "idle">,
   message?: string,
 ): void {
-  const projectId = projectIdFromProjectEditorId(nativeEditorId);
-  const surfaceState = projectEditorSurfaceByProjectId.get(projectId);
-  if (!surfaceState || surfaceState.nativeEditorId !== nativeEditorId) {
+  const projectIds = projectIdsForNativeProjectEditor(nativeEditorId);
+  if (projectIds.length === 0) {
     return;
   }
 
   if (status === "opening") {
-    projectEditorSurfaceByProjectId.set(projectId, {
-      ...surfaceState,
-      errorMessage: undefined,
-      status,
-    });
-    scheduleProjectEditorOpenTimeout(projectId);
+    for (const projectId of projectIds) {
+      const surfaceState = projectEditorSurfaceByProjectId.get(projectId);
+      if (!surfaceState || surfaceState.nativeEditorId !== nativeEditorId) {
+        continue;
+      }
+      projectEditorSurfaceByProjectId.set(projectId, {
+        ...surfaceState,
+        errorMessage: undefined,
+        status,
+      });
+      scheduleProjectEditorOpenTimeout(projectId);
+    }
     publish();
     return;
   }
 
-  cancelProjectEditorOpenTimer(projectId);
-  projectEditorSurfaceByProjectId.set(projectId, {
-    ...surfaceState,
-    errorMessage:
-      status === "error"
-        ? (message ?? projectEditorLoadFailureMessageForMode(surfaceState.mode))
-        : undefined,
-    status,
-  });
+  for (const projectId of projectIds) {
+    const surfaceState = projectEditorSurfaceByProjectId.get(projectId);
+    if (!surfaceState || surfaceState.nativeEditorId !== nativeEditorId) {
+      continue;
+    }
+    cancelProjectEditorOpenTimer(projectId);
+    projectEditorSurfaceByProjectId.set(projectId, {
+      ...surfaceState,
+      errorMessage:
+        status === "error"
+          ? (message ?? projectEditorLoadFailureMessageForMode(surfaceState.mode))
+          : undefined,
+      status,
+    });
+  }
   publish();
 }
 
@@ -20162,6 +21374,7 @@ function sleepProjectEditorSurface(projectId: string): void {
   if (!surfaceState || (activeProjectId === projectId && surfaceState.isOpen)) {
     return;
   }
+  const project = findProject(projectId);
   /**
    * CDXC:EditorPanes 2026-05-06-14:21
    * Project editors stay live across project switches, then sleep after the
@@ -20176,18 +21389,33 @@ function sleepProjectEditorSurface(projectId: string): void {
   forgetAwakeProjectEditorModes(projectId);
   cancelProjectEditorOpenTimer(projectId);
   projectEditorSleepTimeoutByProjectId.delete(projectId);
-  postNative({
-    projectId: createNativeProjectEditorId(projectId, "code"),
-    type: "closeProjectEditorPane",
-  });
-  postNative({
-    projectId: createNativeProjectEditorId(projectId, "git"),
-    type: "closeProjectEditorPane",
-  });
-  postNative({
-    projectId: createNativeProjectEditorId(projectId, "tasks"),
-    type: "closeProjectEditorPane",
-  });
+  const shouldCloseNativeSurface =
+    !project ||
+    quickKindForProject(project) !== "editor" ||
+    !Array.from(projectEditorSurfaceByProjectId.entries()).some(
+      ([candidateProjectId, candidateSurface]) =>
+        candidateProjectId !== projectId &&
+        candidateSurface.nativeEditorId === quickFileSharedNativeEditorId() &&
+        candidateSurface.isSleeping !== true,
+    );
+  if (shouldCloseNativeSurface) {
+    postNative({
+      projectId: project
+        ? nativeProjectEditorIdForProject(project, "code")
+        : createNativeProjectEditorId(projectId, "code"),
+      type: "closeProjectEditorPane",
+    });
+  }
+  if (!project || quickKindForProject(project) !== "editor") {
+    postNative({
+      projectId: createNativeProjectEditorId(projectId, "git"),
+      type: "closeProjectEditorPane",
+    });
+    postNative({
+      projectId: createNativeProjectEditorId(projectId, "tasks"),
+      type: "closeProjectEditorPane",
+    });
+  }
   stopCodeServerRuntimeIfEveryEditorSleeping();
   publish();
 }
@@ -20219,13 +21447,14 @@ function wakeProjectEditorSurface(project: NativeProject, mode?: ProjectEditorSu
   const startedAtMs = performance.now();
   const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
   const nextMode = mode ?? surfaceState?.mode ?? "code";
-  const nativeEditorId = createNativeProjectEditorId(project.projectId, nextMode);
+  const nativeEditorId = nativeProjectEditorIdForProject(project, nextMode);
   const url =
     nextMode === "git"
       ? surfaceState?.url
       : nextMode === "tasks"
         ? surfaceState?.url
-        : createCodeServerProjectEditorUrl(project.path);
+        : (surfaceState?.mode === "code" ? surfaceState.url : undefined) ??
+          createCodeServerProjectEditorUrl(project.path);
   if ((nextMode === "git" || nextMode === "tasks") && !url) {
     return;
   }
@@ -20334,6 +21563,10 @@ function openProjectEditorForGroup(groupId: string): void {
   });
   const reference = resolveSidebarGroupReference(groupId);
   const project = reference.project;
+  if (quickKindForProject(project) === "editor") {
+    focusQuickFileEditorProject(project);
+    return;
+  }
   if (project.isChat === true || project.isRecentProject === true) {
     appendTitlebarCodeLagDebugLog("titlebarCodeLag.sidebarOpenForGroupSkippedProject", {
       elapsedMs: performance.now() - startedAtMs,
@@ -20416,7 +21649,7 @@ function openProjectEditorForGroup(groupId: string): void {
     isOpen: true,
     isSleeping: false,
     mode: "code",
-    nativeEditorId: createNativeProjectEditorId(project.projectId, "code"),
+    nativeEditorId: nativeProjectEditorIdForProject(project, "code"),
     status: "opening",
     title: projectEditorTitle(project),
     url: createCodeServerProjectEditorUrl(project.path),
@@ -20435,7 +21668,7 @@ function openProjectEditorForGroup(groupId: string): void {
     projectId: project.projectId,
   });
   postNative({
-    projectId: createNativeProjectEditorId(project.projectId, "code"),
+    projectId: nativeProjectEditorIdForProject(project, "code"),
     type: "focusProjectEditorPane",
   });
   appendTitlebarCodeLagDebugLog("titlebarCodeLag.sidebarOpenForGroupAfterFocusPost", {
@@ -20872,6 +22105,10 @@ function rotateActivePaneLayoutClockwiseFromTitlebar(): void {
 function closeProjectEditorForGroup(groupId: string): void {
   const reference = resolveSidebarGroupReference(groupId);
   const project = reference.project;
+  if (quickKindForProject(project) === "editor") {
+    removeProject(project.projectId);
+    return;
+  }
   if (project.isChat === true || project.isRecentProject === true) {
     return;
   }
@@ -21043,6 +22280,53 @@ function handleProjectEditorTabSelected(nativeEditorId: string, url?: string): v
   if (!parsed) {
     return;
   }
+  if (nativeEditorId === quickFileSharedNativeEditorId()) {
+    const selectedFile = (() => {
+      try {
+        return url ? new URL(url).searchParams.get("file") : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    const project =
+      projects.find(
+        (candidate) =>
+          quickKindForProject(candidate) === "editor" &&
+          candidate.quickSymlinkPath &&
+          candidate.quickSymlinkPath === selectedFile,
+      ) ??
+      (quickKindForProject(activeProject()) === "editor" ? activeProject() : undefined) ??
+      projects.find((candidate) => quickKindForProject(candidate) === "editor");
+    if (!project) {
+      return;
+    }
+    /*
+     * CDXC:OSIntegration 2026-05-27-18:06:
+     * The shared Quick Code webview reports native tab selection under the
+     * synthetic quick-files id. Map that event back to the loose-file sidebar
+     * row whose mirrored symlink is active, so the sidebar selection remains a
+     * file row instead of an invisible synthetic project.
+     */
+    if (activeProjectId !== project.projectId) {
+      activeProjectId = project.projectId;
+      writeStoredProjects("quickProjectEditorTabSelected");
+    }
+    const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
+    projectEditorSurfaceByProjectId.set(project.projectId, {
+      errorMessage: undefined,
+      isOpen: true,
+      isSleeping: false,
+      mode: "code",
+      nativeEditorId,
+      status: surfaceState?.status ?? "running",
+      title: "Quick Files",
+      url: url ?? surfaceState?.url,
+    });
+    cancelProjectEditorSleepTimer(project.projectId);
+    rememberAwakeProjectEditorMode(project.projectId, "code");
+    publish();
+    return;
+  }
   const project = findProject(parsed.projectId);
   const surfaceState = projectEditorSurfaceByProjectId.get(parsed.projectId);
   if (!project) {
@@ -21079,6 +22363,17 @@ function handleProjectEditorTabSelected(nativeEditorId: string, url?: string): v
 }
 
 function disposeProjectEditorSurface(projectId: string): void {
+  const project = findProject(projectId);
+  const isQuickEditor = project ? quickKindForProject(project) === "editor" : false;
+  const shouldCloseQuickSharedSurface =
+    !isQuickEditor ||
+    !Array.from(projectEditorSurfaceByProjectId.keys()).some((candidateProjectId) => {
+      if (candidateProjectId === projectId) {
+        return false;
+      }
+      const candidateProject = findProject(candidateProjectId);
+      return candidateProject ? quickKindForProject(candidateProject) === "editor" : false;
+    });
   cancelProjectEditorSleepTimer(projectId);
   cancelProjectEditorOpenTimer(projectId);
   forgetAwakeProjectEditorModes(projectId);
@@ -21086,18 +22381,24 @@ function disposeProjectEditorSurface(projectId: string): void {
   projectDiffStatsByProjectId.delete(projectId);
   pendingProjectDiffRefreshProjectIds.delete(projectId);
   setProjectEditorPersistedOpen(projectId, false, "disposeProjectEditor");
-  postNative({
-    projectId: createNativeProjectEditorId(projectId, "code"),
-    type: "closeProjectEditorPane",
-  });
-  postNative({
-    projectId: createNativeProjectEditorId(projectId, "git"),
-    type: "closeProjectEditorPane",
-  });
-  postNative({
-    projectId: createNativeProjectEditorId(projectId, "tasks"),
-    type: "closeProjectEditorPane",
-  });
+  if (!isQuickEditor || shouldCloseQuickSharedSurface) {
+    postNative({
+      projectId: project
+        ? nativeProjectEditorIdForProject(project, "code")
+        : createNativeProjectEditorId(projectId, "code"),
+      type: "closeProjectEditorPane",
+    });
+  }
+  if (!isQuickEditor) {
+    postNative({
+      projectId: createNativeProjectEditorId(projectId, "git"),
+      type: "closeProjectEditorPane",
+    });
+    postNative({
+      projectId: createNativeProjectEditorId(projectId, "tasks"),
+      type: "closeProjectEditorPane",
+    });
+  }
   if (projectEditorSurfaceByProjectId.size === 0) {
     postNative({ type: "stopCodeServerRuntime" });
   }
@@ -21485,6 +22786,19 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "installCuaDriver":
       void installNativeCuaDriver();
       return;
+    case "setOSIntegrationDefaults":
+      /**
+       * CDXC:OSIntegration 2026-05-27-18:06:
+       * Settings can make Ghostex the default editor/terminal-link/script
+       * handler only after the user clicks an explicit OS Integration action.
+       * Forward the request to native so Launch Services defaults are changed
+       * through macOS APIs rather than install-time registration side effects.
+       */
+      postNative({ target: message.target, type: "setOSIntegrationDefaults" });
+      return;
+    case "requestOSIntegrationStatus":
+      postNative({ type: "requestOSIntegrationStatus" });
+      return;
     case "openBrowserChat":
       void createNativeBrowserChat();
       return;
@@ -21665,6 +22979,17 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       );
       publish();
       return;
+    case "renameWorkspaceProjectForGroup": {
+      const groupReference = resolveSidebarGroupReference(message.groupId);
+      projects = projects.map((project) =>
+        project.projectId === groupReference.project.projectId
+          ? { ...project, name: message.title.trim() || project.name }
+          : project,
+      );
+      writeStoredProjects("renameWorkspaceProjectForGroup");
+      publish();
+      return;
+    }
     case "copyWorkspaceProjectPathForGroup": {
       const groupReference = resolveSidebarGroupReference(message.groupId);
       /*
@@ -21749,6 +23074,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       removeProject(groupReference.project.projectId);
       return;
     }
+    case "promptDeleteWorktreeForGroup":
+      void promptDeleteWorktreeForGroup(message.groupId);
+      return;
     case "closeSession":
       closeTerminal(message.sessionId);
       return;
@@ -21957,7 +23285,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "promptFindPreviousSession":
       if (message.query?.trim()) {
-        promptFindPreviousSession(message.query);
+        void promptFindPreviousSession(message.query);
       } else {
         openAppModal({ modal: "findPreviousSession", type: "open" });
       }
@@ -22004,6 +23332,12 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "cancelSidebarGitCommit":
       pendingGitCommitRequests.delete(message.requestId);
       publish();
+      return;
+    case "commitWorktreeBeforeDelete":
+      void runSidebarGitAction("commit", { groupId: message.groupId, forceCommitReview: true });
+      return;
+    case "confirmDeleteWorktree":
+      void deleteWorktreeProject(message.projectId);
       return;
     case "openSidebarGitChangedFile":
       openNativeWorkspaceInSelectedIde(resolveActiveProjectRelativePath(message.filePath));
@@ -23380,6 +24714,23 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     handleProjectEditorTabSelected(hostEvent.projectId, hostEvent.url);
     return;
   }
+  if (hostEvent.type === "osIntegrationStatus") {
+    try {
+      postOSIntegrationStatus(JSON.parse(hostEvent.payloadJson) as SidebarOSIntegrationStatusMessage);
+    } catch (error) {
+      postOSIntegrationStatus({
+        bundleIdentifier: "",
+        editorDefaults: {},
+        generatedAt: new Date().toISOString(),
+        registeredEditableFiles: false,
+        registeredGhostexURLScheme: false,
+        registeredScriptRunner: false,
+        scriptDefaults: {},
+        type: "osIntegrationStatus",
+      });
+    }
+    return;
+  }
   if (hostEvent.type === "projectBoardRequest") {
     void handleProjectBoardRequest(hostEvent);
     return;
@@ -23452,7 +24803,8 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     return;
   }
   if (hostEvent.type === "terminalTitleChanged") {
-    const session = findSessionRecord(sidebarSessionId);
+    const browserReference = resolveNativeHostEventSessionReference(hostEvent.sessionId);
+    const session = findSessionRecordInProject(browserReference.project, browserReference.sessionId);
     if (session?.kind === "browser") {
       /**
        * CDXC:BrowserPanes 2026-05-03-01:58
@@ -23460,10 +24812,17 @@ window.addEventListener("ghostex-native-host-event", (event) => {
        * Browser sessions do not have terminal activity state, so accept these
        * updates before terminal-specific title detection and persist them for
        * the next native layout sync.
+       *
+       * CDXC:BrowserPanes 2026-05-28-05:30:
+       * Browser metadata events carry durable native ids in the form
+       * `projectId:sessionId`. Resolve that project before updating state so a
+       * background browser pane cannot be mistaken for the active project's
+       * terminal session and inherit a Codex icon or terminal placeholder title.
        */
-      updateActiveProjectWorkspace(
+      updateProjectWorkspace(
+        browserReference.project.projectId,
         (workspace) =>
-          setSessionTitleInSimpleWorkspace(workspace, sidebarSessionId, hostEvent.title, {
+          setSessionTitleInSimpleWorkspace(workspace, browserReference.sessionId, hostEvent.title, {
             titleSource: "browser-auto",
           }).snapshot,
       );
@@ -23472,7 +24831,8 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     }
   }
   if (hostEvent.type === "browserUrlChanged") {
-    const session = findSessionRecord(sidebarSessionId);
+    const browserReference = resolveNativeHostEventSessionReference(hostEvent.sessionId);
+    const session = findSessionRecordInProject(browserReference.project, browserReference.sessionId);
     if (session?.kind === "browser") {
       /**
        * CDXC:BrowserPanes 2026-05-03-03:41
@@ -23480,9 +24840,10 @@ window.addEventListener("ghostex-native-host-event", (event) => {
        * committed WKWebView URL over the host event bus and persist it on the
        * browser card before app restart.
        */
-      updateActiveProjectWorkspace(
+      updateProjectWorkspace(
+        browserReference.project.projectId,
         (workspace) =>
-          setBrowserSessionUrlInSimpleWorkspace(workspace, sidebarSessionId, hostEvent.url)
+          setBrowserSessionUrlInSimpleWorkspace(workspace, browserReference.sessionId, hostEvent.url)
             .snapshot,
       );
       publish();
@@ -23490,7 +24851,8 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     }
   }
   if (hostEvent.type === "browserFaviconChanged") {
-    const session = findSessionRecord(sidebarSessionId);
+    const browserReference = resolveNativeHostEventSessionReference(hostEvent.sessionId);
+    const session = findSessionRecordInProject(browserReference.project, browserReference.sessionId);
     if (session?.kind === "browser") {
       /**
        * CDXC:BrowserPanes 2026-05-03-11:28
@@ -23500,11 +24862,12 @@ window.addEventListener("ghostex-native-host-event", (event) => {
        * that same data URL here instead of duplicating browser fetch logic in
        * the sidebar.
        */
-      updateActiveProjectWorkspace(
+      updateProjectWorkspace(
+        browserReference.project.projectId,
         (workspace) =>
           setBrowserSessionFaviconDataUrlInSimpleWorkspace(
             workspace,
-            sidebarSessionId,
+            browserReference.sessionId,
             hostEvent.faviconDataUrl,
           ).snapshot,
       );
@@ -25542,6 +26905,7 @@ if (
   queueMicrotask(() => {
     postNative({ side: sidebarSide, type: "setSidebarSide" });
     startFirstPromptAutoRenameMonitor();
+    startQuickFileMissingMonitor();
     void refreshGitState();
     void refreshVisibleProjectDiffStats();
     if (restoreActiveProjectEditorAtStartup()) {
@@ -25554,6 +26918,7 @@ if (
     void refreshProviderRuntimeStates("startup");
     scheduleNativeT3RuntimePrewarm(activeProjectId, "startup");
     openTipsAndTricksOnFirstLaunch();
+    showOSIntegrationOnboardingOnFirstLaunch();
   });
 
   void refreshWorkspaceOpenTargetAvailabilityAtStartup();

@@ -118,6 +118,24 @@ export type SidebarGhostexCliStatusMessage = {
   type: "ghostexCliStatus";
 };
 
+export type SidebarOSIntegrationStatusMessage = {
+  /**
+   * CDXC:OSIntegration 2026-05-27-18:06:
+   * Settings -> OS Integration shows native Launch Services diagnostics so the
+   * user can tell whether Ghostex is merely available in Open With or is the
+   * current default for editor, terminal-link, and script-runner roles.
+   */
+  bundleIdentifier: string;
+  editorDefaults: Record<string, string>;
+  generatedAt: string;
+  registeredEditableFiles: boolean;
+  registeredGhostexURLScheme: boolean;
+  registeredScriptRunner: boolean;
+  scriptDefaults: Record<string, string>;
+  terminalLinkDefaultBundleId?: string;
+  type: "osIntegrationStatus";
+};
+
 export type SidebarSessionItem = {
   kind?: "browser" | "workspace";
   sessionKind?: "browser" | "terminal" | "t3";
@@ -552,6 +570,7 @@ export type ExtensionToSidebarMessage =
   | SidebarGhostexFolderStatsMessage
   | SidebarAgentHookStatusMessage
   | SidebarGhostexCliStatusMessage
+  | SidebarOSIntegrationStatusMessage
   | SidebarShowSessionRenameModalMessage
   | SidebarShowFindPreviousSessionModalMessage
   | SidebarShowT3ThreadIdModalMessage;
@@ -598,6 +617,19 @@ export type SidebarToExtensionMessage =
        * refreshes the shared integration status afterward.
        */
       type: "installGhostexCli" | "installBrowserControl" | "installCuaDriver";
+    }
+  | {
+      /**
+       * CDXC:OSIntegration 2026-05-27-18:06:
+       * Settings exposes explicit OS default actions. Installing Ghostex only
+       * registers it as an available handler; default editor, terminal-link,
+       * and script-runner ownership changes happen only through this command.
+       */
+      target: "editor" | "terminalLinks" | "scriptRunner" | "all";
+      type: "setOSIntegrationDefaults";
+    }
+  | {
+      type: "requestOSIntegrationStatus";
     }
   | {
       settings: ghostexSettings;
@@ -868,6 +900,15 @@ export type SidebarToExtensionMessage =
       title: string;
     }
   | {
+      /**
+       * CDXC:WorktreeDelete 2026-05-28-07:46:
+       * Combined project rows render worktrees as project headers, so project-name edits and delete confirmation prompts must route through trusted group ids instead of trusting DOM-provided paths.
+       */
+      type: "renameWorkspaceProjectForGroup";
+      groupId: string;
+      title: string;
+    }
+  | {
       type: "copyWorkspaceProjectPathForGroup";
       groupId: string;
     }
@@ -957,6 +998,14 @@ export type SidebarToExtensionMessage =
        * legacy remove message for the workspace dock path.
        */
       type: "closeWorkspaceProjectForGroup" | "removeWorkspaceProjectForGroup";
+      groupId: string;
+    }
+  | {
+      /**
+       * CDXC:WorktreeDelete 2026-05-28-07:46:
+       * Delete Worktree first asks native for a fresh git status summary, then opens the full-window confirmation modal before any checkout directory is removed.
+       */
+      type: "promptDeleteWorktreeForGroup";
       groupId: string;
     }
   | {
@@ -1215,6 +1264,14 @@ export type SidebarToExtensionMessage =
   | {
       requestId: string;
       type: "cancelSidebarGitCommit";
+    }
+  | {
+      projectId: string;
+      type: "confirmDeleteWorktree";
+    }
+  | {
+      groupId: string;
+      type: "commitWorktreeBeforeDelete";
     }
   | {
       type: "saveSidebarCommand";

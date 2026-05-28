@@ -18,7 +18,11 @@ import {
   moveSessionPickerSelection,
   parseArgs,
   parseCreateSession,
+  parseEditPaths,
+  parseOpenPaths,
+  parseQuickTerminal,
   parseRename,
+  parseVsCodePathPosition,
   readAndroidReadinessSettings,
   usage,
 } from "./ghostex-cli.mjs";
@@ -129,6 +133,37 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).toContain("Direct attach stays available through attach/a/resume/r without opening the TUI");
     expect(help).toMatch(/^\s+ghostex$/m);
     expect(help).toMatch(/^\s+gx$/m);
+  });
+
+  test("parses OS integration path open commands", () => {
+    /**
+     * CDXC:OSIntegration 2026-05-27-18:06:
+     * Open/edit/terminal CLI commands are the public macOS integration surface
+     * behind Finder, Open With, and EDITOR-style workflows.
+     */
+    expect(parseOpenPaths(["./docs/os-integration-prd.md"], {})).toMatchObject({
+      mode: "open",
+      targets: [{ line: undefined, path: path.resolve("./docs/os-integration-prd.md") }],
+    });
+    expect(parseEditPaths([], { wait: "src/app.ts:12:3" })).toMatchObject({
+      mode: "edit",
+      targets: [{ column: 3, line: 12, path: path.resolve("src/app.ts") }],
+      wait: true,
+    });
+    expect(parseEditPaths([], { goto: "src/app.ts:12:3", wait: true })).toMatchObject({
+      targets: [{ column: 3, line: 12, path: path.resolve("src/app.ts") }],
+      wait: true,
+    });
+    expect(parseQuickTerminal(["echo", "hi"], { cwd: "/tmp", title: "Scratch" })).toEqual({
+      command: "echo hi",
+      cwd: "/tmp",
+      title: "Scratch",
+    });
+    expect(parseVsCodePathPosition("file.ts:12:3")).toEqual({
+      column: 3,
+      line: 12,
+      path: "file.ts",
+    });
   });
 
   test("installs the Ghostex Browser Use skill for agents", async () => {

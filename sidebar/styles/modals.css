@@ -2077,6 +2077,97 @@
   min-width: 132px;
 }
 
+.worktree-delete-modal-shadcn {
+  /**
+   * CDXC:WorktreeDelete 2026-05-28-07:46:
+   * The delete-worktree confirmation mirrors the Settings/git review modal surface but stays narrower because it only presents the delete question and a git-status summary.
+   */
+  max-height: min(720px, calc(100vh - 2rem));
+  max-width: min(720px, calc(100vw - 2rem));
+  width: min(720px, calc(100vw - 2rem));
+}
+
+.worktree-delete-modal-header {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  gap: 0;
+  padding: 20px;
+}
+
+.worktree-delete-modal-body {
+  display: grid;
+  gap: 18px;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+}
+
+.worktree-delete-modal-question,
+.worktree-delete-modal-note,
+.worktree-delete-status-heading {
+  color: color-mix(in srgb, var(--foreground) 90%, var(--muted-foreground) 10%);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.worktree-delete-status-block {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.worktree-delete-status-summary {
+  background: color-mix(in srgb, var(--background) 68%, transparent);
+  border: 1px solid color-mix(in srgb, var(--input) 72%, transparent);
+  border-radius: 12px;
+  color: color-mix(in srgb, var(--foreground) 88%, var(--muted-foreground) 12%);
+  font-family: var(--app-monospace-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  max-height: min(320px, 42vh);
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.worktree-delete-clean-row {
+  align-items: center;
+  color: color-mix(in srgb, var(--foreground) 88%, var(--muted-foreground) 12%);
+  display: flex;
+  font-size: 14px;
+  font-weight: 700;
+  gap: 10px;
+  min-width: 0;
+}
+
+.worktree-delete-clean-icon {
+  align-items: center;
+  background: #238636;
+  border-radius: 999px;
+  color: white;
+  display: inline-flex;
+  flex: none;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.worktree-delete-modal-actions {
+  border-top: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  padding: 14px 20px 20px;
+}
+
+.worktree-delete-modal-button {
+  min-width: 112px;
+}
+
 .git-file-diff-modal-shadcn {
   /*
    * CDXC:TitlebarGit 2026-05-25-10:16:

@@ -33,6 +33,7 @@ enum HostCommand: Decodable {
   case pickWorkspaceIcon(PickWorkspaceIcon)
   case showMessage(ShowMessage)
   case appendAgentDetectionDebugLog(AppendAgentDetectionDebugLog)
+  case appendLayoutLayeringDebugLog(AppendLayoutLayeringDebugLog)
   case appendTerminalFocusDebugLog(AppendTerminalFocusDebugLog)
   case appendRestoreDebugLog(AppendRestoreDebugLog)
   case appendSessionTitleDebugLog(AppendSessionTitleDebugLog)
@@ -48,6 +49,8 @@ enum HostCommand: Decodable {
   case openAccessibilityPreferences
   case requestMacOSNotificationPermission
   case openMacOSNotificationSettings
+  case setOSIntegrationDefaults(SetOSIntegrationDefaults)
+  case requestOSIntegrationStatus
   case openExternalUrl(OpenExternalUrl)
   case openWorkspaceInFinder(OpenWorkspaceInFinder)
   case openWorkspaceInIde(OpenWorkspaceInIde)
@@ -113,6 +116,7 @@ enum HostCommand: Decodable {
     case pickWorkspaceIcon
     case showMessage
     case appendAgentDetectionDebugLog
+    case appendLayoutLayeringDebugLog
     case appendTerminalFocusDebugLog
     case appendRestoreDebugLog
     case appendSessionTitleDebugLog
@@ -128,6 +132,8 @@ enum HostCommand: Decodable {
     case openAccessibilityPreferences
     case requestMacOSNotificationPermission
     case openMacOSNotificationSettings
+    case setOSIntegrationDefaults
+    case requestOSIntegrationStatus
     case openExternalUrl
     case openWorkspaceInFinder
     case openWorkspaceInIde
@@ -224,6 +230,8 @@ enum HostCommand: Decodable {
       self = .showMessage(try ShowMessage(from: decoder))
     case .appendAgentDetectionDebugLog:
       self = .appendAgentDetectionDebugLog(try AppendAgentDetectionDebugLog(from: decoder))
+    case .appendLayoutLayeringDebugLog:
+      self = .appendLayoutLayeringDebugLog(try AppendLayoutLayeringDebugLog(from: decoder))
     case .appendTerminalFocusDebugLog:
       self = .appendTerminalFocusDebugLog(try AppendTerminalFocusDebugLog(from: decoder))
     case .appendRestoreDebugLog:
@@ -255,6 +263,10 @@ enum HostCommand: Decodable {
       self = .requestMacOSNotificationPermission
     case .openMacOSNotificationSettings:
       self = .openMacOSNotificationSettings
+    case .setOSIntegrationDefaults:
+      self = .setOSIntegrationDefaults(try SetOSIntegrationDefaults(from: decoder))
+    case .requestOSIntegrationStatus:
+      self = .requestOSIntegrationStatus
     case .openExternalUrl:
       self = .openExternalUrl(try OpenExternalUrl(from: decoder))
     case .openWorkspaceInFinder:
@@ -736,6 +748,12 @@ struct AppendTerminalFocusDebugLog: Decodable {
   let force: Bool?
 }
 
+struct AppendLayoutLayeringDebugLog: Decodable {
+  let details: String?
+  let event: String
+  let force: Bool?
+}
+
 struct AppendSessionTitleDebugLog: Decodable {
   let details: String?
   let event: String
@@ -899,6 +917,10 @@ enum WorkspaceIdeTargetApp: String, Decodable {
   case vscodeInsiders = "vscode-insiders"
 }
 
+struct SetOSIntegrationDefaults: Decodable {
+  let target: String
+}
+
 struct SidebarCliCommand: Decodable {
   let action: String
   let payloadJson: String?
@@ -983,6 +1005,7 @@ enum HostEvent: Encodable {
   case projectEditorTabSelected(projectId: String, url: String?)
   case projectEditorLoadState(projectId: String, status: String, message: String?)
   case projectBoardRequest(ProjectBoardBridgeRequest)
+  case osIntegrationStatus(payloadJson: String)
   case sessionStatusIndicatorClicked(status: NativeSessionStatusIndicatorStatus)
   case petOverlayActivityClicked(projectId: String, sessionId: String)
   case sessionAttentionNotificationClicked(sessionId: String)
@@ -1230,6 +1253,9 @@ enum HostEvent: Encodable {
       try container.encode(request.requestId, forKey: .requestId)
       try container.encodeIfPresent(request.sessionId, forKey: .sessionId)
       try container.encodeIfPresent(request.ticketTitle, forKey: .ticketTitle)
+    case .osIntegrationStatus(let payloadJson):
+      try container.encode("osIntegrationStatus", forKey: .type)
+      try container.encode(payloadJson, forKey: .payloadJson)
     case .sessionStatusIndicatorClicked(let status):
       /**
        CDXC:SessionStatusIndicators 2026-05-05-19:47
