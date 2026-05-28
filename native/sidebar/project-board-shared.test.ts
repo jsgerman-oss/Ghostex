@@ -3,6 +3,8 @@ import {
   appendImageMarkdownToDescription,
   extractDescriptionImagePreviews,
   extractDescriptionImageReferences,
+  priorityLabel,
+  prioritySelectValue,
   removeDescriptionImageReference,
 } from "./project-board-shared";
 
@@ -60,5 +62,21 @@ describe("project board description image helpers", () => {
     const description = `Prompt\n\n![pasted-image](${pngDataUrl})`;
 
     expect(extractDescriptionImagePreviews(description)).toEqual([pngDataUrl]);
+  });
+});
+
+describe("project board priority labels", () => {
+  test("uses urgency words while preserving numeric bd values", () => {
+    expect([0, 1, 2, 3].map((priority) => priorityLabel(priority))).toEqual([
+      "Urgent",
+      "High",
+      "Medium",
+      "Low",
+    ]);
+  });
+
+  test("normalizes legacy P4 values into the visible Low tier", () => {
+    expect(priorityLabel(4)).toBe("Low");
+    expect(prioritySelectValue(4)).toBe("3");
   });
 });

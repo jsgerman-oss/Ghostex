@@ -114,11 +114,14 @@ export const BOARD_COLUMNS: Array<{
 ];
 
 export const PRIORITY_OPTIONS = [
-  { label: "P0", value: "0" },
-  { label: "P1", value: "1" },
-  { label: "P2", value: "2" },
-  { label: "P3", value: "3" },
-  { label: "P4", value: "4" },
+  /*
+    CDXC:ProjectBoard 2026-05-28-09:18:
+    Project board priority controls must show user-facing urgency labels instead of Beads' numeric P0/P1/P2/P3/P4 shorthand. Keep persisted priority values numeric for bd compatibility and collapse legacy lowest-priority value 4 into the visible Low tier.
+  */
+  { label: "Urgent", value: "0" },
+  { label: "High", value: "1" },
+  { label: "Medium", value: "2" },
+  { label: "Low", value: "3" },
 ] as const;
 
 export const TSHIRT_OPTIONS = [
@@ -228,7 +231,12 @@ export function tshirtToEstimate(label: TshirtSize | undefined): number | undefi
 
 export function priorityLabel(priority: number | undefined): string {
   const value = priority ?? 2;
-  return PRIORITY_OPTIONS.find((option) => Number(option.value) === value)?.label ?? `P${value}`;
+  return PRIORITY_OPTIONS.find((option) => Number(option.value) === value)?.label ?? "Low";
+}
+
+export function prioritySelectValue(priority: number | undefined): string {
+  const value = priority ?? 2;
+  return PRIORITY_OPTIONS.some((option) => Number(option.value) === value) ? String(value) : "3";
 }
 
 export function parseBeadsJson(stdout: string): unknown {

@@ -49,6 +49,12 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   BOARD_COLUMNS,
   PRIORITY_OPTIONS,
   TSHIRT_OPTIONS,
@@ -69,6 +75,7 @@ import {
   normalizeDisplayIssueKey,
   parseBeadsJson,
   priorityLabel,
+  prioritySelectValue,
   removeDescriptionImageReference,
   isDescriptionImageSource,
   tshirtToEstimate,
@@ -463,7 +470,7 @@ function ProjectBoardApp() {
       isDeleting: false,
       isSaving: false,
       labels: ticket.labels ?? [],
-      priority: String(ticket.priority ?? 2),
+      priority: prioritySelectValue(ticket.priority),
       status: ticket.boardStatus,
       title: ticket.title,
       tshirt: estimateToTshirt(ticket.estimate),
@@ -488,7 +495,7 @@ function ProjectBoardApp() {
         isDeleting: false,
         isSaving: false,
         labels: nextTicket.labels ?? [],
-        priority: String(nextTicket.priority ?? 2),
+        priority: prioritySelectValue(nextTicket.priority),
         status: nextTicket.boardStatus,
         title: nextTicket.title,
         tshirt: estimateToTshirt(nextTicket.estimate),
@@ -1547,40 +1554,48 @@ function ConversationSection({
         </Button>
       </div>
       {links.length > 0 ? (
-        <div className="project-ticket-conversation-list">
-          {links.map((link) => {
-            return (
-              <div className="project-ticket-conversation-row" key={link.id}>
-                <div>
-                  <strong>{conversationLinkLabel(link)}</strong>
-                  <span>{conversationLinkStatusText(link)}</span>
+        <TooltipProvider delayDuration={350}>
+          <div className="project-ticket-conversation-list">
+            {links.map((link) => {
+              const label = conversationLinkLabel(link);
+              return (
+                <div className="project-ticket-conversation-row" key={link.id}>
+                  <div className="project-ticket-conversation-main">
+                    <ConversationLinkName
+                      className="project-ticket-conversation-name"
+                      label={label}
+                    />
+                    <span className="project-ticket-conversation-status">
+                      {conversationLinkStatusText(link)}
+                    </span>
+                  </div>
+                  <div className="project-ticket-conversation-actions">
+                    <Button
+                      aria-label="Jump to linked conversation"
+                      disabled={!link.isLive || hasActiveConversationAction}
+                      onClick={() => onJumpToConversation(link)}
+                      size="icon-sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <IconExternalLink />
+                    </Button>
+                    <Button
+                      aria-label="Unlink conversation"
+                      disabled={hasActiveConversationAction}
+                      onClick={() => onUnlinkConversation(link)}
+                      size="icon-sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <IconUnlink />
+                    </Button>
+                  </div>
                 </div>
-                <div className="project-ticket-conversation-actions">
-                  <Button
-                    aria-label="Jump to linked conversation"
-                    disabled={!link.isLive || hasActiveConversationAction}
-                    onClick={() => onJumpToConversation(link)}
-                    size="icon-sm"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <IconExternalLink />
-                  </Button>
-                  <Button
-                    aria-label="Unlink conversation"
-                    disabled={hasActiveConversationAction}
-                    onClick={() => onUnlinkConversation(link)}
-                    size="icon-sm"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <IconUnlink />
-                  </Button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        </TooltipProvider>
       ) : (
         <p className="project-ticket-empty">No linked conversation yet.</p>
       )}
@@ -1590,6 +1605,23 @@ function ConversationSection({
 
 function conversationLinkLabel(link: ProjectBoardConversationLinkView): string {
   return link.sessionTitle || link.agentName || link.agentId || link.agentSessionId || "Agent session";
+}
+
+function ConversationLinkName({
+  className,
+  label,
+}: {
+  className: string;
+  label: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={className}>{label}</span>
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function conversationLinkStatusText(link: ProjectBoardConversationLinkView): string {
@@ -1689,6 +1721,7 @@ function TicketCard({
   const blockingCount = ticket.dependent_count ?? 0;
   const primaryLink = links[0];
   const additionalLinkCount = primaryLink ? links.length - 1 : 0;
+  const primaryLinkLabel = primaryLink ? conversationLinkLabel(primaryLink) : "";
   const jumpDisabled =
     !primaryLink?.isLive ||
     Boolean(conversationAction);
@@ -1733,11 +1766,20 @@ function TicketCard({
         </div>
         {primaryLink ? (
           <div className="project-board-card-conversation">
-            <span>
-              <IconLink />
-              {conversationLinkLabel(primaryLink)}
-              {additionalLinkCount > 0 ? ` +${additionalLinkCount}` : ""}
-            </span>
+            <TooltipProvider delayDuration={350}>
+              <span className="project-board-card-conversation-label">
+                <IconLink />
+                <ConversationLinkName
+                  className="project-board-card-conversation-name"
+                  label={primaryLinkLabel}
+                />
+                {additionalLinkCount > 0 ? (
+                  <span className="project-board-card-conversation-extra">
+                    +{additionalLinkCount}
+                  </span>
+                ) : null}
+              </span>
+            </TooltipProvider>
             <Button
               aria-label="Jump to linked conversation"
               disabled={jumpDisabled}
@@ -2288,6 +2330,22 @@ styleElement.textContent = `
     white-space: nowrap;
   }
 
+  .project-board-card-conversation-label {
+    flex: 1 1 auto;
+  }
+
+  .project-board-card-conversation-name {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-board-card-conversation-extra {
+    flex: 0 0 auto;
+  }
+
   .project-board-card-conversation svg {
     flex: 0 0 auto;
     height: 13px;
@@ -2508,8 +2566,19 @@ styleElement.textContent = `
     padding: 7px 8px 7px 10px;
   }
 
-  .project-ticket-conversation-row strong,
-  .project-ticket-conversation-row span {
+  .project-ticket-conversation-main {
+    /*
+     * CDXC:ProjectBoard 2026-05-28-09:17:
+     * Ticket conversation rows must preserve the right-side jump/unlink controls
+     * at narrow widths while the associated session name truncates with an
+     * ellipsis and exposes the full name through the hover tooltip.
+     */
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .project-ticket-conversation-name,
+  .project-ticket-conversation-status {
     display: block;
     min-width: 0;
     overflow: hidden;
@@ -2517,13 +2586,13 @@ styleElement.textContent = `
     white-space: nowrap;
   }
 
-  .project-ticket-conversation-row strong {
+  .project-ticket-conversation-name {
     color: rgba(250, 250, 250, 0.9);
     font-size: 12px;
     font-weight: 620;
   }
 
-  .project-ticket-conversation-row span {
+  .project-ticket-conversation-status {
     color: rgba(244, 244, 245, 0.46);
     font-size: 11px;
     margin-top: 2px;
