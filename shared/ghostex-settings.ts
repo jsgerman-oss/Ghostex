@@ -859,7 +859,12 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       DEFAULT_ghostex_SETTINGS.autoSleepAgentSessionsEnabled,
     ),
     autoSleepAgentIdleMinutes: normalizeAutoSleepIdleMinutes(
-      readNumber(source, "autoSleepAgentIdleMinutes", DEFAULT_ghostex_SETTINGS.autoSleepAgentIdleMinutes),
+      readNumber(
+        source,
+        "autoSleepAgentIdleMinutes",
+        DEFAULT_ghostex_SETTINGS.autoSleepAgentIdleMinutes,
+      ),
+      DEFAULT_ghostex_SETTINGS.autoSleepAgentIdleMinutes,
     ),
     autoSleepCodeEditorEnabled: readBoolean(
       source,
@@ -872,6 +877,7 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
         "autoSleepCodeEditorIdleMinutes",
         DEFAULT_ghostex_SETTINGS.autoSleepCodeEditorIdleMinutes,
       ),
+      DEFAULT_ghostex_SETTINGS.autoSleepCodeEditorIdleMinutes,
     ),
     autoSleepFocusedAgentSessions: readBoolean(
       source,
@@ -889,6 +895,7 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
         "autoSleepGitEditorIdleMinutes",
         DEFAULT_ghostex_SETTINGS.autoSleepGitEditorIdleMinutes,
       ),
+      DEFAULT_ghostex_SETTINGS.autoSleepGitEditorIdleMinutes,
     ),
     autoSleepRequireAgentResumeCommand: readBoolean(
       source,
@@ -1323,6 +1330,15 @@ function normalizeKeepAwakeDurationMinutes(value: number): KeepAwakeDurationMinu
   return KEEP_AWAKE_DURATION_OPTIONS.some((option) => option.value === value)
     ? (value as KeepAwakeDurationMinutes)
     : DEFAULT_ghostex_SETTINGS.keepAwakeDefaultDurationMinutes;
+}
+
+function normalizeAutoSleepIdleMinutes(
+  value: number,
+  fallback: AutoSleepIdleMinutes,
+): AutoSleepIdleMinutes {
+  return AUTO_SLEEP_IDLE_MINUTE_OPTIONS.some((option) => option.value === value)
+    ? (value as AutoSleepIdleMinutes)
+    : fallback;
 }
 
 function normalizePromptEditorBackend(source: Record<string, unknown>): PromptEditorBackend {
