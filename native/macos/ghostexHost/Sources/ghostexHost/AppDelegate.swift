@@ -29,11 +29,18 @@ private let ghostexReferenceSidebarChromeBackgroundColor = NSColor(
 private let ghostexAppTitlebarHeight: CGFloat = 35
 /**
  CDXC:NativeWindowChrome 2026-05-25-07:22:
- The traffic-light buttons should sit 5px below exact vertical center in the
- 35px app titlebar. Keep this as a named visual-down offset so flipped and
- non-flipped AppKit titlebar coordinate systems apply the same requirement.
+ The traffic-light buttons should sit below exact vertical center in the 35px
+ app titlebar by the configured visual offset. Keep this as a named visual-down
+ offset so flipped and non-flipped AppKit titlebar coordinate systems apply the
+ same requirement.
  */
 private let ghostexTrafficLightVisualDownOffset: CGFloat = 2
+/**
+ CDXC:NativeWindowChrome 2026-05-28-14:59:
+ The main app window must not resize or restore below 500px wide by 400px tall.
+ Keep the AppKit resize minimum and persisted-frame clamps on the same value so saved older window sizes cannot reopen below the supported app minimum.
+ */
+private let ghostexMainWindowMinimumSize = NSSize(width: 500, height: 400)
 private let ghostexOSIntegrationEditorExtensions = [
   "txt", "md", "markdown", "json", "jsonc", "yaml", "yml", "toml", "ini", "env", "xml", "csv",
   "html", "css", "scss", "js", "jsx", "ts", "tsx", "sh", "bash", "zsh", "fish", "py", "rb", "go",
@@ -380,10 +387,17 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
   }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUUpdaterDelegate,
+  SPUStandardUserDriverDelegate
+{
   static let logger = Logger(subsystem: "com.madda.ghostex.host", category: "app")
   private static let standardWindowButtonTypes: [NSWindow.ButtonType] = [
     .closeButton, .miniaturizeButton, .zoomButton,
+  ]
+  private static let standardWindowButtonLeadingOffsets: [NSWindow.ButtonType: CGFloat] = [
+    .closeButton: 0,
+    .miniaturizeButton: 23,
+    .zoomButton: 46,
   ]
   private static let logDateFormatter: DateFormatter = {
     let formatter = DateFormatter()
@@ -411,13 +425,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private var isFlushingCEFBeforeTerminate = false
   private var didFlushCEFBeforeTerminate = false
   private var workspaceActivationObserver: NSObjectProtocol?
+  private var trafficLightLayoutObservers: [NSObjectProtocol] = []
+  private weak var trafficLightLayoutObservedWindow: NSWindow?
+  private weak var trafficLightLayoutObservedTitlebarView: NSView?
+  private var isPositioningMainWindowTrafficLightButtons = false
   private var appHotkeyEventMonitor: Any?
   private var lastNativeActivationRequest: NativeActivationRequest?
   private var lastNativeInputEventPayload: [String: Any]?
   private var lastNativeInputEventRecordedAt: Date?
   private weak var appTitlebarLabel: NSTextField?
   private let nativeSettingsStore = NativeSettingsStore()
-  private let updaterController: SPUStandardUpdaterController
+  private var isSparkleUpdateAvailable = false
+  private lazy var updaterController = SPUStandardUpdaterController(
+    startingUpdater: true,
+    updaterDelegate: self,
+    userDriverDelegate: self)
   private var t3CodeRuntimeProcess: Process?
   private var t3RuntimeVisibleSessionCwd: String?
   private var t3RuntimeLivenessTimer: Timer?
@@ -447,17 +469,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
      */
     ghosttyConfigSelection = configSelection
     ghostty = GhostexGhosttyApp(configPath: configSelection.path)
-    /**
-     CDXC:AutoUpdate 2026-05-02-06:51
-     The native app should use Sparkle for the macOS appcast update flow, like
-     DockDoor. Start the updater controller during app initialization so the
-     menu item and background checks share Sparkle's standard state machine.
-     */
-    updaterController = SPUStandardUpdaterController(
-      startingUpdater: true,
-      updaterDelegate: nil,
-      userDriverDelegate: nil)
     super.init()
+    /**
+     CDXC:AutoUpdate 2026-05-28-14:19:
+     Ghostex should still initialize Sparkle at launch, but scheduled update
+     presentation is mediated by AppDelegate so new releases surface first as
+     quiet titlebar chrome instead of an immediate modal prompt.
+     */
+    _ = updaterController
     logGhosttyConfigStartup()
   }
 
@@ -478,7 +497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       makeWindow()
       installAppHotkeyEventMonitor()
       startBridge()
-      startSparkleBackgroundUpdateCheck()
+      startSparkleLaunchUpdateProbe()
       scheduleOSIntegrationFlushRetry()
     }
     tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
@@ -1021,6 +1040,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     SidebarRefreshDebugLog.append(event: event, details: details)
   }
 
+  fileprivate static func appendProjectBoardDebugLog(event: String, details: String?) {
+    /**
+     CDXC:ProjectBoardDiagnostics 2026-05-28-12:32:
+     Project-page create/start diagnostics need their own app-storage log file
+     so Beads creation, title generation, agent launch, and worktree setup
+     breadcrumbs can be inspected without mixing them into terminal-focus or
+     session-title logs. These are regular diagnostics, so Settings Debugging
+     Mode is the final gate before any file write.
+     */
+    guard NativeDebugLogging.isEnabled else {
+      return
+    }
+    let logsDirectory = GhostexAppStorage.logsDirectory
+    let logURL = logsDirectory.appendingPathComponent("project-board-debug.log")
+    let message = details.map { "\(event) \($0)" } ?? event
+    appendLogLine(message, to: logURL, logsDirectory: logsDirectory, label: "project board debug")
+  }
+
   fileprivate static func appendWorkspaceDockIndicatorDebugLog(event: String, details: String?) {
     /**
      CDXC:WorkspaceDock 2026-04-27-04:23
@@ -1130,6 +1167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
   func windowWillClose(_ notification: Notification) {
     persistMainWindowChrome()
+    removeMainWindowTrafficLightLayoutObservers()
     (window?.contentView as? ghostexRootView)?.persistNativeChromeForAppLifecycle()
     Self.appendNativeHostLifecycleLog(
       "windowWillClose title=\(window?.title ?? "<missing>") visibleBeforeClose=\(window?.isVisible ?? false)"
@@ -1407,20 +1445,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   }
 
   @MainActor
-  private func startSparkleBackgroundUpdateCheck() {
+  private func startSparkleLaunchUpdateProbe() {
     /**
-     CDXC:AutoUpdate 2026-05-02-06:51
-     Automatic update checks should honor Sparkle's persisted user preference.
-     When enabled, ask Sparkle to check in the background at launch instead of
-     implementing a parallel polling path in ghostex.
+     CDXC:AutoUpdate 2026-05-28-14:19:
+     Launch should still check whether a newer Ghostex build exists, but the
+     first user-facing surface must be the quiet titlebar download button.
+     Use Sparkle's informational probe so launch never offers or downloads the
+     update before the user clicks the titlebar control.
      */
-    if updaterController.updater.automaticallyChecksForUpdates {
-      updaterController.updater.checkForUpdatesInBackground()
-    }
+    updaterController.updater.checkForUpdateInformation()
   }
 
   @IBAction func checkForUpdates(_ sender: Any?) {
     updaterController.updater.checkForUpdates()
+  }
+
+  @MainActor private func showUpdateDialogFromTitlebar() {
+    /**
+     CDXC:AutoUpdate 2026-05-28-14:19:
+     The titlebar download button is the consent boundary for update UI. Once
+     the user clicks it, hand off to Sparkle's standard dialog so signing,
+     release notes, download, and install behavior stay on the supported path.
+     */
+    updaterController.updater.checkForUpdates()
+  }
+
+  @MainActor private func setSparkleUpdateAvailable(_ available: Bool) {
+    isSparkleUpdateAvailable = available
+    /**
+     CDXC:AutoUpdate 2026-05-28-14:26:
+     Repeat availability pushes are intentional because Sparkle can learn about
+     scheduled updates before the titlebar webview finishes loading. Re-sending
+     the current boolean lets later probes hydrate the titlebar without adding a
+     fallback cache in React.
+     */
+    (window?.contentView as? ghostexRootView)?.setTitlebarUpdateAvailable(available)
   }
 
   @IBAction nonisolated func closeAllWindows(_ sender: Any?) {}
@@ -1428,6 +1487,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   @IBAction nonisolated func toggleQuickTerminal(_ sender: Any?) {}
 
   nonisolated func toggleVisibility(_ sender: Any?) {}
+
+  var supportsGentleScheduledUpdateReminders: Bool {
+    true
+  }
+
+  func standardUserDriverShouldHandleShowingScheduledUpdate(
+    _ update: SUAppcastItem,
+    andInImmediateFocus immediateFocus: Bool
+  ) -> Bool {
+    /**
+     CDXC:AutoUpdate 2026-05-28-14:19:
+     Sparkle scheduled checks must not raise the standard update alert on their
+     own. Ghostex handles scheduled availability as the titlebar download
+     affordance, while user-initiated checks still use Sparkle's normal dialog.
+     */
+    setSparkleUpdateAvailable(true)
+    return false
+  }
+
+  func standardUserDriverWillHandleShowingUpdate(
+    _ handleShowingUpdate: Bool,
+    forUpdate update: SUAppcastItem,
+    state: SPUUserUpdateState
+  ) {
+    if !state.userInitiated {
+      setSparkleUpdateAvailable(true)
+    }
+  }
+
+  func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+    setSparkleUpdateAvailable(false)
+  }
+
+  func standardUserDriverWillFinishUpdateSession() {
+    setSparkleUpdateAvailable(false)
+  }
+
+  func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+    setSparkleUpdateAvailable(true)
+  }
+
+  func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+    setSparkleUpdateAvailable(false)
+  }
+
+  func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+    setSparkleUpdateAvailable(false)
+  }
 
   nonisolated func syncFloatOnTopMenu(_ window: NSWindow) {}
 
@@ -1507,6 +1614,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       },
       setPetOverlayState: { [weak petOverlayController] command in
         petOverlayController?.apply(command)
+      },
+      showUpdateDialogFromTitlebar: { [weak self] in
+        self?.showUpdateDialogFromTitlebar()
       }
     )
     workspaceView = root.workspaceView
@@ -1549,6 +1659,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.isMovableByWindowBackground = false
+    window.minSize = ghostexMainWindowMinimumSize
     window.backgroundColor = ghostexReferenceSidebarChromeBackgroundColor
     window.contentView = root
     window.delegate = self
@@ -1642,7 +1753,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       return restoredFrame
     }
 
-    let size = CGSize(width: max(stored.width ?? 1440, 320), height: max(stored.height ?? 900, 240))
+    let size = CGSize(
+      width: max(stored.width ?? 1440, ghostexMainWindowMinimumSize.width),
+      height: max(stored.height ?? 900, ghostexMainWindowMinimumSize.height))
     return Self.defaultInitialWindowFrame(size: size)
   }
 
@@ -1652,7 +1765,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     guard let storedFrame = stored.frame else {
       return nil
     }
-    let size = CGSize(width: max(storedFrame.width, 320), height: max(storedFrame.height, 240))
+    let size = CGSize(
+      width: max(storedFrame.width, ghostexMainWindowMinimumSize.width),
+      height: max(storedFrame.height, ghostexMainWindowMinimumSize.height))
     if let screen = screen(matchingIdentifier: stored.screenID),
       let storedScreenFrame = stored.screenFrame
     {
@@ -1698,31 +1813,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   private func positionMainWindowTrafficLightButtons(on window: NSWindow) {
     /**
      CDXC:NativeWindowChrome 2026-05-25-07:22:
-     The macOS traffic-light buttons should be positioned from the custom 35px titlebar center, then pushed 5px visually lower. Compute the absolute frame on every AppKit relayout so close/minimize/zoom do not snap back to AppKit's default 30px placement.
+     The macOS traffic-light buttons should be positioned from the custom 35px
+     titlebar center, then pushed visually lower by the configured offset.
+     Compute the absolute frame on every AppKit relayout so close/minimize/zoom
+     do not snap back to AppKit's default 30px placement.
+
+     CDXC:NativeWindowChrome 2026-05-28-11:14:
+     The traffic-light group should also move right until the close button's
+     left inset matches its computed top inset. Derive the horizontal offset
+     from the final vertical placement so top and left spacing stay equal when
+     the titlebar height or visual-down offset changes. Frame observers must
+     ignore frames set by this function so AppKit notifications correct external
+     relayouts without recursively re-entering the positioning path.
+
+     CDXC:NativeWindowChrome 2026-05-28-11:38:
+     AppKit can reset only one standard button during titlebar churn, which left
+     the yellow minimize button behind after the red and green buttons moved.
+     Set each button's absolute leading position from the close button target
+     and AppKit's standard 23px button cadence instead of applying one relative
+     delta to whatever partial state AppKit last produced.
      */
+    guard !isPositioningMainWindowTrafficLightButtons else {
+      return
+    }
+    guard
+      let closeButton = window.standardWindowButton(.closeButton),
+      let closeTitlebarView = closeButton.superview
+    else {
+      return
+    }
+    isPositioningMainWindowTrafficLightButtons = true
+    defer {
+      isPositioningMainWindowTrafficLightButtons = false
+    }
+    let desiredOriginY = { (frame: CGRect, titlebarView: NSView) -> CGFloat in
+      if titlebarView.isFlipped {
+        return (ghostexAppTitlebarHeight - frame.height) / 2
+          + ghostexTrafficLightVisualDownOffset
+      }
+      return titlebarView.bounds.height - ((ghostexAppTitlebarHeight + frame.height) / 2)
+        - ghostexTrafficLightVisualDownOffset
+    }
+    let closeDesiredOriginY = desiredOriginY(closeButton.frame, closeTitlebarView)
+    let closeTopInset = closeTitlebarView.isFlipped
+      ? closeDesiredOriginY
+      : closeTitlebarView.bounds.height - closeDesiredOriginY - closeButton.frame.height
     for buttonType in Self.standardWindowButtonTypes {
       guard let button = window.standardWindowButton(buttonType), let titlebarView = button.superview else {
         continue
       }
-      var frame = button.frame
-      if titlebarView.isFlipped {
-        frame.origin.y =
-          (ghostexAppTitlebarHeight - frame.height) / 2
-          + ghostexTrafficLightVisualDownOffset
-      } else {
-        frame.origin.y =
-          titlebarView.bounds.height - ((ghostexAppTitlebarHeight + frame.height) / 2)
-          - ghostexTrafficLightVisualDownOffset
+      let frame = button.frame
+      let leadingOffset = Self.standardWindowButtonLeadingOffsets[buttonType] ?? 0
+      let desiredFrame = CGRect(
+        x: closeTopInset + leadingOffset,
+        y: desiredOriginY(frame, titlebarView),
+        width: frame.width,
+        height: frame.height
+      )
+      guard abs(frame.origin.x - desiredFrame.origin.x) > 0.5
+        || abs(frame.origin.y - desiredFrame.origin.y) > 0.5
+      else {
+        continue
       }
-      button.frame = frame
+      button.frame = desiredFrame
     }
   }
 
   private func scheduleMainWindowTrafficLightPositioning(on window: NSWindow) {
     /**
      CDXC:NativeWindowChrome 2026-05-25-07:22:
-     AppKit can restore standard window-button frames during activation and resize layout passes after the custom titlebar is already visible. Reapply the 35px-titlebar positioning plus 5px visual-down offset at the end of those passes so the final on-screen traffic lights remain in the requested spot.
+     AppKit can restore standard window-button frames during activation and resize layout passes after the custom titlebar is already visible. Reapply the 35px-titlebar positioning plus the configured visual-down offset at the end of those passes so the final on-screen traffic lights remain in the requested spot.
+
+     CDXC:NativeWindowChrome 2026-05-28-11:05:
+     First launch can run another AppKit titlebar layout after makeKeyAndOrderFront and NSApp.activate, before a later key-window transition occurs. Observe the titlebar container and standard button frames so startup relayouts use the same final correction instead of waiting for Alt-Tab to trigger windowDidBecomeKey.
      */
+    installMainWindowTrafficLightLayoutObservers(on: window)
     positionMainWindowTrafficLightButtons(on: window)
     DispatchQueue.main.async { [weak self, weak window] in
       guard let self, let window, self.window === window else {
@@ -1736,6 +1901,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       }
       self.positionMainWindowTrafficLightButtons(on: window)
     }
+  }
+
+  private func installMainWindowTrafficLightLayoutObservers(on window: NSWindow) {
+    guard
+      let closeButton = window.standardWindowButton(.closeButton),
+      let titlebarView = closeButton.superview
+    else {
+      return
+    }
+    guard trafficLightLayoutObservedWindow !== window
+      || trafficLightLayoutObservedTitlebarView !== titlebarView
+      || trafficLightLayoutObservers.isEmpty
+    else {
+      return
+    }
+    removeMainWindowTrafficLightLayoutObservers()
+
+    titlebarView.postsFrameChangedNotifications = true
+    titlebarView.postsBoundsChangedNotifications = true
+    trafficLightLayoutObservedWindow = window
+    trafficLightLayoutObservedTitlebarView = titlebarView
+
+    let notificationCenter = NotificationCenter.default
+    let titlebarFrameObserver = notificationCenter.addObserver(
+      forName: NSView.frameDidChangeNotification,
+      object: titlebarView,
+      queue: .main
+    ) { [weak self, weak window] _ in
+      guard let self, let window, self.window === window,
+        !self.isPositioningMainWindowTrafficLightButtons
+      else {
+        return
+      }
+      self.scheduleMainWindowTrafficLightPositioning(on: window)
+    }
+    let titlebarBoundsObserver = notificationCenter.addObserver(
+      forName: NSView.boundsDidChangeNotification,
+      object: titlebarView,
+      queue: .main
+    ) { [weak self, weak window] _ in
+      guard let self, let window, self.window === window,
+        !self.isPositioningMainWindowTrafficLightButtons
+      else {
+        return
+      }
+      self.scheduleMainWindowTrafficLightPositioning(on: window)
+    }
+
+    trafficLightLayoutObservers = [titlebarFrameObserver, titlebarBoundsObserver]
+    for buttonType in Self.standardWindowButtonTypes {
+      guard let button = window.standardWindowButton(buttonType) else {
+        continue
+      }
+      button.postsFrameChangedNotifications = true
+      trafficLightLayoutObservers.append(
+        notificationCenter.addObserver(
+          forName: NSView.frameDidChangeNotification,
+          object: button,
+          queue: .main
+        ) { [weak self, weak window] _ in
+          guard let self, let window, self.window === window,
+            !self.isPositioningMainWindowTrafficLightButtons
+          else {
+            return
+          }
+          self.scheduleMainWindowTrafficLightPositioning(on: window)
+        }
+      )
+    }
+  }
+
+  private func removeMainWindowTrafficLightLayoutObservers() {
+    guard !trafficLightLayoutObservers.isEmpty else {
+      return
+    }
+    let notificationCenter = NotificationCenter.default
+    for observer in trafficLightLayoutObservers {
+      notificationCenter.removeObserver(observer)
+    }
+    trafficLightLayoutObservers = []
+    trafficLightLayoutObservedWindow = nil
+    trafficLightLayoutObservedTitlebarView = nil
   }
 
   private static func screen(matchingIdentifier identifier: UInt32?) -> NSScreen? {
@@ -2014,6 +2261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .appendLayoutLayeringDebugLog(let command):
       Self.appendLayoutLayeringDebugLog(
         event: command.event, details: command.details, force: command.force == true)
+    case .appendProjectBoardDebugLog(let command):
+      Self.appendProjectBoardDebugLog(event: command.event, details: command.details)
     case .appendTerminalFocusDebugLog(let command):
       Self.appendTerminalFocusDebugLog(
         event: command.event, details: command.details, force: command.force == true)
@@ -2104,6 +2353,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     case .togglePetOverlayFromTitlebar:
       break
     case .toggleCommandsPanelFromTitlebar:
+      break
+    case .showUpdateDialogFromTitlebar:
+      showUpdateDialogFromTitlebar()
+    case .focusResourceSessionFromTitlebar:
       break
     case .sleepInactiveSessionsFromTitlebar:
       break
@@ -3870,8 +4123,8 @@ final class ghostexRootView: NSView {
   private static let combinedSidebarMinWidthReduction: CGFloat = 70
   private static let sidebarMaxWidth: CGFloat = 520
   private static let dividerWidth: CGFloat = 6
-  private static let defaultSidebarWidth: CGFloat = 260
-  private static let sidebarResetWidth: CGFloat = 260
+  private static let defaultSidebarWidth: CGFloat = 235
+  private static let sidebarResetWidth: CGFloat = 235
   private static let startupOverlayVisibleDuration: TimeInterval = 2.0
   private static let startupOverlayFadeDuration: TimeInterval = 1.0
   private static let startupOverlayIconOpacity: CGFloat = 0.14
@@ -3909,10 +4162,13 @@ final class ghostexRootView: NSView {
   private let setAppTitlebarTitle: (String?) -> Void
   private let setSessionStatusIndicators: (SetSessionStatusIndicators) -> Void
   private let setPetOverlayState: (SetPetOverlayState) -> Void
+  private let showUpdateDialogFromTitlebar: () -> Void
   private let sendHostEvent: (HostEvent) -> Void
   private let nativeSettingsStore = NativeSettingsStore()
   private var isModalHostReady = false
   private var activeAppModalKind: String?
+  private var appModalPresentationPending = false
+  private var appModalReturnFocusSessionId: String?
   private var pendingModalHostOpenMessage: [String: Any]?
   private var latestModalHostSidebarState: [String: Any]?
   private var activeFloatingPromptEditor: ActiveFloatingPromptEditor?
@@ -3949,6 +4205,8 @@ final class ghostexRootView: NSView {
    CDXC:NativeSidebarChrome 2026-04-28-02:21
    New sidebar sessions should start at 260px, and double-clicking the native
    resize handle should snap the sidebar back to the same 260px width.
+   CDXC:NativeSidebarChrome 2026-05-28-12:18:
+   New sidebar sessions should now start at 235px, and double-clicking the native resize handle should snap back to the same 235px default.
    */
   init(
     ghostty: GhostexGhosttyApp,
@@ -3961,7 +4219,8 @@ final class ghostexRootView: NSView {
     openWorkspaceInIde: @escaping (OpenWorkspaceInIde) -> Void,
     setAppTitlebarTitle: @escaping (String?) -> Void,
     setSessionStatusIndicators: @escaping (SetSessionStatusIndicators) -> Void,
-    setPetOverlayState: @escaping (SetPetOverlayState) -> Void
+    setPetOverlayState: @escaping (SetPetOverlayState) -> Void,
+    showUpdateDialogFromTitlebar: @escaping () -> Void
   ) {
     let settingsStore = NativeSettingsStore()
     let storedSidebarChrome = settingsStore.readSidebarChrome()
@@ -3983,6 +4242,7 @@ final class ghostexRootView: NSView {
     self.setAppTitlebarTitle = setAppTitlebarTitle
     self.setSessionStatusIndicators = setSessionStatusIndicators
     self.setPetOverlayState = setPetOverlayState
+    self.showUpdateDialogFromTitlebar = showUpdateDialogFromTitlebar
     self.sendHostEvent = sendEvent
     self.sidebarWidth = storedSidebarChrome.width ?? Self.defaultSidebarWidth
     self.sidebarSide = nativeSettingsStore.readSidebarSide()
@@ -5272,6 +5532,28 @@ final class ghostexRootView: NSView {
     needsLayout = true
   }
 
+  func setTitlebarUpdateAvailable(_ available: Bool) {
+    let payload: [String: Any] = ["updateAvailable": available]
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    /**
+     CDXC:AutoUpdate 2026-05-28-14:19:
+     Sparkle update availability is native state, but the visible affordance
+     lives in the isolated React titlebar beside the project identity. Push a
+     tiny boolean payload so React can render or hide the quiet download button
+     without owning appcast parsing or update installation.
+     */
+    titlebarChromeWebView.evaluateJavaScript(
+      """
+      window.__ghostex_TITLEBAR__?.setActiveProjectState(\(json));
+      undefined;
+      """)
+  }
+
   private func openActiveProjectEditorFromTitlebar() {
     /**
      CDXC:TitlebarOpenIn 2026-05-11-00:22
@@ -5426,6 +5708,24 @@ final class ghostexRootView: NSView {
     sidebarView.evaluateJavaScript(
       """
       window.__ghostex_NATIVE_SIDEBAR__?.sleepInactiveSessionsFromTitlebar?.(\(sessionIdsJson));
+      undefined;
+      """)
+  }
+
+  private func focusResourceSessionFromTitlebar(_ command: FocusResourceSessionFromTitlebar) {
+    /**
+     CDXC:TitlebarResources 2026-05-28-10:39:
+     Resource-row Focus is a React titlebar action, but the sidebar owns
+     project/session focus state. Forward the selected combined session id into
+     the sidebar webview so existing cross-project and sleeping-session focus
+     behavior remains authoritative.
+     */
+    guard let sessionIdJson = Self.javascriptStringLiteral(command.sessionId) else {
+      return
+    }
+    sidebarView.evaluateJavaScript(
+      """
+      window.__ghostex_NATIVE_SIDEBAR__?.focusResourceSessionFromTitlebar?.(\(sessionIdJson));
       undefined;
       """)
   }
@@ -5605,6 +5905,8 @@ final class ghostexRootView: NSView {
     case .appendLayoutLayeringDebugLog(let command):
       AppDelegate.appendLayoutLayeringDebugLog(
         event: command.event, details: command.details, force: command.force == true)
+    case .appendProjectBoardDebugLog(let command):
+      AppDelegate.appendProjectBoardDebugLog(event: command.event, details: command.details)
     case .appendTerminalFocusDebugLog(let command):
       AppDelegate.appendTerminalFocusDebugLog(
         event: command.event, details: command.details, force: command.force == true)
@@ -5713,6 +6015,10 @@ final class ghostexRootView: NSView {
       togglePetOverlayFromTitlebar()
     case .toggleCommandsPanelFromTitlebar:
       toggleCommandsPanelFromTitlebar()
+    case .showUpdateDialogFromTitlebar:
+      showUpdateDialogFromTitlebar()
+    case .focusResourceSessionFromTitlebar(let command):
+      focusResourceSessionFromTitlebar(command)
     case .sleepInactiveSessionsFromTitlebar(let command):
       sleepInactiveSessionsFromTitlebar(command)
     case .quitResourcesFromTitlebar(let command):
@@ -6237,16 +6543,61 @@ final class ghostexRootView: NSView {
   }
 
   private func closeAppModalHost(reason: String) {
+    let returnFocusSessionId = appModalReturnFocusSessionId
     AppDelegate.appendAgentDetectionDebugLog(
       event: "nativeBridge.appModal.close.received",
-      details: "reason=\(reason) wasHidden=\(modalHostView.isHidden)"
+      details: "reason=\(reason) returnFocusSessionId=\(returnFocusSessionId ?? "<none>") wasHidden=\(modalHostView.isHidden)"
     )
     dispatchModalHostMessage(["type": "close"])
     activeAppModalKind = nil
+    appModalPresentationPending = false
     pendingModalHostOpenMessage = nil
     modalHostView.setTopLeftHitRegions(nil)
     modalHostView.isHidden = true
     updateSidebarModalBackdrop()
+    restoreAppModalReturnFocusIfNeeded(sessionId: returnFocusSessionId, reason: reason)
+  }
+
+  private func rememberAppModalReturnFocusTarget(modal: String?) {
+    guard modal != "floatingPromptEditor" else {
+      return
+    }
+    if appModalReturnFocusSessionId != nil {
+      return
+    }
+    appModalReturnFocusSessionId = workspaceView.appModalReturnFocusTerminalSessionId()
+    /**
+     CDXC:AppModals 2026-05-28-14:52:
+     Backdrop modals run in a transparent WKWebView that becomes first responder while open. Capture the currently focused terminal before presenting that webview so Escape, backdrop clicks, close buttons, and React-driven dismissals can return typing focus to the pane the user was using.
+     */
+    AppDelegate.appendAgentDetectionDebugLog(
+      event: "nativeBridge.appModal.returnFocusCaptured",
+      details: "modal=\(modal ?? "unknown") returnFocusSessionId=\(appModalReturnFocusSessionId ?? "<none>")"
+    )
+  }
+
+  private func restoreAppModalReturnFocusIfNeeded(sessionId: String?, reason: String) {
+    guard let sessionId else {
+      appModalReturnFocusSessionId = nil
+      return
+    }
+    DispatchQueue.main.async { [weak self] in
+      guard let self else {
+        return
+      }
+      guard self.activeAppModalKind == nil,
+        !self.appModalPresentationPending,
+        self.modalHostView.isHidden
+      else {
+        AppDelegate.appendAgentDetectionDebugLog(
+          event: "nativeBridge.appModal.returnFocusDeferred",
+          details: "reason=\(reason) returnFocusSessionId=\(sessionId) activeAppModalKind=\(self.activeAppModalKind ?? "<none>") presentationPending=\(self.appModalPresentationPending) modalHostHidden=\(self.modalHostView.isHidden)"
+        )
+        return
+      }
+      self.appModalReturnFocusSessionId = nil
+      self.workspaceView.focusTerminal(sessionId: sessionId, reason: "appModalClosed.\(reason)")
+    }
   }
 
   private func updateSidebarModalBackdrop() {
@@ -6994,10 +7345,13 @@ final class ghostexRootView: NSView {
         details:
           "modal=\(message["modal"] as? String ?? "unknown") ready=\(isModalHostReady) hasLatestState=\(latestModalHostSidebarState != nil) wasHidden=\(modalHostView.isHidden)"
       )
+      rememberAppModalReturnFocusTarget(modal: message["modal"] as? String)
       if !isModalHostReady {
+        appModalPresentationPending = true
         pendingModalHostOpenMessage = message
         return
       }
+      appModalPresentationPending = true
       pendingModalHostOpenMessage = nil
       if (message["modal"] as? String) != "floatingPromptEditor" {
         modalHostView.setTopLeftHitRegions(nil)
@@ -7028,6 +7382,7 @@ final class ghostexRootView: NSView {
       if isPrewarmingFloatingPromptEditor {
         return
       }
+      appModalPresentationPending = false
       activeAppModalKind = message["modal"] as? String
       if activeAppModalKind != "floatingPromptEditor" {
         modalHostView.setTopLeftHitRegions(nil)

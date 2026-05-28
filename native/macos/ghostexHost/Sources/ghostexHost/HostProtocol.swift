@@ -34,6 +34,7 @@ enum HostCommand: Decodable {
   case showMessage(ShowMessage)
   case appendAgentDetectionDebugLog(AppendAgentDetectionDebugLog)
   case appendLayoutLayeringDebugLog(AppendLayoutLayeringDebugLog)
+  case appendProjectBoardDebugLog(AppendProjectBoardDebugLog)
   case appendTerminalFocusDebugLog(AppendTerminalFocusDebugLog)
   case appendRestoreDebugLog(AppendRestoreDebugLog)
   case appendSessionTitleDebugLog(AppendSessionTitleDebugLog)
@@ -71,6 +72,8 @@ enum HostCommand: Decodable {
   case rotateActivePaneLayoutClockwiseFromTitlebar
   case togglePetOverlayFromTitlebar
   case toggleCommandsPanelFromTitlebar
+  case showUpdateDialogFromTitlebar
+  case focusResourceSessionFromTitlebar(FocusResourceSessionFromTitlebar)
   case sleepInactiveSessionsFromTitlebar(SleepInactiveSessionsFromTitlebar)
   case quitResourcesFromTitlebar(QuitResourcesFromTitlebar)
   case runSidebarCommandFromTitlebar(RunSidebarCommandFromTitlebar)
@@ -117,6 +120,7 @@ enum HostCommand: Decodable {
     case showMessage
     case appendAgentDetectionDebugLog
     case appendLayoutLayeringDebugLog
+    case appendProjectBoardDebugLog
     case appendTerminalFocusDebugLog
     case appendRestoreDebugLog
     case appendSessionTitleDebugLog
@@ -154,6 +158,8 @@ enum HostCommand: Decodable {
     case rotateActivePaneLayoutClockwiseFromTitlebar
     case togglePetOverlayFromTitlebar
     case toggleCommandsPanelFromTitlebar
+    case showUpdateDialogFromTitlebar
+    case focusResourceSessionFromTitlebar
     case sleepInactiveSessionsFromTitlebar
     case quitResourcesFromTitlebar
     case runSidebarCommandFromTitlebar
@@ -232,6 +238,8 @@ enum HostCommand: Decodable {
       self = .appendAgentDetectionDebugLog(try AppendAgentDetectionDebugLog(from: decoder))
     case .appendLayoutLayeringDebugLog:
       self = .appendLayoutLayeringDebugLog(try AppendLayoutLayeringDebugLog(from: decoder))
+    case .appendProjectBoardDebugLog:
+      self = .appendProjectBoardDebugLog(try AppendProjectBoardDebugLog(from: decoder))
     case .appendTerminalFocusDebugLog:
       self = .appendTerminalFocusDebugLog(try AppendTerminalFocusDebugLog(from: decoder))
     case .appendRestoreDebugLog:
@@ -307,6 +315,10 @@ enum HostCommand: Decodable {
       self = .togglePetOverlayFromTitlebar
     case .toggleCommandsPanelFromTitlebar:
       self = .toggleCommandsPanelFromTitlebar
+    case .showUpdateDialogFromTitlebar:
+      self = .showUpdateDialogFromTitlebar
+    case .focusResourceSessionFromTitlebar:
+      self = .focusResourceSessionFromTitlebar(try FocusResourceSessionFromTitlebar(from: decoder))
     case .sleepInactiveSessionsFromTitlebar:
       self = .sleepInactiveSessionsFromTitlebar(try SleepInactiveSessionsFromTitlebar(from: decoder))
     case .quitResourcesFromTitlebar:
@@ -379,11 +391,14 @@ struct ProjectBoardBridgeRequest: Decodable {
   let agentId: String?
   let beadDisplayId: String?
   let beadId: String?
+  let details: String?
+  let event: String?
   let prompt: String?
   let projectId: String?
   let projectPath: String?
   let requestId: String
   let sessionId: String?
+  let startLocation: String?
   let ticketTitle: String?
 }
 
@@ -495,6 +510,14 @@ struct SetActiveTerminalSet: Decodable {
   let focusRequestId: Int?
   let focusedSessionId: String?
   let isFocusModeActive: Bool?
+  /**
+   CDXC:SessionFocusMode 2026-05-28-12:52:
+   Native tab context menus need explicit Focus availability from the sidebar layout model because a single pane can contain multiple tabs without having any split pane to zoom.
+
+   CDXC:SessionFocusMode 2026-05-28-15:35:
+   Availability follows rendered awake pane owners, so a persisted split whose other pane is sleeping does not leave Focus visible while AppKit shows one pane.
+   */
+  let sessionFocusModeAvailableSessionIds: [String]?
   let sleepingSessionIds: [String]?
   let layoutChanged: Bool?
   let layout: NativeTerminalLayout?
@@ -754,6 +777,11 @@ struct AppendLayoutLayeringDebugLog: Decodable {
   let force: Bool?
 }
 
+struct AppendProjectBoardDebugLog: Decodable {
+  let details: String?
+  let event: String
+}
+
 struct AppendSessionTitleDebugLog: Decodable {
   let details: String?
   let event: String
@@ -896,6 +924,10 @@ struct RunSidebarGitActionFromTitlebar: Decodable {
   let action: String
 }
 
+struct FocusResourceSessionFromTitlebar: Decodable {
+  let sessionId: String
+}
+
 struct SleepInactiveSessionsFromTitlebar: Decodable {
   let sessionIds: [String]
 }
@@ -995,6 +1027,7 @@ enum HostEvent: Encodable {
   case terminalFocused(sessionId: String)
   case terminalBell(sessionId: String)
   case nativeSessionSurfaceMissing(sessionId: String)
+  case terminalRestoreBlocked(sessionId: String, reason: String, cwd: String)
   case commandsPanelHeightRatioChanged(heightRatio: Double)
   case terminalError(sessionId: String, message: String)
   case terminalTextResult(requestId: String, sessionId: String, ok: Bool, text: String?, error: String?)
@@ -1050,6 +1083,7 @@ enum HostEvent: Encodable {
     case exists
     case persistenceSessionCreated
     case provider
+    case reason
     case text
     case sessionName
     case sessionPersistenceName
@@ -1165,6 +1199,18 @@ enum HostEvent: Encodable {
        */
       try container.encode("nativeSessionSurfaceMissing", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
+    case .terminalRestoreBlocked(let sessionId, let reason, let cwd):
+      /**
+       CDXC:SessionRestore 2026-05-28-16:13:
+       Deleted project/chat folders are a user-action restore failure, not a
+       terminal process failure. Report the missing cwd to the sidebar before
+       launching Ghostty so the user can confirm removing the dead session
+       instead of watching an empty pane appear and close immediately.
+       */
+      try container.encode("terminalRestoreBlocked", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
+      try container.encode(reason, forKey: .reason)
+      try container.encode(cwd, forKey: .cwd)
     case .commandsPanelHeightRatioChanged(let heightRatio):
       try container.encode("commandsPanelHeightRatioChanged", forKey: .type)
       try container.encode(heightRatio, forKey: .heightRatio)

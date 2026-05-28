@@ -1827,6 +1827,7 @@ final class TerminalWorkspaceView: NSView {
   private var sessionActivities = [String: NativeTerminalActivity]()
   private var sessionDelayedSendRemainingLabels = [String: String]()
   private var sessionFaviconDataUrls = [String: String]()
+  private var sessionFocusModeAvailableSessionIds = Set<String>()
   private var sessionTitleBarActions = [String: [TerminalTitleBarAction]]()
   private var sessionTitles = [String: String]()
   private var showSessionIdInTerminalPanes = false
@@ -2637,6 +2638,33 @@ final class TerminalWorkspaceView: NSView {
           ).exists
         }
       }
+    if sessionPersistenceProvider != nil,
+      persistenceSessionExisted == false,
+      !NativeSessionPersistenceMode.cwdExists(command.cwd)
+    {
+      /**
+       CDXC:SessionRestore 2026-05-28-16:13:
+       Provider-backed sessions can create a missing tmux/zmx/zellij backend
+       only after changing into the saved project folder. If that folder was
+       deleted, stop before Ghostty starts an attach shell that immediately
+       exits and let the sidebar ask whether to remove the dead session.
+       */
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.createTerminal.restoreBlocked",
+        details: [
+          "cwd": command.cwd,
+          "reason": "missingCwd",
+          "requestedSessionId": command.sessionId,
+          "sessionPersistenceName": sessionPersistenceName ?? "",
+          "sessionPersistenceProvider": sessionPersistenceProvider?.rawValue ?? "off",
+        ],
+        force: forcePreviousSessionRestoreDiagnostics)
+      sendEvent(.terminalRestoreBlocked(
+        sessionId: command.sessionId,
+        reason: "missingCwd",
+        cwd: command.cwd))
+      return
+    }
     /**
      CDXC:SessionPersistence 2026-05-26-17:20:
      Sidebar sleeping state means "no native pane is mounted"; it no longer
@@ -3878,6 +3906,11 @@ final class TerminalWorkspaceView: NSView {
       let items = session.tabs.map { tab in
         TerminalSessionTitleBarView.TabItem(
           actions: [],
+          /*
+           CDXC:SessionFocusMode 2026-05-28-13:22:
+           Project editor tabs are browser tabs inside one editor pane, not terminal split panes, so their titlebar items must opt out of pane focus mode while still satisfying the shared tab item contract.
+           */
+          allowsFocusMode: false,
           isSleeping: false,
           sessionId: tab.tabId,
           title: tab.title)
@@ -5174,6 +5207,7 @@ final class TerminalWorkspaceView: NSView {
     let previousProjectEditorCompanionIsVisible = projectEditorCompanionIsVisible
     let previousProjectEditorCompanionPaneHidden = projectEditorCompanionPaneHidden
     let previousProjectEditorCompanionSessionId = projectEditorCompanionSessionId
+    let previousSessionFocusModeAvailableSessionIds = sessionFocusModeAvailableSessionIds
     let previousSessionTitleBarActions = sessionTitleBarActions
     let previousSessionTitles = sessionTitles
     let responderSessionIdBefore = currentResponderSessionId()
@@ -5228,12 +5262,14 @@ final class TerminalWorkspaceView: NSView {
     sessionActivities = command.sessionActivities ?? [:]
     sessionDelayedSendRemainingLabels = command.sessionDelayedSendRemainingLabels ?? [:]
     sessionFaviconDataUrls = command.sessionFaviconDataUrls ?? [:]
+    sessionFocusModeAvailableSessionIds = Set(command.sessionFocusModeAvailableSessionIds ?? [])
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
     showSessionIdInTerminalPanes = command.showSessionIdInTerminalPanes == true
     activeProjectEditorId = nextActiveProjectEditorId
     let shouldRefreshPaneTabMetadata =
-      previousSessionTitleBarActions != sessionTitleBarActions || previousSessionTitles != sessionTitles
+      previousSessionFocusModeAvailableSessionIds != sessionFocusModeAvailableSessionIds
+      || previousSessionTitleBarActions != sessionTitleBarActions || previousSessionTitles != sessionTitles
     if previousDelayedSendRemainingLabels != sessionDelayedSendRemainingLabels {
       needsLayout = true
     }
@@ -10860,6 +10896,7 @@ final class TerminalWorkspaceView: NSView {
     let items = sessionIds.map { sessionId in
       TerminalSessionTitleBarView.TabItem(
         actions: sessionTitleBarActions[sessionId] ?? [],
+        allowsFocusMode: sessionFocusModeAvailableSessionIds.contains(sessionId),
         isSleeping: sleepingSessionIds.contains(sessionId),
         sessionId: sessionId,
         title: normalizedTerminalSessionTitle(sessionTitles[sessionId], sessionId: sessionId))
@@ -12856,6 +12893,23 @@ final class TerminalWorkspaceView: NSView {
     return sessionId(containing: responder)
   }
 
+  func appModalReturnFocusTerminalSessionId() -> String? {
+    /**
+     CDXC:AppModals 2026-05-28-14:52:
+     Modal dismissal must return keyboard input to the terminal that owned focus when the modal opened. Prefer the live first-responder terminal, then the command-panel and workspace focus stores, because opening a modal from sidebar or titlebar chrome can move first responder away before the selected terminal changes.
+     */
+    let candidates = [
+      currentResponderSessionId(),
+      commandsPanelFocusedSessionId,
+      focusedSessionId,
+      lastEmittedFocusedSessionId,
+    ].compactMap { $0 }
+    return candidates.first { sessionId in
+      sessions[sessionId] != nil
+        && (activeSessionIds.contains(sessionId) || commandsPanelActiveSessionIds.contains(sessionId))
+    }
+  }
+
   private func shouldPreserveNonTerminalFirstResponder() -> Bool {
     guard let responder = window?.firstResponder else {
       return false
@@ -13531,6 +13585,12 @@ private enum NativeSessionPersistenceMode {
         cwd: cwd,
         sessionName: sessionName)
     }
+  }
+
+  static func cwdExists(_ cwd: String) -> Bool {
+    var isDirectory = ObjCBool(false)
+    return FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory)
+      && isDirectory.boolValue
   }
 
   static func killSession(
@@ -16424,6 +16484,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   var onTabFocusRequested: ((String) -> Void)?
   var onTabActionRequested: ((String, TerminalTitleBarAction) -> Void)?
   private var contextMenuActions: [TerminalTitleBarAction] = []
+  private var allowsFocusMode = false
   private var allowsClose = true
   private var activity: NativeTerminalActivity?
   private var hoveredInlineAction: InlineAction? {
@@ -16609,6 +16670,10 @@ private final class TerminalTitleBarTabButton: NSButton {
 
   func setContextMenuActions(_ actions: [TerminalTitleBarAction]) {
     contextMenuActions = actions
+  }
+
+  func setAllowsFocusMode(_ isAllowed: Bool) {
+    allowsFocusMode = isAllowed
   }
 
   func setAllowsClose(_ isAllowed: Bool) {
@@ -16965,13 +17030,18 @@ private final class TerminalTitleBarTabButton: NSButton {
     let primaryActions = primaryTabContextMenuActions()
     var didAddFocusItem = false
     for action in primaryActions {
-      if action == .popOut || action == .restorePopOut {
+      if allowsFocusMode && (action == .popOut || action == .restorePopOut) {
         addTabFocusMenuItem(to: menu)
         didAddFocusItem = true
       }
       addTabActionMenuItem(action, to: menu)
     }
-    if !didAddFocusItem {
+    if allowsFocusMode && !didAddFocusItem {
+      /**
+       CDXC:SessionFocusMode 2026-05-28-12:52:
+       Native tab context menus should show Focus only when the sidebar has marked the tab as part of a split-pane layout.
+       One pane with multiple tabs still has tab buttons, but no split pane to zoom, so the menu omits Focus there.
+       */
       addTabFocusMenuItem(to: menu)
     }
     if !primaryActions.isEmpty {
@@ -17364,6 +17434,7 @@ private final class TerminalTitleBarTabButton: NSButton {
 private final class TerminalSessionTitleBarView: NSView {
   struct TabItem: Equatable {
     let actions: [TerminalTitleBarAction]
+    let allowsFocusMode: Bool
     let isSleeping: Bool
     let sessionId: String
     let title: String
@@ -17669,6 +17740,7 @@ private final class TerminalSessionTitleBarView: NSView {
       button.setSleeping(tab.isSleeping)
       button.setDelayedSendRemainingLabel(nil)
       button.setContextMenuActions(tab.actions)
+      button.setAllowsFocusMode(tab.allowsFocusMode)
       button.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     }
     updateTabGroupFocusAppearance()

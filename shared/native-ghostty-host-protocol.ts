@@ -258,6 +258,14 @@ export type NativeGhosttyHostCommand =
        * The React titlebar needs to know when reversible pane-tab Focus mode is active so it can expose an explicit exit control beside the mode switcher.
        */
       isFocusModeActive?: boolean;
+      /**
+       * CDXC:SessionFocusMode 2026-05-28-12:52:
+       * Native tab context menus need a per-session Focus availability list because AppKit cannot infer whether a tab belongs to a split pane or a single tabbed pane from tab count alone.
+       *
+       * CDXC:SessionFocusMode 2026-05-28-15:35:
+       * Availability follows rendered awake pane owners, so a persisted split whose other owner is sleeping does not show Focus in the native tab context menu.
+       */
+      sessionFocusModeAvailableSessionIds?: string[];
       sleepingSessionIds?: string[];
       /**
        * CDXC:NativeGpu 2026-05-08-16:45
@@ -395,6 +403,18 @@ export type NativeGhosttyHostEvent =
        */
       sessionId: string;
       type: "nativeSessionSurfaceMissing";
+    }
+  | {
+      /**
+       * CDXC:SessionRestore 2026-05-28-16:13:
+       * Native blocks provider-backed terminal restore before launch when the
+       * saved cwd was deleted and the backend session must be recreated there.
+       * The sidebar confirms removal instead of showing a pane that exits.
+       */
+      cwd: string;
+      reason: "missingCwd" | string;
+      sessionId: string;
+      type: "terminalRestoreBlocked";
     }
   | {
       heightRatio: number;

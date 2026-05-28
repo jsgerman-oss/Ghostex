@@ -107,8 +107,8 @@ import {
   type ProjectBoardConversationLinkView,
   type ProjectBoardConversationState,
   type ProjectBoardSessionOption,
+  type ProjectBoardStartLocation,
 } from "../../shared/bead-conversation-links";
-import { focusDirectionInSnapshot } from "../../shared/session-grid-state-create-focus";
 import { normalizeSessionRecord } from "../../shared/session-grid-state-helpers";
 import {
   createDefaultSidebarGitState,
@@ -131,6 +131,8 @@ import {
   focusGroupInSimpleWorkspace,
   focusSessionExclusivelyInSimpleWorkspace,
   focusSessionInSimpleWorkspace,
+  focusVisibleDirectionInSimpleWorkspace,
+  hasMultiplePaneOwners,
   mergeAllTabsInPaneLayoutInSimpleWorkspace,
   moveSessionInPaneLayoutInSimpleWorkspace,
   moveSessionToGroupInSimpleWorkspace,
@@ -430,6 +432,14 @@ type NativeHostCommand =
        * The React titlebar needs to know when reversible pane-tab Focus mode is active so it can expose an explicit exit control beside the mode switcher.
        */
       isFocusModeActive?: boolean;
+      /**
+       * CDXC:SessionFocusMode 2026-05-28-12:52:
+       * Native tab context menus need explicit Focus availability from the sidebar layout model because one tab group can contain many tabs while still being only one pane.
+       *
+       * CDXC:SessionFocusMode 2026-05-28-15:35:
+       * Availability follows rendered awake pane owners, so a sleeping-only split sibling does not expose Focus while the native workarea visually has one pane.
+       */
+      sessionFocusModeAvailableSessionIds?: string[];
       sleepingSessionIds?: string[];
       /**
        * CDXC:NativeGpu 2026-05-08-16:45
@@ -513,6 +523,7 @@ type NativeHostCommand =
   | { type: "showMessage"; level: "info" | "warning" | "error"; message: string }
   | { details?: string; event: string; type: "appendAgentDetectionDebugLog" }
   | { details?: string; event: string; force?: boolean; type: "appendLayoutLayeringDebugLog" }
+  | { details?: string; event: string; type: "appendProjectBoardDebugLog" }
   | { details?: string; event: string; force?: boolean; type: "appendTerminalFocusDebugLog" }
   | { details?: string; event: string; type: "appendRestoreDebugLog" }
   | { details?: string; event: string; force?: boolean; type: "appendSessionTitleDebugLog" }
@@ -717,6 +728,7 @@ type NativeHostEvent =
   | { sessionId: string; type: "terminalFocused" }
   | { sessionId: string; type: "terminalBell" }
   | { sessionId: string; type: "nativeSessionSurfaceMissing" }
+  | { cwd: string; reason: "missingCwd" | string; sessionId: string; type: "terminalRestoreBlocked" }
   | { heightRatio: number; type: "commandsPanelHeightRatioChanged" }
   | { message: string; sessionId: string; type: "terminalError" }
   | {
@@ -2216,6 +2228,39 @@ function appendSidebarRefreshDebugLog(event: string, details?: unknown): void {
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event,
     type: "appendSidebarRefreshDebugLog",
+  });
+}
+
+function appendPinnedSessionReorderDebugLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:PinnedSessions 2026-05-28-15:33:
+   * Pinned-session reorder repros need low-volume persistent breadcrumbs even
+   * when broad Debugging Mode is off, because the bug happens during one drag
+   * and can be missed by console-only sidebarDebugLog output.
+   */
+  postNative({
+    details: details === undefined ? undefined : safeSerializeForNativeLog(details),
+    event,
+    force: true,
+    type: "appendTerminalFocusDebugLog",
+  });
+}
+
+function appendProjectBoardDebugLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:ProjectBoardDiagnostics 2026-05-28-12:32:
+   * Project-page create/start diagnostics are low-volume user-action
+   * breadcrumbs. Keep them behind Settings Debugging Mode in React before they
+   * cross the native bridge, and let Swift enforce the same gate before writing
+   * the dedicated project-board log file.
+   */
+  if (!isNativeSidebarDebugLoggingEnabled()) {
+    return;
+  }
+  postNative({
+    details: details === undefined ? undefined : safeSerializeForNativeLog(details),
+    event,
+    type: "appendProjectBoardDebugLog",
   });
 }
 
@@ -8264,6 +8309,7 @@ function createProjectSessionGroupsForProjection(project: NativeProject): Sessio
 function createProjectedSidebarGroupsForProject(project: NativeProject): SidebarSessionGroup[] {
   const workspace = project.workspace;
   return createProjectSessionGroupsForProjection(project).map((group) => ({
+    canFocusMode: hasMultiplePaneOwners(group.snapshot),
     groupId: group.groupId,
     isActive: group.groupId === workspace.activeGroupId,
     isFocusModeActive: group.snapshot.visibleCount === 1,
@@ -8482,6 +8528,7 @@ function createCombinedProjectSidebarGroup(project: NativeProject): SidebarSessi
 
   return {
     groupId: createCombinedProjectGroupId(project.projectId),
+    canFocusMode: activeGroup?.canFocusMode ?? false,
     isActive: isActiveProject,
     isFocusModeActive: isActiveProject && activeGroup ? activeGroup.isFocusModeActive : false,
     kind: "workspace",
@@ -15071,6 +15118,9 @@ function focusSidebarSessionMode(sessionId: string): void {
   /**
    * CDXC:SessionFocusMode 2026-05-23-14:35:
    * Double-clicking a native pane tab while Focus mode is already active for that tab group must exit Focus and restore the prior Code/Git/Project surface instead of re-entering Focus.
+   *
+   * CDXC:SessionFocusMode 2026-05-28-09:41:
+   * Focus mode is a split-pane zoom. When the zoom is already active, a second Focus request for the focused pane group is an automatic exit rather than another focus transition.
    */
   if (
     snapshot &&
@@ -15407,7 +15457,9 @@ function focusNativeHotkeyDirection(direction: SessionGridDirection): void {
       visibleSessionIds: snapshotBefore.visibleSessionIds,
     });
   }
-  const result = focusDirectionInSnapshot(snapshotBefore, direction);
+  const result = focusVisibleDirectionInSimpleWorkspace(activeProject().workspace, direction);
+  const resultGroup = result.snapshot.groups.find((group) => group.groupId === groupBefore.groupId);
+  const resultSnapshot = resultGroup?.snapshot ?? snapshotBefore;
   if (!result.changed) {
     logNativeHotkeyDebug(
       shouldTraceCommandArrow
@@ -15426,28 +15478,22 @@ function focusNativeHotkeyDirection(direction: SessionGridDirection): void {
     logNativeHotkeyDebug("nativeHotkeys.commandArrowFocusDirectionResolved", {
       activeGroupId: groupBefore.groupId,
       direction,
-      focusedSessionIdAfter: result.snapshot.focusedSessionId,
+      focusedSessionIdAfter: resultSnapshot.focusedSessionId,
       focusedSessionIdBefore: snapshotBefore.focusedSessionId,
-      paneLayoutAfter: summarizeSessionPaneLayout(result.snapshot.paneLayout),
+      paneLayoutAfter: summarizeSessionPaneLayout(resultSnapshot.paneLayout),
       paneLayoutBefore: summarizeSessionPaneLayout(snapshotBefore.paneLayout),
-      sessionIdsAfter: result.snapshot.sessions.map((session) => session.sessionId),
+      sessionIdsAfter: resultSnapshot.sessions.map((session) => session.sessionId),
       sessionIdsBefore: snapshotBefore.sessions.map((session) => session.sessionId),
-      visibleSessionIdsAfter: result.snapshot.visibleSessionIds,
+      visibleSessionIdsAfter: resultSnapshot.visibleSessionIds,
       visibleSessionIdsBefore: snapshotBefore.visibleSessionIds,
     });
   }
   /**
-   * CDXC:PaneFocus 2026-05-15-13:31:
-   * Directional focus hotkeys must use the pane-layout-aware workspace focus path.
-   * Replacing the active group with a legacy normalized SessionGridSnapshot can drop paneLayout and make native sync explode grouped tabs into separate panes.
+   * CDXC:PaneFocus 2026-05-28-14:29:
+   * Directional focus hotkeys should move focus only among currently visible macOS pane sessions.
+   * Apply the visible-only workspace mutation directly so Cmd+Alt+Arrow cannot reveal hidden sessions or change visibleSessionIds.
    */
-  const nextFocusedSessionId = result.snapshot.focusedSessionId;
-  updateActiveProjectWorkspace(
-    (workspace) =>
-      nextFocusedSessionId
-        ? focusSessionInSimpleWorkspace(workspace, nextFocusedSessionId).snapshot
-        : workspace,
-  );
+  updateActiveProjectWorkspace(() => result.snapshot);
   publish();
   const focusedSessionId = activeSnapshot().focusedSessionId;
   if (focusedSessionId) {
@@ -16196,6 +16242,20 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
   }
 }
 
+function focusResourceSessionFromTitlebar(sessionId: string): void {
+  /**
+   * CDXC:TitlebarResources 2026-05-28-10:39:
+   * The Resources panel can focus an individual session from its process row.
+   * Reuse sidebar-card focus behavior so combined cross-project ids, sleeping
+   * terminal wake, command-panel panes, browser panes, and project switching all
+   * stay owned by the existing session focus pipeline.
+   */
+  if (!sessionId.trim()) {
+    return;
+  }
+  focusSidebarSession(sessionId);
+}
+
 function sleepInactiveProjectSessions(projectId: string): void {
   /**
    * CDXC:ProjectSleep 2026-05-27-06:28:
@@ -16809,6 +16869,56 @@ function recoverMissingNativeSessionSurface(nativeSessionId: string): void {
   restoreNativeSessionSurfaceForWake(reference.project, session, "missing-native-surface");
   queueNativeLayoutFocusRequest(reference.sessionId, "missingNativeSurface");
   publish();
+}
+
+function handleNativeTerminalRestoreBlocked(
+  event: Extract<NativeHostEvent, { type: "terminalRestoreBlocked" }>,
+): void {
+  const durableReference = parseDurableNativeSessionId(event.sessionId);
+  const reference =
+    durableReference ?? resolveSidebarSessionReference(sidebarSessionIdForNativeSession(event.sessionId));
+  const session = findTerminalSessionInProject(reference.project, reference.sessionId);
+  appendTerminalFocusDebugLog("nativeSidebar.restoreBlocked.received", {
+    cwd: event.cwd,
+    hasSession: Boolean(session),
+    nativeSessionId: event.sessionId,
+    projectId: reference.project.projectId,
+    reason: event.reason,
+    sessionId: reference.sessionId,
+  });
+  if (!session) {
+    return;
+  }
+  /**
+   * CDXC:SessionRestore 2026-05-28-16:13:
+   * A deleted saved cwd is rare and not worth a custom recovery flow. Keep the
+   * UX to one confirmation: cancel leaves the dead row sleeping for later, and
+   * Remove Session deletes the sidebar record because restoring it would only
+   * recreate the same missing-folder error.
+   */
+  clearStaleTerminalRuntimeStateBeforeWake(
+    reference.project.projectId,
+    reference.sessionId,
+    "restore-blocked-missing-cwd",
+  );
+  clearNativeTerminalSurfaceCreationPending(reference.sessionId);
+  const shouldRemove = window.confirm(
+    [
+      "Session can't be restored.",
+      "",
+      "It points to a folder that no longer exists:",
+      event.cwd,
+      "",
+      "Remove this session from the sidebar?",
+    ].join("\n"),
+  );
+  if (shouldRemove) {
+    closeTerminal(createCombinedProjectSessionId(reference.project.projectId, reference.sessionId), {
+      preservePersistenceSession: true,
+    });
+    return;
+  }
+  setNativeSessionSleeping(createCombinedProjectSessionId(reference.project.projectId, reference.sessionId), true);
 }
 
 function restartNativeSession(sessionId: string): void {
@@ -19469,6 +19579,156 @@ function normalizeNativePathForProjectComparison(path: string): string {
   return path.trim().replace(/\/+$/u, "") || path.trim();
 }
 
+async function createNativeWorktreeForAgentPrompt(input: {
+  agent: SidebarAgentButton;
+  logEvent?: (event: string, details?: Record<string, unknown>) => void;
+  prompt: string;
+  sourceProject: NativeProject;
+  successToastTitle?: string;
+}): Promise<{ project: NativeProject; session: TerminalSessionRecord }> {
+  const { agent, logEvent, prompt, sourceProject } = input;
+  if (!prompt.trim()) {
+    throw new Error("Worktree prompt is empty.");
+  }
+  if (!agent.command?.trim()) {
+    throw new Error("Choose an agent with a configured command.");
+  }
+  if (sourceProject.isChat === true || sourceProject.isRecentProject === true) {
+    throw new Error("Worktrees need an active code project.");
+  }
+
+  /**
+   * CDXC:Worktrees 2026-05-18-23:07:
+   * Creating a worktree should create a named branch, add a sibling worktree directory, focus that new project, optionally run the parent setup command, then launch the selected agent with the user's first prompt.
+   *
+   * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
+   * The new worktree project belongs directly below the project that created
+   * it, while its metadata points at the main project so every worktree in
+   * the family remains grouped under that main project during later reorders.
+   *
+   * CDXC:ProjectBoard 2026-05-28-12:32:
+   * Project-board Create & Start can reuse the same worktree creation machinery,
+   * but it supplies the bead work prompt and stores the conversation link on the
+   * board project. Return the created terminal and worktree project so the
+   * caller can link the bead to the actual execution environment.
+   */
+  showAppToast("info", "Generating worktree name");
+  logEvent?.("projectBoard.worktree.repoCheck.start", {
+    sourceProjectId: sourceProject.projectId,
+    sourceProjectPath: sourceProject.path,
+  });
+  const repoCheck = await runGitInProject(sourceProject, ["rev-parse", "--is-inside-work-tree"], {
+    allowFailure: true,
+  });
+  if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
+    throw new Error(`${sourceProject.name} is not inside a Git work tree.`);
+  }
+
+  const baseSlug = await generateNativeWorktreeNameFromPrompt(sourceProject.path, prompt);
+  const target = await resolveUniqueNativeWorktreeTarget(sourceProject, baseSlug);
+  logEvent?.("projectBoard.worktree.targetResolved", {
+    branch: target.branch,
+    path: target.path,
+    sourceProjectId: sourceProject.projectId,
+  });
+  showAppToast("info", "Creating branch", target.branch);
+  await runGitInProject(sourceProject, ["branch", target.branch, "HEAD"]);
+  showAppToast("info", "Creating worktree", target.path);
+  await runGitInProject(sourceProject, ["worktree", "add", target.path, target.branch], {
+    allowFailure: false,
+  });
+
+  const projectId = createProjectId(target.path);
+  const parentProject = resolveNativeWorktreeFamilyParentProject(sourceProject);
+  const projectName = `${parentProject.name}-${target.name}`;
+  const existingProject = projects.find((project) => project.projectId === projectId);
+  const worktree: NativeProjectWorktreeMetadata = {
+    branch: target.branch,
+    createdAt: new Date().toISOString(),
+    name: target.name,
+    parentProjectId: parentProject.projectId,
+    parentProjectName: parentProject.name,
+    parentProjectPath: parentProject.path,
+  };
+
+  const nextWorktreeProject: NativeProject = existingProject
+    ? {
+        ...existingProject,
+        isRecentProject: false,
+        name: projectName,
+        recentClosedAt: undefined,
+        worktree,
+      }
+    : {
+        commandsPanel: createDefaultCommandsPanelState(),
+        name: projectName,
+        path: target.path,
+        projectId,
+        theme: sourceProject.theme ?? resolveSidebarTheme(settings.sidebarTheme, "dark"),
+        themeColor: sourceProject.themeColor,
+        worktree,
+        workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
+      };
+  projects = insertWorktreeProjectBelowSourceProject(
+    ensureNativeProjectPresent(projects, parentProject),
+    nextWorktreeProject,
+    sourceProject.projectId,
+  );
+  activeProjectId = projectId;
+  collapseSidebarProjectSessionList(sourceProject.projectId);
+  ensureProjectCommandsState(resolveNativeProjectCommandsOwnerId(projectId));
+  writeProjectCommandsStore();
+  loadActiveProjectCommands();
+  writeStoredProjects("createProjectWorktree");
+  await refreshGitState();
+  publish();
+  logEvent?.("projectBoard.worktree.projectCreated", {
+    projectId,
+    projectName,
+    sourceProjectId: sourceProject.projectId,
+  });
+
+  const setupCommand = sourceProject.worktreeCommand?.trim();
+  if (setupCommand) {
+    showAppToast("info", "Running worktree command");
+    logEvent?.("projectBoard.worktree.setup.start", { projectId });
+    const setupResult = await runNativeProcess("/bin/zsh", ["-lc", setupCommand], {
+      cwd: target.path,
+      timeoutMs: 120_000,
+    });
+    if (setupResult.exitCode === 0) {
+      showAppToast("success", "Worktree command finished");
+      logEvent?.("projectBoard.worktree.setup.completed", { projectId });
+    } else {
+      const setupError =
+        setupResult.stderr.trim() || setupResult.stdout.trim() || "Command exited with an error.";
+      showAppToast("error", "Worktree command failed", setupError.slice(0, 500));
+      logEvent?.("projectBoard.worktree.setup.failed", {
+        exitCode: setupResult.exitCode,
+        projectId,
+        stderrLength: setupResult.stderr.length,
+        stdoutLength: setupResult.stdout.length,
+      });
+    }
+  }
+
+  showAppToast("info", "Opening agent", agent.name);
+  const session = await launchAgentTerminal(agent, undefined, { initialPromptText: prompt });
+  if (!session || session.kind !== "terminal") {
+    throw new Error("Could not create an agent session in the worktree.");
+  }
+  showAppToast("success", input.successToastTitle ?? "Worktree ready", projectName);
+  logEvent?.("projectBoard.worktree.agentStarted", {
+    agentId: agent.agentId,
+    projectId,
+    sessionId: session.sessionId,
+  });
+  return {
+    project: findProject(projectId) ?? nextWorktreeProject,
+    session,
+  };
+}
+
 async function createProjectWorktreeFromPrompt(
   message: Extract<SidebarToExtensionMessage, { type: "createProjectWorktree" }>,
 ): Promise<void> {
@@ -19487,102 +19747,8 @@ async function createProjectWorktreeFromPrompt(
     showAppToast("error", "Agent is unavailable", "Choose an agent with a configured command.");
     return;
   }
-  if (sourceProject.isChat === true || sourceProject.isRecentProject === true) {
-    showAppToast("error", "Worktrees need an active code project");
-    return;
-  }
-
   try {
-    /**
-     * CDXC:Worktrees 2026-05-18-23:07:
-     * Creating a worktree should create a named branch, add a sibling worktree directory, focus that new project, optionally run the parent setup command, then launch the selected agent with the user's first prompt.
-     *
-     * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
-     * The new worktree project belongs directly below the project that created
-     * it, while its metadata points at the main project so every worktree in
-     * the family remains grouped under that main project during later reorders.
-     */
-    showAppToast("info", "Generating worktree name");
-    const repoCheck = await runGitInProject(sourceProject, ["rev-parse", "--is-inside-work-tree"], {
-      allowFailure: true,
-    });
-    if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
-      throw new Error(`${sourceProject.name} is not inside a Git work tree.`);
-    }
-
-    const baseSlug = await generateNativeWorktreeNameFromPrompt(sourceProject.path, prompt);
-    const target = await resolveUniqueNativeWorktreeTarget(sourceProject, baseSlug);
-    showAppToast("info", "Creating branch", target.branch);
-    await runGitInProject(sourceProject, ["branch", target.branch, "HEAD"]);
-    showAppToast("info", "Creating worktree", target.path);
-    await runGitInProject(sourceProject, ["worktree", "add", target.path, target.branch], {
-      allowFailure: false,
-    });
-
-    const projectId = createProjectId(target.path);
-    const parentProject = resolveNativeWorktreeFamilyParentProject(sourceProject);
-    const projectName = `${parentProject.name}-${target.name}`;
-    const existingProject = projects.find((project) => project.projectId === projectId);
-    const worktree: NativeProjectWorktreeMetadata = {
-      branch: target.branch,
-      createdAt: new Date().toISOString(),
-      name: target.name,
-      parentProjectId: parentProject.projectId,
-      parentProjectName: parentProject.name,
-      parentProjectPath: parentProject.path,
-    };
-
-    const nextWorktreeProject: NativeProject = existingProject
-      ? {
-          ...existingProject,
-          isRecentProject: false,
-          name: projectName,
-          recentClosedAt: undefined,
-          worktree,
-        }
-      : {
-          commandsPanel: createDefaultCommandsPanelState(),
-          name: projectName,
-          path: target.path,
-          projectId,
-          theme: sourceProject.theme ?? resolveSidebarTheme(settings.sidebarTheme, "dark"),
-          themeColor: sourceProject.themeColor,
-          worktree,
-          workspace: createDefaultGroupedSessionWorkspaceSnapshot(),
-        };
-    projects = insertWorktreeProjectBelowSourceProject(
-      ensureNativeProjectPresent(projects, parentProject),
-      nextWorktreeProject,
-      sourceProject.projectId,
-    );
-    activeProjectId = projectId;
-    collapseSidebarProjectSessionList(sourceProject.projectId);
-    ensureProjectCommandsState(resolveNativeProjectCommandsOwnerId(projectId));
-    writeProjectCommandsStore();
-    loadActiveProjectCommands();
-    writeStoredProjects("createProjectWorktree");
-    await refreshGitState();
-    publish();
-
-    const setupCommand = sourceProject.worktreeCommand?.trim();
-    if (setupCommand) {
-      showAppToast("info", "Running worktree command");
-      const setupResult = await runNativeProcess("/bin/zsh", ["-lc", setupCommand], {
-        cwd: target.path,
-        timeoutMs: 120_000,
-      });
-      if (setupResult.exitCode === 0) {
-        showAppToast("success", "Worktree command finished");
-      } else {
-        const setupError =
-          setupResult.stderr.trim() || setupResult.stdout.trim() || "Command exited with an error.";
-        showAppToast("error", "Worktree command failed", setupError.slice(0, 500));
-      }
-    }
-
-    showAppToast("info", "Opening agent", agent.name);
-    await launchAgentTerminal(agent, undefined, { initialPromptText: prompt });
-    showAppToast("success", "Worktree ready", projectName);
+    await createNativeWorktreeForAgentPrompt({ agent, prompt, sourceProject });
   } catch (error) {
     showAppToast(
       "error",
@@ -21072,6 +21238,7 @@ function createProjectBoardConversationState(
   return {
     activeSessionId: activeProjectId === project.projectId ? activeSnapshot().focusedSessionId : undefined,
     agents: createProjectBoardAgentOptions(),
+    debuggingMode: settings.debuggingMode,
     defaultAgentId: resolveProjectBoardDefaultAgentId(),
     focusedTerminalSessionId: sessionOptions.find((session) => session.isFocused)?.sessionId,
     links: activeLinks.map<ProjectBoardConversationLinkView>((link) => {
@@ -21099,35 +21266,72 @@ function resolveProjectBoardDefaultAgentId(): string | undefined {
 }
 
 function createProjectBoardSessionOptions(project: NativeProject): ProjectBoardSessionOption[] {
-  const focusedSessionId =
-    activeProjectId === project.projectId
-      ? project.workspace.groups.find((group) => group.groupId === project.workspace.activeGroupId)
-          ?.snapshot.focusedSessionId
-      : undefined;
-  return project.workspace.groups.flatMap((group) =>
-    group.snapshot.sessions.flatMap((session): ProjectBoardSessionOption[] => {
-      if (session.kind !== "terminal") {
-        return [];
-      }
-      return [
-        {
-          agentId: session.agentName,
-          isFocused: session.sessionId === focusedSessionId,
-          isSleeping: session.isSleeping === true,
-          label: getSessionCardPrimaryTitle(session) ?? session.title,
-          sessionId: session.sessionId,
-        },
-      ];
-    }),
+  const relatedProjects = createProjectBoardConversationProjects(project);
+  return relatedProjects.flatMap((sessionProject) => {
+    const focusedSessionId =
+      activeProjectId === sessionProject.projectId
+        ? sessionProject.workspace.groups.find(
+            (group) => group.groupId === sessionProject.workspace.activeGroupId,
+          )?.snapshot.focusedSessionId
+        : undefined;
+    return sessionProject.workspace.groups.flatMap((group) =>
+      group.snapshot.sessions.flatMap((session): ProjectBoardSessionOption[] => {
+        if (session.kind !== "terminal") {
+          return [];
+        }
+        const label = getSessionCardPrimaryTitle(session) ?? session.title;
+        const sessionId =
+          sessionProject.projectId === project.projectId
+            ? session.sessionId
+            : createCombinedProjectSessionId(sessionProject.projectId, session.sessionId);
+        return [
+          {
+            agentId: session.agentName,
+            isFocused: session.sessionId === focusedSessionId,
+            isSleeping: session.isSleeping === true,
+            label: sessionProject.projectId === project.projectId ? label : `${sessionProject.name} · ${label}`,
+            sessionId,
+          },
+        ];
+      }),
+    );
+  });
+}
+
+function createProjectBoardConversationProjects(project: NativeProject): NativeProject[] {
+  /*
+   * CDXC:ProjectBoard 2026-05-28-12:32:
+   * A board bead can be worked from a sibling worktree while its ticket remains
+   * on the parent board. Include the project/worktree family in conversation
+   * lookup so linked sessions stay live and jumpable even when the agent runs
+   * outside the board project's own workspace.
+   */
+  const familyParentId = project.worktree?.parentProjectId ?? project.projectId;
+  const related = projects.filter(
+    (candidate) =>
+      candidate.projectId === project.projectId ||
+      candidate.projectId === familyParentId ||
+      candidate.worktree?.parentProjectId === familyParentId,
   );
+  return related.length > 0 ? related : [project];
 }
 
 function upsertProjectBoardConversationLink(
   project: NativeProject,
-  args: { beadDisplayId?: string; beadId: string; session: TerminalSessionRecord },
+  args: {
+    beadDisplayId?: string;
+    beadId: string;
+    session: TerminalSessionRecord;
+    sessionProject?: NativeProject;
+  },
 ): BeadConversationLink {
   const now = new Date().toISOString();
   const terminalState = terminalStateById.get(args.session.sessionId);
+  const sessionProject = args.sessionProject ?? project;
+  const ghostexSessionId =
+    sessionProject.projectId === project.projectId
+      ? args.session.sessionId
+      : createCombinedProjectSessionId(sessionProject.projectId, args.session.sessionId);
   const nextLink: BeadConversationLink = {
     agentId: terminalState?.agentName ?? args.session.agentName,
     agentName: terminalState?.agentName ?? args.session.agentName,
@@ -21136,8 +21340,8 @@ function upsertProjectBoardConversationLink(
     beadDisplayId: args.beadDisplayId,
     beadId: args.beadId,
     createdAt: now,
-    ghostexSessionId: args.session.sessionId,
-    id: createBeadConversationLinkId(project.projectId, args.beadId, args.session.sessionId),
+    ghostexSessionId,
+    id: createBeadConversationLinkId(project.projectId, args.beadId, ghostexSessionId),
     projectId: project.projectId,
     sessionPersistenceName:
       terminalState?.sessionPersistenceName ?? args.session.sessionPersistenceName,
@@ -21223,6 +21427,12 @@ async function handleProjectBoardRequest(request: ProjectBoardBridgeRequest): Pr
       case "getState":
         postProjectBoardResponse(request, createProjectBoardConversationState(project));
         return;
+      case "appendDebugLog":
+        if (request.event?.trim()) {
+          appendProjectBoardDebugLog(request.event.trim(), request.details);
+        }
+        postProjectBoardResponse(request, createProjectBoardConversationState(project));
+        return;
       case "associateFocusedSession":
         handleProjectBoardAssociateFocusedSession(project, request);
         return;
@@ -21237,6 +21447,13 @@ async function handleProjectBoardRequest(request: ProjectBoardBridgeRequest): Pr
         return;
     }
   } catch (error) {
+    appendProjectBoardDebugLog("projectBoard.request.failed", {
+      action: request.action,
+      beadId: request.beadId,
+      error: error instanceof Error ? error.message : String(error),
+      projectId: project.projectId,
+      startLocation: request.startLocation,
+    });
     postProjectBoardResponse(
       request,
       undefined,
@@ -21254,7 +21471,8 @@ function handleProjectBoardAssociateFocusedSession(
   if (!focusedSessionId) {
     throw new Error("Focus an agent session before associating this bead.");
   }
-  const session = findTerminalSessionInProject(project, focusedSessionId);
+  const reference = resolveSidebarSessionReference(focusedSessionId);
+  const session = findTerminalSessionInProject(reference.project, reference.sessionId);
   if (!session) {
     throw new Error("The focused session is not an agent terminal.");
   }
@@ -21262,6 +21480,7 @@ function handleProjectBoardAssociateFocusedSession(
     beadDisplayId: request.beadDisplayId,
     beadId,
     session,
+    sessionProject: reference.project,
   });
   const nextProject = findProject(project.projectId) ?? project;
   publish();
@@ -21282,28 +21501,79 @@ async function handleProjectBoardStartWork(
   if (!agent?.command?.trim()) {
     throw new Error("Choose a configured agent before starting work.");
   }
-  if (activeProjectId !== project.projectId) {
-    focusProject(project.projectId);
+  const startLocation: ProjectBoardStartLocation =
+    request.startLocation === "newWorktree" ? "newWorktree" : "currentProject";
+  appendProjectBoardDebugLog("projectBoard.startWork.received", {
+    agentId: agent.agentId,
+    beadId,
+    projectId: project.projectId,
+    projectPath: project.path,
+    promptLength: prompt.length,
+    startLocation,
+  });
+
+  let sessionProject = project;
+  let session: SessionRecord | undefined;
+  if (startLocation === "newWorktree") {
+    const sourceProject = resolveProjectBoardWorktreeSourceProject(project);
+    appendProjectBoardDebugLog("projectBoard.startWork.worktree.start", {
+      beadId,
+      sourceProjectId: sourceProject.projectId,
+      sourceProjectPath: sourceProject.path,
+    });
+    const created = await createNativeWorktreeForAgentPrompt({
+      agent,
+      logEvent: appendProjectBoardDebugLog,
+      prompt,
+      sourceProject,
+      successToastTitle: "Worktree started",
+    });
+    sessionProject = created.project;
+    session = created.session;
+  } else {
+    if (activeProjectId !== project.projectId) {
+      focusProject(project.projectId);
+    }
+    const groupId = activeProject().workspace.activeGroupId;
+    const visiblePlacement = createFocusedTabGroupPlacement(groupId);
+    session = await launchAgentTerminal(agent, groupId, { visiblePlacement });
   }
-  const groupId = activeProject().workspace.activeGroupId;
-  const visiblePlacement = createFocusedTabGroupPlacement(groupId);
-  const session = await launchAgentTerminal(agent, groupId, { visiblePlacement });
   if (!session || session.kind !== "terminal") {
     throw new Error("Could not create an agent session for this bead.");
   }
-  upsertProjectBoardConversationLink(activeProject(), {
+  upsertProjectBoardConversationLink(project, {
     beadDisplayId: request.beadDisplayId,
     beadId,
     session,
+    sessionProject,
   });
-  const nativeSessionId = nativeSessionIdForProjectSidebarSession(project.projectId, session.sessionId);
-  window.setTimeout(() => {
-    postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
-    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
-  }, PROJECT_BOARD_AGENT_PROMPT_STAGING_DELAY_MS);
+  appendProjectBoardDebugLog("projectBoard.startWork.sessionLinked", {
+    beadId,
+    boardProjectId: project.projectId,
+    sessionId: session.sessionId,
+    sessionProjectId: sessionProject.projectId,
+    startLocation,
+  });
+  if (startLocation === "currentProject") {
+    const nativeSessionId = nativeSessionIdForProjectSidebarSession(project.projectId, session.sessionId);
+    window.setTimeout(() => {
+      postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
+      postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+    }, PROJECT_BOARD_AGENT_PROMPT_STAGING_DELAY_MS);
+  }
   const nextProject = findProject(project.projectId) ?? activeProject();
   publish();
   postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
+}
+
+function resolveProjectBoardWorktreeSourceProject(project: NativeProject): NativeProject {
+  if (!project.worktree?.parentProjectId) {
+    return project;
+  }
+  return (
+    findProject(project.worktree.parentProjectId) ??
+    createNativeProjectFromWorktreeParent(project.worktree, project)
+  );
 }
 
 function handleProjectBoardJumpToConversation(
@@ -21314,11 +21584,12 @@ function handleProjectBoardJumpToConversation(
   if (!sessionId) {
     throw new Error("No linked conversation is selected.");
   }
-  const session = findTerminalSessionInProject(project, sessionId);
+  const reference = resolveSidebarSessionReference(sessionId);
+  const session = findTerminalSessionInProject(reference.project, reference.sessionId);
   if (!session) {
     throw new Error("The linked Ghostex session is no longer available.");
   }
-  focusTerminal(createCombinedProjectSessionId(project.projectId, session.sessionId));
+  focusTerminal(createCombinedProjectSessionId(reference.project.projectId, session.sessionId));
   const nextProject = findProject(project.projectId) ?? project;
   postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
 }
@@ -23879,6 +24150,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         recordSidebarCardFocusTrace(message.details);
         return;
       }
+      if (message.event.startsWith("repro.pinnedSessionReorder.")) {
+        appendPinnedSessionReorderDebugLog(message.event, message.details);
+        return;
+      }
       if (!isNativeSidebarDebugLoggingEnabled()) {
         return;
       }
@@ -24195,6 +24470,9 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const awakeVisibleSessions = visibleSessions.filter((session) => session.isSleeping !== true);
   const visibleSessionIds = awakeVisibleSessions
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
+  const sessionFocusModeAvailableSessionIds = hasMultiplePaneOwners(snapshot)
+    ? visibleSessions.map((session) => nativeSessionIdForSidebarSession(session.sessionId))
+    : [];
   const focusedNativeSessionId = snapshot.focusedSessionId && visibleSidebarSessionIds.has(snapshot.focusedSessionId)
     ? nativeSessionIdForSidebarSession(snapshot.focusedSessionId)
     : undefined;
@@ -24451,6 +24729,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     activeProjectPath: currentProject.path,
     isFocusModeActive:
       snapshot.visibleCount === 1 && snapshot.fullscreenRestoreVisibleCount !== undefined,
+    sessionFocusModeAvailableSessionIds,
     attentionSessionIds,
     backgroundColor: settings.workspaceBackgroundColor,
     ...(focusRequestId !== undefined ? { focusRequestId } : {}),
@@ -25268,6 +25547,10 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       sidebarSessionIdForNativeSession(hostEvent.targetSessionId),
       hostEvent.placement,
     );
+    return;
+  }
+  if (hostEvent.type === "terminalRestoreBlocked") {
+    handleNativeTerminalRestoreBlocked(hostEvent);
     return;
   }
   if (hostEvent.type === "nativeSessionSurfaceMissing") {
@@ -26570,6 +26853,7 @@ window.__ghostex_NATIVE_SIDEBAR__ = {
   openActiveProjectEditorFromTitlebar,
   exitFocusModeFromTitlebar,
   openAgentsModeFromTitlebar,
+  focusResourceSessionFromTitlebar,
   openGitHubProjectFromTitlebar: () => {
     void openGitHubProjectFromTitlebar();
   },
