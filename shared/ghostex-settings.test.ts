@@ -69,6 +69,25 @@ describe("normalizeghostexSettings", () => {
     ]);
   });
 
+  test("normalizes the default prompt agent setting", () => {
+    /**
+     * CDXC:PromptAgents 2026-05-28-07:15:
+     * Automated prompt launchers share one Settings-selected agent id. Missing
+     * values default to Codex, while custom agent ids stay valid because the
+     * runtime agent registry resolves whether the selected id is configured.
+     */
+    expect(DEFAULT_ghostex_SETTINGS.defaultPromptAgentId).toBe("codex");
+    expect(normalizeghostexSettings({})).toMatchObject({
+      defaultPromptAgentId: "codex",
+    });
+    expect(normalizeghostexSettings({ defaultPromptAgentId: " claude " })).toMatchObject({
+      defaultPromptAgentId: "claude",
+    });
+    expect(normalizeghostexSettings({ defaultPromptAgentId: "" })).toMatchObject({
+      defaultPromptAgentId: "codex",
+    });
+  });
+
   test("keeps untracked project diff lines off unless explicitly enabled", () => {
     expect(DEFAULT_ghostex_SETTINGS.showUntrackedProjectDiffWhenNoTrackedChanges).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
@@ -102,18 +121,24 @@ describe("normalizeghostexSettings", () => {
      * CDXC:SidebarSettingsPresets 2026-05-16-10:11:
      * Codex is the default sidebar preset for normalized settings. It hides
      * hover-only agent icons, project-header git stats, floating badges, and
-     * menu bar badges while keeping close controls and Last Active timestamps.
+     * menu bar badges while keeping browser favicons, close controls, and Last
+     * Active timestamps visible.
      */
     expect(DEFAULT_ghostex_SETTINGS).toMatchObject(SIDEBAR_SETTINGS_PRESET_SETTINGS.codex);
     expect(normalizeghostexSettings({})).toMatchObject(SIDEBAR_SETTINGS_PRESET_SETTINGS.codex);
     expect(getSidebarSettingsPresetId(DEFAULT_ghostex_SETTINGS)).toBe("codex");
+    expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideBrowserFaviconUntilHover).toBe(false);
+    expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.minimal.hideBrowserFaviconUntilHover).toBe(true);
+    expect(SIDEBAR_SETTINGS_PRESET_SETTINGS.detailed.hideBrowserFaviconUntilHover).toBe(false);
     expect(
       normalizeghostexSettings({
         hideProjectHeaderDiffStats: false,
+        hideBrowserFaviconUntilHover: true,
         hideSessionAgentIconUntilHover: false,
       }),
     ).toMatchObject({
       hideProjectHeaderDiffStats: false,
+      hideBrowserFaviconUntilHover: true,
       hideSessionAgentIconUntilHover: false,
     });
   });

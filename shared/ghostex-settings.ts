@@ -86,6 +86,13 @@ export type ghostexSettings = {
    */
   agentAcceptAllEnabled: boolean;
   agentManagerZoomPercent: number;
+  /**
+   * CDXC:PromptAgents 2026-05-28-07:15:
+   * Automated prompt flows such as Git helper prompts, Find Session, project
+   * board Start Work, and worktree first prompts need one user-selected default
+   * agent instead of hardcoding Codex in each launcher.
+   */
+  defaultPromptAgentId: string;
   browserFeedbackTool: BrowserFeedbackTool;
   browserOpenMode: BrowserOpenMode;
   codeServerLinkVscodeUserConfig: boolean;
@@ -101,6 +108,7 @@ export type ghostexSettings = {
   debuggingMode: boolean;
   renameSessionOnDoubleClick: boolean;
   hideSessionAgentIconUntilHover: boolean;
+  hideBrowserFaviconUntilHover: boolean;
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
   hideLastActiveTimeOnSessionCards: boolean;
@@ -158,6 +166,7 @@ export type ghostexSettings = {
 
 export const SIDEBAR_SETTINGS_PRESET_KEYS = [
   "hideSessionAgentIconUntilHover",
+  "hideBrowserFaviconUntilHover",
   "showCloseButtonOnSessionCards",
   "hideLastActiveTimeOnSessionCards",
   "hideProjectHeaderDiffStats",
@@ -177,6 +186,7 @@ export type SidebarSettingsPresetSettings = Pick<ghostexSettings, SidebarSetting
 export const SIDEBAR_SETTINGS_PRESET_SETTINGS = {
   codex: {
     hideSessionAgentIconUntilHover: true,
+    hideBrowserFaviconUntilHover: false,
     showCloseButtonOnSessionCards: true,
     hideLastActiveTimeOnSessionCards: false,
     hideProjectHeaderDiffStats: true,
@@ -186,6 +196,7 @@ export const SIDEBAR_SETTINGS_PRESET_SETTINGS = {
   },
   minimal: {
     hideSessionAgentIconUntilHover: true,
+    hideBrowserFaviconUntilHover: true,
     showCloseButtonOnSessionCards: true,
     hideLastActiveTimeOnSessionCards: true,
     hideProjectHeaderDiffStats: true,
@@ -195,6 +206,7 @@ export const SIDEBAR_SETTINGS_PRESET_SETTINGS = {
   },
   detailed: {
     hideSessionAgentIconUntilHover: false,
+    hideBrowserFaviconUntilHover: false,
     showCloseButtonOnSessionCards: false,
     hideLastActiveTimeOnSessionCards: false,
     hideProjectHeaderDiffStats: false,
@@ -218,6 +230,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   actionCompletionSound: "shamisenreverb",
   agentAcceptAllEnabled: false,
   agentManagerZoomPercent: DEFAULT_AGENT_MANAGER_ZOOM_PERCENT,
+  defaultPromptAgentId: "codex",
   /**
    * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
    * Browser panes can inject either React Grab or Agentation for visual
@@ -294,6 +307,14 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   hideSessionAgentIconUntilHover:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideSessionAgentIconUntilHover,
+  /**
+   * CDXC:BrowserPanes 2026-05-28-07:38:
+   * Browser page favicons are page identity, not agent chrome. Keep them
+   * visible in the default Codex and Detailed presets even when agent icons are
+   * hover-only, while Minimal can hide favicons until hover for a quieter list.
+   */
+  hideBrowserFaviconUntilHover:
+    SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideBrowserFaviconUntilHover,
   /**
    * CDXC:SidebarSessions 2026-05-09-17:00
    * Session-card close controls should be available out of the box. Users can
@@ -644,6 +665,15 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       readNumber(source, "agentManagerZoomPercent", DEFAULT_ghostex_SETTINGS.agentManagerZoomPercent),
     ),
     /**
+     * CDXC:PromptAgents 2026-05-28-07:15:
+     * Keep the selected default prompt agent as a plain agent id so built-in,
+     * reordered, hidden-restored, and custom agents can all be selected without
+     * coupling settings normalization to the runtime agent registry.
+     */
+    defaultPromptAgentId: normalizeDefaultPromptAgentId(
+      readString(source, "defaultPromptAgentId", DEFAULT_ghostex_SETTINGS.defaultPromptAgentId),
+    ),
+    /**
      * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
      * Normalize the browser feedback injector choice so missing or invalid
      * settings use Agentation, while explicit React Grab selections continue
@@ -740,6 +770,17 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "hideSessionAgentIconUntilHover",
       DEFAULT_ghostex_SETTINGS.hideSessionAgentIconUntilHover,
+    ),
+    /**
+     * CDXC:BrowserPanes 2026-05-28-07:38:
+     * Missing browser-favicon visibility should follow the sidebar preset
+     * independently from the older agent-icon hover-only setting so browser
+     * page identity does not disappear just because agent logos are quiet.
+     */
+    hideBrowserFaviconUntilHover: readBoolean(
+      source,
+      "hideBrowserFaviconUntilHover",
+      DEFAULT_ghostex_SETTINGS.hideBrowserFaviconUntilHover,
     ),
     showCloseButtonOnSessionCards: readBoolean(
       source,
@@ -1148,6 +1189,10 @@ function normalizeDefaultEditorCommand(value: string | undefined): DefaultEditor
 
 function normalizeCustomDefaultEditorCommand(value: string | undefined): string {
   return (value ?? "").trim().slice(0, 240);
+}
+
+function normalizeDefaultPromptAgentId(value: string | undefined): string {
+  return ((value ?? "").trim() || DEFAULT_ghostex_SETTINGS.defaultPromptAgentId).slice(0, 120);
 }
 
 function normalizeCustomPromptEditorCommand(value: string | undefined): string {

@@ -2,6 +2,7 @@ import { IconClock, IconLoader2, IconTerminal2, IconWorld, IconX } from "@tabler
 import {
   cloneElement,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -11,6 +12,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   DEFAULT_TERMINAL_SESSION_TITLE,
   type SidebarSessionItem,
@@ -29,6 +31,8 @@ import { useRelativeTimeTick } from "./use-relative-time-tick";
  * immediately cover the sidebar while users scan active work.
  */
 const SESSION_HOVER_TOOLTIP_DELAY_MS = TOOLTIP_DELAY_MS + 1_000;
+const SESSION_TOOLTIP_VIEWPORT_MARGIN_PX = 8;
+const SESSION_TOOLTIP_TRIGGER_OFFSET_PX = 8;
 
 const AGENT_SECONDARY_LABELS: Record<SidebarAgentIcon, readonly string[]> = {
   "amp-cli": ["amp", "amp cli"],
@@ -951,6 +955,12 @@ type OverflowTooltipTextProps = {
   tooltipWhen?: "always" | "overflow";
 };
 
+type SessionTooltipPosition = {
+  left: number;
+  maxWidth: number;
+  top: number;
+};
+
 export function OverflowTooltipText({
   children,
   text,
@@ -959,8 +969,12 @@ export function OverflowTooltipText({
   tooltipWhen = "overflow",
 }: OverflowTooltipTextProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [tooltipPosition, setTooltipPosition] = useState<SessionTooltipPosition>();
   const openTimeoutIdRef = useRef<number | undefined>(undefined);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const tooltipPopupRef = useRef<HTMLDivElement>(null);
   const tooltipIdRef = useRef(Symbol("overflowTooltip"));
+  const tooltipContent = tooltip ?? text;
 
   const clearOpenTimeout = () => {
     if (openTimeoutIdRef.current === undefined) {
@@ -978,6 +992,7 @@ export function OverflowTooltipText({
       activeOverflowTooltipClose = undefined;
     }
     setIsOpen(false);
+    setTooltipPosition(undefined);
   };
 
   const hasOverflow = () => {
@@ -1026,13 +1041,84 @@ export function OverflowTooltipText({
     };
   }, []);
 
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+
+    const getTriggerElement = () => textRef?.current ?? shellRef.current;
+
+    const updateTooltipPosition = () => {
+      const triggerElement = getTriggerElement();
+      const tooltipElement = tooltipPopupRef.current;
+      if (!triggerElement || !tooltipElement) {
+        return;
+      }
+
+      const triggerBounds = triggerElement.getBoundingClientRect();
+      const tooltipBounds = tooltipElement.getBoundingClientRect();
+      const maxWidth = Math.max(0, window.innerWidth - SESSION_TOOLTIP_VIEWPORT_MARGIN_PX * 2);
+      const width = Math.min(tooltipBounds.width, maxWidth);
+      const halfWidth = width / 2;
+      const centeredLeft = triggerBounds.left + triggerBounds.width / 2;
+      const left = Math.max(
+        SESSION_TOOLTIP_VIEWPORT_MARGIN_PX + halfWidth,
+        Math.min(centeredLeft, window.innerWidth - SESSION_TOOLTIP_VIEWPORT_MARGIN_PX - halfWidth),
+      );
+      const belowTop = triggerBounds.bottom + SESSION_TOOLTIP_TRIGGER_OFFSET_PX;
+      const aboveTop = triggerBounds.top - tooltipBounds.height - SESSION_TOOLTIP_TRIGGER_OFFSET_PX;
+      const hasRoomBelow =
+        belowTop + tooltipBounds.height <= window.innerHeight - SESSION_TOOLTIP_VIEWPORT_MARGIN_PX;
+      const hasMoreRoomAbove = triggerBounds.top > window.innerHeight - triggerBounds.bottom;
+      const preferredTop = hasRoomBelow || !hasMoreRoomAbove ? belowTop : aboveTop;
+      const top = Math.max(
+        SESSION_TOOLTIP_VIEWPORT_MARGIN_PX,
+        Math.min(
+          preferredTop,
+          window.innerHeight - SESSION_TOOLTIP_VIEWPORT_MARGIN_PX - tooltipBounds.height,
+        ),
+      );
+
+      setTooltipPosition((previousPosition) => {
+        if (
+          previousPosition?.left === left &&
+          previousPosition.maxWidth === maxWidth &&
+          previousPosition.top === top
+        ) {
+          return previousPosition;
+        }
+
+        return { left, maxWidth, top };
+      });
+    };
+
+    updateTooltipPosition();
+    window.addEventListener("resize", updateTooltipPosition);
+    window.addEventListener("scroll", updateTooltipPosition, true);
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updateTooltipPosition);
+    const triggerElement = getTriggerElement();
+    if (triggerElement) {
+      resizeObserver?.observe(triggerElement);
+    }
+    if (tooltipPopupRef.current) {
+      resizeObserver?.observe(tooltipPopupRef.current);
+    }
+
+    return () => {
+      window.removeEventListener("resize", updateTooltipPosition);
+      window.removeEventListener("scroll", updateTooltipPosition, true);
+      resizeObserver?.disconnect();
+    };
+  }, [isOpen, textRef, tooltipContent]);
+
   const trigger = cloneElement(children, {
     onBlur: chainEventHandlers(children.props.onBlur, closeTooltip),
     onFocus: chainEventHandlers(children.props.onFocus, openTooltip),
     onMouseEnter: chainEventHandlers(children.props.onMouseEnter, openTooltip),
     onMouseLeave: chainEventHandlers(children.props.onMouseLeave, closeTooltip),
   });
-  const tooltipContent = tooltip ?? text;
 
   /*
    * CDXC:SessionTooltips 2026-05-20-11:05:
@@ -1049,15 +1135,41 @@ export function OverflowTooltipText({
    * Session title tooltips should keep metadata and provider/session id rows at
    * their existing base weight while making only the first title row slightly
    * bolder, so the title scans as the primary label without making ids heavier.
+   *
+   * CDXC:SessionTooltips 2026-05-28-04:33:
+   * Quick-session hover tooltips must paint above sticky project headers in the
+   * Projects area. Keep the custom native-sidebar positioning behavior, but
+   * portal the rendered tooltip to the document body and place it from the
+   * trigger rect so section and sticky-header stacking contexts cannot cover it.
    */
   return (
-    <div className="session-local-tooltip-shell">
+    <div className="session-local-tooltip-shell" ref={shellRef}>
       {trigger}
-      {isOpen && tooltipContent ? (
-        <div className="session-local-tooltip-popup" role="tooltip">
-          {renderSessionLocalTooltipContent(tooltipContent)}
-        </div>
-      ) : null}
+      {isOpen && tooltipContent
+        ? createPortal(
+            <div
+              className="session-local-tooltip-popup"
+              ref={tooltipPopupRef}
+              role="tooltip"
+              style={
+                {
+                  "--session-local-tooltip-left": tooltipPosition
+                    ? `${tooltipPosition.left}px`
+                    : "50vw",
+                  "--session-local-tooltip-max-width": tooltipPosition
+                    ? `${tooltipPosition.maxWidth}px`
+                    : `calc(100vw - ${SESSION_TOOLTIP_VIEWPORT_MARGIN_PX * 2}px)`,
+                  "--session-local-tooltip-top": tooltipPosition
+                    ? `${tooltipPosition.top}px`
+                    : "0px",
+                } as CSSProperties
+              }
+            >
+              {renderSessionLocalTooltipContent(tooltipContent)}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

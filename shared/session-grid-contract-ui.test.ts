@@ -29,6 +29,8 @@ describe("createSidebarSessionItems", () => {
 
     expect(items[0]?.agentIcon).toBe("browser");
     expect(items[0]?.faviconDataUrl).toBe(faviconDataUrl);
+    expect(items[0]?.kind).toBe("browser");
+    expect(items[0]?.sessionKind).toBe("browser");
   });
 
   test("should expose favorite state through sidebar session items", () => {

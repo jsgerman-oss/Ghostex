@@ -125,6 +125,10 @@
   background: color-mix(in srgb, var(--app-border) 70%, transparent);
 }
 
+.session-context-menu-spacer {
+  height: 6px;
+}
+
 .session-context-menu-item-danger {
   color: #ff7b72;
 }
@@ -165,15 +169,14 @@
 
 /*
  * CDXC:SessionTooltips 2026-05-20-11:05:
- * Session-card tooltips render below the hovered row with a local popup so they
- * do not overlap the trigger or mis-anchor through the portaled Radix layer in
- * the native sidebar webview. Center the popup horizontally in the sidebar
- * session column instead of left-aligning it to the row edge.
+ * Session-card tooltips render below the hovered row with a custom measured
+ * popup so they do not overlap the trigger or mis-anchor through the Radix
+ * layer in the native sidebar webview. The popup is portaled out of the row so
+ * sticky project headers cannot cover Quick-session tooltips.
  */
 .session-local-tooltip-shell {
   display: block;
   min-width: 0;
-  position: relative;
   width: 100%;
 }
 
@@ -191,13 +194,13 @@
   display: grid;
   font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);
   gap: 6px;
-  left: 50%;
-  max-width: min(90vw, calc(100vw - 16px));
+  left: var(--session-local-tooltip-left, 50vw);
+  max-width: min(90vw, var(--session-local-tooltip-max-width, calc(100vw - 16px)));
   overflow-wrap: anywhere;
   padding: 6px 12px;
   pointer-events: none;
-  position: absolute;
-  top: calc(100% + 8px);
+  position: fixed;
+  top: var(--session-local-tooltip-top, 0px);
   transform: translateX(-50%);
   white-space: pre-line;
   width: max-content;

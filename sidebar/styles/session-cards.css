@@ -1725,6 +1725,12 @@
  * CDXC:SidebarReference 2026-05-16-08:46:
  * Hover-only agent icons in the reference sidebar must hide even for visible
  * or focused sessions until the user points at or keyboard-focuses the row.
+ *
+ * CDXC:BrowserPanes 2026-05-28-07:38:
+ * Browser page favicons have their own hover-only setting because page identity
+ * should stay visible in the default Codex preset even when agent logos are
+ * quiet. Exclude favicon image icons here and let the browser-specific rule
+ * below control them.
  */
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-frame[data-agent-icon-hover-only="true"]:not(:has(.session:hover)):not(
@@ -1735,7 +1741,7 @@
   .session-frame[data-agent-icon-hover-only="true"]:not(:has(.session:hover)):not(
     :has(.session:focus-visible)
   ):not(:has(.session:focus-within))
-  .session-floating-agent-tabler-icon,
+  .session-floating-agent-tabler-icon:not([data-icon-variant="favicon"]),
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-frame[data-agent-icon-hover-only="true"]:not(:has(.session:hover)):not(
     :has(.session:focus-visible)
@@ -1746,6 +1752,14 @@
     :has(.session:focus-visible)
   ):not(:has(.session:focus-within))
   .session-persistence-provider-badge[data-slot="floating"] {
+  opacity: 0;
+}
+
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-browser-favicon-hover-only="true"]:not(:has(.session:hover)):not(
+    :has(.session:focus-visible)
+  ):not(:has(.session:focus-within))
+  .session-floating-agent-tabler-icon[data-agent-icon="browser"][data-icon-variant="favicon"] {
   opacity: 0;
 }
 

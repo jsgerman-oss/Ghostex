@@ -134,6 +134,14 @@ export function createSidebarSessionItems(
     isSleeping: session.isSleeping === true,
     isRunning: session.kind === "browser",
     isVisible: visibleIds.has(session.sessionId),
+    /**
+     * CDXC:BrowserPanes 2026-05-28-05:30:
+     * Browser panes must project their browser identity in both the legacy
+     * `kind` field and the canonical `sessionKind` field. Some sidebar card
+     * paths still check `kind`, so omitting it can let browser rows inherit
+     * terminal title/icon handling and render as `∗ Terminal Session`.
+     */
+    kind: session.kind === "browser" ? "browser" : undefined,
     lastInteractionAt: undefined,
     primaryTitle: getSessionCardPrimaryTitle(session),
     row: session.row,

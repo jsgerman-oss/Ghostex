@@ -159,6 +159,7 @@ export function SortableSessionCard({
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
   const {
     hideSessionAgentIconUntilHover,
+    hideBrowserFaviconUntilHover,
     browserFeedbackTool,
     showCloseButton,
     showDebugSessionNumbers,
@@ -175,6 +176,14 @@ export function SortableSessionCard({
       hideSessionAgentIconUntilHover:
         state.hud.settings?.hideSessionAgentIconUntilHover ??
         DEFAULT_ghostex_SETTINGS.hideSessionAgentIconUntilHover,
+      /*
+       * CDXC:BrowserPanes 2026-05-28-07:38:
+       * Browser favicons identify pages and need their own hover-only setting
+       * instead of being suppressed by the agent-logo hover preference.
+       */
+      hideBrowserFaviconUntilHover:
+        state.hud.settings?.hideBrowserFaviconUntilHover ??
+        DEFAULT_ghostex_SETTINGS.hideBrowserFaviconUntilHover,
       browserFeedbackTool:
         state.hud.settings?.browserFeedbackTool ?? DEFAULT_ghostex_SETTINGS.browserFeedbackTool,
       showCloseButton: state.hud.showCloseButtonOnSessionCards,
@@ -1074,6 +1083,9 @@ export function SortableSessionCard({
           data-group-connector={String(showGroupConnector)}
           data-has-agent-icon={String(hasSessionCardIcon)}
           data-agent-icon-hover-only={String(hideSessionAgentIconUntilHover)}
+          data-browser-favicon-hover-only={String(
+            isBrowserSession && Boolean(session.faviconDataUrl) && hideBrowserFaviconUntilHover,
+          )}
           data-lifecycle-state={lifecycleState}
           data-running={String(lifecycleState === "running")}
           data-sleeping={String(Boolean(session.isSleeping))}
@@ -1111,6 +1123,9 @@ export function SortableSessionCard({
             data-group-connector={String(showGroupConnector)}
             data-lifecycle-state={lifecycleState}
             data-agent-icon-hover-only={String(hideSessionAgentIconUntilHover)}
+            data-browser-favicon-hover-only={String(
+              isBrowserSession && Boolean(session.faviconDataUrl) && hideBrowserFaviconUntilHover,
+            )}
             data-running={String(lifecycleState === "running")}
             data-search-selected={String(isSearchSelected)}
             data-sleeping={String(Boolean(session.isSleeping))}
