@@ -3,6 +3,7 @@ import Combine
 import Darwin
 import GhosttyKit
 import QuartzCore
+import UniformTypeIdentifiers
 import WebKit
 
 private func nativePaneImage(fromDataUrl dataUrl: String?, isTemplate: Bool = false) -> NSImage? {
@@ -61,6 +62,7 @@ private let nativeTerminalColorEnvironmentKeys = [
 
 private let projectBeadsResponseEventName = "ghostex-project-beads-response"
 private let projectBoardResponseEventName = "ghostex-project-board-response"
+private let projectBoardImageResponseEventName = "ghostex-project-board-image-response"
 
 private struct ProjectBeadsBridgeRequest: Decodable {
   let action: String
@@ -90,6 +92,20 @@ private struct ProjectBeadsBridgeResponse: Encodable {
   let stdout: String
 }
 
+private struct ProjectBoardImageBridgeRequest: Decodable {
+  let action: String
+  let path: String?
+  let requestId: String
+}
+
+private struct ProjectBoardImageBridgeResponse: Encodable {
+  let dataUrl: String?
+  let error: String?
+  let imagePath: String?
+  let path: String?
+  let requestId: String
+}
+
 private enum ProjectBeadsBridgeError: Error, LocalizedError {
   case invalidRequest(String)
 
@@ -99,6 +115,231 @@ private enum ProjectBeadsBridgeError: Error, LocalizedError {
       return message
     }
   }
+}
+
+private enum ProjectBoardImageBridgeError: Error, LocalizedError {
+  case invalidRequest(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .invalidRequest(let message):
+      return message
+    }
+  }
+}
+
+private func projectBoardClipboardImagePath() throws -> String {
+  let pasteboard = NSPasteboard.general
+  if let imageFileURL = firstProjectBoardClipboardImageFileURL(in: pasteboard) {
+    return projectBoardDisplayImagePath(forExistingFileURL: imageFileURL)
+  }
+  guard let pngData = projectBoardClipboardPNGData(in: pasteboard) else {
+    throw ProjectBoardImageBridgeError.invalidRequest("Clipboard does not contain an image path or image data.")
+  }
+
+  /*
+   CDXC:ProjectBoardImagePaste 2026-05-28-08:27:
+   Project Board image paste should store path references, not base64 Markdown.
+   Use an existing clipboard image file path when available; save pathless bitmap
+   clipboard images under the same ~/.ghostex/i directory used by the rich prompt
+   editor so issue descriptions and agent prompts stay compact and durable.
+   */
+  let fileURL = try uniqueProjectBoardImageURL(pathExtension: "png")
+  try pngData.write(to: fileURL, options: .atomic)
+  return projectBoardDisplayImagePath(forSavedImageURL: fileURL)
+}
+
+private func firstProjectBoardClipboardImageFileURL(in pasteboard: NSPasteboard) -> URL? {
+  let fileURLType = NSPasteboard.PasteboardType("public.file-url")
+  for item in pasteboard.pasteboardItems ?? [] {
+    if let fileURLString = item.string(forType: fileURLType),
+      let fileURL = URL(string: fileURLString),
+      fileURL.isFileURL,
+      FileManager.default.fileExists(atPath: fileURL.path),
+      isProjectBoardImageFileURL(fileURL)
+    {
+      return fileURL
+    }
+    if let plainText = item.string(forType: .string),
+      let fileURL = projectBoardImageFileURL(path: plainText),
+      FileManager.default.fileExists(atPath: fileURL.path),
+      isProjectBoardImageFileURL(fileURL)
+    {
+      return fileURL
+    }
+  }
+
+  let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+  if let filenames = pasteboard.propertyList(forType: filenamesType) as? [String],
+    let fileURL = filenames
+      .map({ URL(fileURLWithPath: $0) })
+      .first(where: {
+        FileManager.default.fileExists(atPath: $0.path) && isProjectBoardImageFileURL($0)
+      })
+  {
+    return fileURL
+  }
+
+  if let string = pasteboard.string(forType: .string),
+    let fileURL = projectBoardImageFileURL(path: string),
+    FileManager.default.fileExists(atPath: fileURL.path),
+    isProjectBoardImageFileURL(fileURL)
+  {
+    return fileURL
+  }
+  return nil
+}
+
+private func projectBoardClipboardPNGData(in pasteboard: NSPasteboard) -> Data? {
+  let pngType = NSPasteboard.PasteboardType("public.png")
+  if let pngData = pasteboard.data(forType: pngType), NSImage(data: pngData) != nil {
+    return pngData
+  }
+
+  let tiffType = NSPasteboard.PasteboardType("public.tiff")
+  if let tiffData = pasteboard.data(forType: tiffType),
+    let image = NSImage(data: tiffData)
+  {
+    return projectBoardPNGData(from: image)
+  }
+
+  guard let image = NSImage(pasteboard: pasteboard) else {
+    return nil
+  }
+  return projectBoardPNGData(from: image)
+}
+
+private func projectBoardPNGData(from image: NSImage) -> Data? {
+  guard let tiffData = image.tiffRepresentation,
+    let bitmap = NSBitmapImageRep(data: tiffData)
+  else {
+    return nil
+  }
+  return bitmap.representation(using: .png, properties: [:])
+}
+
+private func uniqueProjectBoardImageURL(pathExtension: String) throws -> URL {
+  let directory = GhostexAppStorage.sharedRootDirectory.appendingPathComponent("i", isDirectory: true)
+  try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  let formatter = DateFormatter()
+  formatter.locale = Locale(identifier: "en_US_POSIX")
+  formatter.dateFormat = "yyMMddHHmmss"
+  let baseName = formatter.string(from: Date())
+  let normalizedExtension = normalizedProjectBoardImageFileExtension(pathExtension)
+  let firstURL = directory.appendingPathComponent("\(baseName).\(normalizedExtension)", isDirectory: false)
+  guard FileManager.default.fileExists(atPath: firstURL.path) else {
+    return firstURL
+  }
+
+  for index in 2...99 {
+    let candidate = directory.appendingPathComponent(
+      "\(baseName)-\(index).\(normalizedExtension)",
+      isDirectory: false)
+    if !FileManager.default.fileExists(atPath: candidate.path) {
+      return candidate
+    }
+  }
+  return directory.appendingPathComponent(
+    "\(baseName)-\(UUID().uuidString.lowercased().prefix(4)).\(normalizedExtension)",
+    isDirectory: false)
+}
+
+private func normalizedProjectBoardImageFileExtension(_ pathExtension: String) -> String {
+  let normalizedExtension = pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  if normalizedExtension == "jpeg" {
+    return "jpg"
+  }
+  if normalizedExtension == "tiff" {
+    return "tif"
+  }
+  return normalizedExtension.isEmpty ? "png" : normalizedExtension
+}
+
+private func projectBoardDisplayImagePath(forSavedImageURL fileURL: URL) -> String {
+  "~/.ghostex/i/\(fileURL.lastPathComponent)"
+}
+
+private func projectBoardDisplayImagePath(forExistingFileURL fileURL: URL) -> String {
+  let sharedRootPath = GhostexAppStorage.sharedRootDirectory.standardizedFileURL.path
+  let standardizedPath = fileURL.standardizedFileURL.path
+  if standardizedPath.hasPrefix(sharedRootPath + "/") {
+    return "~/.ghostex/\(String(standardizedPath.dropFirst(sharedRootPath.count + 1)))"
+  }
+  return standardizedPath
+}
+
+private func projectBoardImagePreviewDataURL(path: String) throws -> String {
+  guard let fileURL = projectBoardImageFileURL(path: path),
+    FileManager.default.fileExists(atPath: fileURL.path),
+    isProjectBoardImageFileURL(fileURL)
+  else {
+    throw ProjectBoardImageBridgeError.invalidRequest("Image preview path does not point to a local image.")
+  }
+
+  let data = try Data(contentsOf: fileURL)
+  if fileURL.pathExtension.lowercased() == "svg" {
+    return "data:image/svg+xml;base64,\(data.base64EncodedString())"
+  }
+  guard let image = NSImage(data: data),
+    let pngData = projectBoardPreviewPNGData(from: image)
+  else {
+    throw ProjectBoardImageBridgeError.invalidRequest("Image preview data could not be decoded.")
+  }
+  return "data:image/png;base64,\(pngData.base64EncodedString())"
+}
+
+private func projectBoardImageFileURL(path: String) -> URL? {
+  let trimmedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+  if trimmedPath.hasPrefix("file://"), let url = URL(string: trimmedPath), url.isFileURL {
+    return url
+  }
+  if trimmedPath.hasPrefix("~/.ghostex/") {
+    let relativePath = String(trimmedPath.dropFirst("~/.ghostex/".count))
+    return GhostexAppStorage.sharedRootDirectory.appendingPathComponent(relativePath)
+  }
+  if trimmedPath.hasPrefix("~/") {
+    let relativePath = String(trimmedPath.dropFirst(2))
+    return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(relativePath)
+  }
+  if trimmedPath.hasPrefix("/") {
+    return URL(fileURLWithPath: trimmedPath)
+  }
+  return nil
+}
+
+private func projectBoardPreviewPNGData(from image: NSImage) -> Data? {
+  let sourceSize = image.size.width > 0 && image.size.height > 0 ? image.size : NSSize(width: 1, height: 1)
+  let maximumDimension = CGFloat(1600)
+  let scale = min(1, maximumDimension / max(sourceSize.width, sourceSize.height))
+  let drawSize = NSSize(width: max(1, sourceSize.width * scale), height: max(1, sourceSize.height * scale))
+  let output = NSImage(size: drawSize)
+  output.lockFocus()
+  NSColor.clear.setFill()
+  NSRect(origin: .zero, size: drawSize).fill()
+  image.draw(
+    in: NSRect(origin: .zero, size: drawSize),
+    from: NSRect(origin: .zero, size: sourceSize),
+    operation: .sourceOver,
+    fraction: 1.0)
+  output.unlockFocus()
+  guard let tiffData = output.tiffRepresentation,
+    let bitmap = NSBitmapImageRep(data: tiffData)
+  else {
+    return nil
+  }
+  return bitmap.representation(using: .png, properties: [:])
+}
+
+private func isProjectBoardImageFileURL(_ url: URL) -> Bool {
+  let pathExtension = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !pathExtension.isEmpty else {
+    return false
+  }
+  if let type = UTType(filenameExtension: pathExtension), type.conforms(to: .image) {
+    return true
+  }
+  return ["avif", "gif", "heic", "heif", "jpg", "jpeg", "png", "svg", "tif", "tiff", "webp"]
+    .contains(pathExtension.lowercased())
 }
 
 private func projectBoardNativeProcessEnvironment() -> [String: String] {
@@ -1100,9 +1341,15 @@ private final class GhostexGhosttySurfaceHostView: NSView {
      action drawing a downward chevron.
 
      CDXC:NativeTerminalScroll 2026-05-27-04:18:
-     The scroll-to-top and scroll-to-bottom controls must trade stack positions
-     with their icons and actions intact, so the lower overlay button is the
-     top jump and the upper overlay button is the bottom jump.
+     A follow-up request to "swap" the buttons was about the broken visual/action
+     pairing, not a requirement to make the lower button scroll to top. The final
+     mapping below owns the semantic correction.
+
+     CDXC:NativeTerminalScroll 2026-05-28-08:16:
+     The visual chevrons were correct but the semantic controls were reversed:
+     the upper chevron-up button must scroll to top, and the lower chevron-down
+     button must scroll to bottom. Keep visibility tied to the same semantic
+     action so the top of scrollback shows only the go-to-bottom control.
      */
     scrollToBottomButton.target = self
     scrollToBottomButton.action = #selector(scrollToBottomButtonPressed)
@@ -1224,8 +1471,8 @@ private final class GhostexGhosttySurfaceHostView: NSView {
     let size = Self.scrollButtonSize
     let x = max(bounds.maxX - Self.scrollButtonRightInset - size.width, bounds.minX)
     let bottomY = bounds.minY + Self.scrollButtonBottomInset
-    scrollToTopButton.frame = CGRect(origin: CGPoint(x: x, y: bottomY), size: size)
-    scrollToBottomButton.frame = CGRect(
+    scrollToBottomButton.frame = CGRect(origin: CGPoint(x: x, y: bottomY), size: size)
+    scrollToTopButton.frame = CGRect(
       origin: CGPoint(x: x, y: bottomY + size.height + Self.scrollButtonGap),
       size: size)
   }
@@ -3439,12 +3686,19 @@ final class TerminalWorkspaceView: NSView {
       let projectBoardBridge = ProjectBoardBridge { [weak self] request in
         self?.sendEvent(.projectBoardRequest(request))
       }
+      let projectBoardImageBridge = ProjectBoardImageBridge { [weak self] request, webView in
+        self?.handleProjectBoardImageBridgeRequest(request, webView: webView)
+      }
       configuration.userContentController.add(beadsBridge, name: ProjectBeadsBridge.messageHandlerName)
       configuration.userContentController.add(
         projectBoardBridge,
         name: ProjectBoardBridge.messageHandlerName)
+      configuration.userContentController.add(
+        projectBoardImageBridge,
+        name: ProjectBoardImageBridge.messageHandlerName)
       let projectWebView = WKWebView(frame: .zero, configuration: configuration)
       beadsBridge.webView = projectWebView
+      projectBoardImageBridge.webView = projectWebView
       if #available(macOS 13.3, *) {
         projectWebView.isInspectable = true
       }
@@ -6957,6 +7211,64 @@ final class TerminalWorkspaceView: NSView {
     }
     let script = """
       window.dispatchEvent(new CustomEvent('\(projectBeadsResponseEventName)', { detail: \(json) }));
+      undefined;
+      """
+    webView.evaluateJavaScript(script, completionHandler: nil)
+  }
+
+  private func handleProjectBoardImageBridgeRequest(
+    _ request: ProjectBoardImageBridgeRequest,
+    webView: WKWebView?
+  ) {
+    guard let webView else {
+      return
+    }
+    let response: ProjectBoardImageBridgeResponse
+    do {
+      switch request.action {
+      case "pasteImage":
+        response = ProjectBoardImageBridgeResponse(
+          dataUrl: nil,
+          error: nil,
+          imagePath: try projectBoardClipboardImagePath(),
+          path: nil,
+          requestId: request.requestId)
+      case "loadPreview":
+        let path = request.path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !path.isEmpty else {
+          throw ProjectBoardImageBridgeError.invalidRequest("Missing image preview path.")
+        }
+        response = ProjectBoardImageBridgeResponse(
+          dataUrl: try projectBoardImagePreviewDataURL(path: path),
+          error: nil,
+          imagePath: nil,
+          path: path,
+          requestId: request.requestId)
+      default:
+        throw ProjectBoardImageBridgeError.invalidRequest("Unsupported Project Board image action: \(request.action)")
+      }
+    } catch {
+      response = ProjectBoardImageBridgeResponse(
+        dataUrl: nil,
+        error: error.localizedDescription,
+        imagePath: nil,
+        path: request.path,
+        requestId: request.requestId)
+    }
+    dispatchProjectBoardImageBridgeResponse(response, to: webView)
+  }
+
+  private func dispatchProjectBoardImageBridgeResponse(
+    _ response: ProjectBoardImageBridgeResponse,
+    to webView: WKWebView
+  ) {
+    guard let data = try? JSONEncoder().encode(response),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    let script = """
+      window.dispatchEvent(new CustomEvent('\(projectBoardImageResponseEventName)', { detail: \(json) }));
       undefined;
       """
     webView.evaluateJavaScript(script, completionHandler: nil)
@@ -13017,6 +13329,31 @@ private final class ProjectBoardBridge: NSObject, WKScriptMessageHandler {
       return
     }
     onRequest(request)
+  }
+}
+
+private final class ProjectBoardImageBridge: NSObject, WKScriptMessageHandler {
+  static let messageHandlerName = "ghostexProjectBoardImages"
+
+  weak var webView: WKWebView?
+
+  private let onRequest: (ProjectBoardImageBridgeRequest, WKWebView?) -> Void
+
+  init(onRequest: @escaping (ProjectBoardImageBridgeRequest, WKWebView?) -> Void) {
+    self.onRequest = onRequest
+  }
+
+  func userContentController(
+    _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
+  ) {
+    guard let dictionary = message.body as? [String: Any],
+      JSONSerialization.isValidJSONObject(dictionary),
+      let data = try? JSONSerialization.data(withJSONObject: dictionary),
+      let request = try? JSONDecoder().decode(ProjectBoardImageBridgeRequest.self, from: data)
+    else {
+      return
+    }
+    onRequest(request, webView)
   }
 }
 
@@ -20827,6 +21164,12 @@ private final class TerminalPaneScrollButton: NSButton {
      The overlay icons should be chevrons only. Draw direction from the button
      action, not from the visual stack position, so scroll-to-top is chevron-up
      and scroll-to-bottom is chevron-down.
+
+     CDXC:NativeTerminalScroll 2026-05-28-08:16:
+     This AppKit overlay draws in the host view coordinate space used by the
+     terminal stack. Keep the chevron paths aligned with the semantic button
+     action after restoring the upper button to scroll-to-top and the lower
+     button to scroll-to-bottom.
      */
     title = ""
     isBordered = false
@@ -20891,13 +21234,13 @@ private final class TerminalPaneScrollButton: NSButton {
 
     switch direction {
     case .bottom:
-      path.move(to: CGPoint(x: centerX - 6, y: centerY + 3))
-      path.line(to: CGPoint(x: centerX, y: centerY - 4))
-      path.line(to: CGPoint(x: centerX + 6, y: centerY + 3))
-    case .top:
       path.move(to: CGPoint(x: centerX - 6, y: centerY - 3))
       path.line(to: CGPoint(x: centerX, y: centerY + 4))
       path.line(to: CGPoint(x: centerX + 6, y: centerY - 3))
+    case .top:
+      path.move(to: CGPoint(x: centerX - 6, y: centerY + 3))
+      path.line(to: CGPoint(x: centerX, y: centerY - 4))
+      path.line(to: CGPoint(x: centerX + 6, y: centerY + 3))
     }
 
     Self.glyphColor.setStroke()

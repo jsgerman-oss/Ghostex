@@ -59,7 +59,8 @@ import {
   boardStatusLabel,
   buildAgentWorkPrompt,
   ensureWorkflowStatuses,
-  extractDescriptionImagePreviews,
+  extractDescriptionImageReferences,
+  extractPreviewableDescriptionImageReferences,
   filterBoardTickets,
   formatShortDate,
   getBlockedByIds,
@@ -68,6 +69,8 @@ import {
   normalizeDisplayIssueKey,
   parseBeadsJson,
   priorityLabel,
+  removeDescriptionImageReference,
+  isDescriptionImageSource,
   tshirtToEstimate,
   toBoardTickets,
   estimateToTshirt,
@@ -76,6 +79,7 @@ import {
   type BeadsIssue,
   type BoardStatusKey,
   type BoardTicket,
+  type DescriptionImageReference,
   type TshirtSize,
 } from "./project-board-shared";
 import {
@@ -130,6 +134,9 @@ type ProjectBeadsWebKitWindow = Window & {
       ghostexProjectBoard?: {
         postMessage: (message: ProjectBoardBridgeRequest) => void;
       };
+      ghostexProjectBoardImages?: {
+        postMessage: (message: ProjectBoardImageBridgeRequest) => void;
+      };
     };
   };
 };
@@ -137,6 +144,7 @@ type ProjectBeadsWebKitWindow = Window & {
 const BRIDGE_REQUEST_PREFIX = "__GHOSTEX_PROJECT_BEADS_REQUEST__";
 const BRIDGE_RESPONSE_EVENT = "ghostex-project-beads-response";
 const PROJECT_BOARD_RESPONSE_EVENT = "ghostex-project-board-response";
+const PROJECT_BOARD_IMAGE_RESPONSE_EVENT = "ghostex-project-board-image-response";
 const INSTALL_BEADS_COMMAND = "brew install beads";
 const PROJECT_BOARD_AUTO_REFRESH_INTERVAL_MS = 8_000;
 const PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS = 60_000;
@@ -149,6 +157,20 @@ type BoardRefreshMode = "background" | "initial" | "manual" | "mutation";
 type BoardRefreshOptions = {
   includeLabels?: boolean;
   mode?: BoardRefreshMode;
+};
+
+type ProjectBoardImageBridgeRequest = {
+  action: "loadPreview" | "pasteImage";
+  path?: string;
+  requestId: string;
+};
+
+type ProjectBoardImageBridgeResponse = {
+  dataUrl?: string;
+  error?: string;
+  imagePath?: string;
+  path?: string;
+  requestId: string;
 };
 
 function createEmptyDetailDraft(): DetailDraft {
@@ -202,6 +224,9 @@ function ProjectBoardApp() {
   const [newTicket, setNewTicket] = useState<TicketFormDraft>(createEmptyTicketFormDraft);
   const [isCreating, setIsCreating] = useState(false);
   const [deleteConfirmingTicketId, setDeleteConfirmingTicketId] = useState("");
+  const [imagePreviewDataUrls, setImagePreviewDataUrls] = useState<Record<string, string>>({});
+  const pendingImagePreviewPathsRef = useRef(new Set<string>());
+  const failedImagePreviewPathsRef = useRef(new Set<string>());
   /*
    * CDXC:ProjectBoard 2026-05-26-05:38:
    * The Project page must observe Beads changes made by the user's app actions or nearby bd CLI commands without forcing manual Refresh.
@@ -321,6 +346,48 @@ function ProjectBoardApp() {
     void loadTickets({ includeLabels: true, mode: "initial" });
     void loadConversationState();
   }, [loadConversationState, loadTickets]);
+
+  useEffect(() => {
+    const imageSources = [
+      ...extractPreviewableDescriptionImageReferences(detail.description),
+      ...extractPreviewableDescriptionImageReferences(newTicket.description),
+    ].map((image) => image.src);
+    for (const imageSource of imageSources) {
+      if (imageSource.startsWith("data:image/")) {
+        setImagePreviewDataUrls((current) =>
+          current[imageSource] ? current : { ...current, [imageSource]: imageSource },
+        );
+        continue;
+      }
+      if (
+        imagePreviewDataUrls[imageSource] ||
+        pendingImagePreviewPathsRef.current.has(imageSource) ||
+        failedImagePreviewPathsRef.current.has(imageSource)
+      ) {
+        continue;
+      }
+      pendingImagePreviewPathsRef.current.add(imageSource);
+      void sendProjectBoardImageRequest({ action: "loadPreview", path: imageSource })
+        .then((response) => {
+          if (response.dataUrl?.startsWith("data:image/")) {
+            setImagePreviewDataUrls((current) => ({
+              ...current,
+              [imageSource]: response.dataUrl ?? "",
+            }));
+            return;
+          }
+          failedImagePreviewPathsRef.current.add(imageSource);
+          console.warn(response.error || `Could not load image preview for ${imageSource}.`);
+        })
+        .catch((error) => {
+          failedImagePreviewPathsRef.current.add(imageSource);
+          console.warn(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          pendingImagePreviewPathsRef.current.delete(imageSource);
+        });
+    }
+  }, [detail.description, imagePreviewDataUrls, newTicket.description]);
 
   useEffect(() => {
     const refreshIfVisible = (includeLabels = false) => {
@@ -904,25 +971,50 @@ function ProjectBoardApp() {
               <Textarea
                 className="project-ticket-prompt-input"
                 onChange={(event) =>
-                  setDetail((current) => ({ ...current, description: event.target.value }))
+                  setDetail((current) => ({
+                    ...current,
+                    description: event.target.value,
+                  }))
                 }
                 onPaste={(event) => {
-                  void pasteImageFromClipboard(event).then((image) => {
-                    if (!image) {
+                  if (!hasProjectBoardImagePastePayload(event.clipboardData)) {
+                    return;
+                  }
+                  event.preventDefault();
+                  const selectionStart = event.currentTarget.selectionStart;
+                  const selectionEnd = event.currentTarget.selectionEnd;
+                  void sendProjectBoardImageRequest({ action: "pasteImage" }).then((response) => {
+                    if (!response.imagePath) {
+                      setErrorMessage(response.error || "Clipboard image could not be converted to a path.");
                       return;
                     }
-                    event.preventDefault();
                     setDetail((current) => ({
                       ...current,
-                      description: appendImageMarkdownToDescription(current.description, image),
+                      description: appendImageMarkdownToDescription(
+                        current.description,
+                        response.imagePath ?? "",
+                        selectionStart,
+                        selectionEnd,
+                      ),
                     }));
+                  }).catch((error) => {
+                    setErrorMessage(error instanceof Error ? error.message : "Clipboard image paste failed.");
                   });
                 }}
                 placeholder="Write the full prompt for this ticket."
                 value={detail.description}
               />
             </label>
-            <ImagePreviewStrip description={detail.description} />
+            <ImagePreviewStrip
+              description={detail.description}
+              imagePreviewDataUrls={imagePreviewDataUrls}
+              onRemove={(image) =>
+                setDetail((current) => ({
+                  ...current,
+                  description: removeDescriptionImageReference(current.description, image.id),
+                }))
+              }
+            />
             <DependencySummary
               blockedByIds={detail.blockedByIds}
               blockingIds={detail.blockingIds}
@@ -1062,18 +1154,34 @@ function ProjectBoardApp() {
               <Textarea
                 className="project-ticket-prompt-input"
                 onChange={(event) =>
-                  setNewTicket((current) => ({ ...current, description: event.target.value }))
+                  setNewTicket((current) => ({
+                    ...current,
+                    description: event.target.value,
+                  }))
                 }
                 onPaste={(event) => {
-                  void pasteImageFromClipboard(event).then((image) => {
-                    if (!image) {
+                  if (!hasProjectBoardImagePastePayload(event.clipboardData)) {
+                    return;
+                  }
+                  event.preventDefault();
+                  const selectionStart = event.currentTarget.selectionStart;
+                  const selectionEnd = event.currentTarget.selectionEnd;
+                  void sendProjectBoardImageRequest({ action: "pasteImage" }).then((response) => {
+                    if (!response.imagePath) {
+                      setErrorMessage(response.error || "Clipboard image could not be converted to a path.");
                       return;
                     }
-                    event.preventDefault();
                     setNewTicket((current) => ({
                       ...current,
-                      description: appendImageMarkdownToDescription(current.description, image),
+                      description: appendImageMarkdownToDescription(
+                        current.description,
+                        response.imagePath ?? "",
+                        selectionStart,
+                        selectionEnd,
+                      ),
                     }));
+                  }).catch((error) => {
+                    setErrorMessage(error instanceof Error ? error.message : "Clipboard image paste failed.");
                   });
                 }}
                 placeholder="Write the full prompt for this ticket."
@@ -1081,7 +1189,16 @@ function ProjectBoardApp() {
                 value={newTicket.description}
               />
             </label>
-            <ImagePreviewStrip description={newTicket.description} />
+            <ImagePreviewStrip
+              description={newTicket.description}
+              imagePreviewDataUrls={imagePreviewDataUrls}
+              onRemove={(image) =>
+                setNewTicket((current) => ({
+                  ...current,
+                  description: removeDescriptionImageReference(current.description, image.id),
+                }))
+              }
+            />
           </div>
           <DialogFooter>
             <Button
@@ -1341,15 +1458,39 @@ function DependencySummary({
   );
 }
 
-function ImagePreviewStrip({ description }: { description: string }) {
-  const images = extractDescriptionImagePreviews(description);
+function ImagePreviewStrip({
+  description,
+  imagePreviewDataUrls,
+  onRemove,
+}: {
+  description: string;
+  imagePreviewDataUrls: Record<string, string>;
+  onRemove?: (image: DescriptionImageReference) => void;
+}) {
+  const images = extractPreviewableDescriptionImageReferences(description);
   if (images.length === 0) {
     return null;
   }
   return (
     <div className="project-ticket-image-strip" aria-label="Image previews">
-      {images.map((src, index) => (
-        <img alt="" className="project-ticket-image-thumb" key={`${src.slice(0, 32)}-${index}`} src={src} />
+      {images.map((image) => (
+        <div className="project-ticket-image-thumb" key={image.id}>
+          {imagePreviewDataUrls[image.src] ? (
+            <img alt="" src={imagePreviewDataUrls[image.src]} />
+          ) : (
+            <span aria-hidden="true" />
+          )}
+          {onRemove ? (
+            <button
+              aria-label="Remove pasted image"
+              className="project-ticket-image-remove"
+              onClick={() => onRemove(image)}
+              type="button"
+            >
+              <IconX aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
       ))}
     </div>
   );
@@ -1686,25 +1827,28 @@ function prioritizeDependencyTickets(tickets: BoardTicket[]): BoardTicket[] {
   return [...activeTickets, ...doneTickets];
 }
 
-function pasteImageFromClipboard(event: {
-  clipboardData: DataTransfer;
-}): Promise<string | undefined> {
-  const item = [...event.clipboardData.items].find((entry) => entry.type.startsWith("image/"));
-  if (!item) {
-    return Promise.resolve(undefined);
+function hasProjectBoardImagePastePayload(clipboardData: DataTransfer): boolean {
+  /**
+   * CDXC:ProjectBoardImagePaste 2026-05-28-08:18:
+   * Image paste detection must stay synchronous so the caller prevents the browser's default data-URI Markdown insertion before native resolves the clipboard to a durable image path.
+   *
+   * CDXC:ProjectBoardImagePaste 2026-05-28-08:27:
+   * New Project Board image pastes should persist a path, not a base64 payload. If the clipboard has a file or path, native returns that path; if it only has bitmap data, native saves the bitmap under ~/.ghostex/i like the rich prompt editor and returns the saved path.
+   */
+  const files = [...clipboardData.files];
+  if (files.some((file) => file.type.startsWith("image/") || isDescriptionImageSource(file.name))) {
+    return true;
   }
-  const file = item.getAsFile();
-  if (!file) {
-    return Promise.resolve(undefined);
+  const items = [...clipboardData.items];
+  if (items.some((entry) => entry.type.startsWith("image/") || entry.type === "public.file-url")) {
+    return true;
   }
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      resolve(typeof reader.result === "string" ? reader.result : undefined);
-    };
-    reader.onerror = () => resolve(undefined);
-    reader.readAsDataURL(file);
-  });
+  const uriList = clipboardData.getData("text/uri-list").trim();
+  if (uriList.startsWith("file:") && isDescriptionImageSource(uriList)) {
+    return true;
+  }
+  const plainText = clipboardData.getData("text/plain").trim();
+  return isDescriptionImageSource(plainText);
 }
 
 function sendBeadsRequest(
@@ -1775,6 +1919,38 @@ function sendProjectBoardRequest(
     window.clearTimeout(timeout);
     window.removeEventListener(PROJECT_BOARD_RESPONSE_EVENT, onResponse);
     reject(new Error("Project board bridge is unavailable outside Ghostex."));
+  });
+}
+
+function sendProjectBoardImageRequest(
+  request: Omit<ProjectBoardImageBridgeRequest, "requestId">,
+): Promise<ProjectBoardImageBridgeResponse> {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener(PROJECT_BOARD_IMAGE_RESPONSE_EVENT, onResponse);
+      reject(new Error("Project board image bridge timed out."));
+    }, 30_000);
+    const onResponse = (event: Event) => {
+      const response = (event as CustomEvent<ProjectBoardImageBridgeResponse>).detail;
+      if (response?.requestId !== requestId) {
+        return;
+      }
+      window.clearTimeout(timeout);
+      window.removeEventListener(PROJECT_BOARD_IMAGE_RESPONSE_EVENT, onResponse);
+      resolve(response);
+    };
+    window.addEventListener(PROJECT_BOARD_IMAGE_RESPONSE_EVENT, onResponse);
+    const message = { ...request, requestId };
+    const projectBoardImagesBridge = (window as ProjectBeadsWebKitWindow).webkit?.messageHandlers
+      ?.ghostexProjectBoardImages;
+    if (projectBoardImagesBridge) {
+      projectBoardImagesBridge.postMessage(message);
+      return;
+    }
+    window.clearTimeout(timeout);
+    window.removeEventListener(PROJECT_BOARD_IMAGE_RESPONSE_EVENT, onResponse);
+    reject(new Error("Project board image bridge is unavailable outside Ghostex."));
   });
 }
 
@@ -2243,11 +2419,53 @@ styleElement.textContent = `
   }
 
   .project-ticket-image-thumb {
+    background: rgba(0, 0, 0, 0.24);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
+    display: block;
     height: 72px;
+    overflow: hidden;
+    position: relative;
+    width: 72px;
+  }
+
+  .project-ticket-image-thumb img {
+    height: 100%;
     object-fit: cover;
     width: 72px;
+  }
+
+  .project-ticket-image-thumb span {
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02));
+    display: block;
+    height: 100%;
+    width: 100%;
+  }
+
+  .project-ticket-image-remove {
+    align-items: center;
+    background: rgba(10, 10, 12, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 999px;
+    color: rgba(255, 255, 255, 0.9);
+    cursor: pointer;
+    display: inline-flex;
+    height: 22px;
+    justify-content: center;
+    padding: 0;
+    position: absolute;
+    right: 4px;
+    top: 4px;
+    width: 22px;
+  }
+
+  .project-ticket-image-remove svg {
+    height: 13px;
+    width: 13px;
+  }
+
+  .project-ticket-image-remove:hover {
+    background: rgba(32, 32, 36, 0.94);
   }
 
   .project-ticket-dependencies {

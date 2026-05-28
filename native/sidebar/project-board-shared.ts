@@ -316,17 +316,171 @@ export function filterBoardTickets(
 
 export function appendImageMarkdownToDescription(
   description: string,
-  dataUrl: string,
-  fileName = "pasted-image",
+  imagePath: string,
+  selectionStart?: number,
+  selectionEnd?: number,
 ): string {
-  const snippet = `![${fileName}](${dataUrl})`;
-  const trimmed = description.trim();
-  return trimmed ? `${trimmed}\n\n${snippet}` : snippet;
+  const snippet = `[Image #${getNextDescriptionImageIndex(description)}](${imagePath})`;
+  /**
+   * CDXC:ProjectBoardImagePaste 2026-05-28-08:48:
+   * Project Board image references are editable prompt text, not hidden metadata.
+   * Paste images as visible [Image #N](path) references at the caret so users can
+   * write prose around them and refer to each image explicitly in the prompt.
+   */
+  return insertDescriptionSnippet(description, snippet, selectionStart, selectionEnd);
+}
+
+export type DescriptionImageReference = {
+  endOffset: number;
+  id: string;
+  markdown: string;
+  src: string;
+  startOffset: number;
+};
+
+const descriptionImageFileExtensionPattern = /\.(avif|gif|heic|heif|jpe?g|png|svg|tiff?|webp)(?:[?#].*)?$/iu;
+
+function descriptionImageMarkdownPattern(): RegExp {
+  return /!?\[[^\]\n]*\]\(([^)\n]+)\)/gu;
+}
+
+export function extractDescriptionImageReferences(description: string): DescriptionImageReference[] {
+  const references: DescriptionImageReference[] = [];
+  for (const match of description.matchAll(descriptionImageMarkdownPattern())) {
+    const markdown = match[0];
+    const src = (match[1] ?? "").trim();
+    if (!isDescriptionImageSource(src)) {
+      continue;
+    }
+    const startOffset = match.index ?? 0;
+    references.push({
+      endOffset: startOffset + markdown.length,
+      id: `${startOffset}:${markdown.length}:${src.slice(0, 64)}`,
+      markdown,
+      src,
+      startOffset,
+    });
+  }
+
+  let lineStartOffset = 0;
+  for (const line of description.split(/(\n)/u)) {
+    if (line === "\n") {
+      lineStartOffset += line.length;
+      continue;
+    }
+    const src = line.trim();
+    if (
+      isDescriptionImageSource(src) &&
+      !references.some(
+        (reference) => lineStartOffset <= reference.startOffset && reference.endOffset <= lineStartOffset + line.length,
+      )
+    ) {
+      const leadingWhitespaceLength = line.length - line.trimStart().length;
+      const startOffset = lineStartOffset + leadingWhitespaceLength;
+      references.push({
+        endOffset: startOffset + src.length,
+        id: `${startOffset}:${src.length}:${src.slice(0, 64)}`,
+        markdown: src,
+        src,
+        startOffset,
+      });
+    }
+    lineStartOffset += line.length;
+  }
+
+  return references.sort((left, right) => left.startOffset - right.startOffset);
 }
 
 export function extractDescriptionImagePreviews(description: string): string[] {
-  const matches = description.matchAll(/!\[[^\]]*\]\((data:image\/[^)]+)\)/giu);
-  return [...matches].map((match) => match[1]).filter(Boolean);
+  /**
+   * CDXC:ProjectBoardImagePaste 2026-05-28-08:50:
+   * The preview strip must update from the image paths users type or paste in
+   * the prompt text, including visible [Image #N](path) references and plain
+   * standalone image-path lines.
+   */
+  return previewableDescriptionImageReferences(description).map((reference) => reference.src);
+}
+
+export function extractPreviewableDescriptionImageReferences(description: string): DescriptionImageReference[] {
+  return previewableDescriptionImageReferences(description);
+}
+
+export function removeDescriptionImageReference(description: string, imageId: string): string {
+  const reference = extractDescriptionImageReferences(description).find((candidate) => candidate.id === imageId);
+  if (!reference) {
+    return description;
+  }
+  return `${description.slice(0, reference.startOffset)}${description.slice(reference.endOffset)}`
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+export function isDescriptionImageSource(source: string): boolean {
+  const trimmed = source.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.toLowerCase().startsWith("data:image/")) {
+    return true;
+  }
+  if (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("~/") ||
+    trimmed.startsWith("file://") ||
+    trimmed.startsWith("~/.ghostex/i/")
+  ) {
+    return descriptionImageFileExtensionPattern.test(trimmed);
+  }
+  return false;
+}
+
+function getNextDescriptionImageIndex(description: string): number {
+  let highestIndex = 0;
+  for (const match of description.matchAll(/\[Image #(\d+)\]\(/gu)) {
+    const index = Number.parseInt(match[1] ?? "", 10);
+    if (Number.isFinite(index)) {
+      highestIndex = Math.max(highestIndex, index);
+    }
+  }
+  return highestIndex + 1;
+}
+
+function insertDescriptionSnippet(
+  description: string,
+  snippet: string,
+  selectionStart?: number,
+  selectionEnd?: number,
+): string {
+  const start =
+    typeof selectionStart === "number" && Number.isFinite(selectionStart)
+      ? Math.max(0, Math.min(description.length, selectionStart))
+      : description.length;
+  const end =
+    typeof selectionEnd === "number" && Number.isFinite(selectionEnd)
+      ? Math.max(start, Math.min(description.length, selectionEnd))
+      : start;
+  const prefix = description.slice(0, start);
+  const suffix = description.slice(end);
+  const before = prefix.length === 0 || prefix.endsWith("\n") ? prefix : `${prefix}\n\n`;
+  const after = suffix.length === 0 || suffix.startsWith("\n") ? suffix : `\n\n${suffix}`;
+  return `${before}${snippet}${after}`;
+}
+
+function persistableDescriptionImageReferences(description: string): DescriptionImageReference[] {
+  const references = extractDescriptionImageReferences(description);
+  const hasPathReference = references.some((reference) => !isLegacyDataImageSource(reference.src));
+  return hasPathReference
+    ? references.filter((reference) => !isLegacyDataImageSource(reference.src))
+    : references;
+}
+
+function previewableDescriptionImageReferences(description: string): DescriptionImageReference[] {
+  return persistableDescriptionImageReferences(description);
+}
+
+function isLegacyDataImageSource(source: string): boolean {
+  return source.trim().toLowerCase().startsWith("data:image/");
 }
 
 export function buildAgentWorkPrompt(ticket: BoardTicket): string {
