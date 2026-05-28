@@ -1,7 +1,7 @@
 Discord: https://discord.gg/xYSBPapM
 
 # Native Ghostty Based Open Source Alternative to Codex App
-Low Ram Use. Longer Battery. All Agent CLIs. T3code. Notifications. Pets.<br/>
+Low Ram Use. Longer Battery. Desktop/Browser use. All Agent CLIs. T3code. Notifications. Pets.<br/>
 Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
 
 > Looking for contributers! Please join the discord if interested!
