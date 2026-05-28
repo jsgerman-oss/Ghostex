@@ -1,4 +1,4 @@
-Discord: https://discord.gg/xYSBPapM
+### Please join the Discord to support Ghostex 🙏🏻 https://discord.gg/df7b3G92CS
 
 # Native Ghostty Based Open Source Alternative to Codex App
 Low Ram Use. Longer Battery. Desktop/Browser use. All Agent CLIs. T3code. Notifications. Pets.<br/>
@@ -60,7 +60,7 @@ The README Android APK badge must use a stable GitHub release asset URL so futur
 [![Download Android APK](https://img.shields.io/badge/Android-APK-3DDC84?logo=android&logoColor=white)](https://github.com/maddada/Ghostex/releases/download/ghostex-android-latest/ghostex-android.apk)
 
 - iPhone app is in Test Flight. Click here to join the Discord to get it: 
-[![iPhone App Discord](https://img.shields.io/badge/iPhone-Test%20Flight-000000?logo=apple&logoColor=white)](https://discord.gg/xYSBPapM)
+[![iPhone App Discord](https://img.shields.io/badge/iPhone-Test%20Flight-000000?logo=apple&logoColor=white)](https://discord.gg/df7b3G92CS)
 
 <br />
 
