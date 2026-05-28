@@ -2812,6 +2812,14 @@ final class TerminalWorkspaceView: NSView {
     let initialUrl = URL(string: command.url)
     let isManagedT3Pane = initialUrl.map(NativeT3RuntimeLauncher.isManagedRuntimeURL) ?? false
     let browserFeedbackTool = Self.normalizedBrowserFeedbackTool(command.browserFeedbackTool)
+    appendLayoutLayeringDebugLog("nativeWorkspace.createWebPane.received", details: [
+      "commandSessionId": command.sessionId,
+      "commandTitle": command.title,
+      "hadExistingSession": webPaneSessions[command.sessionId] != nil,
+      "isManagedT3Pane": isManagedT3Pane,
+      "projectId": command.projectId ?? NSNull(),
+      "url": command.url,
+    ])
     if let existingSession = webPaneSessions[command.sessionId] {
       NativeT3CodePaneReproLog.append("nativeWorkspace.t3WebPane.create.reused", [
         "sessionId": command.sessionId,
@@ -3133,6 +3141,12 @@ final class TerminalWorkspaceView: NSView {
     needsLayout = true
     scheduleDeferredWebPaneLayout(sessionId: command.sessionId, reason: "createWebPaneNew")
     focusWebPane(sessionId: command.sessionId, reason: "createWebPaneNew")
+    appendLayoutLayeringDebugLog("nativeWorkspace.createWebPane.afterFocus", details: [
+      "browserFrame": describeFrame(webPaneSessions[command.sessionId]?.containerView.frame ?? .zero),
+      "commandSessionId": command.sessionId,
+      "isProjectEditorInteractionSurfaceActive": isProjectEditorInteractionSurfaceActive,
+      "url": command.url,
+    ])
   }
 
   func closeWebPane(sessionId: String) {
@@ -3215,7 +3229,18 @@ final class TerminalWorkspaceView: NSView {
       ])
       return
     }
+    appendLayoutLayeringDebugLog("nativeWorkspace.focusWebPane.start", details: [
+      "browserContainerFrameBefore": describeFrame(session.containerView.frame),
+      "browserHostFrameBefore": describeFrame(session.hostView.frame),
+      "isProjectEditorInteractionSurfaceActiveBefore": isProjectEditorInteractionSurfaceActive,
+      "reason": reason,
+      "requestedSessionId": sessionId,
+    ])
     if activateProjectEditorCompanionPane(sessionId: sessionId, focus: true, reason: reason) {
+      appendLayoutLayeringDebugLog("nativeWorkspace.focusWebPane.redirectedToProjectEditorCompanion", details: [
+        "reason": reason,
+        "requestedSessionId": sessionId,
+      ])
       return
     }
     let view = session.browserContentView
@@ -3238,6 +3263,14 @@ final class TerminalWorkspaceView: NSView {
       "currentUrl": session.currentURLString ?? NSNull(),
       "reason": reason,
       "sessionId": sessionId,
+    ])
+    appendLayoutLayeringDebugLog("nativeWorkspace.focusWebPane.applied", details: [
+      "browserContainerFrameAfter": describeFrame(session.containerView.frame),
+      "browserHostFrameAfter": describeFrame(session.hostView.frame),
+      "clearedActiveProjectEditor": hadActiveProjectEditor,
+      "isProjectEditorInteractionSurfaceActiveAfter": isProjectEditorInteractionSurfaceActive,
+      "reason": reason,
+      "requestedSessionId": sessionId,
     ])
     sendEvent(.terminalFocused(sessionId: sessionId))
   }
@@ -4600,7 +4633,7 @@ final class TerminalWorkspaceView: NSView {
      Ghostty panes. Log search visibility, hit-test targets, first-responder
      state, and query length without persisting the user's typed search text.
      */
-    TerminalFocusDebugLog.append(event: event, details: payload)
+    NativeLayoutLayeringDebugLog.append(event: event, details: payload)
   }
 
   private func logSurfaceTextInputProbe(
@@ -4865,6 +4898,17 @@ final class TerminalWorkspaceView: NSView {
           paneGap: paneGap,
           poppedOutSessionIds: poppedOutSessionIds
         ))
+    if shouldRelayout || activeProjectEditorId != nextActiveProjectEditorId || webPaneSessions[command.focusedSessionId ?? ""] != nil {
+      appendLayoutLayeringDebugLog("nativeWorkspace.setActiveTerminalSet.received", details: [
+        "commandActiveProjectEditorId": command.activeProjectEditorId ?? NSNull(),
+        "commandFocusedSessionId": command.focusedSessionId ?? NSNull(),
+        "focusRequestId": command.focusRequestId ?? 0,
+        "layoutChanged": shouldRelayout,
+        "nextActiveSessionIds": Array(nextActiveSessionIds).sorted(),
+        "nextLayoutSignature": nativeLayoutNodeSignature(nextLayout),
+        "previousLayoutSignature": nativeLayoutNodeSignature(terminalLayout),
+      ])
+    }
     let previousFocusedSessionId = focusedSessionId
     let previousCommandsPanelFocusedSessionId = commandsPanelFocusedSessionId
     let previousCommandsPanelActiveSessionIds = commandsPanelActiveSessionIds
@@ -5103,6 +5147,16 @@ final class TerminalWorkspaceView: NSView {
         "responderBefore": responderBefore,
         "visibleSessionIds": orderedVisibleSessionIds(),
       ])
+    if shouldRelayout || previousActiveProjectEditorId != activeProjectEditorId || webPaneSessions[command.focusedSessionId ?? ""] != nil {
+      appendLayoutLayeringDebugLog("nativeWorkspace.setActiveTerminalSet.applied", details: [
+        "commandActiveProjectEditorId": command.activeProjectEditorId ?? NSNull(),
+        "commandFocusedSessionId": command.focusedSessionId ?? NSNull(),
+        "focusRequestId": command.focusRequestId ?? 0,
+        "isProjectEditorInteractionSurfaceActiveAfter": isProjectEditorInteractionSurfaceActive,
+        "layoutChanged": shouldRelayout,
+        "previousActiveProjectEditorId": previousActiveProjectEditorId ?? NSNull(),
+      ])
+    }
     if previousActiveProjectEditorId != activeProjectEditorId {
       /*
        CDXC:ZmxPersistenceRefresh 2026-05-18-15:03:
@@ -5363,6 +5417,11 @@ final class TerminalWorkspaceView: NSView {
         "hostFrameBefore": describeFrame(editorSession.hostView.frame),
         "workspaceBounds": describeFrame(bounds),
         "windowNumber": window?.windowNumber ?? NSNull(),
+      ])
+      appendLayoutLayeringDebugLog("nativeWorkspace.projectEditor.layout.active", details: [
+        "editorHostFrameBefore": describeFrame(editorSession.hostView.frame),
+        "editorMode": editorSession.mode,
+        "workspaceBounds": describeFrame(bounds),
       ])
       hideSplitSessionSurfacesForActiveEditor()
       let companionLayout = projectEditorCompanionLayout(in: workspaceBounds)
@@ -7781,6 +7840,13 @@ final class TerminalWorkspaceView: NSView {
       return floatingEditorHitView
     }
     if isProjectEditorInteractionSurfaceActive {
+      let visibleBrowserHits = visibleWebPaneSessionIds(containing: point)
+      if !visibleBrowserHits.isEmpty {
+        appendLayoutLayeringDebugLog("nativeWorkspace.hitTest.projectEditorActiveOverBrowserPoint", details: [
+          "point": describePoint(point),
+          "visibleBrowserHits": visibleBrowserHits,
+        ])
+      }
       return projectEditorInteractionHitView(at: point)
     }
     if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
@@ -8305,8 +8371,8 @@ final class TerminalWorkspaceView: NSView {
     guard legacyFirstSessionId != region.sessionId || returnedSessionId != region.sessionId else {
       return
     }
-    TerminalFocusDebugLog.append(
-      event: "nativeFocusTrace.paneContentHitRoutedByLayout",
+    appendLayoutLayeringDebugLog(
+      "nativeFocusTrace.paneContentHitRoutedByLayout",
       details: [
         "legacyCandidateSessionIds": legacyCandidateSessionIds,
         "legacyFirstSessionId": nullableString(legacyFirstSessionId),
@@ -8319,6 +8385,17 @@ final class TerminalWorkspaceView: NSView {
         "returnedSessionId": nullableString(returnedSessionId),
       ],
       force: true)
+  }
+
+  private func visibleWebPaneSessionIds(containing point: CGPoint) -> [String] {
+    webPaneSessions.values
+      .filter {
+        !$0.containerView.isHidden
+          && $0.containerView.window != nil
+          && $0.containerView.frame.contains(point)
+      }
+      .map(\.sessionId)
+      .sorted()
   }
 
   private func paneContentLegacyCandidateSessionIds(
@@ -12070,6 +12147,78 @@ final class TerminalWorkspaceView: NSView {
       return
         "split:\(direction.rawValue):\(ratioSignature):[\(children.map { nativeLayoutNodeSignature($0) }.joined(separator: ","))]"
     }
+  }
+
+  private func appendLayoutLayeringDebugLog(
+    _ event: String,
+    details: [String: Any] = [:],
+    force: Bool = false
+  ) {
+    /*
+     CDXC:WorkspaceLayeringDiagnostics 2026-05-28-04:36:
+     Browser-pane click-through repros need the native view ordering and
+     hit-test owner beside sidebar paneLayout traces. Keep the payload
+     metadata-only and write it to the dedicated layout/layering log so
+     terminal focus diagnostics stay readable.
+     */
+    var payload = details
+    payload["activeProjectEditorId"] = nullableString(activeProjectEditorId)
+    payload["activeSessionIds"] = Array(activeSessionIds).sorted()
+    payload["focusedSessionId"] = nullableString(focusedSessionId)
+    payload["responder"] = responderSnapshot()
+    payload["visiblePaneOwnerSessionIds"] = orderedVisiblePaneOwnerSessionIds()
+    payload["visibleProjectEditorInteractionSessionIds"] = visibleProjectEditorInteractionSessionIds
+    payload["visibleSurfaces"] = visibleWorkspaceSurfaceSummary()
+    NativeLayoutLayeringDebugLog.append(event: event, details: payload, force: force)
+  }
+
+  private func visibleWorkspaceSurfaceSummary() -> [[String: Any]] {
+    var surfaces: [[String: Any]] = []
+    for (sessionId, session) in sessions {
+      if session.containerView.window != nil || !session.containerView.isHidden {
+        surfaces.append(surfaceSummary(
+          kind: "terminal",
+          id: sessionId,
+          view: session.containerView,
+          contentView: session.scrollView))
+      }
+    }
+    for (sessionId, session) in webPaneSessions {
+      if session.containerView.window != nil || !session.containerView.isHidden {
+        surfaces.append(surfaceSummary(
+          kind: "browser",
+          id: sessionId,
+          view: session.containerView,
+          contentView: session.hostView))
+      }
+    }
+    for (projectId, session) in projectEditorPaneSessions {
+      if session.hostView.window != nil || !session.hostView.isHidden {
+        surfaces.append(surfaceSummary(
+          kind: "projectEditor.\(session.mode)",
+          id: projectId,
+          view: session.hostView,
+          contentView: session.hostView))
+      }
+    }
+    return surfaces.sorted {
+      (($0["kind"] as? String) ?? "") + ":" + (($0["id"] as? String) ?? "")
+        < (($1["kind"] as? String) ?? "") + ":" + (($1["id"] as? String) ?? "")
+    }
+  }
+
+  private func surfaceSummary(kind: String, id: String, view: NSView, contentView: NSView) -> [String: Any] {
+    [
+      "alpha": Double(view.alphaValue),
+      "contentFrame": describeFrame(contentView.frame),
+      "frame": describeFrame(view.frame),
+      "hidden": view.isHidden,
+      "id": id,
+      "kind": kind,
+      "superviewIndex": view.superview?.subviews.firstIndex(of: view) ?? -1,
+      "windowAttached": view.window != nil,
+      "zPosition": Double(view.layer?.zPosition ?? 0),
+    ]
   }
 
   private func moveOffscreen(_ view: NSView) {
