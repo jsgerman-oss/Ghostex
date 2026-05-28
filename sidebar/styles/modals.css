@@ -2081,8 +2081,12 @@
   /**
    * CDXC:WorktreeDelete 2026-05-28-07:46:
    * The delete-worktree confirmation mirrors the Settings/git review modal surface but stays narrower because it only presents the delete question and a git-status summary.
+   *
+   * CDXC:WorktreeDelete 2026-05-28-09:29:
+   * Delete confirmation must fit its content when the worktree is clean or only has a few changed files. Do not inherit the tall Settings dialog height; constrain only the status area when the summary is long.
    */
-  max-height: min(720px, calc(100vh - 2rem));
+  height: auto;
+  max-height: min(560px, calc(100vh - 2rem));
   max-width: min(720px, calc(100vw - 2rem));
   width: min(720px, calc(100vw - 2rem));
 }
@@ -2096,6 +2100,7 @@
 .worktree-delete-modal-body {
   display: grid;
   gap: 18px;
+  max-height: min(380px, calc(100vh - 180px));
   min-height: 0;
   overflow: auto;
   padding: 20px;
@@ -2126,7 +2131,7 @@
   font-size: 12px;
   line-height: 1.45;
   margin: 0;
-  max-height: min(320px, 42vh);
+  max-height: min(220px, calc(100vh - 280px));
   overflow: auto;
   padding: 12px;
   white-space: pre-wrap;

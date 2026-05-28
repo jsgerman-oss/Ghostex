@@ -47,7 +47,7 @@ export function WorktreeDeleteModal({
       open={isOpen}
     >
       <DialogContent
-        className="ghostex-settings-shadcn settings-modal-dialog command-config-modal-shadcn worktree-delete-modal-shadcn dark flex flex-col gap-0 overflow-hidden p-0 font-sans"
+        className="ghostex-settings-shadcn command-config-modal-shadcn worktree-delete-modal-shadcn dark flex flex-col gap-0 overflow-hidden p-0 font-sans"
         data-sidebar-theme="plain-dark"
       >
         <DialogHeader className="worktree-delete-modal-header">
