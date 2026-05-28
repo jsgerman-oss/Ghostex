@@ -1,6 +1,15 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-23-12:45: Release notes for 3.10.0 must include all user-facing commits after v3.9.1 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-28-09:45: Release notes for 3.18.0 must include all user-facing commits after v3.17.0 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
+
+## 3.18.0 - 2026-05-28
+
+- Added pinned sessions so important agent terminals stay at the top of a project, remain manually reorderable in last-activity mode, and can be toggled from the CLI with `pin-session`.
+- Added auto-sleep controls for browser and project panes so idle embedded surfaces follow the same sleep policies as terminals.
+- Improved the Project board with pasted image path storage, clearer ticket editor layout, and grouped ticket actions.
+- Improved macOS worktree flows with tighter OS integration and clearer worktree delete confirmation copy.
+- Improved browser session cards, tooltips, and the rich prompt editor by trimming trailing blank lines on save.
+- Stopped auto-installing agent hooks on app startup; hook installation now requires explicit consent from first-launch setup or Settings -> Integrations.
 
 ## 3.17.0 - 2026-05-27
 
