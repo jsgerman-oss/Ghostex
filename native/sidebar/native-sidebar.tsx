@@ -1019,12 +1019,15 @@ let gitState = createDefaultSidebarGitState(
  * their active/sleeping state beside project header diff stats so switching
  * projects preserves each live editor webview without adding it to session
  * ordering.
- * The existing managed-runtime sleep window is five minutes; inactive editor
- * webviews use the same delay before closing their native Chromium surface.
+ *
+ * CDXC:AutoSleep 2026-05-28-08:06:
+ * Inactive editor and Git webviews now use Settings-owned Auto Sleep idle
+ * delays before closing their native Chromium surfaces.
  */
 const CODE_SERVER_EDITOR_ORIGIN = "http://127.0.0.1:3775";
 const PROJECT_EDITOR_OPEN_TIMEOUT_MS = 10 * 1000;
-const PROJECT_EDITOR_SLEEP_TIMEOUT_MS = 5 * 60 * 1000;
+const AUTO_SLEEP_MONITOR_INTERVAL_MS = 60 * 1000;
+const AUTO_SLEEP_MINUTE_MS = 60 * 1000;
 const PROJECT_DIFF_UNTRACKED_WC_CHUNK_SIZE = 100;
 const projectDiffStatsByProjectId = new Map<string, SidebarProjectDiffStats>();
 const pendingProjectDiffRefreshProjectIds = new Set<string>();
@@ -1045,6 +1048,7 @@ let nativeSplitLayoutHint: NativeSplitLayoutHint | undefined;
 let lastPersistedProjectsPayloadJson: string | undefined;
 const projectEditorSleepTimeoutByProjectId = new Map<string, number>();
 const projectEditorOpenTimeoutByProjectId = new Map<string, number>();
+let nativeAutoSleepMonitorIntervalId: number | undefined;
 const sessionFocusPreviousProjectModeByProjectId = new Map<string, ProjectEditorSurfaceMode>();
 const awakeProjectEditorModesByProjectId = new Map<string, Set<ProjectEditorSurfaceMode>>();
 const projectEditorSurfaceByProjectId = new Map<
@@ -3741,6 +3745,7 @@ function saveSettings(nextSettings: ghostexSettings): void {
   syncNativeSidebarSide(settings.sidebarSide, previousSettings.sidebarSide);
   syncGhosttyTerminalSettings(settings, previousSettings);
   syncCodeServerRuntimeSettings(settings, previousSettings);
+  syncAutoSleepSettings(settings, previousSettings);
   if (
     previousSettings.showUntrackedProjectDiffWhenNoTrackedChanges !==
     settings.showUntrackedProjectDiffWhenNoTrackedChanges
@@ -3797,6 +3802,39 @@ function syncCodeServerRuntimeSettings(
     if (project) {
       wakeProjectEditorSurface(project);
     }
+  }
+}
+
+function syncAutoSleepSettings(
+  nextSettings: ghostexSettings,
+  previousSettings: ghostexSettings,
+): void {
+  const editorPolicyChanged =
+    previousSettings.autoSleepCodeEditorEnabled !== nextSettings.autoSleepCodeEditorEnabled ||
+    previousSettings.autoSleepCodeEditorIdleMinutes !== nextSettings.autoSleepCodeEditorIdleMinutes ||
+    previousSettings.autoSleepGitEditorEnabled !== nextSettings.autoSleepGitEditorEnabled ||
+    previousSettings.autoSleepGitEditorIdleMinutes !== nextSettings.autoSleepGitEditorIdleMinutes;
+  if (editorPolicyChanged) {
+    /**
+     * CDXC:AutoSleep 2026-05-28-08:06:
+     * Changing editor or Git Auto Sleep settings should affect already-open
+     * background panes immediately by rescheduling their pending sleep timers.
+     */
+    for (const [projectId, surfaceState] of projectEditorSurfaceByProjectId.entries()) {
+      if (surfaceState.isOpen === false && surfaceState.isSleeping !== true) {
+        scheduleProjectEditorSleep(projectId);
+      }
+    }
+  }
+  if (
+    previousSettings.autoSleepAgentSessionsEnabled !== nextSettings.autoSleepAgentSessionsEnabled ||
+    previousSettings.autoSleepAgentIdleMinutes !== nextSettings.autoSleepAgentIdleMinutes ||
+    previousSettings.autoSleepRequireAgentResumeCommand !==
+      nextSettings.autoSleepRequireAgentResumeCommand ||
+    previousSettings.autoSleepFocusedAgentSessions !== nextSettings.autoSleepFocusedAgentSessions ||
+    previousSettings.autoSleepFavoriteAgentSessions !== nextSettings.autoSleepFavoriteAgentSessions
+  ) {
+    runNativeAutoSleepMonitor("settings-change");
   }
 }
 
@@ -21357,15 +21395,30 @@ function cancelProjectEditorSleepTimer(projectId: string): void {
   }
 }
 
+function getProjectEditorAutoSleepTimeoutMs(mode: ProjectEditorSurfaceMode): number | undefined {
+  const enabled =
+    mode === "git" ? settings.autoSleepGitEditorEnabled : settings.autoSleepCodeEditorEnabled;
+  if (!enabled) {
+    return undefined;
+  }
+  const idleMinutes =
+    mode === "git" ? settings.autoSleepGitEditorIdleMinutes : settings.autoSleepCodeEditorIdleMinutes;
+  return idleMinutes * AUTO_SLEEP_MINUTE_MS;
+}
+
 function scheduleProjectEditorSleep(projectId: string): void {
   const surfaceState = projectEditorSurfaceByProjectId.get(projectId);
   if (!surfaceState || surfaceState.isSleeping === true) {
     return;
   }
   cancelProjectEditorSleepTimer(projectId);
+  const timeoutMs = getProjectEditorAutoSleepTimeoutMs(surfaceState.mode);
+  if (timeoutMs === undefined) {
+    return;
+  }
   const timeout = window.setTimeout(() => {
     sleepProjectEditorSurface(projectId);
-  }, PROJECT_EDITOR_SLEEP_TIMEOUT_MS);
+  }, timeoutMs);
   projectEditorSleepTimeoutByProjectId.set(projectId, timeout);
 }
 
@@ -21378,9 +21431,9 @@ function sleepProjectEditorSurface(projectId: string): void {
   /**
    * CDXC:EditorPanes 2026-05-06-14:21
    * Project editors stay live across project switches, then sleep after the
-   * existing five-minute managed-runtime window. Sleeping closes only the
-   * native Chromium surface; the sidebar keeps the project editor preference so
-   * focusing the project can wake code-server back into the same folder.
+   * configured Auto Sleep idle window. Sleeping closes only the native Chromium
+   * surface; the sidebar keeps the project editor preference so focusing the
+   * project can wake code-server back into the same folder.
    */
   projectEditorSurfaceByProjectId.set(projectId, {
     ...surfaceState,

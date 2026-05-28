@@ -1998,6 +1998,119 @@ export function SettingsModal({
             </SettingsSection>
             ) : null}
 
+            {mainSectionVisible("autoSleep", settingsSearch.autoSleep) ? (
+            <SettingsSection sectionRef={autoSleepSectionRef} title="Auto Sleep">
+              {/* CDXC:AutoSleep 2026-05-28-08:06: Auto Sleep controls belong in one Settings section so VS Code/project panes, Git panes, and agent terminals can be tuned independently without hiding the relationship between the policies. */}
+              {mainSettingVisible(settingsSearch.autoSleep, "autoSleepCodeEditorEnabled") ? (
+              <ToggleField
+                checked={draft.autoSleepCodeEditorEnabled}
+                description="Sleep inactive VS Code and project panes after the selected idle period."
+                label="Sleep inactive VS Code panes"
+                {...getSettingModificationProps("autoSleepCodeEditorEnabled")}
+                onChange={(checked) => updateDraft("autoSleepCodeEditorEnabled", checked)}
+              />
+              ) : null}
+              {draft.autoSleepCodeEditorEnabled &&
+              mainSettingVisible(settingsSearch.autoSleep, "autoSleepCodeEditorIdleMinutes") ? (
+              <SelectField
+                description="Idle time before inactive VS Code and project panes sleep."
+                label="VS Code idle time"
+                {...getSettingModificationProps("autoSleepCodeEditorIdleMinutes")}
+                onChange={(value) =>
+                  updateDraft("autoSleepCodeEditorIdleMinutes", Number(value) as AutoSleepIdleMinutes)
+                }
+                options={AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+                  label: option.label,
+                  value: String(option.value),
+                }))}
+                value={String(draft.autoSleepCodeEditorIdleMinutes)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.autoSleep, "autoSleepGitEditorEnabled") ? (
+              <ToggleField
+                checked={draft.autoSleepGitEditorEnabled}
+                description="Sleep inactive Git panes after the selected idle period."
+                label="Sleep inactive Git panes"
+                {...getSettingModificationProps("autoSleepGitEditorEnabled")}
+                onChange={(checked) => updateDraft("autoSleepGitEditorEnabled", checked)}
+              />
+              ) : null}
+              {draft.autoSleepGitEditorEnabled &&
+              mainSettingVisible(settingsSearch.autoSleep, "autoSleepGitEditorIdleMinutes") ? (
+              <SelectField
+                description="Idle time before inactive Git panes sleep."
+                label="Git idle time"
+                {...getSettingModificationProps("autoSleepGitEditorIdleMinutes")}
+                onChange={(value) =>
+                  updateDraft("autoSleepGitEditorIdleMinutes", Number(value) as AutoSleepIdleMinutes)
+                }
+                options={AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+                  label: option.label,
+                  value: String(option.value),
+                }))}
+                value={String(draft.autoSleepGitEditorIdleMinutes)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.autoSleep, "autoSleepAgentSessionsEnabled") ? (
+              <ToggleField
+                checked={draft.autoSleepAgentSessionsEnabled}
+                description="Sleep idle agent terminal sessions automatically."
+                label="Sleep idle agent sessions"
+                {...getSettingModificationProps("autoSleepAgentSessionsEnabled")}
+                onChange={(checked) => updateDraft("autoSleepAgentSessionsEnabled", checked)}
+              />
+              ) : null}
+              {draft.autoSleepAgentSessionsEnabled &&
+              mainSettingVisible(settingsSearch.autoSleep, "autoSleepAgentIdleMinutes") ? (
+              <SelectField
+                description="Idle time before eligible agent terminals sleep."
+                label="Agent idle time"
+                {...getSettingModificationProps("autoSleepAgentIdleMinutes")}
+                onChange={(value) =>
+                  updateDraft("autoSleepAgentIdleMinutes", Number(value) as AutoSleepIdleMinutes)
+                }
+                options={AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+                  label: option.label,
+                  value: String(option.value),
+                }))}
+                value={String(draft.autoSleepAgentIdleMinutes)}
+              />
+              ) : null}
+              {draft.autoSleepAgentSessionsEnabled &&
+              mainSettingVisible(settingsSearch.autoSleep, "autoSleepRequireAgentResumeCommand") ? (
+              <ToggleField
+                checked={draft.autoSleepRequireAgentResumeCommand}
+                description="Only auto-sleep agent sessions Ghostex can wake with a resume command."
+                label="Require resume command"
+                {...getSettingModificationProps("autoSleepRequireAgentResumeCommand")}
+                onChange={(checked) =>
+                  updateDraft("autoSleepRequireAgentResumeCommand", checked)
+                }
+              />
+              ) : null}
+              {draft.autoSleepAgentSessionsEnabled &&
+              mainSettingVisible(settingsSearch.autoSleep, "autoSleepFocusedAgentSessions") ? (
+              <ToggleField
+                checked={draft.autoSleepFocusedAgentSessions}
+                description="Allow the currently focused agent terminal to auto-sleep."
+                label="Include focused agent"
+                {...getSettingModificationProps("autoSleepFocusedAgentSessions")}
+                onChange={(checked) => updateDraft("autoSleepFocusedAgentSessions", checked)}
+              />
+              ) : null}
+              {draft.autoSleepAgentSessionsEnabled &&
+              mainSettingVisible(settingsSearch.autoSleep, "autoSleepFavoriteAgentSessions") ? (
+              <ToggleField
+                checked={draft.autoSleepFavoriteAgentSessions}
+                description="Allow favorite agent sessions to auto-sleep."
+                label="Include favorite agents"
+                {...getSettingModificationProps("autoSleepFavoriteAgentSessions")}
+                onChange={(checked) => updateDraft("autoSleepFavoriteAgentSessions", checked)}
+              />
+              ) : null}
+            </SettingsSection>
+            ) : null}
+
             {mainSectionVisible("power", settingsSearch.power) ? (
             <SettingsSection sectionRef={powerSectionRef} title="Power">
               {mainSettingVisible(settingsSearch.power, "hideKeepAwakeTitlebarControl") ? (
