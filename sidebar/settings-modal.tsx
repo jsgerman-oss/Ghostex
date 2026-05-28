@@ -88,6 +88,7 @@ import {
   type SidebarThemeVariant,
 } from "../shared/session-grid-contract";
 import {
+  AUTO_SLEEP_IDLE_MINUTE_OPTIONS,
   BROWSER_FEEDBACK_TOOL_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
   DEFAULT_EDITOR_COMMAND_OPTIONS,
@@ -107,6 +108,7 @@ import {
   getSidebarSettingsPresetId,
   normalizeghostexSettings,
   type BrowserFeedbackTool,
+  type AutoSleepIdleMinutes,
   type DefaultEditorCommand,
   type GhosttyConfirmCloseSurface,
   type GhosttyCopyOnSelect,
@@ -286,6 +288,7 @@ type MainSettingsSectionId =
   | "workspace"
   | "browser"
   | "editor"
+  | "autoSleep"
   | "power"
   | "sounds"
   | "storage";
@@ -343,6 +346,17 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "hideProjectHeaderDiffStats",
     "showProjectEditorDiffFileCount",
     "showUntrackedProjectDiffWhenNoTrackedChanges",
+  ],
+  autoSleep: [
+    "autoSleepCodeEditorEnabled",
+    "autoSleepCodeEditorIdleMinutes",
+    "autoSleepGitEditorEnabled",
+    "autoSleepGitEditorIdleMinutes",
+    "autoSleepAgentSessionsEnabled",
+    "autoSleepAgentIdleMinutes",
+    "autoSleepRequireAgentResumeCommand",
+    "autoSleepFocusedAgentSessions",
+    "autoSleepFavoriteAgentSessions",
   ],
   power: [
     "hideKeepAwakeTitlebarControl",
@@ -532,6 +546,7 @@ export function SettingsModal({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const pendingSettingsRef = useRef<ghostexSettings | undefined>(undefined);
   const pendingTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const autoSleepSectionRef = useRef<HTMLDivElement>(null);
   const browserSectionRef = useRef<HTMLDivElement>(null);
   const editorSectionRef = useRef<HTMLDivElement>(null);
   const ghosttyBehaviorSectionRef = useRef<HTMLDivElement>(null);
@@ -758,6 +773,65 @@ export function SettingsModal({
         subtitle:
           "When tracked git diff is +0 -0, show untracked line counts in project headers (Starship-style prompts ignore untracked lines).",
         title: "Show untracked lines without tracked changes",
+      },
+    ]),
+    autoSleep: getSettingsSectionSearch(settingsSearchQuery, "Auto Sleep", [
+      {
+        key: "autoSleepCodeEditorEnabled",
+        subtitle: "Sleep inactive VS Code and project panes after the selected idle period.",
+        title: "Sleep inactive VS Code panes",
+      },
+      {
+        key: "autoSleepCodeEditorIdleMinutes",
+        options: AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+          label: option.label,
+          value: String(option.value),
+        })),
+        subtitle: "Idle time before inactive VS Code and project panes sleep.",
+        title: "VS Code idle time",
+      },
+      {
+        key: "autoSleepGitEditorEnabled",
+        subtitle: "Sleep inactive Git panes after the selected idle period.",
+        title: "Sleep inactive Git panes",
+      },
+      {
+        key: "autoSleepGitEditorIdleMinutes",
+        options: AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+          label: option.label,
+          value: String(option.value),
+        })),
+        subtitle: "Idle time before inactive Git panes sleep.",
+        title: "Git idle time",
+      },
+      {
+        key: "autoSleepAgentSessionsEnabled",
+        subtitle: "Sleep idle agent terminal sessions automatically.",
+        title: "Sleep idle agent sessions",
+      },
+      {
+        key: "autoSleepAgentIdleMinutes",
+        options: AUTO_SLEEP_IDLE_MINUTE_OPTIONS.map((option) => ({
+          label: option.label,
+          value: String(option.value),
+        })),
+        subtitle: "Idle time before eligible agent terminals sleep.",
+        title: "Agent idle time",
+      },
+      {
+        key: "autoSleepRequireAgentResumeCommand",
+        subtitle: "Only auto-sleep agent sessions Ghostex can wake with a resume command.",
+        title: "Require resume command",
+      },
+      {
+        key: "autoSleepFocusedAgentSessions",
+        subtitle: "Allow the currently focused agent terminal to auto-sleep.",
+        title: "Include focused agent",
+      },
+      {
+        key: "autoSleepFavoriteAgentSessions",
+        subtitle: "Allow favorite agent sessions to auto-sleep.",
+        title: "Include favorite agents",
       },
     ]),
     power: getSettingsSectionSearch(settingsSearchQuery, "Power", [
@@ -1152,6 +1226,12 @@ export function SettingsModal({
       title: "Workspace",
     },
     { id: "editor", ref: editorSectionRef, searchResult: settingsSearch.editor, title: "Editor" },
+    {
+      id: "autoSleep",
+      ref: autoSleepSectionRef,
+      searchResult: settingsSearch.autoSleep,
+      title: "Auto Sleep",
+    },
     { id: "power", ref: powerSectionRef, searchResult: settingsSearch.power, title: "Power" },
     { id: "sounds", ref: soundsSectionRef, searchResult: settingsSearch.sounds, title: "Sounds" },
     { id: "storage", ref: storageSectionRef, searchResult: settingsSearch.storage, title: "Storage" },
@@ -1224,6 +1304,7 @@ export function SettingsModal({
      * scroll position.
      */
     const targetSectionRef = getMainSettingsSectionRef(initialSection, {
+      autoSleep: autoSleepSectionRef,
       browser: browserSectionRef,
       editor: editorSectionRef,
       power: powerSectionRef,

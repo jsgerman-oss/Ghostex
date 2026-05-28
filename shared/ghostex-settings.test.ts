@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  AUTO_SLEEP_IDLE_MINUTE_OPTIONS,
   BROWSER_FEEDBACK_TOOL_OPTIONS,
   BROWSER_OPEN_MODE_OPTIONS,
   DEFAULT_ghostex_SETTINGS,
@@ -213,6 +214,49 @@ describe("normalizeghostexSettings", () => {
     });
     expect(normalizeghostexSettings({ keepAwakeDefaultDurationMinutes: 999 })).toMatchObject({
       keepAwakeDefaultDurationMinutes: 0,
+    });
+  });
+
+  test("normalizes auto sleep settings separately for editors, Git, and agents", () => {
+    /**
+     * CDXC:AutoSleep 2026-05-28-08:06:
+     * Settings must preserve the existing editor/Git sleep defaults while
+     * making agent auto-sleep opt-in and bounded to visible idle-duration choices.
+     */
+    expect(AUTO_SLEEP_IDLE_MINUTE_OPTIONS).toEqual([
+      { label: "5 minutes", value: 5 },
+      { label: "10 minutes", value: 10 },
+      { label: "15 minutes", value: 15 },
+      { label: "30 minutes", value: 30 },
+      { label: "1 hour", value: 60 },
+      { label: "2 hours", value: 120 },
+      { label: "5 hours", value: 300 },
+    ]);
+    expect(normalizeghostexSettings({})).toMatchObject({
+      autoSleepAgentIdleMinutes: 60,
+      autoSleepAgentSessionsEnabled: false,
+      autoSleepCodeEditorEnabled: true,
+      autoSleepCodeEditorIdleMinutes: 5,
+      autoSleepFavoriteAgentSessions: false,
+      autoSleepFocusedAgentSessions: false,
+      autoSleepGitEditorEnabled: true,
+      autoSleepGitEditorIdleMinutes: 5,
+      autoSleepRequireAgentResumeCommand: true,
+    });
+    expect(
+      normalizeghostexSettings({
+        autoSleepAgentIdleMinutes: 999,
+        autoSleepAgentSessionsEnabled: true,
+        autoSleepCodeEditorIdleMinutes: 999,
+        autoSleepGitEditorEnabled: false,
+        autoSleepGitEditorIdleMinutes: 30,
+      }),
+    ).toMatchObject({
+      autoSleepAgentIdleMinutes: 60,
+      autoSleepAgentSessionsEnabled: true,
+      autoSleepCodeEditorIdleMinutes: 5,
+      autoSleepGitEditorEnabled: false,
+      autoSleepGitEditorIdleMinutes: 30,
     });
   });
 
