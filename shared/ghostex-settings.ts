@@ -56,6 +56,7 @@ export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
 export type KeepAwakeDurationMinutes = 0 | 5 | 10 | 15 | 30 | 60 | 120 | 300;
+export type AutoSleepIdleMinutes = 5 | 10 | 15 | 30 | 60 | 120 | 300;
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
 const MIN_GHOSTTY_SCROLLBACK_LIMIT_MB = 1;
@@ -112,6 +113,22 @@ export type ghostexSettings = {
   showCloseButtonOnSessionCards: boolean;
   showHotkeysOnSessionCards: boolean;
   hideLastActiveTimeOnSessionCards: boolean;
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:06:
+   * Auto Sleep is a settings-owned policy for retiring idle VS Code/project
+   * editor, Git, and agent sessions through the same sleep paths as manual
+   * Sleep. Keep each surface independently configurable so users can preserve
+   * the existing editor behavior while opting agent terminals in separately.
+   */
+  autoSleepAgentSessionsEnabled: boolean;
+  autoSleepAgentIdleMinutes: AutoSleepIdleMinutes;
+  autoSleepCodeEditorEnabled: boolean;
+  autoSleepCodeEditorIdleMinutes: AutoSleepIdleMinutes;
+  autoSleepFocusedAgentSessions: boolean;
+  autoSleepGitEditorEnabled: boolean;
+  autoSleepGitEditorIdleMinutes: AutoSleepIdleMinutes;
+  autoSleepRequireAgentResumeCommand: boolean;
+  autoSleepFavoriteAgentSessions: boolean;
   keepAwakeActivateOnExternalDisplay: boolean;
   keepAwakeActivateOnLaunch: boolean;
   keepAwakeAllowDisplaySleep: boolean;
@@ -332,6 +349,21 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   hideLastActiveTimeOnSessionCards:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideLastActiveTimeOnSessionCards,
+  /**
+   * CDXC:AutoSleep 2026-05-28-08:06:
+   * Preserve the existing five-minute auto-sleep behavior for background
+   * VS Code/project and Git panes. Agent auto-sleep starts opt-in because it
+   * closes live provider sessions and should require an explicit user choice.
+   */
+  autoSleepAgentSessionsEnabled: false,
+  autoSleepAgentIdleMinutes: 60,
+  autoSleepCodeEditorEnabled: true,
+  autoSleepCodeEditorIdleMinutes: 5,
+  autoSleepFocusedAgentSessions: false,
+  autoSleepGitEditorEnabled: true,
+  autoSleepGitEditorIdleMinutes: 5,
+  autoSleepRequireAgentResumeCommand: true,
+  autoSleepFavoriteAgentSessions: false,
   keepAwakeActivateOnExternalDisplay: false,
   keepAwakeActivateOnLaunch: false,
   keepAwakeAllowDisplaySleep: false,
@@ -590,6 +622,19 @@ export const KEEP_AWAKE_DURATION_OPTIONS: ReadonlyArray<{
   { label: "5 hours", value: 300 },
 ];
 
+export const AUTO_SLEEP_IDLE_MINUTE_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: AutoSleepIdleMinutes;
+}> = [
+  { label: "5 minutes", value: 5 },
+  { label: "10 minutes", value: 10 },
+  { label: "15 minutes", value: 15 },
+  { label: "30 minutes", value: 30 },
+  { label: "1 hour", value: 60 },
+  { label: "2 hours", value: 120 },
+  { label: "5 hours", value: 300 },
+];
+
 export const GHOSTTY_COPY_ON_SELECT_OPTIONS: ReadonlyArray<{
   label: string;
   value: GhosttyCopyOnSelect;
@@ -802,6 +847,58 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "hideLastActiveTimeOnSessionCards",
       DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards,
+    ),
+    /**
+     * CDXC:AutoSleep 2026-05-28-08:06:
+     * Normalize Auto Sleep policy independently from keep-awake so Mac power
+     * assertions and Ghostex session retirement can be configured separately.
+     */
+    autoSleepAgentSessionsEnabled: readBoolean(
+      source,
+      "autoSleepAgentSessionsEnabled",
+      DEFAULT_ghostex_SETTINGS.autoSleepAgentSessionsEnabled,
+    ),
+    autoSleepAgentIdleMinutes: normalizeAutoSleepIdleMinutes(
+      readNumber(source, "autoSleepAgentIdleMinutes", DEFAULT_ghostex_SETTINGS.autoSleepAgentIdleMinutes),
+    ),
+    autoSleepCodeEditorEnabled: readBoolean(
+      source,
+      "autoSleepCodeEditorEnabled",
+      DEFAULT_ghostex_SETTINGS.autoSleepCodeEditorEnabled,
+    ),
+    autoSleepCodeEditorIdleMinutes: normalizeAutoSleepIdleMinutes(
+      readNumber(
+        source,
+        "autoSleepCodeEditorIdleMinutes",
+        DEFAULT_ghostex_SETTINGS.autoSleepCodeEditorIdleMinutes,
+      ),
+    ),
+    autoSleepFocusedAgentSessions: readBoolean(
+      source,
+      "autoSleepFocusedAgentSessions",
+      DEFAULT_ghostex_SETTINGS.autoSleepFocusedAgentSessions,
+    ),
+    autoSleepGitEditorEnabled: readBoolean(
+      source,
+      "autoSleepGitEditorEnabled",
+      DEFAULT_ghostex_SETTINGS.autoSleepGitEditorEnabled,
+    ),
+    autoSleepGitEditorIdleMinutes: normalizeAutoSleepIdleMinutes(
+      readNumber(
+        source,
+        "autoSleepGitEditorIdleMinutes",
+        DEFAULT_ghostex_SETTINGS.autoSleepGitEditorIdleMinutes,
+      ),
+    ),
+    autoSleepRequireAgentResumeCommand: readBoolean(
+      source,
+      "autoSleepRequireAgentResumeCommand",
+      DEFAULT_ghostex_SETTINGS.autoSleepRequireAgentResumeCommand,
+    ),
+    autoSleepFavoriteAgentSessions: readBoolean(
+      source,
+      "autoSleepFavoriteAgentSessions",
+      DEFAULT_ghostex_SETTINGS.autoSleepFavoriteAgentSessions,
     ),
     keepAwakeActivateOnExternalDisplay: readBoolean(
       source,
