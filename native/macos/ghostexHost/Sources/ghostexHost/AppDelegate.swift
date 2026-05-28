@@ -435,6 +435,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private var lastNativeInputEventRecordedAt: Date?
   private weak var appTitlebarLabel: NSTextField?
   private let nativeSettingsStore = NativeSettingsStore()
+  private let lidSleepHelperClient = LidSleepPrivilegedHelperClient.shared
   private var isSparkleUpdateAvailable = false
   private lazy var updaterController = SPUStandardUpdaterController(
     startingUpdater: true,
@@ -559,6 +560,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     )
     stopCodeServerRuntime(logPrefix: "nativeHost.applicationWillTerminate")
     (window?.contentView as? ghostexRootView)?.stopCodeServerRuntimeForAppTermination()
+    /**
+     CDXC:TitlebarKeepAwake 2026-05-28-19:28:
+     Closing Ghostex must restore normal lid-close sleep even if the React
+     titlebar cannot run cleanup. The privileged helper also expires crashed
+     leases, but normal app termination should proactively disable the policy.
+     */
+    let semaphore = DispatchSemaphore(value: 0)
+    lidSleepHelperClient.setEnabled(false, installIfNeeded: false) { _ in
+      semaphore.signal()
+    }
+    _ = semaphore.wait(timeout: .now() + 2)
   }
 
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -2283,6 +2295,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       NativeSoundPlayer.shared.play(command)
     case .runProcess(let command):
       runProcess(command) { [weak self] event in
+        self?.bridge?.send(event)
+      }
+    case .setKeepAwakeLidSleepPrevention(let command):
+      LidSleepPrivilegedHelperClient.shared.setEnabled(
+        command.enabled,
+        requestId: command.requestId,
+        installIfNeeded: command.installIfNeeded ?? command.enabled
+      ) { [weak self] event in
         self?.bridge?.send(event)
       }
     case .syncGhosttyTerminalSettings(let command):
@@ -5398,6 +5418,7 @@ final class ghostexRootView: NSView {
         "deactivateOnLowPowerMode": keepAwake.deactivateOnLowPowerMode,
         "deactivateOnUserSwitch": keepAwake.deactivateOnUserSwitch,
         "defaultDurationMinutes": keepAwake.defaultDurationMinutes,
+        "preventLidSleep": keepAwake.preventLidSleep,
       ]
     }
     if let sidebarActions = command.sidebarActions {
@@ -5934,6 +5955,14 @@ final class ghostexRootView: NSView {
       NativeSoundPlayer.shared.play(command)
     case .runProcess(let command):
       runProcess(command)
+    case .setKeepAwakeLidSleepPrevention(let command):
+      LidSleepPrivilegedHelperClient.shared.setEnabled(
+        command.enabled,
+        requestId: command.requestId,
+        installIfNeeded: command.installIfNeeded ?? command.enabled
+      ) { [weak self] event in
+        self?.postHostEvent(event)
+      }
     case .syncGhosttyTerminalSettings(let command):
       syncGhosttyTerminalSettings(command)
     case .applyGhosttyConfigSettings(let command):

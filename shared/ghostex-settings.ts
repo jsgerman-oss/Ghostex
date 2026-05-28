@@ -55,7 +55,7 @@ export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large
 export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
-export type KeepAwakeDurationMinutes = 0 | 5 | 10 | 15 | 30 | 60 | 120 | 300;
+export type KeepAwakeDurationMinutes = 0 | 120 | 300;
 export type AutoSleepIdleMinutes = 5 | 10 | 15 | 30 | 60 | 120 | 300;
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
@@ -141,6 +141,7 @@ export type ghostexSettings = {
   keepAwakeDeactivateOnLowPowerMode: boolean;
   keepAwakeDeactivateOnUserSwitch: boolean;
   keepAwakeDefaultDurationMinutes: KeepAwakeDurationMinutes;
+  keepAwakePreventLidSleep: boolean;
   hideKeepAwakeTitlebarControl: boolean;
   showMacOSAttentionNotifications: boolean;
   hideFloatingSessionStatusIndicators: boolean;
@@ -381,6 +382,12 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   keepAwakeDeactivateOnUserSwitch: true,
   keepAwakeDefaultDurationMinutes: 0,
   /**
+   * CDXC:TitlebarKeepAwake 2026-05-28-19:28:
+   * Closing a MacBook lid is not covered by the standard caffeinate idle-sleep assertion.
+   * Keep lid-close sleep prevention as an explicit opt-in because it changes the system-wide `pmset disablesleep` policy with administrator approval.
+   */
+  keepAwakePreventLidSleep: false,
+  /**
    * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
    * The titlebar keep-awake affordance is optional chrome. Keep it visible by
    * default, but persist a Power setting that can remove the titlebar control
@@ -620,12 +627,12 @@ export const KEEP_AWAKE_DURATION_OPTIONS: ReadonlyArray<{
   label: string;
   value: KeepAwakeDurationMinutes;
 }> = [
+  /**
+   * CDXC:TitlebarKeepAwake 2026-05-28-19:28:
+   * The keep-awake menu should stay intentionally small: indefinite, two hours,
+   * five hours, and the runtime Allow Sleep Now action are the complete user-facing duration set.
+   */
   { label: "Indefinitely", value: 0 },
-  { label: "5 minutes", value: 5 },
-  { label: "10 minutes", value: 10 },
-  { label: "15 minutes", value: 15 },
-  { label: "30 minutes", value: 30 },
-  { label: "1 hour", value: 60 },
   { label: "2 hours", value: 120 },
   { label: "5 hours", value: 300 },
 ];
@@ -987,6 +994,11 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
         "keepAwakeDefaultDurationMinutes",
         DEFAULT_ghostex_SETTINGS.keepAwakeDefaultDurationMinutes,
       ),
+    ),
+    keepAwakePreventLidSleep: readBoolean(
+      source,
+      "keepAwakePreventLidSleep",
+      DEFAULT_ghostex_SETTINGS.keepAwakePreventLidSleep,
     ),
     /**
      * CDXC:TitlebarKeepAwake 2026-05-27-07:32:

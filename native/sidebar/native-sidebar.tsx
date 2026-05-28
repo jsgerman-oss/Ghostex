@@ -161,6 +161,7 @@ import {
   setViewModeInSimpleWorkspace,
   setVisibleCountInSimpleWorkspace,
   swapVisibleSessionsInSimpleWorkspace,
+  syncSessionOrderAcrossSimpleWorkspaceGroups,
   syncGroupOrderInSimpleWorkspace,
   syncSessionOrderInSimpleWorkspace,
   toggleFullscreenSessionInSimpleWorkspace,
@@ -466,6 +467,7 @@ type NativeHostCommand =
         deactivateOnLowPowerMode: boolean;
         deactivateOnUserSwitch: boolean;
         defaultDurationMinutes: ghostexSettings["keepAwakeDefaultDurationMinutes"];
+        preventLidSleep: boolean;
       };
 	      petOverlayEnabled?: boolean;
 	      showSessionIdInTerminalPanes?: boolean;
@@ -6959,10 +6961,15 @@ function restorePreviousSession(historyId: string): void {
   deletePreviousSession(historyId);
 }
 
+type PreviousTerminalSessionRestoreResult = {
+  project: NativeProject;
+  session: TerminalSessionRecord;
+};
+
 function restorePreviousTerminalSession(
   previousSession: SidebarPreviousSessionItem,
   archivedRecord: TerminalSessionRecord,
-): boolean {
+): PreviousTerminalSessionRestoreResult | undefined {
   /**
    * CDXC:PreviousSessions 2026-05-05-05:30
    * Restoring a previous agent session is a session recreation operation, not a
@@ -7016,7 +7023,7 @@ function restorePreviousTerminalSession(
       groupId,
       projectId: project.projectId,
     });
-    return false;
+    return undefined;
   }
 
   const restoredRecord = mergeArchivedTerminalDetails(restoredSession, archivedRecord);
@@ -7062,7 +7069,7 @@ function restorePreviousTerminalSession(
       groupId,
     ),
   });
-  return true;
+  return { project: activeProject(), session: restoredRecord };
 }
 
 function activatePreviousSessionProject(previousSession: SidebarPreviousSessionItem): NativeProject {
@@ -21242,14 +21249,26 @@ function createProjectBoardConversationState(
     defaultAgentId: resolveProjectBoardDefaultAgentId(),
     focusedTerminalSessionId: sessionOptions.find((session) => session.isFocused)?.sessionId,
     links: activeLinks.map<ProjectBoardConversationLinkView>((link) => {
+      /*
+       * CDXC:ProjectBoard 2026-05-28-16:21:
+       * "Go to Session" means open the linked conversation, not only focus an
+       * already-mounted terminal. Expose previous-session restorable links so
+       * the board can route existing ticket work back through Ghostex restore
+       * instead of inviting duplicate "Start work" sessions.
+       */
+      const reference = resolveProjectBoardLinkSessionReference(project, link.ghostexSessionId);
       const session = sessionById.get(link.ghostexSessionId);
+      const previousSession = session
+        ? undefined
+        : findRestorableProjectBoardPreviousSession(reference);
       return {
         ...link,
         agentId: link.agentId ?? session?.agentId,
         isFocused: session?.isFocused,
         isLive: Boolean(session),
+        isRestorable: Boolean(previousSession),
         isSleeping: session?.isSleeping,
-        sessionTitle: session?.label,
+        sessionTitle: session?.label ?? previousSession?.primaryTitle ?? previousSession?.alias,
       };
     }),
     projectId: project.projectId,
@@ -21314,6 +21333,53 @@ function createProjectBoardConversationProjects(project: NativeProject): NativeP
       candidate.worktree?.parentProjectId === familyParentId,
   );
   return related.length > 0 ? related : [project];
+}
+
+function resolveProjectBoardLinkSessionReference(
+  boardProject: NativeProject,
+  sessionId: string,
+): {
+  project?: NativeProject;
+  projectId: string;
+  projectPath?: string;
+  sessionId: string;
+} {
+  const combinedReference = parseCombinedProjectSessionId(sessionId);
+  if (combinedReference) {
+    const project = findProject(combinedReference.projectId);
+    return {
+      project,
+      projectId: combinedReference.projectId,
+      projectPath: project?.path,
+      sessionId: combinedReference.sessionId,
+    };
+  }
+  return {
+    project: boardProject,
+    projectId: boardProject.projectId,
+    projectPath: boardProject.path,
+    sessionId,
+  };
+}
+
+function findRestorableProjectBoardPreviousSession(reference: {
+  projectId: string;
+  projectPath?: string;
+  sessionId: string;
+}): SidebarPreviousSessionItem | undefined {
+  return previousSessions.find((previousSession) => {
+    if (!previousSession.isRestorable) {
+      return false;
+    }
+    const archivedRecord = normalizePreviousSessionRecord(previousSession.sessionRecord);
+    if (archivedRecord?.kind !== "terminal" || archivedRecord.sessionId !== reference.sessionId) {
+      return false;
+    }
+    const sameProject =
+      previousSession.projectId === reference.projectId ||
+      (Boolean(reference.projectPath) && previousSession.projectPath === reference.projectPath);
+    return sameProject;
+  });
 }
 
 function upsertProjectBoardConversationLink(
@@ -21381,6 +21447,68 @@ function archiveProjectBoardConversationLink(
           : link,
       ),
     "archiveProjectBoardConversationLink",
+  );
+}
+
+function replaceProjectBoardConversationLinkSession(
+  project: NativeProject,
+  args: {
+    beadId?: string;
+    oldGhostexSessionId: string;
+    session: TerminalSessionRecord;
+    sessionProject: NativeProject;
+  },
+): void {
+  const now = new Date().toISOString();
+  const terminalState = terminalStateById.get(args.session.sessionId);
+  const ghostexSessionId =
+    args.sessionProject.projectId === project.projectId
+      ? args.session.sessionId
+      : createCombinedProjectSessionId(args.sessionProject.projectId, args.session.sessionId);
+  const targetDuplicateId = args.beadId
+    ? createBeadConversationLinkId(project.projectId, args.beadId, ghostexSessionId)
+    : undefined;
+  updateProjectBeadConversationLinks(
+    project.projectId,
+    (links) =>
+      links.flatMap((link) => {
+        const isTarget =
+          link.ghostexSessionId === args.oldGhostexSessionId &&
+          (!args.beadId || link.beadId === args.beadId);
+        const nextId = createBeadConversationLinkId(project.projectId, link.beadId, ghostexSessionId);
+        const isDuplicateForTarget =
+          Boolean(targetDuplicateId) && link.beadId === args.beadId && link.id === targetDuplicateId;
+        if (!isTarget) {
+          if (isDuplicateForTarget) {
+            return [];
+          }
+          return [link];
+        }
+        return [
+          {
+            ...link,
+            agentId: terminalState?.agentName ?? args.session.agentName ?? link.agentId,
+            agentName: terminalState?.agentName ?? args.session.agentName ?? link.agentName,
+            agentSessionId:
+              terminalState?.agentSessionId ?? args.session.agentSessionId ?? link.agentSessionId,
+            agentSessionPath:
+              terminalState?.agentSessionPath ?? args.session.agentSessionPath ?? link.agentSessionPath,
+            ghostexSessionId,
+            id: nextId,
+            sessionPersistenceName:
+              terminalState?.sessionPersistenceName ??
+              args.session.sessionPersistenceName ??
+              link.sessionPersistenceName,
+            sessionPersistenceProvider:
+              terminalState?.sessionPersistenceProvider ??
+              args.session.sessionPersistenceProvider ??
+              link.sessionPersistenceProvider,
+            status: "active",
+            updatedAt: now,
+          },
+        ];
+      }),
+    "replaceProjectBoardConversationLinkSession",
   );
 }
 
@@ -21584,14 +21712,41 @@ function handleProjectBoardJumpToConversation(
   if (!sessionId) {
     throw new Error("No linked conversation is selected.");
   }
-  const reference = resolveSidebarSessionReference(sessionId);
-  const session = findTerminalSessionInProject(reference.project, reference.sessionId);
-  if (!session) {
-    throw new Error("The linked Ghostex session is no longer available.");
+  const reference = resolveProjectBoardLinkSessionReference(project, sessionId);
+  if (reference.project) {
+    const session = findTerminalSessionInProject(reference.project, reference.sessionId);
+    if (session) {
+      focusTerminal(createCombinedProjectSessionId(reference.project.projectId, session.sessionId));
+      const nextProject = findProject(project.projectId) ?? project;
+      postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
+      return;
+    }
   }
-  focusTerminal(createCombinedProjectSessionId(reference.project.projectId, session.sessionId));
-  const nextProject = findProject(project.projectId) ?? project;
-  postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
+
+  const previousSession = findRestorableProjectBoardPreviousSession(reference);
+  const archivedRecord = previousSession
+    ? normalizePreviousSessionRecord(previousSession.sessionRecord)
+    : undefined;
+  if (previousSession && archivedRecord?.kind === "terminal") {
+    const restored = restorePreviousTerminalSession(previousSession, archivedRecord);
+    if (!restored) {
+      throw new Error("The linked Ghostex session could not be restored.");
+    }
+    deletePreviousSession(previousSession.historyId);
+    replaceProjectBoardConversationLinkSession(project, {
+      beadId: request.beadId,
+      oldGhostexSessionId: sessionId,
+      session: restored.session,
+      sessionProject: restored.project,
+    });
+    focusTerminal(createCombinedProjectSessionId(restored.project.projectId, restored.session.sessionId));
+    const nextProject = findProject(project.projectId) ?? project;
+    publish();
+    postProjectBoardResponse(request, createProjectBoardConversationState(nextProject));
+    return;
+  }
+
+  throw new Error("The linked Ghostex session is no longer available.");
 }
 
 function handleProjectBoardUnlinkConversation(
@@ -24316,6 +24471,26 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "syncSessionOrder": {
       const groupReference = resolveSidebarGroupReference(message.groupId);
       if (!groupReference.groupId) {
+        const combinedProjectId = parseCombinedProjectGroupId(message.groupId);
+        if (!combinedProjectId) {
+          return;
+        }
+        const sessionIds = message.sessionIds.flatMap((sessionId) => {
+          const reference = parseCombinedProjectSessionId(sessionId);
+          return reference?.projectId === combinedProjectId ? [reference.sessionId] : [];
+        });
+        /**
+         * CDXC:PinnedSessions 2026-05-28-20:27:
+         * Pinned reorder in the reference sidebar is sent against the synthetic
+         * combined project group. Route it to the real project workspace and
+         * unwrap combined session ids before syncing, otherwise native drops
+         * the valid syncSessionOrder message and the row appears to snap back.
+         */
+        updateProjectWorkspace(
+          combinedProjectId,
+          (workspace) => syncSessionOrderAcrossSimpleWorkspaceGroups(workspace, sessionIds).snapshot,
+        );
+        publish();
         return;
       }
       const groupId = groupReference.groupId;
@@ -24758,6 +24933,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
       deactivateOnLowPowerMode: settings.keepAwakeDeactivateOnLowPowerMode,
       deactivateOnUserSwitch: settings.keepAwakeDeactivateOnUserSwitch,
       defaultDurationMinutes: settings.keepAwakeDefaultDurationMinutes,
+      preventLidSleep: settings.keepAwakePreventLidSleep,
     },
     sidebarActions: {
       commands,

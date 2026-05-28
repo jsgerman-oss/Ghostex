@@ -187,13 +187,9 @@ describe("normalizeghostexSettings", () => {
   test("keeps title-bar keep-awake settings English and bounded", () => {
     expect(DEFAULT_ghostex_SETTINGS.keepAwakeDefaultDurationMinutes).toBe(0);
     expect(DEFAULT_ghostex_SETTINGS.hideKeepAwakeTitlebarControl).toBe(false);
+    expect(DEFAULT_ghostex_SETTINGS.keepAwakePreventLidSleep).toBe(false);
     expect(KEEP_AWAKE_DURATION_OPTIONS).toEqual([
       { label: "Indefinitely", value: 0 },
-      { label: "5 minutes", value: 5 },
-      { label: "10 minutes", value: 10 },
-      { label: "15 minutes", value: 15 },
-      { label: "30 minutes", value: 30 },
-      { label: "1 hour", value: 60 },
       { label: "2 hours", value: 120 },
       { label: "5 hours", value: 300 },
     ]);
@@ -201,13 +197,15 @@ describe("normalizeghostexSettings", () => {
       normalizeghostexSettings({
         keepAwakeAllowDisplaySleep: true,
         keepAwakeBatteryThresholdPercent: 4,
-        keepAwakeDefaultDurationMinutes: 15,
+        keepAwakeDefaultDurationMinutes: 120,
+        keepAwakePreventLidSleep: true,
       }),
     ).toMatchObject({
       hideKeepAwakeTitlebarControl: false,
       keepAwakeAllowDisplaySleep: true,
       keepAwakeBatteryThresholdPercent: 10,
-      keepAwakeDefaultDurationMinutes: 15,
+      keepAwakeDefaultDurationMinutes: 120,
+      keepAwakePreventLidSleep: true,
     });
     expect(normalizeghostexSettings({ hideKeepAwakeTitlebarControl: true })).toMatchObject({
       hideKeepAwakeTitlebarControl: true,

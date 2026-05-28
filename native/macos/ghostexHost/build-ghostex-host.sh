@@ -51,6 +51,7 @@ else
 	GHOSTEX_SPARKLE_FEED_URL="${GHOSTEX_SPARKLE_FEED_URL:-https://raw.githubusercontent.com/maddada/Ghostex/main/appcast.xml}"
 	GHOSTEX_SPARKLE_PUBLIC_ED_KEY="${GHOSTEX_SPARKLE_PUBLIC_ED_KEY:-AGWDPeMqfhmbjt8Pbk+VTC9fDfXAYq+cZoLGCYuGn70=}"
 fi
+GHOSTEX_LID_SLEEP_HELPER_LABEL="${GHOSTEX_LID_SLEEP_HELPER_LABEL:-$GHOSTEX_BUNDLE_ID.LidSleepHelper}"
 
 # CDXC:AutoUpdate 2026-05-02-06:51: Sparkle update checks need an appcast URL
 # and EdDSA public key in Info.plist. The default public key is read from the
@@ -443,6 +444,7 @@ export GHOSTTY_ROOT
 export GHOSTEX_APP_NAME
 export GHOSTEX_APP_DISPLAY_NAME
 export GHOSTEX_BUNDLE_ID
+export GHOSTEX_LID_SLEEP_HELPER_LABEL
 export GHOSTEX_HOME_DIRECTORY_NAME
 export GHOSTEX_SHARED_HOME_DIRECTORY_NAME
 export GHOSTEX_MACOS_ARCH
@@ -488,6 +490,27 @@ APP_PATH="$(
 		-showBuildSettings 2>/dev/null |
 		awk -F' = ' '/BUILT_PRODUCTS_DIR/ { print $2; exit }'
 )/$GHOSTEX_APP_NAME.app"
+
+copy_lid_sleep_helper() {
+	local app_path="$1"
+	local helper_source="$(
+		xcodebuild \
+			-project "$PROJECT_PATH" \
+			-scheme ghostex \
+			-configuration "$CONFIGURATION" \
+			-destination "$XCODE_DESTINATION" \
+			-derivedDataPath "$DERIVED_DATA" \
+			ARCHS="$GHOSTEX_MACOS_ARCH" \
+			ONLY_ACTIVE_ARCH=NO \
+			-showBuildSettings 2>/dev/null |
+			awk -F' = ' '/BUILT_PRODUCTS_DIR/ { print $2; exit }'
+	)/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
+	local helper_dir="$app_path/Contents/Library/LaunchServices"
+	# CDXC:TitlebarKeepAwake 2026-05-28-19:28: Bundle the narrow lid-sleep privileged helper inside the app. The main app installs it to launchd only after the user enables closed-lid keep-awake and approves macOS administrator authorization.
+	mkdir -p "$helper_dir"
+	cp "$helper_source" "$helper_dir/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
+	chmod 755 "$helper_dir/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
+}
 
 copy_cef_runtime() {
 	local app_path="$1"
@@ -538,6 +561,7 @@ EOF_HELPER
 }
 
 copy_cef_runtime "$APP_PATH"
+copy_lid_sleep_helper "$APP_PATH"
 
 "$SCRIPT_DIR/codesign-ghostex-host.sh" "$APP_PATH"
 

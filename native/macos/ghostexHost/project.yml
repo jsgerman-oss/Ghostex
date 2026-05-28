@@ -151,6 +151,7 @@ targets:
       - path: Resources/Assets.xcassets
         buildPhase: resources
     dependencies:
+      - target: GhostexLidSleepHelper
       - framework: ${GHOSTTY_ROOT}/macos/GhosttyKit.xcframework
         embed: false
       - package: Sparkle
@@ -197,3 +198,22 @@ targets:
         # uses the com.madda namespace expected by the brew publishing flow.
         PRODUCT_BUNDLE_IDENTIFIER: ${GHOSTEX_BUNDLE_ID}
         PRODUCT_NAME: ${GHOSTEX_APP_NAME}
+  GhostexLidSleepHelper:
+    type: tool
+    platform: macOS
+    productName: ${GHOSTEX_LID_SLEEP_HELPER_LABEL}
+    sources:
+      - path: Sources/Shared/GhostexLidSleepHelperProtocol.swift
+      - path: Sources/GhostexLidSleepHelper
+    settings:
+      base:
+        # CDXC:TitlebarKeepAwake 2026-05-28-19:28: Closed-lid keep-awake uses a dedicated privileged helper instead of granting root capability to the main app. The helper target exposes only a narrow XPC API and is copied into the app for one-time user-approved installation.
+        CODE_SIGN_STYLE: Automatic
+        EXECUTABLE_NAME: ${GHOSTEX_LID_SLEEP_HELPER_LABEL}
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: ${GHOSTEX_LID_SLEEP_HELPER_LABEL}
+        MACOSX_DEPLOYMENT_TARGET: "13.0"
+        PRODUCT_BUNDLE_IDENTIFIER: ${GHOSTEX_LID_SLEEP_HELPER_LABEL}
+        PRODUCT_NAME: ${GHOSTEX_LID_SLEEP_HELPER_LABEL}
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        SWIFT_VERSION: "5.0"

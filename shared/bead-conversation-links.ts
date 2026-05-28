@@ -33,6 +33,7 @@ export type ProjectBoardAgentOption = {
 export type ProjectBoardConversationLinkView = BeadConversationLink & {
   isFocused?: boolean;
   isLive?: boolean;
+  isRestorable?: boolean;
   isSleeping?: boolean;
   sessionTitle?: string;
 };

@@ -44,6 +44,7 @@ enum HostCommand: Decodable {
   case projectBoardResponse(ProjectBoardResponse)
   case playSound(PlaySound)
   case runProcess(RunProcess)
+  case setKeepAwakeLidSleepPrevention(SetKeepAwakeLidSleepPrevention)
   case syncGhosttyTerminalSettings(SyncGhosttyTerminalSettings)
   case applyGhosttyConfigSettings(ApplyGhosttyConfigSettings)
   case openGhosttyConfigFile
@@ -130,6 +131,7 @@ enum HostCommand: Decodable {
     case projectBoardResponse
     case playSound
     case runProcess
+    case setKeepAwakeLidSleepPrevention
     case syncGhosttyTerminalSettings
     case applyGhosttyConfigSettings
     case openGhosttyConfigFile
@@ -259,6 +261,8 @@ enum HostCommand: Decodable {
       self = .playSound(try PlaySound(from: decoder))
     case .runProcess:
       self = .runProcess(try RunProcess(from: decoder))
+    case .setKeepAwakeLidSleepPrevention:
+      self = .setKeepAwakeLidSleepPrevention(try SetKeepAwakeLidSleepPrevention(from: decoder))
     case .syncGhosttyTerminalSettings:
       self = .syncGhosttyTerminalSettings(try SyncGhosttyTerminalSettings(from: decoder))
     case .applyGhosttyConfigSettings:
@@ -577,6 +581,7 @@ struct TitlebarKeepAwakeSettings: Decodable {
   let deactivateOnLowPowerMode: Bool
   let deactivateOnUserSwitch: Bool
   let defaultDurationMinutes: Int
+  let preventLidSleep: Bool
 }
 
 struct TitlebarResourceSession: Decodable {
@@ -824,6 +829,12 @@ struct RunProcess: Decodable {
   let cwd: String?
   let env: [String: String]?
   let executable: String
+  let requestId: String
+}
+
+struct SetKeepAwakeLidSleepPrevention: Decodable {
+  let enabled: Bool
+  let installIfNeeded: Bool?
   let requestId: String
 }
 

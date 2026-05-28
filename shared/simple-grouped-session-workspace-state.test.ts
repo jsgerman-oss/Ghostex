@@ -32,6 +32,7 @@ import {
   setVisibleCountInSimpleWorkspace,
   selectPaneTabInSimpleWorkspace,
   swapVisibleSessionsInSimpleWorkspace,
+  syncSessionOrderAcrossSimpleWorkspaceGroups,
   syncSessionOrderInSimpleWorkspace,
   wakePaneTabSessionInSimpleWorkspace,
 } from "./simple-grouped-session-workspace-state";
@@ -1334,6 +1335,61 @@ describe("swapVisibleSessionsInSimpleWorkspace", () => {
     ]);
     expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(
       secondVisibleSession.sessionId,
+    );
+  });
+});
+
+describe("syncSessionOrderAcrossSimpleWorkspaceGroups", () => {
+  test("should apply a flattened project order to each owning group", () => {
+    const result = syncSessionOrderAcrossSimpleWorkspaceGroups(
+      createWorkspaceSnapshot({
+        activeGroupId: "group-1",
+        groups: [
+          {
+            groupId: "group-1",
+            snapshot: {
+              focusedSessionId: "session-a",
+              fullscreenRestoreVisibleCount: undefined,
+              sessions: [
+                createSessionRecord(1, 0, { displayId: "session-a", sessionId: "session-a" }),
+                createSessionRecord(2, 1, { displayId: "session-b", sessionId: "session-b" }),
+                createSessionRecord(3, 2, { displayId: "session-c", sessionId: "session-c" }),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: ["session-a", "session-b"],
+            },
+            title: "Main",
+          },
+          {
+            groupId: "group-2",
+            snapshot: {
+              focusedSessionId: "session-d",
+              fullscreenRestoreVisibleCount: undefined,
+              sessions: [
+                createSessionRecord(4, 0, { displayId: "session-d", sessionId: "session-d" }),
+                createSessionRecord(5, 1, { displayId: "session-e", sessionId: "session-e" }),
+              ],
+              viewMode: "grid",
+              visibleCount: 1,
+              visibleSessionIds: ["session-d"],
+            },
+            title: "Aux",
+          },
+        ],
+        nextGroupNumber: 3,
+        nextSessionDisplayId: 5,
+        nextSessionNumber: 6,
+      }),
+      ["session-b", "session-a", "session-e", "session-d", "session-c"],
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.sessions.map((session) => session.sessionId)).toEqual(
+      ["session-b", "session-a", "session-c"],
+    );
+    expect(result.snapshot.groups[1]?.snapshot.sessions.map((session) => session.sessionId)).toEqual(
+      ["session-e", "session-d"],
     );
   });
 });

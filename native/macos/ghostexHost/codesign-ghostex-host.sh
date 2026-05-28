@@ -132,6 +132,25 @@ if [[ -d "$RESOURCE_BIN_PATH" ]]; then
 					--sign "$CODE_SIGN_IDENTITY" \
 					"$resource_executable"
 			fi
+	done
+fi
+
+LAUNCH_SERVICES_PATH="$APP_PATH/Contents/Library/LaunchServices"
+if [[ -d "$LAUNCH_SERVICES_PATH" ]]; then
+	# CDXC:TitlebarKeepAwake 2026-05-28-19:28: The bundled lid-sleep helper is a standalone Mach-O that launchd installs as root after user approval. Sign it before the outer app so the helper and app retain a verifiable relationship for runtime authorization.
+	find "$LAUNCH_SERVICES_PATH" \
+		-type f \
+		-perm -111 \
+		-print0 |
+		while IFS= read -r -d '' helper_executable; do
+			if file "$helper_executable" | grep -q 'Mach-O'; then
+				codesign \
+					--force \
+					--options runtime \
+					"$CODE_SIGN_TIMESTAMP_FLAG" \
+					--sign "$CODE_SIGN_IDENTITY" \
+					"$helper_executable"
+			fi
 		done
 fi
 

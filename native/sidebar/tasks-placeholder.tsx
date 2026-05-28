@@ -263,6 +263,11 @@ function ProjectBoardApp() {
    * CDXC:ProjectBoard 2026-05-28-12:32:
    * New tickets need an explicit Create & Start path with agent selection and a current-project versus new-worktree start location.
    * The ticket is still created on the board project first so the agent prompt carries the real bead id, and project-page diagnostics are emitted only when Settings Debugging Mode is enabled.
+   *
+   * CDXC:ProjectBoard 2026-05-28-16:21:
+   * Ticket primary actions should reopen existing work before creating new work.
+   * Treat live and previous-session-restorable conversation links as usable so "Start work" changes to "Go to Session" once a ticket already owns an openable agent conversation.
+   * Keep the ticket dialog open after Go to Session; focusing/restoring the session should reveal the workarea without discarding the user's ticket-editing context.
    */
   const isRefreshingRef = useRef(false);
   const issuesSignatureRef = useRef("");
@@ -956,6 +961,22 @@ function ProjectBoardApp() {
     }
   };
 
+  const detailConversationLinks = detail.ticket ? (linksByBeadId.get(detail.ticket.id) ?? []) : [];
+  const detailPrimaryConversationLink = getPrimaryUsableConversationLink(detailConversationLinks);
+  const detailPrimaryActionLabel =
+    conversationAction?.kind === "jump" && conversationAction.linkId === detailPrimaryConversationLink?.id
+      ? "Opening"
+      : detailPrimaryConversationLink
+        ? "Go to Session"
+        : conversationAction?.kind === "start" && conversationAction.beadId === detail.ticket?.id
+          ? "Starting"
+          : "Start work";
+  const detailPrimaryActionDisabled =
+    detail.isDeleting ||
+    detail.isSaving ||
+    Boolean(conversationAction) ||
+    (!detailPrimaryConversationLink && conversationState.agents.length === 0);
+
   useEffect(() => {
     if (!newTicketOpen) {
       return;
@@ -1148,7 +1169,7 @@ function ProjectBoardApp() {
                 agents={conversationState.agents}
                 action={conversationAction}
                 focusedSessionId={conversationState.focusedTerminalSessionId}
-                links={linksByBeadId.get(detail.ticket.id) ?? []}
+                links={detailConversationLinks}
                 onAssociateFocusedSession={() => void associateFocusedSession()}
                 onJumpToConversation={(link) => void jumpToConversation(link)}
                 onSelectedAgentChange={setSelectedAgentId}
@@ -1207,20 +1228,21 @@ function ProjectBoardApp() {
             </Button>
             <div className="project-ticket-dialog-primary-actions">
               <Button
-                disabled={
-                  detail.isDeleting ||
-                  detail.isSaving ||
-                  conversationState.agents.length === 0 ||
-                  Boolean(conversationAction)
+                disabled={detailPrimaryActionDisabled}
+                onClick={() =>
+                  detailPrimaryConversationLink
+                    ? void jumpToConversation(detailPrimaryConversationLink)
+                    : void startTicketWork()
                 }
-                onClick={() => void startTicketWork()}
                 type="button"
                 variant="outline"
               >
-                <IconLink data-icon="inline-start" />
-                {conversationAction?.kind === "start" && conversationAction.beadId === detail.ticket?.id
-                  ? "Starting"
-                  : "Start work"}
+                {detailPrimaryConversationLink ? (
+                  <IconExternalLink data-icon="inline-start" />
+                ) : (
+                  <IconLink data-icon="inline-start" />
+                )}
+                {detailPrimaryActionLabel}
               </Button>
               <Button disabled={detail.isDeleting || detail.isSaving} onClick={() => void saveTicketDetail()}>
                 {detail.isSaving ? "Saving" : "Save"}
@@ -1758,7 +1780,7 @@ function ConversationSection({
                   <div className="project-ticket-conversation-actions">
                     <Button
                       aria-label="Jump to linked conversation"
-                      disabled={!link.isLive || hasActiveConversationAction}
+                      disabled={!isUsableConversationLink(link) || hasActiveConversationAction}
                       onClick={() => onJumpToConversation(link)}
                       size="icon-sm"
                       type="button"
@@ -1793,6 +1815,16 @@ function conversationLinkLabel(link: ProjectBoardConversationLinkView): string {
   return link.sessionTitle || link.agentName || link.agentId || link.agentSessionId || "Agent session";
 }
 
+function isUsableConversationLink(link: ProjectBoardConversationLinkView | undefined): boolean {
+  return Boolean(link?.isLive || link?.isRestorable);
+}
+
+function getPrimaryUsableConversationLink(
+  links: ProjectBoardConversationLinkView[],
+): ProjectBoardConversationLinkView | undefined {
+  return links.find(isUsableConversationLink);
+}
+
 function ConversationLinkName({
   className,
   label,
@@ -1811,7 +1843,13 @@ function ConversationLinkName({
 }
 
 function conversationLinkStatusText(link: ProjectBoardConversationLinkView): string {
-  const sessionStatus = link.isSleeping ? "Sleeping" : link.isLive ? "Live" : "Missing";
+  const sessionStatus = link.isSleeping
+    ? "Sleeping"
+    : link.isLive
+      ? "Live"
+      : link.isRestorable
+        ? "Restorable"
+        : "Unavailable";
   const agentSessionPreview = link.agentSessionId ? ` · ${link.agentSessionId.slice(0, 8)}` : "";
   return `${sessionStatus}${agentSessionPreview}`;
 }
@@ -1905,11 +1943,11 @@ function TicketCard({
   });
   const blockedByCount = ticket.dependency_count ?? getBlockedByIds(ticket).length;
   const blockingCount = ticket.dependent_count ?? 0;
-  const primaryLink = links[0];
+  const primaryLink = getPrimaryUsableConversationLink(links) ?? links[0];
   const additionalLinkCount = primaryLink ? links.length - 1 : 0;
   const primaryLinkLabel = primaryLink ? conversationLinkLabel(primaryLink) : "";
   const jumpDisabled =
-    !primaryLink?.isLive ||
+    !isUsableConversationLink(primaryLink) ||
     Boolean(conversationAction);
 
   return (

@@ -1189,6 +1189,47 @@ export function syncSessionOrderInSimpleWorkspace(
   };
 }
 
+export function syncSessionOrderAcrossSimpleWorkspaceGroups(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionIds: readonly string[],
+): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  let nextSnapshot = normalizedSnapshot;
+  let changed = false;
+
+  /*
+   * CDXC:PinnedSessions 2026-05-28-20:27:
+   * The combined project sidebar renders one project-level list over multiple
+   * real workspace groups. Persist a combined pinned reorder by applying the
+   * requested relative order inside each owning group while preserving group
+   * membership and pane layout ownership.
+   */
+  for (const group of normalizedSnapshot.groups) {
+    const groupSessionIds = group.snapshot.sessions.map((session) => session.sessionId);
+    const groupSessionIdSet = new Set(groupSessionIds);
+    const nextGroupSessionIds = sessionIds.filter((sessionId) => groupSessionIdSet.has(sessionId));
+    if (
+      nextGroupSessionIds.length !== groupSessionIds.length ||
+      !haveSameStringSet(nextGroupSessionIds, groupSessionIds)
+    ) {
+      continue;
+    }
+
+    const result = syncSessionOrderInSimpleWorkspace(
+      nextSnapshot,
+      group.groupId,
+      nextGroupSessionIds,
+    );
+    nextSnapshot = result.snapshot;
+    changed = changed || result.changed;
+  }
+
+  return {
+    changed,
+    snapshot: nextSnapshot,
+  };
+}
+
 export function swapVisibleSessionsInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   groupId: string,
@@ -3513,6 +3554,15 @@ function getWorkspaceSessionIds(snapshot: GroupedSessionWorkspaceSnapshot): stri
   return snapshot.groups.flatMap((group) =>
     group.snapshot.sessions.map((session) => session.sessionId),
   );
+}
+
+function haveSameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const rightSet = new Set(right);
+  return left.every((value) => rightSet.has(value));
 }
 
 function areSnapshotsEqual(

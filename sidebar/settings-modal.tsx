@@ -366,6 +366,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "hideKeepAwakeTitlebarControl",
     "keepAwakeDefaultDurationMinutes",
     "keepAwakeAllowDisplaySleep",
+    "keepAwakePreventLidSleep",
     "keepAwakeActivateOnLaunch",
     "keepAwakeActivateOnExternalDisplay",
     "keepAwakeDeactivateBelowBatteryThreshold",
@@ -885,6 +886,12 @@ export function SettingsModal({
         key: "keepAwakeAllowDisplaySleep",
         subtitle: "Keep the Mac awake but allow the display to turn off.",
         title: "Allow display sleep",
+      },
+      {
+        key: "keepAwakePreventLidSleep",
+        subtitle:
+          "Optional. When Keep Awake is on, Ghostex can install a small privileged helper once so closing the lid stays awake only for that active keep-awake session.",
+        title: "Prevent lid-close sleep",
       },
       {
         key: "keepAwakeActivateOnLaunch",
@@ -2226,6 +2233,15 @@ export function SettingsModal({
                 label="Allow display sleep"
                 {...getSettingModificationProps("keepAwakeAllowDisplaySleep")}
                 onChange={(checked) => updateDraft("keepAwakeAllowDisplaySleep", checked)}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.power, "keepAwakePreventLidSleep") ? (
+              <ToggleField
+                checked={draft.keepAwakePreventLidSleep}
+                description="Optional. When Keep Awake is on, Ghostex can install a small privileged helper once so closing the lid stays awake only for that active keep-awake session. Keep Awake itself remains off until you enable it."
+                label="Prevent lid-close sleep"
+                {...getSettingModificationProps("keepAwakePreventLidSleep")}
+                onChange={(checked) => updateDraft("keepAwakePreventLidSleep", checked)}
               />
               ) : null}
               {mainSettingVisible(settingsSearch.power, "keepAwakeActivateOnLaunch") ? (

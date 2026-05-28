@@ -127,6 +127,7 @@ type TitlebarKeepAwakeSettings = {
   deactivateOnUserSwitch: boolean;
   defaultDurationMinutes: KeepAwakeDurationMinutes;
   hideTitlebarControl: boolean;
+  preventLidSleep: boolean;
 };
 
 type TitlebarResourceGroup = {
@@ -227,6 +228,12 @@ type NativeTitlebarCommand =
       requestId: string;
       type: "runProcess";
     }
+  | {
+      enabled: boolean;
+      installIfNeeded?: boolean;
+      requestId: string;
+      type: "setKeepAwakeLidSleepPrevention";
+    }
   | { type: "openActiveProjectEditorFromTitlebar" }
   | { type: "showProjectEditorCompanionFromTitlebar" }
   | { type: "exitFocusModeFromTitlebar" }
@@ -283,8 +290,10 @@ declare global {
 const LAST_OPEN_TARGET_STORAGE_KEY = "ghostex.titlebar.lastOpenTargetId";
 const LAST_ACTION_COMMAND_STORAGE_PREFIX = "ghostex.titlebar.lastActionCommandByProject:";
 const KEEP_AWAKE_RUNTIME_STORAGE_KEY = "ghostex.titlebar.keepAwakeRuntime";
+const KEEP_AWAKE_LID_SLEEP_STORAGE_KEY = "ghostex.titlebar.lidSleepPrevention";
 const RESOURCES_MENU_FIRST_OPEN_STORAGE_KEY = "ghostex.titlebar.resourcesMenuSeen";
 const KEEP_AWAKE_POWER_CHECK_INTERVAL_MS = 30_000;
+const KEEP_AWAKE_ADMIN_PROCESS_TIMEOUT_MS = 120_000;
 /**
  * CDXC:NativeWindowChrome 2026-05-25-07:16:
  * The macOS app titlebar should now be 35px tall, not the earlier 45px. Keep the React titlebar height in sync with Swift's native reservation so web controls and AppKit traffic-light centering share one chrome height.
@@ -368,7 +377,7 @@ function appendTitlebarCodeLagDebugLog(
 function runNativeProcess(
   executable: string,
   args: string[],
-  options: { cwd?: string; env?: Record<string, string> } = {},
+  options: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {},
 ): Promise<NativeProcessResult> {
   const requestId = `titlebar-process-${Date.now().toString(36)}-${Math.random()
     .toString(36)
@@ -385,7 +394,29 @@ function runNativeProcess(
     const timeout = window.setTimeout(() => {
       pendingProcessResults.delete(requestId);
       reject(new Error(`${executable} ${args.join(" ")} timed out`));
-    }, 30_000);
+    }, options.timeoutMs ?? 30_000);
+    pendingProcessResults.set(requestId, { reject, resolve, timeout });
+  });
+}
+
+function runNativeKeepAwakeLidSleepPrevention(
+  enabled: boolean,
+  options: { installIfNeeded?: boolean; timeoutMs?: number } = {},
+): Promise<NativeProcessResult> {
+  const requestId = `titlebar-lid-sleep-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  postNative({
+    enabled,
+    installIfNeeded: options.installIfNeeded,
+    requestId,
+    type: "setKeepAwakeLidSleepPrevention",
+  });
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      pendingProcessResults.delete(requestId);
+      reject(new Error(`setKeepAwakeLidSleepPrevention ${enabled} timed out`));
+    }, options.timeoutMs ?? KEEP_AWAKE_ADMIN_PROCESS_TIMEOUT_MS);
     pendingProcessResults.set(requestId, { reject, resolve, timeout });
   });
 }
@@ -1609,7 +1640,12 @@ function App() {
       if (keepAwakeRuntime) {
         await stopKeepAwake();
       }
-      const flags = projectState.keepAwake.allowDisplaySleep ? "-i" : "-di";
+      /**
+       * CDXC:TitlebarKeepAwake 2026-05-28-19:28:
+       * The normal keep-awake button should prevent idle sleep and AC system sleep.
+       * Lid-close sleep is controlled by the separate Settings toggle because macOS does not treat it as a regular caffeinate idle-sleep assertion.
+       */
+      const flags = projectState.keepAwake.allowDisplaySleep ? "-is" : "-dis";
       const timeout = durationMinutes > 0 ? ` -t ${durationMinutes * 60}` : "";
       const result = await runNativeProcess("/bin/sh", [
         "-lc",
@@ -1663,6 +1699,45 @@ function App() {
     }
     void startKeepAwake();
   }, [keepAwakeRuntime, projectState.keepAwake.activateOnLaunch, startKeepAwake]);
+
+  useEffect(() => {
+    const desired = Boolean(keepAwakeRuntime && projectState.keepAwake.preventLidSleep);
+    const ghostexEnabledLidSleepPrevention =
+      localStorage.getItem(KEEP_AWAKE_LID_SLEEP_STORAGE_KEY) === "enabled";
+    if (!desired && !ghostexEnabledLidSleepPrevention) {
+      return;
+    }
+    let cancelled = false;
+    const needsPolicyChange = desired !== ghostexEnabledLidSleepPrevention;
+    const applyPolicy = async () => {
+      const applied = await applyKeepAwakeLidSleepPrevention(desired, {
+        installIfNeeded: desired && needsPolicyChange,
+      });
+      if (!applied || cancelled) {
+        return;
+      }
+      localStorage.setItem(KEEP_AWAKE_LID_SLEEP_STORAGE_KEY, desired ? "enabled" : "disabled");
+    };
+    if (needsPolicyChange) {
+      void applyPolicy();
+    }
+    let interval: number | undefined;
+    if (desired) {
+      interval = window.setInterval(() => {
+        void applyKeepAwakeLidSleepPrevention(true, { installIfNeeded: false }).then((applied) => {
+          if (applied && !cancelled) {
+            localStorage.setItem(KEEP_AWAKE_LID_SLEEP_STORAGE_KEY, "enabled");
+          }
+        });
+      }, 10_000);
+    }
+    return () => {
+      cancelled = true;
+      if (interval !== undefined) {
+        window.clearInterval(interval);
+      }
+    };
+  }, [keepAwakeRuntime, projectState.keepAwake.preventLidSleep]);
 
   useEffect(() => {
     if (!keepAwakeRuntime) {
@@ -2321,6 +2396,7 @@ function createTitlebarKeepAwakeSettings(
     deactivateOnUserSwitch: settings.keepAwakeDeactivateOnUserSwitch,
     defaultDurationMinutes: settings.keepAwakeDefaultDurationMinutes,
     hideTitlebarControl: settings.hideKeepAwakeTitlebarControl,
+    preventLidSleep: settings.keepAwakePreventLidSleep,
   };
 }
 
@@ -2350,6 +2426,33 @@ function readStoredKeepAwakeRuntime(): KeepAwakeRuntimeState | undefined {
   } catch {
     return undefined;
   }
+}
+
+async function applyKeepAwakeLidSleepPrevention(
+  enabled: boolean,
+  options: { installIfNeeded?: boolean } = {},
+): Promise<boolean> {
+  /**
+   * CDXC:TitlebarKeepAwake 2026-05-28-19:28:
+   * User-requested closed-lid wakefulness requires a privileged helper because
+   * `caffeinate` cannot cover MacBook lid-close sleep. The helper is installed
+   * only when this setting and Keep Awake are both active. Lease refreshes never
+   * request installation, so cancelling the administrator prompt does not create
+   * repeated password prompts; the user can retry by starting Keep Awake again.
+   */
+  try {
+    const result = await runNativeKeepAwakeLidSleepPrevention(enabled, {
+      installIfNeeded: options.installIfNeeded,
+    });
+    if (result.exitCode !== 0) {
+      console.warn("Failed to update lid-close sleep prevention", result.stderr || result.stdout);
+      return false;
+    }
+  } catch (error) {
+    console.warn("Failed to update lid-close sleep prevention", error);
+    return false;
+  }
+  return true;
 }
 
 async function readKeepAwakePowerSnapshot(): Promise<
