@@ -48,6 +48,7 @@ export type ProjectBoardSessionOption = {
 export type ProjectBoardConversationState = {
   activeSessionId?: string;
   agents: ProjectBoardAgentOption[];
+  debuggingMode?: boolean;
   defaultAgentId?: string;
   focusedTerminalSessionId?: string;
   links: ProjectBoardConversationLinkView[];
@@ -55,7 +56,10 @@ export type ProjectBoardConversationState = {
   sessions: ProjectBoardSessionOption[];
 };
 
+export type ProjectBoardStartLocation = "currentProject" | "newWorktree";
+
 export type ProjectBoardBridgeAction =
+  | "appendDebugLog"
   | "associateFocusedSession"
   | "getState"
   | "jumpToConversation"
@@ -67,11 +71,14 @@ export type ProjectBoardBridgeRequest = {
   agentId?: string;
   beadDisplayId?: string;
   beadId?: string;
+  details?: string;
+  event?: string;
   prompt?: string;
   projectId?: string;
   projectPath?: string;
   requestId: string;
   sessionId?: string;
+  startLocation?: ProjectBoardStartLocation;
   ticketTitle?: string;
 };
 

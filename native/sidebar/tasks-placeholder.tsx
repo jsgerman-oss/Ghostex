@@ -1,5 +1,6 @@
 import {
   IconAlertTriangle,
+  IconCopy,
   IconExternalLink,
   IconLink,
   IconMessageCircle,
@@ -95,6 +96,7 @@ import {
   type ProjectBoardBridgeResponse,
   type ProjectBoardConversationLinkView,
   type ProjectBoardConversationState,
+  type ProjectBoardStartLocation,
 } from "../../shared/bead-conversation-links";
 import "../../sidebar/styles/shadcn.generated.css";
 
@@ -218,6 +220,7 @@ function ProjectBoardApp() {
   const [knownLabels, setKnownLabels] = useState<string[]>([]);
   const [conversationState, setConversationState] = useState<ProjectBoardConversationState>({
     agents: [],
+    debuggingMode: false,
     links: [],
     sessions: [],
   });
@@ -229,7 +232,10 @@ function ProjectBoardApp() {
   const [detail, setDetail] = useState<DetailDraft>(createEmptyDetailDraft);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [newTicket, setNewTicket] = useState<TicketFormDraft>(createEmptyTicketFormDraft);
-  const [isCreating, setIsCreating] = useState(false);
+  const [createAction, setCreateAction] = useState<"create" | "createStart">();
+  const [newTicketStartLocation, setNewTicketStartLocation] =
+    useState<ProjectBoardStartLocation>("currentProject");
+  const isCreating = Boolean(createAction);
   const [deleteConfirmingTicketId, setDeleteConfirmingTicketId] = useState("");
   const [imagePreviewDataUrls, setImagePreviewDataUrls] = useState<Record<string, string>>({});
   const pendingImagePreviewPathsRef = useRef(new Set<string>());
@@ -253,6 +259,10 @@ function ProjectBoardApp() {
    * CDXC:ProjectBoard 2026-05-26-10:20:
    * Conversation actions can launch terminals, focus sessions, or mutate persisted links.
    * Track the active action so duplicate clicks do not create duplicate agent sessions or race link/archive state while the board is responding.
+   *
+   * CDXC:ProjectBoard 2026-05-28-12:32:
+   * New tickets need an explicit Create & Start path with agent selection and a current-project versus new-worktree start location.
+   * The ticket is still created on the board project first so the agent prompt carries the real bead id, and project-page diagnostics are emitted only when Settings Debugging Mode is enabled.
    */
   const isRefreshingRef = useRef(false);
   const issuesSignatureRef = useRef("");
@@ -292,6 +302,24 @@ function ProjectBoardApp() {
       console.warn("Project board conversation state unavailable.", error);
     }
   }, [projectId, projectPath]);
+
+  const logProjectBoardDebug = useCallback(
+    (event: string, details?: Record<string, unknown>) => {
+      if (!conversationState.debuggingMode) {
+        return;
+      }
+      void sendProjectBoardRequest({
+        action: "appendDebugLog",
+        details: stringifyProjectBoardDebugDetails(details),
+        event,
+        projectId,
+        projectPath,
+      }).catch((error) => {
+        console.warn("Project board debug log unavailable.", error);
+      });
+    },
+    [conversationState.debuggingMode, projectId, projectPath],
+  );
 
   const loadTickets = useCallback(async (options: BoardRefreshOptions = {}) => {
     const mode = options.mode ?? "manual";
@@ -624,10 +652,12 @@ function ProjectBoardApp() {
     }
   };
 
-  const createTicket = async () => {
+  const createTicket = async (options: { startAfterCreate?: boolean } = {}) => {
     if (isCreating) {
       return;
     }
+    const startAfterCreate = options.startAfterCreate === true;
+    const startLocation = newTicketStartLocation;
     const draft = {
       ...newTicket,
       blockedByIds: [...newTicket.blockedByIds],
@@ -638,11 +668,21 @@ function ProjectBoardApp() {
     if (!prompt) {
       return;
     }
-    setIsCreating(true);
+    setCreateAction(startAfterCreate ? "createStart" : "create");
+    logProjectBoardDebug("projectBoard.createTicket.started", {
+      blockedByCount: draft.blockedByIds.length,
+      blockingCount: draft.blockingIds.length,
+      hasRequestedTitle: Boolean(draft.title.trim()),
+      labelCount: draft.labels.length,
+      promptLength: prompt.length,
+      startAfterCreate,
+      startLocation,
+    });
     try {
       const requestedTitle = draft.title.trim();
       const shouldGenerateTitle = !requestedTitle;
       const title = shouldGenerateTitle ? PROJECT_BOARD_GENERATING_TITLE : requestedTitle;
+      let shouldStartCreatedTicket = startAfterCreate;
       const estimate = tshirtToEstimate(draft.tshirt);
       const createdPayload = await runBeads({
         action: "create",
@@ -654,7 +694,12 @@ function ProjectBoardApp() {
         title,
       });
       const created = normalizeBeadsPayload<BeadsIssue | BeadsIssue[]>(createdPayload, []);
-      const createdIssue = Array.isArray(created) ? created[0] : created;
+      let createdIssue = Array.isArray(created) ? created[0] : created;
+      logProjectBoardDebug("projectBoard.createTicket.beadCreated", {
+        beadId: createdIssue?.id ?? "",
+        shouldGenerateTitle,
+        startAfterCreate,
+      });
       if (createdIssue?.id) {
         await syncDependencies(createdIssue.id, draft.blockedByIds, draft.blockingIds);
         if (draft.labels.length > 0) {
@@ -665,12 +710,12 @@ function ProjectBoardApp() {
           });
         }
       }
-      setNewTicket(createEmptyTicketFormDraft());
-      setNewTicketOpen(false);
-      await loadTickets({ includeLabels: true, mode: "mutation" });
-      setIsCreating(false);
       if (shouldGenerateTitle && createdIssue?.id) {
         try {
+          logProjectBoardDebug("projectBoard.createTicket.titleGeneration.started", {
+            beadId: createdIssue.id,
+            startAfterCreate,
+          });
           const generated = normalizeBeadsPayload<{ title?: string }>(
             await runBeads({ action: "generateTitle", prompt }),
             {},
@@ -684,15 +729,65 @@ function ProjectBoardApp() {
             issueId: createdIssue.id,
             title: generatedTitle,
           });
-          await loadTickets({ includeLabels: false, mode: "mutation" });
+          createdIssue = { ...createdIssue, title: generatedTitle };
+          logProjectBoardDebug("projectBoard.createTicket.titleGeneration.completed", {
+            beadId: createdIssue.id,
+            generatedTitleLength: generatedTitle.length,
+            startAfterCreate,
+          });
         } catch (error) {
+          logProjectBoardDebug("projectBoard.createTicket.titleGeneration.failed", {
+            beadId: createdIssue.id,
+            error: error instanceof Error ? error.message : String(error),
+            startAfterCreate,
+          });
           setErrorMessage(error instanceof Error ? error.message : "Could not generate the ticket title.");
+          if (startAfterCreate) {
+            shouldStartCreatedTicket = false;
+          }
         }
       }
+      setNewTicket(createEmptyTicketFormDraft());
+      setNewTicketStartLocation("currentProject");
+      setNewTicketOpen(false);
+      const refreshedPayload = await runBeads({ action: "listIssues" });
+      const refreshedIssues = normalizeBeadsPayload<BeadsIssue[]>(
+        refreshedPayload,
+        Array.isArray(refreshedPayload) ? refreshedPayload : [],
+      );
+      const refreshedTickets = toBoardTickets(refreshedIssues, displayKey);
+      setAllIssues(refreshedIssues);
+      setTickets(refreshedTickets);
+      await loadTickets({ includeLabels: true, mode: "mutation" });
+      if (shouldStartCreatedTicket && createdIssue?.id) {
+        const createdTicket = refreshedTickets.find((ticket) => ticket.id === createdIssue.id);
+        if (!createdTicket) {
+          throw new Error("Created ticket was not found after refresh.");
+        }
+        logProjectBoardDebug("projectBoard.createTicket.startAfterCreate.requested", {
+          beadId: createdTicket.id,
+          displayId: createdTicket.displayId,
+          startLocation,
+        });
+        const didStart = await startTicketWork(createdTicket, { startLocation });
+        if (!didStart) {
+          return;
+        }
+      }
+      logProjectBoardDebug("projectBoard.createTicket.completed", {
+        beadId: createdIssue?.id ?? "",
+        startAfterCreate,
+        startLocation,
+      });
     } catch (error) {
+      logProjectBoardDebug("projectBoard.createTicket.failed", {
+        error: error instanceof Error ? error.message : String(error),
+        startAfterCreate,
+        startLocation,
+      });
       setErrorMessage(error instanceof Error ? error.message : "Could not create the ticket.");
     } finally {
-      setIsCreating(false);
+      setCreateAction(undefined);
     }
   };
 
@@ -717,12 +812,21 @@ function ProjectBoardApp() {
     }
   };
 
-  const startTicketWork = async () => {
-    if (!detail.ticket) {
-      return;
+  const startTicketWork = async (
+    ticket: BoardTicket | undefined = detail.ticket,
+    options: { startLocation?: ProjectBoardStartLocation } = {},
+  ) => {
+    if (!ticket) {
+      return false;
     }
-    const ticket = detail.ticket;
+    const startLocation = options.startLocation ?? "currentProject";
     setConversationAction({ beadId: ticket.id, kind: "start" });
+    logProjectBoardDebug("projectBoard.createStart.startWork.requested", {
+      agentId: selectedAgentId || conversationState.defaultAgentId || "",
+      beadId: ticket.id,
+      displayId: ticket.displayId,
+      startLocation,
+    });
     try {
       const prompt = buildAgentWorkPrompt(ticket);
       const response = await sendProjectBoardRequest({
@@ -733,6 +837,7 @@ function ProjectBoardApp() {
         projectId,
         projectPath,
         prompt,
+        startLocation,
         ticketTitle: ticket.title,
       });
       if (!response.ok) {
@@ -747,9 +852,20 @@ function ProjectBoardApp() {
         status: "in_progress",
       });
       setErrorMessage("");
+      logProjectBoardDebug("projectBoard.createStart.startWork.completed", {
+        beadId: ticket.id,
+        startLocation,
+      });
       await loadTickets({ includeLabels: false, mode: "mutation" });
+      return true;
     } catch (error) {
+      logProjectBoardDebug("projectBoard.createStart.startWork.failed", {
+        beadId: ticket.id,
+        error: error instanceof Error ? error.message : String(error),
+        startLocation,
+      });
       setErrorMessage(error instanceof Error ? error.message : "Could not start ticket work.");
+      return false;
     } finally {
       setConversationAction((current) =>
         current?.kind === "start" && current.beadId === ticket.id ? undefined : current,
@@ -1114,7 +1230,15 @@ function ProjectBoardApp() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={newTicketOpen} onOpenChange={setNewTicketOpen}>
+      <Dialog
+        open={newTicketOpen}
+        onOpenChange={(open) => {
+          setNewTicketOpen(open);
+          if (!open) {
+            setNewTicketStartLocation("currentProject");
+          }
+        }}
+      >
         <DialogContent className="project-ticket-dialog">
           <DialogHeader>
             <DialogTitle>New Ticket</DialogTitle>
@@ -1207,13 +1331,75 @@ function ProjectBoardApp() {
               }
             />
           </div>
-          <DialogFooter>
-            <Button
-              disabled={isCreating || !newTicket.description.trim()}
-              onClick={() => void createTicket()}
-            >
-              {isCreating ? "Creating" : "Create"}
-            </Button>
+          <DialogFooter className="project-ticket-create-footer">
+            <section className="project-ticket-create-start" aria-label="Create and start options">
+              <div className="project-ticket-section-title">Start work</div>
+              <div className="project-ticket-create-start-controls">
+                <Select
+                  disabled={conversationState.agents.length === 0 || isCreating}
+                  onValueChange={setSelectedAgentId}
+                  value={selectedAgentId}
+                >
+                  <SelectTrigger aria-label="Agent for Create and Start" size="sm">
+                    <SelectValue placeholder="Choose agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {conversationState.agents.map((agent) => (
+                      <SelectItem key={agent.agentId} value={agent.agentId}>
+                        {agent.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="project-ticket-start-location" role="radiogroup" aria-label="Start location">
+                  <Button
+                    aria-checked={newTicketStartLocation === "currentProject"}
+                    disabled={isCreating}
+                    onClick={() => setNewTicketStartLocation("currentProject")}
+                    role="radio"
+                    size="sm"
+                    type="button"
+                    variant={newTicketStartLocation === "currentProject" ? "secondary" : "outline"}
+                  >
+                    Current project
+                  </Button>
+                  <Button
+                    aria-checked={newTicketStartLocation === "newWorktree"}
+                    disabled={isCreating}
+                    onClick={() => setNewTicketStartLocation("newWorktree")}
+                    role="radio"
+                    size="sm"
+                    type="button"
+                    variant={newTicketStartLocation === "newWorktree" ? "secondary" : "outline"}
+                  >
+                    New worktree
+                  </Button>
+                </div>
+              </div>
+            </section>
+            <div className="project-ticket-create-actions">
+              <Button
+                disabled={isCreating || !newTicket.description.trim()}
+                onClick={() => void createTicket()}
+                type="button"
+                variant="outline"
+              >
+                {createAction === "create" ? "Creating" : "Create"}
+              </Button>
+              <Button
+                disabled={
+                  isCreating ||
+                  !newTicket.description.trim() ||
+                  conversationState.agents.length === 0 ||
+                  Boolean(conversationAction)
+                }
+                onClick={() => void createTicket({ startAfterCreate: true })}
+                type="button"
+              >
+                <IconLink data-icon="inline-start" />
+                {createAction === "createStart" ? "Creating & Starting" : "Create & Start"}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1619,7 +1805,7 @@ function ConversationLinkName({
       <TooltipTrigger asChild>
         <span className={className}>{label}</span>
       </TooltipTrigger>
-      <TooltipContent side="top">{label}</TooltipContent>
+      <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
   );
 }
@@ -1805,19 +1991,45 @@ function ProjectBoardNotice({ message }: { message: string }) {
   const isMissingBeads =
     !isMissingProject &&
     /executable|command not found|not found: bd|bd: not found|env: bd: no such file|cannot find/i.test(message);
+  const command = isMissingBeads ? INSTALL_BEADS_COMMAND : isMissingProject ? "bd init" : "";
+  const title = isMissingBeads
+    ? "Install Beads"
+    : isMissingProject
+      ? "Initialize Beads for this project"
+      : "Project board unavailable";
+  const body = isMissingBeads
+    ? "The Project board stores tickets with the Beads CLI, but the app could not find the bd executable."
+    : isMissingProject
+      ? "This project does not have a Beads workspace yet. Run this once from the project root, then refresh the board."
+      : message;
   return (
-    <Card className="project-board-notice" size="sm">
+    <Card className="project-board-notice" data-kind={isMissingProject ? "init" : "error"} role="status" size="sm">
       <CardContent>
-        <IconAlertTriangle />
-        <div>
-          <strong>
-            {isMissingBeads
-              ? "Install Beads"
-              : isMissingProject
-                ? "Initialize Beads"
-                : "Project board unavailable"}
-          </strong>
-          <p>{isMissingBeads ? INSTALL_BEADS_COMMAND : isMissingProject ? "bd init" : message}</p>
+        {/*
+          CDXC:ProjectBoard 2026-05-28-15:27:
+          Initialization is a normal first-run state for Beads-backed projects, not an app failure.
+          Present bd init as an explanatory setup callout with a copyable command so users understand what needs to happen before the board can load tickets.
+        */}
+        <div className="project-board-notice-icon" aria-hidden="true">
+          <IconAlertTriangle />
+        </div>
+        <div className="project-board-notice-body">
+          <strong>{title}</strong>
+          <p>{body}</p>
+          {command ? (
+            <div className="project-board-notice-command">
+              <code>{command}</code>
+              <Button
+                aria-label={`Copy ${command}`}
+                onClick={() => void navigator.clipboard.writeText(command)}
+                size="icon-sm"
+                type="button"
+                variant="ghost"
+              >
+                <IconCopy />
+              </Button>
+            </div>
+          ) : null}
         </div>
       </CardContent>
     </Card>
@@ -1842,6 +2054,17 @@ function waitForProjectBoardRefreshIdle(isBusy: () => boolean): Promise<void> {
     };
     tick();
   });
+}
+
+function stringifyProjectBoardDebugDetails(details: Record<string, unknown> | undefined): string | undefined {
+  if (details === undefined) {
+    return undefined;
+  }
+  try {
+    return JSON.stringify(details);
+  } catch {
+    return JSON.stringify({ serializationFailed: true });
+  }
 }
 
 function createIssuesSignature(issues: BeadsIssue[]): string {
@@ -2331,11 +2554,23 @@ styleElement.textContent = `
   }
 
   .project-board-card-conversation-label {
-    flex: 1 1 auto;
+    /*
+     * CDXC:ProjectBoard 2026-05-28-10:14:
+     * Board-card associated session names must show a literal ellipsis when
+     * the card is too narrow, while the trailing jump button remains visible.
+     * Give the text cluster a zero flex basis and override the broader span
+     * rule on the actual tooltip trigger so Chromium/WebKit calculate
+     * text-overflow instead of clipping the label.
+     */
+    flex: 1 1 0;
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
   }
 
-  .project-board-card-conversation-name {
+  .project-board-card-conversation-label .project-board-card-conversation-name {
     display: block;
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2353,20 +2588,107 @@ styleElement.textContent = `
   }
 
   .project-board-notice {
-    background: #201b14;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0)),
+      #171717;
+    border: 1px solid rgba(255, 255, 255, 0.09);
     border-radius: 8px;
-    color: #f7dfb4;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.22);
+    color: rgba(244, 244, 245, 0.9);
     flex: 0 0 auto;
   }
 
+  .project-board-notice[data-kind="init"] {
+    border-color: rgba(231, 184, 91, 0.28);
+  }
+
   .project-board-notice [data-slot="card-content"] {
-    align-items: center;
+    align-items: flex-start;
     display: flex;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .project-board-notice-icon {
+    align-items: center;
+    background: rgba(231, 184, 91, 0.13);
+    border: 1px solid rgba(231, 184, 91, 0.2);
+    border-radius: 8px;
+    color: #e7b85b;
+    display: flex;
+    flex: 0 0 auto;
+    height: 34px;
+    justify-content: center;
+    width: 34px;
+  }
+
+  .project-board-notice-icon svg {
+    height: 17px;
+    width: 17px;
+  }
+
+  .project-board-notice-body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .project-board-notice strong {
+    color: rgba(250, 250, 250, 0.94);
+    font-size: 13px;
+    font-weight: 680;
+    letter-spacing: 0;
+    line-height: 1.2;
+  }
+
+  .project-board-notice p {
+    color: rgba(244, 244, 245, 0.64);
+    font-size: 12px;
+    line-height: 1.45;
+    margin: 0;
+    max-width: 660px;
+  }
+
+  .project-board-notice-command {
+    align-items: center;
+    align-self: flex-start;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 7px;
+    display: inline-flex;
+    gap: 7px;
+    min-height: 30px;
+    padding: 3px 4px 3px 9px;
+  }
+
+  .project-board-notice-command code {
+    color: rgba(250, 250, 250, 0.9);
+    font-family: "SF Mono", ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .project-board-notice-command button {
+    color: rgba(244, 244, 245, 0.58);
+    height: 22px;
+    width: 22px;
+  }
+
+  .project-board-notice-command button:hover {
+    color: rgba(250, 250, 250, 0.92);
   }
 
   .project-ticket-dialog {
+    /*
+     * CDXC:ProjectBoard 2026-05-28-13:52:
+     * Project ticket edit/create dialogs should use the same #0e0e0e modal
+     * background as the rest of Ghostex app-modal surfaces.
+     */
+    background: #0e0e0e;
+    background-color: #0e0e0e;
     border-radius: 12px;
     max-width: min(780px, calc(100vw - 44px));
     overflow: hidden;
@@ -2401,6 +2723,47 @@ styleElement.textContent = `
     gap: 8px;
     justify-content: flex-end;
     margin-left: auto;
+  }
+
+  .project-ticket-create-footer {
+    /*
+     * CDXC:ProjectBoard 2026-05-28-12:32:
+     * New-ticket creation now has two outcomes: queue the bead, or create it and
+     * immediately launch work in the selected execution location. Keep agent and
+     * location controls grouped with Create & Start so plain Create remains a
+     * simple board operation while the start path is explicit.
+     */
+    align-items: end;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .project-ticket-create-start {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    min-width: 0;
+  }
+
+  .project-ticket-create-start-controls {
+    align-items: center;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(150px, 220px) auto;
+    min-width: 0;
+  }
+
+  .project-ticket-start-location,
+  .project-ticket-create-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .project-ticket-create-actions {
+    justify-content: flex-end;
   }
 
   .project-ticket-meta-grid {
@@ -2572,6 +2935,10 @@ styleElement.textContent = `
      * Ticket conversation rows must preserve the right-side jump/unlink controls
      * at narrow widths while the associated session name truncates with an
      * ellipsis and exposes the full name through the hover tooltip.
+     *
+     * CDXC:ProjectBoard 2026-05-28-10:14:
+     * The associated-session tooltip should open below the session name so it
+     * does not cover the title area while inspecting a ticket.
      */
     min-width: 0;
     overflow: hidden;
@@ -2641,6 +3008,17 @@ styleElement.textContent = `
 
   @media (max-width: 900px) {
     .project-board-shell { padding: 18px 16px; }
+    .project-ticket-create-footer,
+    .project-ticket-create-start-controls {
+      grid-template-columns: 1fr;
+    }
+    .project-ticket-create-actions {
+      justify-content: stretch;
+    }
+    .project-ticket-create-actions > button,
+    .project-ticket-start-location > button {
+      flex: 1 1 auto;
+    }
     .project-ticket-conversation-controls { grid-template-columns: 1fr; }
     .project-ticket-meta-grid { grid-template-columns: 1fr; }
   }
