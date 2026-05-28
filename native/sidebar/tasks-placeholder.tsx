@@ -990,25 +990,27 @@ function ProjectBoardApp() {
                   : "Confirm delete"
                 : "Delete"}
             </Button>
-            <Button
-              disabled={
-                detail.isDeleting ||
-                detail.isSaving ||
-                conversationState.agents.length === 0 ||
-                Boolean(conversationAction)
-              }
-              onClick={() => void startTicketWork()}
-              type="button"
-              variant="outline"
-            >
-              <IconLink data-icon="inline-start" />
-              {conversationAction?.kind === "start" && conversationAction.beadId === detail.ticket?.id
-                ? "Starting"
-                : "Start work"}
-            </Button>
-            <Button disabled={detail.isDeleting || detail.isSaving} onClick={() => void saveTicketDetail()}>
-              {detail.isSaving ? "Saving" : "Save"}
-            </Button>
+            <div className="project-ticket-dialog-primary-actions">
+              <Button
+                disabled={
+                  detail.isDeleting ||
+                  detail.isSaving ||
+                  conversationState.agents.length === 0 ||
+                  Boolean(conversationAction)
+                }
+                onClick={() => void startTicketWork()}
+                type="button"
+                variant="outline"
+              >
+                <IconLink data-icon="inline-start" />
+                {conversationAction?.kind === "start" && conversationAction.beadId === detail.ticket?.id
+                  ? "Starting"
+                  : "Start work"}
+              </Button>
+              <Button disabled={detail.isDeleting || detail.isSaving} onClick={() => void saveTicketDetail()}>
+                {detail.isSaving ? "Saving" : "Save"}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -2147,7 +2149,24 @@ styleElement.textContent = `
   }
 
   .project-ticket-dialog-footer {
+    /*
+     * CDXC:ProjectBoardTicketEditor 2026-05-28-08:02:
+     * The ticket editor footer should not distribute Delete, Start work, and Save as left, center, and right islands. Keep the destructive Delete action isolated while grouping the workflow and save actions together at the right edge.
+     */
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
     justify-content: space-between;
+  }
+
+  .project-ticket-dialog-primary-actions {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-left: auto;
   }
 
   .project-ticket-meta-grid {
