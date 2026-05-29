@@ -73,7 +73,14 @@ export type BeadsBridgeAction =
   | "updateTitle";
 
 export type BeadsBridgeRequest = {
+  /*
+   * CDXC:PromptAgents 2026-05-29-10:53:
+   * Project-board generated ticket titles should use the board's selected/default
+   * prompt agent instead of hardcoding Codex in the native Beads bridge.
+   */
   action: BeadsBridgeAction;
+  agentCommand?: string;
+  agentId?: string;
   comment?: string;
   cwd: string;
   dependsOnId?: string;

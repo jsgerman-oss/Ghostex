@@ -27,6 +27,12 @@ export type BeadConversationLink = {
 
 export type ProjectBoardAgentOption = {
   agentId: string;
+  /**
+   * CDXC:PromptAgents 2026-05-29-10:53:
+   * Project-board title generation runs through the native Beads bridge, so the
+   * board state must carry the configured prompt-agent command as well as the id.
+   */
+  command?: string;
   label: string;
 };
 

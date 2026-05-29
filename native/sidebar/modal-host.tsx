@@ -30,6 +30,7 @@ import {
 } from "../../sidebar/worktree-delete-modal";
 import { WorktreeCreateModal } from "../../sidebar/worktree-create-modal";
 import type { SidebarActionType } from "../../shared/sidebar-commands";
+import type { SidebarAgentButton } from "../../shared/sidebar-agents";
 import type {
   ExtensionToSidebarMessage,
   SidebarAgentHookStatusMessage,
@@ -154,6 +155,13 @@ type AppModalHostMessage =
 type RenameSessionModalState = {
   initialTitle: string;
   sessionId: string;
+};
+
+type PromptAgentModalKey = "gitCommit" | "renameSession";
+
+const PROMPT_AGENT_MODAL_STORAGE_KEYS: Record<PromptAgentModalKey, string> = {
+  gitCommit: "ghostex.promptAgent.gitCommit",
+  renameSession: "ghostex.promptAgent.renameSession",
 };
 
 type FirstUserMessageModalState = {
@@ -1464,6 +1472,39 @@ function getSettingsInitialTab(modal: AppModalKind | undefined): SettingsModalTa
   return "settings";
 }
 
+function readPromptAgentModalOverride(modal: PromptAgentModalKey): string | undefined {
+  const value = localStorage.getItem(PROMPT_AGENT_MODAL_STORAGE_KEYS[modal])?.trim();
+  return value || undefined;
+}
+
+function writePromptAgentModalOverride(modal: PromptAgentModalKey, agentId: string): void {
+  const normalizedAgentId = agentId.trim();
+  if (!normalizedAgentId) {
+    localStorage.removeItem(PROMPT_AGENT_MODAL_STORAGE_KEYS[modal]);
+    return;
+  }
+  localStorage.setItem(PROMPT_AGENT_MODAL_STORAGE_KEYS[modal], normalizedAgentId);
+}
+
+function clearPromptAgentModalOverrides(): void {
+  for (const key of Object.values(PROMPT_AGENT_MODAL_STORAGE_KEYS)) {
+    localStorage.removeItem(key);
+  }
+}
+
+function resolvePromptAgentModalSelection(
+  agents: readonly SidebarAgentButton[],
+  savedAgentId: string | undefined,
+  defaultAgentId: string | undefined,
+): string | undefined {
+  const commandAgents = agents.filter((agent) => agent.agentId !== "t3" && agent.command?.trim());
+  return (
+    commandAgents.find((agent) => agent.agentId === savedAgentId)?.agentId ??
+    commandAgents.find((agent) => agent.agentId === defaultAgentId)?.agentId ??
+    commandAgents[0]?.agentId
+  );
+}
+
 function AppModalHost() {
   const {
     activeModal,
@@ -1501,6 +1542,23 @@ function AppModalHost() {
   );
   const customThemeColor = useSidebarStore((state) => state.hud.customThemeColor);
   const theme = useSidebarStore((state) => state.hud.theme);
+  const [gitCommitPromptAgentId, setGitCommitPromptAgentId] = useState(() =>
+    readPromptAgentModalOverride("gitCommit"),
+  );
+  const [renamePromptAgentId, setRenamePromptAgentId] = useState(() =>
+    readPromptAgentModalOverride("renameSession"),
+  );
+  const previousDefaultPromptAgentIdRef = useRef(settings?.defaultPromptAgentId);
+  const resolvedGitCommitPromptAgentId = resolvePromptAgentModalSelection(
+    agents,
+    gitCommitPromptAgentId,
+    settings?.defaultPromptAgentId,
+  );
+  const resolvedRenamePromptAgentId = resolvePromptAgentModalSelection(
+    agents,
+    renamePromptAgentId,
+    settings?.defaultPromptAgentId,
+  );
   const isSettingsRenderable = isSettingsModalKind(activeModal) && settings !== undefined;
   const settingsInitialTab = getSettingsInitialTab(activeModal);
   const isActiveModalRenderable = isModalRenderable({
@@ -1519,6 +1577,35 @@ function AppModalHost() {
     t3ThreadId,
     worktree,
   });
+
+  useEffect(() => {
+    const previousDefaultPromptAgentId = previousDefaultPromptAgentIdRef.current;
+    const nextDefaultPromptAgentId = settings?.defaultPromptAgentId;
+    previousDefaultPromptAgentIdRef.current = nextDefaultPromptAgentId;
+    if (!previousDefaultPromptAgentId || previousDefaultPromptAgentId === nextDefaultPromptAgentId) {
+      return;
+    }
+
+    /*
+     * CDXC:PromptAgents 2026-05-29-10:53:
+     * Per-modal prompt-agent choices are temporary overrides. When the global
+     * Settings default prompt agent changes, clear every modal override so Git
+     * commit review and Rename Generate Name immediately show the new default.
+     */
+    clearPromptAgentModalOverrides();
+    setGitCommitPromptAgentId(undefined);
+    setRenamePromptAgentId(undefined);
+  }, [settings?.defaultPromptAgentId]);
+
+  const updateGitCommitPromptAgentId = useCallback((agentId: string) => {
+    writePromptAgentModalOverride("gitCommit", agentId);
+    setGitCommitPromptAgentId(agentId);
+  }, []);
+
+  const updateRenamePromptAgentId = useCallback((agentId: string) => {
+    writePromptAgentModalOverride("renameSession", agentId);
+    setRenamePromptAgentId(agentId);
+  }, []);
 
   /**
    * CDXC:AppModals 2026-05-08-09:00
@@ -1766,6 +1853,7 @@ function AppModalHost() {
         }}
         onConfirm={(requestId, message, options) => {
           vscode.postMessage({
+            agentId: options.agentId,
             commitOnNewRef: options.commitOnNewRef,
             deleteWorktreeAfter: options.deleteWorktreeAfter,
             filePaths: options.filePaths,
@@ -1777,6 +1865,7 @@ function AppModalHost() {
         }}
         onDirectMerge={(requestId, message, options) => {
           vscode.postMessage({
+            agentId: options.agentId,
             conflictAgentId: options.conflictAgentId,
             deleteWorktreeAfter: options.deleteWorktreeAfter,
             filePaths: options.filePaths,
@@ -1786,13 +1875,15 @@ function AppModalHost() {
           });
           closeModal();
         }}
-        onMultipleCommits={(requestId) => {
-          vscode.postMessage({ requestId, type: "runSidebarGitMultipleCommits" });
+        onMultipleCommits={(requestId, agentId) => {
+          vscode.postMessage({ agentId, requestId, type: "runSidebarGitMultipleCommits" });
           closeModal();
         }}
         onOpenFileDiff={(filePath) => {
           vscode.postMessage({ filePath, type: "openSidebarGitChangedFileDiff" });
         }}
+        onPromptAgentIdChange={updateGitCommitPromptAgentId}
+        promptAgentId={resolvedGitCommitPromptAgentId}
       />
       <GitFileDiffModal
         draft={
@@ -1871,7 +1962,6 @@ function AppModalHost() {
         }}
       />
       <SettingsModal
-        accessibilityPermissionGranted={window.__ghostex_NATIVE_HOST__?.accessibilityPermissionGranted}
         agentHookStatus={agentHookStatus}
         agentHookStatusLoading={agentHookStatusLoading}
         initialSection={settingsInitialSection}
@@ -2041,6 +2131,7 @@ function AppModalHost() {
         }}
       />
       <SessionRenameModal
+        agents={agents}
         initialTitle={renameSession?.initialTitle ?? ""}
         isOpen={activeModal === "renameSession" && renameSession !== undefined}
         onCancel={closeModal}
@@ -2049,6 +2140,7 @@ function AppModalHost() {
             return;
           }
           vscode.postMessage({
+            agentId: options?.agentId,
             sessionId: renameSession.sessionId,
             ...(options?.shouldGenerateTitle ? { shouldGenerateTitle: true } : {}),
             title,
@@ -2056,6 +2148,8 @@ function AppModalHost() {
           });
           closeModal();
         }}
+        onPromptAgentIdChange={updateRenamePromptAgentId}
+        promptAgentId={resolvedRenamePromptAgentId}
       />
       <CommandConfigModal
         draft={config.commandDraft ?? createEmptyCommandDraft()}

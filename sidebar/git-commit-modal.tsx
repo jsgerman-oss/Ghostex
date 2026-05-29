@@ -26,6 +26,7 @@ import { ConfirmationModal } from "./confirmation-modal";
 
 export type GitCommitModalDraft = {
   action?: SidebarGitAction;
+  agentId?: string;
   branch?: string | null;
   changedFiles?: SidebarGitChangedFile[];
   confirmLabel: string;
@@ -49,15 +50,27 @@ export type GitCommitModalProps = {
   onConfirm: (
     requestId: string,
     message: string,
-    options: { commitOnNewRef?: boolean; deleteWorktreeAfter: boolean; filePaths?: string[] },
+    options: {
+      agentId?: string;
+      commitOnNewRef?: boolean;
+      deleteWorktreeAfter: boolean;
+      filePaths?: string[];
+    },
   ) => void;
   onDirectMerge?: (
     requestId: string,
     message: string,
-    options: { conflictAgentId: string; deleteWorktreeAfter: boolean; filePaths?: string[] },
+    options: {
+      agentId?: string;
+      conflictAgentId: string;
+      deleteWorktreeAfter: boolean;
+      filePaths?: string[];
+    },
   ) => void;
-  onMultipleCommits: (requestId: string) => void;
+  onMultipleCommits: (requestId: string, agentId?: string) => void;
   onOpenFileDiff: (filePath: string) => void;
+  onPromptAgentIdChange?: (agentId: string) => void;
+  promptAgentId?: string;
 };
 
 export function GitCommitModal({
@@ -69,6 +82,8 @@ export function GitCommitModal({
   onDirectMerge,
   onMultipleCommits,
   onOpenFileDiff,
+  onPromptAgentIdChange,
+  promptAgentId,
 }: GitCommitModalProps) {
   const [message, setMessage] = useState(buildDraftMessage(draft));
   const [deleteWorktreeAfter, setDeleteWorktreeAfter] = useState(
@@ -77,14 +92,25 @@ export function GitCommitModal({
   const [excludedFiles, setExcludedFiles] = useState<Set<string>>(() => new Set());
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isDirectMergeConfirmOpen, setIsDirectMergeConfirmOpen] = useState(false);
+  const [localPromptAgentId, setLocalPromptAgentId] = useState("");
   const commandAgents = useMemo(
     () => agents.filter((agent) => agent.command?.trim()),
     [agents],
   );
+  const promptAgents = useMemo(
+    () => commandAgents.filter((agent) => agent.agentId !== "t3"),
+    [commandAgents],
+  );
+  const effectivePromptAgentId = promptAgentId ?? localPromptAgentId;
+  const selectedPromptAgentId =
+    promptAgents.find((agent) => agent.agentId === effectivePromptAgentId)?.agentId ??
+    promptAgents[0]?.agentId ??
+    "";
   const [selectedMergeAgentId, setSelectedMergeAgentId] = useState(
     draft.mergeAgentId ?? commandAgents[0]?.agentId ?? "",
   );
   const descriptionId = useId();
+  const generateAgentId = useId();
   const mergeAgentId = useId();
   const titleId = useId();
   const changedFiles = draft.changedFiles ?? [];
@@ -151,6 +177,14 @@ export function GitCommitModal({
     });
   };
 
+  const handlePromptAgentChange = (agentId: string) => {
+    if (onPromptAgentIdChange) {
+      onPromptAgentIdChange(agentId);
+      return;
+    }
+    setLocalPromptAgentId(agentId);
+  };
+
   /*
    * CDXC:Worktrees 2026-05-18-23:07:
    * The git review modal must support three worktree-specific choices: file selection, skipping the commit-message field when only push/PR is needed, and deleting the temporary worktree after a successful action.
@@ -169,6 +203,11 @@ export function GitCommitModal({
    *
    * CDXC:WorktreeMerge 2026-05-27-06:25:
    * Worktree PR review keeps the T3-style commit/push/PR flow as the primary action, but the same review modal also offers an explicit merge-to-main action. Direct merge requires a remembered per-project conflict agent so merge conflicts can open an agent session on main with the resolution prompt staged but unsent.
+   *
+   * CDXC:PromptAgents 2026-05-29-10:53:
+   * Commit review exposes a plain prompt-agent dropdown for generated commit
+   * messages and Multiple Commits. The modal host remembers this modal-specific
+   * selection until Settings -> Default Prompt Agent changes.
    */
   return (
     <>
@@ -288,6 +327,32 @@ export function GitCommitModal({
                 />
               </label>
             ) : null}
+            {promptAgents.length > 0 ? (
+              <label className="command-config-field" htmlFor={generateAgentId}>
+                <span className="command-config-label">Generate with</span>
+                <Select
+                  onValueChange={handlePromptAgentChange}
+                  value={selectedPromptAgentId}
+                >
+                  <SelectTrigger
+                    aria-label="Generate commit agent"
+                    className="git-commit-merge-agent-select"
+                    id={generateAgentId}
+                  >
+                    <SelectValue placeholder="Select agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {promptAgents.map((agent) => (
+                        <SelectItem key={agent.agentId} value={agent.agentId}>
+                          {agent.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </label>
+            ) : null}
             {draft.isWorktree ? (
               <label className="command-config-toggle git-commit-delete-worktree-toggle">
                 <input
@@ -354,6 +419,7 @@ export function GitCommitModal({
                 disabled={!canConfirm}
                 onClick={() =>
                   onConfirm(draft.requestId, trimmedMessage, {
+                    agentId: selectedPromptAgentId || undefined,
                     commitOnNewRef: true,
                     deleteWorktreeAfter,
                     filePaths: selectedFilePaths,
@@ -369,7 +435,7 @@ export function GitCommitModal({
               <Button
                 className="git-commit-modal-button"
                 disabled={!canConfirm}
-                onClick={() => onMultipleCommits(draft.requestId)}
+                onClick={() => onMultipleCommits(draft.requestId, selectedPromptAgentId || undefined)}
                 type="button"
                 variant="outline"
               >
@@ -381,6 +447,7 @@ export function GitCommitModal({
               disabled={!canConfirm}
               onClick={() =>
                 onConfirm(draft.requestId, trimmedMessage, {
+                  agentId: selectedPromptAgentId || undefined,
                   deleteWorktreeAfter,
                   filePaths: selectedFilePaths,
                 })
@@ -403,6 +470,7 @@ export function GitCommitModal({
           }
           setIsDirectMergeConfirmOpen(false);
           onDirectMerge(draft.requestId, trimmedMessage, {
+            agentId: selectedPromptAgentId || undefined,
             conflictAgentId: selectedMergeAgentId,
             deleteWorktreeAfter,
             filePaths: selectedFilePaths,

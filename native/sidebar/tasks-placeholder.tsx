@@ -246,7 +246,7 @@ function ProjectBoardApp() {
    * Poll only while the page is visible, coalesce overlapping refreshes, refresh labels less often than issues, and cap mounted lane/dependency rows so thousand-bead projects do not repeatedly rebuild an unbounded DOM.
    *
    * CDXC:ProjectBoard 2026-05-26-10:08:
-   * Creating a ticket with an empty title must not keep the modal blocked while Codex generates a title.
+   * Creating a ticket with an empty title must not keep the modal blocked while the selected/default prompt agent generates a title.
    * Create the Beads issue first with an explicit "Generating title..." card title, close the modal, refresh the board, then replace that temporary title after generation finishes.
    *
    * CDXC:ProjectBoard 2026-05-26-10:08:
@@ -689,6 +689,8 @@ function ProjectBoardApp() {
       const title = shouldGenerateTitle ? PROJECT_BOARD_GENERATING_TITLE : requestedTitle;
       let shouldStartCreatedTicket = startAfterCreate;
       const estimate = tshirtToEstimate(draft.tshirt);
+      const promptAgentId = selectedAgentId || conversationState.defaultAgentId;
+      const promptAgent = conversationState.agents.find((agent) => agent.agentId === promptAgentId);
       const createdPayload = await runBeads({
         action: "create",
         description: prompt,
@@ -722,12 +724,17 @@ function ProjectBoardApp() {
             startAfterCreate,
           });
           const generated = normalizeBeadsPayload<{ title?: string }>(
-            await runBeads({ action: "generateTitle", prompt }),
+            await runBeads({
+              action: "generateTitle",
+              agentCommand: promptAgent?.command,
+              agentId: promptAgentId,
+              prompt,
+            }),
             {},
           );
           const generatedTitle = generated.title?.trim();
           if (!generatedTitle) {
-            throw new Error("Codex title generation returned an empty title.");
+            throw new Error("Prompt-agent title generation returned an empty title.");
           }
           await runBeads({
             action: "updateTitle",

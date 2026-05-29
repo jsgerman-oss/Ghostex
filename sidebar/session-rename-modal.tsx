@@ -16,16 +16,28 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import type { SidebarAgentButton } from "../shared/sidebar-agents";
 import { normalizeSessionRenameTitle } from "../shared/session-grid-contract";
 
 const SESSION_RENAME_GENERATE_NAME_THRESHOLD = 70;
 
 export type SessionRenameModalProps = {
+  agents?: SidebarAgentButton[];
   initialTitle: string;
   isOpen: boolean;
   onCancel: () => void;
-  onConfirm: (title: string, options?: { shouldGenerateTitle?: boolean }) => void;
+  onConfirm: (title: string, options?: { agentId?: string; shouldGenerateTitle?: boolean }) => void;
+  onPromptAgentIdChange?: (agentId: string) => void;
+  promptAgentId?: string;
 };
 
 /**
@@ -36,14 +48,25 @@ export type SessionRenameModalProps = {
  * behavior remain exactly the same.
  */
 export function SessionRenameModal({
+  agents = [],
   initialTitle,
   isOpen,
   onCancel,
   onConfirm,
+  onPromptAgentIdChange,
+  promptAgentId,
 }: SessionRenameModalProps) {
   const [title, setTitle] = useState(initialTitle);
+  const [localPromptAgentId, setLocalPromptAgentId] = useState("");
+  const agentSelectId = useId();
   const inputId = useId();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const promptAgents = agents.filter((agent) => agent.agentId !== "t3" && agent.command?.trim());
+  const effectivePromptAgentId = promptAgentId ?? localPromptAgentId;
+  const selectedPromptAgentId =
+    promptAgents.find((agent) => agent.agentId === effectivePromptAgentId)?.agentId ??
+    promptAgents[0]?.agentId ??
+    "";
 
   useEffect(() => {
     if (!isOpen) {
@@ -89,7 +112,12 @@ export function SessionRenameModal({
       return;
     }
 
-    onConfirm(normalizedTitle, shouldGenerateTitle ? { shouldGenerateTitle: true } : undefined);
+    onConfirm(
+      normalizedTitle,
+      shouldGenerateTitle
+        ? { agentId: selectedPromptAgentId || undefined, shouldGenerateTitle: true }
+        : undefined,
+    );
   };
 
   const submitRename = (event: FormEvent<HTMLFormElement>) => {
@@ -112,10 +140,23 @@ export function SessionRenameModal({
      * renameSession command path. Bind Enter at the input so WKWebView
      * form-submission differences cannot leave the modal inert, but route
      * entered text longer than 70 characters to Generate Name.
+     *
+     * CDXC:PromptAgents 2026-05-29-10:53:
+     * Generate Name exposes a plain agent dropdown so users can choose the
+     * prompt agent per modal without changing the global default. The host
+     * remembers that modal choice and resets it when Settings default changes.
      */
     event.preventDefault();
     event.stopPropagation();
     confirmTitle(event.currentTarget.value, canGenerateTitle);
+  };
+
+  const handlePromptAgentChange = (agentId: string) => {
+    if (onPromptAgentIdChange) {
+      onPromptAgentIdChange(agentId);
+      return;
+    }
+    setLocalPromptAgentId(agentId);
   };
 
   return (
@@ -155,6 +196,28 @@ export function SessionRenameModal({
                 {trimmedTitle.length} / {SESSION_RENAME_GENERATE_NAME_THRESHOLD} characters
               </FieldDescription>
             </Field>
+            {promptAgents.length > 0 ? (
+              <Field>
+                <FieldLabel htmlFor={agentSelectId}>Generate with</FieldLabel>
+                <Select
+                  onValueChange={handlePromptAgentChange}
+                  value={selectedPromptAgentId}
+                >
+                  <SelectTrigger aria-label="Generate name agent" id={agentSelectId}>
+                    <SelectValue placeholder="Select agent" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {promptAgents.map((agent) => (
+                        <SelectItem key={agent.agentId} value={agent.agentId}>
+                          {agent.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : null}
           </FieldGroup>
           <DialogFooter>
             <Button onClick={onCancel} type="button" variant="outline">

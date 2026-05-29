@@ -66,6 +66,8 @@ private let projectBoardImageResponseEventName = "ghostex-project-board-image-re
 
 private struct ProjectBeadsBridgeRequest: Decodable {
   let action: String
+  let agentCommand: String?
+  let agentId: String?
   let comment: String?
   let cwd: String
   let dependsOnId: String?
@@ -6894,7 +6896,9 @@ final class TerminalWorkspaceView: NSView {
       if request.action == "generateTitle" {
         let title = try projectBeadsGenerateTitle(
           cwd: cwd,
-          prompt: try projectBeadsRequired(request.prompt, field: "prompt"))
+          prompt: try projectBeadsRequired(request.prompt, field: "prompt"),
+          agentCommand: request.agentCommand,
+          agentId: request.agentId)
         let payload = try JSONSerialization.data(withJSONObject: ["title": title])
         return ProjectBeadsBridgeResponse(
           error: nil,
@@ -7121,7 +7125,12 @@ final class TerminalWorkspaceView: NSView {
     return issues
   }
 
-  private static func projectBeadsGenerateTitle(cwd: URL, prompt: String) throws -> String {
+  private static func projectBeadsGenerateTitle(
+    cwd: URL,
+    prompt: String,
+    agentCommand: String?,
+    agentId: String?
+  ) throws -> String {
     /**
      CDXC:ProjectBoard 2026-05-23-14:18:
      Ticket title autogeneration must reuse the same Codex summarization policy as native session first-prompt naming so empty ticket titles stay consistent across Ghostex surfaces.
@@ -7148,8 +7157,14 @@ final class TerminalWorkspaceView: NSView {
     - Print only the final result to stdout.
     """
     let delimiter = "ghostex_SESSION_TITLE_\(Int(Date().timeIntervalSince1970))"
+    let generationCommand = try projectBeadsPromptGenerationCommand(agentCommand: agentCommand, agentId: agentId)
+    /*
+     CDXC:PromptAgents 2026-05-29-10:53:
+     Project-board generated titles must use the selected/default prompt agent
+     from the board instead of hardcoding Codex in the Swift Beads bridge.
+     */
     let command = """
-    codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"' - <<'\(delimiter)'
+    \(generationCommand) <<'\(delimiter)'
     \(generationPrompt)
     \(delimiter)
     """
@@ -7169,12 +7184,12 @@ final class TerminalWorkspaceView: NSView {
     if process.terminationStatus != 0 {
       let stderr = stderrCollector().trimmingCharacters(in: .whitespacesAndNewlines)
       throw ProjectBeadsBridgeError.invalidRequest(
-        stderr.isEmpty ? "Codex title generation failed." : stderr)
+        stderr.isEmpty ? "Prompt-agent title generation failed." : stderr)
     }
     let stdout = stdoutCollector().trimmingCharacters(in: .whitespacesAndNewlines)
     guard let line = stdout.split(whereSeparator: \.isNewline).map(String.init).first(where: { !$0.isEmpty })
     else {
-      throw ProjectBeadsBridgeError.invalidRequest("Codex title generation returned an empty title.")
+      throw ProjectBeadsBridgeError.invalidRequest("Prompt-agent title generation returned an empty title.")
     }
     let sanitized =
       line
@@ -7183,9 +7198,37 @@ final class TerminalWorkspaceView: NSView {
       .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
       .replacingOccurrences(of: #"[.…]+$"#, with: "", options: .regularExpression)
     guard !sanitized.isEmpty else {
-      throw ProjectBeadsBridgeError.invalidRequest("Codex title generation returned an empty title.")
+      throw ProjectBeadsBridgeError.invalidRequest("Prompt-agent title generation returned an empty title.")
     }
     return String(sanitized.prefix(39))
+  }
+
+  private static func projectBeadsPromptGenerationCommand(agentCommand: String?, agentId: String?) throws -> String {
+    let normalizedAgentId = agentId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let command = agentCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let normalizedAgentId, !normalizedAgentId.isEmpty else {
+      return "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
+    }
+    if let command, !command.isEmpty {
+      if normalizedAgentId == "codex" {
+        return "\(command) exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
+      }
+      if normalizedAgentId == "claude" || normalizedAgentId == "gemini" {
+        return "\(command) -p"
+      }
+      return command
+    }
+    switch normalizedAgentId {
+    case "codex":
+      return "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
+    case "claude":
+      return "claude -p"
+    case "gemini":
+      return "gemini -p"
+    default:
+      throw ProjectBeadsBridgeError.invalidRequest(
+        "\(normalizedAgentId) does not support background title generation.")
+    }
   }
 
   private static func projectBeadsRequired(_ value: String?, field: String) throws -> String {

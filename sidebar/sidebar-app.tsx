@@ -2986,6 +2986,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           onConfirm={(requestId, message, options) => {
             setGitCommitDraft(undefined);
             vscode.postMessage({
+              agentId: options.agentId,
               commitOnNewRef: options.commitOnNewRef,
               deleteWorktreeAfter: options.deleteWorktreeAfter,
               filePaths: options.filePaths,
@@ -2997,6 +2998,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           onDirectMerge={(requestId, message, options) => {
             setGitCommitDraft(undefined);
             vscode.postMessage({
+              agentId: options.agentId,
               conflictAgentId: options.conflictAgentId,
               deleteWorktreeAfter: options.deleteWorktreeAfter,
               filePaths: options.filePaths,
@@ -3005,9 +3007,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
               type: "confirmSidebarGitDirectMerge",
             });
           }}
-          onMultipleCommits={(requestId) => {
+          onMultipleCommits={(requestId, agentId) => {
             setGitCommitDraft(undefined);
-            vscode.postMessage({ requestId, type: "runSidebarGitMultipleCommits" });
+            vscode.postMessage({ agentId, requestId, type: "runSidebarGitMultipleCommits" });
           }}
           onOpenFileDiff={(filePath) => {
             vscode.postMessage({ filePath, type: "openSidebarGitChangedFileDiff" });
