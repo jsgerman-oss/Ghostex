@@ -135,7 +135,27 @@ if [[ -d "$RESOURCE_BIN_PATH" ]]; then
 	done
 fi
 
+sign_lid_sleep_helper() {
+	local helper_executable="$1"
+	if [[ ! -f "$helper_executable" ]]; then
+		return 0
+	fi
+	if ! file "$helper_executable" | grep -q 'Mach-O'; then
+		return 0
+	fi
+	# CDXC:TitlebarKeepAwake 2026-05-29-19:12: The privileged lid-sleep helper must be Developer ID signed with hardened runtime and a secure timestamp before the outer app is signed. Release builds must not ship debug entitlements such as get-task-allow on this Mach-O.
+	codesign \
+		--force \
+		--options runtime \
+		"$CODE_SIGN_TIMESTAMP_FLAG" \
+		--sign "$CODE_SIGN_IDENTITY" \
+		"$helper_executable"
+}
+
 LAUNCH_SERVICES_PATH="$APP_PATH/Contents/Library/LaunchServices"
+if [[ -n "${GHOSTEX_LID_SLEEP_HELPER_LABEL:-}" ]]; then
+	sign_lid_sleep_helper "$LAUNCH_SERVICES_PATH/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
+fi
 if [[ -d "$LAUNCH_SERVICES_PATH" ]]; then
 	# CDXC:TitlebarKeepAwake 2026-05-28-19:28: The bundled lid-sleep helper is a standalone Mach-O that launchd installs as root after user approval. Sign it before the outer app so the helper and app retain a verifiable relationship for runtime authorization.
 	find "$LAUNCH_SERVICES_PATH" \
@@ -143,15 +163,13 @@ if [[ -d "$LAUNCH_SERVICES_PATH" ]]; then
 		-perm -111 \
 		-print0 |
 		while IFS= read -r -d '' helper_executable; do
-			if file "$helper_executable" | grep -q 'Mach-O'; then
-				codesign \
-					--force \
-					--options runtime \
-					"$CODE_SIGN_TIMESTAMP_FLAG" \
-					--sign "$CODE_SIGN_IDENTITY" \
-					"$helper_executable"
-			fi
+			sign_lid_sleep_helper "$helper_executable"
 		done
+fi
+RESOURCES_LID_SLEEP_HELPER="$APP_PATH/Contents/Resources/${GHOSTEX_LID_SLEEP_HELPER_LABEL:-}"
+if [[ -n "${GHOSTEX_LID_SLEEP_HELPER_LABEL:-}" && -e "$RESOURCES_LID_SLEEP_HELPER" ]]; then
+	echo "Unexpected lid sleep helper copy in Contents/Resources. Remove it before signing: $RESOURCES_LID_SLEEP_HELPER" >&2
+	exit 1
 fi
 
 codesign \

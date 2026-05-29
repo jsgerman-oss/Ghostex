@@ -600,6 +600,11 @@ copy_lid_sleep_helper() {
 	mkdir -p "$helper_dir"
 	cp "$helper_source" "$helper_dir/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
 	chmod 755 "$helper_dir/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
+	local resources_helper="$app_path/Contents/Resources/$GHOSTEX_LID_SLEEP_HELPER_LABEL"
+	if [[ -e "$resources_helper" ]]; then
+		# CDXC:TitlebarKeepAwake 2026-05-29-19:12: Xcode copies the helper tool into Contents/Resources when ghostex depends on GhostexLidSleepHelper. Public releases install only the LaunchServices copy, and leaving the adhoc Resources binary breaks notarization.
+		rm -f "$resources_helper"
+	fi
 }
 
 copy_cef_runtime() {

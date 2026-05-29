@@ -220,3 +220,8 @@ targets:
         PRODUCT_NAME: ${GHOSTEX_LID_SLEEP_HELPER_LABEL}
         SWIFT_OBJC_BRIDGING_HEADER: ""
         SWIFT_VERSION: "5.0"
+      configs:
+        Release:
+          # CDXC:TitlebarKeepAwake 2026-05-29-19:12: Release builds notarize the bundled lid-sleep helper as a standalone Mach-O. Keep hardened runtime enabled and omit debug entitlements such as get-task-allow so Apple accepts the helper inside public DMGs.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+          ENABLE_HARDENED_RUNTIME: YES
