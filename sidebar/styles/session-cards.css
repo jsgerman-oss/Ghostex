@@ -1979,6 +1979,19 @@
   width: 12px;
 }
 
+/*
+ * CDXC:SidebarSessions 2026-05-29-19:03:
+ * macOS sidebar session buttons should not show the right-edge working timer
+ * spinner. Keep left-side Delayed Send clocks and other card identity chrome
+ * intact, but remove the passive trailing spinner from the reference sidebar
+ * row so the title remains the primary scan target.
+ */
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-activity="working"]
+  .session-status-dot-inline {
+  display: none;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-status-dot-anchored {
   display: none;
 }
