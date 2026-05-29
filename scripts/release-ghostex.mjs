@@ -25,6 +25,22 @@ const config = {
   installCommand: "brew install --cask maddada/tap/ghostex",
 };
 
+/*
+ CDXC:ReleaseAutomation 2026-05-29-19:12:
+ Public releases can spend many minutes in Xcode builds and Apple notarization.
+ Use explicit step timeouts and heartbeat logs so release operators see progress
+ instead of waiting on a silent shell for twenty-plus minutes.
+ */
+const releaseTimeouts = {
+  typecheckMs: 8 * 60 * 1000,
+  testMs: 12 * 60 * 1000,
+  buildArchMs: 50 * 60 * 1000,
+  notaryArchMs: 45 * 60 * 1000,
+  brewFetchMs: 15 * 60 * 1000,
+  overallMs: 150 * 60 * 1000,
+  heartbeatMs: 60 * 1000,
+};
+
 const architectures = [
   {
     arch: "arm64",
@@ -65,6 +81,12 @@ Options:
 Expected state:
   Run this only after the agent/user has split-committed feature changes,
   updated CHANGELOG.md and AllFeatures.md, and pushed main.
+
+Timeouts and progress:
+  Build steps log heartbeat updates about every minute.
+  Per-arch build timeout: 50 minutes.
+  Per-arch notarization timeout: 45 minutes.
+  Overall release timeout: 150 minutes.
 `;
 }
 
@@ -206,6 +228,102 @@ function run(command, options = {}) {
 async function capture(command, options = {}) {
   const result = await run(command, { ...options, stdio: "pipe" });
   return result.stdout.trim();
+}
+
+function formatElapsedSeconds(startedAt) {
+  const elapsedSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+async function runWithHeartbeat(command, options = {}) {
+  const {
+    label = "command",
+    timeoutMs = releaseTimeouts.notaryArchMs,
+    heartbeatMs = releaseTimeouts.heartbeatMs,
+    cwd = repoRoot,
+    env = process.env,
+  } = options;
+  const startedAt = Date.now();
+  const timeoutMinutes = Math.max(1, Math.round(timeoutMs / 60_000));
+  console.log(`${label}: starting (timeout ${timeoutMinutes} min)`);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(command, {
+      cwd,
+      env: { ...process.env, ...env },
+      shell: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const heartbeat = setInterval(() => {
+      console.log(`${label}: still running (${formatElapsedSeconds(startedAt)} elapsed)...`);
+    }, heartbeatMs);
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.kill("SIGTERM");
+      clearInterval(heartbeat);
+      reject(
+        new ReleaseError(
+          `${label} timed out after ${formatElapsedSeconds(startedAt)} (${timeoutMinutes} min limit).`,
+        ),
+      );
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      const text = chunk.toString();
+      stdout += text;
+      process.stdout.write(text);
+    });
+    child.stderr.on("data", (chunk) => {
+      const text = chunk.toString();
+      stderr += text;
+      process.stderr.write(text);
+    });
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(heartbeat);
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearInterval(heartbeat);
+      clearTimeout(timeout);
+      if (code === 0) {
+        console.log(`${label}: finished in ${formatElapsedSeconds(startedAt)}`);
+        resolve(stdout.trim());
+      } else {
+        const detail = stderr || stdout;
+        reject(
+          new ReleaseError(
+            `${label} failed (${code}) after ${formatElapsedSeconds(startedAt)}: ${command}${detail ? `\n${detail}` : ""}`,
+          ),
+        );
+      }
+    });
+  });
+}
+
+function assertReleaseWithinOverallBudget(startedAt, stepLabel) {
+  const elapsedMs = Date.now() - startedAt;
+  if (elapsedMs > releaseTimeouts.overallMs) {
+    throw new ReleaseError(
+      `Release exceeded the overall ${Math.round(releaseTimeouts.overallMs / 60_000)} minute budget during ${stepLabel}.`,
+    );
+  }
 }
 
 function isGitNetworkResolutionError(error) {
@@ -725,11 +843,15 @@ async function preflight(version, buildVersion, options) {
   await ensureSigningIdentity();
   await ensureNotaryProfile();
 
+  console.log(
+    `Release timeouts: build ${Math.round(releaseTimeouts.buildArchMs / 60_000)}m/arch, notary ${Math.round(releaseTimeouts.notaryArchMs / 60_000)}m/arch, overall ${Math.round(releaseTimeouts.overallMs / 60_000)}m.`,
+  );
+
   if (!options.skipTypecheck) {
-    await run("bun run typecheck");
+    await run("bun run typecheck", { timeoutMs: releaseTimeouts.typecheckMs });
   }
   if (options.withTests) {
-    await run("bun run test");
+    await run("bun run test", { timeoutMs: releaseTimeouts.testMs });
   }
 
   return {};
@@ -785,7 +907,10 @@ async function buildArch(version, entry) {
   }
 
   logStep(`Build ${entry.arch}`);
-  await run("native/macos/ghostexHost/build-ghostex-host.sh", { env });
+  await run("native/macos/ghostexHost/build-ghostex-host.sh", {
+    env,
+    timeoutMs: releaseTimeouts.buildArchMs,
+  });
 
   const appPathFile = `/tmp/ghostex-${version}-${entry.arch}-app-path`;
   const appPath = await readFile(appPathFile, "utf8").then((value) => value.trim());
@@ -822,6 +947,47 @@ async function validateBuiltApp(version, buildVersion, entry) {
   if (publicKey !== config.sparklePublicKey) {
     throw new ReleaseError(`${entry.arch} SUPublicEDKey mismatch.`);
   }
+
+  await validateLidSleepHelperSigning(entry);
+}
+
+async function validateLidSleepHelperSigning(entry) {
+  const helperName = `${config.bundleId}.LidSleepHelper`;
+  const launchServicesHelper = path.join(entry.appPath, "Contents/Library/LaunchServices", helperName);
+  const resourcesHelper = path.join(entry.appPath, "Contents/Resources", helperName);
+
+  if (existsSync(resourcesHelper)) {
+    throw new ReleaseError(
+      `${entry.arch} still contains an unsigned Resources copy of ${helperName}. Release builds must ship only Contents/Library/LaunchServices/${helperName}.`,
+    );
+  }
+  if (!existsSync(launchServicesHelper)) {
+    throw new ReleaseError(`${entry.arch} is missing bundled lid sleep helper: ${launchServicesHelper}`);
+  }
+
+  const signingDetails = await capture(
+    `codesign -dv --verbose=4 ${shellQuote(launchServicesHelper)} 2>&1`,
+  );
+  if (!/Developer ID Application:/.test(signingDetails)) {
+    throw new ReleaseError(
+      `${entry.arch} lid sleep helper is not Developer ID signed:\n${launchServicesHelper}\n${signingDetails}`,
+    );
+  }
+  if (!/Timestamp=/.test(signingDetails)) {
+    throw new ReleaseError(`${entry.arch} lid sleep helper is missing a secure timestamp: ${launchServicesHelper}`);
+  }
+  if (!/flags=.*runtime/.test(signingDetails)) {
+    throw new ReleaseError(`${entry.arch} lid sleep helper is missing hardened runtime: ${launchServicesHelper}`);
+  }
+
+  const entitlements = await capture(
+    `codesign -d --entitlements :- ${shellQuote(launchServicesHelper)} 2>/dev/null | plutil -p - 2>/dev/null || true`,
+  );
+  if (/get-task-allow/.test(entitlements)) {
+    throw new ReleaseError(
+      `${entry.arch} lid sleep helper still has get-task-allow and cannot be notarized: ${launchServicesHelper}`,
+    );
+  }
 }
 
 async function packageAndNotarize(version, artifactDir, entry) {
@@ -836,8 +1002,12 @@ async function packageAndNotarize(version, artifactDir, entry) {
   const preStapleSha = await capture(`shasum -a 256 ${shellQuote(finalDmg)} | awk '{print $1}'`);
 
   const notaryLogPath = path.join(artifactDir, `ghostex-${version}-${entry.arch}-notary.log`);
-  const notaryOutput = await capture(
+  const notaryOutput = await runWithHeartbeat(
     `xcrun notarytool submit ${shellQuote(finalDmg)} --keychain-profile ${shellQuote(config.notaryProfile)} --wait | tee ${shellQuote(notaryLogPath)}`,
+    {
+      label: `${entry.arch} notarization`,
+      timeoutMs: releaseTimeouts.notaryArchMs,
+    },
   );
   const submissionId = notaryOutput.match(/id:\s*([0-9a-f-]+)/)?.[1] ?? "unknown";
   /*
@@ -1095,10 +1265,14 @@ async function updateHomebrew(version, artifacts, options) {
   const tapCommit = await capture("git rev-parse HEAD", { cwd: tapDir });
 
   if (!options.skipBrewFetch) {
-    await run("brew update --force");
-    await run("brew info --cask maddada/tap/ghostex");
-    await run("brew fetch --force --cask --arch=arm maddada/tap/ghostex");
-    await run("brew fetch --force --cask --arch=intel maddada/tap/ghostex");
+    await run("brew update --force", { timeoutMs: releaseTimeouts.brewFetchMs });
+    await run("brew info --cask maddada/tap/ghostex", { timeoutMs: releaseTimeouts.brewFetchMs });
+    await run("brew fetch --force --cask --arch=arm maddada/tap/ghostex", {
+      timeoutMs: releaseTimeouts.brewFetchMs,
+    });
+    await run("brew fetch --force --cask --arch=intel maddada/tap/ghostex", {
+      timeoutMs: releaseTimeouts.brewFetchMs,
+    });
   }
 
   return { tapDir, tapCommit };
@@ -1163,6 +1337,7 @@ async function main() {
 
   console.log(`Ghostex local release: ${version}`);
   console.log(`Sparkle build version: ${buildVersion}`);
+  const releaseStartedAt = Date.now();
 
   await ensureCleanWorktree();
 
@@ -1174,9 +1349,13 @@ async function main() {
     return;
   }
 
+  assertReleaseWithinOverallBudget(releaseStartedAt, "preflight");
   await preflight(version, buildVersion, options);
+  assertReleaseWithinOverallBudget(releaseStartedAt, "metadata bump");
   await bumpReleaseMetadata(version, buildVersion);
+  assertReleaseWithinOverallBudget(releaseStartedAt, "build and notarize");
   const { artifactDir, artifacts } = await buildAndPackage(version, buildVersion);
+  assertReleaseWithinOverallBudget(releaseStartedAt, "sparkle feeds");
   const sparkleBinDir = await findAndVerifySparkleBinDir();
   await updateSparkleFeeds(version, buildVersion, sparkleBinDir, artifacts);
   const releaseCommit = await commitReleaseMetadata(version, options);
@@ -1187,6 +1366,7 @@ async function main() {
   if (!options.noPush) {
     releaseUrl = await createGithubRelease(version, artifacts);
     await validateLiveSparkleAndAssets(version, buildVersion, sparkleBinDir);
+    assertReleaseWithinOverallBudget(releaseStartedAt, "homebrew update");
     const brewResult = await updateHomebrew(version, artifacts, options);
     tapCommit = brewResult.tapCommit;
   }
