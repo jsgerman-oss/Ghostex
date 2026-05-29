@@ -954,7 +954,10 @@ const ghostex_AGENT_NOTIFY_HOOK_PATH = `${nativeGhostexHomeDirectory()}/hooks/ag
 const GHOSTEX_AGENT_HOOK_STATE_DIR = `${nativeHomeDirectory()}/.ghostexterm`;
 const NATIVE_PI_EXTENSION_PATH = `${nativeHomeDirectory()}/.pi/agent/extensions/ghostex.ts`;
 const DEFAULT_PROMPT_AGENT_ID = "codex";
-const FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS = 1_500;
+const AGENT_PROMPT_READY_DELAY_MS = 4_000;
+const AGENT_PROMPT_STEP_DELAY_MS = 1_000;
+const AGENT_PROMPT_SUBMIT_DELAY_MS = 250;
+const AGENT_PROMPT_TERMINAL_READY_TIMEOUT_MS = 10_000;
 /*
  * CDXC:TitlebarGit 2026-05-25-09:41:
  * The Git review modal's Multiple Commits action should hand the repository to
@@ -1021,7 +1024,6 @@ const WORKSPACE_DOCK_THEME_OPTIONS: ReadonlyArray<{ label: string; value: Sideba
  */
 const GENERATED_SESSION_TITLE_MAX_LENGTH = 39;
 const GENERATED_SESSION_TITLE_SOURCE_MAX_LENGTH = 250;
-const PROJECT_BOARD_AGENT_PROMPT_STAGING_DELAY_MS = 2_500;
 let storedAgents: StoredSidebarAgent[] = [];
 let storedAgentOrder: string[] = [];
 let agents: SidebarAgentButton[] = [];
@@ -1436,6 +1438,8 @@ const providerSessionStateByProjectSessionId = new Map<
  * terminating the native pane surface.
  */
 const pendingNativeTerminalStartupTextBySessionId = new Map<string, string>();
+const nativeTerminalReadyAtBySessionId = new Map<string, number>();
+const nativeTerminalReadyWaitersBySessionId = new Map<string, Set<() => void>>();
 const NATIVE_TERMINAL_SURFACE_CREATION_PENDING_MS = 5_000;
 type PendingNativeTerminalSurfaceCreationState = {
   nativeSessionId: string;
@@ -1522,12 +1526,55 @@ function takeNativeTerminalStartupText(sessionId: string): string | undefined {
   return text;
 }
 
+function waitForNativeTerminalReady(
+  sessionId: string,
+  timeoutMs = AGENT_PROMPT_TERMINAL_READY_TIMEOUT_MS,
+): Promise<void> {
+  if (nativeTerminalReadyAtBySessionId.has(sessionId)) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let timeoutId: number | undefined;
+    const complete = () => {
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+      const waiters = nativeTerminalReadyWaitersBySessionId.get(sessionId);
+      waiters?.delete(complete);
+      if (waiters?.size === 0) {
+        nativeTerminalReadyWaitersBySessionId.delete(sessionId);
+      }
+      resolve();
+    };
+    const waiters = nativeTerminalReadyWaitersBySessionId.get(sessionId) ?? new Set<() => void>();
+    waiters.add(complete);
+    nativeTerminalReadyWaitersBySessionId.set(sessionId, waiters);
+    timeoutId = window.setTimeout(complete, timeoutMs);
+  });
+}
+
+function resolveNativeTerminalReadyWaiters(sessionId: string): void {
+  const waiters = nativeTerminalReadyWaitersBySessionId.get(sessionId);
+  if (!waiters) {
+    return;
+  }
+  nativeTerminalReadyWaitersBySessionId.delete(sessionId);
+  for (const waiter of waiters) {
+    waiter();
+  }
+}
+
+function delayNativeAgentPromptStep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
+}
+
 function markNativeTerminalSurfaceCreationPending(
   projectId: string,
   sessionId: string,
   nativeSessionId: string,
   reason: string,
 ): void {
+  nativeTerminalReadyAtBySessionId.delete(sessionId);
   /**
    * CDXC:SessionSurfaceRecovery 2026-05-27-10:24:
    * Native createTerminal is asynchronous. A layout sync can ask AppKit to
@@ -6112,6 +6159,12 @@ function buildNativePromptGenerationShellCommand(input: {
    * hardcoding Codex. Use explicit non-interactive modes for supported built-in
    * agents; custom agents are treated as stdin-driven commands so advanced users
    * can provide their own generation wrapper without Ghostex adding fallback logic.
+   *
+   * CDXC:PromptAgents 2026-05-29-20:25:
+   * Cursor Agent supports read-only headless prompting through `--print --mode ask`.
+   * Treat Cursor as a first-class prompt-generation agent so choosing it as the
+   * default prompt agent still generates Codex session names and stages
+   * `/rename <generated title>` instead of failing before the rename command.
    */
   if (input.agent.agentId === "codex") {
     return createNativeHereDocCommand(
@@ -6119,6 +6172,9 @@ function buildNativePromptGenerationShellCommand(input: {
       input.delimiter,
       input.prompt,
     );
+  }
+  if (input.agent.agentId === "cursor") {
+    return `${command} --print --mode ask --trust --output-format text ${quoteNativeShellArg(input.prompt)}`;
   }
   if (input.agent.agentId === "claude") {
     return createNativeHereDocCommand(`${command} -p`, input.delimiter, input.prompt);
@@ -6213,24 +6269,15 @@ async function runSidebarGitPromptAction(
     return;
   }
 
-  window.setTimeout(() => {
-    const nativeSessionId = nativeSessionIdForProjectSidebarSession(projectId, session.sessionId);
-    postNative({
-      sessionId: nativeSessionId,
-      text: `/rename ${title}`,
-      type: "writeTerminalText",
-    });
-    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
-    window.setTimeout(() => {
-      postNative({
-        sessionId: nativeSessionId,
-        text: prompt,
-        type: "writeTerminalText",
-      });
-      postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
-      showAppToast("success", `${title} started`, activeProject().name);
-    }, AUTO_SUBMIT_STAGED_RENAME_DELAY_MS);
-  }, FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS);
+  await stageNativeAgentPrompt({
+    agent,
+    projectId,
+    prompt,
+    renameTitle: title,
+    session,
+    submitPrompt: true,
+  });
+  showAppToast("success", `${title} started`, activeProject().name);
 }
 
 function resolveActiveProjectRelativePath(relativePath: string): string {
@@ -6665,13 +6712,12 @@ async function launchMergeConflictAgent(input: {
     parentProject,
     worktreeProject,
   });
-  window.setTimeout(() => {
-    postNative({
-      sessionId: nativeSessionIdForProjectSidebarSession(parentProject.projectId, session.sessionId),
-      text: prompt,
-      type: "writeTerminalText",
-    });
-  }, FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS);
+  await stageNativeAgentPrompt({
+    agent,
+    projectId: parentProject.projectId,
+    prompt,
+    session,
+  });
   showAppToast("warning", "Merge conflicts need resolution", agent.name);
 }
 
@@ -12253,7 +12299,6 @@ type LaunchAgentTerminalOptions = {
   diagnosticSource?: "previousSessionRestore";
   focusAfterCreate?: boolean;
   initialPresentation?: "background" | "focused";
-  initialPromptText?: string;
   queueProviderStartupText?: boolean;
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
@@ -12276,21 +12321,9 @@ async function launchAgentTerminal(
       launchCommand = appendCursorCliResumeFlag(launchCommand, agentSessionId);
     }
   }
-  const initialPromptText = options?.initialPromptText?.trim();
-  /**
-   * CDXC:Worktrees 2026-05-28-06:12:
-   * Worktree creation must stage the user's first prompt as one-shot startup
-   * input after the agent launch command instead of writing it later through a
-   * timer. Provider-backed terminals already consume and clear queued startup
-   * text on terminalReady, so attaching to an existing zmx/tmux/zellij session
-   * cannot replay the original worktree prompt.
-   */
-  const initialInput = initialPromptText
-    ? `${launchCommand}\r${initialPromptText}`
-    : `${launchCommand}\r`;
   return createTerminal(
     createAgentSessionDefaultTitle(agent.name),
-    initialInput,
+    `${launchCommand}\r`,
     groupId,
     agent.agentId,
     {
@@ -12298,6 +12331,49 @@ async function launchAgentTerminal(
       agentSessionId,
     },
   );
+}
+
+async function stageNativeAgentPrompt(input: {
+  agent: SidebarAgentButton;
+  prompt: string;
+  projectId: string;
+  renameTitle?: string;
+  session: Pick<SessionRecord, "sessionId">;
+  submitPrompt?: boolean;
+}): Promise<void> {
+  const prompt = input.prompt.trim();
+  if (!prompt) {
+    return;
+  }
+  const nativeSessionId = nativeSessionIdForProjectSidebarSession(
+    input.projectId,
+    input.session.sessionId,
+  );
+  /**
+   * CDXC:PromptAgents 2026-05-29-20:21:
+   * Agent prompt automation must not paste into a terminal while the CLI is
+   * still mounting its TUI. Wait for native terminalReady, then give the agent
+   * prompt editor time to appear. When a helper session needs a title, submit
+   * `/rename` first and only write the real prompt after that command has
+   * settled, so Multi-commit, Find Session, project-board Start Work, merge
+   * conflicts, and worktree first prompts all use the same ordered path.
+   */
+  await waitForNativeTerminalReady(input.session.sessionId);
+  await delayNativeAgentPromptStep(AGENT_PROMPT_READY_DELAY_MS);
+  const renameTitle = input.renameTitle?.trim();
+  if (renameTitle) {
+    const agentId = input.agent.agentId.trim().toLowerCase();
+    const renameCommand = agentId === "pi" ? `/name ${renameTitle}` : `/rename ${renameTitle}`;
+    postNative({ sessionId: nativeSessionId, text: renameCommand, type: "writeTerminalText" });
+    await delayNativeAgentPromptStep(AGENT_PROMPT_SUBMIT_DELAY_MS);
+    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+    await delayNativeAgentPromptStep(AGENT_PROMPT_STEP_DELAY_MS);
+  }
+  postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
+  if (input.submitPrompt === true) {
+    await delayNativeAgentPromptStep(AGENT_PROMPT_SUBMIT_DELAY_MS);
+    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+  }
 }
 
 function buildNativePiForkCommand(session: TerminalSessionRecord): string | undefined {
@@ -18159,6 +18235,7 @@ async function promptFindPreviousSession(queryInput?: string): Promise<void> {
     return;
   }
 
+  const projectId = activeProjectId;
   const session = await launchAgentTerminal(agent);
   if (!session) {
     appendAgentDetectionDebugLog("nativeSidebar.promptFindPreviousSession.createSessionFailed", {
@@ -18172,29 +18249,26 @@ async function promptFindPreviousSession(queryInput?: string): Promise<void> {
     DEFAULT_FIND_PREVIOUS_SESSION_PROMPT_TEMPLATE,
     query,
   );
-  window.setTimeout(() => {
-    const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
-    /**
-     * CDXC:PreviousSessions 2026-05-07-16:02
-     * The Find Session button crosses React, the modal-host WebKit bridge, and
-     * native sidebar command dispatch before terminal input is written. Keep
-     * debug breadcrumbs at session creation and prompt staging so Computer Use
-     * repros can identify the exact boundary that stopped the action.
-     */
-    appendAgentDetectionDebugLog("nativeSidebar.promptFindPreviousSession.stagingPrompt", {
-      agentId: agent.agentId,
-      nativeSessionId,
-      queryLength: query.length,
-      sessionId: session.sessionId,
-    });
-    postNative({
-      sessionId: nativeSessionId,
-      text: `/rename Search: ${query}`,
-      type: "writeTerminalText",
-    });
-    postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
-    postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
-  }, FIND_PREVIOUS_SESSION_AGENT_STAGING_DELAY_MS);
+  /**
+   * CDXC:PreviousSessions 2026-05-07-16:02
+   * The Find Session button crosses React, the modal-host WebKit bridge, and
+   * native sidebar command dispatch before terminal input is written. Keep
+   * debug breadcrumbs at session creation and prompt staging so Computer Use
+   * repros can identify the exact boundary that stopped the action.
+   */
+  appendAgentDetectionDebugLog("nativeSidebar.promptFindPreviousSession.stagingPrompt", {
+    agentId: agent.agentId,
+    nativeSessionId: nativeSessionIdForProjectSidebarSession(projectId, session.sessionId),
+    queryLength: query.length,
+    sessionId: session.sessionId,
+  });
+  await stageNativeAgentPrompt({
+    agent,
+    projectId,
+    prompt,
+    renameTitle: `Search: ${query}`,
+    session,
+  });
 }
 
 function resolveFindPreviousSessionAgent(): SidebarAgentButton | undefined {
@@ -18208,11 +18282,15 @@ async function searchPreviousSessionsByText(): Promise<void> {
    * terminal running `gx f`, which is the bundled zehn prompt-history search
    * path. Do not route this through the agent prompt flow; users asked for a
    * direct terminal search button next to Prompt to Find Session.
+   *
+   * CDXC:PreviousSessions 2026-05-29-20:32:
+   * Search by Text belongs in the currently active project, not in a generated
+   * Quick terminal area. Use the normal project terminal creation path and add
+   * it as a tab beside the currently focused project pane.
    */
   appendAgentDetectionDebugLog("nativeSidebar.searchPreviousSessionsByText.received");
-  const session = await createNativeQuickTerminal({
-    command: "gx f",
-    title: "Search by Text",
+  const session = createTerminal("Search by Text", "gx f\r", undefined, undefined, {
+    visiblePlacement: createFocusedTabGroupPlacement(),
   });
   if (!session) {
     appendAgentDetectionDebugLog("nativeSidebar.searchPreviousSessionsByText.createSessionFailed");
@@ -19111,13 +19189,24 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
         if (!createdSession) {
           throw new Error(`Could not create agent session for ${agentId}.`);
         }
-        const nativeSessionId = nativeSessionIdForSidebarSession(createdSession.sessionId);
-        await new Promise((resolve) =>
-          window.setTimeout(resolve, Number(payload.sendDelayMs ?? 750)),
-        );
-        postNative({ sessionId: nativeSessionId, text, type: "writeTerminalText" });
-        if (submit) {
-          postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+        const createdAgent = resolveSidebarAgentButtonById(agentId);
+        if (createdSession.kind === "terminal" && createdAgent) {
+          await stageNativeAgentPrompt({
+            agent: createdAgent,
+            projectId: activeProjectId,
+            prompt: text,
+            session: createdSession,
+            submitPrompt: submit,
+          });
+        } else {
+          const nativeSessionId = nativeSessionIdForSidebarSession(createdSession.sessionId);
+          await new Promise((resolve) =>
+            window.setTimeout(resolve, Number(payload.sendDelayMs ?? 750)),
+          );
+          postNative({ sessionId: nativeSessionId, text, type: "writeTerminalText" });
+          if (submit) {
+            postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
+          }
         }
         return {
           created: true,
@@ -20025,6 +20114,7 @@ async function createNativeWorktreeForAgentPrompt(input: {
   logEvent?: (event: string, details?: Record<string, unknown>) => void;
   prompt: string;
   sourceProject: NativeProject;
+  submitPrompt?: boolean;
   successToastTitle?: string;
 }): Promise<{ project: NativeProject; session: TerminalSessionRecord }> {
   const { agent, logEvent, prompt, sourceProject } = input;
@@ -20154,10 +20244,17 @@ async function createNativeWorktreeForAgentPrompt(input: {
   }
 
   showAppToast("info", "Opening agent", agent.name);
-  const session = await launchAgentTerminal(agent, undefined, { initialPromptText: prompt });
+  const session = await launchAgentTerminal(agent);
   if (!session || session.kind !== "terminal") {
     throw new Error("Could not create an agent session in the worktree.");
   }
+  await stageNativeAgentPrompt({
+    agent,
+    projectId,
+    prompt,
+    session,
+    submitPrompt: input.submitPrompt,
+  });
   showAppToast("success", input.successToastTitle ?? "Worktree ready", projectName);
   logEvent?.("projectBoard.worktree.agentStarted", {
     agentId: agent.agentId,
@@ -22088,6 +22185,7 @@ async function handleProjectBoardStartWork(
       logEvent: appendProjectBoardDebugLog,
       prompt,
       sourceProject,
+      submitPrompt: true,
       successToastTitle: "Worktree started",
     });
     sessionProject = created.project;
@@ -22117,11 +22215,13 @@ async function handleProjectBoardStartWork(
     startLocation,
   });
   if (startLocation === "currentProject") {
-    const nativeSessionId = nativeSessionIdForProjectSidebarSession(project.projectId, session.sessionId);
-    window.setTimeout(() => {
-      postNative({ sessionId: nativeSessionId, text: prompt, type: "writeTerminalText" });
-      postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
-    }, PROJECT_BOARD_AGENT_PROMPT_STAGING_DELAY_MS);
+    await stageNativeAgentPrompt({
+      agent,
+      projectId: project.projectId,
+      prompt,
+      session,
+      submitPrompt: true,
+    });
   }
   const nextProject = findProject(project.projectId) ?? activeProject();
   publish();
@@ -26785,6 +26885,8 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }
     } else if (hostEvent.type === "terminalReady") {
       const pendingSurfaceCreate = takeNativeTerminalSurfaceCreationPending(sidebarSessionId);
+      nativeTerminalReadyAtBySessionId.set(sidebarSessionId, Date.now());
+      resolveNativeTerminalReadyWaiters(sidebarSessionId);
       terminalState.lifecycleState = "running";
       if (hostEvent.sessionPersistenceName !== undefined) {
         terminalState.sessionPersistenceName = hostEvent.sessionPersistenceName;

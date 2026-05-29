@@ -1240,6 +1240,10 @@ export type SidebarToExtensionMessage =
        * prompt workflow. Keep it as an explicit sidebar command so the modal
        * can start a fresh terminal running `gx f` without overloading the
        * existing prompt-to-agent message.
+       *
+       * CDXC:PreviousSessions 2026-05-29-20:32:
+       * Search by Text must create that terminal in the currently active
+       * project, not in the Quick/projectless terminal area.
        */
       type: "searchPreviousSessionsByText";
     }

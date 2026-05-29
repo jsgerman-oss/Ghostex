@@ -7233,12 +7233,20 @@ final class TerminalWorkspaceView: NSView {
   private static func projectBeadsPromptGenerationCommand(agentCommand: String?, agentId: String?) throws -> String {
     let normalizedAgentId = agentId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let command = agentCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
+    /*
+     CDXC:PromptAgents 2026-05-29-20:33:
+     Cursor Agent supports read-only background generation through `--print --mode ask`.
+     Project-board title generation must accept Cursor as a selected/default prompt agent so empty Beads ticket titles do not fail when Cursor is the user's prompt agent.
+     */
     guard let normalizedAgentId, !normalizedAgentId.isEmpty else {
       return "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
     }
     if let command, !command.isEmpty {
       if normalizedAgentId == "codex" {
         return "\(command) exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
+      }
+      if normalizedAgentId == "cursor" {
+        return "\(command) --print --mode ask --trust --output-format text"
       }
       if normalizedAgentId == "claude" || normalizedAgentId == "gemini" {
         return "\(command) -p"
@@ -7250,6 +7258,8 @@ final class TerminalWorkspaceView: NSView {
       return "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"'"
     case "claude":
       return "claude -p"
+    case "cursor":
+      return "cursor-agent --print --mode ask --trust --output-format text"
     case "gemini":
       return "gemini -p"
     default:
