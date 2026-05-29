@@ -3425,11 +3425,15 @@ function SidebarReferenceSettingsButton({
           This bottom-right hover icon cannot use portaled Radix tooltips because
           the native sidebar webview mis-anchors them far from the trigger. Keep
           the label local to the button and render it to the left of the icon.
+
+          CDXC:CommandsPane 2026-05-29-20:39:
+          The Commands pane footer action should use the shorter visual tooltip
+          "Commands Pane" and keep the full accessible label on the button.
         */}
         <button
           aria-label="Show Commands Pane"
           className="reference-sidebar-hover-action reference-sidebar-hover-action-tooltip reference-sidebar-settings-terminal-action"
-          data-tooltip="Show Commands Pane"
+          data-tooltip="Commands Pane"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
