@@ -239,7 +239,7 @@ export function GitCommitModal({
                 "Review and confirm your commit. Leave the message blank to auto-generate one."}
             </DialogDescription>
           </DialogHeader>
-          <div className="git-commit-modal-body scroll-mask-y">
+          <div className="git-commit-modal-body">
             <div className="git-commit-files-panel">
               {draft.branch !== undefined ? (
                 <div className="git-commit-branch-row">

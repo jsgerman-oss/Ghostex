@@ -1877,14 +1877,25 @@
   padding: 0 12px;
 }
 
-.git-commit-modal-shadcn {
+.ghostex-settings-shadcn.settings-modal-dialog.git-commit-modal-shadcn {
   /**
    * CDXC:TitlebarGit 2026-05-25-07:40:
    * The commit review modal should visually belong to Settings: shadcn dark
    * surface, larger Settings typography, rounded outline buttons, matching
    * checkbox controls, and branch-only user-facing copy.
+   *
+   * CDXC:TitlebarGit 2026-05-29-18:40:
+   * Commit, push, PR, and publishing review dialogs must fit their content
+   * instead of inheriting the tall Settings modal height. Keep only a viewport
+   * max-height so long file lists or message drafts scroll inside the dialog.
+   *
+   * CDXC:TitlebarGit 2026-05-29-18:57:
+   * The initial commit review view should not clip the bottom of the commit
+   * message textarea. Use a little more available viewport height before the
+   * body becomes scrollable.
    */
-  max-height: min(780px, calc(100vh - 2rem));
+  height: auto;
+  max-height: min(820px, calc(100vh - 1rem));
   max-width: min(960px, calc(100vw - 2rem));
   width: min(960px, calc(100vw - 2rem));
 }
@@ -1905,7 +1916,7 @@
   gap: 18px;
   min-height: 0;
   overflow: auto;
-  padding: 0 20px 20px;
+  padding: 0 20px 24px;
 }
 
 .git-commit-modal-shadcn .command-config-label {
@@ -2059,9 +2070,16 @@
    * The commit review prompt-agent selector belongs in the footer next to the
    * generated commit actions and should stay compact at 160px without a visible
    * field label.
+   *
+   * CDXC:PromptAgents 2026-05-29-18:57:
+   * The selector should sit on the left side of the footer while the commit
+   * action buttons stay on the right, and its trigger height should match the
+   * default shadcn button height in the same row.
    */
-  min-height: 44px;
+  height: 2.25rem;
   flex: 0 0 160px;
+  margin-right: auto;
+  min-height: 2.25rem;
   width: 160px;
 }
 
@@ -2119,6 +2137,7 @@
 }
 
 .git-commit-modal-actions {
+  align-items: center;
   border-top: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
   display: flex !important;
   flex-direction: row !important;
