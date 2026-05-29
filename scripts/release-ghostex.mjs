@@ -1257,6 +1257,13 @@ async function updateHomebrew(version, artifacts, options) {
 
   await writeFile(caskFile, cask);
   await run(`ruby -c ${shellQuote(config.caskPath)}`, { cwd: tapDir });
+  /*
+   CDXC:ReleaseAutomation 2026-05-29-19:30:
+   Homebrew style can fail on autocorrectable blank-line offenses after the cask
+   generator inserts the gx preflight block. Auto-fix those before the strict
+   style check so a successful GitHub release is not blocked by formatting.
+   */
+  await run(`brew style --fix ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   await run(`brew style ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   await run(`git diff -- ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   await run(`git add ${shellQuote(config.caskPath)}`, { cwd: tapDir });
