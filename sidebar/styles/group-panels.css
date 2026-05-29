@@ -922,6 +922,18 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   position: relative;
 }
 
+.group-header-actions .reference-sidebar-hover-action-tooltip::after {
+  /*
+   * CDXC:ProjectHeaderTooltips 2026-05-29-20:29:
+   * Project-header actions use a fixed React portal for their tooltip labels so
+   * later sticky project headers cannot cover them. Suppress any remaining
+   * pseudo-tooltip fallback in the action cluster to avoid duplicate labels if a
+   * button still carries the legacy tooltip class.
+   */
+  content: none;
+  display: none;
+}
+
 .reference-sidebar-hover-action-tooltip::after,
 .reference-sidebar-section-action.reference-sidebar-hover-action-tooltip::after {
   background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
@@ -946,6 +958,27 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   z-index: var(--ghostex-tooltip-z-index, 1400);
 }
 
+.project-header-action-tooltip-popup {
+  background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
+  border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12));
+  border-radius: 16px;
+  box-shadow: var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0, 0, 0, 0.35));
+  color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
+  font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);
+  left: var(--project-header-action-tooltip-left, 50vw);
+  max-width: min(90vw, var(--project-header-action-tooltip-max-width, calc(100vw - 16px)));
+  opacity: 1;
+  overflow-wrap: anywhere;
+  padding: 6px 12px;
+  pointer-events: none;
+  position: fixed;
+  top: var(--project-header-action-tooltip-top, 0px);
+  transform: translateX(-50%);
+  white-space: normal;
+  width: max-content;
+  z-index: var(--ghostex-tooltip-z-index, 1400);
+}
+
 @media (max-width: 179.98px) {
   .reference-sidebar-previous-sessions-button.reference-sidebar-hover-action-tooltip::after {
     /*
@@ -959,27 +992,17 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   }
 }
 
-.group-header-actions .reference-sidebar-hover-action-tooltip::after {
-  left: 50%;
-  max-width: calc(100vw - 16px);
-  right: auto;
-  top: calc(100% + 8px);
-  transform: translateX(-50%);
-  white-space: normal;
-  width: max-content;
-}
-
-.group-header-actions > .reference-sidebar-hover-action-tooltip:first-child::after {
-  left: 0;
-  transform: none;
-}
-
-.group-header-actions
-  .group-agent-split-button
-  .reference-sidebar-hover-action-tooltip::after {
-  left: auto;
-  right: 0;
-  transform: none;
+@media (max-width: 169.98px) {
+  .reference-sidebar-settings-terminal-action.reference-sidebar-hover-action-tooltip::after {
+    /*
+     * CDXC:CommandsPane 2026-05-29-20:39:
+     * The Commands pane footer action sits at the narrow sidebar edge. Hide its
+     * visual tooltip below 170px instead of shortening it further so the footer
+     * controls stay unclipped while the button keeps its accessible label.
+     */
+    content: none;
+    display: none;
+  }
 }
 
 .reference-sidebar-nav-item:hover .reference-sidebar-hover-action-tooltip:is(:hover, :focus-visible)::after,
@@ -1004,6 +1027,7 @@ body[data-sidebar-tooltips-suppressed="true"] .reference-sidebar-hover-action-to
 body[data-sidebar-tooltips-suppressed="true"]
   .reference-sidebar-section-action.reference-sidebar-hover-action-tooltip::after,
 body[data-sidebar-tooltips-suppressed="true"] .session-local-tooltip-popup,
+body[data-sidebar-tooltips-suppressed="true"] .project-header-action-tooltip-popup,
 body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   opacity: 0 !important;
   transition-delay: 0s !important;

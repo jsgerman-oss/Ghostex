@@ -29,16 +29,20 @@ import { useDroppable } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { createPortal } from "react-dom";
 import {
+  forwardRef,
   startTransition,
+  useLayoutEffect,
   useEffect,
   useEffectEvent,
   useRef,
   useState,
+  type ButtonHTMLAttributes,
   type CSSProperties,
+  type Ref,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { AppTooltip } from "./app-tooltip";
+import { AppTooltip, SIDEBAR_TOOLTIP_DISMISS_EVENT } from "./app-tooltip";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import {
   getSidebarSessionLifecycleState,
@@ -86,6 +90,8 @@ const CONTEXT_MENU_ITEM_HEIGHT_PX = 34;
 const CONTEXT_MENU_VERTICAL_PADDING_PX = 12;
 const GROUP_CONTROL_MENU_MARGIN_PX = 12;
 const GROUP_AGENT_MENU_WIDTH_PX = 220;
+const PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX = 8;
+const PROJECT_HEADER_TOOLTIP_TRIGGER_OFFSET_PX = 8;
 const PROJECT_AGENT_LAUNCHER_STORAGE_KEY = "ghostex-sidebar-project-terminal-launcher";
 const GROUP_DRAG_HOLD_DELAY_MS = 130;
 const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
@@ -202,6 +208,221 @@ type GroupContextMenuPosition = ContextMenuPosition & {
 };
 
 type GroupControlMenu = "project-agent";
+
+type ProjectHeaderActionTooltipPosition = {
+  left: number;
+  maxWidth: number;
+  top: number;
+};
+
+type ProjectHeaderActionButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+  tooltip: string;
+};
+
+function assignProjectHeaderActionRef(
+  ref: Ref<HTMLButtonElement> | undefined,
+  value: HTMLButtonElement | null,
+): void {
+  if (!ref) {
+    return;
+  }
+
+  if (typeof ref === "function") {
+    ref(value);
+    return;
+  }
+
+  ref.current = value;
+}
+
+const ProjectHeaderActionButton = forwardRef<
+  HTMLButtonElement,
+  ProjectHeaderActionButtonProps
+>(function ProjectHeaderActionButton(
+  {
+    children,
+    className,
+    disabled,
+    onBlur,
+    onFocus,
+    onMouseEnter,
+    onMouseLeave,
+    tooltip,
+    ...buttonProps
+  },
+  forwardedRef,
+) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [isTooltipOpen, setIsTooltipOpen] = useState(false);
+  const [tooltipPosition, setTooltipPosition] =
+    useState<ProjectHeaderActionTooltipPosition>();
+
+  const setButtonRef = (button: HTMLButtonElement | null) => {
+    buttonRef.current = button;
+    assignProjectHeaderActionRef(forwardedRef, button);
+  };
+
+  const closeTooltip = () => {
+    setIsTooltipOpen(false);
+    setTooltipPosition(undefined);
+  };
+
+  const openTooltip = () => {
+    if (disabled || !tooltip) {
+      closeTooltip();
+      return;
+    }
+
+    setIsTooltipOpen(true);
+  };
+
+  useEffect(() => {
+    const handleSidebarTooltipDismiss = () => closeTooltip();
+    window.addEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleSidebarTooltipDismiss);
+    return () => {
+      window.removeEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleSidebarTooltipDismiss);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isTooltipOpen) {
+      return undefined;
+    }
+
+    const updateTooltipPosition = () => {
+      const button = buttonRef.current;
+      const tooltipElement = tooltipRef.current;
+      if (!button || !tooltipElement) {
+        return;
+      }
+
+      const buttonBounds = button.getBoundingClientRect();
+      const tooltipBounds = tooltipElement.getBoundingClientRect();
+      const maxWidth = Math.max(
+        0,
+        window.innerWidth - PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX * 2,
+      );
+      const width = Math.min(tooltipBounds.width, maxWidth);
+      const halfWidth = width / 2;
+      const centeredLeft = buttonBounds.left + buttonBounds.width / 2;
+      const left = Math.max(
+        PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX + halfWidth,
+        Math.min(
+          centeredLeft,
+          window.innerWidth - PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX - halfWidth,
+        ),
+      );
+      const belowTop = buttonBounds.bottom + PROJECT_HEADER_TOOLTIP_TRIGGER_OFFSET_PX;
+      const aboveTop =
+        buttonBounds.top - tooltipBounds.height - PROJECT_HEADER_TOOLTIP_TRIGGER_OFFSET_PX;
+      const hasRoomBelow =
+        belowTop + tooltipBounds.height <=
+        window.innerHeight - PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX;
+      const hasMoreRoomAbove = buttonBounds.top > window.innerHeight - buttonBounds.bottom;
+      const preferredTop = hasRoomBelow || !hasMoreRoomAbove ? belowTop : aboveTop;
+      const top = Math.max(
+        PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX,
+        Math.min(
+          preferredTop,
+          window.innerHeight - PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX - tooltipBounds.height,
+        ),
+      );
+
+      setTooltipPosition((previousPosition) => {
+        if (
+          previousPosition?.left === left &&
+          previousPosition.maxWidth === maxWidth &&
+          previousPosition.top === top
+        ) {
+          return previousPosition;
+        }
+
+        return { left, maxWidth, top };
+      });
+    };
+
+    updateTooltipPosition();
+    window.addEventListener("resize", updateTooltipPosition);
+    window.addEventListener("scroll", updateTooltipPosition, true);
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updateTooltipPosition);
+    if (buttonRef.current) {
+      resizeObserver?.observe(buttonRef.current);
+    }
+    if (tooltipRef.current) {
+      resizeObserver?.observe(tooltipRef.current);
+    }
+
+    return () => {
+      window.removeEventListener("resize", updateTooltipPosition);
+      window.removeEventListener("scroll", updateTooltipPosition, true);
+      resizeObserver?.disconnect();
+    };
+  }, [isTooltipOpen, tooltip]);
+
+  /*
+   * CDXC:ProjectHeaderTooltips 2026-05-29-20:29:
+   * Project-header action tooltips must paint above subsequent sticky project
+   * headers. Keep the actual header button in its layout slot, but portal the
+   * tooltip bubble to document.body and place it from the button rect so group
+   * and sticky-header stacking contexts cannot cover the label.
+   */
+  return (
+    <>
+      <button
+        {...buttonProps}
+        className={className}
+        disabled={disabled}
+        onBlur={(event) => {
+          onBlur?.(event);
+          closeTooltip();
+        }}
+        onFocus={(event) => {
+          onFocus?.(event);
+          openTooltip();
+        }}
+        onMouseEnter={(event) => {
+          onMouseEnter?.(event);
+          openTooltip();
+        }}
+        onMouseLeave={(event) => {
+          onMouseLeave?.(event);
+          closeTooltip();
+        }}
+        ref={setButtonRef}
+      >
+        {children}
+      </button>
+      {isTooltipOpen && tooltip
+        ? createPortal(
+            <div
+              className="project-header-action-tooltip-popup"
+              ref={tooltipRef}
+              role="tooltip"
+              style={
+                {
+                  "--project-header-action-tooltip-left": tooltipPosition
+                    ? `${tooltipPosition.left}px`
+                    : "50vw",
+                  "--project-header-action-tooltip-max-width": tooltipPosition
+                    ? `${tooltipPosition.maxWidth}px`
+                    : `calc(100vw - ${PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX * 2}px)`,
+                  "--project-header-action-tooltip-top": tooltipPosition
+                    ? `${tooltipPosition.top}px`
+                    : "0px",
+                } as CSSProperties
+              }
+            >
+              {tooltip}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+});
 
 export function shouldTreatProjectAsEmptySessionGroup({
   hasProjectContext,
@@ -645,6 +866,10 @@ export function SessionGroupSection({
    * Project header action labels must open below their button, not to the left,
    * because left-side labels clip against the sidebar edge when the compact
    * action cluster is near the left side of the project header.
+   *
+   * CDXC:ProjectHeaderTooltips 2026-05-29-20:29:
+   * Project header action labels must render through a fixed tooltip portal so
+   * the next sticky project header cannot cover labels from the previous row.
    */
   const shouldSuppressProjectCollapseTooltip =
     Boolean(projectContext) && canToggleCollapsed;
@@ -1366,8 +1591,9 @@ export function SessionGroupSection({
                        *
                        * CDXC:ProjectHeaderTooltips 2026-05-29-18:19:
                        * Keep project header action tooltips below each hovered
-                       * button and clamp the edge buttons through CSS so short
-                       * labels remain visible inside narrow sidebar webviews.
+                       * button when space allows and clamp the fixed tooltip
+                       * portal so short labels remain visible inside narrow
+                       * sidebar webviews.
                        *
                        * CDXC:Worktrees 2026-05-18-23:07:
                        * Main project rows expose Create Worktree. Worktree rows
@@ -1383,15 +1609,15 @@ export function SessionGroupSection({
                       <>
                         {projectContext.worktree ? (
                           <>
-                            <button
+                            <ProjectHeaderActionButton
                               aria-label={`Create PR for ${group.title}`}
-                              className="group-add-button group-worktree-pr-button reference-sidebar-hover-action-tooltip"
-                              data-tooltip="Create PR"
+                              className="group-add-button group-worktree-pr-button"
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
                                 requestCreateWorktreePullRequest();
                               }}
+                              tooltip="Create PR"
                               type="button"
                             >
                               <IconGitPullRequest
@@ -1400,18 +1626,18 @@ export function SessionGroupSection({
                                 size={14}
                                 stroke={2}
                               />
-                            </button>
+                            </ProjectHeaderActionButton>
                           </>
                         ) : (
-                          <button
+                          <ProjectHeaderActionButton
                             aria-label={`Create a worktree from ${group.title}`}
-                            className="group-add-button group-worktree-button reference-sidebar-hover-action-tooltip"
-                            data-tooltip="New Worktree"
+                            className="group-add-button group-worktree-button"
                             onClick={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
                               openWorktreeModal();
                             }}
+                            tooltip="New Worktree"
                             type="button"
                           >
                             <IconGitBranch
@@ -1420,17 +1646,17 @@ export function SessionGroupSection({
                               size={14}
                               stroke={2}
                             />
-                          </button>
+                          </ProjectHeaderActionButton>
                         )}
-                        <button
+                        <ProjectHeaderActionButton
                           aria-label={`Create a browser tab in ${group.title}`}
-                          className="group-add-button group-browser-button reference-sidebar-hover-action-tooltip"
-                          data-tooltip="New Browser Tab"
+                          className="group-add-button group-browser-button"
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
                             requestCreateBrowserPane();
                           }}
+                          tooltip="New Browser Tab"
                           type="button"
                         >
                           <IconWorld
@@ -1439,16 +1665,16 @@ export function SessionGroupSection({
                             size={14}
                             stroke={2}
                           />
-                        </button>
-                        <button
+                        </ProjectHeaderActionButton>
+                        <ProjectHeaderActionButton
                           aria-label={`Create a terminal in ${group.title}`}
-                          className="group-add-button group-project-terminal-button reference-sidebar-hover-action-tooltip"
-                          data-tooltip="Create Terminal"
+                          className="group-add-button group-project-terminal-button"
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
                             requestCreateProjectTerminal();
                           }}
+                          tooltip="Create Terminal"
                           type="button"
                         >
                           <IconTerminal2
@@ -1457,16 +1683,15 @@ export function SessionGroupSection({
                             size={14}
                             stroke={2}
                           />
-                        </button>
+                        </ProjectHeaderActionButton>
                         <div className="group-control-anchor">
                           <div
                             className="group-agent-split-button"
                             data-open={String(openControlMenu === "project-agent")}
                           >
-                            <button
+                            <ProjectHeaderActionButton
                               aria-label={`Create ${primaryProjectAgentLabel} in ${group.title}`}
-                              className="group-agent-main-button reference-sidebar-hover-action-tooltip"
-                              data-tooltip={`Create ${primaryProjectAgentLabel}`}
+                              className="group-agent-main-button"
                               onClick={(event) => {
                                 event.preventDefault();
                                 event.stopPropagation();
@@ -1476,27 +1701,28 @@ export function SessionGroupSection({
                                 }
                                 requestRunProjectAgent(primaryProjectAgent);
                               }}
+                              tooltip={`Create ${primaryProjectAgentLabel}`}
                               type="button"
                             >
                               <ProjectAgentLauncherIcon agent={primaryProjectAgent} />
-                            </button>
-                            <button
+                            </ProjectHeaderActionButton>
+                            <ProjectHeaderActionButton
                               aria-expanded={openControlMenu === "project-agent"}
                               aria-haspopup="menu"
                               aria-label={`Select agent for ${group.title}`}
-                              className="group-agent-toggle-button reference-sidebar-hover-action-tooltip"
+                              className="group-agent-toggle-button"
                               data-open={String(openControlMenu === "project-agent")}
-                              data-tooltip="Select Agent"
                               onClick={() => {
                                 setOpenControlMenu((previous) =>
                                   previous === "project-agent" ? undefined : "project-agent",
                                 );
                               }}
                               ref={projectAgentButtonRef}
+                              tooltip="Select Agent"
                               type="button"
                             >
                               <IconChevronDown aria-hidden="true" size={13} stroke={2} />
-                            </button>
+                            </ProjectHeaderActionButton>
                           </div>
                         </div>
                       </>
