@@ -111,7 +111,6 @@ export type ghostexSettings = {
   hideSessionAgentIconUntilHover: boolean;
   hideBrowserFaviconUntilHover: boolean;
   showCloseButtonOnSessionCards: boolean;
-  showHotkeysOnSessionCards: boolean;
   hideLastActiveTimeOnSessionCards: boolean;
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
@@ -249,8 +248,18 @@ export const SIDEBAR_SETTINGS_PRESETS: ReadonlyArray<{
 ];
 
 export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
-  actionCompletionSound: "shamisenreverb",
-  agentAcceptAllEnabled: false,
+  /**
+   * CDXC:CompletionSounds 2026-05-29-12:00:
+   * Action-completion feedback should use the plain shamisen sound by default;
+   * shamisen reverb remains available from Settings for users who prefer it.
+   */
+  actionCompletionSound: "shamisen",
+  /**
+   * CDXC:SidebarAgents 2026-05-29-12:00:
+   * New installs should start with Accept All enabled so built-in and custom
+   * agent launches inherit permission-bypass mode unless the user turns it off.
+   */
+  agentAcceptAllEnabled: true,
   agentManagerZoomPercent: DEFAULT_AGENT_MANAGER_ZOOM_PERCENT,
   defaultPromptAgentId: "codex",
   /**
@@ -313,7 +322,12 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * +0 -0.
    */
   showUntrackedProjectDiffWhenNoTrackedChanges: false,
-  completionBellEnabled: false,
+  /**
+   * CDXC:CompletionSounds 2026-05-29-12:00:
+   * The completion bell should be enabled by default so finished agent work is
+   * audible without requiring users to discover the Sounds setting first.
+   */
+  completionBellEnabled: true,
   completionSound: DEFAULT_COMPLETION_SOUND,
   createSessionOnSidebarDoubleClick: false,
   debuggingMode: false,
@@ -344,7 +358,6 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   showCloseButtonOnSessionCards:
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.showCloseButtonOnSessionCards,
-  showHotkeysOnSessionCards: false,
   /**
    * CDXC:SidebarSessions 2026-05-15-08:57
    * Session-card Last Active timestamps stay visible by default for existing
@@ -356,21 +369,21 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
     SIDEBAR_SETTINGS_PRESET_SETTINGS.codex.hideLastActiveTimeOnSessionCards,
   /**
    * CDXC:AutoSleep 2026-05-28-08:06:
-   * Preserve the existing five-minute auto-sleep behavior for background
-   * VS Code, Project, and Git panes. Browser and agent auto-sleep start opt-in
-   * because they close live user-created session surfaces.
+   * Background VS Code, Project, and Git panes auto-sleep after fifteen minutes
+   * of idle time by default. Browser and agent auto-sleep start opt-in because
+   * they close live user-created session surfaces.
    */
   autoSleepAgentSessionsEnabled: false,
   autoSleepAgentIdleMinutes: 60,
   autoSleepBrowserSessionsEnabled: false,
   autoSleepBrowserIdleMinutes: 30,
   autoSleepCodeEditorEnabled: true,
-  autoSleepCodeEditorIdleMinutes: 5,
+  autoSleepCodeEditorIdleMinutes: 15,
   autoSleepFocusedAgentSessions: false,
   autoSleepGitEditorEnabled: true,
-  autoSleepGitEditorIdleMinutes: 5,
+  autoSleepGitEditorIdleMinutes: 15,
   autoSleepProjectEditorEnabled: true,
-  autoSleepProjectEditorIdleMinutes: 5,
+  autoSleepProjectEditorIdleMinutes: 15,
   autoSleepRequireAgentResumeCommand: true,
   autoSleepFavoriteAgentSessions: false,
   keepAwakeActivateOnExternalDisplay: false,
@@ -379,7 +392,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   keepAwakeBatteryThresholdPercent: 20,
   keepAwakeDeactivateBelowBatteryThreshold: false,
   keepAwakeDeactivateOnLowPowerMode: false,
-  keepAwakeDeactivateOnUserSwitch: true,
+  keepAwakeDeactivateOnUserSwitch: false,
   keepAwakeDefaultDurationMinutes: 0,
   /**
    * CDXC:TitlebarKeepAwake 2026-05-28-19:28:
@@ -520,7 +533,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   useGteForCtrlGPromptEditing: false,
   hotkeys: DEFAULT_ghostex_HOTKEYS,
   workspaceActivePaneBorderColor: "#3b82f6",
-  workspaceBackgroundColor: "#0e0e0e",
+  workspaceBackgroundColor: "#151515",
   /**
    * CDXC:TitlebarOpenIn 2026-05-11-00:22
    * The titlebar Open In menu is configurable: built-in editor targets can be
@@ -538,10 +551,10 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   /**
    * CDXC:WorkspaceLayout 2026-05-11-18:42
    * Native split panes use the Pane Gap setting for every outside edge and
-   * internal split divider. Keep the default one pixel wider so the real
-   * draggable gap has enough visual weight on all sides.
+   * internal split divider. Default to a tighter five-pixel gap so workspace
+   * chrome stays compact unless the user widens it in Settings.
    */
-  workspacePaneGap: 13,
+  workspacePaneGap: 5,
 };
 
 export const SIDEBAR_THEME_SETTING_OPTIONS: ReadonlyArray<{
@@ -846,11 +859,6 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source,
       "showCloseButtonOnSessionCards",
       DEFAULT_ghostex_SETTINGS.showCloseButtonOnSessionCards,
-    ),
-    showHotkeysOnSessionCards: readBoolean(
-      source,
-      "showHotkeysOnSessionCards",
-      DEFAULT_ghostex_SETTINGS.showHotkeysOnSessionCards,
     ),
     /**
      * CDXC:SidebarSessions 2026-05-15-08:57

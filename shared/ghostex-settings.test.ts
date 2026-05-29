@@ -236,13 +236,13 @@ describe("normalizeghostexSettings", () => {
       autoSleepBrowserIdleMinutes: 30,
       autoSleepBrowserSessionsEnabled: false,
       autoSleepCodeEditorEnabled: true,
-      autoSleepCodeEditorIdleMinutes: 5,
+      autoSleepCodeEditorIdleMinutes: 15,
       autoSleepFavoriteAgentSessions: false,
       autoSleepFocusedAgentSessions: false,
       autoSleepGitEditorEnabled: true,
-      autoSleepGitEditorIdleMinutes: 5,
+      autoSleepGitEditorIdleMinutes: 15,
       autoSleepProjectEditorEnabled: true,
-      autoSleepProjectEditorIdleMinutes: 5,
+      autoSleepProjectEditorIdleMinutes: 15,
       autoSleepRequireAgentResumeCommand: true,
     });
     expect(
@@ -261,10 +261,10 @@ describe("normalizeghostexSettings", () => {
       autoSleepAgentSessionsEnabled: true,
       autoSleepBrowserIdleMinutes: 120,
       autoSleepBrowserSessionsEnabled: true,
-      autoSleepCodeEditorIdleMinutes: 5,
+      autoSleepCodeEditorIdleMinutes: 15,
       autoSleepGitEditorEnabled: false,
       autoSleepGitEditorIdleMinutes: 30,
-      autoSleepProjectEditorIdleMinutes: 5,
+      autoSleepProjectEditorIdleMinutes: 15,
     });
   });
 
@@ -429,7 +429,7 @@ describe("normalizeghostexSettings", () => {
   });
 
   test("keeps the workspace background color setting", () => {
-    expect(DEFAULT_ghostex_SETTINGS.workspaceBackgroundColor).toBe("#0e0e0e");
+    expect(DEFAULT_ghostex_SETTINGS.workspaceBackgroundColor).toBe("#151515");
     expect(normalizeghostexSettings({ workspaceBackgroundColor: "#202020" })).toMatchObject({
       workspaceBackgroundColor: "#202020",
     });
