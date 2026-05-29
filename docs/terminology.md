@@ -3,6 +3,20 @@
 <!-- CDXC:Terminology 2026-04-27-06:58: Keep the core session vocabulary
 stable for sidebar, native host, and future agent-manager-x integration. -->
 
+<!-- CDXC:Terminology 2026-05-29-09:20: Session liveness must distinguish
+native pane mount state from provider session existence. Use `nativePaneState`,
+`providerSessionState`, and derived `isLive` for new app code; keep legacy
+`isSleeping` and `isRunning` only at compatibility boundaries. -->
+
+<!-- CDXC:Terminology 2026-05-29-06:29: Provider-disabled terminal sessions are
+not unknown. Use `providerSessionState: persistence-disabled` when persistence
+is off, and reserve `unknown` for configured providers whose existence probe has
+not completed or failed.
+
+CDXC:Terminology 2026-05-29-07:19: Use the explicit value
+`persistence-disabled` instead of generic `disabled` so API payloads name the
+terminal provider capability that is off. -->
+
 This document defines the main terms used across ghostex. Use these names in code,
 logs, UI labels, and integration payloads unless an external API already owns a
 different term.
@@ -18,6 +32,11 @@ different term.
 - `done`: The session has completed without being live. In the workspace rail this is the green top-right count.
 - `sleeping`: The session is intentionally suspended and should not count as `running` or `done` in workspace rail indicators.
 - `error`: The session failed or exited with an error and should not count as a successful `done` session.
+- `nativePaneState`: Whether Ghostex currently has a native pane for the session. Valid values are `mounted`, `mounting`, and `unmounted`.
+- `providerSessionState`: Whether the terminal provider session exists behind the sidebar row. Valid values are `persistence-disabled`, `exists`, `missing`, and `unknown`.
+- `isLive`: Derived liveness. A session is live when its native pane is mounted or mounting, or when its provider session exists.
+- `isSleeping`: Legacy compatibility flag for old clients. Do not use it as the source of truth for provider session existence because a zmx session can exist while no native pane is mounted.
+- `isRunning`: Legacy compatibility flag for old clients. New code should use `isLive` for runtime liveness and `activity` for work state.
 
 ## Workspace rail counts
 
