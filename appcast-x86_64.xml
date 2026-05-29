@@ -8,6 +8,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex Intel macOS releases.</description>
         <item>
+            <title>3.22.0</title>
+            <pubDate>Fri, 29 May 2026 21:10:58 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.22.0</sparkle:fullReleaseNotesLink>
+            <sparkle:version>32200</sparkle:version>
+            <sparkle:shortVersionString>3.22.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.22.0/ghostex-3.22.0-x86_64.dmg" length="200455517" type="application/octet-stream" sparkle:edSignature="CYTvF5jFwINLDoQZreGJXtyS0E91Bbxa4Df98+kPcIujww53fEHpEwSDebmOkmNY9lGnZ9nI+AF5MSXgalk1Ag=="/>
+        </item>
+        <item>
             <title>3.21.0</title>
             <pubDate>Fri, 29 May 2026 20:42:38 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.21.0</sparkle:fullReleaseNotesLink>
@@ -52,18 +61,9 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
             <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.17.0/ghostex-3.17.0-x86_64.dmg" length="198732332" type="application/octet-stream" sparkle:edSignature="ZzF+Lbm1KirO2aBNfgkbmE2Ze2tETosLGJ8Wtevya+XIlPM6tJAT8tGxmc6W/DwxPM4oM7mAEKEYXkceKaIFAg=="/>
         </item>
-        <item>
-            <title>3.16.0</title>
-            <pubDate>Wed, 27 May 2026 10:02:40 +0400</pubDate>
-            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.16.0</sparkle:fullReleaseNotesLink>
-            <sparkle:version>31600</sparkle:version>
-            <sparkle:shortVersionString>3.16.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.16.0/ghostex-3.16.0-x86_64.dmg" length="198738098" type="application/octet-stream" sparkle:edSignature="GArSWfsgPWFB8Pt6xufm9W7HFLuwJvC+AWYRagDI+lB10nlHMCNEIlBNVCeUUFZIaEy4omKWVZ59t553zGHdAg=="/>
-        </item>
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: YIiCnA4y/FnvUuQSChd0K3DHt2Sq5WFTzMcfhr45NMsAQMl0sYViYv/JLF+SmBVCgC6CHpZKpuf/YMyk5SUYBA==
+edSignature: dXzFalTJ9hA76D40tFOhWYxabgOY5NB1Au7fuo9WCkKbiCg+VEXfIDEfpqvmFt8WMa7hrG8B5sFpIBmEvqsWDw==
 length: 5059
 -->
