@@ -1959,7 +1959,9 @@ function App() {
                     <IconDownload aria-hidden="true" size={15} stroke={1.8} />
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>Download update</TooltipContent>
+                <TooltipContent side="right" sideOffset={6}>
+                  Download update
+                </TooltipContent>
               </Tooltip>
             ) : null}
             <div className="titlebar-project-title">
@@ -3666,8 +3668,14 @@ styleElement.textContent = `
      * The update affordance sits immediately to the left of the project
      * identity with a fixed 7px gap, so available updates read as subtle
      * chrome and never shift center or right-side titlebar controls.
+     *
+     * CDXC:AutoUpdate 2026-05-29-20:56:
+     * The titlebar update button needs 6px of left breathing room at the
+     * window edge, and its tooltip opens horizontally so the promoted sidebar
+     * layer cannot cover a below-titlebar label.
      */
     color: rgba(255,255,255,0.46);
+    margin-left: 6px;
     margin-right: 7px;
     padding: 0;
     width: 20px;
