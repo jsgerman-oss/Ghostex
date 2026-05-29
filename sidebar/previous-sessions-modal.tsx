@@ -26,7 +26,6 @@ export type PreviousSessionsModalProps = {
 export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessionsModalProps) {
   const previousSessions = useSidebarStore((state) => state.previousSessions);
   const showDebugSessionNumbers = useSidebarStore((state) => state.hud.debuggingMode);
-  const showHotkeys = useSidebarStore((state) => state.hud.showHotkeysOnSessionCards);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -227,7 +226,6 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
                         }}
                         session={session}
                         showDebugSessionNumbers={showDebugSessionNumbers}
-                        showHotkeys={showHotkeys}
                       />
                     ))}
                   </div>
@@ -246,6 +244,25 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
             )}
           </div>
           <div className="previous-sessions-footer">
+            <button
+              className="previous-sessions-find-button previous-sessions-text-search-button"
+              onClick={() => {
+                /**
+                 * CDXC:PreviousSessions 2026-05-29-12:36:
+                 * Search by Text is the lightweight zehn path: start a new
+                 * terminal and run `gx f` directly. Keep it separate from
+                 * Prompt to Find Session, which creates an agent helper and
+                 * stages a natural-language recovery prompt.
+                 */
+                vscode.postMessage({
+                  type: "searchPreviousSessionsByText",
+                });
+                onClose();
+              }}
+              type="button"
+            >
+              Search by Text
+            </button>
             <button
               className="previous-sessions-find-button"
               onClick={() => {
