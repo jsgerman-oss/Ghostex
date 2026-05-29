@@ -21,6 +21,40 @@ case "$GHOSTEX_MACOS_ARCH" in
 		exit 1
 		;;
 esac
+
+# CDXC:NativeBuild 2026-05-29-11:24: `bun run start` builds zmx and its Ghostty Zig dependency, which require Zig 0.15.2. A global Homebrew `zig` upgrade to 0.16 breaks the build API, so the local native build must choose the compatible Zig binary deliberately instead of inheriting the first PATH entry.
+ZIG_BIN="${ZIG:-}"
+if [[ -z "$ZIG_BIN" && -x /opt/homebrew/opt/zig@0.15/bin/zig ]]; then
+	ZIG_BIN=/opt/homebrew/opt/zig@0.15/bin/zig
+elif [[ -z "$ZIG_BIN" ]]; then
+	ZIG_BIN="$(command -v zig || true)"
+fi
+if [[ -z "$ZIG_BIN" ]]; then
+	cat >&2 <<EOF
+Zig 0.15.2 is required to build Ghostex's native zmx/Ghostty dependency.
+
+Install it, then rerun this script:
+  brew install zig@0.15
+EOF
+	exit 1
+fi
+ZIG_VERSION="$("$ZIG_BIN" version 2>/dev/null || true)"
+if [[ "$ZIG_VERSION" != "0.15.2" ]]; then
+	cat >&2 <<EOF
+Zig 0.15.2 is required to build Ghostex's native zmx/Ghostty dependency.
+
+Selected Zig:
+  $ZIG_BIN
+  version: ${ZIG_VERSION:-unknown}
+
+Install Homebrew's compatible keg or set ZIG explicitly:
+  brew install zig@0.15
+  ZIG=/opt/homebrew/opt/zig@0.15/bin/zig bun run start
+EOF
+	exit 1
+fi
+export ZIG="$ZIG_BIN"
+
 DERIVED_DATA="${DERIVED_DATA:-$REPO_ROOT/build/$GHOSTEX_MACOS_ARCH}"
 # CDXC:NativeBuild 2026-05-23-13:29: `bun run start` should not rely on Xcode's first matching macOS destination when both arm64 and x86_64 host destinations are present. Pin the destination to the requested build architecture so warning output stays actionable.
 XCODE_DESTINATION="platform=macOS,arch=$GHOSTEX_MACOS_ARCH"
@@ -99,7 +133,7 @@ Build it first:
   env DEVELOPER_DIR=/Library/Developer/CommandLineTools \\
     SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \\
     GHOSTTY_METAL_DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \\
-    zig build -Demit-xcframework -Dxcframework-target=universal -Demit-macos-app=false
+    "$ZIG_BIN" build -Demit-xcframework -Dxcframework-target=universal -Demit-macos-app=false
 EOF
 	exit 1
 fi
@@ -193,14 +227,14 @@ esac
 (
 	cd "$ZMX_ROOT"
 	# CDXC:ZmxPersistence 2026-05-20-10:23: Zig 0.15.2 currently resolves the native build runner through the selected macOS 26 Xcode SDK on this machine, which can fail before zmx compilation starts. Scope the Command Line Tools developer dir to the zmx submodule build only; the zmx artifact itself is still built for the explicit deployment target above.
-	ZMX_BUILD_ENV=(env -u LDFLAGS)
+	ZMX_BUILD_ENV=(env -u LDFLAGS ZIG="$ZIG_BIN")
 	if [[ -z "${ZMX_BUILD_DEVELOPER_DIR:-}" && -d /Library/Developer/CommandLineTools ]]; then
 		ZMX_BUILD_DEVELOPER_DIR=/Library/Developer/CommandLineTools
 	fi
 	if [[ -n "${ZMX_BUILD_DEVELOPER_DIR:-}" ]]; then
 		ZMX_BUILD_ENV+=(DEVELOPER_DIR="$ZMX_BUILD_DEVELOPER_DIR")
 	fi
-	"${ZMX_BUILD_ENV[@]}" zig build -Doptimize=ReleaseSafe -Dtarget="$ZMX_TARGET"
+	"${ZMX_BUILD_ENV[@]}" "$ZIG_BIN" build -Doptimize=ReleaseSafe -Dtarget="$ZMX_TARGET"
 )
 rm -rf "$WEB_DIR/bin"
 mkdir -p "$WEB_DIR/bin"
