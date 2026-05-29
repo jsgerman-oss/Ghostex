@@ -145,9 +145,12 @@ targets:
       # same AppIcon asset catalog as the public Ghostex app so Finder, Dock,
       # app switcher, and signed release builds all resolve the compiled icon
       # from Xcode instead of falling back to a generic app icon.
-      # CDXC:Branding 2026-05-21-18:22: The iOS/a-Shell app icon set is also
-      # generated from this macOS Ghostex icon so Mac-installed iOS wrapper apps
-      # present the same Ghostex brand instead of the upstream a-Shell mini icon.
+      # CDXC:Branding 2026-05-21-18:22: The iOS app icon set is also generated
+      # from this macOS Ghostex icon so Mac-installed iOS wrapper apps present
+      # the same Ghostex brand instead of an upstream app icon.
+      # CDXC:Branding 2026-05-29-05:18: The only supported iOS app is now the
+      # VVTerm-based Ghostex submodule, so branding comments should not refer to
+      # the removed a-Shell-based app.
       - path: Resources/Assets.xcassets
         buildPhase: resources
     dependencies:

@@ -1,26 +1,26 @@
 <!--
 CDXC:iOSMigration 2026-05-26-14:22:
-The iOS migration target is a clean VVTerm-based Ghostex iOS app. Preserve the old a-Shell-based app as iOS-old, make the new VVTerm fork the iOS submodule, and port sidebar behavior without bringing over the failed a-Shell Ghostty terminal integration.
+The iOS migration target is a clean VVTerm-based Ghostex iOS app. Use the VVTerm fork as the root `iOS` submodule and port sidebar behavior without bringing over the failed a-Shell Ghostty terminal integration.
+
+CDXC:iOSMigration 2026-05-29-05:18:
+The repository should now keep only the VVTerm-based iOS app. Remove the old a-Shell-based `iOS-old` submodule and update local scripts and requirements so future iOS work cannot target the legacy app.
 -->
 
 # Ghostex iOS Migration Requirements
 
 ## Goal
 
-Move Ghostex iOS development onto a fresh fork of `vivy-company/vvterm`, while keeping the current a-Shell-based iOS app available side by side for reference. Rebuild the Ghostex sidebar work on top of VVTerm's existing Ghostty, SSH, session, and SwiftUI architecture.
+Move Ghostex iOS development onto the `maddada/ghostex-ios` fork of `vivy-company/vvterm`. Rebuild and maintain the Ghostex sidebar work on top of VVTerm's existing Ghostty, SSH, session, and SwiftUI architecture, with no active a-Shell-based app in this repository.
 
 ## Repository Layout
 
-- Rename the current GitHub repository `maddada/ghostex-ios` to `maddada/ghostex-ios-old`.
-- Fork `https://github.com/vivy-company/vvterm` as `maddada/ghostex-ios`.
-- Rename the current local `iOS` submodule path to `iOS-old`.
-- Update `.gitmodules` so `iOS-old` points to `https://github.com/maddada/ghostex-ios-old.git`.
-- Add the new VVTerm-based fork as the `iOS` submodule pointing to `https://github.com/maddada/ghostex-ios.git`.
-- Keep both submodules available in this repo so sidebar behavior can be compared and ported from `iOS-old` into `iOS`.
+- Keep the VVTerm-based fork as the root `iOS` submodule pointing to `https://github.com/maddada/ghostex-ios.git`.
+- Do not keep or re-add an `iOS-old` submodule in this repository.
+- Do not add build scripts, docs, or release paths that target `a-Shell.xcodeproj`, `a-Shell-mini`, or `ghostex-ios-old`.
 
 ## Porting Scope
 
-- Port the Ghostex sidebar product behavior from `iOS-old`:
+- Maintain the Ghostex sidebar product behavior in the VVTerm-based app:
   - saved machine management needed to reach the desktop Ghostex host;
   - session inventory refresh using the Ghostex command contract;
   - project grouping;
@@ -36,8 +36,8 @@ Move Ghostex iOS development onto a fresh fork of `vivy-company/vvterm`, while k
 ## Explicitly Out Of Scope
 
 - Do not port the old a-Shell terminal integration.
-- Do not port `GhostexNativeTerminal`, `GhostexGhosttyKitBridge`, `GhostexIOSGhosttySurfaceView`, `GhostexIOSTerminalSession`, or related native-terminal files from `iOS-old`.
-- Do not port `GhostexLibssh2Runner` or the direct libssh2 attach path from `iOS-old`.
+- Do not port `GhostexNativeTerminal`, `GhostexGhosttyKitBridge`, `GhostexIOSGhosttySurfaceView`, `GhostexIOSTerminalSession`, or related native-terminal files from the removed a-Shell app.
+- Do not port `GhostexLibssh2Runner` or the direct libssh2 attach path from the removed a-Shell app.
 - Do not port `ios_system`, local fork, stdout backpressure, direct attach render slicing, Ghostty tick suppression, or terminal stall recovery logic from the old a-Shell implementation.
 - Do not add fallback terminal paths. The new implementation should use VVTerm's existing terminal, SSH, and session managers as the correct base behavior.
 
@@ -54,8 +54,9 @@ Move Ghostex iOS development onto a fresh fork of `vivy-company/vvterm`, while k
 
 ## Acceptance Criteria
 
-- The main repo has `iOS-old` and `iOS` submodules with the intended remote URLs.
-- `iOS-old` still points at the preserved old Ghostex iOS app.
+- The main repo has only one iOS app submodule: `iOS`.
+- `.gitmodules` has no `iOS-old` or `ghostex-ios-old` submodule entry.
+- `git submodule status` shows `iOS` but not `iOS-old`.
 - `iOS` builds from the VVTerm-based fork after the migration setup.
 - The new iOS app exposes a Ghostex sidebar entry point.
 - The sidebar can show saved machine state, refresh remote Ghostex sessions, group sessions by project, and render recognizable session cards with agent identity.
@@ -65,7 +66,7 @@ Move Ghostex iOS development onto a fresh fork of `vivy-company/vvterm`, while k
 
 ## Validation Plan
 
-- Verify `.gitmodules` and `git submodule status` show `iOS-old` and `iOS` correctly.
+- Verify `.gitmodules` and `git submodule status` show `iOS` and do not show `iOS-old`.
 - Build the new iOS target with Xcode tooling or the repo's documented build script where feasible.
 - Run relevant VVTerm tests for model parsing, SSH command construction, sidebar view models, and action routing.
-- Manually compare the old sidebar in `iOS-old` against the new sidebar in `iOS` for the required product behavior.
+- Manually validate sidebar behavior in the VVTerm-based `iOS` app.

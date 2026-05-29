@@ -6,16 +6,20 @@ set -euo pipefail
 # Build a production-style Release app locally, install it to Mohamad's paired iPhone over CoreDevice/Wi-Fi, and launch it without waiting for TestFlight processing.
 # Keep the device identifiers configurable because Xcode uses the USB UDID for build destinations while devicectl can use the CoreDevice network identifier for wireless install and launch.
 #
+# CDXC:iOSDirectInstall 2026-05-29-05:18:
+# Ghostex now keeps only the VVTerm-based iOS app in the `iOS` submodule.
+# Build and install `VVTerm.app` directly so local device installs cannot target the removed a-Shell-based app.
+#
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_PATH="${ROOT_DIR}/iOS/a-Shell.xcodeproj"
-SCHEME="${GHOSTEX_IOS_SCHEME:-a-Shell-mini}"
+PROJECT_PATH="${ROOT_DIR}/iOS/VVTerm.xcodeproj"
+SCHEME="${GHOSTEX_IOS_SCHEME:-VVTerm}"
 CONFIGURATION="${GHOSTEX_IOS_CONFIGURATION:-Release}"
 BUNDLE_ID="${GHOSTEX_IOS_BUNDLE_ID:-com.maddada.ghostex.ios}"
 BUILD_DEVICE_ID="${GHOSTEX_IOS_BUILD_DEVICE_ID:-00008030-000258C91EEA802E}"
 INSTALL_DEVICE_ID="${GHOSTEX_IOS_INSTALL_DEVICE_ID:-A9F1B590-5609-5F6B-9F92-722715CBF6B4}"
 DERIVED_DATA_PATH="${GHOSTEX_IOS_DERIVED_DATA_PATH:-/tmp/ghostex-ios-device-release-dd}"
-APP_PATH="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}-iphoneos/a-Shell-mini.app"
+APP_PATH="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}-iphoneos/VVTerm.app"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   cat <<EOF

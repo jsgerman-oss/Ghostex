@@ -6,10 +6,6 @@
 [submodule "zmx"]
 	path = zmx
 	url = https://github.com/maddada/zmx.git
-# CDXC:iOSUpstream 2026-05-21-09:41: Keep the Ghostex iOS app under the root `iOS` submodule so the parent repo pins a reviewed mobile app commit while iOS work keeps its own repository history.
-[submodule "iOS-old"]
-	path = iOS-old
-	url = https://github.com/maddada/ghostex-ios-old.git
 [submodule "crossplatform"]
 	path = crossplatform
 	url = /Users/madda/dev/_active/ghostex-crossplatform
@@ -17,6 +13,8 @@
 [submodule "tui"]
 	path = tui
 	url = https://github.com/maddada/ghostex-tui.git
+# CDXC:iOSUpstream 2026-05-21-09:41: Keep the Ghostex iOS app under the root `iOS` submodule so the parent repo pins a reviewed mobile app commit while iOS work keeps its own repository history.
+# CDXC:iOSUpstream 2026-05-29-05:18: The repo should keep only the VVTerm-based iOS app. Remove the old a-Shell-based `iOS-old` submodule so mobile development and install scripts cannot drift back to the legacy app.
 [submodule "iOS"]
 	path = iOS
 	url = https://github.com/maddada/ghostex-ios.git

@@ -2,6 +2,10 @@
 CDXC:iOSNativeTerminals 2026-05-22-09:29:
 The iOS app must stop using the JavaScript hterm terminal and implement the same native Ghostty terminal architecture used by the macOS Ghostex app.
 This is a committed product direction, not a feasibility spike: replace the terminal surface, input/output path, rendering, scrollback, and lifecycle with native Ghostty-backed UIKit surfaces.
+
+CDXC:iOSNativeTerminals 2026-05-29-05:18:
+The old a-Shell-based iOS app submodule has been removed from this repo.
+Keep this document focused on the VVTerm-based `iOS` app and do not reintroduce `iOS/a-Shell` implementation paths.
 -->
 
 # iOS Native Ghostty Terminal Implementation
@@ -14,17 +18,17 @@ The terminal surface must not be JavaScript-based. JavaScript may still exist fo
 
 ## Current iOS Terminal Path To Remove
 
-The current terminal is web-rendered:
+The removed a-Shell app used a web-rendered terminal path:
 
-- `iOS/a-Shell/ContentView.swift` creates `KBWebViewBase`.
-- `ContentView.updateUIView` loads `iOS/hterm.html`.
-- `iOS/hterm.html` loads `hterm_all.js`, `gestures.js`, and `script.js`.
-- `iOS/script.js` creates `new hterm.Terminal()`.
-- `script.js` sends input through `window.webkit.messageHandlers.aShell`.
-- `iOS/a-Shell/SceneDelegate.swift` receives `input:`, `inputInteractive:`, and `inputTTY:`.
+- `a-Shell/ContentView.swift` created `KBWebViewBase`.
+- `ContentView.updateUIView` loaded `hterm.html`.
+- `hterm.html` loaded `hterm_all.js`, `gestures.js`, and `script.js`.
+- `script.js` created `new hterm.Terminal()`.
+- `script.js` sent input through `window.webkit.messageHandlers.aShell`.
+- `a-Shell/SceneDelegate.swift` received `input:`, `inputInteractive:`, and `inputTTY:`.
 - `SceneDelegate.outputToWebView` prints output by evaluating `window.term_.io.print(...)`.
 
-These paths should be deleted or isolated away from the main Ghostex mobile terminal once the native path is ready.
+These paths are not part of the active VVTerm-based `iOS` app and should not be reintroduced.
 
 ## Target Architecture
 
@@ -270,7 +274,7 @@ Acceptance criteria:
 ## Suggested File Layout
 
 ```text
-iOS/a-Shell/GhostexNativeTerminal/
+iOS/VVTerm/Features/Ghostex/Terminal/
   GhostexIOSGhosttyApp.swift
   GhostexIOSGhosttySurfaceConfiguration.swift
   GhostexIOSGhosttySurfaceView.swift
