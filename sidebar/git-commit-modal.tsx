@@ -208,6 +208,11 @@ export function GitCommitModal({
    * Commit review exposes a plain prompt-agent dropdown for generated commit
    * messages and Multiple Commits. The modal host remembers this modal-specific
    * selection until Settings -> Default Prompt Agent changes.
+   *
+   * CDXC:PromptAgents 2026-05-29-18:29:
+   * The commit review prompt-agent selector should be a compact footer control
+   * without a visible "Generate with" label, so the message editor keeps focus
+   * on the commit text while generated actions still share the chosen agent.
    */
   return (
     <>
@@ -327,32 +332,6 @@ export function GitCommitModal({
                 />
               </label>
             ) : null}
-            {promptAgents.length > 0 ? (
-              <label className="command-config-field" htmlFor={generateAgentId}>
-                <span className="command-config-label">Generate with</span>
-                <Select
-                  onValueChange={handlePromptAgentChange}
-                  value={selectedPromptAgentId}
-                >
-                  <SelectTrigger
-                    aria-label="Generate commit agent"
-                    className="git-commit-merge-agent-select"
-                    id={generateAgentId}
-                  >
-                    <SelectValue placeholder="Select agent" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      {promptAgents.map((agent) => (
-                        <SelectItem key={agent.agentId} value={agent.agentId}>
-                          {agent.name}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </label>
-            ) : null}
             {draft.isWorktree ? (
               <label className="command-config-toggle git-commit-delete-worktree-toggle">
                 <input
@@ -394,6 +373,29 @@ export function GitCommitModal({
             ) : null}
           </div>
           <DialogFooter className="git-commit-modal-actions">
+            {promptAgents.length > 0 ? (
+              <Select
+                onValueChange={handlePromptAgentChange}
+                value={selectedPromptAgentId}
+              >
+                <SelectTrigger
+                  aria-label="Generate commit agent"
+                  className="git-commit-prompt-agent-select"
+                  id={generateAgentId}
+                >
+                  <SelectValue placeholder="Select agent" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {promptAgents.map((agent) => (
+                      <SelectItem key={agent.agentId} value={agent.agentId}>
+                        {agent.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            ) : null}
             <Button
               className="git-commit-modal-button"
               onClick={() => onCancel(draft.requestId)}
