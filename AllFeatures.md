@@ -2,7 +2,10 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
+- Clone Repository is available from the Projects header and command palette, with native folder picking, flexible Git URL paste formats, and automatic project creation after clone success.
 - Bundled zehn prompt-history search is available from `gx find` and `gx f`, while `gx s` remains the sessions alias.
+- Previous Sessions includes Search by Text to launch `gx f` in a new terminal beside Prompt to Find Session.
+- Git commit review and other modals can remember their own prompt agent selection independently of the global default.
 - Command-panel terminals participate in project session tracking, CLI session lists, project batch actions, and favorite controls.
 - Project Sleep Inactive, Wake, and Reload actions include idle zmx-backed command terminals while keeping working or attention sessions awake.
 - Restored and restarted terminal panes wait for native surface creation to finish before Ghostex tries missing-surface recovery.

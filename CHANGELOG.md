@@ -1,6 +1,21 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-28-09:45: Release notes for 3.18.0 must include all user-facing commits after v3.17.0 so README, GitHub, and Homebrew release metadata describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-29-18:40: Release notes for 3.19.0 must include all user-facing commits after v3.18.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+
+## 3.19.0 - 2026-05-29
+
+- Added Clone Repository from the Projects header and command palette, including native folder picking, flexible repository URL paste formats, and automatic project creation after a successful clone.
+- Added bundled zehn prompt-history search through `gx find` and `gx f`, while keeping `gx s` as the sessions alias.
+- Added Search by Text in Previous Sessions to open a fresh terminal running `gx f` beside the existing agent prompt workflow.
+- Added per-modal prompt agent selection so Git commit review and other modals remember their own agent choice until Settings changes the default.
+- Improved new-install defaults with completion bell and Accept All enabled, longer default auto-sleep for code, Git, and project panes, and tighter workspace chrome defaults.
+- Improved the macOS titlebar on narrow layouts by hiding crowded controls below 620px, compacting Git primary labels, and counting agent-owned process trees correctly in Resources.
+- Improved session focus so keyboard focus stays on visible panes and reference sidebar rows no longer show a passive working timer spinner.
+- Improved the Project board with a create-and-start flow, clearer missing-Beads setup guidance, and Cua Driver permission status in Integrations.
+- Improved Git commit review by moving the prompt agent selector into the footer and removing the duplicate review toast when the modal opens.
+- Improved project header action tooltips so labels open below their buttons without clipping at the sidebar edge.
+- Bundled Ghostex agent skills with the CLI install path.
+- Removed session-card shortcut badges and the unused show-hotkeys-on-cards setting.
 
 ## 3.18.0 - 2026-05-28
 
