@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { Toaster, toast } from "sonner";
+import { AddRepositoryModal } from "../../sidebar/add-repository-modal";
 import { AgentConfigModal, type AgentConfigDraft } from "../../sidebar/agent-config-modal";
 import { AgentsHubModal } from "../../sidebar/agents-hub-modal";
 import { CommandPalette } from "../../sidebar/command-palette";
@@ -53,6 +54,7 @@ import type { WebviewApi } from "../../sidebar/webview-api";
 import "../../sidebar/styles.css";
 
 type AppModalKind =
+  | "addRepository"
   | "agentConfig"
   | "agentsHub"
   | "commandPalette"
@@ -124,6 +126,15 @@ type AppModalHostMessage =
       type: "toast";
     }
   | { keepOpen?: boolean; type: "toastDismissed" }
+  | { initialPath?: string; type: "pickRepositoryFolder" }
+  | { path: string; type: "repositoryFolderPicked" }
+  | {
+      error?: string;
+      ok: boolean;
+      projectPath?: string;
+      requestId: string;
+      type: "repositoryCloneResult";
+    }
   | { type: "pickWorktreeImages" }
   | { paths: string[]; type: "worktreeImageFilesPicked" }
   | { details?: string; event: string; type: "debugLog" }
@@ -2151,6 +2162,19 @@ function AppModalHost() {
         onPromptAgentIdChange={updateRenamePromptAgentId}
         promptAgentId={resolvedRenamePromptAgentId}
       />
+      <AddRepositoryModal
+        isOpen={activeModal === "addRepository"}
+        onCancel={closeModal}
+        onClone={(request) => {
+          vscode.postMessage({
+            folderPath: request.folderPath,
+            repositoryInput: request.repositoryInput,
+            requestId: request.requestId,
+            type: "cloneRepository",
+          });
+        }}
+        onCloneSuccess={closeModal}
+      />
       <CommandConfigModal
         draft={config.commandDraft ?? createEmptyCommandDraft()}
         isOpen={activeModal === "commandConfig" && config.commandDraft !== undefined}
@@ -2794,6 +2818,8 @@ function isModalRenderable({
   switch (activeModal) {
     case undefined:
       return false;
+    case "addRepository":
+      return true;
     case "agentConfig":
       return config.agentDraft !== undefined;
     case "agentsHub":

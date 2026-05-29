@@ -7,6 +7,7 @@ import type { ExtensionToSidebarMessage } from "../shared/session-grid-contract"
 type T3BrowserAccessMessage = Extract<ExtensionToSidebarMessage, { type: "showT3BrowserAccess" }>;
 
 export type AppModalKind =
+  | "addRepository"
   | "agentConfig"
   | "agentsHub"
   | "commandPalette"
@@ -37,6 +38,7 @@ export type OpenAppModalMessage =
   | {
       modal: Exclude<
         AppModalKind,
+        | "addRepository"
         | "agentConfig"
         | "commandConfig"
         | "delayedSend"
@@ -52,6 +54,7 @@ export type OpenAppModalMessage =
       >;
       type: "open";
     }
+  | { modal: "addRepository"; type: "open" }
   | { initialQuery?: string; modal: "findPreviousSession"; type: "open" }
   | { access: T3BrowserAccessMessage; modal: "t3BrowserAccess"; type: "open" }
   | { modal: "t3ThreadId"; sessionId: string; threadId: string; type: "open" }

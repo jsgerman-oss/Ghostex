@@ -406,7 +406,6 @@ export type SidebarHudState = {
   createSessionOnSidebarDoubleClick: boolean;
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
-  showHotkeysOnSessionCards: boolean;
   theme:
     | "plain-dark"
     | "plain-light"
@@ -909,6 +908,18 @@ export type SidebarToExtensionMessage =
       type: "pickWorkspaceFolder";
     }
   | {
+      /**
+       * CDXC:AddRepository 2026-05-29-11:45:
+       * The full-window Clone Repository modal sends clone requests through the
+       * native sidebar so Git runs in the trusted native process bridge, errors
+       * return to the modal, and the project is added only after clone success.
+       */
+      folderPath: string;
+      repositoryInput: string;
+      requestId: string;
+      type: "cloneRepository";
+    }
+  | {
       type: "createSessionInGroup";
       groupId: string;
     }
@@ -1221,6 +1232,16 @@ export type SidebarToExtensionMessage =
        */
       query?: string;
       type: "promptFindPreviousSession";
+    }
+  | {
+      /**
+       * CDXC:PreviousSessions 2026-05-29-12:36:
+       * Previous Sessions needs a direct text-search launcher beside the agent
+       * prompt workflow. Keep it as an explicit sidebar command so the modal
+       * can start a fresh terminal running `gx f` without overloading the
+       * existing prompt-to-agent message.
+       */
+      type: "searchPreviousSessionsByText";
     }
   | {
       type: "clearGeneratedPreviousSessions";

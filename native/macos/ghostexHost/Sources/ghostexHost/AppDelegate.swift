@@ -7455,6 +7455,8 @@ final class ghostexRootView: NSView {
         modalHostView.isHidden = true
       }
       updateSidebarModalBackdrop()
+    case "pickRepositoryFolder":
+      presentRepositoryFolderPicker(initialPath: message["initialPath"] as? String)
     case "pickWorktreeImages":
       presentWorktreeImagePicker()
     case "sidebarState":
@@ -7607,6 +7609,53 @@ final class ghostexRootView: NSView {
       self?.dispatchModalHostMessage([
         "paths": panel.urls.map(\.path),
         "type": "worktreeImageFilesPicked",
+      ])
+    }
+
+    if let window {
+      panel.beginSheetModal(for: window, completionHandler: completion)
+    } else {
+      completion(panel.runModal())
+    }
+  }
+
+  private func presentRepositoryFolderPicker(initialPath: String?) {
+    /**
+     CDXC:AddRepository 2026-05-29-11:45:
+     The Clone Repository modal owns clone configuration, but folder selection
+     must still use a trusted native directory picker. Return only the selected
+     parent path to the modal host, which persists it as the app-wide last clone
+     location.
+     */
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = true
+    panel.canChooseFiles = false
+    panel.allowsMultipleSelection = false
+    panel.canCreateDirectories = true
+    panel.prompt = "Choose"
+    panel.message = "Choose where to clone the repository."
+    if let initialPath = initialPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !initialPath.isEmpty
+    {
+      let expandedPath =
+        initialPath == "~"
+        ? FileManager.default.homeDirectoryForCurrentUser.path
+        : initialPath.replacingOccurrences(
+          of: "~/",
+          with: "\(FileManager.default.homeDirectoryForCurrentUser.path)/",
+          options: [.anchored])
+      panel.directoryURL = URL(fileURLWithPath: expandedPath, isDirectory: true)
+    }
+
+    let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+      guard response == .OK,
+        let url = panel.url
+      else {
+        return
+      }
+      self?.dispatchModalHostMessage([
+        "path": url.path,
+        "type": "repositoryFolderPicked",
       ])
     }
 

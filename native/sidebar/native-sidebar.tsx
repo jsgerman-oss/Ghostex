@@ -37,6 +37,7 @@ import {
   DEFAULT_FIND_PREVIOUS_SESSION_PROMPT_TEMPLATE,
   renderFindPreviousSessionPrompt,
 } from "../../shared/find-previous-session-prompt";
+import { parseRepositoryCloneInput } from "../../shared/repository-clone";
 import {
   acknowledgeTitleDerivedSessionActivity,
   getTitleDerivedSessionActivityFromTransition,
@@ -8975,7 +8976,6 @@ function buildSidebarMessage(): SidebarHydrateMessage {
         project.theme ?? resolveSidebarTheme(settings.sidebarTheme, "dark"),
         settings.agentManagerZoomPercent,
         settings.showCloseButtonOnSessionCards,
-        settings.showHotkeysOnSessionCards,
         settings.debuggingMode,
         settings.completionBellEnabled,
         settings.completionSound,
@@ -18180,6 +18180,24 @@ function resolveFindPreviousSessionAgent(): SidebarAgentButton | undefined {
   return resolveDefaultPromptAgent();
 }
 
+async function searchPreviousSessionsByText(): Promise<void> {
+  /*
+   * CDXC:PreviousSessions 2026-05-29-12:36:
+   * The Previous Sessions modal's Search by Text button should open a fresh
+   * terminal running `gx f`, which is the bundled zehn prompt-history search
+   * path. Do not route this through the agent prompt flow; users asked for a
+   * direct terminal search button next to Prompt to Find Session.
+   */
+  appendAgentDetectionDebugLog("nativeSidebar.searchPreviousSessionsByText.received");
+  const session = await createNativeQuickTerminal({
+    command: "gx f",
+    title: "Search by Text",
+  });
+  if (!session) {
+    appendAgentDetectionDebugLog("nativeSidebar.searchPreviousSessionsByText.createSessionFailed");
+  }
+}
+
 function runCliCommandButton(commandId: string): TerminalSessionRecord | undefined {
   const command = commands.find((candidate) => candidate.commandId === commandId);
   if (!command) {
@@ -19708,6 +19726,104 @@ async function addProject(path: string, name = projectNameFromPath(path)): Promi
     return;
   }
   publish();
+}
+
+async function cloneRepositoryFromModal(
+  message: Extract<SidebarToExtensionMessage, { type: "cloneRepository" }>,
+): Promise<void> {
+  const parsedRepository = parseRepositoryCloneInput(message.repositoryInput);
+  const requestId = message.requestId.trim();
+  const parentPath = expandNativeRepositoryParentPath(message.folderPath);
+  if (!requestId) {
+    return;
+  }
+  if (!parsedRepository) {
+    postRepositoryCloneResult(requestId, {
+      error: "Enter a Git repository to clone.",
+      ok: false,
+    });
+    return;
+  }
+  if (!parentPath) {
+    postRepositoryCloneResult(requestId, {
+      error: "Choose a folder location.",
+      ok: false,
+    });
+    return;
+  }
+
+  const destinationName = normalizeRepositoryDestinationFolderName(parsedRepository.repositoryName);
+  const projectPath = joinNativeRepositoryPath(parentPath, destinationName);
+
+  try {
+    /**
+     * CDXC:AddRepository 2026-05-29-11:45:
+     * Clone & Add must not close the modal or create a project row until the
+     * Git clone finishes successfully. Run `git clone` in the selected parent
+     * folder with an explicit destination folder, then reuse the same addProject
+     * path as native folder-picker projects so terminal creation, worktree
+     * detection, ordering, and persistence stay consistent.
+     */
+    const result = await runNativeProcess(
+      "/usr/bin/env",
+      ["git", "clone", parsedRepository.cloneUrl, destinationName],
+      { cwd: parentPath, timeoutMs: 15 * 60_000 },
+    );
+    if (result.exitCode !== 0) {
+      throw new Error(
+        result.stderr.trim() ||
+          result.stdout.trim() ||
+          `git clone ${parsedRepository.cloneUrl} failed`,
+      );
+    }
+
+    await addProject(projectPath, destinationName);
+    postRepositoryCloneResult(requestId, { ok: true, projectPath });
+  } catch (error) {
+    postRepositoryCloneResult(requestId, {
+      error: error instanceof Error ? error.message : String(error),
+      ok: false,
+    });
+  }
+}
+
+function postRepositoryCloneResult(
+  requestId: string,
+  result: { error?: string; ok: boolean; projectPath?: string },
+): void {
+  postAppModalHostMessage(
+    {
+      error: result.error,
+      ok: result.ok,
+      projectPath: result.projectPath,
+      requestId,
+      type: "repositoryCloneResult",
+    },
+    "AppModals:addRepository.cloneResult",
+  );
+}
+
+function expandNativeRepositoryParentPath(path: string): string {
+  const trimmed = path.trim().replace(/\/+$/, "");
+  if (!trimmed) {
+    return "";
+  }
+  if (trimmed === "~") {
+    return nativeHomeDirectory();
+  }
+  if (trimmed.startsWith("~/")) {
+    return `${nativeHomeDirectory()}${trimmed.slice(1)}`;
+  }
+  return trimmed;
+}
+
+function normalizeRepositoryDestinationFolderName(name: string): string {
+  const normalizedName = name.trim().replace(/[/:\\]+/g, "-").replace(/^\.+$/, "");
+  return normalizedName || "repository";
+}
+
+function joinNativeRepositoryPath(parentPath: string, childName: string): string {
+  return `${parentPath.replace(/\/+$/, "")}/${childName}`;
 }
 
 async function resolveOpenedWorktreeProjectMetadata(
@@ -24052,6 +24168,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
     case "pickWorkspaceFolder":
       postNative({ type: "pickWorkspaceFolder" });
       return;
+    case "cloneRepository":
+      void cloneRepositoryFromModal(message);
+      return;
     case "openSettings":
       publish();
       return;
@@ -24501,6 +24620,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       } else {
         openAppModal({ modal: "findPreviousSession", type: "open" });
       }
+      return;
+    case "searchPreviousSessionsByText":
+      void searchPreviousSessionsByText();
       return;
     case "setT3SessionThreadId":
       void relinkNativeT3SessionThread(message.sessionId, message.threadId);

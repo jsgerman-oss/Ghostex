@@ -8,6 +8,7 @@ import {
   IconChevronLeft,
   IconChevronRight,
   IconChevronUp,
+  IconDownload,
   IconEdit,
   IconExternalLink,
   IconGitFork,
@@ -80,6 +81,12 @@ type BuiltInPaletteCommand =
   | HotkeyPaletteCommand
   | {
       hotkey: "";
+      kind: "cloneRepository";
+      searchText: string;
+      title: string;
+    }
+  | {
+      hotkey: "";
       kind: "pet";
       searchText: string;
       title: string;
@@ -140,7 +147,13 @@ export function CommandPalette({
         searchText: `${petTitle} pet overlay ${petOverlayEnabled ? "hide sleep" : "show wake"}`,
         title: petTitle,
       };
-      return [...hotkeyCommands, petCommand];
+      const cloneRepositoryCommand: BuiltInPaletteCommand = {
+        hotkey: "",
+        kind: "cloneRepository",
+        searchText: "Clone Repository add project git clone github codeberg repository",
+        title: "Clone Repository",
+      };
+      return [...hotkeyCommands, cloneRepositoryCommand, petCommand];
     },
     [normalizedHotkeys, petOverlayEnabled],
   );
@@ -176,6 +189,11 @@ export function CommandPalette({
       vscode.postMessage({
         type: "togglePetOverlay",
       });
+      return;
+    }
+    if (command.kind === "cloneRepository") {
+      onOpenChange(false);
+      openAppModal({ modal: "addRepository", type: "open" });
       return;
     }
     onOpenChange(false);
@@ -241,7 +259,12 @@ export function CommandPalette({
           CDXC:CommandPalette 2026-05-17-01:32:
           Focused pane-menu commands should appear together in the command
           palette, matching the pane menu order shown in native chrome while
-          still using shared configurable hotkey definitions. */}
+          still using shared configurable hotkey definitions.
+
+          CDXC:AddRepository 2026-05-29-11:45:
+          Clone Repository should be available from Cmd+K as a Ghostex built-in
+          command and open the same full-window clone modal as the Projects
+          header button, without going through configurable project actions. */}
       <Command>
         <CommandInput placeholder="Search Ghostex commands..." />
         <CommandList className="ghostex-command-palette-list">
@@ -323,6 +346,9 @@ export function CommandPalette({
 }
 
 function BuiltInCommandIcon({ command }: { command: BuiltInPaletteCommand }) {
+  if (command.kind === "cloneRepository") {
+    return <IconDownload aria-hidden="true" />;
+  }
   if (command.kind === "pet") {
     return command.title === "Sleep Pet" ? (
       <IconMoon aria-hidden="true" />

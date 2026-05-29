@@ -11,6 +11,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconCopy,
+  IconDownload,
   IconEye,
   IconFilter2,
   IconFolder,
@@ -573,7 +574,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     recentProjects,
     settings,
     revision,
-    showHotkeysOnSessionCards,
     sessionsById,
     theme,
     workspaceGroupIds,
@@ -591,7 +591,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       recentProjects: state.hud.recentProjects,
       revision: state.revision,
       settings: state.hud.settings,
-      showHotkeysOnSessionCards: state.hud.showHotkeysOnSessionCards,
       sessionsById: state.sessionsById,
       theme: state.hud.theme,
       workspaceGroupIds: state.workspaceGroupIds,
@@ -2660,6 +2659,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                         : undefined
                     }
                     collapsed={isReferenceProjectsCollapsed}
+                    onAddRepository={() => {
+                      openAppModal({ modal: "addRepository", type: "open" });
+                    }}
                     onAddProject={pickWorkspaceFolder}
                     onBulkProjectToggle={
                       displayedReferenceProjectGroupIds.length > 0
@@ -2764,7 +2766,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                       : undefined
                   }
                   showDebugSessionNumbers={debuggingMode}
-                  showHotkeys={showHotkeysOnSessionCards}
                 />
               ) : null}
               {shouldShowSessionSearchEmptyState ? (
@@ -3254,6 +3255,7 @@ function SidebarReferenceSectionHeader({
   bulkActionLabel,
   collapsed,
   onAddProject,
+  onAddRepository,
   onBulkProjectToggle,
   onCreateBrowserChat,
   onCreateChat,
@@ -3266,6 +3268,7 @@ function SidebarReferenceSectionHeader({
   bulkActionLabel?: string;
   collapsed: boolean;
   onAddProject?: () => void;
+  onAddRepository?: () => void;
   onBulkProjectToggle?: () => void;
   onCreateBrowserChat?: () => void;
   onCreateChat?: () => void;
@@ -3278,8 +3281,13 @@ function SidebarReferenceSectionHeader({
    * CDXC:SidebarReference 2026-05-08-01:41
    * Reference-mode Chats and Projects are collapsible section headers. Chats
    * exposes browser-chat and new-chat controls on hover, while Projects expose
-   * add-project and expand/collapse-all controls on hover so the compact
+   * clone-repository, add-project, and expand/collapse-all controls on hover so the compact
    * Codex.app-style list keeps management actions nearby.
+   *
+   * CDXC:AddRepository 2026-05-29-11:45:
+   * The Projects header needs a Download-icon Clone Repository action immediately
+   * to the left of Add Project. It opens the full-window clone dialog while the
+   * existing plus button remains the native folder picker for local projects.
    *
    * CDXC:SidebarReference 2026-05-08-02:21
    * The project bulk control is one stateful text button: "Collapse All" while
@@ -3306,7 +3314,12 @@ function SidebarReferenceSectionHeader({
   const BulkProjectIcon =
     bulkActionLabel === "Collapse All" ? IconArrowsDiagonalMinimize : IconArrowsDiagonal2;
   const hasActions =
-    onAddProject || onBulkProjectToggle || onCreateBrowserChat || onCreateChat || onFilterChats;
+    onAddProject ||
+    onAddRepository ||
+    onBulkProjectToggle ||
+    onCreateBrowserChat ||
+    onCreateChat ||
+    onFilterChats;
 
   return (
     <div
@@ -3360,6 +3373,17 @@ function SidebarReferenceSectionHeader({
               type="button"
             >
               <BulkProjectIcon aria-hidden="true" size={14} stroke={1.9} />
+            </button>
+          ) : null}
+          {onAddRepository ? (
+            <button
+              aria-label="Clone Repository"
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip="Clone Repository"
+              onClick={onAddRepository}
+              type="button"
+            >
+              <IconDownload aria-hidden="true" size={14} stroke={2} />
             </button>
           ) : null}
           {onAddProject ? (
