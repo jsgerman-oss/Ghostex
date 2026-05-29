@@ -65,6 +65,25 @@ export type TitlebarResourceSession = {
   delayedSendDeadlineAt?: string;
   delayedSendRemainingLabel?: string;
   delayedSendRemainingMs?: number;
+  /**
+   * CDXC:SessionLifecycle 2026-05-29-09:20:
+   * Titlebar resources consume the same explicit lifecycle resources as the
+   * sidebar: native pane mount state, provider session existence, and derived
+   * live state. Keep legacy booleans for older hosts while new code avoids
+   * conflating pane sleep with zmx/tmux/zellij liveness.
+   *
+   * CDXC:SessionLifecycle 2026-05-29-06:29:
+   * Persistence-disabled terminal sessions use `providerSessionState:
+   * "persistence-disabled"` so resource panels do not present a providerless
+   * backend as an unknown one.
+   *
+   * CDXC:SessionLifecycle 2026-05-29-07:19:
+   * Use `persistence-disabled` instead of a generic `disabled` value so
+   * titlebar/resource payloads state exactly which provider capability is off.
+   */
+  nativePaneState?: "mounted" | "mounting" | "unmounted";
+  providerSessionState?: "exists" | "missing" | "persistence-disabled" | "unknown";
+  isLive?: boolean;
   isRunning: boolean;
   isSleeping?: boolean;
   lastInteractionAt?: string;

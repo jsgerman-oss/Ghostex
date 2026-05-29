@@ -100,14 +100,22 @@ export type SidebarGhostexCliStatusMessage = {
    * Desktop Control readiness includes the `$ghostex-computer-use` wrapper
    * skill, because Cua Driver alone does not teach agents the Ghostex-named
    * computer-use workflow.
+   *
+   * CDXC:CuaPermissions 2026-05-29-06:00:
+   * The Cua Permissions row must report Cua Driver's own macOS privacy grants,
+   * not Ghostex's Accessibility grant. Carry both Accessibility and Screen
+   * Recording from `cua-driver check_permissions` in the setup status payload.
    */
   browserSkillInstalled: boolean;
   browserSkillPath?: string;
   computerUseSkillInstalled: boolean;
   computerUseSkillPath?: string;
+  cuaDriverAccessibilityPermissionGranted?: boolean;
   cuaAppInstalled: boolean;
   cuaDriverInstalled: boolean;
+  cuaDriverPermissionDetail?: string;
   cuaDriverPath?: string;
+  cuaDriverScreenRecordingPermissionGranted?: boolean;
   detail: string;
   generatedAt: string;
   ghostexPath?: string;
@@ -173,8 +181,31 @@ export type SidebarSessionItem = {
   row: number;
   column: number;
   isFocused: boolean;
+  /**
+   * CDXC:SessionLifecycle 2026-05-29-09:20:
+   * Session lifecycle uses resource-specific state names so UI and batch
+   * actions do not infer provider session existence from the legacy `isSleeping` and
+   * `isRunning` booleans. A native pane can be unmounted while a zmx/tmux/zellij
+   * provider session still exists, so both resource states are carried
+   * explicitly and `isLive` is derived from them.
+   *
+   * CDXC:SessionLifecycle 2026-05-29-06:29:
+   * Persistence-disabled terminal sessions must report `providerSessionState:
+   * "persistence-disabled"` instead of `unknown`. Unknown is reserved for configured
+   * providers whose existence check has not completed or failed.
+   *
+   * CDXC:SessionLifecycle 2026-05-29-07:19:
+   * Name the providerless state `persistence-disabled` so payloads make it
+   * clear the terminal provider is absent because persistence is off, not
+   * because some unrelated disabled flag was set.
+   */
+  nativePaneState?: "mounted" | "mounting" | "unmounted";
+  providerSessionState?: "exists" | "missing" | "persistence-disabled" | "unknown";
+  isLive?: boolean;
+  /** @deprecated Use nativePaneState/providerSessionState plus isLive. */
   isSleeping?: boolean;
   isVisible: boolean;
+  /** @deprecated Use isLive for runtime liveness and activity for work state. */
   isRunning: boolean;
   detail?: string;
   /**
@@ -196,10 +227,21 @@ export type SidebarSessionItem = {
 };
 
 export function getSidebarSessionLifecycleState(
-  session: Pick<SidebarSessionItem, "lifecycleState" | "isRunning" | "isSleeping">,
+  session: Pick<
+    SidebarSessionItem,
+    "isLive" | "isRunning" | "isSleeping" | "lifecycleState" | "nativePaneState" | "providerSessionState"
+  >,
 ): SessionLifecycleState {
   if (session.lifecycleState) {
     return session.lifecycleState;
+  }
+
+  if (session.isLive === true) {
+    return "running";
+  }
+
+  if (session.nativePaneState === "mounted" || session.providerSessionState === "exists") {
+    return "running";
   }
 
   if (session.isSleeping) {
@@ -495,7 +537,15 @@ export type SidebarT3SessionItem = {
 };
 
 export type SidebarPromptGitCommitMessage = {
+  /**
+   * CDXC:PromptAgents 2026-05-29-10:53:
+   * Git commit review, Multiple Commits, Release, and generated rename/title flows
+   * must carry the user-selected prompt agent explicitly. Modal-specific choices
+   * are remembered by the modal host, while Settings default-agent changes clear
+   * those remembered choices so every modal returns to the new default.
+   */
   action: SidebarGitAction;
+  agentId?: string;
   branch?: string | null;
   changedFiles?: SidebarGitChangedFile[];
   confirmLabel: string;
@@ -894,6 +944,7 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "renameSession";
+      agentId?: string;
       sessionId: string;
       title: string;
       /**
@@ -1256,6 +1307,7 @@ export type SidebarToExtensionMessage =
   | {
       commitOnNewRef?: boolean;
       deleteWorktreeAfter?: boolean;
+      agentId?: string;
       filePaths?: string[];
       message: string;
       requestId: string;
@@ -1264,12 +1316,14 @@ export type SidebarToExtensionMessage =
   | {
       conflictAgentId: string;
       deleteWorktreeAfter?: boolean;
+      agentId?: string;
       filePaths?: string[];
       message: string;
       requestId: string;
       type: "confirmSidebarGitDirectMerge";
     }
   | {
+      agentId?: string;
       requestId: string;
       type: "runSidebarGitMultipleCommits";
     }

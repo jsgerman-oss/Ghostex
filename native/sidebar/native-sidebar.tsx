@@ -127,8 +127,10 @@ import {
   createGroupFromSessionInSimpleWorkspace,
   createGroupInSimpleWorkspace,
   createSessionInSimpleWorkspace,
+  ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace,
   focusGroupByIndexInSimpleWorkspace,
   focusGroupInSimpleWorkspace,
+  focusSidebarSessionInSimpleWorkspace,
   focusSessionExclusivelyInSimpleWorkspace,
   focusSessionInSimpleWorkspace,
   focusVisibleDirectionInSimpleWorkspace,
@@ -1192,9 +1194,12 @@ type TitlebarResourceSession = {
   delayedSendDeadlineAt?: string;
   delayedSendRemainingLabel?: string;
   delayedSendRemainingMs?: number;
+  isLive?: boolean;
   isRunning: boolean;
   isSleeping?: boolean;
   lastInteractionAt?: string;
+  nativePaneState?: NativePaneState;
+  providerSessionState?: ProviderSessionState;
   projectId?: string;
   sessionId: string;
   sessionKind?: "browser" | "terminal" | "t3";
@@ -1225,12 +1230,15 @@ type NativeCliSessionListItem = {
   groupTitle: string;
   isFavorite?: boolean;
   isFocused: boolean;
+  isLive?: boolean;
   isVisible: boolean;
   lastInteractionAt: string;
+  nativePaneState?: NativePaneState;
   projectId: string;
   projectName: string;
   projectPath: string;
   provider?: TerminalSessionPersistenceProvider;
+  providerSessionState?: ProviderSessionState;
   providerSessionName?: string;
   resumeFallbackCommand?: string;
   resumeCommand?: string;
@@ -1391,13 +1399,14 @@ const terminalStateById = new Map<
     terminalTitle?: string;
   }
 >();
-type ProviderRuntimeState = "missing" | "running" | "unknown";
-type ProviderRuntimeStateLookupOptions = {
+type NativePaneState = "mounted" | "mounting" | "unmounted";
+type ProviderSessionState = "exists" | "missing" | "persistence-disabled" | "unknown";
+type ProviderSessionStateLookupOptions = {
   includeMountedNativeSession?: boolean;
 };
-const providerRuntimeStateByProjectSessionId = new Map<
+const providerSessionStateByProjectSessionId = new Map<
   string,
-  { checkedAt: number; provider: TerminalSessionPersistenceProvider; sessionName: string; state: ProviderRuntimeState }
+  { checkedAt: number; provider: TerminalSessionPersistenceProvider; sessionName: string; state: ProviderSessionState }
 >();
 /**
  * CDXC:AgentTerminalLifecycle 2026-05-25-16:26:
@@ -1553,11 +1562,11 @@ function normalizeNativeRestoreStartupScript(text: string): string {
   return text.replace(/\r$/u, "");
 }
 
-function providerRuntimeSessionKey(projectId: string, sessionId: string): string {
+function providerSessionStateKey(projectId: string, sessionId: string): string {
   return `${projectId}:${sessionId}`;
 }
 
-function getTerminalProviderRuntimeInfo(
+function getTerminalProviderSessionInfo(
   session: TerminalSessionRecord,
 ): { provider: TerminalSessionPersistenceProvider; sessionName: string } | undefined {
   const provider = session.sessionPersistenceProvider ?? (session.tmuxSessionName ? "tmux" : undefined);
@@ -1565,25 +1574,37 @@ function getTerminalProviderRuntimeInfo(
   return provider && sessionName ? { provider, sessionName } : undefined;
 }
 
-function getProviderRuntimeStateForSession(
+function getProviderSessionStateForSession(
   projectId: string,
   session: TerminalSessionRecord,
-  options: ProviderRuntimeStateLookupOptions = {},
-): ProviderRuntimeState {
+  options: ProviderSessionStateLookupOptions = {},
+): ProviderSessionState {
   const terminalState = terminalStateById.get(session.sessionId);
   if (
     options.includeMountedNativeSession !== false &&
     terminalState?.lifecycleState === "running" &&
     terminalState.sessionPersistenceProvider
   ) {
-    return "running";
+    return "exists";
   }
-  const providerInfo = getTerminalProviderRuntimeInfo(session);
+  const providerInfo = getTerminalProviderSessionInfo(session);
   if (!providerInfo) {
-    return "unknown";
+    /**
+     * CDXC:SessionLifecycle 2026-05-29-06:29:
+     * Disabled persistence is a known provider state, not an unknown backend
+     * check. Providerless terminals can still be live through `nativePaneState`,
+     * while provider restore/resume logic should not treat them as missing zmx
+     * sessions.
+     *
+     * CDXC:SessionLifecycle 2026-05-29-07:19:
+     * Use `persistence-disabled` rather than generic `disabled` because this
+     * state specifically means the terminal has no provider session by
+     * configuration.
+     */
+    return "persistence-disabled";
   }
-  const cached = providerRuntimeStateByProjectSessionId.get(
-    providerRuntimeSessionKey(projectId, session.sessionId),
+  const cached = providerSessionStateByProjectSessionId.get(
+    providerSessionStateKey(projectId, session.sessionId),
   );
   if (
     cached &&
@@ -1595,14 +1616,14 @@ function getProviderRuntimeStateForSession(
   return "unknown";
 }
 
-function rememberProviderRuntimeState(
+function rememberProviderSessionState(
   projectId: string,
   sessionId: string,
   provider: TerminalSessionPersistenceProvider,
   sessionName: string,
-  state: ProviderRuntimeState,
+  state: ProviderSessionState,
 ): void {
-  providerRuntimeStateByProjectSessionId.set(providerRuntimeSessionKey(projectId, sessionId), {
+  providerSessionStateByProjectSessionId.set(providerSessionStateKey(projectId, sessionId), {
     checkedAt: Date.now(),
     provider,
     sessionName,
@@ -1610,8 +1631,27 @@ function rememberProviderRuntimeState(
   });
 }
 
-function forgetProviderRuntimeState(projectId: string, sessionId: string): void {
-  providerRuntimeStateByProjectSessionId.delete(providerRuntimeSessionKey(projectId, sessionId));
+function forgetProviderSessionState(projectId: string, sessionId: string): void {
+  providerSessionStateByProjectSessionId.delete(providerSessionStateKey(projectId, sessionId));
+}
+
+function getNativePaneStateForSession(sessionId: string): NativePaneState {
+  if (pendingNativeTerminalSurfaceCreationBySessionId.has(sessionId)) {
+    return "mounting";
+  }
+  const terminalState = terminalStateById.get(sessionId);
+  return terminalState?.lifecycleState === "running" ? "mounted" : "unmounted";
+}
+
+function isSessionLiveFromResourceStates(
+  nativePaneState: NativePaneState,
+  providerSessionState: ProviderSessionState,
+): boolean {
+  return (
+    nativePaneState === "mounted" ||
+    nativePaneState === "mounting" ||
+    providerSessionState === "exists"
+  );
 }
 
 function shouldQueueProviderStartupTextForRestore(
@@ -1620,43 +1660,37 @@ function shouldQueueProviderStartupTextForRestore(
 ): boolean {
   /**
    * CDXC:SessionPersistence 2026-05-27-06:28:
-   * Restore startup decisions need provider-runtime liveness, not pane
+   * Restore startup decisions need provider-session existence, not pane
    * lifecycle. After a laptop restart, native can mount a fresh zmx shell for a
-   * persisted awake pane; treating that mounted pane as provider "running"
+   * persisted awake pane; treating that mounted pane as provider "exists"
    * suppresses the agent resume command and leaves an empty terminal.
    */
-  const providerRuntimeState = getProviderRuntimeStateForSession(projectId, session, {
+  const providerSessionState = getProviderSessionStateForSession(projectId, session, {
     includeMountedNativeSession: false,
   });
-  if (providerRuntimeState === "running") {
+  if (providerSessionState === "exists") {
     return false;
   }
   /**
    * CDXC:SessionPersistence 2026-05-27-06:28:
-   * Queue restore input whenever provider liveness is missing or unknown. The
+   * Queue restore input whenever provider session existence is missing or unknown. The
    * native terminalReady event still suppresses the queued input when attach
    * finds an existing tmux/zmx/zellij session, so live sessions are protected
    * while cold-recreated provider shells resume the stored agent.
    */
-  return providerRuntimeState === "missing" || providerRuntimeState === "unknown";
+  return providerSessionState === "missing" || providerSessionState === "unknown";
 }
 
-function shouldIncludeSessionInNativePaneTabs(projectId: string, session: SessionRecord): boolean {
-  if (session.kind !== "terminal") {
-    return true;
-  }
-  const providerInfo = getTerminalProviderRuntimeInfo(session);
-  if (providerInfo?.provider !== "zmx") {
-    return true;
-  }
+function shouldIncludeSessionInNativePaneTabs(_projectId: string, _session: SessionRecord): boolean {
   /**
-   * CDXC:SessionPersistence 2026-05-26-16:21:
-   * Native pane tabs for zmx-backed terminal records represent an attachable
-   * zmx runtime, not just durable Ghostex sidebar history. Hide confirmed
-   * missing zmx sessions from AppKit tab strips while keeping providerless
-   * persistence-off sessions on the older Ghostex-owned tab behavior.
+   * CDXC:PaneTabs 2026-05-29-09:04:
+   * Native pane tabs must mirror the active sidebar group, including sleeping,
+   * unmounted, and confirmed-missing provider sessions. Missing zmx sessions are
+   * still parked until selected or dragged, but filtering them out of AppKit tab
+   * strips makes sidebar cards and native tabs disagree and prevents drag/drop
+   * from restoring the session into the destination pane.
    */
-  return getProviderRuntimeStateForSession(projectId, session) !== "missing";
+  return true;
 }
 
 function getNativeSidebarCommandSession(
@@ -4728,7 +4762,7 @@ function collectStartupSurfacedPaneSessionIds(
   }
 }
 
-async function refreshProviderRuntimeStates(reason: string): Promise<void> {
+async function refreshProviderSessionStates(reason: string): Promise<void> {
   const targets: Array<{
     projectId: string;
     provider: TerminalSessionPersistenceProvider;
@@ -4737,7 +4771,7 @@ async function refreshProviderRuntimeStates(reason: string): Promise<void> {
   }> = [];
   for (const project of projects) {
     for (const session of project.commandsPanel.sessions) {
-      const providerInfo = getTerminalProviderRuntimeInfo(session);
+      const providerInfo = getTerminalProviderSessionInfo(session);
       if (providerInfo && !terminalStateById.has(session.sessionId)) {
         targets.push({ projectId: project.projectId, session, ...providerInfo });
       }
@@ -4747,7 +4781,7 @@ async function refreshProviderRuntimeStates(reason: string): Promise<void> {
         if (session.kind !== "terminal" || terminalStateById.has(session.sessionId)) {
           continue;
         }
-        const providerInfo = getTerminalProviderRuntimeInfo(session);
+        const providerInfo = getTerminalProviderSessionInfo(session);
         if (providerInfo) {
           targets.push({ projectId: project.projectId, session, ...providerInfo });
         }
@@ -4776,9 +4810,9 @@ async function refreshProviderRuntimeStates(reason: string): Promise<void> {
       continue;
     }
     const { result, target } = settled.value;
-    const state: ProviderRuntimeState = result.error ? "unknown" : result.exists ? "running" : "missing";
-    const key = providerRuntimeSessionKey(target.projectId, target.session.sessionId);
-    const previous = providerRuntimeStateByProjectSessionId.get(key);
+    const state: ProviderSessionState = result.error ? "unknown" : result.exists ? "exists" : "missing";
+    const key = providerSessionStateKey(target.projectId, target.session.sessionId);
+    const previous = providerSessionStateByProjectSessionId.get(key);
     if (
       previous?.provider === target.provider &&
       previous?.sessionName === target.sessionName &&
@@ -4786,7 +4820,7 @@ async function refreshProviderRuntimeStates(reason: string): Promise<void> {
     ) {
       continue;
     }
-    rememberProviderRuntimeState(
+    rememberProviderSessionState(
       target.projectId,
       target.session.sessionId,
       target.provider,
@@ -4796,11 +4830,11 @@ async function refreshProviderRuntimeStates(reason: string): Promise<void> {
     changed = true;
   }
   if (changed) {
-    appendRestoreDebugLog("nativeSidebar.providerRuntimeStates.refreshed", {
+    appendRestoreDebugLog("nativeSidebar.providerSessionStates.refreshed", {
       checkedCount: targets.length,
       reason,
-      runningCount: [...providerRuntimeStateByProjectSessionId.values()].filter(
-        (entry) => entry.state === "running",
+      existsCount: [...providerSessionStateByProjectSessionId.values()].filter(
+        (entry) => entry.state === "exists",
       ).length,
     });
     publish();
@@ -5834,6 +5868,7 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
   });
   const modalDraft = {
     action,
+    agentId: resolveDefaultPromptAgentId(),
     branch: gitState.branch,
     changedFiles: gitState.files,
     confirmLabel: resolveSidebarGitConfirmLabel(action, hasCommit),
@@ -6009,11 +6044,19 @@ function resolveSidebarAgentButtonById(agentId: string): SidebarAgentButton | un
 function createDefaultPromptAgentOptions(): ProjectBoardAgentOption[] {
   return agents
     .filter((agent) => agent.agentId !== "t3" && Boolean(agent.command?.trim()))
-    .map((agent) => ({ agentId: agent.agentId, label: agent.name.trim() || agent.agentId }));
+    .map((agent) => ({
+      agentId: agent.agentId,
+      command: agent.command?.trim(),
+      label: agent.name.trim() || agent.agentId,
+    }));
 }
 
 function resolveDefaultPromptAgentId(): string | undefined {
-  const requestedAgentId = settings.defaultPromptAgentId.trim() || DEFAULT_PROMPT_AGENT_ID;
+  return resolvePromptAgentId();
+}
+
+function resolvePromptAgentId(agentId?: string): string | undefined {
+  const requestedAgentId = agentId?.trim() || settings.defaultPromptAgentId.trim() || DEFAULT_PROMPT_AGENT_ID;
   const requestedAgent = resolveSidebarAgentButtonById(requestedAgentId);
   if (requestedAgent?.command?.trim()) {
     return requestedAgent.agentId;
@@ -6025,9 +6068,51 @@ function resolveDefaultPromptAgentId(): string | undefined {
   return agents.find((agent) => agent.agentId !== "t3" && agent.command?.trim())?.agentId;
 }
 
-function resolveDefaultPromptAgent(): SidebarAgentButton | undefined {
-  const agentId = resolveDefaultPromptAgentId();
-  return agentId ? resolveSidebarAgentButtonById(agentId) : undefined;
+function resolveDefaultPromptAgent(agentId?: string): SidebarAgentButton | undefined {
+  const resolvedAgentId = resolvePromptAgentId(agentId);
+  return resolvedAgentId ? resolveSidebarAgentButtonById(resolvedAgentId) : undefined;
+}
+
+function buildNativePromptGenerationShellCommand(input: {
+  agent: SidebarAgentButton;
+  delimiter: string;
+  prompt: string;
+  purpose: string;
+}): string {
+  const command = input.agent.command?.trim();
+  if (!command) {
+    throw new Error(`Choose a configured agent before generating ${input.purpose}.`);
+  }
+
+  /**
+   * CDXC:PromptAgents 2026-05-29-10:53:
+   * Background text generation must honor the selected prompt agent instead of
+   * hardcoding Codex. Use explicit non-interactive modes for supported built-in
+   * agents; custom agents are treated as stdin-driven commands so advanced users
+   * can provide their own generation wrapper without Ghostex adding fallback logic.
+   */
+  if (input.agent.agentId === "codex") {
+    return createNativeHereDocCommand(
+      `${command} exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
+      input.delimiter,
+      input.prompt,
+    );
+  }
+  if (input.agent.agentId === "claude") {
+    return createNativeHereDocCommand(`${command} -p`, input.delimiter, input.prompt);
+  }
+  if (input.agent.agentId === "gemini") {
+    return createNativeHereDocCommand(`${command} -p`, input.delimiter, input.prompt);
+  }
+  if (!isDefaultSidebarAgentId(input.agent.agentId)) {
+    return createNativeHereDocCommand(command, input.delimiter, input.prompt);
+  }
+
+  throw new Error(`${input.agent.name} does not support background ${input.purpose} generation.`);
+}
+
+function createNativeHereDocCommand(command: string, delimiter: string, body: string): string {
+  return [command, " <<'", delimiter, "'\n", body, "\n", delimiter].join("");
 }
 
 function resolveProjectWorktreeMergeAgentId(project: NativeProject): string | undefined {
@@ -6069,22 +6154,26 @@ function focusPendingGitProject(projectId: string): NativeProject {
   return project;
 }
 
-async function runSidebarGitMultipleCommits(requestId: string): Promise<void> {
+async function runSidebarGitMultipleCommits(requestId: string, agentId?: string): Promise<void> {
   pendingGitCommitRequests.delete(requestId);
   gitState = { ...gitState, isBusy: false };
   publish();
 
-  await runSidebarGitPromptAction("Multiple Commits", GIT_MULTIPLE_COMMITS_PROMPT);
+  await runSidebarGitPromptAction("Multiple Commits", GIT_MULTIPLE_COMMITS_PROMPT, agentId);
 }
 
-async function runSidebarGitPromptAction(title: string, prompt: string): Promise<void> {
+async function runSidebarGitPromptAction(
+  title: string,
+  prompt: string,
+  agentId?: string,
+): Promise<void> {
   await refreshGitState();
   if (!gitState.isRepo) {
     showAppToast("warning", "Git unavailable", `Open a Git repository to use ${title}.`);
     return;
   }
 
-  const agent = resolveDefaultPromptAgent();
+  const agent = resolveDefaultPromptAgent(agentId);
   if (!agent?.command) {
     showAppToast(
       "error",
@@ -6214,7 +6303,7 @@ async function commitWithMessage(
   subject: string,
   body?: string,
   filePaths?: readonly string[],
-  options: { commitOnNewRef?: boolean } = {},
+  options: { agentId?: string; commitOnNewRef?: boolean } = {},
 ): Promise<void> {
   if (filePaths && filePaths.length > 0) {
     await runGit(["add", "-A", "--", ...filePaths]);
@@ -6224,7 +6313,7 @@ async function commitWithMessage(
   const message = parseSidebarGitCommitMessage(subject, body);
   const resolvedMessage = message.subject
     ? message
-    : await generateSidebarGitCommitMessageFromStagedChanges();
+    : await generateSidebarGitCommitMessageFromStagedChanges(options.agentId);
   if (options.commitOnNewRef) {
     const branch = await checkoutSidebarGitFeatureBranch(resolvedMessage.subject);
     gitState = { ...gitState, branch, hasUpstream: false };
@@ -6280,7 +6369,7 @@ function parseSidebarGitCommitMessage(
   };
 }
 
-async function generateSidebarGitCommitMessageFromStagedChanges(): Promise<{
+async function generateSidebarGitCommitMessageFromStagedChanges(agentId?: string): Promise<{
   body: string;
   subject: string;
 }> {
@@ -6305,25 +6394,29 @@ async function generateSidebarGitCommitMessageFromStagedChanges(): Promise<{
     stagedPatch,
     stagedSummary,
   });
+  const agent = resolveDefaultPromptAgent(agentId);
+  if (!agent) {
+    throw new Error("Choose a configured prompt agent before generating a commit message.");
+  }
   const delimiter = `ghostex_GIT_COMMIT_${Date.now().toString(36)}`;
-  const command = [
-    "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"' - <<'",
+  const command = buildNativePromptGenerationShellCommand({
+    agent,
     delimiter,
-    "'\n",
     prompt,
-    "\n",
-    delimiter,
-  ].join("");
+    purpose: "commit message",
+  });
   const result = await runNativeProcess("/bin/zsh", ["-lc", command], {
     cwd: activeProject().path,
     timeoutMs: 120_000,
   });
   if (result.exitCode !== 0) {
     throw new Error(
-      result.stderr.trim() || result.stdout.trim() || "Codex commit message generation failed.",
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        `${agent.name} commit message generation failed.`,
     );
   }
-  return parseSidebarGitGeneratedCommitMessage(result.stdout);
+  return parseSidebarGitGeneratedCommitMessage(result.stdout, agent.name);
 }
 
 function buildSidebarGitCommitMessagePrompt(input: {
@@ -6352,10 +6445,13 @@ function buildSidebarGitCommitMessagePrompt(input: {
   ].join("\n");
 }
 
-function parseSidebarGitGeneratedCommitMessage(stdout: string): { body: string; subject: string } {
+function parseSidebarGitGeneratedCommitMessage(
+  stdout: string,
+  agentName = "Agent",
+): { body: string; subject: string } {
   const jsonText = stdout.match(/\{[\s\S]*\}/u)?.[0];
   if (!jsonText) {
-    throw new Error("Codex did not return a commit message JSON object.");
+    throw new Error(`${agentName} did not return a commit message JSON object.`);
   }
   const parsed = JSON.parse(jsonText) as Partial<{ body: unknown; subject: unknown }>;
   const subject = String(parsed.subject ?? "")
@@ -6364,7 +6460,7 @@ function parseSidebarGitGeneratedCommitMessage(stdout: string): { body: string; 
     .trim()
     .slice(0, 72);
   if (!subject) {
-    throw new Error("Codex returned an empty commit subject.");
+    throw new Error(`${agentName} returned an empty commit subject.`);
   }
   const body = typeof parsed.body === "string" ? parsed.body.trim() : "";
   return { body, subject };
@@ -6376,6 +6472,7 @@ async function continueGitActionAfterCommitConfirmation(
   filePaths?: readonly string[],
   deleteWorktreeAfter = false,
   commitOnNewRef = false,
+  agentId?: string,
 ): Promise<void> {
   const pending = pendingGitCommitRequests.get(requestId);
   if (!pending) {
@@ -6389,6 +6486,7 @@ async function continueGitActionAfterCommitConfirmation(
     showAppToast("info", resolveSidebarGitStartedTitle(pending.action), activeProject().name);
     if (pending.hasCommit) {
       await commitWithMessage(message.trim() || pending.subject, pending.body, filePaths, {
+        agentId,
         commitOnNewRef,
       });
     }
@@ -6421,6 +6519,7 @@ async function continueGitDirectMergeAfterConfirmation(
   filePaths: readonly string[] | undefined,
   deleteWorktreeAfter: boolean,
   conflictAgentId: string,
+  agentId?: string,
 ): Promise<void> {
   const pending = pendingGitCommitRequests.get(requestId);
   if (!pending) {
@@ -6441,7 +6540,9 @@ async function continueGitDirectMergeAfterConfirmation(
     publish();
     showAppToast("info", "Preparing direct merge", worktreeProject.name);
     if (pending.hasCommit) {
-      await commitWithMessage(message.trim() || pending.subject, pending.body, filePaths);
+      await commitWithMessage(message.trim() || pending.subject, pending.body, filePaths, {
+        agentId,
+      });
     }
     const result = await mergeActiveWorktreeIntoMain({
       conflictAgent,
@@ -8462,9 +8563,12 @@ function createTitlebarResourceSession(
     delayedSendDeadlineAt: session.delayedSendDeadlineAt,
     delayedSendRemainingLabel: session.delayedSendRemainingLabel,
     delayedSendRemainingMs: session.delayedSendRemainingMs,
+    isLive: session.isLive,
     isRunning: session.isRunning,
     isSleeping: session.isSleeping,
     lastInteractionAt: session.lastInteractionAt,
+    nativePaneState: session.nativePaneState,
+    providerSessionState: session.providerSessionState,
     projectId,
     sessionId: session.sessionId,
     sessionKind: session.sessionKind,
@@ -8637,16 +8741,20 @@ function createProjectedSidebarSessionsForGroup(
     const delayedSend = getDelayedSendProjectionForProjectSession(projectId, session.sessionId);
     if (sessionRecord?.kind === "t3") {
       const isSleeping = sessionRecord.isSleeping === true;
+      const nativePaneState: NativePaneState = isSleeping ? "unmounted" : "mounted";
       return {
         ...session,
         agentIcon: "t3",
         delayedSendDeadlineAt: delayedSend?.deadlineAt,
         delayedSendRemainingLabel: delayedSend?.remainingLabel,
         delayedSendRemainingMs: delayedSend?.remainingMs,
+        isLive: nativePaneState === "mounted",
         isRunning: !isSleeping,
         lastInteractionAt: sessionRecord.createdAt,
         lifecycleState: isSleeping ? "sleeping" : "running",
+        nativePaneState,
         primaryTitle: session.primaryTitle ?? "T3 Code",
+        providerSessionState: "persistence-disabled",
       };
     }
 
@@ -8654,11 +8762,16 @@ function createProjectedSidebarSessionsForGroup(
       sessionRecord?.kind === "terminal" ? sessionRecord.agentName : undefined;
     const terminalState = terminalStateById.get(session.sessionId);
     if (session.sessionKind !== "terminal") {
+      const rawSleeping = sessionRecord?.isSleeping === true;
+      const nativePaneState: NativePaneState = rawSleeping ? "unmounted" : "mounted";
       return {
         ...session,
         delayedSendDeadlineAt: delayedSend?.deadlineAt,
         delayedSendRemainingLabel: delayedSend?.remainingLabel,
         delayedSendRemainingMs: delayedSend?.remainingMs,
+        isLive: nativePaneState === "mounted",
+        nativePaneState,
+        providerSessionState: "persistence-disabled",
       };
     }
     const visibleTerminalTitle = getVisibleTerminalTitle(terminalState?.terminalTitle);
@@ -8686,11 +8799,12 @@ function createProjectedSidebarSessionsForGroup(
     const hasTrustedStoredResumeTitle =
       sessionRecord?.kind === "terminal" &&
       getNativeStoredTrustedResumeTitle(sessionRecord).title !== undefined;
-    const providerRuntimeState =
+    const providerSessionState =
       sessionRecord?.kind === "terminal"
-        ? getProviderRuntimeStateForSession(projectId, sessionRecord)
+        ? getProviderSessionStateForSession(projectId, sessionRecord)
         : "unknown";
-    const isDetachedProviderRuntimeRunning = providerRuntimeState === "running";
+    const nativePaneState = getNativePaneStateForSession(session.sessionId);
+    const isLive = isSessionLiveFromResourceStates(nativePaneState, providerSessionState);
     const primaryTitle = shouldPreferTerminalTitle
       ? visibleTerminalTitle
       : visiblePrimaryTitle
@@ -8712,16 +8826,19 @@ function createProjectedSidebarSessionsForGroup(
       delayedSendRemainingLabel: delayedSend?.remainingLabel,
       delayedSendRemainingMs: delayedSend?.remainingMs,
       firstUserMessage: sessionRecord?.firstUserMessage ?? terminalState?.firstUserMessage,
-      isSleeping: isDetachedProviderRuntimeRunning ? false : session.isSleeping,
+      isLive,
+      isSleeping: isLive ? false : session.isSleeping,
       lifecycleState:
         terminalState?.lifecycleState ??
-        (isDetachedProviderRuntimeRunning ? "running" : session.lifecycleState),
+        (isLive ? "running" : session.lifecycleState),
       isGeneratingFirstPromptTitle: terminalState?.firstPromptAutoRenameInProgress === true,
-      isRunning: terminalState?.lifecycleState === "running" || isDetachedProviderRuntimeRunning,
+      isRunning: isLive,
       isPrimaryTitleTerminalTitle:
         (Boolean(visibleTerminalTitle) && (!visiblePrimaryTitle || shouldPreferTerminalTitle)) ||
         (!visibleTerminalTitle && hasTrustedStoredResumeTitle),
       primaryTitle,
+      nativePaneState,
+      providerSessionState,
       sessionPersistenceName:
         terminalState?.sessionPersistenceName ?? session.sessionPersistenceName,
       sessionPersistenceProvider:
@@ -8992,6 +9109,7 @@ function handleAgentManagerXSessionCommand(rawData: unknown): void {
 }
 
 function publish(): void {
+  const didMaterializeVirtualPaneTabs = ensureActiveWorkspaceVirtualPaneTabs("publish");
   const didCreateNativeSession = ensureVisibleNativeSessions("publish");
   const sidebarMessage = buildSidebarMessage();
   sidebarBus.post(sidebarMessage);
@@ -9005,9 +9123,39 @@ function publish(): void {
   postAppModalHost({ message: sidebarMessage, type: "sidebarState" });
   postWorkspaceBarState();
   syncNativeT3RuntimeSessionState(sidebarMessage);
-  syncNativeLayout({ force: didCreateNativeSession });
+  syncNativeLayout({ force: didCreateNativeSession || didMaterializeVirtualPaneTabs });
   syncNativeSessionStatusIndicators();
   syncNativePetOverlayState();
+}
+
+function ensureActiveWorkspaceVirtualPaneTabs(reason: string): boolean {
+  const project = activeProject();
+  const group = activeWorkspaceGroup();
+  const beforePaneLayout = summarizeSessionPaneLayout(group.snapshot.paneLayout);
+  const result = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+    project.workspace,
+    group.groupId,
+  );
+  if (!result.changed) {
+    return false;
+  }
+  /**
+   * CDXC:PaneTabs 2026-05-29-09:04:
+   * The macOS native workarea shows one tab for every sidebar session in the
+   * active group. Materialize display-only virtual tab ids into paneLayout
+   * before publishing so selection, context menus, drag/drop, and persisted
+   * restart layout all operate on the same focused tab group.
+   */
+  updateActiveProjectWorkspace(() => result.snapshot);
+  appendPaneLayoutTraceDebugLog("nativeSidebar.virtualPaneTabs.materialized", {
+    activeProjectId,
+    afterPaneLayout: summarizeSessionPaneLayout(activeWorkspaceGroup().snapshot.paneLayout),
+    beforePaneLayout,
+    groupId: group.groupId,
+    reason,
+    sessionIds: group.snapshot.sessions.map((session) => session.sessionId),
+  });
+  return true;
 }
 
 function syncNativeT3RuntimeSessionState(sidebarMessage: SidebarHydrateMessage): void {
@@ -9286,7 +9434,7 @@ function restoreNativeTerminalSession(
   if (shouldQueueProviderStartupText) {
     /**
      * CDXC:AgentTerminalLifecycle 2026-05-27-06:28:
-     * Restored provider sessions queue resume text when provider liveness is
+     * Restored provider sessions queue resume text when provider session existence is
      * not confirmed running. Native terminalReady owns the final created-vs-
      * attached check, so existing zmx sessions stay untouched while newly
      * created provider shells resume the agent instead of staying empty.
@@ -10028,13 +10176,20 @@ async function requestNativeGhostexCliStatus(): Promise<void> {
    * CDXC:ComputerAgentControl 2026-05-27-06:58:
    * Desktop Control is ready for agents only when both Cua Driver and the
    * `$ghostex-computer-use` wrapper skill are installed.
+   *
+   * CDXC:CuaPermissions 2026-05-29-06:00:
+   * The Integrations page must show Cua Driver's actual macOS permission state.
+   * Check `cua-driver check_permissions` during the native setup status probe
+   * instead of reusing Ghostex's own Accessibility grant.
    */
   const result = await runNativeProcess("/usr/bin/python3", [
     "-c",
     String.raw`
 import json
 import os
+import re
 import shutil
+import subprocess
 from datetime import datetime, timezone
 
 ghostex_path = shutil.which("ghostex")
@@ -10050,6 +10205,41 @@ cua_driver_path = shutil.which("cua-driver")
 cua_app_installed = os.path.isdir("/Applications/CuaDriver.app")
 cua_driver_installed = bool(cua_driver_path or cua_app_installed)
 desktop_control_installed = bool(cua_driver_installed and computer_use_skill_installed)
+cua_driver_accessibility_permission_granted = None
+cua_driver_screen_recording_permission_granted = None
+cua_driver_permission_detail = None
+
+def parse_cua_permission(output, label):
+    match = re.search(label + r"\s*:\s*([^\n.]+)", output, re.IGNORECASE)
+    if not match:
+        return None
+    value = match.group(1).strip().lower()
+    if "granted" in value and "not granted" not in value:
+        return True
+    if "not granted" in value or "denied" in value or "missing" in value:
+        return False
+    return None
+
+if cua_driver_path:
+    try:
+        permission_result = subprocess.run(
+            [cua_driver_path, "check_permissions"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        permission_output = (permission_result.stdout + "\n" + permission_result.stderr).strip()
+        cua_driver_permission_detail = permission_output or None
+        cua_driver_accessibility_permission_granted = parse_cua_permission(
+            permission_output,
+            "Accessibility",
+        )
+        cua_driver_screen_recording_permission_granted = parse_cua_permission(
+            permission_output,
+            "Screen Recording",
+        )
+    except Exception as error:
+        cua_driver_permission_detail = f"Unable to check Cua Driver permissions: {error}"
 
 if ghostex_path:
     if gx_usable:
@@ -10078,14 +10268,26 @@ if desktop_control_installed:
 else:
     detail = detail + " Desktop Control is not installed yet."
 
+if cua_driver_permission_detail:
+    if (
+        cua_driver_accessibility_permission_granted is True
+        and cua_driver_screen_recording_permission_granted is True
+    ):
+        detail = detail + " Cua Driver reports Accessibility and Screen Recording permissions are granted."
+    else:
+        detail = detail + " Cua Driver permissions need attention."
+
 print(json.dumps({
     "browserSkillInstalled": browser_skill_installed,
     "browserSkillPath": browser_skill_path if browser_skill_installed else None,
     "computerUseSkillInstalled": computer_use_skill_installed,
     "computerUseSkillPath": computer_use_skill_path if computer_use_skill_installed else None,
     "cuaAppInstalled": cua_app_installed,
+    "cuaDriverAccessibilityPermissionGranted": cua_driver_accessibility_permission_granted,
     "cuaDriverInstalled": cua_driver_installed,
+    "cuaDriverPermissionDetail": cua_driver_permission_detail,
     "cuaDriverPath": cua_driver_path,
+    "cuaDriverScreenRecordingPermissionGranted": cua_driver_screen_recording_permission_granted,
     "detail": detail,
     "generatedAt": datetime.now(timezone.utc).isoformat(),
     "ghostexPath": ghostex_path,
@@ -14487,31 +14689,42 @@ function isNativeTimestampNewer(candidate: string, current: string | undefined):
   return candidateTimestamp > getNativeTimestampValue(current);
 }
 
-async function generateNativeSessionTitleFromPrompt(cwd: string, prompt: string): Promise<string> {
+async function generateNativeSessionTitleFromPrompt(
+  cwd: string,
+  prompt: string,
+  agentId?: string,
+): Promise<string> {
   const sourceText = prompt.slice(0, GENERATED_SESSION_TITLE_SOURCE_MAX_LENGTH);
   const generationPrompt = buildNativeSessionTitlePrompt(sourceText);
+  const agent = resolveDefaultPromptAgent(agentId);
+  if (!agent) {
+    throw new Error("Choose a configured prompt agent before generating a session title.");
+  }
   const delimiter = `ghostex_SESSION_TITLE_${Date.now().toString(36)}`;
-  const command = [
-    /**
-     * CDXC:SessionTitleSync 2026-04-26-20:27
-     * Internal first-prompt title generation summarizes user text only. It must
-     * not require the terminal cwd to be a trusted Git repository, because new
-     * empty sessions can start at `/` or another non-repo path.
-     */
-    "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"' - <<'",
+  /**
+   * CDXC:SessionTitleSync 2026-04-26-20:27
+   * Internal first-prompt title generation summarizes user text only. It must
+   * not require the terminal cwd to be a trusted Git repository, because new
+   * empty sessions can start at `/` or another non-repo path.
+   *
+   * CDXC:PromptAgents 2026-05-29-10:53:
+   * Generated session titles should use the selected/default prompt agent, not a
+   * hardcoded Codex shell command. Manual Rename Generate Name passes its modal
+   * choice, while automatic first-prompt titles use Settings' default.
+   */
+  const command = buildNativePromptGenerationShellCommand({
+    agent,
     delimiter,
-    "'\n",
-    generationPrompt,
-    "\n",
-    delimiter,
-  ].join("");
+    prompt: generationPrompt,
+    purpose: "session title",
+  });
   const result = await runNativeProcess("/bin/zsh", ["-lc", command], { cwd });
   if (result.exitCode !== 0) {
     throw new Error(
-      result.stderr.trim() || result.stdout.trim() || "Codex title generation failed.",
+      result.stderr.trim() || result.stdout.trim() || `${agent.name} title generation failed.`,
     );
   }
-  return parseNativeGeneratedSessionTitleText(result.stdout);
+  return parseNativeGeneratedSessionTitleText(result.stdout, agent.name);
 }
 
 async function generateNativeWorktreeNameFromPrompt(cwd: string, prompt: string): Promise<string> {
@@ -14549,11 +14762,11 @@ function buildNativeSessionTitlePrompt(sourceText: string): string {
   ].join("\n");
 }
 
-function parseNativeGeneratedSessionTitleText(value: string): string {
+function parseNativeGeneratedSessionTitleText(value: string, agentName = "Agent"): string {
   const normalized = normalizeNativeGeneratedText(value);
   const titleLine = normalized.split(/\r?\n/g).find((line) => line.trim().length > 0);
   if (!titleLine) {
-    throw new Error("Codex title generation returned an empty session title.");
+    throw new Error(`${agentName} title generation returned an empty session title.`);
   }
   const sanitized = titleLine
     .replace(/^["'`]+|["'`]+$/g, "")
@@ -14561,7 +14774,7 @@ function parseNativeGeneratedSessionTitleText(value: string): string {
     .trim()
     .replace(/[.…]+$/gu, "");
   if (!sanitized) {
-    throw new Error("Codex title generation returned an empty session title.");
+    throw new Error(`${agentName} title generation returned an empty session title.`);
   }
   return clampNativeGeneratedSessionTitleLength(sanitized);
 }
@@ -14690,7 +14903,7 @@ function closeTerminal(
       };
     });
     terminalStateById.delete(reference.sessionId);
-    forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
+    forgetProviderSessionState(reference.project.projectId, reference.sessionId);
     pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
     titleDerivedActivityBySessionId.delete(reference.sessionId);
     nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
@@ -14733,7 +14946,7 @@ function closeTerminal(
     },
   );
   terminalStateById.delete(reference.sessionId);
-  forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
+  forgetProviderSessionState(reference.project.projectId, reference.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
   titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
@@ -14901,7 +15114,7 @@ function focusTerminal(sessionId: string): void {
     reference.sessionId,
   );
   updateActiveProjectWorkspace(
-    (workspace) => focusSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
+    (workspace) => focusSidebarSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
   );
   const focusTargetAfter = summarizeSidebarSessionFocusTarget(activeProject(), reference.sessionId);
   if (!shouldKeepProjectEditorOpen) {
@@ -14972,14 +15185,14 @@ function focusTerminal(sessionId: string): void {
         "focus-sleeping-session",
       );
     }
-    const providerRuntimeState = getProviderRuntimeStateForSession(
+    const providerSessionState = getProviderSessionStateForSession(
       reference.project.projectId,
       session,
     );
     restoreNativeTerminalSession(
       activeProject(),
       session,
-      providerRuntimeState === "running"
+      providerSessionState === "exists"
         ? "focus-live-provider-session"
         : "focus-sleeping-session",
     );
@@ -15464,6 +15677,9 @@ function focusNativeHotkeyDirection(direction: SessionGridDirection): void {
       visibleSessionIds: snapshotBefore.visibleSessionIds,
     });
   }
+  if (focusProjectEditorCompanionHotkeyDirection(direction, snapshotBefore)) {
+    return;
+  }
   const result = focusVisibleDirectionInSimpleWorkspace(activeProject().workspace, direction);
   const resultGroup = result.snapshot.groups.find((group) => group.groupId === groupBefore.groupId);
   const resultSnapshot = resultGroup?.snapshot ?? snapshotBefore;
@@ -15512,6 +15728,82 @@ function focusNativeHotkeyDirection(direction: SessionGridDirection): void {
     }
     focusSidebarSession(focusedSessionId);
   }
+}
+
+function focusProjectEditorCompanionHotkeyDirection(
+  direction: SessionGridDirection,
+  snapshot: SessionGridSnapshot,
+): boolean {
+  const project = activeProject();
+  const surfaceState = projectEditorSurfaceByProjectId.get(project.projectId);
+  if (surfaceState?.isOpen !== true || surfaceState.isSleeping === true) {
+    return false;
+  }
+
+  if (direction === "up" || direction === "down") {
+    logNativeHotkeyDebug("nativeHotkeys.projectEditorCompanionDirectionIgnored", {
+      activeProjectEditorId: surfaceState.nativeEditorId,
+      direction,
+      mode: surfaceState.mode,
+      projectId: project.projectId,
+    });
+    return true;
+  }
+
+  /**
+   * CDXC:PaneFocus 2026-05-29-05:25:
+   * In Code, Git, and Project modes, directional focus treats the companion agent pane as the left target and the project-editor workarea as the right target.
+   * Left/right should move keyboard focus between those two native regions without changing visibleSessionIds; up/down are consumed because the editor companion layout is horizontal only.
+   */
+  if (direction === "right") {
+    postNative({
+      projectId: surfaceState.nativeEditorId,
+      type: "focusProjectEditorPane",
+    });
+    logNativeHotkeyDebug("nativeHotkeys.projectEditorCompanionFocusEditor", {
+      activeProjectEditorId: surfaceState.nativeEditorId,
+      mode: surfaceState.mode,
+      projectId: project.projectId,
+    });
+    return true;
+  }
+
+  const focusedSessionId = snapshot.focusedSessionId;
+  const focusedSession =
+    focusedSessionId && snapshot.visibleSessionIds.includes(focusedSessionId)
+      ? snapshot.sessions.find((session) => session.sessionId === focusedSessionId)
+      : undefined;
+  if (
+    !focusedSession ||
+    focusedSession.isSleeping === true ||
+    project.projectEditorCompanionPaneHidden === true
+  ) {
+    logNativeHotkeyDebug("nativeHotkeys.projectEditorCompanionFocusAgentMissing", {
+      activeProjectEditorId: surfaceState.nativeEditorId,
+      companionHidden: project.projectEditorCompanionPaneHidden === true,
+      focusedSessionId: focusedSessionId ?? "",
+      hasFocusedVisibleSession: focusedSession !== undefined,
+      mode: surfaceState.mode,
+      projectId: project.projectId,
+    });
+    return true;
+  }
+
+  postNative({
+    sessionId: nativeSessionIdForProjectSidebarSession(
+      project.projectId,
+      focusedSession.sessionId,
+    ),
+    type: focusedSession.kind === "terminal" ? "focusTerminal" : "focusWebPane",
+  });
+  logNativeHotkeyDebug("nativeHotkeys.projectEditorCompanionFocusAgent", {
+    activeProjectEditorId: surfaceState.nativeEditorId,
+    focusedSessionId: focusedSession.sessionId,
+    mode: surfaceState.mode,
+    projectId: project.projectId,
+    sessionKind: focusedSession.kind,
+  });
+  return true;
 }
 
 function focusNativeHotkeyGroupByIndex(groupIndex: number): void {
@@ -15878,7 +16170,7 @@ async function renameNativeSidebarTerminalSession(
   sessionId: string,
   title: string,
   source: string,
-  options?: { shouldGenerateTitle?: boolean },
+  options?: { agentId?: string; shouldGenerateTitle?: boolean },
 ): Promise<void> {
   const reference = resolveSidebarSessionReference(sessionId);
   const session = findTerminalSessionInProject(reference.project, reference.sessionId);
@@ -15960,6 +16252,7 @@ async function renameNativeSidebarTerminalSession(
       requestedTitle = await generateNativeSessionTitleFromPrompt(
         reference.project.path,
         requestedTitleInput,
+        options?.agentId,
       );
       appendSessionTitleDebugLog("nativeSidebar.renameSession.generateTitle.completed", {
         pastedTextLength: requestedTitleInput.length,
@@ -16147,9 +16440,9 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
     );
   }
   if (sleeping) {
-    const providerInfo = getTerminalProviderRuntimeInfo(session);
+    const providerInfo = getTerminalProviderSessionInfo(session);
     if (providerInfo) {
-      rememberProviderRuntimeState(
+      rememberProviderSessionState(
         reference.project.projectId,
         reference.sessionId,
         providerInfo.provider,
@@ -16157,7 +16450,7 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
         "missing",
       );
     } else {
-      forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
+      forgetProviderSessionState(reference.project.projectId, reference.sessionId);
     }
     stopNativeSleepingSessionRuntime(reference.sessionId, reference.project);
   } else if (wasSleeping || !terminalStateById.has(reference.sessionId)) {
@@ -16168,7 +16461,7 @@ function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
         session.surface === "commands" ? "wake-command-session" : "wake-session",
       );
     }
-    forgetProviderRuntimeState(reference.project.projectId, reference.sessionId);
+    forgetProviderSessionState(reference.project.projectId, reference.sessionId);
     const nextProject = findProject(reference.project.projectId) ?? reference.project;
     const nextSession = findTerminalSessionInProject(nextProject, reference.sessionId);
     if (nextSession) {
@@ -16234,12 +16527,15 @@ function sleepInactiveSessionsFromTitlebar(sessionIds: string[]): void {
   for (const sessionId of Array.from(new Set(sessionIds))) {
     const reference = resolveSidebarSessionReference(sessionId);
     const session = findTerminalSessionInProject(reference.project, reference.sessionId);
-    if (!session || session.kind !== "terminal" || session.isSleeping === true) {
+    if (!session || session.kind !== "terminal") {
       continue;
     }
     const projectedSession = createProjectedSidebarGroupsForProject(reference.project)
       .flatMap((group) => group.sessions)
       .find((candidate) => candidate.sessionId === reference.sessionId);
+    if (projectedSession?.isSleeping === true) {
+      continue;
+    }
     const terminalState = terminalStateById.get(reference.sessionId);
     const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
     if (activity === "working" || activity === "attention") {
@@ -16271,6 +16567,12 @@ function sleepInactiveProjectSessions(projectId: string): void {
    * current project sessions, including command-panel zmx terminals. Live/idle
    * zmx sessions are eligible; only working and attention sessions remain awake
    * because they represent active output or user review.
+   *
+   * CDXC:ProjectSleep 2026-05-29-09:20:
+   * Sleep Inactive must use projected resource state, not raw `isSleeping`,
+   * because durable session records can say sleeping while their zmx provider
+   * session still exists and is shown as live. Sleep the idle live projection so
+   * provider runtimes are actually released.
    */
   const project = findProject(projectId);
   if (!project) {
@@ -16282,37 +16584,24 @@ function sleepInactiveProjectSessions(projectId: string): void {
       .map((session) => [session.sessionId, session]),
   );
 
-  for (const group of project.workspace.groups) {
+  for (const group of createProjectSessionGroupsForProjection(project)) {
     for (const session of group.snapshot.sessions) {
-      if (session.kind !== "terminal" || session.isSleeping === true) {
+      const projectedSession = projectedSessionsById.get(session.sessionId);
+      if (projectedSession?.isSleeping === true) {
         continue;
       }
-      const projectedSession = projectedSessionsById.get(session.sessionId);
       const terminalState = terminalStateById.get(session.sessionId);
       const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
       if (activity === "working" || activity === "attention") {
         continue;
       }
-      setNativeSessionSleeping(
-        createCombinedProjectSessionId(project.projectId, session.sessionId),
-        true,
-      );
+      const combinedSessionId = createCombinedProjectSessionId(project.projectId, session.sessionId);
+      if (session.kind === "terminal") {
+        setNativeSessionSleeping(combinedSessionId, true);
+      } else if (session.kind === "browser") {
+        setNativeBrowserSessionSleeping(project.projectId, session.sessionId, true);
+      }
     }
-  }
-  for (const session of project.commandsPanel.sessions) {
-    if (session.isSleeping === true) {
-      continue;
-    }
-    const projectedSession = projectedSessionsById.get(session.sessionId);
-    const terminalState = terminalStateById.get(session.sessionId);
-    const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
-    if (activity === "working" || activity === "attention") {
-      continue;
-    }
-    setNativeSessionSleeping(
-      createCombinedProjectSessionId(project.projectId, session.sessionId),
-      true,
-    );
   }
 }
 
@@ -16611,7 +16900,7 @@ function fullReloadProjectZmxSessions(projectId: string): void {
 
   for (const group of createProjectSessionGroupsForProjection(project)) {
     for (const session of group.snapshot.sessions) {
-      if (session.kind !== "terminal" || session.isSleeping === true) {
+      if (session.kind !== "terminal") {
         continue;
       }
       const terminalState = terminalStateById.get(session.sessionId);
@@ -16623,6 +16912,9 @@ function fullReloadProjectZmxSessions(projectId: string): void {
         continue;
       }
       const projectedSession = projectedSessionsById.get(session.sessionId);
+      if (projectedSession?.isSleeping === true) {
+        continue;
+      }
       const activity = projectedSession?.activity ?? terminalState.activity ?? "idle";
       if (activity === "working" || activity === "attention") {
         continue;
@@ -17544,12 +17836,14 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
           terminalState?.sessionPersistenceName ??
           session.sessionPersistenceName ??
           session.tmuxSessionName;
-        const providerRuntimeState = getProviderRuntimeStateForSession(project.projectId, session);
+        const providerSessionState = getProviderSessionStateForSession(project.projectId, session);
+        const nativePaneState = getNativePaneStateForSession(session.sessionId);
+        const isLive = isSessionLiveFromResourceStates(nativePaneState, providerSessionState);
         const status = getNativeCliSessionStatus(
           session,
           projectedSession,
           terminalState,
-          providerRuntimeState,
+          providerSessionState,
         );
         /**
          * CDXC:CliSessions 2026-05-07-21:22
@@ -17585,13 +17879,16 @@ function listNativeCliSessions(): NativeCliSessionListItem[] {
            */
           isFavorite: session.isFavorite,
           isFocused: group.snapshot.focusedSessionId === session.sessionId,
+          isLive,
           isVisible: Boolean(projectedSession?.isVisible),
           lastInteractionAt:
             projectedSession?.lastInteractionAt ?? terminalState?.lastActivityAt ?? session.createdAt,
+          nativePaneState,
           projectId: project.projectId,
           projectName: project.name,
           projectPath: project.path,
           provider,
+          providerSessionState,
           providerSessionName,
           resumeFallbackCommand: buildNativeCopyResumeFallbackCommand(session),
           resumeCommand: buildNativeCopyResumeCommand(session),
@@ -17618,9 +17915,9 @@ function getNativeCliSessionStatus(
         lifecycleState: "done" | "error" | "running" | "sleeping";
       }
     | undefined,
-  providerRuntimeState: ProviderRuntimeState = "unknown",
+  providerSessionState: ProviderSessionState = "unknown",
 ): NativeCliSessionListItem["status"] {
-  if (providerRuntimeState === "running") {
+  if (providerSessionState === "exists") {
     return projectedSession?.activity ?? terminalState?.activity ?? "idle";
   }
   if (session.isSleeping === true || terminalState?.lifecycleState === "sleeping") {
@@ -23860,7 +24157,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.sessionId,
         message.title,
         "native-sidebar-rename-session",
-        { shouldGenerateTitle: message.shouldGenerateTitle },
+        { agentId: message.agentId, shouldGenerateTitle: message.shouldGenerateTitle },
       );
       return;
     case "renameGroup":
@@ -24230,6 +24527,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.filePaths,
         message.deleteWorktreeAfter,
         message.commitOnNewRef,
+        message.agentId,
       );
       return;
     case "confirmSidebarGitDirectMerge":
@@ -24239,10 +24537,11 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.filePaths,
         message.deleteWorktreeAfter === true,
         message.conflictAgentId,
+        message.agentId,
       );
       return;
     case "runSidebarGitMultipleCommits":
-      void runSidebarGitMultipleCommits(message.requestId);
+      void runSidebarGitMultipleCommits(message.requestId, message.agentId);
       return;
     case "cancelSidebarGitCommit":
       pendingGitCommitRequests.delete(message.requestId);
@@ -25137,8 +25436,8 @@ function buildLayout(
      * CDXC:PaneTabs 2026-05-15-20:10:
      * Restart restore must keep sleeping tab buttons in the native top tab bar
      * without attaching every terminal process. Add missing parked tab members
-     * to the first active pane/tab group, while missing awake sessions follow
-     * the same tab-attachment rule unless the user explicitly performed a split.
+     * to the focused pane/tab group, while missing awake sessions follow the
+     * same tab-attachment rule unless the user explicitly performed a split.
      *
      * CDXC:SplitIntent 2026-05-19-08:29:
      * Native layout synthesis must not create new split panes to recover from
@@ -25150,6 +25449,12 @@ function buildLayout(
      * terminal the active native tab. Preserve the sidebar-focused session as
      * the only allowed active-tab promotion so a repaired Google/browser tab
      * cannot expand to the full workarea while another session is selected.
+     *
+     * CDXC:PaneTabs 2026-05-29-09:04:
+     * Virtual tabs are deterministic: append any synthesized missing tab ids to
+     * the focused tab group, not the first split in layout order. This keeps
+     * sidebar, native chrome, and later drag/drop restore behavior aligned with
+     * the pane the user is actively working in.
      */
     const missingSessionEntries = sessionIds.flatMap((sessionId, index) => {
       const sidebarSessionId = sidebarSessionIds[index];
@@ -25167,6 +25472,7 @@ function buildLayout(
       persistedLayout,
       missingParkedSessionIds,
       activeSessionIds,
+      preferredActiveSessionId,
     );
     if (missingActiveSessionIds.length === 0) {
       return layoutWithParkedTabs;
@@ -25223,7 +25529,12 @@ function buildLayout(
   const layoutItems = createNativeLayoutItems(visible, splitHint);
   const parkedSessionIds = sessionIds.filter((sessionId) => !activeSessionIds.has(sessionId));
   if (layoutItems.length === 1) {
-    return addParkedSessionsToNativeTabGroup(layoutItems[0]!, parkedSessionIds, activeSessionIds);
+    return addParkedSessionsToNativeTabGroup(
+      layoutItems[0]!,
+      parkedSessionIds,
+      activeSessionIds,
+      preferredActiveSessionId,
+    );
   }
 
   const columns = layoutItems.length === 2 ? 2 : layoutItems.length <= 4 ? 2 : 3;
@@ -25236,7 +25547,12 @@ function buildLayout(
   }
   const generatedLayout =
     rows.length === 1 ? rows[0]! : { children: rows, direction: "vertical" as const, kind: "split" as const };
-  return addParkedSessionsToNativeTabGroup(generatedLayout, parkedSessionIds, activeSessionIds);
+  return addParkedSessionsToNativeTabGroup(
+    generatedLayout,
+    parkedSessionIds,
+    activeSessionIds,
+    preferredActiveSessionId,
+  );
 }
 
 function addMissingSessionsToNativeTabGroup(
@@ -25267,6 +25583,16 @@ function addMissingSessionsToExistingNativeTabGroup(
   missingSessionIds: readonly string[],
   preferredActiveSessionId?: string,
 ): { didAdd: boolean; layout: NativeTerminalLayout } {
+  if (preferredActiveSessionId) {
+    const preferredResult = addMissingSessionsToPreferredNativeTabGroup(
+      layout,
+      missingSessionIds,
+      preferredActiveSessionId,
+    );
+    if (preferredResult.didAdd) {
+      return preferredResult;
+    }
+  }
   switch (layout.kind) {
     case "leaf":
       return { didAdd: false, layout };
@@ -25291,6 +25617,56 @@ function addMissingSessionsToExistingNativeTabGroup(
           return child;
         }
         const result = addMissingSessionsToExistingNativeTabGroup(
+          child,
+          missingSessionIds,
+          preferredActiveSessionId,
+        );
+        didAdd = result.didAdd;
+        return result.layout;
+      });
+      return { didAdd, layout: didAdd ? { ...layout, children } : layout };
+    }
+  }
+}
+
+function addMissingSessionsToPreferredNativeTabGroup(
+  layout: NativeTerminalLayout,
+  missingSessionIds: readonly string[],
+  preferredActiveSessionId: string,
+): { didAdd: boolean; layout: NativeTerminalLayout } {
+  switch (layout.kind) {
+    case "leaf":
+      return layout.sessionId === preferredActiveSessionId
+        ? {
+            didAdd: true,
+            layout: {
+              activeSessionId: preferredActiveSessionId,
+              kind: "tabs",
+              sessionIds: dedupeNativeSessionIds([preferredActiveSessionId, ...missingSessionIds]),
+            },
+          }
+        : { didAdd: false, layout };
+    case "tabs": {
+      if (!layout.sessionIds.includes(preferredActiveSessionId)) {
+        return { didAdd: false, layout };
+      }
+      const sessionIds = dedupeNativeSessionIds([...layout.sessionIds, ...missingSessionIds]);
+      return {
+        didAdd: true,
+        layout: {
+          ...layout,
+          activeSessionId: preferredActiveSessionId,
+          sessionIds,
+        },
+      };
+    }
+    case "split": {
+      let didAdd = false;
+      const children = layout.children.map((child) => {
+        if (didAdd) {
+          return child;
+        }
+        const result = addMissingSessionsToPreferredNativeTabGroup(
           child,
           missingSessionIds,
           preferredActiveSessionId,
@@ -25345,6 +25721,7 @@ function addParkedSessionsToNativeTabGroup(
   layout: NativeTerminalLayout,
   parkedSessionIds: readonly string[],
   activeSessionIds: ReadonlySet<string>,
+  preferredActiveSessionId?: string,
 ): NativeTerminalLayout {
   const missingParkedSessionIds = parkedSessionIds.filter(
     (sessionId, index, sessionIds) =>
@@ -25352,6 +25729,17 @@ function addParkedSessionsToNativeTabGroup(
   );
   if (missingParkedSessionIds.length === 0) {
     return layout;
+  }
+  if (preferredActiveSessionId) {
+    const preferredResult = addParkedSessionsToPreferredNativeTabGroup(
+      layout,
+      missingParkedSessionIds,
+      activeSessionIds,
+      preferredActiveSessionId,
+    );
+    if (preferredResult.didAdd) {
+      return preferredResult.layout;
+    }
   }
   const result = addParkedSessionsToExistingNativeTabGroup(layout, missingParkedSessionIds, activeSessionIds);
   if (result.didAdd) {
@@ -25388,6 +25776,57 @@ function addParkedSessionsToExistingNativeTabGroup(
           return child;
         }
         const result = addParkedSessionsToExistingNativeTabGroup(child, parkedSessionIds, activeSessionIds);
+        didAdd = result.didAdd;
+        return result.layout;
+      });
+      return { didAdd, layout: didAdd ? { ...layout, children } : layout };
+    }
+  }
+}
+
+function addParkedSessionsToPreferredNativeTabGroup(
+  layout: NativeTerminalLayout,
+  parkedSessionIds: readonly string[],
+  activeSessionIds: ReadonlySet<string>,
+  preferredActiveSessionId: string,
+): { didAdd: boolean; layout: NativeTerminalLayout } {
+  switch (layout.kind) {
+    case "leaf":
+      return layout.sessionId === preferredActiveSessionId && activeSessionIds.has(layout.sessionId)
+        ? {
+            didAdd: true,
+            layout: {
+              activeSessionId: preferredActiveSessionId,
+              kind: "tabs",
+              sessionIds: dedupeNativeSessionIds([preferredActiveSessionId, ...parkedSessionIds]),
+            },
+          }
+        : { didAdd: false, layout };
+    case "tabs": {
+      const hasActiveTab = layout.sessionIds.some((sessionId) => activeSessionIds.has(sessionId));
+      if (!hasActiveTab || !layout.sessionIds.includes(preferredActiveSessionId)) {
+        return { didAdd: false, layout };
+      }
+      return {
+        didAdd: true,
+        layout: {
+          ...layout,
+          sessionIds: dedupeNativeSessionIds([...layout.sessionIds, ...parkedSessionIds]),
+        },
+      };
+    }
+    case "split": {
+      let didAdd = false;
+      const children = layout.children.map((child) => {
+        if (didAdd) {
+          return child;
+        }
+        const result = addParkedSessionsToPreferredNativeTabGroup(
+          child,
+          parkedSessionIds,
+          activeSessionIds,
+          preferredActiveSessionId,
+        );
         didAdd = result.didAdd;
         return result.layout;
       });
@@ -26166,12 +26605,12 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }
       if (terminalState.sessionPersistenceProvider && terminalState.sessionPersistenceName) {
         const reference = resolveSidebarSessionReference(sidebarSessionId);
-        rememberProviderRuntimeState(
+        rememberProviderSessionState(
           reference.project.projectId,
           reference.sessionId,
           terminalState.sessionPersistenceProvider,
           terminalState.sessionPersistenceName,
-          "running",
+          "exists",
         );
       }
       const startupText = takeNativeTerminalStartupText(sidebarSessionId);
@@ -26389,18 +26828,26 @@ function handleNativePaneTabSelected(sessionId: string): void {
   const group = activeWorkspaceGroup();
   const selectedSessionBefore = findSessionRecord(sessionId);
   const wasSleeping = selectedSessionBefore?.isSleeping === true;
+  const wasMissingNativeTerminalState =
+    selectedSessionBefore?.kind === "terminal" && !terminalStateById.has(sessionId);
+  const wasMissingNativeWebSurface =
+    (selectedSessionBefore?.kind === "browser" || selectedSessionBefore?.kind === "t3") &&
+    !nativeSessionIdBySidebarSessionId.has(sessionId);
+  const shouldRestoreSelectedSurface =
+    wasSleeping || wasMissingNativeTerminalState || wasMissingNativeWebSurface;
   appendPaneLayoutTraceDebugLog("paneTabSelected.received", {
     activeProjectId,
     groupId: group.groupId,
     sessionId,
     targetGroup: summarizeWorkspaceGroupForPaneLayoutTrace(activeProject().workspace, group.groupId),
     wasSleeping,
+    wasMissingNativeSurface: wasMissingNativeTerminalState || wasMissingNativeWebSurface,
   });
   const workspaceWithWake = wasSleeping
     ? wakePaneTabSessionInSimpleWorkspace(activeProject().workspace, group.groupId, sessionId).snapshot
     : activeProject().workspace;
   const result = selectPaneTabInSimpleWorkspace(workspaceWithWake, group.groupId, sessionId);
-  if (!result.changed && !wasSleeping) {
+  if (!result.changed && !shouldRestoreSelectedSurface) {
     appendPaneLayoutTraceDebugLog("paneTabSelected.unchanged", {
       acknowledgedAttention,
       activeProjectId,
@@ -26419,6 +26866,12 @@ function handleNativePaneTabSelected(sessionId: string): void {
    * session. If the clicked tab is sleeping, wake its persisted session record
    * first, recreate the native terminal/web surface, then publish the selected
    * tab layout so sleeping tabs are not inert controls.
+   *
+   * CDXC:PaneTabs 2026-05-29-09:04:
+   * Virtual tab clicks are restore intents even when the stored session is not
+   * marked sleeping. A tab can be unmounted or provider-missing with no native
+   * renderer yet, so selection must materialize paneLayout and create the
+   * surface before asking AppKit to focus it.
    */
   updateActiveProjectWorkspace(() => (result.changed ? result.snapshot : workspaceWithWake));
   appendPaneLayoutTraceDebugLog("paneTabSelected.applied", {
@@ -26431,14 +26884,18 @@ function handleNativePaneTabSelected(sessionId: string): void {
       group.groupId,
     ),
     wasSleeping,
+    wasMissingNativeSurface: wasMissingNativeTerminalState || wasMissingNativeWebSurface,
   });
-  if (wasSleeping) {
+  if (shouldRestoreSelectedSurface) {
     const restoredSession = findSessionRecord(sessionId) ?? selectedSessionBefore;
     restoreNativeSessionSurfaceForWake(activeProject(), restoredSession, "pane-tab-wake", {
-      forceTerminalRestore: true,
+      forceTerminalRestore: wasSleeping,
     });
   }
-  queueNativeLayoutFocusRequest(sessionId, wasSleeping ? "paneTabWake" : "paneTabSelected");
+  queueNativeLayoutFocusRequest(
+    sessionId,
+    shouldRestoreSelectedSurface ? "paneTabWake" : "paneTabSelected",
+  );
   publish();
 }
 
@@ -27876,7 +28333,7 @@ if (
     } else {
       publish();
     }
-    void refreshProviderRuntimeStates("startup");
+    void refreshProviderSessionStates("startup");
     runNativeAutoSleepMonitor("startup");
     scheduleNativeT3RuntimePrewarm(activeProjectId, "startup");
     openTipsAndTricksOnFirstLaunch();

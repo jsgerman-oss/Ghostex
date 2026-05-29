@@ -378,6 +378,52 @@ export function focusSessionInSimpleWorkspace(
   };
 }
 
+export function focusSidebarSessionInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+): WorkspaceMutationResult {
+  const normalizedSnapshot = restoreFocusModeForExternalSession(
+    normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot),
+    sessionId,
+  );
+  const owningGroup = getGroupForSession(normalizedSnapshot, sessionId);
+  if (!owningGroup) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+  const groupSnapshotWithVirtualTabs = materializeAllSessionsInFocusedPaneTabGroup(
+    owningGroup.snapshot,
+  );
+  const currentSession = groupSnapshotWithVirtualTabs.sessions.find(
+    (session) => session.sessionId === sessionId,
+  );
+  const shouldSelectExistingPaneTab =
+    currentSession?.isSleeping !== true &&
+    paneLayoutContainsSession(groupSnapshotWithVirtualTabs.paneLayout, sessionId);
+  if (!shouldSelectExistingPaneTab) {
+    return focusSessionInSimpleWorkspace(normalizedSnapshot, sessionId);
+  }
+  const snapshotWithVirtualTabs = updateGroup(
+    {
+      ...normalizedSnapshot,
+      activeGroupId: owningGroup.groupId,
+    },
+    owningGroup.groupId,
+    (group) => ({
+      ...group,
+      /**
+       * CDXC:SidebarSessionFocus 2026-05-29-09:47:
+       * Sidebar clicks on unmounted-but-not-sleeping sessions should select the
+       * session in its existing paneLayout tab group. The old generic focus
+       * path reused the currently active pane and moved the tab before restore,
+       * which changed split ownership and tab order even though paneLayout
+       * already knew where the session belonged.
+       */
+      snapshot: groupSnapshotWithVirtualTabs,
+    }),
+  );
+  return selectPaneTabInSimpleWorkspace(snapshotWithVirtualTabs, owningGroup.groupId, sessionId);
+}
+
 export function focusSessionExclusivelyInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,
@@ -585,21 +631,25 @@ export function wakePaneTabSessionInSimpleWorkspace(
 ): WorkspaceMutationResult {
   const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
   const group = getGroupById(normalizedSnapshot, groupId);
-  const currentSession = group?.snapshot.sessions.find(
+  if (!group) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+  const groupSnapshotWithVirtualTabs = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
+  const currentSession = groupSnapshotWithVirtualTabs?.sessions.find(
     (session) => session.sessionId === sessionId,
   );
-  if (!group || !currentSession || currentSession.isSleeping !== true) {
+  if (!currentSession || currentSession.isSleeping !== true) {
     return { changed: false, snapshot: normalizedSnapshot };
   }
 
-  const nextVisibleSessionIds = group.snapshot.visibleSessionIds.includes(sessionId)
-    ? group.snapshot.visibleSessionIds
-    : [...group.snapshot.visibleSessionIds, sessionId];
+  const nextVisibleSessionIds = groupSnapshotWithVirtualTabs.visibleSessionIds.includes(sessionId)
+    ? groupSnapshotWithVirtualTabs.visibleSessionIds
+    : [...groupSnapshotWithVirtualTabs.visibleSessionIds, sessionId];
 
   const nextSnapshot = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
     ...targetGroup,
     snapshot: normalizeGroupSnapshot({
-      ...targetGroup.snapshot,
+      ...groupSnapshotWithVirtualTabs,
       focusedSessionId: sessionId,
       /**
        * CDXC:PaneTabs 2026-05-23-09:08:
@@ -607,14 +657,20 @@ export function wakePaneTabSessionInSimpleWorkspace(
        * existing split/tab group. Do not reuse the generic sidebar wake path,
        * because that intentionally moves sleeping cards into the focused pane
        * and can drain a right split into the left tab group.
+       *
+       * CDXC:PaneTabs 2026-05-29-09:04:
+       * Virtual native tabs are persisted into the focused pane tab group before
+       * wake. Selecting a sleeping/unmounted/missing-provider tab must activate
+       * that tab in its current group, not synthesize a new split or ignore the
+       * click because paneLayout lacked the displayed tab id.
        */
-      sessions: targetGroup.snapshot.sessions.map((session) =>
+      sessions: groupSnapshotWithVirtualTabs.sessions.map((session) =>
         session.sessionId === sessionId
           ? { ...session, isPoppedOut: undefined, isSleeping: false }
           : session,
       ),
       visibleCount: clampSupportedVisibleCount(
-        Math.max(targetGroup.snapshot.visibleCount, nextVisibleSessionIds.length),
+        Math.max(groupSnapshotWithVirtualTabs.visibleCount, nextVisibleSessionIds.length),
       ),
       visibleSessionIds: nextVisibleSessionIds,
     }),
@@ -1310,12 +1366,20 @@ export function selectPaneTabInSimpleWorkspace(
   if (!group) {
     return { changed: false, snapshot };
   }
-  if (!group.snapshot.visibleSessionIds.includes(sessionId)) {
+  const groupSnapshotWithVirtualTabs = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
+  const isPaneTabSession = paneLayoutContainsSession(
+    groupSnapshotWithVirtualTabs.paneLayout,
+    sessionId,
+  );
+  if (!groupSnapshotWithVirtualTabs.visibleSessionIds.includes(sessionId)) {
     const focusedTabSessionIds =
-      group.snapshot.visibleCount === 1 &&
-      group.snapshot.fullscreenRestoreVisibleCount !== undefined &&
-      group.snapshot.focusedSessionId
-        ? findPaneTabGroupSessionIds(group.snapshot.paneLayout, group.snapshot.focusedSessionId)
+      groupSnapshotWithVirtualTabs.visibleCount === 1 &&
+      groupSnapshotWithVirtualTabs.fullscreenRestoreVisibleCount !== undefined &&
+      groupSnapshotWithVirtualTabs.focusedSessionId
+        ? findPaneTabGroupSessionIds(
+            groupSnapshotWithVirtualTabs.paneLayout,
+            groupSnapshotWithVirtualTabs.focusedSessionId,
+          )
         : undefined;
     if (focusedTabSessionIds?.includes(sessionId) === true) {
       /**
@@ -1325,13 +1389,46 @@ export function selectPaneTabInSimpleWorkspace(
        */
       return focusSessionInSimpleWorkspace(snapshot, sessionId);
     }
-    return { changed: false, snapshot };
+    if (!isPaneTabSession) {
+      return { changed: false, snapshot };
+    }
+    const nextLayout = setActiveSessionInPaneLayout(
+      groupSnapshotWithVirtualTabs.paneLayout,
+      sessionId,
+    );
+    const nextVisibleSessionIds = [...groupSnapshotWithVirtualTabs.visibleSessionIds, sessionId];
+    /**
+     * CDXC:PaneTabs 2026-05-29-09:04:
+     * Native tab chrome can expose virtual tab members that are not in legacy
+     * visibleSessionIds. Selecting one must focus that paneLayout tab group and
+     * promote the tab into visible ids so the subsequent native restore/focus
+     * command has a real workspace target.
+     */
+    const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
+      ...targetGroup,
+      snapshot: normalizeGroupSnapshot({
+        ...groupSnapshotWithVirtualTabs,
+        focusedSessionId: sessionId,
+        ...(nextLayout ? { paneLayout: nextLayout } : {}),
+        visibleCount: clampSupportedVisibleCount(
+          Math.max(groupSnapshotWithVirtualTabs.visibleCount, nextVisibleSessionIds.length),
+        ),
+        visibleSessionIds: nextVisibleSessionIds,
+      }),
+    }));
+    return {
+      changed: !areSnapshotsEqual(snapshot, nextSnapshot),
+      snapshot: nextSnapshot,
+    };
   }
-  const nextLayout = setActiveSessionInPaneLayout(group.snapshot.paneLayout, sessionId);
+  const nextLayout = setActiveSessionInPaneLayout(
+    groupSnapshotWithVirtualTabs.paneLayout,
+    sessionId,
+  );
   const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
     ...targetGroup,
     snapshot: normalizeGroupSnapshot({
-      ...targetGroup.snapshot,
+      ...groupSnapshotWithVirtualTabs,
       focusedSessionId: sessionId,
       ...(nextLayout ? { paneLayout: nextLayout } : {}),
     }),
@@ -1354,18 +1451,14 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
   if (!group) {
     return { changed: false, snapshot };
   }
-  const paneSessionIds = getPaneSessionIds(group.snapshot);
+  const groupSnapshotWithVirtualTabs = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
+  const paneSessionIds = getPaneSessionIds(groupSnapshotWithVirtualTabs);
   const paneSessionIdSet = new Set(paneSessionIds);
   if (!paneSessionIdSet.has(sourceSessionId) || !paneSessionIdSet.has(targetSessionId)) {
     return { changed: false, snapshot };
   }
   const currentLayout =
-    normalizePaneLayout(
-      group.snapshot.paneLayout,
-      paneSessionIds,
-      paneSessionIds,
-      group.snapshot.focusedSessionId,
-    ) ?? createPaneLayoutFromVisibleIds(paneSessionIds);
+    groupSnapshotWithVirtualTabs.paneLayout ?? createPaneLayoutFromVisibleIds(paneSessionIds);
   if (!currentLayout) {
     return { changed: false, snapshot };
   }
@@ -1398,17 +1491,17 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
   if (!nextLayout) {
     return { changed: false, snapshot };
   }
-  const sourceSession = group.snapshot.sessions.find(
+  const sourceSession = groupSnapshotWithVirtualTabs.sessions.find(
     (session) => session.sessionId === sourceSessionId,
   );
   const shouldWakeSourceSession = options.wakeSourceSession === true && sourceSession?.isSleeping === true;
   const nextSessions = shouldWakeSourceSession
-    ? group.snapshot.sessions.map((session) =>
+    ? groupSnapshotWithVirtualTabs.sessions.map((session) =>
         session.sessionId === sourceSessionId
           ? { ...session, isPoppedOut: undefined, isSleeping: false }
           : session,
       )
-    : group.snapshot.sessions;
+    : groupSnapshotWithVirtualTabs.sessions;
   const nextVisibleSessionIds =
     placement === "center"
       ? paneSessionIds
@@ -1437,11 +1530,18 @@ export function moveSessionInPaneLayoutInSimpleWorkspace(
    * restore action. Wake the dragged source in the same paneLayout mutation so
    * normalization keeps it focused, includes it in active visible ids, and lets
    * native sync show the restored split instead of parking the moved tab.
+   *
+   * CDXC:PaneTabs 2026-05-29-09:04:
+   * Dragging a virtual sleeping/unmounted/missing-provider tab must first
+   * materialize that displayed tab in paneLayout, then move/focus/wake it using
+   * the same mutation as an already mounted tab. Native chrome may show tabs
+   * that have no renderer yet, so drag handling cannot assume paneLayout already
+   * contains every visible title-bar tab.
    */
   const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
     ...targetGroup,
     snapshot: normalizeGroupSnapshot({
-      ...targetGroup.snapshot,
+      ...groupSnapshotWithVirtualTabs,
       focusedSessionId: sourceSessionId,
       paneLayout: nextLayout,
       sessions: nextSessions,
@@ -1469,12 +1569,8 @@ export function reorderSessionInPaneTabGroupInSimpleWorkspace(
   if (!group) {
     return { changed: false, snapshot };
   }
-  const currentLayout = normalizePaneLayout(
-    group.snapshot.paneLayout,
-    group.snapshot.sessions.map((session) => session.sessionId),
-    group.snapshot.sessions.map((session) => session.sessionId),
-    group.snapshot.focusedSessionId,
-  );
+  const groupSnapshotWithVirtualTabs = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
+  const currentLayout = groupSnapshotWithVirtualTabs.paneLayout;
   if (!currentLayout) {
     return { changed: false, snapshot };
   }
@@ -1496,7 +1592,7 @@ export function reorderSessionInPaneTabGroupInSimpleWorkspace(
   const nextSnapshot = updateGroup(snapshot, groupId, (targetGroup) => ({
     ...targetGroup,
     snapshot: normalizeGroupSnapshot({
-      ...targetGroup.snapshot,
+      ...groupSnapshotWithVirtualTabs,
       paneLayout: result.node,
     }),
   }));
@@ -2706,6 +2802,340 @@ function getPaneSessionIds(snapshot: SessionGroupRecord["snapshot"]): string[] {
   return paneSessionIds;
 }
 
+export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  groupId: string,
+): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const group = getGroupById(normalizedSnapshot, groupId);
+  if (!group) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+  const nextGroupSnapshot = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
+  const nextSnapshot = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
+    ...targetGroup,
+    snapshot: nextGroupSnapshot,
+  }));
+  return {
+    changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
+    snapshot: nextSnapshot,
+  };
+}
+
+function materializeAllSessionsInFocusedPaneTabGroup(
+  snapshot: SessionGroupRecord["snapshot"],
+): SessionGroupRecord["snapshot"] {
+  const sessionIds = dedupeVisibleSessionIds(snapshot.sessions.map((session) => session.sessionId));
+  if (sessionIds.length === 0) {
+    return normalizeGroupSnapshot(snapshot);
+  }
+  const nextPaneLayout = normalizeSessionsIntoFocusedPaneTabGroup(
+    snapshot.paneLayout,
+    sessionIds,
+    snapshot.visibleSessionIds,
+    snapshot.focusedSessionId,
+  );
+  if (!nextPaneLayout) {
+    return normalizeGroupSnapshot(snapshot);
+  }
+  return normalizeGroupSnapshot({
+    ...snapshot,
+    /**
+     * CDXC:PaneTabs 2026-05-29-09:04:
+     * macOS native tabs must represent every sidebar session in the active
+     * group, even when the provider session is missing or the native pane is
+     * unmounted. Persist virtual tab membership in the focused pane tab group so
+     * tab clicks, context menus, drag/drop, and restart restore all use one
+     * paneLayout source of truth instead of a display-only synthesized tab list.
+     *
+     * CDXC:PaneTabs 2026-05-29-09:26:
+     * App restart can leave sessions in sleeping-only paneLayout branches that
+     * Swift correctly prunes because no native pane owns those branches. Treat
+     * runtime materialization as an idempotent layout normalization: preserve
+     * rendered split pane owners and their existing tab siblings, but relocate
+     * sessions from non-rendered branches into the focused tab group so the
+     * sidebar and tab strip expose the same session inventory.
+     */
+    paneLayout: nextPaneLayout,
+  });
+}
+
+function normalizeSessionsIntoFocusedPaneTabGroup(
+  layout: SessionPaneLayoutNode | undefined,
+  sessionIds: readonly string[],
+  visibleSessionIds: readonly string[],
+  focusedSessionId: string | undefined,
+): SessionPaneLayoutNode | undefined {
+  const allowedSessionIds = dedupeVisibleSessionIds(sessionIds);
+  const allowedSessionIdSet = new Set(allowedSessionIds);
+  const visiblePaneOwnerSessionIds = dedupeVisibleSessionIds([
+    ...visibleSessionIds.filter((sessionId) => allowedSessionIdSet.has(sessionId)),
+  ]);
+  const seedSessionIds = dedupeVisibleSessionIds([
+    ...visiblePaneOwnerSessionIds,
+    ...(focusedSessionId && allowedSessionIdSet.has(focusedSessionId) ? [focusedSessionId] : []),
+    ...allowedSessionIds,
+  ]);
+  const renderedLayout =
+    layout && visiblePaneOwnerSessionIds.length > 0
+      ? retainRenderedPaneLayoutSessions(
+          layout,
+          allowedSessionIdSet,
+          new Set(visiblePaneOwnerSessionIds),
+          focusedSessionId,
+        )
+      : undefined;
+  const missingVisibleSessionIds = visiblePaneOwnerSessionIds.filter(
+    (sessionId) => !paneLayoutContainsSession(renderedLayout, sessionId),
+  );
+  const missingVisibleLayout =
+    missingVisibleSessionIds.length > 0
+      ? createInitialPaneLayoutForCreatedSession(
+          missingVisibleSessionIds,
+          focusedSessionId && missingVisibleSessionIds.includes(focusedSessionId)
+            ? focusedSessionId
+            : missingVisibleSessionIds[0] ?? "",
+        )
+      : undefined;
+  const baseLayout =
+    renderedLayout && missingVisibleLayout
+      ? flattenPaneLayoutSplit({
+          children: [renderedLayout, missingVisibleLayout],
+          direction: "horizontal",
+          kind: "split",
+        })
+      : renderedLayout ??
+        missingVisibleLayout ??
+        createInitialPaneLayoutForCreatedSession(
+          seedSessionIds.length > 0 ? seedSessionIds : allowedSessionIds,
+          focusedSessionId && allowedSessionIdSet.has(focusedSessionId)
+            ? focusedSessionId
+            : seedSessionIds[0] ?? allowedSessionIds[0] ?? "",
+        );
+  if (!baseLayout) {
+    return undefined;
+  }
+  const baseLayoutSessionIds = new Set(getPaneLayoutSessionIds(baseLayout));
+  const backgroundSessionIds = allowedSessionIds.filter(
+    (sessionId) => !baseLayoutSessionIds.has(sessionId),
+  );
+  if (backgroundSessionIds.length === 0) {
+    return baseLayout;
+  }
+  const targetSessionId = resolveFocusedPaneTabGroupTargetSessionId(
+    baseLayout,
+    focusedSessionId,
+    visiblePaneOwnerSessionIds,
+    allowedSessionIds,
+  );
+  if (targetSessionId) {
+    const appendedToFocusedGroup = appendSessionsToPaneTabGroupPreservingActive(
+      baseLayout,
+      targetSessionId,
+      backgroundSessionIds,
+    );
+    if (appendedToFocusedGroup) {
+      return appendedToFocusedGroup;
+    }
+  }
+  return appendSessionsToFirstPaneTabGroupPreservingActive(baseLayout, backgroundSessionIds).node;
+}
+
+function retainRenderedPaneLayoutSessions(
+  node: SessionPaneLayoutNode,
+  allowedSessionIdSet: ReadonlySet<string>,
+  visiblePaneOwnerSessionIdSet: ReadonlySet<string>,
+  focusedSessionId: string | undefined,
+): SessionPaneLayoutNode | undefined {
+  if (node.kind === "leaf") {
+    return allowedSessionIdSet.has(node.sessionId) && visiblePaneOwnerSessionIdSet.has(node.sessionId)
+      ? node
+      : undefined;
+  }
+  if (node.kind === "tabs") {
+    const sessionIds = dedupeVisibleSessionIds(node.sessionIds).filter((sessionId) =>
+      allowedSessionIdSet.has(sessionId),
+    );
+    const hasVisiblePaneOwner = sessionIds.some((sessionId) =>
+      visiblePaneOwnerSessionIdSet.has(sessionId),
+    );
+    if (sessionIds.length === 0 || !hasVisiblePaneOwner) {
+      return undefined;
+    }
+    const activeSessionId =
+      (node.activeSessionId && visiblePaneOwnerSessionIdSet.has(node.activeSessionId)
+        ? node.activeSessionId
+        : undefined) ??
+      (focusedSessionId && visiblePaneOwnerSessionIdSet.has(focusedSessionId)
+        ? focusedSessionId
+        : undefined) ??
+      sessionIds.find((sessionId) => visiblePaneOwnerSessionIdSet.has(sessionId)) ??
+      sessionIds[0];
+    return sessionIds.length === 1
+      ? { kind: "leaf", sessionId: sessionIds[0]! }
+      : { activeSessionId, kind: "tabs", sessionIds };
+  }
+  /**
+   * CDXC:PaneTabs 2026-05-29-09:26:
+   * Preserve complete tab groups that already have a visible native pane owner,
+   * including their sleeping/unmounted tab siblings. Only sessions trapped in
+   * branches with no rendered owner are relocated to the focused tab group.
+   */
+  const children = node.children
+    .map((child) =>
+      retainRenderedPaneLayoutSessions(
+        child,
+        allowedSessionIdSet,
+        visiblePaneOwnerSessionIdSet,
+        focusedSessionId,
+      ),
+    )
+    .filter((child): child is SessionPaneLayoutNode => child !== undefined);
+  if (children.length === 0) {
+    return undefined;
+  }
+  if (children.length === 1) {
+    return children[0];
+  }
+  return flattenPaneLayoutSplit({ ...node, children });
+}
+
+function resolveFocusedPaneTabGroupTargetSessionId(
+  layout: SessionPaneLayoutNode,
+  focusedSessionId: string | undefined,
+  visibleSessionIds: readonly string[],
+  allSessionIds: readonly string[],
+): string | undefined {
+  const layoutSessionIds = new Set(getPaneLayoutSessionIds(layout));
+  for (const sessionId of [
+    ...(focusedSessionId ? [focusedSessionId] : []),
+    ...visibleSessionIds,
+    ...allSessionIds,
+  ]) {
+    if (layoutSessionIds.has(sessionId)) {
+      return sessionId;
+    }
+  }
+  return undefined;
+}
+
+function appendSessionsToPaneTabGroupPreservingActive(
+  layout: SessionPaneLayoutNode,
+  targetSessionId: string,
+  sessionIdsToAppend: readonly string[],
+): SessionPaneLayoutNode | undefined {
+  const result = appendSessionsToPaneTabGroupPreservingActiveNode(
+    layout,
+    targetSessionId,
+    sessionIdsToAppend,
+  );
+  return result.didAppend ? result.node : undefined;
+}
+
+function appendSessionsToPaneTabGroupPreservingActiveNode(
+  node: SessionPaneLayoutNode,
+  targetSessionId: string,
+  sessionIdsToAppend: readonly string[],
+): { didAppend: boolean; node: SessionPaneLayoutNode } {
+  const appendIds = sessionIdsToAppend.filter((sessionId) => sessionId !== targetSessionId);
+  if (appendIds.length === 0) {
+    return { didAppend: false, node };
+  }
+  if (node.kind === "leaf") {
+    return node.sessionId === targetSessionId
+      ? {
+          didAppend: true,
+          node: {
+            activeSessionId: targetSessionId,
+            kind: "tabs",
+            sessionIds: dedupeVisibleSessionIds([targetSessionId, ...appendIds]),
+          },
+        }
+      : { didAppend: false, node };
+  }
+  if (node.kind === "tabs") {
+    if (!node.sessionIds.includes(targetSessionId)) {
+      return { didAppend: false, node };
+    }
+    const sessionIds = dedupeVisibleSessionIds([...node.sessionIds, ...appendIds]);
+    return {
+      didAppend: true,
+      node: {
+        ...node,
+        activeSessionId:
+          node.activeSessionId && sessionIds.includes(node.activeSessionId)
+            ? node.activeSessionId
+            : targetSessionId,
+        sessionIds,
+      },
+    };
+  }
+  let didAppend = false;
+  const children = node.children.map((child) => {
+    if (didAppend) {
+      return child;
+    }
+    const result = appendSessionsToPaneTabGroupPreservingActiveNode(
+      child,
+      targetSessionId,
+      appendIds,
+    );
+    didAppend = result.didAppend;
+    return result.node;
+  });
+  return {
+    didAppend,
+    node: didAppend ? flattenPaneLayoutSplit({ ...node, children }) : node,
+  };
+}
+
+function appendSessionsToFirstPaneTabGroupPreservingActive(
+  node: SessionPaneLayoutNode,
+  sessionIdsToAppend: readonly string[],
+): { didAppend: boolean; node: SessionPaneLayoutNode } {
+  const appendIds = dedupeVisibleSessionIds(sessionIdsToAppend);
+  if (appendIds.length === 0) {
+    return { didAppend: false, node };
+  }
+  if (node.kind === "leaf") {
+    return {
+      didAppend: true,
+      node: {
+        activeSessionId: node.sessionId,
+        kind: "tabs",
+        sessionIds: dedupeVisibleSessionIds([node.sessionId, ...appendIds]),
+      },
+    };
+  }
+  if (node.kind === "tabs") {
+    const sessionIds = dedupeVisibleSessionIds([...node.sessionIds, ...appendIds]);
+    return {
+      didAppend: true,
+      node: {
+        ...node,
+        activeSessionId:
+          node.activeSessionId && sessionIds.includes(node.activeSessionId)
+            ? node.activeSessionId
+            : sessionIds[0],
+        sessionIds,
+      },
+    };
+  }
+  let didAppend = false;
+  const children = node.children.map((child) => {
+    if (didAppend) {
+      return child;
+    }
+    const result = appendSessionsToFirstPaneTabGroupPreservingActive(child, appendIds);
+    didAppend = result.didAppend;
+    return result.node;
+  });
+  return {
+    didAppend,
+    node: didAppend ? flattenPaneLayoutSplit({ ...node, children }) : node,
+  };
+}
+
 function normalizePaneLayout(
   layout: SessionPaneLayoutNode | undefined,
   allowedSessionIds: readonly string[],
@@ -3232,10 +3662,16 @@ function getNextPaneLayoutForFocusedSession(
   }
   /**
    * CDXC:PaneFocus 2026-05-11-16:45
-   * Sidebar card clicks on hidden sessions should reuse the currently focused
-   * pane slot. visibleSessionIds already replaces the focused session id; the
+   * Generic focus for hidden sessions should reuse the currently focused pane
+   * slot. visibleSessionIds already replaces the focused session id; the
    * paneLayout must mirror that replacement so native sync does not append the
    * clicked session as a new split pane.
+   *
+   * CDXC:SidebarSessionFocus 2026-05-29-09:47:
+   * Sidebar card clicks use focusSidebarSessionInSimpleWorkspace first, so
+   * existing paneLayout tabs are selected in place. This replacement path stays
+   * available for focus commands that intentionally retarget a hidden session
+   * into the focused pane or for sessions with no existing paneLayout tab.
    */
   return replaceFocusedSessionInPaneLayout(
     currentLayout,

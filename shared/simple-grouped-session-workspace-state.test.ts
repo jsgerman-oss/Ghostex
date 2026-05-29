@@ -12,7 +12,9 @@ import {
   createGroupInSimpleWorkspace,
   createGroupFromSessionInSimpleWorkspace,
   createSessionInSimpleWorkspace,
+  ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace,
   focusSessionExclusivelyInSimpleWorkspace,
+  focusSidebarSessionInSimpleWorkspace,
   focusGroupInSimpleWorkspace,
   focusSessionInSimpleWorkspace,
   focusVisibleDirectionInSimpleWorkspace,
@@ -276,6 +278,358 @@ describe("focusVisibleDirectionInSimpleWorkspace", () => {
     expect(group?.paneLayout).toEqual(paneLayout);
     expect(group?.visibleSessionIds).toEqual([leftSessionId, focusedSessionId]);
     expect(group?.visibleSessionIds).not.toContain(hiddenRightSessionId);
+  });
+
+  test("should use visible tab group layout instead of stored session grid slots", () => {
+    const rightSessionId = sessionIdForDisplay(0);
+    const leftSessionId = sessionIdForDisplay(1);
+    const hiddenLeftTabSessionId = sessionIdForDisplay(2);
+    const hiddenRightTabSessionId = sessionIdForDisplay(3);
+    const paneLayout: SessionPaneLayoutNode = {
+      children: [
+        {
+          activeSessionId: leftSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, hiddenLeftTabSessionId],
+        },
+        {
+          activeSessionId: rightSessionId,
+          kind: "tabs",
+          sessionIds: [hiddenRightTabSessionId, rightSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const result = focusVisibleDirectionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: leftSessionId,
+              paneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [rightSessionId, leftSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 4,
+        nextSessionNumber: 5,
+      }),
+      "right",
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(result.changed).toBe(true);
+    expect(group?.focusedSessionId).toBe(rightSessionId);
+    expect(group?.paneLayout).toEqual(paneLayout);
+    expect(group?.visibleSessionIds).toEqual([rightSessionId, leftSessionId]);
+  });
+
+  test("should prefer the directly lower pane over a taller right pane", () => {
+    const topLeftSessionId = sessionIdForDisplay(0);
+    const bottomLeftSessionId = sessionIdForDisplay(1);
+    const rightSessionId = sessionIdForDisplay(2);
+    const paneLayout: SessionPaneLayoutNode = {
+      children: [
+        {
+          children: [
+            { kind: "leaf", sessionId: topLeftSessionId },
+            { kind: "leaf", sessionId: bottomLeftSessionId },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+        { kind: "leaf", sessionId: rightSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const result = focusVisibleDirectionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: topLeftSessionId,
+              paneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [topLeftSessionId, bottomLeftSessionId, rightSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      "down",
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(result.changed).toBe(true);
+    expect(group?.focusedSessionId).toBe(bottomLeftSessionId);
+    expect(group?.visibleSessionIds).toEqual([
+      topLeftSessionId,
+      bottomLeftSessionId,
+      rightSessionId,
+    ]);
+  });
+
+  test("should move right from top-left to top-right in a four-way split", () => {
+    const topLeftSessionId = sessionIdForDisplay(0);
+    const bottomLeftSessionId = sessionIdForDisplay(1);
+    const bottomRightSessionId = sessionIdForDisplay(2);
+    const topRightSessionId = sessionIdForDisplay(3);
+    const paneLayout: SessionPaneLayoutNode = {
+      children: [
+        {
+          children: [
+            { kind: "leaf", sessionId: topLeftSessionId },
+            { kind: "leaf", sessionId: bottomLeftSessionId },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+        {
+          children: [
+            { kind: "leaf", sessionId: topRightSessionId },
+            { kind: "leaf", sessionId: bottomRightSessionId },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const result = focusVisibleDirectionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: topLeftSessionId,
+              paneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+              ],
+              viewMode: "grid",
+              visibleCount: 4,
+              visibleSessionIds: [
+                topLeftSessionId,
+                bottomLeftSessionId,
+                bottomRightSessionId,
+                topRightSessionId,
+              ],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 4,
+        nextSessionNumber: 5,
+      }),
+      "right",
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(result.changed).toBe(true);
+    expect(group?.focusedSessionId).toBe(topRightSessionId);
+    expect(group?.visibleSessionIds).toEqual([
+      topLeftSessionId,
+      bottomLeftSessionId,
+      bottomRightSessionId,
+      topRightSessionId,
+    ]);
+  });
+
+  test("should ignore hidden panes while keeping visible right-column ordering", () => {
+    const topLeftSessionId = sessionIdForDisplay(0);
+    const bottomLeftSessionId = sessionIdForDisplay(1);
+    const topRightSessionId = sessionIdForDisplay(2);
+    const bottomRightSessionId = sessionIdForDisplay(3);
+    const hiddenTopRightTabSessionId = sessionIdForDisplay(4);
+    const hiddenFarRightSessionId = sessionIdForDisplay(5);
+    const paneLayout: SessionPaneLayoutNode = {
+      children: [
+        {
+          children: [
+            { kind: "leaf", sessionId: topLeftSessionId },
+            { kind: "leaf", sessionId: bottomLeftSessionId },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+        {
+          children: [
+            {
+              activeSessionId: hiddenTopRightTabSessionId,
+              kind: "tabs",
+              sessionIds: [hiddenTopRightTabSessionId],
+            },
+            { kind: "leaf", sessionId: topRightSessionId },
+            { kind: "leaf", sessionId: bottomRightSessionId },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+        { kind: "leaf", sessionId: hiddenFarRightSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const result = focusVisibleDirectionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: topLeftSessionId,
+              paneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+                { ...createSessionRecord(5, 4), isSleeping: true },
+                { ...createSessionRecord(6, 5), isSleeping: true },
+              ],
+              viewMode: "grid",
+              visibleCount: 4,
+              visibleSessionIds: [
+                topLeftSessionId,
+                bottomLeftSessionId,
+                topRightSessionId,
+                bottomRightSessionId,
+              ],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 6,
+        nextSessionNumber: 7,
+      }),
+      "right",
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(result.changed).toBe(true);
+    expect(group?.focusedSessionId).toBe(topRightSessionId);
+    expect(group?.visibleSessionIds).toEqual([
+      topLeftSessionId,
+      bottomLeftSessionId,
+      topRightSessionId,
+      bottomRightSessionId,
+    ]);
+  });
+
+  test("should not use normalized visibleCount padding as directional focus targets", () => {
+    const topLeftSessionId = sessionIdForDisplay(0);
+    const bottomLeftSessionId = sessionIdForDisplay(1);
+    const topRightSessionId = sessionIdForDisplay(2);
+    const bottomRightSessionId = sessionIdForDisplay(3);
+    const hiddenTopRightTabSessionId = sessionIdForDisplay(4);
+    const hiddenFarRightSessionId = sessionIdForDisplay(5);
+    const paneLayout: SessionPaneLayoutNode = {
+      children: [
+        {
+          children: [
+            { kind: "leaf", sessionId: topLeftSessionId },
+            { kind: "leaf", sessionId: bottomLeftSessionId },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+        {
+          children: [
+            {
+              activeSessionId: hiddenTopRightTabSessionId,
+              kind: "tabs",
+              sessionIds: [hiddenTopRightTabSessionId],
+            },
+            { kind: "leaf", sessionId: topRightSessionId },
+            { kind: "leaf", sessionId: bottomRightSessionId },
+          ],
+          direction: "vertical",
+          kind: "split",
+        },
+        { kind: "leaf", sessionId: hiddenFarRightSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const result = focusVisibleDirectionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: bottomRightSessionId,
+              paneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+                { ...createSessionRecord(5, 4), isSleeping: true },
+                { ...createSessionRecord(6, 5), isSleeping: true },
+              ],
+              viewMode: "grid",
+              visibleCount: 6,
+              visibleSessionIds: [
+                topLeftSessionId,
+                bottomLeftSessionId,
+                topRightSessionId,
+                bottomRightSessionId,
+              ],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 6,
+        nextSessionNumber: 7,
+      }),
+      "right",
+    );
+
+    const group = result.snapshot.groups[0]?.snapshot;
+    expect(result.changed).toBe(false);
+    expect(group?.focusedSessionId).toBe(bottomRightSessionId);
+    expect(group?.visibleSessionIds).toEqual([
+      topLeftSessionId,
+      bottomLeftSessionId,
+      topRightSessionId,
+      bottomRightSessionId,
+    ]);
+    expect(group?.visibleSessionIds).not.toContain(hiddenFarRightSessionId);
+    expect(group?.visibleSessionIds).not.toContain(hiddenTopRightTabSessionId);
   });
 });
 
@@ -720,6 +1074,87 @@ describe("focusSessionInSimpleWorkspace", () => {
       sessionIdForDisplay(1),
       sessionIdForDisplay(0),
     ]);
+  });
+});
+
+describe("focusSidebarSessionInSimpleWorkspace", () => {
+  test("should select an unmounted sidebar session in its existing split tab group", () => {
+    const focusedLeftSessionId = sessionIdForDisplay(0);
+    const activeRightSessionId = sessionIdForDisplay(1);
+    const unmountedRightSessionId = sessionIdForDisplay(2);
+    const backgroundSessionId = sessionIdForDisplay(3);
+
+    const result = focusSidebarSessionInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: focusedLeftSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: focusedLeftSessionId },
+                  {
+                    activeSessionId: activeRightSessionId,
+                    kind: "tabs",
+                    sessionIds: [unmountedRightSessionId, activeRightSessionId],
+                  },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [focusedLeftSessionId, activeRightSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 4,
+        nextSessionNumber: 5,
+      }),
+      unmountedRightSessionId,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(unmountedRightSessionId);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      focusedLeftSessionId,
+      activeRightSessionId,
+      unmountedRightSessionId,
+    ]);
+    /**
+     * CDXC:SidebarSessionFocus 2026-05-29-09:47:
+     * Clicking a sidebar row for an unmounted tab is a selection/restore intent
+     * for the tab's current pane, not a request to move it into the focused
+     * pane. Preserve the source tab-group membership and ordering exactly while
+     * making that tab active.
+     */
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: focusedLeftSessionId,
+          kind: "tabs",
+          sessionIds: [focusedLeftSessionId, backgroundSessionId],
+        },
+        {
+          activeSessionId: unmountedRightSessionId,
+          kind: "tabs",
+          sessionIds: [unmountedRightSessionId, activeRightSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
   });
 });
 
@@ -3355,6 +3790,317 @@ describe("setSessionSleepingInSimpleWorkspace", () => {
           activeSessionId: sleepingRightSessionId,
           kind: "tabs",
           sessionIds: [sleepingRightSessionId, activeRightSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should materialize virtual tabs in the focused split tab group", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const focusedSessionId = sessionIdForDisplay(1);
+    const focusedSiblingSessionId = sessionIdForDisplay(2);
+    const sleepingSessionId = sessionIdForDisplay(3);
+    const missingProviderSessionId = sessionIdForDisplay(4);
+
+    const result = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: leftSessionId },
+                  {
+                    activeSessionId: focusedSessionId,
+                    kind: "tabs",
+                    sessionIds: [focusedSessionId, focusedSiblingSessionId],
+                  },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                { ...createSessionRecord(4, 3), isSleeping: true },
+                { ...createSessionRecord(5, 4), isSleeping: true },
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [leftSessionId, focusedSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 5,
+        nextSessionNumber: 6,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      leftSessionId,
+      focusedSessionId,
+    ]);
+    /**
+     * CDXC:PaneTabs 2026-05-29-09:04:
+     * Virtual native tabs for sleeping, unmounted, or missing-provider sessions
+     * belong to the focused pane group so AppKit tab chrome and persisted
+     * paneLayout agree before the user clicks or drags one of those tabs.
+     */
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: focusedSessionId,
+          kind: "tabs",
+          sessionIds: [
+            focusedSessionId,
+            focusedSiblingSessionId,
+            sleepingSessionId,
+            missingProviderSessionId,
+          ],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should relocate offscreen layout sessions into the focused split tab group", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const focusedSessionId = sessionIdForDisplay(1);
+    const focusedVisibleSiblingSessionId = sessionIdForDisplay(2);
+    const oldSleepingTabSessionId = sessionIdForDisplay(3);
+    const oldSleepingTabSiblingSessionId = sessionIdForDisplay(4);
+    const oldSleepingLeafSessionId = sessionIdForDisplay(5);
+    const oldSleepingSplitLeafSessionId = sessionIdForDisplay(6);
+
+    const result = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: leftSessionId },
+                  {
+                    activeSessionId: oldSleepingTabSessionId,
+                    kind: "tabs",
+                    sessionIds: [oldSleepingTabSessionId, oldSleepingTabSiblingSessionId],
+                  },
+                  {
+                    activeSessionId: focusedSessionId,
+                    kind: "tabs",
+                    sessionIds: [focusedSessionId, focusedVisibleSiblingSessionId],
+                  },
+                  {
+                    children: [
+                      { kind: "leaf", sessionId: oldSleepingLeafSessionId },
+                      { kind: "leaf", sessionId: oldSleepingSplitLeafSessionId },
+                    ],
+                    direction: "vertical",
+                    kind: "split",
+                  },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                { ...createSessionRecord(4, 3), isSleeping: true },
+                { ...createSessionRecord(5, 4), isSleeping: true },
+                { ...createSessionRecord(6, 5), isSleeping: true },
+                { ...createSessionRecord(7, 6), isSleeping: true },
+              ],
+              viewMode: "grid",
+              visibleCount: 3,
+              visibleSessionIds: [
+                leftSessionId,
+                focusedSessionId,
+                focusedVisibleSiblingSessionId,
+              ],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 7,
+        nextSessionNumber: 8,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+    );
+
+    expect(result.changed).toBe(true);
+    /**
+     * CDXC:PaneTabs 2026-05-29-09:26:
+     * Runtime layout normalization must repair saved layouts where sidebar
+     * sessions already exist in sleeping-only branches. Those branches have no
+     * native pane owner, so preserving them would still hide their tabs after
+     * restart even though paneLayout technically contains the session ids.
+     */
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: focusedSessionId,
+          kind: "tabs",
+          sessionIds: [
+            focusedSessionId,
+            focusedVisibleSiblingSessionId,
+            oldSleepingTabSessionId,
+            oldSleepingTabSiblingSessionId,
+            oldSleepingLeafSessionId,
+            oldSleepingSplitLeafSessionId,
+          ],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should drag a virtual sleeping tab to another pane and wake it there", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const focusedSessionId = sessionIdForDisplay(1);
+    const sleepingSessionId = sessionIdForDisplay(2);
+    const workspace = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: leftSessionId },
+                  { kind: "leaf", sessionId: focusedSessionId },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                { ...createSessionRecord(3, 2), isSleeping: true },
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [leftSessionId, focusedSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+    ).snapshot;
+
+    const result = moveSessionInPaneLayoutInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      sleepingSessionId,
+      leftSessionId,
+      "center",
+      { wakeSourceSession: true },
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.sessions[2]?.isSleeping).toBe(false);
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(sleepingSessionId);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: sleepingSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, sleepingSessionId],
+        },
+        { kind: "leaf", sessionId: focusedSessionId },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should select a virtual unmounted tab that is outside legacy visible ids", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const focusedSessionId = sessionIdForDisplay(1);
+    const unmountedSessionId = sessionIdForDisplay(2);
+    const workspace = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: {
+                children: [
+                  { kind: "leaf", sessionId: leftSessionId },
+                  { kind: "leaf", sessionId: focusedSessionId },
+                ],
+                direction: "horizontal",
+                kind: "split",
+              },
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 2,
+              visibleSessionIds: [leftSessionId, focusedSessionId],
+            },
+            title: "Main",
+          },
+        ],
+        nextGroupNumber: 2,
+        nextSessionDisplayId: 3,
+        nextSessionNumber: 4,
+      }),
+      DEFAULT_MAIN_GROUP_ID,
+    ).snapshot;
+
+    const result = selectPaneTabInSimpleWorkspace(
+      workspace,
+      DEFAULT_MAIN_GROUP_ID,
+      unmountedSessionId,
+    );
+
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe(unmountedSessionId);
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual([
+      leftSessionId,
+      focusedSessionId,
+      unmountedSessionId,
+    ]);
+    expect(result.snapshot.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: unmountedSessionId,
+          kind: "tabs",
+          sessionIds: [focusedSessionId, unmountedSessionId],
         },
       ],
       direction: "horizontal",
