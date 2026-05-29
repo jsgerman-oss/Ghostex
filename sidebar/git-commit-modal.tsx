@@ -1,4 +1,11 @@
-import { useEffect, useId, useMemo, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent as ReactClipboardEvent,
+} from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -93,6 +100,7 @@ export function GitCommitModal({
   const [isEditingFiles, setIsEditingFiles] = useState(false);
   const [isDirectMergeConfirmOpen, setIsDirectMergeConfirmOpen] = useState(false);
   const [localPromptAgentId, setLocalPromptAgentId] = useState("");
+  const initializedDraftRequestRef = useRef<string | undefined>(undefined);
   const commandAgents = useMemo(
     () => agents.filter((agent) => agent.command?.trim()),
     [agents],
@@ -126,8 +134,13 @@ export function GitCommitModal({
 
   useEffect(() => {
     if (!isOpen) {
+      initializedDraftRequestRef.current = undefined;
       return;
     }
+    if (initializedDraftRequestRef.current === draft.requestId) {
+      return;
+    }
+    initializedDraftRequestRef.current = draft.requestId;
 
     setMessage(buildDraftMessage(draft));
     setDeleteWorktreeAfter(draft.deleteWorktreeAfterDefault === true);
@@ -144,6 +157,22 @@ export function GitCommitModal({
       return commandAgents[0]?.agentId ?? "";
     });
   }, [commandAgents, draft, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    setSelectedMergeAgentId((currentAgentId) => {
+      if (commandAgents.some((agent) => agent.agentId === currentAgentId)) {
+        return currentAgentId;
+      }
+      if (draft.mergeAgentId && commandAgents.some((agent) => agent.agentId === draft.mergeAgentId)) {
+        return draft.mergeAgentId;
+      }
+      return commandAgents[0]?.agentId ?? "";
+    });
+  }, [commandAgents, draft.mergeAgentId, isOpen]);
 
   /**
    * CDXC:TitlebarGit 2026-05-28-07:47:
@@ -213,6 +242,12 @@ export function GitCommitModal({
    * The commit review prompt-agent selector should be a compact footer control
    * without a visible "Generate with" label, so the message editor keeps focus
    * on the commit text while generated actions still share the chosen agent.
+   *
+   * CDXC:AppModals 2026-05-29-19:44:
+   * Session attention/activity can refresh app-modal props while commit review
+   * is open. Commit drafts are reinitialized only for a new request id; later
+   * agent-list updates may repair an invalid merge agent without replacing the
+   * user's edited commit message or file selection.
    */
   return (
     <>

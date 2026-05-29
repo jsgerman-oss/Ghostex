@@ -73,20 +73,38 @@ export function WorktreeCreateModal({
    * The first prompt is prompt-editor text. Plain-text paste and submit should
    * remove spaces at line ends before the prompt is sent to the selected agent,
    * while image paste keeps inserting durable Markdown links.
+   *
+   * CDXC:AppModals 2026-05-29-19:44:
+   * Session attention/activity can refresh app-modal props while a user is
+   * typing. The New Worktree draft is initialized only when the modal opens;
+   * later agent-list updates may repair an invalid selection but must not clear
+   * the prompt, images, or a still-valid selected agent.
    */
+  const hasInitializedOpenDraftRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) {
+      hasInitializedOpenDraftRef.current = false;
+      return;
+    }
+    if (hasInitializedOpenDraftRef.current) {
+      return;
+    }
+    hasInitializedOpenDraftRef.current = true;
+
+    setPrompt("");
+    setImageCount(0);
+    setSelectedAgentId(resolveInitialWorktreeAgentId(commandAgents, defaultAgentId));
+  }, [commandAgents, defaultAgentId, isOpen]);
+
   useEffect(() => {
     if (!isOpen) {
       return;
     }
 
-    setPrompt("");
-    setImageCount(0);
     setSelectedAgentId((currentAgentId) =>
-      commandAgents.find((agent) => agent.agentId === defaultAgentId)?.agentId ??
-      (commandAgents.some((agent) => agent.agentId === currentAgentId)
+      commandAgents.some((agent) => agent.agentId === currentAgentId)
         ? currentAgentId
-        : commandAgents[0]?.agentId ??
-          "")
+        : resolveInitialWorktreeAgentId(commandAgents, defaultAgentId),
     );
   }, [commandAgents, defaultAgentId, isOpen]);
 
@@ -307,5 +325,16 @@ export function WorktreeCreateModal({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function resolveInitialWorktreeAgentId(
+  commandAgents: SidebarAgentButton[],
+  defaultAgentId?: string,
+): string {
+  return (
+    commandAgents.find((agent) => agent.agentId === defaultAgentId)?.agentId ??
+    commandAgents[0]?.agentId ??
+    ""
   );
 }
