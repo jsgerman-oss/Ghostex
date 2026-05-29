@@ -45,7 +45,11 @@ bun run cli -- switch-project --path /Users/madda/dev/_active/ghostex
 bun run cli -- add-project /Users/madda/dev/_active/agent-tiler --name agent-tiler
 ghostex sessions
 gx sessions
+gx find --project
+gx f --list
 ```
+
+<!-- CDXC:AgentHistorySearch 2026-05-29-12:27: Ghostex exposes the bundled zehn prompt-history search tool as `gx find` and `gx f`. `gx s` remains the session-list alias because it was already part of the public CLI contract, and `gx search` is intentionally not a public alias. -->
 
 ## Sidebar Buttons
 

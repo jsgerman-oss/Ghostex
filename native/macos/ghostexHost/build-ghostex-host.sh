@@ -8,6 +8,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 WEB_DIR="$SCRIPT_DIR/Web"
 GHOSTTY_ROOT="${GHOSTTY_ROOT:-}"
 ZMX_ROOT="${ZMX_ROOT:-$REPO_ROOT/zmx}"
+ZEHN_ROOT="${ZEHN_ROOT:-$REPO_ROOT/zehn}"
 GHOSTEX_MACOS_ARCH="${GHOSTEX_MACOS_ARCH:-$(uname -m)}"
 case "$GHOSTEX_MACOS_ARCH" in
 	arm64 | aarch64)
@@ -240,6 +241,61 @@ rm -rf "$WEB_DIR/bin"
 mkdir -p "$WEB_DIR/bin"
 cp "$ZMX_ROOT/zig-out/bin/zmx" "$WEB_DIR/bin/zmx"
 chmod 755 "$WEB_DIR/bin/zmx"
+# CDXC:AgentHistorySearch 2026-05-29-12:27: Ghostex bundles the pinned zehn submodule as Web/bin/zehn so `gx find` and `gx f` run the reviewed prompt-history search tool even when the user's PATH contains no zehn or a different zehn build. `gx s` is intentionally left as the existing sessions alias, and `gx search` is not a public alias.
+if [[ ! -f "$ZEHN_ROOT/build.zig" ]]; then
+	cat >&2 <<EOF
+zehn source is missing:
+  $ZEHN_ROOT
+
+Initialize submodules before building:
+  git submodule update --init zehn
+EOF
+	exit 1
+fi
+ZEHN_ZIG_BIN="${ZEHN_ZIG:-}"
+if [[ -z "$ZEHN_ZIG_BIN" ]]; then
+	ZEHN_ZIG_BIN="$(command -v zig || true)"
+fi
+if [[ -z "$ZEHN_ZIG_BIN" ]]; then
+	cat >&2 <<EOF
+Zig 0.16 or newer is required to build bundled zehn.
+
+Install it, then rerun this script:
+  brew install zig
+EOF
+	exit 1
+fi
+ZEHN_ZIG_VERSION="$("$ZEHN_ZIG_BIN" version 2>/dev/null || true)"
+case "$ZEHN_ZIG_VERSION" in
+	0.16.* | 0.17.* | 0.18.* | 0.19.* | 0.20.*)
+		;;
+	*)
+		cat >&2 <<EOF
+Zig 0.16 or newer is required to build bundled zehn.
+
+Selected Zig:
+  $ZEHN_ZIG_BIN
+  version: ${ZEHN_ZIG_VERSION:-unknown}
+
+Set ZEHN_ZIG explicitly if your compatible Zig binary is not first on PATH.
+EOF
+		exit 1
+		;;
+esac
+case "$GHOSTEX_MACOS_ARCH" in
+	arm64)
+		ZEHN_TARGET="aarch64-macos.15.0"
+		;;
+	x86_64)
+		ZEHN_TARGET="x86_64-macos.13.0"
+		;;
+esac
+(
+	cd "$ZEHN_ROOT"
+	env ZIG="$ZEHN_ZIG_BIN" "$ZEHN_ZIG_BIN" build -Doptimize=ReleaseFast -Dtarget="$ZEHN_TARGET"
+)
+cp "$ZEHN_ROOT/zig-out/bin/zehn" "$WEB_DIR/bin/zehn"
+chmod 755 "$WEB_DIR/bin/zehn"
 mkdir -p "$WEB_DIR/cli/node_modules"
 cp -R "$REPO_ROOT/node_modules/ws" "$WEB_DIR/cli/node_modules/ws"
 rm -rf "$WEB_DIR/monaco"

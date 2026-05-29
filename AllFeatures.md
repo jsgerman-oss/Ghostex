@@ -2,6 +2,7 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
+- Bundled zehn prompt-history search is available from `gx find` and `gx f`, while `gx s` remains the sessions alias.
 - Command-panel terminals participate in project session tracking, CLI session lists, project batch actions, and favorite controls.
 - Project Sleep Inactive, Wake, and Reload actions include idle zmx-backed command terminals while keeping working or attention sessions awake.
 - Restored and restarted terminal panes wait for native surface creation to finish before Ghostex tries missing-surface recovery.

@@ -25,6 +25,7 @@ import {
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
   resolveListedSessions,
+  resolveZehnLaunchFromRoot,
   usage,
 } from "./ghostex-cli.mjs";
 
@@ -132,8 +133,34 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).not.toContain("browser-devtools-mcp [--port n]");
     expect(help).toContain("top switch button for project/session switching");
     expect(help).toContain("Direct attach stays available through attach/a/resume/r without opening the TUI");
+    expect(help).toContain("find | f [zehn args...]");
+    expect(help).toContain("gx find and gx f launch bundled zehn");
+    expect(help).not.toContain("search | find");
     expect(help).toMatch(/^\s+ghostex$/m);
     expect(help).toMatch(/^\s+gx$/m);
+  });
+
+  test("resolves bundled zehn from the pinned submodule output", async () => {
+    /**
+     * CDXC:AgentHistorySearch 2026-05-29-12:27:
+     * Ghostex prompt-history search should launch the pinned zehn checkout or
+     * bundled Web/bin copy, not a random PATH install. `gx s` stays reserved for
+     * sessions, and `gx search` is intentionally not a zehn alias.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-zehn-"));
+    try {
+      const zehnBin = path.join(tempDir, "zehn", "zig-out", "bin", "zehn");
+      await mkdir(path.dirname(zehnBin), { recursive: true });
+      await writeFile(zehnBin, "#!/bin/sh\n");
+
+      expect(resolveZehnLaunchFromRoot(tempDir)).toMatchObject({
+        args: [],
+        command: zehnBin,
+      });
+      expect(usage()).not.toContain("search |");
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
   });
 
   test("parses OS integration path open commands", () => {

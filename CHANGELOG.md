@@ -4,6 +4,7 @@
 
 ## 3.18.0 - 2026-05-28
 
+- Added bundled zehn prompt-history search through `gx find` and `gx f`, while keeping `gx s` as the existing sessions alias.
 - Added pinned sessions so important agent terminals stay at the top of a project, remain manually reorderable in last-activity mode, and can be toggled from the CLI with `pin-session`.
 - Added auto-sleep controls for browser and project panes so idle embedded surfaces follow the same sleep policies as terminals.
 - Improved the Project board with pasted image path storage, clearer ticket editor layout, and grouped ticket actions.

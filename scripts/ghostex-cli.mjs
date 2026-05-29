@@ -82,6 +82,8 @@ const COMMANDS = new Map([
   ["s", sessionsCommand],
   ["list-sessions", sessionsCommand],
   ["ls", sessionsCommand],
+  ["find", zehnSearchCommand],
+  ["f", zehnSearchCommand],
   ["android-check", androidCheckCommand],
   ["attach", attachSessionCommand],
   ["a", attachSessionCommand],
@@ -215,7 +217,7 @@ async function main() {
     throw new Error(`Unknown command: ${commandName}\n\n${usage()}`);
   }
   if (
-    !["agent-orchestration", "browser", "computer-use", "generate-title"].includes(commandName) &&
+    !["agent-orchestration", "browser", "computer-use", "f", "find", "generate-title"].includes(commandName) &&
     (args.includes("-h") || args.includes("--help"))
   ) {
     helpCommand();
@@ -2015,6 +2017,73 @@ async function ghostexTuiCommand(args) {
   });
 }
 
+async function zehnSearchCommand(args) {
+  const launch = resolveZehnLaunch();
+  /**
+   * CDXC:AgentHistorySearch 2026-05-29-12:27:
+   * `gx find` and `gx f` should show the pinned zehn CLI for
+   * cross-agent prompt history search. Keep `gx s` on the existing sessions
+   * command because that alias was already part of the public Ghostex CLI.
+   * Forward zehn flags untouched so modes such as --print, --project, --list,
+   * --version, and --help remain owned by zehn rather than Ghostex parsing.
+   */
+  await runInteractiveProcess(launch.command, [...launch.args, ...args], {
+    cwd: launch.cwd,
+    env: launch.env,
+  });
+}
+
+function resolveZehnLaunch() {
+  const explicitBin = String(process.env.GHOSTEX_ZEHN_BIN ?? "").trim();
+  if (explicitBin) {
+    return { args: [], command: explicitBin, cwd: undefined, env: process.env };
+  }
+
+  const cliDir = path.dirname(fileURLToPath(import.meta.url));
+  const bundledBin = path.resolve(cliDir, "..", "bin", "zehn");
+  if (fileExistsSync(bundledBin)) {
+    return { args: [], command: bundledBin, cwd: undefined, env: process.env };
+  }
+
+  const repoRoot = path.resolve(cliDir, "..");
+  const roots = uniquePaths([
+    repoRoot,
+    process.env.GHOSTEX_SOURCE_ROOT,
+    findGhostexSourceRoot(process.cwd()),
+  ]);
+  for (const root of roots) {
+    const launch = resolveZehnLaunchFromRoot(root);
+    if (launch) {
+      return launch;
+    }
+  }
+
+  throw new Error(
+    "Bundled zehn was not found. Initialize the submodule with `git submodule update --init zehn`, build it with Zig 0.16+, or set GHOSTEX_ZEHN_BIN to a reviewed zehn binary.",
+  );
+}
+
+function resolveZehnLaunchFromRoot(root) {
+  if (!root) {
+    return undefined;
+  }
+  const bin = path.join(root, "zehn", "zig-out", "bin", "zehn");
+  if (fileExistsSync(bin)) {
+    return { args: [], command: bin, cwd: undefined, env: process.env };
+  }
+  const manifestPath = path.join(root, "zehn", "build.zig");
+  if (!fileExistsSync(manifestPath)) {
+    return undefined;
+  }
+  const zigBin = String(process.env.GHOSTEX_ZEHN_ZIG ?? process.env.ZEHN_ZIG ?? "zig").trim();
+  return {
+    args: ["build", "run", "--"],
+    command: zigBin || "zig",
+    cwd: path.join(root, "zehn"),
+    env: process.env,
+  };
+}
+
 function resolveGhostexTuiLaunch(flags = {}) {
   const explicitBin = String(flags.tuiBin ?? process.env.GHOSTEX_TUI_BIN ?? "").trim();
   if (explicitBin) {
@@ -3288,6 +3357,7 @@ function usage() {
    */
   const sessionCommands = [
     formatHelpCommand("sessions | s | ls [--ungrouped|-u] [--json]", "List running terminal sessions"),
+    formatHelpCommand("find | f [zehn args...]", "Search agent prompt history with bundled zehn"),
     formatHelpCommand("android-check [--json]", "Verify this Mac is ready for Ghostex Android"),
     formatHelpCommand("attach | a [selector]", "Attach to a provider session, or open the picker without a selector"),
     formatHelpCommand("resume | r [selector]", "Alias for attach"),
@@ -3386,6 +3456,7 @@ Selectors:
 
 Sessions:
   Running ghostex or gx with no subcommand opens the Ghostex terminal TUI.
+  gx find and gx f launch bundled zehn for prompt-history search; gx s remains sessions.
   The TUI shows the attached session, with a top switch button for project/session switching.
   The switcher lists Ghostex projects and sessions in macOS sidebar order and attaches through the existing zmx path.
   Direct attach stays available through attach/a/resume/r without opening the TUI.
@@ -3596,5 +3667,6 @@ export {
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
   resolveListedSessions,
+  resolveZehnLaunchFromRoot,
   usage,
 };
