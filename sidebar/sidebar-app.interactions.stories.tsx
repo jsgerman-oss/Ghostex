@@ -289,7 +289,6 @@ export const ActiveSortToggle: Story = {
     fixture: "sort-toggle-demo",
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
-    showHotkeysOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvasElement, step }) => {
@@ -328,7 +327,6 @@ export const ActiveSortModeStillAllowsDragging: Story = {
     fixture: "sort-toggle-demo",
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
-    showHotkeysOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvasElement, step }) => {
@@ -385,7 +383,6 @@ export const InlineSearchFiltersGroupsInPlace: Story = {
     fixture: "sort-toggle-demo",
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
-    showHotkeysOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvas, canvasElement, step, userEvent }) => {
@@ -457,7 +454,6 @@ export const CombinedSearchKeepsPreviousSessionsBelowProjects: Story = {
     fixture: "combined-sparse-reference",
     highlightedVisibleCount: 1,
     showCloseButtonOnSessionCards: false,
-    showHotkeysOnSessionCards: false,
     visibleCount: 1,
   },
   render: renderCombinedSidebarStory,
@@ -526,7 +522,6 @@ export const TypingSidebarChromeDoesNotStartSearchAndEscapePrefersModals: Story 
     fixture: "sort-toggle-demo",
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
-    showHotkeysOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvas, canvasElement, step, userEvent }) => {
@@ -610,7 +605,6 @@ export const InlineSearchKeyboardSelection: Story = {
     fixture: "sort-toggle-demo",
     highlightedVisibleCount: 2,
     showCloseButtonOnSessionCards: true,
-    showHotkeysOnSessionCards: true,
     visibleCount: 2,
   },
   play: async ({ canvas, canvasElement, step, userEvent }) => {

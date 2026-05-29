@@ -94,7 +94,6 @@ export type SidebarPreviousSessionsSearchGroupProps = {
   previousSessions: readonly SidebarPreviousSessionItem[];
   selectedHistoryId?: string;
   showDebugSessionNumbers: boolean;
-  showHotkeys: boolean;
 };
 
 export function SidebarPreviousSessionsSearchGroup({
@@ -103,7 +102,6 @@ export function SidebarPreviousSessionsSearchGroup({
   previousSessions,
   selectedHistoryId,
   showDebugSessionNumbers,
-  showHotkeys,
 }: SidebarPreviousSessionsSearchGroupProps) {
   if (previousSessions.length === 0) {
     return null;
@@ -129,7 +127,6 @@ export function SidebarPreviousSessionsSearchGroup({
             onRestore={() => onRestorePreviousSession(session.historyId)}
             session={session}
             showDebugSessionNumbers={showDebugSessionNumbers}
-            showHotkeys={showHotkeys}
           />
         ))}
       </div>

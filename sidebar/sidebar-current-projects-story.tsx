@@ -168,8 +168,6 @@ function createCurrentProjectsSidebarMessage(
       settings: currentSettings,
       showCloseButtonOnSessionCards:
         currentSettings?.showCloseButtonOnSessionCards ?? args.showCloseButtonOnSessionCards,
-      showHotkeysOnSessionCards:
-        currentSettings?.showHotkeysOnSessionCards ?? args.showHotkeysOnSessionCards,
       theme,
       viewMode: args.viewMode,
       visibleCount,

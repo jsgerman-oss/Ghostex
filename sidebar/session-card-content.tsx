@@ -75,7 +75,6 @@ export type SessionCardContentProps = {
   session: SidebarSessionItem;
   showDebugSessionNumbers: boolean;
   showCloseButton: boolean;
-  showHotkeys: boolean;
   showLastActiveTime?: boolean;
   showLastInteractionTime?: boolean;
   trailingPrefix?: ReactNode;

@@ -515,7 +515,6 @@ describe("SessionCardContent", () => {
         },
         showCloseButton: false,
         showDebugSessionNumbers: false,
-        showHotkeys: false,
         showLastInteractionTime: false,
       }),
     );
@@ -546,7 +545,6 @@ describe("SessionCardContent", () => {
         },
         showCloseButton: false,
         showDebugSessionNumbers: false,
-        showHotkeys: false,
         showLastActiveTime: false,
       }),
     );
@@ -577,7 +575,6 @@ describe("SessionCardContent", () => {
         },
         showCloseButton: false,
         showDebugSessionNumbers: false,
-        showHotkeys: false,
         showLastInteractionTime: true,
       }),
     );
@@ -607,7 +604,6 @@ describe("SessionCardContent", () => {
         },
         showCloseButton: false,
         showDebugSessionNumbers: false,
-        showHotkeys: false,
       }),
     );
 
@@ -635,7 +631,6 @@ describe("SessionCardContent", () => {
         },
         showCloseButton: false,
         showDebugSessionNumbers: false,
-        showHotkeys: false,
       }),
     );
 
@@ -664,7 +659,6 @@ describe("SessionCardContent", () => {
         },
         showCloseButton: false,
         showDebugSessionNumbers: false,
-        showHotkeys: false,
       }),
     );
 
@@ -695,7 +689,6 @@ describe("SessionCardContent", () => {
         },
         showCloseButton: true,
         showDebugSessionNumbers: false,
-        showHotkeys: false,
       }),
     );
 

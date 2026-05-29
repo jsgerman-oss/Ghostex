@@ -362,7 +362,6 @@ describe("sidebar HUD state", () => {
       95,
       true,
       false,
-      false,
       true,
       "glass",
     );
@@ -374,7 +373,6 @@ describe("sidebar HUD state", () => {
     expect(hud.createSessionOnSidebarDoubleClick).toBe(false);
     expect(hud.renameSessionOnDoubleClick).toBe(false);
     expect(hud.showCloseButtonOnSessionCards).toBe(true);
-    expect(hud.showHotkeysOnSessionCards).toBe(false);
     expect(hud.activeSessionsSortMode).toBe("lastActivity");
     expect(hud.isFocusModeActive).toBe(false);
   });
@@ -384,7 +382,6 @@ describe("sidebar HUD state", () => {
       createDefaultSessionGridSnapshot(),
       "dark-green",
       100,
-      false,
       false,
       false,
       false,
@@ -405,7 +402,6 @@ describe("sidebar HUD state", () => {
       createDefaultSessionGridSnapshot(),
       "dark-green",
       100,
-      false,
       false,
       false,
       false,
@@ -435,9 +431,7 @@ describe("sidebar HUD state", () => {
       "dark-green",
       100,
       false,
-      false,
       true,
-      false,
       false,
       "ping",
     );

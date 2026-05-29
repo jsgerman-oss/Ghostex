@@ -172,7 +172,6 @@ export function SortableSessionCard({
     browserFeedbackTool,
     showCloseButton,
     showDebugSessionNumbers,
-    showHotkeys,
     showLastActiveTime,
   } = useSidebarStore(
     useShallow((state) => ({
@@ -197,7 +196,6 @@ export function SortableSessionCard({
         state.hud.settings?.browserFeedbackTool ?? DEFAULT_ghostex_SETTINGS.browserFeedbackTool,
       showCloseButton: state.hud.showCloseButtonOnSessionCards,
       showDebugSessionNumbers: state.hud.debuggingMode,
-      showHotkeys: state.hud.showHotkeysOnSessionCards,
       showLastActiveTime:
         !(state.hud.settings?.hideLastActiveTimeOnSessionCards ??
           DEFAULT_ghostex_SETTINGS.hideLastActiveTimeOnSessionCards),
@@ -1279,7 +1277,6 @@ export function SortableSessionCard({
               session={session}
               showDebugSessionNumbers={showDebugSessionNumbers}
               showCloseButton={showCloseButton}
-              showHotkeys={showHotkeys}
               showLastActiveTime={showLastActiveTime}
             />
           </article>

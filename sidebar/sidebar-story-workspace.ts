@@ -41,7 +41,6 @@ type SidebarStoryWorkspaceOptions = {
   recentProjects: SidebarHydrateMessage["hud"]["recentProjects"];
   scratchPadContent: string;
   showCloseButtonOnSessionCards: boolean;
-  showHotkeysOnSessionCards: boolean;
   settings?: ghostexSettings;
   theme: SidebarHydrateMessage["hud"]["theme"];
 };
@@ -86,7 +85,6 @@ export function createSidebarStoryWorkspace(message: SidebarHydrateMessage): Sid
       recentProjects: message.hud.recentProjects,
       scratchPadContent: message.scratchPadContent,
       showCloseButtonOnSessionCards: message.hud.showCloseButtonOnSessionCards,
-      showHotkeysOnSessionCards: message.hud.showHotkeysOnSessionCards,
       settings: message.hud.settings,
       theme: message.hud.theme,
     },
@@ -185,7 +183,6 @@ export function createSidebarStoryMessage(
     workspace.options.theme,
     workspace.options.agentManagerZoomPercent,
     workspace.options.showCloseButtonOnSessionCards,
-    workspace.options.showHotkeysOnSessionCards,
     workspace.options.debuggingMode,
     workspace.options.completionBellEnabled,
     workspace.options.completionSound,

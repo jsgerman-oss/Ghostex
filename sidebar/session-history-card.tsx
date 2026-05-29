@@ -16,7 +16,6 @@ export type SessionHistoryCardProps = {
   onRestore: () => void;
   session: SidebarPreviousSessionItem;
   showDebugSessionNumbers: boolean;
-  showHotkeys: boolean;
 };
 
 export function SessionHistoryCard({
@@ -24,7 +23,6 @@ export function SessionHistoryCard({
   onRestore,
   session,
   showDebugSessionNumbers,
-  showHotkeys,
 }: SessionHistoryCardProps) {
   const aliasHeadingRef = useRef<HTMLDivElement>(null);
   const displayTitle = getSessionHistoryCardTitle(session);
@@ -151,7 +149,6 @@ export function SessionHistoryCard({
             session={displaySession}
             showDebugSessionNumbers={showDebugSessionNumbers}
             showCloseButton={false}
-            showHotkeys={showHotkeys}
             showLastInteractionTime={true}
             trailingPrefix={
               projectLabel ? (

@@ -43,7 +43,6 @@ export type SidebarStoryArgs = {
   isFocusModeActive: boolean;
   renameSessionOnDoubleClick: boolean;
   showCloseButtonOnSessionCards: boolean;
-  showHotkeysOnSessionCards: boolean;
   theme: SidebarTheme;
   viewMode: TerminalViewMode;
   visibleCount: VisibleSessionCount;
@@ -206,8 +205,6 @@ export function createSidebarStoryMessage(
       combinedStorySettings?.renameSessionOnDoubleClick ?? args.renameSessionOnDoubleClick,
     showCloseButtonOnSessionCards:
       combinedStorySettings?.showCloseButtonOnSessionCards ?? args.showCloseButtonOnSessionCards,
-    showHotkeysOnSessionCards:
-      combinedStorySettings?.showHotkeysOnSessionCards ?? args.showHotkeysOnSessionCards,
     theme: args.theme,
     viewMode: args.viewMode,
     visibleCount: args.visibleCount,
