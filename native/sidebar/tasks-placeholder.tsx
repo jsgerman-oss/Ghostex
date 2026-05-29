@@ -2036,31 +2036,47 @@ function ProjectBoardNotice({ message }: { message: string }) {
   const isMissingBeads =
     !isMissingProject &&
     /executable|command not found|not found: bd|bd: not found|env: bd: no such file|cannot find/i.test(message);
-  const command = isMissingBeads ? INSTALL_BEADS_COMMAND : isMissingProject ? "bd init" : "";
+  const command = isMissingProject ? "bd init" : "";
   const title = isMissingBeads
-    ? "Install Beads"
+    ? "Install Beads to use Project"
     : isMissingProject
       ? "Initialize Beads for this project"
       : "Project board unavailable";
-  const body = isMissingBeads
-    ? "The Project board stores tickets with the Beads CLI, but the app could not find the bd executable."
+  const bodyLines = isMissingBeads
+    ? [
+        "Ghostex uses the Beads CLI to read and update Project tickets.",
+        `Run ${INSTALL_BEADS_COMMAND}, then reopen or refresh the Project board.`,
+      ]
     : isMissingProject
-      ? "This project does not have a Beads workspace yet. Run this once from the project root, then refresh the board."
-      : message;
+      ? [
+          "This project does not have a Beads workspace yet. Run this once from the project root, then refresh the board.",
+        ]
+      : [message];
   return (
-    <Card className="project-board-notice" data-kind={isMissingProject ? "init" : "error"} role="status" size="sm">
+    <Card
+      className="project-board-notice"
+      data-kind={isMissingBeads ? "install" : isMissingProject ? "init" : "error"}
+      role="status"
+      size="sm"
+    >
       <CardContent>
         {/*
           CDXC:ProjectBoard 2026-05-28-15:27:
           Initialization is a normal first-run state for Beads-backed projects, not an app failure.
           Present bd init as an explanatory setup callout with a copyable command so users understand what needs to happen before the board can load tickets.
+
+          CDXC:ProjectBoard 2026-05-29-15:49:
+          Missing-Beads setup should use the same polished notice shell but stay intentionally terse: one header and two lines below.
+          Explain why Beads is required and give the install command without adding a second control row.
         */}
         <div className="project-board-notice-icon" aria-hidden="true">
           <IconAlertTriangle />
         </div>
         <div className="project-board-notice-body">
           <strong>{title}</strong>
-          <p>{body}</p>
+          {bodyLines.map((line) => (
+            <p key={line}>{line}</p>
+          ))}
           {command ? (
             <div className="project-board-notice-command">
               <code>{command}</code>
@@ -2647,6 +2663,16 @@ styleElement.textContent = `
     border-color: rgba(231, 184, 91, 0.28);
   }
 
+  .project-board-notice[data-kind="install"] {
+    border-color: rgba(94, 164, 255, 0.26);
+  }
+
+  .project-board-notice[data-kind="install"] .project-board-notice-icon {
+    background: rgba(94, 164, 255, 0.12);
+    border-color: rgba(94, 164, 255, 0.2);
+    color: #7ab7ff;
+  }
+
   .project-board-notice [data-slot="card-content"] {
     align-items: flex-start;
     display: flex;
@@ -2676,7 +2702,7 @@ styleElement.textContent = `
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: 7px;
+    gap: 5px;
     min-width: 0;
   }
 
