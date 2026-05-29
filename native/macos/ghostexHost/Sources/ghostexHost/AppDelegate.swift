@@ -99,19 +99,14 @@ private func normalizedNativeProcessPath(_ path: String?) -> String {
 private final class SessionAttentionNotificationController: NSObject, UNUserNotificationCenterDelegate {
   private let center = UNUserNotificationCenter.current()
   private let onSessionClicked: (String) -> Void
-  private let shouldSuppressDelivery: @MainActor (ShowSessionAttentionNotification) -> Bool
 
-  init(
-    onSessionClicked: @escaping (String) -> Void,
-    shouldSuppressDelivery: @escaping @MainActor (ShowSessionAttentionNotification) -> Bool = { _ in false }
-  ) {
+  init(onSessionClicked: @escaping (String) -> Void) {
     self.onSessionClicked = onSessionClicked
-    self.shouldSuppressDelivery = shouldSuppressDelivery
     super.init()
     center.delegate = self
   }
 
-  @MainActor func show(_ command: ShowSessionAttentionNotification) {
+  func show(_ command: ShowSessionAttentionNotification) {
     /**
      CDXC:SessionAttentionNotifications 2026-05-10-16:46
      The sidebar decides when attention notifications are allowed. Native code
@@ -122,27 +117,16 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
      Attention notifications must not add their own macOS notification sound.
      Request only alert permission and leave notification content sound unset;
      the existing completion-bell setting remains the only audio path.
-
-     CDXC:SessionAttentionNotifications 2026-05-29-18:49:
-     Foreground attention banners must never take keyboard focus away from a
-     Ghostex terminal pane the user is typing in. Suppress delivery while a
-     terminal surface owns first responder and keep background notifications
-     unchanged.
      */
-    guard !suppressDelivery(command, phase: "show") else { return }
     center.getNotificationSettings { [weak self] settings in
       guard let self else { return }
       switch settings.authorizationStatus {
       case .authorized, .provisional:
-        Task { @MainActor in
-          self.deliverIfAllowed(command, phase: "authorized")
-        }
+        self.deliver(command)
       case .notDetermined:
         self.center.requestAuthorization(options: [.alert]) { granted, _ in
           if granted {
-            Task { @MainActor in
-              self.deliverIfAllowed(command, phase: "authorizationGranted")
-            }
+            self.deliver(command)
           }
         }
       case .denied:
@@ -153,7 +137,7 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     }
   }
 
-  @MainActor func requestPermissionFromSettings() {
+  func requestPermissionFromSettings() {
     center.getNotificationSettings { [weak self] settings in
       guard let self else { return }
       switch settings.authorizationStatus {
@@ -169,7 +153,7 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     }
   }
 
-  @MainActor private func deliver(_ command: ShowSessionAttentionNotification) {
+  private func deliver(_ command: ShowSessionAttentionNotification) {
     let identifier = "ghostex.session.attention.\(command.sessionId).\(UUID().uuidString)"
     let content = UNMutableNotificationContent()
     let title = command.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -190,46 +174,6 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
       guard error == nil else { return }
       self?.removeDeliveredNotificationLater(identifier, attachmentUrl: attachmentUrl)
     }
-  }
-
-  @MainActor private func deliverIfAllowed(_ command: ShowSessionAttentionNotification, phase: String) {
-    guard !suppressDelivery(command, phase: phase) else { return }
-    deliver(command)
-  }
-
-  @MainActor private func suppressDelivery(_ command: ShowSessionAttentionNotification, phase: String) -> Bool {
-    guard shouldSuppressDelivery(command) else {
-      return false
-    }
-    TerminalFocusDebugLog.append(
-      event: "nativeHost.sessionAttentionNotification.suppressedForTerminalFocus",
-      details: [
-        "phase": phase,
-        "sessionId": command.sessionId,
-      ])
-    return true
-  }
-
-  @MainActor private func shouldSuppressForegroundPresentation(_ notification: UNNotification) -> Bool {
-    /**
-     CDXC:SessionAttentionNotifications 2026-05-29-18:49:
-     A notification queued while Ghostex was backgrounded can still present
-     after the user returns to an active terminal. Re-check foreground terminal
-     input at willPresent time so delayed banners cannot steal typing focus.
-     */
-    guard
-      notification.request.content.categoryIdentifier == "ghostex.session.attention",
-      let sessionId = notification.request.content.userInfo["sessionId"] as? String
-    else {
-      return false
-    }
-    return suppressDelivery(
-      ShowSessionAttentionNotification(
-        body: notification.request.content.body,
-        iconDataUrl: nil,
-        sessionId: sessionId,
-        title: notification.request.content.title),
-      phase: "willPresent")
   }
 
   private func applyProjectIconAttachment(
@@ -421,13 +365,7 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
-    Task { @MainActor in
-      guard !self.shouldSuppressForegroundPresentation(notification) else {
-        completionHandler([])
-        return
-      }
-      completionHandler([.banner])
-    }
+    completionHandler([.banner])
   }
 
   func userNotificationCenter(
@@ -510,16 +448,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private var codeServerRuntimeStartedAt: Date?
   private var pendingOSIntegrationCommands: [(action: String, payloadJson: String)] = []
   private lazy var sessionAttentionNotificationController =
-    SessionAttentionNotificationController(
-      onSessionClicked: { [weak self] sessionId in
-        Task { @MainActor in
-          self?.handleSessionAttentionNotificationClick(sessionId)
-        }
-      },
-      shouldSuppressDelivery: { [weak self] command in
-        guard let self else { return false }
-        return self.shouldSuppressAttentionNotificationForTerminalFocus(command)
-      })
+    SessionAttentionNotificationController { [weak self] sessionId in
+      Task { @MainActor in
+        self?.handleSessionAttentionNotificationClick(sessionId)
+      }
+    }
 
   private struct NativeActivationRequest {
     let reason: String
@@ -742,23 +675,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     Self.appendNativeHostLifecycleLog(
       "activationRequest reason=\(reason) sessionId=\(sessionId ?? "<none>") windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
-  }
-
-  @MainActor
-  private func shouldSuppressAttentionNotificationForTerminalFocus(
-    _ command: ShowSessionAttentionNotification
-  ) -> Bool {
-    guard let focusedInputSessionId = workspaceView?.foregroundTerminalInputSessionId() else {
-      return false
-    }
-    TerminalFocusDebugLog.append(
-      event: "nativeHost.sessionAttentionNotification.foregroundTerminalFocus",
-      details: [
-        "focusedInputSessionId": focusedInputSessionId,
-        "notificationSessionId": command.sessionId,
-        "windowIsKey": window?.isKeyWindow ?? false,
-      ])
-    return true
   }
 
   @MainActor
@@ -2321,6 +2237,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       updateAppTitlebarTitle(command.appTitle)
       (window?.contentView as? ghostexRootView)?.applyReactTitlebarProjectState(command)
       workspaceView?.setActiveTerminalSet(command)
+    case .setSessionPaneChrome(let command):
+      workspaceView?.setSessionPaneChrome(command)
     case .setSessionStatusIndicators(let command):
       sessionStatusIndicatorController?.apply(command)
     case .setPetOverlayState(let command):
@@ -4296,14 +4214,9 @@ final class ghostexRootView: NSView {
   private var lastWorkspaceInteractionShieldLogKey: String?
   private var sidebarContextMenuOpenCount = 0
   private lazy var sessionAttentionNotificationController =
-    SessionAttentionNotificationController(
-      onSessionClicked: { [weak self] sessionId in
-        self?.handleSessionAttentionNotificationClick(sessionId)
-      },
-      shouldSuppressDelivery: { [weak self] command in
-        guard let self else { return false }
-        return self.shouldSuppressAttentionNotificationForTerminalFocus(command)
-      })
+    SessionAttentionNotificationController { [weak self] sessionId in
+      self?.handleSessionAttentionNotificationClick(sessionId)
+    }
   private var sidebarWidth: CGFloat
   private var sidebarSide: SidebarSide = .left
 
@@ -5403,23 +5316,6 @@ final class ghostexRootView: NSView {
     sendHostEvent(event)
   }
 
-  @MainActor
-  private func shouldSuppressAttentionNotificationForTerminalFocus(
-    _ command: ShowSessionAttentionNotification
-  ) -> Bool {
-    guard let focusedInputSessionId = workspaceView.foregroundTerminalInputSessionId() else {
-      return false
-    }
-    TerminalFocusDebugLog.append(
-      event: "nativeRoot.sessionAttentionNotification.foregroundTerminalFocus",
-      details: [
-        "focusedInputSessionId": focusedInputSessionId,
-        "notificationSessionId": command.sessionId,
-        "windowIsKey": window?.isKeyWindow ?? false,
-      ])
-    return true
-  }
-
   func applyReactTitlebarProjectState(_ command: SetActiveTerminalSet) {
     /**
      CDXC:ReactTitlebar 2026-05-11-00:22
@@ -6016,6 +5912,8 @@ final class ghostexRootView: NSView {
       setAppTitlebarTitle(command.appTitle)
       applyReactTitlebarProjectState(command)
       workspaceView.setActiveTerminalSet(command)
+    case .setSessionPaneChrome(let command):
+      workspaceView.setSessionPaneChrome(command)
     case .setSessionStatusIndicators(let command):
       setSessionStatusIndicators(command)
     case .setPetOverlayState(let command):

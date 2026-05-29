@@ -485,11 +485,29 @@ type NativeHostCommand =
 	        availability: ghostexSettings["workspaceOpenTargetAvailability"];
 	        customTargets: CustomWorkspaceOpenTarget[];
 	        hiddenTargetIds: string[];
-	      };
-	    }
+		      };
+		    }
   | {
       /**
-       * CDXC:SessionStatusIndicators 2026-05-05-19:47
+       * CDXC:SessionAttentionFocus 2026-05-29-19:14:
+       * Attention and working activity changes are pane chrome only. Send them
+       * through a narrow native command so a session entering attention never
+       * touches the broader setActiveTerminalSet layout/focus path.
+       */
+      attentionSessionIds?: string[];
+      sessionAgentIconColors?: Record<string, string>;
+      sessionAgentIconDataUrls?: Record<string, string>;
+      sessionActivities?: Record<string, "attention" | "sleeping" | "working">;
+      sessionDelayedSendRemainingLabels?: Record<string, string>;
+      sessionFaviconDataUrls?: Record<string, string>;
+      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
+      sessionTitles?: Record<string, string>;
+      showSessionIdInTerminalPanes?: boolean;
+      type: "setSessionPaneChrome";
+    }
+	  | {
+	      /**
+	       * CDXC:SessionStatusIndicators 2026-05-05-19:47
        * The AppKit floating circles receive only aggregate counts. Sidebar
        * state remains authoritative for which session should be opened when a
        * circle is clicked, avoiding duplicate native-side session selection.
@@ -1051,6 +1069,7 @@ const PROJECT_DIFF_UNTRACKED_WC_CHUNK_SIZE = 100;
 const projectDiffStatsByProjectId = new Map<string, SidebarProjectDiffStats>();
 const pendingProjectDiffRefreshProjectIds = new Set<string>();
 let lastNativeLayoutSyncKey: string | undefined;
+let lastNativeNonPaneChromeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
 let lastNativeFocusedSidebarSessionId: string | undefined;
@@ -24939,12 +24958,19 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
  * flicker even though no layout state changed. Send native layout sync only
  * when the actual layout payload changes, while still allowing explicit focus
  * requests and newly recreated native surfaces through.
+ *
+ * CDXC:SessionAttentionFocus 2026-05-29-19:14:
+ * Attention changes are passive status updates. When only pane chrome metadata
+ * changes, send a narrow native pane-chrome command instead of
+ * setActiveTerminalSet so the update cannot disturb AppKit first responder
+ * through layout/titlebar sync side effects.
  */
 function postNativeLayoutSync(
   command: NativeSetActiveTerminalSetCommand,
   options: { force?: boolean } = {},
 ): { didPost: boolean; layoutChanged: boolean } {
   const commandSyncKey = createNativeCommandSyncKey(command);
+  const nonPaneChromeCommandSyncKey = createNativeNonPaneChromeCommandSyncKey(command);
   const layoutSyncKey = createNativeLayoutSyncKey(command);
   const layoutChanged = options.force === true || layoutSyncKey !== lastNativeLayoutSyncKey;
   if (
@@ -24954,7 +24980,30 @@ function postNativeLayoutSync(
   ) {
     return { didPost: false, layoutChanged };
   }
+  if (
+    options.force !== true &&
+    command.focusRequestId === undefined &&
+    !layoutChanged &&
+    lastNativeNonPaneChromeSetActiveTerminalSetCommandKey !== undefined &&
+    nonPaneChromeCommandSyncKey === lastNativeNonPaneChromeSetActiveTerminalSetCommandKey
+  ) {
+    lastNativeSetActiveTerminalSetCommandKey = commandSyncKey;
+    postNative({
+      attentionSessionIds: command.attentionSessionIds,
+      sessionAgentIconColors: command.sessionAgentIconColors,
+      sessionAgentIconDataUrls: command.sessionAgentIconDataUrls,
+      sessionActivities: command.sessionActivities,
+      sessionDelayedSendRemainingLabels: command.sessionDelayedSendRemainingLabels,
+      sessionFaviconDataUrls: command.sessionFaviconDataUrls,
+      sessionTitleBarActions: command.sessionTitleBarActions,
+      sessionTitles: command.sessionTitles,
+      showSessionIdInTerminalPanes: command.showSessionIdInTerminalPanes,
+      type: "setSessionPaneChrome",
+    });
+    return { didPost: false, layoutChanged };
+  }
   lastNativeSetActiveTerminalSetCommandKey = commandSyncKey;
+  lastNativeNonPaneChromeSetActiveTerminalSetCommandKey = nonPaneChromeCommandSyncKey;
   lastNativeLayoutSyncKey = layoutSyncKey;
   postNative({ ...command, layoutChanged });
   return { didPost: true, layoutChanged };
@@ -24963,6 +25012,24 @@ function postNativeLayoutSync(
 function createNativeCommandSyncKey(command: NativeSetActiveTerminalSetCommand): string {
   const { focusRequestId: _focusRequestId, ...layoutCommand } = command;
   return JSON.stringify(normalizeNativeLayoutSyncValue(layoutCommand));
+}
+
+function createNativeNonPaneChromeCommandSyncKey(command: NativeSetActiveTerminalSetCommand): string {
+  const {
+    attentionSessionIds: _attentionSessionIds,
+    focusRequestId: _focusRequestId,
+    sessionAgentIconColors: _sessionAgentIconColors,
+    sessionAgentIconDataUrls: _sessionAgentIconDataUrls,
+    sessionActivities: _sessionActivities,
+    sessionDelayedSendRemainingLabels: _sessionDelayedSendRemainingLabels,
+    sessionFaviconDataUrls: _sessionFaviconDataUrls,
+    sessionTitleBarActions: _sessionTitleBarActions,
+    sessionTitles: _sessionTitles,
+    showSessionIdInTerminalPanes: _showSessionIdInTerminalPanes,
+    titlebarResourceGroups: _titlebarResourceGroups,
+    ...nonPaneChromeCommand
+  } = command;
+  return JSON.stringify(normalizeNativeLayoutSyncValue(nonPaneChromeCommand));
 }
 
 function getNativeCommandPaneTabActivity(

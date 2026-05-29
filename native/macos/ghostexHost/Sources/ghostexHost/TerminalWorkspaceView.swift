@@ -5387,41 +5387,7 @@ final class TerminalWorkspaceView: NSView {
       scheduleDeferredWebPaneLayout(sessionId: command.focusedSessionId, reason: "setActiveTerminalSet")
     }
     updateAllTerminalBorders()
-    var responderSessionIdAfterBorderApply = currentResponderSessionId()
-    if command.focusRequestId == nil,
-      let responderSessionIdBefore,
-      sessions[responderSessionIdBefore] != nil,
-      (
-        activeSessionIds.contains(responderSessionIdBefore)
-          || commandsPanelActiveSessionIds.contains(responderSessionIdBefore)
-      ),
-      responderSessionIdAfterBorderApply != responderSessionIdBefore,
-      window?.isKeyWindow == true
-    {
-      /**
-       CDXC:SessionAttentionNotifications 2026-05-29-18:49:
-       Attention transitions arrive as passive setActiveTerminalSet sync. If
-       native chrome/status updates disturb AppKit first responder while the
-       user is typing in a terminal, immediately restore that same terminal
-       instead of treating the sidebar or titlebar webview as the new input
-       target.
-       */
-      let responderBeforeRestore = responderSnapshot()
-      programmaticFocusDepth += 1
-      let didRestoreResponder =
-        window?.makeFirstResponder(sessions[responderSessionIdBefore]?.view) ?? false
-      programmaticFocusDepth -= 1
-      responderSessionIdAfterBorderApply = currentResponderSessionId()
-      TerminalFocusDebugLog.append(
-        event: "nativeWorkspace.setActiveTerminalSet.passiveResponderRestored",
-        details: [
-          "didRestoreResponder": didRestoreResponder,
-          "focusedSessionIdAfterApply": nullableString(focusedSessionId),
-          "responderAfterRestore": responderSnapshot(),
-          "responderBeforeRestore": responderBeforeRestore,
-          "restoredSessionId": responderSessionIdBefore,
-        ])
-    }
+    let responderSessionIdAfterBorderApply = currentResponderSessionId()
     let focusedSurfaceSessionIdsAfterActiveSet = focusedSurfaceSessionIds()
     if command.focusRequestId == nil,
       let responderSessionIdAfterBorderApply,
@@ -5645,6 +5611,33 @@ final class TerminalWorkspaceView: NSView {
           "reason": "focusedSessionNotActive",
         ])
     }
+  }
+
+  func setSessionPaneChrome(_ command: SetSessionPaneChrome) {
+    /**
+     CDXC:SessionAttentionFocus 2026-05-29-19:14:
+     A session entering attention must update only pane chrome, not focus or
+     layout. This narrow path repaints native title-bar text, dots, icons, and
+     borders without touching focusedSessionId, first responder, titlebar
+     webviews, or project/editor state.
+     */
+    attentionSessionIds = Set(command.attentionSessionIds ?? [])
+    sessionAgentIconColors = command.sessionAgentIconColors ?? [:]
+    sessionAgentIconDataUrls = command.sessionAgentIconDataUrls ?? [:]
+    sessionActivities = command.sessionActivities ?? [:]
+    sessionDelayedSendRemainingLabels = command.sessionDelayedSendRemainingLabels ?? [:]
+    sessionFaviconDataUrls = command.sessionFaviconDataUrls ?? [:]
+    sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
+    sessionTitles = command.sessionTitles ?? [:]
+    if let nextShowSessionIdInTerminalPanes = command.showSessionIdInTerminalPanes {
+      showSessionIdInTerminalPanes = nextShowSessionIdInTerminalPanes
+      for session in sessions.values {
+        let isCommandActive = commandsPanelActiveSessionIds.contains(session.sessionId)
+        session.persistenceLabelView.setEnabledBySettings(showSessionIdInTerminalPanes)
+        session.persistenceLabelView.setSuppressed(isCommandActive && !commandsPanelIsVisible)
+      }
+    }
+    updateAllTerminalBorders()
   }
 
   func setSidebarSide(_ side: SidebarSide) {
@@ -12968,23 +12961,6 @@ final class TerminalWorkspaceView: NSView {
       return nil
     }
     return sessionId(containing: responder)
-  }
-
-  func foregroundTerminalInputSessionId() -> String? {
-    /**
-     CDXC:SessionAttentionNotifications 2026-05-29-18:49:
-     Attention-state chrome and notifications are passive status updates. When
-     the main Ghostex window is key and a terminal surface owns first responder,
-     that terminal is the user's live keyboard target and must not lose input
-     focus because another session becomes attention.
-     */
-    guard window?.isKeyWindow == true,
-      let responderSessionId = currentResponderSessionId(),
-      sessions[responderSessionId] != nil
-    else {
-      return nil
-    }
-    return responderSessionId
   }
 
   func appModalReturnFocusTerminalSessionId() -> String? {

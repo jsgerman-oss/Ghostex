@@ -24,6 +24,7 @@ enum HostCommand: Decodable {
   case readTerminalText(ReadTerminalText)
   case checkPersistenceSession(CheckPersistenceSession)
   case setActiveTerminalSet(SetActiveTerminalSet)
+  case setSessionPaneChrome(SetSessionPaneChrome)
   case setSessionStatusIndicators(SetSessionStatusIndicators)
   case setPetOverlayState(SetPetOverlayState)
   case showSessionAttentionNotification(ShowSessionAttentionNotification)
@@ -111,6 +112,7 @@ enum HostCommand: Decodable {
     case readTerminalText
     case checkPersistenceSession
     case setActiveTerminalSet
+    case setSessionPaneChrome
     case setSessionStatusIndicators
     case setPetOverlayState
     case showSessionAttentionNotification
@@ -220,6 +222,8 @@ enum HostCommand: Decodable {
       self = .checkPersistenceSession(try CheckPersistenceSession(from: decoder))
     case .setActiveTerminalSet:
       self = .setActiveTerminalSet(try SetActiveTerminalSet(from: decoder))
+    case .setSessionPaneChrome:
+      self = .setSessionPaneChrome(try SetSessionPaneChrome(from: decoder))
     case .setSessionStatusIndicators:
       self = .setSessionStatusIndicators(try SetSessionStatusIndicators(from: decoder))
     case .setPetOverlayState:
@@ -560,6 +564,24 @@ struct SetActiveTerminalSet: Decodable {
   let sessionPersistenceProvider: String?
   let titlebarResourceGroups: [TitlebarResourceGroup]?
   let workspaceOpenTargets: TitlebarWorkspaceOpenTargets?
+}
+
+struct SetSessionPaneChrome: Decodable {
+  /**
+   CDXC:SessionAttentionFocus 2026-05-29-19:14:
+   Attention and working transitions are status-only chrome updates. Keep pane
+   metadata outside setActiveTerminalSet so a session entering attention never
+   enters the broad layout/focus sync path.
+   */
+  let attentionSessionIds: [String]?
+  let sessionAgentIconColors: [String: String]?
+  let sessionAgentIconDataUrls: [String: String]?
+  let sessionActivities: [String: NativeTerminalActivity]?
+  let sessionDelayedSendRemainingLabels: [String: String]?
+  let sessionFaviconDataUrls: [String: String]?
+  let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
+  let sessionTitles: [String: String]?
+  let showSessionIdInTerminalPanes: Bool?
 }
 
 struct TitlebarResourceGroup: Decodable {
