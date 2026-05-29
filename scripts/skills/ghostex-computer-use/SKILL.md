@@ -27,8 +27,13 @@ Check the machine state before acting:
 ```bash
 which cua-driver
 cua-driver status
-cua-driver check_permissions
+cua-driver check_permissions '{"prompt":false}'
 ```
+
+<!--
+CDXC:CuaPermissions 2026-05-29-12:21:
+State checks must be read-only. The default Cua Driver permission check can ask macOS to show missing-grant prompts, so the Ghostex wrapper uses prompt:false and only sends users to System Settings when grants are actually missing.
+-->
 
 If the daemon is not running, start it with:
 
@@ -41,6 +46,9 @@ open -n -g -a CuaDriver --args serve
 - Prefer CLI calls: `cua-driver <tool> '<JSON>'`.
 - Use the Cua Driver MCP server only when the task or environment explicitly
   needs MCP mode.
+- Do not register or rely on a persistent `cua-driver mcp` server for ordinary
+  Ghostex Computer Use. The CLI proxies through the signed CuaDriver.app daemon,
+  while global MCP registration can leave many stdio helper processes around.
 - Do not foreground the user's apps unless the user explicitly asks for that.
 - Do not use `open -a`, AppleScript activation, HID event injection, `cliclick`,
   or menu-bar automation for background control.
