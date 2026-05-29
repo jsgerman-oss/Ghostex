@@ -1262,9 +1262,17 @@ async function updateHomebrew(version, artifacts, options) {
    Homebrew style can fail on autocorrectable blank-line offenses after the cask
    generator inserts the gx preflight block. Auto-fix those before the strict
    style check so a successful GitHub release is not blocked by formatting.
+
+   CDXC:ReleaseAutomation 2026-05-29-20:59:
+   Preserve explicit `depends_on macos: ">= :ventura"` syntax for older
+   Homebrew clients that can treat the symbol shorthand as exact Ventura.
    */
-  await run(`brew style --fix ${shellQuote(config.caskPath)}`, { cwd: tapDir });
-  await run(`brew style ${shellQuote(config.caskPath)}`, { cwd: tapDir });
+  await run(`brew style --fix --except-cops Homebrew/OSDependsOn ${shellQuote(config.caskPath)}`, { cwd: tapDir });
+  await run(`brew style --except-cops Homebrew/OSDependsOn ${shellQuote(config.caskPath)}`, { cwd: tapDir });
+  cask = await readFile(caskFile, "utf8");
+  if (!cask.includes('depends_on macos: ">= :ventura"')) {
+    throw new ReleaseError("Ghostex cask must require macOS Ventura or newer with explicit >= syntax.");
+  }
   await run(`git diff -- ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   await run(`git add ${shellQuote(config.caskPath)}`, { cwd: tapDir });
   await run(`git commit -m ${shellQuote(`Update ghostex cask to ${version}`)}`, { cwd: tapDir });
@@ -1290,6 +1298,12 @@ async function updateHomebrew(version, artifacts, options) {
  * Homebrew releases should install `ghostex` and the new `gx` short alias, not
  * the older `gtx` alias. Check for an existing non-Ghostex `gx` binary before
  * linking so setup does not silently claim a command name another tool owns.
+ *
+ * CDXC:MacRelease 2026-05-29-20:59:
+ * The cask must require macOS Ventura as a minimum floor, matching the Sparkle
+ * 13.0 appcast requirement. Keep the explicit string form because older
+ * Homebrew clients can parse the symbol shorthand as exact Ventura and block
+ * newer macOS releases such as 26.x before Homebrew can install Ghostex.
  */
 function normalizeGhostexCliCask(cask) {
   const ghostexBinary = '  binary "#{appdir}/ghostex.app/Contents/Resources/Web/cli/ghostex"';
@@ -1317,6 +1331,7 @@ function normalizeGhostexCliCask(cask) {
       /\n  # CDXC:CliBranding 2026-05-26-15:11: Install gx only when another tool does not already own that command name\.\n  preflight do[\s\S]*?\n  end(?=\n\n  zap trash:|\n  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx")/g,
       "",
     )
+    .replace(/^  depends_on macos: :ventura$/m, '  depends_on macos: ">= :ventura"')
     .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gtx"\n/gm, "")
     .replace(/^  binary "#\{appdir\}\/ghostex\.app\/Contents\/Resources\/Web\/cli\/gx"\n/gm, "");
 
@@ -1327,6 +1342,9 @@ function normalizeGhostexCliCask(cask) {
   next = next.replace(`${ghostexBinary}\n`, `${ghostexBinary}\n${gxBinary}\n\n${cliPreflight}\n`);
   if (!next.includes(gxBinary) || next.includes("/Web/cli/gtx")) {
     throw new ReleaseError("Failed to normalize Ghostex cask CLI binary aliases.");
+  }
+  if (!next.includes('depends_on macos: ">= :ventura"')) {
+    throw new ReleaseError("Ghostex cask must require macOS Ventura or newer with explicit >= syntax.");
   }
   return next;
 }
