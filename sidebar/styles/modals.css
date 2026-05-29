@@ -1361,6 +1361,18 @@
   width: auto;
 }
 
+.previous-sessions-text-search-button {
+  /*
+   * CDXC:PreviousSessions 2026-05-29-12:36:
+   * The new Search by Text action sits to the left of the primary Prompt to
+   * Find Session button. Use a quieter dark button so the agent-prompt workflow
+   * remains the primary footer action while zehn search stays discoverable.
+   */
+  background: color-mix(in srgb, var(--app-foreground) 8%, transparent);
+  border-color: color-mix(in srgb, var(--app-border) 86%, transparent);
+  color: color-mix(in srgb, var(--app-foreground) 86%, var(--app-muted) 14%);
+}
+
 .previous-sessions-find-button:hover,
 .previous-sessions-find-button:focus-visible {
   background: #ffffff;
@@ -1406,6 +1418,7 @@
 
 .previous-sessions-footer {
   display: flex;
+  gap: 8px;
   justify-content: flex-end;
 }
 
@@ -2040,6 +2053,18 @@
   width: min(360px, 100%);
 }
 
+.git-commit-prompt-agent-select {
+  /**
+   * CDXC:PromptAgents 2026-05-29-18:29:
+   * The commit review prompt-agent selector belongs in the footer next to the
+   * generated commit actions and should stay compact at 160px without a visible
+   * field label.
+   */
+  min-height: 44px;
+  flex: 0 0 160px;
+  width: 160px;
+}
+
 .git-commit-modal-shadcn .changed-files-tree-row {
   border-radius: 10px;
   color: color-mix(in srgb, var(--foreground) 86%, var(--muted-foreground) 14%);
@@ -2514,6 +2539,15 @@
   max-width: min(520px, calc(100vw - 2rem));
 }
 
+.add-repository-modal-shadcn {
+  /**
+   * CDXC:AddRepository 2026-05-29-11:45:
+   * Clone Repository copies Rename Session's compact modal chrome, with a
+   * slightly wider body for the folder picker row and inline clone errors.
+   */
+  max-width: min(560px, calc(100vw - 2rem));
+}
+
 .worktree-create-modal-shadcn {
   max-width: min(560px, calc(100vw - 2rem));
 }
@@ -2551,6 +2585,27 @@
 
 .session-rename-field-group {
   gap: 16px;
+}
+
+.add-repository-folder-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.add-repository-folder-row [data-slot="input"] {
+  min-width: 0;
+}
+
+.add-repository-error {
+  background: color-mix(in srgb, var(--destructive) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--destructive) 38%, transparent);
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--destructive) 82%, var(--foreground) 18%);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 10px 12px;
+  white-space: pre-wrap;
 }
 
 .session-rename-modal-shadcn [data-slot="textarea"] {
