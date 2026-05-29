@@ -5857,6 +5857,9 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
   /**
    * CDXC:Worktrees 2026-05-18-23:07:
    * Worktree git actions always open the review modal so the user can inspect files and decide whether the temporary worktree should be removed after commit/push/PR completion.
+   *
+   * CDXC:TitlebarGit 2026-05-29-18:32:
+   * Opening the git review modal is enough feedback for commit, push, and PR review actions. Do not also show a "Review git action" toast because it duplicates the modal and covers useful workspace content.
    */
   const hasCommit = gitState.hasWorkingTreeChanges;
   const draft = { subject: "", body: undefined };
@@ -5892,7 +5895,6 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
   );
   gitState = { ...gitState, isBusy: false };
   publish();
-  showAppToast("info", "Review git action", resolveSidebarGitConfirmLabel(action, hasCommit));
 }
 
 async function promptDeleteWorktreeForGroup(groupId: string): Promise<void> {
