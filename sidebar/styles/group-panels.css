@@ -911,8 +911,13 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   /*
    * CDXC:ProjectHeaderTooltips 2026-05-25-09:43:
    * Project header action buttons reuse the local reference-sidebar tooltip
-   * surface so their labels open to the left of the icon and stay anchored
-   * inside the native sidebar webview.
+   * surface so their labels stay anchored inside the native sidebar webview.
+   *
+   * CDXC:ProjectHeaderTooltips 2026-05-29-18:19:
+   * Project header action labels open below each button instead of to the left
+   * because the compact action cluster can sit near the sidebar's left edge.
+   * Align the first and trailing split-button labels inward so short labels do
+   * not clip against narrow webview edges.
    */
   position: relative;
 }
@@ -939,6 +944,42 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   visibility: hidden;
   white-space: nowrap;
   z-index: var(--ghostex-tooltip-z-index, 1400);
+}
+
+@media (max-width: 179.98px) {
+  .reference-sidebar-previous-sessions-button.reference-sidebar-hover-action-tooltip::after {
+    /*
+     * CDXC:SidebarSearch 2026-05-29-18:27:
+     * At the minimum sidebar width, the full "Previous Sessions" tooltip clips
+     * against the webview edge. Keep the button's accessible label full-length,
+     * but shorten the visual hover label below 180px so the tooltip remains
+     * readable without changing the Search row layout.
+     */
+    content: "Prev. Sessions";
+  }
+}
+
+.group-header-actions .reference-sidebar-hover-action-tooltip::after {
+  left: 50%;
+  max-width: calc(100vw - 16px);
+  right: auto;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  white-space: normal;
+  width: max-content;
+}
+
+.group-header-actions > .reference-sidebar-hover-action-tooltip:first-child::after {
+  left: 0;
+  transform: none;
+}
+
+.group-header-actions
+  .group-agent-split-button
+  .reference-sidebar-hover-action-tooltip::after {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
 .reference-sidebar-nav-item:hover .reference-sidebar-hover-action-tooltip:is(:hover, :focus-visible)::after,

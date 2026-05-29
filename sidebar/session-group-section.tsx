@@ -638,9 +638,13 @@ export function SessionGroupSection({
    * behavior, and the folder icon is visual-only.
    *
    * CDXC:ProjectHeaderTooltips 2026-05-25-09:43:
-   * Project header action buttons now need compact hover labels, matching the
-   * reference-sidebar settings/header actions by rendering each tooltip to the
-   * left of its icon instead of below the project row.
+   * Project header action buttons need compact hover labels without relying on
+   * native title attributes.
+   *
+   * CDXC:ProjectHeaderTooltips 2026-05-29-18:19:
+   * Project header action labels must open below their button, not to the left,
+   * because left-side labels clip against the sidebar edge when the compact
+   * action cluster is near the left side of the project header.
    */
   const shouldSuppressProjectCollapseTooltip =
     Boolean(projectContext) && canToggleCollapsed;
@@ -1357,8 +1361,13 @@ export function SessionGroupSection({
                        *
                        * CDXC:ProjectHeaderTooltips 2026-05-25-09:43:
                        * Project header icon actions now show compact local
-                       * tooltips to the left of the hovered button, matching the
-                       * settings/header hover-action pattern.
+                       * tooltips without native title attributes, matching the
+                       * settings/header hover-action surface.
+                       *
+                       * CDXC:ProjectHeaderTooltips 2026-05-29-18:19:
+                       * Keep project header action tooltips below each hovered
+                       * button and clamp the edge buttons through CSS so short
+                       * labels remain visible inside narrow sidebar webviews.
                        *
                        * CDXC:Worktrees 2026-05-18-23:07:
                        * Main project rows expose Create Worktree. Worktree rows
