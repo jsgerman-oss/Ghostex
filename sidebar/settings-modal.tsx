@@ -457,7 +457,6 @@ export type GhosttySettingsAction =
 export type SettingsModalPresentation = "default" | "firstLaunchSetup";
 
 export type SettingsModalProps = {
-  accessibilityPermissionGranted?: boolean;
   agentHookStatus?: SidebarAgentHookStatusMessage;
   agentHookStatusLoading?: boolean;
   firstLaunchSetupVisibleSettings?: ReadonlySet<FirstLaunchSetupMainSettingKey>;
@@ -499,7 +498,6 @@ export type SettingsModalProps = {
 };
 
 export function SettingsModal({
-  accessibilityPermissionGranted,
   agentHookStatus,
   agentHookStatusLoading = false,
   firstLaunchSetupVisibleSettings,
@@ -2867,7 +2865,6 @@ export function SettingsModal({
           {!isFirstLaunchSetup ? (
           <TabsContent className="mt-0 min-h-0 flex-1 overflow-hidden" value="integrations">
             <IntegrationsSettingsTab
-              accessibilityPermissionGranted={accessibilityPermissionGranted}
               agentHookStatus={agentHookStatus}
               agentHookStatusLoading={agentHookStatusLoading}
               ghostexCliStatus={ghostexCliStatus}
@@ -3511,8 +3508,41 @@ const AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS = DEFAULT_SIDEBAR_AGENTS.filter(
   (agent) => agent.agentId !== "t3",
 );
 
+function getCuaPermissionStatus(
+  ghostexCliStatus: SidebarGhostexCliStatusMessage | undefined,
+  ghostexCliStatusLoading: boolean,
+): { status: string; tone: "success" | "warning" | "neutral" } {
+  if (ghostexCliStatusLoading && !ghostexCliStatus) {
+    return { status: "Checking", tone: "neutral" };
+  }
+  if (ghostexCliStatus?.cuaDriverInstalled !== true) {
+    return { status: "Driver Not Installed", tone: "warning" };
+  }
+
+  const accessibilityGranted = ghostexCliStatus.cuaDriverAccessibilityPermissionGranted;
+  const screenRecordingGranted = ghostexCliStatus.cuaDriverScreenRecordingPermissionGranted;
+  if (accessibilityGranted === true && screenRecordingGranted === true) {
+    return { status: "Permissions Allowed", tone: "success" };
+  }
+  if (accessibilityGranted === false && screenRecordingGranted === false) {
+    return { status: "Permissions Off - Open Settings", tone: "warning" };
+  }
+  if (accessibilityGranted === false) {
+    return { status: "Accessibility Off - Open Settings", tone: "warning" };
+  }
+  if (screenRecordingGranted === false) {
+    return { status: "Screen Recording Off - Open Settings", tone: "warning" };
+  }
+  if (accessibilityGranted === true) {
+    return { status: "Screen Recording Unknown", tone: "warning" };
+  }
+  if (screenRecordingGranted === true) {
+    return { status: "Accessibility Unknown", tone: "warning" };
+  }
+  return { status: "Permission Status Unknown", tone: "warning" };
+}
+
 function IntegrationsSettingsTab({
-  accessibilityPermissionGranted,
   agentHookStatus,
   agentHookStatusLoading,
   ghostexCliStatus,
@@ -3527,7 +3557,6 @@ function IntegrationsSettingsTab({
   onRequestAgentHookStatus,
   onRequestGhostexCliStatus,
 }: {
-  accessibilityPermissionGranted?: boolean;
   agentHookStatus?: SidebarAgentHookStatusMessage;
   agentHookStatusLoading: boolean;
   ghostexCliStatus?: SidebarGhostexCliStatusMessage;
@@ -3558,6 +3587,14 @@ function IntegrationsSettingsTab({
   const desktopControlReady =
     ghostexCliStatus?.cuaDriverInstalled === true &&
     ghostexCliStatus?.computerUseSkillInstalled === true;
+  /**
+   * CDXC:CuaPermissions 2026-05-29-06:00:
+   * Cua Permissions status must be based on Cua Driver's own permission check,
+   * because granting Cua Driver in macOS can still leave Ghostex's separate
+   * Accessibility trust bit false. The row represents desktop automation
+   * readiness for agents, not Ghostex's ability to synthesize input.
+   */
+  const cuaPermissionStatus = getCuaPermissionStatus(ghostexCliStatus, ghostexCliStatusLoading);
 
   return (
     <ScrollArea className="h-full min-h-0">
@@ -3668,8 +3705,8 @@ function IntegrationsSettingsTab({
           <IntegrationSettingsRow
             description="Cua Driver needs Accessibility to click and type in apps, and Screen Recording to understand what is visible on the desktop."
             icon={IconSettings}
-            status={getAccessibilityPermissionButtonLabel(accessibilityPermissionGranted)}
-            tone={accessibilityPermissionGranted ? "success" : "warning"}
+            status={cuaPermissionStatus.status}
+            tone={cuaPermissionStatus.tone}
             title="Cua Permissions"
           >
             <Button
@@ -5672,26 +5709,6 @@ function formatSliderNumber(value: number, step: number): string {
   }
   const decimals = Math.max(0, step.toString().split(".")[1]?.length ?? 0);
   return value.toFixed(decimals);
-}
-
-function getAccessibilityPermissionDescription(granted: boolean | undefined): string {
-  if (granted === true) {
-    return "Allowed in macOS. Desktop integrations can inspect and control app windows.";
-  }
-  if (granted === false) {
-    return "Not allowed in macOS. Open Accessibility settings to add Ghostex.";
-  }
-  return "Status is unavailable in this environment. Open macOS Accessibility settings if desktop integrations cannot control apps.";
-}
-
-function getAccessibilityPermissionButtonLabel(granted: boolean | undefined): string {
-  if (granted === true) {
-    return "Accessibility Allowed";
-  }
-  if (granted === false) {
-    return "Accessibility Off - Open Settings";
-  }
-  return "Open Accessibility Settings";
 }
 
 function ActionButtonField({

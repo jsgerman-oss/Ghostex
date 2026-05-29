@@ -21,11 +21,11 @@ const modalSettings: ghostexSettings = {
 };
 
 function SettingsModalStory({
-  accessibilityPermissionGranted,
+  cuaPermissionsGranted,
   initialSettings = modalSettings,
   initialTab = "settings",
 }: {
-  accessibilityPermissionGranted?: boolean;
+  cuaPermissionsGranted?: boolean;
   initialSettings?: ghostexSettings;
   initialTab?: "settings" | "ghostty" | "integrations" | "projects" | "agents" | "actions" | "openTargets" | "hotkeys";
 }) {
@@ -49,7 +49,9 @@ function SettingsModalStory({
     browserSkillInstalled: false,
     computerUseSkillInstalled: false,
     cuaAppInstalled: false,
-    cuaDriverInstalled: false,
+    cuaDriverAccessibilityPermissionGranted: cuaPermissionsGranted,
+    cuaDriverInstalled: cuaPermissionsGranted !== undefined,
+    cuaDriverScreenRecordingPermissionGranted: cuaPermissionsGranted,
     detail: "ghostex is available on PATH. Ghostex Browser Use and Ghostex Computer Use are not installed yet.",
     generatedAt: "2026-05-27T04:17:00.000Z",
     ghostexPath: "/opt/homebrew/bin/ghostex",
@@ -68,7 +70,6 @@ function SettingsModalStory({
       }}
     >
       <SettingsModal
-        accessibilityPermissionGranted={accessibilityPermissionGranted}
         agentHookStatus={agentHookStatus}
         ghostexCliStatus={ghostexCliStatus}
         initialTab={initialTab}
@@ -98,8 +99,10 @@ function SettingsModalStory({
             computerUseSkillInstalled: true,
             computerUseSkillPath: "/Users/madda/agents/skills/ghostex-computer-use/SKILL.md",
             cuaAppInstalled: true,
+            cuaDriverAccessibilityPermissionGranted: true,
             cuaDriverInstalled: true,
             cuaDriverPath: "/Users/madda/.local/bin/cua-driver",
+            cuaDriverScreenRecordingPermissionGranted: true,
           })
         }
         onInstallGhostexCli={() => setGhostexCliStatus({ ...ghostexCliStatus, installed: true })}
@@ -141,11 +144,11 @@ export const DarkGray: Story = {
 };
 
 export const AccessibilityOff: Story = {
-  render: () => <SettingsModalStory accessibilityPermissionGranted={false} />,
+  render: () => <SettingsModalStory cuaPermissionsGranted={false} />,
 };
 
 export const Integrations: Story = {
-  render: () => <SettingsModalStory accessibilityPermissionGranted={false} initialTab="integrations" />,
+  render: () => <SettingsModalStory cuaPermissionsGranted={false} initialTab="integrations" />,
 };
 
 export const LightOrange: Story = {
