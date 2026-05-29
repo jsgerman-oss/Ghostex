@@ -2,6 +2,7 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
+- Homebrew installs require macOS Ventura or newer with explicit `>= :ventura` cask syntax so newer macOS releases are not blocked by an exact Ventura match.
 - Cursor Agent can generate session titles, Git prompts, worktree prompts, and Project board ticket titles when it is the selected prompt agent.
 - Project header actions use portaled sidebar tooltips that stay visible inside narrow native webviews.
 - Session attention and working updates refresh native pane chrome without disturbing terminal keyboard focus or broad layout sync.

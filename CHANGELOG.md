@@ -1,6 +1,11 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-29-20:38: Release notes for 3.21.0 must include all user-facing commits after v3.20.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-29-21:05: Release notes for 3.22.0 must include all user-facing commits after v3.21.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+
+## 3.22.0 - 2026-05-29
+
+- Fixed Homebrew installs on newer macOS releases by keeping the Ghostex cask minimum requirement at macOS Ventura (`>= :ventura`) instead of an exact Ventura match that blocked installation on later systems.
+- Improved the titlebar update button tooltip so it opens to the side and no longer sits under the promoted sidebar layer.
 
 ## 3.21.0 - 2026-05-29
 
