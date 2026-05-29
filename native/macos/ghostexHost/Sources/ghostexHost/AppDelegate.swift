@@ -99,14 +99,19 @@ private func normalizedNativeProcessPath(_ path: String?) -> String {
 private final class SessionAttentionNotificationController: NSObject, UNUserNotificationCenterDelegate {
   private let center = UNUserNotificationCenter.current()
   private let onSessionClicked: (String) -> Void
+  private let shouldSuppressDelivery: @MainActor (ShowSessionAttentionNotification) -> Bool
 
-  init(onSessionClicked: @escaping (String) -> Void) {
+  init(
+    onSessionClicked: @escaping (String) -> Void,
+    shouldSuppressDelivery: @escaping @MainActor (ShowSessionAttentionNotification) -> Bool = { _ in false }
+  ) {
     self.onSessionClicked = onSessionClicked
+    self.shouldSuppressDelivery = shouldSuppressDelivery
     super.init()
     center.delegate = self
   }
 
-  func show(_ command: ShowSessionAttentionNotification) {
+  @MainActor func show(_ command: ShowSessionAttentionNotification) {
     /**
      CDXC:SessionAttentionNotifications 2026-05-10-16:46
      The sidebar decides when attention notifications are allowed. Native code
@@ -117,16 +122,27 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
      Attention notifications must not add their own macOS notification sound.
      Request only alert permission and leave notification content sound unset;
      the existing completion-bell setting remains the only audio path.
+
+     CDXC:SessionAttentionNotifications 2026-05-29-18:49:
+     Foreground attention banners must never take keyboard focus away from a
+     Ghostex terminal pane the user is typing in. Suppress delivery while a
+     terminal surface owns first responder and keep background notifications
+     unchanged.
      */
+    guard !suppressDelivery(command, phase: "show") else { return }
     center.getNotificationSettings { [weak self] settings in
       guard let self else { return }
       switch settings.authorizationStatus {
       case .authorized, .provisional:
-        self.deliver(command)
+        Task { @MainActor in
+          self.deliverIfAllowed(command, phase: "authorized")
+        }
       case .notDetermined:
         self.center.requestAuthorization(options: [.alert]) { granted, _ in
           if granted {
-            self.deliver(command)
+            Task { @MainActor in
+              self.deliverIfAllowed(command, phase: "authorizationGranted")
+            }
           }
         }
       case .denied:
@@ -137,7 +153,7 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     }
   }
 
-  func requestPermissionFromSettings() {
+  @MainActor func requestPermissionFromSettings() {
     center.getNotificationSettings { [weak self] settings in
       guard let self else { return }
       switch settings.authorizationStatus {
@@ -153,7 +169,7 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     }
   }
 
-  private func deliver(_ command: ShowSessionAttentionNotification) {
+  @MainActor private func deliver(_ command: ShowSessionAttentionNotification) {
     let identifier = "ghostex.session.attention.\(command.sessionId).\(UUID().uuidString)"
     let content = UNMutableNotificationContent()
     let title = command.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -174,6 +190,46 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
       guard error == nil else { return }
       self?.removeDeliveredNotificationLater(identifier, attachmentUrl: attachmentUrl)
     }
+  }
+
+  @MainActor private func deliverIfAllowed(_ command: ShowSessionAttentionNotification, phase: String) {
+    guard !suppressDelivery(command, phase: phase) else { return }
+    deliver(command)
+  }
+
+  @MainActor private func suppressDelivery(_ command: ShowSessionAttentionNotification, phase: String) -> Bool {
+    guard shouldSuppressDelivery(command) else {
+      return false
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeHost.sessionAttentionNotification.suppressedForTerminalFocus",
+      details: [
+        "phase": phase,
+        "sessionId": command.sessionId,
+      ])
+    return true
+  }
+
+  @MainActor private func shouldSuppressForegroundPresentation(_ notification: UNNotification) -> Bool {
+    /**
+     CDXC:SessionAttentionNotifications 2026-05-29-18:49:
+     A notification queued while Ghostex was backgrounded can still present
+     after the user returns to an active terminal. Re-check foreground terminal
+     input at willPresent time so delayed banners cannot steal typing focus.
+     */
+    guard
+      notification.request.content.categoryIdentifier == "ghostex.session.attention",
+      let sessionId = notification.request.content.userInfo["sessionId"] as? String
+    else {
+      return false
+    }
+    return suppressDelivery(
+      ShowSessionAttentionNotification(
+        body: notification.request.content.body,
+        iconDataUrl: nil,
+        sessionId: sessionId,
+        title: notification.request.content.title),
+      phase: "willPresent")
   }
 
   private func applyProjectIconAttachment(
@@ -365,7 +421,13 @@ private final class SessionAttentionNotificationController: NSObject, UNUserNoti
     willPresent notification: UNNotification,
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) {
-    completionHandler([.banner])
+    Task { @MainActor in
+      guard !self.shouldSuppressForegroundPresentation(notification) else {
+        completionHandler([])
+        return
+      }
+      completionHandler([.banner])
+    }
   }
 
   func userNotificationCenter(
@@ -448,11 +510,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private var codeServerRuntimeStartedAt: Date?
   private var pendingOSIntegrationCommands: [(action: String, payloadJson: String)] = []
   private lazy var sessionAttentionNotificationController =
-    SessionAttentionNotificationController { [weak self] sessionId in
-      Task { @MainActor in
-        self?.handleSessionAttentionNotificationClick(sessionId)
-      }
-    }
+    SessionAttentionNotificationController(
+      onSessionClicked: { [weak self] sessionId in
+        Task { @MainActor in
+          self?.handleSessionAttentionNotificationClick(sessionId)
+        }
+      },
+      shouldSuppressDelivery: { [weak self] command in
+        guard let self else { return false }
+        return self.shouldSuppressAttentionNotificationForTerminalFocus(command)
+      })
 
   private struct NativeActivationRequest {
     let reason: String
@@ -507,41 +574,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   @MainActor func application(_ application: NSApplication, open urls: [URL]) {
+    var filePaths: [String] = []
     for url in urls {
+      if url.isFileURL {
+        filePaths.append(url.path)
+        continue
+      }
       handleOSIntegrationURL(url)
+    }
+    if !filePaths.isEmpty {
+      dispatchOSIntegrationFileOpenPaths(filePaths)
     }
   }
 
   @MainActor func application(_ sender: NSApplication, openFiles filenames: [String]) {
-    /**
-     CDXC:OSIntegration 2026-05-27-18:06:
-     Launch Services file/folder opens must enter the same sidebar open-request
-     router as the CLI. Native only captures macOS intake and keeps script/URL
-     prompts in AppKit; React/sidebar remains the owner of project, Quick, and
-     embedded Code state.
-     */
-    let editPaths = filenames.filter { !presentScriptOpenDialogIfNeeded(path: $0) }
-    if !editPaths.isEmpty {
-      dispatchOSIntegrationCommand(
-        action: "openPaths",
-        payload: [
-          "mode": "open",
-          "targets": editPaths.map { ["path": $0, "raw": $0] },
-        ])
-    }
+    dispatchOSIntegrationFileOpenPaths(filenames)
     sender.reply(toOpenOrPrint: .success)
   }
 
   @MainActor func application(_ sender: NSApplication, openFile filename: String) -> Bool {
-    if presentScriptOpenDialogIfNeeded(path: filename) {
-      return true
-    }
-    dispatchOSIntegrationCommand(
-      action: "openPaths",
-		      payload: [
-	        "mode": "open",
-	        "targets": [["path": filename, "raw": filename]],
-	      ])
+    dispatchOSIntegrationFileOpenPaths([filename])
     return true
   }
 
@@ -690,6 +742,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     Self.appendNativeHostLifecycleLog(
       "activationRequest reason=\(reason) sessionId=\(sessionId ?? "<none>") windowVisible=\(window?.isVisible ?? false) keyWindow=\(window?.isKeyWindow ?? false) frontmost=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "<missing>") recentInput=\(describeRecentNativeInputEvent()) workspace=\(describeWorkspaceActivationSnapshot())"
     )
+  }
+
+  @MainActor
+  private func shouldSuppressAttentionNotificationForTerminalFocus(
+    _ command: ShowSessionAttentionNotification
+  ) -> Bool {
+    guard let focusedInputSessionId = workspaceView?.foregroundTerminalInputSessionId() else {
+      return false
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeHost.sessionAttentionNotification.foregroundTerminalFocus",
+      details: [
+        "focusedInputSessionId": focusedInputSessionId,
+        "notificationSessionId": command.sessionId,
+        "windowIsKey": window?.isKeyWindow ?? false,
+      ])
+    return true
   }
 
   @MainActor
@@ -2840,6 +2909,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     }
   }
 
+  @MainActor private func dispatchOSIntegrationFileOpenPaths(_ paths: [String]) {
+    /**
+     CDXC:OSIntegration 2026-05-29-18:44:
+     Finder Open With and `open -a Ghostex file.md` can arrive through either
+     AppKit document delegate: `openFiles` string paths or modern `open urls`
+     file URLs. Route both through one helper so markdown/text documents reach
+     the same sidebar open-request router instead of file URLs being ignored as
+     non-ghostex schemes.
+     */
+    let editPaths = paths.filter { !presentScriptOpenDialogIfNeeded(path: $0) }
+    if !editPaths.isEmpty {
+      dispatchOSIntegrationCommand(
+        action: "openPaths",
+        payload: [
+          "mode": "open",
+          "targets": editPaths.map { ["path": $0, "raw": $0] },
+        ])
+    }
+  }
+
   @MainActor private func presentScriptOpenDialogIfNeeded(path: String) -> Bool {
     let url = URL(fileURLWithPath: path)
     guard ["command", "tool", "sh"].contains(url.pathExtension.lowercased()) else {
@@ -4207,9 +4296,14 @@ final class ghostexRootView: NSView {
   private var lastWorkspaceInteractionShieldLogKey: String?
   private var sidebarContextMenuOpenCount = 0
   private lazy var sessionAttentionNotificationController =
-    SessionAttentionNotificationController { [weak self] sessionId in
-      self?.handleSessionAttentionNotificationClick(sessionId)
-    }
+    SessionAttentionNotificationController(
+      onSessionClicked: { [weak self] sessionId in
+        self?.handleSessionAttentionNotificationClick(sessionId)
+      },
+      shouldSuppressDelivery: { [weak self] command in
+        guard let self else { return false }
+        return self.shouldSuppressAttentionNotificationForTerminalFocus(command)
+      })
   private var sidebarWidth: CGFloat
   private var sidebarSide: SidebarSide = .left
 
@@ -5307,6 +5401,23 @@ final class ghostexRootView: NSView {
     NSApp.activate(ignoringOtherApps: true)
     window?.makeKeyAndOrderFront(nil)
     sendHostEvent(event)
+  }
+
+  @MainActor
+  private func shouldSuppressAttentionNotificationForTerminalFocus(
+    _ command: ShowSessionAttentionNotification
+  ) -> Bool {
+    guard let focusedInputSessionId = workspaceView.foregroundTerminalInputSessionId() else {
+      return false
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeRoot.sessionAttentionNotification.foregroundTerminalFocus",
+      details: [
+        "focusedInputSessionId": focusedInputSessionId,
+        "notificationSessionId": command.sessionId,
+        "windowIsKey": window?.isKeyWindow ?? false,
+      ])
+    return true
   }
 
   func applyReactTitlebarProjectState(_ command: SetActiveTerminalSet) {
