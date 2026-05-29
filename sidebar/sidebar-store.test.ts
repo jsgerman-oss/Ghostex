@@ -3,6 +3,7 @@ import type {
   SidebarHydrateMessage,
   SidebarSessionGroup,
   SidebarSessionItem,
+  SidebarSessionStateMessage,
 } from "../shared/session-grid-contract";
 import {
   createInitialSidebarStoreDataState,
@@ -150,6 +151,75 @@ describe("sidebar store", () => {
     expect(after.sessionsById["session-1"]?.lifecycleState).toBe("done");
     expect(after.sessionsById["session-1"]?.primaryTitle).toBe("updated groups");
     expect(after.sessionsById["session-2"]).toBe(previousSiblingSession);
+  });
+
+  test("should preserve unchanged HUD slice references across session snapshots", () => {
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage([
+          createGroup("group-1", [
+            createSession("session-1", "groups"),
+            createSession("session-2", "notes"),
+          ]),
+        ]),
+      );
+
+    const before = useSidebarStore.getState();
+    const sessionState: SidebarSessionStateMessage = {
+      groups: [
+        createGroup("group-1", [
+          {
+            ...createSession("session-1", "groups"),
+            activity: "attention",
+            activityLabel: "Needs attention",
+          },
+          createSession("session-2", "notes"),
+        ]),
+      ],
+      hud: {
+        ...before.hud,
+        agents: before.hud.agents.map((agent) => ({ ...agent })),
+        commands: before.hud.commands.map((command) => ({ ...command })),
+        git: {
+          ...before.hud.git,
+          files: before.hud.git.files.map((file) => ({ ...file })),
+          pr: before.hud.git.pr ? { ...before.hud.git.pr } : null,
+        },
+        pendingAgentIds: [...before.hud.pendingAgentIds],
+        projectSettingsProjects: before.hud.projectSettingsProjects?.map((project) => ({
+          ...project,
+        })),
+        recentProjects: before.hud.recentProjects.map((project) => ({ ...project })),
+        settings: before.hud.settings ? { ...before.hud.settings } : undefined,
+        visibleSlotLabels: [...before.hud.visibleSlotLabels],
+      },
+      pinnedPrompts: [],
+      previousSessions: [],
+      revision: 2,
+      scratchPadContent: "",
+      type: "sessionState",
+    };
+
+    /**
+     * CDXC:AppModals 2026-05-29-19:44:
+     * Attention/activity snapshots may rebuild HUD objects without changing
+     * agents or settings. Open modals subscribe to those slices, so preserving
+     * unchanged references keeps unrelated session status updates from
+     * reinitializing modal drafts.
+     */
+    useSidebarStore.getState().applySidebarMessage(sessionState);
+
+    const after = useSidebarStore.getState();
+    expect(after.sessionsById["session-1"]?.activity).toBe("attention");
+    expect(after.hud.agents).toBe(before.hud.agents);
+    expect(after.hud.commands).toBe(before.hud.commands);
+    expect(after.hud.git).toBe(before.hud.git);
+    expect(after.hud.pendingAgentIds).toBe(before.hud.pendingAgentIds);
+    expect(after.hud.projectSettingsProjects).toBe(before.hud.projectSettingsProjects);
+    expect(after.hud.recentProjects).toBe(before.hud.recentProjects);
+    expect(after.hud.settings).toBe(before.hud.settings);
+    expect(after.hud.visibleSlotLabels).toBe(before.hud.visibleSlotLabels);
   });
 });
 

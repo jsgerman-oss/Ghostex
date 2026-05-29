@@ -213,6 +213,11 @@ function applySidebarMessageState(
     state.pendingFocusedSessionId,
   );
   const normalizedGroups = normalizeSidebarGroups(state, reconciledGroups.groups);
+  const nextHud = preserveSidebarHudReferences(state.hud, {
+    ...message.hud,
+    projectSettingsProjects: message.hud.projectSettingsProjects ?? [],
+    recentProjects: message.hud.recentProjects ?? [],
+  });
   return {
     commandRunStates: reconcileSidebarCommandRunFeedbackStates(
       state.commandRunStates,
@@ -220,11 +225,7 @@ function applySidebarMessageState(
     ),
     groupOrder: normalizedGroups.groupOrder,
     groupsById: normalizedGroups.groupsById,
-    hud: {
-      ...message.hud,
-      projectSettingsProjects: message.hud.projectSettingsProjects ?? [],
-      recentProjects: message.hud.recentProjects ?? [],
-    },
+    hud: nextHud,
     pendingFocusedSessionId: reconciledGroups.pendingFocusedSessionId,
     pinnedPrompts: message.pinnedPrompts,
     previousSessions: message.previousSessions,
@@ -234,6 +235,69 @@ function applySidebarMessageState(
     sessionsById: normalizedGroups.sessionsById,
     workspaceGroupIds: normalizedGroups.workspaceGroupIds,
   };
+}
+
+/**
+ * CDXC:AppModals 2026-05-29-19:44:
+ * App-level modals keep user drafts in local React state while the sidebar
+ * store still receives full session snapshots for attention/activity updates.
+ * Preserve unchanged HUD slice references so unrelated session changes do not
+ * look like fresh modal props and reset open drafts.
+ */
+function preserveSidebarHudReferences(
+  previousHud: SidebarHudState,
+  nextHud: SidebarHudState,
+): SidebarHudState {
+  let mergedHud = nextHud;
+  const preserveIfEqual = <Key extends keyof SidebarHudState>(key: Key) => {
+    if (!haveSameSerializableValue(previousHud[key], nextHud[key])) {
+      return;
+    }
+    if (mergedHud === nextHud) {
+      mergedHud = { ...nextHud };
+    }
+    mergedHud[key] = previousHud[key];
+  };
+
+  preserveIfEqual("agents");
+  preserveIfEqual("commands");
+  preserveIfEqual("commandSessionIndicators");
+  preserveIfEqual("git");
+  preserveIfEqual("pendingAgentIds");
+  preserveIfEqual("projectSettingsProjects");
+  preserveIfEqual("projectWorktrees");
+  preserveIfEqual("recentProjects");
+  preserveIfEqual("settings");
+  preserveIfEqual("visibleSlotLabels");
+
+  return haveSameSerializableValue(previousHud, mergedHud) ? previousHud : mergedHud;
+}
+
+function haveSameSerializableValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (typeof left !== typeof right) {
+    return false;
+  }
+  if (typeof left !== "object" || left === null || right === null) {
+    return false;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    return left.every((value, index) => haveSameSerializableValue(value, right[index]));
+  }
+
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => haveSameSerializableValue(leftRecord[key], rightRecord[key]))
+  );
 }
 
 function applySessionPresentationMessageState(
