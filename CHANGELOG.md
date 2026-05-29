@@ -1,6 +1,14 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-29-20:10: Release notes for 3.20.0 must include all user-facing commits after v3.19.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-29-20:38: Release notes for 3.21.0 must include all user-facing commits after v3.20.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+
+## 3.21.0 - 2026-05-29
+
+- Added Cursor Agent support for prompt generation so session rename, Git review, worktree prompts, and Project board title generation work when Cursor is the selected prompt agent.
+- Improved agent prompt staging so Ghostex waits for the terminal to be ready and uses consistent step delays before sending rename and prompt commands.
+- Fixed Search by Text in Previous Sessions so it opens in the active project instead of the Quick/projectless terminal area.
+- Improved project header action tooltips with portaled labels that stay visible inside narrow sidebar webviews.
+- Shortened the Commands Pane footer hover label while keeping the full accessible button name.
 
 ## 3.20.0 - 2026-05-29
 

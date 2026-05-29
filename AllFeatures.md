@@ -2,6 +2,8 @@
 ## All features:
 
 - Native Sparkle updates for macOS releases.
+- Cursor Agent can generate session titles, Git prompts, worktree prompts, and Project board ticket titles when it is the selected prompt agent.
+- Project header actions use portaled sidebar tooltips that stay visible inside narrow native webviews.
 - Session attention and working updates refresh native pane chrome without disturbing terminal keyboard focus or broad layout sync.
 - Git commit review and New Worktree modals keep in-progress drafts stable when unrelated session activity updates arrive.
 - Clone Repository is available from the Projects header and command palette, with native folder picking, flexible Git URL paste formats, and automatic project creation after clone success.
