@@ -689,9 +689,15 @@ function claimAppRuntimeProcesses(
    * The Resources dropdown should hide Ghostex's own app-runtime rows. Keep
    * matching these processes only to reserve their PIDs before browser and
    * orphan resource sections are built.
+   *
+   * CDXC:TitlebarResources 2026-05-29-12:02:
+   * Ghostex-launched zmx/tmux/zellij and agent roots are user work resources,
+   * not app runtime. Do not reserve those roots here; leave them for session or
+   * orphan resource tree walking so child processes such as node, npm, Codex,
+   * and DevTools helpers stay counted under the Ghostex-owned session root.
    */
   appProcesses
-    .filter((process) => !appPids.has(process.ppid))
+    .filter((process) => !appPids.has(process.ppid) && !isAgentRuntimeProcess(process))
     .slice(0, 3)
     .forEach((process) => {
       const tree = collectProcessTree([process], childrenByParent).filter(
@@ -1115,6 +1121,27 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const narrowTitlebarMedia = window.matchMedia("(max-width: 619.98px)");
+    const closeMenusHiddenAtNarrowWidth = () => {
+      /**
+       * CDXC:ReactTitlebar 2026-05-29-16:05:
+       * App widths below 620px hide the top-right Resources and Keep Awake
+       * controls, so their portaled menus must close at the same breakpoint
+       * instead of remaining open after their triggers leave the titlebar.
+       */
+      if (narrowTitlebarMedia.matches) {
+        setKeepAwakeMenuOpen(false);
+        setResourcesMenuOpen(false);
+      }
+    };
+    closeMenusHiddenAtNarrowWidth();
+    narrowTitlebarMedia.addEventListener("change", closeMenusHiddenAtNarrowWidth);
+    return () => {
+      narrowTitlebarMedia.removeEventListener("change", closeMenusHiddenAtNarrowWidth);
+    };
+  }, []);
+
   const allTargets = useMemo(
     () => createConfiguredOpenTargets(projectState.workspaceOpenTargets),
     [projectState.workspaceOpenTargets],
@@ -1135,6 +1162,9 @@ function App() {
     () => resolveSidebarGitPrimaryActionState(projectState.git),
     [projectState.git],
   );
+  const gitPrimaryLabel = titlebarPrimaryGitActionLabel(gitPrimaryAction.label);
+  const gitPrimaryCompactLabel = compactTitlebarPrimaryGitActionLabel(gitPrimaryAction.label);
+  const shouldCompactGitPrimaryLabel = gitPrimaryCompactLabel !== gitPrimaryLabel;
   const gitMenuItems = useMemo(
     () => buildSidebarGitMenuItems(projectState.git),
     [projectState.git],
@@ -2010,78 +2040,78 @@ function App() {
              * dropdown menus, while avoiding extra titlebar hover chrome.
              */}
             {!projectState.keepAwake.hideTitlebarControl ? (
-            <DropdownMenu onOpenChange={setKeepAwakeMenuOpen} open={keepAwakeMenuOpen}>
-              <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
-                <Button
-                  aria-label={keepAwakeRuntime ? "Allow Mac sleep" : "Keep Mac awake"}
-                  className="titlebar-session-button titlebar-open-main-button"
-                  data-active={String(Boolean(keepAwakeRuntime))}
-                  onClick={toggleKeepAwake}
-                  type="button"
-                  variant={keepAwakeRuntime ? "outline" : "ghost"}
-                >
-                  {/*
-                   * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
-                   * Keep-awake titlebar chrome must be icon-only so it cannot
-                   * clip in the narrow right-side slot. Coffee means Ghostex is
-                   * keeping the Mac awake; moon means clicking will allow sleep.
-                   */}
-                  {keepAwakeRuntime ? (
-                    <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
-                  ) : (
-                    <IconMoon aria-hidden="true" size={14} stroke={1.8} />
-                  )}
-                </Button>
-                <DropdownMenuTrigger asChild>
+              <DropdownMenu onOpenChange={setKeepAwakeMenuOpen} open={keepAwakeMenuOpen}>
+                <ButtonGroup className="titlebar-open-group titlebar-keep-awake-group" data-titlebar-hit-region>
                   <Button
-                    aria-label="Keep awake menu"
-                    className="titlebar-session-button titlebar-open-chevron-button"
+                    aria-label={keepAwakeRuntime ? "Allow Mac sleep" : "Keep Mac awake"}
+                    className="titlebar-session-button titlebar-open-main-button"
+                    data-active={String(Boolean(keepAwakeRuntime))}
+                    onClick={toggleKeepAwake}
                     type="button"
-                    variant="ghost"
+                    variant={keepAwakeRuntime ? "outline" : "ghost"}
                   >
-                    <IconChevronDown aria-hidden="true" size={14} />
+                    {/*
+                     * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
+                     * Keep-awake titlebar chrome must be icon-only so it cannot
+                     * clip in the narrow right-side slot. Coffee means Ghostex is
+                     * keeping the Mac awake; moon means clicking will allow sleep.
+                     */}
+                    {keepAwakeRuntime ? (
+                      <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
+                    ) : (
+                      <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+                    )}
                   </Button>
-                </DropdownMenuTrigger>
-              </ButtonGroup>
-              <DropdownMenuContent
-                align="center"
-                alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                className="titlebar-open-menu min-w-[220px] rounded-lg border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
-                data-titlebar-hit-region
-                sideOffset={6}
-                style={{ backgroundColor: "#0e0e0e" }}
-              >
-                {KEEP_AWAKE_DURATION_OPTIONS.map((option) => (
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      aria-label="Keep awake menu"
+                      className="titlebar-session-button titlebar-open-chevron-button"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <IconChevronDown aria-hidden="true" size={14} />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </ButtonGroup>
+                <DropdownMenuContent
+                  align="center"
+                  alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
+                  className="titlebar-open-menu min-w-[220px] rounded-lg border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
+                  data-titlebar-hit-region
+                  sideOffset={6}
+                  style={{ backgroundColor: "#0e0e0e" }}
+                >
+                  {KEEP_AWAKE_DURATION_OPTIONS.map((option) => (
+                    <DropdownMenuItem
+                      className="titlebar-open-menu-item"
+                      key={option.value}
+                      onClick={() => {
+                        void startKeepAwake(option.value);
+                      }}
+                    >
+                      <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
+                      <span className="min-w-0 flex-1 truncate">Keep awake {option.label.toLowerCase()}</span>
+                      {keepAwakeRuntime?.durationMinutes === option.value ? (
+                        <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
+                      ) : null}
+                    </DropdownMenuItem>
+                  ))}
+                  {keepAwakeRuntime ? (
+                    <DropdownMenuItem className="titlebar-open-menu-item" onClick={() => void stopKeepAwake()}>
+                      <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+                      <span>Allow sleep now</span>
+                    </DropdownMenuItem>
+                  ) : null}
+                  <DropdownMenuSeparator className="bg-border/70" />
                   <DropdownMenuItem
                     className="titlebar-open-menu-item"
-                    key={option.value}
-                    onClick={() => {
-                      void startKeepAwake(option.value);
-                    }}
+                    onClick={openPowerSettings}
                   >
-                    <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
-                    <span className="min-w-0 flex-1 truncate">Keep awake {option.label.toLowerCase()}</span>
-                    {keepAwakeRuntime?.durationMinutes === option.value ? (
-                      <IconCheck aria-hidden="true" className="ml-2 size-4 opacity-75" />
-                    ) : null}
+                    <IconSettings aria-hidden="true" size={16} />
+                    <span>Power Settings</span>
                   </DropdownMenuItem>
-                ))}
-                {keepAwakeRuntime ? (
-                  <DropdownMenuItem className="titlebar-open-menu-item" onClick={() => void stopKeepAwake()}>
-                    <IconMoon aria-hidden="true" size={14} stroke={1.8} />
-                    <span>Allow sleep now</span>
-                  </DropdownMenuItem>
-                ) : null}
-                <DropdownMenuSeparator className="bg-border/70" />
-                <DropdownMenuItem
-                  className="titlebar-open-menu-item"
-                  onClick={openPowerSettings}
-                >
-                  <IconSettings aria-hidden="true" size={16} />
-                  <span>Power Settings</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : null}
             <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
               <DropdownMenuTrigger asChild>
@@ -2132,7 +2162,7 @@ function App() {
             <DropdownMenu onOpenChange={setGitMenuOpen} open={gitMenuOpen}>
               <ButtonGroup className="titlebar-open-group titlebar-git-group" data-titlebar-hit-region>
                 <Button
-                  aria-label={gitPrimaryAction.disabledReason ?? titlebarPrimaryGitActionLabel(gitPrimaryAction.label)}
+                  aria-label={gitPrimaryAction.disabledReason ?? gitPrimaryLabel}
                   className="titlebar-session-button titlebar-open-main-button titlebar-git-main-button"
                   disabled={gitPrimaryAction.disabled}
                   onClick={() => runGitAction(gitPrimaryAction.action)}
@@ -2148,9 +2178,17 @@ function App() {
                   ) : (
                     getTitlebarGitActionIcon(gitPrimaryAction.action)
                   )}
-                  <span className="titlebar-git-label">
-                    {titlebarPrimaryGitActionLabel(gitPrimaryAction.label)}
+                  <span
+                    className="titlebar-git-label titlebar-git-label-full"
+                    data-compact-below-620={String(shouldCompactGitPrimaryLabel)}
+                  >
+                    {gitPrimaryLabel}
                   </span>
+                  {gitPrimaryCompactLabel ? (
+                    <span aria-hidden="true" className="titlebar-git-label titlebar-git-label-compact">
+                      {gitPrimaryCompactLabel}
+                    </span>
+                  ) : null}
                 </Button>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -3400,6 +3438,19 @@ function titlebarPrimaryGitActionLabel(label: string): string {
   return label.replace(/\bPush\b/g, "push").replace(/\bPR\b/g, "PR");
 }
 
+function compactTitlebarPrimaryGitActionLabel(label: string): string {
+  /**
+   * CDXC:TitlebarGit 2026-05-29-16:05:
+   * Below 620px, the top-right Git primary button needs to remove the visible
+   * Commit wording while preserving any following push or PR destination text.
+   * Keep the full aria label on the button so the compact visual label does not
+   * reduce screen-reader context.
+   */
+  return titlebarPrimaryGitActionLabel(label)
+    .replace(/^Commit(?:\s*&\s*|,\s*)?/i, "")
+    .trim();
+}
+
 function getTitlebarGitActionIcon(action: SidebarGitAction): ReactNode {
   if (action === "push") {
     return <IconUpload aria-hidden="true" className="titlebar-git-icon" size={15} stroke={1.8} />;
@@ -3685,6 +3736,9 @@ styleElement.textContent = `
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .titlebar-git-label-compact {
+    display: none;
+  }
   .titlebar-git-icon {
     flex: 0 0 auto;
   }
@@ -3826,6 +3880,26 @@ styleElement.textContent = `
   .titlebar-resource-button {
     padding: 0;
     width: 28px;
+  }
+  @media (max-width: 619.98px) {
+    /**
+     * CDXC:ReactTitlebar 2026-05-29-16:05:
+     * App widths below 620px need the top-right titlebar chrome to prioritize
+     * the primary Git action. Hide Exit Focus, Keep Awake, and Resources, and
+     * remove visible Commit wording from the Git primary label while keeping
+     * non-commit destination text such as push or PR when there is room.
+     */
+    .titlebar-exit-focus-button,
+    .titlebar-keep-awake-group,
+    .titlebar-resource-button {
+      display: none !important;
+    }
+    .titlebar-git-label-full[data-compact-below-620="true"] {
+      display: none;
+    }
+    .titlebar-git-label-compact {
+      display: inline;
+    }
   }
   .titlebar-open-chevron-button {
     width: 18px;
