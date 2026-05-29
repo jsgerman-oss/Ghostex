@@ -1,6 +1,12 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-29-18:40: Release notes for 3.19.0 must include all user-facing commits after v3.18.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-29-20:10: Release notes for 3.20.0 must include all user-facing commits after v3.19.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+
+## 3.20.0 - 2026-05-29
+
+- Fixed session attention updates so they refresh pane chrome without stealing keyboard focus from the terminal you are typing in.
+- Fixed Git commit review and New Worktree modals so session activity updates no longer reset in-progress drafts or agent selections.
+- Improved sidebar session snapshots so unchanged HUD data keeps stable references across attention and activity updates.
 
 ## 3.19.0 - 2026-05-29
 
