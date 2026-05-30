@@ -309,9 +309,10 @@ export type NativeGhosttyHostCommand =
        * CDXC:DelayedSend 2026-05-17-03:14
        * Native tab strips and pane overlays are outside React, so layout sync
        * must carry the active Delayed Send countdown labels into AppKit.
-       */
+      */
       sessionDelayedSendRemainingLabels?: Record<string, string>;
       sessionFaviconDataUrls?: Record<string, string>;
+      sessionFirstPromptTitleGenerationSessionIds?: string[];
       sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;
       /**
@@ -411,6 +412,16 @@ export type NativeGhosttyHostEvent =
   | {
       sessionId: string;
       type: "terminalBell";
+    }
+  | {
+      /**
+       * CDXC:SessionTitleSync 2026-05-30-05:44:
+       * Native Ghostty panes own keyboard input while the title-generation
+       * overlay is visible, so Escape cancellation is reported through the
+       * host event stream instead of React DOM key handling.
+       */
+      sessionId: string;
+      type: "firstPromptAutoRenameCancelled";
     }
   | {
       /**

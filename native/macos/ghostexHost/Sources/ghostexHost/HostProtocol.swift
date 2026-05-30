@@ -549,6 +549,12 @@ struct SetActiveTerminalSet: Decodable {
    outside the webview tree.
    */
   let sessionDelayedSendRemainingLabels: [String: String]?
+  /**
+   CDXC:SessionTitleSync 2026-05-30-05:44:
+   First-prompt title generation blocks terminal input and shows an AppKit
+   overlay because native Ghostty panes are outside the React DOM.
+   */
+  let sessionFirstPromptTitleGenerationSessionIds: [String]?
   let sessionFaviconDataUrls: [String: String]?
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
@@ -579,6 +585,7 @@ struct SetSessionPaneChrome: Decodable {
   let sessionActivities: [String: NativeTerminalActivity]?
   let sessionDelayedSendRemainingLabels: [String: String]?
   let sessionFaviconDataUrls: [String: String]?
+  let sessionFirstPromptTitleGenerationSessionIds: [String]?
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
   let showSessionIdInTerminalPanes: Bool?
@@ -1059,6 +1066,7 @@ enum HostEvent: Encodable {
   case terminalExited(sessionId: String, exitCode: Int?)
   case terminalFocused(sessionId: String)
   case terminalBell(sessionId: String)
+  case firstPromptAutoRenameCancelled(sessionId: String)
   case nativeSessionSurfaceMissing(sessionId: String)
   case terminalRestoreBlocked(sessionId: String, reason: String, cwd: String)
   case commandsPanelHeightRatioChanged(heightRatio: Double)
@@ -1220,6 +1228,15 @@ enum HostEvent: Encodable {
       try container.encode(sessionId, forKey: .sessionId)
     case .terminalBell(let sessionId):
       try container.encode("terminalBell", forKey: .type)
+      try container.encode(sessionId, forKey: .sessionId)
+    case .firstPromptAutoRenameCancelled(let sessionId):
+      /**
+       CDXC:SessionTitleSync 2026-05-30-05:44:
+       Escape in the native "Generating title..." overlay must cancel the
+       sidebar's in-flight first-prompt title generation without forwarding
+       Escape to the terminal process.
+       */
+      try container.encode("firstPromptAutoRenameCancelled", forKey: .type)
       try container.encode(sessionId, forKey: .sessionId)
     case .nativeSessionSurfaceMissing(let sessionId):
       /**

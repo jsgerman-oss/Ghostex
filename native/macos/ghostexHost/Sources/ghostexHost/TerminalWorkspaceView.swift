@@ -1546,6 +1546,7 @@ final class TerminalWorkspaceView: NSView {
     let borderView: TerminalPaneBorderView
     let persistenceLabelView: TerminalPanePersistenceLabelView
     let delayedSendLabelView: TerminalPaneDelayedSendLabelView
+    let firstPromptTitleOverlayView: TerminalPaneFirstPromptTitleOverlayView
     var foregroundPid: Int?
     var sessionPersistenceName: String?
     var sessionPersistenceProvider: NativeSessionPersistenceProvider?
@@ -1828,6 +1829,7 @@ final class TerminalWorkspaceView: NSView {
   private var sessionAgentIconDataUrls = [String: String]()
   private var sessionActivities = [String: NativeTerminalActivity]()
   private var sessionDelayedSendRemainingLabels = [String: String]()
+  private var firstPromptTitleGenerationSessionIds = Set<String>()
   private var sessionFaviconDataUrls = [String: String]()
   private var sessionFocusModeAvailableSessionIds = Set<String>()
   private var sessionTitleBarActions = [String: [TerminalTitleBarAction]]()
@@ -2742,6 +2744,9 @@ final class TerminalWorkspaceView: NSView {
     surfaceView.onMouseDownFocus = { [weak self] surfaceView, event in
       self?.focusTerminalFromContentMouseDown(surfaceView: surfaceView, event: event)
     }
+    surfaceView.onFirstPromptTitleGenerationCancel = { [weak self] sessionId in
+      self?.sendEvent(.firstPromptAutoRenameCancelled(sessionId: sessionId))
+    }
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.createTerminal.surfaceInit.completed",
       details: [
@@ -2811,6 +2816,11 @@ final class TerminalWorkspaceView: NSView {
     persistenceLabelView.setProvider(sessionPersistenceProvider, sessionName: sessionPersistenceName)
     let delayedSendLabelView = TerminalPaneDelayedSendLabelView()
     delayedSendLabelView.translatesAutoresizingMaskIntoConstraints = false
+    let firstPromptTitleOverlayView = TerminalPaneFirstPromptTitleOverlayView()
+    firstPromptTitleOverlayView.translatesAutoresizingMaskIntoConstraints = false
+    firstPromptTitleOverlayView.onCancel = { [weak self] in
+      self?.sendEvent(.firstPromptAutoRenameCancelled(sessionId: command.sessionId))
+    }
     let containerView = TerminalPaneLeafContainerView()
     containerView.translatesAutoresizingMaskIntoConstraints = true
 
@@ -2824,6 +2834,7 @@ final class TerminalWorkspaceView: NSView {
       borderView: borderView,
       persistenceLabelView: persistenceLabelView,
       delayedSendLabelView: delayedSendLabelView,
+      firstPromptTitleOverlayView: firstPromptTitleOverlayView,
       foregroundPid: nil,
       sessionPersistenceName: sessionPersistenceName,
       sessionPersistenceProvider: sessionPersistenceProvider,
@@ -3028,6 +3039,7 @@ final class TerminalWorkspaceView: NSView {
     sessionAgentIconDataUrls.removeValue(forKey: sessionId)
     sessionDelayedSendRemainingLabels.removeValue(forKey: sessionId)
     sessionFaviconDataUrls.removeValue(forKey: sessionId)
+    firstPromptTitleGenerationSessionIds.remove(sessionId)
     sessionTitleBarActions.removeValue(forKey: sessionId)
     sessionTitles.removeValue(forKey: sessionId)
     closePoppedOutPaneWindow(sessionId: sessionId, reason: "closeTerminal")
@@ -5205,6 +5217,7 @@ final class TerminalWorkspaceView: NSView {
     let previousCommandsPanelHeightRatio = commandsPanelHeightRatio
     let previousCommandsPanelMode = commandsPanelMode
     let previousActiveProjectEditorId = activeProjectEditorId
+    let previousFirstPromptTitleGenerationSessionIds = firstPromptTitleGenerationSessionIds
     let previousPaneGap = paneGap
     let previousProjectEditorCompanionIsVisible = projectEditorCompanionIsVisible
     let previousProjectEditorCompanionPaneHidden = projectEditorCompanionPaneHidden
@@ -5263,6 +5276,8 @@ final class TerminalWorkspaceView: NSView {
     sessionAgentIconDataUrls = command.sessionAgentIconDataUrls ?? [:]
     sessionActivities = command.sessionActivities ?? [:]
     sessionDelayedSendRemainingLabels = command.sessionDelayedSendRemainingLabels ?? [:]
+    firstPromptTitleGenerationSessionIds =
+      Set(command.sessionFirstPromptTitleGenerationSessionIds ?? [])
     sessionFaviconDataUrls = command.sessionFaviconDataUrls ?? [:]
     sessionFocusModeAvailableSessionIds = Set(command.sessionFocusModeAvailableSessionIds ?? [])
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
@@ -5272,7 +5287,9 @@ final class TerminalWorkspaceView: NSView {
     let shouldRefreshPaneTabMetadata =
       previousSessionFocusModeAvailableSessionIds != sessionFocusModeAvailableSessionIds
       || previousSessionTitleBarActions != sessionTitleBarActions || previousSessionTitles != sessionTitles
-    if previousDelayedSendRemainingLabels != sessionDelayedSendRemainingLabels {
+    if previousDelayedSendRemainingLabels != sessionDelayedSendRemainingLabels ||
+      previousFirstPromptTitleGenerationSessionIds != firstPromptTitleGenerationSessionIds
+    {
       needsLayout = true
     }
     syncProjectEditorTabBars()
@@ -5324,6 +5341,9 @@ final class TerminalWorkspaceView: NSView {
         colorHex: sessionAgentIconColors[session.sessionId])
       session.delayedSendLabelView.setRemainingLabel(
         sessionDelayedSendRemainingLabels[session.sessionId])
+      let isGeneratingFirstPromptTitle = firstPromptTitleGenerationSessionIds.contains(session.sessionId)
+      session.firstPromptTitleOverlayView.setVisible(isGeneratingFirstPromptTitle)
+      session.view.setFirstPromptTitleGenerationInputSuppressed(isGeneratingFirstPromptTitle)
       if shouldRelayout {
         let isPoppedOut = poppedOutSessionIds.contains(session.sessionId)
         let isActive = (!isProjectEditorActive && activeSessionIds.contains(session.sessionId)) || isCommandActive
@@ -5627,8 +5647,19 @@ final class TerminalWorkspaceView: NSView {
     sessionActivities = command.sessionActivities ?? [:]
     sessionDelayedSendRemainingLabels = command.sessionDelayedSendRemainingLabels ?? [:]
     sessionFaviconDataUrls = command.sessionFaviconDataUrls ?? [:]
+    let previousFirstPromptTitleGenerationSessionIds = firstPromptTitleGenerationSessionIds
+    firstPromptTitleGenerationSessionIds =
+      Set(command.sessionFirstPromptTitleGenerationSessionIds ?? [])
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
+    if previousFirstPromptTitleGenerationSessionIds != firstPromptTitleGenerationSessionIds {
+      needsLayout = true
+    }
+    for session in sessions.values {
+      let isGeneratingFirstPromptTitle = firstPromptTitleGenerationSessionIds.contains(session.sessionId)
+      session.firstPromptTitleOverlayView.setVisible(isGeneratingFirstPromptTitle)
+      session.view.setFirstPromptTitleGenerationInputSuppressed(isGeneratingFirstPromptTitle)
+    }
     if let nextShowSessionIdInTerminalPanes = command.showSessionIdInTerminalPanes {
       showSessionIdInTerminalPanes = nextShowSessionIdInTerminalPanes
       for session in sessions.values {
@@ -5983,6 +6014,7 @@ final class TerminalWorkspaceView: NSView {
     mount(session.searchBarView, in: session.containerView)
     mount(session.persistenceLabelView, in: session.containerView)
     mount(session.delayedSendLabelView, in: session.containerView)
+    mount(session.firstPromptTitleOverlayView, in: session.containerView)
     mount(session.borderView, in: session.containerView)
   }
 
@@ -10499,6 +10531,8 @@ final class TerminalWorkspaceView: NSView {
         scrollView: session.scrollView,
         searchBarView: session.searchBarView,
         persistenceLabelView: session.persistenceLabelView,
+        delayedSendLabelView: session.delayedSendLabelView,
+        firstPromptTitleOverlayView: session.firstPromptTitleOverlayView,
         titleBarView: popOutTitleBarView,
         titleBarHeight: Self.terminalTitleBarHeight)
       firstResponder = session.view
@@ -10865,6 +10899,7 @@ final class TerminalWorkspaceView: NSView {
       session.persistenceLabelView.setSuppressed(true)
       session.persistenceLabelView.frame = .zero
       session.delayedSendLabelView.frame = .zero
+      session.firstPromptTitleOverlayView.frame = .zero
       session.borderView.frame = session.containerView.bounds
       updateTerminalBorder(for: sessionId)
       return
@@ -10891,6 +10926,7 @@ final class TerminalWorkspaceView: NSView {
     session.delayedSendLabelView.frame = delayedSendLabelFrame(
       in: terminalRect,
       labelView: session.delayedSendLabelView)
+    session.firstPromptTitleOverlayView.frame = firstPromptTitleOverlayFrame(in: terminalRect)
     session.borderView.frame = session.containerView.bounds
     logTerminalResizeIfNeeded(
       session: session,
@@ -10935,6 +10971,10 @@ final class TerminalWorkspaceView: NSView {
       width: labelWidth,
       height: labelHeight
     )
+  }
+
+  private func firstPromptTitleOverlayFrame(in terminalRect: CGRect) -> CGRect {
+    terminalRect.width > 1 && terminalRect.height > 1 ? terminalRect : .zero
   }
 
   private func titleBarHeight(for sessionId: String) -> CGFloat {
@@ -14459,6 +14499,7 @@ final class GhostexGhosttySurfaceView: NSView {
   private static let zmxPersistenceRefreshSequence = "\u{001B}]1337;ZMX_REFRESH\u{0007}"
   let id: UUID
   var ghostexSessionId: String?
+  var onFirstPromptTitleGenerationCancel: ((String) -> Void)?
   var onKeyDownProbe: ((GhostexGhosttySurfaceView, NSEvent, String) -> Void)?
   var onMouseDownFocus: ((GhostexGhosttySurfaceView, NSEvent) -> Void)?
   var onTextInputProbe: ((GhostexGhosttySurfaceView, Any, NSRange) -> Void)?
@@ -14499,6 +14540,7 @@ final class GhostexGhosttySurfaceView: NSView {
     surface.map(GhostexGhosttySurfaceModel.init(surface:))
   }
   var focused = false
+  private var isFirstPromptTitleGenerationInputSuppressed = false
   private var processExitedOverride = false
   private var searchNeedleCancellable: AnyCancellable?
   private var markedText = ""
@@ -14638,6 +14680,15 @@ final class GhostexGhosttySurfaceView: NSView {
      focus ring.
      */
     onKeyDownProbe?(self, event, "received")
+    if isFirstPromptTitleGenerationInputSuppressed {
+      if event.keyCode == 53, let ghostexSessionId {
+        onKeyDownProbe?(self, event, "firstPromptTitleGenerationEscapeConsumed")
+        onFirstPromptTitleGenerationCancel?(ghostexSessionId)
+      } else {
+        onKeyDownProbe?(self, event, "firstPromptTitleGenerationInputSuppressed")
+      }
+      return
+    }
     if event.keyCode == 53, searchState != nil {
       onKeyDownProbe?(self, event, "searchEscapeConsumed")
       searchState = nil
@@ -14648,10 +14699,16 @@ final class GhostexGhosttySurfaceView: NSView {
   }
 
   override func keyUp(with event: NSEvent) {
+    if isFirstPromptTitleGenerationInputSuppressed {
+      return
+    }
     sendKeyEvent(event, action: GHOSTTY_ACTION_RELEASE, includeText: false)
   }
 
   override func flagsChanged(with event: NSEvent) {
+    if isFirstPromptTitleGenerationInputSuppressed {
+      return
+    }
     sendKeyEvent(event, action: GHOSTTY_ACTION_PRESS, includeText: false)
     /**
      CDXC:TerminalMouse 2026-05-23-00:24:
@@ -14662,6 +14719,22 @@ final class GhostexGhosttySurfaceView: NSView {
      */
     if let surface, ghostty_surface_mouse_captured(surface) {
       sendMousePosition(event)
+    }
+  }
+
+  func setFirstPromptTitleGenerationInputSuppressed(_ isSuppressed: Bool) {
+    guard isFirstPromptTitleGenerationInputSuppressed != isSuppressed else {
+      return
+    }
+    /**
+     CDXC:SessionTitleSync 2026-05-30-05:44:
+     The title-generation overlay blocks terminal typing without moving focus
+     away from Ghostty. When the overlay clears, the same focused pane should
+     accept input immediately without an extra click.
+    */
+    isFirstPromptTitleGenerationInputSuppressed = isSuppressed
+    if isSuppressed {
+      unmarkText()
     }
   }
 
@@ -15236,6 +15309,9 @@ final class GhostexGhosttySurfaceView: NSView {
 extension GhostexGhosttySurfaceView: NSTextInputClient {
   func insertText(_ string: Any, replacementRange: NSRange) {
     onTextInputProbe?(self, string, replacementRange)
+    if isFirstPromptTitleGenerationInputSuppressed {
+      return
+    }
     let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
     guard let surface, !text.isEmpty else { return }
     markedText = ""
@@ -15254,6 +15330,9 @@ extension GhostexGhosttySurfaceView: NSTextInputClient {
   }
 
   func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+    if isFirstPromptTitleGenerationInputSuppressed {
+      return
+    }
     markedText = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
     markedTextRange =
       markedText.isEmpty
@@ -21054,6 +21133,8 @@ private final class PoppedOutTerminalPaneContentView: NSView {
   private let scrollView: NSView
   private let searchBarView: NSView
   private let persistenceLabelView: NSView
+  private let delayedSendLabelView: NSView
+  private let firstPromptTitleOverlayView: NSView
   private let titleBarView: NSView
   private let titleBarHeight: CGFloat
 
@@ -21061,12 +21142,16 @@ private final class PoppedOutTerminalPaneContentView: NSView {
     scrollView: NSView,
     searchBarView: NSView,
     persistenceLabelView: NSView,
+    delayedSendLabelView: NSView,
+    firstPromptTitleOverlayView: NSView,
     titleBarView: NSView,
     titleBarHeight: CGFloat
   ) {
     self.scrollView = scrollView
     self.searchBarView = searchBarView
     self.persistenceLabelView = persistenceLabelView
+    self.delayedSendLabelView = delayedSendLabelView
+    self.firstPromptTitleOverlayView = firstPromptTitleOverlayView
     self.titleBarView = titleBarView
     self.titleBarHeight = titleBarHeight
     super.init(frame: .zero)
@@ -21075,6 +21160,8 @@ private final class PoppedOutTerminalPaneContentView: NSView {
     addSubview(scrollView)
     addSubview(searchBarView)
     addSubview(persistenceLabelView)
+    addSubview(delayedSendLabelView)
+    addSubview(firstPromptTitleOverlayView)
     addSubview(titleBarView)
   }
 
@@ -21110,6 +21197,19 @@ private final class PoppedOutTerminalPaneContentView: NSView {
         y: max(6, bounds.height - titleHeight - labelHeight - 6),
         width: labelWidth,
         height: labelHeight)
+    let terminalRect = CGRect(
+      x: 0,
+      y: 0,
+      width: bounds.width,
+      height: max(bounds.height - titleHeight, 1))
+    delayedSendLabelView.frame = delayedSendLabelView.isHidden
+      ? .zero
+      : CGRect(
+        x: max(12, terminalRect.maxX - min(delayedSendLabelView.fittingSize.width, max(terminalRect.width - 32, 0)) - 12),
+        y: max(8, terminalRect.maxY - min(max(delayedSendLabelView.fittingSize.height, 52), max(terminalRect.height - 24, 0)) - 8),
+        width: min(delayedSendLabelView.fittingSize.width, max(terminalRect.width - 32, 0)),
+        height: min(max(delayedSendLabelView.fittingSize.height, 52), max(terminalRect.height - 24, 0)))
+    firstPromptTitleOverlayView.frame = firstPromptTitleOverlayView.isHidden ? .zero : terminalRect
   }
 
   override func hitTest(_ point: NSPoint) -> NSView? {
@@ -21599,6 +21699,96 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
      */
     stringValue = nextLabel
     isHidden = nextLabel.isEmpty
+    needsLayout = true
+    superview?.needsLayout = true
+  }
+}
+
+private final class TerminalPaneFirstPromptTitleOverlayView: NSView {
+  var onCancel: (() -> Void)?
+  private let titleLabel = NSTextField(labelWithString: "Generating title...")
+  private let cancelLabel = NSTextField(labelWithString: "(ESC to Cancel)")
+
+  override var isOpaque: Bool {
+    false
+  }
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.backgroundColor = NSColor(calibratedWhite: 0.0, alpha: 0.58).cgColor
+    isHidden = true
+
+    titleLabel.font = NSFont.systemFont(ofSize: 17, weight: .medium)
+    titleLabel.textColor = NSColor(calibratedWhite: 1.0, alpha: 0.96)
+    titleLabel.alignment = .center
+    titleLabel.lineBreakMode = .byTruncatingTail
+
+    cancelLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+    cancelLabel.textColor = NSColor(calibratedWhite: 1.0, alpha: 0.58)
+    cancelLabel.alignment = .center
+    cancelLabel.lineBreakMode = .byTruncatingTail
+
+    addSubview(titleLabel)
+    addSubview(cancelLabel)
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    isHidden ? nil : self
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+
+  override func mouseDown(with event: NSEvent) {}
+
+  override func keyDown(with event: NSEvent) {
+    if event.keyCode == 53 {
+      onCancel?()
+      return
+    }
+    NSSound.beep()
+  }
+
+  override func layout() {
+    super.layout()
+    let titleHeight: CGFloat = 24
+    let cancelHeight: CGFloat = 18
+    let gap: CGFloat = 5
+    let totalHeight = titleHeight + gap + cancelHeight
+    let originY = max((bounds.height - totalHeight) / 2, 0)
+    let horizontalInset = min(max(bounds.width * 0.08, 12), 48)
+    let labelWidth = max(bounds.width - horizontalInset * 2, 1)
+    /**
+     CDXC:SessionTitleSync 2026-05-30-05:44:
+     While Ghostex generates a session title, the terminal pane must show a
+     centered blocking overlay with white medium-weight status text and a
+     smaller dim Escape hint. The overlay consumes pointer hits, while the
+     Ghostty surface consumes keyboard input until Escape cancels or generation
+     completes.
+     */
+    titleLabel.frame = CGRect(
+      x: horizontalInset,
+      y: originY + cancelHeight + gap,
+      width: labelWidth,
+      height: titleHeight)
+    cancelLabel.frame = CGRect(
+      x: horizontalInset,
+      y: originY,
+      width: labelWidth,
+      height: cancelHeight)
+  }
+
+  func setVisible(_ isVisible: Bool) {
+    guard isHidden == isVisible else {
+      return
+    }
+    isHidden = !isVisible
     needsLayout = true
     superview?.needsLayout = true
   }
