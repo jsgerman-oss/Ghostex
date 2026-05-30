@@ -1939,30 +1939,24 @@ function App() {
         <div style={styles.titlebar}>
           <div style={styles.projectSlot}>
             {projectState.updateAvailable ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    aria-label="Download update"
-                    className="titlebar-session-button titlebar-update-button"
-                    data-titlebar-hit-region
-                    onClick={showUpdateDialog}
-                    type="button"
-                    variant="ghost"
-                  >
-                    {/*
-                     * CDXC:AutoUpdate 2026-05-28-14:19:
-                     * Available app updates should be subtle titlebar chrome,
-                     * not a launch-time modal. Keep this button dim beside the
-                     * project identity; clicking it is the user's explicit
-                     * handoff into Sparkle's standard update dialog.
-                     */}
-                    <IconDownload aria-hidden="true" size={15} stroke={1.8} />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="right" sideOffset={6}>
-                  Download update
-                </TooltipContent>
-              </Tooltip>
+              <Button
+                aria-label="Download update"
+                className="titlebar-session-button titlebar-update-button"
+                data-titlebar-hit-region
+                data-tooltip="Download update"
+                onClick={showUpdateDialog}
+                type="button"
+                variant="ghost"
+              >
+                {/*
+                 * CDXC:AutoUpdate 2026-05-28-14:19:
+                 * Available app updates should be subtle titlebar chrome,
+                 * not a launch-time modal. Keep this button dim beside the
+                 * project identity; clicking it is the user's explicit
+                 * handoff into Sparkle's standard update dialog.
+                 */}
+                <IconDownload aria-hidden="true" size={15} stroke={1.8} />
+              </Button>
             ) : null}
             <div className="titlebar-project-title">
               {/*
@@ -3671,14 +3665,43 @@ styleElement.textContent = `
      *
      * CDXC:AutoUpdate 2026-05-29-20:56:
      * The titlebar update button needs 6px of left breathing room at the
-     * window edge, and its tooltip opens horizontally so the promoted sidebar
-     * layer cannot cover a below-titlebar label.
+     * window edge. Its hover label must render as a local titlebar-strip
+     * pseudo-tooltip instead of a portaled Radix tooltip because the promoted
+     * sidebar layer can cover any tooltip that drops below the titlebar webview.
      */
     color: rgba(255,255,255,0.46);
     margin-left: 6px;
     margin-right: 7px;
     padding: 0;
+    position: relative;
     width: 20px;
+  }
+  .titlebar-update-button::after {
+    background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
+    border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12));
+    border-radius: 16px;
+    box-shadow: var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0, 0, 0, 0.35));
+    color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
+    content: attr(data-tooltip);
+    font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);
+    left: calc(100% + 7px);
+    opacity: 0;
+    padding: 5px 10px;
+    pointer-events: none;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    transition:
+      opacity 120ms ease,
+      visibility 0s linear 120ms;
+    visibility: hidden;
+    white-space: nowrap;
+    z-index: var(--ghostex-tooltip-z-index, 1400);
+  }
+  .titlebar-update-button:is(:hover, :focus-visible)::after {
+    opacity: 1;
+    transition-delay: 0s;
+    visibility: visible;
   }
   .titlebar-update-button:hover,
   .titlebar-update-button:focus-visible {
