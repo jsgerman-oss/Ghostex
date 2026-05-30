@@ -3682,7 +3682,13 @@ const styles = {
     display: "flex",
     gap: 0,
     position: "absolute",
-    right: 10,
+    /*
+     * CDXC:ReactTitlebar 2026-05-30-12:00:
+     * Right-side titlebar controls should sit flush with the window edge. The
+     * Open split button is the rightmost control, so do not reserve trailing
+     * inset on the slot container.
+     */
+    right: 0,
     top: TITLEBAR_RIGHT_CONTROLS_TOP,
   },
   shell: {
