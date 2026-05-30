@@ -99,14 +99,20 @@ export function SessionCardContent({
   });
   const hasLastInteractionTime = showLastActiveTime && Boolean(session.lastInteractionAt);
   const showHeaderLoadingSpinner = session.isReloading === true || isGeneratingFirstPromptTitle;
-  const hasDelayedSend = Boolean(session.delayedSendRemainingLabel);
   const showTerminalSessionIcon = !hideHeaderAgentIcon && shouldShowTerminalSessionIcon(session);
   const shouldAllowFullWidthTitle =
     !showLastActiveTime && !showLastInteractionTime && !trailingPrefix;
+  /**
+   * CDXC:DelayedSend 2026-05-30-08:33:
+   * Active Delayed Send timers should show exactly one sidebar clock, in the
+   * leading session identity slot. Do not promote the timer into the
+   * right-side header agent slot; that duplicates the clock beside Last Active
+   * and makes the row look like two separate timers.
+   */
   const hasHeaderAgentIcon =
     !hideHeaderAgentIcon &&
     !shouldAllowFullWidthTitle &&
-    (hasDelayedSend || Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
+    (Boolean(session.agentIcon) || showTerminalSessionIcon || showHeaderLoadingSpinner);
   useRelativeTimeTick(hasLastInteractionTime);
   const lastInteractionLabel =
     hasLastInteractionTime && session.lastInteractionAt
@@ -198,12 +204,10 @@ export function SessionCardContent({
             {hasHeaderAgentIcon ? (
               <SessionHeaderAgentIcon
                 agentIcon={session.agentIcon}
-                delayedSendRemainingLabel={session.delayedSendRemainingLabel}
                 faviconDataUrl={session.faviconDataUrl}
                 isFavorite={session.isFavorite}
                 isGeneratingFirstPromptTitle={session.isGeneratingFirstPromptTitle}
                 isReloading={session.isReloading}
-                onDelayedSendClick={onDelayedSendClick}
                 sessionPersistenceName={session.sessionPersistenceName}
                 sessionPersistenceProvider={session.sessionPersistenceProvider}
                 showTerminalIcon={showTerminalSessionIcon}
@@ -764,26 +768,14 @@ function PinnedSessionSidebarIcon() {
 
 function SessionHeaderAgentIcon({
   agentIcon,
-  delayedSendRemainingLabel,
   faviconDataUrl,
   isFavorite = false,
-  onDelayedSendClick,
   isGeneratingFirstPromptTitle = false,
   isReloading = false,
   sessionPersistenceName,
   sessionPersistenceProvider,
   showTerminalIcon = false,
-}: SessionAgentIconProps & { onDelayedSendClick?: () => void }) {
-  if (delayedSendRemainingLabel) {
-    return (
-      <DelayedSendSidebarIcon
-        className="session-header-agent-tabler-icon session-delayed-send-agent-icon"
-        onClick={onDelayedSendClick}
-        remainingLabel={delayedSendRemainingLabel}
-      />
-    );
-  }
-
+}: SessionAgentIconProps) {
   return (
     <>
       <SessionAgentIconDecoration
@@ -822,8 +814,8 @@ function DelayedSendSidebarIcon({
    * slot and dimensions as the normal agent glyph, expose the remaining
    * hh:mm:ss/mm:ss countdown on hover, and reopen the modal so users can
    * change or cancel the pending Enter keypress. Render the clock element
-   * directly in the agent-icon slot; a wrapper would become a separate flow box
-   * and can push the clock above the session card.
+   * directly in the leading agent-icon slot; a wrapper would become a separate
+   * flow box and can push the clock above the session card.
    */
   const tooltip = `Delayed Send in ${remainingLabel}`;
   return (

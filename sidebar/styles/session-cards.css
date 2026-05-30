@@ -791,7 +791,7 @@
  * Active Delayed Send timers must occupy the exact same visual slot as the
  * session-card agent icon, but stay visible regardless of hover-only agent
  * settings. Keep only timer-specific color/visibility here; placement and
- * outer dimensions come from the normal floating/header agent icon classes.
+ * outer dimensions come from the normal floating agent icon class.
  */
 .session-delayed-send-agent-icon {
   align-items: center;
@@ -1859,8 +1859,7 @@
  * Keep it centered on the same leading slot as the agent icon while allowing
  * the clock glyph to be slightly larger and always visible.
  */
-.session-floating-agent-tabler-icon.session-delayed-send-agent-icon,
-.session-header-agent-tabler-icon.session-delayed-send-agent-icon {
+.session-floating-agent-tabler-icon.session-delayed-send-agent-icon {
   color: #f6c945 !important;
   display: inline-flex !important;
   opacity: 1 !important;
@@ -1876,15 +1875,7 @@
   width: calc(18px * var(--sidebar-density-scale));
 }
 
-.session-header-agent-tabler-icon.session-delayed-send-agent-icon {
-  align-items: center;
-  height: calc(18px * var(--sidebar-density-scale));
-  justify-content: center;
-  width: calc(18px * var(--sidebar-density-scale));
-}
-
-.session-floating-agent-tabler-icon.session-delayed-send-agent-icon > svg,
-.session-header-agent-tabler-icon.session-delayed-send-agent-icon > svg {
+.session-floating-agent-tabler-icon.session-delayed-send-agent-icon > svg {
   height: calc(18px * var(--sidebar-density-scale));
   width: calc(18px * var(--sidebar-density-scale));
 }

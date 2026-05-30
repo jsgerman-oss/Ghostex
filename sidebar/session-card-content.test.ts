@@ -555,6 +555,41 @@ describe("SessionCardContent", () => {
     expect(markup).not.toContain("session-header-agent-icon");
   });
 
+  test("should not duplicate delayed send clocks in the right-side header icon slot", () => {
+    const floatingMarkup = renderToStaticMarkup(
+      createElement(SessionFloatingAgentIcon, {
+        agentIcon: "codex",
+        delayedSendRemainingLabel: "04:32",
+      }),
+    );
+    const contentMarkup = renderToStaticMarkup(
+      createElement(SessionCardContent, {
+        session: {
+          activity: "idle",
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "00",
+          column: 0,
+          delayedSendRemainingLabel: "04:32",
+          isFocused: false,
+          isRunning: true,
+          isVisible: true,
+          lastInteractionAt: "2026-04-18T10:00:00.000Z",
+          row: 0,
+          sessionId: "session-1",
+          shortcutLabel: "1",
+        },
+        showCloseButton: false,
+        showDebugSessionNumbers: false,
+      }),
+    );
+
+    expect(floatingMarkup).toContain('aria-label="Delayed Send in 04:32"');
+    expect(contentMarkup).toContain("session-header-agent-icon");
+    expect(contentMarkup).not.toContain("session-header-agent-tabler-icon session-delayed-send-agent-icon");
+    expect(contentMarkup).not.toContain('aria-label="Delayed Send in 04:32"');
+  });
+
   test("should allow previous-session rows to reserve the trailing slot for last active", () => {
     const markup = renderToStaticMarkup(
       createElement(SessionCardContent, {
