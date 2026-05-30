@@ -4122,7 +4122,9 @@ final class ghostexRootView: NSView {
     var divider: CGRect
     var modalHost: CGRect
     var sidebar: CGRect
+    var sidebarWorkareaBorder: CGRect
     var titlebarChrome: CGRect
+    var workareaTitlebarBorder: CGRect
     var workspace: CGRect
   }
 
@@ -4150,6 +4152,22 @@ final class ghostexRootView: NSView {
   private static let combinedSidebarMinWidthReduction: CGFloat = 70
   private static let sidebarMaxWidth: CGFloat = 520
   private static let dividerWidth: CGFloat = 6
+  /**
+   CDXC:NativeWindowChrome 2026-05-30-06:23:
+   The main work area needs a #2b2b2b separator below the React titlebar
+   without continuing above the sidebar. Use native non-interactive chrome lines
+   so the horizontal titlebar divider starts at the workspace frame while the
+   matching vertical divider tracks the sidebar/workarea boundary.
+
+   CDXC:NativeWindowChrome 2026-05-30-06:51:
+   The workarea separators should be 1px thick instead of the original 2px.
+   */
+  private static let workareaSeparatorWidth: CGFloat = 1
+  private static let workareaSeparatorColor = NSColor(
+    srgbRed: 43.0 / 255.0,
+    green: 43.0 / 255.0,
+    blue: 43.0 / 255.0,
+    alpha: 1.0)
   private static let defaultSidebarWidth: CGFloat = 235
   private static let sidebarResetWidth: CGFloat = 235
   private static let startupOverlayVisibleDuration: TimeInterval = 2.0
@@ -4179,6 +4197,8 @@ final class ghostexRootView: NSView {
   private let scriptBridge: SidebarScriptBridge
   private let sidebarCommandRouter = SidebarCommandRouter()
   private let divider: PaneResizeHandleView
+  private let sidebarWorkareaBorderView = NonInteractiveChromeLineView()
+  private let workareaTitlebarBorderView = NonInteractiveChromeLineView()
   private let eventEncoder = JSONEncoder()
   private let syncGhosttyTerminalSettings: (SyncGhosttyTerminalSettings) -> Void
   private let applyGhosttyConfigSettings: (ApplyGhosttyConfigSettings) -> Void
@@ -4380,6 +4400,10 @@ final class ghostexRootView: NSView {
      */
     addSubview(sidebarView)
     addSubview(divider)
+    sidebarWorkareaBorderView.lineColor = Self.workareaSeparatorColor
+    workareaTitlebarBorderView.lineColor = Self.workareaSeparatorColor
+    addSubview(sidebarWorkareaBorderView)
+    addSubview(workareaTitlebarBorderView)
     /**
      CDXC:AppModals 2026-04-26-15:10
      Sidebar dialogs need a full-window React host because WKWebView portals
@@ -6945,6 +6969,8 @@ final class ghostexRootView: NSView {
     workspaceInteractionShieldView.frame = frames.workspace
     modalHostView.frame = frames.modalHost
     sidebarModalBackdropView.frame = frames.sidebar.union(frames.divider)
+    sidebarWorkareaBorderView.frame = frames.sidebarWorkareaBorder
+    workareaTitlebarBorderView.frame = frames.workareaTitlebarBorder
     titlebarChromeView.frame = frames.titlebarChrome
     promoteSidebarChrome()
     startupOverlayView.frame = bounds
@@ -7156,6 +7182,25 @@ final class ghostexRootView: NSView {
       width: workspaceWidth,
       height: contentHeight
     )
+    let separatorWidth = Self.workareaSeparatorWidth
+    let sidebarWorkareaBorderX: CGFloat
+    if sidebarSide == .left {
+      sidebarWorkareaBorderX = max(workspaceFrame.minX - separatorWidth, 0)
+    } else {
+      sidebarWorkareaBorderX = min(workspaceFrame.maxX, max(bounds.width - separatorWidth, 0))
+    }
+    let sidebarWorkareaBorderFrame = CGRect(
+      x: sidebarWorkareaBorderX,
+      y: workspaceFrame.minY,
+      width: separatorWidth,
+      height: workspaceFrame.height
+    )
+    let workareaTitlebarBorderFrame = CGRect(
+      x: workspaceFrame.minX,
+      y: max(workspaceFrame.maxY - separatorWidth, workspaceFrame.minY),
+      width: workspaceFrame.width,
+      height: min(separatorWidth, workspaceFrame.height)
+    )
     /**
      CDXC:RootHitBoundaries 2026-05-12-09:58
      The titlebar WKWebView keeps a full-window visual frame so portaled
@@ -7176,7 +7221,9 @@ final class ghostexRootView: NSView {
       divider: dividerFrame,
       modalHost: modalHostFrame,
       sidebar: sidebarFrame,
+      sidebarWorkareaBorder: sidebarWorkareaBorderFrame,
       titlebarChrome: titlebarChromeFrame,
+      workareaTitlebarBorder: workareaTitlebarBorderFrame,
       workspace: workspaceFrame)
   }
 
@@ -8482,6 +8529,30 @@ final class ghostexFocusReportingWindow: NSWindow {
     default:
       return false
     }
+  }
+}
+
+final class NonInteractiveChromeLineView: NSView {
+  var lineColor: NSColor = .clear {
+    didSet {
+      layer?.backgroundColor = lineColor.cgColor
+    }
+  }
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.backgroundColor = lineColor.cgColor
+  }
+
+  required init?(coder: NSCoder) {
+    super.init(coder: coder)
+    wantsLayer = true
+    layer?.backgroundColor = lineColor.cgColor
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
   }
 }
 

@@ -1715,6 +1715,11 @@ final class TerminalWorkspaceView: NSView {
    The non-command tab controls still render about 3px taller than the visible
    bar in the native host. Keep the tabs at 36pt and raise only the owning bar
    by 3pt so the bar catches up to the rendered tab extent.
+
+   CDXC:PaneTabs 2026-05-30-06:53:
+   Native workspace tabs should not leave a few pixels of empty titlebar chrome
+   above or below the tabs. Keep the non-command titlebar at 42pt and let the
+   workspace tab controls fill that height.
    */
   private static let terminalTitleBarHeight: CGFloat = 42
   /**
@@ -1735,12 +1740,11 @@ final class TerminalWorkspaceView: NSView {
   private static let collapsedCommandsPanelLeftMargin: CGFloat = 4
   private static let collapsedCommandsPanelRightMargin: CGFloat = 8
   /**
-   CDXC:NativePaneResize 2026-05-11-18:42
-   The native fallback pane gap must match the shared default used by sidebar
-   settings so outside pane edges and internal split dividers stay one pixel
-   wider on all sides even before the React settings payload arrives.
+   CDXC:NativePaneResize 2026-05-30-07:24:
+   The macOS Pane Gap setting was removed. Use a zero native fallback so startup
+   layout and every sidebar sync render panes without configurable spacing.
    */
-  private static let defaultPaneGap: CGFloat = 13
+  private static let defaultPaneGap: CGFloat = 0
   private static let singlePaneInset: CGFloat = 1
   private static let paneResizeMinimumHeight: CGFloat = 160
   private static let paneResizeMinimumWidth: CGFloat = 220
@@ -1785,9 +1789,9 @@ final class TerminalWorkspaceView: NSView {
    cursor and drag events. Do not use a window-local resize monitor, because it
    can compete with the sidebar resize handle.
    CDXC:NativePaneResize 2026-05-11-17:53
-   Split rails must be real AppKit divider siblings that occupy the visible
-   pane gap, not transparent overlays extending across pane content. The drag
-   target is the divider rail itself.
+   Split rails must be real AppKit divider siblings that own divider width, not
+   transparent overlays extending across pane content. The drag target is the
+   divider rail itself.
    */
   private static let paneHeaderDragThreshold: CGFloat = 6
   private static let paneHeaderDragGhostMaxWidth: CGFloat = 230
@@ -5114,7 +5118,7 @@ final class TerminalWorkspaceView: NSView {
         ])
       return
     }
-    view.keyDown(with: event)
+    view.sendProgrammaticTerminalEnter(with: event)
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.sendTerminalEnter.sent",
       details: [
@@ -5316,7 +5320,7 @@ final class TerminalWorkspaceView: NSView {
      CDXC:WorkspaceLayout 2026-04-28-06:08
      The terminal workspace background is user-configurable from Settings.
      Apply the chosen color directly to the AppKit backing layer so the
-     visible space created by Pane Gap uses the user's color.
+     pane surfaces use the user's color without depending on configurable gaps.
     */
     applyWorkspaceBackgroundColor(command.backgroundColor)
     let isProjectEditorActive = activeProjectEditorId != nil
@@ -7956,10 +7960,10 @@ final class TerminalWorkspaceView: NSView {
   private func splitGap(forChildCount childCount: Int) -> CGFloat {
     /**
      CDXC:NativePaneResize 2026-05-11-18:16
-     Grid layouts keep the Pane Gap setting between independent panes, matching
-     the outer workspace inset. Structured split layouts use
-     splitDividerWidth(forChildCount:) so internal rails match the stable native
-     sidebar divider: one real five-pixel AppKit cursor/drag owner.
+     Grid layouts no longer add configurable Pane Gap spacing between
+     independent panes. Structured split layouts still use
+     splitDividerWidth(forChildCount:) so internal rails keep one real
+     five-pixel AppKit cursor/drag owner.
      */
     childCount <= 1 ? 0 : paneGap
   }
@@ -8270,7 +8274,8 @@ final class TerminalWorkspaceView: NSView {
    terminal line remains selectable and cannot start pane reordering.
 
    CDXC:NativePaneResize 2026-05-11-17:53
-   Split dividers are ordinary AppKit siblings in the reserved pane gap.
+   Split dividers are ordinary AppKit siblings in the reserved divider width;
+   configurable pane gap spacing is no longer part of macOS layout.
 
    CDXC:NativePaneResize 2026-05-13-07:35
    Pane resize rails are real AppKit divider siblings between pane containers.
@@ -14698,6 +14703,18 @@ final class GhostexGhosttySurfaceView: NSView {
     onKeyDownProbe?(self, event, "forwarded")
   }
 
+  func sendProgrammaticTerminalEnter(with event: NSEvent) {
+    /**
+     CDXC:SessionTitleSync 2026-05-30-05:51:
+     First-prompt title generation keeps the terminal overlay visible until
+     Ghostex submits the staged `/rename <title>`. User typing must stay
+     suppressed under that overlay, but Ghostex-originated Enter still needs to
+     reach Ghostty so the rename submits before the overlay is cleared.
+     */
+    onKeyDownProbe?(self, event, "programmaticEnterForwarded")
+    sendKeyEvent(event, action: GHOSTTY_ACTION_PRESS)
+  }
+
   override func keyUp(with event: NSEvent) {
     if isFirstPromptTitleGenerationInputSuppressed {
       return
@@ -17453,7 +17470,13 @@ private final class TerminalTitleBarTabButton: NSButton {
     }
     context.saveGState()
     context.setFillColor(fillColor)
-    context.fillEllipse(in: activityIndicatorFrame)
+    /*
+     CDXC:PaneTabs 2026-05-30-06:55:
+     Working and attention indicators in native tab-bar tabs should be square,
+     not rounded dots. Keep sleeping and delayed-send markers on their distinct
+     symbol paths while drawing only these status fills without border radius.
+     */
+    context.fill(activityIndicatorFrame)
     context.restoreGState()
   }
 
@@ -17680,8 +17703,12 @@ private final class TerminalSessionTitleBarView: NSView {
 
    CDXC:PaneTabs 2026-05-22-09:14:
    Tab activation should preserve the user's current tab-strip position when the selected tab is already visibly usable. Share horizontal offsets across title-bar instances in the same tab group, and reveal only when the active tab is offscreen or clipped down below 60px of visible width so visible tab clicks and visible session switches do not move tabs around.
+
+   CDXC:PaneTabs 2026-05-30-06:53:
+   Workspace tab buttons should consume the full non-command titlebar height so
+   the native tab bar has no top or bottom gap.
    */
-  private static let workspaceTabButtonHeight: CGFloat = 36
+  private static let workspaceTabButtonHeight: CGFloat = 42
   private static var tabScrollOffsetByGroupSignature: [String: CGFloat] = [:]
 
   private let faviconImageView = NSImageView(frame: .zero)
@@ -18648,6 +18675,13 @@ private final class TerminalSessionTitleBarView: NSView {
     super.layout()
     let isCommandChrome = chromeRole == .commands
     let insetX: CGFloat = isCommandChrome ? 0 : 8
+    /**
+     CDXC:PaneTabs 2026-05-30-06:47:
+     Workspace native tabs should start flush at the pane titlebar's left edge.
+     Keep the existing right-side action inset, but do not reserve an empty
+     leading gutter before the first workspace tab.
+     */
+    let tabStripLeadingInset: CGFloat = isCommandChrome ? insetX : 0
     let buttonSize: CGFloat = isCommandChrome ? bounds.height : 28
     let tabButtonHeight: CGFloat = isCommandChrome ? buttonSize : Self.workspaceTabButtonHeight
     let buttonGap: CGFloat = 0
@@ -18718,11 +18752,12 @@ private final class TerminalSessionTitleBarView: NSView {
     let hasCloseAction = actionButtons.contains { $0.action == .close }
     let canReserveCloseActionInCollapsedLayout =
       hasCloseAction
-      && bounds.width - insetX * 2 - buttonSize - tabViewportTrailingGap
+      && bounds.width - tabStripLeadingInset - insetX - buttonSize - tabViewportTrailingGap
         >= minimumContentWidthForCollapsedControls
     let reservedCloseActionWidth = canReserveCloseActionInCollapsedLayout ? buttonSize : 0
     let canReserveCollapsedActionMenu =
-      bounds.width - insetX * 2 - reservedCloseActionWidth - buttonSize - tabViewportTrailingGap
+      bounds.width - tabStripLeadingInset - insetX - reservedCloseActionWidth - buttonSize
+        - tabViewportTrailingGap
         >= minimumContentWidthForCollapsedControls
     var separatorIndex = 0
     if showsProjectEditorCompanionControls {
@@ -18840,20 +18875,20 @@ private final class TerminalSessionTitleBarView: NSView {
       activityIndicatorView.isHidden = true
       activityIndicatorView.frame = .zero
       tabClipView.isHidden = false
-      let tabAreaMaxX = max(insetX, trailingX - tabViewportTrailingGap)
+      let tabAreaMaxX = max(tabStripLeadingInset, trailingX - tabViewportTrailingGap)
       let canShowTabAddButton =
         showsTabAddButton
-        && (tabAreaMaxX - insetX
+        && (tabAreaMaxX - tabStripLeadingInset
           >= Self.minimumVisibleTabViewportWidthWithDoubleClickTarget + tabAddButtonGap + tabAddButtonSize)
       let tabViewportMaxX =
         canShowTabAddButton
-        ? max(insetX, tabAreaMaxX - tabAddButtonGap - tabAddButtonSize)
-        : reserveDoubleClickNewTerminalTarget(from: insetX, to: tabAreaMaxX)
+        ? max(tabStripLeadingInset, tabAreaMaxX - tabAddButtonGap - tabAddButtonSize)
+        : reserveDoubleClickNewTerminalTarget(from: tabStripLeadingInset, to: tabAreaMaxX)
       if canShowTabAddButton {
         doubleClickNewTerminalFrame = .zero
       }
       layoutTabButtons(
-        from: insetX,
+        from: tabStripLeadingInset,
         to: tabViewportMaxX,
         centerY: tabCenterY,
         height: tabButtonHeight)
@@ -18873,7 +18908,7 @@ private final class TerminalSessionTitleBarView: NSView {
         centerY: centerY,
         tabCenterY: tabCenterY,
         buttonSize: buttonSize,
-        insetX: insetX)
+        insetX: tabStripLeadingInset)
       if isCollapsedCommandPanelBar {
         commandCollapsedTrailingBackgroundView.isHidden = false
         commandCollapsedTrailingBackgroundView.frame = CGRect(
@@ -21847,16 +21882,16 @@ private final class TerminalWorkspacePaneResizeHandleView: NSView {
     /**
      CDXC:NativePaneResize 2026-05-11-09:39
      The splitter rail owns cursor and drag for horizontal and vertical layout
-     branches. It remains visually transparent so focused pane borders and the
-     workspace gap provide the only visible separation.
+     branches. It remains visually transparent so focused pane borders provide
+     the only visible separation.
      CDXC:NativePaneResize 2026-05-11-10:40
      Native hover ownership on the rail view itself. This keeps cursor
      ownership on the same native object that can drag, and avoids a
      window-local resize monitor competing with sidebar resize.
      CDXC:NativePaneResize 2026-05-11-14:17
-     The rail must be visually transparent in production. native-style resizing is
-     represented by the real pane gap; this view only owns native hit testing,
-     cursor setting, and drag delivery.
+     The rail must be visually transparent in production. Native-style resizing
+     is represented by the real divider width; this view only owns native hit
+     testing, cursor setting, and drag delivery.
      CDXC:NativePaneResize 2026-05-13-07:23
      Match the stable sidebar divider implementation for pane splits. Cursor
      feedback comes from one AppKit cursor rect on this real five-pixel rail;
