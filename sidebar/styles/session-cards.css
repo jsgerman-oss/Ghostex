@@ -1485,7 +1485,17 @@
    #73e79c, and working uses a subtly orange spinner.
    CDXC:SessionStatusIndicators 2026-05-08-09:14: The smaller attention dot
    shifts 3px left from the shared right edge so its visual center aligns with
-   the wider working spinner. */
+   the wider working spinner.
+   CDXC:SessionStatusIndicators 2026-05-30-06:08: Working and attention
+   indicators should sit 4px farther left than the prior right-edge placement
+   so they read as attached to the row instead of hanging off the edge.
+   CDXC:SessionStatusIndicators 2026-05-30-06:39: The working loading
+   indicator should use the May 28 transparent-border spinner again instead of
+   the masked SVG arc. Keep the done/attention indicator styling unchanged, and
+   move both active indicators 1px right from the earlier May 30 placement.
+   CDXC:SessionStatusIndicators 2026-05-30-06:54: The old border spinner must
+   explicitly override the base square status-dot radius so the working
+   indicator renders as a rounded ring. */
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame {
   --reference-session-agent-icon-size: 13px;
   --reference-session-icon-size: 15px;
@@ -1965,7 +1975,7 @@
   --session-status-dot-color: #73e79c;
   animation: none;
   background: #73e79c;
-  right: calc(var(--reference-session-trailing-inset) + 3px);
+  right: calc(var(--reference-session-trailing-inset) + 6px);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame[data-activity="working"] .session-status-dot,
@@ -1973,9 +1983,10 @@
   animation: reference-sidebar-working-spin 0.82s linear infinite;
   background: transparent;
   border: 1.5px solid #d99a62;
+  border-radius: 99px;
   border-right-color: transparent;
   height: 12px;
-  right: var(--reference-session-trailing-inset);
+  right: calc(var(--reference-session-trailing-inset) + 3px);
   width: 12px;
 }
 
