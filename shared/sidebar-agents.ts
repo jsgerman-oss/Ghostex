@@ -190,6 +190,21 @@ export type StoredSidebarAgent = {
   name: string;
 };
 
+export function createSidebarAgentSelectItems(
+  agents: readonly Pick<SidebarAgentButton, "agentId" | "name">[],
+): Array<{ label: string; value: string }> {
+  /*
+   * CDXC:PromptAgents 2026-05-30-07:46:
+   * Collapsed macOS agent selects must show the configured friendly title, not
+   * the persisted agent id value. Base UI needs root-level items because the
+   * popup options are not mounted when the trigger renders its initial value.
+   */
+  return agents.map((agent) => ({
+    label: agent.name,
+    value: agent.agentId,
+  }));
+}
+
 export function createDefaultSidebarAgentButtons(
   commandOverrides: DefaultSidebarAgentCommandOverrides = {},
 ): SidebarAgentButton[] {

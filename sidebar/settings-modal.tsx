@@ -3494,6 +3494,13 @@ function OSIntegrationDiagnosticRow({ label, value }: { label: string; value: st
 const AGENT_HOOK_SUPPORTED_DEFAULT_AGENTS = DEFAULT_SIDEBAR_AGENTS.filter(
   (agent) => agent.agentId !== "t3",
 );
+const AGENT_TYPE_SELECT_ITEMS = [
+  { label: "Custom", value: "custom" },
+  ...DEFAULT_SIDEBAR_AGENTS.map((agent) => ({
+    label: agent.name,
+    value: agent.icon,
+  })),
+];
 
 function getCuaPermissionStatus(
   ghostexCliStatus: SidebarGhostexCliStatusMessage | undefined,
@@ -4338,7 +4345,7 @@ function AgentSettingsEditor({
             Agent type
           </FieldLabel>
         </FieldContent>
-        <Select onValueChange={updateAgentType} value={icon}>
+        <Select items={AGENT_TYPE_SELECT_ITEMS} onValueChange={updateAgentType} value={icon}>
           <SelectTrigger className="h-10 w-full px-3 text-sm" id={agentTypeId}>
             <SelectValue />
           </SelectTrigger>
@@ -5779,7 +5786,7 @@ function SelectField({
       label={label}
       onResetToDefault={onResetToDefault}
     >
-      <Select onValueChange={onChange} value={value}>
+      <Select items={options} onValueChange={onChange} value={value}>
         <SelectTrigger className="h-10 w-full px-3 text-sm" id={id}>
           <SelectValue />
         </SelectTrigger>

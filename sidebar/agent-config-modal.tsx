@@ -43,6 +43,14 @@ export type AgentConfigModalProps = {
   onSave: (draft: AgentConfigDraft) => void;
 };
 
+const AGENT_TYPE_SELECT_ITEMS = [
+  { label: "Custom", value: "custom" },
+  ...DEFAULT_SIDEBAR_AGENTS.map((agent) => ({
+    label: agent.name,
+    value: agent.icon,
+  })),
+];
+
 /**
  * CDXC:AppModals 2026-05-08-09:00
  * Reference-mode agent configuration uses the shared shadcn dialog stack so
@@ -117,6 +125,7 @@ export function AgentConfigModal({ draft, isOpen, onCancel, onSave }: AgentConfi
               </FieldTitle>
             </FieldContent>
             <Select
+              items={AGENT_TYPE_SELECT_ITEMS}
               onValueChange={(value) => {
                 const nextType = value as SidebarAgentIcon | "custom";
                 const previousDefaultAgent = getDefaultSidebarAgentByIcon(

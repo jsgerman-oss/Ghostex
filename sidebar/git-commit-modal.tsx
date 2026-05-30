@@ -25,7 +25,10 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { trimPromptEditorTrailingSpaces } from "../shared/prompt-editor-text";
-import type { SidebarAgentButton } from "../shared/sidebar-agents";
+import {
+  createSidebarAgentSelectItems,
+  type SidebarAgentButton,
+} from "../shared/sidebar-agents";
 import type { SidebarGitAction, SidebarGitChangedFile } from "../shared/sidebar-git";
 import { ChangedFilesTree } from "./changed-files-tree";
 import { summarizeChangedFiles } from "./changed-files-tree-utils";
@@ -106,6 +109,10 @@ export function GitCommitModal({
   const promptAgents = useMemo(
     () => commandAgents.filter((agent) => agent.agentId !== "t3"),
     [commandAgents],
+  );
+  const promptAgentSelectItems = useMemo(
+    () => createSidebarAgentSelectItems(promptAgents),
+    [promptAgents],
   );
   const effectivePromptAgentId = promptAgentId ?? localPromptAgentId;
   const selectedPromptAgentId =
@@ -354,6 +361,7 @@ export function GitCommitModal({
           <DialogFooter className="git-commit-modal-actions">
             {promptAgents.length > 0 ? (
               <Select
+                items={promptAgentSelectItems}
                 onValueChange={handlePromptAgentChange}
                 value={selectedPromptAgentId}
               >

@@ -160,6 +160,10 @@ const PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS = 60_000;
 const PROJECT_BOARD_MAX_DEPENDENCY_OPTIONS = 600;
 const PROJECT_BOARD_MAX_VISIBLE_TICKETS_PER_COLUMN = 120;
 const PROJECT_BOARD_GENERATING_TITLE = "Generating title...";
+const PROJECT_BOARD_PRIORITY_SELECT_ITEMS = PRIORITY_OPTIONS.map((option) => ({
+  label: option.label,
+  value: option.value,
+}));
 
 type BoardRefreshMode = "background" | "initial" | "manual" | "mutation";
 
@@ -240,6 +244,14 @@ function ProjectBoardApp() {
   const [imagePreviewDataUrls, setImagePreviewDataUrls] = useState<Record<string, string>>({});
   const pendingImagePreviewPathsRef = useRef(new Set<string>());
   const failedImagePreviewPathsRef = useRef(new Set<string>());
+  const agentSelectItems = useMemo(
+    () =>
+      conversationState.agents.map((agent) => ({
+        label: agent.label,
+        value: agent.agentId,
+      })),
+    [conversationState.agents],
+  );
   /*
    * CDXC:ProjectBoard 2026-05-26-05:38:
    * The Project page must observe Beads changes made by the user's app actions or nearby bd CLI commands without forcing manual Refresh.
@@ -268,6 +280,10 @@ function ProjectBoardApp() {
    * Ticket primary actions should reopen existing work before creating new work.
    * Treat live and previous-session-restorable conversation links as usable so "Start work" changes to "Go to Session" once a ticket already owns an openable agent conversation.
    * Keep the ticket dialog open after Go to Session; focusing/restoring the session should reveal the workarea without discarding the user's ticket-editing context.
+   *
+   * CDXC:ProjectBoard 2026-05-30-07:46:
+   * Collapsed macOS Project-page selects must show friendly labels for agents and ticket priority while preserving the raw Beads-compatible values used by bridge requests.
+   * Provide select item metadata at the root because the popup is not mounted before the collapsed value renders.
    */
   const isRefreshingRef = useRef(false);
   const issuesSignatureRef = useRef("");
@@ -1366,6 +1382,7 @@ function ProjectBoardApp() {
               <div className="project-ticket-create-start-controls">
                 <Select
                   disabled={conversationState.agents.length === 0 || isCreating}
+                  items={agentSelectItems}
                   onValueChange={setSelectedAgentId}
                   value={selectedAgentId}
                 >
@@ -1493,7 +1510,11 @@ function TicketMetaFields({
       ) : null}
       <label className="project-ticket-field project-ticket-field-inline">
         <span>Priority</span>
-        <Select onValueChange={onPriorityChange} value={priority}>
+        <Select
+          items={PROJECT_BOARD_PRIORITY_SELECT_ITEMS}
+          onValueChange={onPriorityChange}
+          value={priority}
+        >
           <SelectTrigger size="sm">
             <SelectValue />
           </SelectTrigger>
@@ -1741,11 +1762,24 @@ function ConversationSection({
 }) {
   const isAssociating = action?.kind === "associate";
   const hasActiveConversationAction = Boolean(action);
+  const agentSelectItems = useMemo(
+    () =>
+      agents.map((agent) => ({
+        label: agent.label,
+        value: agent.agentId,
+      })),
+    [agents],
+  );
   return (
     <section className="project-ticket-conversations" aria-label="Linked conversations">
       <div className="project-ticket-section-title">Conversation</div>
       <div className="project-ticket-conversation-controls">
-        <Select disabled={agents.length === 0} onValueChange={onSelectedAgentChange} value={selectedAgentId}>
+        <Select
+          disabled={agents.length === 0}
+          items={agentSelectItems}
+          onValueChange={onSelectedAgentChange}
+          value={selectedAgentId}
+        >
           <SelectTrigger aria-label="Agent for Start work" size="sm">
             <SelectValue placeholder="Choose agent" />
           </SelectTrigger>

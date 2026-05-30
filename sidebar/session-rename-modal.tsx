@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -25,7 +26,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { SidebarAgentButton } from "../shared/sidebar-agents";
+import {
+  createSidebarAgentSelectItems,
+  type SidebarAgentButton,
+} from "../shared/sidebar-agents";
 import { normalizeSessionRenameTitle } from "../shared/session-grid-contract";
 
 const SESSION_RENAME_GENERATE_NAME_THRESHOLD = 70;
@@ -61,7 +65,14 @@ export function SessionRenameModal({
   const agentSelectId = useId();
   const inputId = useId();
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const promptAgents = agents.filter((agent) => agent.agentId !== "t3" && agent.command?.trim());
+  const promptAgents = useMemo(
+    () => agents.filter((agent) => agent.agentId !== "t3" && agent.command?.trim()),
+    [agents],
+  );
+  const promptAgentSelectItems = useMemo(
+    () => createSidebarAgentSelectItems(promptAgents),
+    [promptAgents],
+  );
   const effectivePromptAgentId = promptAgentId ?? localPromptAgentId;
   const selectedPromptAgentId =
     promptAgents.find((agent) => agent.agentId === effectivePromptAgentId)?.agentId ??
@@ -200,6 +211,7 @@ export function SessionRenameModal({
               <Field>
                 <FieldLabel htmlFor={agentSelectId}>Generate with</FieldLabel>
                 <Select
+                  items={promptAgentSelectItems}
                   onValueChange={handlePromptAgentChange}
                   value={selectedPromptAgentId}
                 >

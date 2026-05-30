@@ -29,7 +29,10 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { trimPromptEditorTrailingSpaces } from "../shared/prompt-editor-text";
-import type { SidebarAgentButton } from "../shared/sidebar-agents";
+import {
+  createSidebarAgentSelectItems,
+  type SidebarAgentButton,
+} from "../shared/sidebar-agents";
 import { postAppModalHostMessage } from "./app-modal-host-bridge";
 
 export type WorktreeCreateModalProps = {
@@ -55,6 +58,10 @@ export function WorktreeCreateModal({
   const commandAgents = useMemo(
     () => agents.filter((agent) => agent.command?.trim()),
     [agents],
+  );
+  const agentSelectItems = useMemo(
+    () => createSidebarAgentSelectItems(commandAgents),
+    [commandAgents],
   );
   const [prompt, setPrompt] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState(commandAgents[0]?.agentId ?? "");
@@ -264,7 +271,11 @@ export function WorktreeCreateModal({
           <FieldGroup className="session-rename-field-group">
             <Field>
               <FieldLabel htmlFor={agentId}>Agent</FieldLabel>
-              <Select onValueChange={setSelectedAgentId} value={selectedAgentId}>
+              <Select
+                items={agentSelectItems}
+                onValueChange={setSelectedAgentId}
+                value={selectedAgentId}
+              >
                 <SelectTrigger
                   aria-label="Agent"
                   className="worktree-create-agent-select"
