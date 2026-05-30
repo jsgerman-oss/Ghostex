@@ -1,6 +1,12 @@
 
 ## All features:
 
+- Sidebar controls migrated to Base UI with refreshed app theme styling across modals, menus, and session chrome.
+- First-launch preferences page lets new installs set common defaults before opening sessions.
+- Git workflows include Sync with Main, split Git menus by action type, prompt-agent Git PR review, unified merge flow, and persistent running toasts for long Git/worktree actions.
+- First-prompt title generation can auto-name new agent sessions from the opening prompt with a native terminal overlay and tighter auto-rename behavior for agents and slash commands.
+- macOS workspace chrome no longer exposes Pane Gap; native panes default to zero spacing with flush tab bars, square status indicators, and workarea separators.
+- Sidebar and project-header tooltips open below their triggers with a consistent square bordered surface.
 - Native Sparkle updates for macOS releases.
 - Homebrew installs require macOS Ventura or newer with explicit `>= :ventura` cask syntax so newer macOS releases are not blocked by an exact Ventura match.
 - Cursor Agent can generate session titles, Git prompts, worktree prompts, and Project board ticket titles when it is the selected prompt agent.
