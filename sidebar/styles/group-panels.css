@@ -900,8 +900,14 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
  * CDXC:Tooltips 2026-05-19-19:05:
  * Reference-sidebar hover icons and section-header action buttons cannot rely on
  * portaled Radix tooltips because the native sidebar webview mis-anchors them
- * against the trigger. Render the label beside the icon with a local
- * pseudo-element to the left instead.
+ * against the trigger. Render the label with a local pseudo-element anchored to
+ * the icon instead.
+ *
+ * CDXC:SidebarTooltips 2026-05-30-06:36:
+ * Sidebar action tooltips should all read as the same square bordered surface
+ * and appear below their trigger rather than to the left. Align right-edge
+ * action labels to the trigger's right edge so long labels extend inward inside
+ * the narrow sidebar instead of clipping against the webview edge.
  */
 .reference-sidebar-section-action.reference-sidebar-hover-action-tooltip {
   position: relative;
@@ -947,9 +953,9 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
   padding: 6px 12px;
   pointer-events: none;
   position: absolute;
-  right: calc(100% + 8px);
-  top: 50%;
-  transform: translateY(-50%);
+  right: 0;
+  top: calc(100% + 8px);
+  transform: none;
   transition:
     opacity 120ms ease,
     visibility 0s linear 120ms;
@@ -961,7 +967,7 @@ body:focus-within .reference-sidebar-window-dot[data-window-dot="zoom"] {
 .project-header-action-tooltip-popup {
   background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
   border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12));
-  border-radius: 16px;
+  border-radius: 0;
   box-shadow: var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0, 0, 0, 0.35));
   color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
   font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);

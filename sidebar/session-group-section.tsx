@@ -314,13 +314,7 @@ const ProjectHeaderActionButton = forwardRef<
         ),
       );
       const belowTop = buttonBounds.bottom + PROJECT_HEADER_TOOLTIP_TRIGGER_OFFSET_PX;
-      const aboveTop =
-        buttonBounds.top - tooltipBounds.height - PROJECT_HEADER_TOOLTIP_TRIGGER_OFFSET_PX;
-      const hasRoomBelow =
-        belowTop + tooltipBounds.height <=
-        window.innerHeight - PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX;
-      const hasMoreRoomAbove = buttonBounds.top > window.innerHeight - buttonBounds.bottom;
-      const preferredTop = hasRoomBelow || !hasMoreRoomAbove ? belowTop : aboveTop;
+      const preferredTop = belowTop;
       const top = Math.max(
         PROJECT_HEADER_TOOLTIP_VIEWPORT_MARGIN_PX,
         Math.min(
@@ -368,6 +362,12 @@ const ProjectHeaderActionButton = forwardRef<
    * headers. Keep the actual header button in its layout slot, but portal the
    * tooltip bubble to document.body and place it from the button rect so group
    * and sticky-header stacking contexts cannot cover the label.
+   *
+   * CDXC:SidebarTooltips 2026-05-30-06:36:
+   * Sidebar action tooltips must share the square bordered surface and open
+   * below the hovered action. Keep the portal placement logic for native
+   * webview stacking, but stop flipping project-header action labels above the
+   * trigger when the sidebar has more room on top.
    */
   return (
     <>

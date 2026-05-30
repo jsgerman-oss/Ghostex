@@ -1100,11 +1100,7 @@ export function OverflowTooltipText({
         Math.min(centeredLeft, window.innerWidth - SESSION_TOOLTIP_VIEWPORT_MARGIN_PX - halfWidth),
       );
       const belowTop = triggerBounds.bottom + SESSION_TOOLTIP_TRIGGER_OFFSET_PX;
-      const aboveTop = triggerBounds.top - tooltipBounds.height - SESSION_TOOLTIP_TRIGGER_OFFSET_PX;
-      const hasRoomBelow =
-        belowTop + tooltipBounds.height <= window.innerHeight - SESSION_TOOLTIP_VIEWPORT_MARGIN_PX;
-      const hasMoreRoomAbove = triggerBounds.top > window.innerHeight - triggerBounds.bottom;
-      const preferredTop = hasRoomBelow || !hasMoreRoomAbove ? belowTop : aboveTop;
+      const preferredTop = belowTop;
       const top = Math.max(
         SESSION_TOOLTIP_VIEWPORT_MARGIN_PX,
         Math.min(
@@ -1175,6 +1171,11 @@ export function OverflowTooltipText({
    * Projects area. Keep the custom native-sidebar positioning behavior, but
    * portal the rendered tooltip to the document body and place it from the
    * trigger rect so section and sticky-header stacking contexts cannot cover it.
+   *
+   * CDXC:SidebarTooltips 2026-05-30-06:36:
+   * Sidebar tooltips should open below their trigger for a consistent scan path
+   * across action buttons and session rows. Preserve viewport clamping, but do
+   * not choose an above-trigger position just because the lower half is tighter.
    */
   return (
     <div className="session-local-tooltip-shell" ref={shellRef}>
