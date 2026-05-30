@@ -1856,6 +1856,7 @@ final class TerminalWorkspaceView: NSView {
   private let commandsPanelChromeView = CommandsPanelChromeView()
   private let commandsPanelReservedBottomBarView = CommandsPanelChromeView(frame: .zero)
   private let commandsPanelCollapsedRightMarginView = NSView(frame: .zero)
+  private let commandsPanelTopSeparatorView = CommandsPanelSeparatorView()
   private let commandsPanelResizeHandleView = TerminalWorkspacePaneResizeHandleView()
   private var projectEditorCompanionSessionId: String?
   private var projectEditorCompanionIsVisible = false
@@ -1945,6 +1946,7 @@ final class TerminalWorkspaceView: NSView {
     commandsPanelCollapsedRightMarginView.wantsLayer = true
     commandsPanelCollapsedRightMarginView.layer?.backgroundColor = NSColor.black.cgColor
     commandsPanelCollapsedRightMarginView.isHidden = true
+    commandsPanelTopSeparatorView.isHidden = true
     commandsPanelResizeHandleView.configure(direction: .vertical, cursor: .resizeUpDown)
     commandsPanelResizeHandleView.onMouseDown = { [weak self] event in
       _ = self?.beginCommandsPanelResize(with: event)
@@ -5866,6 +5868,8 @@ final class TerminalWorkspaceView: NSView {
     commandsPanelReservedBottomBarView.frame = .zero
     commandsPanelCollapsedRightMarginView.isHidden = true
     commandsPanelCollapsedRightMarginView.frame = .zero
+    commandsPanelTopSeparatorView.isHidden = true
+    commandsPanelTopSeparatorView.frame = .zero
   }
 
   private func syncCommandsPanelChrome(
@@ -5890,6 +5894,33 @@ final class TerminalWorkspaceView: NSView {
     }
     syncCommandsPanelCollapsedRightMargin(from: commandPanelBounds, isExpanded: isExpanded)
     syncCommandsPanelReservedBottomBar(height: reservedBottomBarHeight)
+    syncCommandsPanelTopSeparator(in: commandPanelBounds)
+  }
+
+  private func syncCommandsPanelTopSeparator(in commandPanelBounds: CGRect) {
+    /*
+     CDXC:CommandsPanel 2026-05-30-07:35:
+     The command pane tabs bar needs the same 1px #252525 separator treatment
+     as the main workarea chrome. Draw it as native non-interactive chrome at
+     the command panel's top edge so it stays outside tab button layout.
+     */
+    guard commandPanelBounds.width > 0, commandPanelBounds.height > 0 else {
+      commandsPanelTopSeparatorView.isHidden = true
+      commandsPanelTopSeparatorView.frame = .zero
+      return
+    }
+    let separatorHeight: CGFloat = 1
+    commandsPanelTopSeparatorView.frame = CGRect(
+      x: commandPanelBounds.minX,
+      y: max(bounds.minY, commandPanelBounds.maxY - separatorHeight),
+      width: commandPanelBounds.width,
+      height: separatorHeight)
+    commandsPanelTopSeparatorView.isHidden = false
+    commandsPanelTopSeparatorView.layer?.zPosition = 10_400
+    if commandsPanelTopSeparatorView.superview !== self {
+      addSubview(commandsPanelTopSeparatorView, positioned: .above, relativeTo: nil)
+    }
+    addSubview(commandsPanelTopSeparatorView, positioned: .above, relativeTo: commandsPanelChromeView)
   }
 
   private func syncCommandsPanelReservedBottomBar(height: CGFloat) {
@@ -21737,7 +21768,7 @@ private final class TerminalPaneDelayedSendLabelView: NSTextField {
 
 private final class TerminalPaneFirstPromptTitleOverlayView: NSView {
   var onCancel: (() -> Void)?
-  private let titleLabel = NSTextField(labelWithString: "Generating title...")
+  private let titleLabel = NSTextField(labelWithString: "Generating title")
   private let cancelLabel = NSTextField(labelWithString: "(ESC to Cancel)")
 
   override var isOpaque: Bool {
@@ -21839,6 +21870,28 @@ private final class CommandsPanelChromeView: NSView {
     super.init(frame: frameRect)
     wantsLayer = true
     layer?.backgroundColor = Self.backgroundColor.cgColor
+  }
+
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is not supported")
+  }
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
+  }
+}
+
+private final class CommandsPanelSeparatorView: NSView {
+  private static let separatorColor = NSColor(
+    srgbRed: 37.0 / 255.0,
+    green: 37.0 / 255.0,
+    blue: 37.0 / 255.0,
+    alpha: 1.0)
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    wantsLayer = true
+    layer?.backgroundColor = Self.separatorColor.cgColor
   }
 
   required init?(coder: NSCoder) {

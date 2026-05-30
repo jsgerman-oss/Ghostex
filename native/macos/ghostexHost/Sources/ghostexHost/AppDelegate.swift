@@ -4154,19 +4154,23 @@ final class ghostexRootView: NSView {
   private static let dividerWidth: CGFloat = 6
   /**
    CDXC:NativeWindowChrome 2026-05-30-06:23:
-   The main work area needs a #2b2b2b separator below the React titlebar
+   The main work area needs a #252525 separator below the React titlebar
    without continuing above the sidebar. Use native non-interactive chrome lines
    so the horizontal titlebar divider starts at the workspace frame while the
    matching vertical divider tracks the sidebar/workarea boundary.
 
    CDXC:NativeWindowChrome 2026-05-30-06:51:
    The workarea separators should be 1px thick instead of the original 2px.
+
+   CDXC:NativeWindowChrome 2026-05-30-07:35:
+   The workarea separators should use #252525 instead of #2b2b2b so native
+   chrome boundaries stay subtle against the darker titlebar and workspace.
    */
   private static let workareaSeparatorWidth: CGFloat = 1
   private static let workareaSeparatorColor = NSColor(
-    srgbRed: 43.0 / 255.0,
-    green: 43.0 / 255.0,
-    blue: 43.0 / 255.0,
+    srgbRed: 37.0 / 255.0,
+    green: 37.0 / 255.0,
+    blue: 37.0 / 255.0,
     alpha: 1.0)
   private static let defaultSidebarWidth: CGFloat = 235
   private static let sidebarResetWidth: CGFloat = 235

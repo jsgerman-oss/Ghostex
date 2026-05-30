@@ -3715,6 +3715,7 @@ const styleElement = document.createElement("style");
 styleElement.textContent = `
   :root {
     --titlebar-font-family: "JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --titlebar-button-border-color: #252525;
   }
   /**
    * CDXC:ReactTitlebar 2026-05-11-09:00
@@ -3733,12 +3734,16 @@ styleElement.textContent = `
    * The top-right titlebar should not duplicate the Commands pane entry point.
    * Remove the corner terminal icon and its left separator so Commands access
    * lives in the sidebar footer instead of competing with project actions.
+   *
+   * CDXC:ReactTitlebar 2026-05-30-07:37:
+   * Titlebar button left/right separators should use #252525 so they match the
+   * native workarea and commands-pane separator lines.
    */
   .titlebar-session-button {
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
     min-width: 0;
     border: 0;
-    border-left: 1px solid rgba(255,255,255,0.12);
+    border-left: 1px solid var(--titlebar-button-border-color);
     border-radius: 0;
     background: transparent;
     color: rgba(255,255,255,0.84);
@@ -3945,7 +3950,7 @@ styleElement.textContent = `
     align-items: center;
     background: transparent;
     border: 0;
-    border-left: 1px solid rgba(255,255,255,0.12);
+    border-left: 1px solid var(--titlebar-button-border-color);
     border-radius: var(--titlebar-mode-tab-radius);
     color: rgba(255,255,255,0.68);
     cursor: default;
@@ -3961,7 +3966,7 @@ styleElement.textContent = `
     white-space: nowrap;
   }
   .titlebar-mode-tab:last-child {
-    border-right: 1px solid rgba(255,255,255,0.12);
+    border-right: 1px solid var(--titlebar-button-border-color);
   }
   .titlebar-mode-tab:hover,
   .titlebar-mode-tab:focus-visible {
@@ -4009,7 +4014,7 @@ styleElement.textContent = `
     -webkit-appearance: none;
     background: rgba(255,255,255,0.2) !important;
     border: 0 !important;
-    border-left: 1px solid rgba(255,255,255,0.12) !important;
+    border-left: 1px solid var(--titlebar-button-border-color) !important;
     border-radius: 0 !important;
     box-shadow: none !important;
     color: rgba(255,255,255,0.98) !important;
