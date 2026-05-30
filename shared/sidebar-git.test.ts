@@ -2,6 +2,7 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   buildSidebarGitMenuItems,
   createDefaultSidebarGitState,
+  getSidebarGitActionCategory,
   getSidebarGitDisabledReason,
   resolveSidebarGitPrimaryActionState,
 } from "./sidebar-git";
@@ -80,6 +81,63 @@ describe("buildSidebarGitMenuItems", () => {
       "Release",
     ]);
   });
+
+  test("should show sync with main only for worktree projects", () => {
+    const baseState = {
+      ...createDefaultSidebarGitState("commit"),
+      branch: "feature/test",
+      hasGitHubCli: true,
+      hasOriginRemote: true,
+      isRepo: true,
+    };
+
+    expect(buildSidebarGitMenuItems(baseState).map((item) => item.label)).not.toContain(
+      "Sync with Main",
+    );
+    expect(
+      buildSidebarGitMenuItems({ ...baseState, isWorktree: true }).map((item) => item.label),
+    ).toEqual([
+      "Commit",
+      "Push",
+      "Create PR",
+      "Sync with Main",
+      "Multicommit & Release",
+      "Release",
+    ]);
+  });
+});
+
+describe("getSidebarGitActionCategory", () => {
+  test("should classify create pr and sync with main as agent workflows", () => {
+    const state = {
+      ...createDefaultSidebarGitState("commit"),
+      branch: "feature/test",
+      isRepo: true,
+      isWorktree: true,
+    };
+
+    expect(getSidebarGitActionCategory(state, "commit")).toBe("direct");
+    expect(getSidebarGitActionCategory(state, "push")).toBe("direct");
+    expect(getSidebarGitActionCategory(state, "pr")).toBe("agent");
+    expect(getSidebarGitActionCategory(state, "syncMain")).toBe("agent");
+    expect(getSidebarGitActionCategory(state, "multiRelease")).toBe("agent");
+    expect(getSidebarGitActionCategory(state, "release")).toBe("agent");
+  });
+
+  test("should classify an open pr as a direct view action", () => {
+    const state = {
+      ...createDefaultSidebarGitState("commit"),
+      branch: "feature/test",
+      isRepo: true,
+      pr: {
+        state: "open" as const,
+        title: "Add test feature",
+        url: "https://example.com/pr/1",
+      },
+    };
+
+    expect(getSidebarGitActionCategory(state, "pr")).toBe("direct");
+  });
 });
 
 describe("getSidebarGitDisabledReason", () => {
@@ -108,5 +166,19 @@ describe("getSidebarGitDisabledReason", () => {
         "pr",
       ),
     ).toBe("Install GitHub CLI to create or view pull requests.");
+  });
+
+  test("should allow sync with main in worktree projects without requiring gh", () => {
+    expect(
+      getSidebarGitDisabledReason(
+        {
+          ...createDefaultSidebarGitState("commit"),
+          branch: "feature/test",
+          isRepo: true,
+          isWorktree: true,
+        },
+        "syncMain",
+      ),
+    ).toBeUndefined();
   });
 });

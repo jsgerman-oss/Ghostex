@@ -1,4 +1,10 @@
-export type SidebarGitAction = "commit" | "push" | "pr" | "multiRelease" | "release";
+export type SidebarGitAction =
+  | "commit"
+  | "push"
+  | "pr"
+  | "syncMain"
+  | "multiRelease"
+  | "release";
 
 export type SidebarGitChangedFile = {
   additions: number;
@@ -40,6 +46,8 @@ export type SidebarGitMenuItem = {
   disabledReason?: string;
   label: string;
 };
+
+export type SidebarGitActionCategory = "direct" | "agent";
 
 export type SidebarGitPrimaryActionState = {
   action: SidebarGitAction;
@@ -87,13 +95,39 @@ export function normalizeSidebarGitAction(candidate: string | undefined): Sideba
 }
 
 export function buildSidebarGitMenuItems(state: SidebarGitState): SidebarGitMenuItem[] {
+  /**
+   * CDXC:WorktreeSync 2026-05-30-05:13:
+   * Sync with Main is a worktree-only Git workflow. Show it beside Create PR in
+   * the Git dropdown only when the active project is a worktree, because main
+   * projects do not need to pull main into themselves before worktree merge.
+   */
   return [
     buildSidebarGitMenuItem("commit", "Commit", state),
     buildSidebarGitMenuItem("push", "Push", state),
     buildSidebarGitMenuItem("pr", state.pr?.state === "open" ? "View PR" : "Create PR", state),
+    ...(state.isWorktree ? [buildSidebarGitMenuItem("syncMain", "Sync with Main", state)] : []),
     buildSidebarGitMenuItem("multiRelease", "Multicommit & Release", state),
     buildSidebarGitMenuItem("release", "Release", state),
   ];
+}
+
+export function getSidebarGitActionCategory(
+  state: Pick<SidebarGitState, "pr">,
+  action: SidebarGitAction,
+): SidebarGitActionCategory {
+  /**
+   * CDXC:GitActionModel 2026-05-30-05:34:
+   * The Git dropdown separates deterministic native Git operations from
+   * agent-run workflows. Create PR belongs with agent workflows, while View PR
+   * stays direct because it only opens the existing pull request.
+   */
+  if (action === "syncMain" || action === "multiRelease" || action === "release") {
+    return "agent";
+  }
+  if (action === "pr" && state.pr?.state !== "open") {
+    return "agent";
+  }
+  return "direct";
 }
 
 export function resolveSidebarGitPrimaryActionState(
@@ -150,6 +184,10 @@ export function getSidebarGitDisabledReason(
 
   if (!state.branch) {
     return "Create and checkout a branch before pushing or creating a PR.";
+  }
+
+  if (action === "syncMain") {
+    return state.isWorktree ? undefined : "Open a worktree project to sync with main.";
   }
 
   if (state.behindCount > 0) {

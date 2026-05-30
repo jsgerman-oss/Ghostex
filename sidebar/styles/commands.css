@@ -144,6 +144,21 @@
   margin: calc(2px * var(--sidebar-density-scale)) 0;
 }
 
+.git-action-menu-section {
+  display: grid;
+  gap: calc(3px * var(--sidebar-density-scale));
+}
+
+.git-action-menu-section-label {
+  color: color-mix(in srgb, var(--app-muted) 82%, var(--app-foreground) 18%);
+  font-size: calc(9px * var(--sidebar-density-scale));
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: calc(4px * var(--sidebar-density-scale)) calc(10px * var(--sidebar-density-scale))
+    calc(2px * var(--sidebar-density-scale));
+  text-transform: uppercase;
+}
+
 .git-action-menu-item {
   align-items: center;
   background: transparent;

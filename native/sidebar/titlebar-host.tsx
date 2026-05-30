@@ -13,6 +13,7 @@ import {
   IconDownload,
   IconFolderOpen,
   IconFocus2,
+  IconGitCompare,
   IconGitCommit,
   IconGitPullRequest,
   IconLayoutSidebarLeftExpand,
@@ -3448,6 +3449,11 @@ function compactTitlebarPrimaryGitActionLabel(label: string): string {
 }
 
 function getTitlebarGitActionIcon(action: SidebarGitAction): ReactNode {
+  if (action === "syncMain") {
+    return (
+      <IconGitCompare aria-hidden="true" className="titlebar-git-icon" size={15} stroke={1.8} />
+    );
+  }
   if (action === "push") {
     return <IconUpload aria-hidden="true" className="titlebar-git-icon" size={15} stroke={1.8} />;
   }

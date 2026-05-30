@@ -2,6 +2,7 @@ import {
   IconCheck,
   IconChevronDown,
   IconExternalLink,
+  IconGitCompare,
   IconGitCommit,
   IconGitPullRequest,
   IconLoader2,
@@ -13,6 +14,7 @@ import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   buildSidebarGitMenuItems,
+  getSidebarGitActionCategory,
   resolveSidebarGitPrimaryActionState,
   type SidebarGitAction,
   type SidebarGitState,
@@ -42,6 +44,14 @@ export function GitActionRow({ git, vscode }: GitActionRowProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const menuItems = useMemo(() => buildSidebarGitMenuItems(git), [git]);
+  const directMenuItems = useMemo(
+    () => menuItems.filter((item) => getSidebarGitActionCategory(git, item.action) === "direct"),
+    [git, menuItems],
+  );
+  const agentMenuItems = useMemo(
+    () => menuItems.filter((item) => getSidebarGitActionCategory(git, item.action) === "agent"),
+    [git, menuItems],
+  );
   const primaryAction = useMemo(() => resolveSidebarGitPrimaryActionState(git), [git]);
   const primaryDescription = primaryAction.disabledReason ?? primaryAction.label;
 
@@ -214,32 +224,19 @@ export function GitActionRow({ git, vscode }: GitActionRowProps) {
                 width: `${menuPosition.width}px`,
               }}
             >
-              {menuItems.map((item) => (
-                <AppTooltip content={item.disabledReason ?? item.label} key={item.action}>
-                  <button
-                    aria-label={item.disabledReason ?? item.label}
-                    className="git-action-menu-item"
-                    data-disabled={String(item.disabled)}
-                    onClick={() => {
-                      if (!item.disabled) {
-                        runAction(item.action);
-                      }
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    <GitActionIcon action={item.action} />
-                    <span className="git-action-menu-item-label">{item.label}</span>
-                    {item.action === "pr" && git.pr?.state === "open" ? (
-                      <IconExternalLink
-                        aria-hidden="true"
-                        className="git-action-menu-item-trailing-icon"
-                        size={14}
-                      />
-                    ) : null}
-                  </button>
-                </AppTooltip>
-              ))}
+              <GitActionMenuSection
+                git={git}
+                items={directMenuItems}
+                label="Direct Actions"
+                onRunAction={runAction}
+              />
+              <div aria-hidden="true" className="git-action-menu-divider" />
+              <GitActionMenuSection
+                git={git}
+                items={agentMenuItems}
+                label="Agent Workflows"
+                onRunAction={runAction}
+              />
               <div aria-hidden="true" className="git-action-menu-divider" />
               <AppTooltip
                 content={
@@ -324,11 +321,63 @@ export function GitActionRow({ git, vscode }: GitActionRowProps) {
   );
 }
 
+function GitActionMenuSection({
+  git,
+  items,
+  label,
+  onRunAction,
+}: {
+  git: SidebarGitState;
+  items: ReturnType<typeof buildSidebarGitMenuItems>;
+  label: string;
+  onRunAction: (action: SidebarGitAction) => void;
+}) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="git-action-menu-section" role="group" aria-label={label}>
+      <div className="git-action-menu-section-label">{label}</div>
+      {items.map((item) => (
+        <AppTooltip content={item.disabledReason ?? item.label} key={item.action}>
+          <button
+            aria-label={item.disabledReason ?? item.label}
+            className="git-action-menu-item"
+            data-disabled={String(item.disabled)}
+            onClick={() => {
+              if (!item.disabled) {
+                onRunAction(item.action);
+              }
+            }}
+            role="menuitem"
+            type="button"
+          >
+            <GitActionIcon action={item.action} />
+            <span className="git-action-menu-item-label">{item.label}</span>
+            {item.action === "pr" && git.pr?.state === "open" ? (
+              <IconExternalLink
+                aria-hidden="true"
+                className="git-action-menu-item-trailing-icon"
+                size={14}
+              />
+            ) : null}
+          </button>
+        </AppTooltip>
+      ))}
+    </div>
+  );
+}
+
 type GitActionIconProps = {
   action: SidebarGitAction;
 };
 
 function GitActionIcon({ action }: GitActionIconProps) {
+  if (action === "syncMain") {
+    return <IconGitCompare aria-hidden="true" className="git-action-main-icon" size={16} />;
+  }
+
   if (action === "multiRelease") {
     return <IconStackPush aria-hidden="true" className="git-action-main-icon" size={16} />;
   }

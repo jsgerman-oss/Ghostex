@@ -41,7 +41,7 @@ type GhostexNativeSidebarBridge = {
   toggleCommandsPanelFromTitlebar: () => void;
   runSidebarCommandFromTitlebar: (commandId: string) => void;
   runSidebarGitActionFromTitlebar: (
-    action: "commit" | "push" | "pr" | "multiRelease" | "release",
+    action: "commit" | "push" | "pr" | "syncMain" | "multiRelease" | "release",
   ) => void;
 };
 
