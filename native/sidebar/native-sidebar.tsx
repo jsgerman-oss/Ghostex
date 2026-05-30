@@ -2124,7 +2124,7 @@ function rememberGitWorkflowToast(sessionId: string, toastId: string, title: str
 
 function finishGitWorkflowToastForSession(
   sessionId: string,
-  level: "success" | "error",
+  level: "success" | "warning" | "error",
   description?: string,
 ): void {
   const entry = gitWorkflowToastBySessionId.get(sessionId);
@@ -2135,7 +2135,11 @@ function finishGitWorkflowToastForSession(
   finishRunningAppToast(
     entry.toastId,
     level,
-    level === "success" ? `${entry.title} finished` : `${entry.title} failed`,
+    level === "success"
+      ? `${entry.title} finished`
+      : level === "warning"
+        ? `${entry.title} stopped`
+        : `${entry.title} failed`,
     description,
   );
 }
@@ -6139,6 +6143,7 @@ async function deleteWorktreeProject(projectId: string): Promise<void> {
   const parentProject =
     findProject(project.worktree.parentProjectId) ??
     createNativeProjectFromWorktreeParent(project.worktree, project);
+  let toastId: string | undefined;
   try {
     const status = await runGitInProject(project, ["status", "--porcelain"], {
       allowFailure: true,
@@ -6151,7 +6156,13 @@ async function deleteWorktreeProject(projectId: string): Promise<void> {
       removeArgs.push("--force");
     }
     removeArgs.push(project.path);
-    showAppToast("info", "Deleting worktree", project.name);
+    /**
+     * CDXC:GitActionToasts 2026-05-30-06:01:
+     * Delete Worktree is a destructive native operation, so it should use the
+     * same persistent running toast as Git actions instead of a transient
+     * "Deleting worktree" notice that can disappear before removal finishes.
+     */
+    toastId = showRunningAppToast("Deleting worktree", project.name);
     const removeResult = await runGitInProject(parentProject, removeArgs, { allowFailure: true });
     if (removeResult.exitCode !== 0) {
       throw new Error(
@@ -6160,9 +6171,10 @@ async function deleteWorktreeProject(projectId: string): Promise<void> {
     }
     removeWorktreeProjectRecord(project, findProject(project.worktree.parentProjectId), "deleteWorktree");
     await runGitInProject(parentProject, ["worktree", "prune"], { allowFailure: true });
-    showAppToast("success", "Worktree deleted", project.name);
+    finishRunningAppToast(toastId, "success", "Worktree deleted", project.name);
   } catch (error) {
-    showAppToast(
+    finishRunningAppToast(
+      toastId,
       "error",
       "Could not delete worktree",
       error instanceof Error ? error.message : "git worktree remove failed.",
@@ -15385,6 +15397,14 @@ function closeTerminal(
     return;
   }
   const sessionRecord = findSessionRecordInProject(reference.project, reference.sessionId);
+  /*
+   * CDXC:GitActionToasts 2026-05-30-06:39:
+   * Closing a sidebar session is the user's implicit cancel signal for Git
+   * agent workflows. Resolve the persistent running toast here because a
+   * manually closed terminal can disappear before the normal done event updates
+   * the toast.
+   */
+  finishGitWorkflowToastForSession(reference.sessionId, "warning", "Session closed");
   if (sessionRecord?.kind === "terminal" && sessionRecord.surface === "commands") {
     const nativeSessionId = forgetNativeSessionMappingForProject(
       reference.project.projectId,
@@ -25569,9 +25589,9 @@ function createNativeLayoutSyncKey(command: NativeSetActiveTerminalSetCommand): 
   /**
    * CDXC:NativeGpu 2026-05-08-16:45
    * The expensive native AppKit layout only depends on visible surface
-   * identity, split geometry, pane gap, and active editor surface. Pane titles,
-   * activity colors, focus display, and icons are chrome metadata and must not
-   * make the host reframe IOSurface-backed terminal/browser views.
+   * identity, split geometry, fixed pane gap, and active editor surface. Pane
+   * titles, activity colors, focus display, and icons are chrome metadata and
+   * must not make the host reframe IOSurface-backed terminal/browser views.
    */
   return JSON.stringify(
     normalizeNativeLayoutSyncValue({
@@ -25919,12 +25939,12 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     focusedSessionId: focusedNativeSessionId,
     layout,
     /**
-     * CDXC:WorkspaceLayout 2026-04-28-06:01
-     * The Pane Gap settings control must affect native Ghostty pane layout,
-     * not only the React workspace panel. Send the normalized persisted value
-     * with every native layout sync so slider drags repaint AppKit spacing.
+     * CDXC:WorkspaceLayout 2026-05-30-07:24:
+     * Pane Gap has been removed from macOS Settings. Send a fixed zero gap
+     * instead of persisted user values so existing settings cannot reintroduce
+     * spacing between native panes.
      */
-    paneGap: settings.workspacePaneGap,
+    paneGap: 0,
     poppedOutSessionIds,
     sessionAgentIconDataUrls,
     sessionAgentIconColors,
