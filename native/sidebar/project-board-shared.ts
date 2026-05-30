@@ -5,7 +5,7 @@ import Fuse from "fuse.js";
   Shared Beads board helpers keep display-id formatting, t-shirt estimate mapping, and filter logic consistent between the Project WKWebView surface and future Storybook coverage.
 */
 
-export type BoardStatusKey = "todo" | "in_progress" | "test" | "review" | "done";
+export type BoardStatusKey = "backlog" | "todo" | "in_progress" | "test" | "review" | "done";
 
 export type BeadsComment = {
   author?: string;
@@ -113,6 +113,12 @@ export const BOARD_COLUMNS: Array<{
   beadsStatus: string;
   tone: string;
 }> = [
+  /*
+    CDXC:ProjectBoard 2026-05-30-08:58:
+    The Kanban Project view needs a Backlog swim lane positioned before Todo, persisted as the Beads custom status `backlog` so drag/drop, edit-status selects, and reloads all share the same workflow state.
+    New ticket creation remains in Todo; Backlog is an explicit planning lane users move work into.
+  */
+  { key: "backlog", label: "Backlog", beadsStatus: "backlog", tone: "muted" },
   { key: "todo", label: "Todo", beadsStatus: "open", tone: "neutral" },
   { key: "in_progress", label: "In Progress", beadsStatus: "in_progress", tone: "blue" },
   { key: "test", label: "Test", beadsStatus: "test", tone: "amber" },
@@ -143,10 +149,12 @@ export type TshirtSize = (typeof TSHIRT_OPTIONS)[number]["label"];
 export type BoardPriorityFilter = "all" | (typeof PRIORITY_OPTIONS)[number]["value"];
 export type BoardEstimateFilter = "all" | "none" | TshirtSize;
 
-const REQUIRED_CUSTOM_STATUS_CONFIG = "test,review";
+const REQUIRED_CUSTOM_STATUS_CONFIG = "backlog,test,review";
 
 export function beadsStatusToBoardStatus(status: string): BoardStatusKey {
   switch (status) {
+    case "backlog":
+      return "backlog";
     case "closed":
       return "done";
     case "in_progress":
@@ -513,17 +521,29 @@ function isLegacyDataImageSource(source: string): boolean {
   return source.trim().toLowerCase().startsWith("data:image/");
 }
 
+/*
+ * CDXC:ProjectBoard 2026-05-30-09:25:
+ * Start Work must tell agents to leave bead comments after each turn so humans can follow ticket progress without reading the full agent transcript.
+ * Comments should capture user-facing outcomes and high-level technical decisions, not per-file diffs.
+ */
 export function buildAgentWorkPrompt(ticket: BoardTicket): string {
+  const beadId = ticket.id;
   return [
-    `Work on bead ${ticket.id} (${ticket.displayId}): ${ticket.title}`,
+    `Work on bead ${beadId} (${ticket.displayId}): ${ticket.title}`,
     "",
     ticket.description?.trim() || "No prompt provided.",
     "",
+    "After each turn where you made progress on this bead, add a bead comment summarizing what you did:",
+    `- \`bd comment ${beadId} "<summary>"\``,
+    "- Focus on user-facing requirements delivered and high-level technical approach.",
+    "- Do not list specific files or line numbers.",
+    "",
     "Status workflow for this project board:",
-    "- When you start: `bd update " + ticket.id + " --status in_progress`",
-    "- When implementation is ready for test: `bd update " + ticket.id + " --status test`",
-    "- When ready for review: `bd update " + ticket.id + " --status review`",
-    "- When done: `bd close " + ticket.id + "`",
+    `- Park for later: \`bd update ${beadId} --status backlog\``,
+    `- When you start: \`bd update ${beadId} --status in_progress\``,
+    `- When implementation is ready for test: \`bd update ${beadId} --status test\``,
+    `- When ready for review: \`bd update ${beadId} --status review\``,
+    `- When done: \`bd close ${beadId}\``,
   ].join("\n");
 }
 

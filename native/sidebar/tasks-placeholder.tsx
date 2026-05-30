@@ -125,6 +125,7 @@ type TicketFormDraft = {
   description: string;
   labels: string[];
   priority: string;
+  status: BoardStatusKey;
   title: string;
   tshirt?: TshirtSize;
 };
@@ -162,6 +163,10 @@ const PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS = 60_000;
 const PROJECT_BOARD_MAX_DEPENDENCY_OPTIONS = 600;
 const PROJECT_BOARD_MAX_VISIBLE_TICKETS_PER_COLUMN = 120;
 const PROJECT_BOARD_GENERATING_TITLE = "Generating title...";
+const PROJECT_BOARD_STATUS_SELECT_ITEMS = BOARD_COLUMNS.map((column) => ({
+  label: column.label,
+  value: column.key,
+}));
 const PROJECT_BOARD_PRIORITY_SELECT_ITEMS = PRIORITY_OPTIONS.map((option) => ({
   label: option.label,
   value: option.value,
@@ -222,6 +227,7 @@ function createEmptyTicketFormDraft(): TicketFormDraft {
     description: "",
     labels: [],
     priority: "2",
+    status: "todo",
     title: "",
   };
 }
@@ -300,9 +306,31 @@ function ProjectBoardApp() {
    * Collapsed macOS Project-page selects must show friendly labels for agents and ticket priority while preserving the raw Beads-compatible values used by bridge requests.
    * Provide select item metadata at the root because the popup is not mounted before the collapsed value renders.
    *
+   * CDXC:ProjectBoard 2026-05-30-08:59:
+   * The edit-ticket Status select follows the same collapsed-label rule as Priority: show board status labels to users while keeping the stored board status key for Beads updates.
+   *
    * CDXC:ProjectBoardFilters 2026-05-30-08:31:
    * The board toolbar should place the search icon inside the input at the left edge and replace the status dropdown with Priority and Estimate filters.
    * Toolbar selects use root item metadata so collapsed controls show friendly labels instead of raw filter values.
+   *
+   * CDXC:ProjectBoardFilters 2026-05-30-09:13:
+   * The top Project-page filter controls and + Ticket action should share the search input height so the toolbar reads as one aligned control row.
+   *
+   * CDXC:ProjectBoardLaneCreation 2026-05-30-09:15:
+   * Lane headers should expose a hover/focus + action in place of the ticket count so users can create a ticket directly in that workflow status.
+   * Beads creates issues in Todo first, so non-Todo lane creation must immediately update the new issue status before refreshing the board or starting work.
+   *
+   * CDXC:ProjectBoard 2026-05-30-08:54:
+   * Create & Start must launch the selected agent session from the created bead before optional label hydration or auto-title generation runs.
+   * A generated title improves the board card later, but terminal creation and prompt submission must not wait on or be canceled by board refreshes or title generation failures.
+   *
+   * CDXC:ProjectBoard 2026-05-30-09:36:
+   * The native Beads create command can persist the issue while the web create path still lacks a usable created-issue id.
+   * Resolve the newly persisted bead from refreshed Beads data before dependency/status/label updates, title generation, or Create & Start so the terminal session is keyed to the real board ticket instead of silently skipping start.
+   *
+   * CDXC:ProjectBoard 2026-05-30-09:45:
+   * Create & Start should hand the created bead to native session launch as soon as the bead id is available.
+   * Board refresh, lane hydration, labels, dependencies, and generated title updates are secondary work and must not sit in front of terminal creation.
    */
   const isRefreshingRef = useRef(false);
   const issuesSignatureRef = useRef("");
@@ -310,6 +338,11 @@ function ProjectBoardApp() {
   const lastLabelsRefreshAtRef = useRef(0);
   const newPromptRef = useRef<HTMLTextAreaElement>(null);
   const [conversationAction, setConversationAction] = useState<ConversationActionState>();
+
+  const openNewTicket = useCallback((status: BoardStatusKey = "todo") => {
+    setNewTicket((current) => ({ ...current, status }));
+    setNewTicketOpen(true);
+  }, []);
 
   const runBeads = useCallback(
     async (request: Omit<BeadsBridgeRequest, "cwd" | "requestId">) => {
@@ -502,7 +535,7 @@ function ProjectBoardApp() {
         result[column.key] = filteredTickets.filter((ticket) => ticket.boardStatus === column.key);
         return result;
       },
-      { done: [], in_progress: [], review: [], test: [], todo: [] },
+      { backlog: [], done: [], in_progress: [], review: [], test: [], todo: [] },
     );
   }, [filteredTickets]);
 
@@ -717,15 +750,14 @@ function ProjectBoardApp() {
       promptLength: prompt.length,
       startAfterCreate,
       startLocation,
+      targetStatus: draft.status,
     });
     try {
       const requestedTitle = draft.title.trim();
       const shouldGenerateTitle = !requestedTitle;
       const title = shouldGenerateTitle ? PROJECT_BOARD_GENERATING_TITLE : requestedTitle;
-      let shouldStartCreatedTicket = startAfterCreate;
       const estimate = tshirtToEstimate(draft.tshirt);
-      const promptAgentId = selectedAgentId || conversationState.defaultAgentId;
-      const promptAgent = conversationState.agents.find((agent) => agent.agentId === promptAgentId);
+      const issueIdsBeforeCreate = new Set(allIssues.map((issue) => issue.id));
       const createdPayload = await runBeads({
         action: "create",
         description: prompt,
@@ -736,14 +768,53 @@ function ProjectBoardApp() {
         title,
       });
       const created = normalizeBeadsPayload<BeadsIssue | BeadsIssue[]>(createdPayload, []);
-      let createdIssue = Array.isArray(created) ? created[0] : created;
+      let createdIssue: BeadsIssue | undefined = Array.isArray(created) ? created[0] : created;
+      let didStartCreatedTicket = false;
       logProjectBoardDebug("projectBoard.createTicket.beadCreated", {
         beadId: createdIssue?.id ?? "",
         shouldGenerateTitle,
         startAfterCreate,
+        targetStatus: draft.status,
       });
+      if (!createdIssue?.id) {
+        const createdIssueLookupPayload = await runBeads({ action: "listIssues" });
+        const createdIssueLookupIssues = normalizeBeadsPayload<BeadsIssue[]>(
+          createdIssueLookupPayload,
+          Array.isArray(createdIssueLookupPayload) ? createdIssueLookupPayload : [],
+        );
+        createdIssue = resolveCreatedIssueFromRefresh(createdIssueLookupIssues, issueIdsBeforeCreate, {
+          description: prompt,
+          title,
+        });
+      }
+      if (startAfterCreate && createdIssue?.id) {
+        const createdTicket = toCreatedBoardTicket(createdIssue, allIssues, displayKey);
+        if (createdTicket) {
+          logProjectBoardDebug("projectBoard.createTicket.startAfterCreate.requested", {
+            beadId: createdTicket.id,
+            displayId: createdTicket.displayId,
+            startLocation,
+          });
+          const didStart = await startTicketWork(createdTicket, { startLocation });
+          if (!didStart) {
+            return;
+          }
+          didStartCreatedTicket = true;
+        }
+      }
       if (createdIssue?.id) {
         await syncDependencies(createdIssue.id, draft.blockedByIds, draft.blockingIds);
+        if (draft.status !== "todo" && !didStartCreatedTicket) {
+          await runBeads({
+            action: "updateStatus",
+            issueId: createdIssue.id,
+            status: boardStatusBeadsValue(draft.status),
+          });
+          createdIssue = {
+            ...createdIssue,
+            status: boardStatusBeadsValue(draft.status),
+          };
+        }
         if (draft.labels.length > 0) {
           await runBeads({
             action: "setLabels",
@@ -752,10 +823,34 @@ function ProjectBoardApp() {
           });
         }
       }
-      if (shouldGenerateTitle && createdIssue?.id) {
+      setNewTicket(createEmptyTicketFormDraft());
+      setNewTicketStartLocation("currentProject");
+      setNewTicketOpen(false);
+      const refreshedPayload = await runBeads({ action: "listIssues" });
+      const refreshedIssues = normalizeBeadsPayload<BeadsIssue[]>(
+        refreshedPayload,
+        Array.isArray(refreshedPayload) ? refreshedPayload : [],
+      );
+      const refreshedTickets = toBoardTickets(refreshedIssues, displayKey);
+      if (!createdIssue?.id) {
+        createdIssue = resolveCreatedIssueFromRefresh(refreshedIssues, issueIdsBeforeCreate, {
+          description: prompt,
+          title,
+        });
+      }
+      setAllIssues(refreshedIssues);
+      setTickets(refreshedTickets);
+      const refreshLabelsAfterCreate = () => {
+        void loadTickets({ includeLabels: true, mode: "mutation" }).catch((error) => {
+          console.warn("Project board post-create label refresh failed.", error);
+        });
+      };
+      const generateCreatedTicketTitle = async (issueId: string) => {
         try {
+          const promptAgentId = selectedAgentId || conversationState.defaultAgentId;
+          const promptAgent = conversationState.agents.find((agent) => agent.agentId === promptAgentId);
           logProjectBoardDebug("projectBoard.createTicket.titleGeneration.started", {
-            beadId: createdIssue.id,
+            beadId: issueId,
             startAfterCreate,
           });
           const generated = normalizeBeadsPayload<{ title?: string }>(
@@ -773,40 +868,30 @@ function ProjectBoardApp() {
           }
           await runBeads({
             action: "updateTitle",
-            issueId: createdIssue.id,
+            issueId,
             title: generatedTitle,
           });
-          createdIssue = { ...createdIssue, title: generatedTitle };
+          await loadTickets({ includeLabels: false, mode: "mutation" });
           logProjectBoardDebug("projectBoard.createTicket.titleGeneration.completed", {
-            beadId: createdIssue.id,
+            beadId: issueId,
             generatedTitleLength: generatedTitle.length,
             startAfterCreate,
           });
         } catch (error) {
           logProjectBoardDebug("projectBoard.createTicket.titleGeneration.failed", {
-            beadId: createdIssue.id,
+            beadId: issueId,
             error: error instanceof Error ? error.message : String(error),
             startAfterCreate,
           });
-          setErrorMessage(error instanceof Error ? error.message : "Could not generate the ticket title.");
-          if (startAfterCreate) {
-            shouldStartCreatedTicket = false;
+          if (!startAfterCreate) {
+            setErrorMessage(error instanceof Error ? error.message : "Could not generate the ticket title.");
           }
         }
+      };
+      if (!startAfterCreate) {
+        await loadTickets({ includeLabels: true, mode: "mutation" });
       }
-      setNewTicket(createEmptyTicketFormDraft());
-      setNewTicketStartLocation("currentProject");
-      setNewTicketOpen(false);
-      const refreshedPayload = await runBeads({ action: "listIssues" });
-      const refreshedIssues = normalizeBeadsPayload<BeadsIssue[]>(
-        refreshedPayload,
-        Array.isArray(refreshedPayload) ? refreshedPayload : [],
-      );
-      const refreshedTickets = toBoardTickets(refreshedIssues, displayKey);
-      setAllIssues(refreshedIssues);
-      setTickets(refreshedTickets);
-      await loadTickets({ includeLabels: true, mode: "mutation" });
-      if (shouldStartCreatedTicket && createdIssue?.id) {
+      if (startAfterCreate && createdIssue?.id && !didStartCreatedTicket) {
         const createdTicket = refreshedTickets.find((ticket) => ticket.id === createdIssue.id);
         if (!createdTicket) {
           throw new Error("Created ticket was not found after refresh.");
@@ -819,6 +904,17 @@ function ProjectBoardApp() {
         const didStart = await startTicketWork(createdTicket, { startLocation });
         if (!didStart) {
           return;
+        }
+        didStartCreatedTicket = true;
+      }
+      if (didStartCreatedTicket) {
+        refreshLabelsAfterCreate();
+      }
+      if (shouldGenerateTitle && createdIssue?.id) {
+        if (startAfterCreate) {
+          void generateCreatedTicketTitle(createdIssue.id);
+        } else {
+          await generateCreatedTicketTitle(createdIssue.id);
         }
       }
       logProjectBoardDebug("projectBoard.createTicket.completed", {
@@ -1049,7 +1145,12 @@ function ProjectBoardApp() {
           >
             <IconRefresh />
           </Button>
-          <Button onClick={() => setNewTicketOpen(true)} size="sm" variant="secondary">
+          <Button
+            className="project-board-ticket-button"
+            onClick={() => openNewTicket()}
+            size="sm"
+            variant="secondary"
+          >
             <IconPlus data-icon="inline-start" />
             Ticket
           </Button>
@@ -1110,6 +1211,7 @@ function ProjectBoardApp() {
               conversationAction={conversationAction}
               key={column.key}
               linksByBeadId={linksByBeadId}
+              onAddTicket={openNewTicket}
               onJumpToConversation={jumpToConversation}
               onOpenTicket={openTicket}
               tickets={ticketsByColumn[column.key]}
@@ -1323,7 +1425,8 @@ function ProjectBoardApp() {
           <DialogHeader>
             <DialogTitle>New Ticket</DialogTitle>
             <DialogDescription>
-              Leave the title empty to auto-generate it from the prompt. Creates in Todo.
+              Leave the title empty to auto-generate it from the prompt. Creates in{" "}
+              {boardStatusLabel(newTicket.status)}.
             </DialogDescription>
           </DialogHeader>
           <div
@@ -1529,7 +1632,11 @@ function TicketMetaFields({
       {showStatus ? (
         <label className="project-ticket-field project-ticket-field-inline">
           <span>Status</span>
-          <Select onValueChange={(value) => onStatusChange(value as BoardStatusKey)} value={status}>
+          <Select
+            items={PROJECT_BOARD_STATUS_SELECT_ITEMS}
+            onValueChange={(value) => onStatusChange(value as BoardStatusKey)}
+            value={status}
+          >
             <SelectTrigger size="sm">
               <SelectValue />
             </SelectTrigger>
@@ -1950,6 +2057,7 @@ function BoardLane({
   column,
   conversationAction,
   linksByBeadId,
+  onAddTicket,
   onJumpToConversation,
   onOpenTicket,
   tickets,
@@ -1957,6 +2065,7 @@ function BoardLane({
   column: (typeof BOARD_COLUMNS)[number];
   conversationAction: ConversationActionState;
   linksByBeadId: Map<string, ProjectBoardConversationLinkView[]>;
+  onAddTicket: (status: BoardStatusKey) => void;
   onJumpToConversation: (link: ProjectBoardConversationLinkView) => void;
   onOpenTicket: (ticket: BoardTicket) => void;
   tickets: BoardTicket[];
@@ -2031,7 +2140,19 @@ function BoardLane({
           <span className="project-board-lane-dot" />
           <h2>{column.label}</h2>
         </div>
-        <span>{tickets.length}</span>
+        <div className="project-board-lane-header-action">
+          <span className="project-board-lane-count">{tickets.length}</span>
+          <Button
+            aria-label={`Add ticket to ${column.label}`}
+            className="project-board-lane-add"
+            onClick={() => onAddTicket(column.key)}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+          >
+            <IconPlus aria-hidden="true" />
+          </Button>
+        </div>
       </header>
       <div className="project-board-lane-scroll" onScroll={updateScrollThumb} ref={scrollRef}>
         <div className="project-board-card-stack">
@@ -2256,6 +2377,34 @@ function waitForProjectBoardRefreshIdle(isBusy: () => boolean): Promise<void> {
   });
 }
 
+function toCreatedBoardTicket(
+  issue: BeadsIssue,
+  knownIssues: BeadsIssue[],
+  displayKey: string,
+): BoardTicket | undefined {
+  const issues = [...knownIssues.filter((candidate) => candidate.id !== issue.id), issue];
+  return toBoardTickets(issues, displayKey).find((ticket) => ticket.id === issue.id);
+}
+
+function resolveCreatedIssueFromRefresh(
+  issues: BeadsIssue[],
+  issueIdsBeforeCreate: Set<string>,
+  created: { description: string; title: string },
+): BeadsIssue | undefined {
+  return issues
+    .filter((issue) => {
+      if (!issue?.id || issueIdsBeforeCreate.has(issue.id)) {
+        return false;
+      }
+      return issue.title === created.title && (issue.description ?? "") === created.description;
+    })
+    .sort((left, right) => {
+      const leftTime = Date.parse(left.created_at ?? left.updated_at ?? "");
+      const rightTime = Date.parse(right.created_at ?? right.updated_at ?? "");
+      return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+    })[0];
+}
+
 function stringifyProjectBoardDebugDetails(details: Record<string, unknown> | undefined): string | undefined {
   if (details === undefined) {
     return undefined;
@@ -2452,6 +2601,7 @@ styleElement.textContent = `
     --project-board-card-hover: #202020;
     --project-board-border: rgba(255, 255, 255, 0.1);
     --project-board-border-strong: rgba(255, 255, 255, 0.16);
+    --project-board-control-height: 36px;
     --project-board-scrollbar: rgba(255, 255, 255, 0.28);
   }
 
@@ -2602,11 +2752,18 @@ styleElement.textContent = `
   }
 
   .project-board-search input {
+    height: var(--project-board-control-height);
     padding-left: 36px;
   }
 
-  .project-board-filter-select {
+  .project-board-filter-select,
+  .project-board-ticket-button {
+    height: var(--project-board-control-height);
     min-width: 124px;
+  }
+
+  .project-board-ticket-button {
+    min-width: 0;
   }
 
   .project-board-lanes {
@@ -2614,7 +2771,7 @@ styleElement.textContent = `
     display: grid;
     flex: 1 1 auto;
     gap: 12px;
-    grid-template-columns: repeat(5, minmax(218px, 1fr));
+    grid-template-columns: repeat(6, minmax(218px, 1fr));
     min-height: 0;
     overflow-x: auto;
     overflow-y: hidden;
@@ -2661,6 +2818,41 @@ styleElement.textContent = `
     margin: 0;
   }
 
+  .project-board-lane-header-action {
+    height: 28px;
+    justify-content: flex-end;
+    position: relative;
+    width: 28px;
+  }
+
+  .project-board-lane-count,
+  .project-board-lane-add {
+    transition: opacity 120ms ease;
+  }
+
+  .project-board-lane-count {
+    opacity: 1;
+  }
+
+  .project-board-lane-add {
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+    right: 0;
+    top: 0;
+  }
+
+  .project-board-lane:hover .project-board-lane-count,
+  .project-board-lane:focus-within .project-board-lane-count {
+    opacity: 0;
+  }
+
+  .project-board-lane:hover .project-board-lane-add,
+  .project-board-lane:focus-within .project-board-lane-add {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .project-board-lane-dot {
     background: rgba(244, 244, 245, 0.42);
     display: inline-block;
@@ -2668,6 +2860,7 @@ styleElement.textContent = `
     width: 7px;
   }
 
+  .project-board-lane[data-tone="muted"] .project-board-lane-dot { background: #8f9aa7; }
   .project-board-lane[data-tone="blue"] .project-board-lane-dot { background: #5ea4ff; }
   .project-board-lane[data-tone="amber"] .project-board-lane-dot { background: #e7b85b; }
   .project-board-lane[data-tone="violet"] .project-board-lane-dot { background: #b18cff; }

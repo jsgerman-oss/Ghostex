@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
   appendImageMarkdownToDescription,
+  BOARD_COLUMNS,
+  beadsStatusToBoardStatus,
+  boardStatusBeadsValue,
+  buildAgentWorkPrompt,
   extractDescriptionImagePreviews,
   extractDescriptionImageReferences,
   filterBoardTickets,
@@ -124,5 +128,47 @@ describe("project board filters", () => {
     expect(filterBoardTickets(tickets, "", "0", "XS").map((ticket) => ticket.id)).toEqual([
       "urgent-xs",
     ]);
+  });
+});
+
+describe("buildAgentWorkPrompt", () => {
+  const ticket: BoardTicket = {
+    boardStatus: "todo",
+    displayId: "ZMU-41",
+    id: "zmux-zkr",
+    priority: 2,
+    status: "open",
+    title: "Generating title...",
+    description: "Document bead progress in comments after each agent turn.",
+  };
+
+  test("includes bead comment guidance and status workflow commands", () => {
+    const prompt = buildAgentWorkPrompt(ticket);
+
+    expect(prompt).toContain("Work on bead zmux-zkr (ZMU-41): Generating title...");
+    expect(prompt).toContain("Document bead progress in comments after each agent turn.");
+    expect(prompt).toContain('bd comment zmux-zkr "<summary>"');
+    expect(prompt).toContain("user-facing requirements");
+    expect(prompt).toContain("Do not list specific files or line numbers.");
+    expect(prompt).toContain("bd update zmux-zkr --status backlog");
+    expect(prompt).toContain("bd update zmux-zkr --status in_progress");
+    expect(prompt).toContain("bd update zmux-zkr --status test");
+    expect(prompt).toContain("bd update zmux-zkr --status review");
+    expect(prompt).toContain("bd close zmux-zkr");
+  });
+});
+
+describe("project board statuses", () => {
+  test("places Backlog before Todo and persists it as a Beads custom status", () => {
+    expect(BOARD_COLUMNS.map((column) => column.key)).toEqual([
+      "backlog",
+      "todo",
+      "in_progress",
+      "test",
+      "review",
+      "done",
+    ]);
+    expect(beadsStatusToBoardStatus("backlog")).toBe("backlog");
+    expect(boardStatusBeadsValue("backlog")).toBe("backlog");
   });
 });
