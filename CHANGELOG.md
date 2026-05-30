@@ -1,6 +1,14 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-30-12:30: Release notes for 3.23.0 must include all user-facing commits after v3.22.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-30-14:05: Release notes for 3.24.0 must include all user-facing commits after v3.23.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+
+## 3.24.0 - 2026-05-30
+
+- Collapsed macOS agent and priority selects now show friendly labels instead of raw persisted values in Git commit review, session rename, worktree creation, agent configuration, settings, and Project board dialogs.
+- Project name hovers in the sidebar now show a richer tooltip with project kind, path, git file counts, and current session/worktree totals.
+- Native workarea, commands pane, and titlebar button separators use a subtler shared boundary color for cleaner chrome alignment.
+- The Commands pane footer tooltip opens to the left of its icon so it no longer covers footer controls while the rest of the sidebar keeps below-trigger labels.
+- First-prompt title generation overlay copy now reads "Generating title" without trailing ellipsis.
 
 ## 3.23.0 - 2026-05-30
 

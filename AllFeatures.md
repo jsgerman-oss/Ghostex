@@ -1,6 +1,9 @@
 
 ## All features:
 
+- Collapsed macOS selects show friendly agent and priority labels instead of raw persisted values across Git, rename, worktree, settings, and Project board dialogs.
+- Project name hovers in the sidebar show kind, path, git stats, and session/worktree counts in a richer metadata tooltip.
+- Native workarea, commands pane, and titlebar separators share a subtler boundary color, and the Commands pane footer tooltip opens to the left of its icon.
 - Sidebar controls migrated to Base UI with refreshed app theme styling across modals, menus, and session chrome.
 - First-launch preferences page lets new installs set common defaults before opening sessions.
 - Git workflows include Sync with Main, split Git menus by action type, prompt-agent Git PR review, unified merge flow, and persistent running toasts for long Git/worktree actions.
