@@ -1518,6 +1518,46 @@
   color: #a5a5a5;
 }
 
+.project-title-tooltip-content {
+  /*
+   * CDXC:ProjectTitleTooltips 2026-05-30-07:33:
+   * Project-name hover uses a richer metadata tooltip than action buttons. Keep
+   * the shared square bordered tooltip chrome, but give the project name a
+   * brighter medium-weight heading and keep path/git/session metadata muted and
+   * readable in the narrow sidebar.
+   */
+  max-width: min(330px, calc(100vw - 16px)) !important;
+  min-width: min(260px, calc(100vw - 16px));
+  padding: 9px 12px !important;
+  text-align: left;
+  white-space: normal !important;
+}
+
+.project-title-tooltip {
+  display: grid;
+  gap: 8px;
+}
+
+.project-title-tooltip-heading {
+  color: var(--ghostex-tooltip-strong-foreground, rgba(255, 255, 255, 0.94));
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.project-title-tooltip-body {
+  color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
+  display: grid;
+  font-size: 12px;
+  font-weight: 400;
+  gap: 5px;
+  line-height: 1.35;
+}
+
+.project-title-tooltip-path {
+  overflow-wrap: anywhere;
+}
+
 /*
  * CDXC:ProjectHeaders 2026-05-18-09:26:
  * Active project indication is the absence of the inactive 50% content dimming,

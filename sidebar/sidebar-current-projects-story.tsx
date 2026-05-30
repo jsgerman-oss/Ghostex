@@ -252,6 +252,7 @@ function createCurrentProjectGroup(
     layoutVisibleCount: activeGroup?.layoutVisibleCount ?? 1,
     projectContext: {
       canRemoveProject: true,
+      path: project.path ?? "",
       editor: {
         diffStats: createDefaultSidebarProjectDiffStats(),
         isOpen: false,

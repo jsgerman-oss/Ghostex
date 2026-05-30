@@ -9012,6 +9012,7 @@ function createCombinedProjectSidebarGroup(project: NativeProject): SidebarSessi
     layoutVisibleCount: activeGroup?.layoutVisibleCount ?? 1,
     projectContext: {
       canRemoveProject: true,
+      path: project.path,
       editor: createSidebarProjectEditorState(project),
       theme: project.theme ?? resolveSidebarTheme(settings.sidebarTheme, "dark"),
       themeColor: project.themeColor,
@@ -25782,7 +25783,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
        * CDXC:SessionTitleSync 2026-05-30-05:44:
        * AppKit owns native terminal panes, so first-prompt title generation
        * must be mirrored through pane chrome sync. Swift draws the blocking
-       * "Generating title..." overlay and keeps terminal input suppressed.
+       * "Generating title" overlay and keeps terminal input suppressed.
        */
       sessionFirstPromptTitleGenerationSessionIds.push(nativeSessionId);
     }

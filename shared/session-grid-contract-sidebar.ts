@@ -293,6 +293,7 @@ export type SidebarSessionGroup = {
   layoutVisibleCount: VisibleSessionCount;
   projectContext?: {
     canRemoveProject: boolean;
+    path: string;
     /**
      * CDXC:EditorPanes 2026-05-06-14:21
      * Combined project cards expose one project-owned code editor surface.

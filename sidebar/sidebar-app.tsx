@@ -352,6 +352,7 @@ type SidebarProjectGroupLookup = Record<
   string,
   | {
       projectContext?: {
+        path?: string;
         editor: {
           projectId: string;
         };

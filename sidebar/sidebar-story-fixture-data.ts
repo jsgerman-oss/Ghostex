@@ -13,6 +13,7 @@ function secondsAgo(seconds: number): string {
 function createStoryProjectContext(projectId: string): NonNullable<SidebarStoryGroup["projectContext"]> {
   return {
     canRemoveProject: true,
+    path: `/Users/story/dev/${projectId}`,
     /**
      * CDXC:ProjectDiffStats 2026-05-15-14:33:
      * Sidebar stories keep project editor state in project context because the

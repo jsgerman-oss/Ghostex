@@ -562,6 +562,7 @@ function haveSameSidebarProjectContext(
    */
   return (
     left.canRemoveProject === right.canRemoveProject &&
+    left.path === right.path &&
     left.theme === right.theme &&
     left.themeColor === right.themeColor &&
     left.worktree?.branch === right.worktree?.branch &&

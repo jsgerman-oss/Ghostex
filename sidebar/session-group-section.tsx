@@ -521,6 +521,58 @@ function ProjectHeaderDiffStats({
   );
 }
 
+function formatProjectTooltipGitStats(stats: SidebarProjectDiffStats): string {
+  if (stats.isLoading) {
+    return "Git: loading changes";
+  }
+
+  if (!stats.isRepo) {
+    return "Git: not a repository";
+  }
+
+  const fileCount = Math.max(0, stats.files);
+  return `${fileCount} ${formatCountLabel(fileCount, "file")} changed  +${formatProjectEditorLineCount(
+    stats.additions,
+  )}  -${formatProjectEditorLineCount(
+    stats.deletions,
+  )}`;
+}
+
+function formatCountLabel(count: number, singular: string): string {
+  return Math.abs(count) === 1 ? singular : `${singular}s`;
+}
+
+function ProjectTitleTooltip({
+  projectKindLabel,
+  projectPath,
+  sessionCount,
+  stats,
+  title,
+  worktreeCount,
+}: {
+  projectKindLabel: string;
+  projectPath: string;
+  sessionCount: number;
+  stats: SidebarProjectDiffStats;
+  title: string;
+  worktreeCount: number;
+}) {
+  return (
+    <div className="project-title-tooltip">
+      <div className="project-title-tooltip-heading">{title}</div>
+      <div className="project-title-tooltip-body">
+        <div>{projectKindLabel}</div>
+        <div className="project-title-tooltip-path">{projectPath}</div>
+        <div>{formatProjectTooltipGitStats(stats)}</div>
+        <div>
+          {sessionCount} {formatCountLabel(sessionCount, "session")} · {worktreeCount}{" "}
+          {formatCountLabel(worktreeCount, "worktree")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export type SessionGroupSectionProps = {
   autoEdit: boolean;
   canClose: boolean;
@@ -612,6 +664,16 @@ export function SessionGroupSection({
   const group = useSidebarStore((state) => state.groupsById[groupId]);
   const storedSessionIds = useSidebarStore((state) => state.sessionIdsByGroup[groupId] ?? []);
   const sessionsById = useSidebarStore((state) => state.sessionsById);
+  const projectWorktreeCount = useSidebarStore((state) => {
+    const projectId = state.groupsById[groupId]?.projectContext?.editor.projectId;
+    if (!projectId) {
+      return 0;
+    }
+
+    return Object.values(state.groupsById).filter(
+      (candidate) => candidate?.projectContext?.worktree?.parentProjectId === projectId,
+    ).length;
+  });
   const orderedSessionIds = orderedSessionIdsProp ?? storedSessionIds;
   const [contextMenuPosition, setContextMenuPosition] = useState<GroupContextMenuPosition>();
   const [customThemeColor, setCustomThemeColor] = useState(DEFAULT_WORKSPACE_THEME_COLOR);
@@ -873,6 +935,24 @@ export function SessionGroupSection({
    */
   const shouldSuppressProjectCollapseTooltip =
     Boolean(projectContext) && canToggleCollapsed;
+  /*
+   * CDXC:ProjectTitleTooltips 2026-05-30-07:33:
+   * Hovering a project name should show a richer sidebar tooltip, not the
+   * collapse/expand hint. The tooltip title uses brighter medium-weight text,
+   * then shows factual project metadata: project kind, path, git file/+/- stats,
+   * and the current session/worktree counts.
+   */
+  const projectTitleTooltip =
+    projectContext && !isEditing ? (
+      <ProjectTitleTooltip
+        projectKindLabel={projectContext.worktree ? "Worktree project" : "Repository project"}
+        projectPath={projectContext.path}
+        sessionCount={actualSessionCount}
+        stats={projectContext.editor.diffStats}
+        title={group.title}
+        worktreeCount={projectWorktreeCount}
+      />
+    ) : undefined;
   const createSessionTooltip = isChatCollection ? "Create a Chat" : "Create a Terminal";
   const primaryProjectAgent =
     agents.find((agent) => agent.agentId === primaryProjectAgentLauncherId) ?? agents[0];
@@ -1490,22 +1570,29 @@ export function SessionGroupSection({
                   ref={isChatCollection ? undefined : sortable.handleRef}
                 >
                   {shouldSuppressProjectCollapseTooltip ? (
-                    <button
-                      aria-controls={canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined}
-                      aria-disabled={!canToggleCollapsed && !isEmptyProjectGroup}
-                      aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
-                      aria-label={groupTitleActionLabel}
-                      className="group-title-button"
-                      data-empty-project={String(isEmptyProjectGroup)}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        toggleCollapsedOrSelectEmptyProject();
-                      }}
-                      type="button"
+                    <AppTooltip
+                      content={projectTitleTooltip}
+                      contentClassName="project-title-tooltip-content"
                     >
-                      <span className="group-title section-titlebar-label">{group.title}</span>
-                    </button>
+                      <button
+                        aria-controls={
+                          canToggleCollapsed && !isCollapsed ? sessionsRegionId : undefined
+                        }
+                        aria-disabled={!canToggleCollapsed && !isEmptyProjectGroup}
+                        aria-expanded={canToggleCollapsed ? !isCollapsed : undefined}
+                        aria-label={groupTitleActionLabel}
+                        className="group-title-button"
+                        data-empty-project={String(isEmptyProjectGroup)}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          toggleCollapsedOrSelectEmptyProject();
+                        }}
+                        type="button"
+                      >
+                        <span className="group-title section-titlebar-label">{group.title}</span>
+                      </button>
+                    </AppTooltip>
                   ) : (
                     <AppTooltip content={groupTitleActionLabel}>
                       <button
