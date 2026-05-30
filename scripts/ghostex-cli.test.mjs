@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +12,7 @@ import {
   buildSessionPickerRows,
   buildSessionAttachCommand,
   computerUseUsage,
+  createCliSshForwardPlan,
   formatCompactSessionLine,
   generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
@@ -24,6 +26,8 @@ import {
   parseRename,
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
+  requestGxserverRpc,
+  resolveGxserverServerTarget,
   resolveListedSessions,
   resolveZehnLaunchFromRoot,
   usage,
@@ -45,6 +49,35 @@ function strictAndroidReleaseEnv(overrides = {}) {
     GHOSTEX_ANDROID_CONFIRM_CLEAR_DATA: "1",
     ...overrides,
   };
+}
+
+async function withGxserverFixture(callback, options = {}) {
+  const body = options.body ?? {
+    ok: true,
+    product: "gxserver",
+    protocolVersion: 1,
+    requestId: "fixture-request",
+    result: { sessions: [] },
+  };
+  const server = http.createServer(async (request, response) => {
+    expect(request.headers.authorization).toBe("Bearer test-token");
+    expect(request.headers["x-gxserver-protocol-version"]).toBe("1");
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(chunk);
+    }
+    const requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    expect(requestBody.protocolVersion).toBe(1);
+    response.writeHead(options.status ?? 200, { "content-type": "application/json" });
+    response.end(JSON.stringify(body));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  try {
+    await callback({ baseUrl: `http://127.0.0.1:${address.port}` });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 describe("ghostex CLI Android remote-session contract", () => {
@@ -719,6 +752,87 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(command).toBe("zmx attach ghostex-session-8");
   });
 
+  test("sends gxserver auth and protocol headers for RPC requests", async () => {
+    /**
+     * CDXC:GxserverCliCutover 2026-05-30-15:15:
+     * The Node gx/ghostex CLI reads the local gxserver token itself and sends
+     * authenticated protocol-versioned HTTP RPCs. This replaces the retired
+     * macOS app bridge for session inventory, lifecycle, and mobile callbacks.
+     */
+    await withGxserverFixture(async ({ baseUrl }) => {
+      const result = await requestGxserverRpc(
+        { baseUrl, token: "test-token" },
+        "/api/listSessions",
+        { projectId: "P3a91" },
+        { timeoutMs: 1_000 },
+      );
+
+      expect(result).toMatchObject({
+        ok: true,
+        requestId: "fixture-request",
+        sessions: [],
+      });
+    });
+  });
+
+  test("hard-fails gxserver protocol mismatch with update guidance", async () => {
+    await withGxserverFixture(
+      async ({ baseUrl }) => {
+        await expect(
+          requestGxserverRpc(
+            { baseUrl, token: "test-token" },
+            "/api/listSessions",
+            {},
+            { timeoutMs: 1_000 },
+          ),
+        ).rejects.toThrow(/Update Ghostex and gxserver/);
+      },
+      {
+        body: {
+          error: "protocolMismatch",
+          message: "gxserver protocol mismatch. Expected protocol 1, got 999. Update Ghostex and gxserver so their protocol versions match.",
+          ok: false,
+          product: "gxserver",
+          protocolVersion: 1,
+        },
+        status: 426,
+      },
+    );
+  });
+
+  test("reports missing local gxserver with a clear start command", async () => {
+    await expect(
+      requestGxserverRpc(
+        { baseUrl: "http://127.0.0.1:9", token: "test-token" },
+        "/api/listSessions",
+        {},
+        { timeoutMs: 50 },
+      ),
+    ).rejects.toThrow(/Start it with "gxserver start"/);
+  });
+
+  test("plans remote ssh targets and direct trusted-network targets with explicit tokens", async () => {
+    /**
+     * CDXC:GxserverRemoteCli 2026-05-30-15:25:
+     * SSH remote support is a helper plan around a forwarded gxserver listener,
+     * while direct/Tailscale targets require explicit auth token material from
+     * the credential store or a one-shot flag. The CLI must not fall back to the
+     * retired macOS bridge for remote refs.
+     */
+    expect(createCliSshForwardPlan({ id: "studio", sshUrl: "ssh://madda@example.test" }, { localPort: 60000 })).toMatchObject({
+      baseUrl: "http://127.0.0.1:60000",
+      checkCommand: ["ssh", "madda@example.test", "command -v gxserver >/dev/null && gxserver status --json"],
+      portForwardCommand: ["ssh", "-N", "-L", "60000:127.0.0.1:58744", "madda@example.test"],
+      startCommand: ["ssh", "madda@example.test", "gxserver start --background"],
+    });
+    await expect(resolveGxserverServerTarget({ server: "https://studio.test:58745", token: "token-1" })).resolves.toMatchObject({
+      baseUrl: "https://studio.test:58745",
+      kind: "direct",
+      token: "token-1",
+    });
+    await expect(resolveGxserverServerTarget({ server: "studio" })).rejects.toThrow(/was not found/);
+  });
+
   test("preserves sidebar project and session order from the inventory", () => {
     const grouped = groupSessionsPreservingSidebarOrder([
       {
@@ -911,12 +1025,14 @@ describe("ghostex CLI Android remote-session contract", () => {
       stderr: expect.stringContaining("GHOSTEX_ANDROID_SIGNING_STORE_FILE does not exist"),
     });
 
+    const inCheckoutKeystore = path.resolve("android/.ghostex-release-test-keystore");
+    await writeFile(inCheckoutKeystore, "test");
     try {
       await execFileAsync("bash", [
         path.resolve("scripts/ghostex-android-release-readiness.sh"),
       ], {
         env: strictAndroidReleaseEnv({
-          GHOSTEX_ANDROID_SIGNING_STORE_FILE: path.resolve("android/README.md"),
+          GHOSTEX_ANDROID_SIGNING_STORE_FILE: inCheckoutKeystore,
         }),
       });
       throw new Error("strict Android release runner unexpectedly accepted an in-checkout signing file");
@@ -925,6 +1041,8 @@ describe("ghostex CLI Android remote-session contract", () => {
       expect(error.stderr).toContain("must live outside the Android checkout");
       expect(error.stdout).not.toContain("ghostex-cli.mjs android-check");
       expect(error.stdout).not.toContain("./gradlew");
+    } finally {
+      await rm(inCheckoutKeystore, { force: true });
     }
   });
 });

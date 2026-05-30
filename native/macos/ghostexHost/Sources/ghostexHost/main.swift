@@ -28,11 +28,13 @@ private func runBundledCli(arguments: [String]) -> Never {
    Pass the bundle-derived dev home and bridge port into the bundled CLI so
    `ghostex-dev sessions` uses ~/.ghostex-dev and the dev WebSocket bridge instead
    of production state.
+   CDXC:GxserverBootstrap 2026-05-30-15:39:
+   gxserver owns 58744. Dev CLI bridge automation must use 58742 so launching ghostex-dev cannot occupy or hide the daemon API port.
    */
   environment["GHOSTEX_HOME"] = GhostexAppStorage.sharedRootDirectory.path
-  if Bundle.main.bundleIdentifier == "com.madda.ghostex-dev.host" {
+  if isGhostexDevBundleIdentifier(Bundle.main.bundleIdentifier) {
     environment["GHOSTEX_APP_VARIANT"] = "dev"
-    environment["GHOSTEX_CLI_PORT"] = "58744"
+    environment["GHOSTEX_CLI_PORT"] = "58742"
   }
   process.environment = environment
   process.standardInput = FileHandle.standardInput
@@ -46,6 +48,14 @@ private func runBundledCli(arguments: [String]) -> Never {
     fputs("Ghostex CLI failed to start node: \(error.localizedDescription)\n", stderr)
     exit(1)
   }
+}
+
+private func isGhostexDevBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
+  /**
+   CDXC:GxserverVerification 2026-05-30-16:25:
+   Worktree verification needs a uniquely named dev bundle so LaunchServices does not reuse /Applications/Ghostex-dev.app. Treat every com.madda.ghostex-dev... bundle as the dev flavor so the CLI bridge stays off gxserver port 58744 while preserving the production bundle's existing port.
+   */
+  bundleIdentifier?.hasPrefix("com.madda.ghostex-dev") == true
 }
 
 let cliArguments = terminalCliArguments()

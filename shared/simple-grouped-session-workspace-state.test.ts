@@ -1830,6 +1830,21 @@ describe("syncSessionOrderAcrossSimpleWorkspaceGroups", () => {
 });
 
 describe("createSessionInSimpleWorkspace", () => {
+  test("should preserve an explicit session id when daemon-created sessions are placed locally", () => {
+    const result = createSessionInSimpleWorkspace(
+      createDefaultGroupedSessionWorkspaceSnapshot(),
+      {
+        sessionId: "G1abc",
+        title: "Daemon Session",
+      },
+    );
+
+    expect(result.session?.sessionId).toBe("G1abc");
+    expect(result.session?.displayId).toBe("00");
+    expect(result.snapshot.groups[0]?.snapshot.focusedSessionId).toBe("G1abc");
+    expect(result.snapshot.groups[0]?.snapshot.visibleSessionIds).toEqual(["G1abc"]);
+  });
+
   test("should keep split mode and surface the new session when adding a session", () => {
     let snapshot = createDefaultGroupedSessionWorkspaceSnapshot();
     const firstResult = createSessionInSimpleWorkspace(snapshot);

@@ -27,7 +27,7 @@ final class NativeHostBridge {
      CDXC:CliBridgeTransport 2026-05-15-20:03:
      Ctrl+G rich prompt editing reaches native through the local CLI bridge.
      Network.framework's WebSocket listener can fail before binding on this
-     macOS setup, leaving no listener on 58743/58744 and making Ctrl+G fall back
+     macOS setup, leaving no listener on the native bridge port and making Ctrl+G fall back
      to inline vi. Use a loopback-only newline JSON TCP listener instead; browser
      pages cannot open raw TCP sockets, and the per-launch auth token still gates
      every native command from local processes.

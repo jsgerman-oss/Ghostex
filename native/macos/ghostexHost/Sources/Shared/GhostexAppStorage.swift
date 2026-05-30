@@ -84,6 +84,13 @@ enum GhostexAppStorage {
       if selectedValue == legacyValue, sharedValue != legacyValue, let selectedValue {
         try? persistSharedSidebarStorage(key: key, payloadJson: selectedValue)
       }
+      if selectedValue == sharedValue,
+        sharedValue != legacyValue,
+        let selectedValue,
+        shouldReplaceLegacyLocalStorageValue(key: file.localStorageKey, payloadJson: selectedValue)
+      {
+        persistLegacyDefaultAppLocalStorageValue(key: file.localStorageKey, payloadJson: selectedValue)
+      }
       if let selectedValue,
         selectedValue == sharedValue,
         !isSharedSidebarStorageFileNormalized(file.fileName, payloadJson: selectedValue)
@@ -159,6 +166,20 @@ enum GhostexAppStorage {
       return sharedValue
     }
     if key == "ghostex-native-projects",
+      isGxserverMigratedProjectSnapshot(sharedValue)
+    {
+      /**
+       CDXC:GxserverMigration 2026-05-30-17:45:
+       Once gxserver has rewritten the shared sidebar snapshot to canonical P/G IDs, the shared file is authoritative. Legacy WK localStorage may still contain the larger pre-daemon `project-*`/`g-*` tree, but choosing it would make the macOS app overwrite the migrated file and send stale IDs back to gxserver.
+       */
+      return sharedValue
+    }
+    if key == "ghostex-native-previous-sessions",
+      isGxserverMigratedPreviousSessionsSnapshot(sharedValue)
+    {
+      return sharedValue
+    }
+    if key == "ghostex-native-projects",
       projectSnapshotScore(legacyValue) > projectSnapshotScore(sharedValue)
     {
       return legacyValue
@@ -169,6 +190,76 @@ enum GhostexAppStorage {
       return legacyValue
     }
     return sharedValue
+  }
+
+  private static func shouldReplaceLegacyLocalStorageValue(
+    key: String,
+    payloadJson: String
+  ) -> Bool {
+    switch key {
+    case "ghostex-native-projects":
+      return isGxserverMigratedProjectSnapshot(payloadJson)
+    case "ghostex-native-previous-sessions":
+      return isGxserverMigratedPreviousSessionsSnapshot(payloadJson)
+    default:
+      return false
+    }
+  }
+
+  private static func isGxserverMigratedProjectSnapshot(_ payloadJson: String) -> Bool {
+    guard let data = payloadJson.data(using: .utf8),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return false
+    }
+    if object["gxserverMigratedAt"] is String {
+      return true
+    }
+    guard let projects = object["projects"] as? [[String: Any]], !projects.isEmpty else {
+      return false
+    }
+    let projectIds = projects.compactMap { $0["projectId"] as? String }
+    return !projectIds.isEmpty && projectIds.allSatisfy(isCanonicalGxserverProjectId)
+  }
+
+  private static func isGxserverMigratedPreviousSessionsSnapshot(_ payloadJson: String) -> Bool {
+    guard let data = payloadJson.data(using: .utf8),
+      let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+      !sessions.isEmpty
+    else {
+      return false
+    }
+    return sessions.allSatisfy { item in
+      let projectId = item["projectId"] as? String
+      let sessionId = item["sessionId"] as? String
+      return (projectId == nil || projectId.map(isCanonicalGxserverProjectId) == true)
+        && (sessionId == nil || sessionId.map(isCanonicalGxserverSessionId) == true)
+    }
+  }
+
+  private static func isCanonicalGxserverProjectId(_ value: String) -> Bool {
+    isCanonicalGxserverId(value, prefix: "P", suffixLength: 4)
+  }
+
+  private static func isCanonicalGxserverSessionId(_ value: String) -> Bool {
+    isCanonicalGxserverId(value, prefix: "G", suffixLength: 4)
+  }
+
+  private static func isCanonicalGxserverId(
+    _ value: String,
+    prefix: Character,
+    suffixLength: Int
+  ) -> Bool {
+    guard value.first == prefix, value.count == suffixLength + 1 else {
+      return false
+    }
+    let suffix = value.dropFirst()
+    guard let first = suffix.first, first.isNumber else {
+      return false
+    }
+    return suffix.allSatisfy { character in
+      character.isNumber || ("a"..."z").contains(character)
+    }
   }
 
   private static func projectSnapshotScore(_ payloadJson: String) -> Int {
@@ -244,6 +335,63 @@ enum GhostexAppStorage {
     return nil
   }
 
+  private static func persistLegacyDefaultAppLocalStorageValue(key: String, payloadJson: String) {
+    /**
+     CDXC:GxserverMigration 2026-05-30-17:45:
+     First launch after the gxserver cutover must make both storage sources agree on canonical P/G IDs. The sidebar can read WK localStorage before its first shared-file write, so replacing the old localStorage blob prevents stale `project-*`/`g-*` IDs from rehydrating native layout and causing gxserver attach notFound failures.
+     */
+    guard sharedHomeDirectoryName == ".ghostex",
+      Bundle.main.bundleIdentifier == "com.madda.ghostex.host"
+    else {
+      return
+    }
+    let webKitRoot = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("Library/WebKit/com.madda.ghostex.host", isDirectory: true)
+    guard let enumerator = FileManager.default.enumerator(
+      at: webKitRoot,
+      includingPropertiesForKeys: nil,
+      options: [.skipsHiddenFiles]
+    ) else {
+      return
+    }
+    for case let url as URL in enumerator where url.lastPathComponent == "localstorage.sqlite3" {
+      guard readLocalStorageValue(databaseURL: url, key: key) != nil else {
+        continue
+      }
+      writeLocalStorageValue(databaseURL: url, key: key, payloadJson: payloadJson)
+    }
+  }
+
+  private static func writeLocalStorageValue(
+    databaseURL: URL,
+    key: String,
+    payloadJson: String
+  ) {
+    guard let valueData = payloadJson.data(using: .utf16LittleEndian) else {
+      return
+    }
+    let escapedKey = key.replacingOccurrences(of: "'", with: "''")
+    let hexValue = hexString(from: valueData)
+    let process = Process()
+    let input = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    process.arguments = [databaseURL.path]
+    process.standardInput = input
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    do {
+      try process.run()
+      let sql = "insert or replace into ItemTable(key, value) values('\(escapedKey)', x'\(hexValue)');\n"
+      if let data = sql.data(using: .utf8) {
+        input.fileHandleForWriting.write(data)
+      }
+      input.fileHandleForWriting.closeFile()
+      process.waitUntilExit()
+    } catch {
+      try? input.fileHandleForWriting.close()
+    }
+  }
+
   private static func readLocalStorageValue(databaseURL: URL, key: String) -> String? {
     let escapedKey = key.replacingOccurrences(of: "'", with: "''")
     let process = Process()
@@ -293,6 +441,10 @@ enum GhostexAppStorage {
       return value
     }
     return nil
+  }
+
+  private static func hexString(from data: Data) -> String {
+    data.map { String(format: "%02X", $0) }.joined()
   }
 
   private static func dataFromHexString(_ hex: String) -> Data? {

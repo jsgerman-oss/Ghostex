@@ -296,6 +296,14 @@ esac
 )
 cp "$ZEHN_ROOT/zig-out/bin/zehn" "$WEB_DIR/bin/zehn"
 chmod 755 "$WEB_DIR/bin/zehn"
+# CDXC:GxserverPackaging 2026-05-30-15:49: The macOS app bundles the same gxserver server package used by standalone installs. The app only starts/reuses gxserver through system Node and does not own shutdown, so app resources must include compiled gxserver JS plus pinned zmx/zehn artifacts without bundling Node or Beads.
+(
+	cd "$REPO_ROOT/gxserver"
+	npm run build
+	npm run package:app -- --zmx-bin "$WEB_DIR/bin/zmx" --zehn-bin "$WEB_DIR/bin/zehn"
+)
+rm -rf "$WEB_DIR/gxserver"
+cp -R "$REPO_ROOT/gxserver/dist/server-package" "$WEB_DIR/gxserver"
 mkdir -p "$WEB_DIR/cli/node_modules"
 cp -R "$REPO_ROOT/node_modules/ws" "$WEB_DIR/cli/node_modules/ws"
 rm -rf "$WEB_DIR/monaco"

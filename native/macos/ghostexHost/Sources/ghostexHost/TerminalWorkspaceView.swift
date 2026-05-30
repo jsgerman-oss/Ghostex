@@ -2686,16 +2686,47 @@ final class TerminalWorkspaceView: NSView {
     } else {
       sessionPersistenceName = nil
     }
+    let gxserverZmxAttachCommand =
+      sessionPersistenceProvider == .zmx
+      ? command.shellAttachCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
+      : nil
+    if sessionPersistenceProvider == .zmx,
+      gxserverZmxAttachCommand?.isEmpty != false
+    {
+      /**
+       CDXC:GxserverTerminalAttach 2026-05-30-15:50:
+       The macOS terminal renderer is no longer allowed to synthesize zmx attach
+       state. gxserver owns provider existence, missing-cwd restore blocks, and
+       startup replay decisions; Swift may only render the returned shell
+       command in Ghostty and report terminal readiness/tty/pid/title events.
+       */
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.createTerminal.gxserverAttachMissing",
+        details: [
+          "requestedSessionId": command.sessionId,
+          "sessionPersistenceName": sessionPersistenceName ?? "",
+          "sessionPersistenceProvider": sessionPersistenceProvider?.rawValue ?? "off",
+        ],
+        force: forcePreviousSessionRestoreDiagnostics)
+      sendEvent(
+        .terminalError(
+          sessionId: command.sessionId,
+          message: "gxserver did not provide a zmx attach command for this terminal."))
+      return
+    }
     let persistenceSessionExisted =
-      sessionPersistenceProvider.flatMap { provider in
-        sessionPersistenceName.map { sessionName in
-          NativeSessionPersistenceMode.sessionExists(
-            provider: provider,
-            sessionName: sessionName
-          ).exists
+      sessionPersistenceProvider == .zmx
+      ? command.persistenceSessionCreated.map { !$0 }
+      : sessionPersistenceProvider.flatMap { provider in
+          sessionPersistenceName.map { sessionName in
+            NativeSessionPersistenceMode.sessionExists(
+              provider: provider,
+              sessionName: sessionName
+            ).exists
+          }
         }
-      }
     if sessionPersistenceProvider != nil,
+      sessionPersistenceProvider != .zmx,
       persistenceSessionExisted == false,
       !NativeSessionPersistenceMode.cwdExists(command.cwd)
     {
@@ -2755,12 +2786,16 @@ final class TerminalWorkspaceView: NSView {
        creation scripts must stay normal shells; the sidebar owns one-shot
        startup input after terminalReady.
        */
-      config.command = NativeSessionPersistenceMode.attachCommand(
-        provider: sessionPersistenceProvider,
-        cwd: command.cwd,
-        title: command.title,
-        sessionName: sessionPersistenceName
-      )
+      if let gxserverZmxAttachCommand {
+        config.command = gxserverZmxAttachCommand
+      } else {
+        config.command = NativeSessionPersistenceMode.attachCommand(
+          provider: sessionPersistenceProvider,
+          cwd: command.cwd,
+          title: command.title,
+          sessionName: sessionPersistenceName
+        )
+      }
     }
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.createTerminal.surfaceInit.start",

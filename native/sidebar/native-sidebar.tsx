@@ -290,6 +290,15 @@ import {
   GHOSTEX_GHOSTTY_MANAGED_CONFIG_KEYS,
   GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES,
 } from "../../shared/ghostty-config-actions";
+import {
+  createNativeSidebarGxserverClient,
+  type NativeSidebarGxserverBootstrap,
+  type NativeSidebarGxserverStartupSnapshot,
+} from "./gxserver-client";
+import type {
+  GxserverAttachSessionMetadataResult,
+  GxserverSessionDomainState,
+} from "../../shared/gxserver-protocol";
 import "../../sidebar/styles.css";
 
 type NativeSessionStatusIndicatorStatus = "attention" | "working" | "available";
@@ -334,9 +343,11 @@ type NativeHostCommand =
 	      env?: Record<string, string>;
 	      diagnosticSource?: "previousSessionRestore";
 	      initialInput?: string;
+      persistenceSessionCreated?: boolean;
 	      sessionId: string;
       sessionPersistenceName?: string;
       sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
+      shellAttachCommand?: string;
       shellCommand?: string;
       title?: string;
       type: "createTerminal";
@@ -801,6 +812,7 @@ type NativeHostEvent =
     }
   | { sessionId: string; threadId: string; title?: string; type: "t3ThreadChanged" }
   | { exitCode: number; requestId: string; stderr: string; stdout: string; type: "processResult" }
+  | { payloadJson: string; type: "gxserverStatus" }
   | { actionId: ghostexHotkeyActionId; type: "nativeHotkey" }
   | { protocolVersion: 1; type: "hostReady" };
 
@@ -814,6 +826,7 @@ type NativeTerminalTextResult = Extract<NativeHostEvent, { type: "terminalTextRe
 type NativeBootstrap = {
   accessibilityPermissionGranted?: boolean;
   cwd?: string;
+  gxserver?: NativeSidebarGxserverBootstrap;
   homeDir?: string;
   sharedSidebarStorage?: {
     previousSessions?: string;
@@ -888,6 +901,8 @@ class SurfaceMessageBus<T> {
  */
 const initialWorkspacePath = window.__ghostex_NATIVE_HOST__?.cwd || nativeFallbackHomeDirectory();
 const initialWorkspaceName = window.__ghostex_NATIVE_HOST__?.workspaceName || "Ghostex";
+const gxserverClient = createNativeSidebarGxserverClient(window.__ghostex_NATIVE_HOST__?.gxserver);
+let gxserverStartupSnapshot: NativeSidebarGxserverStartupSnapshot | undefined;
 const SETTINGS_STORAGE_KEY = "ghostex-native-settings";
 const AGENTS_STORAGE_KEY = "ghostex-native-agents";
 const AGENT_ORDER_STORAGE_KEY = "ghostex-native-agent-order";
@@ -2079,6 +2094,228 @@ function postAppModalHost(message: unknown): void {
 
 function showNativeMessage(level: "info" | "warning" | "error", message: string): void {
   postNative({ level, message, type: "showMessage" });
+}
+
+async function refreshGxserverStartupSnapshot(reason: string): Promise<void> {
+  try {
+    const snapshot = await gxserverClient.fetchStartupSnapshot();
+    const previousSnapshot = gxserverStartupSnapshot;
+    gxserverStartupSnapshot = snapshot;
+    appendSidebarRefreshDebugLog("nativeSidebar.gxserver.snapshot", {
+      previousProjectCount: previousSnapshot?.projects.length,
+      projectCount: snapshot.projects.length,
+      reason,
+      serverId: snapshot.health.serverId,
+      sessionCount: snapshot.sessions.length,
+    });
+  } catch (error) {
+    appendSidebarRefreshDebugLog("nativeSidebar.gxserver.snapshot.failed", {
+      message: error instanceof Error ? error.message : String(error),
+      reason,
+    });
+  }
+}
+
+function handleGxserverStatusEvent(payloadJson: string): void {
+  const status = gxserverClient.applyNativeStatus(payloadJson);
+  if (!status) {
+    appendSidebarRefreshDebugLog("nativeSidebar.gxserver.status.invalid", {
+      payloadPreview: payloadJson.slice(0, 200),
+    });
+    return;
+  }
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.status", {
+    message: status.message,
+    ok: status.ok,
+    state: status.state,
+  });
+  if (status.ok === false && status.message) {
+    showNativeMessage("error", status.message);
+    return;
+  }
+  void refreshGxserverStartupSnapshot("native-status");
+}
+
+type NativeCreateTerminalCommand = Extract<NativeHostCommand, { type: "createTerminal" }>;
+
+function providerSessionStateFromGxserverAttach(
+  attach: GxserverAttachSessionMetadataResult,
+): ProviderSessionState {
+  switch (attach.providerState.lifecycleState) {
+    case "exists":
+      return "exists";
+    case "missing":
+      return "missing";
+    default:
+      return "unknown";
+  }
+}
+
+function markNativeTerminalCreateFailed(
+  projectId: string,
+  sessionId: string,
+  message: string,
+): void {
+  clearNativeTerminalSurfaceCreationPending(sessionId);
+  const terminalState = terminalStateById.get(sessionId);
+  if (terminalState) {
+    terminalState.lifecycleState = "error";
+    terminalState.activity = "attention";
+    terminalState.terminalTitle = message;
+  }
+  handleNativeSessionEnteredAttention(sessionId, "terminal-error");
+  appendTerminalLaunchDebugLog("nativeSidebar.gxserverAttach.failed", {
+    message,
+    projectId,
+    sessionId,
+  });
+  showNativeMessage("error", message);
+  publish();
+}
+
+function stopGxserverZmxSessionRuntime(
+  projectId: string,
+  sessionId: string,
+  reason: "closeTerminal" | "sleepSession",
+): void {
+  /*
+  CDXC:GxserverTerminalAttach 2026-05-30-15:50:
+  Sleep and close keep the native renderer as a view owner only. For zmx-backed sessions, ask gxserver to kill/cache provider runtime state and close the Ghostty surface with preservePersistenceSession so Swift does not duplicate server-owned lifecycle decisions.
+  */
+  void gxserverClient
+    .updateSessionLifecycle(reason === "sleepSession" ? "/api/sleepSession" : "/api/killSession", {
+      projectId: projectId as never,
+      reason,
+      sessionId: sessionId as never,
+    })
+    .catch((error) => {
+      appendTerminalFocusDebugLog("nativeSidebar.gxserverProviderStop.failed", {
+        message: error instanceof Error ? error.message : String(error),
+        projectId,
+        reason,
+        sessionId,
+      });
+      showNativeMessage("error", error instanceof Error ? error.message : String(error));
+    });
+}
+
+function setProjectTerminalSessionPersistence(
+  projectId: string,
+  sessionId: string,
+  sessionPersistenceName: string | undefined,
+  sessionPersistenceProvider: TerminalSessionPersistenceProvider | undefined,
+): void {
+  const project = findProject(projectId);
+  if (!project) {
+    return;
+  }
+  if (project.commandsPanel.sessions.some((session) => session.sessionId === sessionId)) {
+    updateProjectCommandsPanel(projectId, (panel) => ({
+      ...panel,
+      sessions: panel.sessions.map((session) =>
+        session.sessionId === sessionId
+          ? { ...session, sessionPersistenceName, sessionPersistenceProvider }
+          : session,
+      ),
+    }));
+    return;
+  }
+  updateProjectWorkspace(projectId, (workspace) => {
+    const providerUpdate = setTerminalSessionPersistenceProviderInSimpleWorkspace(
+      workspace,
+      sessionId,
+      sessionPersistenceProvider,
+    ).snapshot;
+    return setTerminalSessionPersistenceNameInSimpleWorkspace(
+      providerUpdate,
+      sessionId,
+      sessionPersistenceName,
+    ).snapshot;
+  });
+}
+
+async function postNativeCreateTerminalWithGxserverAttach(
+  command: NativeCreateTerminalCommand,
+  project: NativeProject,
+  sidebarSessionId: string,
+  startupText: string,
+): Promise<void> {
+  if (command.sessionPersistenceProvider !== "zmx") {
+    postNative(command);
+    return;
+  }
+  /*
+  CDXC:GxserverTerminalAttach 2026-05-30-15:50:
+  zmx-backed native terminal creation must ask gxserver for render metadata before Swift creates Ghostty. The sidebar may supply proposed startup text, but gxserver decides whether that text is queued, discarded for an existing provider, or blocked by missing cwd; Swift receives only the shell command string to render.
+  */
+  let attach: GxserverAttachSessionMetadataResult;
+  try {
+    attach = await gxserverClient.fetchAttachSessionMetadata({
+      projectId: project.projectId as never,
+      sessionId: sidebarSessionId as never,
+      startupText,
+    });
+  } catch (error) {
+    markNativeTerminalCreateFailed(
+      project.projectId,
+      sidebarSessionId,
+      error instanceof Error ? error.message : String(error),
+    );
+    return;
+  }
+
+  rememberProviderSessionState(
+    project.projectId,
+    sidebarSessionId,
+    "zmx",
+    attach.zmxName,
+    providerSessionStateFromGxserverAttach(attach),
+  );
+  setProjectTerminalSessionPersistence(project.projectId, sidebarSessionId, attach.zmxName, "zmx");
+  const terminalState = terminalStateById.get(sidebarSessionId);
+  if (terminalState) {
+    terminalState.sessionPersistenceName = attach.zmxName;
+    terminalState.sessionPersistenceProvider = "zmx";
+  }
+
+  if (attach.restoreBlocked) {
+    handleNativeTerminalRestoreBlocked({
+      cwd: attach.restoreBlocked.cwd ?? command.cwd,
+      reason: attach.restoreBlocked.reason,
+      sessionId: command.sessionId,
+      type: "terminalRestoreBlocked",
+    });
+    return;
+  }
+  if (!attach.attachCommand?.trim()) {
+    markNativeTerminalCreateFailed(
+      project.projectId,
+      sidebarSessionId,
+      "gxserver did not return a zmx attach command for this session.",
+    );
+    return;
+  }
+  if (attach.startupTextDisposition === "queueAfterTerminalReady" && attach.startupText?.trim()) {
+    queueNativeTerminalStartupText(sidebarSessionId, attach.startupText);
+  }
+  appendTerminalLaunchDebugLog("nativeSidebar.gxserverAttach.resolved", {
+    persistenceSessionCreated: attach.persistenceSessionCreated,
+    projectId: project.projectId,
+    providerState: attach.providerState.lifecycleState,
+    sessionId: sidebarSessionId,
+    startupTextDisposition: attach.startupTextDisposition,
+    zmxName: attach.zmxName,
+  });
+  postNative({
+    ...command,
+    cwd: attach.cwd ?? command.cwd,
+    initialInput: "",
+    persistenceSessionCreated: attach.persistenceSessionCreated,
+    sessionPersistenceName: attach.zmxName,
+    sessionPersistenceProvider: "zmx",
+    shellAttachCommand: attach.attachCommand,
+  });
+  publish();
 }
 
 function showAppToast(
@@ -4962,6 +5199,24 @@ async function refreshProviderSessionStates(reason: string): Promise<void> {
    */
   const results = await Promise.allSettled(
     targets.map(async (target) => {
+      if (target.provider === "zmx") {
+        /*
+        CDXC:GxserverTerminalAttach 2026-05-30-15:50:
+        Detached zmx liveness is gxserver state in the hard cutover. Sidebar refreshes ask gxserver to probe/cache provider state instead of using the native renderer's older checkPersistenceSession command.
+        */
+        const probe = await gxserverClient.probeSessionProvider({
+          projectId: target.projectId as never,
+          sessionId: target.session.sessionId as never,
+        });
+        return {
+          result: {
+            error: probe.providerState.error,
+            exists: probe.providerState.lifecycleState === "exists",
+            lifecycleState: probe.providerState.lifecycleState,
+          },
+          target,
+        };
+      }
       const result = await checkNativePersistenceSession(target.provider, target.sessionName);
       return { result, target };
     }),
@@ -4972,7 +5227,18 @@ async function refreshProviderSessionStates(reason: string): Promise<void> {
       continue;
     }
     const { result, target } = settled.value;
-    const state: ProviderSessionState = result.error ? "unknown" : result.exists ? "exists" : "missing";
+    const state: ProviderSessionState =
+      "lifecycleState" in result
+        ? result.lifecycleState === "exists"
+          ? "exists"
+          : result.lifecycleState === "missing"
+            ? "missing"
+            : "unknown"
+        : result.error
+          ? "unknown"
+          : result.exists
+            ? "exists"
+            : "missing";
     const key = providerSessionStateKey(target.projectId, target.session.sessionId);
     const previous = providerSessionStateByProjectSessionId.get(key);
     if (
@@ -9697,6 +9963,7 @@ function restoreNativeTerminalSession(
   );
   const shouldQueueProviderStartupText =
     Boolean(sessionPersistenceProvider && initialInput.trim()) &&
+    sessionPersistenceProvider !== "zmx" &&
     shouldQueueProviderStartupTextForRestore(session, project.projectId);
   const shouldAcknowledgeWakeAttention =
     shouldAcknowledgePersistedAttentionForWakeRestore(reason);
@@ -9803,10 +10070,10 @@ function restoreNativeTerminalSession(
   if (shouldQueueProviderStartupText) {
     /**
      * CDXC:AgentTerminalLifecycle 2026-05-27-06:28:
-     * Restored provider sessions queue resume text when provider session existence is
-     * not confirmed running. Native terminalReady owns the final created-vs-
-     * attached check, so existing zmx sessions stay untouched while newly
-     * created provider shells resume the agent instead of staying empty.
+     * Restored tmux/zellij sessions queue resume text when provider session
+     * existence is not confirmed running. zmx restore queue/discard decisions
+     * are gxserver attach metadata now, so existing zmx sessions stay untouched
+     * without relying on native provider probes.
      */
     queueNativeTerminalStartupText(session.sessionId, initialInput);
   }
@@ -9829,7 +10096,7 @@ function restoreNativeTerminalSession(
     });
   }
   markNativeTerminalSurfaceCreationPending(project.projectId, session.sessionId, nativeSessionId, reason);
-  postNative({
+  void postNativeCreateTerminalWithGxserverAttach({
     /**
      * CDXC:CrashRootCause 2026-05-04-11:53
      * Sleeping-session restore uses the same native creation path as new agent
@@ -9847,7 +10114,7 @@ function restoreNativeTerminalSession(
     sessionPersistenceProvider,
     title: session.title,
     type: "createTerminal",
-  });
+  }, project, session.sessionId, initialInput);
   appendRestoreDebugLog("nativeSidebar.restoreNativeTerminalSession", {
     nativeSessionId,
     projectId: project.projectId,
@@ -12992,6 +13259,55 @@ function resolveAgentLaunchCommand(agent: SidebarAgentButton): string {
   });
 }
 
+function createGxserverTerminalRecordForNativeCreate(
+  project: NativeProject,
+  title: string,
+  agentName: string | undefined,
+  options: LaunchAgentTerminalOptions | undefined,
+): GxserverSessionDomainState | undefined {
+  /*
+  CDXC:GxserverSessionIdentity 2026-05-30-18:20:
+  New zmx-backed sessions must be born in gxserver before the macOS sidebar writes local pane layout. This preserves the hard-cutover requirement that G IDs and canonical zmx names come from gxserver, while the React sidebar continues to own grouping, tab, split, and focus placement exactly as before.
+  */
+  try {
+    const session = gxserverClient.createTerminalSessionSync({
+      agentId: agentName,
+      cwd: project.path,
+      kind: agentName ? "agent" : "terminal",
+      lifecycleState: "running",
+      projectId: project.projectId as never,
+      runtimeSettings: {
+        agentName,
+        agentSessionId: options?.agentSessionId,
+      },
+      title,
+    });
+    if (gxserverStartupSnapshot) {
+      gxserverStartupSnapshot = {
+        ...gxserverStartupSnapshot,
+        sessions: [
+          ...gxserverStartupSnapshot.sessions.filter(
+            (candidate) =>
+              candidate.projectId !== session.projectId || candidate.sessionId !== session.sessionId,
+          ),
+          session,
+        ],
+      };
+    }
+    return session;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendTerminalLaunchDebugLog("nativeSidebar.gxserverCreateSession.failed", {
+      agentName,
+      message,
+      projectId: project.projectId,
+      title,
+    });
+    showNativeMessage("error", message);
+    return undefined;
+  }
+}
+
 function createTerminal(
   title = DEFAULT_TERMINAL_SESSION_TITLE,
   initialInput = "",
@@ -13073,8 +13389,17 @@ function createTerminal(
    */
   const sessionPersistenceProvider =
     options?.sessionPersistenceProvider ?? activeSessionPersistenceProviderFromSettings();
+  const gxserverSession =
+    sessionPersistenceProvider === "zmx"
+      ? createGxserverTerminalRecordForNativeCreate(project, title, agentName, options)
+      : undefined;
+  if (sessionPersistenceProvider === "zmx" && !gxserverSession) {
+    return undefined;
+  }
   const sessionPersistenceName = sessionPersistenceProvider
-    ? options?.sessionPersistenceName
+    ? sessionPersistenceProvider === "zmx"
+      ? gxserverSession?.zmxName
+      : options?.sessionPersistenceName
     : undefined;
   const result = createSessionInSimpleWorkspace(
     targetWorkspace,
@@ -13082,6 +13407,7 @@ function createTerminal(
       agentName,
       agentSessionId: options?.agentSessionId,
       initialPresentation: options?.initialPresentation,
+      sessionId: gxserverSession?.sessionId,
       sessionPersistenceName,
       sessionPersistenceProvider,
       terminalEngine: "ghostty-native",
@@ -13204,6 +13530,7 @@ function createTerminal(
   });
   if (
     sessionPersistenceProvider &&
+    sessionPersistenceProvider !== "zmx" &&
     initialInput.trim() &&
     (options?.queueProviderStartupText === true ||
       sessionPersistenceName === undefined ||
@@ -13211,11 +13538,11 @@ function createTerminal(
   ) {
     /**
      * CDXC:AgentTerminalLifecycle 2026-05-27-10:24:
-     * Provider-backed reload/restart replacements can still create a new zmx
+     * tmux/zellij reload/restart replacements can still create a new provider
      * shell even when they reuse a known persistence name. Explicit reload
      * callers must be able to queue restore text; terminalReady remains the
-     * guard that discards it when native attached an already-running provider
-     * session.
+     * guard for those providers, while zmx startup replay decisions now come
+     * from gxserver attach metadata.
      */
     queueNativeTerminalStartupText(session.sessionId, initialInput);
   }
@@ -13225,7 +13552,7 @@ function createTerminal(
     nativeSessionId,
     options?.diagnosticSource ?? "create-terminal",
   );
-  postNative({
+  void postNativeCreateTerminalWithGxserverAttach({
     /**
      * CDXC:CrashRootCause 2026-05-04-09:19
      * Rapid agent launches must not let native createTerminal briefly activate
@@ -13251,7 +13578,7 @@ function createTerminal(
     sessionPersistenceProvider,
     title,
     type: "createTerminal",
-  });
+  }, project, session.sessionId, initialInput);
   publish();
   appendSidebarRefreshDebugLog("nativeSidebar.createTerminal.afterPublish", {
     agentName,
@@ -15401,6 +15728,11 @@ function closeTerminal(
     return;
   }
   const sessionRecord = findSessionRecordInProject(reference.project, reference.sessionId);
+  const terminalState = terminalStateById.get(reference.sessionId);
+  const shouldStopZmxThroughGxserver =
+    options.preservePersistenceSession !== true &&
+    sessionRecord?.kind === "terminal" &&
+    (terminalState?.sessionPersistenceProvider ?? sessionRecord.sessionPersistenceProvider) === "zmx";
   /*
    * CDXC:GitActionToasts 2026-05-30-06:39:
    * Closing a sidebar session is the user's implicit cancel signal for Git
@@ -15437,8 +15769,11 @@ function closeTerminal(
     clearNativeSessionAttentionTracking(reference.sessionId);
     nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
     clearDelayedSendTimer(reference.sessionId, reference.project.projectId);
+    if (shouldStopZmxThroughGxserver) {
+      stopGxserverZmxSessionRuntime(reference.project.projectId, reference.sessionId, "closeTerminal");
+    }
     postNative({
-      preservePersistenceSession: options.preservePersistenceSession,
+      preservePersistenceSession: options.preservePersistenceSession || shouldStopZmxThroughGxserver,
       sessionId: nativeSessionId,
       type: "closeTerminal",
     });
@@ -15480,8 +15815,11 @@ function closeTerminal(
   clearNativeSessionAttentionTracking(reference.sessionId);
   nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
   clearDelayedSendTimer(reference.sessionId, reference.project.projectId);
+  if (shouldStopZmxThroughGxserver) {
+    stopGxserverZmxSessionRuntime(reference.project.projectId, reference.sessionId, "closeTerminal");
+  }
   postNative({
-    preservePersistenceSession: options.preservePersistenceSession,
+    preservePersistenceSession: options.preservePersistenceSession || shouldStopZmxThroughGxserver,
     sessionId: nativeSessionId,
     type:
       sessionRecord?.kind === "t3" || sessionRecord?.kind === "browser"
@@ -16921,6 +17259,10 @@ async function renameNativeSidebarTerminalSession(
 
 function stopNativeSleepingSessionRuntime(sessionId: string, project = activeProject()): void {
   const nativeSessionId = forgetNativeSessionMappingForProject(project.projectId, sessionId);
+  const session = findTerminalSessionInProject(project, sessionId);
+  const terminalState = terminalStateById.get(sessionId);
+  const shouldStopZmxThroughGxserver =
+    (terminalState?.sessionPersistenceProvider ?? session?.sessionPersistenceProvider) === "zmx";
   clearNativeSidebarCommandSessionBySessionId(sessionId);
   terminalStateById.delete(sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
@@ -16934,8 +17276,20 @@ function stopNativeSleepingSessionRuntime(sessionId: string, project = activePro
    * Close the tmux/zmx/zellij provider session too; wake recreates the provider
    * session and runs the stored agent resume command when the sidebar has a
    * restorable identity.
+   *
+   * CDXC:GxserverTerminalAttach 2026-05-30-15:50:
+   * zmx provider shutdown is server-owned after the gxserver cutover. Keep the
+   * native close as a Ghostty surface detach while gxserver handles kill/cache
+   * semantics for sleep.
    */
-  postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
+  if (shouldStopZmxThroughGxserver) {
+    stopGxserverZmxSessionRuntime(project.projectId, sessionId, "sleepSession");
+  }
+  postNative({
+    preservePersistenceSession: shouldStopZmxThroughGxserver,
+    sessionId: nativeSessionId,
+    type: "closeTerminal",
+  });
 }
 
 function setNativeSessionSleeping(sessionId: string, sleeping: boolean): void {
@@ -26794,6 +27148,10 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     pending.resolve(hostEvent);
     return;
   }
+  if (hostEvent.type === "gxserverStatus") {
+    handleGxserverStatusEvent(hostEvent.payloadJson);
+    return;
+  }
   if (hostEvent.type === "nativeHotkey") {
     /**
      * CDXC:Hotkeys 2026-04-28-06:15
@@ -29071,6 +29429,7 @@ if (
     startFirstPromptAutoRenameMonitor();
     startQuickFileMissingMonitor();
     startNativeAutoSleepMonitor();
+    void refreshGxserverStartupSnapshot("startup");
     void refreshGitState();
     void refreshVisibleProjectDiffStats();
     if (restoreActiveProjectEditorAtStartup()) {

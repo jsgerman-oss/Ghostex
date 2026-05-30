@@ -55,9 +55,36 @@ APP_PATH="$(
 	awk -F' = ' '/BUILT_PRODUCTS_DIR/ { print $2; exit }'
 )/$APP_NAME.app"
 
+APP_EXECUTABLE="$INSTALLED_APP/Contents/MacOS/$APP_NAME"
+
+find_running_app_pids() {
+	pgrep -f "^$APP_EXECUTABLE$" 2>/dev/null || true
+}
+
+wait_for_app_exit() {
+	local deadline
+	deadline=$((SECONDS + 8))
+	while [[ $SECONDS -lt $deadline ]]; do
+		if [[ -z "$(find_running_app_pids)" ]]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
 osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
-pkill -x "$APP_NAME" 2>/dev/null || true
-sleep 0.3
+if ! wait_for_app_exit; then
+	# CDXC:LocalStart 2026-05-30-17:03: `bun run start` must launch the freshly built app, not activate an old in-memory process. Match only the installed app executable so replacing the UI app never signals zmx attach processes or the gxserver control plane.
+	running_app_pids="$(find_running_app_pids)"
+	if [[ -n "$running_app_pids" ]]; then
+		kill -TERM $running_app_pids
+	fi
+fi
+if ! wait_for_app_exit; then
+	echo "$APP_NAME did not exit, refusing to replace $INSTALLED_APP while it is still running." >&2
+	exit 1
+fi
 
 # CDXC:MacOSPermissions 2026-05-27-07:24: Install dev builds to a stable
 # /Applications app path before launching so macOS Accessibility permission

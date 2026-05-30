@@ -1,0 +1,309 @@
+import {
+  GXSERVER_PRODUCT,
+  GXSERVER_PROTOCOL_VERSION,
+  type GxserverEndpointPath,
+  type GxserverAttachSessionMetadataParams,
+  type GxserverAttachSessionMetadataResult,
+  type GxserverCreateSessionParams,
+  type GxserverSessionProviderProbeResponse,
+  type GxserverProjectDomainState,
+  type GxserverRpcErrorResponse,
+  type GxserverRpcSuccessResponse,
+  type GxserverServerHealthResponse,
+  type GxserverSessionDomainState,
+} from "../../shared/gxserver-protocol";
+
+export type NativeSidebarGxserverBootstrap = {
+  authToken?: string;
+  baseUrl?: string;
+  protocolVersion?: number;
+  tokenFile?: string;
+};
+
+export type NativeSidebarGxserverStatus = NativeSidebarGxserverBootstrap & {
+  health?: GxserverServerHealthResponse;
+  message?: string;
+  ok?: boolean;
+  state?: string;
+};
+
+export type NativeSidebarGxserverStartupSnapshot = {
+  health: GxserverServerHealthResponse;
+  projects: GxserverProjectDomainState[];
+  sessions: GxserverSessionDomainState[];
+};
+
+const DEFAULT_BASE_URL = "http://127.0.0.1:58744";
+const NETWORK_RETRY_DELAYS_MS = [120, 300, 700] as const;
+
+/*
+CDXC:GxserverSidebarClient 2026-05-30-15:39:
+The native React sidebar is no longer allowed to invent a second backend transport for shared project/session/agent/zmx/Git/log state. Keep gxserver HTTP auth, protocol headers, RPC envelope creation, and response validation in this wrapper so UI code consumes one hard-cutover client instead of mixing direct daemon ownership with compatibility paths.
+*/
+export function createNativeSidebarGxserverClient(
+  bootstrap: NativeSidebarGxserverBootstrap | undefined,
+) {
+  let config: Required<Pick<NativeSidebarGxserverBootstrap, "baseUrl" | "protocolVersion">> &
+    Omit<NativeSidebarGxserverBootstrap, "baseUrl" | "protocolVersion"> = {
+    authToken: bootstrap?.authToken,
+    baseUrl: bootstrap?.baseUrl || DEFAULT_BASE_URL,
+    protocolVersion: bootstrap?.protocolVersion ?? GXSERVER_PROTOCOL_VERSION,
+    tokenFile: bootstrap?.tokenFile,
+  };
+
+  function applyNativeStatus(payloadJson: string): NativeSidebarGxserverStatus | undefined {
+    const parsed = parseObject(payloadJson) as NativeSidebarGxserverStatus | undefined;
+    if (!parsed) {
+      return undefined;
+    }
+    config = {
+      ...config,
+      authToken: parsed.authToken ?? config.authToken,
+      baseUrl: parsed.baseUrl || config.baseUrl,
+      protocolVersion: parsed.protocolVersion ?? config.protocolVersion,
+      tokenFile: parsed.tokenFile ?? config.tokenFile,
+    };
+    return parsed;
+  }
+
+  async function fetchHealth(): Promise<GxserverServerHealthResponse> {
+    const response = await fetchWithRetry(`${config.baseUrl}/api/health/server`, {
+      headers: createHeaders(),
+      method: "GET",
+    }, "GET /api/health/server");
+    const body = await readJson(response);
+    if (!response.ok) {
+      throw createGxserverError(body, response.status);
+    }
+    return parseHealth(body);
+  }
+
+  async function rpc<TResult>(
+    path: GxserverEndpointPath,
+    params: Record<string, unknown> = {},
+  ): Promise<TResult> {
+    const response = await fetchWithRetry(`${config.baseUrl}${path}`, {
+      body: JSON.stringify({
+        params,
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      }),
+      headers: {
+        ...createHeaders(),
+        "content-type": "application/json",
+      },
+      method: "POST",
+    }, `POST ${path}`);
+    const body = await readJson(response);
+    if (!response.ok || !isRpcSuccess(body)) {
+      throw createGxserverError(body, response.status);
+    }
+    return parseRpcResponse<TResult>(body, response.status);
+  }
+
+  function rpcSync<TResult>(
+    path: GxserverEndpointPath,
+    params: Record<string, unknown> = {},
+  ): TResult {
+    const Xhr = globalThis.XMLHttpRequest;
+    if (typeof Xhr !== "function") {
+      throw new Error("gxserver synchronous RPC requires XMLHttpRequest in the native sidebar runtime.");
+    }
+    const xhr = new Xhr();
+    xhr.open("POST", `${config.baseUrl}${path}`, false);
+    const headers = {
+      ...createHeaders(),
+      "content-type": "application/json",
+    };
+    for (const [name, value] of Object.entries(headers)) {
+      xhr.setRequestHeader(name, value);
+    }
+    xhr.send(
+      JSON.stringify({
+        params,
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      }),
+    );
+    const body = xhr.responseText.trim() ? JSON.parse(xhr.responseText) as unknown : undefined;
+    return parseRpcResponse<TResult>(body, xhr.status);
+  }
+
+  async function fetchStartupSnapshot(): Promise<NativeSidebarGxserverStartupSnapshot> {
+    const health = await fetchHealth();
+    const [{ projects }, { sessions }] = await Promise.all([
+      rpc<{ projects: GxserverProjectDomainState[] }>("/api/listProjects"),
+      rpc<{ sessions: GxserverSessionDomainState[] }>("/api/listSessions"),
+    ]);
+    return { health, projects, sessions };
+  }
+
+  async function fetchAttachSessionMetadata(
+    params: GxserverAttachSessionMetadataParams,
+  ): Promise<GxserverAttachSessionMetadataResult> {
+    /*
+    CDXC:GxserverTerminalAttach 2026-05-30-15:50:
+    Native macOS terminal panes are renderers in the hard cutover. Fetch zmx attach metadata through gxserver so provider existence, missing-cwd restore blocks, and startup-text replay/discard decisions stay server-owned before React asks Swift to render a Ghostty command.
+    */
+    const { attach } = await rpc<{ attach: GxserverAttachSessionMetadataResult }>(
+      "/api/attachSessionMetadata",
+      params as unknown as Record<string, unknown>,
+    );
+    return attach;
+  }
+
+  function createTerminalSessionSync(
+    params: GxserverCreateSessionParams,
+  ): GxserverSessionDomainState {
+    /*
+    CDXC:GxserverSessionIdentity 2026-05-30-18:20:
+    The existing macOS creation pipeline is synchronous: callers immediately need the new session ID to place panes, focus tabs, update native mappings, and return CLI summaries. For the gxserver hard cutover, block briefly on the local authenticated daemon createSession RPC so gxserver still generates the canonical G ID before the sidebar mutates client-owned layout state.
+    */
+    const { session } = rpcSync<{ session: GxserverSessionDomainState }>(
+      "/api/createSession",
+      params as unknown as Record<string, unknown>,
+    );
+    return session;
+  }
+
+  async function probeSessionProvider(
+    params: Pick<GxserverAttachSessionMetadataParams, "projectId" | "sessionId">,
+  ): Promise<GxserverSessionProviderProbeResponse> {
+    return rpc<GxserverSessionProviderProbeResponse>(
+      "/api/probeSessionProvider",
+      params as unknown as Record<string, unknown>,
+    );
+  }
+
+  async function updateSessionLifecycle(
+    path: "/api/killSession" | "/api/sleepSession",
+    params: Pick<GxserverAttachSessionMetadataParams, "projectId" | "sessionId"> & { reason?: string },
+  ): Promise<void> {
+    await rpc(path, params as unknown as Record<string, unknown>);
+  }
+
+  function createHeaders(): Record<string, string> {
+    if (!config.authToken) {
+      throw new Error(
+        `gxserver auth token is not available. Expected native bootstrap to read ${config.tokenFile ?? "~/.ghostex/gxserver/auth/token"}.`,
+      );
+    }
+    return {
+      authorization: `Bearer ${config.authToken}`,
+      "x-gxserver-protocol-version": String(GXSERVER_PROTOCOL_VERSION),
+    };
+  }
+
+  return {
+    applyNativeStatus,
+    createTerminalSessionSync,
+    fetchAttachSessionMetadata,
+    fetchHealth,
+    fetchStartupSnapshot,
+    probeSessionProvider,
+    rpc,
+    updateSessionLifecycle,
+  };
+}
+
+function parseRpcResponse<TResult>(
+  body: unknown,
+  status: number,
+): TResult {
+  if (!isRpcSuccess(body)) {
+    throw createGxserverError(body, status);
+  }
+  if (body.protocolVersion !== GXSERVER_PROTOCOL_VERSION) {
+    throw new Error(
+      `gxserver protocol mismatch. Expected protocol ${GXSERVER_PROTOCOL_VERSION}, got ${String(
+        body.protocolVersion,
+      )}. Update Ghostex and gxserver so their protocol versions match.`,
+    );
+  }
+  return body.result as TResult;
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text.trim()) {
+    return undefined;
+  }
+  return JSON.parse(text) as unknown;
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  label: string,
+): Promise<Response> {
+  /*
+  CDXC:GxserverSidebarClient 2026-05-30-18:04:
+  The desktop app starts gxserver independently and WebKit may issue zmx attach/list requests while the daemon is still binding or completing CORS preflight. Retry transport-level `Load failed`/network errors briefly, but do not retry authenticated HTTP/RPC failures because those are real daemon decisions that should surface immediately.
+  */
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= NETWORK_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      lastError = error;
+      const delayMs = NETWORK_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) {
+        break;
+      }
+      await new Promise((resolve) => globalThis.setTimeout(resolve, delayMs));
+    }
+  }
+  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`${message} (gxserver ${label} ${url})`);
+}
+
+function parseObject(payloadJson: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(payloadJson) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseHealth(value: unknown): GxserverServerHealthResponse {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    (value as { product?: unknown }).product !== GXSERVER_PRODUCT
+  ) {
+    throw new Error("gxserver health response did not identify gxserver.");
+  }
+  if ((value as { protocolVersion?: unknown }).protocolVersion !== GXSERVER_PROTOCOL_VERSION) {
+    throw new Error(
+      `gxserver protocol mismatch. Expected protocol ${GXSERVER_PROTOCOL_VERSION}, got ${String(
+        (value as { protocolVersion?: unknown }).protocolVersion,
+      )}. Update Ghostex and gxserver so their protocol versions match.`,
+    );
+  }
+  return value as GxserverServerHealthResponse;
+}
+
+function isRpcSuccess(value: unknown): value is GxserverRpcSuccessResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (value as { ok?: unknown }).ok === true &&
+    (value as { product?: unknown }).product === GXSERVER_PRODUCT
+  );
+}
+
+function createGxserverError(body: unknown, status: number): Error {
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    !Array.isArray(body) &&
+    (body as GxserverRpcErrorResponse).ok === false &&
+    typeof (body as GxserverRpcErrorResponse).message === "string"
+  ) {
+    return new Error((body as GxserverRpcErrorResponse).message);
+  }
+  return new Error(`gxserver request failed with HTTP ${status}.`);
+}

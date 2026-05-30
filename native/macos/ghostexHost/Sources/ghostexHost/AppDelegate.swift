@@ -436,6 +436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   private weak var appTitlebarLabel: NSTextField?
   private let nativeSettingsStore = NativeSettingsStore()
   private let lidSleepHelperClient = LidSleepPrivilegedHelperClient.shared
+  private let gxserverClient = GxserverClient()
   private var isSparkleUpdateAvailable = false
   private lazy var updaterController = SPUStandardUpdaterController(
     startingUpdater: true,
@@ -498,6 +499,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       makeWindow()
       installAppHotkeyEventMonitor()
       startBridge()
+      startGxserverBootstrap()
       startSparkleLaunchUpdateProbe()
       scheduleOSIntegrationFlushRetry()
     }
@@ -545,6 +547,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     )
     stopCodeServerRuntime(logPrefix: "nativeHost.applicationWillTerminate")
     (window?.contentView as? ghostexRootView)?.stopCodeServerRuntimeForAppTermination()
+    /**
+     CDXC:GxserverBootstrap 2026-05-30-15:39:
+     Closing or quitting the macOS app must not stop gxserver. The desktop host starts or reuses the daemon during launch, then treats it as an independent backend process so terminal/session backend state survives window and app lifetime changes.
+     */
     /**
      CDXC:TitlebarKeepAwake 2026-05-28-19:28:
      Closing Ghostex must restore normal lid-close sleep even if the React
@@ -1581,6 +1587,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     petOverlayController.load(webAssets: ghostexRootView.resolveWebAssets())
     let root = ghostexRootView(
       ghostty: ghostty,
+      gxserverBootstrap: gxserverClient.webBootstrap(),
       sendEvent: { [weak self] event in
         self?.bridge?.send(event)
         (self?.window?.contentView as? ghostexRootView)?.postHostEvent(event)
@@ -2054,6 +2061,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   @MainActor
+  private func startGxserverBootstrap() {
+    Task { [weak self] in
+      guard let self else { return }
+      let status = await self.gxserverClient.startOrReuse()
+      guard
+        let payloadData = try? JSONSerialization.data(
+          withJSONObject: self.gxserverClient.statusPayload(status)),
+        let payloadJson = String(data: payloadData, encoding: .utf8)
+      else {
+        return
+      }
+      await MainActor.run {
+        let event = HostEvent.gxserverStatus(payloadJson: payloadJson)
+        self.bridge?.send(event)
+        (self.window?.contentView as? ghostexRootView)?.postHostEvent(event)
+        Self.appendNativeHostLifecycleLog(
+          "gxserver.bootstrap state=\(status.state) ok=\(status.ok) message=\(status.message)")
+        if !status.ok {
+          self.showMessage(.init(level: .error, message: status.message))
+        }
+      }
+    }
+  }
+
+  @MainActor
   private func startBridge() {
     do {
       /**
@@ -2061,10 +2093,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        CEF browser-pane verification runs the ghostex-dev app beside the installed
        ghostex app. Give the dev bundle a separate CLI bridge port so browser-pane
        creation can be tested without stopping the user's normal ghostex process.
+
+       CDXC:GxserverBootstrap 2026-05-30-15:39:
+       gxserver owns port 58744 in the hard cutover. The dev-only native CLI bridge uses 58742 so local desktop automation cannot bind or mask the daemon API port.
        */
-      let bridgePort: UInt16 = Bundle.main.bundleIdentifier == "com.madda.ghostex-dev.host"
-        ? 58744
-        : 58743
+      let bridgePort: UInt16 = Self.isDevBundleIdentifier(Bundle.main.bundleIdentifier)
+	        ? 58742
+	        : 58743
       let bridgeAuthToken = try Self.prepareBridgeAuthToken()
       let bridge = try NativeHostBridge(port: bridgePort, authToken: bridgeAuthToken) { [weak self] command in
         self?.handle(command)
@@ -2082,20 +2117,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        */
       Self.appendNativeHostLifecycleLog("nativeHostBridge.failed error=\(error.localizedDescription)")
       workspaceView?.createTerminal(
-        CreateTerminal(
-          activateOnCreate: true,
-          cwd: FileManager.default.currentDirectoryPath,
-          diagnosticSource: nil,
+	        CreateTerminal(
+	          activateOnCreate: true,
+	          cwd: FileManager.default.currentDirectoryPath,
+	          diagnosticSource: nil,
 	          env: nil,
 	          initialInput: "printf 'Failed to start Ghostex bridge: \(error.localizedDescription)\\n'\r",
+	          persistenceSessionCreated: nil,
 	          sessionId: "bridge-error",
-          sessionPersistenceName: nil,
-          sessionPersistenceProvider: nil,
-          /**
-           CDXC:CliBridgeTransport 2026-05-21-00:56:
-           The bridge-error terminal must remain a normal shell session that receives diagnostic initial input, so the explicit shellCommand contract is nil here.
-           */
-          shellCommand: nil,
+	          sessionPersistenceName: nil,
+	          sessionPersistenceProvider: nil,
+	          /**
+	           CDXC:CliBridgeTransport 2026-05-21-00:56:
+	           The bridge-error terminal must remain a normal shell session that receives diagnostic initial input, so the explicit shellCommand contract is nil here.
+
+	           CDXC:GxserverBootstrap 2026-05-30-16:16:
+	           This diagnostic pane is created only when the native bridge fails before sidebar startup, so it must not claim a gxserver-created zmx attach command or persistence-created state.
+	           */
+	          shellAttachCommand: nil,
+	          shellCommand: nil,
           title: "Bridge error",
           tmuxMode: nil,
           tmuxSessionName: nil
@@ -2103,7 +2143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     }
   }
 
-  private static func prepareBridgeAuthToken() throws -> String {
+	  private static func prepareBridgeAuthToken() throws -> String {
     /**
      CDXC:CliBridgeSecurity 2026-05-15-18:25
      CLI automation still needs a localhost bridge, but browser pages can also
@@ -2124,9 +2164,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     )
     if fileManager.fileExists(atPath: GhostexAppStorage.cliBridgeTokenURL.path) {
       try fileManager.removeItem(at: GhostexAppStorage.cliBridgeTokenURL)
-    }
-    guard
-      fileManager.createFile(
+	  }
+
+	    guard
+	      fileManager.createFile(
         atPath: GhostexAppStorage.cliBridgeTokenURL.path,
         contents: Data("\(token)\n".utf8),
         attributes: [.posixPermissions: 0o600]
@@ -2137,10 +2178,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         code: 2,
         userInfo: [NSLocalizedDescriptionKey: "Failed to write bridge token."])
     }
-    return token
+	    return token
+	  }
+
+  private static func isDevBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
+    /**
+     CDXC:GxserverVerification 2026-05-30-16:25:
+     Worktree verification uses a uniquely identified Ghostex dev app so Cua Driver can launch the built bundle instead of the installed /Applications copy. Every com.madda.ghostex-dev... bundle keeps the dev bridge on 58742 because gxserver owns 58744 and production keeps 58743.
+     */
+    bundleIdentifier?.hasPrefix("com.madda.ghostex-dev") == true
   }
 
-  private static func makeBridgeAuthToken() throws -> String {
+	  private static func makeBridgeAuthToken() throws -> String {
     var bytes = [UInt8](repeating: 0, count: 32)
     let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
     guard status == errSecSuccess else {
@@ -4261,6 +4310,7 @@ final class ghostexRootView: NSView {
    */
   init(
     ghostty: GhostexGhosttyApp,
+    gxserverBootstrap: [String: Any],
     sendEvent: @escaping (HostEvent) -> Void,
     syncGhosttyTerminalSettings: @escaping (SyncGhosttyTerminalSettings) -> Void,
     applyGhosttyConfigSettings: @escaping (ApplyGhosttyConfigSettings) -> Void,
@@ -4314,6 +4364,7 @@ final class ghostexRootView: NSView {
     var bootstrap: [String: Any] = [
       "accessibilityPermissionGranted": AXIsProcessTrusted(),
       "cwd": cwd,
+      "gxserver": gxserverBootstrap,
       "homeDir": FileManager.default.homeDirectoryForCurrentUser.path,
       "ghostexHomeDir": GhostexAppStorage.sharedRootDirectory.path,
       "sharedSidebarStorage": GhostexAppStorage.readSharedSidebarStorage(),

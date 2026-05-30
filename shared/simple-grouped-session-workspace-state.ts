@@ -151,10 +151,21 @@ export function createSessionInSimpleWorkspace(
     return { snapshot: normalizedSnapshot };
   }
 
-  const sessionId = createTimestampedSessionId([
+  const usedSessionIds = [
     ...getWorkspaceSessionIds(normalizedSnapshot),
     ...(createOptions?.usedSessionIds ?? []),
-  ]);
+  ];
+  /*
+  CDXC:GxserverSessionIdentity 2026-05-30-18:20:
+  gxserver-generated session IDs must be preserved when the macOS sidebar creates the local layout record after daemon allocation. The shared workspace helper may still mint timestamp IDs for non-daemon panes, but an explicit sessionId is authoritative and duplicate use is a caller bug rather than a recoverable layout decision.
+  */
+  const requestedSessionId = typeof options?.sessionId === "string" && options.sessionId.trim()
+    ? options.sessionId.trim()
+    : undefined;
+  if (requestedSessionId && usedSessionIds.includes(requestedSessionId)) {
+    throw new Error(`Session ${requestedSessionId} already exists in this workspace.`);
+  }
+  const sessionId = requestedSessionId ?? createTimestampedSessionId(usedSessionIds);
   const nextSession = createSessionRecord(
     normalizedSnapshot.nextSessionNumber,
     activeGroup.snapshot.sessions.length,

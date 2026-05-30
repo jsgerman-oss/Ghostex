@@ -13,7 +13,13 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_PORT = 58743;
-const DEV_PORT = 58744;
+// CDXC:GxserverBootstrap 2026-05-30-15:39: gxserver owns 58744 in the hard cutover, so the ghostex-dev native bridge must use 58742 for legacy bridge automation commands instead of competing with the daemon API.
+const DEV_PORT = 58742;
+const GXSERVER_PRODUCT = "gxserver";
+const GXSERVER_PROTOCOL_VERSION = 1;
+const GXSERVER_PROTOCOL_HEADER = "x-gxserver-protocol-version";
+const GXSERVER_LOCAL_API_HOST = "127.0.0.1";
+const GXSERVER_LOCAL_API_PORT = 58744;
 /**
  * CDXC:DevAppFlavor 2026-05-11-12:10
  * CLI-side logs, selector caches, and bridge metadata must follow the app
@@ -36,6 +42,10 @@ const GHOSTEX_HOME =
 const LOG_DIR = path.join(GHOSTEX_HOME, "logs");
 const CLI_DIR = path.join(GHOSTEX_HOME, "cli");
 const BRIDGE_TOKEN_PATH = path.join(CLI_DIR, "bridge-token");
+const GXSERVER_ROOT = path.join(homedir(), ".ghostex", "gxserver");
+const GXSERVER_AUTH_TOKEN_PATH = path.join(GXSERVER_ROOT, "auth", "token");
+const GXSERVER_LOG_PATH = path.join(GXSERVER_ROOT, "logs", "gxserver.jsonl");
+const GXSERVER_CONNECTIONS_PATH = path.join(homedir(), ".ghostex", "clients", "connections.json");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
 const SHARED_SETTINGS_PATH = path.join(GHOSTEX_HOME, "state", "native-sidebar-settings.json");
 const GHOSTEX_AGENT_SKILL_INSTALL_ROOT = path.join(homedir(), "agents", "skills");
@@ -1343,6 +1353,549 @@ class McpStdioTransport {
 }
 
 async function sendSidebarCliCommand(action, payload, flags = {}) {
+  return sendGxserverCliAction(action, payload, flags);
+}
+
+class GxserverCliConnectionError extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = "GxserverCliConnectionError";
+    this.cause = options.cause;
+  }
+}
+
+class GxserverCliUnsupportedError extends Error {
+  constructor(action) {
+    super(
+      `Ghostex CLI action "${action}" requires a gxserver API endpoint that is not available in this cutover. Update Ghostex/gxserver when that endpoint lands; the macOS app bridge is no longer a fallback.`,
+    );
+    this.name = "GxserverCliUnsupportedError";
+  }
+}
+
+class GxserverCliRpcError extends Error {
+  constructor(response) {
+    const message =
+      response?.error === "notImplemented"
+        ? `${response?.message || "gxserver endpoint is not implemented."} Update Ghostex/gxserver when that endpoint lands; the macOS app bridge is no longer a fallback.`
+        : response?.message || response?.error || "gxserver request failed.";
+    super(message);
+    this.name = "GxserverCliRpcError";
+    this.response = response;
+  }
+}
+
+async function sendGxserverCliAction(action, payload = {}, flags = {}) {
+  /**
+   * CDXC:GxserverCliCutover 2026-05-30-15:15:
+   * gx/ghostex remains the Node user CLI, but hard-cutover commands must talk
+   * to gxserver instead of the macOS app bridge. Commands without a gxserver
+   * endpoint fail with an update-required error so behavior does not silently
+   * depend on the retired bridge.
+   */
+  switch (action) {
+    case "listSessions":
+      return fetchGxserverSessionList(flags);
+    case "state":
+    case "dumpState":
+      return fetchGxserverState(flags);
+    case "createQuickTerminal":
+      return createGxserverQuickTerminal(payload, flags);
+    case "createSession":
+      return createGxserverSession(payload, flags);
+    case "createAgentSession":
+    case "runAgent":
+      return createGxserverAgentSession(payload, flags);
+    case "addProject":
+      return callGxserverRpc("/api/addProjectPath", payload, flags);
+    case "closeSession":
+      return callGxserverRpc("/api/killSession", withResolvedSessionParams(payload), flags);
+    case "sleepSession":
+      return callGxserverRpc(payload?.sleeping === false ? "/api/wakeSession" : "/api/sleepSession", withResolvedSessionParams(payload), flags);
+    case "renameSession":
+      return callGxserverRpc("/api/updateSession", withResolvedSessionParams(payload), flags);
+    case "favoriteSession":
+      return callGxserverRpc(
+        "/api/updateSession",
+        withResolvedSessionParams({ ...payload, isFavorite: payload?.favorite }),
+        flags,
+      );
+    case "pinSession":
+      return callGxserverRpc(
+        "/api/updateSession",
+        withResolvedSessionParams({ ...payload, isPinned: payload?.pinned }),
+        flags,
+      );
+    case "acknowledgeSessionAttention":
+      return callGxserverRpc(
+        "/api/updateAgentActivity",
+        withResolvedSessionParams({ ...payload, event: "acknowledge" }),
+        flags,
+      );
+    case "focusSession":
+      return callGxserverRpc("/api/focusSession", withResolvedSessionParams(payload), flags);
+    case "readSessionText":
+      return callGxserverRpc("/api/readSessionText", withResolvedSessionParams(payload), flags);
+    case "sendText":
+      return callGxserverRpc("/api/sendSessionText", withResolvedSessionParams(payload), flags);
+    case "sendEnter":
+      return callGxserverRpc("/api/sendSessionEnter", withResolvedSessionParams(payload), flags);
+    case "sendMessage":
+      return callGxserverRpc("/api/sendSessionMessage", payload, flags);
+    default:
+      throw new GxserverCliUnsupportedError(action);
+  }
+}
+
+async function fetchGxserverState(flags = {}) {
+  const [projectsResult, sessionsResult] = await Promise.all([
+    callGxserverRpc("/api/listProjects", {}, flags),
+    fetchGxserverSessionList(flags),
+  ]);
+  return {
+    ok: true,
+    product: GXSERVER_PRODUCT,
+    projects: projectsResult.projects ?? [],
+    sessions: sessionsResult.sessions ?? [],
+  };
+}
+
+async function createGxserverQuickTerminal(payload = {}, flags = {}) {
+  const cwd = path.resolve(String(payload.cwd ?? process.cwd()));
+  const projectId = flags.projectId ?? payload.projectId ?? (await ensureGxserverProjectForPath(cwd, flags)).projectId;
+  return createGxserverSession(
+    {
+      command: payload.command,
+      cwd,
+      projectId,
+      title: payload.title ?? (payload.command ? String(payload.command).slice(0, 80) : "Terminal"),
+    },
+    flags,
+  );
+}
+
+async function createGxserverSession(payload = {}, flags = {}) {
+  const projectId = normalizeRequiredProjectId(payload.projectId ?? flags.projectId, "create-session");
+  const params = {
+    cwd: payload.cwd,
+    kind: "terminal",
+    launchSettings: payload.command ? { startupCommand: payload.command } : undefined,
+    projectId,
+    title: payload.title || "Terminal",
+  };
+  return callGxserverRpc("/api/createSession", compactObject(params), flags);
+}
+
+async function createGxserverAgentSession(payload = {}, flags = {}) {
+  const projectId = normalizeRequiredProjectId(payload.projectId ?? flags.projectId, "create-agent");
+  const agentId = String(payload.agentId ?? flags.agentId ?? "").trim();
+  if (!agentId) {
+    throw new Error("create-agent requires an agent id.");
+  }
+  return callGxserverRpc(
+    "/api/createAgentSession",
+    compactObject({
+      agentId,
+      projectId,
+      title: flags.title,
+    }),
+    flags,
+  );
+}
+
+async function ensureGxserverProjectForPath(projectPath, flags = {}) {
+  const result = await callGxserverRpc("/api/addProjectPath", { path: projectPath }, flags);
+  return result.project;
+}
+
+function normalizeRequiredProjectId(value, commandName) {
+  const projectId = String(value ?? "").trim();
+  if (!projectId) {
+    throw new Error(`${commandName} requires --project-id until gxserver active-project routing lands.`);
+  }
+  return projectId;
+}
+
+function withResolvedSessionParams(payload = {}) {
+  const globalParts = isGxserverGlobalSessionRef(payload.sessionId) ? String(payload.sessionId).split(":") : undefined;
+  return compactObject({
+    ...payload,
+    projectId: payload.projectId ?? globalParts?.[1],
+    sessionId: globalParts?.[2] ?? payload.sessionId,
+  });
+}
+
+async function fetchGxserverSessionList(flags = {}) {
+  const [projectsResponse, sessionsResponse] = await Promise.all([
+    callGxserverRpc("/api/listProjects", {}, flags),
+    callGxserverRpc("/api/listSessions", {}, flags),
+  ]);
+  const projects = Array.isArray(projectsResponse.projects) ? projectsResponse.projects : [];
+  const sessions = Array.isArray(sessionsResponse.sessions) ? sessionsResponse.sessions : [];
+  const projectById = new Map(projects.map((project) => [project.projectId, project]));
+  return {
+    ok: true,
+    product: GXSERVER_PRODUCT,
+    projects,
+    revision: sessionsResponse.requestId,
+    sessions: sessions.map((session, index) => toCliSession(session, projectById.get(session.projectId), index)),
+  };
+}
+
+function toCliSession(session, project, index) {
+  const lifecycleState = String(session.lifecycleState ?? "");
+  const providerState = String(session.providerState?.lifecycleState ?? "");
+  const status =
+    lifecycleState === "sleeping"
+      ? "sleep"
+      : lifecycleState === "stopped"
+        ? "stopped"
+        : providerState === "exists"
+          ? "running"
+          : providerState || lifecycleState || "unknown";
+  return {
+    agent: session.agentId,
+    agentId: session.agentId,
+    alias: index + 1,
+    globalRef: session.globalRef,
+    isFocused: false,
+    isSleeping: lifecycleState === "sleeping",
+    lastInteractionAt: session.lastActiveAt ?? session.updatedAt,
+    projectId: session.projectId,
+    projectName: project?.name ?? session.projectId,
+    projectPath: session.cwd ?? project?.path ?? "",
+    provider: "zmx",
+    providerSessionName: session.zmxName ?? session.providerState?.zmxName,
+    sessionId: session.sessionId,
+    status,
+    title: session.title,
+  };
+}
+
+async function fetchAttachMetadataForSession(session, flags = {}) {
+  const result = await callGxserverRpc(
+    "/api/attachSessionMetadata",
+    {
+      projectId: session.projectId ?? projectIdFromGlobalRef(session.globalRef),
+      sessionId: session.sessionId,
+    },
+    flags,
+  );
+  return result.attach;
+}
+
+function applyAttachMetadataToCliSession(session, attach) {
+  if (!attach) {
+    return session;
+  }
+  if (attach.restoreBlocked) {
+    const cwd = attach.restoreBlocked.cwd ? ` (${attach.restoreBlocked.cwd})` : "";
+    throw new Error(`Session ${session.title ?? session.sessionId} cannot be restored because its cwd is missing${cwd}.`);
+  }
+  const providerLifecycle = attach.providerState?.lifecycleState;
+  const resumeCommand = normalizeStartupTextForShell(attach.startupText);
+  return {
+    ...session,
+    attachCommand: attach.attachCommand,
+    projectPath: attach.cwd ?? session.projectPath,
+    provider: attach.provider ?? session.provider,
+    providerSessionName: attach.zmxName ?? session.providerSessionName,
+    resumeCommand,
+    status: providerLifecycle === "exists" ? "running" : resumeCommand ? "sleep" : session.status,
+  };
+}
+
+function normalizeStartupTextForShell(value) {
+  const text = String(value ?? "").replace(/\r+$/u, "").trim();
+  return text || undefined;
+}
+
+async function callGxserverRpc(pathname, params = {}, flags = {}) {
+  const target = await resolveGxserverServerTarget(flags, params);
+  return requestGxserverRpc(target, pathname, params, flags);
+}
+
+async function requestGxserverRpc(target, pathname, params = {}, flags = {}) {
+  const controller = new AbortController();
+  const timeoutMs = Number(flags.timeout ?? flags.timeoutMs ?? 15_000);
+  const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  try {
+    const response = await fetch(`${target.baseUrl}${pathname}`, {
+      body: JSON.stringify({
+        params,
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      }),
+      headers: {
+        authorization: `Bearer ${target.token}`,
+        "content-type": "application/json",
+        [GXSERVER_PROTOCOL_HEADER]: String(GXSERVER_PROTOCOL_VERSION),
+      },
+      method: "POST",
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => undefined);
+    if (body?.product === GXSERVER_PRODUCT && body.protocolVersion !== undefined && body.protocolVersion !== GXSERVER_PROTOCOL_VERSION) {
+      throw new GxserverCliRpcError({
+        error: "protocolMismatch",
+        message: `gxserver protocol mismatch. Expected protocol ${GXSERVER_PROTOCOL_VERSION}, got ${String(body.protocolVersion)}. Update Ghostex and gxserver so their protocol versions match.`,
+        ok: false,
+      });
+    }
+    if (!response.ok || body?.ok === false) {
+      throw new GxserverCliRpcError(body ?? { error: `http-${response.status}`, message: `gxserver HTTP ${response.status}`, ok: false });
+    }
+    return { ok: true, ...(body?.result ?? {}), requestId: body?.requestId };
+  } catch (error) {
+    if (error instanceof GxserverCliRpcError) {
+      throw error;
+    }
+    throw new GxserverCliConnectionError(
+      `Could not connect to ${target.kind === "local" ? "local" : "remote"} gxserver at ${target.baseUrl}. Start it with "gxserver start" and retry.`,
+      { cause: error },
+    );
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+async function resolveGxserverServerTarget(flags = {}, params = {}) {
+  const server = String(flags.server ?? process.env.GHOSTEX_GXSERVER_SERVER ?? "local").trim() || "local";
+  const globalRef = findGlobalRefCandidate(params);
+  if (globalRef) {
+    const serverId = globalRef.split(":")[0];
+    const local = await resolveLocalGxserverTarget();
+    const health = await fetchGxserverHealth(local).catch(() => undefined);
+    if (health?.serverId === serverId) {
+      return local;
+    }
+    const profile = await findGxserverConnectionProfileByServerId(serverId);
+    if (!profile) {
+      throw new Error(`Global session ref ${globalRef} targets ${serverId}, but no gxserver connection profile exists for that server.`);
+    }
+    return resolveGxserverProfileTarget(profile, flags);
+  }
+  if (server === "local") {
+    return resolveLocalGxserverTarget();
+  }
+  if (/^ssh:\/\//u.test(server)) {
+    return resolveGxserverProfileTarget(
+      {
+        id: server,
+        name: server,
+        sshUrl: server,
+        transport: "ssh",
+      },
+      flags,
+    );
+  }
+  if (/^https?:\/\//u.test(server)) {
+    return {
+      baseUrl: server.replace(/\/+$/u, ""),
+      kind: "direct",
+      token: await readGxserverCredentialSecretFromFlags(flags),
+    };
+  }
+  const profile = await readGxserverConnectionProfile(server);
+  if (!profile) {
+    throw new Error(`gxserver profile "${server}" was not found in ${GXSERVER_CONNECTIONS_PATH}.`);
+  }
+  return resolveGxserverProfileTarget(profile, flags);
+}
+
+async function resolveLocalGxserverTarget() {
+  const token = await readLocalGxserverAuthToken();
+  return {
+    baseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
+    kind: "local",
+    token,
+  };
+}
+
+async function readLocalGxserverAuthToken() {
+  const token = (await readFile(GXSERVER_AUTH_TOKEN_PATH, "utf8").catch(() => "")).trim();
+  if (!token) {
+    throw new GxserverCliConnectionError(
+      `Could not read local gxserver auth token at ${GXSERVER_AUTH_TOKEN_PATH}. Start gxserver with "gxserver start" and retry.`,
+    );
+  }
+  return token;
+}
+
+async function fetchGxserverHealth(target) {
+  const response = await fetch(`${target.baseUrl}/api/health/server?protocolVersion=${GXSERVER_PROTOCOL_VERSION}`, {
+    headers: {
+      authorization: `Bearer ${target.token}`,
+      [GXSERVER_PROTOCOL_HEADER]: String(GXSERVER_PROTOCOL_VERSION),
+    },
+    method: "GET",
+  });
+  if (!response.ok) {
+    return undefined;
+  }
+  return response.json();
+}
+
+async function readGxserverConnectionProfile(name) {
+  const text = await readFile(GXSERVER_CONNECTIONS_PATH, "utf8").catch(() => "");
+  const parsed = text ? parseJson(text) : undefined;
+  if (!parsed || typeof parsed !== "object") {
+    return undefined;
+  }
+  if (Array.isArray(parsed.profiles)) {
+    return parsed.profiles.find((profile) => profile?.name === name || profile?.id === name);
+  }
+  return parsed[name];
+}
+
+async function findGxserverConnectionProfileByServerId(serverId) {
+  const text = await readFile(GXSERVER_CONNECTIONS_PATH, "utf8").catch(() => "");
+  const parsed = text ? parseJson(text) : undefined;
+  if (!parsed || typeof parsed !== "object") {
+    return undefined;
+  }
+  const profiles = Array.isArray(parsed.profiles) ? parsed.profiles : Object.values(parsed);
+  return profiles.find((profile) => profile?.serverId === serverId);
+}
+
+async function resolveGxserverProfileTarget(profile, flags = {}) {
+  /**
+   * CDXC:GxserverRemoteCli 2026-05-30-15:25:
+   * gx remote routing supports multiple named profiles and S:P:G refs from
+   * `~/.ghostex/clients/connections.json`. Direct/Tailscale profiles connect
+   * to their trusted-network URL with an OS credential-store token; SSH
+   * profiles expose a deterministic check/start/forward plan and use the
+   * forwarded local URL for gxserver RPCs.
+   */
+  const transport = String(profile.transport ?? (profile.sshUrl ? "ssh" : "direct"));
+  const token = await readGxserverConnectionProfileToken(profile, flags);
+  if (transport === "ssh") {
+    const forwardPlan = createCliSshForwardPlan(profile, {
+      localPort: Number(flags.localPort ?? flags.forwardPort ?? 0) || 0,
+      remoteLocalPort: Number(flags.remotePort ?? GXSERVER_LOCAL_API_PORT),
+    });
+    return {
+      baseUrl: String(flags.baseUrl ?? forwardPlan.baseUrl),
+      forwardPlan,
+      kind: "ssh",
+      profileId: profile.id,
+      serverId: profile.serverId,
+      token,
+    };
+  }
+  const baseUrl = String(profile.baseUrl ?? "").replace(/\/+$/u, "");
+  if (!baseUrl) {
+    throw new Error(`gxserver profile "${profile.name ?? profile.id}" is missing baseUrl.`);
+  }
+  return {
+    baseUrl,
+    kind: transport === "tailscale" ? "tailscale" : "direct",
+    profileId: profile.id,
+    serverId: profile.serverId,
+    token,
+  };
+}
+
+async function readGxserverConnectionProfileToken(profile, flags = {}) {
+  if (flags.token) {
+    return String(flags.token);
+  }
+  if (profile.token) {
+    throw new Error(`gxserver profile "${profile.name ?? profile.id}" contains a plaintext token. Move it to the OS credential store and keep only tokenSecretRef in ${GXSERVER_CONNECTIONS_PATH}.`);
+  }
+  if (!profile.tokenSecretRef) {
+    return readGxserverCredentialSecretFromFlags(flags);
+  }
+  return readGxserverCredentialSecret(profile.tokenSecretRef);
+}
+
+async function readGxserverCredentialSecretFromFlags(flags = {}) {
+  if (flags.token) {
+    return String(flags.token);
+  }
+  throw new Error("Remote gxserver profiles require an auth token stored in the OS credential store. Add tokenSecretRef to the profile or pass --token for a one-shot command.");
+}
+
+async function readGxserverCredentialSecret(ref) {
+  const service = String(ref?.service ?? "ghostex.gxserver");
+  const account = String(ref?.account ?? "");
+  if (!account) {
+    throw new Error("gxserver credential secret ref is missing account.");
+  }
+  if (process.platform === "darwin") {
+    const { stdout } = await execFileAsync("security", ["find-generic-password", "-s", service, "-a", account, "-w"]);
+    return stdout.trim();
+  }
+  if (process.platform === "linux") {
+    const { stdout } = await execFileAsync("secret-tool", ["lookup", "service", service, "account", account]);
+    return stdout.trim();
+  }
+  throw new Error("This platform needs a gxserver OS credential-store integration before remote tokens can be read.");
+}
+
+function createCliSshForwardPlan(profile, options = {}) {
+  const sshUrl = String(profile.sshUrl ?? profile.id ?? "");
+  const target = parseCliSshUrl(sshUrl);
+  const localPort = Number(options.localPort ?? GXSERVER_LOCAL_API_PORT) || GXSERVER_LOCAL_API_PORT;
+  const remoteLocalPort = Number(options.remoteLocalPort ?? GXSERVER_LOCAL_API_PORT);
+  return {
+    baseUrl: `http://127.0.0.1:${localPort}`,
+    checkCommand: ["ssh", ...cliSshTargetArgs(target), "command -v gxserver >/dev/null && gxserver status --json"],
+    installGuidance:
+      "gxserver is not installed on the remote host. Install the Ghostex server package there, then retry; the SSH helper does not install software silently.",
+    localPort,
+    portForwardCommand: ["ssh", "-N", "-L", `${localPort}:127.0.0.1:${remoteLocalPort}`, ...cliSshTargetArgs(target)],
+    remoteLocalPort,
+    startCommand: ["ssh", ...cliSshTargetArgs(target), "gxserver start --background"],
+  };
+}
+
+function parseCliSshUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== "ssh:" || !url.hostname) {
+    throw new Error("SSH gxserver profiles must use ssh://user@host.");
+  }
+  return {
+    host: url.hostname,
+    port: url.port ? Number(url.port) : undefined,
+    user: url.username ? decodeURIComponent(url.username) : undefined,
+  };
+}
+
+function cliSshTargetArgs(target) {
+  return [...(target.port ? ["-p", String(target.port)] : []), target.user ? `${target.user}@${target.host}` : target.host];
+}
+
+function findGlobalRefCandidate(value) {
+  if (typeof value === "string" && isGxserverGlobalSessionRef(value)) {
+    return value;
+  }
+  if (value && typeof value === "object") {
+    for (const key of ["globalRef", "sessionId", "target", "selector"]) {
+      if (isGxserverGlobalSessionRef(value[key])) {
+        return value[key];
+      }
+    }
+  }
+  return undefined;
+}
+
+function projectIdFromGlobalRef(value) {
+  return isGxserverGlobalSessionRef(value) ? value.split(":")[1] : undefined;
+}
+
+function isGxserverGlobalSessionRef(value) {
+  return /^S[0-9][a-z0-9]*:P[0-9][a-z0-9]*:G[0-9][a-z0-9]*$/u.test(String(value ?? ""));
+}
+
+function compactObject(value) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
+  );
+}
+
+async function sendLegacySidebarCliCommand(action, payload, flags = {}) {
   const port = Number(
     flags.port ??
       process.env.GHOSTEX_CLI_PORT ??
@@ -1445,6 +1998,7 @@ function addSocketMessageListener(socket, handler) {
 }
 
 async function floatingEditorCommand(args) {
+  throw new GxserverCliUnsupportedError("floating-editor");
   const { flags, rest } = parseArgs(args);
   const commandArgs = rest.filter((arg) => arg !== "");
   if (commandArgs.length === 0) {
@@ -1524,6 +2078,7 @@ async function floatingEditorCommand(args) {
 }
 
 async function floatingMonacoEditorCommand(args) {
+  throw new GxserverCliUnsupportedError("floating-monaco-editor");
   const { flags, rest } = parseArgs(args);
   const filePath = rest.find((arg) => arg && arg.trim() !== "");
   if (!filePath) {
@@ -1769,15 +2324,52 @@ async function screenshotCommand(args) {
 
 async function logsCommand(args) {
   const { flags } = parseArgs(args);
-  const file = String(flags.file ?? "agent-detection-debug.log");
   const lines = Number(flags.lines ?? 200);
-  const logPath = path.join(LOG_DIR, file);
+  try {
+    const result = await callGxserverRpc(
+      "/api/queryLogs",
+      compactObject({
+        event: flags.event,
+        eventPrefix: flags.eventPrefix,
+        level: flags.level,
+        limit: lines,
+        order: flags.order,
+        reverse: flags.reverse === undefined ? undefined : parseBoolean(flags.reverse),
+        since: flags.since,
+        until: flags.until,
+      }),
+      flags,
+    );
+    const entries = Array.isArray(result.entries) ? result.entries : [];
+    const filtered = flags.grep
+      ? entries.filter((entry) => JSON.stringify(entry).includes(String(flags.grep)))
+      : entries;
+    if (flags.json) {
+      printJson({ ...result, entries: filtered, ok: true, source: "gxserver-api" });
+      return;
+    }
+    for (const entry of filtered) {
+      console.log(JSON.stringify(entry));
+    }
+    return;
+  } catch (error) {
+    if (!(error instanceof GxserverCliConnectionError)) {
+      throw error;
+    }
+  }
+
+  const file = String(flags.file ?? path.basename(GXSERVER_LOG_PATH));
+  const logPath = path.isAbsolute(file)
+    ? file
+    : file === path.basename(GXSERVER_LOG_PATH)
+      ? GXSERVER_LOG_PATH
+      : path.join(LOG_DIR, file);
   const text = await readFile(logPath, "utf8").catch((error) => {
     throw new Error(`Could not read ${logPath}: ${error.message}`);
   });
   const filtered = filterLogLines(text, flags).slice(-lines);
   if (flags.json) {
-    printJson({ file: logPath, lines: filtered, ok: true });
+    printJson({ file: logPath, lines: filtered, ok: true, source: "local-file" });
     return;
   }
   console.log(filtered.join("\n"));
@@ -1833,10 +2425,12 @@ async function androidCheckCommand(args) {
   const result = await runAndroidReadinessCheck(flags);
   /**
    * CDXC:AndroidConnectionManagement 2026-05-17-18:20:
-   * Ghostex Android needs one Mac-side readiness contract instead of inferring
-   * release support from generic session listing. This command proves zmx is on
-   * PATH, Ghostex settings are actually set to zmx, and the running app bridge
-   * can return the sidebar session inventory used by Android.
+   * Ghostex Android needs one Mac-side readiness contract instead of inferring release support from generic session listing.
+   *
+   * CDXC:AndroidConnectionManagement 2026-05-30-15:15:
+   * The hard cutover readiness check uses authenticated gxserver health and
+   * inventory APIs. zmx availability comes from gxserver tool capabilities, and
+   * the macOS app bridge is not a readiness fallback.
    */
   if (flags.json) {
     printJson(result);
@@ -1851,39 +2445,47 @@ async function androidCheckCommand(args) {
 }
 
 async function runAndroidReadinessCheck(flags = {}) {
-  const zmxPath = await resolveCommandPath("zmx");
-  if (!zmxPath) {
+  const target = await resolveGxserverServerTarget(flags).catch((error) => ({
+    error: error instanceof Error ? error.message : String(error),
+    ok: false,
+  }));
+  if (target.ok === false) {
+    return target;
+  }
+  const health = await fetchGxserverHealth(target).catch(() => undefined);
+  if (!health) {
     return {
-      error: "zmx not found. Install zmx and set Ghostex session persistence to zmx before connecting from Android.",
+      error: `Could not load gxserver health from ${target.baseUrl}. Start gxserver and try again.`,
       ok: false,
     };
   }
-
-  const settingsResult = await readAndroidReadinessSettings();
-  if (!settingsResult.ok) {
-    return settingsResult;
+  const zmxTool = Array.isArray(health.tools) ? health.tools.find((tool) => tool?.tool === "zmx") : undefined;
+  if (zmxTool?.availability !== "available") {
+    return {
+      error: zmxTool?.message ?? "gxserver zmx capability is unavailable.",
+      ok: false,
+      serverId: health.serverId,
+    };
   }
 
   const result = await sendSidebarCliCommand("listSessions", {}, flags).catch((error) => ({
-    bridgeOk: false,
     error: error instanceof Error ? error.message : String(error),
     ok: false,
   }));
   if (isFailedCliResult(result)) {
     return {
-      bridgeOk: result.bridgeOk,
-      error: result.error ?? "Could not load Ghostex sessions from the running app.",
+      error: result.error ?? "Could not load Ghostex sessions from gxserver.",
       ok: false,
-      sessionPersistenceProvider: settingsResult.sessionPersistenceProvider,
-      zmxPath,
+      serverId: health.serverId,
+      zmxPath: zmxTool.executablePath,
     };
   }
 
   return {
     ok: true,
-    sessionPersistenceProvider: settingsResult.sessionPersistenceProvider,
+    serverId: health.serverId,
     sessions: Array.isArray(result.sessions) ? result.sessions.length : 0,
-    zmxPath,
+    zmxPath: zmxTool.executablePath,
   };
 }
 
@@ -1947,10 +2549,10 @@ async function attachSessionCommand(args) {
   }
   const result = await fetchSessionList(flags);
   const session = await resolveOneListedSession(selector, result.sessions ?? []);
-  await attachResolvedSession(session);
+  await attachResolvedSession(session, flags);
 }
 
-async function attachResolvedSession(session) {
+async function attachResolvedSession(session, flags = {}) {
   /**
    * CDXC:CliSessions 2026-05-17-01:33:
    * Sleeping a provider-backed agent session stops the tmux/zmx/zellij runtime to
@@ -1958,13 +2560,15 @@ async function attachResolvedSession(session) {
    * agent resume command for sleeping rows; provider attach remains first for
    * awake rows where the named session is still live.
    */
-  const command = buildSessionAttachCommand(session);
+  const attachMetadata = await fetchAttachMetadataForSession(session, flags);
+  const attachableSession = applyAttachMetadataToCliSession(session, attachMetadata);
+  const command = buildSessionAttachCommand(attachableSession);
   if (!command) {
     throw new Error(
       `Session ${session.alias} has no provider attach command or supported agent resume command.`,
     );
   }
-  await runInteractiveShellCommand(command, session.projectPath);
+  await runInteractiveShellCommand(command, attachableSession.projectPath);
 }
 
 async function interactiveSessionPickerCommand(args) {
@@ -1983,7 +2587,7 @@ async function interactiveSessionPickerCommand(args) {
   if (!session) {
     return;
   }
-  await attachResolvedSession(session);
+  await attachResolvedSession(session, flags);
 }
 
 async function ghostexTuiCommand(args) {
@@ -1993,8 +2597,11 @@ async function ghostexTuiCommand(args) {
    * Bare `ghostex` / `gx` launches the full Ghostex terminal TUI. Direct
    * attach commands such as `gx a <session>` stay on the Node attach path so
    * scripts and muscle-memory single-session attaches keep their old behavior.
-   * The TUI calls back into this CLI for session inventory and attach so the
-   * macOS sidebar remains the source of truth.
+   *
+   * CDXC:GhostexTui 2026-05-30-15:15:
+   * The TUI still calls back into this CLI for inventory and attach, but those
+   * callbacks now route to gxserver so the terminal UI no longer depends on the
+   * macOS app bridge.
    */
   if (!isInteractiveTerminal()) {
     await interactiveSessionPickerCommand(args);
@@ -2556,6 +3163,10 @@ async function resolveListedSessions(selector, sessions) {
   if (exactId) {
     return [exactId];
   }
+  const exactGlobalRef = sessions.find((session) => session.globalRef === normalizedSelector);
+  if (exactGlobalRef) {
+    return [exactGlobalRef];
+  }
   /**
    * CDXC:CliSessionSelectors 2026-05-28-10:55:
    * Terminals export GHOSTEX_SESSION_ID as the provider persistence name
@@ -3036,8 +3647,11 @@ function parseCreateSession(rest, flags) {
   /**
    * CDXC:AndroidRemoteSessions 2026-05-18-02:31:
    * Ghostex Android creates new terminals through `ghostex create-session`
-   * over SSH. Preserve project/group flags so the running Mac app owns the
-   * creation path and applies the active zmx persistence setting.
+   * over SSH.
+   *
+   * CDXC:GxserverCliCutover 2026-05-30-15:15:
+   * Preserve project/group flags so gxserver owns the creation path and applies
+   * zmx-backed session persistence after the hard cutover.
    */
   return {
     groupId: flags.groupId,
@@ -3653,6 +4267,7 @@ export {
   buildSessionPickerRows,
   buildSessionAttachCommand,
   computerUseUsage,
+  createCliSshForwardPlan,
   formatCompactSessionLine,
   generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
@@ -3666,6 +4281,8 @@ export {
   parseRename,
   parseVsCodePathPosition,
   readAndroidReadinessSettings,
+  requestGxserverRpc,
+  resolveGxserverServerTarget,
   resolveListedSessions,
   resolveZehnLaunchFromRoot,
   usage,

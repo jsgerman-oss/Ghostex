@@ -351,9 +351,11 @@ struct CreateTerminal: Decodable {
   let diagnosticSource: String?
   let env: [String: String]?
   let initialInput: String?
+  let persistenceSessionCreated: Bool?
   let sessionId: String
   let sessionPersistenceName: String?
   let sessionPersistenceProvider: String?
+  let shellAttachCommand: String?
   let shellCommand: String?
   let title: String?
   let tmuxMode: Bool?
@@ -1088,6 +1090,7 @@ enum HostEvent: Encodable {
   case t3ThreadChanged(sessionId: String, threadId: String, title: String?)
   case processResult(requestId: String, exitCode: Int32, stdout: String, stderr: String)
   case sidebarCliResult(requestId: String, ok: Bool, payloadJson: String)
+  case gxserverStatus(payloadJson: String)
 
   private enum CodingKeys: String, CodingKey {
     case exitCode
@@ -1401,6 +1404,13 @@ enum HostEvent: Encodable {
       try container.encode("sidebarCliResult", forKey: .type)
       try container.encode(requestId, forKey: .requestId)
       try container.encode(ok, forKey: .ok)
+      try container.encode(payloadJson, forKey: .payloadJson)
+    case .gxserverStatus(let payloadJson):
+      /**
+       CDXC:GxserverBootstrap 2026-05-30-15:39:
+       Native gxserver bootstrap status crosses the existing typed host-event bus so the trusted React sidebar can update its gxserver client wrapper without owning daemon launch or reading local token files itself.
+       */
+      try container.encode("gxserverStatus", forKey: .type)
       try container.encode(payloadJson, forKey: .payloadJson)
     }
   }
