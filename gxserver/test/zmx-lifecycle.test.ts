@@ -1,14 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import {
   buildZmxAttachCommand,
   buildZmxExistsCommand,
+  buildZmxHistoryCommand,
   buildZmxKillCommand,
+  buildZmxSendCommand,
   decideStartupTextDisposition,
   probeZmxSession,
   selectStartupRestoreSessionIds,
 } from "../src/zmx-lifecycle.js";
 import type { GxserverSessionDomainState } from "../protocol/index.js";
+import type { GxserverZmxCommandResult } from "../src/zmx-lifecycle.js";
 
 test("zmx attach command preserves the renderer shell contract", () => {
   const command = buildZmxAttachCommand({
@@ -68,6 +75,79 @@ test("zmx existence probes distinguish exists, missing, and unknown", async () =
   assert.equal(unknown.error, "zmx broken");
 });
 
+test("zmx list command failure probes as unknown instead of missing", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "gxserver-zmx-probe-"));
+  const zmxPath = path.join(tempDir, "zmx");
+  try {
+    await writeFile(
+      zmxPath,
+      `#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "--short" ]; then
+  exit 1
+fi
+exit 64
+`,
+    );
+    await chmod(zmxPath, 0o755);
+
+    const probe = await probeZmxSession({
+      runZsh: runZshCommand,
+      sessionName: "P3a91-G8v20",
+      zmxExecutablePath: zmxPath,
+    });
+
+    assert.equal(probe.lifecycleState, "unknown");
+    assert.match(probe.error ?? "", /zmx list --short failed with exit 1/);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("successful zmx list without session probes as missing", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "gxserver-zmx-probe-"));
+  const zmxPath = path.join(tempDir, "zmx");
+  try {
+    await writeFile(
+      zmxPath,
+      `#!/bin/sh
+if [ "$1" = "list" ] && [ "$2" = "--short" ]; then
+  printf '%s\\n' 'P3a91-G1111'
+  exit 0
+fi
+exit 64
+`,
+    );
+    await chmod(zmxPath, 0o755);
+
+    const probe = await probeZmxSession({
+      runZsh: runZshCommand,
+      sessionName: "P3a91-G8v20",
+      zmxExecutablePath: zmxPath,
+    });
+
+    assert.equal(probe.lifecycleState, "missing");
+    assert.equal(probe.error, undefined);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("probe runner failures probe as unknown with error details", async () => {
+  const error = new Error("spawn /bin/zsh ENOENT") as NodeJS.ErrnoException;
+  error.code = "ENOENT";
+  const probe = await probeZmxSession({
+    runZsh: async () => {
+      throw error;
+    },
+    sessionName: "P3a91-G8v20",
+    zmxExecutablePath: "/fake/zmx",
+  });
+
+  assert.equal(probe.lifecycleState, "unknown");
+  assert.match(probe.error ?? "", /ENOENT/);
+  assert.match(probe.error ?? "", /spawn \/bin\/zsh ENOENT/);
+});
+
 test("sleep and close kill commands use bundled zmx directly", () => {
   const command = buildZmxKillCommand({
     sessionName: "P3a91-G8v20",
@@ -78,6 +158,23 @@ test("sleep and close kill commands use bundled zmx directly", () => {
   assert.match(command, /unset ZMX_SESSION ZMX_SESSION_PREFIX/);
   assert.match(command, /exec "\$zmx_bin" kill "\$zmx_session" --force/);
   assert.doesNotMatch(command, /command -v zmx/);
+});
+
+test("zmx session interaction commands use bundled zmx for history and raw input", () => {
+  const history = buildZmxHistoryCommand({
+    sessionName: "P3a91-G8v20",
+    zmxExecutablePath: "/bundle/zmx",
+  });
+  const send = buildZmxSendCommand({
+    sessionName: "P3a91-G8v20",
+    text: "hello 'quoted'\r",
+    zmxExecutablePath: "/bundle/zmx",
+  });
+
+  assert.match(history, /exec "\$zmx_bin" history "\$zmx_session"/);
+  assert.match(send, /zmx_text='hello '\\''quoted'\\''\r'/);
+  assert.match(send, /exec "\$zmx_bin" send "\$zmx_session" "\$zmx_text"/);
+  assert.doesNotMatch(`${history}\n${send}`, /command -v zmx/);
 });
 
 test("startup restore selects active visible sessions, not every stored session", () => {
@@ -118,3 +215,23 @@ test("zmx exists command does not use PATH zmx", () => {
   assert.match(command, /"\$zmx_bin" list --short/);
   assert.doesNotMatch(command, /command -v zmx/);
 });
+
+function runZshCommand(script: string): Promise<GxserverZmxCommandResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("/bin/zsh", ["-lc", script], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({
+        exitCode: code ?? 1,
+        stderr: Buffer.concat(stderr).toString("utf8").trim(),
+        stdout: Buffer.concat(stdout).toString("utf8").trim(),
+      });
+    });
+  });
+}

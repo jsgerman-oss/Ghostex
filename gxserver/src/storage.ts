@@ -20,7 +20,12 @@ export interface GxserverStorageInitResult {
   stateDbFile: string;
 }
 
+export interface GxserverCorsConfig {
+  allowedOrigins: string[];
+}
+
 export interface GxserverConfig {
+  cors: GxserverCorsConfig;
   createdAt: string;
   listeners: {
     local: GxserverListenerConfig;
@@ -28,6 +33,20 @@ export interface GxserverConfig {
   };
   product: typeof GXSERVER_PRODUCT;
 }
+
+/*
+CDXC:GxserverCors 2026-05-30-20:15:
+Browser access to gxserver is limited to native WKWebView `Origin: null`, known local sidebar development origins, and exact origins added to config.json. CLI and server-to-server clients do not need CORS, so responses without a browser Origin header should not expose CORS or private-network permissions.
+*/
+const DEFAULT_GXSERVER_CORS_ALLOWED_ORIGINS = [
+  "null",
+  "http://127.0.0.1:4173",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:6006",
+  "http://localhost:4173",
+  "http://localhost:5173",
+  "http://localhost:6006",
+] as const;
 
 export const GxserverStorageMigrations: readonly GxserverMigration[] = [
   {
@@ -250,6 +269,9 @@ The local API is always a full loopback listener on 127.0.0.1:58744. The remote/
 */
 export function createDefaultGxserverConfig(): GxserverConfig {
   return {
+    cors: {
+      allowedOrigins: [...DEFAULT_GXSERVER_CORS_ALLOWED_ORIGINS],
+    },
     createdAt: new Date().toISOString(),
     listeners: {
       local: {
@@ -269,6 +291,9 @@ export function createDefaultGxserverConfig(): GxserverConfig {
 export function mergeGxserverConfig(config: Partial<GxserverConfig>): GxserverConfig {
   const defaults = createDefaultGxserverConfig();
   return {
+    cors: {
+      allowedOrigins: normalizeAllowedCorsOrigins(config.cors?.allowedOrigins, defaults.cors.allowedOrigins),
+    },
     createdAt: typeof config.createdAt === "string" ? config.createdAt : defaults.createdAt,
     listeners: {
       local: {
@@ -290,6 +315,18 @@ export function mergeGxserverConfig(config: Partial<GxserverConfig>): GxserverCo
 
 function isPartialListenerConfig(value: unknown): value is Partial<GxserverListenerConfig> {
   return typeof value === "object" && value !== null;
+}
+
+function normalizeAllowedCorsOrigins(value: unknown, defaults: readonly string[]): string[] {
+  const origins = new Set(defaults);
+  if (Array.isArray(value)) {
+    for (const origin of value) {
+      if (typeof origin === "string" && origin.trim()) {
+        origins.add(origin.trim());
+      }
+    }
+  }
+  return [...origins].sort();
 }
 
 function isExistingFileError(error: unknown): boolean {

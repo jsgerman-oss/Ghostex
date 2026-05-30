@@ -27,6 +27,7 @@ export type GxserverListenerKind = "local" | "remote";
 export type GxserverApiPermission = "fullLocal" | "remoteAllowed" | "remoteBlocked";
 export type GxserverRpcErrorCode =
   | "badRequest"
+  | "corruptState"
   | "dependencyUnavailable"
   | "forbidden"
   | "internalError"
@@ -265,8 +266,15 @@ export interface GxserverQueryLogsParams {
 
 export interface GxserverQueryLogsResult {
   entries: GxserverLogEntry[];
+  logFileSizeBytes?: number;
   malformedLineCount: number;
+  malformedLineCountIsExact?: boolean;
+  scannedBytes?: number;
+  scannedLineCount?: number;
   totalMatched: number;
+  totalMatchedIsExact?: boolean;
+  truncated?: boolean;
+  truncatedReason?: "fileWindowExceeded";
 }
 
 export type GxserverGitAction = "branch" | "diff" | "list" | "status";
@@ -311,9 +319,25 @@ export interface GxserverTypedCommand {
   executable: string;
 }
 
+export type GxserverTypedOperationFailureCode =
+  | "aborted"
+  | "stderrLimitExceeded"
+  | "stdoutLimitExceeded"
+  | "timeout";
+
+export interface GxserverTypedOperationFailure {
+  capturedBytes?: number;
+  code: GxserverTypedOperationFailureCode;
+  limitBytes?: number;
+  message: string;
+  stream?: "stderr" | "stdout";
+  timeoutMs?: number;
+}
+
 export interface GxserverTypedOperationResult {
   action: GxserverGitAction | GxserverWorktreeAction | GxserverBeadsAction;
   command?: GxserverTypedCommand;
+  error?: GxserverTypedOperationFailure;
   exitCode: number;
   stderr: string;
   stdout: string;

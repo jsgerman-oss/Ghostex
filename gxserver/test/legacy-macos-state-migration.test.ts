@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import Database from "better-sqlite3";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GxserverDomainRepository } from "../src/domain-state.js";
@@ -38,10 +39,20 @@ test("first-run import migrates macOS sidebar projects, active and sleeping sess
     assert.deepEqual(rewrittenSharedProjects.projects[0].workspace.groups[0].snapshot.visibleSessionIds, ["G8v20"]);
     assert.equal(rewrittenSharedProjects.projects[0].commandsPanel.activeSessionId, "G2abc");
     assert.equal(rewrittenSharedProjects.projects[0].beadConversationLinks[0].sessionId, "G8v20");
+    assert.equal(rewrittenSharedProjects.projects[0].beadConversationLinks[0].projectId, "P3a91");
+    assert.deepEqual(rewrittenSharedProjects.projects[0].beadConversationLinks[0].metadata.sessionIds, ["G1z99"]);
+    assert.equal(
+      rewrittenSharedProjects.projects[0].beadConversationLinks[1].ghostexSessionId,
+      "combined-session:P4b22:G3def",
+    );
+    assert.equal(rewrittenSharedProjects.projects[0].beadConversationLinks[1].note, "preserve me");
     assert.equal(rewrittenSharedProjects.projects[1].worktree.parentProjectId, "P3a91");
     const rewrittenPreviousSessions = JSON.parse(await readFile(fixture.sharedPreviousSessionsFile, "utf8")) as any[];
     assert.equal(rewrittenPreviousSessions[0].projectId, "P3a91");
-    assert.equal(rewrittenPreviousSessions[0].sessionId, "legacy-prev");
+    assert.equal(rewrittenPreviousSessions[0].sessionId, "G4hij");
+    assert.equal(rewrittenPreviousSessions[0].sessionRecord.projectId, "P3a91");
+    assert.equal(rewrittenPreviousSessions[0].sessionRecord.sessionId, "G4hij");
+    assert.deepEqual(rewrittenPreviousSessions[0].relatedSessionIds, ["G4hij", "G8v20"]);
 
     const db = openGxserverDatabase(fixture.paths);
     try {
@@ -69,10 +80,41 @@ test("first-run import migrates macOS sidebar projects, active and sleeping sess
       assert.equal(mainProject?.completionRules.completionBellEnabled, true);
       assert.equal(mainProject?.attentionRules.showMacOSAttentionNotifications, true);
       assert.equal(mainProject?.previousSessionHistory[0]?.historyId, "hist-1");
+      assert.equal(mainProject?.previousSessionHistory[0]?.projectId, "P3a91");
+      assert.equal(mainProject?.previousSessionHistory[0]?.sessionId, "G4hij");
+      assert.equal((mainProject?.previousSessionHistory[0] as any)?.sessionRecord?.projectId, "P3a91");
+      assert.equal((mainProject?.previousSessionHistory[0] as any)?.sessionRecord?.sessionId, "G4hij");
+      assert.deepEqual((mainProject?.previousSessionHistory[0] as any)?.relatedSessionIds, ["G4hij", "G8v20"]);
+      assert.deepEqual((mainProject?.previousSessionHistory[0] as any)?.sessionRecord?.relatedSessionIds, ["G4hij"]);
       assert.equal((mainProject?.previousSessionHistory[0] as any)?.hiddenRestoreMetadata?.legacySessionId, "legacy-prev");
+      assert.equal(
+        (mainProject?.previousSessionHistory[0] as any)?.hiddenRestoreMetadata?.sessionRecord?.sessionId,
+        "legacy-prev",
+      );
       assert.equal(JSON.stringify(mainProject?.previousSessionHistory).includes("restored from"), false);
       assert.equal(mainProjectBoardConfig?.beadsDisplayKey, "GX");
+      assert.equal(mainProjectBoardConfig?.beadConversationLinks?.[0]?.sessionId, "G8v20");
+      assert.equal(mainProjectBoardConfig?.beadConversationLinks?.[0]?.projectId, "P3a91");
+      assert.deepEqual(mainProjectBoardConfig?.beadConversationLinks?.[0]?.metadata?.sessionIds, ["G1z99"]);
+      assert.equal(
+        mainProjectBoardConfig?.beadConversationLinks?.[1]?.ghostexSessionId,
+        "combined-session:P4b22:G3def",
+      );
+      assert.equal(mainProjectBoardConfig?.beadConversationLinks?.[1]?.note, "preserve me");
       assert.equal(mainGitConfig?.primaryAction, "pr");
+      const storedProjectRow = db
+        .prepare<[string], { previousSessionHistoryJson: string }>(
+          "SELECT previousSessionHistoryJson FROM projects WHERE projectId = ?",
+        )
+        .get("P3a91");
+      const storedPreviousSessionHistory = JSON.parse(storedProjectRow?.previousSessionHistoryJson ?? "[]") as any[];
+      assert.equal(storedPreviousSessionHistory[0].projectId, "P3a91");
+      assert.equal(storedPreviousSessionHistory[0].sessionId, "G4hij");
+      assert.equal(storedPreviousSessionHistory[0].sessionRecord.projectId, "P3a91");
+      assert.equal(storedPreviousSessionHistory[0].sessionRecord.sessionId, "G4hij");
+      assert.deepEqual(storedPreviousSessionHistory[0].relatedSessionIds, ["G4hij", "G8v20"]);
+      assert.equal(storedPreviousSessionHistory[0].hiddenRestoreMetadata.legacySessionId, "legacy-prev");
+      assert.equal(storedPreviousSessionHistory[0].hiddenRestoreMetadata.sessionRecord.sessionId, "legacy-prev");
 
       const importedSessions = sessions.filter((session) => session.projectId === "P3a91");
       assert.deepEqual(
@@ -116,6 +158,145 @@ test("first-run import migrates macOS sidebar projects, active and sleeping sess
   });
 });
 
+test("first-run import chooses richer WK localStorage projects and previous sessions over stale shared JSON", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    const localStorageProjects = await readFile(fixture.sharedProjectsFile, "utf8");
+    const localStoragePreviousSessions = await readFile(fixture.sharedPreviousSessionsFile, "utf8");
+    const staleSharedProjects = JSON.parse(localStorageProjects) as any;
+    staleSharedProjects.projects = [staleSharedProjects.projects[0]];
+    staleSharedProjects.projects[0].workspace.groups[0].snapshot.sessions = [];
+    staleSharedProjects.projects[0].workspace.groups[0].snapshot.visibleSessionIds = [];
+    staleSharedProjects.projects[0].commandsPanel.sessions = [];
+    staleSharedProjects.projects[0].commandsPanel.activeSessionId = undefined;
+    await writeFile(fixture.sharedProjectsFile, JSON.stringify(staleSharedProjects), "utf8");
+    await writeFile(fixture.sharedPreviousSessionsFile, "[]", "utf8");
+    fixture.legacyStorageValues["ghostex-native-projects"] = localStorageProjects;
+    fixture.legacyStorageValues["ghostex-native-previous-sessions"] = localStoragePreviousSessions;
+
+    const result = await runImport(fixture);
+
+    assert.equal(result.status.status, "completed");
+    assert.equal(result.status.projectsImported, 2);
+    assert.equal(result.status.sessionsImported, 4);
+    const staleSharedBackup = JSON.parse(await readFile(`${fixture.sharedProjectsFile}.legacy-before-gxserver`, "utf8")) as any;
+    assert.equal(staleSharedBackup.projects.length, 1);
+    assert.equal(staleSharedBackup.projects[0].workspace.groups[0].snapshot.sessions.length, 0);
+
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      const projects = repository.listProjects();
+      const sessions = repository.listSessions();
+      const mainProject = projects.find((project) => project.projectId === "P3a91");
+      assert.deepEqual(
+        projects.map((project) => project.projectId),
+        ["P3a91", "P4b22"],
+      );
+      assert.deepEqual(
+        sessions.map((session) => session.sessionId).sort(),
+        ["G1z99", "G2abc", "G3def", "G8v20"],
+      );
+      assert.equal(mainProject?.previousSessionHistory[0]?.historyId, "hist-1");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+test("first-run import chooses richer fresher WK localStorage database over stale-first enumeration", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    const freshProjects = await readFile(fixture.sharedProjectsFile, "utf8");
+    const freshPreviousSessions = await readFile(fixture.sharedPreviousSessionsFile, "utf8");
+    const staleProjects = JSON.parse(freshProjects) as any;
+    staleProjects.projects = [staleProjects.projects[0]];
+    staleProjects.projects[0].workspace.groups[0].snapshot.sessions = [];
+    staleProjects.projects[0].workspace.groups[0].snapshot.visibleSessionIds = [];
+    staleProjects.projects[0].commandsPanel.sessions = [];
+    staleProjects.projects[0].commandsPanel.activeSessionId = undefined;
+    await writeFile(fixture.sharedProjectsFile, JSON.stringify(staleProjects), "utf8");
+    await writeFile(fixture.sharedPreviousSessionsFile, "[]", "utf8");
+
+    const localStorageRoot = path.join(fixture.paths.homeDir, "Library", "WebKit", "com.madda.ghostex.host");
+    const staleDatabase = path.join(localStorageRoot, "a-stale", "localstorage.sqlite3");
+    const freshDatabase = path.join(localStorageRoot, "z-fresh", "localstorage.sqlite3");
+    await createLegacyLocalStorageDatabase(staleDatabase, {
+      "ghostex-native-previous-sessions": "[]",
+      "ghostex-native-projects": JSON.stringify(staleProjects),
+    });
+    await createLegacyLocalStorageDatabase(freshDatabase, {
+      "ghostex-native-previous-sessions": freshPreviousSessions,
+      "ghostex-native-projects": freshProjects,
+    });
+    const staleTime = new Date("2026-05-29T10:00:00.000Z");
+    const freshTime = new Date("2026-05-30T10:00:00.000Z");
+    await utimes(staleDatabase, staleTime, staleTime);
+    await utimes(freshDatabase, freshTime, freshTime);
+
+    const result = await migrateLegacyMacosStateIntoGxserver({
+      createProjectId: () => fixture.projectIds.shift() ?? "P9zzz",
+      createSessionId: () => fixture.sessionIds.shift() ?? "G9zzz",
+      legacyLocalStorageRoot: localStorageRoot,
+      legacyLogsDir: fixture.legacyLogsDir,
+      logger: createGxserverLogger(fixture.paths),
+      now: () => "2026-05-30T11:10:00.000Z",
+      paths: fixture.paths,
+      serverId: "S7k",
+      sharedStateDir: fixture.sharedStateDir,
+    });
+
+    assert.equal(result.status.status, "completed");
+    assert.equal(result.status.projectsImported, 2);
+    assert.equal(result.status.sessionsImported, 4);
+
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      assert.deepEqual(
+        repository.listProjects().map((project) => project.projectId),
+        ["P3a91", "P4b22"],
+      );
+      assert.deepEqual(
+        repository.listSessions().map((session) => session.sessionId).sort(),
+        ["G1z99", "G2abc", "G3def", "G8v20"],
+      );
+      assert.equal(repository.getProject("P3a91")?.previousSessionHistory[0]?.historyId, "hist-1");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+test("completed repair keeps migrated shared empty previous sessions over stale WK history", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverVerification 2026-05-30-22:14:
+    A migrated projects snapshot plus shared previous-sessions `[]` must be enough to prove the user has no restorable history. Completed-import repair should keep that empty shared file authoritative even if WKWebView still has older previous-session rows.
+    */
+    const staleLocalStoragePreviousSessions = await readFile(fixture.sharedPreviousSessionsFile, "utf8");
+    await writeFile(fixture.sharedPreviousSessionsFile, "[]", "utf8");
+
+    const result = await runImport(fixture);
+
+    assert.equal(result.status.status, "completed");
+    assert.deepEqual(JSON.parse(await readFile(fixture.sharedPreviousSessionsFile, "utf8")), []);
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      assert.deepEqual(repository.getProject("P3a91")?.previousSessionHistory, []);
+    } finally {
+      db.close();
+    }
+
+    await rm(fixture.sharedPreviousSessionsFile, { force: true });
+    fixture.legacyStorageValues["ghostex-native-previous-sessions"] = staleLocalStoragePreviousSessions;
+    const repaired = await runImport(fixture);
+
+    assert.equal(repaired.status.status, "skipped");
+    assert.equal(repaired.status.skippedReason, "alreadyCompleted");
+    assert.deepEqual(JSON.parse(await readFile(fixture.sharedPreviousSessionsFile, "utf8")), []);
+  });
+});
+
 test("already-migrated state skips without importing rows again", async () => {
   await withLegacyImportFixture(async (fixture) => {
     await runImport(fixture);
@@ -141,7 +322,50 @@ test("already-migrated state skips without importing rows again", async () => {
       await readFile(`${fixture.sharedPreviousSessionsFile}.legacy-before-gxserver`, "utf8"),
       "utf8",
     );
-    fixture.sessionIds.push("G5new" as GxserverSessionId);
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      db.prepare("UPDATE projects SET projectBoardConfigJson = ? WHERE projectId = ?").run(
+        JSON.stringify({
+          beadConversationLinks: [
+            {
+              beadId: "gxserver-11",
+              ghostexSessionId: "legacy-live",
+              marker: "stale-db-config",
+              projectId: "legacy-project-main",
+            },
+          ],
+          beadsDisplayKey: "GX",
+        }),
+        "P3a91",
+      );
+      db.prepare("UPDATE projects SET previousSessionHistoryJson = ? WHERE projectId = ?").run(
+        JSON.stringify([
+          {
+            historyId: "hist-raw-db",
+            projectId: "legacy-project-main",
+            relatedSessionIds: ["legacy-prev", "legacy-live"],
+            sessionId: "legacy-prev",
+            sessionRecord: {
+              projectId: "legacy-project-main",
+              relatedSessionIds: ["legacy-prev"],
+              sessionId: "legacy-prev",
+              title: "Raw DB previous",
+            },
+            hiddenRestoreMetadata: {
+              legacySessionId: "legacy-prev",
+              sessionRecord: {
+                projectId: "legacy-project-main",
+                sessionId: "legacy-prev",
+              },
+            },
+          },
+        ]),
+        "P3a91",
+      );
+    } finally {
+      db.close();
+    }
+    fixture.sessionIds.push("G5new" as GxserverSessionId, "G6hij" as GxserverSessionId);
     const skipped = await runImport(fixture);
 
     assert.equal(skipped.status.status, "skipped");
@@ -155,13 +379,75 @@ test("already-migrated state skips without importing rows again", async () => {
       "G5new",
     );
 
-    const db = openGxserverDatabase(fixture.paths);
+    const repairedDb = openGxserverDatabase(fixture.paths);
     try {
-      assert.equal(db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM projects").get()?.count, 2);
-      assert.equal(db.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM sessions").get()?.count, 5);
+      assert.equal(repairedDb.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM projects").get()?.count, 2);
+      assert.equal(repairedDb.prepare<[], { count: number }>("SELECT COUNT(*) AS count FROM sessions").get()?.count, 5);
+      const repairedConfig = repairedDb
+        .prepare<[string], { projectBoardConfigJson: string }>(
+          "SELECT projectBoardConfigJson FROM projects WHERE projectId = ?",
+        )
+        .get("P3a91");
+      const repairedProjectBoardConfig = JSON.parse(repairedConfig?.projectBoardConfigJson ?? "{}");
+      assert.equal(repairedProjectBoardConfig.beadConversationLinks[0].ghostexSessionId, "G8v20");
+      assert.equal(repairedProjectBoardConfig.beadConversationLinks[0].projectId, "P3a91");
+      assert.equal(repairedProjectBoardConfig.beadConversationLinks[0].marker, "stale-db-config");
+      const repairedHistoryRow = repairedDb
+        .prepare<[string], { previousSessionHistoryJson: string }>(
+          "SELECT previousSessionHistoryJson FROM projects WHERE projectId = ?",
+        )
+        .get("P3a91");
+      const repairedHistory = JSON.parse(repairedHistoryRow?.previousSessionHistoryJson ?? "[]");
+      assert.equal(repairedHistory[0].projectId, "P3a91");
+      assert.equal(repairedHistory[0].sessionId, "G6hij");
+      assert.equal(repairedHistory[0].sessionRecord.projectId, "P3a91");
+      assert.equal(repairedHistory[0].sessionRecord.sessionId, "G6hij");
+      assert.deepEqual(repairedHistory[0].relatedSessionIds, ["G6hij", "G8v20"]);
+      assert.equal(repairedHistory[0].hiddenRestoreMetadata.legacySessionId, "legacy-prev");
+      assert.equal(repairedHistory[0].hiddenRestoreMetadata.sessionRecord.sessionId, "legacy-prev");
     } finally {
-      db.close();
+      repairedDb.close();
     }
+  });
+});
+
+test("first-run retry after crash reuses partially imported legacy rows before marker", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    await runImport(fixture);
+    const originalRows = readImportedLegacyRows(fixture);
+    await writeFile(
+      fixture.sharedProjectsFile,
+      await readFile(`${fixture.sharedProjectsFile}.legacy-before-gxserver`, "utf8"),
+      "utf8",
+    );
+    await writeFile(
+      fixture.sharedPreviousSessionsFile,
+      await readFile(`${fixture.sharedPreviousSessionsFile}.legacy-before-gxserver`, "utf8"),
+      "utf8",
+    );
+    forgetLegacyImportMarker(fixture);
+    fixture.projectIds.push("P5dup" as GxserverProjectId, "P6dup" as GxserverProjectId);
+    fixture.sessionIds.push(
+      "G5dup" as GxserverSessionId,
+      "G6dup" as GxserverSessionId,
+      "G7dup" as GxserverSessionId,
+      "G8dup" as GxserverSessionId,
+    );
+
+    const retried = await runImport(fixture);
+
+    assert.equal(retried.status.status, "completed");
+    assert.equal(retried.status.projectsImported, 2);
+    assert.equal(retried.status.sessionsImported, 4);
+    assert.deepEqual(readImportedLegacyRows(fixture), originalRows);
+
+    const rewrittenSharedProjects = JSON.parse(await readFile(fixture.sharedProjectsFile, "utf8")) as any;
+    assert.equal(rewrittenSharedProjects.activeProjectId, "P3a91");
+    assert.equal(rewrittenSharedProjects.projects[0].projectId, "P3a91");
+    assert.equal(rewrittenSharedProjects.projects[0].workspace.groups[0].snapshot.sessions[0].sessionId, "G8v20");
+    assert.equal(rewrittenSharedProjects.projects[0].commandsPanel.activeSessionId, "G2abc");
+    assert.equal(rewrittenSharedProjects.projects[1].projectId, "P4b22");
+    assert.equal(rewrittenSharedProjects.projects[1].workspace.groups[0].snapshot.sessions[0].sessionId, "G3def");
   });
 });
 
@@ -330,6 +616,7 @@ async function withLegacyImportFixture(run: (fixture: LegacyImportFixture) => Pr
           projectName: "Ghostex",
           projectPath,
           primaryTitle: "Previous Exact",
+          relatedSessionIds: ["legacy-prev", "legacy-live"],
           row: 0,
           sessionId: "legacy-prev",
           sessionRecord: {
@@ -337,6 +624,8 @@ async function withLegacyImportFixture(run: (fixture: LegacyImportFixture) => Pr
             createdAt: "2026-05-29T09:00:00.000Z",
             displayId: "1",
             kind: "terminal",
+            projectId: "legacy-project-main",
+            relatedSessionIds: ["legacy-prev"],
             sessionId: "legacy-prev",
             sessionPersistenceName: "legacy-zmx-prev",
             sessionPersistenceProvider: "zmx",
@@ -405,7 +694,7 @@ async function withLegacyImportFixture(run: (fixture: LegacyImportFixture) => Pr
       paths,
       projectIds: ["P3a91", "P4b22"],
       projectPath,
-      sessionIds: ["G8v20", "G1z99", "G2abc", "G3def"],
+      sessionIds: ["G8v20", "G1z99", "G2abc", "G3def", "G4hij"],
       sharedProjectsFile,
       sharedPreviousSessionsFile,
       sharedSettingsFile,
@@ -430,10 +719,81 @@ async function runImport(fixture: LegacyImportFixture) {
   });
 }
 
+async function createLegacyLocalStorageDatabase(filePath: string, values: Record<string, string>): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const db = new Database(filePath);
+  try {
+    db.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB NOT NULL)");
+    const insert = db.prepare<[string, string]>("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+    for (const [key, value] of Object.entries(values)) {
+      insert.run(key, value);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function forgetLegacyImportMarker(fixture: LegacyImportFixture): void {
+  const db = openGxserverDatabase(fixture.paths);
+  try {
+    db.prepare("DELETE FROM metadata WHERE key = ?").run(`migration.${LEGACY_MACOS_STATE_IMPORT_ID}`);
+  } finally {
+    db.close();
+  }
+}
+
+function readImportedLegacyRows(fixture: LegacyImportFixture): {
+  projects: Array<{ legacyProjectId: string; projectId: string }>;
+  sessions: Array<{ legacySessionId: string; projectId: string; sessionId: string }>;
+} {
+  const db = openGxserverDatabase(fixture.paths);
+  try {
+    const projects = db
+      .prepare<[], { projectId: string; runtimeSettingsJson: string }>(
+        "SELECT projectId, runtimeSettingsJson FROM projects ORDER BY projectId",
+      )
+      .all()
+      .map((row) => ({
+        legacyProjectId: JSON.parse(row.runtimeSettingsJson).legacyProjectId as string,
+        projectId: row.projectId,
+      }));
+    const sessions = db
+      .prepare<[], { projectId: string; providerStateJson: string; sessionId: string }>(
+        "SELECT projectId, sessionId, providerStateJson FROM sessions ORDER BY projectId, sessionId",
+      )
+      .all()
+      .map((row) => ({
+        legacySessionId: JSON.parse(row.providerStateJson).legacySessionId as string,
+        projectId: row.projectId,
+        sessionId: row.sessionId,
+      }));
+    return { projects, sessions };
+  } finally {
+    db.close();
+  }
+}
+
 function createLegacyProjectFixture(projectId: string, name: string, projectPath: string) {
   return {
     beadsDisplayKey: "GX",
-    beadConversationLinks: [{ issueId: "gxserver-9", sessionId: "legacy-live" }],
+    beadConversationLinks: [
+      {
+        issueId: "gxserver-9",
+        metadata: {
+          projectId,
+          sessionIds: ["legacy-sleep"],
+        },
+        projectId,
+        sessionId: "legacy-live",
+      },
+      {
+        beadId: "gxserver-10",
+        ghostexSessionId: "combined-session:legacy-project-worktree:legacy-worktree-session",
+        id: "legacy-link-worktree",
+        note: "preserve me",
+        projectId,
+      },
+    ],
     commandsPanel: {
       activeSessionId: "legacy-command",
       heightRatio: 0.3,

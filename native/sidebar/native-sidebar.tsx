@@ -295,6 +295,10 @@ import {
   type NativeSidebarGxserverBootstrap,
   type NativeSidebarGxserverStartupSnapshot,
 } from "./gxserver-client";
+import {
+  isGxserverCanonicalProjectsStoragePayload,
+  projectStoragePayloadHasLegacyGxserverIds,
+} from "./gxserver-sidebar-storage";
 import type {
   GxserverAttachSessionMetadataResult,
   GxserverSessionDomainState,
@@ -5336,6 +5340,21 @@ function persistSharedProjectsSnapshot(
     activeProjectId: nextActiveProjectId,
     projects: nextProjects,
   });
+  const hasCanonicalSharedProjectsSnapshot =
+    sharedProjectsJson !== undefined &&
+    isGxserverCanonicalProjectsStoragePayload(sharedProjectsJson);
+  if (hasCanonicalSharedProjectsSnapshot && projectStoragePayloadHasLegacyGxserverIds(payloadJson)) {
+    /*
+    CDXC:GxserverMigration 2026-05-30-19:30:
+    A canonical gxserver projects snapshot must win over any stale React in-memory tree from the first upgraded launch. If an old `project-*`/`g-*` layout reaches persistence after migration, refresh WK localStorage from the canonical shared file and block the shared write instead of repairing IDs client-side.
+    */
+    localStorage.setItem(PROJECTS_STORAGE_KEY, sharedProjectsJson);
+    lastPersistedProjectsPayloadJson = sharedProjectsJson;
+    appendRestoreDebugLog("nativeSidebar.projects.persistBlockedStaleLegacyIds", {
+      reason,
+    });
+    return;
+  }
   /**
    * CDXC:NativeGpu 2026-05-08-16:45
    * Re-persisting an identical project tree wakes the native bridge and

@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createGxserverLogger } from "../src/logger.js";
-import { queryGxserverLogs } from "../src/logs.js";
+import { GXSERVER_LOG_QUERY_FULL_SCAN_MAX_BYTES, queryGxserverLogs } from "../src/logs.js";
 import { getGxserverPaths } from "../src/paths.js";
 
 test("log query filters malformed JSONL, identities, timestamps, limit, and order", async () => {
@@ -52,9 +52,59 @@ test("log query filters malformed JSONL, identities, timestamps, limit, and orde
     });
 
     assert.equal(result.malformedLineCount, 1);
+    assert.equal(result.malformedLineCountIsExact, true);
     assert.equal(result.totalMatched, 2);
+    assert.equal(result.totalMatchedIsExact, true);
+    assert.equal(result.truncated, false);
     assert.equal(result.entries.length, 1);
     assert.equal(result.entries[0]?.event, "agent.activity.working");
+  } finally {
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("large descending log query reads a bounded tail window", async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-query-large-tail-"));
+  try {
+    const paths = getGxserverPaths(homeDir);
+    const lines: string[] = [];
+    let byteLength = 0;
+    let lineCount = 0;
+    while (byteLength <= GXSERVER_LOG_QUERY_FULL_SCAN_MAX_BYTES + 1024 * 1024) {
+      const line = JSON.stringify({
+        event: `tail.${lineCount}`,
+        level: "info",
+        message: "x".repeat(768),
+        ts: new Date(Date.UTC(2026, 4, 30, 10, 0, lineCount)).toISOString(),
+      });
+      const jsonlLine = `${line}\n`;
+      lines.push(jsonlLine);
+      byteLength += Buffer.byteLength(jsonlLine, "utf8");
+      lineCount += 1;
+    }
+    await mkdir(paths.logsDir, { recursive: true });
+    await writeFile(paths.logFile, lines.join(""), "utf8");
+
+    const result = await queryGxserverLogs(paths, {
+      eventPrefix: "tail.",
+      limit: 3,
+      order: "desc",
+    });
+
+    assert.equal(result.entries.length, 3);
+    assert.deepEqual(
+      result.entries.map((entry) => entry.event),
+      [`tail.${lineCount - 1}`, `tail.${lineCount - 2}`, `tail.${lineCount - 3}`],
+    );
+    assert.equal(result.truncated, true);
+    assert.equal(result.truncatedReason, "fileWindowExceeded");
+    assert.equal(result.totalMatchedIsExact, false);
+    assert.equal(result.malformedLineCountIsExact, false);
+    assert.ok(result.logFileSizeBytes !== undefined);
+    assert.ok(result.scannedBytes !== undefined);
+    assert.ok(result.scannedLineCount !== undefined);
+    assert.ok(result.scannedBytes < result.logFileSizeBytes);
+    assert.ok(result.scannedLineCount < lineCount);
   } finally {
     await rm(homeDir, { force: true, recursive: true });
   }

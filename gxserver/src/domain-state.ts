@@ -33,10 +33,33 @@ export interface GxserverDomainRepositoryOptions {
 
 type JsonObject = Record<string, unknown>;
 type JsonArray = readonly JsonObject[];
+type DomainJsonField =
+  | "attentionRules"
+  | "completionRules"
+  | "customAgents"
+  | "customCommands"
+  | "gitConfig"
+  | "identityIcon"
+  | "launchSettings"
+  | "notificationRules"
+  | "previousSessionHistory"
+  | "projectBoardConfig"
+  | "providerState"
+  | "runtimeSettings"
+  | "worktree";
+
+export const GXSERVER_DOMAIN_STATE_JSON_LIMIT_CHARS = 1_000_000;
+export const GXSERVER_DOMAIN_STATE_JSON_MAX_DEPTH = 10;
 
 /*
 CDXC:GxserverDomainState 2026-05-30-17:30:
 The domain repository stores only state that must follow users across Ghostex clients: project/session identity, provider lifecycle metadata, launch/runtime-affecting settings, custom agents/commands, completion/attention rules, pinned/favorite flags, and hidden previous-session restore links. Visual layout and pane chrome stay in separate client-layout rows so normal UI state cannot corrupt shared records.
+
+CDXC:GxserverDomainState 2026-05-30-20:20:
+Project/session JSON blobs are shared durable state and appear in list/read responses, so create/update APIs must reject oversized or deeply nested runtimeSettings, previousSessionHistory, launchSettings, providerState, and related JSON columns before SQLite persistence. Use the same 1,000,000-character and depth-10 envelope as first-run migration, but reject live API writes instead of silently truncating user-owned state.
+
+CDXC:GxserverDomainState 2026-05-30-20:25:
+Corrupt persisted SQLite JSON columns must be surfaced as explicit corrupt-state errors on read and update. Do not normalize malformed or wrongly shaped project/session JSON to empty objects or arrays, because that hides persistence corruption and lets later updates overwrite recoverable user state with empty defaults.
 */
 export class GxserverDomainRepository {
   readonly #createProjectId: GxserverCandidateFactory<GxserverProjectId>;
@@ -249,7 +272,7 @@ export class GxserverDomainRepository {
     return row
       ? {
           clientId: row.clientId,
-          layout: parseObject(row.layoutJson),
+          layout: parseObject(row.layoutJson, "layoutJson", "clientLayout", `${row.clientId}/${row.projectId || "global"}`),
           ...(row.projectId ? { projectId: row.projectId as GxserverProjectId } : {}),
           updatedAt: row.updatedAt,
         }
@@ -286,9 +309,9 @@ export class GxserverDomainRepository {
 }
 
 export class GxserverDomainStateError extends Error {
-  readonly code: "badRequest" | "notFound";
+  readonly code: "badRequest" | "corruptState" | "notFound";
 
-  constructor(code: "badRequest" | "notFound", message: string) {
+  constructor(code: "badRequest" | "corruptState" | "notFound", message: string) {
     super(message);
     this.code = code;
   }
@@ -513,57 +536,68 @@ interface ClientLayoutRow {
 
 function toProjectRow(project: GxserverProjectDomainState): ProjectRow {
   return {
-    attentionRulesJson: stringifyJson(project.attentionRules),
-    completionRulesJson: stringifyJson(project.completionRules),
+    attentionRulesJson: stringifyDomainJsonField("attentionRules", project.attentionRules),
+    completionRulesJson: stringifyDomainJsonField("completionRules", project.completionRules),
     createdAt: project.createdAt,
     customAgentOrderJson: stringifyJson(project.customAgentOrder),
-    customAgentsJson: stringifyJson(project.customAgents),
+    customAgentsJson: stringifyDomainJsonField("customAgents", project.customAgents),
     customCommandOrderJson: stringifyJson(project.customCommandOrder),
-    customCommandsJson: stringifyJson(project.customCommands),
+    customCommandsJson: stringifyDomainJsonField("customCommands", project.customCommands),
     defaultCommand: project.defaultCommand ?? null,
     deletedDefaultCommandIdsJson: stringifyJson(project.deletedDefaultCommandIds),
-    gitConfigJson: stringifyJson(project.gitConfig),
-    identityIconJson: stringifyJson(project.identityIcon ?? {}),
+    gitConfigJson: stringifyDomainJsonField("gitConfig", project.gitConfig),
+    identityIconJson: stringifyDomainJsonField("identityIcon", project.identityIcon ?? {}),
     isFavorite: project.isFavorite ? 1 : 0,
     isPinned: project.isPinned ? 1 : 0,
-    launchSettingsJson: stringifyJson(project.launchSettings),
+    launchSettingsJson: stringifyDomainJsonField("launchSettings", project.launchSettings),
     name: project.name,
-    notificationRulesJson: stringifyJson(project.notificationRules),
+    notificationRulesJson: stringifyDomainJsonField("notificationRules", project.notificationRules),
     path: project.path ?? null,
-    previousSessionHistoryJson: stringifyJson(project.previousSessionHistory),
-    projectBoardConfigJson: stringifyJson(project.projectBoardConfig),
+    previousSessionHistoryJson: stringifyDomainJsonField("previousSessionHistory", project.previousSessionHistory),
+    projectBoardConfigJson: stringifyDomainJsonField("projectBoardConfig", project.projectBoardConfig),
     projectId: project.projectId,
-    runtimeSettingsJson: stringifyJson(project.runtimeSettings),
+    runtimeSettingsJson: stringifyDomainJsonField("runtimeSettings", project.runtimeSettings),
     updatedAt: project.updatedAt,
-    worktreeJson: stringifyJson(project.worktree ?? {}),
+    worktreeJson: stringifyDomainJsonField("worktree", project.worktree ?? {}),
   };
 }
 
 function fromProjectRow(row: ProjectRow): GxserverProjectDomainState {
-  const identityIcon = parseObject(row.identityIconJson);
-  const worktree = parseObject(row.worktreeJson);
+  const rowId = row.projectId;
+  const identityIcon = parseObject(row.identityIconJson, "identityIconJson", "project", rowId);
+  const worktree = parseObject(row.worktreeJson, "worktreeJson", "project", rowId);
   return {
-    attentionRules: parseObject(row.attentionRulesJson),
-    completionRules: parseObject(row.completionRulesJson),
+    attentionRules: parseObject(row.attentionRulesJson, "attentionRulesJson", "project", rowId),
+    completionRules: parseObject(row.completionRulesJson, "completionRulesJson", "project", rowId),
     createdAt: row.createdAt,
-    customAgentOrder: parseStringArray(row.customAgentOrderJson),
-    customAgents: parseObjectArray(row.customAgentsJson),
-    customCommandOrder: parseStringArray(row.customCommandOrderJson),
-    customCommands: parseObjectArray(row.customCommandsJson),
+    customAgentOrder: parseStringArray(row.customAgentOrderJson, "customAgentOrderJson", "project", rowId),
+    customAgents: parseObjectArray(row.customAgentsJson, "customAgentsJson", "project", rowId),
+    customCommandOrder: parseStringArray(row.customCommandOrderJson, "customCommandOrderJson", "project", rowId),
+    customCommands: parseObjectArray(row.customCommandsJson, "customCommandsJson", "project", rowId),
     defaultCommand: row.defaultCommand ?? undefined,
-    deletedDefaultCommandIds: parseStringArray(row.deletedDefaultCommandIdsJson),
-    gitConfig: parseObject(row.gitConfigJson),
+    deletedDefaultCommandIds: parseStringArray(
+      row.deletedDefaultCommandIdsJson,
+      "deletedDefaultCommandIdsJson",
+      "project",
+      rowId,
+    ),
+    gitConfig: parseObject(row.gitConfigJson, "gitConfigJson", "project", rowId),
     ...(Object.keys(identityIcon).length > 0 ? { identityIcon } : {}),
     isFavorite: row.isFavorite === 1,
     isPinned: row.isPinned === 1,
-    launchSettings: parseObject(row.launchSettingsJson),
+    launchSettings: parseObject(row.launchSettingsJson, "launchSettingsJson", "project", rowId),
     name: row.name,
-    notificationRules: parseObject(row.notificationRulesJson),
+    notificationRules: parseObject(row.notificationRulesJson, "notificationRulesJson", "project", rowId),
     path: row.path ?? undefined,
-    previousSessionHistory: parseObjectArray(row.previousSessionHistoryJson),
-    projectBoardConfig: parseObject(row.projectBoardConfigJson),
+    previousSessionHistory: parseObjectArray(
+      row.previousSessionHistoryJson,
+      "previousSessionHistoryJson",
+      "project",
+      rowId,
+    ),
+    projectBoardConfig: parseObject(row.projectBoardConfigJson, "projectBoardConfigJson", "project", rowId),
     projectId: row.projectId as GxserverProjectId,
-    runtimeSettings: parseObject(row.runtimeSettingsJson),
+    runtimeSettings: parseObject(row.runtimeSettingsJson, "runtimeSettingsJson", "project", rowId),
     updatedAt: row.updatedAt,
     ...(Object.keys(worktree).length > 0 ? { worktree } : {}),
   };
@@ -572,27 +606,27 @@ function fromProjectRow(row: ProjectRow): GxserverProjectDomainState {
 function toSessionRow(session: GxserverSessionDomainState): SessionRow {
   return {
     agentId: session.agentId ?? null,
-    attentionRulesJson: stringifyJson(session.attentionRules),
+    attentionRulesJson: stringifyDomainJsonField("attentionRules", session.attentionRules),
     commandId: session.commandId ?? null,
-    completionRulesJson: stringifyJson(session.completionRules),
+    completionRulesJson: stringifyDomainJsonField("completionRules", session.completionRules),
     createdAt: session.createdAt,
     cwd: session.cwd ?? null,
     isFavorite: session.isFavorite ? 1 : 0,
     isPinned: session.isPinned ? 1 : 0,
     kind: session.kind,
     lastActiveAt: session.lastActiveAt ?? null,
-    launchSettingsJson: stringifyJson(session.launchSettings),
+    launchSettingsJson: stringifyDomainJsonField("launchSettings", session.launchSettings),
     lifecycleState: session.lifecycleState,
-    notificationRulesJson: stringifyJson(session.notificationRules),
+    notificationRulesJson: stringifyDomainJsonField("notificationRules", session.notificationRules),
     projectId: session.projectId,
-    providerStateJson: stringifyJson(session.providerState),
+    providerStateJson: stringifyDomainJsonField("providerState", session.providerState),
     restoredFromHistoryId: session.hiddenMetadata.restoredFromHistoryId ?? null,
     restoredFromSessionId: session.hiddenMetadata.restoredFromSessionId ?? null,
-    runtimeSettingsJson: stringifyJson(session.runtimeSettings),
+    runtimeSettingsJson: stringifyDomainJsonField("runtimeSettings", session.runtimeSettings),
     sessionId: session.sessionId,
     title: session.title,
     updatedAt: session.updatedAt,
-    worktreeJson: stringifyJson(session.worktree ?? {}),
+    worktreeJson: stringifyDomainJsonField("worktree", session.worktree ?? {}),
     zmxName: session.zmxName,
   };
 }
@@ -600,14 +634,15 @@ function toSessionRow(session: GxserverSessionDomainState): SessionRow {
 function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSessionDomainState {
   const projectId = row.projectId as GxserverProjectId;
   const sessionId = row.sessionId as GxserverSessionId;
+  const rowId = `${row.projectId}/${row.sessionId}`;
   const zmxName = createZmxSessionName(projectId, sessionId);
-  const providerState: JsonObject = parseObject(row.providerStateJson);
-  const worktree = parseObject(row.worktreeJson);
+  const providerState: JsonObject = parseObject(row.providerStateJson, "providerStateJson", "session", rowId);
+  const worktree = parseObject(row.worktreeJson, "worktreeJson", "session", rowId);
   return {
     agentId: row.agentId ?? undefined,
-    attentionRules: parseObject(row.attentionRulesJson),
+    attentionRules: parseObject(row.attentionRulesJson, "attentionRulesJson", "session", rowId),
     commandId: row.commandId ?? undefined,
-    completionRules: parseObject(row.completionRulesJson),
+    completionRules: parseObject(row.completionRulesJson, "completionRulesJson", "session", rowId),
     createdAt: row.createdAt,
     cwd: row.cwd ?? undefined,
     globalRef: createGlobalSessionRef(serverId, projectId, sessionId),
@@ -619,16 +654,16 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
     isPinned: row.isPinned === 1,
     kind: normalizeSessionKind(row.kind),
     lastActiveAt: row.lastActiveAt ?? undefined,
-    launchSettings: parseObject(row.launchSettingsJson),
+    launchSettings: parseObject(row.launchSettingsJson, "launchSettingsJson", "session", rowId),
     lifecycleState: normalizeDomainLifecycleState(row.lifecycleState),
-    notificationRules: parseObject(row.notificationRulesJson),
+    notificationRules: parseObject(row.notificationRulesJson, "notificationRulesJson", "session", rowId),
     projectId,
     providerState: {
       ...providerState,
       lifecycleState: normalizeProviderLifecycleState(providerState.lifecycleState),
       zmxName: normalizeProviderZmxName(providerState.zmxName, zmxName),
     },
-    runtimeSettings: parseObject(row.runtimeSettingsJson),
+    runtimeSettings: parseObject(row.runtimeSettingsJson, "runtimeSettingsJson", "session", rowId),
     sessionId,
     title: row.title,
     updatedAt: row.updatedAt,
@@ -710,26 +745,109 @@ function stringifyJson(value: unknown): string {
   return JSON.stringify(value ?? {});
 }
 
-function parseObject(value: string): JsonObject {
+function stringifyDomainJsonField(field: DomainJsonField, value: unknown): string {
+  const normalized = value ?? {};
+  assertDomainJsonDepth(field, normalized, 0, new WeakSet<object>());
+  let text: string;
   try {
-    return normalizeObject(JSON.parse(value));
+    text = JSON.stringify(normalized);
   } catch {
-    return {};
+    throw new GxserverDomainStateError("badRequest", `${field} must be JSON-serializable.`);
+  }
+  if (text.length > GXSERVER_DOMAIN_STATE_JSON_LIMIT_CHARS) {
+    throw new GxserverDomainStateError(
+      "badRequest",
+      `${field} exceeds the gxserver domain-state JSON size limit of ${GXSERVER_DOMAIN_STATE_JSON_LIMIT_CHARS} characters.`,
+    );
+  }
+  return text;
+}
+
+function assertDomainJsonDepth(field: DomainJsonField, value: unknown, depth: number, seen: WeakSet<object>): void {
+  if (depth > GXSERVER_DOMAIN_STATE_JSON_MAX_DEPTH) {
+    throw new GxserverDomainStateError(
+      "badRequest",
+      `${field} exceeds the gxserver domain-state JSON depth limit of ${GXSERVER_DOMAIN_STATE_JSON_MAX_DEPTH}.`,
+    );
+  }
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
+  const objectValue = value as object;
+  if (seen.has(objectValue)) {
+    throw new GxserverDomainStateError("badRequest", `${field} must be JSON-serializable.`);
+  }
+  seen.add(objectValue);
+  try {
+    const children = Array.isArray(value) ? value : Object.values(value as JsonObject);
+    for (const child of children) {
+      assertDomainJsonDepth(field, child, depth + 1, seen);
+    }
+  } finally {
+    seen.delete(objectValue);
   }
 }
 
-function parseObjectArray(value: string): JsonArray {
+function parseObject(value: string, column: string, rowKind: "clientLayout" | "project" | "session", rowId: string): JsonObject {
+  const parsed = parseJsonColumn(value, column, rowKind, rowId);
+  if (!isRecord(parsed)) {
+    throw corruptJsonColumn(column, rowKind, rowId, "expected a JSON object");
+  }
+  return { ...parsed };
+}
+
+function parseObjectArray(value: string, column: string, rowKind: "project" | "session", rowId: string): JsonArray {
+  const parsed = parseJsonColumn(value, column, rowKind, rowId);
+  if (!Array.isArray(parsed)) {
+    throw corruptJsonColumn(column, rowKind, rowId, "expected a JSON array of objects");
+  }
+  return parsed.map((item, index) => {
+    if (!isRecord(item)) {
+      throw corruptJsonColumn(column, rowKind, rowId, `expected object at array index ${index}`);
+    }
+    return { ...item };
+  });
+}
+
+function parseStringArray(value: string, column: string, rowKind: "project", rowId: string): readonly string[] {
+  const parsed = parseJsonColumn(value, column, rowKind, rowId);
+  if (!Array.isArray(parsed)) {
+    throw corruptJsonColumn(column, rowKind, rowId, "expected a JSON array of strings");
+  }
+  return parsed.map((item, index) => {
+    if (typeof item !== "string") {
+      throw corruptJsonColumn(column, rowKind, rowId, `expected string at array index ${index}`);
+    }
+    const trimmed = item.trim();
+    if (!trimmed) {
+      throw corruptJsonColumn(column, rowKind, rowId, `expected non-empty string at array index ${index}`);
+    }
+    return trimmed;
+  });
+}
+
+function parseJsonColumn(
+  value: string,
+  column: string,
+  rowKind: "clientLayout" | "project" | "session",
+  rowId: string,
+): unknown {
   try {
-    return normalizeObjectArray(JSON.parse(value));
-  } catch {
-    return [];
+    return JSON.parse(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw corruptJsonColumn(column, rowKind, rowId, `invalid JSON (${message})`);
   }
 }
 
-function parseStringArray(value: string): readonly string[] {
-  try {
-    return normalizeStringArray(JSON.parse(value));
-  } catch {
-    return [];
-  }
+function corruptJsonColumn(
+  column: string,
+  rowKind: "clientLayout" | "project" | "session",
+  rowId: string,
+  detail: string,
+): GxserverDomainStateError {
+  return new GxserverDomainStateError(
+    "corruptState",
+    `Corrupt gxserver domain-state JSON in ${rowKind} ${rowId} column ${column}: ${detail}. Refusing to read or update the row so persisted state is not overwritten.`,
+  );
 }

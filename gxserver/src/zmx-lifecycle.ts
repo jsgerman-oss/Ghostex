@@ -18,6 +18,12 @@ export interface GxserverZmxCommandResult {
 export type GxserverZmxCommandRunner = (script: string) => Promise<GxserverZmxCommandResult>;
 export type GxserverCwdExists = (cwd: string) => Promise<boolean>;
 
+/*
+CDXC:GxserverZmxLifecycle 2026-05-30-19:37:
+Provider probe execution errors, non-existence-command exits, and command timeouts must produce provider lifecycle `unknown` with an error. Only a completed zmx list that lacks the exact session name is allowed to report `missing`.
+*/
+const ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS = 5_000;
+
 export interface GxserverZmxAttachCommandInput {
   cwd: string;
   sessionName: GxserverZmxSessionName;
@@ -93,7 +99,7 @@ exec "$zmx_bin" kill "$zmx_session" --force
   return script;
 }
 
-export function buildZmxExistsCommand(input: {
+export function buildZmxHistoryCommand(input: {
   sessionName: GxserverZmxSessionName;
   zmxExecutablePath: string;
 }): string {
@@ -105,7 +111,51 @@ if [ ! -x "$zmx_bin" ]; then
   exit 127
 fi
 unset ZMX_SESSION ZMX_SESSION_PREFIX
-"$zmx_bin" list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1
+exec "$zmx_bin" history "$zmx_session"
+`.trim();
+}
+
+export function buildZmxSendCommand(input: {
+  sessionName: GxserverZmxSessionName;
+  text: string;
+  zmxExecutablePath: string;
+}): string {
+  return `
+zmx_session=${shellQuote(input.sessionName)}
+zmx_text=${shellQuote(input.text)}
+zmx_bin=${shellQuote(input.zmxExecutablePath)}
+if [ ! -x "$zmx_bin" ]; then
+  printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
+  exit 127
+fi
+unset ZMX_SESSION ZMX_SESSION_PREFIX
+exec "$zmx_bin" send "$zmx_session" "$zmx_text"
+`.trim();
+}
+
+export function buildZmxExistsCommand(input: {
+  sessionName: GxserverZmxSessionName;
+  zmxExecutablePath: string;
+}): string {
+  /*
+  CDXC:GxserverZmxLifecycle 2026-05-30-19:37:
+  A failed `zmx list --short` means provider state is unknown, not missing. Capture the list exit before matching session names so transient zmx failures cannot make live sessions look absent and trigger restore/recreate behavior.
+  */
+  return `
+zmx_session=${shellQuote(input.sessionName)}
+zmx_bin=${shellQuote(input.zmxExecutablePath)}
+if [ ! -x "$zmx_bin" ]; then
+  printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
+  exit 127
+fi
+unset ZMX_SESSION ZMX_SESSION_PREFIX
+zmx_sessions=$("$zmx_bin" list --short)
+zmx_list_status=$?
+if [ "$zmx_list_status" -ne 0 ]; then
+  printf '%s\\n' "zmx list --short failed with exit $zmx_list_status" >&2
+  exit 2
+fi
+printf '%s\\n' "$zmx_sessions" | grep -F -x -- "$zmx_session" >/dev/null 2>&1
 `.trim();
 }
 
@@ -115,19 +165,30 @@ export async function probeZmxSession(input: {
   sessionName: GxserverZmxSessionName;
   zmxExecutablePath: string;
 }): Promise<GxserverProviderProbeResult> {
-  const result = await (input.runZsh ?? runZshScript)(
-    buildZmxExistsCommand({
-      sessionName: input.sessionName,
-      zmxExecutablePath: input.zmxExecutablePath,
-    }),
-  );
+  const probedAt = (input.now ?? (() => new Date().toISOString()))();
+  let result: GxserverZmxCommandResult;
+  try {
+    result = await (input.runZsh ?? runZshScript)(
+      buildZmxExistsCommand({
+        sessionName: input.sessionName,
+        zmxExecutablePath: input.zmxExecutablePath,
+      }),
+    );
+  } catch (error) {
+    return {
+      error: zmxProbeThrownErrorMessage(error),
+      lifecycleState: "unknown",
+      probedAt,
+      zmxName: input.sessionName,
+    };
+  }
   const lifecycleState: GxserverProviderLifecycleState =
     result.exitCode === 0 ? "exists" : result.exitCode === 1 ? "missing" : "unknown";
-  const error = lifecycleState === "unknown" ? result.stderr || `exit-${result.exitCode}` : undefined;
+  const error = lifecycleState === "unknown" ? zmxProbeExitErrorMessage(result) : undefined;
   return {
     ...(error ? { error } : {}),
     lifecycleState,
-    probedAt: (input.now ?? (() => new Date().toISOString()))(),
+    probedAt,
     zmxName: input.sessionName,
   };
 }
@@ -137,12 +198,25 @@ export async function killZmxSession(input: {
   sessionName: GxserverZmxSessionName;
   zmxExecutablePath: string;
 }): Promise<GxserverProviderKillResult> {
-  const result = await (input.runZsh ?? runZshScript)(
-    buildZmxKillCommand({
-      sessionName: input.sessionName,
-      zmxExecutablePath: input.zmxExecutablePath,
-    }),
-  );
+  let result: GxserverZmxCommandResult;
+  try {
+    result = await (input.runZsh ?? runZshScript)(
+      buildZmxKillCommand({
+        sessionName: input.sessionName,
+        zmxExecutablePath: input.zmxExecutablePath,
+      }),
+    );
+  } catch (error) {
+    const message = zmxKillThrownErrorMessage(error);
+    return {
+      error: message,
+      exitCode: 1,
+      killed: false,
+      stderr: message,
+      stdout: "",
+      zmxName: input.sessionName,
+    };
+  }
   return {
     ...(result.exitCode === 0 ? {} : { error: result.stderr || `exit-${result.exitCode}` }),
     exitCode: result.exitCode,
@@ -202,6 +276,7 @@ export function providerStatePatch(
 ): GxserverSessionDomainState["providerState"] {
   return {
     ...session.providerState,
+    killError: undefined,
     lifecycleState: probe.lifecycleState,
     probeError: probe.error,
     probedAt: probe.probedAt,
@@ -215,8 +290,25 @@ export function missingProviderStatePatch(
 ): GxserverSessionDomainState["providerState"] {
   return {
     ...session.providerState,
+    killError: undefined,
     lifecycleState: "missing",
     probeError: undefined,
+    probedAt: timestamp,
+    zmxName: providerZmxSessionName(session),
+  };
+}
+
+export function failedKillProviderStatePatch(
+  session: Pick<GxserverSessionDomainState, "providerState" | "zmxName">,
+  kill: GxserverProviderKillResult,
+  timestamp: string,
+): GxserverSessionDomainState["providerState"] {
+  const error = (kill.error ?? kill.stderr) || `zmx kill command exited ${kill.exitCode}`;
+  return {
+    ...session.providerState,
+    killError: error,
+    lifecycleState: "unknown",
+    probeError: error,
     probedAt: timestamp,
     zmxName: providerZmxSessionName(session),
   };
@@ -264,20 +356,70 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function runZshScript(script: string): Promise<GxserverZmxCommandResult> {
+function zmxProbeExitErrorMessage(result: GxserverZmxCommandResult): string {
+  const stderr = result.stderr.trim();
+  if (stderr) {
+    return stderr;
+  }
+  const stdout = result.stdout.trim();
+  if (stdout) {
+    return stdout;
+  }
+  return `zmx probe command exited ${result.exitCode}`;
+}
+
+function zmxProbeThrownErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const code = typeof (error as NodeJS.ErrnoException).code === "string" ? ` ${(error as NodeJS.ErrnoException).code}` : "";
+    return `${error.name || "Error"}${code}: ${error.message}`;
+  }
+  return `zmx probe command failed: ${String(error)}`;
+}
+
+function zmxKillThrownErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const code = typeof (error as NodeJS.ErrnoException).code === "string" ? ` ${(error as NodeJS.ErrnoException).code}` : "";
+    return `${error.name || "Error"}${code}: ${error.message}`;
+  }
+  return `zmx kill command failed: ${String(error)}`;
+}
+
+export function runZshScript(script: string): Promise<GxserverZmxCommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn("/bin/zsh", ["-lc", script], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    let timedOut = false;
+    let forceKillTimeout: NodeJS.Timeout | undefined;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      forceKillTimeout = setTimeout(() => child.kill("SIGKILL"), 1_000);
+    }, ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS);
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      if (forceKillTimeout) {
+        clearTimeout(forceKillTimeout);
+      }
+      reject(error);
+    });
     child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (forceKillTimeout) {
+        clearTimeout(forceKillTimeout);
+      }
+      const stderrText = Buffer.concat(stderr).toString("utf8").trim();
       resolve({
-        exitCode: code ?? 1,
-        stderr: Buffer.concat(stderr).toString("utf8").trim(),
+        exitCode: timedOut ? 124 : (code ?? 1),
+        stderr: timedOut
+          ? [stderrText, `zmx lifecycle command timed out after ${ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS}ms`]
+              .filter(Boolean)
+              .join("\n")
+          : stderrText,
         stdout: Buffer.concat(stdout).toString("utf8").trim(),
       });
     });

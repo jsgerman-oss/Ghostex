@@ -12,10 +12,16 @@ import type {
   GxserverRunGitActionParams,
   GxserverRunWorktreeActionParams,
   GxserverTypedCommand,
+  GxserverTypedOperationFailure,
   GxserverTypedOperationResult,
   GxserverWorktreeAction,
 } from "../protocol/index.js";
 import { getBdToolStatus } from "./toolchain.js";
+
+export const GXSERVER_TYPED_OPERATION_TIMEOUT_MS = 120_000;
+export const GXSERVER_TYPED_OPERATION_STDOUT_LIMIT_BYTES = 4 * 1024 * 1024;
+export const GXSERVER_TYPED_OPERATION_STDERR_LIMIT_BYTES = 4 * 1024 * 1024;
+const GXSERVER_TYPED_OPERATION_KILL_GRACE_MS = 1_000;
 
 export class GxserverTypedOperationError extends Error {
   readonly code: "badRequest" | "dependencyUnavailable" | "forbidden" | "notFound";
@@ -34,14 +40,25 @@ export class GxserverTypedOperationError extends Error {
 }
 
 export interface GxserverTypedOperationContext {
+  abortSignal?: AbortSignal;
+  commandLimits?: Partial<GxserverTypedCommandLimits>;
   cwd: string;
   envPath?: string;
   projects: readonly GxserverProjectDomainState[];
 }
 
+export interface GxserverTypedCommandLimits {
+  stderrLimitBytes: number;
+  stdoutLimitBytes: number;
+  timeoutMs: number;
+}
+
 /*
 CDXC:GxserverTypedOperations 2026-05-30-14:53:
 gxserver exposes Git, worktree, and Beads through typed allowlisted operations only. Remote clients may request these workflows, but they cannot provide arbitrary executables or arguments; gxserver constructs each command after validating project scope, paths, refs, statuses, and destructive worktree targets.
+
+CDXC:GxserverTypedOperations 2026-05-30-23:41:
+Typed Git, worktree, and Beads subprocesses must have bounded runtime and bounded stdout/stderr memory. Timeout, output-overrun, and client-abort termination are reported as structured operation failures instead of returning silently truncated successful output.
 */
 export function buildGitCommand(params: GxserverRunGitActionParams, cwd: string): GxserverTypedCommand {
   const action = normalizeGitAction(params.action);
@@ -122,7 +139,7 @@ export async function runGitAction(
   context: GxserverTypedOperationContext,
 ): Promise<GxserverTypedOperationResult> {
   const command = buildGitCommand(params, context.cwd);
-  return { action: normalizeGitAction(params.action), command, ...(await runTypedCommand(command)) };
+  return { action: normalizeGitAction(params.action), command, ...(await runTypedCommand(command, commandOptions(context))) };
 }
 
 export async function runWorktreeAction(
@@ -130,7 +147,7 @@ export async function runWorktreeAction(
   context: GxserverTypedOperationContext,
 ): Promise<GxserverTypedOperationResult> {
   const command = buildWorktreeCommand(params, context);
-  return { action: normalizeWorktreeAction(params.action), command, ...(await runTypedCommand(command)) };
+  return { action: normalizeWorktreeAction(params.action), command, ...(await runTypedCommand(command, commandOptions(context))) };
 }
 
 export async function runBeadsAction(
@@ -152,32 +169,159 @@ export async function runBeadsAction(
   if (!command) {
     throw new GxserverTypedOperationError("badRequest", `No command was constructed for Beads action ${action}.`);
   }
-  return { action, command, ...(await runTypedCommand(command, { BD_JSON_ENVELOPE: "1" })) };
+  return { action, command, ...(await runTypedCommand(command, commandOptions(context, { BD_JSON_ENVELOPE: "1" }))) };
 }
 
 async function runTypedCommand(
   command: GxserverTypedCommand,
-  env: Record<string, string> = {},
-): Promise<{ exitCode: number; stderr: string; stdout: string }> {
+  options: {
+    env?: Record<string, string>;
+    limits?: Partial<GxserverTypedCommandLimits>;
+    signal?: AbortSignal;
+  } = {},
+): Promise<{ error?: GxserverTypedOperationFailure; exitCode: number; stderr: string; stdout: string }> {
+  const limits = resolveTypedCommandLimits(options.limits);
   return await new Promise((resolve, reject) => {
     const child = spawn(command.executable, command.args, {
       cwd: command.cwd,
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...options.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    child.on("error", reject);
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let failure: GxserverTypedOperationFailure | undefined;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    const timeout = setTimeout(() => {
+      failAndTerminate({
+        code: "timeout",
+        message: `Typed operation timed out after ${limits.timeoutMs}ms.`,
+        timeoutMs: limits.timeoutMs,
+      });
+    }, limits.timeoutMs);
+    timeout.unref();
+
+    const failAndTerminate = (nextFailure: GxserverTypedOperationFailure): void => {
+      if (failure) {
+        return;
+      }
+      failure = nextFailure;
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+        killTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, GXSERVER_TYPED_OPERATION_KILL_GRACE_MS);
+        killTimer.unref();
+      }
+    };
+
+    const abort = (): void => {
+      failAndTerminate({
+        code: "aborted",
+        message: "Typed operation was aborted before the subprocess completed.",
+      });
+    };
+    if (options.signal?.aborted) {
+      abort();
+    } else {
+      options.signal?.addEventListener("abort", abort, { once: true });
+    }
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (failure) {
+        return;
+      }
+      const nextBytes = stdoutBytes + chunk.byteLength;
+      if (nextBytes > limits.stdoutLimitBytes) {
+        const remaining = limits.stdoutLimitBytes - stdoutBytes;
+        if (remaining > 0) {
+          stdoutChunks.push(chunk.subarray(0, remaining));
+        }
+        stdoutBytes = nextBytes;
+        failAndTerminate({
+          capturedBytes: limits.stdoutLimitBytes,
+          code: "stdoutLimitExceeded",
+          limitBytes: limits.stdoutLimitBytes,
+          message: `Typed operation stdout exceeded ${limits.stdoutLimitBytes} bytes.`,
+          stream: "stdout",
+        });
+        return;
+      }
+      stdoutBytes = nextBytes;
+      stdoutChunks.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (failure) {
+        return;
+      }
+      const nextBytes = stderrBytes + chunk.byteLength;
+      if (nextBytes > limits.stderrLimitBytes) {
+        const remaining = limits.stderrLimitBytes - stderrBytes;
+        if (remaining > 0) {
+          stderrChunks.push(chunk.subarray(0, remaining));
+        }
+        stderrBytes = nextBytes;
+        failAndTerminate({
+          capturedBytes: limits.stderrLimitBytes,
+          code: "stderrLimitExceeded",
+          limitBytes: limits.stderrLimitBytes,
+          message: `Typed operation stderr exceeded ${limits.stderrLimitBytes} bytes.`,
+          stream: "stderr",
+        });
+        return;
+      }
+      stderrBytes = nextBytes;
+      stderrChunks.push(chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+      options.signal?.removeEventListener("abort", abort);
+      reject(error);
+    });
     child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+      options.signal?.removeEventListener("abort", abort);
       resolve({
-        exitCode: code ?? 1,
+        ...(failure ? { error: failure } : {}),
+        exitCode: failure ? 1 : (code ?? 1),
         stderr: Buffer.concat(stderrChunks).toString("utf8").trim(),
         stdout: Buffer.concat(stdoutChunks).toString("utf8").trim(),
       });
     });
   });
+}
+
+function commandOptions(
+  context: GxserverTypedOperationContext,
+  env: Record<string, string> = {},
+): {
+  env: Record<string, string>;
+  limits?: Partial<GxserverTypedCommandLimits>;
+  signal?: AbortSignal;
+} {
+  return {
+    env: { ...(context.envPath ? { PATH: context.envPath } : {}), ...env },
+    limits: context.commandLimits,
+    signal: context.abortSignal,
+  };
+}
+
+function resolveTypedCommandLimits(limits?: Partial<GxserverTypedCommandLimits>): GxserverTypedCommandLimits {
+  return {
+    stderrLimitBytes: limits?.stderrLimitBytes ?? GXSERVER_TYPED_OPERATION_STDERR_LIMIT_BYTES,
+    stdoutLimitBytes: limits?.stdoutLimitBytes ?? GXSERVER_TYPED_OPERATION_STDOUT_LIMIT_BYTES,
+    timeoutMs: limits?.timeoutMs ?? GXSERVER_TYPED_OPERATION_TIMEOUT_MS,
+  };
 }
 
 async function requireBd(envPath?: string): Promise<string> {

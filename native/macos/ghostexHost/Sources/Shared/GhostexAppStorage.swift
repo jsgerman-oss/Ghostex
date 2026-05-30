@@ -6,6 +6,12 @@ enum GhostexAppStorage {
     let localStorageKey: String
   }
 
+  private struct LegacyLocalStorageValueCandidate {
+    let databasePath: String
+    let modifiedAt: TimeInterval
+    let value: String
+  }
+
   private static let sharedSidebarStorageFiles: [String: SharedSidebarStorageFile] = [
     "projects": SharedSidebarStorageFile(
       fileName: "native-sidebar-projects.json",
@@ -84,6 +90,14 @@ enum GhostexAppStorage {
       if selectedValue == legacyValue, sharedValue != legacyValue, let selectedValue {
         try? persistSharedSidebarStorage(key: key, payloadJson: selectedValue)
       }
+      if selectedValue != sharedValue,
+        selectedValue != legacyValue,
+        let selectedValue,
+        shouldReplaceLegacyLocalStorageValue(key: file.localStorageKey, payloadJson: selectedValue)
+      {
+        try? persistSharedSidebarStorage(key: key, payloadJson: selectedValue)
+        persistLegacyDefaultAppLocalStorageValue(key: file.localStorageKey, payloadJson: selectedValue)
+      }
       if selectedValue == sharedValue,
         sharedValue != legacyValue,
         let selectedValue,
@@ -160,6 +174,11 @@ enum GhostexAppStorage {
     legacyValue: String?
   ) -> String? {
     guard let sharedValue else {
+      if key == "ghostex-native-previous-sessions",
+        isSharedProjectsSnapshotGxserverMigrated()
+      {
+        return "[]"
+      }
       return legacyValue
     }
     guard let legacyValue else {
@@ -175,7 +194,10 @@ enum GhostexAppStorage {
       return sharedValue
     }
     if key == "ghostex-native-previous-sessions",
-      isGxserverMigratedPreviousSessionsSnapshot(sharedValue)
+      isGxserverMigratedPreviousSessionsSnapshot(
+        sharedValue,
+        allowEmpty: isSharedProjectsSnapshotGxserverMigrated()
+      )
     {
       return sharedValue
     }
@@ -200,10 +222,20 @@ enum GhostexAppStorage {
     case "ghostex-native-projects":
       return isGxserverMigratedProjectSnapshot(payloadJson)
     case "ghostex-native-previous-sessions":
-      return isGxserverMigratedPreviousSessionsSnapshot(payloadJson)
+      return isGxserverMigratedPreviousSessionsSnapshot(
+        payloadJson,
+        allowEmpty: isSharedProjectsSnapshotGxserverMigrated()
+      )
     default:
       return false
     }
+  }
+
+  private static func isSharedProjectsSnapshotGxserverMigrated() -> Bool {
+    guard let projectsJson = readSharedSidebarStorageFile("native-sidebar-projects.json") else {
+      return false
+    }
+    return isGxserverMigratedProjectSnapshot(projectsJson)
   }
 
   private static func isGxserverMigratedProjectSnapshot(_ payloadJson: String) -> Bool {
@@ -222,12 +254,21 @@ enum GhostexAppStorage {
     return !projectIds.isEmpty && projectIds.allSatisfy(isCanonicalGxserverProjectId)
   }
 
-  private static func isGxserverMigratedPreviousSessionsSnapshot(_ payloadJson: String) -> Bool {
+  private static func isGxserverMigratedPreviousSessionsSnapshot(
+    _ payloadJson: String,
+    allowEmpty: Bool = false
+  ) -> Bool {
     guard let data = payloadJson.data(using: .utf8),
-      let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-      !sessions.isEmpty
+      let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
     else {
       return false
+    }
+    /**
+     CDXC:PreviousSessions 2026-05-30-22:14:
+     Once gxserver has marked the adjacent projects snapshot migrated, a shared previous-sessions `[]` is an intentional empty history. Native bootstrap must keep that empty shared file ahead of stale WK localStorage and write it back into WK so old restorable sessions cannot reappear.
+     */
+    if sessions.isEmpty {
+      return allowEmpty
     }
     return sessions.allSatisfy { item in
       let projectId = item["projectId"] as? String
@@ -327,12 +368,84 @@ enum GhostexAppStorage {
     ) else {
       return nil
     }
-    for case let url as URL in enumerator where url.lastPathComponent == "localstorage.sqlite3" {
-      if let value = readLocalStorageValue(databaseURL: url, key: key) {
-        return value
+    let databaseURLs = enumerator
+      .compactMap { $0 as? URL }
+      .filter { $0.lastPathComponent == "localstorage.sqlite3" }
+      .sorted { $0.path < $1.path }
+    var selectedCandidate: LegacyLocalStorageValueCandidate?
+    for url in databaseURLs {
+      guard let value = readLocalStorageValue(databaseURL: url, key: key) else {
+        continue
       }
+      let modifiedAt =
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)?
+        .timeIntervalSince1970 ?? 0
+      let candidate = LegacyLocalStorageValueCandidate(
+        databasePath: url.path,
+        modifiedAt: modifiedAt,
+        value: value
+      )
+      selectedCandidate = selectLegacyLocalStorageValueCandidate(
+        key: key,
+        current: selectedCandidate,
+        candidate: candidate
+      )
     }
-    return nil
+    return selectedCandidate?.value
+  }
+
+  /**
+   CDXC:GxserverMigration 2026-05-30-19:55:
+   WKWebView may retain more than one `localstorage.sqlite3` with Ghostex sidebar keys. Native bootstrap must use the same canonical/richer snapshot rules as shared-storage selection, then database freshness and path, so stale filesystem enumeration cannot rehydrate old projects, settings, agents, or commands before gxserver migration repairs state.
+   */
+  private static func selectLegacyLocalStorageValueCandidate(
+    key: String,
+    current: LegacyLocalStorageValueCandidate?,
+    candidate: LegacyLocalStorageValueCandidate
+  ) -> LegacyLocalStorageValueCandidate {
+    guard let current else {
+      return candidate
+    }
+    let currentScore = legacyLocalStorageValueScore(key: key, value: current.value)
+    let candidateScore = legacyLocalStorageValueScore(key: key, value: candidate.value)
+    if candidateScore != currentScore {
+      return candidateScore > currentScore ? candidate : current
+    }
+    if candidate.modifiedAt != current.modifiedAt {
+      return candidate.modifiedAt > current.modifiedAt ? candidate : current
+    }
+    if candidate.value.count != current.value.count {
+      return candidate.value.count > current.value.count ? candidate : current
+    }
+    return candidate.databasePath < current.databasePath ? candidate : current
+  }
+
+  private static func legacyLocalStorageValueScore(key: String, value: String) -> Int {
+    switch key {
+    case "ghostex-native-projects":
+      return isGxserverMigratedProjectSnapshot(value) ? 1_000_000_000 : projectSnapshotScore(value)
+    case "ghostex-native-previous-sessions":
+      return isGxserverMigratedPreviousSessionsSnapshot(value)
+        ? 1_000_000_000
+        : previousSessionsSnapshotScore(value)
+    default:
+      return genericJsonPayloadScore(value)
+    }
+  }
+
+  private static func genericJsonPayloadScore(_ payloadJson: String) -> Int {
+    guard let data = payloadJson.data(using: .utf8),
+      let object = try? JSONSerialization.jsonObject(with: data)
+    else {
+      return payloadJson.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+    }
+    if let array = object as? [Any] {
+      return (array.count * 1_000) + payloadJson.count
+    }
+    if let dictionary = object as? [String: Any] {
+      return (dictionary.keys.count * 1_000) + payloadJson.count
+    }
+    return payloadJson.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
   }
 
   private static func persistLegacyDefaultAppLocalStorageValue(key: String, payloadJson: String) {

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { GxserverDomainRepository } from "../src/domain-state.js";
+import type Database from "better-sqlite3";
+import { GxserverDomainRepository, GxserverDomainStateError } from "../src/domain-state.js";
 import { getGxserverPaths } from "../src/paths.js";
 import { initializeGxserverStorage, openGxserverDatabase } from "../src/storage.js";
 import type { GxserverProjectId, GxserverSessionId } from "../protocol/index.js";
@@ -142,8 +143,72 @@ test("client-local layout round-trips separately from shared project and session
   });
 });
 
+test("corrupt project JSON columns throw explicit corrupt-state errors without overwriting the row", async () => {
+  await withDomainRepository(async (repository, db) => {
+    const project = repository.createProject({
+      name: "Ghostex",
+      runtimeSettings: { defaultPromptAgentId: "codex" },
+    });
+    db.prepare("UPDATE projects SET runtimeSettingsJson = ? WHERE projectId = ?").run("{not-json", project.projectId);
+
+    assertCorruptState(() => repository.getProject(project.projectId), /project P3a91 column runtimeSettingsJson/);
+    assertCorruptState(() => repository.listProjects(), /project P3a91 column runtimeSettingsJson/);
+    assertCorruptState(
+      () => repository.updateProject({ name: "Should not persist", projectId: project.projectId }),
+      /project P3a91 column runtimeSettingsJson/,
+    );
+
+    const stored = db
+      .prepare<[string], { name: string; runtimeSettingsJson: string }>(
+        "SELECT name, runtimeSettingsJson FROM projects WHERE projectId = ?",
+      )
+      .get(project.projectId);
+    assert.equal(stored?.name, "Ghostex");
+    assert.equal(stored?.runtimeSettingsJson, "{not-json");
+  });
+});
+
+test("corrupt session JSON columns throw explicit corrupt-state errors without overwriting the row", async () => {
+  await withDomainRepository(async (repository, db) => {
+    const project = repository.createProject({ name: "Ghostex" });
+    const session = repository.createSession({
+      projectId: project.projectId,
+      providerState: { lifecycleState: "exists", marker: "durable" },
+      title: "Durable session",
+    });
+    db.prepare("UPDATE sessions SET providerStateJson = ? WHERE projectId = ? AND sessionId = ?").run(
+      JSON.stringify("wrong-shape"),
+      project.projectId,
+      session.sessionId,
+    );
+
+    assertCorruptState(
+      () => repository.getSession(project.projectId, session.sessionId),
+      /session P3a91\/G8v20 column providerStateJson/,
+    );
+    assertCorruptState(() => repository.listSessions(project.projectId), /session P3a91\/G8v20 column providerStateJson/);
+    assertCorruptState(
+      () =>
+        repository.updateSession({
+          projectId: project.projectId,
+          sessionId: session.sessionId,
+          title: "Should not persist",
+        }),
+      /session P3a91\/G8v20 column providerStateJson/,
+    );
+
+    const stored = db
+      .prepare<[string, string], { providerStateJson: string; title: string }>(
+        "SELECT providerStateJson, title FROM sessions WHERE projectId = ? AND sessionId = ?",
+      )
+      .get(project.projectId, session.sessionId);
+    assert.equal(stored?.title, "Durable session");
+    assert.equal(stored?.providerStateJson, JSON.stringify("wrong-shape"));
+  });
+});
+
 async function withDomainRepository(
-  run: (repository: GxserverDomainRepository) => Promise<void> | void,
+  run: (repository: GxserverDomainRepository, db: Database.Database) => Promise<void> | void,
 ): Promise<void> {
   const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-domain-state-"));
   const projectIds = ["P3a91", "P4b22"] as GxserverProjectId[];
@@ -158,13 +223,24 @@ async function withDomainRepository(
         createSessionId: () => sessionIds.shift() ?? "G0aaa",
         now: createTimestampFactory(),
       });
-      await run(repository);
+      await run(repository, db);
     } finally {
       db.close();
     }
   } finally {
     await rm(homeDir, { force: true, recursive: true });
   }
+}
+
+function assertCorruptState(run: () => unknown, messagePattern: RegExp): void {
+  assert.throws(run, (error) => {
+    assert.equal(error instanceof GxserverDomainStateError, true);
+    const domainError = error as GxserverDomainStateError;
+    assert.equal(domainError.code, "corruptState");
+    assert.match(domainError.message, messagePattern);
+    assert.match(domainError.message, /persisted state is not overwritten/);
+    return true;
+  });
 }
 
 function createTimestampFactory(): () => string {

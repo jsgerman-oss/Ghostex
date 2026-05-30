@@ -34,6 +34,9 @@ export type GxserverCredentialCommandRunner = (
 /*
 CDXC:GxserverRemoteCredentials 2026-05-30-15:25:
 Remote connection profiles store only non-secret metadata in `~/.ghostex/clients/connections.json`. Auth tokens are addressed by stable OS credential-store refs so the desktop app and gx CLI can share profiles without writing bearer tokens to JSON; when a platform store is unavailable, connection setup must fail with guidance instead of inventing a plaintext fallback.
+
+CDXC:GxserverRemoteCredentials 2026-05-30-20:47:
+Credential-store writes must not put bearer tokens in process argv. Use platform stdin/password-prompt paths where available so same-user process inspection sees only metadata, not the remote gxserver secret.
 */
 export function createUnavailableCredentialStore(guidance = defaultCredentialGuidance(process.platform)): GxserverCredentialStore {
   const unavailable = async (): Promise<never> => {
@@ -99,16 +102,13 @@ function createDarwinCredentialStore(runner: GxserverCredentialCommandRunner): G
       return result.stdout.trim();
     },
     set: async (ref, secret) => {
-      await runCredentialCommand(runner, "security", [
-        "add-generic-password",
-        "-U",
-        "-s",
-        ref.service,
-        "-a",
-        ref.account,
-        "-w",
-        secret,
-      ]);
+      await runCredentialCommand(
+        runner,
+        "security",
+        ["add-generic-password", "-U", "-s", ref.service, "-a", ref.account, "-w"],
+        false,
+        `${secret}\n`,
+      );
     },
     status: async () => ({ status: "available" }),
   };

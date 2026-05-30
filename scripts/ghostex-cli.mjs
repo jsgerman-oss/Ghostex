@@ -20,6 +20,13 @@ const GXSERVER_PROTOCOL_VERSION = 1;
 const GXSERVER_PROTOCOL_HEADER = "x-gxserver-protocol-version";
 const GXSERVER_LOCAL_API_HOST = "127.0.0.1";
 const GXSERVER_LOCAL_API_PORT = 58744;
+const GXSERVER_SSH_FORWARD_DEFAULT_PORT = GXSERVER_LOCAL_API_PORT + 1;
+const GXSERVER_SSH_FORWARD_PORT_SCAN_LIMIT = 25;
+const GXSERVER_SSH_TUNNEL_READY_TIMEOUT_MS = 8_000;
+const GXSERVER_SSH_COMMAND_TIMEOUT_MS = 12_000;
+const GXSERVER_SSH_TUNNEL_IDLE_KILL_MS = 500;
+const activeGxserverSshTunnels = new Map();
+let gxserverSshTunnelExitHooksInstalled = false;
 /**
  * CDXC:DevAppFlavor 2026-05-11-12:10
  * CLI-side logs, selector caches, and bridge metadata must follow the app
@@ -1616,6 +1623,7 @@ async function callGxserverRpc(pathname, params = {}, flags = {}) {
 }
 
 async function requestGxserverRpc(target, pathname, params = {}, flags = {}) {
+  const releaseSshTunnel = await ensureGxserverSshTunnelForRpc(target, flags);
   const controller = new AbortController();
   const timeoutMs = Number(flags.timeout ?? flags.timeoutMs ?? 15_000);
   const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
@@ -1650,13 +1658,262 @@ async function requestGxserverRpc(target, pathname, params = {}, flags = {}) {
       throw error;
     }
     throw new GxserverCliConnectionError(
-      `Could not connect to ${target.kind === "local" ? "local" : "remote"} gxserver at ${target.baseUrl}. Start it with "gxserver start" and retry.`,
+      target.kind === "ssh"
+        ? `Could not connect to SSH gxserver profile${target.profileId ? ` "${target.profileId}"` : ""} at ${target.baseUrl}. Check SSH access, remote gxserver status, and the local tunnel, then retry.`
+        : `Could not connect to ${target.kind === "local" ? "local" : "remote"} gxserver at ${target.baseUrl}. Start it with "gxserver start" and retry.`,
       { cause: error },
     );
   } finally {
     if (timeout) {
       clearTimeout(timeout);
     }
+    releaseSshTunnel();
+  }
+}
+
+async function ensureGxserverSshTunnelForRpc(target, flags = {}) {
+  if (target?.kind !== "ssh" || !target.forwardPlan) {
+    return () => {};
+  }
+  const existingHealth = await fetchGxserverHealth(target, { timeoutMs: 600 }).catch(() => undefined);
+  if (isExpectedGxserverHealth(existingHealth, target)) {
+    return () => {};
+  }
+
+  installGxserverSshTunnelExitHooks();
+  const key = gxserverSshTunnelCacheKey(target);
+  let record = activeGxserverSshTunnels.get(key);
+  if (!record) {
+    record = {
+      child: undefined,
+      idleTimer: undefined,
+      ready: startGxserverSshTunnel(target, flags),
+      refs: 0,
+    };
+    record.ready
+      .then((child) => {
+        record.child = child;
+      })
+      .catch(() => {
+        activeGxserverSshTunnels.delete(key);
+      });
+    activeGxserverSshTunnels.set(key, record);
+  }
+  record.refs += 1;
+  if (record.idleTimer) {
+    clearTimeout(record.idleTimer);
+    record.idleTimer = undefined;
+  }
+  let released = false;
+  const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    record.refs = Math.max(0, record.refs - 1);
+    if (record.refs === 0) {
+      record.idleTimer = setTimeout(() => {
+        if (record.refs === 0) {
+          stopGxserverSshTunnelRecord(key, record);
+        }
+      }, Number(flags.sshTunnelIdleKillMs ?? GXSERVER_SSH_TUNNEL_IDLE_KILL_MS));
+      record.idleTimer.unref?.();
+    }
+  };
+
+  try {
+    await record.ready;
+    return release;
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
+async function startGxserverSshTunnel(target, flags = {}) {
+  const { forwardPlan } = target;
+  /**
+   * CDXC:GxserverRemoteCli 2026-05-30-20:18:
+   * SSH gxserver profiles must establish a verified local tunnel before any RPC fetch. The CLI checks remote gxserver status through SSH, starts it when stopped, spawns a loopback forward only after the remote daemon is expected to be running, and tears down CLI-owned tunnel children after the request burst so failed or interrupted setup does not leave obvious `ssh -N -L` processes behind.
+   */
+  const before = await runGxserverSshStatusCommand(forwardPlan, flags).catch((error) => {
+    throw formatGxserverSshSetupError("check", target, forwardPlan, error);
+  });
+  if (before?.state !== "running") {
+    await runGxserverSshCommand(forwardPlan.startCommand, flags, "start").catch((error) => {
+      throw formatGxserverSshSetupError("start", target, forwardPlan, error);
+    });
+    const after = await runGxserverSshStatusCommand(forwardPlan, flags).catch((error) => {
+      throw formatGxserverSshSetupError("check", target, forwardPlan, error);
+    });
+    if (after?.state !== "running") {
+      throw new GxserverCliConnectionError(
+        `SSH gxserver profile${target.profileId ? ` "${target.profileId}"` : ""} started remote gxserver, but status is still ${String(after?.state ?? "unknown")}. Run ${formatCommand(forwardPlan.checkCommand)} on the remote profile to inspect it.`,
+      );
+    }
+  }
+
+  const child = spawnGxserverSshTunnel(forwardPlan.portForwardCommand, flags);
+  try {
+    await waitForGxserverSshTunnelHealth(target, child, flags);
+    return child;
+  } catch (error) {
+    stopGxserverSshTunnelChild(child);
+    throw error;
+  }
+}
+
+async function runGxserverSshStatusCommand(forwardPlan, flags = {}) {
+  const result = await runGxserverSshCommand(forwardPlan.checkCommand, flags, "check");
+  const parsed = parseJson(result.stdout);
+  if (parsed?.product === GXSERVER_PRODUCT) {
+    return parsed;
+  }
+  return undefined;
+}
+
+async function runGxserverSshCommand(command, flags = {}, phase = "ssh") {
+  const runner = flags.sshCommandRunner ?? defaultGxserverSshCommandRunner;
+  const result = await runner(command, {
+    phase,
+    timeoutMs: Number(flags.sshCommandTimeoutMs ?? GXSERVER_SSH_COMMAND_TIMEOUT_MS),
+  });
+  if (typeof result === "string") {
+    return { stderr: "", stdout: result };
+  }
+  return {
+    stderr: String(result?.stderr ?? ""),
+    stdout: String(result?.stdout ?? ""),
+  };
+}
+
+async function defaultGxserverSshCommandRunner(command, options = {}) {
+  const [file, ...args] = command;
+  return execFileAsync(file, args, {
+    encoding: "utf8",
+    maxBuffer: 128 * 1024,
+    timeout: options.timeoutMs,
+    windowsHide: true,
+  });
+}
+
+function spawnGxserverSshTunnel(command, flags = {}) {
+  const spawner = flags.sshTunnelSpawner ?? defaultGxserverSshTunnelSpawner;
+  return spawner(command, {
+    timeoutMs: Number(flags.sshTunnelReadyTimeoutMs ?? GXSERVER_SSH_TUNNEL_READY_TIMEOUT_MS),
+  });
+}
+
+function defaultGxserverSshTunnelSpawner(command) {
+  const [file, ...args] = command;
+  return spawn(file, args, { stdio: "ignore", windowsHide: true });
+}
+
+async function waitForGxserverSshTunnelHealth(target, child, flags = {}) {
+  const timeoutMs = Number(flags.sshTunnelReadyTimeoutMs ?? GXSERVER_SSH_TUNNEL_READY_TIMEOUT_MS);
+  const deadline = Date.now() + timeoutMs;
+  let exited;
+  child.once?.("exit", (code, signal) => {
+    exited = { code, signal };
+  });
+  while (Date.now() < deadline) {
+    if (exited) {
+      throw new GxserverCliConnectionError(
+        `SSH tunnel for gxserver profile${target.profileId ? ` "${target.profileId}"` : ""} exited before it became ready (code ${String(exited.code)}, signal ${String(exited.signal)}). Check SSH forwarding permissions and port ${target.forwardPlan.localPort}.`,
+      );
+    }
+    const health = await fetchGxserverHealth(target, { timeoutMs: 600 }).catch(() => undefined);
+    if (isExpectedGxserverHealth(health, target)) {
+      return;
+    }
+    await sleep(Number(flags.sshTunnelPollMs ?? 100));
+  }
+  throw new GxserverCliConnectionError(
+    `SSH tunnel for gxserver profile${target.profileId ? ` "${target.profileId}"` : ""} did not become healthy on ${target.baseUrl}. Check that ${formatCommand(target.forwardPlan.portForwardCommand)} can connect and that the remote gxserver token is valid.`,
+  );
+}
+
+function isExpectedGxserverHealth(health, target) {
+  return (
+    health?.product === GXSERVER_PRODUCT &&
+    health.protocolVersion === GXSERVER_PROTOCOL_VERSION &&
+    (!target.serverId || health.serverId === target.serverId)
+  );
+}
+
+function formatGxserverSshSetupError(phase, target, forwardPlan, error) {
+  if (error?.code === "ENOENT") {
+    return new GxserverCliConnectionError(
+      `Could not set up SSH gxserver profile${target.profileId ? ` "${target.profileId}"` : ""} because the "ssh" executable was not found on PATH. Install OpenSSH, or use a direct/Tailscale gxserver profile instead.`,
+      { cause: error },
+    );
+  }
+  const stderr = String(error?.stderr ?? "").trim();
+  const stdout = String(error?.stdout ?? "").trim();
+  const output = [stderr, stdout].filter(Boolean).join("\n").slice(0, 1200);
+  const command = phase === "start" ? forwardPlan.startCommand : forwardPlan.checkCommand;
+  const guidance = phase === "check" ? ` ${forwardPlan.installGuidance}` : "";
+  return new GxserverCliConnectionError(
+    `Could not ${phase} remote gxserver for SSH profile${target.profileId ? ` "${target.profileId}"` : ""} with ${formatCommand(command)}.${guidance}${output ? `\nSSH output:\n${output}` : ""}`,
+    { cause: error },
+  );
+}
+
+function gxserverSshTunnelCacheKey(target) {
+  return [
+    target.profileId ?? "",
+    target.serverId ?? "",
+    target.baseUrl,
+    target.forwardPlan.localPort,
+    target.forwardPlan.remoteLocalPort,
+    ...target.forwardPlan.portForwardCommand,
+  ].join("\0");
+}
+
+function formatCommand(command) {
+  return command.map(shellQuote).join(" ");
+}
+
+function stopGxserverSshTunnelRecord(key, record) {
+  activeGxserverSshTunnels.delete(key);
+  if (record.idleTimer) {
+    clearTimeout(record.idleTimer);
+    record.idleTimer = undefined;
+  }
+  stopGxserverSshTunnelChild(record.child);
+  record.ready
+    .then((child) => stopGxserverSshTunnelChild(child))
+    .catch(() => {});
+}
+
+function stopGxserverSshTunnelChild(child) {
+  if (!child || child.killed) {
+    return;
+  }
+  child.kill?.("SIGTERM");
+  setTimeout(() => {
+    if (!child.killed) {
+      child.kill?.("SIGKILL");
+    }
+  }, 1_000).unref?.();
+}
+
+function installGxserverSshTunnelExitHooks() {
+  if (gxserverSshTunnelExitHooksInstalled) {
+    return;
+  }
+  gxserverSshTunnelExitHooksInstalled = true;
+  const stopAll = () => {
+    for (const [key, record] of activeGxserverSshTunnels) {
+      stopGxserverSshTunnelRecord(key, record);
+    }
+  };
+  process.once("exit", stopAll);
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.once(signal, () => {
+      stopAll();
+      process.kill(process.pid, signal);
+    });
   }
 }
 
@@ -1723,18 +1980,28 @@ async function readLocalGxserverAuthToken() {
   return token;
 }
 
-async function fetchGxserverHealth(target) {
-  const response = await fetch(`${target.baseUrl}/api/health/server?protocolVersion=${GXSERVER_PROTOCOL_VERSION}`, {
-    headers: {
-      authorization: `Bearer ${target.token}`,
-      [GXSERVER_PROTOCOL_HEADER]: String(GXSERVER_PROTOCOL_VERSION),
-    },
-    method: "GET",
-  });
-  if (!response.ok) {
-    return undefined;
+async function fetchGxserverHealth(target, options = {}) {
+  const controller = new AbortController();
+  const timeoutMs = Number(options.timeoutMs ?? 1_000);
+  const timeout = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  try {
+    const response = await fetch(`${target.baseUrl}/api/health/server?protocolVersion=${GXSERVER_PROTOCOL_VERSION}`, {
+      headers: {
+        authorization: `Bearer ${target.token}`,
+        [GXSERVER_PROTOCOL_HEADER]: String(GXSERVER_PROTOCOL_VERSION),
+      },
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      return undefined;
+    }
+    return response.json();
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
-  return response.json();
 }
 
 async function readGxserverConnectionProfile(name) {
@@ -1771,8 +2038,10 @@ async function resolveGxserverProfileTarget(profile, flags = {}) {
   const transport = String(profile.transport ?? (profile.sshUrl ? "ssh" : "direct"));
   const token = await readGxserverConnectionProfileToken(profile, flags);
   if (transport === "ssh") {
+    const explicitLocalPort = Number(flags.localPort ?? flags.forwardPort ?? localPortFromBaseUrl(flags.baseUrl) ?? 0) || undefined;
+    const localPort = await selectCliSshForwardLocalPort(explicitLocalPort);
     const forwardPlan = createCliSshForwardPlan(profile, {
-      localPort: Number(flags.localPort ?? flags.forwardPort ?? 0) || 0,
+      localPort,
       remoteLocalPort: Number(flags.remotePort ?? GXSERVER_LOCAL_API_PORT),
     });
     return {
@@ -1797,9 +2066,68 @@ async function resolveGxserverProfileTarget(profile, flags = {}) {
   };
 }
 
+async function selectCliSshForwardLocalPort(explicitLocalPort) {
+  if (explicitLocalPort) {
+    return explicitLocalPort;
+  }
+  /**
+   * CDXC:GxserverRemoteCli 2026-05-30-20:18:
+   * SSH profiles cannot default their local forward to gxserver's own local API port. A running local daemon owns 58744, so SSH RPCs choose the next available loopback port and scan upward before falling back to an ephemeral port.
+   */
+  for (
+    let port = GXSERVER_SSH_FORWARD_DEFAULT_PORT;
+    port < GXSERVER_SSH_FORWARD_DEFAULT_PORT + GXSERVER_SSH_FORWARD_PORT_SCAN_LIMIT;
+    port += 1
+  ) {
+    if (await isLoopbackPortAvailable(port)) {
+      return port;
+    }
+  }
+  return reserveEphemeralLoopbackPort();
+}
+
+function localPortFromBaseUrl(baseUrl) {
+  if (!baseUrl) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(String(baseUrl));
+    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" ? Number(parsed.port) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function isLoopbackPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+async function reserveEphemeralLoopbackPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port);
+          return;
+        }
+        reject(new Error("Could not reserve an ephemeral local port for the SSH gxserver tunnel."));
+      });
+    });
+  });
+}
+
 async function readGxserverConnectionProfileToken(profile, flags = {}) {
-  if (flags.token) {
-    return String(flags.token);
+  if (flags.token || flags.tokenStdin || flags.tokenFromStdin) {
+    return readGxserverCredentialSecretFromFlags(flags);
   }
   if (profile.token) {
     throw new Error(`gxserver profile "${profile.name ?? profile.id}" contains a plaintext token. Move it to the OS credential store and keep only tokenSecretRef in ${GXSERVER_CONNECTIONS_PATH}.`);
@@ -1811,10 +2139,38 @@ async function readGxserverConnectionProfileToken(profile, flags = {}) {
 }
 
 async function readGxserverCredentialSecretFromFlags(flags = {}) {
+  if (flags.tokenStdin || flags.tokenFromStdin) {
+    const token = (await readGxserverOneShotTokenFromStdin(flags)).trim();
+    if (!token) {
+      throw new Error("Remote gxserver --token-stdin did not receive a token.");
+    }
+    return token;
+  }
   if (flags.token) {
     return String(flags.token);
   }
-  throw new Error("Remote gxserver profiles require an auth token stored in the OS credential store. Add tokenSecretRef to the profile or pass --token for a one-shot command.");
+  throw new Error("Remote gxserver profiles require an auth token stored in the OS credential store. Add tokenSecretRef to the profile. For temporary one-shot use, pass --token-stdin; --token remains available for legacy scripts but can expose the token in shell history and process listings.");
+}
+
+async function readGxserverOneShotTokenFromStdin(flags = {}) {
+  /**
+   * CDXC:GxserverRemoteCredentials 2026-05-30-20:47:
+   * Direct/Tailscale one-shot tokens should have a stdin path so humans and scripts do not need to put bearer tokens in argv. The legacy `--token` flag remains accepted for compatibility but is not the recommended setup path.
+   */
+  const reader = flags.stdinReader ?? defaultReadGxserverOneShotTokenFromStdin;
+  return reader();
+}
+
+async function defaultReadGxserverOneShotTokenFromStdin() {
+  if (process.stdin.isTTY) {
+    throw new Error("Remote gxserver --token-stdin requires a token piped on stdin.");
+  }
+  let text = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) {
+    text += chunk;
+  }
+  return text;
 }
 
 async function readGxserverCredentialSecret(ref) {
@@ -1837,7 +2193,7 @@ async function readGxserverCredentialSecret(ref) {
 function createCliSshForwardPlan(profile, options = {}) {
   const sshUrl = String(profile.sshUrl ?? profile.id ?? "");
   const target = parseCliSshUrl(sshUrl);
-  const localPort = Number(options.localPort ?? GXSERVER_LOCAL_API_PORT) || GXSERVER_LOCAL_API_PORT;
+  const localPort = Number(options.localPort ?? GXSERVER_SSH_FORWARD_DEFAULT_PORT) || GXSERVER_SSH_FORWARD_DEFAULT_PORT;
   const remoteLocalPort = Number(options.remoteLocalPort ?? GXSERVER_LOCAL_API_PORT);
   return {
     baseUrl: `http://127.0.0.1:${localPort}`,
@@ -1845,7 +2201,7 @@ function createCliSshForwardPlan(profile, options = {}) {
     installGuidance:
       "gxserver is not installed on the remote host. Install the Ghostex server package there, then retry; the SSH helper does not install software silently.",
     localPort,
-    portForwardCommand: ["ssh", "-N", "-L", `${localPort}:127.0.0.1:${remoteLocalPort}`, ...cliSshTargetArgs(target)],
+    portForwardCommand: ["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-L", `${localPort}:127.0.0.1:${remoteLocalPort}`, ...cliSshTargetArgs(target)],
     remoteLocalPort,
     startCommand: ["ssh", ...cliSshTargetArgs(target), "gxserver start --background"],
   };
@@ -3979,8 +4335,8 @@ function usage() {
     formatHelpCommand("kill | k <selector|all> [--json]", "Close one session or every listed session"),
     formatHelpCommand("sleep <selector|all> [--json]", "Sleep one session or every listed session"),
     formatHelpCommand("wake <selector|all> [--json]", "Wake one session or every listed session"),
-    formatHelpCommand("focus <selector> [--json]", "Focus a session in Ghostex"),
-    formatHelpCommand("(focus|sleep|wake|kill) --session-id <id> [--json]", "Flag form used by Android sidebar actions"),
+    formatHelpCommand("focus <selector> [--json]", "Unsupported in gxserver cutover until renderer focus events land"),
+    formatHelpCommand("(sleep|wake|kill) --session-id <id> [--json]", "Flag form used by Android sidebar actions"),
   ].join("\n");
 
   const workspaceCommands = [
@@ -4006,7 +4362,7 @@ function usage() {
     formatHelpCommand("send-enter <selector>", "Send Enter to a session by id or quoted title"),
     formatHelpCommand("send-key <selector> <key>", "Send ctrl-c, escape, tab, or arrow keys"),
     formatHelpCommand("send-message <selector> <text>", "Type text and Enter into an existing session"),
-    formatHelpCommand("send-message <agentId> <text>", "Create a visible agent session, send text, and return its Ghostex id"),
+    formatHelpCommand("send-message <agentId> <text>", "Unsupported in gxserver cutover until renderer-created visible sessions land"),
     formatHelpCommand("read-text <selector> [--lines n] [--visible] [--json]", "Read terminal text by id or quoted title"),
     formatHelpCommand("rename-session <sessionId> <title> [--json]", "Rename a session"),
     formatHelpCommand("rename-session --session-id <id> --title <title> [--json]", "Flag form used by Android SSH actions"),
@@ -4084,7 +4440,8 @@ Attach:
 
 Global flags:
   --port <number>       Native bridge port
-  --token <token>       Bridge token
+  --token-stdin         Read a temporary remote gxserver token from stdin
+  --token <token>       Bridge token; legacy remote one-shot only because argv can expose secrets
   --timeout <ms>        Bridge request timeout
   help | h              Show this help
   -h, --help            Show this help

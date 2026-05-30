@@ -26,6 +26,9 @@ export class GxserverSshProfileError extends Error {
 /*
 CDXC:GxserverSshRemote 2026-05-30-15:25:
 SSH profiles are explicit helper connections, not a gxserver PTY transport. The client checks/starts gxserver over SSH, opens a local port forward to the remote loopback listener, and attaches terminal UI by running `zmx attach` through SSH so the remote gxserver can keep running after the tunnel or app disconnects.
+
+CDXC:GxserverSshRemote 2026-05-30-20:18:
+Tunnel commands must fail fast when the local bind or remote forward cannot be established. `ExitOnForwardFailure=yes` lets the CLI surface SSH/port setup failures instead of hanging on an apparently running `ssh -N -L` process that never carries gxserver RPC.
 */
 export function parseSshProfileUrl(sshUrl: string): GxserverSshTarget {
   let url: URL;
@@ -107,6 +110,8 @@ export function buildSshPortForwardCommand(
   return [
     "ssh",
     "-N",
+    "-o",
+    "ExitOnForwardFailure=yes",
     "-L",
     `${localPort}:127.0.0.1:${remoteLocalPort}`,
     ...sshTargetArgs(target),

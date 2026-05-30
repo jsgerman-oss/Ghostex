@@ -495,11 +495,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
        Persistent helper mode was removed by request. Native terminals now
        always use the in-process embedded Ghostty SurfaceView backend from
        startup, so no restart-survival helper client is created.
+
+       CDXC:GxserverMigration 2026-05-30-19:30:
+       First upgraded launch must let gxserver finish the legacy macOS shared-state import before WKWebView injects sidebar storage. Creating the sidebar earlier can hydrate old `project-*`/`g-*` IDs and later persist them over the canonical P/G rewrite, so window creation waits for the local gxserver bootstrap result.
        */
-      makeWindow()
-      installAppHotkeyEventMonitor()
-      startBridge()
-      startGxserverBootstrap()
+      startGxserverBootstrapThenCreateWindow()
       startSparkleLaunchUpdateProbe()
       scheduleOSIntegrationFlushRetry()
     }
@@ -2061,27 +2061,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   }
 
   @MainActor
-  private func startGxserverBootstrap() {
+  private func startGxserverBootstrapThenCreateWindow() {
     Task { [weak self] in
       guard let self else { return }
       let status = await self.gxserverClient.startOrReuse()
-      guard
-        let payloadData = try? JSONSerialization.data(
-          withJSONObject: self.gxserverClient.statusPayload(status)),
-        let payloadJson = String(data: payloadData, encoding: .utf8)
-      else {
-        return
-      }
       await MainActor.run {
-        let event = HostEvent.gxserverStatus(payloadJson: payloadJson)
-        self.bridge?.send(event)
-        (self.window?.contentView as? ghostexRootView)?.postHostEvent(event)
-        Self.appendNativeHostLifecycleLog(
-          "gxserver.bootstrap state=\(status.state) ok=\(status.ok) message=\(status.message)")
-        if !status.ok {
-          self.showMessage(.init(level: .error, message: status.message))
-        }
+        self.makeWindow()
+        self.installAppHotkeyEventMonitor()
+        self.startBridge()
+        self.publishGxserverBootstrapStatus(status)
       }
+    }
+  }
+
+  @MainActor
+  private func publishGxserverBootstrapStatus(_ status: GxserverClientStatus) {
+    guard
+      let payloadData = try? JSONSerialization.data(withJSONObject: gxserverClient.statusPayload(status)),
+      let payloadJson = String(data: payloadData, encoding: .utf8)
+    else {
+      return
+    }
+    let event = HostEvent.gxserverStatus(payloadJson: payloadJson)
+    bridge?.send(event)
+    (window?.contentView as? ghostexRootView)?.postHostEvent(event)
+    Self.appendNativeHostLifecycleLog(
+      "gxserver.bootstrap state=\(status.state) ok=\(status.ok) message=\(status.message)")
+    if !status.ok {
+      showMessage(.init(level: .error, message: status.message))
     }
   }
 

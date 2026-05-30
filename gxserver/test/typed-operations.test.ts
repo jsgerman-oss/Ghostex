@@ -9,6 +9,7 @@ import {
   buildWorktreeCommand,
   GxserverTypedOperationError,
   runBeadsAction,
+  runGitAction,
 } from "../src/typed-operations.js";
 import { normalizeExistingDirectoryPath } from "../src/project-paths.js";
 import type { GxserverProjectDomainState } from "../protocol/index.js";
@@ -96,6 +97,97 @@ test("Beads command construction uses PATH bd only and preserves current board a
   }
 });
 
+test("typed Git operations time out and return structured failures", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-typed-timeout-"));
+  try {
+    const repo = path.join(root, "repo");
+    const bin = path.join(root, "bin");
+    await mkdir(repo);
+    await makeExecutable(path.join(bin, "git"), "#!/bin/sh\nsleep 5\n");
+
+    const startedAt = Date.now();
+    const result = await runGitAction(
+      { action: "status", projectPath: repo },
+      {
+        commandLimits: { timeoutMs: 50 },
+        cwd: repo,
+        envPath: bin,
+        projects: [project("P3a91", repo)],
+      },
+    );
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.error?.code, "timeout");
+    assert.equal(result.error?.timeoutMs, 50);
+    assert.match(result.error?.message ?? "", /timed out/);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+    assert.ok(Date.now() - startedAt < 2_000);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("typed Git operations fail explicitly when stdout exceeds the byte cap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-typed-output-cap-"));
+  try {
+    const repo = path.join(root, "repo");
+    const bin = path.join(root, "bin");
+    await mkdir(repo);
+    await makeExecutable(path.join(bin, "git"), "#!/bin/sh\nprintf abcdef\n");
+
+    const result = await runGitAction(
+      { action: "status", projectPath: repo },
+      {
+        commandLimits: { stdoutLimitBytes: 4, timeoutMs: 5_000 },
+        cwd: repo,
+        envPath: bin,
+        projects: [project("P3a91", repo)],
+      },
+    );
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.error?.code, "stdoutLimitExceeded");
+    assert.equal(result.error?.stream, "stdout");
+    assert.equal(result.error?.limitBytes, 4);
+    assert.equal(result.error?.capturedBytes, 4);
+    assert.equal(result.stdout, "abcd");
+    assert.equal(result.stderr, "");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("typed Git operations fail explicitly when stderr exceeds the byte cap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-typed-stderr-cap-"));
+  try {
+    const repo = path.join(root, "repo");
+    const bin = path.join(root, "bin");
+    await mkdir(repo);
+    await makeExecutable(path.join(bin, "git"), "#!/bin/sh\nprintf abcdef >&2\n");
+
+    const result = await runGitAction(
+      { action: "status", projectPath: repo },
+      {
+        commandLimits: { stderrLimitBytes: 4, timeoutMs: 5_000 },
+        cwd: repo,
+        envPath: bin,
+        projects: [project("P3a91", repo)],
+      },
+    );
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.error?.code, "stderrLimitExceeded");
+    assert.equal(result.error?.stream, "stderr");
+    assert.equal(result.error?.limitBytes, 4);
+    assert.equal(result.error?.capturedBytes, 4);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "abcd");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("project path normalization expands tilde and rejects files", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-project-paths-"));
   try {
@@ -134,8 +226,8 @@ function project(projectId: "P3a91", projectPath: string): GxserverProjectDomain
   };
 }
 
-async function makeExecutable(executablePath: string): Promise<void> {
+async function makeExecutable(executablePath: string, contents = "#!/bin/sh\nprintf '{}'\n"): Promise<void> {
   await mkdir(path.dirname(executablePath), { recursive: true });
-  await writeFile(executablePath, "#!/bin/sh\nprintf '{}'\n");
+  await writeFile(executablePath, contents);
   await chmod(executablePath, 0o755);
 }

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -78,6 +80,73 @@ async function withGxserverFixture(callback, options = {}) {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+function createGxserverRpcAndHealthFixture({ serverId }) {
+  return http.createServer(async (request, response) => {
+    expect(request.headers.authorization).toBe("Bearer test-token");
+    expect(request.headers["x-gxserver-protocol-version"]).toBe("1");
+    if (request.method === "GET" && request.url?.startsWith("/api/health/server")) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          product: "gxserver",
+          protocolVersion: 1,
+          serverId,
+          state: "running",
+        }),
+      );
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(chunk);
+    }
+    const requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    expect(requestBody.protocolVersion).toBe(1);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        ok: true,
+        product: "gxserver",
+        protocolVersion: 1,
+        requestId: "fixture-request",
+        result: { sessions: [] },
+      }),
+    );
+  });
+}
+
+async function reserveTestPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (address && typeof address === "object") {
+          resolve(address.port);
+          return;
+        }
+        reject(new Error("Expected test server to reserve a TCP port."));
+      });
+    });
+  });
+}
+
+async function isTestPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 describe("ghostex CLI Android remote-session contract", () => {
@@ -816,13 +885,13 @@ describe("ghostex CLI Android remote-session contract", () => {
      * CDXC:GxserverRemoteCli 2026-05-30-15:25:
      * SSH remote support is a helper plan around a forwarded gxserver listener,
      * while direct/Tailscale targets require explicit auth token material from
-     * the credential store or a one-shot flag. The CLI must not fall back to the
+     * the credential store or stdin one-shot path. The CLI must not fall back to the
      * retired macOS bridge for remote refs.
      */
     expect(createCliSshForwardPlan({ id: "studio", sshUrl: "ssh://madda@example.test" }, { localPort: 60000 })).toMatchObject({
       baseUrl: "http://127.0.0.1:60000",
       checkCommand: ["ssh", "madda@example.test", "command -v gxserver >/dev/null && gxserver status --json"],
-      portForwardCommand: ["ssh", "-N", "-L", "60000:127.0.0.1:58744", "madda@example.test"],
+      portForwardCommand: ["ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-L", "60000:127.0.0.1:58744", "madda@example.test"],
       startCommand: ["ssh", "madda@example.test", "gxserver start --background"],
     });
     await expect(resolveGxserverServerTarget({ server: "https://studio.test:58745", token: "token-1" })).resolves.toMatchObject({
@@ -830,7 +899,117 @@ describe("ghostex CLI Android remote-session contract", () => {
       kind: "direct",
       token: "token-1",
     });
+    await expect(
+      resolveGxserverServerTarget({
+        server: "https://studio.test:58745",
+        tokenStdin: true,
+        stdinReader: async () => "stdin-token\n",
+      }),
+    ).resolves.toMatchObject({
+      baseUrl: "https://studio.test:58745",
+      kind: "direct",
+      token: "stdin-token",
+    });
     await expect(resolveGxserverServerTarget({ server: "studio" })).rejects.toThrow(/was not found/);
+  });
+
+  test("guides remote gxserver one-shot tokens away from argv", async () => {
+    await expect(resolveGxserverServerTarget({ server: "https://studio.test:58745" })).rejects.toThrow(/--token-stdin/);
+    await expect(resolveGxserverServerTarget({ server: "https://studio.test:58745" })).rejects.toThrow(/process listings/);
+
+    const help = usage();
+    expect(help).toContain("--token-stdin");
+    expect(help).toContain("legacy remote one-shot only because argv can expose secrets");
+  });
+
+  test("starts an SSH tunnel before RPC when no existing forward is listening", async () => {
+    /**
+     * CDXC:GxserverRemoteCli 2026-05-30-20:18:
+     * An SSH profile command must not fetch the forwarded URL until the CLI has
+     * checked remote gxserver, started it if needed, spawned the forward, and
+     * observed gxserver health through that tunnel.
+     */
+    const localPort = await reserveTestPort();
+    const commands = [];
+    let remoteRunning = false;
+    let tunnelServer;
+    let tunnelChild;
+
+    const result = await requestGxserverRpc(
+      {
+        baseUrl: `http://127.0.0.1:${localPort}`,
+        forwardPlan: createCliSshForwardPlan({ id: "studio", sshUrl: "ssh://madda@example.test" }, { localPort }),
+        kind: "ssh",
+        profileId: "studio",
+        serverId: "S1a",
+        token: "test-token",
+      },
+      "/api/listSessions",
+      {},
+      {
+        sshCommandRunner: async (command, options) => {
+          commands.push({ command, phase: options.phase });
+          if (options.phase === "start") {
+            remoteRunning = true;
+            return { stderr: "", stdout: "" };
+          }
+          return {
+            stderr: "",
+            stdout: JSON.stringify({
+              ok: true,
+              product: "gxserver",
+              protocolVersion: 1,
+              serverId: "S1a",
+              state: remoteRunning ? "running" : "stopped",
+            }),
+          };
+        },
+        sshTunnelIdleKillMs: 0,
+        sshTunnelPollMs: 10,
+        sshTunnelReadyTimeoutMs: 1_000,
+        sshTunnelSpawner: (command) => {
+          commands.push({ command, phase: "forward" });
+          tunnelChild = new EventEmitter();
+          tunnelChild.killed = false;
+          tunnelChild.kill = () => {
+            tunnelChild.killed = true;
+            tunnelServer?.close();
+            tunnelChild.emit("exit", 0, null);
+            return true;
+          };
+          tunnelServer = createGxserverRpcAndHealthFixture({ serverId: "S1a" });
+          tunnelServer.listen(localPort, "127.0.0.1");
+          return tunnelChild;
+        },
+        timeoutMs: 1_000,
+      },
+    );
+
+    expect(result).toMatchObject({ ok: true, requestId: "fixture-request", sessions: [] });
+    expect(commands.map((entry) => entry.phase)).toEqual(["check", "start", "check", "forward"]);
+    expect(commands.at(-1).command).toContain("ExitOnForwardFailure=yes");
+    await sleep(20);
+    expect(tunnelChild.killed).toBe(true);
+  });
+
+  test("chooses a non-gxserver port for SSH profiles when the local gxserver port is occupied", async () => {
+    let localGxserverPortFixture;
+    if (await isTestPortAvailable(58744)) {
+      localGxserverPortFixture = net.createServer();
+      await new Promise((resolve) => localGxserverPortFixture.listen(58744, "127.0.0.1", resolve));
+    }
+    try {
+      const target = await resolveGxserverServerTarget({
+        server: "ssh://madda@example.test",
+        token: "test-token",
+      });
+
+      expect(target.kind).toBe("ssh");
+      expect(target.forwardPlan.localPort).not.toBe(58744);
+      expect(target.baseUrl).not.toBe("http://127.0.0.1:58744");
+    } finally {
+      await new Promise((resolve) => localGxserverPortFixture?.close(resolve) ?? resolve());
+    }
   });
 
   test("preserves sidebar project and session order from the inventory", () => {
@@ -872,7 +1051,7 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).toContain("attach | a --session-id <id>");
     expect(help).toContain("sleep <selector|all> [--json]");
     expect(help).toContain("wake <selector|all> [--json]");
-    expect(help).toContain("(focus|sleep|wake|kill) --session-id <id> [--json]");
+    expect(help).toContain("(sleep|wake|kill) --session-id <id> [--json]");
     expect(help).toContain("rename-session --session-id <id> --title <title> [--json]");
   });
 

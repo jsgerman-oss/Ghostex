@@ -17,11 +17,27 @@ import { GXSERVER_PROTOCOL_HEADER } from "../src/api.js";
 import { ensureGxserverAuthToken } from "../src/auth.js";
 import { GxserverEventHub } from "../src/events.js";
 import { LEGACY_MACOS_STATE_IMPORT_ID } from "../src/legacy-macos-state-migration.js";
+import { getGxserverStatus } from "../src/lifecycle.js";
 import { createGxserverLogger } from "../src/logger.js";
 import { getGxserverPaths } from "../src/paths.js";
 import type { GxserverPaths } from "../src/paths.js";
-import { createGxserverHttpServer, type GxserverApiRuntime } from "../src/server.js";
-import { createGxserverMigrationStatus, initializeGxserverStorage, readGxserverConfig } from "../src/storage.js";
+import {
+  createGxserverHttpServer,
+  GXSERVER_JSON_BODY_LIMIT_BYTES,
+  type GxserverApiRuntime,
+} from "../src/server.js";
+import {
+  GXSERVER_DOMAIN_STATE_JSON_LIMIT_CHARS,
+  GXSERVER_DOMAIN_STATE_JSON_MAX_DEPTH,
+} from "../src/domain-state.js";
+import {
+  createGxserverMigrationStatus,
+  initializeGxserverStorage,
+  openGxserverDatabase,
+  readGxserverConfig,
+  type GxserverConfig,
+  writeGxserverConfig,
+} from "../src/storage.js";
 import type { GxserverZmxCommandRunner } from "../src/zmx-lifecycle.js";
 
 test("minimal health is unauthenticated and non-health APIs require auth", async () => {
@@ -97,14 +113,77 @@ test("foreground gxserver process uses temporary HOME, writes daemon state, and 
   }
 });
 
+test("foreground gxserver closes local listener when remote listener bind fails", async () => {
+  /*
+  CDXC:GxserverVerification 2026-05-30-20:09:
+  Remote listener startup can fail after the local listener is bound. The foreground-process regression must prove gxserver exits without runtime metadata and releases the local listener so CLI status cannot report a half-started daemon.
+  */
+  const localPort = await getAvailableTcpPort();
+  const remoteBlocker = http.createServer();
+  remoteBlocker.listen(0, "127.0.0.1");
+  await once(remoteBlocker, "listening");
+  const remoteAddress = remoteBlocker.address();
+  if (typeof remoteAddress !== "object" || remoteAddress === null || !("port" in remoteAddress)) {
+    throw new Error("Expected remote port blocker to listen on a TCP port.");
+  }
+
+  const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-remote-bind-failure-home-"));
+  const paths = getGxserverPaths(homeDir);
+  const config = await readGxserverConfig(paths);
+  await writeGxserverConfig(paths, {
+    ...config,
+    listeners: {
+      local: {
+        ...config.listeners.local,
+        host: "127.0.0.1",
+        port: localPort,
+      },
+      remote: {
+        ...config.listeners.remote,
+        enabled: true,
+        host: "127.0.0.1",
+        port: remoteAddress.port,
+      },
+    },
+  });
+
+  const cliPath = path.resolve("dist/src/cli.js");
+  const child = spawn(process.execPath, [cliPath, "--foreground"], {
+    cwd: path.resolve("."),
+    env: { ...process.env, HOME: homeDir },
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+
+  try {
+    await waitForProcessExit(child, 5_000);
+    assert.notEqual(child.exitCode, 0);
+    assert.match(stderr, new RegExp(`Port ${remoteAddress.port} is already in use`));
+    assert.equal(await isTcpPortAvailable(localPort), true);
+    assert.match(await readFile(paths.runtimeMetadataFile, "utf8").catch(() => ""), /^$/);
+    assert.equal((await getGxserverStatus({ homeDir, version: "0.1.0-test" })).state, "stopped");
+  } finally {
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      await waitForProcessExit(child, 2_000).catch(() => child.kill("SIGKILL"));
+    }
+    await closeServer(remoteBlocker);
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
 test("RPC endpoints require POST and the exact gxserver protocol version", async () => {
   await withApiServer("local", async ({ baseUrl, token }) => {
     const preflight = await requestJson(baseUrl, "/api/attachSessionMetadata", {
       method: "OPTIONS",
+      origin: "null",
+      requestPrivateNetwork: true,
     });
     assert.equal(preflight.status, 204);
     assert.equal(preflight.body, undefined);
-    assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+    assert.equal(preflight.headers.get("access-control-allow-origin"), "null");
     assert.equal(preflight.headers.get("access-control-allow-private-network"), "true");
     assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /authorization/);
     assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /x-gxserver-protocol-version/);
@@ -140,6 +219,101 @@ test("RPC endpoints require POST and the exact gxserver protocol version", async
     });
     assert.equal(bodyProtocol.status, 200);
     assert.deepEqual(bodyProtocol.body.result.sessions, []);
+  });
+});
+
+test("CORS and private-network headers are limited to trusted browser origins", async () => {
+  await withApiServer("local", async ({ baseUrl, token }) => {
+    const trustedDev = await requestJson(baseUrl, "/api/listSessions", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      origin: "http://localhost:5173",
+      token,
+    });
+    assert.equal(trustedDev.status, 200);
+    assert.equal(trustedDev.headers.get("access-control-allow-origin"), "http://localhost:5173");
+    assert.equal(trustedDev.headers.get("access-control-allow-private-network"), null);
+
+    const cli = await requestJson(baseUrl, "/api/listSessions", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(cli.status, 200);
+    assert.equal(cli.headers.get("access-control-allow-origin"), null);
+    assert.equal(cli.headers.get("access-control-allow-private-network"), null);
+
+    const disallowedActual = await requestJson(baseUrl, "/api/listSessions", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      origin: "https://evil.example",
+      token,
+    });
+    assert.equal(disallowedActual.status, 200);
+    assert.equal(disallowedActual.headers.get("access-control-allow-origin"), null);
+    assert.equal(disallowedActual.headers.get("access-control-allow-private-network"), null);
+
+    const disallowedPreflight = await requestJson(baseUrl, "/api/attachSessionMetadata", {
+      method: "OPTIONS",
+      origin: "https://evil.example",
+      requestPrivateNetwork: true,
+    });
+    assert.equal(disallowedPreflight.status, 204);
+    assert.equal(disallowedPreflight.headers.get("access-control-allow-origin"), null);
+    assert.equal(disallowedPreflight.headers.get("access-control-allow-private-network"), null);
+    assert.equal(disallowedPreflight.headers.get("access-control-allow-headers"), null);
+  });
+});
+
+test("configured CORS origins can opt in trusted gxserver browser clients", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl }) => {
+      const preflight = await requestJson(baseUrl, "/api/listSessions", {
+        method: "OPTIONS",
+        origin: "https://trusted.example",
+        requestPrivateNetwork: true,
+      });
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get("access-control-allow-origin"), "https://trusted.example");
+      assert.equal(preflight.headers.get("access-control-allow-private-network"), "true");
+    },
+    {
+      configureConfig: (config) => ({
+        ...config,
+        cors: {
+          allowedOrigins: [...config.cors.allowedOrigins, "https://trusted.example"],
+        },
+      }),
+    },
+  );
+});
+
+test("RPC JSON body parser accepts normal bodies and rejects oversized bodies", async () => {
+  await withApiServer("local", async ({ baseUrl, token }) => {
+    const normal = await requestJson(baseUrl, "/api/listSessions", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(normal.status, 200);
+    assert.deepEqual(normal.body.result.sessions, []);
+
+    const oversizedBody = JSON.stringify({
+      params: { padding: "x".repeat(GXSERVER_JSON_BODY_LIMIT_BYTES) },
+      protocolVersion: GXSERVER_PROTOCOL_VERSION,
+    });
+    assert.equal(Buffer.byteLength(oversizedBody) > GXSERVER_JSON_BODY_LIMIT_BYTES, true);
+
+    const oversized = await requestRawJson(baseUrl, "/api/listSessions", {
+      bodyText: oversizedBody,
+      method: "POST",
+      protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      token,
+    });
+    assert.equal(oversized.status, 413);
+    assert.equal(oversized.body.error, "badRequest");
+    assert.match(oversized.body.message, /JSON RPC limit/);
   });
 });
 
@@ -301,6 +475,224 @@ test("project and session domain-state APIs create, update, list, and keep clien
   });
 });
 
+test("domain-state APIs reject oversized and too-deep project/session JSON before SQLite persistence", async () => {
+  await withApiServer("local", async ({ baseUrl, token }) => {
+    const oversizedProjectBody = {
+      params: {
+        name: "Oversized project",
+        runtimeSettings: { promptCache: "x".repeat(GXSERVER_DOMAIN_STATE_JSON_LIMIT_CHARS) },
+      },
+      protocolVersion: GXSERVER_PROTOCOL_VERSION,
+    };
+    assert.equal(Buffer.byteLength(JSON.stringify(oversizedProjectBody)) < GXSERVER_JSON_BODY_LIMIT_BYTES, true);
+
+    const oversizedProject = await requestJson(baseUrl, "/api/createProject", {
+      body: oversizedProjectBody,
+      method: "POST",
+      token,
+    });
+    assert.equal(oversizedProject.status, 400);
+    assert.equal(oversizedProject.body.error, "badRequest");
+    assert.match(oversizedProject.body.message, /runtimeSettings exceeds .*JSON size limit/);
+
+    const projectsAfterRejectedCreate = await requestJson(baseUrl, "/api/listProjects", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.deepEqual(projectsAfterRejectedCreate.body.result.projects, []);
+
+    const createdProject = await requestJson(baseUrl, "/api/createProject", {
+      body: { params: { name: "Ghostex" }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(createdProject.status, 200);
+    const project = createdProject.body.result.project;
+
+    const tooDeepHistory = await requestJson(baseUrl, "/api/updateProject", {
+      body: {
+        params: {
+          previousSessionHistory: [{ historyId: "hist-deep", payload: nestedJson(GXSERVER_DOMAIN_STATE_JSON_MAX_DEPTH + 1) }],
+          projectId: project.projectId,
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(tooDeepHistory.status, 400);
+    assert.equal(tooDeepHistory.body.error, "badRequest");
+    assert.match(tooDeepHistory.body.message, /previousSessionHistory exceeds .*JSON depth limit/);
+
+    const projectStatus = await requestJson(baseUrl, "/api/readProjectStatus", {
+      body: { params: { projectId: project.projectId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.deepEqual(projectStatus.body.result.project.previousSessionHistory, []);
+
+    const oversizedSessionBody = {
+      params: {
+        launchSettings: { firstUserMessage: "x".repeat(GXSERVER_DOMAIN_STATE_JSON_LIMIT_CHARS) },
+        projectId: project.projectId,
+        title: "Oversized session",
+      },
+      protocolVersion: GXSERVER_PROTOCOL_VERSION,
+    };
+    assert.equal(Buffer.byteLength(JSON.stringify(oversizedSessionBody)) < GXSERVER_JSON_BODY_LIMIT_BYTES, true);
+
+    const oversizedSession = await requestJson(baseUrl, "/api/createSession", {
+      body: oversizedSessionBody,
+      method: "POST",
+      token,
+    });
+    assert.equal(oversizedSession.status, 400);
+    assert.equal(oversizedSession.body.error, "badRequest");
+    assert.match(oversizedSession.body.message, /launchSettings exceeds .*JSON size limit/);
+
+    const createdSession = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: { projectId: project.projectId, runtimeSettings: { delayedSendMs: 250 }, title: "Bounded session" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(createdSession.status, 200);
+    const session = createdSession.body.result.session;
+
+    const tooDeepSession = await requestJson(baseUrl, "/api/updateSession", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          runtimeSettings: nestedJson(GXSERVER_DOMAIN_STATE_JSON_MAX_DEPTH + 1),
+          sessionId: session.sessionId,
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(tooDeepSession.status, 400);
+    assert.equal(tooDeepSession.body.error, "badRequest");
+    assert.match(tooDeepSession.body.message, /runtimeSettings exceeds .*JSON depth limit/);
+
+    const sessions = await requestJson(baseUrl, "/api/listSessions", {
+      body: { params: { projectId: project.projectId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(sessions.body.result.sessions.length, 1);
+    assert.deepEqual(sessions.body.result.sessions[0].runtimeSettings, { delayedSendMs: 250 });
+  });
+});
+
+test("domain-state APIs surface corrupt SQLite JSON columns instead of emptying state", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    const createdProject = await requestJson(baseUrl, "/api/createProject", {
+      body: {
+        params: { name: "Ghostex", runtimeSettings: { defaultPromptAgentId: "codex" } },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(createdProject.status, 200);
+    const project = createdProject.body.result.project;
+
+    const createdSession = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: { projectId: project.projectId, providerState: { marker: "durable" }, title: "Durable session" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(createdSession.status, 200);
+    const session = createdSession.body.result.session;
+
+    const db = openGxserverDatabase(paths);
+    try {
+      db.prepare("UPDATE projects SET runtimeSettingsJson = ? WHERE projectId = ?").run("{not-json", project.projectId);
+    } finally {
+      db.close();
+    }
+
+    const projectRead = await requestJson(baseUrl, "/api/readProjectStatus", {
+      body: { params: { projectId: project.projectId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(projectRead.status, 409);
+    assert.equal(projectRead.body.error, "corruptState");
+    assert.match(projectRead.body.message, /project .* column runtimeSettingsJson/);
+
+    const projectUpdate = await requestJson(baseUrl, "/api/updateProject", {
+      body: {
+        params: { name: "Should not persist", projectId: project.projectId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(projectUpdate.status, 409);
+    assert.equal(projectUpdate.body.error, "corruptState");
+
+    const repairedProjectDb = openGxserverDatabase(paths);
+    try {
+      const storedProject = repairedProjectDb
+        .prepare<[string], { name: string; runtimeSettingsJson: string }>(
+          "SELECT name, runtimeSettingsJson FROM projects WHERE projectId = ?",
+        )
+        .get(project.projectId);
+      assert.equal(storedProject?.name, "Ghostex");
+      assert.equal(storedProject?.runtimeSettingsJson, "{not-json");
+      repairedProjectDb
+        .prepare("UPDATE projects SET runtimeSettingsJson = ? WHERE projectId = ?")
+        .run(JSON.stringify({ defaultPromptAgentId: "codex" }), project.projectId);
+      repairedProjectDb
+        .prepare("UPDATE sessions SET providerStateJson = ? WHERE projectId = ? AND sessionId = ?")
+        .run(JSON.stringify("wrong-shape"), project.projectId, session.sessionId);
+    } finally {
+      repairedProjectDb.close();
+    }
+
+    const sessionRead = await requestJson(baseUrl, "/api/readProjectStatus", {
+      body: { params: { projectId: project.projectId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(sessionRead.status, 409);
+    assert.equal(sessionRead.body.error, "corruptState");
+    assert.match(sessionRead.body.message, /session .* column providerStateJson/);
+
+    const sessionUpdate = await requestJson(baseUrl, "/api/updateSession", {
+      body: {
+        params: { projectId: project.projectId, sessionId: session.sessionId, title: "Should not persist" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(sessionUpdate.status, 409);
+    assert.equal(sessionUpdate.body.error, "corruptState");
+
+    const finalDb = openGxserverDatabase(paths);
+    try {
+      const storedSession = finalDb
+        .prepare<[string, string], { providerStateJson: string; title: string }>(
+          "SELECT providerStateJson, title FROM sessions WHERE projectId = ? AND sessionId = ?",
+        )
+        .get(project.projectId, session.sessionId);
+      assert.equal(storedSession?.title, "Durable session");
+      assert.equal(storedSession?.providerStateJson, JSON.stringify("wrong-shape"));
+    } finally {
+      finalDb.close();
+    }
+  });
+});
+
 test("zmx lifecycle APIs attach existing sessions without replay and create missing sessions with cwd", async () => {
   const calls: string[] = [];
   let probeExitCode = 0;
@@ -371,6 +763,121 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
     },
     {
       zmxLifecycle: fakeZmxLifecycle(calls, () => probeExitCode),
+    },
+  );
+});
+
+test("zmx session interaction APIs read and send through bundled zmx, with explicit unsupported focus", async () => {
+  const calls: string[] = [];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: { params: { projectId: project.projectId, title: "Talk to me" }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const read = await requestJson(baseUrl, "/api/readSessionText", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(read.status, 200);
+      assert.equal(read.body.result.text, "first line\nsecond line");
+      assert.equal(read.body.result.zmxName, `${project.projectId}-${session.sessionId}`);
+
+      const send = await requestJson(baseUrl, "/api/sendSessionText", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId, text: "hello 'agent'" },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(send.status, 200);
+      assert.equal(send.body.result.textLength, "hello 'agent'".length);
+
+      const enter = await requestJson(baseUrl, "/api/sendSessionEnter", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(enter.status, 200);
+      assert.equal(enter.body.result.textLength, 1);
+
+      const message = await requestJson(baseUrl, "/api/sendSessionMessage", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId, text: "ship it", submit: true },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(message.status, 200);
+      assert.equal(message.body.result.submit, true);
+
+      const focus = await requestJson(baseUrl, "/api/focusSession", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(focus.status, 503);
+      assert.equal(focus.body.error, "dependencyUnavailable");
+      assert.match(focus.body.message, /renderer event channel/);
+
+      const agentMessage = await requestJson(baseUrl, "/api/sendSessionMessage", {
+        body: {
+          params: { agentId: "codex", text: "new visible session" },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(agentMessage.status, 503);
+      assert.equal(agentMessage.body.error, "dependencyUnavailable");
+      assert.match(agentMessage.body.message, /requires projectId and sessionId/);
+      assert.ok(calls.some((script) => script.includes('exec "$zmx_bin" history "$zmx_session"')));
+      assert.ok(calls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session" "$zmx_text"')));
+      assert.ok(calls.some((script) => script.includes("zmx_text='hello '\\''agent'\\'''")));
+      assert.ok(calls.some((script) => script.includes("zmx_text='ship it\r'")));
+    },
+    {
+      zmxLifecycle: {
+        requireZmx: async () => ({
+          executablePath: "/fake/bundled/zmx",
+          source: "devSubmodule",
+          tool: "zmx",
+        }),
+        runZsh: async (script) => {
+          calls.push(script);
+          if (script.includes('exec "$zmx_bin" history "$zmx_session"')) {
+            return { exitCode: 0, stderr: "", stdout: "first line\nsecond line" };
+          }
+          if (script.includes('exec "$zmx_bin" send "$zmx_session" "$zmx_text"')) {
+            return { exitCode: 0, stderr: "", stdout: "" };
+          }
+          return { exitCode: 64, stderr: "unexpected zmx command", stdout: "" };
+        },
+      },
     },
   );
 });
@@ -638,6 +1145,130 @@ test("explicit sleep and close kill the zmx provider session", async () => {
     },
     {
       zmxLifecycle: fakeZmxLifecycle(calls, () => 0),
+    },
+  );
+});
+
+test("sleep failure keeps stored zmx provider route unknown instead of missing", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: {
+              projectId: project.projectId,
+              providerState: { lifecycleState: "exists" },
+              title: "Sleep failure stays attachable",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const sleep = await requestJson(baseUrl, "/api/sleepSession", {
+        body: { params: { projectId: project.projectId, sessionId: session.sessionId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+
+      assert.equal(sleep.status, 200);
+      assert.equal(sleep.body.result.kill.killed, false);
+      assert.equal(sleep.body.result.kill.exitCode, 42);
+      assert.match(sleep.body.result.kill.error, /zmx kill failed/);
+      assert.equal(sleep.body.result.session.lifecycleState, "unknown");
+      assert.equal(sleep.body.result.session.providerState.lifecycleState, "unknown");
+      assert.equal(sleep.body.result.session.providerState.zmxName, session.zmxName);
+      assert.match(sleep.body.result.session.providerState.killError, /zmx kill failed/);
+
+      const list = await requestJson(baseUrl, "/api/listSessions", {
+        body: { params: { projectId: project.projectId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      const stored = list.body.result.sessions.find((candidate: Record<string, unknown>) => candidate.sessionId === session.sessionId);
+      assert.equal(stored.lifecycleState, "unknown");
+      assert.equal(stored.providerState.lifecycleState, "unknown");
+      assert.equal(stored.providerState.zmxName, session.zmxName);
+
+      const logs = await readFile(paths.logFile, "utf8");
+      assert.match(logs, /"event":"zmx.kill.failed"/);
+      assert.match(logs, /"reason":"sleepSession"/);
+      assert.match(logs, /zmx kill failed/);
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0, { killExitCode: () => 42 }),
+    },
+  );
+});
+
+test("kill failure keeps stored zmx provider route unknown instead of stopped and missing", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: {
+              projectId: project.projectId,
+              providerState: { lifecycleState: "exists" },
+              title: "Kill failure stays attachable",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const close = await requestJson(baseUrl, "/api/killSession", {
+        body: { params: { projectId: project.projectId, sessionId: session.sessionId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+
+      assert.equal(close.status, 200);
+      assert.equal(close.body.result.kill.killed, false);
+      assert.equal(close.body.result.kill.exitCode, 43);
+      assert.match(close.body.result.kill.error, /zmx kill failed/);
+      assert.equal(close.body.result.session.lifecycleState, "unknown");
+      assert.equal(close.body.result.session.providerState.lifecycleState, "unknown");
+      assert.equal(close.body.result.session.providerState.zmxName, session.zmxName);
+      assert.match(close.body.result.session.providerState.probeError, /zmx kill failed/);
+
+      const list = await requestJson(baseUrl, "/api/listSessions", {
+        body: { params: { projectId: project.projectId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      const stored = list.body.result.sessions.find((candidate: Record<string, unknown>) => candidate.sessionId === session.sessionId);
+      assert.equal(stored.lifecycleState, "unknown");
+      assert.equal(stored.providerState.lifecycleState, "unknown");
+      assert.equal(stored.providerState.zmxName, session.zmxName);
+
+      const logs = await readFile(paths.logFile, "utf8");
+      assert.match(logs, /"event":"zmx.kill.failed"/);
+      assert.match(logs, /"reason":"killSession"/);
+      assert.match(logs, /zmx kill failed/);
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0, { killExitCode: () => 43 }),
     },
   );
 });
@@ -964,6 +1595,7 @@ async function withApiServer(
   listenerKind: "local" | "remote",
   run: (fixture: ServerFixture) => Promise<void>,
   options: {
+    configureConfig?: (config: GxserverConfig) => GxserverConfig;
     zmxLifecycle?: GxserverApiRuntime["zmxLifecycle"];
   } = {},
 ): Promise<void> {
@@ -982,12 +1614,18 @@ async function startApiServerFixture(
   homeDir: string,
   listenerKind: "local" | "remote",
   options: {
+    configureConfig?: (config: GxserverConfig) => GxserverConfig;
     zmxLifecycle?: GxserverApiRuntime["zmxLifecycle"];
   } = {},
 ): Promise<RunningServerFixture> {
   const paths = getGxserverPaths(homeDir);
   const storage = await initializeGxserverStorage(paths);
-  const config = await readGxserverConfig(paths);
+  let config = await readGxserverConfig(paths);
+  if (options.configureConfig) {
+    config = options.configureConfig(config);
+    await writeGxserverConfig(paths, config);
+    config = await readGxserverConfig(paths);
+  }
   const auth = await ensureGxserverAuthToken(paths);
   const metadata: GxserverRuntimeMetadata = {
     pid: process.pid,
@@ -1036,11 +1674,15 @@ async function startApiServerFixture(
 function fakeZmxLifecycle(
   calls: string[],
   probeExitCode: () => number,
+  options: {
+    killExitCode?: () => number;
+  } = {},
 ): NonNullable<GxserverApiRuntime["zmxLifecycle"]> {
   const runZsh: GxserverZmxCommandRunner = async (script) => {
     calls.push(script);
     if (script.includes('kill "$zmx_session" --force')) {
-      return { exitCode: 0, stderr: "", stdout: "" };
+      const exitCode = options.killExitCode?.() ?? 0;
+      return { exitCode, stderr: exitCode === 0 ? "" : `zmx kill failed with exit ${exitCode}`, stdout: "" };
     }
     const exitCode = probeExitCode();
     return {
@@ -1059,17 +1701,30 @@ function fakeZmxLifecycle(
   };
 }
 
+function nestedJson(depth: number): Record<string, unknown> {
+  let value: Record<string, unknown> = { leaf: true };
+  for (let index = 0; index < depth; index += 1) {
+    value = { child: value };
+  }
+  return value;
+}
+
 async function requestJson(
   baseUrl: string,
   pathname: string,
   options: {
     body?: unknown;
     method: "GET" | "OPTIONS" | "POST";
+    origin?: string;
     protocolVersion?: number;
+    requestPrivateNetwork?: boolean;
     token?: GxserverAuthToken;
   },
 ): Promise<{ body: Record<string, any>; headers: Headers; status: number }> {
   const headers: Record<string, string> = {};
+  if (options.origin) {
+    headers.origin = options.origin;
+  }
   if (options.token) {
     headers.authorization = `Bearer ${options.token}`;
   }
@@ -1078,6 +1733,9 @@ async function requestJson(
   }
   if (options.body !== undefined) {
     headers["content-type"] = "application/json";
+  }
+  if (options.requestPrivateNetwork) {
+    headers["access-control-request-private-network"] = "true";
   }
   const response = await fetch(`${baseUrl}${pathname}`, {
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -1090,6 +1748,57 @@ async function requestJson(
     headers: response.headers,
     status: response.status,
   };
+}
+
+async function requestRawJson(
+  baseUrl: string,
+  pathname: string,
+  options: {
+    bodyText: string;
+    method: "POST";
+    protocolVersion?: number;
+    token?: GxserverAuthToken;
+  },
+): Promise<{ body: Record<string, any>; headers: http.IncomingHttpHeaders; status: number }> {
+  const url = new URL(pathname, baseUrl);
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "transfer-encoding": "chunked",
+  };
+  if (options.token) {
+    headers.authorization = `Bearer ${options.token}`;
+  }
+  if (options.protocolVersion !== undefined) {
+    headers[GXSERVER_PROTOCOL_HEADER] = String(options.protocolVersion);
+  }
+
+  return await new Promise((resolve, reject) => {
+    const request = http.request(
+      url,
+      {
+        headers,
+        method: options.method,
+      },
+      (response) => {
+        let text = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          text += chunk;
+        });
+        response.on("end", () => {
+          resolve({
+            body: (text.trim() ? JSON.parse(text) : undefined) as Record<string, any>,
+            headers: response.headers,
+            status: response.statusCode ?? 0,
+          });
+        });
+      },
+    );
+    request.on("error", reject);
+    const splitAt = Math.floor(options.bodyText.length / 2);
+    request.write(options.bodyText.slice(0, splitAt));
+    request.end(options.bodyText.slice(splitAt));
+  });
 }
 
 async function websocketRejected(
@@ -1119,10 +1828,27 @@ function toWebSocketUrl(baseUrl: string, pathname: string): string {
 }
 
 async function isFixedLocalPortAvailable(): Promise<boolean> {
+  return await isTcpPortAvailable(GXSERVER_LOCAL_API_PORT);
+}
+
+async function getAvailableTcpPort(): Promise<number> {
   const probe = http.createServer();
-  return new Promise((resolve) => {
+  probe.listen(0, "127.0.0.1");
+  await once(probe, "listening");
+  const address = probe.address();
+  if (typeof address !== "object" || address === null || !("port" in address)) {
+    throw new Error("Expected TCP port probe to listen on a TCP port.");
+  }
+  const port = address.port;
+  await closeServer(probe);
+  return port;
+}
+
+async function isTcpPortAvailable(port: number): Promise<boolean> {
+  const probe = http.createServer();
+  return await new Promise((resolve) => {
     probe.once("error", () => resolve(false));
-    probe.listen(GXSERVER_LOCAL_API_PORT, "127.0.0.1", () => {
+    probe.listen(port, "127.0.0.1", () => {
       probe.close(() => resolve(true));
     });
   });

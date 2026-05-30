@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import {
   createGlobalSessionRef,
   createUniqueProjectId,
@@ -41,11 +41,14 @@ const SESSION_ID_FIELDS = new Set([
   "focusedSessionId",
   "ghostexSessionId",
   "poppedOutSessionIds",
+  "relatedSessionIds",
   "restoredFromSessionId",
   "sessionId",
   "sessionIds",
   "visibleSessionIds",
 ]);
+const COMBINED_PROJECT_SESSION_ID_PREFIX = "combined-session:";
+const COMBINED_ID_SEPARATOR = ":";
 
 const LEGACY_STORAGE_KEYS = {
   agentOrder: "ghostex-native-agent-order",
@@ -92,6 +95,17 @@ interface LegacyStateSnapshot {
   sourceFilesRead: readonly string[];
 }
 
+interface LegacyStoragePayload {
+  payloadJson: string;
+  parsed: unknown;
+}
+
+interface LegacyLocalStorageCandidate {
+  databasePath: string;
+  modifiedAtMs: number;
+  value: string;
+}
+
 interface LegacyProjectCommands {
   commands: JsonArray;
   deletedDefaultCommandIds: readonly string[];
@@ -103,6 +117,13 @@ interface LegacySnapshotImportResult {
   projectsImported: number;
   sessionIdByLegacyProjectId: Record<string, Record<string, GxserverSessionId>>;
   sessionsImported: number;
+}
+
+interface LegacyIdRemapContext {
+  preserveHiddenRestoreMetadata?: boolean;
+  projectIdByLegacyProjectId: Record<string, GxserverProjectId>;
+  sessionIdByLegacyProjectId?: Record<string, Record<string, GxserverSessionId>>;
+  sessionIdByLegacySessionId: Record<string, GxserverSessionId>;
 }
 
 /*
@@ -133,6 +154,11 @@ export async function migrateLegacyMacosStateIntoGxserver(
         importedAt: repairedAt,
         serverId: options.serverId,
       });
+      repairPreviousSessionHistoryIdReferencesFromDatabase(db, importResult, {
+        createSessionId: options.createSessionId,
+        repairedAt,
+      });
+      repairProjectBoardConfigIdReferencesFromDatabase(db, importResult, repairedAt);
       await rewriteSharedSidebarStateWithGxserverIds(options, source, importResult, repairedAt).catch(async (error) => {
         await options.logger.log({
           error: error instanceof Error ? error : String(error),
@@ -259,15 +285,25 @@ async function readLegacyStateSnapshot(options: GxserverLegacyMacosStateMigratio
     ...options.legacyStorageValues,
   };
   const sourceFilesRead: string[] = [];
-  const sharedProjects = await readSharedJsonFile(path.join(sharedStateDir, SHARED_PROJECTS_FILE), sourceFilesRead);
-  const sharedPreviousSessions = await readSharedJsonFile(
+  const sharedProjects = await readSharedJsonFilePayload(path.join(sharedStateDir, SHARED_PROJECTS_FILE), sourceFilesRead);
+  const sharedPreviousSessions = await readSharedJsonFilePayload(
     path.join(sharedStateDir, SHARED_PREVIOUS_SESSIONS_FILE),
     sourceFilesRead,
   );
-  const sharedSettings = await readSharedJsonFile(path.join(sharedStateDir, SHARED_SETTINGS_FILE), sourceFilesRead);
-  const projectPayload = sharedProjects ?? parseJson(localStorageValues[LEGACY_STORAGE_KEYS.projects]);
-  const previousPayload = sharedPreviousSessions ?? parseJson(localStorageValues[LEGACY_STORAGE_KEYS.previousSessions]);
-  const settingsPayload = sharedSettings ?? parseJson(localStorageValues[LEGACY_STORAGE_KEYS.settings]);
+  const sharedSettings = await readSharedJsonFilePayload(path.join(sharedStateDir, SHARED_SETTINGS_FILE), sourceFilesRead);
+  const projectPayload = selectLegacyStoragePayload(
+    LEGACY_STORAGE_KEYS.projects,
+    sharedProjects,
+    parseLegacyStoragePayload(localStorageValues[LEGACY_STORAGE_KEYS.projects]),
+  );
+  const previousPayload = selectLegacyStoragePayload(
+    LEGACY_STORAGE_KEYS.previousSessions,
+    sharedPreviousSessions,
+    parseLegacyStoragePayload(localStorageValues[LEGACY_STORAGE_KEYS.previousSessions]),
+    { sharedProjectsMigrated: isGxserverMigratedProjectSnapshot(sharedProjects?.parsed) },
+  );
+  const settingsPayload =
+    sharedSettings?.parsed ?? parseLegacyStoragePayload(localStorageValues[LEGACY_STORAGE_KEYS.settings])?.parsed;
   const settings = normalizeObject(settingsPayload);
   const activeSessionsSortMode = localStorageValues[LEGACY_STORAGE_KEYS.activeSessionsSortMode];
   if (activeSessionsSortMode === "manual" || activeSessionsSortMode === "lastActivity") {
@@ -289,17 +325,141 @@ async function readLegacyStateSnapshot(options: GxserverLegacyMacosStateMigratio
   };
 }
 
-async function readSharedJsonFile(filePath: string, sourceFilesRead: string[]): Promise<unknown> {
+/*
+CDXC:GxserverMigration 2026-05-30-19:48:
+gxserver can start before the macOS app has reconciled stale shared sidebar JSON with richer WKWebView localStorage. Match GhostexAppStorage's source scoring during legacy import so first daemon start does not mark migration complete from an older shared file while fresher projects or previous-session history still exist in WK storage.
+*/
+function selectLegacyStoragePayload(
+  key: string,
+  sharedPayload: LegacyStoragePayload | undefined,
+  localStoragePayload: LegacyStoragePayload | undefined,
+  context: { sharedProjectsMigrated?: boolean } = {},
+): unknown {
+  if (!sharedPayload) {
+    if (key === LEGACY_STORAGE_KEYS.previousSessions && context.sharedProjectsMigrated === true) {
+      return [];
+    }
+    return localStoragePayload?.parsed;
+  }
+  if (!localStoragePayload) {
+    return sharedPayload.parsed;
+  }
+  if (key === LEGACY_STORAGE_KEYS.projects && isGxserverMigratedProjectSnapshot(sharedPayload.parsed)) {
+    return sharedPayload.parsed;
+  }
+  if (
+    key === LEGACY_STORAGE_KEYS.previousSessions &&
+    isGxserverMigratedPreviousSessionsSnapshot(sharedPayload.parsed, {
+      allowEmpty: context.sharedProjectsMigrated === true,
+    })
+  ) {
+    return sharedPayload.parsed;
+  }
+  if (
+    key === LEGACY_STORAGE_KEYS.projects &&
+    projectSnapshotScore(localStoragePayload) > projectSnapshotScore(sharedPayload)
+  ) {
+    return localStoragePayload.parsed;
+  }
+  if (
+    key === LEGACY_STORAGE_KEYS.previousSessions &&
+    previousSessionsSnapshotScore(localStoragePayload) > previousSessionsSnapshotScore(sharedPayload)
+  ) {
+    return localStoragePayload.parsed;
+  }
+  return sharedPayload.parsed;
+}
+
+async function readSharedJsonFilePayload(
+  filePath: string,
+  sourceFilesRead: string[],
+): Promise<LegacyStoragePayload | undefined> {
   try {
-    const text = await readFile(filePath, "utf8");
+    const payloadJson = await readFile(filePath, "utf8");
     sourceFilesRead.push(filePath);
-    return JSON.parse(text);
+    return { payloadJson, parsed: JSON.parse(payloadJson) };
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") {
       return undefined;
     }
     throw error;
   }
+}
+
+function parseLegacyStoragePayload(payloadJson: string | undefined): LegacyStoragePayload | undefined {
+  if (!payloadJson) {
+    return undefined;
+  }
+  const parsed = parseJson(payloadJson);
+  return parsed === undefined ? undefined : { payloadJson, parsed };
+}
+
+function isGxserverMigratedProjectSnapshot(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (typeof value.gxserverMigratedAt === "string") {
+    return true;
+  }
+  const projects = Array.isArray(value.projects) ? value.projects.filter(isRecord) : [];
+  if (projects.length === 0) {
+    return false;
+  }
+  const projectIds = projects
+    .map((project) => project.projectId)
+    .filter((projectId): projectId is string => typeof projectId === "string");
+  return projectIds.length > 0 && projectIds.every(isGxserverProjectId);
+}
+
+function isGxserverMigratedPreviousSessionsSnapshot(
+  value: unknown,
+  options: { allowEmpty?: boolean } = {},
+): boolean {
+  if (!Array.isArray(value)) {
+    return false;
+  }
+  /*
+  CDXC:PreviousSessions 2026-05-30-22:14:
+  After gxserver has rewritten the projects file with its migration marker, a shared previous-sessions `[]` is the canonical absence of restorable history. Treat that empty file as authoritative over stale WKWebView localStorage so old previous-session rows cannot reappear during completed-import repair.
+  */
+  if (value.length === 0) {
+    return options.allowEmpty === true;
+  }
+  return value.every((item) => {
+    if (!isRecord(item)) {
+      return false;
+    }
+    const projectId = item.projectId;
+    const sessionId = item.sessionId;
+    return (
+      (typeof projectId !== "string" || isGxserverProjectId(projectId)) &&
+      (typeof sessionId !== "string" || isGxserverSessionId(sessionId))
+    );
+  });
+}
+
+function projectSnapshotScore(payload: LegacyStoragePayload): number {
+  const object = normalizeObject(payload.parsed);
+  const projects = Array.isArray(object.projects) ? object.projects : [];
+  if (projects.length === 0) {
+    return 0;
+  }
+  const sessionCount = projects.reduce((count, project) => count + projectSessionCount(project), 0);
+  return projects.length * 100_000 + sessionCount * 1_000 + payload.payloadJson.length;
+}
+
+function projectSessionCount(project: unknown): number {
+  const workspace = normalizeObject(normalizeObject(project).workspace);
+  const groups = Array.isArray(workspace.groups) ? workspace.groups : [];
+  return groups.reduce((count, group) => {
+    const snapshot = normalizeObject(normalizeObject(group).snapshot);
+    const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
+    return count + sessions.length;
+  }, 0);
+}
+
+function previousSessionsSnapshotScore(payload: LegacyStoragePayload): number {
+  return Array.isArray(payload.parsed) ? payload.parsed.length * 1_000 + payload.payloadJson.length : 0;
 }
 
 async function readLegacyLocalStorageValues(
@@ -310,26 +470,27 @@ async function readLegacyLocalStorageValues(
   }
   const root = options.legacyLocalStorageRoot ?? path.join(options.paths.homeDir, "Library", "WebKit", "com.madda.ghostex.host");
   const databaseFiles = await findLocalStorageDatabases(root);
-  const values: Record<string, string | undefined> = {};
+  const candidates: Record<string, LegacyLocalStorageCandidate | undefined> = {};
   for (const file of databaseFiles) {
+    const modifiedAtMs = await readFileModifiedAtMs(file);
     const db = new Database(file, { fileMustExist: true, readonly: true });
     try {
       const select = db.prepare<[string], { value: Buffer | string }>("SELECT value FROM ItemTable WHERE key = ? LIMIT 1");
       for (const key of Object.values(LEGACY_STORAGE_KEYS)) {
-        if (values[key] !== undefined) {
-          continue;
-        }
         const row = select.get(key);
         const decoded = row ? decodeLegacyLocalStorageValue(row.value) : undefined;
         if (decoded !== undefined) {
-          values[key] = decoded;
+          const candidate = { databasePath: file, modifiedAtMs, value: decoded };
+          candidates[key] = selectLegacyLocalStorageCandidate(key, candidates[key], candidate);
         }
       }
     } finally {
       db.close();
     }
   }
-  return values;
+  return Object.fromEntries(
+    Object.entries(candidates).map(([key, candidate]) => [key, candidate?.value]),
+  );
 }
 
 async function findLocalStorageDatabases(root: string): Promise<string[]> {
@@ -344,7 +505,7 @@ async function findLocalStorageDatabases(root: string): Promise<string[]> {
       }
       throw error;
     }
-    for (const entry of entries) {
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const filePath = path.join(directory, entry.name);
       if (entry.isDirectory()) {
         await visit(filePath);
@@ -354,7 +515,55 @@ async function findLocalStorageDatabases(root: string): Promise<string[]> {
     }
   }
   await visit(root);
-  return found;
+  return found.sort((left, right) => left.localeCompare(right));
+}
+
+/*
+CDXC:GxserverMigration 2026-05-30-19:55:
+WKWebView can leave multiple `localstorage.sqlite3` files with the same Ghostex keys. Migration must rank candidates by the same canonical/richer snapshot rules used for shared-vs-WK storage, then by database freshness and path, so stale first-directory enumeration cannot import old projects, settings, agents, or commands nondeterministically.
+*/
+function selectLegacyLocalStorageCandidate(
+  key: string,
+  current: LegacyLocalStorageCandidate | undefined,
+  candidate: LegacyLocalStorageCandidate,
+): LegacyLocalStorageCandidate {
+  if (!current) {
+    return candidate;
+  }
+  const currentScore = legacyLocalStorageValueScore(key, current.value);
+  const candidateScore = legacyLocalStorageValueScore(key, candidate.value);
+  if (candidateScore !== currentScore) {
+    return candidateScore > currentScore ? candidate : current;
+  }
+  if (candidate.modifiedAtMs !== current.modifiedAtMs) {
+    return candidate.modifiedAtMs > current.modifiedAtMs ? candidate : current;
+  }
+  if (candidate.value.length !== current.value.length) {
+    return candidate.value.length > current.value.length ? candidate : current;
+  }
+  return candidate.databasePath.localeCompare(current.databasePath) < 0 ? candidate : current;
+}
+
+function legacyLocalStorageValueScore(key: string, value: string): number {
+  const payload = parseLegacyStoragePayload(value);
+  if (payload && key === LEGACY_STORAGE_KEYS.projects) {
+    return isGxserverMigratedProjectSnapshot(payload.parsed) ? 1_000_000_000 : projectSnapshotScore(payload);
+  }
+  if (payload && key === LEGACY_STORAGE_KEYS.previousSessions) {
+    return isGxserverMigratedPreviousSessionsSnapshot(payload.parsed) ? 1_000_000_000 : previousSessionsSnapshotScore(payload);
+  }
+  const parsed = parseJson(value);
+  if (Array.isArray(parsed)) {
+    return parsed.length * 1_000 + value.length;
+  }
+  if (isRecord(parsed)) {
+    return Object.keys(parsed).length * 1_000 + value.length;
+  }
+  return value.trim() ? 1 : 0;
+}
+
+async function readFileModifiedAtMs(filePath: string): Promise<number> {
+  return (await stat(filePath)).mtimeMs;
 }
 
 function decodeLegacyLocalStorageValue(value: Buffer | string): string | undefined {
@@ -385,15 +594,28 @@ function importLegacySnapshotIntoDatabase(
     let sessionsImported = 0;
     const existingProjectIds = readExistingIds(db, "project", "");
     const previousByProject = groupPreviousSessionsByProject(snapshot.previousSessions);
-    const projectIdByLegacyProjectId: Record<string, GxserverProjectId> = {};
-    const sessionIdByLegacyProjectId: Record<string, Record<string, GxserverSessionId>> = {};
+    const existingImportResult = readLegacySnapshotImportResultFromDatabase(db);
+    /*
+    CDXC:GxserverMigration 2026-05-30-19:28:
+    First-run migration retries can happen after SQLite rows were inserted but before the completion marker was recorded. Seed the import map from durable legacyProjectId/legacySessionId metadata before allocating IDs so the retry reuses the original P/G identities and only fills genuinely missing rows.
+    */
+    const projectIdByLegacyProjectId: Record<string, GxserverProjectId> = {
+      ...existingImportResult.projectIdByLegacyProjectId,
+    };
+    const sessionIdByLegacyProjectId: Record<string, Record<string, GxserverSessionId>> = Object.fromEntries(
+      Object.entries(existingImportResult.sessionIdByLegacyProjectId).map(([legacyProjectId, sessionIds]) => [
+        legacyProjectId,
+        { ...sessionIds },
+      ]),
+    );
     const allocatedProjectIds = snapshot.projects.map((legacyProject) => {
-      const projectId = createUniqueProjectId(existingProjectIds, options.createProjectId);
-      existingProjectIds.add(projectId);
       const legacyProjectId = text(legacyProject.projectId);
+      const existingProjectId = legacyProjectId ? projectIdByLegacyProjectId[legacyProjectId] : undefined;
+      const projectId = existingProjectId ?? createUniqueProjectId(existingProjectIds, options.createProjectId);
+      existingProjectIds.add(projectId);
       if (legacyProjectId) {
         projectIdByLegacyProjectId[legacyProjectId] = projectId;
-        sessionIdByLegacyProjectId[legacyProjectId] = {};
+        sessionIdByLegacyProjectId[legacyProjectId] ??= {};
       }
       return projectId;
     });
@@ -401,66 +623,67 @@ function importLegacySnapshotIntoDatabase(
     for (const [projectIndex, legacyProject] of snapshot.projects.entries()) {
       const projectId = allocatedProjectIds[projectIndex]!;
       const legacyProjectId = text(legacyProject.projectId);
+      const existingProjectId = legacyProjectId
+        ? existingImportResult.projectIdByLegacyProjectId[legacyProjectId]
+        : undefined;
       const projectPath = text(legacyProject.path);
       const projectName = text(legacyProject.name) ?? nameFromPath(projectPath) ?? projectId;
       const commands = findLegacyProjectCommands(snapshot.projectCommandsByLegacyId, legacyProjectId, legacyProject);
-      const projectPreviousHistory = [
-        ...(previousByProject.get(legacyProjectId ?? "") ?? []),
-        ...(previousByProject.get(projectPath ?? "") ?? []),
-      ];
       const canonicalWorktree = remapLegacyProjectIdsInObject(
         normalizeObject(legacyProject.worktree),
         projectIdByLegacyProjectId,
       );
-      insertProjectRow(db, {
-        attentionRulesJson: stringifyJson(pickAttentionRules(snapshot.settings)),
-        completionRulesJson: stringifyJson(pickCompletionRules(snapshot.settings)),
-        createdAt: options.importedAt,
-        customAgentOrderJson: stringifyJson(snapshot.agentOrder),
-        customAgentsJson: stringifyJson(snapshot.agents),
-        customCommandOrderJson: stringifyJson(commands.order),
-        customCommandsJson: stringifyJson(commands.commands),
-        defaultCommand: null,
-        deletedDefaultCommandIdsJson: stringifyJson(commands.deletedDefaultCommandIds),
-        gitConfigJson: stringifyJson({
-          ...snapshot.gitConfig,
-          beadsDisplayKey: text(legacyProject.beadsDisplayKey),
-          legacyProjectId,
-          worktreeCommand: text(legacyProject.worktreeCommand),
-        }),
-        identityIconJson: stringifyJson(pickIdentityIcon(legacyProject)),
-        isFavorite: 0,
-        isPinned: 0,
-        launchSettingsJson: stringifyJson({
-          activeProjectImported: false,
-          isChat: legacyProject.isChat === true,
-          isQuick: legacyProject.isQuick === true,
-          projectEditor: normalizeObject(legacyProject.projectEditor),
-          projectEditorCompanionPaneHidden: legacyProject.projectEditorCompanionPaneHidden === true,
-          quickKind: text(legacyProject.quickKind),
-          quickOriginalMissing: legacyProject.quickOriginalMissing === true,
-          quickOriginalPath: text(legacyProject.quickOriginalPath),
-          quickSymlinkPath: text(legacyProject.quickSymlinkPath),
-          settings: pickLaunchSettings(snapshot.settings),
-        }),
-        name: projectName,
-        notificationRulesJson: stringifyJson(pickNotificationRules(snapshot.settings)),
-        path: projectPath ?? null,
-        previousSessionHistoryJson: stringifyJson(projectPreviousHistory),
-        projectBoardConfigJson: stringifyJson({
-          beadConversationLinks: normalizeObjectArray(legacyProject.beadConversationLinks),
-          beadsDisplayKey: text(legacyProject.beadsDisplayKey),
-        }),
-        projectId,
-        runtimeSettingsJson: stringifyJson({
-          activeSessionsSortMode: snapshot.settings.activeSessionsSortMode,
-          legacyProjectId,
-          settings: pickRuntimeSettings(snapshot.settings),
-        }),
-        updatedAt: options.importedAt,
-        worktreeJson: stringifyJson(canonicalWorktree),
-      });
-      recordIdAllocation(db, "project", "", projectId, options.importedAt);
+      if (!existingProjectId) {
+        insertProjectRow(db, {
+          attentionRulesJson: stringifyJson(pickAttentionRules(snapshot.settings)),
+          completionRulesJson: stringifyJson(pickCompletionRules(snapshot.settings)),
+          createdAt: options.importedAt,
+          customAgentOrderJson: stringifyJson(snapshot.agentOrder),
+          customAgentsJson: stringifyJson(snapshot.agents),
+          customCommandOrderJson: stringifyJson(commands.order),
+          customCommandsJson: stringifyJson(commands.commands),
+          defaultCommand: null,
+          deletedDefaultCommandIdsJson: stringifyJson(commands.deletedDefaultCommandIds),
+          gitConfigJson: stringifyJson({
+            ...snapshot.gitConfig,
+            beadsDisplayKey: text(legacyProject.beadsDisplayKey),
+            legacyProjectId,
+            worktreeCommand: text(legacyProject.worktreeCommand),
+          }),
+          identityIconJson: stringifyJson(pickIdentityIcon(legacyProject)),
+          isFavorite: 0,
+          isPinned: 0,
+          launchSettingsJson: stringifyJson({
+            activeProjectImported: false,
+            isChat: legacyProject.isChat === true,
+            isQuick: legacyProject.isQuick === true,
+            projectEditor: normalizeObject(legacyProject.projectEditor),
+            projectEditorCompanionPaneHidden: legacyProject.projectEditorCompanionPaneHidden === true,
+            quickKind: text(legacyProject.quickKind),
+            quickOriginalMissing: legacyProject.quickOriginalMissing === true,
+            quickOriginalPath: text(legacyProject.quickOriginalPath),
+            quickSymlinkPath: text(legacyProject.quickSymlinkPath),
+            settings: pickLaunchSettings(snapshot.settings),
+          }),
+          name: projectName,
+          notificationRulesJson: stringifyJson(pickNotificationRules(snapshot.settings)),
+          path: projectPath ?? null,
+          previousSessionHistoryJson: stringifyJson([]),
+          projectBoardConfigJson: stringifyJson({
+            beadConversationLinks: normalizeObjectArray(legacyProject.beadConversationLinks),
+            beadsDisplayKey: text(legacyProject.beadsDisplayKey),
+          }),
+          projectId,
+          runtimeSettingsJson: stringifyJson({
+            activeSessionsSortMode: snapshot.settings.activeSessionsSortMode,
+            legacyProjectId,
+            settings: pickRuntimeSettings(snapshot.settings),
+          }),
+          updatedAt: options.importedAt,
+          worktreeJson: stringifyJson(canonicalWorktree),
+        });
+        recordIdAllocation(db, "project", "", projectId, options.importedAt);
+      }
       projectsImported += 1;
       sessionsImported += importLegacyProjectSessions(db, legacyProject, {
         createSessionId: options.createSessionId,
@@ -473,7 +696,33 @@ function importLegacySnapshotIntoDatabase(
       });
     }
 
-    return { projectIdByLegacyProjectId, projectsImported, sessionIdByLegacyProjectId, sessionsImported };
+    /*
+    CDXC:ProjectBoard 2026-05-30-21:10:
+    Legacy project-board conversation links are routing data, not decorative client state. Store them in gxserver with the same canonical P/G identities used by imported projects and sessions so "Go to Session" never points at obsolete `project-*`/`g-*` sidebar IDs after the hard cutover.
+    */
+    const completedImportResult = {
+      projectIdByLegacyProjectId,
+      projectsImported,
+      sessionIdByLegacyProjectId,
+      sessionsImported,
+    };
+    /*
+    CDXC:PreviousSessions 2026-05-30-20:03:
+    gxserver project history is shared daemon state, so every visible project/session reference imported from legacy previous sessions must use canonical P/G IDs before clients read `listProjects`. Keep legacy IDs only inside `hiddenRestoreMetadata`, where they are audit/restore context rather than routable daemon identity.
+    */
+    updatePreviousSessionHistoryRowsFromSnapshot(db, snapshot, previousByProject, allocatedProjectIds, completedImportResult, {
+      createSessionId: options.createSessionId,
+      importedAt: options.importedAt,
+    });
+    for (const [projectIndex, legacyProject] of snapshot.projects.entries()) {
+      updateProjectBoardConfigRow(db, {
+        projectBoardConfigJson: stringifyJson(createLegacyProjectBoardConfig(legacyProject, completedImportResult)),
+        projectId: allocatedProjectIds[projectIndex]!,
+        updatedAt: options.importedAt,
+      });
+    }
+
+    return completedImportResult;
   })();
 }
 
@@ -481,8 +730,8 @@ function readLegacySnapshotImportResultFromDatabase(db: Database.Database): Lega
   const projectIdByLegacyProjectId: Record<string, GxserverProjectId> = {};
   const sessionIdByLegacyProjectId: Record<string, Record<string, GxserverSessionId>> = {};
   const projectRows = db
-    .prepare<[], { gitConfigJson: string; projectId: string; runtimeSettingsJson: string }>(
-      "SELECT projectId, runtimeSettingsJson, gitConfigJson FROM projects",
+    .prepare<[], { gitConfigJson: string; previousSessionHistoryJson: string; projectId: string; runtimeSettingsJson: string }>(
+      "SELECT projectId, runtimeSettingsJson, gitConfigJson, previousSessionHistoryJson FROM projects",
     )
     .all();
   for (const row of projectRows) {
@@ -510,22 +759,46 @@ function readLegacySnapshotImportResultFromDatabase(db: Database.Database): Lega
       "SELECT projectId, sessionId, providerStateJson, launchSettingsJson FROM sessions",
     )
     .all();
-  const legacyProjectIdByProjectId = new Map(
-    Object.entries(projectIdByLegacyProjectId).map(([legacyProjectId, projectId]) => [projectId, legacyProjectId]),
-  );
+  const legacyProjectIdsByProjectId = new Map<GxserverProjectId, string[]>();
+  for (const [legacyProjectId, projectId] of Object.entries(projectIdByLegacyProjectId)) {
+    const ids = legacyProjectIdsByProjectId.get(projectId) ?? [];
+    ids.push(legacyProjectId);
+    legacyProjectIdsByProjectId.set(projectId, ids);
+  }
   for (const row of sessionRows) {
-    const legacyProjectId = legacyProjectIdByProjectId.get(row.projectId as GxserverProjectId);
-    if (!legacyProjectId) {
+    const legacyProjectIds = legacyProjectIdsByProjectId.get(row.projectId as GxserverProjectId);
+    if (!legacyProjectIds) {
       continue;
     }
     const legacySessionId =
       text(normalizeObject(parseJson(row.providerStateJson)).legacySessionId) ??
       text(normalizeObject(parseJson(row.launchSettingsJson)).legacySessionId);
-    if (!legacySessionId) {
+    for (const legacyProjectId of legacyProjectIds) {
+      sessionIdByLegacyProjectId[legacyProjectId] ??= {};
+      if (legacySessionId) {
+        sessionIdByLegacyProjectId[legacyProjectId]![legacySessionId] = row.sessionId as GxserverSessionId;
+      }
+      if (isGxserverSessionId(row.sessionId)) {
+        sessionIdByLegacyProjectId[legacyProjectId]![row.sessionId] = row.sessionId;
+      }
+    }
+  }
+  for (const row of projectRows) {
+    const legacyProjectIds = legacyProjectIdsByProjectId.get(row.projectId as GxserverProjectId);
+    if (!legacyProjectIds) {
       continue;
     }
-    sessionIdByLegacyProjectId[legacyProjectId] ??= {};
-    sessionIdByLegacyProjectId[legacyProjectId]![legacySessionId] = row.sessionId as GxserverSessionId;
+    for (const previousSession of normalizeObjectArray(parseJson(row.previousSessionHistoryJson))) {
+      const legacySessionId = text(normalizeObject(previousSession.hiddenRestoreMetadata).legacySessionId);
+      const sessionId = text(previousSession.sessionId);
+      if (!legacySessionId || !sessionId || !isGxserverSessionId(sessionId)) {
+        continue;
+      }
+      for (const legacyProjectId of legacyProjectIds) {
+        sessionIdByLegacyProjectId[legacyProjectId] ??= {};
+        sessionIdByLegacyProjectId[legacyProjectId]![legacySessionId] = sessionId;
+      }
+    }
   }
 
   return {
@@ -583,6 +856,265 @@ function repairUnmappedLegacySessionsFromSnapshot(
   })();
 }
 
+function repairProjectBoardConfigIdReferencesFromDatabase(
+  db: Database.Database,
+  importResult: LegacySnapshotImportResult,
+  repairedAt: string,
+): void {
+  const rows = db
+    .prepare<[], { projectBoardConfigJson: string; projectId: string }>(
+      "SELECT projectId, projectBoardConfigJson FROM projects",
+    )
+    .all();
+  for (const row of rows) {
+    const projectBoardConfig = normalizeObject(parseJson(row.projectBoardConfigJson));
+    const remapped = remapProjectBoardConfigIds(projectBoardConfig, row.projectId as GxserverProjectId, importResult);
+    if (JSON.stringify(remapped) === JSON.stringify(projectBoardConfig)) {
+      continue;
+    }
+    updateProjectBoardConfigRow(db, {
+      projectBoardConfigJson: stringifyJson(remapped),
+      projectId: row.projectId as GxserverProjectId,
+      updatedAt: repairedAt,
+    });
+  }
+}
+
+function repairPreviousSessionHistoryIdReferencesFromDatabase(
+  db: Database.Database,
+  importResult: LegacySnapshotImportResult,
+  options: {
+    createSessionId?: GxserverCandidateFactory<GxserverSessionId>;
+    repairedAt: string;
+  },
+): void {
+  const rows = db
+    .prepare<[], { previousSessionHistoryJson: string; projectId: string }>(
+      "SELECT projectId, previousSessionHistoryJson FROM projects",
+    )
+    .all();
+  for (const row of rows) {
+    const projectId = row.projectId as GxserverProjectId;
+    const previousSessionHistory = normalizeObjectArray(parseJson(row.previousSessionHistoryJson));
+    const canonicalHistory = canonicalizePreviousSessionHistory(previousSessionHistory, {
+      createSessionId: options.createSessionId,
+      db,
+      defaultLegacyProjectId: legacyProjectIdsForProject(projectId, importResult)[0] ?? projectId,
+      importedAt: options.repairedAt,
+      importResult,
+      projectId,
+    });
+    if (JSON.stringify(canonicalHistory) === JSON.stringify(previousSessionHistory)) {
+      continue;
+    }
+    updatePreviousSessionHistoryRow(db, {
+      previousSessionHistoryJson: stringifyJson(canonicalHistory),
+      projectId,
+      updatedAt: options.repairedAt,
+    });
+  }
+}
+
+function updatePreviousSessionHistoryRowsFromSnapshot(
+  db: Database.Database,
+  snapshot: LegacyStateSnapshot,
+  previousByProject: Map<string, JsonArray>,
+  allocatedProjectIds: readonly GxserverProjectId[],
+  importResult: LegacySnapshotImportResult,
+  options: {
+    createSessionId?: GxserverCandidateFactory<GxserverSessionId>;
+    importedAt: string;
+  },
+): void {
+  for (const [projectIndex, legacyProject] of snapshot.projects.entries()) {
+    const projectId = allocatedProjectIds[projectIndex]!;
+    const legacyProjectId = text(legacyProject.projectId);
+    const projectPath = text(legacyProject.path);
+    const projectPreviousHistory = [
+      ...(previousByProject.get(legacyProjectId ?? "") ?? []),
+      ...(previousByProject.get(projectPath ?? "") ?? []),
+    ];
+    const canonicalHistory = canonicalizePreviousSessionHistory(projectPreviousHistory, {
+      createSessionId: options.createSessionId,
+      db,
+      defaultLegacyProjectId: legacyProjectId ?? projectId,
+      importedAt: options.importedAt,
+      importResult,
+      projectId,
+    });
+    updatePreviousSessionHistoryRow(db, {
+      previousSessionHistoryJson: stringifyJson(canonicalHistory),
+      projectId,
+      updatedAt: options.importedAt,
+    });
+  }
+}
+
+function canonicalizePreviousSessionHistory(
+  previousSessionHistory: JsonArray,
+  context: {
+    createSessionId?: GxserverCandidateFactory<GxserverSessionId>;
+    db: Database.Database;
+    defaultLegacyProjectId: string;
+    importedAt: string;
+    importResult: LegacySnapshotImportResult;
+    projectId: GxserverProjectId;
+  },
+): JsonArray {
+  const existingSessionIdsByProjectId = new Map<GxserverProjectId, Set<string>>();
+  const allocationContext = { ...context, existingSessionIdsByProjectId };
+  for (const historyItem of previousSessionHistory) {
+    reservePreviousSessionHistoryIds(historyItem, allocationContext);
+  }
+  return previousSessionHistory.map((historyItem) =>
+    remapLegacySidebarIds(historyItem, {
+      preserveHiddenRestoreMetadata: true,
+      projectIdByLegacyProjectId: context.importResult.projectIdByLegacyProjectId,
+      sessionIdByLegacyProjectId: context.importResult.sessionIdByLegacyProjectId,
+      sessionIdByLegacySessionId: mergeLegacySessionIdsForProject(context.projectId, context.importResult),
+    }) as JsonObject,
+  );
+}
+
+function reservePreviousSessionHistoryIds(
+  value: unknown,
+  context: {
+    createSessionId?: GxserverCandidateFactory<GxserverSessionId>;
+    db: Database.Database;
+    defaultLegacyProjectId: string;
+    existingSessionIdsByProjectId: Map<GxserverProjectId, Set<string>>;
+    importedAt: string;
+    importResult: LegacySnapshotImportResult;
+    projectId: GxserverProjectId;
+  },
+  key?: string,
+): void {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      reservePreviousSessionHistoryIds(item, context, key);
+    }
+    return;
+  }
+  if (!isRecord(value)) {
+    if (typeof value === "string" && key && SESSION_ID_FIELDS.has(key)) {
+      reservePreviousSessionHistoryIdString(value, context);
+    }
+    return;
+  }
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    if (entryKey === "hiddenRestoreMetadata") {
+      continue;
+    }
+    reservePreviousSessionHistoryIds(entryValue, context, entryKey);
+  }
+}
+
+function reservePreviousSessionHistoryIdString(
+  value: string,
+  context: {
+    createSessionId?: GxserverCandidateFactory<GxserverSessionId>;
+    db: Database.Database;
+    defaultLegacyProjectId: string;
+    existingSessionIdsByProjectId: Map<GxserverProjectId, Set<string>>;
+    importedAt: string;
+    importResult: LegacySnapshotImportResult;
+    projectId: GxserverProjectId;
+  },
+): void {
+  const combined = parseCombinedProjectSessionId(value);
+  if (combined) {
+    const projectId =
+      remapLegacyProjectId(combined.projectId, context.importResult.projectIdByLegacyProjectId) ?? context.projectId;
+    reserveLegacySessionIdForProject(combined.projectId, combined.sessionId, projectId, context);
+    return;
+  }
+  reserveLegacySessionIdForProject(context.defaultLegacyProjectId, value, context.projectId, context);
+}
+
+function reserveLegacySessionIdForProject(
+  legacyProjectId: string,
+  legacySessionId: string,
+  projectId: GxserverProjectId,
+  context: {
+    createSessionId?: GxserverCandidateFactory<GxserverSessionId>;
+    db: Database.Database;
+    existingSessionIdsByProjectId: Map<GxserverProjectId, Set<string>>;
+    importedAt: string;
+    importResult: LegacySnapshotImportResult;
+  },
+): void {
+  if (!legacySessionId || isGxserverSessionId(legacySessionId)) {
+    return;
+  }
+  const sessionIdByLegacySessionId = (context.importResult.sessionIdByLegacyProjectId[legacyProjectId] ??= {});
+  if (sessionIdByLegacySessionId[legacySessionId]) {
+    return;
+  }
+  const existingForProject = mergeLegacySessionIdsForProject(projectId, context.importResult)[legacySessionId];
+  if (existingForProject) {
+    sessionIdByLegacySessionId[legacySessionId] = existingForProject;
+    return;
+  }
+  let existingSessionIds = context.existingSessionIdsByProjectId.get(projectId);
+  if (!existingSessionIds) {
+    existingSessionIds = readExistingIds(context.db, "session", projectId);
+    context.existingSessionIdsByProjectId.set(projectId, existingSessionIds);
+  }
+  const sessionId = createUniqueSessionId(existingSessionIds, context.createSessionId);
+  existingSessionIds.add(sessionId);
+  sessionIdByLegacySessionId[legacySessionId] = sessionId;
+  recordIdAllocation(context.db, "session", projectId, sessionId, context.importedAt);
+}
+
+function createLegacyProjectBoardConfig(
+  legacyProject: JsonObject,
+  importResult: LegacySnapshotImportResult,
+): JsonObject {
+  const legacyProjectId = text(legacyProject.projectId);
+  return compactObject({
+    beadConversationLinks: remapLegacySidebarIds(normalizeObjectArray(legacyProject.beadConversationLinks), {
+      projectIdByLegacyProjectId: importResult.projectIdByLegacyProjectId,
+      sessionIdByLegacyProjectId: importResult.sessionIdByLegacyProjectId,
+      sessionIdByLegacySessionId: legacyProjectId ? importResult.sessionIdByLegacyProjectId[legacyProjectId] ?? {} : {},
+    }),
+    beadsDisplayKey: text(legacyProject.beadsDisplayKey),
+  });
+}
+
+function remapProjectBoardConfigIds(
+  projectBoardConfig: JsonObject,
+  projectId: GxserverProjectId,
+  importResult: LegacySnapshotImportResult,
+): JsonObject {
+  return remapLegacySidebarIds(projectBoardConfig, {
+    projectIdByLegacyProjectId: importResult.projectIdByLegacyProjectId,
+    sessionIdByLegacyProjectId: importResult.sessionIdByLegacyProjectId,
+    sessionIdByLegacySessionId: mergeLegacySessionIdsForProject(projectId, importResult),
+  }) as JsonObject;
+}
+
+function mergeLegacySessionIdsForProject(
+  projectId: GxserverProjectId,
+  importResult: LegacySnapshotImportResult,
+): Record<string, GxserverSessionId> {
+  const merged: Record<string, GxserverSessionId> = {};
+  for (const [legacyProjectId, canonicalProjectId] of Object.entries(importResult.projectIdByLegacyProjectId)) {
+    if (canonicalProjectId === projectId) {
+      Object.assign(merged, importResult.sessionIdByLegacyProjectId[legacyProjectId]);
+    }
+  }
+  return merged;
+}
+
+function legacyProjectIdsForProject(
+  projectId: GxserverProjectId,
+  importResult: LegacySnapshotImportResult,
+): string[] {
+  return Object.entries(importResult.projectIdByLegacyProjectId)
+    .filter(([, canonicalProjectId]) => canonicalProjectId === projectId)
+    .map(([legacyProjectId]) => legacyProjectId);
+}
+
 function importLegacyProjectSessions(
   db: Database.Database,
   legacyProject: JsonObject,
@@ -607,6 +1139,18 @@ function importLegacyProjectSessions(
     }
     if (legacySessionId) {
       seenLegacySessionIds.add(legacySessionId);
+    }
+    const existingSessionId = legacySessionId ? options.sessionIdByLegacySessionId?.[legacySessionId] : undefined;
+    if (existingSessionId) {
+      imported += 1;
+      continue;
+    }
+    if (legacySessionId && isGxserverSessionId(legacySessionId) && existingSessionIds.has(legacySessionId)) {
+      if (options.sessionIdByLegacySessionId) {
+        options.sessionIdByLegacySessionId[legacySessionId] = legacySessionId;
+      }
+      imported += 1;
+      continue;
     }
     const sessionId = createUniqueSessionId(existingSessionIds, options.createSessionId);
     if (legacySessionId && options.sessionIdByLegacySessionId) {
@@ -718,13 +1262,11 @@ async function rewriteSharedSidebarStateWithGxserverIds(
   await backupSharedStateFile(projectsFile);
   await writeFile(projectsFile, stringifyJson(payload), "utf8");
 
-  if (snapshot.previousSessions.length > 0) {
-    const canonicalPreviousSessions = snapshot.previousSessions.map((session) =>
-      remapLegacySidebarIdsForPreviousSession(session, importResult),
-    );
-    await backupSharedStateFile(previousSessionsFile);
-    await writeFile(previousSessionsFile, stringifyJson(canonicalPreviousSessions), "utf8");
-  }
+  const canonicalPreviousSessions = snapshot.previousSessions.map((session) =>
+    remapLegacySidebarIdsForPreviousSession(session, importResult),
+  );
+  await backupSharedStateFile(previousSessionsFile);
+  await writeFile(previousSessionsFile, stringifyJson(canonicalPreviousSessions), "utf8");
 }
 
 async function backupSharedStateFile(filePath: string): Promise<void> {
@@ -747,6 +1289,7 @@ function remapLegacySidebarIdsForProject(
     legacyProjectId !== undefined ? importResult.sessionIdByLegacyProjectId[legacyProjectId] ?? {} : {};
   return remapLegacySidebarIds(project, {
     projectIdByLegacyProjectId: importResult.projectIdByLegacyProjectId,
+    sessionIdByLegacyProjectId: importResult.sessionIdByLegacyProjectId,
     sessionIdByLegacySessionId: sessionIds,
   }) as JsonObject;
 }
@@ -760,18 +1303,19 @@ function remapLegacySidebarIdsForPreviousSession(
     legacyProjectId !== undefined ? importResult.sessionIdByLegacyProjectId[legacyProjectId] ?? {} : {};
   return remapLegacySidebarIds(session, {
     projectIdByLegacyProjectId: importResult.projectIdByLegacyProjectId,
+    sessionIdByLegacyProjectId: importResult.sessionIdByLegacyProjectId,
     sessionIdByLegacySessionId: sessionIds,
   }) as JsonObject;
 }
 
 function remapLegacySidebarIds(
   value: unknown,
-  context: {
-    projectIdByLegacyProjectId: Record<string, GxserverProjectId>;
-    sessionIdByLegacySessionId: Record<string, GxserverSessionId>;
-  },
+  context: LegacyIdRemapContext,
   key?: string,
 ): unknown {
+  if (context.preserveHiddenRestoreMetadata && key === "hiddenRestoreMetadata") {
+    return value;
+  }
   if (Array.isArray(value)) {
     return value.map((item) => remapLegacySidebarIds(item, context, key));
   }
@@ -792,16 +1336,13 @@ function remapLegacySidebarIds(
 function remapLegacySidebarIdString(
   key: string | undefined,
   value: string,
-  context: {
-    projectIdByLegacyProjectId: Record<string, GxserverProjectId>;
-    sessionIdByLegacySessionId: Record<string, GxserverSessionId>;
-  },
+  context: LegacyIdRemapContext,
 ): string {
   if (key && PROJECT_ID_FIELDS.has(key)) {
     return remapLegacyProjectId(value, context.projectIdByLegacyProjectId) ?? value;
   }
   if (key && SESSION_ID_FIELDS.has(key)) {
-    return context.sessionIdByLegacySessionId[value] ?? value;
+    return remapLegacySessionId(value, context);
   }
   return value;
 }
@@ -816,11 +1357,58 @@ function remapLegacyProjectIdsInObject(
   }) as JsonObject;
 }
 
+function remapLegacySessionId(value: string, context: LegacyIdRemapContext): string {
+  const combined = parseCombinedProjectSessionId(value);
+  if (combined) {
+    const projectId = remapLegacyProjectId(combined.projectId, context.projectIdByLegacyProjectId) ?? combined.projectId;
+    const sessionIds =
+      context.sessionIdByLegacyProjectId?.[combined.projectId] ??
+      context.sessionIdByLegacyProjectId?.[projectId] ??
+      {};
+    const sessionId = sessionIds[combined.sessionId] ?? combined.sessionId;
+    return createCombinedProjectSessionId(projectId, sessionId);
+  }
+  return context.sessionIdByLegacySessionId[value] ?? value;
+}
+
 function remapLegacyProjectId(
   value: string | undefined,
   projectIdByLegacyProjectId: Record<string, GxserverProjectId>,
 ): GxserverProjectId | undefined {
   return value ? projectIdByLegacyProjectId[value] : undefined;
+}
+
+function createCombinedProjectSessionId(projectId: string, sessionId: string): string {
+  return [
+    COMBINED_PROJECT_SESSION_ID_PREFIX,
+    encodeURIComponent(projectId),
+    COMBINED_ID_SEPARATOR,
+    encodeURIComponent(sessionId),
+  ].join("");
+}
+
+function parseCombinedProjectSessionId(
+  sessionId: string,
+): { projectId: string; sessionId: string } | undefined {
+  if (!sessionId.startsWith(COMBINED_PROJECT_SESSION_ID_PREFIX)) {
+    return undefined;
+  }
+  const payload = sessionId.slice(COMBINED_PROJECT_SESSION_ID_PREFIX.length);
+  const separatorIndex = payload.indexOf(COMBINED_ID_SEPARATOR);
+  if (separatorIndex < 0) {
+    return undefined;
+  }
+  const projectId = decodeCombinedIdPart(payload.slice(0, separatorIndex));
+  const originalSessionId = decodeCombinedIdPart(payload.slice(separatorIndex + 1));
+  return projectId && originalSessionId ? { projectId, sessionId: originalSessionId } : undefined;
+}
+
+function decodeCombinedIdPart(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function collectLegacyTerminalSessions(legacyProject: JsonObject): JsonArray {
@@ -858,6 +1446,24 @@ function insertProjectRow(db: Database.Database, row: ProjectInsertRow): void {
       @attentionRulesJson, @notificationRulesJson, @gitConfigJson, @projectBoardConfigJson,
       @previousSessionHistoryJson, @createdAt, @updatedAt
     )`,
+  ).run(row);
+}
+
+function updateProjectBoardConfigRow(
+  db: Database.Database,
+  row: { projectBoardConfigJson: string; projectId: GxserverProjectId; updatedAt: string },
+): void {
+  db.prepare(
+    "UPDATE projects SET projectBoardConfigJson = @projectBoardConfigJson, updatedAt = @updatedAt WHERE projectId = @projectId",
+  ).run(row);
+}
+
+function updatePreviousSessionHistoryRow(
+  db: Database.Database,
+  row: { previousSessionHistoryJson: string; projectId: GxserverProjectId; updatedAt: string },
+): void {
+  db.prepare(
+    "UPDATE projects SET previousSessionHistoryJson = @previousSessionHistoryJson, updatedAt = @updatedAt WHERE projectId = @projectId",
   ).run(row);
 }
 

@@ -50,14 +50,18 @@ import {
 } from "./typed-operations.js";
 import {
   buildZmxAttachCommand,
+  buildZmxHistoryCommand,
+  buildZmxSendCommand,
   decideStartupTextDisposition,
   defaultCwdExists,
+  failedKillProviderStatePatch,
   killZmxSession,
   missingProviderStatePatch,
   normalizeLifecycleReason,
   probeZmxSession,
   providerStatePatch,
   providerZmxSessionName,
+  runZshScript,
   type GxserverCwdExists,
   type GxserverZmxCommandRunner,
 } from "./zmx-lifecycle.js";
@@ -113,6 +117,12 @@ export interface GxserverApiRuntime {
     runZsh?: GxserverZmxCommandRunner;
   };
 }
+
+/*
+CDXC:GxserverApi 2026-05-30-20:04:
+Authenticated HTTP RPC clients must not be able to grow gxserver memory by streaming unbounded JSON bodies. Keep POST body parsing capped at 1 MiB, reject larger Content-Length values before reading, and stop retaining chunks as soon as chunked transfer input crosses the same limit.
+*/
+export const GXSERVER_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
 
 export async function runGxserverForeground(options: GxserverForegroundOptions): Promise<GxserverForegroundResult> {
   assertSupportedNodeVersion();
@@ -179,14 +189,25 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
     version: options.version,
   };
 
-  const localServer = createGxserverHttpServer(runtime, "local");
-  servers.push(localServer);
-  await listen(localServer, config.listeners.local);
+  /*
+  CDXC:GxserverLifecycle 2026-05-30-20:09:
+  Foreground startup is all-or-nothing across configured listeners. If the remote listener fails after the local API is already bound, gxserver must close the local listener before throwing so status never observes a half-started daemon without runtime metadata.
+  */
+  try {
+    const localServer = createGxserverHttpServer(runtime, "local");
+    await listen(localServer, config.listeners.local);
+    servers.push(localServer);
 
-  if (config.listeners.remote.enabled) {
-    const remoteServer = createGxserverHttpServer(runtime, "remote");
-    servers.push(remoteServer);
-    await listen(remoteServer, config.listeners.remote);
+    if (config.listeners.remote.enabled) {
+      const remoteServer = createGxserverHttpServer(runtime, "remote");
+      await listen(remoteServer, config.listeners.remote);
+      servers.push(remoteServer);
+    }
+  } catch (error) {
+    await eventHub.close();
+    await Promise.allSettled(servers.map(closeServer));
+    await removeRuntimeMetadata(paths);
+    throw error;
   }
 
   await writeRuntimeMetadata(paths, metadata);
@@ -244,6 +265,7 @@ async function handleRequest(options: HandleRequestOptions): Promise<void> {
   const { request, response, runtime } = options;
   const requestId = getRequestId(request);
   const startedAtMs = Date.now();
+  const clientAddress = request.socket.remoteAddress;
   let error: string | undefined;
   let endpointPath: GxserverEndpointPath | undefined;
   try {
@@ -257,7 +279,7 @@ async function handleRequest(options: HandleRequestOptions): Promise<void> {
     }
   } finally {
     await runtime.logger.log({
-      client: request.socket.remoteAddress,
+      client: clientAddress,
       durationMs: Date.now() - startedAtMs,
       error,
       event: "apiRequest",
@@ -286,7 +308,7 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
   const { listenerKind, request, response, runtime } = options;
   const url = new URL(request.url ?? "/", `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`);
   const endpoint = getGxserverEndpoint(url.pathname);
-  applyCorsHeaders(response);
+  applyCorsHeaders(request, response, runtime.config);
 
   /*
   CDXC:GxserverApi 2026-05-30-18:04:
@@ -351,8 +373,20 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
   if (request.method === "POST") {
     try {
       body = await readJsonBody(request);
-    } catch {
-      sendJson(response, 400, createRpcError("badRequest", "Request body must be valid JSON.", requestId));
+    } catch (caught) {
+      if (caught instanceof GxserverRequestBodyTooLargeError) {
+        sendJson(
+          response,
+          413,
+          createRpcError(
+            "badRequest",
+            `Request body exceeds the gxserver JSON RPC limit of ${GXSERVER_JSON_BODY_LIMIT_BYTES} bytes.`,
+            requestId,
+          ),
+        );
+      } else {
+        sendJson(response, 400, createRpcError("badRequest", "Request body must be valid JSON.", requestId));
+      }
       return endpoint.path;
     }
   }
@@ -409,14 +443,30 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
   }
 
   if (isTypedOperationEndpoint(endpoint.path)) {
+    const abortController = new AbortController();
+    const abortTypedOperation = (): void => {
+      if (!response.writableEnded) {
+        abortController.abort();
+      }
+    };
+    request.once("aborted", abortTypedOperation);
+    response.once("close", abortTypedOperation);
     try {
-      sendJson(response, 200, await handleTypedOperationEndpoint(runtime, endpoint.path, body, requestId));
+      const result = await handleTypedOperationEndpoint(runtime, endpoint.path, body, requestId, abortController.signal);
+      if (!response.destroyed) {
+        sendJson(response, 200, result);
+      }
     } catch (caught) {
-      if (caught instanceof GxserverTypedOperationError || caught instanceof GxserverProjectPathError) {
+      if (caught instanceof GxserverDomainStateError) {
+        sendJson(response, statusForDomainStateError(caught.code), createRpcError(caught.code, caught.message, requestId));
+      } else if (caught instanceof GxserverTypedOperationError || caught instanceof GxserverProjectPathError) {
         sendJson(response, statusForOperationError(caught.code), createRpcError(caught.code, caught.message, requestId));
       } else {
         throw caught;
       }
+    } finally {
+      request.removeListener("aborted", abortTypedOperation);
+      response.removeListener("close", abortTypedOperation);
     }
     return endpoint.path;
   }
@@ -427,12 +477,28 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
       sendJson(response, 200, result);
     } catch (caught) {
       if (caught instanceof GxserverDomainStateError) {
-        sendJson(
-          response,
-          caught.code === "notFound" ? 404 : 400,
-          createRpcError(caught.code, caught.message, requestId),
-        );
+        sendJson(response, statusForDomainStateError(caught.code), createRpcError(caught.code, caught.message, requestId));
       } else if (caught instanceof GxserverProjectPathError) {
+        sendJson(response, statusForOperationError(caught.code), createRpcError(caught.code, caught.message, requestId));
+      } else {
+        throw caught;
+      }
+    }
+    return endpoint.path;
+  }
+
+  /*
+  CDXC:GxserverSessionInteraction 2026-05-30-20:53:
+  gx/ghostex session interaction commands must terminate at gxserver after the hard cutover. zmx-backed read/send/send-enter/session-targeted send-message use the bundled zmx binary directly; renderer focus and agent-targeted message creation stay explicitly unsupported until gxserver has a client event channel that can focus or create visible macOS panes without reviving the retired app bridge.
+  */
+  if (isZmxSessionInteractionEndpoint(endpoint.path)) {
+    try {
+      const result = await handleZmxSessionInteractionEndpoint(runtime, endpoint.path, body, requestId);
+      sendJson(response, 200, result);
+    } catch (caught) {
+      if (caught instanceof GxserverDomainStateError) {
+        sendJson(response, statusForDomainStateError(caught.code), createRpcError(caught.code, caught.message, requestId));
+      } else if (caught instanceof GxserverTypedOperationError) {
         sendJson(response, statusForOperationError(caught.code), createRpcError(caught.code, caught.message, requestId));
       } else {
         throw caught;
@@ -450,11 +516,7 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
       sendJson(response, 200, handleDomainStateEndpoint(runtime, endpoint.path, body, requestId));
     } catch (caught) {
       if (caught instanceof GxserverDomainStateError) {
-        sendJson(
-          response,
-          caught.code === "notFound" ? 404 : 400,
-          createRpcError(caught.code, caught.message, requestId),
-        );
+        sendJson(response, statusForDomainStateError(caught.code), createRpcError(caught.code, caught.message, requestId));
       } else if (caught instanceof GxserverProjectPathError) {
         sendJson(response, statusForOperationError(caught.code), createRpcError(caught.code, caught.message, requestId));
       } else {
@@ -591,6 +653,7 @@ async function handleTypedOperationEndpoint(
   endpointPath: GxserverEndpointPath,
   body: unknown,
   requestId: string,
+  abortSignal?: AbortSignal,
 ): Promise<GxserverRpcSuccessResponse> {
   const params = readOperationRpcParams(body);
   const db = openGxserverDatabase(runtime.paths);
@@ -598,7 +661,7 @@ async function handleTypedOperationEndpoint(
     const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
     const projects = repository.listProjects();
     const { cwd, project } = resolveProjectOperationDirectory(projects, params);
-    const context = { cwd, envPath: process.env.PATH, projects };
+    const context = { abortSignal, cwd, envPath: process.env.PATH, projects };
     const result =
       endpointPath === "/api/runGitAction"
         ? await runGitAction(params as unknown as GxserverRunGitActionParams, context)
@@ -612,6 +675,7 @@ async function handleTypedOperationEndpoint(
         cwd,
         executable: result.command?.executable,
         exitCode: result.exitCode,
+        operationError: result.error,
       },
       event: "typedOperation",
       level: result.exitCode === 0 ? "info" : "warn",
@@ -714,6 +778,139 @@ async function dispatchZmxLifecycleEndpoint(
     default:
       throw new GxserverDomainStateError("notFound", `${endpointPath} is not a gxserver zmx lifecycle endpoint.`);
   }
+}
+
+async function handleZmxSessionInteractionEndpoint(
+  runtime: GxserverApiRuntime,
+  endpointPath: GxserverEndpointPath,
+  body: unknown,
+  requestId: string,
+): Promise<GxserverRpcSuccessResponse> {
+  const params = readDomainRpcParams(body);
+  const db = openGxserverDatabase(runtime.paths);
+  try {
+    const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
+    const result = await dispatchZmxSessionInteractionEndpoint(runtime, repository, endpointPath, params, requestId);
+    return {
+      ok: true,
+      product: GXSERVER_PRODUCT,
+      protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      requestId,
+      result,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function dispatchZmxSessionInteractionEndpoint(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  endpointPath: GxserverEndpointPath,
+  params: Record<string, unknown>,
+  requestId: string,
+): Promise<Record<string, unknown>> {
+  if (endpointPath === "/api/focusSession") {
+    throw new GxserverTypedOperationError(
+      "dependencyUnavailable",
+      "gxserver focusSession is not available until a renderer event channel can focus visible macOS panes through gxserver. Use gx attach for terminal access.",
+    );
+  }
+  if (endpointPath === "/api/sendSessionMessage" && params.sessionId === undefined) {
+    throw new GxserverTypedOperationError(
+      "dependencyUnavailable",
+      "gxserver sendSessionMessage currently requires projectId and sessionId. Agent-targeted visible session creation needs a renderer event channel and is not available through gxserver yet.",
+    );
+  }
+
+  const zmx = await (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)();
+  const lifecycle = readSessionLifecycleParams(params);
+  const session = requireSession(repository, lifecycle);
+  const zmxSessionName = providerZmxSessionName(session);
+  switch (endpointPath) {
+    case "/api/readSessionText": {
+      const result = await runZmxInteractionCommand(runtime, buildZmxHistoryCommand({
+        sessionName: zmxSessionName,
+        zmxExecutablePath: zmx.executablePath,
+      }));
+      return {
+        provider: "zmx",
+        session,
+        source: "history",
+        text: result.stdout,
+        zmxName: zmxSessionName,
+      };
+    }
+    case "/api/sendSessionText": {
+      const text = readInteractionText(params.text, "sendSessionText");
+      const result = await runZmxInteractionCommand(runtime, buildZmxSendCommand({
+        sessionName: zmxSessionName,
+        text,
+        zmxExecutablePath: zmx.executablePath,
+      }));
+      return {
+        exitCode: result.exitCode,
+        provider: "zmx",
+        session,
+        textLength: text.length,
+        zmxName: zmxSessionName,
+      };
+    }
+    case "/api/sendSessionEnter": {
+      const result = await runZmxInteractionCommand(runtime, buildZmxSendCommand({
+        sessionName: zmxSessionName,
+        text: "\r",
+        zmxExecutablePath: zmx.executablePath,
+      }));
+      return {
+        exitCode: result.exitCode,
+        provider: "zmx",
+        session,
+        textLength: 1,
+        zmxName: zmxSessionName,
+      };
+    }
+    case "/api/sendSessionMessage": {
+      const text = readInteractionText(params.text, "sendSessionMessage");
+      const submit = params.submit !== false;
+      const result = await runZmxInteractionCommand(runtime, buildZmxSendCommand({
+        sessionName: zmxSessionName,
+        text: submit ? `${text}\r` : text,
+        zmxExecutablePath: zmx.executablePath,
+      }));
+      return {
+        exitCode: result.exitCode,
+        provider: "zmx",
+        session,
+        submit,
+        textLength: text.length,
+        zmxName: zmxSessionName,
+      };
+    }
+    default:
+      throw new GxserverDomainStateError("notFound", `${endpointPath} is not a gxserver zmx session interaction endpoint.`);
+  }
+}
+
+async function runZmxInteractionCommand(
+  runtime: GxserverApiRuntime,
+  script: string,
+): Promise<{ exitCode: number; stderr: string; stdout: string }> {
+  const result = await (runtime.zmxLifecycle?.runZsh ?? runZshScript)(script);
+  if (result.exitCode !== 0) {
+    throw new GxserverTypedOperationError(
+      "dependencyUnavailable",
+      result.stderr || result.stdout || `zmx session interaction command exited ${result.exitCode}`,
+    );
+  }
+  return result;
+}
+
+function readInteractionText(value: unknown, commandName: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new GxserverDomainStateError("badRequest", `${commandName} requires non-empty text.`);
+  }
+  return value;
 }
 
 async function createAttachSessionMetadata(
@@ -835,10 +1032,16 @@ async function killAndCacheSessionProvider(
     zmxExecutablePath: zmx.executablePath,
   });
   const timestamp = new Date().toISOString();
+  /*
+  CDXC:GxserverZmxLifecycle 2026-05-30-19:41:
+  Sleep and kill requests may fail after zmx has kept the provider session alive. A failed kill must leave the stored session and provider lifecycle as `unknown` with the kill error instead of persisting terminal UI state (`sleeping`/`stopped`) or provider `missing`, so clients retain the route to the possible live zmx session.
+  */
   const updated = repository.updateSession({
-    lifecycleState,
+    lifecycleState: kill.killed ? lifecycleState : "unknown",
     projectId: session.projectId,
-    providerState: missingProviderStatePatch(session, timestamp),
+    providerState: kill.killed
+      ? missingProviderStatePatch(session, timestamp)
+      : failedKillProviderStatePatch(session, kill, timestamp),
     sessionId: session.sessionId,
   });
   await runtime.logger.log({
@@ -902,6 +1105,16 @@ function isZmxLifecycleEndpoint(path: GxserverEndpointPath): boolean {
   );
 }
 
+function isZmxSessionInteractionEndpoint(path: GxserverEndpointPath): boolean {
+  return (
+    path === "/api/readSessionText" ||
+    path === "/api/sendSessionText" ||
+    path === "/api/sendSessionMessage" ||
+    path === "/api/sendSessionEnter" ||
+    path === "/api/focusSession"
+  );
+}
+
 function normalizeAddProjectPathParams(params: Record<string, unknown>): GxserverCreateProjectParams {
   const normalizedPath = normalizeExistingDirectoryPath(params.path ?? params.projectPath, "path");
   return {
@@ -949,6 +1162,17 @@ function statusForOperationError(code: GxserverTypedOperationError["code"] | Gxs
       return 503;
     case "forbidden":
       return 403;
+    case "notFound":
+      return 404;
+    default:
+      return 400;
+  }
+}
+
+function statusForDomainStateError(code: GxserverDomainStateError["code"]): number {
+  switch (code) {
+    case "corruptState":
+      return 409;
     case "notFound":
       return 404;
     default:
@@ -1069,8 +1293,18 @@ async function createAuthenticatedHealth(runtime: GxserverApiRuntime): Promise<R
 
 async function readJsonBody(request: http.IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+  const contentLength = readContentLength(request);
+  if (contentLength !== undefined && contentLength > GXSERVER_JSON_BODY_LIMIT_BYTES) {
+    throw new GxserverRequestBodyTooLargeError(contentLength);
+  }
+  let receivedBytes = 0;
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    receivedBytes += buffer.byteLength;
+    if (receivedBytes > GXSERVER_JSON_BODY_LIMIT_BYTES) {
+      throw new GxserverRequestBodyTooLargeError(receivedBytes);
+    }
+    chunks.push(buffer);
   }
   if (chunks.length === 0) {
     return {};
@@ -1082,23 +1316,71 @@ async function readJsonBody(request: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(text);
 }
 
+function readContentLength(request: http.IncomingMessage): number | undefined {
+  const header = request.headers["content-length"];
+  if (typeof header !== "string" || !/^\d+$/.test(header)) {
+    return undefined;
+  }
+  return Number(header);
+}
+
+class GxserverRequestBodyTooLargeError extends Error {
+  constructor(readonly receivedBytes: number) {
+    super(`Request body exceeds ${GXSERVER_JSON_BODY_LIMIT_BYTES} bytes: ${receivedBytes}`);
+  }
+}
+
 function sendJson(response: http.ServerResponse, statusCode: number, body: unknown): void {
-  applyCorsHeaders(response);
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
   });
   response.end(`${JSON.stringify(body)}\n`);
 }
 
-function applyCorsHeaders(response: http.ServerResponse): void {
-  response.setHeader("access-control-allow-origin", "*");
+function applyCorsHeaders(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  config: GxserverConfig,
+): void {
+  const origin = readSingleHeader(request.headers.origin);
+  if (!origin) {
+    return;
+  }
+  appendVaryHeader(response, "Origin");
+  appendVaryHeader(response, "Access-Control-Request-Private-Network");
+  if (!isAllowedCorsOrigin(origin, config)) {
+    return;
+  }
+  response.setHeader("access-control-allow-origin", origin);
   response.setHeader(
     "access-control-allow-headers",
     "authorization, content-type, x-gxserver-protocol-version, x-request-id",
   );
   response.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
-  response.setHeader("access-control-allow-private-network", "true");
+  if (readSingleHeader(request.headers["access-control-request-private-network"]) === "true") {
+    response.setHeader("access-control-allow-private-network", "true");
+  }
   response.setHeader("access-control-max-age", "600");
+}
+
+function isAllowedCorsOrigin(origin: string, config: GxserverConfig): boolean {
+  return config.cors.allowedOrigins.includes(origin);
+}
+
+function readSingleHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? undefined : value;
+}
+
+function appendVaryHeader(response: http.ServerResponse, value: string): void {
+  const existing = response.getHeader("vary");
+  const values = new Set(
+    (Array.isArray(existing) ? existing.join(",") : String(existing ?? ""))
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean),
+  );
+  values.add(value);
+  response.setHeader("vary", [...values].join(", "));
 }
 
 function readRpcParams(body: unknown): Record<string, unknown> {
@@ -1128,7 +1410,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function listen(server: http.Server, config: GxserverListenerConfig): Promise<void> {
   return new Promise((resolve, reject) => {
-    server.once("error", (error) => {
+    const cleanup = (): void => {
+      server.off("error", onError);
+      server.off("listening", onListening);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
       if (isAddressInUseError(error)) {
         reject(
           new Error(
@@ -1138,8 +1425,14 @@ function listen(server: http.Server, config: GxserverListenerConfig): Promise<vo
         return;
       }
       reject(error);
-    });
-    server.listen(config.port, config.host, resolve);
+    };
+    const onListening = (): void => {
+      cleanup();
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(config.port, config.host);
   });
 }
 

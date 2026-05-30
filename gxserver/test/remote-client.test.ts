@@ -113,10 +113,11 @@ test("credential store abstraction reports unavailable stores and shell-backed s
   await darwin.set(ref, "stored-token");
   assert.equal(await darwin.get(ref), "stored-token");
   assert.deepEqual(calls[0], {
-    args: ["add-generic-password", "-U", "-s", "ghostex.gxserver", "-a", "connection:studio:authToken", "-w", "stored-token"],
+    args: ["add-generic-password", "-U", "-s", "ghostex.gxserver", "-a", "connection:studio:authToken", "-w"],
     command: "security",
-    stdin: undefined,
+    stdin: "stored-token\n",
   });
+  assert.equal(calls[0]?.args.includes("stored-token"), false);
 });
 
 test("SSH helper plans remote gxserver check, background start, forwarding, and zmx attach", () => {
@@ -142,6 +143,8 @@ test("SSH helper plans remote gxserver check, background start, forwarding, and 
   assert.deepEqual(buildSshPortForwardCommand(target, 60000), [
     "ssh",
     "-N",
+    "-o",
+    "ExitOnForwardFailure=yes",
     "-L",
     "60000:127.0.0.1:58744",
     "-p",
