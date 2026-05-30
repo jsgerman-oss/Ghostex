@@ -18,6 +18,9 @@ Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
 ### 7. TUI mode (ghostex cli) to connect to all your sessions from any other machine.
 
 ### More Features:
+- First-launch preferences help new installs set common defaults before opening sessions
+- Git workflows include Sync with Main, split Git menus, prompt-agent PR review, and persistent running toasts for long actions
+- First-prompt title generation can auto-name new agent sessions from the opening prompt
 - Pinned sessions keep important agent terminals at the top of each project and support `ghostex pin-session`
 - Auto-sleep policies now cover idle browser and project panes as well as terminals
 - Embedded Chromium Browser w Devtools and profiles

@@ -1,6 +1,18 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-29-21:05: Release notes for 3.22.0 must include all user-facing commits after v3.21.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-30-12:30: Release notes for 3.23.0 must include all user-facing commits after v3.22.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+
+## 3.23.0 - 2026-05-30
+
+- Migrated the sidebar to Base UI and refreshed the app theme styling for a more consistent control surface across modals, menus, and session chrome.
+- Added a first-launch preferences page so new installs can set common defaults before opening sessions.
+- Improved Git workflows with Sync with Main, a split Git menu by action type, prompt-agent Git PR review, and a unified merge flow.
+- Added first-prompt title generation with a native terminal overlay, tighter auto-rename behavior for agents and slash commands, and sidebar wiring for the new flow.
+- Improved Git and worktree status toasts with persistent running notices, spinner styling, success/error tints, and clearer completion when sessions close or worktrees delete.
+- Removed the macOS Pane Gap setting and tightened native workspace chrome with flush tab bars, square status indicators, workarea separators, and zero default pane spacing.
+- Improved sidebar and project-header tooltips so labels open below their triggers with a consistent square bordered surface.
+- Refined session working/attention indicators so they sit closer to the row edge and the working spinner renders as a rounded ring again.
+- Improved the titlebar update tooltip placement and aligned right-side titlebar controls flush with the window edge.
 
 ## 3.22.0 - 2026-05-29
 
