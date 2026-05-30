@@ -1,6 +1,9 @@
 
 ## All features:
 
+- Project board Backlog lane, per-lane ticket creation, improved Create & Start, bead-comment Start Work prompts, and immediate session focus when starting work from Kanban.
+- Command pane defaults to 125px height, supports up to 90% workspace height, and native Beads accepts backlog status updates.
+- Floating menus, selects, popovers, and tooltips share sidebar tooltip border styling for clearer edges.
 - Titlebar Tips & Tricks menu surfaces built-in workflow hints with unread tracking and persistent read state.
 - Project board filters by priority and estimate instead of lane status, with inline search iconography and tidier ticket metadata layout.
 - Ghostty terminal scrollbars and scroll overlay buttons use square styling in native panes.

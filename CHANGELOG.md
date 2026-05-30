@@ -1,6 +1,15 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-30-14:42: Release notes for 3.25.0 must include all user-facing commits after v3.24.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-30-09:52: Release notes for 3.26.0 must include all user-facing commits after v3.25.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+
+## 3.26.0 - 2026-05-30
+
+- Project board adds a Backlog swim lane before Todo, per-lane + ticket creation, status selects with friendly labels, and more reliable Create & Start that launches the agent session before secondary board refresh work.
+- Start Work prompts now ask agents to leave bead comments after each turn and include backlog/in-progress/test/review workflow commands.
+- Starting work from the Kanban page focuses the created agent session immediately, matching sidebar session-card behavior.
+- Command pane defaults restore to 125px (up from the prior smaller default), can grow up to 90% of the workspace height, and native Beads updates accept the backlog status.
+- Dropdowns, selects, popovers, and tooltips share the same visible border as sidebar tooltips.
+- Titlebar Tips & Tricks copy was refreshed for pinning sessions and using the Kanban board with agents.
 
 ## 3.25.0 - 2026-05-30
 
