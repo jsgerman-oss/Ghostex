@@ -122,7 +122,9 @@ type AppModalHostMessage =
   | {
       description?: string;
       level?: "info" | "success" | "warning" | "error";
+      persistent?: boolean;
       title: string;
+      toastId?: string;
       type: "toast";
     }
   | { keepOpen?: boolean; type: "toastDismissed" }
@@ -2628,17 +2630,30 @@ function useModalStateFromNative() {
           /**
            * CDXC:Worktrees 2026-05-18-23:07:
            * Native worktree and git actions report progress through the app-modal host toast layer so command feedback appears over the full Ghostex window without stealing focus from terminal panes.
+           *
+           * CDXC:GitActionModel 2026-05-30-05:34:
+           * Long-running Git actions and agent workflows need persistent status
+           * toasts. Reuse Sonner ids so native can update a running toast to a
+           * success or error state instead of stacking transient progress notices.
            */
           toastTokenRef.current += 1;
           const toastToken = toastTokenRef.current;
+          const toastOptions = {
+            description: message.description,
+            duration: message.persistent ? Number.POSITIVE_INFINITY : undefined,
+            id: message.toastId,
+          };
           if (message.level === "error") {
-            toast.error(message.title, { description: message.description });
+            toast.error(message.title, toastOptions);
           } else if (message.level === "warning") {
-            toast.warning(message.title, { description: message.description });
+            toast.warning(message.title, toastOptions);
           } else if (message.level === "success") {
-            toast.success(message.title, { description: message.description });
+            toast.success(message.title, toastOptions);
           } else {
-            toast.message(message.title, { description: message.description });
+            toast.message(message.title, toastOptions);
+          }
+          if (message.persistent) {
+            return;
           }
           window.setTimeout(() => {
             if (toastToken !== toastTokenRef.current) {
