@@ -3,9 +3,11 @@ import {
   appendImageMarkdownToDescription,
   extractDescriptionImagePreviews,
   extractDescriptionImageReferences,
+  filterBoardTickets,
   priorityLabel,
   prioritySelectValue,
   removeDescriptionImageReference,
+  type BoardTicket,
 } from "./project-board-shared";
 
 const pngDataUrl = "data:image/png;base64,abc123";
@@ -78,5 +80,49 @@ describe("project board priority labels", () => {
   test("normalizes legacy P4 values into the visible Low tier", () => {
     expect(priorityLabel(4)).toBe("Low");
     expect(prioritySelectValue(4)).toBe("3");
+  });
+});
+
+describe("project board filters", () => {
+  const tickets: BoardTicket[] = [
+    {
+      boardStatus: "todo",
+      displayId: "ZMX-1",
+      estimate: 15,
+      id: "urgent-xs",
+      priority: 0,
+      status: "open",
+      title: "Urgent XS task",
+    },
+    {
+      boardStatus: "in_progress",
+      displayId: "ZMX-2",
+      estimate: null,
+      id: "medium-none",
+      priority: 2,
+      status: "in_progress",
+      title: "Medium unestimated task",
+    },
+    {
+      boardStatus: "review",
+      displayId: "ZMX-3",
+      estimate: 120,
+      id: "legacy-low",
+      priority: 4,
+      status: "review",
+      title: "Legacy low task",
+    },
+  ];
+
+  test("filters by normalized priority and estimate without changing lane status", () => {
+    expect(filterBoardTickets(tickets, "", "3", "all").map((ticket) => ticket.id)).toEqual([
+      "legacy-low",
+    ]);
+    expect(filterBoardTickets(tickets, "", "all", "none").map((ticket) => ticket.id)).toEqual([
+      "medium-none",
+    ]);
+    expect(filterBoardTickets(tickets, "", "0", "XS").map((ticket) => ticket.id)).toEqual([
+      "urgent-xs",
+    ]);
   });
 });

@@ -84,6 +84,8 @@ import {
   estimateToTshirt,
   type BeadsBridgeRequest,
   type BeadsBridgeResponse,
+  type BoardEstimateFilter,
+  type BoardPriorityFilter,
   type BeadsIssue,
   type BoardStatusKey,
   type BoardTicket,
@@ -164,6 +166,18 @@ const PROJECT_BOARD_PRIORITY_SELECT_ITEMS = PRIORITY_OPTIONS.map((option) => ({
   label: option.label,
   value: option.value,
 }));
+const PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS: Array<{ label: string; value: BoardPriorityFilter }> = [
+  { label: "All priorities", value: "all" },
+  ...PROJECT_BOARD_PRIORITY_SELECT_ITEMS,
+];
+const PROJECT_BOARD_TSHIRT_SELECT_ITEMS: Array<{ label: string; value: TshirtSize | "none" }> = [
+  { label: "None", value: "none" },
+  ...TSHIRT_OPTIONS.map((option) => ({ label: option.label, value: option.label })),
+];
+const PROJECT_BOARD_ESTIMATE_FILTER_SELECT_ITEMS: Array<{ label: string; value: BoardEstimateFilter }> = [
+  { label: "All estimates", value: "all" },
+  ...PROJECT_BOARD_TSHIRT_SELECT_ITEMS,
+];
 
 type BoardRefreshMode = "background" | "initial" | "manual" | "mutation";
 
@@ -232,7 +246,8 @@ function ProjectBoardApp() {
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<BoardStatusKey | "all">("all");
+  const [priorityFilter, setPriorityFilter] = useState<BoardPriorityFilter>("all");
+  const [estimateFilter, setEstimateFilter] = useState<BoardEstimateFilter>("all");
   const [detail, setDetail] = useState<DetailDraft>(createEmptyDetailDraft);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [newTicket, setNewTicket] = useState<TicketFormDraft>(createEmptyTicketFormDraft);
@@ -284,6 +299,10 @@ function ProjectBoardApp() {
    * CDXC:ProjectBoard 2026-05-30-07:46:
    * Collapsed macOS Project-page selects must show friendly labels for agents and ticket priority while preserving the raw Beads-compatible values used by bridge requests.
    * Provide select item metadata at the root because the popup is not mounted before the collapsed value renders.
+   *
+   * CDXC:ProjectBoardFilters 2026-05-30-08:31:
+   * The board toolbar should place the search icon inside the input at the left edge and replace the status dropdown with Priority and Estimate filters.
+   * Toolbar selects use root item metadata so collapsed controls show friendly labels instead of raw filter values.
    */
   const isRefreshingRef = useRef(false);
   const issuesSignatureRef = useRef("");
@@ -473,8 +492,8 @@ function ProjectBoardApp() {
   }, [loadConversationState, loadTickets]);
 
   const filteredTickets = useMemo(
-    () => filterBoardTickets(tickets, searchQuery, statusFilter),
-    [searchQuery, statusFilter, tickets],
+    () => filterBoardTickets(tickets, searchQuery, priorityFilter, estimateFilter),
+    [estimateFilter, priorityFilter, searchQuery, tickets],
   );
 
   const ticketsByColumn = useMemo(() => {
@@ -1048,17 +1067,33 @@ function ProjectBoardApp() {
           />
         </div>
         <Select
-          onValueChange={(value) => setStatusFilter(value as BoardStatusKey | "all")}
-          value={statusFilter}
+          items={PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS}
+          onValueChange={(value) => setPriorityFilter(value as BoardPriorityFilter)}
+          value={priorityFilter}
         >
-          <SelectTrigger aria-label="Filter by status" size="sm">
-            <SelectValue placeholder="All statuses" />
+          <SelectTrigger aria-label="Filter by priority" className="project-board-filter-select" size="sm">
+            <SelectValue placeholder="All priorities" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All statuses</SelectItem>
-            {BOARD_COLUMNS.map((column) => (
-              <SelectItem key={column.key} value={column.key}>
-                {column.label}
+            {PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          items={PROJECT_BOARD_ESTIMATE_FILTER_SELECT_ITEMS}
+          onValueChange={(value) => setEstimateFilter(value as BoardEstimateFilter)}
+          value={estimateFilter}
+        >
+          <SelectTrigger aria-label="Filter by estimate" className="project-board-filter-select" size="sm">
+            <SelectValue placeholder="All estimates" />
+          </SelectTrigger>
+          <SelectContent>
+            {PROJECT_BOARD_ESTIMATE_FILTER_SELECT_ITEMS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1530,6 +1565,7 @@ function TicketMetaFields({
       <label className="project-ticket-field project-ticket-field-inline">
         <span>T-shirt</span>
         <Select
+          items={PROJECT_BOARD_TSHIRT_SELECT_ITEMS}
           onValueChange={(value) => onTshirtChange(value === "none" ? undefined : (value as TshirtSize))}
           value={tshirt ?? "none"}
         >
@@ -1546,33 +1582,27 @@ function TicketMetaFields({
           </SelectContent>
         </Select>
       </label>
-      <DependencyPicker
-        label="Blocked by"
-        onChange={onBlockedByChange}
-        selectedIds={blockedByIds}
-        ticketOptions={ticketOptions}
-      />
-      <DependencyPicker
-        label="Blocking"
-        onChange={onBlockingChange}
-        selectedIds={blockingIds}
-        ticketOptions={ticketOptions}
-      />
-      <div className="project-ticket-field project-ticket-labels-field">
+      {/*
+        CDXC:ProjectBoardTicketMetadata 2026-05-30-08:31:
+        Ticket metadata should put Labels where Blocked by was, keep every metadata control's label-to-element spacing consistent, and show T-shirt select values as friendly labels.
+      */}
+      <div className="project-ticket-field project-ticket-field-inline project-ticket-labels-field">
         <span>Labels</span>
-        <div className="project-ticket-label-list">
-          {labels.map((label) => (
-            <button
-              className="project-ticket-label-chip"
-              key={label}
-              onClick={() => onLabelsChange(labels.filter((candidate) => candidate !== label))}
-              type="button"
-            >
-              {label}
-              <IconX aria-hidden="true" />
-            </button>
-          ))}
-        </div>
+        {labels.length > 0 ? (
+          <div className="project-ticket-label-list">
+            {labels.map((label) => (
+              <button
+                className="project-ticket-label-chip"
+                key={label}
+                onClick={() => onLabelsChange(labels.filter((candidate) => candidate !== label))}
+                type="button"
+              >
+                {label}
+                <IconX aria-hidden="true" />
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div className="project-ticket-label-editor">
           <Input
             aria-label="Add label"
@@ -1612,6 +1642,18 @@ function TicketMetaFields({
           </Button>
         </div>
       </div>
+      <DependencyPicker
+        label="Blocking"
+        onChange={onBlockingChange}
+        selectedIds={blockingIds}
+        ticketOptions={ticketOptions}
+      />
+      <DependencyPicker
+        label="Blocked by"
+        onChange={onBlockedByChange}
+        selectedIds={blockedByIds}
+        ticketOptions={ticketOptions}
+      />
     </div>
   );
 }
@@ -1630,24 +1672,26 @@ function DependencyPicker({
   const [draft, setDraft] = useState("");
   const available = ticketOptions.filter((option) => !selectedIds.includes(option.id));
   return (
-    <div className="project-ticket-field">
+    <div className="project-ticket-field project-ticket-field-inline">
       <span>{label}</span>
-      <div className="project-ticket-label-list">
-        {selectedIds.map((id) => {
-          const ticket = ticketOptions.find((option) => option.id === id);
-          return (
-            <button
-              className="project-ticket-label-chip"
-              key={id}
-              onClick={() => onChange(selectedIds.filter((candidate) => candidate !== id))}
-              type="button"
-            >
-              {ticket?.label ?? id}
-              <IconX aria-hidden="true" />
-            </button>
-          );
-        })}
-      </div>
+      {selectedIds.length > 0 ? (
+        <div className="project-ticket-label-list">
+          {selectedIds.map((id) => {
+            const ticket = ticketOptions.find((option) => option.id === id);
+            return (
+              <button
+                className="project-ticket-label-chip"
+                key={id}
+                onClick={() => onChange(selectedIds.filter((candidate) => candidate !== id))}
+                type="button"
+              >
+                {ticket?.label ?? id}
+                <IconX aria-hidden="true" />
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
       <Select
         onValueChange={(value) => {
           if (value && !selectedIds.includes(value)) {
@@ -2543,15 +2587,26 @@ styleElement.textContent = `
     align-items: center;
     display: flex;
     flex: 1 1 auto;
-    gap: 8px;
     min-width: 0;
+    position: relative;
   }
 
   .project-board-search svg {
     color: rgba(244, 244, 245, 0.42);
-    flex: 0 0 auto;
     height: 16px;
+    left: 12px;
+    pointer-events: none;
+    position: absolute;
     width: 16px;
+    z-index: 1;
+  }
+
+  .project-board-search input {
+    padding-left: 36px;
+  }
+
+  .project-board-filter-select {
+    min-width: 124px;
   }
 
   .project-board-lanes {
@@ -3066,6 +3121,10 @@ styleElement.textContent = `
     align-items: center;
     display: flex;
     gap: 8px;
+  }
+
+  .project-ticket-label-editor input {
+    height: 28px;
   }
 
   .project-ticket-image-strip {

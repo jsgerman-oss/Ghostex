@@ -140,6 +140,8 @@ export const TSHIRT_OPTIONS = [
 ] as const;
 
 export type TshirtSize = (typeof TSHIRT_OPTIONS)[number]["label"];
+export type BoardPriorityFilter = "all" | (typeof PRIORITY_OPTIONS)[number]["value"];
+export type BoardEstimateFilter = "all" | "none" | TshirtSize;
 
 const REQUIRED_CUSTOM_STATUS_CONFIG = "test,review";
 
@@ -312,13 +314,26 @@ export async function ensureWorkflowStatuses(
 export function filterBoardTickets(
   tickets: BoardTicket[],
   query: string,
-  statusFilter: BoardStatusKey | "all",
+  priorityFilter: BoardPriorityFilter,
+  estimateFilter: BoardEstimateFilter,
 ): BoardTicket[] {
   const normalizedQuery = query.trim();
+  /*
+    CDXC:ProjectBoardFilters 2026-05-30-08:31:
+    The Project board toolbar should filter by planning metadata instead of lane status so the visible swimlanes remain the workflow source of truth.
+    Priority matching uses the same normalized visible tier as ticket controls, and estimate matching treats missing estimates as their own selectable state.
+  */
   let filtered =
-    statusFilter === "all"
+    priorityFilter === "all"
       ? tickets
-      : tickets.filter((ticket) => ticket.boardStatus === statusFilter);
+      : tickets.filter((ticket) => prioritySelectValue(ticket.priority) === priorityFilter);
+  filtered =
+    estimateFilter === "all"
+      ? filtered
+      : filtered.filter((ticket) => {
+          const ticketEstimate = estimateToTshirt(ticket.estimate);
+          return estimateFilter === "none" ? ticketEstimate === undefined : ticketEstimate === estimateFilter;
+        });
   if (!normalizedQuery) {
     return filtered;
   }
