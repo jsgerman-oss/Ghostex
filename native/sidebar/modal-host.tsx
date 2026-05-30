@@ -2635,13 +2635,43 @@ function useModalStateFromNative() {
            * Long-running Git actions and agent workflows need persistent status
            * toasts. Reuse Sonner ids so native can update a running toast to a
            * success or error state instead of stacking transient progress notices.
+           *
+           * CDXC:GitActionToasts 2026-05-30-06:39:
+           * Persistent Git/worktree toasts need an explicit spinner, error
+           * toasts need a red-tinted surface, and success toasts need a subtle
+           * green tint so users can distinguish completion states even when the
+           * toast copy is partially clipped.
            */
           toastTokenRef.current += 1;
           const toastToken = toastTokenRef.current;
+          const isPersistent = message.persistent === true;
+          const toastClassName = [
+            "ghostex-app-toast",
+            isPersistent ? "ghostex-app-toast-persistent" : "",
+            message.level === "error" ? "ghostex-app-toast-error" : "",
+            message.level === "success" ? "ghostex-app-toast-success" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
           const toastOptions = {
+            className: toastClassName,
             description: message.description,
-            duration: message.persistent ? Number.POSITIVE_INFINITY : undefined,
+            duration: isPersistent ? Number.POSITIVE_INFINITY : undefined,
             id: message.toastId,
+            style:
+              message.level === "error"
+                ? {
+                    background: "linear-gradient(0deg, rgba(95, 24, 31, 0.28), rgba(95, 24, 31, 0.28)), #0e0e0e",
+                    border: "1px solid rgba(248, 113, 113, 0.32)",
+                    color: "#fff1f2",
+                  }
+                : message.level === "success"
+                  ? {
+                      background: "linear-gradient(0deg, rgba(22, 101, 52, 0.24), rgba(22, 101, 52, 0.24)), #0e0e0e",
+                      border: "1px solid rgba(74, 222, 128, 0.3)",
+                      color: "#f0fdf4",
+                    }
+                : undefined,
           };
           if (message.level === "error") {
             toast.error(message.title, toastOptions);
@@ -2652,7 +2682,7 @@ function useModalStateFromNative() {
           } else {
             toast.message(message.title, toastOptions);
           }
-          if (message.persistent) {
+          if (isPersistent) {
             return;
           }
           window.setTimeout(() => {

@@ -2523,6 +2523,68 @@
   min-width: 112px;
 }
 
+.ghostex-app-toast {
+  /**
+   * CDXC:GitActionToasts 2026-05-30-06:39:
+   * Persistent Git/worktree toasts show a top-right spinner while the action is
+   * still running. Error and success toasts keep subtle tinted shadows so final
+   * states are visually distinct from normal dark status toasts.
+   */
+  position: relative;
+}
+
+.ghostex-app-toast-persistent {
+  padding-right: 52px !important;
+}
+
+.ghostex-app-toast-persistent::after {
+  border: 2px solid color-mix(in srgb, var(--app-muted) 46%, transparent);
+  border-radius: 999px;
+  content: "";
+  height: 16px;
+  pointer-events: none;
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  width: 16px;
+  z-index: 0;
+}
+
+.ghostex-app-toast-persistent::before {
+  /*
+   * CDXC:AppToasts 2026-05-30-06:04:
+   * Persistent worktree and Git toasts need a fully rounded loading spinner.
+   * Use a masked SVG arc with round stroke caps instead of a border-top spinner,
+   * because border segments render square ends that look like an angular bracket.
+   */
+  animation: ghostex-toast-spinner 850ms linear infinite;
+  background: color-mix(in srgb, var(--app-foreground) 88%, white 12%);
+  content: "";
+  height: 16px;
+  pointer-events: none;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M8 1.75a6.25 6.25 0 1 1-4.42 1.83' fill='none' stroke='black' stroke-linecap='round' stroke-width='2'/%3E%3C/svg%3E") center / 16px 16px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg viewBox='0 0 16 16' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M8 1.75a6.25 6.25 0 1 1-4.42 1.83' fill='none' stroke='black' stroke-linecap='round' stroke-width='2'/%3E%3C/svg%3E") center / 16px 16px no-repeat;
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  width: 16px;
+  z-index: 1;
+}
+
+.ghostex-app-toast-error {
+  box-shadow: 0 16px 42px rgba(127, 29, 29, 0.22);
+}
+
+.ghostex-app-toast-success {
+  box-shadow: 0 16px 42px rgba(21, 128, 61, 0.18);
+}
+
+@keyframes ghostex-toast-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .session-rename-modal-shadcn {
   /**
    * CDXC:SidebarRename 2026-05-09-17:25
