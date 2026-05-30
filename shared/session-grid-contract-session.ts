@@ -57,15 +57,44 @@ const CURSOR_CLI_WORKING_TITLE_STRIP_PATTERN = /\s*-\s*⏳ Working [.·]+$/u;
 const CURSOR_CLI_READY_TITLE_STRIP_PATTERN = /\s*-\s*✅ Ready$/u;
 export const DEFAULT_TERMINAL_SESSION_TITLE = "Terminal Session";
 /**
- * CDXC:CommandsPanel 2026-05-14-08:12:
- * The bottom command pane must open at 27% of the workspace height by default so the main terminal area keeps more vertical room while command sessions remain visible.
- *
  * CDXC:CommandsPanel 2026-05-16-07:36:
- * Users need the bottom command pane to shrink to 5% of the window height, while the default remains 27% so command sessions still open at a usable size.
+ * Users need the bottom command pane to shrink to 5% of the window height.
+ *
+ * CDXC:CommandsPanel 2026-05-30-09:20:
+ * The command pane may grow up to 90% of the workspace height. Double-clicking the top resize rail and other default-height restores must target 125px, not a percentage of the window.
+ *
+ * CDXC:CommandsPanel 2026-05-30-09:45:
+ * Default command-pane height was raised by 60px (65px -> 125px) so reset/double-click restores leave more room for command tabs and input.
  */
 export const MIN_COMMANDS_PANEL_HEIGHT_RATIO = 0.05;
-export const MAX_COMMANDS_PANEL_HEIGHT_RATIO = 0.55;
-export const DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO = 0.27;
+export const MAX_COMMANDS_PANEL_HEIGHT_RATIO = 0.9;
+export const DEFAULT_COMMANDS_PANEL_HEIGHT_PX = 125;
+/**
+ * CDXC:CommandsPanel 2026-05-30-09:20:
+ * Persisted command-pane ratios are normalized before the native workspace reports its height. Seed defaults from this reference height so first paint matches the 125px target on typical windows.
+ */
+export const DEFAULT_COMMANDS_PANEL_REFERENCE_WORKSPACE_HEIGHT_PX = 900;
+
+export function resolveDefaultCommandsPanelHeightRatio(
+  workspaceHeightPx?: number,
+): number {
+  const workspaceHeight =
+    typeof workspaceHeightPx === "number" &&
+    Number.isFinite(workspaceHeightPx) &&
+    workspaceHeightPx > 0
+      ? workspaceHeightPx
+      : DEFAULT_COMMANDS_PANEL_REFERENCE_WORKSPACE_HEIGHT_PX;
+  return Math.max(
+    MIN_COMMANDS_PANEL_HEIGHT_RATIO,
+    Math.min(
+      MAX_COMMANDS_PANEL_HEIGHT_RATIO,
+      DEFAULT_COMMANDS_PANEL_HEIGHT_PX / workspaceHeight,
+    ),
+  );
+}
+
+export const DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO =
+  resolveDefaultCommandsPanelHeightRatio();
 const DEFAULT_TERMINAL_ENGINE: TerminalEngine = "ghostty-native";
 const IGNORED_GENERIC_TERMINAL_TITLES = new Set([
   "amp",

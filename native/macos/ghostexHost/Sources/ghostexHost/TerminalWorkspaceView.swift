@@ -1804,15 +1804,21 @@ final class TerminalWorkspaceView: NSView {
    */
   private static let zmxPersistenceRefreshDebounceInterval: TimeInterval = 0.8
   /**
-   CDXC:CommandsPanel 2026-05-14-08:12:
-   The native command pane default must match the shared 27% sidebar model so first layout, resize reset, and persisted height normalization agree.
-
    CDXC:CommandsPanel 2026-05-16-07:36:
-   Users need the bottom command pane to resize down to 5% of the window height. Keep the 27% default but clamp native drag geometry and persisted ratios to the same minimum.
+   Users need the bottom command pane to resize down to 5% of the window height.
+
+   CDXC:CommandsPanel 2026-05-30-09:20:
+   Native drag geometry, persisted ratios, and double-click reset must match the shared command-pane limits: 125px default height, 5% minimum, and 90% maximum of the workspace height.
+
+   CDXC:CommandsPanel 2026-05-30-09:45:
+   Default command-pane height was raised by 60px (65px -> 125px) so reset/double-click restores leave more room for command tabs and input.
    */
   private static let minimumCommandsPanelHeightRatio: CGFloat = 0.05
-  private static let maximumCommandsPanelHeightRatio: CGFloat = 0.55
-  private static let defaultCommandsPanelHeightRatio: CGFloat = 0.27
+  private static let maximumCommandsPanelHeightRatio: CGFloat = 0.9
+  private static let defaultCommandsPanelHeightPoints: CGFloat = 125
+  private static let defaultCommandsPanelReferenceWorkspaceHeight: CGFloat = 900
+  private static let defaultCommandsPanelHeightRatio: CGFloat =
+    defaultCommandsPanelHeightPoints / defaultCommandsPanelReferenceWorkspaceHeight
   /**
    CDXC:ProjectEditorCompanion 2026-05-14-09:19:
    Embedded VS Code should open with the currently active terminal or T3 Code session visible as a simple left companion pane.
@@ -5312,7 +5318,7 @@ final class TerminalWorkspaceView: NSView {
      */
     commandsPanelFocusedSessionId =
       passiveResponderCommandSessionId ?? command.commandsPanelFocusedSessionId
-    commandsPanelHeightRatio = Self.clampedCommandsPanelHeightRatio(command.commandsPanelHeightRatio)
+    commandsPanelHeightRatio = clampedCommandsPanelHeightRatio(command.commandsPanelHeightRatio)
     commandsPanelIsVisible = command.commandsPanelIsVisible == true
     commandsPanelLayout = command.commandsPanelLayout
     commandsPanelMode = command.commandsPanelMode ?? "pinned"
@@ -7008,6 +7014,9 @@ final class TerminalWorkspaceView: NSView {
      CDXC:ProjectBoard 2026-05-26-10:08:
      Project board ticket deletion must route through Beads deletion so dependencies, labels, events, and deletion manifests stay consistent with bd CLI behavior.
      Keep the bridge allowlist explicit and require a concrete issue id before running the destructive command.
+
+     CDXC:ProjectBoard 2026-05-30-08:58:
+     The Project Kanban workflow includes Backlog before Todo, so the native Beads bridge must allow the custom `backlog` status instead of rejecting valid drag/drop and edit-status moves from the web board.
      */
     guard let webView else {
       return
@@ -7144,7 +7153,7 @@ final class TerminalWorkspaceView: NSView {
       ]
     case "updateStatus":
       let status = try projectBeadsRequired(request.status, field: "status")
-      guard ["closed", "in_progress", "open", "review", "test"].contains(status) else {
+      guard ["backlog", "closed", "in_progress", "open", "review", "test"].contains(status) else {
         throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads status: \(status)")
       }
       return [
@@ -9130,9 +9139,14 @@ final class TerminalWorkspaceView: NSView {
      CDXC:CommandsPanel 2026-05-14-07:18:
      Double-clicking the command pane's top resize rail must restore the pane to its original/default height, not start a drag resize.
      Emit the existing height-ratio event after updating native layout so persisted sidebar state and AppKit geometry stay on the same path as ordinary resize drags.
+
+     CDXC:CommandsPanel 2026-05-30-09:20:
+     The default restore height is 125px of workspace height, clamped to the same 5%-90% ratio limits used during drag resize.
      */
     commandsPanelResizeDrag = nil
-    commandsPanelHeightRatio = Self.defaultCommandsPanelHeightRatio
+    let defaultHeight = clampedCommandsPanelHeight(Self.defaultCommandsPanelHeightPoints)
+    commandsPanelHeightRatio = Self.clampedCommandsPanelHeightRatio(
+      Double(defaultHeight / max(bounds.height, 1)))
     needsLayout = true
     layoutSubtreeIfNeeded()
     scheduleZmxPersistenceTerminalRefreshAfterResize(reason: "commandsPanelResizeReset")
@@ -13279,11 +13293,26 @@ final class TerminalWorkspaceView: NSView {
     return CGFloat(min(48, max(0, value)))
   }
 
-  private static func clampedCommandsPanelHeightRatio(_ value: Double?) -> CGFloat {
+  private func clampedCommandsPanelHeightRatio(_ value: Double?) -> CGFloat {
     guard let value, value.isFinite else {
-      return defaultCommandsPanelHeightRatio
+      return Self.defaultCommandsPanelHeightRatio(for: bounds.height)
     }
-    return CGFloat(
+    return Self.clampedCommandsPanelHeightRatio(value)
+  }
+
+  private static func defaultCommandsPanelHeightRatio(for workspaceHeight: CGFloat) -> CGFloat {
+    let resolvedWorkspaceHeight =
+      workspaceHeight > 0 ? workspaceHeight : defaultCommandsPanelReferenceWorkspaceHeight
+    let minimumHeight = resolvedWorkspaceHeight * minimumCommandsPanelHeightRatio
+    let maximumHeight = max(minimumHeight, resolvedWorkspaceHeight * maximumCommandsPanelHeightRatio)
+    let defaultHeight = min(
+      max(defaultCommandsPanelHeightPoints, minimumHeight),
+      maximumHeight)
+    return clampedCommandsPanelHeightRatio(Double(defaultHeight / resolvedWorkspaceHeight))
+  }
+
+  private static func clampedCommandsPanelHeightRatio(_ value: Double) -> CGFloat {
+    CGFloat(
       min(
         Double(maximumCommandsPanelHeightRatio),
         max(Double(minimumCommandsPanelHeightRatio), value)))

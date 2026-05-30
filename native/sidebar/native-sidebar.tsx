@@ -58,6 +58,7 @@ import {
   getCodexSessionIdFromTitle,
   MAX_COMMANDS_PANEL_HEIGHT_RATIO,
   MIN_COMMANDS_PANEL_HEIGHT_RATIO,
+  resolveDefaultCommandsPanelHeightRatio,
   getSessionCardPrimaryTitle,
   getSlotPosition,
   isGhostPlaceholderSessionTitle,
@@ -5451,16 +5452,18 @@ function normalizeCommandsPanelMode(mode: unknown): CommandsPanelMode {
   return mode === "floating" ? "floating" : "pinned";
 }
 
-function normalizeCommandsPanelHeightRatio(heightRatio: unknown): number {
+function normalizeCommandsPanelHeightRatio(
+  heightRatio: unknown,
+  workspaceHeightPx?: number,
+): number {
+  const defaultHeightRatio = resolveDefaultCommandsPanelHeightRatio(workspaceHeightPx);
   const numericHeightRatio =
-    typeof heightRatio === "number" ? heightRatio : DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO;
+    typeof heightRatio === "number" ? heightRatio : defaultHeightRatio;
   return Math.max(
     MIN_COMMANDS_PANEL_HEIGHT_RATIO,
     Math.min(
       MAX_COMMANDS_PANEL_HEIGHT_RATIO,
-      Number.isFinite(numericHeightRatio)
-        ? numericHeightRatio
-        : DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO,
+      Number.isFinite(numericHeightRatio) ? numericHeightRatio : defaultHeightRatio,
     ),
   );
 }
@@ -22640,6 +22643,12 @@ async function handleProjectBoardStartWork(
     sessionProjectId: sessionProject.projectId,
     startLocation,
   });
+  /*
+   * CDXC:ProjectBoard 2026-05-30-09:02:
+   * Starting work from the Kanban/Project page must give immediate visual feedback by focusing the created agent session exactly like a sidebar session-card click.
+   * Use the project-qualified session id so current-project and new-worktree starts both route through the normal Project-mode-to-Agents or companion-pane focus behavior.
+   */
+  focusTerminal(createCombinedProjectSessionId(sessionProject.projectId, session.sessionId));
   if (startLocation === "currentProject") {
     await stageNativeAgentPrompt({
       agent,
