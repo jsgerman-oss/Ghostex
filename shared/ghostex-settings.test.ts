@@ -189,7 +189,7 @@ describe("normalizeghostexSettings", () => {
     expect(DEFAULT_ghostex_SETTINGS.hideKeepAwakeTitlebarControl).toBe(false);
     expect(DEFAULT_ghostex_SETTINGS.keepAwakePreventLidSleep).toBe(false);
     expect(KEEP_AWAKE_DURATION_OPTIONS).toEqual([
-      { label: "Indefinitely", value: 0 },
+      { label: "", value: 0 },
       { label: "2 hours", value: 120 },
       { label: "5 hours", value: 300 },
     ]);
@@ -212,6 +212,18 @@ describe("normalizeghostexSettings", () => {
     });
     expect(normalizeghostexSettings({ keepAwakeDefaultDurationMinutes: 999 })).toMatchObject({
       keepAwakeDefaultDurationMinutes: 0,
+    });
+  });
+
+  test("pins removed macOS pane gap setting to zero", () => {
+    /**
+     * CDXC:WorkspaceLayout 2026-05-30-07:24:
+     * Pane Gap is no longer a macOS app setting. Persisted legacy values should
+     * normalize to zero so existing installations lose pane spacing immediately.
+     */
+    expect(DEFAULT_ghostex_SETTINGS.workspacePaneGap).toBe(0);
+    expect(normalizeghostexSettings({ workspacePaneGap: 24 })).toMatchObject({
+      workspacePaneGap: 0,
     });
   });
 

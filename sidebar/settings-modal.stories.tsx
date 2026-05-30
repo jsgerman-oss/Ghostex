@@ -16,7 +16,6 @@ const modalSettings: ghostexSettings = {
   terminalFontSize: 16,
   terminalFontWeight: 400,
   terminalLineHeight: 1.35,
-  workspacePaneGap: 16,
 };
 
 function SettingsModalStory({

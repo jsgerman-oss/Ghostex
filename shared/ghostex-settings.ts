@@ -549,12 +549,12 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   workspaceOpenTargetAvailability: DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY,
   workspaceOpenTargetHiddenIds: [],
   /**
-   * CDXC:WorkspaceLayout 2026-05-11-18:42
-   * Native split panes use the Pane Gap setting for every outside edge and
-   * internal split divider. Default to a tighter five-pixel gap so workspace
-   * chrome stays compact unless the user widens it in Settings.
+   * CDXC:WorkspaceLayout 2026-05-30-07:24:
+   * The macOS app no longer exposes Pane Gap as a user setting. Keep the
+   * persisted field for settings compatibility, but normalize it to zero so
+   * native panes always render without configurable spacing.
    */
-  workspacePaneGap: 5,
+  workspacePaneGap: 0,
 };
 
 export const SIDEBAR_THEME_SETTING_OPTIONS: ReadonlyArray<{
@@ -645,7 +645,7 @@ export const KEEP_AWAKE_DURATION_OPTIONS: ReadonlyArray<{
    * The keep-awake menu should stay intentionally small: indefinite, two hours,
    * five hours, and the runtime Allow Sleep Now action are the complete user-facing duration set.
    */
-  { label: "Indefinitely", value: 0 },
+  { label: "", value: 0 },
   { label: "2 hours", value: 120 },
   { label: "5 hours", value: 300 },
 ];
@@ -1289,12 +1289,7 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     workspaceOpenTargetHiddenIds: normalizeWorkspaceOpenTargetHiddenIds(
       source.workspaceOpenTargetHiddenIds,
     ),
-    workspacePaneGap: clampNumber(
-      readNumber(source, "workspacePaneGap", DEFAULT_ghostex_SETTINGS.workspacePaneGap),
-      0,
-      48,
-      DEFAULT_ghostex_SETTINGS.workspacePaneGap,
-    ),
+    workspacePaneGap: 0,
   };
 }
 

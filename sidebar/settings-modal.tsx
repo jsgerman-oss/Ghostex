@@ -333,7 +333,6 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
     "hideLastActiveTimeOnSessionCards",
   ],
   workspace: [
-    "workspacePaneGap",
     "workspaceActivePaneBorderColor",
     "workspaceBackgroundColor",
     "debuggingMode",
@@ -1215,11 +1214,6 @@ export function SettingsModal({
     ]),
     workspace: getSettingsSectionSearch(settingsSearchQuery, "Workspace", [
       {
-        key: "workspacePaneGap",
-        subtitle: "Control spacing between panes.",
-        title: "Pane Gap",
-      },
-      {
         key: "workspaceActivePaneBorderColor",
         subtitle: "CSS color for the focused pane border.",
         title: "Active Pane Border",
@@ -1908,19 +1902,12 @@ export function SettingsModal({
 
             {mainSectionVisible("workspace", settingsSearch.workspace) ? (
             <SettingsSection sectionRef={workspaceSectionRef} title="Workspace">
-              {mainSettingVisible(settingsSearch.workspace, "workspacePaneGap") ? (
-              <SliderNumberField
-                description="Control spacing between panes."
-                label="Pane Gap"
-                {...getSettingModificationProps("workspacePaneGap")}
-                max={48}
-                min={0}
-                onCommit={(value) => updateDraft("workspacePaneGap", value)}
-                onChange={(value) => updateDraftDebounced("workspacePaneGap", value)}
-                step={1}
-                value={draft.workspacePaneGap}
-              />
-              ) : null}
+              {/*
+                CDXC:WorkspaceLayout 2026-05-30-07:24:
+                Pane Gap is no longer configurable in the macOS app. Keep the
+                Workspace section focused on color/debug controls while shared
+                settings normalization pins the retained compatibility field to zero.
+              */}
               {mainSettingVisible(settingsSearch.workspace, "workspaceActivePaneBorderColor") ? (
               <TextField
                 description="CSS color for the focused pane border."
