@@ -1293,6 +1293,39 @@ struct GhostexGhosttySurfaceModel {
   }
 }
 
+private final class TerminalPaneScroller: NSScroller {
+  private static let slotColor = NSColor(calibratedWhite: 0.08, alpha: 0.18)
+  private static let knobColor = NSColor(calibratedWhite: 0.92, alpha: 0.48)
+  private static let activeKnobColor = NSColor(calibratedWhite: 0.98, alpha: 0.68)
+  private static let knobInset = CGFloat(2)
+
+  override var isOpaque: Bool {
+    false
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    drawKnobSlot(in: rect(for: .knobSlot), highlight: false)
+    drawKnob()
+  }
+
+  override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
+    guard !slotRect.isEmpty else {
+      return
+    }
+    Self.slotColor.setFill()
+    NSBezierPath(rect: slotRect).fill()
+  }
+
+  override func drawKnob() {
+    let knobRect = rect(for: .knob).insetBy(dx: Self.knobInset, dy: Self.knobInset)
+    guard !knobRect.isEmpty else {
+      return
+    }
+    (isHighlighted ? Self.activeKnobColor : Self.knobColor).setFill()
+    NSBezierPath(rect: knobRect).fill()
+  }
+}
+
 private final class GhostexGhosttySurfaceHostView: NSView {
   private static let scrollButtonSize = CGSize(width: 37.5, height: 37.5)
   private static let scrollButtonRightInset: CGFloat = 17
@@ -1319,6 +1352,14 @@ private final class GhostexGhosttySurfaceHostView: NSView {
      behavior. A plain host NSView removes the scrollbar and leaves wheel
      scrolling dependent only on surface event delivery.
      */
+    /**
+     CDXC:NativeTerminalScroll 2026-05-30-08:29:
+     Ghostty terminal scrollbars must be visually square, with no rounded thumb
+     or track corners. Use a host-owned NSScroller subclass so only embedded
+     Ghostty panes change shape while AppKit still owns scrollback geometry and
+     drag-to-row behavior.
+     */
+    scrollView.verticalScroller = TerminalPaneScroller()
     scrollView.hasVerticalScroller = surfaceView.scrollbarConfiguration != .never
     scrollView.hasHorizontalScroller = false
     scrollView.autohidesScrollers = false
@@ -21484,6 +21525,11 @@ private final class TerminalPaneScrollButton: NSButton {
      terminal stack. Keep the chevron paths aligned with the semantic button
      action after restoring the upper button to scroll-to-top and the lower
      button to scroll-to-bottom.
+
+     CDXC:NativeTerminalScroll 2026-05-30-08:29:
+     Scroll-to-top and scroll-to-bottom overlay buttons should match the square
+     terminal scrollbar treatment. Keep the existing icon-only overlay behavior
+     but set button roundness to zero instead of drawing circular controls.
      */
     title = ""
     isBordered = false
@@ -21492,7 +21538,7 @@ private final class TerminalPaneScrollButton: NSButton {
     layer?.backgroundColor = Self.normalBackgroundColor
     layer?.borderColor = Self.borderColor
     layer?.borderWidth = 1
-    layer?.cornerRadius = 18.75
+    layer?.cornerRadius = 0
     layer?.masksToBounds = false
     layer?.shadowColor = NSColor.black.cgColor
     layer?.shadowOffset = CGSize(width: 0, height: -10)
