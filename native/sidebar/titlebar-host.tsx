@@ -8,6 +8,7 @@ import {
   IconChecklist,
   IconCode,
   IconCoffee,
+  IconCommand,
   IconCpu,
   IconDeviceDesktop,
   IconDownload,
@@ -16,11 +17,13 @@ import {
   IconGitCompare,
   IconGitCommit,
   IconGitPullRequest,
+  IconInfoCircle,
   IconLayoutSidebarLeftExpand,
   IconLoader2,
   IconMoon,
   IconPlayerPlay,
   IconRocket,
+  IconSearch,
   IconSettings,
   IconStackPush,
   IconTerminal2,
@@ -153,6 +156,13 @@ type TitlebarResourceSession = {
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: string;
   terminalTitle?: string;
+  title: string;
+};
+
+type TitlebarTip = {
+  body: string;
+  icon: "browser" | "command" | "moon" | "resources" | "search";
+  id: string;
   title: string;
 };
 
@@ -293,6 +303,7 @@ const LAST_ACTION_COMMAND_STORAGE_PREFIX = "ghostex.titlebar.lastActionCommandBy
 const KEEP_AWAKE_RUNTIME_STORAGE_KEY = "ghostex.titlebar.keepAwakeRuntime";
 const KEEP_AWAKE_LID_SLEEP_STORAGE_KEY = "ghostex.titlebar.lidSleepPrevention";
 const RESOURCES_MENU_FIRST_OPEN_STORAGE_KEY = "ghostex.titlebar.resourcesMenuSeen";
+const TITLEBAR_TIPS_READ_STORAGE_KEY = "ghostex.titlebar.tips.readIds";
 const KEEP_AWAKE_POWER_CHECK_INTERVAL_MS = 30_000;
 const KEEP_AWAKE_ADMIN_PROCESS_TIMEOUT_MS = 120_000;
 /**
@@ -314,6 +325,51 @@ const RESOURCE_POLL_INTERVAL_MS = 5_000;
  * sidebar interaction model.
  */
 const TITLEBAR_SPLIT_MENU_CENTER_OFFSET = -14;
+
+/**
+ * CDXC:TipsAndTricks 2026-05-30-08:31:
+ * Tips are authored in code, not by end users in the dropdown. Keep this array
+ * as the ordered source of truth so adding, removing, or reordering tips is a
+ * normal code edit while read state survives app updates by stable tip id.
+ */
+const TITLEBAR_TIPS: TitlebarTip[] = [
+  {
+    body: 'Open actions with Cmd K, then type "move pane" to place the active terminal without dragging.',
+    icon: "command",
+    id: "command-palette-pane-moves",
+    title: "Use Command Palette for pane moves",
+  },
+  {
+    body: "The Resources menu can sleep inactive terminal sessions while keeping them restorable in the sidebar.",
+    icon: "moon",
+    id: "sleep-idle-sessions-from-resources",
+    title: "Sleep idle sessions from Resources",
+  },
+  {
+    body: "Use browser panes beside agents when the task needs screenshots, DOM inspection, or logged-in product state.",
+    icon: "browser",
+    id: "attach-browser-pane-to-task",
+    title: "Attach a browser pane to a task",
+  },
+  {
+    body: 'Open the sidebar, choose Previous Sessions, click "Search by Text", then type any words you remember from the prompt.',
+    icon: "search",
+    id: "find-session-by-prompt-text",
+    title: "Find any session from prompt text",
+  },
+  {
+    body: "Pin a workspace from the sidebar when you need it to survive context switches.",
+    icon: "resources",
+    id: "pin-important-workspaces",
+    title: "Pin important workspaces",
+  },
+  {
+    body: "Use generated titles to keep resumed agent threads searchable from the titlebar.",
+    icon: "command",
+    id: "name-sessions-after-current-task",
+    title: "Name sessions after the current task",
+  },
+];
 
 type KeepAwakeRuntimeState = {
   durationMinutes: KeepAwakeDurationMinutes;
@@ -1046,13 +1102,16 @@ function App() {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [openInMenuOpen, setOpenInMenuOpen] = useState(false);
   const [resourcesMenuOpen, setResourcesMenuOpen] = useState(false);
+  const [tipsMenuOpen, setTipsMenuOpen] = useState(false);
+  const [readTipIds, setReadTipIds] = useState<Set<string>>(() => readStoredTitlebarTipIds());
   const titlebarOverlayOpen =
     actionsMenuOpen ||
     gitMenuOpen ||
     keepAwakeMenuOpen ||
     modeMenuOpen ||
     openInMenuOpen ||
-    resourcesMenuOpen;
+    resourcesMenuOpen ||
+    tipsMenuOpen;
   const [keepAwakeRuntime, setKeepAwakeRuntime] = useState<KeepAwakeRuntimeState | undefined>(
     () => readStoredKeepAwakeRuntime(),
   );
@@ -1083,6 +1142,42 @@ function App() {
     () => createInactiveTerminalSleepSessionIds(projectState.resourceGroups),
     [projectState.resourceGroups],
   );
+  const unreadTips = useMemo(
+    () => TITLEBAR_TIPS.filter((tip) => !readTipIds.has(tip.id)),
+    [readTipIds],
+  );
+  const readTips = useMemo(
+    () => TITLEBAR_TIPS.filter((tip) => readTipIds.has(tip.id)),
+    [readTipIds],
+  );
+  const markTipRead = useCallback((tipId: string) => {
+    setReadTipIds((current) => {
+      if (current.has(tipId)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(tipId);
+      writeStoredTitlebarTipIds(next);
+      return next;
+    });
+  }, []);
+  const markAllTipsRead = useCallback(() => {
+    setReadTipIds((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const tip of TITLEBAR_TIPS) {
+        if (!next.has(tip.id)) {
+          next.add(tip.id);
+          changed = true;
+        }
+      }
+      if (!changed) {
+        return current;
+      }
+      writeStoredTitlebarTipIds(next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const suppressTitlebarWebviewContextMenu = (event: MouseEvent) => {
@@ -1127,13 +1222,15 @@ function App() {
     const closeMenusHiddenAtNarrowWidth = () => {
       /**
        * CDXC:ReactTitlebar 2026-05-29-16:05:
-       * App widths below 620px hide the top-right Resources and Keep Awake
-       * controls, so their portaled menus must close at the same breakpoint
-       * instead of remaining open after their triggers leave the titlebar.
+       * App widths below 620px hide the top-right Tips, Resources, and Keep
+       * Awake controls, so their portaled menus must close at the same
+       * breakpoint instead of remaining open after their triggers leave the
+       * titlebar.
        */
       if (narrowTitlebarMedia.matches) {
         setKeepAwakeMenuOpen(false);
         setResourcesMenuOpen(false);
+        setTipsMenuOpen(false);
       }
     };
     closeMenusHiddenAtNarrowWidth();
@@ -1288,6 +1385,7 @@ function App() {
     modeMenuOpen,
     openInMenuOpen,
     resourcesMenuOpen,
+    tipsMenuOpen,
     resourceProcesses.length,
     projectState.projectEditorCompanionPaneHidden,
     projectState.projectIconDataUrl,
@@ -1332,6 +1430,7 @@ function App() {
         setKeepAwakeMenuOpen(false);
         setOpenInMenuOpen(false);
         setResourcesMenuOpen(false);
+        setTipsMenuOpen(false);
       },
       setActiveProjectState: (state) => {
         setProjectState((current) => ({
@@ -2024,7 +2123,77 @@ function App() {
              * Top-right titlebar menus are right-click affordances. Keep left
              * click on primary icon actions, hide chevrons, and tell users about
              * right-click options through compact hover tooltips.
+             *
+             * CDXC:ReactTitlebar 2026-05-30-08:39:
+             * Tips & Tricks should sit before Keep Awake in the top-right
+             * titlebar control order, keeping the info/help affordance closer to
+             * the mode switcher while power controls remain farther right.
              */}
+            <DropdownMenu onOpenChange={setTipsMenuOpen} open={tipsMenuOpen}>
+              <ButtonGroup className="titlebar-open-group titlebar-tips-group" data-titlebar-hit-region>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label={
+                          unreadTips.length > 0
+                            ? `Tips and tricks, ${unreadTips.length} unread`
+                            : "Tips and tricks"
+                        }
+                        className="titlebar-session-button titlebar-tips-button"
+                        onClick={() => {
+                          setTipsMenuOpen(true);
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setTipsMenuOpen(true);
+                        }}
+                        type="button"
+                        variant="ghost"
+                      >
+                        {/*
+                         * CDXC:TipsAndTricks 2026-05-30-08:39:
+                         * The titlebar Tips & Tricks affordance is an info circle,
+                         * not the earlier square glyph. Unread state is a small
+                         * blue dot without a visible number so the icon stays quiet.
+                         */}
+                        <IconInfoCircle aria-hidden="true" size={16} stroke={1.8} />
+                        {unreadTips.length > 0 ? (
+                          <span aria-hidden="true" className="titlebar-tips-unread-badge" />
+                        ) : null}
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>Tips & Tricks</TooltipContent>
+                </Tooltip>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      aria-label="Tips and tricks menu"
+                      aria-hidden="true"
+                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
+                      tabIndex={-1}
+                      type="button"
+                      variant="ghost"
+                    />
+                  }
+                />
+              </ButtonGroup>
+              <DropdownMenuContent
+                align="end"
+                className="titlebar-open-menu titlebar-tips-menu rounded-none border-border/80 !bg-[#0e0e0e] p-0 text-[13px] text-foreground shadow-2xl"
+                data-titlebar-hit-region
+                sideOffset={6}
+                style={{ backgroundColor: "#0e0e0e" }}
+              >
+                <TitlebarTipsMenu
+                  onMarkAllRead={markAllTipsRead}
+                  onMarkRead={markTipRead}
+                  readTips={readTips}
+                  unreadTips={unreadTips}
+                />
+              </DropdownMenuContent>
+            </DropdownMenu>
             {!projectState.keepAwake.hideTitlebarControl ? (
               <DropdownMenu onOpenChange={setKeepAwakeMenuOpen} open={keepAwakeMenuOpen}>
                 <ButtonGroup className="titlebar-open-group titlebar-keep-awake-group" data-titlebar-hit-region>
@@ -2541,6 +2710,22 @@ function readStoredKeepAwakeRuntime(): KeepAwakeRuntimeState | undefined {
   }
 }
 
+function readStoredTitlebarTipIds(): Set<string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TITLEBAR_TIPS_READ_STORAGE_KEY) || "[]");
+    if (!Array.isArray(parsed)) {
+      return new Set();
+    }
+    return new Set(parsed.filter((id): id is string => typeof id === "string" && id.length > 0));
+  } catch {
+    return new Set();
+  }
+}
+
+function writeStoredTitlebarTipIds(ids: Set<string>) {
+  localStorage.setItem(TITLEBAR_TIPS_READ_STORAGE_KEY, JSON.stringify([...ids]));
+}
+
 async function applyKeepAwakeLidSleepPrevention(
   enabled: boolean,
   options: { installIfNeeded?: boolean } = {},
@@ -2608,6 +2793,173 @@ async function readKeepAwakePowerSnapshot(): Promise<
   } catch (error) {
     console.warn("Failed to read keep-awake power state", error);
     return undefined;
+  }
+}
+
+function TitlebarTipsMenu({
+  onMarkAllRead,
+  onMarkRead,
+  readTips,
+  unreadTips,
+}: {
+  onMarkAllRead: () => void;
+  onMarkRead: (tipId: string) => void;
+  readTips: TitlebarTip[];
+  unreadTips: TitlebarTip[];
+}) {
+  const [readSectionCollapsed, setReadSectionCollapsed] = useState(unreadTips.length > 0);
+  useEffect(() => {
+    /**
+     * CDXC:TipsAndTricks 2026-05-30-08:31:
+     * Old tips should stay out of the way while unread tips exist, but once the
+     * user has read everything the Read section should open automatically so
+     * the completed set remains visible without an extra click.
+     */
+    setReadSectionCollapsed(unreadTips.length > 0);
+  }, [unreadTips.length]);
+  const readSectionOpen = !readSectionCollapsed;
+  return (
+    <div className="titlebar-tips-panel" onClick={(event) => event.stopPropagation()}>
+      <div className="titlebar-tips-header">
+        <div className="titlebar-tips-title">
+          <IconInfoCircle aria-hidden="true" size={18} stroke={1.8} />
+          <span>Tips & Tricks</span>
+        </div>
+        <div className="titlebar-tips-actions">
+          <button
+            aria-label="Mark all tips as read"
+            className="titlebar-tips-action-button"
+            disabled={unreadTips.length === 0}
+            onClick={onMarkAllRead}
+            type="button"
+          >
+            <IconCheck aria-hidden="true" size={14} stroke={1.9} />
+            <span>Read all</span>
+          </button>
+          <span className="titlebar-tips-summary">{unreadTips.length} unread</span>
+        </div>
+      </div>
+      <div className="titlebar-tips-scroll">
+        <TitlebarTipsSection
+          count={unreadTips.length}
+          emptyText="All caught up."
+          title="Unread"
+        >
+          {unreadTips.map((tip) => (
+            <TitlebarTipRow
+              key={tip.id}
+              onMarkRead={onMarkRead}
+              read={false}
+              tip={tip}
+            />
+          ))}
+        </TitlebarTipsSection>
+        <TitlebarTipsSection
+          collapsed={!readSectionOpen}
+          count={readTips.length}
+          emptyText="No read tips yet."
+          onToggle={() => setReadSectionCollapsed((current) => !current)}
+          title="Read"
+        >
+          {readTips.map((tip) => (
+            <TitlebarTipRow
+              key={tip.id}
+              onMarkRead={onMarkRead}
+              read
+              tip={tip}
+            />
+          ))}
+        </TitlebarTipsSection>
+      </div>
+    </div>
+  );
+}
+
+function TitlebarTipsSection({
+  children,
+  collapsed = false,
+  count,
+  emptyText,
+  onToggle,
+  title,
+}: {
+  children: ReactNode;
+  collapsed?: boolean;
+  count: number;
+  emptyText: string;
+  onToggle?: () => void;
+  title: string;
+}) {
+  return (
+    <section className="titlebar-tips-section">
+      <div className="titlebar-tips-section-heading">
+        <button
+          aria-expanded={!collapsed}
+          className="titlebar-tips-section-toggle"
+          disabled={!onToggle}
+          onClick={onToggle}
+          type="button"
+        >
+          <IconChevronDown aria-hidden="true" data-collapsed={String(collapsed)} size={14} stroke={1.8} />
+          <span>{title}</span>
+          <span className="titlebar-tips-section-count">{count}</span>
+        </button>
+      </div>
+      {collapsed ? null : (
+        <div className="titlebar-tips-list">
+          {count > 0 ? children : <div className="titlebar-tips-empty">{emptyText}</div>}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TitlebarTipRow({
+  onMarkRead,
+  read,
+  tip,
+}: {
+  onMarkRead: (tipId: string) => void;
+  read: boolean;
+  tip: TitlebarTip;
+}) {
+  return (
+    <article className="titlebar-tip-row" data-read={String(read)}>
+      <div className="titlebar-tip-icon">{getTitlebarTipIcon(tip.icon)}</div>
+      <div className="titlebar-tip-copy">
+        <div className="titlebar-tip-title">{tip.title}</div>
+        <div className="titlebar-tip-body">{tip.body}</div>
+      </div>
+      {read ? (
+        <span className="titlebar-tip-read-state" aria-label="Read">
+          <IconCheck aria-hidden="true" size={15} stroke={1.9} />
+        </span>
+      ) : (
+        <button
+          aria-label={`Mark ${tip.title} as read`}
+          className="titlebar-tip-read-button"
+          onClick={() => onMarkRead(tip.id)}
+          type="button"
+        >
+          <IconCheck aria-hidden="true" size={15} stroke={1.9} />
+        </button>
+      )}
+    </article>
+  );
+}
+
+function getTitlebarTipIcon(icon: TitlebarTip["icon"]): ReactNode {
+  switch (icon) {
+    case "browser":
+      return <IconWorld aria-hidden="true" size={16} stroke={1.8} />;
+    case "command":
+      return <IconCommand aria-hidden="true" size={16} stroke={1.8} />;
+    case "moon":
+      return <IconMoon aria-hidden="true" size={16} stroke={1.8} />;
+    case "resources":
+      return <IconDeviceDesktop aria-hidden="true" size={16} stroke={1.8} />;
+    case "search":
+      return <IconSearch aria-hidden="true" size={16} stroke={1.8} />;
   }
 }
 
@@ -4038,16 +4390,43 @@ styleElement.textContent = `
     padding: 0 12px;
     width: 42px;
   }
+  .titlebar-tips-button {
+    padding: 0 12px;
+    position: relative;
+    width: 42px;
+  }
+  .titlebar-tips-unread-badge {
+    /*
+     * CDXC:TipsAndTricks 2026-05-30-08:39:
+     * The unread indicator is intentionally a quiet half-size dot instead of a
+     * numbered badge: use #95d7f6 and a circular shape at the top-right of the
+     * Tips & Tricks icon.
+     */
+    align-items: center;
+    background: #95d7f6;
+    border: 1px solid #0e0e0e;
+    display: inline-flex;
+    height: 7.5px;
+    justify-content: center;
+    min-width: 0;
+    padding: 0;
+    position: absolute;
+    right: 8px;
+    top: 5px;
+    width: 7.5px;
+    border-radius: 999px;
+  }
   @media (max-width: 619.98px) {
     /**
      * CDXC:ReactTitlebar 2026-05-29-16:05:
      * App widths below 620px need the top-right titlebar chrome to prioritize
-     * the primary Git action. Hide Exit Focus, Keep Awake, and Resources, and
-     * remove visible Commit wording from the Git primary label while keeping
-     * non-commit destination text such as push or PR when there is room.
+     * the primary Git action. Hide Exit Focus, Keep Awake, Tips, and Resources,
+     * and remove visible Commit wording from the Git primary label while
+     * keeping non-commit destination text such as push or PR when there is room.
      */
     .titlebar-exit-focus-button,
     .titlebar-keep-awake-group,
+    .titlebar-tips-group,
     .titlebar-resource-button {
       display: none !important;
     }
@@ -4161,6 +4540,200 @@ styleElement.textContent = `
   .titlebar-action-command-tooltip {
     max-width: 190px !important;
     overflow-wrap: anywhere;
+  }
+  .titlebar-tips-menu {
+    /**
+     * CDXC:TipsAndTricks 2026-05-30-08:31:
+     * Tips should use the same maximum dropdown height as Resources and keep
+     * the authored array order on screen. The menu is a reading surface, not an
+     * editor, so it stays dense and square like the Resources manager.
+     */
+    background: #0e0e0e !important;
+    background-color: #0e0e0e !important;
+    width: min(656px, calc(100vw - 24px));
+    max-height: min(760px, calc(100vh - 46px));
+    overflow: hidden;
+  }
+  .titlebar-tips-panel {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    max-height: min(760px, calc(100vh - 46px));
+    overflow: hidden;
+  }
+  .titlebar-tips-header {
+    align-items: center;
+    border-bottom: 1px solid rgba(255,255,255,0.12);
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    padding: 11px 12px;
+  }
+  .titlebar-tips-title,
+  .titlebar-tips-actions,
+  .titlebar-tips-summary,
+  .titlebar-tips-section-toggle,
+  .titlebar-tip-read-button,
+  .titlebar-tip-read-state {
+    align-items: center;
+    display: inline-flex;
+  }
+  .titlebar-tips-title {
+    color: rgba(255,255,255,0.96);
+    font: 750 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    gap: 8px;
+    min-width: 0;
+  }
+  .titlebar-tips-actions {
+    gap: 10px;
+    margin-left: auto;
+  }
+  .titlebar-tips-action-button {
+    align-items: center;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 0;
+    color: rgba(255,255,255,0.78);
+    display: inline-flex;
+    gap: 6px;
+    font: 750 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    height: 24px;
+    justify-content: center;
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+  .titlebar-tips-action-button:not(:disabled):hover {
+    background: rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.94);
+  }
+  .titlebar-tips-action-button:disabled {
+    color: rgba(255,255,255,0.3);
+    cursor: default;
+  }
+  .titlebar-tips-summary {
+    color: rgba(255,255,255,0.62);
+    font: 650 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    white-space: nowrap;
+  }
+  .titlebar-tips-scroll {
+    display: grid;
+    gap: 0;
+    max-height: min(700px, calc(100vh - 104px));
+    overflow: auto;
+    padding: 8px 10px 10px;
+  }
+  .titlebar-tips-section + .titlebar-tips-section {
+    margin-top: 10px;
+  }
+  .titlebar-tips-section-heading {
+    align-items: center;
+    color: rgba(255,255,255,0.62);
+    display: flex;
+    font: 750 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    gap: 6px;
+    letter-spacing: 0.08em;
+    padding: 4px 2px 7px;
+    text-transform: uppercase;
+    width: 100%;
+  }
+  .titlebar-tips-section-toggle {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    flex: 1;
+    font: inherit;
+    gap: 6px;
+    justify-content: flex-start;
+    letter-spacing: inherit;
+    min-width: 0;
+    padding: 0;
+    text-transform: inherit;
+  }
+  .titlebar-tips-section-toggle:disabled {
+    cursor: default;
+  }
+  .titlebar-tips-section-toggle svg[data-collapsed="true"] {
+    transform: rotate(-90deg);
+  }
+  .titlebar-tips-section-count {
+    color: rgba(255,255,255,0.38);
+  }
+  .titlebar-tips-list {
+    display: grid;
+    gap: 7px;
+  }
+  .titlebar-tip-row {
+    align-items: start;
+    background: rgba(255,255,255,0.025);
+    border: 1px solid rgba(255,255,255,0.1);
+    display: grid;
+    gap: 10px;
+    grid-template-columns: 28px minmax(0, 1fr) 28px;
+    min-height: 72px;
+    overflow: hidden;
+    padding: 9px 8px;
+  }
+  .titlebar-tip-row[data-read="true"] {
+    opacity: 0.72;
+  }
+  .titlebar-tip-icon {
+    align-items: center;
+    align-self: start;
+    background: rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.84);
+    display: inline-flex;
+    height: 28px;
+    justify-content: center;
+    width: 28px;
+  }
+  .titlebar-tip-copy {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+  }
+  .titlebar-tip-title {
+    color: rgba(255,255,255,0.94);
+    font: 700 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .titlebar-tip-body {
+    color: rgba(255,255,255,0.58);
+    display: -webkit-box;
+    font: 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .titlebar-tip-read-button,
+  .titlebar-tip-read-state {
+    align-self: end;
+    justify-self: end;
+    justify-content: center;
+  }
+  .titlebar-tip-read-button {
+    background: rgba(255,255,255,0.14);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 0;
+    color: rgba(255,255,255,0.9);
+    height: 24px;
+    padding: 0;
+    transition: background 120ms ease, color 120ms ease;
+    width: 24px;
+  }
+  .titlebar-tip-read-button:hover {
+    background: rgba(255,255,255,0.2);
+    color: rgba(255,255,255,0.96);
+  }
+  .titlebar-tip-read-state {
+    color: rgba(255,255,255,0.46);
+    height: 24px;
+    width: 24px;
+  }
+  .titlebar-tips-empty {
+    color: rgba(255,255,255,0.54);
+    font: 500 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    padding: 10px 4px;
   }
   .titlebar-resources-menu {
     /**
