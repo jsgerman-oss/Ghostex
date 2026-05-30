@@ -459,8 +459,9 @@ type NativeHostCommand =
       sessionAgentIconColors?: Record<string, string>;
       sessionActivities?: Record<string, "attention" | "sleeping" | "working">;
       sessionDelayedSendRemainingLabels?: Record<string, string>;
-	      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
-	      sessionTitles?: Record<string, string>;
+      sessionFirstPromptTitleGenerationSessionIds?: string[];
+      sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
+      sessionTitles?: Record<string, string>;
       keepAwake?: {
         activateOnExternalDisplay: boolean;
         activateOnLaunch: boolean;
@@ -500,6 +501,7 @@ type NativeHostCommand =
       sessionActivities?: Record<string, "attention" | "sleeping" | "working">;
       sessionDelayedSendRemainingLabels?: Record<string, string>;
       sessionFaviconDataUrls?: Record<string, string>;
+      sessionFirstPromptTitleGenerationSessionIds?: string[];
       sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;
       showSessionIdInTerminalPanes?: boolean;
@@ -750,6 +752,7 @@ type NativeHostEvent =
   | { exitCode?: number; sessionId: string; type: "terminalExited" }
   | { sessionId: string; type: "terminalFocused" }
   | { sessionId: string; type: "terminalBell" }
+  | { sessionId: string; type: "firstPromptAutoRenameCancelled" }
   | { sessionId: string; type: "nativeSessionSurfaceMissing" }
   | { cwd: string; reason: "missingCwd" | string; sessionId: string; type: "terminalRestoreBlocked" }
   | { heightRatio: number; type: "commandsPanelHeightRatioChanged" }
@@ -995,6 +998,37 @@ ${GIT_RELEASE_STEPS_PROMPT}`;
 const GIT_RELEASE_ONLY_PROMPT = `Please release this app using the usual release workflow.
 
 ${GIT_RELEASE_STEPS_PROMPT}`;
+
+function buildGitSyncWithMainPrompt(input: {
+  branch: string | null;
+  project: NativeProject;
+}): string {
+  /**
+   * CDXC:WorktreeSync 2026-05-30-05:13:
+   * Sync with Main is an agent-run worktree preparation workflow. The prompt
+   * should ask the agent to bring main into the worktree while preserving both
+   * sides, because the user's next step is usually merging the worktree back
+   * into main.
+   */
+  const worktree = input.project.worktree;
+  return [
+    "Please sync the latest main branch changes into this worktree so it can be merged back to main afterward.",
+    "",
+    `Repository: ${input.project.path}`,
+    `Current worktree branch: ${input.branch ?? worktree?.branch ?? "(unknown)"}`,
+    worktree ? `Main project: ${worktree.parentProjectName} (${worktree.parentProjectPath})` : "",
+    "",
+    "Requirements:",
+    "- Fetch the latest remote refs before syncing.",
+    "- Bring main into this worktree branch using the safest normal project workflow for this repository, such as merge or rebase only if that is clearly the repo convention.",
+    "- Preserve work from both main and this worktree. If conflicts happen, resolve them without dropping code, behavior, or UX from either side.",
+    "- After resolving conflicts, run the relevant checks you can run locally.",
+    "- Leave the worktree branch ready for the user to merge back into main.",
+    "- Stop and explain clearly if the repository state is unsafe or if a decision is needed.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 /**
  * CDXC:WorkspaceDock 2026-04-27-08:48
  * Workspace context-menu themes use the same concrete theme palette names as
@@ -1027,6 +1061,7 @@ const GENERATED_SESSION_TITLE_SOURCE_MAX_LENGTH = 250;
 let storedAgents: StoredSidebarAgent[] = [];
 let storedAgentOrder: string[] = [];
 let agents: SidebarAgentButton[] = [];
+const gitWorkflowToastBySessionId = new Map<string, { title: string; toastId: string }>();
 let projectCommandsByProjectId: ProjectSidebarCommandsStore = {};
 let storedCommands: StoredSidebarCommand[] = [];
 let storedCommandOrder: string[] = [];
@@ -1406,6 +1441,8 @@ const terminalStateById = new Map<
     agentName?: string;
     agentSessionId?: string;
     agentSessionPath?: string;
+    firstPromptAutoRenameActivePrompt?: string;
+    firstPromptAutoRenameGenerationId?: number;
     firstPromptAutoRenameInProgress?: boolean;
     firstPromptAutoRenameLastLogKey?: string;
     firstPromptAutoRenameProcessedPrompt?: string;
@@ -1420,6 +1457,8 @@ const terminalStateById = new Map<
     terminalTitle?: string;
   }
 >();
+let nextFirstPromptAutoRenameGenerationId = 0;
+const cancelledFirstPromptAutoRenameGenerationIds = new Set<number>();
 type NativePaneState = "mounted" | "mounting" | "unmounted";
 type ProviderSessionState = "exists" | "missing" | "persistence-disabled" | "unknown";
 type ProviderSessionStateLookupOptions = {
@@ -2045,8 +2084,60 @@ function showAppToast(
   level: "info" | "success" | "warning" | "error",
   title: string,
   description?: string,
+  options: { persistent?: boolean; toastId?: string } = {},
 ): void {
-  postAppModalHostMessage({ description, level, title, type: "toast" }, "AppModals:toast");
+  postAppModalHostMessage(
+    {
+      description,
+      level,
+      persistent: options.persistent,
+      title,
+      toastId: options.toastId,
+      type: "toast",
+    },
+    "AppModals:toast",
+  );
+}
+
+function createAppToastId(scope: string): string {
+  return `toast-${scope}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function showRunningAppToast(title: string, description?: string): string {
+  const toastId = createAppToastId("git");
+  showAppToast("info", title, description, { persistent: true, toastId });
+  return toastId;
+}
+
+function finishRunningAppToast(
+  toastId: string | undefined,
+  level: "success" | "warning" | "error",
+  title: string,
+  description?: string,
+): void {
+  showAppToast(level, title, description, toastId ? { toastId } : {});
+}
+
+function rememberGitWorkflowToast(sessionId: string, toastId: string, title: string): void {
+  gitWorkflowToastBySessionId.set(sessionId, { title, toastId });
+}
+
+function finishGitWorkflowToastForSession(
+  sessionId: string,
+  level: "success" | "error",
+  description?: string,
+): void {
+  const entry = gitWorkflowToastBySessionId.get(sessionId);
+  if (!entry) {
+    return;
+  }
+  gitWorkflowToastBySessionId.delete(sessionId);
+  finishRunningAppToast(
+    entry.toastId,
+    level,
+    level === "success" ? `${entry.title} finished` : `${entry.title} failed`,
+    description,
+  );
 }
 
 function postGhostexFolderStats(message: SidebarGhostexFolderStatsMessage): void {
@@ -5832,15 +5923,45 @@ async function runSidebarGitAction(
     return;
   }
 
+  if (action === "syncMain") {
+    const project = activeProject();
+    if (!project.worktree) {
+      showAppToast("warning", "Worktree unavailable", "Open a worktree project to sync with main.");
+      return;
+    }
+    await runSidebarGitPromptAction(
+      "Sync with Main",
+      buildGitSyncWithMainPrompt({ branch: gitState.branch, project }),
+    );
+    return;
+  }
+
+  let toastId: string | undefined;
   try {
     if (shouldPromptSidebarGitAction(options)) {
       promptSidebarGitActionReview(action);
       return;
     }
 
+    if (action === "pr" && gitState.pr?.state !== "open") {
+      await runSidebarGitPullRequestAgentWorkflow({
+        deleteWorktreeAfter: false,
+        filePaths: undefined,
+        message: "",
+        pending: {
+          action,
+          hasCommit: gitState.hasWorkingTreeChanges,
+          projectId: activeProject().projectId,
+          subject: "",
+        },
+        project: activeProject(),
+      });
+      return;
+    }
+
+    toastId = showRunningAppToast(resolveSidebarGitStartedTitle(action), activeProject().name);
     gitState = { ...gitState, isBusy: true };
     publish();
-    showAppToast("info", resolveSidebarGitStartedTitle(action), activeProject().name);
     if (action === "commit") {
       if ((await commitWorkingTree(action)) === "pending") {
         return;
@@ -5858,11 +5979,12 @@ async function runSidebarGitAction(
       await openOrCreatePullRequest();
     }
     await refreshGitState();
-    showAppToast("success", resolveSidebarGitFinishedTitle(action), activeProject().name);
+    finishRunningAppToast(toastId, "success", resolveSidebarGitFinishedTitle(action), activeProject().name);
   } catch (error) {
     gitState = { ...gitState, isBusy: false };
     publish();
-    showAppToast(
+    finishRunningAppToast(
+      toastId,
       "error",
       `${resolveSidebarGitActionNoun(action)} failed`,
       error instanceof Error ? error.message : `Git ${action} failed.`,
@@ -6241,22 +6363,37 @@ async function runSidebarGitPromptAction(
   }
 
   const projectId = activeProjectId;
-  showAppToast("info", `Opening ${agent.name}`, title);
+  const toastId = showRunningAppToast(`${title} running`, `Opening ${agent.name}`);
   const session = await launchAgentTerminal(agent);
   if (!session) {
-    showAppToast("error", `Could not open ${agent.name}`, `${title} did not start.`);
+    finishRunningAppToast(toastId, "error", `Could not open ${agent.name}`, `${title} did not start.`);
     return;
   }
+  rememberGitWorkflowToast(session.sessionId, toastId, title);
 
   await stageNativeAgentPrompt({
     agent,
     projectId,
     prompt,
-    renameTitle: title,
+    renameTitle: formatGitAgentWorkflowTitle(title),
     session,
     submitPrompt: true,
   });
-  showAppToast("success", `${title} started`, activeProject().name);
+  showAppToast("info", `${title} running in ${agent.name}`, activeProject().name, {
+    persistent: true,
+    toastId,
+  });
+}
+
+function formatGitAgentWorkflowTitle(title: string): string {
+  /**
+   * CDXC:GitAgentWorkflows 2026-05-30-05:13:
+   * Agent terminals spawned for Git/GitHub workflows should rename with a
+   * `Git: ` prefix so their purpose remains obvious after multiple agent tabs
+   * are open.
+   */
+  const normalizedTitle = title.trim();
+  return normalizedTitle.startsWith("Git:") ? normalizedTitle : `Git: ${normalizedTitle}`;
 }
 
 function resolveActiveProjectRelativePath(relativePath: string): string {
@@ -6527,6 +6664,7 @@ async function continueGitActionAfterCommitConfirmation(
     return;
   }
   pendingGitCommitRequests.delete(requestId);
+  let toastId: string | undefined;
   try {
     const project = focusPendingGitProject(pending.projectId);
     if (pending.action === "pr") {
@@ -6541,9 +6679,9 @@ async function continueGitActionAfterCommitConfirmation(
       return;
     }
 
+    toastId = showRunningAppToast(resolveSidebarGitStartedTitle(pending.action), activeProject().name);
     gitState = { ...gitState, isBusy: true };
     publish();
-    showAppToast("info", resolveSidebarGitStartedTitle(pending.action), activeProject().name);
     if (pending.hasCommit) {
       await commitWithMessage(message.trim() || pending.subject, pending.body, filePaths, {
         agentId,
@@ -6557,11 +6695,12 @@ async function continueGitActionAfterCommitConfirmation(
       await removeActiveWorktreeProjectAfterGitAction();
     }
     await refreshGitState();
-    showAppToast("success", resolveSidebarGitFinishedTitle(pending.action), activeProject().name);
+    finishRunningAppToast(toastId, "success", resolveSidebarGitFinishedTitle(pending.action), activeProject().name);
   } catch (error) {
     gitState = { ...gitState, isBusy: false };
     publish();
-    showAppToast(
+    finishRunningAppToast(
+      toastId,
       "error",
       `${resolveSidebarGitActionNoun(pending.action)} failed`,
       error instanceof Error ? error.message : "Git action failed.",
@@ -6602,12 +6741,13 @@ async function runSidebarGitPullRequestAgentWorkflow(input: {
    */
   gitState = { ...gitState, isBusy: false };
   publish();
-  showAppToast("info", `Opening ${agent.name}`, "Commit, push and create PR");
+  const toastId = showRunningAppToast("PR workflow running", `Opening ${agent.name}`);
   const session = await launchAgentTerminal(agent);
   if (!session) {
-    showAppToast("error", `Could not open ${agent.name}`, "Pull request workflow did not start.");
+    finishRunningAppToast(toastId, "error", `Could not open ${agent.name}`, "Pull request workflow did not start.");
     return;
   }
+  rememberGitWorkflowToast(session.sessionId, toastId, "PR workflow");
 
   const prompt = buildSidebarGitPullRequestAgentPrompt({
     branch: gitState.branch,
@@ -6625,11 +6765,14 @@ async function runSidebarGitPullRequestAgentWorkflow(input: {
     agent,
     projectId: input.project.projectId,
     prompt,
-    renameTitle: "Commit, Push & PR",
+    renameTitle: formatGitAgentWorkflowTitle("Commit, Push & PR"),
     session,
     submitPrompt: true,
   });
-  showAppToast("success", "PR workflow started", input.project.name);
+  showAppToast("info", `PR workflow running in ${agent.name}`, input.project.name, {
+    persistent: true,
+    toastId,
+  });
 }
 
 function buildSidebarGitPullRequestAgentPrompt(input: {
@@ -6690,6 +6833,7 @@ async function continueGitDirectMergeAfterConfirmation(
     return;
   }
   pendingGitCommitRequests.delete(requestId);
+  let toastId: string | undefined;
   try {
     const worktreeProject = focusPendingGitProject(pending.projectId);
     if (!worktreeProject.worktree) {
@@ -6699,9 +6843,9 @@ async function continueGitDirectMergeAfterConfirmation(
     if (!conflictAgent?.command?.trim()) {
       throw new Error("Choose a configured prompt agent before merging.");
     }
+    toastId = showRunningAppToast("Merging worktree into main", worktreeProject.name);
     gitState = { ...gitState, isBusy: true };
     publish();
-    showAppToast("info", "Preparing direct merge", worktreeProject.name);
     if (pending.hasCommit) {
       await commitWithMessage(message.trim() || pending.subject, pending.body, filePaths, {
         agentId,
@@ -6715,14 +6859,16 @@ async function continueGitDirectMergeAfterConfirmation(
     if (result === "conflicts") {
       gitState = { ...gitState, isBusy: false };
       publish();
+      finishRunningAppToast(toastId, "warning", "Merge conflicts need resolution", worktreeProject.name);
       return;
     }
     await refreshGitState();
-    showAppToast("success", "Worktree merged to main", worktreeProject.name);
+    finishRunningAppToast(toastId, "success", "Worktree merged to main", worktreeProject.name);
   } catch (error) {
     gitState = { ...gitState, isBusy: false };
     publish();
-    showAppToast(
+    finishRunningAppToast(
+      toastId,
       "error",
       "Direct merge failed",
       error instanceof Error ? error.message : "Could not merge worktree.",
@@ -6810,6 +6956,7 @@ async function launchMergeConflictAgent(input: {
     agent,
     projectId: parentProject.projectId,
     prompt,
+    renameTitle: formatGitAgentWorkflowTitle("Merge Conflicts"),
     session,
   });
   showAppToast("warning", "Merge conflicts need resolution", agent.name);
@@ -10746,6 +10893,15 @@ def first_path(*values):
             return value.strip()
     return ""
 
+def decode_base64_text(value):
+    try:
+        return base64.b64decode((value or "").encode("ascii")).decode("utf-8").strip()
+    except Exception:
+        return ""
+
+def normalize_prompt_text(value):
+    return " ".join(str(value or "").strip().split())
+
 def normalized_agent_key(value):
     normalized = " ".join(str(value or "").strip().lower().split())
     if normalized in {"claude", "claude code"}:
@@ -10910,8 +11066,20 @@ elif event_name in {"SessionEnd", "session_shutdown", "release"}:
 if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSubmitPrompt", "pre_llm_call", "pre_tool_call", "on_tool_permission"} and prompt:
     state["firstUserMessageBase64"] = state.get("firstUserMessageBase64") or base64.b64encode(prompt.encode("utf-8")).decode("ascii")
     state["lastActivityAt"] = state.get("lastActivityAt") or now_iso()
-    if state.get("autoTitleFromFirstPrompt") not in {"1", "true", "TRUE", "True"} and not state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
-        state["pendingFirstPromptAutoRenamePrompt"] = " ".join(prompt.split())
+    # CDXC:SessionTitleSync 2026-05-30-05:42:
+    # Cursor Agent and Claude Code name their own sessions. Keep recording the
+    # first message for session metadata, but do not queue Ghostex auto-rename.
+    if agent_key not in {"claude", "cursor"} and state.get("autoTitleFromFirstPrompt") not in {"1", "true", "TRUE", "True"} and not state.get("pendingFirstPromptAutoRenamePrompt", "").strip():
+        first_prompt = normalize_prompt_text(decode_base64_text(state.get("firstUserMessageBase64", "")))
+        current_prompt = normalize_prompt_text(prompt)
+        # CDXC:SessionTitleSync 2026-05-30-05:44:
+        # Cancelled first-prompt title generation clears the pending field but
+        # preserves the first message. Queue the next prompt with that original
+        # message so the retry title reflects both pieces of user intent.
+        if first_prompt and first_prompt != current_prompt:
+            state["pendingFirstPromptAutoRenamePrompt"] = normalize_prompt_text(first_prompt + "\\n" + current_prompt)
+        else:
+            state["pendingFirstPromptAutoRenamePrompt"] = current_prompt
 
 write_state()
 PY
@@ -11456,7 +11624,21 @@ function captureInput(pi: ExtensionAPI, event: InputEvent, ctx: ExtensionContext
     state.firstUserMessageBase64 || Buffer.from(prompt, "utf8").toString("base64");
   state.lastActivityAt = new Date().toISOString();
   if (!state.pendingFirstPromptAutoRenamePrompt && !/^(1|true)$/iu.test(state.autoTitleFromFirstPrompt || "")) {
-    state.pendingFirstPromptAutoRenamePrompt = prompt.replace(/\\s+/g, " ");
+    /*
+     * CDXC:SessionTitleSync 2026-05-30-05:44:
+     * Cancelled first-prompt title generation keeps the first message stored
+     * but clears the pending prompt. Retry with the next prompt plus the
+     * original first message so generated titles use both user requests.
+     */
+    const firstPrompt = Buffer.from(state.firstUserMessageBase64 || "", "base64")
+      .toString("utf8")
+      .replace(/\\s+/g, " ")
+      .trim();
+    const currentPrompt = prompt.replace(/\\s+/g, " ").trim();
+    state.pendingFirstPromptAutoRenamePrompt =
+      firstPrompt && firstPrompt !== currentPrompt
+        ? (firstPrompt + " " + currentPrompt).replace(/\\s+/g, " ")
+        : currentPrompt;
   }
   writeState(filePath, state);
 }
@@ -14146,7 +14328,9 @@ async function processNativeFirstPromptAutoRename(
   if (!decision.shouldAutoName || !pendingPrompt) {
     const shouldClearStalePendingPrompt =
       Boolean(pendingPrompt) &&
-      (decision.reason === "nonGenericCurrentTitle" || decision.reason === "alreadyAutoNamed");
+      (decision.reason === "nonGenericCurrentTitle" ||
+        decision.reason === "alreadyAutoNamed" ||
+        isFirstPromptAutoRenameDisabledAgent(agentName));
     if (shouldClearStalePendingPrompt && pendingPrompt && terminalState.sessionStateFilePath) {
       await clearNativeFirstPromptAutoRenamePendingPrompt(
         terminalState.sessionStateFilePath,
@@ -14168,6 +14352,12 @@ async function processNativeFirstPromptAutoRename(
 
   const strategy = resolveFirstPromptAutoRenameStrategy(agentName);
   if (!strategy) {
+    if (isFirstPromptAutoRenameDisabledAgent(agentName) && pendingPrompt) {
+      await clearNativeFirstPromptAutoRenamePendingPrompt(
+        terminalState.sessionStateFilePath,
+        pendingPrompt,
+      );
+    }
     logNativeFirstPromptAutoRenameSkipOnce(sessionId, terminalState, "unsupportedAgent", {
       agentName,
       sessionStateFilePath: terminalState.sessionStateFilePath,
@@ -14175,6 +14365,9 @@ async function processNativeFirstPromptAutoRename(
     return;
   }
 
+  const generationId = ++nextFirstPromptAutoRenameGenerationId;
+  terminalState.firstPromptAutoRenameActivePrompt = pendingPrompt;
+  terminalState.firstPromptAutoRenameGenerationId = generationId;
   terminalState.firstPromptAutoRenameInProgress = true;
   terminalState.firstPromptAutoRenameLastLogKey = undefined;
   publish();
@@ -14189,7 +14382,19 @@ async function processNativeFirstPromptAutoRename(
       strategy === "sendBareRenameCommand"
         ? undefined
         : await generateNativeSessionTitleFromPrompt(activeProject().path, pendingPrompt);
+    if (isFirstPromptAutoRenameGenerationCancelled(generationId)) {
+      appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.cancelledAfterGeneration", {
+        agentName,
+        promptPreview: getNativePromptPreview(pendingPrompt),
+        sessionId,
+        strategy,
+      });
+      return;
+    }
     await sendNativeFirstPromptRenameCommand(sessionId, strategy, title);
+    if (isFirstPromptAutoRenameGenerationCancelled(generationId)) {
+      return;
+    }
     terminalState.firstPromptAutoRenameProcessedPrompt = pendingPrompt;
     if (title) {
       updateActiveProjectWorkspace(
@@ -14208,6 +14413,9 @@ async function processNativeFirstPromptAutoRename(
     });
     publish();
   } catch (error) {
+    if (isFirstPromptAutoRenameGenerationCancelled(generationId)) {
+      return;
+    }
     await clearNativeFirstPromptAutoRenamePendingPrompt(
       terminalState.sessionStateFilePath,
       pendingPrompt,
@@ -14221,9 +14429,67 @@ async function processNativeFirstPromptAutoRename(
       strategy,
     });
   } finally {
-    terminalState.firstPromptAutoRenameInProgress = false;
-    publish();
+    cancelledFirstPromptAutoRenameGenerationIds.delete(generationId);
+    if (terminalState.firstPromptAutoRenameGenerationId === generationId) {
+      terminalState.firstPromptAutoRenameActivePrompt = undefined;
+      terminalState.firstPromptAutoRenameGenerationId = undefined;
+      terminalState.firstPromptAutoRenameInProgress = false;
+      publish();
+    }
   }
+}
+
+function isFirstPromptAutoRenameDisabledAgent(agentName: string | undefined): boolean {
+  /**
+   * CDXC:SessionTitleSync 2026-05-30-05:42:
+   * Cursor Agent and Claude Code publish their own session names. Clear stale
+   * first-prompt pending prompts for these agents, but do not enter Ghostex's
+   * generation, overlay, cancellation, or command-send path.
+   */
+  const normalizedAgentName = agentName?.trim().toLowerCase();
+  return (
+    normalizedAgentName === "claude" ||
+    normalizedAgentName === "cursor" ||
+    normalizedAgentName === "cursor agent" ||
+    normalizedAgentName === "cursor cli" ||
+    normalizedAgentName === "cursor-agent"
+  );
+}
+
+function isFirstPromptAutoRenameGenerationCancelled(generationId: number): boolean {
+  return cancelledFirstPromptAutoRenameGenerationIds.has(generationId);
+}
+
+async function cancelNativeFirstPromptAutoRename(sessionId: string): Promise<void> {
+  const terminalState = terminalStateById.get(sessionId);
+  if (!terminalState?.firstPromptAutoRenameInProgress) {
+    return;
+  }
+  const generationId = terminalState.firstPromptAutoRenameGenerationId;
+  const pendingPrompt = terminalState.firstPromptAutoRenameActivePrompt;
+  if (generationId !== undefined) {
+    cancelledFirstPromptAutoRenameGenerationIds.add(generationId);
+  }
+  terminalState.firstPromptAutoRenameActivePrompt = undefined;
+  terminalState.firstPromptAutoRenameGenerationId = undefined;
+  terminalState.firstPromptAutoRenameInProgress = false;
+  terminalState.firstPromptAutoRenameLastLogKey = undefined;
+  terminalState.firstPromptAutoRenameProcessedPrompt = pendingPrompt;
+  publish();
+  if (terminalState.sessionStateFilePath && pendingPrompt) {
+    await clearNativeFirstPromptAutoRenamePendingPrompt(
+      terminalState.sessionStateFilePath,
+      pendingPrompt,
+    );
+  }
+  if (terminalState.firstPromptAutoRenameProcessedPrompt === pendingPrompt) {
+    terminalState.firstPromptAutoRenameProcessedPrompt = undefined;
+  }
+  appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.cancelled", {
+    pendingPromptCleared: Boolean(terminalState.sessionStateFilePath && pendingPrompt),
+    promptPreview: getNativePromptPreview(pendingPrompt),
+    sessionId,
+  });
 }
 
 async function readNativePersistedSessionState(
@@ -25188,6 +25454,8 @@ function postNativeLayoutSync(
       sessionActivities: command.sessionActivities,
       sessionDelayedSendRemainingLabels: command.sessionDelayedSendRemainingLabels,
       sessionFaviconDataUrls: command.sessionFaviconDataUrls,
+      sessionFirstPromptTitleGenerationSessionIds:
+        command.sessionFirstPromptTitleGenerationSessionIds,
       sessionTitleBarActions: command.sessionTitleBarActions,
       sessionTitles: command.sessionTitles,
       showSessionIdInTerminalPanes: command.showSessionIdInTerminalPanes,
@@ -25216,6 +25484,8 @@ function createNativeNonPaneChromeCommandSyncKey(command: NativeSetActiveTermina
     sessionActivities: _sessionActivities,
     sessionDelayedSendRemainingLabels: _sessionDelayedSendRemainingLabels,
     sessionFaviconDataUrls: _sessionFaviconDataUrls,
+    sessionFirstPromptTitleGenerationSessionIds:
+      _sessionFirstPromptTitleGenerationSessionIds,
     sessionTitleBarActions: _sessionTitleBarActions,
     sessionTitles: _sessionTitles,
     showSessionIdInTerminalPanes: _showSessionIdInTerminalPanes,
@@ -25381,6 +25651,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const sessionAgentIconDataUrls: Record<string, string> = {};
   const sessionDelayedSendRemainingLabels: Record<string, string> = {};
   const sessionFaviconDataUrls: Record<string, string> = {};
+  const sessionFirstPromptTitleGenerationSessionIds: string[] = [];
   const sessionTitleBarActions: Record<string, NativeTerminalTitleBarAction[]> = {};
   const sessionTitles: Record<string, string> = {};
   const poppedOutSessionIds: string[] = [];
@@ -25441,6 +25712,15 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
       continue;
     }
     const terminalState = terminalStateById.get(session.sessionId);
+    if (terminalState?.firstPromptAutoRenameInProgress === true) {
+      /**
+       * CDXC:SessionTitleSync 2026-05-30-05:44:
+       * AppKit owns native terminal panes, so first-prompt title generation
+       * must be mirrored through pane chrome sync. Swift draws the blocking
+       * "Generating title..." overlay and keeps terminal input suppressed.
+       */
+      sessionFirstPromptTitleGenerationSessionIds.push(nativeSessionId);
+    }
     const activity =
       session.surface === "commands"
         ? getNativeCommandPaneTabActivity(session.sessionId, terminalState?.activity)
@@ -25604,6 +25884,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     sessionAgentIconDataUrls,
     sessionAgentIconColors,
     sessionDelayedSendRemainingLabels,
+    sessionFirstPromptTitleGenerationSessionIds,
     sessionFaviconDataUrls,
     sessionActivities,
     sleepingSessionIds,
@@ -26799,6 +27080,9 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       }
       return;
     }
+  } else if (hostEvent.type === "firstPromptAutoRenameCancelled") {
+    void cancelNativeFirstPromptAutoRename(sidebarSessionId);
+    return;
   } else {
     const terminalState = terminalStateById.get(sidebarSessionId);
     if (!terminalState) {
@@ -26939,6 +27223,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       terminalState.activity = "idle";
       persistTerminalSessionRestoreActivity(sidebarSessionId, undefined);
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
+      finishGitWorkflowToastForSession(sidebarSessionId, "success", terminalState.agentName);
       if (handleNativeSidebarCommandSessionExit(sidebarSessionId, hostEvent.exitCode)) {
         return;
       }
@@ -26949,6 +27234,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       terminalState.activity = "attention";
       terminalState.terminalTitle = hostEvent.message;
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
+      finishGitWorkflowToastForSession(sidebarSessionId, "error", hostEvent.message);
       if (previousActivity !== "attention") {
         if (previousActivity === "working") {
           markNativeSessionSemanticActivityAt(sidebarSessionId, "attention", "terminal-error");
