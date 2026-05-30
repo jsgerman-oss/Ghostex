@@ -20,15 +20,22 @@
  * CDXC:AppModals 2026-05-28-13:52:
  * Menu overlay surfaces should use the same #0e0e0e background as modal
  * surfaces regardless of the theme/card color below.
+ *
+ * CDXC:ReactDropdowns 2026-05-30-08:58:
+ * Expanded React dropdowns should show the same border color as sidebar
+ * tooltips so every floating menu has a visible edge against the app chrome.
  */
 [data-slot="dropdown-menu-content"],
 [data-slot="dropdown-menu-sub-content"],
+[data-slot="popover-content"],
+[data-slot="select-content"],
 .command-icon-picker-menu,
 .git-action-menu,
 .quick-action-menu,
 .session-context-menu {
   background: #0e0e0e !important;
   background-color: #0e0e0e !important;
+  border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12)) !important;
 }
 
 [data-slot="dropdown-menu-checkbox-item"],

@@ -2,14 +2,7 @@ import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 import * as React from "react"
 
 import { cn } from "../../lib/utils"
-
-const tooltipSurfaceStyle: React.CSSProperties = {
-  background: "var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98))",
-  border: "1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12))",
-  boxShadow: "var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0, 0, 0, 0.35))",
-  color: "var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78))",
-  font: 'var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif)',
-}
+import { tooltipSurfaceStyle } from "./overlay-surface"
 
 function TooltipProvider({
   delayDuration,
