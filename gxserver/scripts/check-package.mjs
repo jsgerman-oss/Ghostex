@@ -17,6 +17,7 @@ Packaging checks must prove the server-only artifact is headless, uses system No
 await assertInsideDist(packageDir, "server package");
 await assertFile(path.join(packageDir, "dist", "src", "cli.js"));
 await assertFile(path.join(packageDir, "dist", "protocol", "index.js"));
+await assertFile(path.join(packageDir, "build-identity.json"));
 await assertFile(path.join(packageDir, "package.json"));
 await assertFile(path.join(packageDir, "package-lock.json"));
 await assertExecutable(path.join(packageDir, "bin", "gxserver"));
@@ -24,7 +25,8 @@ await assertExecutable(path.join(packageDir, "bin", "zmx"));
 await assertExecutable(path.join(packageDir, "bin", "zehn"));
 await assertNoBundledNodeRuntime(packageDir);
 await assertNoMacosUiDependency(packageDir);
-await assertPackageManifest(path.join(packageDir, "package.json"));
+const packageVersion = await assertPackageManifest(path.join(packageDir, "package.json"));
+await assertBuildIdentity(path.join(packageDir, "build-identity.json"), packageVersion);
 
 if (await exists(formulaPath)) {
   await assertHomebrewFormula(formulaPath);
@@ -64,6 +66,19 @@ async function assertPackageManifest(manifestPath) {
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   if (!manifest.engines?.node || !String(manifest.engines.node).includes(">=22")) {
     throw new Error("gxserver package manifest must declare Node >=22.");
+  }
+  return manifest.version ?? "0.0.0";
+}
+
+async function assertBuildIdentity(identityPath, version) {
+  const identity = JSON.parse(await readFile(identityPath, "utf8"));
+  if (
+    identity.packageVersion !== version ||
+    typeof identity.fingerprint !== "string" ||
+    !identity.fingerprint.startsWith("sha256:") ||
+    identity.buildIdentity !== `gxserver:${version}:${identity.fingerprint}`
+  ) {
+    throw new Error("gxserver package build identity must match the package version and sha256 fingerprint.");
   }
 }
 

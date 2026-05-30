@@ -11,7 +11,9 @@ import {
   buildZmxKillCommand,
   buildZmxSendCommand,
   decideStartupTextDisposition,
+  GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
   probeZmxSession,
+  runZshScript,
   selectStartupRestoreSessionIds,
 } from "../src/zmx-lifecycle.js";
 import type { GxserverSessionDomainState } from "../protocol/index.js";
@@ -167,14 +169,36 @@ test("zmx session interaction commands use bundled zmx for history and raw input
   });
   const send = buildZmxSendCommand({
     sessionName: "P3a91-G8v20",
-    text: "hello 'quoted'\r",
     zmxExecutablePath: "/bundle/zmx",
   });
 
   assert.match(history, /exec "\$zmx_bin" history "\$zmx_session"/);
-  assert.match(send, /zmx_text='hello '\\''quoted'\\''\r'/);
-  assert.match(send, /exec "\$zmx_bin" send "\$zmx_session" "\$zmx_text"/);
+  assert.match(send, /exec "\$zmx_bin" send "\$zmx_session"/);
+  assert.doesNotMatch(send, /zmx_text=/);
   assert.doesNotMatch(`${history}\n${send}`, /command -v zmx/);
+});
+
+test("zmx command runner caps output and pipes stdin without argv payloads", async () => {
+  /*
+  CDXC:GxserverVerification 2026-05-30-23:32:
+  The subprocess runner regression covers the security boundary directly: output caps stop unbounded zmx history accumulation, and stdin support lets gxserver send payloads without placing user text in the shell argv script.
+  */
+  const stdin = await runZshScript("exec /bin/cat", {
+    stdin: "hello from stdin",
+    stdoutLimitBytes: GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
+  });
+  assert.equal(stdin.exitCode, 0);
+  assert.equal(stdin.stdout, "hello from stdin");
+
+  const capped = await runZshScript("while true; do printf 0123456789; done", {
+    stdoutLimitBytes: 25,
+    timeoutMs: 5_000,
+  });
+  assert.equal(capped.exitCode, 125);
+  assert.equal(capped.stdout, "0123456789012345678901234");
+  assert.equal(capped.stdoutTruncated, true);
+  assert.equal(capped.stdoutLimitBytes, 25);
+  assert.match(capped.stderr, /stdout exceeded 25 bytes/);
 });
 
 test("startup restore selects active visible sessions, not every stored session", () => {

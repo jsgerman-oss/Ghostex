@@ -61,8 +61,12 @@ import {
   probeZmxSession,
   providerStatePatch,
   providerZmxSessionName,
+  GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES,
+  GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
   runZshScript,
   type GxserverCwdExists,
+  type GxserverZmxCommandResult,
+  type GxserverZmxCommandOptions,
   type GxserverZmxCommandRunner,
 } from "./zmx-lifecycle.js";
 import type {
@@ -91,8 +95,10 @@ import type {
   GxserverUpdateAgentActivityParams,
   GxserverUpdateSessionParams,
 } from "../protocol/index.js";
+import { createSourceGxserverBuildIdentity } from "./build-identity.js";
 
 export interface GxserverForegroundOptions {
+  buildIdentity?: string;
   homeDir?: string;
   version: string;
 }
@@ -103,6 +109,7 @@ export interface GxserverForegroundResult {
 
 export interface GxserverApiRuntime {
   authToken: GxserverAuthToken;
+  buildIdentity: string;
   config: GxserverConfig;
   eventHub: GxserverEventHub;
   logger: GxserverLogger;
@@ -126,6 +133,7 @@ export const GXSERVER_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
 
 export async function runGxserverForeground(options: GxserverForegroundOptions): Promise<GxserverForegroundResult> {
   assertSupportedNodeVersion();
+  const buildIdentity = options.buildIdentity ?? createSourceGxserverBuildIdentity(options.version);
 
   const paths = getGxserverPaths(options.homeDir);
   const existingAuth = await readGxserverAuthToken(paths);
@@ -146,6 +154,7 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
   });
   const startedAt = new Date().toISOString();
   const metadata: GxserverRuntimeMetadata = {
+    buildIdentity,
     pid: process.pid,
     port: GXSERVER_LOCAL_API_PORT,
     protocolVersion: GXSERVER_PROTOCOL_VERSION,
@@ -177,6 +186,7 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
 
   const runtime: GxserverApiRuntime = {
     authToken: auth.token,
+    buildIdentity,
     config,
     eventHub,
     logger,
@@ -810,6 +820,10 @@ async function dispatchZmxSessionInteractionEndpoint(
   params: Record<string, unknown>,
   requestId: string,
 ): Promise<Record<string, unknown>> {
+  /*
+  CDXC:GxserverSessionIO 2026-05-30-23:32:
+  readSessionText must never return unbounded `zmx history` output, and sendSessionText/sendSessionMessage must never embed user text in the shell script passed to `/bin/zsh -lc`. Cap history responses with truncation metadata and pass send payload bytes through zmx stdin after an explicit request-size check.
+  */
   if (endpointPath === "/api/focusSession") {
     throw new GxserverTypedOperationError(
       "dependencyUnavailable",
@@ -829,29 +843,44 @@ async function dispatchZmxSessionInteractionEndpoint(
   const zmxSessionName = providerZmxSessionName(session);
   switch (endpointPath) {
     case "/api/readSessionText": {
-      const result = await runZmxInteractionCommand(runtime, buildZmxHistoryCommand({
-        sessionName: zmxSessionName,
-        zmxExecutablePath: zmx.executablePath,
-      }));
+      const result = await runZmxInteractionCommand(
+        runtime,
+        buildZmxHistoryCommand({
+          sessionName: zmxSessionName,
+          zmxExecutablePath: zmx.executablePath,
+        }),
+        {
+          allowStdoutTruncation: true,
+          stdoutLimitBytes: GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES,
+        },
+      );
       return {
+        capturedBytes: Buffer.byteLength(result.stdout, "utf8"),
+        limitBytes: GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES,
         provider: "zmx",
         session,
         source: "history",
         text: result.stdout,
+        truncated: result.stdoutTruncated === true,
+        ...(result.stdoutTruncated ? { truncatedReason: "historyOutputLimitExceeded" } : {}),
         zmxName: zmxSessionName,
       };
     }
     case "/api/sendSessionText": {
       const text = readInteractionText(params.text, "sendSessionText");
-      const result = await runZmxInteractionCommand(runtime, buildZmxSendCommand({
-        sessionName: zmxSessionName,
-        text,
-        zmxExecutablePath: zmx.executablePath,
-      }));
+      const result = await runZmxInteractionCommand(
+        runtime,
+        buildZmxSendCommand({
+          sessionName: zmxSessionName,
+          zmxExecutablePath: zmx.executablePath,
+        }),
+        { stdin: text },
+      );
       return {
         exitCode: result.exitCode,
         provider: "zmx",
         session,
+        textBytes: Buffer.byteLength(text, "utf8"),
         textLength: text.length,
         zmxName: zmxSessionName,
       };
@@ -859,13 +888,13 @@ async function dispatchZmxSessionInteractionEndpoint(
     case "/api/sendSessionEnter": {
       const result = await runZmxInteractionCommand(runtime, buildZmxSendCommand({
         sessionName: zmxSessionName,
-        text: "\r",
         zmxExecutablePath: zmx.executablePath,
-      }));
+      }), { stdin: "\r" });
       return {
         exitCode: result.exitCode,
         provider: "zmx",
         session,
+        textBytes: 1,
         textLength: 1,
         zmxName: zmxSessionName,
       };
@@ -873,16 +902,21 @@ async function dispatchZmxSessionInteractionEndpoint(
     case "/api/sendSessionMessage": {
       const text = readInteractionText(params.text, "sendSessionMessage");
       const submit = params.submit !== false;
-      const result = await runZmxInteractionCommand(runtime, buildZmxSendCommand({
-        sessionName: zmxSessionName,
-        text: submit ? `${text}\r` : text,
-        zmxExecutablePath: zmx.executablePath,
-      }));
+      const payload = submit ? `${text}\r` : text;
+      const result = await runZmxInteractionCommand(
+        runtime,
+        buildZmxSendCommand({
+          sessionName: zmxSessionName,
+          zmxExecutablePath: zmx.executablePath,
+        }),
+        { stdin: payload },
+      );
       return {
         exitCode: result.exitCode,
         provider: "zmx",
         session,
         submit,
+        textBytes: Buffer.byteLength(text, "utf8"),
         textLength: text.length,
         zmxName: zmxSessionName,
       };
@@ -895,9 +929,10 @@ async function dispatchZmxSessionInteractionEndpoint(
 async function runZmxInteractionCommand(
   runtime: GxserverApiRuntime,
   script: string,
-): Promise<{ exitCode: number; stderr: string; stdout: string }> {
-  const result = await (runtime.zmxLifecycle?.runZsh ?? runZshScript)(script);
-  if (result.exitCode !== 0) {
+  options: GxserverZmxCommandOptions & { allowStdoutTruncation?: boolean } = {},
+): Promise<GxserverZmxCommandResult> {
+  const result = await (runtime.zmxLifecycle?.runZsh ?? runZshScript)(script, options);
+  if (result.exitCode !== 0 && !(options.allowStdoutTruncation === true && result.stdoutTruncated === true)) {
     throw new GxserverTypedOperationError(
       "dependencyUnavailable",
       result.stderr || result.stdout || `zmx session interaction command exited ${result.exitCode}`,
@@ -909,6 +944,13 @@ async function runZmxInteractionCommand(
 function readInteractionText(value: unknown, commandName: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new GxserverDomainStateError("badRequest", `${commandName} requires non-empty text.`);
+  }
+  const textBytes = Buffer.byteLength(value, "utf8");
+  if (textBytes > GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES) {
+    throw new GxserverDomainStateError(
+      "badRequest",
+      `${commandName} text exceeds the ${GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES}-byte zmx send limit.`,
+    );
   }
   return value;
 }
@@ -1280,6 +1322,7 @@ function createMinimalHealth(version: string): GxserverMinimalHealthResponse {
 async function createAuthenticatedHealth(runtime: GxserverApiRuntime): Promise<Record<string, unknown>> {
   return {
     ...createMinimalHealth(runtime.version),
+    buildIdentity: runtime.buildIdentity,
     capabilities: GXSERVER_CONTROL_PLANE_CAPABILITIES,
     listeners: runtime.config.listeners,
     migration: runtime.migration,

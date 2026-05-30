@@ -137,6 +137,7 @@ export interface GxserverLegacyLogImportStatus {
 }
 
 export interface GxserverServerHealthResponse extends GxserverMinimalHealthResponse {
+  buildIdentity: string;
   capabilities: readonly string[];
   listeners: {
     local: GxserverListenerConfig;
@@ -166,6 +167,7 @@ export interface GxserverToolCapabilityStatus {
 }
 
 export interface GxserverRuntimeMetadata {
+  buildIdentity: string;
   pid: number;
   port: typeof GXSERVER_LOCAL_API_PORT;
   protocolVersion: GxserverProtocolVersion;

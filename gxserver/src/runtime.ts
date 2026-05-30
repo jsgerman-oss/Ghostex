@@ -21,6 +21,7 @@ export async function readRuntimeMetadata(paths: GxserverPaths): Promise<Gxserve
   try {
     const parsed = JSON.parse(await readFile(paths.runtimeMetadataFile, "utf8")) as Partial<GxserverRuntimeMetadata>;
     if (
+      typeof parsed.buildIdentity === "string" &&
       typeof parsed.pid === "number" &&
       parsed.port === GXSERVER_LOCAL_API_PORT &&
       parsed.protocolVersion === GXSERVER_PROTOCOL_VERSION &&

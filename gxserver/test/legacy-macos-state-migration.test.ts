@@ -158,6 +158,135 @@ test("first-run import migrates macOS sidebar projects, active and sleeping sess
   });
 });
 
+test("first-run import preserves client-local browser and T3 pane IDs in migrated shared projects", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverVerification 2026-05-30-22:45:
+    gxserver migration should canonicalize daemon-owned terminal IDs without taking ownership of browser/T3 panes. Browser and T3 panes remain macOS sidebar-local, so their `g-*` pane IDs must survive the shared-project rewrite and continue to match layout references.
+    */
+    const sharedProjects = JSON.parse(await readFile(fixture.sharedProjectsFile, "utf8")) as any;
+    const snapshot = sharedProjects.projects[0].workspace.groups[0].snapshot;
+    const browserSession = snapshot.sessions.find((session: any) => session.kind === "browser");
+    browserSession.sessionId = "g-0530-180140";
+    snapshot.sessions.push({
+      alias: "T3",
+      createdAt: "2026-05-30T09:07:00.000Z",
+      displayId: "T3",
+      kind: "t3",
+      sessionId: "g-0530-180141",
+      slotIndex: 3,
+      t3: { boundThreadId: "thread-1" },
+      title: "T3 Code",
+    });
+    snapshot.focusedSessionId = "g-0530-180140";
+    snapshot.paneLayout = {
+      direction: "horizontal",
+      first: { kind: "leaf", sessionId: "legacy-live" },
+      kind: "split",
+      ratio: 0.5,
+      second: {
+        kind: "tabs",
+        selectedSessionId: "g-0530-180140",
+        sessionIds: ["g-0530-180140", "g-0530-180141"],
+      },
+    };
+    snapshot.visibleSessionIds = ["legacy-live", "g-0530-180140", "g-0530-180141"];
+    await writeFile(fixture.sharedProjectsFile, JSON.stringify(sharedProjects), "utf8");
+
+    const result = await runImport(fixture);
+
+    assert.equal(result.status.status, "completed");
+    assert.equal(result.status.sessionsImported, 4);
+    const rewrittenSharedProjects = JSON.parse(await readFile(fixture.sharedProjectsFile, "utf8")) as any;
+    const rewrittenSnapshot = rewrittenSharedProjects.projects[0].workspace.groups[0].snapshot;
+    assert.deepEqual(
+      rewrittenSnapshot.sessions.map((session: any) => session.sessionId),
+      ["G8v20", "G1z99", "g-0530-180140", "g-0530-180141"],
+    );
+    assert.equal(rewrittenSnapshot.focusedSessionId, "g-0530-180140");
+    assert.deepEqual(rewrittenSnapshot.visibleSessionIds, ["G8v20", "g-0530-180140", "g-0530-180141"]);
+    assert.equal(rewrittenSnapshot.paneLayout.first.sessionId, "G8v20");
+    assert.deepEqual(rewrittenSnapshot.paneLayout.second.sessionIds, ["g-0530-180140", "g-0530-180141"]);
+    assert.equal(rewrittenSnapshot.paneLayout.second.selectedSessionId, "g-0530-180140");
+  });
+});
+
+test("first-run import chooses WK projects when command-panel sessions are the fresher state", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverVerification 2026-05-30-22:45:
+    Source freshness scoring must count command-panel sessions and the active command-panel reference. WKWebView projects that only differ by command-pane state should beat a larger stale shared JSON file so gxserver imports the user's command-pane terminal.
+    */
+    const localStorageProjects = await readFile(fixture.sharedProjectsFile, "utf8");
+    const staleSharedProjects = JSON.parse(localStorageProjects) as any;
+    staleSharedProjects.projects[0].commandsPanel.sessions = [];
+    delete staleSharedProjects.projects[0].commandsPanel.activeSessionId;
+    staleSharedProjects.projects[0].iconDataUrl = `data:image/png;base64,${"x".repeat(1_100_000)}`;
+    await writeFile(fixture.sharedProjectsFile, JSON.stringify(staleSharedProjects), "utf8");
+    fixture.legacyStorageValues["ghostex-native-projects"] = localStorageProjects;
+
+    const result = await runImport(fixture);
+
+    assert.equal(result.status.status, "completed");
+    assert.equal(result.status.sessionsImported, 4);
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      const commandPane = repository.listSessions().find((session) => session.sessionId === "G2abc");
+      assert.equal(commandPane?.launchSettings.surface, "commands");
+      assert.equal(commandPane?.title, "Build pane");
+      const staleSharedBackup = JSON.parse(await readFile(`${fixture.sharedProjectsFile}.legacy-before-gxserver`, "utf8")) as any;
+      assert.equal(staleSharedBackup.projects[0].commandsPanel.sessions.length, 0);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+test("first-run import keeps shared settings authoritative over richer WK settings", async () => {
+  await withLegacyImportFixture(async (fixture) => {
+    /*
+    CDXC:GxserverVerification 2026-05-30-23:13:
+    Shared sidebar settings are the macOS app's canonical settings source after the shared file exists. Migration must preserve that behavior even when WK localStorage has more keys, because choosing the richer WK blob would silently change terminal provider, notifications, and Auto Sleep on the first gxserver launch.
+    */
+    fixture.legacyStorageValues["ghostex-native-settings"] = JSON.stringify({
+      actionCompletionSound: "ding",
+      autoSleepAgentIdleMinutes: 120,
+      autoSleepAgentSessionsEnabled: false,
+      completionBellEnabled: false,
+      completionSound: "ding",
+      defaultPromptAgentId: "codex-localstorage",
+      sessionPersistenceProvider: "tmux",
+      showMacOSAttentionNotifications: false,
+      terminalEngine: "xterm",
+      workspaceOpenTargetHiddenIds: ["terminal"],
+    });
+
+    const result = await runImport(fixture);
+
+    assert.equal(result.status.status, "completed");
+    const db = openGxserverDatabase(fixture.paths);
+    try {
+      const repository = new GxserverDomainRepository(db, "S7k");
+      const mainProject = repository.getProject("P3a91");
+      const runtimeSettings = mainProject?.runtimeSettings as any;
+      const launchSettings = mainProject?.launchSettings as any;
+      const completionRules = mainProject?.completionRules as any;
+      const attentionRules = mainProject?.attentionRules as any;
+
+      assert.equal(runtimeSettings?.settings?.sessionPersistenceProvider, "zmx");
+      assert.equal(runtimeSettings?.settings?.autoSleepAgentSessionsEnabled, true);
+      assert.equal(launchSettings?.settings?.terminalEngine, "ghostty-native");
+      assert.equal(launchSettings?.settings?.defaultPromptAgentId, "codex-pro");
+      assert.equal(completionRules?.completionBellEnabled, true);
+      assert.equal(completionRules?.completionSound, "shamisen");
+      assert.equal(attentionRules?.showMacOSAttentionNotifications, true);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 test("first-run import chooses richer WK localStorage projects and previous sessions over stale shared JSON", async () => {
   await withLegacyImportFixture(async (fixture) => {
     const localStorageProjects = await readFile(fixture.sharedProjectsFile, "utf8");

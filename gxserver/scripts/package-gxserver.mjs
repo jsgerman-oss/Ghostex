@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,7 @@ if (args.includeNodeModules) {
   await copyProductionNodeModules(packageDir);
 }
 
+await writeBuildIdentity(packageDir);
 const tarballPath = await createTarball(packageDir);
 if (args.generateHomebrew) {
   await mkdir(homebrewDir, { recursive: true });
@@ -228,6 +229,58 @@ async function createTarball(sourceDir) {
     await rm(tempRoot, { force: true, recursive: true });
   }
   return tarballPath;
+}
+
+/*
+CDXC:GxserverPackaging 2026-05-30-23:47:
+The macOS launcher compares its bundled gxserver build identity with authenticated daemon health before sidebar hydration. Generate the identity from the staged daemon package so same-version server rebuilds force a control-plane restart instead of reusing stale code.
+*/
+async function writeBuildIdentity(sourceDir) {
+  const version = await packageVersion();
+  const fingerprint = `sha256:${await sha256Directory(sourceDir)}`;
+  await writeFile(
+    path.join(sourceDir, "build-identity.json"),
+    `${JSON.stringify({
+      buildIdentity: `gxserver:${version}:${fingerprint}`,
+      fingerprint,
+      packageVersion: version,
+    }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+async function sha256Directory(root) {
+  const hash = createHash("sha256");
+  for (const filePath of await listPackageFiles(root)) {
+    const relativePath = path.relative(root, filePath).split(path.sep).join("/");
+    hash.update(relativePath);
+    hash.update("\0");
+    hash.update(await readFile(filePath));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+async function listPackageFiles(root) {
+  const files = [];
+  async function walk(dir) {
+    const entries = await readdir(dir, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const entryPath = path.join(dir, entry.name);
+      const relativePath = path.relative(root, entryPath).split(path.sep).join("/");
+      if (relativePath === "build-identity.json") {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+      } else if (entry.isFile() || entry.isSymbolicLink()) {
+        files.push(entryPath);
+      }
+    }
+  }
+  await walk(root);
+  return files;
 }
 
 async function packageVersion() {

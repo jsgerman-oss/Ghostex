@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { createReadStream, statSync } from "node:fs";
+import { stat as statFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import type {
   GxserverBeadsAction,
   GxserverBeadsBoardResult,
@@ -21,6 +22,9 @@ import { getBdToolStatus } from "./toolchain.js";
 export const GXSERVER_TYPED_OPERATION_TIMEOUT_MS = 120_000;
 export const GXSERVER_TYPED_OPERATION_STDOUT_LIMIT_BYTES = 4 * 1024 * 1024;
 export const GXSERVER_TYPED_OPERATION_STDERR_LIMIT_BYTES = 4 * 1024 * 1024;
+export const GXSERVER_BEADS_BOARD_FILE_LIMIT_BYTES = GXSERVER_TYPED_OPERATION_STDOUT_LIMIT_BYTES;
+export const GXSERVER_BEADS_BOARD_RESPONSE_LIMIT_BYTES = GXSERVER_TYPED_OPERATION_STDOUT_LIMIT_BYTES;
+export const GXSERVER_BEADS_BOARD_ROW_LIMIT = 5_000;
 const GXSERVER_TYPED_OPERATION_KILL_GRACE_MS = 1_000;
 
 export class GxserverTypedOperationError extends Error {
@@ -41,10 +45,17 @@ export class GxserverTypedOperationError extends Error {
 
 export interface GxserverTypedOperationContext {
   abortSignal?: AbortSignal;
+  beadsBoardLimits?: Partial<GxserverBeadsBoardLimits>;
   commandLimits?: Partial<GxserverTypedCommandLimits>;
   cwd: string;
   envPath?: string;
   projects: readonly GxserverProjectDomainState[];
+}
+
+export interface GxserverBeadsBoardLimits {
+  fileLimitBytes: number;
+  responseLimitBytes: number;
+  rowLimit: number;
 }
 
 export interface GxserverTypedCommandLimits {
@@ -59,6 +70,9 @@ gxserver exposes Git, worktree, and Beads through typed allowlisted operations o
 
 CDXC:GxserverTypedOperations 2026-05-30-23:41:
 Typed Git, worktree, and Beads subprocesses must have bounded runtime and bounded stdout/stderr memory. Timeout, output-overrun, and client-abort termination are reported as structured operation failures instead of returning silently truncated successful output.
+
+CDXC:GxserverTypedOperations 2026-05-30-23:08:
+Beads board reads bypass the subprocess stdout cap because gxserver reads `.beads/issues.jsonl` directly for UI board state. Apply file-size, row-count, and serialized-response limits before returning `issues` so a remote Project board request cannot make gxserver load or JSON-encode unbounded board data.
 */
 export function buildGitCommand(params: GxserverRunGitActionParams, cwd: string): GxserverTypedCommand {
   const action = normalizeGitAction(params.action);
@@ -157,13 +171,13 @@ export async function runBeadsAction(
   const action = normalizeBeadsAction(params.action);
   const command = await buildBeadsCommand(params, context);
   if (action === "board") {
-    const issues = await readBeadsIssuesJsonl(context.cwd);
+    const { issues, stdout } = await readBeadsIssuesJsonl(context.cwd, resolveBeadsBoardLimits(context));
     return {
       action,
       exitCode: 0,
       issues,
       stderr: "",
-      stdout: JSON.stringify(issues),
+      stdout,
     };
   }
   if (!command) {
@@ -324,6 +338,15 @@ function resolveTypedCommandLimits(limits?: Partial<GxserverTypedCommandLimits>)
   };
 }
 
+function resolveBeadsBoardLimits(context: GxserverTypedOperationContext): GxserverBeadsBoardLimits {
+  const commandLimits = resolveTypedCommandLimits(context.commandLimits);
+  return {
+    fileLimitBytes: context.beadsBoardLimits?.fileLimitBytes ?? GXSERVER_BEADS_BOARD_FILE_LIMIT_BYTES,
+    responseLimitBytes: context.beadsBoardLimits?.responseLimitBytes ?? Math.min(commandLimits.stdoutLimitBytes, GXSERVER_BEADS_BOARD_RESPONSE_LIMIT_BYTES),
+    rowLimit: context.beadsBoardLimits?.rowLimit ?? GXSERVER_BEADS_BOARD_ROW_LIMIT,
+  };
+}
+
 async function requireBd(envPath?: string): Promise<string> {
   const status = await getBdToolStatus({ envPath: envPath ?? process.env.PATH ?? "" });
   if (status.availability === "available" && status.executablePath) {
@@ -335,27 +358,76 @@ async function requireBd(envPath?: string): Promise<string> {
   });
 }
 
-async function readBeadsIssuesJsonl(cwd: string): Promise<readonly Record<string, unknown>[]> {
+async function readBeadsIssuesJsonl(
+  cwd: string,
+  limits: GxserverBeadsBoardLimits,
+): Promise<{ issues: readonly Record<string, unknown>[]; stdout: string }> {
+  const issuesPath = path.join(cwd, ".beads", "issues.jsonl");
   try {
-    const contents = await readFile(path.join(cwd, ".beads", "issues.jsonl"), "utf8");
-    const issues: Record<string, unknown>[] = [];
-    for (const line of contents.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (isRecord(parsed)) {
-          issues.push(parsed);
-        }
-      } catch {
-        continue;
-      }
+    const stats = await statFile(issuesPath);
+    if (stats.size > limits.fileLimitBytes) {
+      throw new GxserverTypedOperationError(
+        "badRequest",
+        `Beads board state exceeds the ${limits.fileLimitBytes}-byte file limit; refusing to read oversized .beads/issues.jsonl.`,
+        { fileLimitBytes: limits.fileLimitBytes, fileSizeBytes: stats.size },
+      );
     }
-    return issues;
-  } catch {
-    return [];
+
+    const issues: Record<string, unknown>[] = [];
+    const serializedIssues: string[] = [];
+    let responseBytes = 2;
+    let rowCount = 0;
+    const stream = createReadStream(issuesPath, { encoding: "utf8" });
+    const lines = createInterface({ crlfDelay: Infinity, input: stream });
+    try {
+      for await (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+        rowCount += 1;
+        if (rowCount > limits.rowLimit) {
+          throw new GxserverTypedOperationError(
+            "badRequest",
+            `Beads board state exceeds the ${limits.rowLimit}-row limit; refusing to read oversized .beads/issues.jsonl.`,
+            { rowCount, rowLimit: limits.rowLimit },
+          );
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        if (isRecord(parsed)) {
+          const serialized = JSON.stringify(parsed);
+          const nextResponseBytes = responseBytes + Buffer.byteLength(serialized, "utf8") + (serializedIssues.length === 0 ? 0 : 1);
+          if (nextResponseBytes > limits.responseLimitBytes) {
+            throw new GxserverTypedOperationError(
+              "badRequest",
+              `Beads board response exceeds the ${limits.responseLimitBytes}-byte serialized JSON limit; refusing to return oversized board data.`,
+              {
+                capturedBytes: responseBytes,
+                responseLimitBytes: limits.responseLimitBytes,
+                rowCount,
+              },
+            );
+          }
+          responseBytes = nextResponseBytes;
+          issues.push(parsed);
+          serializedIssues.push(serialized);
+        }
+      }
+    } finally {
+      lines.close();
+      stream.destroy();
+    }
+    return { issues, stdout: `[${serializedIssues.join(",")}]` };
+  } catch (error) {
+    if (error instanceof GxserverTypedOperationError) {
+      throw error;
+    }
+    return { issues: [], stdout: "[]" };
   }
 }
 

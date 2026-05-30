@@ -75,4 +75,65 @@ describe("native sidebar gxserver project storage", () => {
       }),
     ).toBe(false);
   });
+
+  test("allows migrated client-local browser and T3 pane identities", () => {
+    /*
+    CDXC:GxserverVerification 2026-05-30-22:45:
+    Browser and T3 panes keep client-local sidebar IDs through gxserver migration. The persistence guard should allow those `g-*` pane IDs while continuing to reject daemon-owned terminal rows that still have legacy identity.
+    */
+    const migratedClientLocalPayload = {
+      activeProjectId: "P1abc",
+      gxserverMigratedAt: "2026-05-30T18:45:00.000Z",
+      projects: [
+        {
+          projectId: "P1abc",
+          workspace: {
+            groups: [
+              {
+                snapshot: {
+                  focusedSessionId: "g-0530-180140",
+                  paneLayout: {
+                    kind: "tabs",
+                    selectedSessionId: "g-0530-180140",
+                    sessionIds: ["G1abc", "g-0530-180140", "g-0530-180141"],
+                  },
+                  sessions: [
+                    { kind: "terminal", sessionId: "G1abc" },
+                    { browser: { url: "https://example.com" }, kind: "browser", sessionId: "g-0530-180140" },
+                    { kind: "t3", sessionId: "g-0530-180141", t3: { boundThreadId: "thread-1" } },
+                  ],
+                  visibleSessionIds: ["G1abc", "g-0530-180140", "g-0530-180141"],
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+
+    expect(projectStoragePayloadHasLegacyGxserverIds(migratedClientLocalPayload)).toBe(false);
+    expect(
+      projectStoragePayloadHasLegacyGxserverIds({
+        ...migratedClientLocalPayload,
+        projects: [
+          {
+            projectId: "P1abc",
+            workspace: {
+              groups: [
+                {
+                  snapshot: {
+                    sessions: [
+                      { kind: "browser", sessionId: "g-0530-180140" },
+                      { kind: "terminal", sessionId: "g-0530-180140" },
+                    ],
+                    visibleSessionIds: ["g-0530-180140"],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
 });

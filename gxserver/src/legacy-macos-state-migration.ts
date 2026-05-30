@@ -35,6 +35,9 @@ const MAX_MIGRATED_STRING_CHARS = 100_000;
 const MAX_MIGRATED_ARRAY_ITEMS = 1_000;
 const MAX_MIGRATED_OBJECT_KEYS = 1_000;
 const MAX_MIGRATED_JSON_DEPTH = 10;
+const PROJECT_SNAPSHOT_PROJECT_SCORE = 10_000_000;
+const PROJECT_SNAPSHOT_SESSION_SCORE = 1_000_000;
+const PROJECT_SNAPSHOT_BYTE_TIEBREAKER_LIMIT = 100_000;
 const PROJECT_ID_FIELDS = new Set(["activeProjectId", "parentProjectId", "projectId"]);
 const SESSION_ID_FIELDS = new Set([
   "activeSessionId",
@@ -302,8 +305,11 @@ async function readLegacyStateSnapshot(options: GxserverLegacyMacosStateMigratio
     parseLegacyStoragePayload(localStorageValues[LEGACY_STORAGE_KEYS.previousSessions]),
     { sharedProjectsMigrated: isGxserverMigratedProjectSnapshot(sharedProjects?.parsed) },
   );
-  const settingsPayload =
-    sharedSettings?.parsed ?? parseLegacyStoragePayload(localStorageValues[LEGACY_STORAGE_KEYS.settings])?.parsed;
+  const settingsPayload = selectLegacyStoragePayload(
+    LEGACY_STORAGE_KEYS.settings,
+    sharedSettings,
+    parseLegacyStoragePayload(localStorageValues[LEGACY_STORAGE_KEYS.settings]),
+  );
   const settings = normalizeObject(settingsPayload);
   const activeSessionsSortMode = localStorageValues[LEGACY_STORAGE_KEYS.activeSessionsSortMode];
   if (activeSessionsSortMode === "manual" || activeSessionsSortMode === "lastActivity") {
@@ -342,6 +348,13 @@ function selectLegacyStoragePayload(
     return localStoragePayload?.parsed;
   }
   if (!localStoragePayload) {
+    return sharedPayload.parsed;
+  }
+  if (key === LEGACY_STORAGE_KEYS.settings) {
+    /*
+    CDXC:GxserverMigration 2026-05-30-23:13:
+    macOS bootstrap treats `native-sidebar-settings.json` as the authoritative settings source once it exists: Settings writes every save to the shared file and WK localStorage, and startup only uses `ghostex-native-settings` to seed a missing shared file. Keep gxserver migration on the same policy so a richer but stale WK blob cannot flip terminal provider, notifications, or Auto Sleep during the cutover.
+    */
     return sharedPayload.parsed;
   }
   if (key === LEGACY_STORAGE_KEYS.projects && isGxserverMigratedProjectSnapshot(sharedPayload.parsed)) {
@@ -444,11 +457,27 @@ function projectSnapshotScore(payload: LegacyStoragePayload): number {
   if (projects.length === 0) {
     return 0;
   }
-  const sessionCount = projects.reduce((count, project) => count + projectSessionCount(project), 0);
-  return projects.length * 100_000 + sessionCount * 1_000 + payload.payloadJson.length;
+  /*
+  CDXC:GxserverMigration 2026-05-30-22:45:
+  Project source selection must treat command-panel sessions as migration-relevant daemon state, because the importer creates gxserver sessions from `commandsPanel.sessions` and preserves `commandsPanel.activeSessionId`. Score structural project/session data above raw JSON size so stale shared files with large client-only blobs cannot beat richer WKWebView state.
+  */
+  const sessionWeight = projects.reduce((count, project) => count + projectMigrationSessionWeight(project), 0);
+  return (
+    projects.length * PROJECT_SNAPSHOT_PROJECT_SCORE +
+    sessionWeight * PROJECT_SNAPSHOT_SESSION_SCORE +
+    Math.min(payload.payloadJson.length, PROJECT_SNAPSHOT_BYTE_TIEBREAKER_LIMIT)
+  );
 }
 
-function projectSessionCount(project: unknown): number {
+function projectMigrationSessionWeight(project: unknown): number {
+  const projectObject = normalizeObject(project);
+  const commandsPanel = normalizeObject(projectObject.commandsPanel);
+  const commandPanelSessions = Array.isArray(commandsPanel.sessions) ? commandsPanel.sessions : [];
+  const activeCommandPanelSessionWeight = typeof commandsPanel.activeSessionId === "string" ? 1 : 0;
+  return projectWorkspaceSessionCount(projectObject) + commandPanelSessions.length + activeCommandPanelSessionWeight;
+}
+
+function projectWorkspaceSessionCount(project: unknown): number {
   const workspace = normalizeObject(normalizeObject(project).workspace);
   const groups = Array.isArray(workspace.groups) ? workspace.groups : [];
   return groups.reduce((count, group) => {

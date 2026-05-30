@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +40,9 @@ test("server package stages compiled daemon, system-Node launcher, and bundled z
     assert.equal(checkResult.status, 0, checkResult.stderr || checkResult.stdout);
 
     await stat(path.join(packageDir, "dist", "src", "cli.js"));
+    const buildIdentity = JSON.parse(await readFile(path.join(packageDir, "build-identity.json"), "utf8"));
+    assert.equal(buildIdentity.packageVersion, "0.1.0");
+    assert.equal(buildIdentity.buildIdentity.startsWith("gxserver:0.1.0:sha256:"), true);
     await stat(path.join(packageDir, "bin", "gxserver"));
     await stat(path.join(packageDir, "bin", "zmx"));
     await stat(path.join(packageDir, "bin", "zehn"));

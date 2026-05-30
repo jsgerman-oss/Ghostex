@@ -34,6 +34,15 @@ export interface GxserverConfig {
   product: typeof GXSERVER_PRODUCT;
 }
 
+export class GxserverLocalListenerConfigError extends Error {
+  readonly code = "badRequest" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "GxserverLocalListenerConfigError";
+  }
+}
+
 /*
 CDXC:GxserverCors 2026-05-30-20:15:
 Browser access to gxserver is limited to native WKWebView `Origin: null`, known local sidebar development origins, and exact origins added to config.json. CLI and server-to-server clients do not need CORS, so responses without a browser Origin header should not expose CORS or private-network permissions.
@@ -266,6 +275,9 @@ async function writeDefaultConfigIfMissing(paths: GxserverPaths): Promise<void> 
 /*
 CDXC:GxserverApi 2026-05-30-14:26:
 The local API is always a full loopback listener on 127.0.0.1:58744. The remote/Tailscale listener uses a separate port, 58745, and defaults off so remote exposure is an explicit configuration choice with a reduced permission set.
+
+CDXC:GxserverApi 2026-05-30-23:34:
+Config must not silently move the local API because runtime metadata, status checks, CLI callers, and native/sidebar clients use the fixed 127.0.0.1:58744 contract. Startup fails with a clear validation error when config.json attempts to override listeners.local.host or listeners.local.port, while remote listener host/port remain configurable.
 */
 export function createDefaultGxserverConfig(): GxserverConfig {
   return {
@@ -296,12 +308,7 @@ export function mergeGxserverConfig(config: Partial<GxserverConfig>): GxserverCo
     },
     createdAt: typeof config.createdAt === "string" ? config.createdAt : defaults.createdAt,
     listeners: {
-      local: {
-        ...defaults.listeners.local,
-        ...(isPartialListenerConfig(config.listeners?.local) ? config.listeners.local : {}),
-        enabled: true,
-        kind: "local",
-      },
+      local: normalizeLocalListenerConfig(config.listeners?.local, defaults.listeners.local),
       remote: {
         ...normalizeRemoteListenerConfig({
           ...defaults.listeners.remote,
@@ -310,6 +317,29 @@ export function mergeGxserverConfig(config: Partial<GxserverConfig>): GxserverCo
       },
     },
     product: GXSERVER_PRODUCT,
+  };
+}
+
+function normalizeLocalListenerConfig(
+  config: unknown,
+  defaults: GxserverListenerConfig,
+): GxserverListenerConfig {
+  if (isPartialListenerConfig(config)) {
+    if ("host" in config && config.host !== undefined && config.host !== defaults.host) {
+      throw new GxserverLocalListenerConfigError(
+        `Local gxserver listener host is fixed at ${defaults.host}; remove listeners.local.host from config.json.`,
+      );
+    }
+    if ("port" in config && config.port !== undefined && config.port !== defaults.port) {
+      throw new GxserverLocalListenerConfigError(
+        `Local gxserver listener port is fixed at ${defaults.port}; remove listeners.local.port from config.json.`,
+      );
+    }
+  }
+  return {
+    ...defaults,
+    enabled: true,
+    kind: "local",
   };
 }
 

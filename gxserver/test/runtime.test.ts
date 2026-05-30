@@ -14,6 +14,7 @@ test("runtime metadata round trips through the fixed gxserver path shape", async
     assert.equal(paths.runtimeMetadataFile, path.join(homeDir, ".ghostex", "gxserver", "runtime", "server.json"));
 
     await writeRuntimeMetadata(paths, {
+      buildIdentity: "gxserver:0.1.0:source",
       pid: 123,
       port: GXSERVER_LOCAL_API_PORT,
       protocolVersion: GXSERVER_PROTOCOL_VERSION,
@@ -23,6 +24,7 @@ test("runtime metadata round trips through the fixed gxserver path shape", async
     });
 
     assert.deepEqual(await readRuntimeMetadata(paths), {
+      buildIdentity: "gxserver:0.1.0:source",
       pid: 123,
       port: GXSERVER_LOCAL_API_PORT,
       protocolVersion: GXSERVER_PROTOCOL_VERSION,

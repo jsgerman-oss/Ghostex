@@ -97,6 +97,117 @@ test("Beads command construction uses PATH bd only and preserves current board a
   }
 });
 
+test("Beads board reads preserve normal issues.jsonl output", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-beads-board-"));
+  try {
+    const repo = path.join(root, "repo");
+    const bin = path.join(root, "bin");
+    await mkdir(path.join(repo, ".beads"), { recursive: true });
+    await makeExecutable(path.join(bin, "bd"));
+    await writeFile(
+      path.join(repo, ".beads", "issues.jsonl"),
+      [
+        JSON.stringify({ id: "gxserver-1", status: "open", title: "First" }),
+        "",
+        "not json",
+        JSON.stringify({ id: "gxserver-2", status: "test", title: "Second" }),
+      ].join("\n"),
+    );
+
+    const result = await runBeadsAction(
+      { action: "board", projectPath: repo },
+      {
+        beadsBoardLimits: { fileLimitBytes: 1024, responseLimitBytes: 1024, rowLimit: 10 },
+        cwd: repo,
+        envPath: bin,
+        projects: [project("P3a91", repo)],
+      },
+    );
+
+    if (!("issues" in result)) {
+      assert.fail("board action should return parsed issues");
+    }
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(result.issues, [
+      { id: "gxserver-1", status: "open", title: "First" },
+      { id: "gxserver-2", status: "test", title: "Second" },
+    ]);
+    assert.equal(result.stdout, JSON.stringify(result.issues));
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("Beads board reads reject oversized board state with typed errors", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-beads-board-limits-"));
+  try {
+    const repo = path.join(root, "repo");
+    const bin = path.join(root, "bin");
+    const issuesPath = path.join(repo, ".beads", "issues.jsonl");
+    await mkdir(path.join(repo, ".beads"), { recursive: true });
+    await makeExecutable(path.join(bin, "bd"));
+    const context = { cwd: repo, envPath: bin, projects: [project("P3a91", repo)] };
+
+    await writeFile(issuesPath, `${JSON.stringify({ id: "gxserver-large" })}\n`);
+    await assert.rejects(
+      () =>
+        runBeadsAction(
+          { action: "board", projectPath: repo },
+          { ...context, beadsBoardLimits: { fileLimitBytes: 4, responseLimitBytes: 1024, rowLimit: 10 } },
+        ),
+      (error: unknown) => {
+        assert.equal(error instanceof GxserverTypedOperationError, true);
+        assert.equal((error as GxserverTypedOperationError).code, "badRequest");
+        assert.match((error as GxserverTypedOperationError).message, /file limit/);
+        assert.equal((error as GxserverTypedOperationError).details?.fileLimitBytes, 4);
+        return true;
+      },
+    );
+
+    await writeFile(
+      issuesPath,
+      [
+        JSON.stringify({ id: "gxserver-1" }),
+        JSON.stringify({ id: "gxserver-2" }),
+        JSON.stringify({ id: "gxserver-3" }),
+      ].join("\n"),
+    );
+    await assert.rejects(
+      () =>
+        runBeadsAction(
+          { action: "board", projectPath: repo },
+          { ...context, beadsBoardLimits: { fileLimitBytes: 1024, responseLimitBytes: 1024, rowLimit: 2 } },
+        ),
+      (error: unknown) => {
+        assert.equal(error instanceof GxserverTypedOperationError, true);
+        assert.equal((error as GxserverTypedOperationError).code, "badRequest");
+        assert.match((error as GxserverTypedOperationError).message, /row limit/);
+        assert.equal((error as GxserverTypedOperationError).details?.rowLimit, 2);
+        return true;
+      },
+    );
+
+    await writeFile(issuesPath, `${JSON.stringify({ id: "gxserver-1", title: "response body is too large" })}\n`);
+    await assert.rejects(
+      () =>
+        runBeadsAction(
+          { action: "board", projectPath: repo },
+          { ...context, beadsBoardLimits: { fileLimitBytes: 1024, responseLimitBytes: 16, rowLimit: 10 } },
+        ),
+      (error: unknown) => {
+        assert.equal(error instanceof GxserverTypedOperationError, true);
+        assert.equal((error as GxserverTypedOperationError).code, "badRequest");
+        assert.match((error as GxserverTypedOperationError).message, /serialized JSON limit/);
+        assert.equal((error as GxserverTypedOperationError).details?.responseLimitBytes, 16);
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 test("typed Git operations time out and return structured failures", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-typed-timeout-"));
   try {

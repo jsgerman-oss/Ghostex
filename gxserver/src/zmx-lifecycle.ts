@@ -12,17 +12,35 @@ import type {
 export interface GxserverZmxCommandResult {
   exitCode: number;
   stderr: string;
+  stderrLimitBytes?: number;
+  stderrTruncated?: boolean;
   stdout: string;
+  stdoutLimitBytes?: number;
+  stdoutTruncated?: boolean;
 }
 
-export type GxserverZmxCommandRunner = (script: string) => Promise<GxserverZmxCommandResult>;
+export interface GxserverZmxCommandOptions {
+  stderrLimitBytes?: number;
+  stdin?: string;
+  stdoutLimitBytes?: number;
+  timeoutMs?: number;
+}
+
+export type GxserverZmxCommandRunner = (script: string, options?: GxserverZmxCommandOptions) => Promise<GxserverZmxCommandResult>;
 export type GxserverCwdExists = (cwd: string) => Promise<boolean>;
 
 /*
 CDXC:GxserverZmxLifecycle 2026-05-30-19:37:
 Provider probe execution errors, non-existence-command exits, and command timeouts must produce provider lifecycle `unknown` with an error. Only a completed zmx list that lacks the exact session name is allowed to report `missing`.
+
+CDXC:GxserverSessionIO 2026-05-30-23:32:
+gxserver session reads and sends run through zmx subprocesses with explicit byte limits. History output is capped before stdout can grow without bound, and send payloads go through stdin so valid JSON requests do not become oversized `/bin/zsh -lc` argv strings.
 */
 const ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS = 5_000;
+export const GXSERVER_ZMX_COMMAND_STDOUT_LIMIT_BYTES = 512 * 1024;
+export const GXSERVER_ZMX_COMMAND_STDERR_LIMIT_BYTES = 64 * 1024;
+export const GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES = 256 * 1024;
+export const GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES = 512 * 1024;
 
 export interface GxserverZmxAttachCommandInput {
   cwd: string;
@@ -117,19 +135,17 @@ exec "$zmx_bin" history "$zmx_session"
 
 export function buildZmxSendCommand(input: {
   sessionName: GxserverZmxSessionName;
-  text: string;
   zmxExecutablePath: string;
 }): string {
   return `
 zmx_session=${shellQuote(input.sessionName)}
-zmx_text=${shellQuote(input.text)}
 zmx_bin=${shellQuote(input.zmxExecutablePath)}
 if [ ! -x "$zmx_bin" ]; then
   printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
   exit 127
 fi
 unset ZMX_SESSION ZMX_SESSION_PREFIX
-exec "$zmx_bin" send "$zmx_session" "$zmx_text"
+exec "$zmx_bin" send "$zmx_session"
 `.trim();
 }
 
@@ -384,22 +400,76 @@ function zmxKillThrownErrorMessage(error: unknown): string {
   return `zmx kill command failed: ${String(error)}`;
 }
 
-export function runZshScript(script: string): Promise<GxserverZmxCommandResult> {
+export function runZshScript(script: string, options: GxserverZmxCommandOptions = {}): Promise<GxserverZmxCommandResult> {
+  const stdoutLimitBytes = options.stdoutLimitBytes ?? GXSERVER_ZMX_COMMAND_STDOUT_LIMIT_BYTES;
+  const stderrLimitBytes = options.stderrLimitBytes ?? GXSERVER_ZMX_COMMAND_STDERR_LIMIT_BYTES;
+  const timeoutMs = options.timeoutMs ?? ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const child = spawn("/bin/zsh", ["-lc", script], {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let timedOut = false;
     let forceKillTimeout: NodeJS.Timeout | undefined;
+
+    const terminate = (): void => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return;
+      }
+      child.kill("SIGTERM");
+      if (!forceKillTimeout) {
+        forceKillTimeout = setTimeout(() => child.kill("SIGKILL"), 1_000);
+        forceKillTimeout.unref();
+      }
+    };
+
     const timeout = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      forceKillTimeout = setTimeout(() => child.kill("SIGKILL"), 1_000);
-    }, ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS);
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+      terminate();
+    }, timeoutMs);
+    timeout.unref();
+
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(options.stdin ?? "");
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (stdoutTruncated) {
+        return;
+      }
+      const remaining = stdoutLimitBytes - stdoutBytes;
+      if (chunk.byteLength > remaining) {
+        if (remaining > 0) {
+          stdout.push(chunk.subarray(0, remaining));
+        }
+        stdoutBytes = stdoutLimitBytes;
+        stdoutTruncated = true;
+        terminate();
+        return;
+      }
+      stdout.push(chunk);
+      stdoutBytes += chunk.byteLength;
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderrTruncated) {
+        return;
+      }
+      const remaining = stderrLimitBytes - stderrBytes;
+      if (chunk.byteLength > remaining) {
+        if (remaining > 0) {
+          stderr.push(chunk.subarray(0, remaining));
+        }
+        stderrBytes = stderrLimitBytes;
+        stderrTruncated = true;
+        terminate();
+        return;
+      }
+      stderr.push(chunk);
+      stderrBytes += chunk.byteLength;
+    });
     child.on("error", (error) => {
       clearTimeout(timeout);
       if (forceKillTimeout) {
@@ -413,14 +483,20 @@ export function runZshScript(script: string): Promise<GxserverZmxCommandResult> 
         clearTimeout(forceKillTimeout);
       }
       const stderrText = Buffer.concat(stderr).toString("utf8").trim();
+      const limitMessages = [
+        stdoutTruncated ? `zmx command stdout exceeded ${stdoutLimitBytes} bytes` : "",
+        stderrTruncated ? `zmx command stderr exceeded ${stderrLimitBytes} bytes` : "",
+      ].filter(Boolean);
       resolve({
-        exitCode: timedOut ? 124 : (code ?? 1),
+        exitCode: timedOut ? 124 : stdoutTruncated || stderrTruncated ? 125 : (code ?? 1),
         stderr: timedOut
-          ? [stderrText, `zmx lifecycle command timed out after ${ZMX_LIFECYCLE_COMMAND_TIMEOUT_MS}ms`]
+          ? [stderrText, `zmx lifecycle command timed out after ${timeoutMs}ms`, ...limitMessages]
               .filter(Boolean)
               .join("\n")
-          : stderrText,
+          : [stderrText, ...limitMessages].filter(Boolean).join("\n"),
+        ...(stderrTruncated ? { stderrLimitBytes, stderrTruncated } : {}),
         stdout: Buffer.concat(stdout).toString("utf8").trim(),
+        ...(stdoutTruncated ? { stdoutLimitBytes, stdoutTruncated } : {}),
       });
     });
   });

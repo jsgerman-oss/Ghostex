@@ -38,7 +38,11 @@ import {
   type GxserverConfig,
   writeGxserverConfig,
 } from "../src/storage.js";
-import type { GxserverZmxCommandRunner } from "../src/zmx-lifecycle.js";
+import {
+  GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES,
+  GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES,
+  type GxserverZmxCommandRunner,
+} from "../src/zmx-lifecycle.js";
 
 test("minimal health is unauthenticated and non-health APIs require auth", async () => {
   await withApiServer("local", async ({ baseUrl }) => {
@@ -113,12 +117,19 @@ test("foreground gxserver process uses temporary HOME, writes daemon state, and 
   }
 });
 
-test("foreground gxserver closes local listener when remote listener bind fails", async () => {
+test("foreground gxserver closes local listener when remote listener bind fails", async (t) => {
   /*
   CDXC:GxserverVerification 2026-05-30-20:09:
   Remote listener startup can fail after the local listener is bound. The foreground-process regression must prove gxserver exits without runtime metadata and releases the local listener so CLI status cannot report a half-started daemon.
+
+  CDXC:GxserverVerification 2026-05-30-23:34:
+  This regression uses the fixed local listener because config.json is not allowed to move the local API away from 127.0.0.1:58744. Skip when the user's daemon already owns the fixed port instead of creating a test-only alternate local port.
   */
-  const localPort = await getAvailableTcpPort();
+  if (!(await isFixedLocalPortAvailable())) {
+    t.skip(`127.0.0.1:${GXSERVER_LOCAL_API_PORT} is already in use; skipping the real remote-bind cleanup fixture.`);
+    return;
+  }
+
   const remoteBlocker = http.createServer();
   remoteBlocker.listen(0, "127.0.0.1");
   await once(remoteBlocker, "listening");
@@ -135,8 +146,6 @@ test("foreground gxserver closes local listener when remote listener bind fails"
     listeners: {
       local: {
         ...config.listeners.local,
-        host: "127.0.0.1",
-        port: localPort,
       },
       remote: {
         ...config.listeners.remote,
@@ -161,7 +170,7 @@ test("foreground gxserver closes local listener when remote listener bind fails"
     await waitForProcessExit(child, 5_000);
     assert.notEqual(child.exitCode, 0);
     assert.match(stderr, new RegExp(`Port ${remoteAddress.port} is already in use`));
-    assert.equal(await isTcpPortAvailable(localPort), true);
+    assert.equal(await isTcpPortAvailable(GXSERVER_LOCAL_API_PORT), true);
     assert.match(await readFile(paths.runtimeMetadataFile, "utf8").catch(() => ""), /^$/);
     assert.equal((await getGxserverStatus({ homeDir, version: "0.1.0-test" })).state, "stopped");
   } finally {
@@ -769,6 +778,7 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
 
 test("zmx session interaction APIs read and send through bundled zmx, with explicit unsupported focus", async () => {
   const calls: string[] = [];
+  const sendInputs: string[] = [];
   await withApiServer(
     "local",
     async ({ baseUrl, paths, token }) => {
@@ -797,6 +807,8 @@ test("zmx session interaction APIs read and send through bundled zmx, with expli
       });
       assert.equal(read.status, 200);
       assert.equal(read.body.result.text, "first line\nsecond line");
+      assert.equal(read.body.result.truncated, false);
+      assert.equal(read.body.result.limitBytes, GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES);
       assert.equal(read.body.result.zmxName, `${project.projectId}-${session.sessionId}`);
 
       const send = await requestJson(baseUrl, "/api/sendSessionText", {
@@ -809,6 +821,7 @@ test("zmx session interaction APIs read and send through bundled zmx, with expli
       });
       assert.equal(send.status, 200);
       assert.equal(send.body.result.textLength, "hello 'agent'".length);
+      assert.equal(send.body.result.textBytes, Buffer.byteLength("hello 'agent'", "utf8"));
 
       const enter = await requestJson(baseUrl, "/api/sendSessionEnter", {
         body: {
@@ -820,6 +833,7 @@ test("zmx session interaction APIs read and send through bundled zmx, with expli
       });
       assert.equal(enter.status, 200);
       assert.equal(enter.body.result.textLength, 1);
+      assert.equal(enter.body.result.textBytes, 1);
 
       const message = await requestJson(baseUrl, "/api/sendSessionMessage", {
         body: {
@@ -856,9 +870,9 @@ test("zmx session interaction APIs read and send through bundled zmx, with expli
       assert.equal(agentMessage.body.error, "dependencyUnavailable");
       assert.match(agentMessage.body.message, /requires projectId and sessionId/);
       assert.ok(calls.some((script) => script.includes('exec "$zmx_bin" history "$zmx_session"')));
-      assert.ok(calls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session" "$zmx_text"')));
-      assert.ok(calls.some((script) => script.includes("zmx_text='hello '\\''agent'\\'''")));
-      assert.ok(calls.some((script) => script.includes("zmx_text='ship it\r'")));
+      assert.ok(calls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')));
+      assert.equal(calls.some((script) => script.includes("hello 'agent'") || script.includes("ship it")), false);
+      assert.deepEqual(sendInputs, ["hello 'agent'", "\r", "ship it\r"]);
     },
     {
       zmxLifecycle: {
@@ -867,15 +881,91 @@ test("zmx session interaction APIs read and send through bundled zmx, with expli
           source: "devSubmodule",
           tool: "zmx",
         }),
-        runZsh: async (script) => {
+        runZsh: async (script, options) => {
           calls.push(script);
           if (script.includes('exec "$zmx_bin" history "$zmx_session"')) {
+            assert.equal(options?.stdoutLimitBytes, GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES);
             return { exitCode: 0, stderr: "", stdout: "first line\nsecond line" };
           }
-          if (script.includes('exec "$zmx_bin" send "$zmx_session" "$zmx_text"')) {
+          if (script.includes('exec "$zmx_bin" send "$zmx_session"')) {
+            sendInputs.push(options?.stdin ?? "");
             return { exitCode: 0, stderr: "", stdout: "" };
           }
           return { exitCode: 64, stderr: "unexpected zmx command", stdout: "" };
+        },
+      },
+    },
+  );
+});
+
+test("zmx session interaction APIs cap history and reject oversized send payloads", async () => {
+  const calls: string[] = [];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: { params: { projectId: project.projectId, title: "Bounded I/O" }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const read = await requestJson(baseUrl, "/api/readSessionText", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(read.status, 200);
+      assert.equal(read.body.result.text.length, GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES);
+      assert.equal(read.body.result.truncated, true);
+      assert.equal(read.body.result.truncatedReason, "historyOutputLimitExceeded");
+      assert.equal(read.body.result.limitBytes, GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES);
+
+      const oversized = await requestJson(baseUrl, "/api/sendSessionText", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+            text: "x".repeat(GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES + 1),
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(oversized.status, 400);
+      assert.equal(oversized.body.error, "badRequest");
+      assert.match(oversized.body.message, /zmx send limit/);
+      assert.equal(calls.filter((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')).length, 0);
+    },
+    {
+      zmxLifecycle: {
+        requireZmx: async () => ({
+          executablePath: "/fake/bundled/zmx",
+          source: "devSubmodule",
+          tool: "zmx",
+        }),
+        runZsh: async (script, options) => {
+          calls.push(script);
+          assert.equal(options?.stdoutLimitBytes, GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES);
+          return {
+            exitCode: 125,
+            stderr: `zmx command stdout exceeded ${GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES} bytes`,
+            stdout: "h".repeat(GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES),
+            stdoutLimitBytes: GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES,
+            stdoutTruncated: true,
+          };
         },
       },
     },
@@ -1536,6 +1626,7 @@ test("authenticated health includes listener, tool, and migration status", async
       token,
     });
     assert.equal(health.status, 200);
+    assert.equal(health.body.buildIdentity, "gxserver:0.1.0-test:source");
     assert.equal(health.body.serverId, "S7k");
     assert.equal(health.body.listeners.local.port, GXSERVER_LOCAL_API_PORT);
     assert.equal(health.body.listeners.remote.enabled, false);
@@ -1628,6 +1719,7 @@ async function startApiServerFixture(
   }
   const auth = await ensureGxserverAuthToken(paths);
   const metadata: GxserverRuntimeMetadata = {
+    buildIdentity: "gxserver:0.1.0-test:source",
     pid: process.pid,
     port: GXSERVER_LOCAL_API_PORT,
     protocolVersion: GXSERVER_PROTOCOL_VERSION,
@@ -1638,6 +1730,7 @@ async function startApiServerFixture(
   const eventHub = new GxserverEventHub(metadata.serverId);
   const runtime: GxserverApiRuntime = {
     authToken: auth.token,
+    buildIdentity: metadata.buildIdentity,
     config,
     eventHub,
     logger: createGxserverLogger(paths),
@@ -1829,19 +1922,6 @@ function toWebSocketUrl(baseUrl: string, pathname: string): string {
 
 async function isFixedLocalPortAvailable(): Promise<boolean> {
   return await isTcpPortAvailable(GXSERVER_LOCAL_API_PORT);
-}
-
-async function getAvailableTcpPort(): Promise<number> {
-  const probe = http.createServer();
-  probe.listen(0, "127.0.0.1");
-  await once(probe, "listening");
-  const address = probe.address();
-  if (typeof address !== "object" || address === null || !("port" in address)) {
-    throw new Error("Expected TCP port probe to listen on a TCP port.");
-  }
-  const port = address.port;
-  await closeServer(probe);
-  return port;
 }
 
 async function isTcpPortAvailable(port: number): Promise<boolean> {

@@ -14,6 +14,7 @@ import { getGxserverPaths } from "./paths.js";
 import { createRunningStatus, createStoppedStatus, isProcessRunning, readRuntimeMetadata } from "./runtime.js";
 
 export interface LifecycleOptions {
+  buildIdentity?: string;
   homeDir?: string;
   version: string;
 }

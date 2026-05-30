@@ -26,6 +26,12 @@ struct GxserverClientStatus {
   }
 }
 
+enum GxserverBuildIdentityReuseDecision: Equatable {
+  case compatible
+  case incompatible
+  case unknownExpected
+}
+
 final class GxserverClient {
   static let localBaseURL = "http://127.0.0.1:58744"
   static let protocolVersion = 1
@@ -38,10 +44,11 @@ final class GxserverClient {
   /*
    CDXC:GxserverBootstrap 2026-05-30-15:39:
    The macOS app hard-cutover starts or reuses the local gxserver control plane on 127.0.0.1:58744, authenticates with ~/.ghostex/gxserver/auth/token, and never owns daemon shutdown after launch. Missing or old system Node is a user-visible dependency error with install guidance, not an auto-install or bundled fallback.
-   */
+  */
   func startOrReuse() async -> GxserverClientStatus {
-    if let running = await authenticatedHealthStatus() {
-      if running.state != "toolchainUnavailable" {
+    let expectedBuildIdentity = expectedBundledBuildIdentity()
+    if let running = await authenticatedHealthStatus(expectedBuildIdentity: expectedBuildIdentity) {
+      if !Self.reuseFailureRequiresRestart(running.state) {
         return running
       }
       await stopRunningGxserverControlPlane()
@@ -80,7 +87,7 @@ final class GxserverClient {
 
     let deadline = Date().addingTimeInterval(15)
     while Date() < deadline {
-      if let running = await authenticatedHealthStatus() {
+      if let running = await authenticatedHealthStatus(expectedBuildIdentity: expectedBuildIdentity) {
         return running
       }
       try? await Task.sleep(nanoseconds: 150_000_000)
@@ -111,7 +118,7 @@ final class GxserverClient {
     status.payload(baseURL: Self.localBaseURL, tokenFile: authTokenURL.path)
   }
 
-  private func authenticatedHealthStatus() async -> GxserverClientStatus? {
+  private func authenticatedHealthStatus(expectedBuildIdentity: String?) async -> GxserverClientStatus? {
     guard let token = readAuthToken() else {
       return nil
     }
@@ -139,6 +146,19 @@ final class GxserverClient {
         state: "protocolMismatch"
       )
     }
+    switch Self.buildIdentityReuseDecision(response: response, expectedBuildIdentity: expectedBuildIdentity) {
+    case .compatible, .unknownExpected:
+      break
+    case .incompatible:
+      return GxserverClientStatus(
+        authToken: token,
+        health: response,
+        message:
+          "gxserver build identity changed. Relaunching gxserver from the current Ghostex bundle before loading the sidebar.",
+        ok: false,
+        state: "buildIdentityMismatch"
+      )
+    }
     let usableTools = requiredBundledToolsAvailable(in: response)
     return GxserverClientStatus(
       authToken: token,
@@ -149,6 +169,24 @@ final class GxserverClient {
       ok: usableTools,
       state: usableTools ? "running" : "toolchainUnavailable"
     )
+  }
+
+  /*
+   CDXC:GxserverBootstrap 2026-05-30-23:47:
+   A Ghostex app update can keep the gxserver protocol stable while changing server behavior. Compare authenticated daemon health against the build identity bundled beside the current app's gxserver CLI, and restart only on a definite mismatch so same-build daemon reuse still avoids unnecessary zmx control-plane churn.
+   */
+  static func buildIdentityReuseDecision(
+    response: [String: Any],
+    expectedBuildIdentity: String?
+  ) -> GxserverBuildIdentityReuseDecision {
+    guard let expected = expectedBuildIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !expected.isEmpty else {
+      return .unknownExpected
+    }
+    return (response["buildIdentity"] as? String) == expected ? .compatible : .incompatible
+  }
+
+  private static func reuseFailureRequiresRestart(_ state: String) -> Bool {
+    state == "toolchainUnavailable" || state == "buildIdentityMismatch"
   }
 
   /*
@@ -184,7 +222,7 @@ final class GxserverClient {
 
     let deadline = Date().addingTimeInterval(5)
     while Date() < deadline {
-      if await authenticatedHealthStatus() == nil {
+      if await authenticatedHealthStatus(expectedBuildIdentity: nil) == nil {
         return
       }
       try? await Task.sleep(nanoseconds: 100_000_000)
@@ -292,6 +330,38 @@ final class GxserverClient {
       sourceRoot.appendingPathComponent("gxserver/dist/src/cli.js"),
     ].compactMap { $0 }
     return candidates.first { fileManager.fileExists(atPath: $0.path) }
+  }
+
+  private func expectedBundledBuildIdentity() -> String? {
+    guard let cliURL = resolveGxserverCliURL() else {
+      return nil
+    }
+    let packageRoot = cliURL
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let identityURL = packageRoot.appendingPathComponent("build-identity.json", isDirectory: false)
+    if fileManager.fileExists(atPath: identityURL.path) {
+      guard
+        let data = try? Data(contentsOf: identityURL),
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let buildIdentity = json["buildIdentity"] as? String,
+        !buildIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else {
+        return "invalid-gxserver-build-identity:\(identityURL.path)"
+      }
+      return buildIdentity
+    }
+    let packageJsonURL = packageRoot.appendingPathComponent("package.json", isDirectory: false)
+    guard
+      let data = try? Data(contentsOf: packageJsonURL),
+      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let version = json["version"] as? String,
+      !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      return nil
+    }
+    return "gxserver:\(version):source"
   }
 
   private func systemNodeDependencyError() -> String? {

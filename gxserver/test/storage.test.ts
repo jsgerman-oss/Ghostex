@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { GXSERVER_LOCAL_API_HOST, GXSERVER_LOCAL_API_PORT } from "../protocol/index.js";
 import { getGxserverPaths } from "../src/paths.js";
 import { initializeGxserverStorage, openGxserverDatabase, readGxserverConfig } from "../src/storage.js";
 
@@ -20,10 +21,85 @@ test("gxserver storage paths represent the required root layout", async () => {
     assert.equal(paths.migrationsDir, path.join(paths.rootDir, "migrations"));
     assert.equal(paths.identityFile, path.join(paths.rootDir, "identity.json"));
     const config = await readGxserverConfig(paths);
+    assert.equal(config.listeners.local.enabled, true);
+    assert.equal(config.listeners.local.host, GXSERVER_LOCAL_API_HOST);
+    assert.equal(config.listeners.local.port, GXSERVER_LOCAL_API_PORT);
     assert.equal(config.listeners.remote.enabled, false);
     assert.deepEqual(config.listeners.remote.auth, { mode: "bearerToken", required: true });
   } finally {
     await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("gxserver config keeps the local listener fixed while allowing remote listener overrides", async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-storage-config-"));
+  try {
+    const paths = getGxserverPaths(homeDir);
+    await initializeGxserverStorage(paths);
+    await writeFile(
+      paths.configFile,
+      `${JSON.stringify({
+        listeners: {
+          local: {
+            enabled: false,
+            host: GXSERVER_LOCAL_API_HOST,
+            kind: "remote",
+            port: GXSERVER_LOCAL_API_PORT,
+          },
+          remote: {
+            enabled: true,
+            host: "100.64.0.12",
+            port: 59000,
+          },
+        },
+      })}\n`,
+    );
+
+    const config = await readGxserverConfig(paths);
+
+    assert.deepEqual(config.listeners.local, {
+      enabled: true,
+      host: GXSERVER_LOCAL_API_HOST,
+      kind: "local",
+      port: GXSERVER_LOCAL_API_PORT,
+    });
+    assert.equal(config.listeners.remote.enabled, true);
+    assert.equal(config.listeners.remote.host, "100.64.0.12");
+    assert.equal(config.listeners.remote.port, 59000);
+    assert.deepEqual(config.listeners.remote.auth, { mode: "bearerToken", required: true });
+  } finally {
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("gxserver config rejects attempted local listener host or port overrides", async () => {
+  const cases = [
+    {
+      config: { listeners: { local: { host: "0.0.0.0" } } },
+      message: /Local gxserver listener host is fixed at 127\.0\.0\.1/,
+      name: "host",
+    },
+    {
+      config: { listeners: { local: { port: 59000 } } },
+      message: /Local gxserver listener port is fixed at 58744/,
+      name: "port",
+    },
+  ];
+
+  for (const testCase of cases) {
+    const homeDir = await mkdtemp(path.join(tmpdir(), `gxserver-storage-local-${testCase.name}-`));
+    try {
+      const paths = getGxserverPaths(homeDir);
+      await initializeGxserverStorage(paths);
+      await writeFile(paths.configFile, `${JSON.stringify(testCase.config)}\n`);
+
+      await assert.rejects(readGxserverConfig(paths), {
+        name: "GxserverLocalListenerConfigError",
+        message: testCase.message,
+      });
+    } finally {
+      await rm(homeDir, { force: true, recursive: true });
+    }
   }
 });
 
