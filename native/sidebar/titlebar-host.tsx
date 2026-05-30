@@ -358,16 +358,16 @@ const TITLEBAR_TIPS: TitlebarTip[] = [
     title: "Find any session from prompt text",
   },
   {
-    body: "Pin a workspace from the sidebar when you need it to survive context switches.",
+    body: "Pin a session in the sidebar when you need it to stay at the top.",
     icon: "resources",
     id: "pin-important-workspaces",
-    title: "Pin important workspaces",
+    title: "Pin important sessions",
   },
   {
-    body: "Use generated titles to keep resumed agent threads searchable from the titlebar.",
+    body: "Then you can easily ask agents to \"work on beads with   high priority from the kanban board\"",
     icon: "command",
-    id: "name-sessions-after-current-task",
-    title: "Name sessions after the current task",
+    id: "add-todos-to-kanban-page",
+    title: "Add all your Todos in the Kanban page",
   },
 ];
 
