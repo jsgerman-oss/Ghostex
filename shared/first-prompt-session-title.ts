@@ -16,7 +16,6 @@ export type FirstPromptAutoRenameDecisionReason =
   | "alreadyPending"
   | "eligible"
   | "emptyPrompt"
-  | "inlineSlashCommandReference"
   | "metaPrompt"
   | "nonGenericCurrentTitle"
   | "slashCommand"
@@ -66,18 +65,40 @@ const GENERIC_SESSION_TITLES_BY_AGENT = new Map<string, ReadonlySet<string>>([
 ]);
 const LEADING_PROMPT_FILLER_PATTERN =
   /^(?:(?:please|kindly|hey|hi|hello)\s+|(?:can|could|would|will)\s+you\s+|(?:can|could|would)\s+we\s+|help\s+me\s+|i\s+need(?:\s+you)?\s+to\s+|i\s+need\s+|how\s+do\s+i\s+|how\s+does\s+|is\s+there\s+(?:any\s+)?way\s+to\s+)+/iu;
-const INLINE_SLASH_COMMAND_PATTERN = /(?:^|[\s([{"'`])\/[a-z][\w-]*(?=\s|$|[).,:;!?'"`])/iu;
+const LEADING_SLASH_COMMAND_LINE_PATTERN =
+  /(?:^|\r?\n)[ \t]*\/[a-z][\w-]*(?=\s|$|[).,:;!?'"`])/iu;
+const MAX_SLASH_COMMAND_AUTO_RENAME_BLOCK_LENGTH = 50;
 
 export function resolveFirstPromptAutoRenameStrategy(
   agentName: string | undefined,
 ): FirstPromptAutoRenameStrategy | undefined {
   const normalizedAgentName = agentName?.trim().toLowerCase();
   if (normalizedAgentName === "claude") {
-    return "sendBareRenameCommand";
+    /**
+     * CDXC:SessionTitleSync 2026-05-30-05:42:
+     * Claude Code now names sessions automatically. Disable Ghostex first-prompt
+     * naming for Claude, including the previous bare `/rename` trigger, while
+     * keeping the sendBareRenameCommand strategy available for future reuse.
+     */
+    return undefined;
   }
 
   if (normalizedAgentName === "codex") {
     return "generateTitleAndRename";
+  }
+
+  if (
+    normalizedAgentName === "cursor" ||
+    normalizedAgentName === "cursor agent" ||
+    normalizedAgentName === "cursor cli" ||
+    normalizedAgentName === "cursor-agent"
+  ) {
+    /**
+     * CDXC:SessionTitleSync 2026-05-30-05:44:
+     * Cursor Agent already names its sessions automatically. Do not run
+     * Ghostex first-prompt auto-title generation for Cursor sessions.
+     */
+    return undefined;
   }
 
   if (normalizedAgentName === "pi" || normalizedAgentName === "π") {
@@ -208,19 +229,13 @@ export function explainFirstPromptAutoRenameDecision(input: {
     };
   }
 
-  if (normalizedPrompt.startsWith("/")) {
+  if (
+    normalizedPrompt.length <= MAX_SLASH_COMMAND_AUTO_RENAME_BLOCK_LENGTH &&
+    containsLeadingSlashCommandLine(input.prompt)
+  ) {
     return {
       normalizedPrompt,
       reason: "slashCommand",
-      shouldAutoName: false,
-      strategy,
-    };
-  }
-
-  if (containsInlineSlashCommandReference(normalizedPrompt)) {
-    return {
-      normalizedPrompt,
-      reason: "inlineSlashCommandReference",
       shouldAutoName: false,
       strategy,
     };
@@ -254,8 +269,15 @@ function normalizePrompt(prompt: string): string | undefined {
   return cleanedPrompt || undefined;
 }
 
-function containsInlineSlashCommandReference(prompt: string): boolean {
-  return INLINE_SLASH_COMMAND_PATTERN.test(prompt);
+function containsLeadingSlashCommandLine(prompt: string): boolean {
+  /**
+   * CDXC:SessionTitleSync 2026-05-30-05:18:
+   * First-prompt auto-title should still run when a normal request discusses
+   * slash commands, such as asking Ghostex to send `/rename <title>`.
+   * Suppress only short slash-command invocations that start a line. Longer
+   * text is a user request worth naming even if it begins with a slash command.
+   */
+  return LEADING_SLASH_COMMAND_LINE_PATTERN.test(prompt);
 }
 
 function isMetaPrompt(prompt: string): boolean {

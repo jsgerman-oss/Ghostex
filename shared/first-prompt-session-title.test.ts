@@ -63,3 +63,120 @@ describe("Pi first-prompt auto naming", () => {
     });
   });
 });
+
+describe("Cursor first-prompt auto naming", () => {
+  test("should not auto generate titles because Cursor names sessions itself", () => {
+    /**
+     * CDXC:SessionTitleSync 2026-05-30-05:44:
+     * Cursor Agent owns its session titles by default, so Ghostex must not run
+     * first-prompt title generation or send `/rename` for Cursor sessions.
+     */
+    expect(resolveFirstPromptAutoRenameStrategy("cursor")).toBeUndefined();
+    expect(
+      explainFirstPromptAutoRenameDecision({
+        agentName: "cursor",
+        currentTitle: "Cursor Agent",
+        prompt: "Implement title overlay cancellation",
+      }),
+    ).toMatchObject({
+      reason: "unsupportedAgent",
+      shouldAutoName: false,
+    });
+  });
+});
+
+describe("Claude first-prompt auto naming", () => {
+  test("should not auto generate titles or send bare rename because Claude names sessions itself", () => {
+    /**
+     * CDXC:SessionTitleSync 2026-05-30-05:42:
+     * Claude Code owns session titles by default. Ghostex should not generate a
+     * first-prompt title or send the old bare `/rename` command for Claude.
+     */
+    expect(resolveFirstPromptAutoRenameStrategy("claude")).toBeUndefined();
+    expect(
+      explainFirstPromptAutoRenameDecision({
+        agentName: "claude",
+        currentTitle: "Claude Code",
+        prompt: "Implement title overlay cancellation",
+      }),
+    ).toMatchObject({
+      reason: "unsupportedAgent",
+      shouldAutoName: false,
+    });
+  });
+});
+
+describe("first-prompt slash command mentions", () => {
+  test("should allow title generation when slash commands are not at the start of a line", () => {
+    /**
+     * CDXC:SessionTitleSync 2026-05-30-05:18:
+     * Forked Codex sessions must still generate a first-prompt title when the
+     * user's natural-language request mentions `/rename` as product behavior.
+     * Only short slash-command invocations at the start of a line should
+     * suppress auto-title; long prompts should be renamed from their text.
+     */
+    expect(
+      explainFirstPromptAutoRenameDecision({
+        agentName: "codex",
+        currentTitle: "Terminal Session",
+        prompt:
+          'For all GitHub related terminals, the /rename command should write the action starting with "Git: ".',
+      }),
+    ).toMatchObject({
+      reason: "eligible",
+      shouldAutoName: true,
+      strategy: "generateTitleAndRename",
+    });
+
+    expect(
+      explainFirstPromptAutoRenameDecision({
+        agentName: "codex",
+        currentTitle: "Terminal Session",
+        prompt: "Please run /compact before continuing",
+      }),
+    ).toMatchObject({
+      reason: "eligible",
+      shouldAutoName: true,
+      strategy: "generateTitleAndRename",
+    });
+  });
+
+  test("should skip only short slash command prompts at the start of a line", () => {
+    expect(
+      explainFirstPromptAutoRenameDecision({
+        agentName: "codex",
+        currentTitle: "Terminal Session",
+        prompt: "/compact",
+      }),
+    ).toMatchObject({
+      reason: "slashCommand",
+      shouldAutoName: false,
+      strategy: "generateTitleAndRename",
+    });
+
+    expect(
+      explainFirstPromptAutoRenameDecision({
+        agentName: "codex",
+        currentTitle: "Terminal Session",
+        prompt: "Prep context\n  /compact",
+      }),
+    ).toMatchObject({
+      reason: "slashCommand",
+      shouldAutoName: false,
+      strategy: "generateTitleAndRename",
+    });
+
+    expect(
+      explainFirstPromptAutoRenameDecision({
+        agentName: "codex",
+        currentTitle: "Terminal Session",
+        prompt:
+          "/rename Git: update project board action labels so all spawned GitHub terminals keep the action prefix",
+      }),
+    ).toMatchObject({
+      reason: "eligible",
+      shouldAutoName: true,
+      strategy: "generateTitleAndRename",
+    });
+  });
+});
