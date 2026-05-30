@@ -990,8 +990,8 @@ async function validateLidSleepHelperSigning(entry) {
   }
 }
 
-async function packageAndNotarize(version, artifactDir, entry) {
-  logStep(`Package and notarize ${entry.arch}`);
+async function packageReleaseDmg(version, artifactDir, entry) {
+  logStep(`Package ${entry.arch} DMG`);
   const stagingDir = await mkdtemp(path.join(tmpdir(), `ghostex-${version}-${entry.arch}-stage-`));
   const finalDmg = path.join(artifactDir, `ghostex-${version}-${entry.arch}.dmg`);
   const stagedApp = path.join(stagingDir, config.stagedAppName);
@@ -1000,10 +1000,20 @@ async function packageAndNotarize(version, artifactDir, entry) {
   await run(`ln -s /Applications ${shellQuote(path.join(stagingDir, "Applications"))}`);
   await run(`hdiutil create -volname ghostex -srcfolder ${shellQuote(stagingDir)} -format UDZO ${shellQuote(finalDmg)}`);
   const preStapleSha = await capture(`shasum -a 256 ${shellQuote(finalDmg)} | awk '{print $1}'`);
+  await rm(stagingDir, { recursive: true, force: true });
 
+  return {
+    ...entry,
+    finalDmg,
+    preStapleSha,
+  };
+}
+
+async function notarizeReleaseDmg(version, artifactDir, entry) {
+  logStep(`Notarize ${entry.arch}`);
   const notaryLogPath = path.join(artifactDir, `ghostex-${version}-${entry.arch}-notary.log`);
   const notaryOutput = await runWithHeartbeat(
-    `xcrun notarytool submit ${shellQuote(finalDmg)} --keychain-profile ${shellQuote(config.notaryProfile)} --wait | tee ${shellQuote(notaryLogPath)}`,
+    `xcrun notarytool submit ${shellQuote(entry.finalDmg)} --keychain-profile ${shellQuote(config.notaryProfile)} --wait | tee ${shellQuote(notaryLogPath)}`,
     {
       label: `${entry.arch} notarization`,
       timeoutMs: releaseTimeouts.notaryArchMs,
@@ -1022,17 +1032,14 @@ async function packageAndNotarize(version, artifactDir, entry) {
     throw new ReleaseError(`${entry.arch} notarization did not finish Accepted. Status: ${status}`);
   }
 
-  await run(`xcrun stapler staple ${shellQuote(finalDmg)}`);
-  await run(`xcrun stapler validate ${shellQuote(finalDmg)}`);
-  const sha256 = await capture(`shasum -a 256 ${shellQuote(finalDmg)} | awk '{print $1}'`);
+  await run(`xcrun stapler staple ${shellQuote(entry.finalDmg)}`);
+  await run(`xcrun stapler validate ${shellQuote(entry.finalDmg)}`);
+  const sha256 = await capture(`shasum -a 256 ${shellQuote(entry.finalDmg)} | awk '{print $1}'`);
   await writeFile(`/tmp/ghostex-${version.replaceAll(".", "")}-${entry.arch}-sha256`, `${sha256}\n`);
-  await writeFile(`/tmp/ghostex-${version.replaceAll(".", "")}-${entry.arch}-final-dmg`, `${finalDmg}\n`);
-  await rm(stagingDir, { recursive: true, force: true });
+  await writeFile(`/tmp/ghostex-${version.replaceAll(".", "")}-${entry.arch}-final-dmg`, `${entry.finalDmg}\n`);
 
   return {
     ...entry,
-    finalDmg,
-    preStapleSha,
     sha256,
     notaryLogPath,
     notarySubmissionId: submissionId,
@@ -1085,8 +1092,22 @@ async function buildAndPackage(version, buildVersion) {
   const artifactDir = await mkdtemp(path.join(tmpdir(), `ghostex-${version}-release-`));
   console.log(`Artifact directory: ${artifactDir}`);
 
-  logStep("Package and notarize both architectures in parallel");
-  const packaged = await Promise.all(built.map((entry) => packageAndNotarize(version, artifactDir, entry)));
+  /*
+   CDXC:ReleaseAutomation 2026-05-30-14:12:
+   Create DMGs sequentially because parallel `hdiutil create` calls can fail
+   with Resource busy on the same host. Keep Apple notarization parallel after
+   both unsigned DMGs exist.
+   */
+  logStep("Package both architectures sequentially");
+  const packagedDmgs = [];
+  for (const entry of built) {
+    packagedDmgs.push(await packageReleaseDmg(version, artifactDir, entry));
+  }
+
+  logStep("Notarize both architectures in parallel");
+  const packaged = await Promise.all(
+    packagedDmgs.map((entry) => notarizeReleaseDmg(version, artifactDir, entry)),
+  );
 
   for (const entry of packaged) {
     await validateMountedDmg(version, buildVersion, entry);
