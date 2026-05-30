@@ -3000,7 +3000,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
             setGitCommitDraft(undefined);
             vscode.postMessage({
               agentId: options.agentId,
-              conflictAgentId: options.conflictAgentId,
               deleteWorktreeAfter: options.deleteWorktreeAfter,
               filePaths: options.filePaths,
               message,

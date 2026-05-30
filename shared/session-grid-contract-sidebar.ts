@@ -552,7 +552,6 @@ export type SidebarPromptGitCommitMessage = {
   description: string;
   isWorktree?: boolean;
   isDefaultRef?: boolean;
-  mergeAgentId?: string;
   requestId: string;
   showCommitMessage?: boolean;
   suggestedBody?: string;
@@ -1339,7 +1338,6 @@ export type SidebarToExtensionMessage =
       type: "confirmSidebarGitCommit";
     }
   | {
-      conflictAgentId: string;
       deleteWorktreeAfter?: boolean;
       agentId?: string;
       filePaths?: string[];

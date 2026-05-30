@@ -41,7 +41,6 @@ export type GitCommitModalDraft = {
   description: string;
   isWorktree?: boolean;
   isDefaultRef?: boolean;
-  mergeAgentId?: string;
   requestId: string;
   showCommitMessage?: boolean;
   suggestedBody?: string;
@@ -69,7 +68,6 @@ export type GitCommitModalProps = {
     message: string,
     options: {
       agentId?: string;
-      conflictAgentId: string;
       deleteWorktreeAfter: boolean;
       filePaths?: string[];
     },
@@ -114,12 +112,8 @@ export function GitCommitModal({
     promptAgents.find((agent) => agent.agentId === effectivePromptAgentId)?.agentId ??
     promptAgents[0]?.agentId ??
     "";
-  const [selectedMergeAgentId, setSelectedMergeAgentId] = useState(
-    draft.mergeAgentId ?? commandAgents[0]?.agentId ?? "",
-  );
   const descriptionId = useId();
   const generateAgentId = useId();
-  const mergeAgentId = useId();
   const titleId = useId();
   const changedFiles = draft.changedFiles ?? [];
   const showCommitMessage = draft.showCommitMessage ?? true;
@@ -147,32 +141,7 @@ export function GitCommitModal({
     setExcludedFiles(new Set());
     setIsEditingFiles(false);
     setIsDirectMergeConfirmOpen(false);
-    setSelectedMergeAgentId((currentAgentId) => {
-      if (draft.mergeAgentId && commandAgents.some((agent) => agent.agentId === draft.mergeAgentId)) {
-        return draft.mergeAgentId;
-      }
-      if (commandAgents.some((agent) => agent.agentId === currentAgentId)) {
-        return currentAgentId;
-      }
-      return commandAgents[0]?.agentId ?? "";
-    });
   }, [commandAgents, draft, isOpen]);
-
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-
-    setSelectedMergeAgentId((currentAgentId) => {
-      if (commandAgents.some((agent) => agent.agentId === currentAgentId)) {
-        return currentAgentId;
-      }
-      if (draft.mergeAgentId && commandAgents.some((agent) => agent.agentId === draft.mergeAgentId)) {
-        return draft.mergeAgentId;
-      }
-      return commandAgents[0]?.agentId ?? "";
-    });
-  }, [commandAgents, draft.mergeAgentId, isOpen]);
 
   /**
    * CDXC:TitlebarGit 2026-05-28-07:47:
@@ -183,7 +152,7 @@ export function GitCommitModal({
   const normalizedMessage = trimPromptEditorTrailingSpaces(message);
   const trimmedMessage = normalizedMessage.trim();
   const canConfirm = !showCommitMessage || !noneSelected;
-  const canRunDirectMerge = canConfirm && selectedMergeAgentId.length > 0;
+  const canRunDirectMerge = canConfirm && selectedPromptAgentId.length > 0;
   const selectedFilePaths =
     changedFiles.length > 0 && selectedFiles.length !== changedFiles.length
       ? selectedFiles.map((file) => file.path)
@@ -231,7 +200,7 @@ export function GitCommitModal({
    * Changed-file rows in the commit review modal should open a large app-modal diff viewer instead of jumping straight to the IDE, so users can inspect the exact patch before choosing a commit action.
    *
    * CDXC:WorktreeMerge 2026-05-27-06:25:
-   * Worktree PR review keeps the T3-style commit/push/PR flow as the primary action, but the same review modal also offers an explicit merge-to-main action. Direct merge requires a remembered per-project conflict agent so merge conflicts can open an agent session on main with the resolution prompt staged but unsent.
+   * Worktree PR review keeps the T3-style commit/push/PR flow as the primary action, but the same review modal also offers an explicit merge-to-main action. Direct merge uses the same prompt-agent selector as PR creation so the modal has one clear agent choice.
    *
    * CDXC:PromptAgents 2026-05-29-10:53:
    * Commit review exposes a plain prompt-agent dropdown for generated commit
@@ -246,7 +215,7 @@ export function GitCommitModal({
    * CDXC:AppModals 2026-05-29-19:44:
    * Session attention/activity can refresh app-modal props while commit review
    * is open. Commit drafts are reinitialized only for a new request id; later
-   * agent-list updates may repair an invalid merge agent without replacing the
+   * agent-list updates may repair an invalid prompt agent without replacing the
    * user's edited commit message or file selection.
    */
   return (
@@ -381,31 +350,6 @@ export function GitCommitModal({
                 </span>
               </label>
             ) : null}
-            {canDirectMerge ? (
-              <div className="git-commit-direct-merge-panel">
-                <label className="command-config-field" htmlFor={mergeAgentId}>
-                  <span className="command-config-label">Merge conflict agent</span>
-                  <Select onValueChange={setSelectedMergeAgentId} value={selectedMergeAgentId}>
-                    <SelectTrigger
-                      aria-label="Merge conflict agent"
-                      className="git-commit-merge-agent-select"
-                      id={mergeAgentId}
-                    >
-                      <SelectValue placeholder="Select agent" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        {commandAgents.map((agent) => (
-                          <SelectItem key={agent.agentId} value={agent.agentId}>
-                            {agent.name}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </label>
-              </div>
-            ) : null}
           </div>
           <DialogFooter className="git-commit-modal-actions">
             {promptAgents.length > 0 ? (
@@ -508,7 +452,6 @@ export function GitCommitModal({
           setIsDirectMergeConfirmOpen(false);
           onDirectMerge(draft.requestId, trimmedMessage, {
             agentId: selectedPromptAgentId || undefined,
-            conflictAgentId: selectedMergeAgentId,
             deleteWorktreeAfter,
             filePaths: selectedFilePaths,
           });

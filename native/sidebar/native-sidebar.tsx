@@ -1156,7 +1156,6 @@ type NativeProject = {
   themeColor?: string;
   worktree?: NativeProjectWorktreeMetadata;
   worktreeCommand?: string;
-  worktreeMergeAgentId?: string;
   /**
    * CDXC:ProjectBoard 2026-05-23-14:35:
    * Each project can define the three-letter ticket key shown on the board (for example ZMX-12) while Beads keeps hash ids internally.
@@ -5171,10 +5170,6 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
       worktree: normalizeNativeProjectWorktreeMetadata(project.worktree),
       worktreeCommand:
         typeof project.worktreeCommand === "string" ? project.worktreeCommand : undefined,
-      worktreeMergeAgentId:
-        typeof project.worktreeMergeAgentId === "string"
-          ? project.worktreeMergeAgentId
-          : undefined,
       beadsDisplayKey:
         typeof project.beadsDisplayKey === "string" ? project.beadsDisplayKey : undefined,
       beadConversationLinks: normalizeBeadConversationLinks(
@@ -5434,7 +5429,6 @@ function summarizeNativeProject(project: NativeProject) {
     themeColor: project.themeColor,
     worktree: project.worktree,
     worktreeCommand: project.worktreeCommand,
-    worktreeMergeAgentId: project.worktreeMergeAgentId,
   };
 }
 
@@ -5948,7 +5942,6 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
       : resolveSidebarGitPromptDescription(action, hasCommit),
     isDefaultRef: gitState.branch === "main" || gitState.branch === "master",
     isWorktree: activeProject().worktree !== undefined,
-    mergeAgentId: resolveProjectWorktreeMergeAgentId(activeProject()),
     requestId,
     showCommitMessage: hasCommit,
     suggestedBody: draft.body,
@@ -6193,32 +6186,18 @@ function createNativeHereDocCommand(command: string, delimiter: string, body: st
   return [command, " <<'", delimiter, "'\n", body, "\n", delimiter].join("");
 }
 
-function resolveProjectWorktreeMergeAgentId(project: NativeProject): string | undefined {
-  const parentProject = project.worktree?.parentProjectId
-    ? findProject(project.worktree.parentProjectId)
-    : project;
-  const storedAgentId =
-    parentProject?.worktreeMergeAgentId?.trim() || project.worktreeMergeAgentId?.trim();
-  if (storedAgentId && resolveSidebarAgentButtonById(storedAgentId)?.command?.trim()) {
-    return storedAgentId;
-  }
-  return resolveDefaultPromptAgentId();
-}
-
-function rememberProjectWorktreeMergeAgent(project: NativeProject, agentId: string): void {
+function runNativePromptGenerationShellCommand(
+  command: string,
+  options: { cwd?: string; timeoutMs?: number } = {},
+): Promise<NativeProcessResult> {
   /**
-   * CDXC:WorktreeMerge 2026-05-27-06:25:
-   * Direct worktree merge remembers the selected conflict-resolution agent on the
-   * main project, not the temporary worktree, so future worktrees in the same
-   * project family keep using the user's preferred merge agent.
+   * CDXC:PromptAgents 2026-05-30-04:11:
+   * Prompt-agent background generation must resolve the same user-defined
+   * aliases/functions used by interactive agent launches. Run zsh as an
+   * interactive login command so short commands such as `x` can expand before
+   * Codex commit-message and session-title generation execute.
    */
-  const parentProjectId = project.worktree?.parentProjectId ?? project.projectId;
-  projects = projects.map((candidate) =>
-    candidate.projectId === parentProjectId
-      ? { ...candidate, worktreeMergeAgentId: agentId }
-      : candidate,
-  );
-  writeStoredProjects("rememberWorktreeMergeAgent");
+  return runNativeProcess("/bin/zsh", ["-lic", command], options);
 }
 
 function focusPendingGitProject(projectId: string): NativeProject {
@@ -6474,7 +6453,7 @@ async function generateSidebarGitCommitMessageFromStagedChanges(agentId?: string
     prompt,
     purpose: "commit message",
   });
-  const result = await runNativeProcess("/bin/zsh", ["-lc", command], {
+  const result = await runNativePromptGenerationShellCommand(command, {
     cwd: activeProject().path,
     timeoutMs: 120_000,
   });
@@ -6549,7 +6528,19 @@ async function continueGitActionAfterCommitConfirmation(
   }
   pendingGitCommitRequests.delete(requestId);
   try {
-    focusPendingGitProject(pending.projectId);
+    const project = focusPendingGitProject(pending.projectId);
+    if (pending.action === "pr") {
+      await runSidebarGitPullRequestAgentWorkflow({
+        agentId,
+        deleteWorktreeAfter,
+        filePaths,
+        message,
+        pending,
+        project,
+      });
+      return;
+    }
+
     gitState = { ...gitState, isBusy: true };
     publish();
     showAppToast("info", resolveSidebarGitStartedTitle(pending.action), activeProject().name);
@@ -6561,10 +6552,6 @@ async function continueGitActionAfterCommitConfirmation(
     }
     if (pending.action === "push") {
       await pushCurrentBranch();
-    }
-    if (pending.action === "pr") {
-      await pushCurrentBranch();
-      await openOrCreatePullRequest();
     }
     if (deleteWorktreeAfter) {
       await removeActiveWorktreeProjectAfterGitAction();
@@ -6582,12 +6569,120 @@ async function continueGitActionAfterCommitConfirmation(
   }
 }
 
+async function runSidebarGitPullRequestAgentWorkflow(input: {
+  agentId?: string;
+  deleteWorktreeAfter: boolean;
+  filePaths?: readonly string[];
+  message: string;
+  pending: { action: SidebarGitAction; body?: string; hasCommit: boolean; projectId: string; subject: string };
+  project: NativeProject;
+}): Promise<void> {
+  const agent = resolveDefaultPromptAgent(input.agentId);
+  if (!agent?.command?.trim()) {
+    showAppToast(
+      "error",
+      "Agent unavailable",
+      "Choose a configured prompt agent before creating a pull request.",
+    );
+    return;
+  }
+
+  /**
+   * CDXC:WorktreeMerge 2026-05-30-04:18:
+   * The confirmed Create PR flow should be visible like Multiple Commits. Hand
+   * commit, push, and PR creation to the selected prompt agent in a real
+   * terminal instead of running the full Git stack through background native
+   * processes and only reporting progress through toasts.
+   *
+   * CDXC:WorktreeMerge 2026-05-30-05:01:
+   * When every changed file remains selected, the PR workflow prompt should ask
+   * the agent to commit all new/modified files instead of repeating the full
+   * file list. The prompt must also require preserving changes from both sides
+   * if the workflow encounters conflicts or divergent state.
+   */
+  gitState = { ...gitState, isBusy: false };
+  publish();
+  showAppToast("info", `Opening ${agent.name}`, "Commit, push and create PR");
+  const session = await launchAgentTerminal(agent);
+  if (!session) {
+    showAppToast("error", `Could not open ${agent.name}`, "Pull request workflow did not start.");
+    return;
+  }
+
+  const prompt = buildSidebarGitPullRequestAgentPrompt({
+    branch: gitState.branch,
+    deleteWorktreeAfter: input.deleteWorktreeAfter,
+    filePaths: input.filePaths,
+    hasCommit: input.pending.hasCommit,
+    message: input.message.trim() || input.pending.subject,
+    project: input.project,
+    selectedFiles:
+      input.filePaths && input.filePaths.length > 0
+        ? input.filePaths
+        : gitState.files.map((file) => file.path),
+  });
+  await stageNativeAgentPrompt({
+    agent,
+    projectId: input.project.projectId,
+    prompt,
+    renameTitle: "Commit, Push & PR",
+    session,
+    submitPrompt: true,
+  });
+  showAppToast("success", "PR workflow started", input.project.name);
+}
+
+function buildSidebarGitPullRequestAgentPrompt(input: {
+  branch: string | null;
+  deleteWorktreeAfter: boolean;
+  filePaths?: readonly string[];
+  hasCommit: boolean;
+  message: string;
+  project: NativeProject;
+  selectedFiles: readonly string[];
+}): string {
+  const selectedFiles = input.selectedFiles.filter((filePath) => filePath.trim().length > 0);
+  const hasExplicitFileSelection = input.filePaths !== undefined;
+  return [
+    "Please complete the Git pull request flow in this terminal.",
+    "",
+    `Repository: ${input.project.path}`,
+    `Current branch: ${input.branch ?? "(detached HEAD)"}`,
+    input.project.worktree
+      ? `Worktree: ${input.project.worktree.name} from ${input.project.worktree.parentProjectName}`
+      : "",
+    "",
+    "Do these steps visibly:",
+    input.hasCommit
+      ? hasExplicitFileSelection
+        ? "- Stage and commit only the selected files listed below. Do not stage excluded files."
+        : "- Stage and commit all new/modified files."
+      : "- There were no working tree changes when the modal opened, so skip committing unless you find new user changes.",
+    input.message
+      ? "- Use the requested commit message below unless it is clearly invalid for the actual diff."
+      : "- Write a concise commit message that matches the staged diff.",
+    "- If you encounter conflicts, rebases, merge state, or divergent local/remote changes, make sure not to lose changes from either side. Preserve the important code, behavior, and UX from both sides.",
+    "- Push the current branch to origin, setting upstream if needed.",
+    "- Create a GitHub pull request with `gh pr create --fill`, or open/show the existing PR if one already exists.",
+    input.deleteWorktreeAfter
+      ? "- After the PR is created, remove the completed worktree project only if it is safe to do so without losing uncommitted or excluded work."
+      : "",
+    "- Stop and explain clearly if a command fails, authentication is missing, or a merge/rebase/conflict situation needs the user's decision.",
+    "",
+    hasExplicitFileSelection && selectedFiles.length > 0
+      ? ["Selected files:", ...selectedFiles.map((filePath) => `- ${filePath}`)].join("\n")
+      : "Selected files: all new/modified files.",
+    input.message ? `\nRequested commit message:\n${input.message}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 async function continueGitDirectMergeAfterConfirmation(
   requestId: string,
   message: string,
   filePaths: readonly string[] | undefined,
   deleteWorktreeAfter: boolean,
-  conflictAgentId: string,
   agentId?: string,
 ): Promise<void> {
   const pending = pendingGitCommitRequests.get(requestId);
@@ -6600,11 +6695,10 @@ async function continueGitDirectMergeAfterConfirmation(
     if (!worktreeProject.worktree) {
       throw new Error("Direct merge is only available from a worktree project.");
     }
-    const conflictAgent = resolveSidebarAgentButtonById(conflictAgentId);
+    const conflictAgent = resolveDefaultPromptAgent(agentId);
     if (!conflictAgent?.command?.trim()) {
-      throw new Error("Choose an agent with a configured command before merging.");
+      throw new Error("Choose a configured prompt agent before merging.");
     }
-    rememberProjectWorktreeMergeAgent(worktreeProject, conflictAgentId);
     gitState = { ...gitState, isBusy: true };
     publish();
     showAppToast("info", "Preparing direct merge", worktreeProject.name);
@@ -14815,7 +14909,7 @@ async function generateNativeSessionTitleFromPrompt(
     prompt: generationPrompt,
     purpose: "session title",
   });
-  const result = await runNativeProcess("/bin/zsh", ["-lc", command], { cwd });
+  const result = await runNativePromptGenerationShellCommand(command, { cwd });
   if (result.exitCode !== 0) {
     throw new Error(
       result.stderr.trim() || result.stdout.trim() || `${agent.name} title generation failed.`,
@@ -24779,7 +24873,6 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         message.message,
         message.filePaths,
         message.deleteWorktreeAfter === true,
-        message.conflictAgentId,
         message.agentId,
       );
       return;

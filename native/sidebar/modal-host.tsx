@@ -1877,7 +1877,6 @@ function AppModalHost() {
         onDirectMerge={(requestId, message, options) => {
           vscode.postMessage({
             agentId: options.agentId,
-            conflictAgentId: options.conflictAgentId,
             deleteWorktreeAfter: options.deleteWorktreeAfter,
             filePaths: options.filePaths,
             message,

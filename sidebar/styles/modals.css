@@ -2052,18 +2052,6 @@
   border-radius: 18px;
 }
 
-.git-commit-direct-merge-panel {
-  background: color-mix(in srgb, var(--input) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--input) 82%, transparent);
-  border-radius: 18px;
-  padding: 14px;
-}
-
-.git-commit-merge-agent-select {
-  min-height: 44px;
-  width: min(360px, 100%);
-}
-
 .git-commit-prompt-agent-select {
   /**
    * CDXC:PromptAgents 2026-05-29-18:29:
