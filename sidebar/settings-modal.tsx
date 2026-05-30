@@ -2386,7 +2386,7 @@ export function SettingsModal({
             ) : null}
 
             {!isFirstLaunchSetup && !hasVisibleMainSettings ? (
-              <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+              <div className="rounded-none border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
                 No settings match your search.
               </div>
             ) : null}
@@ -2456,7 +2456,7 @@ export function SettingsModal({
                         reload them with Ghostty's normal config shortcut. */}
                     {shouldShowSetting(settingsSearch.terminal, "ghosttySettingsActions") ? (
                       <>
-                        <div className="rounded-lg border border-destructive/45 bg-destructive/10 px-4 py-3 text-sm leading-6 text-foreground">
+                        <div className="rounded-none border border-destructive/45 bg-destructive/10 px-4 py-3 text-sm leading-6 text-foreground">
                           Whatever you set here also applies to your external Ghostty terminal
                           because this Ghostty terminal uses the same settings file. ghostex reloads
                           its embedded Ghostty terminal about 3 seconds after you stop changing
@@ -2843,7 +2843,7 @@ export function SettingsModal({
                 ) : null}
 
                 {!hasVisibleGhosttySettings ? (
-                  <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+                  <div className="rounded-none border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
                     No Ghostty settings match your search.
                   </div>
                 ) : null}
@@ -3204,7 +3204,7 @@ function OpenTargetsSettingsTab({
               const isAvailable = target.id === "finder" || availableBuiltInIds.has(target.id);
               return (
                 <div
-                  className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/40 px-3 py-2"
+                  className="flex items-center justify-between gap-3 rounded-none border border-border/70 bg-card/40 px-3 py-2"
                   key={target.id}
                 >
                   <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -3233,7 +3233,7 @@ function OpenTargetsSettingsTab({
           <div className="flex flex-col gap-2">
             {settings.customWorkspaceOpenTargets.map((target) => (
               <div
-                className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/40 px-3 py-2"
+                className="flex items-center justify-between gap-3 rounded-none border border-border/70 bg-card/40 px-3 py-2"
                 key={target.id}
               >
                 <div className="min-w-0">
@@ -3274,7 +3274,7 @@ function OpenTargetsSettingsTab({
               </div>
             ))}
             {editorState ? (
-              <div className="flex flex-col gap-3 rounded-xl border border-border/70 bg-card/40 p-3">
+              <div className="flex flex-col gap-3 rounded-none border border-border/70 bg-card/40 p-3">
                 <Input
                   aria-label="Open target name"
                   onChange={(event) =>
@@ -3433,7 +3433,7 @@ function OSIntegrationSettingsTab({
         </SettingsSection>
 
         <SettingsSection title="CLI">
-          <div className="grid gap-2 rounded-lg border border-border bg-muted/20 p-3 font-mono text-xs text-muted-foreground">
+          <div className="grid gap-2 rounded-none border border-border bg-muted/20 p-3 font-mono text-xs text-muted-foreground">
             <div>ghostex open ./folder</div>
             <div>ghostex edit --wait file.ts:12:3</div>
             <div>ghostex terminal --cwd /tmp --title Scratch -- echo hi</div>
@@ -3442,7 +3442,7 @@ function OSIntegrationSettingsTab({
         </SettingsSection>
 
         <SettingsSection title="Diagnostics">
-          <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+          <div className="flex flex-col gap-3 rounded-none border border-border bg-muted/20 p-3 text-sm text-muted-foreground">
             <div className="flex items-center justify-between gap-3">
               <span>{loading && !status ? "Checking macOS handlers..." : "macOS handler status"}</span>
               <Button
@@ -3765,10 +3765,10 @@ function IntegrationSettingsRow({
   tone: "success" | "warning" | "neutral";
 }) {
   return (
-    <Field className="rounded-lg border border-border bg-muted/20 px-4 py-3">
+    <Field className="rounded-none border border-border bg-muted/20 px-4 py-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 gap-3">
-          <span className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+          <span className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-none bg-muted text-muted-foreground">
             <Icon aria-hidden="true" size={17} />
           </span>
           <FieldContent>
@@ -3776,7 +3776,7 @@ function IntegrationSettingsRow({
               <FieldTitle className="text-sm">{title}</FieldTitle>
               <span
                 className={cn(
-                  "inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold",
+                  "inline-flex rounded-none border px-2 py-0.5 text-[11px] font-semibold",
                   tone === "success" &&
                     "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
                   tone === "warning" && "border-amber-500/40 bg-amber-500/10 text-amber-200",
@@ -3925,7 +3925,7 @@ function AgentsSettingsTab({
     <ScrollArea className="h-full min-h-0">
       <div className="flex flex-col gap-6 px-5 pb-5">
         {!editorState ? (
-          <details className="group rounded-lg border border-border bg-muted/20">
+          <details className="group rounded-none border border-border bg-muted/20">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 marker:hidden">
               {/*
                * CDXC:AgentHookSettings 2026-05-23-10:05:
@@ -3980,7 +3980,7 @@ function AgentsSettingsTab({
               </div>
               <div className="flex flex-col gap-2">
                 {agentHookStatus?.errorMessage ? (
-                  <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  <div className="rounded-none border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                     {agentHookStatus.errorMessage}
                   </div>
                 ) : null}
@@ -4009,7 +4009,7 @@ function AgentsSettingsTab({
         ) : null}
         {!editorState && promptAgentOptions.length > 0 ? (
           <SelectField
-            description="Choose the agent used by Git helper prompts, Prompt to Find Session, project board Start Work, and the default worktree first-prompt selection."
+            description="Choose the agent used by Git helper prompts, Prompt to Search, project board Start Work, and the default worktree first-prompt selection."
             isModified={defaultPromptAgentId !== DEFAULT_ghostex_SETTINGS.defaultPromptAgentId}
             label="Default Prompt Agent"
             onChange={onDefaultPromptAgentIdChange}
@@ -4026,7 +4026,7 @@ function AgentsSettingsTab({
           />
         ) : null}
         {!editorState ? (
-          <Field className="items-center justify-between rounded-lg border border-border bg-muted/20 px-4 py-3" orientation="horizontal">
+          <Field className="items-center justify-between rounded-none border border-border bg-muted/20 px-4 py-3" orientation="horizontal">
             <FieldContent>
               <FieldLabel className="text-sm" htmlFor={acceptAllToggleId}>
                 Accept All
@@ -4119,7 +4119,7 @@ function AgentHookStatusRow({
 }) {
   const statusText = getAgentHookStatusText(status, isLoading);
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-border/70 bg-card/40 px-3 py-2">
+    <div className="flex items-center justify-between gap-3 rounded-none border border-border/70 bg-card/40 px-3 py-2">
       <div className="flex min-w-0 flex-1 items-center gap-3">
         <span
           aria-hidden="true"
@@ -4136,7 +4136,7 @@ function AgentHookStatusRow({
       </div>
       <span
         className={cn(
-          "flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium",
+          "flex shrink-0 items-center gap-1.5 rounded-none px-2 py-1 text-xs font-medium",
           getAgentHookStatusClassName(status, isLoading),
         )}
       >
@@ -5057,7 +5057,7 @@ function HotkeysSettingsTab({
             </SettingsSection>
           ))}
           {!hasVisibleHotkeys ? (
-            <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+            <div className="rounded-none border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
               No hotkeys match your search.
             </div>
           ) : null}
@@ -5310,19 +5310,19 @@ function GhostexFolderStatsSection({
       </div>
 
       {isLoading && !stats ? (
-        <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
+        <div className="rounded-none border border-border bg-muted/25 px-3 py-2 text-sm text-muted-foreground">
           Loading folder sizes...
         </div>
       ) : null}
 
       {stats?.errorMessage ? (
-        <div className="rounded-md border border-destructive/45 bg-destructive/10 px-3 py-2 text-sm text-foreground">
+        <div className="rounded-none border border-destructive/45 bg-destructive/10 px-3 py-2 text-sm text-foreground">
           {stats.errorMessage}
         </div>
       ) : null}
 
       {stats && !stats.errorMessage ? (
-        <div className="rounded-md border border-border bg-muted/20">
+        <div className="rounded-none border border-border bg-muted/20">
           {folders.length > 0 ? (
             folders.map((folder) => (
               <div
@@ -5380,16 +5380,18 @@ function GhosttySettingsActions({
         Reset Ghostty defaults
       </Button>
       <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            className="h-10 px-4 text-sm"
-            onClick={onApplyRecommended}
-            type="button"
-            variant="outline"
-          >
-            Apply recommended
-          </Button>
-        </TooltipTrigger>
+        <TooltipTrigger
+          render={
+            <Button
+              className="h-10 px-4 text-sm"
+              onClick={onApplyRecommended}
+              type="button"
+              variant="outline"
+            >
+              Apply recommended
+            </Button>
+          }
+        />
         <TooltipContent className="whitespace-pre-line text-left" sideOffset={6}>
           {GHOSTEX_RECOMMENDED_GHOSTTY_CONFIG_LINES.join("\n")}
         </TooltipContent>
@@ -5828,7 +5830,7 @@ function PetPickerField({
       onResetToDefault={onResetToDefault}
     >
       <div className="flex min-w-0 items-center gap-3">
-        <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-muted/30">
+        <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-none border border-border bg-muted/30">
           <PetAvatar className="scale-[0.42]" petId={selectedPet.id} />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-2">
@@ -5865,7 +5867,7 @@ function StaticNoteField({ description, label }: { description: string; label: s
   return (
     <SettingRow description={description} htmlFor={id} label={label}>
       <div
-        className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+        className="rounded-none border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
         id={id}
       >
         Themes are coming back soon.
@@ -5928,19 +5930,21 @@ function SoundField({
           </SelectContent>
         </Select>
         <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              aria-label={`Play ${label}`}
-              className="h-10 w-10 rounded-md"
-              disabled={!onPlay}
-              onClick={() => onPlay?.(value)}
-              size="icon"
-              type="button"
-              variant="outline"
-            >
-              <IconPlayerPlay aria-hidden="true" className="size-4" />
-            </Button>
-          </TooltipTrigger>
+          <TooltipTrigger
+            render={
+              <Button
+                aria-label={`Play ${label}`}
+                className="h-10 w-10 rounded-none"
+                disabled={!onPlay}
+                onClick={() => onPlay?.(value)}
+                size="icon"
+                type="button"
+                variant="outline"
+              >
+                <IconPlayerPlay aria-hidden="true" className="size-4" />
+              </Button>
+            }
+          />
           <TooltipContent sideOffset={6}>Play selected sound</TooltipContent>
         </Tooltip>
       </div>
@@ -6009,7 +6013,7 @@ function ColorField({
       <div className="grid grid-cols-[2.75rem_minmax(0,1fr)] items-center gap-3">
         <Input
           aria-label={`${label} picker`}
-          className="h-10 cursor-pointer rounded-xl p-1"
+          className="h-10 cursor-pointer rounded-none p-1"
           onChange={(event) => onChange(event.currentTarget.value)}
           type="color"
           value={colorValue}
@@ -6162,22 +6166,24 @@ function ModifiedSettingResetButton({
 }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          aria-label={`Reset ${label} to default`}
-          className="settings-modified-reset-button"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            onResetToDefault();
-          }}
-          size="icon-xs"
-          type="button"
-          variant="ghost"
-        >
-          <IconAsterisk aria-hidden="true" />
-        </Button>
-      </TooltipTrigger>
+      <TooltipTrigger
+        render={
+          <Button
+            aria-label={`Reset ${label} to default`}
+            className="settings-modified-reset-button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onResetToDefault();
+            }}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <IconAsterisk aria-hidden="true" />
+          </Button>
+        }
+      />
       <TooltipContent className="whitespace-pre-line text-center" sideOffset={6}>
         {MODIFIED_SETTING_TOOLTIP}
       </TooltipContent>

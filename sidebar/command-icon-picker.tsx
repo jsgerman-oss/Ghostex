@@ -90,31 +90,33 @@ export function CommandIconPicker({
           Icon
         </span>
         <Popover open={isOpen} onOpenChange={setIsOpen}>
-          <PopoverTrigger asChild>
-            <button
-              aria-expanded={isOpen}
-              aria-labelledby={labelId}
-              className="group-title-input command-config-input command-icon-picker-trigger"
-              type="button"
-            >
-              <span className="command-icon-picker-trigger-value">
-                <span aria-hidden="true" className="command-button-icon-shell">
-                  <SidebarCommandIconGlyph
-                    className="command-button-leading-icon"
-                    color={iconColor}
-                    icon={selectedIcon}
-                    size={16}
-                  />
+          <PopoverTrigger
+            render={
+              <button
+                aria-expanded={isOpen}
+                aria-labelledby={labelId}
+                className="group-title-input command-config-input command-icon-picker-trigger"
+                type="button"
+              >
+                <span className="command-icon-picker-trigger-value">
+                  <span aria-hidden="true" className="command-button-icon-shell">
+                    <SidebarCommandIconGlyph
+                      className="command-button-leading-icon"
+                      color={iconColor}
+                      icon={selectedIcon}
+                      size={16}
+                    />
+                  </span>
+                  <span>{getSidebarCommandIconLabel(selectedIcon)}</span>
                 </span>
-                <span>{getSidebarCommandIconLabel(selectedIcon)}</span>
-              </span>
-              <IconChevronDown
-                aria-hidden="true"
-                className="command-icon-picker-trigger-chevron"
-                size={16}
-              />
-            </button>
-          </PopoverTrigger>
+                <IconChevronDown
+                  aria-hidden="true"
+                  className="command-icon-picker-trigger-chevron"
+                  size={16}
+                />
+              </button>
+            }
+          />
           <PopoverContent
             align="start"
             className="command-icon-picker-menu"

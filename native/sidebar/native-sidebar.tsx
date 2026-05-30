@@ -6490,6 +6490,7 @@ async function commitWithMessage(
   filePaths?: readonly string[],
   options: { agentId?: string; commitOnNewRef?: boolean } = {},
 ): Promise<void> {
+  const project = activeProject();
   if (filePaths && filePaths.length > 0) {
     await runGit(["add", "-A", "--", ...filePaths]);
   } else {
@@ -6504,10 +6505,54 @@ async function commitWithMessage(
     gitState = { ...gitState, branch, hasUpstream: false };
   }
   const args = ["commit", "-m", resolvedMessage.subject];
+  if (await shouldBypassMissingBeadsDatabasePreCommitHook(project)) {
+    args.splice(1, 0, "--no-verify");
+  }
   if (resolvedMessage.body) {
     args.push("-m", resolvedMessage.body);
   }
   await runGit(args);
+}
+
+async function shouldBypassMissingBeadsDatabasePreCommitHook(
+  project: NativeProject,
+): Promise<boolean> {
+  const beadsDirectory = await runNativeProcess(
+    "/bin/test",
+    ["-d", `${project.path.replace(/\/+$/u, "")}/.beads`],
+    { timeoutMs: 5_000 },
+  );
+  if (beadsDirectory.exitCode !== 0) {
+    return false;
+  }
+
+  const bdPath = await runNativeProcess("/usr/bin/env", ["which", "bd"], { timeoutMs: 5_000 });
+  if (bdPath.exitCode !== 0) {
+    return false;
+  }
+
+  const status = await runNativeProcess("/usr/bin/env", ["bd", "status"], {
+    cwd: project.path,
+    timeoutMs: 10_000,
+  });
+  if (status.exitCode === 0) {
+    return false;
+  }
+
+  /**
+   * CDXC:NativeSidebarGit 2026-05-30-03:35
+   * Beads installs a shared Git pre-commit hook that runs `bd sync --flush-only`
+   * whenever `.beads` exists. A fresh Git worktree can have the tracked JSONL
+   * files without a local SQLite database, so that hook fails before Ghostex can
+   * commit ordinary code changes. Only bypass hooks for this precise missing-db
+   * state; initialized Beads workspaces and unrelated hook failures still run
+   * through normal Git verification.
+   */
+  return isMissingBeadsDatabaseError(`${status.stderr}\n${status.stdout}`);
+}
+
+function isMissingBeadsDatabaseError(message: string): boolean {
+  return /no beads database found|run ['"]?bd init['"]?|not initialized|no storage/i.test(message);
 }
 
 async function checkoutSidebarGitFeatureBranch(subject: string): Promise<string> {
@@ -18563,12 +18608,12 @@ async function runCliAgent(agentId: string, groupId?: string): Promise<SessionRe
 
 /**
  * CDXC:PreviousSessions 2026-04-28-05:12
- * Native ghostex must mirror the reference Prompt to Find Session workflow:
+ * Native ghostex must mirror the reference Prompt to Search workflow:
  * receive the modal's remembered-topic query, launch a terminal agent session,
  * rename that helper session, then stage the local-session search prompt.
  *
  * CDXC:PromptAgents 2026-05-28-07:15:
- * Prompt to Find Session should use the same Settings-selected default prompt
+ * Prompt to Search should use the same Settings-selected default prompt
  * agent as Git helper prompts and project-board Start Work instead of
  * hardcoding Codex.
  */

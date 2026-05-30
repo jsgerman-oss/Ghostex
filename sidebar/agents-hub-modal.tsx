@@ -395,34 +395,36 @@ function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode
 
         return (
           <Tooltip key={`${profile.agentIcon}-${profile.profilePath}`}>
-            <TooltipTrigger asChild>
-              <button
-                aria-label={`Open ${profile.label} profile in Finder`}
-                className="agents-hub-agent-icon"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  vscode.postMessage({
-                    path: profile.profilePath,
-                    type: "openAgentsHubPathInFinder",
-                  });
-                }}
-                type="button"
-              >
-                <span
-                  aria-hidden="true"
-                  className="agents-hub-agent-logo"
-                  data-agent-icon={profile.agentIcon}
-                  style={{
-                    backgroundColor: AGENT_LOGO_COLORS[profile.agentIcon],
-                    maskImage: `url("${AGENT_LOGOS[profile.agentIcon]}")`,
-                    WebkitMaskImage: `url("${AGENT_LOGOS[profile.agentIcon]}")`,
+            <TooltipTrigger
+              render={
+                <button
+                  aria-label={`Open ${profile.label} profile in Finder`}
+                  className="agents-hub-agent-icon"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    vscode.postMessage({
+                      path: profile.profilePath,
+                      type: "openAgentsHubPathInFinder",
+                    });
                   }}
-                />
-                {profileBadge ? (
-                  <span className="agents-hub-agent-badge">{profileBadge}</span>
-                ) : null}
-              </button>
-            </TooltipTrigger>
+                  type="button"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="agents-hub-agent-logo"
+                    data-agent-icon={profile.agentIcon}
+                    style={{
+                      backgroundColor: AGENT_LOGO_COLORS[profile.agentIcon],
+                      maskImage: `url("${AGENT_LOGOS[profile.agentIcon]}")`,
+                      WebkitMaskImage: `url("${AGENT_LOGOS[profile.agentIcon]}")`,
+                    }}
+                  />
+                  {profileBadge ? (
+                    <span className="agents-hub-agent-badge">{profileBadge}</span>
+                  ) : null}
+                </button>
+              }
+            />
             <TooltipContent align="start">
               <div className="agents-hub-profile-tooltip">
                 <div className="agents-hub-profile-tooltip-main">

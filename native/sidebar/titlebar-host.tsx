@@ -300,11 +300,11 @@ const KEEP_AWAKE_ADMIN_PROCESS_TIMEOUT_MS = 120_000;
  * The macOS app titlebar should now be 35px tall, not the earlier 45px. Keep the React titlebar height in sync with Swift's native reservation so web controls and AppKit traffic-light centering share one chrome height.
  */
 const TITLEBAR_HEIGHT = 35;
-const TITLEBAR_CONTROL_HEIGHT = 20;
-const TITLEBAR_CONTROL_TOP = (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT) / 2;
-const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP + 1;
+const TITLEBAR_CONTROL_HEIGHT = TITLEBAR_HEIGHT - 1;
+const TITLEBAR_CONTROL_TOP = 1;
+const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_CENTER_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
-const TITLEBAR_RIGHT_CONTROLS_TOP = TITLEBAR_CONTROL_TOP + 1;
+const TITLEBAR_RIGHT_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const RESOURCE_POLL_INTERVAL_MS = 5_000;
 /**
  * CDXC:ReactTitlebar 2026-05-11-09:17
@@ -1900,35 +1900,22 @@ function App() {
     projectState.projectEditorCompanionPaneHidden;
   const titlebarModes = [
     {
-      label: "Agents",
+      label: "AGENTS",
       onSelect: openAgentsMode,
       value: "agents" as const,
     },
     {
-      /**
-       * CDXC:ReactTitlebar 2026-05-15-13:58:
-       * The titlebar Code segment always renders as "Code". Git
-       * diff stats moved to the sidebar project row, and editor
-       * startup errors belong in the editor page instead of this
-       * segmented-control button.
-       */
-      label: "Code",
+      label: "SOURCE",
       onSelect: openCodeMode,
       value: "code" as const,
     },
     {
-      label: "Git",
+      label: "GITHUB",
       onSelect: openGitMode,
       value: "git" as const,
     },
     {
-      /**
-       * CDXC:ProjectMode 2026-05-15-15:35:
-       * The existing tasks-backed mode is labeled Project because
-       * its coming-soon surface is a broader project workspace for
-       * automations, todos, docs, and more.
-       */
-      label: "Project",
+      label: "KANBAN",
       onSelect: openTasksMode,
       value: "tasks" as const,
     },
@@ -1989,24 +1976,26 @@ function App() {
             {shouldShowCompanionRestoreButton ? (
               <div style={styles.companionRestoreSlot}>
                 <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      aria-label="Show Companion Sidepane"
-                      className="titlebar-session-button titlebar-companion-restore-button"
-                      data-titlebar-hit-region
-                      onClick={showProjectEditorCompanion}
-                      type="button"
-                      variant="ghost"
-                    >
-                      {/*
-                       * CDXC:ProjectEditorCompanion 2026-05-16-14:42:
-                       * The hidden companion-pane restore control is floating
-                       * titlebar chrome. Keep it outside the mode switcher flow
-                       * so showing the button never shifts Agents/Code/Git/Project tabs.
-                       */}
-                      <IconLayoutSidebarLeftExpand aria-hidden="true" size={16} stroke={1.8} />
-                    </Button>
-                  </TooltipTrigger>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label="Show Companion Sidepane"
+                        className="titlebar-session-button titlebar-companion-restore-button"
+                        data-titlebar-hit-region
+                        onClick={showProjectEditorCompanion}
+                        type="button"
+                        variant="ghost"
+                      >
+                        {/*
+                         * CDXC:ProjectEditorCompanion 2026-05-16-14:42:
+                         * The hidden companion-pane restore control is floating
+                         * titlebar chrome. Keep it outside the mode switcher flow
+                         * so showing the button never shifts Agents/Code/Git/Project tabs.
+                         */}
+                        <IconLayoutSidebarLeftExpand aria-hidden="true" size={16} stroke={1.8} />
+                      </Button>
+                    }
+                  />
                   <TooltipContent>Show Companion Sidepane</TooltipContent>
                 </Tooltip>
               </div>
@@ -2031,49 +2020,64 @@ function App() {
               </Button>
             ) : null}
             {/*
-             * CDXC:ReactTitlebar 2026-05-17-02:29:
-             * Top-right titlebar controls should not show hover tooltips.
-             * Keep accessible labels on the buttons and visible labels inside
-             * dropdown menus, while avoiding extra titlebar hover chrome.
+             * CDXC:ReactTitlebar 2026-05-30-03:11:
+             * Top-right titlebar menus are right-click affordances. Keep left
+             * click on primary icon actions, hide chevrons, and tell users about
+             * right-click options through compact hover tooltips.
              */}
             {!projectState.keepAwake.hideTitlebarControl ? (
               <DropdownMenu onOpenChange={setKeepAwakeMenuOpen} open={keepAwakeMenuOpen}>
                 <ButtonGroup className="titlebar-open-group titlebar-keep-awake-group" data-titlebar-hit-region>
-                  <Button
-                    aria-label={keepAwakeRuntime ? "Allow Mac sleep" : "Keep Mac awake"}
-                    className="titlebar-session-button titlebar-open-main-button"
-                    data-active={String(Boolean(keepAwakeRuntime))}
-                    onClick={toggleKeepAwake}
-                    type="button"
-                    variant={keepAwakeRuntime ? "outline" : "ghost"}
-                  >
-                    {/*
-                     * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
-                     * Keep-awake titlebar chrome must be icon-only so it cannot
-                     * clip in the narrow right-side slot. Coffee means Ghostex is
-                     * keeping the Mac awake; moon means clicking will allow sleep.
-                     */}
-                    {keepAwakeRuntime ? (
-                      <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
-                    ) : (
-                      <IconMoon aria-hidden="true" size={14} stroke={1.8} />
-                    )}
-                  </Button>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      aria-label="Keep awake menu"
-                      className="titlebar-session-button titlebar-open-chevron-button"
-                      type="button"
-                      variant="ghost"
-                    >
-                      <IconChevronDown aria-hidden="true" size={14} />
-                    </Button>
-                  </DropdownMenuTrigger>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          aria-label={keepAwakeRuntime ? "Allow Mac sleep" : "Keep Mac awake"}
+                          className="titlebar-session-button titlebar-open-main-button"
+                          data-active={String(Boolean(keepAwakeRuntime))}
+                          onClick={toggleKeepAwake}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setKeepAwakeMenuOpen(true);
+                          }}
+                          type="button"
+                          variant={keepAwakeRuntime ? "outline" : "ghost"}
+                        >
+                          {/*
+                           * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
+                           * Keep-awake titlebar chrome must be icon-only so it cannot
+                           * clip in the narrow right-side slot. Coffee means Ghostex is
+                           * keeping the Mac awake; moon means clicking will allow sleep.
+                           */}
+                          {keepAwakeRuntime ? (
+                            <IconCoffee aria-hidden="true" size={14} stroke={1.8} />
+                          ) : (
+                            <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+                          )}
+                        </Button>
+                      }
+                    />
+                    <TooltipContent>Click to toggle. Right-click for options.</TooltipContent>
+                  </Tooltip>
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        aria-label="Keep awake menu"
+                        aria-hidden="true"
+                        className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
+                        tabIndex={-1}
+                        type="button"
+                        variant="ghost"
+                      >
+                        <IconChevronDown aria-hidden="true" size={14} />
+                      </Button>
+                    }
+                  />
                 </ButtonGroup>
                 <DropdownMenuContent
                   align="center"
                   alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                  className="titlebar-open-menu min-w-[220px] rounded-lg border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
+                  className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
                   data-titlebar-hit-region
                   sideOffset={6}
                   style={{ backgroundColor: "#0e0e0e" }}
@@ -2111,31 +2115,56 @@ function App() {
               </DropdownMenu>
             ) : null}
             <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  aria-label="Ghostex resources"
-                  className="titlebar-session-button titlebar-resource-button"
-                  data-titlebar-hit-region
-                  type="button"
-                  variant="ghost"
-                >
-                  {/*
-                   * CDXC:TitlebarResources 2026-05-17-02:03:
-                   * The Resources button is the first right-side titlebar
-                   * control after moving the pet wake/sleep toggle into the
-                   * sidebar overflow menu.
-                   *
-                   * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
-                   * The keep-awake button now owns coffee/moon state icons, so
-                   * Resources uses the old desktop glyph as the stable manager
-                   * icon requested for this titlebar control swap.
-                   */}
-                  <IconDeviceDesktop aria-hidden="true" size={16} />
-                </Button>
-              </DropdownMenuTrigger>
+              <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label="Ghostex resources"
+                        className="titlebar-session-button titlebar-resource-button"
+                        onClick={() => {
+                          setResourcesMenuOpen(true);
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setResourcesMenuOpen(true);
+                        }}
+                        type="button"
+                        variant="ghost"
+                      >
+                      {/*
+                       * CDXC:TitlebarResources 2026-05-17-02:03:
+                       * The Resources button is the first right-side titlebar
+                       * control after moving the pet wake/sleep toggle into the
+                       * sidebar overflow menu.
+                       *
+                       * CDXC:TitlebarKeepAwake 2026-05-27-07:32:
+                       * The keep-awake button now owns coffee/moon state icons, so
+                       * Resources uses the old desktop glyph as the stable manager
+                       * icon requested for this titlebar control swap.
+                       */}
+                        <IconDeviceDesktop aria-hidden="true" size={16} />
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>Click or right-click for resources.</TooltipContent>
+                </Tooltip>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      aria-label="Resources menu"
+                      aria-hidden="true"
+                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
+                      tabIndex={-1}
+                      type="button"
+                      variant="ghost"
+                    />
+                  }
+                />
+              </ButtonGroup>
               <DropdownMenuContent
                 align="end"
-                className="titlebar-open-menu titlebar-resources-menu rounded-lg border-border/80 !bg-[#0e0e0e] p-0 text-[13px] text-foreground shadow-2xl"
+                className="titlebar-open-menu titlebar-resources-menu rounded-none border-border/80 !bg-[#0e0e0e] p-0 text-[13px] text-foreground shadow-2xl"
                 data-titlebar-hit-region
                 sideOffset={6}
                 style={{ backgroundColor: "#0e0e0e" }}
@@ -2158,50 +2187,67 @@ function App() {
             </DropdownMenu>
             <DropdownMenu onOpenChange={setGitMenuOpen} open={gitMenuOpen}>
               <ButtonGroup className="titlebar-open-group titlebar-git-group" data-titlebar-hit-region>
-                <Button
-                  aria-label={gitPrimaryAction.disabledReason ?? gitPrimaryLabel}
-                  className="titlebar-session-button titlebar-open-main-button titlebar-git-main-button"
-                  disabled={gitPrimaryAction.disabled}
-                  onClick={() => runGitAction(gitPrimaryAction.action)}
-                  type="button"
-                  variant="ghost"
-                >
-                  {/*
-                   * CDXC:TitlebarGit 2026-05-24-17:41:
-                   * The titlebar Git split button mirrors t3code's commit/push control and sits immediately after Resources so commit, push, and PR actions are reachable from top chrome without opening the sidebar Git row.
-                   */
-                  projectState.git.isBusy ? (
-                    <IconLoader2 aria-hidden="true" className="titlebar-git-spinner" size={14} />
-                  ) : (
-                    getTitlebarGitActionIcon(gitPrimaryAction.action)
-                  )}
-                  <span
-                    className="titlebar-git-label titlebar-git-label-full"
-                    data-compact-below-620={String(shouldCompactGitPrimaryLabel)}
-                  >
-                    {gitPrimaryLabel}
-                  </span>
-                  {gitPrimaryCompactLabel ? (
-                    <span aria-hidden="true" className="titlebar-git-label titlebar-git-label-compact">
-                      {gitPrimaryCompactLabel}
-                    </span>
-                  ) : null}
-                </Button>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    aria-label="Git actions menu"
-                    className="titlebar-session-button titlebar-open-chevron-button"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <IconChevronDown aria-hidden="true" size={14} />
-                  </Button>
-                </DropdownMenuTrigger>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label={gitPrimaryAction.disabledReason ?? gitPrimaryLabel}
+                        className="titlebar-session-button titlebar-open-main-button titlebar-git-main-button"
+                        disabled={gitPrimaryAction.disabled}
+                        onClick={() => runGitAction(gitPrimaryAction.action)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setGitMenuOpen(true);
+                        }}
+                        type="button"
+                        variant="ghost"
+                      >
+                        {/*
+                         * CDXC:TitlebarGit 2026-05-24-17:41:
+                         * The titlebar Git split button mirrors t3code's commit/push control and sits immediately after Resources so commit, push, and PR actions are reachable from top chrome without opening the sidebar Git row.
+                         */
+                        projectState.git.isBusy ? (
+                          <IconLoader2 aria-hidden="true" className="titlebar-git-spinner" size={14} />
+                        ) : (
+                          getTitlebarGitActionIcon(gitPrimaryAction.action)
+                        )}
+                        {/*
+                        <span
+                          className="titlebar-git-label titlebar-git-label-full"
+                          data-compact-below-620={String(shouldCompactGitPrimaryLabel)}
+                        >
+                          {gitPrimaryLabel}
+                        </span>
+                        {gitPrimaryCompactLabel ? (
+                          <span aria-hidden="true" className="titlebar-git-label titlebar-git-label-compact">
+                            {gitPrimaryCompactLabel}
+                          </span>
+                        ) : null}
+                        */}
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>Click to run. Right-click for Git actions.</TooltipContent>
+                </Tooltip>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      aria-label="Git actions menu"
+                      aria-hidden="true"
+                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
+                      tabIndex={-1}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <IconChevronDown aria-hidden="true" size={14} />
+                    </Button>
+                  }
+                />
               </ButtonGroup>
               <DropdownMenuContent
                 align="center"
                 alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                className="titlebar-open-menu titlebar-git-menu rounded-lg border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
+                className="titlebar-open-menu titlebar-git-menu rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
                 data-titlebar-hit-region
                 sideOffset={6}
                 style={{ backgroundColor: "#0e0e0e", minWidth: 240, width: 240 }}
@@ -2221,35 +2267,50 @@ function App() {
             </DropdownMenu>
             <DropdownMenu onOpenChange={setActionsMenuOpen} open={actionsMenuOpen}>
               <ButtonGroup className="titlebar-open-group titlebar-actions-group" data-titlebar-hit-region>
-                <Button
-                  aria-label={
-                    activeAction
-                      ? `Run ${getSidebarActionLabel(activeAction)}`
-                      : "No actions configured"
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label={
+                          activeAction
+                            ? `Run ${getSidebarActionLabel(activeAction)}`
+                            : "No actions configured"
+                        }
+                        className="titlebar-session-button titlebar-open-main-button"
+                        disabled={!activeAction}
+                        onClick={() => runSidebarAction(activeAction)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setActionsMenuOpen(true);
+                        }}
+                        type="button"
+                        variant="ghost"
+                      >
+                        {getSidebarActionIcon(activeAction)}
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>Click to run. Right-click for actions.</TooltipContent>
+                </Tooltip>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      aria-label="Actions menu"
+                      aria-hidden="true"
+                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
+                      tabIndex={-1}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <IconChevronDown aria-hidden="true" size={14} />
+                    </Button>
                   }
-                  className="titlebar-session-button titlebar-open-main-button"
-                  disabled={!activeAction}
-                  onClick={() => runSidebarAction(activeAction)}
-                  type="button"
-                  variant="ghost"
-                >
-                  {getSidebarActionIcon(activeAction)}
-                </Button>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    aria-label="Actions menu"
-                    className="titlebar-session-button titlebar-open-chevron-button"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <IconChevronDown aria-hidden="true" size={14} />
-                  </Button>
-                </DropdownMenuTrigger>
+                />
               </ButtonGroup>
               <DropdownMenuContent
                 align="center"
                 alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                className="titlebar-open-menu min-w-[220px] rounded-lg border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
+                className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
                 data-titlebar-hit-region
                 sideOffset={6}
                 style={{ backgroundColor: "#0e0e0e" }}
@@ -2269,14 +2330,16 @@ function App() {
                             {getSidebarActionLabel(command)}
                           </span>
                           <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span
-                                className="titlebar-action-command-preview"
-                                data-unconfigured={String(!isSidebarCommandConfigured(command))}
-                              >
-                                {actionCommandPreview}
-                              </span>
-                            </TooltipTrigger>
+                            <TooltipTrigger
+                              render={
+                                <span
+                                  className="titlebar-action-command-preview"
+                                  data-unconfigured={String(!isSidebarCommandConfigured(command))}
+                                >
+                                  {actionCommandPreview}
+                                </span>
+                              }
+                            />
                             <TooltipContent
                               className="titlebar-action-command-tooltip whitespace-normal text-left"
                               sideOffset={6}
@@ -2311,34 +2374,49 @@ function App() {
             </DropdownMenu>
             <DropdownMenu onOpenChange={setOpenInMenuOpen} open={openInMenuOpen}>
               <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
-                <Button
-                  aria-label={activeTarget?.label ?? "Open project"}
-                  className="titlebar-session-button titlebar-open-main-button"
-                  onClick={() => openTarget(activeTarget)}
-                  type="button"
-                  variant="ghost"
-                >
-                  {activeTarget ? (
-                    getOpenTargetIcon(activeTarget)
-                  ) : (
-                    <IconFolderOpen aria-hidden="true" className="size-4 text-zinc-400" />
-                  )}
-                </Button>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    aria-label="Open project menu"
-                    className="titlebar-session-button titlebar-open-chevron-button"
-                    type="button"
-                    variant="ghost"
-                  >
-                    <IconChevronDown aria-hidden="true" size={14} />
-                  </Button>
-                </DropdownMenuTrigger>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        aria-label={activeTarget?.label ?? "Open project"}
+                        className="titlebar-session-button titlebar-open-main-button"
+                        onClick={() => openTarget(activeTarget)}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setOpenInMenuOpen(true);
+                        }}
+                        type="button"
+                        variant="ghost"
+                      >
+                        {activeTarget ? (
+                          getOpenTargetIcon(activeTarget)
+                        ) : (
+                          <IconFolderOpen aria-hidden="true" className="size-4 text-zinc-400" />
+                        )}
+                      </Button>
+                    }
+                  />
+                  <TooltipContent>Click to open. Right-click for targets.</TooltipContent>
+                </Tooltip>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      aria-label="Open project menu"
+                      aria-hidden="true"
+                      className="titlebar-session-button titlebar-open-chevron-button titlebar-open-chevron-button-hidden"
+                      tabIndex={-1}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <IconChevronDown aria-hidden="true" size={14} />
+                    </Button>
+                  }
+                />
               </ButtonGroup>
               <DropdownMenuContent
                 align="center"
                 alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-                className="titlebar-open-menu min-w-[220px] rounded-lg border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
+                className="titlebar-open-menu min-w-[220px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
                 data-titlebar-hit-region
                 sideOffset={6}
                 style={{ backgroundColor: "#0e0e0e" }}
@@ -2653,20 +2731,22 @@ function TitlebarResourcesMenu({
         </div>
         <div className="titlebar-resources-actions">
           <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                aria-label="Sleep inactive sessions"
-                className="titlebar-resources-action-button"
-                data-enabled={String(inactiveTerminalSleepSessionCount > 0)}
-                data-variant="sleep"
-                disabled={inactiveTerminalSleepSessionCount === 0}
-                onClick={onSleepInactiveSessions}
-                type="button"
-              >
-                <IconMoon aria-hidden="true" size={14} stroke={1.8} />
-                <span>Sleep Inactive</span>
-              </button>
-            </TooltipTrigger>
+            <TooltipTrigger
+              render={
+                <button
+                  aria-label="Sleep inactive sessions"
+                  className="titlebar-resources-action-button"
+                  data-enabled={String(inactiveTerminalSleepSessionCount > 0)}
+                  data-variant="sleep"
+                  disabled={inactiveTerminalSleepSessionCount === 0}
+                  onClick={onSleepInactiveSessions}
+                  type="button"
+                >
+                  <IconMoon aria-hidden="true" size={14} stroke={1.8} />
+                  <span>Sleep Inactive</span>
+                </button>
+              }
+            />
             <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
               <span className="titlebar-resource-tooltip-title">Sleep inactive sessions</span>
               <span>Sleeps idle terminals and keeps them restorable in the sidebar.</span>
@@ -2674,19 +2754,21 @@ function TitlebarResourcesMenu({
           </Tooltip>
           {persistentSessionMode ? (
             <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  aria-label="Sleep all terminal sessions"
-                  className="titlebar-resources-action-button"
-                  data-variant="sleep"
-                  disabled={sleepAllSessionBundles.length === 0}
-                  onClick={() => onQuit(sleepAllSessionBundles)}
-                  type="button"
-                >
-                  <IconMoon aria-hidden="true" size={14} stroke={1.9} />
-                  <span>Sleep All</span>
-                </button>
-              </TooltipTrigger>
+              <TooltipTrigger
+                render={
+                  <button
+                    aria-label="Sleep all terminal sessions"
+                    className="titlebar-resources-action-button"
+                    data-variant="sleep"
+                    disabled={sleepAllSessionBundles.length === 0}
+                    onClick={() => onQuit(sleepAllSessionBundles)}
+                    type="button"
+                  >
+                    <IconMoon aria-hidden="true" size={14} stroke={1.9} />
+                    <span>Sleep All</span>
+                  </button>
+                }
+              />
               <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
                 <span className="titlebar-resource-tooltip-title">Sleep all sessions</span>
                 <span>Sleeps all terminal sessions and keeps them restorable in the sidebar.</span>
@@ -2695,24 +2777,28 @@ function TitlebarResourcesMenu({
           ) : null}
           <div className="titlebar-resources-summary">
             <Tooltip>
-              <TooltipTrigger asChild>
-                <span>
-                  <IconCpu aria-hidden="true" size={13} stroke={1.8} />
-                  {formatWholePercent(sumBundleCpu(allBundles))}
-                </span>
-              </TooltipTrigger>
+              <TooltipTrigger
+                render={
+                  <span>
+                    <IconCpu aria-hidden="true" size={13} stroke={1.8} />
+                    {formatWholePercent(sumBundleCpu(allBundles))}
+                  </span>
+                }
+              />
               <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
                 <span className="titlebar-resource-tooltip-title">Live CPU</span>
                 <span>CPU used by resources in this dropdown.</span>
               </TooltipContent>
             </Tooltip>
             <Tooltip>
-              <TooltipTrigger asChild>
-                <span>
-                  <IconDeviceDesktop aria-hidden="true" size={13} stroke={1.8} />
-                  {formatWholeMemory(sumBundleMemory(allBundles))}
-                </span>
-              </TooltipTrigger>
+              <TooltipTrigger
+                render={
+                  <span>
+                    <IconDeviceDesktop aria-hidden="true" size={13} stroke={1.8} />
+                    {formatWholeMemory(sumBundleMemory(allBundles))}
+                  </span>
+                }
+              />
               <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
                 <span className="titlebar-resource-tooltip-title">Live memory</span>
                 <span>RAM used by resources in this dropdown.</span>
@@ -2848,16 +2934,18 @@ function TitlebarResourceSection({
           </span>
         </button>
         <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              className="titlebar-resource-section-quit-button"
-              data-action={hasTerminalSession ? "sleep" : "quit"}
-              onClick={() => onQuit(sectionActionBundles)}
-              type="button"
-            >
-              {sectionActionLabel}
-            </button>
-          </TooltipTrigger>
+          <TooltipTrigger
+            render={
+              <button
+                className="titlebar-resource-section-quit-button"
+                data-action={hasTerminalSession ? "sleep" : "quit"}
+                onClick={() => onQuit(sectionActionBundles)}
+                type="button"
+              >
+                {sectionActionLabel}
+              </button>
+            }
+          />
           <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
             <span className="titlebar-resource-tooltip-title">{sectionActionTooltipTitle}</span>
             <span>{sectionActionTooltipBody}</span>
@@ -2989,20 +3077,22 @@ function TitlebarResourceBundle({
         </span>
         {focusSessionId ? (
           <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                aria-label={`Focus ${bundle.label}`}
-                className="titlebar-resource-focus-button"
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onFocusSession(focusSessionId);
-                }}
-                type="button"
-              >
-                <IconFocus2 aria-hidden="true" size={13} stroke={1.9} />
-              </button>
-            </TooltipTrigger>
+            <TooltipTrigger
+              render={
+                <button
+                  aria-label={`Focus ${bundle.label}`}
+                  className="titlebar-resource-focus-button"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onFocusSession(focusSessionId);
+                  }}
+                  type="button"
+                >
+                  <IconFocus2 aria-hidden="true" size={13} stroke={1.9} />
+                </button>
+              }
+            />
             <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
               <span className="titlebar-resource-tooltip-title">Focus session</span>
               <span>Opens this session in the workspace.</span>
@@ -3010,25 +3100,27 @@ function TitlebarResourceBundle({
           </Tooltip>
         ) : null}
         <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              aria-label={actionLabel}
-              className="titlebar-resource-kill-button"
-              data-action={preservesSidebarSession ? "sleep" : "quit"}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onQuit([bundle]);
-              }}
-              type="button"
-            >
-              {preservesSidebarSession ? (
-                <IconMoon aria-hidden="true" size={13} stroke={1.9} />
-              ) : (
-                <IconX aria-hidden="true" size={13} stroke={2} />
-              )}
-            </button>
-          </TooltipTrigger>
+          <TooltipTrigger
+            render={
+              <button
+                aria-label={actionLabel}
+                className="titlebar-resource-kill-button"
+                data-action={preservesSidebarSession ? "sleep" : "quit"}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onQuit([bundle]);
+                }}
+                type="button"
+              >
+                {preservesSidebarSession ? (
+                  <IconMoon aria-hidden="true" size={13} stroke={1.9} />
+                ) : (
+                  <IconX aria-hidden="true" size={13} stroke={2} />
+                )}
+              </button>
+            }
+          />
           <TooltipContent className="titlebar-resource-tooltip" style={resourceTooltipStyle}>
             <span className="titlebar-resource-tooltip-title">{actionTooltipTitle}</span>
             <span>{actionTooltipBody}</span>
@@ -3233,34 +3325,36 @@ function TitlebarModeDropdown({
   };
   return (
     <DropdownMenu onOpenChange={onOpenChange} open={open}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          aria-label="Mode menu"
-          className="titlebar-session-button titlebar-mode-picker-trigger"
-          data-titlebar-hit-region
-          type="button"
-          variant="ghost"
-        >
-          {/*
-           * CDXC:ModeSwitcher 2026-05-28-10:38:
-           * When app width is below 1050px, Agents/Code/Git/Project moves from
-           * the centered segmented control into a keep-awake-style mode picker
-           * beside the project title. Keep the current mode icon visible on the
-           * main segment so narrow titlebar chrome still exposes the active action.
-           *
-           * CDXC:ModeSwitcher 2026-05-28-11:52:
-           * The compact mode picker should be one button, not a split button:
-           * clicking either the current-mode icon or the chevron opens the same
-           * dropdown so there is no separate immediate mode action in tight chrome.
-           */
-          getTitlebarModeIcon(activeModeOption.value)}
-          <IconChevronDown aria-hidden="true" size={14} />
-        </Button>
-      </DropdownMenuTrigger>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            aria-label="Mode menu"
+            className="titlebar-session-button titlebar-mode-picker-trigger"
+            data-titlebar-hit-region
+            type="button"
+            variant="ghost"
+          >
+            {/*
+             * CDXC:ModeSwitcher 2026-05-28-10:38:
+             * When app width is below 1050px, Agents/Code/Git/Project moves from
+             * the centered segmented control into a keep-awake-style mode picker
+             * beside the project title. Keep the current mode icon visible on the
+             * main segment so narrow titlebar chrome still exposes the active action.
+             *
+             * CDXC:ModeSwitcher 2026-05-28-11:52:
+             * The compact mode picker should be one button, not a split button:
+             * clicking either the current-mode icon or the chevron opens the same
+             * dropdown so there is no separate immediate mode action in tight chrome.
+             */}
+            <span>{activeModeOption.label}</span>
+            <IconChevronDown aria-hidden="true" size={14} />
+          </Button>
+        }
+      />
       <DropdownMenuContent
         align="center"
         alignOffset={TITLEBAR_SPLIT_MENU_CENTER_OFFSET}
-        className="titlebar-open-menu titlebar-mode-picker-menu min-w-[180px] rounded-lg border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
+        className="titlebar-open-menu titlebar-mode-picker-menu min-w-[180px] rounded-none border-border/80 !bg-[#0e0e0e] p-1 text-[13px] text-foreground shadow-2xl"
         data-titlebar-hit-region
         sideOffset={6}
         style={{ backgroundColor: "#0e0e0e", zIndex: 2_200 }}
@@ -3577,7 +3671,7 @@ const styles = {
     alignItems: "center",
     display: "flex",
     gap: 0,
-    left: 78,
+    left: 81,
     maxWidth: "min(620px, calc(100vw - 350px))",
     minWidth: 0,
     position: "absolute",
@@ -3586,7 +3680,7 @@ const styles = {
   rightSlot: {
     alignItems: "center",
     display: "flex",
-    gap: 9,
+    gap: 0,
     position: "absolute",
     right: 10,
     top: TITLEBAR_RIGHT_CONTROLS_TOP,
@@ -3613,6 +3707,9 @@ document.body.style.background = "transparent";
 document.body.style.overflow = "hidden";
 const styleElement = document.createElement("style");
 styleElement.textContent = `
+  :root {
+    --titlebar-font-family: "JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  }
   /**
    * CDXC:ReactTitlebar 2026-05-11-09:00
    * The right titlebar controls should read as flat chrome text/icons rather
@@ -3634,11 +3731,12 @@ styleElement.textContent = `
   .titlebar-session-button {
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
     min-width: 0;
-    border-radius: 5px;
     border: 0;
+    border-left: 1px solid rgba(255,255,255,0.12);
+    border-radius: 0;
     background: transparent;
     color: rgba(255,255,255,0.84);
-    font: 650 12.5px/${TITLEBAR_CONTROL_HEIGHT}px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    font: 650 12.5px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family);
     letter-spacing: 0;
     box-shadow: none;
   }
@@ -3677,6 +3775,7 @@ styleElement.textContent = `
      */
     color: rgba(255,255,255,0.46);
     margin-left: 6px;
+    border-left: 0 !important;
     margin-right: 7px;
     padding: 0;
     position: relative;
@@ -3718,20 +3817,26 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.9);
     cursor: default;
     display: inline-flex;
-    font: 650 13.5px/${TITLEBAR_CONTROL_HEIGHT}px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    flex: 1 1 auto;
+    font: 650 13.5px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family);
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
     letter-spacing: 0;
     max-width: 210px;
     min-width: 0;
+    overflow: hidden;
     padding: 0 3px;
+  }
+  .titlebar-project-title > .truncate {
+    display: block;
+    min-width: 0;
   }
   .titlebar-mode-picker-trigger {
     align-items: center;
     display: none !important;
     gap: 1px;
     flex: 0 0 auto;
-    padding: 0 4px 0 6px;
-    width: 42px;
+    padding: 0 8px;
+    width: max-content;
   }
   .titlebar-mode-picker-menu {
     max-width: 220px;
@@ -3750,7 +3855,7 @@ styleElement.textContent = `
      * as macOS notifications, positioned before the project title without
      * changing titlebar height or competing with the right-side controls.
      */
-    border-radius: 4px;
+    border-radius: 0;
     flex: 0 0 auto;
     height: 14px;
     margin-right: 5px;
@@ -3758,13 +3863,13 @@ styleElement.textContent = `
     width: 14px;
   }
   .titlebar-open-main-button {
-    width: 28px;
-    padding: 0;
+    padding: 0 12px;
+    width: 42px;
   }
   .titlebar-git-main-button {
-    gap: 5px;
-    padding: 0 8px;
-    width: auto;
+    gap: 0;
+    padding: 0 12px;
+    width: 42px;
   }
   .titlebar-git-label {
     max-width: 110px;
@@ -3789,12 +3894,13 @@ styleElement.textContent = `
     }
   }
   .titlebar-command-panel-button {
-    width: 28px;
-    padding: 0;
+    padding: 0 12px;
+    width: 42px;
   }
   .titlebar-companion-restore-button {
-    width: 28px;
-    padding: 0;
+    border-left: 0 !important;
+    padding: 0 12px;
+    width: 42px;
   }
   .titlebar-mode-switcher {
     /**
@@ -3803,11 +3909,11 @@ styleElement.textContent = `
      * card uses calc(10px * var(--sidebar-density-scale)); keep the titlebar
      * tab highlight on the same radius so it is less pill-shaped.
      */
-    --titlebar-mode-tab-radius: calc(10px * var(--sidebar-density-scale));
+    --titlebar-mode-tab-radius: 0;
     align-items: center;
     display: flex;
     flex: 0 1 auto;
-    height: 22px;
+    height: ${TITLEBAR_CONTROL_HEIGHT}px;
     max-width: 100%;
     overflow: visible;
     padding: 0;
@@ -3833,19 +3939,23 @@ styleElement.textContent = `
     align-items: center;
     background: transparent;
     border: 0;
+    border-left: 1px solid rgba(255,255,255,0.12);
     border-radius: var(--titlebar-mode-tab-radius);
     color: rgba(255,255,255,0.68);
     cursor: default;
     display: inline-flex;
-    font: 650 12px/18px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-    height: 22px;
+    font: 720 12px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family);
+    height: ${TITLEBAR_CONTROL_HEIGHT}px;
     justify-content: center;
     letter-spacing: 0;
     min-width: 70px;
     overflow: visible;
-    padding: 0 10px;
+    padding: 0 14px;
     position: relative;
     white-space: nowrap;
+  }
+  .titlebar-mode-tab:last-child {
+    border-right: 1px solid rgba(255,255,255,0.12);
   }
   .titlebar-mode-tab:hover,
   .titlebar-mode-tab:focus-visible {
@@ -3856,7 +3966,7 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.98);
   }
   .titlebar-mode-tab-active {
-    background: rgba(255,255,255,0.2);
+    background: rgba(255,255,255,0.11);
     border-radius: var(--titlebar-mode-tab-radius);
     inset: 0;
     position: absolute;
@@ -3864,15 +3974,13 @@ styleElement.textContent = `
   .titlebar-mode-tab-content {
     align-items: center;
     display: inline-flex;
-    gap: 5px;
+    gap: 0;
     min-width: 0;
     position: relative;
     z-index: 1;
   }
   .titlebar-mode-tab-content svg {
-    flex: 0 0 auto;
-    height: 14px;
-    width: 14px;
+    display: none;
   }
   .titlebar-mode-label {
     min-width: 0;
@@ -3895,17 +4003,18 @@ styleElement.textContent = `
     -webkit-appearance: none;
     background: rgba(255,255,255,0.2) !important;
     border: 0 !important;
-    border-radius: var(--titlebar-mode-tab-radius, calc(10px * var(--sidebar-density-scale, 1))) !important;
+    border-left: 1px solid rgba(255,255,255,0.12) !important;
+    border-radius: 0 !important;
     box-shadow: none !important;
     color: rgba(255,255,255,0.98) !important;
     cursor: default;
     display: inline-flex;
-    font: 650 12px/18px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif !important;
-    height: 22px !important;
+    font: 720 12px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family) !important;
+    height: ${TITLEBAR_CONTROL_HEIGHT}px !important;
     letter-spacing: 0;
-    margin-top: -1px;
+    margin-top: 0;
     min-width: 0;
-    padding: 0 10px !important;
+    padding: 0 14px !important;
     white-space: nowrap;
   }
   .titlebar-exit-focus-button:hover,
@@ -3915,8 +4024,8 @@ styleElement.textContent = `
     outline: none;
   }
   .titlebar-resource-button {
-    padding: 0;
-    width: 28px;
+    padding: 0 12px;
+    width: 42px;
   }
   @media (max-width: 619.98px) {
     /**
@@ -3939,8 +4048,15 @@ styleElement.textContent = `
     }
   }
   .titlebar-open-chevron-button {
-    width: 18px;
     padding: 0;
+    width: 24px;
+  }
+  .titlebar-open-chevron-button-hidden {
+    border-left: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    width: 0;
   }
   .titlebar-open-group {
     gap: 0 !important;
@@ -3948,13 +4064,16 @@ styleElement.textContent = `
   .titlebar-open-group > .titlebar-session-button {
     border-radius: 0;
   }
+  .titlebar-open-group > .titlebar-open-chevron-button {
+    border-left: 0;
+  }
   .titlebar-open-group > .titlebar-session-button:first-child {
-    border-bottom-left-radius: 5px;
-    border-top-left-radius: 5px;
+    border-bottom-left-radius: 0;
+    border-top-left-radius: 0;
   }
   .titlebar-open-group > .titlebar-session-button:last-child {
-    border-bottom-right-radius: 5px;
-    border-top-right-radius: 5px;
+    border-bottom-right-radius: 0;
+    border-top-right-radius: 0;
   }
   .titlebar-open-menu {
     /**
@@ -3984,7 +4103,7 @@ styleElement.textContent = `
     cursor: default !important;
     min-height: 30px;
     gap: 10px;
-    border-radius: 7px;
+    border-radius: 0;
     font: 500 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   }
   /**
@@ -4108,7 +4227,7 @@ styleElement.textContent = `
     align-items: center;
     background: rgba(255,255,255,0.08);
     border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 6px;
+    border-radius: 0;
     color: rgba(255,255,255,0.78);
     display: inline-flex;
     gap: 6px;
@@ -4159,7 +4278,7 @@ styleElement.textContent = `
     appearance: none;
     background: rgba(220,38,38,0.18);
     border: 1px solid rgba(248,113,113,0.28);
-    border-radius: 6px;
+    border-radius: 0;
     color: rgba(255,255,255,0.86);
     display: inline-flex;
     font: 750 11px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
@@ -4222,7 +4341,7 @@ styleElement.textContent = `
      */
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 7px;
+    border-radius: 0;
     color: rgba(255,255,255,0.62);
     font: 600 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     margin-bottom: 8px;
@@ -4306,7 +4425,7 @@ styleElement.textContent = `
   }
   .titlebar-resource-bundle {
     border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 8px;
+    border-radius: 0;
     overflow: hidden;
     background: rgba(255,255,255,0.025);
   }
@@ -4357,7 +4476,7 @@ styleElement.textContent = `
   .titlebar-resource-avatar {
     align-items: center;
     background: rgba(255,255,255,0.1);
-    border-radius: 999px;
+    border-radius: 0;
     color: rgba(255,255,255,0.84);
     display: inline-flex;
     flex: 0 0 auto;
@@ -4423,7 +4542,7 @@ styleElement.textContent = `
     align-items: center;
     background: rgba(255,255,255,0.14);
     border: 1px solid transparent;
-    border-radius: 5px;
+    border-radius: 0;
     box-shadow: 0 8px 18px rgba(0,0,0,0.35);
     color: rgba(255,255,255,0.9);
     display: inline-flex;

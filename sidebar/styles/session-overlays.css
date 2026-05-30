@@ -35,7 +35,7 @@
   overflow-y: auto;
   padding: 6px;
   border: 1px solid color-mix(in srgb, var(--app-border) 88%, transparent);
-  border-radius: 12px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--app-card) 92%, #000000 8%);
   box-shadow:
     0 14px 28px color-mix(in srgb, #000000 32%, transparent),
@@ -61,7 +61,7 @@
   width: 100%;
   padding: 8px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 0;
   background: transparent;
   color: inherit;
   text-align: left;
@@ -96,7 +96,7 @@
   min-width: 0;
   padding: 8px 10px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--app-button-background) 12%, transparent);
   color: inherit;
   text-align: center;
@@ -188,7 +188,7 @@
 .session-local-tooltip-popup {
   background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
   border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12));
-  border-radius: 16px;
+  border-radius: 0;
   box-shadow: var(--ghostex-tooltip-shadow, 0 12px 30px rgba(0, 0, 0, 0.35));
   color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
   display: grid;
@@ -223,7 +223,7 @@
   padding: 5px 8px;
   max-width: 90vw;
   border: 1px solid var(--ghostex-tooltip-border, rgba(255, 255, 255, 0.12));
-  border-radius: 10px;
+  border-radius: 0;
   background: var(--ghostex-tooltip-background, rgba(24, 24, 24, 0.98));
   color: var(--ghostex-tooltip-foreground, rgba(255, 255, 255, 0.78));
   font: var(--ghostex-tooltip-font, 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif);

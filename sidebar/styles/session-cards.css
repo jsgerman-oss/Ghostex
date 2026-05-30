@@ -31,7 +31,7 @@
   left: calc(12px * var(--sidebar-density-scale));
   right: calc(12px * var(--sidebar-density-scale));
   height: 3px;
-  border-radius: 999px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--app-button-background) 86%, #ffffff 14%);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--app-button-background) 22%, transparent),
@@ -91,7 +91,7 @@
   border: 1px solid transparent;
   outline: 2px solid transparent;
   outline-offset: -3px;
-  border-radius: calc(10px * var(--sidebar-density-scale));
+  border-radius: 0;
   background: transparent;
   color: inherit;
   text-align: left;
@@ -185,7 +185,7 @@
   content: "";
   position: absolute;
   box-sizing: border-box;
-  border-radius: inherit;
+  border-radius: 0;
   opacity: 0;
   pointer-events: none;
   transition:
@@ -342,7 +342,7 @@
 .sidebar-reference-layout[data-reference-sidebar="true"] .session.session-history-card {
   align-items: center;
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   box-sizing: border-box;
   display: flex;
   height: 34px;
@@ -502,7 +502,7 @@
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 0;
   color: var(--app-muted);
   display: inline-flex;
   height: calc(18px * var(--sidebar-density-scale));
@@ -541,7 +541,7 @@
   top: 50%;
   width: 11px;
   height: 11px;
-  border-radius: 999px;
+  border-radius: 0;
   background-color: var(--session-status-dot-color);
   box-shadow:
     0 0 0 2px color-mix(in srgb, var(--app-card) 82%, transparent),
@@ -937,7 +937,7 @@
   align-items: center;
   background: color-mix(in srgb, var(--app-card-active) 88%, #000000 12%);
   border: 1px solid color-mix(in srgb, var(--app-button-background) 42%, var(--app-border));
-  border-radius: calc(7px * var(--sidebar-density-scale));
+  border-radius: 0;
   color: color-mix(in srgb, var(--app-foreground) 76%, #82b7ff 24%);
   display: flex;
   font-size: calc(13px * var(--sidebar-density-scale));
@@ -1015,7 +1015,7 @@
 
 .session-floating-agent-tabler-icon[data-agent-icon="browser"][data-icon-variant="favicon"],
 .session-header-agent-tabler-icon[data-agent-icon="browser"][data-icon-variant="favicon"] {
-  border-radius: 3px;
+  border-radius: 0;
   height: calc(14px * var(--sidebar-density-scale));
   object-fit: contain;
   width: calc(14px * var(--sidebar-density-scale));
@@ -1346,7 +1346,7 @@
   align-self: center;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 0;
   color: color-mix(in srgb, var(--app-foreground) 88%, var(--app-muted) 12%);
   display: inline-flex;
   grid-area: 1 / 1;
@@ -1504,7 +1504,7 @@
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session {
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   box-sizing: border-box;
   height: 34px;
   min-height: 34px;
@@ -1577,7 +1577,7 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-title-generation-overlay {
-  border-radius: 8px;
+  border-radius: 0;
   color: color-mix(in srgb, #d8d8d8 74%, #82b7ff 26%);
   font-size: 15.55px;
   font-weight: 300 !important;

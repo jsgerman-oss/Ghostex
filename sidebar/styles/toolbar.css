@@ -50,7 +50,7 @@
 .floating-toolbar-button {
   background: transparent;
   border-color: transparent;
-  border-radius: 999px;
+  border-radius: 0;
   box-shadow: none;
   min-height: 22px;
   min-width: 22px;

@@ -74,7 +74,7 @@
 }
 
 .pet-avatar-button:focus-visible {
-  border-radius: 0.5rem;
+  border-radius: 0;
   outline: 2px solid rgba(96, 165, 250, 0.9);
   outline-offset: 2px;
 }
@@ -141,7 +141,7 @@
   align-items: center;
   appearance: none;
   border: 1px solid rgba(0, 0, 0, 0.18);
-  border-radius: 999px;
+  border-radius: 0;
   box-shadow:
     0 0.13rem 0.32rem rgba(0, 0, 0, 0.38),
     inset 0 0.08rem 0.18rem rgba(255, 255, 255, 0.14),
@@ -183,7 +183,7 @@
   appearance: none;
   background: rgba(16, 16, 16, 0.9);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 0.85rem;
+  border-radius: 0;
   box-shadow: 0 0.6rem 1.6rem rgba(0, 0, 0, 0.24);
   box-sizing: border-box;
   color: #f4f4f5;
@@ -204,7 +204,7 @@
 }
 
 .pet-thread-status {
-  border-radius: 999px;
+  border-radius: 0;
   height: 0.55rem;
   width: 0.55rem;
 }

@@ -245,25 +245,6 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
           </div>
           <div className="previous-sessions-footer">
             <button
-              className="previous-sessions-find-button previous-sessions-text-search-button"
-              onClick={() => {
-                /**
-                 * CDXC:PreviousSessions 2026-05-29-12:36:
-                 * Search by Text is the lightweight zehn path: start a new
-                 * terminal and run `gx f` directly. Keep it separate from
-                 * Prompt to Find Session, which creates an agent helper and
-                 * stages a natural-language recovery prompt.
-                 */
-                vscode.postMessage({
-                  type: "searchPreviousSessionsByText",
-                });
-                onClose();
-              }}
-              type="button"
-            >
-              Search by Text
-            </button>
-            <button
               className="previous-sessions-find-button"
               onClick={() => {
                 const normalizedQuery = searchQuery.trim();
@@ -288,7 +269,26 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
               }}
               type="button"
             >
-              Prompt to Find Session
+              Prompt to Search
+            </button>
+            <button
+              className="previous-sessions-find-button"
+              onClick={() => {
+                /**
+                 * CDXC:PreviousSessions 2026-05-29-12:36:
+                 * Search by Text is the lightweight zehn path: start a new
+                 * terminal and run `gx f` directly. Keep it separate from
+                 * Prompt to Search, which creates an agent helper and stages a
+                 * natural-language recovery prompt.
+                 */
+                vscode.postMessage({
+                  type: "searchPreviousSessionsByText",
+                });
+                onClose();
+              }}
+              type="button"
+            >
+              Search by Text
             </button>
           </div>
         </div>

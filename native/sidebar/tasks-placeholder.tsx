@@ -1841,9 +1841,7 @@ function ConversationLinkName({
 }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <span className={className}>{label}</span>
-      </TooltipTrigger>
+      <TooltipTrigger render={<span className={className}>{label}</span>} />
       <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
   );
@@ -1892,6 +1890,56 @@ function BoardLane({
   });
   const visibleTickets = tickets.slice(0, PROJECT_BOARD_MAX_VISIBLE_TICKETS_PER_COLUMN);
   const hiddenTicketCount = tickets.length - visibleTickets.length;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollThumb, setScrollThumb] = useState({ height: 0, top: 0, visible: false });
+  const updateScrollThumb = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    const maxScrollTop = element.scrollHeight - element.clientHeight;
+    if (maxScrollTop <= 1) {
+      setScrollThumb((current) =>
+        current.visible || current.height !== 0 || current.top !== 0
+          ? { height: 0, top: 0, visible: false }
+          : current,
+      );
+      return;
+    }
+    const height = Math.max(24, (element.clientHeight / element.scrollHeight) * element.clientHeight);
+    const top = (element.scrollTop / maxScrollTop) * (element.clientHeight - height);
+    setScrollThumb((current) => {
+      const next = {
+        height: Math.round(height),
+        top: Math.round(top),
+        visible: true,
+      };
+      return current.height === next.height && current.top === next.top && current.visible === next.visible
+        ? current
+        : next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    updateScrollThumb();
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? undefined
+        : new ResizeObserver(() => updateScrollThumb());
+    resizeObserver?.observe(element);
+    if (element.firstElementChild) {
+      resizeObserver?.observe(element.firstElementChild);
+    }
+    window.addEventListener("resize", updateScrollThumb);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateScrollThumb);
+    };
+  }, [hiddenTicketCount, updateScrollThumb, visibleTickets.length]);
 
   return (
     <section
@@ -1907,7 +1955,7 @@ function BoardLane({
         </div>
         <span>{tickets.length}</span>
       </header>
-      <div className="project-board-lane-scroll">
+      <div className="project-board-lane-scroll" onScroll={updateScrollThumb} ref={scrollRef}>
         <div className="project-board-card-stack">
           {visibleTickets.map((ticket) => (
             <TicketCard
@@ -1925,6 +1973,19 @@ function BoardLane({
             </div>
           ) : null}
         </div>
+      </div>
+      <div
+        aria-hidden="true"
+        className="project-board-lane-scrollbar"
+        data-visible={String(scrollThumb.visible)}
+      >
+        <div
+          className="project-board-lane-scrollbar-thumb"
+          style={{
+            height: `${scrollThumb.height}px`,
+            transform: `translateY(${scrollThumb.top}px)`,
+          }}
+        />
       </div>
     </section>
   );
@@ -2284,41 +2345,49 @@ const styleElement = document.createElement("style");
 styleElement.textContent = `
   :root {
     color-scheme: dark;
-    background: #101112;
+    background: #0e0e0e;
     color: #f4f4f5;
     font-family: Inter Variable, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-    --background: oklch(0.145 0 0);
+    --background: #0e0e0e;
     --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
+    --card: #171717;
     --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
+    --popover: #171717;
     --popover-foreground: oklch(0.985 0 0);
     --primary: oklch(0.922 0 0);
     --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.274 0.006 286.033);
+    --secondary: #242424;
     --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
+    --muted: #242424;
     --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
+    --accent: #242424;
     --accent-foreground: oklch(0.985 0 0);
     --destructive: oklch(0.704 0.191 22.216);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
-    --radius: 0.625rem;
+    --radius: 0;
+    --project-board-bg: #0e0e0e;
+    --project-board-panel: #171717;
+    --project-board-panel-hover: #1d1d1d;
+    --project-board-card: #1a1a1a;
+    --project-board-card-hover: #202020;
+    --project-board-border: rgba(255, 255, 255, 0.1);
+    --project-board-border-strong: rgba(255, 255, 255, 0.16);
+    --project-board-scrollbar: rgba(255, 255, 255, 0.28);
   }
 
   * { box-sizing: border-box; }
 
   body {
-    background: #101112;
+    background: var(--project-board-bg);
     margin: 0;
     min-height: 100vh;
     overflow: hidden;
   }
 
   .project-board-shell {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 160px), #101112;
+    background: var(--project-board-bg);
     display: flex;
     flex-direction: column;
     gap: 14px;
@@ -2326,6 +2395,77 @@ styleElement.textContent = `
     min-height: 0;
     overflow: hidden;
     padding: 22px 24px 24px;
+  }
+
+  .project-board-shell *,
+  .project-ticket-dialog,
+  .project-ticket-dialog * {
+    border-radius: 0 !important;
+  }
+
+  .project-board-lanes,
+  .project-board-lane-scroll,
+  .project-ticket-dialog-body,
+  .project-ticket-comment-list [data-slot="scroll-area-viewport"] {
+    scrollbar-color: transparent transparent;
+    scrollbar-width: none;
+  }
+
+  .project-ticket-dialog-body:hover,
+  .project-ticket-dialog-body:focus-within,
+  .project-ticket-comment-list:hover [data-slot="scroll-area-viewport"],
+  .project-ticket-comment-list:focus-within [data-slot="scroll-area-viewport"] {
+    scrollbar-color: var(--project-board-scrollbar) transparent;
+  }
+
+  .project-board-lanes::-webkit-scrollbar,
+  .project-board-lane-scroll::-webkit-scrollbar,
+  .project-ticket-dialog-body::-webkit-scrollbar,
+  .project-ticket-comment-list [data-slot="scroll-area-viewport"]::-webkit-scrollbar {
+    height: 0;
+    width: 0;
+  }
+
+  .project-ticket-dialog-body::-webkit-scrollbar,
+  .project-ticket-comment-list [data-slot="scroll-area-viewport"]::-webkit-scrollbar {
+    height: 2px;
+    width: 2px;
+  }
+
+  .project-board-lanes::-webkit-scrollbar-track,
+  .project-board-lane-scroll::-webkit-scrollbar-track,
+  .project-ticket-dialog-body::-webkit-scrollbar-track,
+  .project-ticket-comment-list [data-slot="scroll-area-viewport"]::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .project-board-lanes::-webkit-scrollbar-thumb,
+  .project-board-lane-scroll::-webkit-scrollbar-thumb,
+  .project-ticket-dialog-body::-webkit-scrollbar-thumb,
+  .project-ticket-comment-list [data-slot="scroll-area-viewport"]::-webkit-scrollbar-thumb {
+    background: transparent;
+  }
+
+  .project-ticket-dialog-body:hover::-webkit-scrollbar-thumb,
+  .project-ticket-dialog-body:focus-within::-webkit-scrollbar-thumb,
+  .project-ticket-comment-list:hover [data-slot="scroll-area-viewport"]::-webkit-scrollbar-thumb,
+  .project-ticket-comment-list:focus-within [data-slot="scroll-area-viewport"]::-webkit-scrollbar-thumb {
+    background: var(--project-board-scrollbar);
+  }
+
+  .project-ticket-comment-list [data-slot="scroll-area-scrollbar"] {
+    opacity: 0;
+    transition: opacity 120ms ease;
+    width: 5px;
+  }
+
+  .project-ticket-comment-list:hover [data-slot="scroll-area-scrollbar"],
+  .project-ticket-comment-list:focus-within [data-slot="scroll-area-scrollbar"] {
+    opacity: 1;
+  }
+
+  .project-ticket-comment-list [data-slot="scroll-area-thumb"] {
+    background: var(--project-board-scrollbar);
   }
 
   .project-board-toolbar {
@@ -2389,23 +2529,23 @@ styleElement.textContent = `
     min-height: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    padding-bottom: 2px;
+    padding-bottom: 0;
   }
 
   .project-board-lane {
-    background: rgba(255, 255, 255, 0.035);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
+    background: var(--project-board-panel);
+    border: 1px solid var(--project-board-border);
     display: flex;
     flex-direction: column;
     min-height: 0;
     min-width: 218px;
     overflow: hidden;
+    position: relative;
   }
 
   .project-board-lane[data-drop-target="true"] {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.18);
+    background: var(--project-board-panel-hover);
+    border-color: var(--project-board-border-strong);
   }
 
   .project-board-lane-header {
@@ -2434,7 +2574,6 @@ styleElement.textContent = `
 
   .project-board-lane-dot {
     background: rgba(244, 244, 245, 0.42);
-    border-radius: 999px;
     display: inline-block;
     height: 7px;
     width: 7px;
@@ -2450,27 +2589,29 @@ styleElement.textContent = `
     min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
-    padding-right: 2px;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+    padding-right: 0;
   }
 
-  .project-board-lane-scroll::-webkit-scrollbar {
-    width: 6px;
+  .project-board-lane-scrollbar {
+    bottom: 0;
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+    right: 0;
+    top: 44px;
+    transition: opacity 120ms ease;
+    width: 2px;
+    z-index: 4;
   }
 
-  .project-board-lane-scroll::-webkit-scrollbar-track {
-    background: transparent;
+  .project-board-lane:hover .project-board-lane-scrollbar[data-visible="true"],
+  .project-board-lane:focus-within .project-board-lane-scrollbar[data-visible="true"] {
+    opacity: 1;
   }
 
-  .project-board-lane-scroll::-webkit-scrollbar-thumb {
-    background: transparent;
-    border-radius: 999px;
-  }
-
-  .project-board-lane:hover .project-board-lane-scroll::-webkit-scrollbar-thumb,
-  .project-board-lane-scroll:focus-within::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.22);
+  .project-board-lane-scrollbar-thumb {
+    background: var(--project-board-scrollbar);
+    width: 2px;
   }
 
   .project-board-card-stack {
@@ -2483,7 +2624,6 @@ styleElement.textContent = `
 
   .project-board-lane-limit {
     border: 1px dashed rgba(255, 255, 255, 0.12);
-    border-radius: 8px;
     color: rgba(244, 244, 245, 0.48);
     font-size: 11px;
     line-height: 1.4;
@@ -2491,9 +2631,8 @@ styleElement.textContent = `
   }
 
   .project-board-card {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)), #1a1b1d;
-    border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: var(--project-board-card);
+    border: 1px solid var(--project-board-border);
     box-shadow: 0 1px 0 rgba(0, 0, 0, 0.28);
     cursor: default;
     gap: 0;
@@ -2503,7 +2642,7 @@ styleElement.textContent = `
     width: 100%;
   }
 
-  .project-board-card:hover { background-color: #202124; }
+  .project-board-card:hover { background-color: var(--project-board-card-hover); }
   .project-board-card[data-dragging="true"] { opacity: 0.55; }
 
   .project-board-card-header {
@@ -2555,7 +2694,6 @@ styleElement.textContent = `
 
   .project-board-card-label {
     background: rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
     color: rgba(244, 244, 245, 0.72);
     font-size: 10px;
     line-height: 1;
@@ -2593,7 +2731,6 @@ styleElement.textContent = `
     align-items: center;
     background: rgba(80, 160, 255, 0.08);
     border: 1px solid rgba(120, 180, 255, 0.15);
-    border-radius: 7px;
     color: rgba(218, 235, 255, 0.86);
     display: flex;
     gap: 8px;
@@ -2649,11 +2786,8 @@ styleElement.textContent = `
   }
 
   .project-board-notice {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0)),
-      #171717;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 8px;
+    background: var(--project-board-panel);
+    border: 1px solid var(--project-board-border);
     box-shadow: 0 12px 34px rgba(0, 0, 0, 0.22);
     color: rgba(244, 244, 245, 0.9);
     flex: 0 0 auto;
@@ -2684,7 +2818,6 @@ styleElement.textContent = `
     align-items: center;
     background: rgba(231, 184, 91, 0.13);
     border: 1px solid rgba(231, 184, 91, 0.2);
-    border-radius: 8px;
     color: #e7b85b;
     display: flex;
     flex: 0 0 auto;
@@ -2727,7 +2860,6 @@ styleElement.textContent = `
     align-self: flex-start;
     background: rgba(0, 0, 0, 0.22);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 7px;
     display: inline-flex;
     gap: 7px;
     min-height: 30px;
@@ -2760,7 +2892,6 @@ styleElement.textContent = `
      */
     background: #0e0e0e;
     background-color: #0e0e0e;
-    border-radius: 12px;
     max-width: min(780px, calc(100vw - 44px));
     overflow: hidden;
     width: 780px;
@@ -2884,7 +3015,6 @@ styleElement.textContent = `
     align-items: center;
     background: rgba(255, 255, 255, 0.08);
     border: 0;
-    border-radius: 999px;
     color: rgba(244, 244, 245, 0.82);
     cursor: pointer;
     display: inline-flex;
@@ -2913,7 +3043,6 @@ styleElement.textContent = `
   .project-ticket-image-thumb {
     background: rgba(0, 0, 0, 0.24);
     border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
     display: block;
     height: 72px;
     overflow: hidden;
@@ -2938,7 +3067,6 @@ styleElement.textContent = `
     align-items: center;
     background: rgba(10, 10, 12, 0.78);
     border: 1px solid rgba(255, 255, 255, 0.16);
-    border-radius: 999px;
     color: rgba(255, 255, 255, 0.9);
     cursor: pointer;
     display: inline-flex;
@@ -2992,7 +3120,6 @@ styleElement.textContent = `
     align-items: center;
     background: rgba(255, 255, 255, 0.035);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
     display: grid;
     gap: 10px;
     grid-template-columns: minmax(0, 1fr) auto;
@@ -3057,7 +3184,6 @@ styleElement.textContent = `
   .project-ticket-comment-list {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
     max-height: 180px;
     min-height: 92px;
   }

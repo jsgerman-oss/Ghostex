@@ -10,7 +10,7 @@
   --sidebar-section-expanded-spacing: calc(20px * var(--sidebar-density-scale));
   --sidebar-section-collapsed-spacing: calc(4px * var(--sidebar-density-scale));
   border: 1px solid transparent;
-  border-radius: calc(20px * var(--sidebar-density-scale));
+  border-radius: 0;
   background: transparent;
   box-shadow: none;
   cursor: pointer;
@@ -82,7 +82,7 @@
     transparent
   );
   border: none;
-  border-radius: 8px;
+  border-radius: 0;
   box-shadow: none;
   box-sizing: border-box;
   color: var(--app-foreground);
@@ -157,7 +157,7 @@
    * color #c8cdd5 so the drop target stays legible across sidebar themes.
    */
   background: #c8cdd5;
-  border-radius: 999px;
+  border-radius: 0;
   content: "";
   height: 2px;
   left: calc(6px * var(--sidebar-density-scale));
@@ -195,7 +195,7 @@
 }
 
 .group-head {
-  border-radius: calc(10px * var(--sidebar-density-scale));
+  border-radius: 0;
   /*
    * CDXC:SidebarHover 2026-05-04-07:00
    * Group headers share the same surface style as Agents and Actions: keep the
@@ -213,7 +213,7 @@
 }
 
 .group-head::before {
-  border-radius: inherit;
+  border-radius: 0;
   content: "";
   inset: 0;
   pointer-events: none;
@@ -282,7 +282,7 @@
 
 .group[data-session-connector="true"][data-collapsed="false"] .group-head::after {
   background: #444c56;
-  border-radius: 999px;
+  border-radius: 0;
   bottom: calc(-12px * var(--sidebar-density-scale));
   content: "";
   left: calc(8px * var(--sidebar-density-scale));
@@ -653,7 +653,7 @@
   align-items: center;
   background: color-mix(in srgb, var(--app-card-active) 88%, transparent);
   border-color: color-mix(in srgb, var(--app-border) 92%, transparent);
-  border-radius: 999px;
+  border-radius: 0;
   color: color-mix(in srgb, var(--app-button-background) 74%, var(--app-foreground) 26%);
   display: inline-flex;
   flex: none;
@@ -680,13 +680,13 @@
 }
 
 .group-agent-main-button {
-  border-radius: 999px 0 0 999px;
+  border-radius: 0;
   width: 24px;
 }
 
 .group-agent-toggle-button {
   border-left-width: 0;
-  border-radius: 0 999px 999px 0;
+  border-radius: 0;
   width: 17px;
 }
 
@@ -872,7 +872,7 @@
 
 .group-collapsed-status-count::before {
   background: currentColor;
-  border-radius: 999px;
+  border-radius: 0;
   box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
   content: "";
   display: block;
@@ -955,7 +955,7 @@
 .group-title-input {
   background: color-mix(in srgb, var(--app-card-active) 92%, transparent);
   border: 1px solid color-mix(in srgb, var(--app-button-background) 44%, var(--app-border));
-  border-radius: calc(12px * var(--sidebar-density-scale));
+  border-radius: 0;
   color: inherit;
   outline: none;
   padding: calc(6px * var(--sidebar-density-scale)) calc(9px * var(--sidebar-density-scale));
@@ -1084,7 +1084,7 @@
 
 .group-session-connector-rail {
   background: #444c56;
-  border-radius: 999px;
+  border-radius: 0;
   bottom: 0;
   left: calc(8px * var(--sidebar-density-scale));
   pointer-events: none;
@@ -1104,7 +1104,7 @@
   appearance: none;
   background: transparent;
   border: none;
-  border-radius: 999px;
+  border-radius: 0;
   bottom: 0;
   cursor: pointer;
   left: calc(8px * var(--sidebar-density-scale));
@@ -1130,7 +1130,7 @@
   left: calc(12px * var(--sidebar-density-scale));
   right: calc(12px * var(--sidebar-density-scale));
   height: 3px;
-  border-radius: 999px;
+  border-radius: 0;
   background: color-mix(in srgb, var(--app-button-background) 86%, #ffffff 14%);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--app-button-background) 22%, transparent),
@@ -1155,12 +1155,12 @@
 
 .group-sessions[data-drop-target="true"] {
   background: color-mix(in srgb, var(--app-button-background) 8%, transparent);
-  border-radius: 16px;
+  border-radius: 0;
 }
 
 .group:has(.session[data-drop-target="true"]) .group-sessions {
   background: color-mix(in srgb, var(--app-button-background) 8%, transparent);
-  border-radius: 16px;
+  border-radius: 0;
 }
 
 .group-empty-drop-target {
@@ -1188,7 +1188,7 @@
   align-items: center;
   align-self: center;
   border: 1px dashed color-mix(in srgb, var(--app-button-background) 44%, var(--app-border));
-  border-radius: 18px;
+  border-radius: 0;
   color: color-mix(in srgb, var(--app-muted) 82%, var(--app-foreground) 18%);
   display: flex;
   font-size: 12px;
@@ -1355,7 +1355,7 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-head {
-  border-radius: 8px;
+  border-radius: 0;
   margin: 0;
   padding: 0;
 }
@@ -1451,7 +1451,7 @@
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .group[data-project-group="true"]
   .group-head::before {
-  border-radius: 8px;
+  border-radius: 0;
   display: block;
 }
 
@@ -1549,7 +1549,7 @@
  * hover treatment and keep it visible while their context menu is open.
  */
 .sidebar-reference-layout[data-reference-sidebar="true"] .recent-projects-row.group-head::before {
-  border-radius: 8px;
+  border-radius: 0;
   display: block;
 }
 
@@ -1613,7 +1613,7 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-add-button {
-  border-radius: 7px;
+  border-radius: 0;
   transition: none;
   width: 22px;
 }
@@ -1624,12 +1624,12 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-main-button {
-  border-radius: 7px 0 0 7px;
+  border-radius: 0;
   width: 22px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group-agent-toggle-button {
-  border-radius: 0 7px 7px 0;
+  border-radius: 0;
   width: 18px;
 }
 

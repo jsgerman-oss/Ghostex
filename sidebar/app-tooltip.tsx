@@ -74,7 +74,7 @@ export function AppTooltip({
    */
   return (
     <Tooltip {...tooltipRootProps} onOpenChange={setOpen} open={open}>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipTrigger render={children} />
       <TooltipContent
         align={align}
         className={contentClassName}

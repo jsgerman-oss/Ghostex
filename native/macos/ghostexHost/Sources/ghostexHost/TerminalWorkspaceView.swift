@@ -16580,10 +16580,9 @@ private final class TerminalTitleBarTabButton: NSButton {
     case close
   }
 
-  private static let inlineButtonWidth: CGFloat = 22
-  private static let inlineButtonHeight: CGFloat = 18
+  private static let inlineButtonWidth: CGFloat = 24
+  private static let inlineButtonHeight: CGFloat = 20
   private static let inlineButtonTrailingPadding: CGFloat = 4
-  private static let inlineButtonBackgroundColor = NSColor(calibratedWhite: 0.16, alpha: 1).cgColor
   private static let inlineButtonHoverBackgroundColor = NSColor(calibratedWhite: 0.24, alpha: 1).cgColor
   private static let inlineButtonIconColor = NSColor(calibratedWhite: 0.94, alpha: 1).cgColor
   private static let workingIndicatorColor = NSColor(
@@ -16613,7 +16612,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   private static let workspaceIdentityIconSize: CGFloat = 14
   private static let identityIconGap: CGFloat = 5
   private static let titleInlineActionGap: CGFloat = 4
-  private static let workspaceInlineActionCornerRadius: CGFloat = 6
+  private static let workspaceInlineActionCornerRadius: CGFloat = 0
   /**
    CDXC:PaneTabs 2026-05-14-09:23:
    Non-command pane tab titles should be larger and lighter than the previous shared 11pt semibold style. Keep command pane tab titles on the old font so command pane chrome does not shift.
@@ -16953,11 +16952,13 @@ private final class TerminalTitleBarTabButton: NSButton {
      controls. Keeping pointer ownership in the AppKit button hierarchy makes
      narrow right-side tab controls respond without workspace monitor routing.
 
-     CDXC:PaneTabs 2026-05-14-10:10:
-     Non-command pane tabs should round their inline Close control instead of drawing square segmented buttons. Preserve command pane tab controls as-is.
-
      CDXC:PaneTabs 2026-05-15-14:28:
      Sleep moved out of hover-only tab chrome and into the tab right-click menu. Keep hover chrome focused on Close so sleeping a tab is an intentional context-menu command instead of a neighboring inline button.
+
+     CDXC:PaneTabs 2026-05-30-08:36:
+     The native tab Close affordance should stay text-only until the pointer is
+     directly over the Close target. Keep the button square, and give it 1px
+     more visual padding on every edge without changing tab layout behavior.
      */
     if allowsClose {
       drawInlineActionControl()
@@ -17518,15 +17519,10 @@ private final class TerminalTitleBarTabButton: NSButton {
       transform: nil)
 
     context.saveGState()
-    context.addPath(controlPath)
-    context.setFillColor(Self.inlineButtonBackgroundColor)
-    context.fillPath()
-
-    context.addPath(controlPath)
-    context.clip()
     if hoveredInlineAction == .close {
+      context.addPath(controlPath)
       context.setFillColor(Self.inlineButtonHoverBackgroundColor)
-      context.fill(closeButtonFrame)
+      context.fillPath()
     }
     context.restoreGState()
 

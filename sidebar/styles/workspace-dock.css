@@ -90,7 +90,7 @@ body.native-sidebar-body .stack,
 .workspace-dock-drag-ghost {
   align-items: center;
   border: 1px solid var(--workspace-dock-button-border, #263346);
-  border-radius: 12px;
+  border-radius: 0;
   background: var(--workspace-dock-button-background, #121a26);
   color: var(--workspace-dock-button-foreground, #d8e1f1);
   display: flex;
@@ -199,7 +199,7 @@ body.native-sidebar-body .stack,
 }
 
 .workspace-dock-icon-image {
-  border-radius: 8px;
+  border-radius: 0;
   height: 24px;
   object-fit: cover;
   width: 24px;
@@ -230,7 +230,7 @@ body.native-sidebar-body .stack,
 .workspace-dock-indicator {
   align-items: center;
   border: 2px solid #080d14;
-  border-radius: 999px;
+  border-radius: 0;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
   color: #ffffff;
   display: inline-flex;
@@ -265,7 +265,7 @@ body.native-sidebar-body .stack,
 
 .workspace-dock-add-button {
   background: #141d2b;
-  border-radius: 13px;
+  border-radius: 0;
   height: 40px;
 }
 
@@ -281,7 +281,7 @@ body.native-sidebar-body .stack,
 
 .workspace-dock-drop-line {
   background: #8fb4ff;
-  border-radius: 999px;
+  border-radius: 0;
   box-shadow:
     0 0 0 1px rgba(143, 180, 255, 0.34),
     0 0 12px rgba(143, 180, 255, 0.42);
@@ -316,7 +316,7 @@ body.native-sidebar-body .stack,
 
 .workspace-dock-theme-swatch {
   border: 1px solid color-mix(in srgb, white 18%, transparent);
-  border-radius: 999px;
+  border-radius: 0;
   display: inline-block;
   height: 12px;
   margin-left: -2px;
@@ -339,7 +339,7 @@ body.native-sidebar-body .stack,
   appearance: none;
   background: transparent;
   border: 1px solid color-mix(in srgb, var(--app-border) 88%, transparent);
-  border-radius: 8px;
+  border-radius: 0;
   cursor: pointer;
   height: 28px;
   padding: 3px;
@@ -353,13 +353,13 @@ body.native-sidebar-body .stack,
 .workspace-theme-color-input::-webkit-color-swatch,
 .workspace-theme-color-input::-moz-color-swatch {
   border: 0;
-  border-radius: 5px;
+  border-radius: 0;
 }
 
 .workspace-theme-color-text {
   background: color-mix(in srgb, var(--app-card-active) 90%, transparent);
   border: 1px solid color-mix(in srgb, var(--app-border) 88%, transparent);
-  border-radius: 8px;
+  border-radius: 0;
   color: inherit;
   font: 700 11px var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
   height: 28px;
@@ -373,7 +373,7 @@ body.native-sidebar-body .stack,
 .workspace-theme-color-palette-button {
   align-items: center;
   border: 1px solid color-mix(in srgb, var(--app-border) 88%, transparent);
-  border-radius: 8px;
+  border-radius: 0;
   display: inline-flex;
   height: 28px;
   justify-content: center;

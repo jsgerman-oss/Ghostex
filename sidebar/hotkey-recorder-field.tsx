@@ -79,7 +79,7 @@ export function HotkeyRecorderField({
       {normalizedHotkey ? (
         <Button
           aria-label="Remove hotkey"
-          className="pointer-events-none absolute top-1/2 right-1.5 z-10 size-7 -translate-y-1/2 rounded-md border border-border bg-background/95 p-0 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:bg-muted hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/hotkey-recorder:pointer-events-auto group-hover/hotkey-recorder:opacity-100"
+          className="pointer-events-none absolute top-1/2 right-1.5 z-10 size-7 -translate-y-1/2 rounded-none border border-border bg-background/95 p-0 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:bg-muted hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/hotkey-recorder:pointer-events-auto group-hover/hotkey-recorder:opacity-100"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();

@@ -44,8 +44,7 @@
 }
 
 .git-action-main-button {
-  border-radius: calc(12px * var(--sidebar-density-scale)) 0 0
-    calc(12px * var(--sidebar-density-scale));
+  border-radius: 0;
   gap: calc(8px * var(--sidebar-density-scale));
   justify-content: flex-start;
   min-width: 0;
@@ -55,8 +54,7 @@
 
 .git-action-toggle-button {
   border-left-width: 0;
-  border-radius: 0 calc(12px * var(--sidebar-density-scale))
-    calc(12px * var(--sidebar-density-scale)) 0;
+  border-radius: 0;
   justify-content: center;
   padding: 0;
 }
@@ -126,7 +124,7 @@
 .git-action-menu {
   background: color-mix(in srgb, var(--app-card) 96%, black 4%);
   border: 1px solid color-mix(in srgb, var(--app-border) 94%, transparent);
-  border-radius: calc(12px * var(--sidebar-density-scale));
+  border-radius: 0;
   box-shadow: 0 16px 40px color-mix(in srgb, black 24%, transparent);
   display: grid;
   gap: calc(4px * var(--sidebar-density-scale));
@@ -163,7 +161,7 @@
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: calc(10px * var(--sidebar-density-scale));
+  border-radius: 0;
   color: color-mix(in srgb, var(--app-foreground) 92%, var(--app-muted) 8%);
   display: inline-flex;
   gap: calc(8px * var(--sidebar-density-scale));
@@ -205,7 +203,7 @@
   align-items: center;
   block-size: calc(16px * var(--sidebar-density-scale));
   border: 1px solid color-mix(in srgb, var(--app-border) 88%, transparent);
-  border-radius: calc(5px * var(--sidebar-density-scale));
+  border-radius: 0;
   color: color-mix(in srgb, var(--app-button-background) 70%, var(--app-foreground) 30%);
   display: inline-flex;
   flex: none;
@@ -235,7 +233,7 @@
 .git-action-changed-files {
   background: color-mix(in srgb, var(--app-card-active) 78%, transparent);
   border: 1px solid color-mix(in srgb, var(--app-border) 78%, transparent);
-  border-radius: calc(10px * var(--sidebar-density-scale));
+  border-radius: 0;
   display: grid;
   gap: calc(4px * var(--sidebar-density-scale));
   max-height: min(220px, 34vh);
@@ -271,7 +269,7 @@
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: calc(7px * var(--sidebar-density-scale));
+  border-radius: 0;
   color: color-mix(in srgb, var(--app-foreground) 84%, var(--app-muted) 16%);
   display: flex;
   gap: calc(5px * var(--sidebar-density-scale));
@@ -410,8 +408,7 @@
 }
 
 .quick-action-main-button {
-  border-radius: calc(12px * var(--sidebar-density-scale)) 0 0
-    calc(12px * var(--sidebar-density-scale));
+  border-radius: 0;
   justify-content: center;
   padding: 0 calc(8px * var(--sidebar-density-scale));
   width: 100%;
@@ -419,8 +416,7 @@
 
 .quick-action-toggle-button {
   border-left-width: 0;
-  border-radius: 0 calc(12px * var(--sidebar-density-scale))
-    calc(12px * var(--sidebar-density-scale)) 0;
+  border-radius: 0;
   justify-content: center;
   padding: 0;
 }
@@ -444,7 +440,7 @@
 .quick-action-menu {
   background: color-mix(in srgb, var(--app-card) 96%, black 4%);
   border: 1px solid color-mix(in srgb, var(--app-border) 94%, transparent);
-  border-radius: calc(14px * var(--sidebar-density-scale));
+  border-radius: 0;
   box-shadow: 0 16px 40px color-mix(in srgb, black 28%, transparent);
   display: grid;
   gap: calc(4px * var(--sidebar-density-scale));
@@ -478,7 +474,7 @@
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: calc(10px * var(--sidebar-density-scale));
+  border-radius: 0;
   color: color-mix(in srgb, var(--app-foreground) 92%, var(--app-muted) 8%);
   display: inline-flex;
   gap: calc(10px * var(--sidebar-density-scale));
