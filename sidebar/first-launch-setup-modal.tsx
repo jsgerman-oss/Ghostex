@@ -33,7 +33,7 @@ import {
   IconUsersGroup,
   IconWorld,
 } from "@tabler/icons-react";
-import { useEffect, useState, type ComponentType } from "react";
+import { useEffect, useId, useState, type ComponentType } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
@@ -45,7 +45,15 @@ import type {
   SidebarAgentHookStatusMessage,
   SidebarGhostexCliStatusMessage,
 } from "../shared/session-grid-contract";
-import type { ghostexSettings } from "../shared/ghostex-settings";
+import {
+  DEFAULT_ghostex_SETTINGS,
+  SIDEBAR_SETTINGS_PRESETS,
+  applySidebarSettingsPreset,
+  getSidebarSettingsPresetId,
+  normalizeghostexSettings,
+  type SidebarSettingsPresetId,
+  type ghostexSettings,
+} from "../shared/ghostex-settings";
 import { DEFAULT_SIDEBAR_AGENTS } from "../shared/sidebar-agents";
 import type { WebviewApi } from "./webview-api";
 import ghostexIntroImage from "./assets/first-launch/ghostex-intro.png";
@@ -53,6 +61,7 @@ import ghostexMobileDevicesImage from "./assets/first-launch/ghostex-mobile-devi
 
 export type FirstLaunchSetupPage =
   | "welcome"
+  | "preferences"
   | "hooks"
   | "cli"
   | "browserControl"
@@ -137,6 +146,19 @@ const FIRST_LAUNCH_INTRO_BENEFITS: readonly FirstLaunchBenefit[] = [
 const FIRST_LAUNCH_HOOK_SUPPORTED_AGENTS = DEFAULT_SIDEBAR_AGENTS.filter(
   (agent) => agent.agentId !== "t3",
 );
+const FIRST_LAUNCH_PROMPT_AGENT_OPTIONS = DEFAULT_SIDEBAR_AGENTS.filter(
+  (agent) =>
+    agent.agentId !== "t3" && (!("hiddenByDefault" in agent) || agent.hiddenByDefault !== true),
+).map((agent) => ({ label: agent.name, value: agent.agentId }));
+const FIRST_LAUNCH_SIDEBAR_PRESET_ORDER: readonly SidebarSettingsPresetId[] = [
+  "minimal",
+  "codex",
+  "detailed",
+];
+const FIRST_LAUNCH_SIDEBAR_PRESETS = FIRST_LAUNCH_SIDEBAR_PRESET_ORDER.flatMap((presetId) => {
+  const preset = SIDEBAR_SETTINGS_PRESETS.find((candidate) => candidate.id === presetId);
+  return preset ? [preset] : [];
+});
 
 const FIRST_LAUNCH_CLI_COMMAND =
   "brew install --cask maddada/tap/ghostex --force && ghostex browser install-skill && ghostex computer-use install-skill && ghostex agent-orchestration install-skill && ghostex generate-title install-skill";
@@ -146,6 +168,7 @@ const FIRST_LAUNCH_IOS_DISCORD_URL = "https://discord.gg/df7b3G92CS";
 const FIRST_LAUNCH_DISCORD_URL = "https://discord.gg/df7b3G92CS";
 const FIRST_LAUNCH_SETUP_PAGES: readonly FirstLaunchSetupPage[] = [
   "welcome",
+  "preferences",
   "hooks",
   "cli",
   "browserControl",
@@ -597,6 +620,13 @@ type FirstLaunchHookStatusGroup = {
  * width: "Fast Ghostty terminals, Codex inspired Features!" Keep the explanatory
  * subtitle at 18px medium weight, and put each card icon beside its heading to
  * reduce vertical height.
+ *
+ * CDXC:FirstLaunchPreferences 2026-05-29-15:31:
+ * First launch should include a compact defaults page for the highest-impact
+ * settings before optional integrations. The page writes to the same persisted
+ * settings model as Settings: sidebar preset in Minimal / Codex / Detailed
+ * order, default prompt agent, lid-close keep-awake, Accept All, macOS attention
+ * notifications, and completion sound.
  */
 export function FirstLaunchSetupModal({
   agentHookStatus,
@@ -614,7 +644,8 @@ export function FirstLaunchSetupModal({
   onOpenScreenRecordingPreferences,
   onRequestAgentHookStatus,
   onRequestGhostexCliStatus,
-  settings: _settings,
+  onChange,
+  settings = DEFAULT_ghostex_SETTINGS,
   theme = "dark-blue",
   vscode: _vscode,
 }: FirstLaunchSetupModalProps) {
@@ -714,6 +745,8 @@ export function FirstLaunchSetupModal({
         <div className="first-launch-setup-body">
           {activePage === "welcome" ? (
             <FirstLaunchWelcomePage />
+          ) : activePage === "preferences" ? (
+            <FirstLaunchPreferencesPage onChange={onChange} settings={settings} />
           ) : activePage === "hooks" ? (
             <FirstLaunchHooksPage
               agentHookStatusLoading={agentHookStatusLoading}
@@ -869,6 +902,183 @@ function DiscordLogoIcon() {
         fill="#5865F2"
       />
     </svg>
+  );
+}
+
+function FirstLaunchPreferencesPage({
+  onChange,
+  settings,
+}: {
+  onChange: (settings: ghostexSettings) => void;
+  settings: ghostexSettings;
+}) {
+  const activePresetId = getSidebarSettingsPresetId(settings);
+  const selectedDefaultPromptAgentId = FIRST_LAUNCH_PROMPT_AGENT_OPTIONS.some(
+    (option) => option.value === settings.defaultPromptAgentId,
+  )
+    ? settings.defaultPromptAgentId
+    : DEFAULT_ghostex_SETTINGS.defaultPromptAgentId;
+
+  const updateSetting = <Key extends keyof ghostexSettings>(
+    key: Key,
+    value: ghostexSettings[Key],
+  ) => {
+    onChange(normalizeghostexSettings({ ...settings, [key]: value }));
+  };
+
+  const applySidebarPreset = (presetId: SidebarSettingsPresetId) => {
+    onChange(applySidebarSettingsPreset(settings, presetId));
+  };
+
+  return (
+    <section
+      aria-labelledby="first-launch-preferences-title"
+      className="first-launch-setup-preferences"
+    >
+      <div className="first-launch-setup-preferences-hero">
+        <span className="first-launch-setup-guide-icon-shell">
+          <IconSettings aria-hidden="true" className="first-launch-setup-guide-icon" size={26} />
+        </span>
+        <div className="first-launch-setup-guide-copy">
+          <div className="first-launch-setup-kicker">Defaults</div>
+          <h2 className="first-launch-setup-title" id="first-launch-preferences-title">
+            Choose the defaults that shape Ghostex.
+          </h2>
+          <p className="first-launch-setup-description">
+            These are the settings most likely to affect how Ghostex feels day to day. You can
+            change all of them later from Settings.
+          </p>
+        </div>
+      </div>
+
+      <div className="first-launch-setup-preferences-grid">
+        <article className="first-launch-setup-preference-card first-launch-setup-preference-card-wide">
+          <div className="first-launch-setup-preference-copy">
+            <div className="first-launch-setup-preference-heading">
+              <span className="first-launch-setup-preference-icon">
+                <IconLayoutDashboard aria-hidden="true" size={16} />
+              </span>
+              <div>
+                <h3>Sidebar style</h3>
+                <p>Pick how much detail session cards and sidebar chrome should show.</p>
+              </div>
+            </div>
+          </div>
+          <div className="first-launch-setup-preset-options" role="group" aria-label="Sidebar style">
+            {FIRST_LAUNCH_SIDEBAR_PRESETS.map((preset) => (
+              <button
+                aria-pressed={activePresetId === preset.id}
+                className="first-launch-setup-preset-button"
+                data-active={activePresetId === preset.id}
+                key={preset.id}
+                onClick={() => applySidebarPreset(preset.id)}
+                type="button"
+              >
+                {preset.label}
+              </button>
+            ))}
+            {activePresetId ? null : (
+              <span className="first-launch-setup-preset-custom">Custom</span>
+            )}
+          </div>
+        </article>
+
+        <article className="first-launch-setup-preference-card">
+          <label className="first-launch-setup-preference-select-label">
+            <span className="first-launch-setup-preference-heading">
+              <span className="first-launch-setup-preference-icon">
+                <IconBrandOpenai aria-hidden="true" size={16} />
+              </span>
+              <span>
+                <span className="first-launch-setup-preference-title">Default agent</span>
+                <span className="first-launch-setup-preference-description">
+                  Used by helper prompts and new project-board agent starts.
+                </span>
+              </span>
+            </span>
+            <select
+              className="first-launch-setup-preference-select"
+              onChange={(event) => updateSetting("defaultPromptAgentId", event.currentTarget.value)}
+              value={selectedDefaultPromptAgentId}
+            >
+              {FIRST_LAUNCH_PROMPT_AGENT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </article>
+
+        <FirstLaunchCheckboxSetting
+          checked={settings.keepAwakePreventLidSleep}
+          description="When Keep Awake is on, keep the Mac reachable after closing the lid."
+          icon={IconMoon}
+          label="Keep awake when lid is closed"
+          onChange={(checked) => updateSetting("keepAwakePreventLidSleep", checked)}
+        />
+        <FirstLaunchCheckboxSetting
+          checked={settings.agentAcceptAllEnabled}
+          description="Launch supported agents with their permission-bypass flag by default."
+          icon={IconBolt}
+          label="Accept All for new agent sessions"
+          onChange={(checked) => updateSetting("agentAcceptAllEnabled", checked)}
+        />
+        <FirstLaunchCheckboxSetting
+          checked={settings.showMacOSAttentionNotifications}
+          description="Show a macOS banner when an agent needs attention."
+          icon={IconBellRinging}
+          label="macOS attention notifications"
+          onChange={(checked) => updateSetting("showMacOSAttentionNotifications", checked)}
+        />
+        <FirstLaunchCheckboxSetting
+          checked={settings.completionBellEnabled}
+          description="Play a completion sound when long-running work finishes."
+          icon={IconCircleCheck}
+          label="Completion sound"
+          onChange={(checked) => updateSetting("completionBellEnabled", checked)}
+        />
+      </div>
+    </section>
+  );
+}
+
+function FirstLaunchCheckboxSetting({
+  checked,
+  description,
+  icon: SettingIcon,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  description: string;
+  icon: ComponentType<{ className?: string; size?: number; stroke?: number }>;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+
+  return (
+    <article className="first-launch-setup-preference-card">
+      <label className="first-launch-setup-checkbox-setting" htmlFor={id}>
+        <span className="first-launch-setup-preference-heading">
+          <span className="first-launch-setup-preference-icon">
+            <SettingIcon aria-hidden="true" size={16} />
+          </span>
+          <span>
+            <span className="first-launch-setup-preference-title">{label}</span>
+            <span className="first-launch-setup-preference-description">{description}</span>
+          </span>
+        </span>
+        <input
+          checked={checked}
+          className="first-launch-setup-checkbox"
+          id={id}
+          onChange={(event) => onChange(event.currentTarget.checked)}
+          type="checkbox"
+        />
+      </label>
+    </article>
   );
 }
 

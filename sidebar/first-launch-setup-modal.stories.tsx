@@ -196,6 +196,13 @@ export const Intro: Story = {
   },
 };
 
+export const Preferences: Story = {
+  args: {
+    cliInstalled: true,
+    initialPage: "preferences",
+  },
+};
+
 export const Hooks: Story = {
   args: {
     cliInstalled: true,

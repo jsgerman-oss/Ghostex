@@ -568,6 +568,160 @@ button,
   width: 1.45rem;
 }
 
+/*
+ CDXC:FirstLaunchPreferences 2026-05-29-15:31
+ The first-launch defaults page should expose the highest-impact settings in
+ one compact step: sidebar style ordered Minimal / Codex / Detailed, default
+ agent, lid-close keep-awake, Accept All, attention notifications, and
+ completion sound. These controls write to the normal Settings model instead of
+ keeping onboarding-only state.
+*/
+.ghostex-settings-shadcn .first-launch-setup-preferences {
+  align-content: start;
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preferences-hero {
+  align-items: center;
+  display: grid;
+  gap: 0.875rem;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preferences-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preference-card {
+  align-content: start;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--settings-control-radius);
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+  padding: 0.875rem;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preference-card-wide {
+  grid-column: 1 / -1;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preference-copy,
+.ghostex-settings-shadcn .first-launch-setup-preference-select-label {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preference-heading {
+  align-items: flex-start;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preference-icon {
+  align-items: center;
+  background: var(--muted);
+  border-radius: calc(var(--settings-control-radius) - 2px);
+  color: var(--foreground);
+  display: inline-flex;
+  height: 1.875rem;
+  justify-content: center;
+  width: 1.875rem;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preference-card h3,
+.ghostex-settings-shadcn .first-launch-setup-preference-title {
+  color: var(--foreground);
+  display: block;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preference-card p,
+.ghostex-settings-shadcn .first-launch-setup-preference-description {
+  color: var(--muted-foreground);
+  display: block;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  margin: 0.25rem 0 0;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preset-options {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preset-button {
+  align-items: center;
+  background: var(--secondary);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--settings-control-radius) - 2px);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 2.25rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preset-button[data-active="true"] {
+  background: color-mix(in srgb, var(--primary) 18%, var(--card));
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--border));
+  color: var(--foreground);
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preset-custom {
+  align-self: center;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-preference-select {
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%) right 0.95rem center / 0.35rem 0.35rem no-repeat,
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%) right 0.7rem center / 0.35rem 0.35rem no-repeat,
+    color-mix(in srgb, var(--background) 88%, var(--foreground) 4%);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--settings-control-radius) - 2px);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 650;
+  min-height: 2.5rem;
+  padding: 0.5rem 2rem 0.5rem 0.75rem;
+  width: 100%;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-checkbox-setting {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-checkbox {
+  accent-color: var(--primary);
+  height: 1.125rem;
+  width: 1.125rem;
+}
+
 .ghostex-settings-shadcn .first-launch-setup-benefit + .first-launch-setup-benefit {
   border-top: 1px solid var(--border);
 }
@@ -1129,6 +1283,11 @@ button,
   }
 
   .ghostex-settings-shadcn .first-launch-setup-welcome-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ghostex-settings-shadcn .first-launch-setup-preferences-grid,
+  .ghostex-settings-shadcn .first-launch-setup-preset-options {
     grid-template-columns: minmax(0, 1fr);
   }
 
