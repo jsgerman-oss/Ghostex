@@ -1,6 +1,10 @@
 
 ## All features:
 
+- Titlebar Tips & Tricks menu surfaces built-in workflow hints with unread tracking and persistent read state.
+- Project board filters by priority and estimate instead of lane status, with inline search iconography and tidier ticket metadata layout.
+- Ghostty terminal scrollbars and scroll overlay buttons use square styling in native panes.
+- Session rows keep a single Delayed Send countdown in the leading identity slot.
 - Collapsed macOS selects show friendly agent and priority labels instead of raw persisted values across Git, rename, worktree, settings, and Project board dialogs.
 - Project name hovers in the sidebar show kind, path, git stats, and session/worktree counts in a richer metadata tooltip.
 - Native workarea, commands pane, and titlebar separators share a subtler boundary color, and the Commands pane footer tooltip opens to the left of its icon.

@@ -1,6 +1,13 @@
 # Changelog
 
-<!-- CDXC:Distribution 2026-05-30-14:05: Release notes for 3.24.0 must include all user-facing commits after v3.23.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+<!-- CDXC:Distribution 2026-05-30-14:42: Release notes for 3.25.0 must include all user-facing commits after v3.24.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+
+## 3.25.0 - 2026-05-30
+
+- Added a titlebar Tips & Tricks menu with unread tracking, read-all, and persistent read state for built-in workflow hints.
+- Project board filtering now uses Priority and Estimate controls instead of lane status, with the search icon inside the search field and cleaner ticket metadata layout.
+- Ghostty terminal scrollbars and scroll-to-top/bottom overlay buttons are square instead of rounded.
+- Session rows show only one Delayed Send countdown clock in the leading identity slot instead of duplicating it in the header agent area.
 
 ## 3.24.0 - 2026-05-30
 
