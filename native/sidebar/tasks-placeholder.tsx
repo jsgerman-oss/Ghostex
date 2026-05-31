@@ -21,6 +21,7 @@ import {
   type ComponentProps,
   type KeyboardEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { Button } from "@/components/ui/button";
 import {
@@ -163,6 +164,13 @@ const PROJECT_BOARD_LABEL_REFRESH_INTERVAL_MS = 60_000;
 const PROJECT_BOARD_MAX_DEPENDENCY_OPTIONS = 600;
 const PROJECT_BOARD_MAX_VISIBLE_TICKETS_PER_COLUMN = 120;
 const PROJECT_BOARD_GENERATING_TITLE = "Generating title...";
+const PROJECT_BOARD_START_LOCATION_SELECT_ITEMS: ReadonlyArray<{
+  label: string;
+  value: ProjectBoardStartLocation;
+}> = [
+  { label: "Current project", value: "currentProject" },
+  { label: "New worktree", value: "newWorktree" },
+];
 const PROJECT_BOARD_STATUS_SELECT_ITEMS = BOARD_COLUMNS.map((column) => ({
   label: column.label,
   value: column.key,
@@ -257,10 +265,9 @@ function ProjectBoardApp() {
   const [detail, setDetail] = useState<DetailDraft>(createEmptyDetailDraft);
   const [newTicketOpen, setNewTicketOpen] = useState(false);
   const [newTicket, setNewTicket] = useState<TicketFormDraft>(createEmptyTicketFormDraft);
-  const [createAction, setCreateAction] = useState<"create" | "createStart">();
   const [newTicketStartLocation, setNewTicketStartLocation] =
     useState<ProjectBoardStartLocation>("currentProject");
-  const isCreating = Boolean(createAction);
+  const createInFlightRef = useRef(false);
   const [deleteConfirmingTicketId, setDeleteConfirmingTicketId] = useState("");
   const [imagePreviewDataUrls, setImagePreviewDataUrls] = useState<Record<string, string>>({});
   const pendingImagePreviewPathsRef = useRef(new Set<string>());
@@ -300,7 +307,15 @@ function ProjectBoardApp() {
    * CDXC:ProjectBoard 2026-05-28-16:21:
    * Ticket primary actions should reopen existing work before creating new work.
    * Treat live and previous-session-restorable conversation links as usable so "Start work" changes to "Go to Session" once a ticket already owns an openable agent conversation.
-   * Keep the ticket dialog open after Go to Session; focusing/restoring the session should reveal the workarea without discarding the user's ticket-editing context.
+   * Keep the edit dialog open after Go to Session; focusing/restoring the session should reveal the workarea without discarding the user's ticket-editing context.
+   *
+   * CDXC:ProjectBoard 2026-05-31-07:30:
+   * Create, Create & Start, and edit-ticket Start work must dismiss their dialog immediately on click so async Beads/create/start work never blocks the board behind the modal.
+   * Do not swap Create button labels to "Creating…" while the dialog is open; that footer layout shift is visible before close.
+   * Go to Session still keeps the edit dialog open; Start work closes it on click.
+   *
+   * CDXC:ProjectBoard 2026-05-31-08:05:
+   * New-ticket start location is a dropdown beside the agent dropdown, matching its height and sitting to the right (not centered radio buttons).
    *
    * CDXC:ProjectBoard 2026-05-30-07:46:
    * Collapsed macOS Project-page selects must show friendly labels for agents and ticket priority while preserving the raw Beads-compatible values used by bridge requests.
@@ -726,7 +741,7 @@ function ProjectBoardApp() {
   };
 
   const createTicket = async (options: { startAfterCreate?: boolean } = {}) => {
-    if (isCreating) {
+    if (createInFlightRef.current) {
       return;
     }
     const startAfterCreate = options.startAfterCreate === true;
@@ -741,7 +756,13 @@ function ProjectBoardApp() {
     if (!prompt) {
       return;
     }
-    setCreateAction(startAfterCreate ? "createStart" : "create");
+    if (startAfterCreate && conversationState.agents.length === 0) {
+      return;
+    }
+    createInFlightRef.current = true;
+    setNewTicket(createEmptyTicketFormDraft());
+    setNewTicketStartLocation("currentProject");
+    setNewTicketOpen(false);
     logProjectBoardDebug("projectBoard.createTicket.started", {
       blockedByCount: draft.blockedByIds.length,
       blockingCount: draft.blockingIds.length,
@@ -823,9 +844,6 @@ function ProjectBoardApp() {
           });
         }
       }
-      setNewTicket(createEmptyTicketFormDraft());
-      setNewTicketStartLocation("currentProject");
-      setNewTicketOpen(false);
       const refreshedPayload = await runBeads({ action: "listIssues" });
       const refreshedIssues = normalizeBeadsPayload<BeadsIssue[]>(
         refreshedPayload,
@@ -930,7 +948,7 @@ function ProjectBoardApp() {
       });
       setErrorMessage(error instanceof Error ? error.message : "Could not create the ticket.");
     } finally {
-      setCreateAction(undefined);
+      createInFlightRef.current = false;
     }
   };
 
@@ -1389,11 +1407,15 @@ function ProjectBoardApp() {
             <div className="project-ticket-dialog-primary-actions">
               <Button
                 disabled={detailPrimaryActionDisabled}
-                onClick={() =>
-                  detailPrimaryConversationLink
-                    ? void jumpToConversation(detailPrimaryConversationLink)
-                    : void startTicketWork()
-                }
+                onClick={() => {
+                  if (detailPrimaryConversationLink) {
+                    void jumpToConversation(detailPrimaryConversationLink);
+                    return;
+                  }
+                  setDeleteConfirmingTicketId("");
+                  setDetail(createEmptyDetailDraft());
+                  void startTicketWork();
+                }}
                 type="button"
                 variant="outline"
               >
@@ -1519,12 +1541,16 @@ function ProjectBoardApp() {
               <div className="project-ticket-section-title">Start work</div>
               <div className="project-ticket-create-start-controls">
                 <Select
-                  disabled={conversationState.agents.length === 0 || isCreating}
+                  disabled={conversationState.agents.length === 0}
                   items={agentSelectItems}
                   onValueChange={setSelectedAgentId}
                   value={selectedAgentId}
                 >
-                  <SelectTrigger aria-label="Agent for Create and Start" size="sm">
+                  <SelectTrigger
+                    aria-label="Agent for Create and Start"
+                    className="project-ticket-footer-select"
+                    size="sm"
+                  >
                     <SelectValue placeholder="Choose agent" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1535,44 +1561,41 @@ function ProjectBoardApp() {
                     ))}
                   </SelectContent>
                 </Select>
-                <div className="project-ticket-start-location" role="radiogroup" aria-label="Start location">
-                  <Button
-                    aria-checked={newTicketStartLocation === "currentProject"}
-                    disabled={isCreating}
-                    onClick={() => setNewTicketStartLocation("currentProject")}
-                    role="radio"
+                <Select
+                  items={PROJECT_BOARD_START_LOCATION_SELECT_ITEMS}
+                  onValueChange={(value) =>
+                    setNewTicketStartLocation(value as ProjectBoardStartLocation)
+                  }
+                  value={newTicketStartLocation}
+                >
+                  <SelectTrigger
+                    aria-label="Start location"
+                    className="project-ticket-footer-select"
                     size="sm"
-                    type="button"
-                    variant={newTicketStartLocation === "currentProject" ? "secondary" : "outline"}
                   >
-                    Current project
-                  </Button>
-                  <Button
-                    aria-checked={newTicketStartLocation === "newWorktree"}
-                    disabled={isCreating}
-                    onClick={() => setNewTicketStartLocation("newWorktree")}
-                    role="radio"
-                    size="sm"
-                    type="button"
-                    variant={newTicketStartLocation === "newWorktree" ? "secondary" : "outline"}
-                  >
-                    New worktree
-                  </Button>
-                </div>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PROJECT_BOARD_START_LOCATION_SELECT_ITEMS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </section>
             <div className="project-ticket-create-actions">
               <Button
-                disabled={isCreating || !newTicket.description.trim()}
+                disabled={!newTicket.description.trim()}
                 onClick={() => void createTicket()}
                 type="button"
                 variant="outline"
               >
-                {createAction === "create" ? "Creating" : "Create"}
+                Create
               </Button>
               <Button
                 disabled={
-                  isCreating ||
                   !newTicket.description.trim() ||
                   conversationState.agents.length === 0 ||
                   Boolean(conversationAction)
@@ -1581,7 +1604,7 @@ function ProjectBoardApp() {
                 type="button"
               >
                 <IconLink data-icon="inline-start" />
-                {createAction === "createStart" ? "Creating & Starting" : "Create & Start"}
+                Create & Start
               </Button>
             </div>
           </DialogFooter>
@@ -1861,32 +1884,92 @@ function ImagePreviewStrip({
   imagePreviewDataUrls: Record<string, string>;
   onRemove?: (image: DescriptionImageReference) => void;
 }) {
+  const [openImage, setOpenImage] = useState<DescriptionImageReference | undefined>();
   const images = extractPreviewableDescriptionImageReferences(description);
+  const openPreviewSrc = openImage ? imagePreviewDataUrls[openImage.src] : undefined;
+
+  useEffect(() => {
+    if (!openImage) {
+      return;
+    }
+    if (!images.some((image) => image.id === openImage.id)) {
+      setOpenImage(undefined);
+      return;
+    }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenImage(undefined);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [images, openImage]);
+
   if (images.length === 0) {
     return null;
   }
+
   return (
-    <div className="project-ticket-image-strip" aria-label="Image previews">
-      {images.map((image) => (
-        <div className="project-ticket-image-thumb" key={image.id}>
-          {imagePreviewDataUrls[image.src] ? (
-            <img alt="" src={imagePreviewDataUrls[image.src]} />
-          ) : (
-            <span aria-hidden="true" />
-          )}
-          {onRemove ? (
-            <button
-              aria-label="Remove pasted image"
-              className="project-ticket-image-remove"
-              onClick={() => onRemove(image)}
-              type="button"
+    <>
+      <div className="project-ticket-image-strip" aria-label="Image previews">
+        {images.map((image) => {
+          const previewSrc = imagePreviewDataUrls[image.src];
+          return (
+            <div
+              aria-label={previewSrc ? `Open image preview ${image.src}` : undefined}
+              className="project-ticket-image-thumb"
+              key={image.id}
+              onClick={() => {
+                if (previewSrc) {
+                  setOpenImage(image);
+                }
+              }}
+              onKeyDown={(event) => {
+                if (!previewSrc) {
+                  return;
+                }
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setOpenImage(image);
+                }
+              }}
+              role={previewSrc ? "button" : undefined}
+              tabIndex={previewSrc ? 0 : undefined}
             >
-              <IconX aria-hidden="true" />
-            </button>
-          ) : null}
-        </div>
-      ))}
-    </div>
+              {previewSrc ? <img alt="" src={previewSrc} /> : <span aria-hidden="true" />}
+              {onRemove ? (
+                <button
+                  aria-label="Remove pasted image"
+                  className="project-ticket-image-remove"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemove(image);
+                    if (openImage?.id === image.id) {
+                      setOpenImage(undefined);
+                    }
+                  }}
+                  type="button"
+                >
+                  <IconX aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {openImage && openPreviewSrc
+        ? createPortal(
+            <div
+              className="project-ticket-image-popup"
+              onClick={() => setOpenImage(undefined)}
+              role="presentation"
+            >
+              <img alt="" src={openPreviewSrc} />
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
@@ -3234,11 +3317,17 @@ styleElement.textContent = `
     align-items: center;
     display: grid;
     gap: 8px;
-    grid-template-columns: minmax(150px, 220px) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    justify-items: stretch;
     min-width: 0;
   }
 
-  .project-ticket-start-location,
+  .project-ticket-footer-select {
+    height: var(--project-board-control-height);
+    min-width: 0;
+    width: 100%;
+  }
+
   .project-ticket-create-actions {
     align-items: center;
     display: flex;
@@ -3326,6 +3415,30 @@ styleElement.textContent = `
     gap: 8px;
   }
 
+  /*
+   * CDXC:ProjectBoard 2026-05-31-07:15:
+   * Prompt image thumbnails below the ticket Prompt field open a full-screen
+   * preview on click with a dark overlay; any click on the overlay dismisses
+   * the preview and the enlarged image is capped at 90vw by 90vh.
+   */
+  .project-ticket-image-popup {
+    align-items: center;
+    background: rgb(0 0 0 / 74%);
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    padding: 28px;
+    position: fixed;
+    z-index: 2000;
+  }
+
+  .project-ticket-image-popup img {
+    box-shadow: 0 18px 60px rgb(0 0 0 / 50%);
+    max-height: 90vh;
+    max-width: 90vw;
+    object-fit: contain;
+  }
+
   .project-ticket-image-thumb {
     background: rgba(0, 0, 0, 0.24);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -3334,6 +3447,15 @@ styleElement.textContent = `
     overflow: hidden;
     position: relative;
     width: 72px;
+  }
+
+  .project-ticket-image-thumb[role="button"] {
+    cursor: pointer;
+  }
+
+  .project-ticket-image-thumb[role="button"]:hover,
+  .project-ticket-image-thumb[role="button"]:focus-visible {
+    border-color: rgba(255, 255, 255, 0.28);
   }
 
   .project-ticket-image-thumb img {
@@ -3498,8 +3620,7 @@ styleElement.textContent = `
     .project-ticket-create-actions {
       justify-content: stretch;
     }
-    .project-ticket-create-actions > button,
-    .project-ticket-start-location > button {
+    .project-ticket-create-actions > button {
       flex: 1 1 auto;
     }
     .project-ticket-conversation-controls { grid-template-columns: 1fr; }
