@@ -6,8 +6,8 @@
   "type": "module",
   "scripts": {
     "s": "bun run start",
-    "start": "bun scripts/build-t3code-if-needed.mjs && native/macos/ghostexHost/run-ghostex-host.sh",
-    "start:dev": "bun scripts/start-ghostex-dev.mjs",
+    "start": "bun scripts/start-ghostex.mjs",
+    "start:dev": "bun scripts/start-ghostex.mjs dev",
     "build": "native/macos/ghostexHost/build-ghostex-host.sh",
     "build:dev": "GHOSTEX_APP_VARIANT=dev native/macos/ghostexHost/build-ghostex-host.sh",
     "android:verify-release": "scripts/ghostex-android-release-readiness.sh",
