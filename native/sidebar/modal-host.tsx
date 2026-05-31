@@ -1354,7 +1354,7 @@ function FloatingPromptEditorModal({
              * current right edge during resize.
              */}
             <span className="floating-prompt-editor-title-text">{editor.title}</span>
-            <span className="floating-prompt-editor-title-shortcut">(Ctrl + G or Cmd + S to save)</span>
+            <span className="floating-prompt-editor-title-shortcut">(Save with ^G or ⌘S)</span>
           </div>
           <div className="floating-prompt-editor-actions">
             <button

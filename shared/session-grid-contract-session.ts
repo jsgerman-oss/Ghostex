@@ -37,13 +37,13 @@ import { normalizeT3SessionMetadata } from "./t3-session-metadata";
  * CDXC:CursorCLI 2026-05-19-15:22:
  * Cursor CLI appends ` - ⏳ Working <spinner>` and ` - ✅ Ready` to terminal titles,
  * including the startup title `Cursor Agent - ✅ Ready`. Strip those trailing status
- * suffixes for visible sidebar titles. Keep the detection patterns in
- * session-title-activity.ts aligned with these strip rules.
+ * suffixes for visible sidebar titles. Keep the gxserver session-status title
+ * classifier aligned with these strip rules.
  *
  * CDXC:AntigravityCLI 2026-05-19-18:45:
  * Antigravity CLI uses `agy` while running and `🔔 agy` when finished. Strip the
- * bell attention prefix for visible sidebar titles while title-activity keeps the
- * raw terminal title for attention detection.
+ * bell attention prefix for visible sidebar titles while gxserver keeps the raw
+ * terminal title for attention detection.
  */
 const LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✶✻✽✸✹✺✷✴✦◇🤖🔔]+/u;
 const ANTIGRAVITY_ATTENTION_TITLE_PATTERN = /^🔔\s*agy$/iu;

@@ -632,12 +632,29 @@ function dispatchDomainStateEndpoint(
         projectId: lifecycle.projectId,
         sessionId: lifecycle.sessionId,
       });
+      const titledSession = decision.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? current;
+      const statusUpdate = updateSessionActivitySettings(titledSession, {
+        agentName: titleEvent.agentName,
+        event: "title",
+        projectId: lifecycle.projectId,
+        sessionId: lifecycle.sessionId,
+        title: titleEvent.rawTitle,
+      });
+      const session = repository.updateSession({
+        lastActiveAt: statusUpdate.lastActiveAt,
+        projectId: titledSession.projectId,
+        runtimeSettings: statusUpdate.runtimeSettings,
+        sessionId: titledSession.sessionId,
+      });
       return {
         agentSessionId: decision.agentSessionId,
+        activity: statusUpdate.activity,
         changed: decision.changed,
+        enteredAttention: statusUpdate.enteredAttention,
+        previousActivity: statusUpdate.previousActivity,
         projection: decision.projection,
         reason: decision.reason,
-        session: decision.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? current,
+        session,
         visibleTitle: decision.visibleTitle,
       } satisfies GxserverTerminalTitleEventResult;
     }
@@ -652,13 +669,17 @@ function dispatchDomainStateEndpoint(
         );
       }
       const update = updateSessionActivitySettings(current, activity);
+      const session = repository.updateSession({
+        lastActiveAt: update.lastActiveAt,
+        projectId: current.projectId,
+        runtimeSettings: update.runtimeSettings,
+        sessionId: current.sessionId,
+      });
       return {
-        session: repository.updateSession({
-          lastActiveAt: update.lastActiveAt,
-          projectId: current.projectId,
-          runtimeSettings: update.runtimeSettings,
-          sessionId: current.sessionId,
-        }),
+        activity: update.activity,
+        enteredAttention: update.enteredAttention,
+        previousActivity: update.previousActivity,
+        session,
       };
     }
     case "/api/updateSession":

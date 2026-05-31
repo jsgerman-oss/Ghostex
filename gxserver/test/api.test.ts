@@ -523,6 +523,8 @@ test("terminal title event API stores gxserver-decided canonical titles", async 
       token,
     });
     assert.equal(ignored.status, 200);
+    assert.equal(ignored.body.result.activity.activity, "idle");
+    assert.equal(ignored.body.result.enteredAttention, false);
     assert.equal(ignored.body.result.changed, false);
     assert.equal(ignored.body.result.projection.isTemporaryTitle, true);
     assert.equal(ignored.body.result.session.title, "Search by Text");
@@ -541,6 +543,7 @@ test("terminal title event API stores gxserver-decided canonical titles", async 
       token,
     });
     assert.equal(updated.status, 200);
+    assert.equal(updated.body.result.activity.activity, "idle");
     assert.equal(updated.body.result.changed, true);
     assert.equal(updated.body.result.session.title, "Find previous Codex work");
     assert.equal(updated.body.result.session.runtimeSettings.titleSource, "terminal-auto");
@@ -1207,6 +1210,8 @@ test("agent activity API updates semantic activity and last active state", async
         token,
       });
       assert.equal(working.status, 200);
+      assert.equal(working.body.result.activity.activity, "working");
+      assert.equal(working.body.result.enteredAttention, false);
       assert.equal(working.body.result.session.runtimeSettings.agentActivity.activity, "working");
       assert.equal(working.body.result.session.lastActiveAt, "2026-05-30T12:00:13.000Z");
     },

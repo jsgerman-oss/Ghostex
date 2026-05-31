@@ -17,6 +17,7 @@ export * from "./runtime.js";
 export * from "./remote-listener.js";
 export * from "./remote-routing.js";
 export * from "./server.js";
+export * from "./session-status/index.js";
 export * from "./session-title/index.js";
 export * from "./ssh-helper.js";
 export * from "./storage.js";

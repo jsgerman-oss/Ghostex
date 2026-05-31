@@ -1,13 +1,12 @@
 import type {
-  GxserverAgentActivityEvent,
-  GxserverAgentActivityInput,
-  GxserverAgentActivityState,
   GxserverAgentLaunchPlan,
   GxserverCreateSessionParams,
   GxserverProjectDomainState,
   GxserverSessionDomainState,
-  GxserverUpdateAgentActivityParams,
 } from "../protocol/index.js";
+import { normalizeAgentActivityState } from "./session-status/index.js";
+
+export { applyAgentActivityTransition, updateSessionActivitySettings } from "./session-status/index.js";
 import { isRejectedResumeTitle as isRejectedSessionTitle } from "./session-title/index.js";
 
 export type GxserverAgentAcceptAllMode = "inherit" | "enabled" | "disabled";
@@ -126,9 +125,6 @@ const ACCEPT_ALL_FLAG_SPECS: Readonly<Record<DefaultAgentId, AgentAcceptAllFlagS
 
 const GROK_PERMISSION_MODE_FLAG = "--permission-mode";
 const GROK_BYPASS_PERMISSIONS_VALUE = "bypassPermissions";
-export const GXSERVER_INITIAL_ACTIVITY_SUPPRESSION_MS = 12_000;
-export const GXSERVER_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
-const CODEX_ACTION_REQUIRED_TITLE_PATTERN = /^\[\s*[!.]\s*\]\s*Action Required\b/u;
 
 /*
 CDXC:GxserverAgentLifecycle 2026-05-30-15:04:
@@ -333,113 +329,6 @@ export function buildAgentResumeFallbackCommand(
     default:
       return undefined;
   }
-}
-
-export function applyAgentActivityTransition(input: GxserverAgentActivityInput): GxserverAgentActivityState {
-  const nowMs = input.nowMs ?? Date.now();
-  const nowIso = input.nowIso ?? new Date(nowMs).toISOString();
-  const previous = normalizeAgentActivityState(input.previous, { activity: "idle" });
-  if (input.event === "launch" || input.event === "resume" || input.event === "agentDetected") {
-    return {
-      activity: "idle",
-      hasSeenWorking: false,
-      isAcknowledged: true,
-      lastChangedAt: nowIso,
-      suppressedUntil: new Date(nowMs + GXSERVER_INITIAL_ACTIVITY_SUPPRESSION_MS).toISOString(),
-    };
-  }
-  const suppressedUntilMs = previous.suppressedUntil ? Date.parse(previous.suppressedUntil) : Number.NaN;
-  if (Number.isFinite(suppressedUntilMs) && nowMs < suppressedUntilMs) {
-    return {
-      ...previous,
-      activity: "idle",
-      hasSeenWorking: false,
-      isAcknowledged: true,
-      lastChangedAt: nowIso,
-    };
-  }
-  const requested = input.activity ?? detectActivityFromTitle(input.title, input.agentId);
-  const isCodexActionRequiredTitle = matchesCodexActionRequiredTitle(input.title, input.agentId);
-  if (input.event === "acknowledge") {
-    return {
-      ...previous,
-      activity: "idle",
-      isAcknowledged: true,
-      lastChangedAt: nowIso,
-    };
-  }
-  if (requested === "working") {
-    return {
-      activity: "working",
-      hasSeenWorking: true,
-      isAcknowledged: false,
-      lastChangedAt: nowIso,
-      workingStartedAt: previous.activity === "working" ? previous.workingStartedAt ?? nowIso : nowIso,
-    };
-  }
-  if (requested === "attention") {
-    /*
-    CDXC:CodexAttention 2026-05-31-14:36:
-    Codex action-required terminal titles blink between `[ ! ] Action Required` and `[ . ] Action Required`. gxserver must classify both frames as one Codex-only attention state so Ghostex posts a single attention notification instead of treating the dot frame as idle or a fresh completion.
-    */
-    if (isCodexActionRequiredTitle && previous.activity === "attention") {
-      return previous;
-    }
-    if (isCodexActionRequiredTitle && previous.isAcknowledged) {
-      return {
-        ...previous,
-        activity: "idle",
-      };
-    }
-    const workingStartedMs = previous.workingStartedAt ? Date.parse(previous.workingStartedAt) : Number.NaN;
-    if (!Number.isFinite(workingStartedMs) || nowMs - workingStartedMs < GXSERVER_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS) {
-      return {
-        ...previous,
-        activity: "idle",
-        lastChangedAt: nowIso,
-        workingStartedAt: undefined,
-      };
-    }
-    return {
-      activity: "attention",
-      hasSeenWorking: true,
-      isAcknowledged: false,
-      lastChangedAt: nowIso,
-      workingStartedAt: previous.workingStartedAt,
-    };
-  }
-  return {
-    ...previous,
-    activity: "idle",
-    lastChangedAt: nowIso,
-    workingStartedAt: undefined,
-  };
-}
-
-export function updateSessionActivitySettings(
-  session: GxserverSessionDomainState,
-  params: GxserverUpdateAgentActivityParams,
-): { lastActiveAt?: string; runtimeSettings: Record<string, unknown> } {
-  const previous = normalizeAgentActivityState(session.runtimeSettings.agentActivity, {
-    activity: session.runtimeSettings.activity === "working" || session.runtimeSettings.activity === "attention" ? session.runtimeSettings.activity : "idle",
-  });
-  const nowMs = params.nowMs ?? Date.now();
-  const activity = applyAgentActivityTransition({
-    activity: normalizeActivity(params.activity),
-    event: normalizeActivityEvent(params.event),
-    agentId: session.agentId,
-    nowIso: new Date(nowMs).toISOString(),
-    nowMs,
-    previous,
-    title: normalizeText(params.title),
-  });
-  return {
-    lastActiveAt: activity.activity === "working" || activity.activity === "attention" ? activity.lastChangedAt : session.lastActiveAt,
-    runtimeSettings: {
-      ...session.runtimeSettings,
-      agentActivity: activity,
-    },
-  };
 }
 
 function resolveAgentLaunchCommand(input: {
@@ -808,44 +697,6 @@ sys.exit(1)
 `;
 }
 
-function detectActivityFromTitle(
-  title: string | undefined,
-  agentId?: string,
-): GxserverAgentActivityState["activity"] | undefined {
-  if (!title) {
-    return undefined;
-  }
-  if (matchesCodexActionRequiredTitle(title, agentId)) {
-    return "attention";
-  }
-  if (/⏳ Working|[⠐⠂⠸⠴⠼⠧⠦⠏⠋⠇⠙⠹✦🤖]/u.test(title)) {
-    return "working";
-  }
-  if (/^🔔\s*agy$/iu.test(title)) {
-    return "attention";
-  }
-  if (/✅ Ready|✳|\*|◇|🔔|^agy$/u.test(title)) {
-    return "idle";
-  }
-  return undefined;
-}
-
-function matchesCodexActionRequiredTitle(title: string | undefined, agentId?: string): boolean {
-  return normalizeDefaultAgentId(agentId) === "codex" && title !== undefined && CODEX_ACTION_REQUIRED_TITLE_PATTERN.test(title);
-}
-
-function normalizeAgentActivityState(value: unknown, fallback: Pick<GxserverAgentActivityState, "activity">): GxserverAgentActivityState {
-  const record = normalizeObject(value);
-  return {
-    activity: normalizeActivity(record.activity) ?? fallback.activity,
-    hasSeenWorking: readBoolean(record.hasSeenWorking),
-    isAcknowledged: readBoolean(record.isAcknowledged),
-    lastChangedAt: normalizeText(record.lastChangedAt),
-    suppressedUntil: normalizeText(record.suppressedUntil),
-    workingStartedAt: normalizeText(record.workingStartedAt),
-  };
-}
-
 function readAgentLaunchPlan(value: Record<string, unknown>): GxserverAgentLaunchPlan | undefined {
   const plan = normalizeObject(value.agentLaunchPlan);
   const startupText = normalizeText(plan.startupText);
@@ -879,21 +730,6 @@ function resolveDefaultAgentCommand(agentId: string | undefined): string | undef
 
 function normalizeAcceptAllMode(value: unknown): GxserverAgentAcceptAllMode | undefined {
   return value === "inherit" || value === "enabled" || value === "disabled" ? value : undefined;
-}
-
-function normalizeActivity(value: unknown): GxserverAgentActivityState["activity"] | undefined {
-  return value === "idle" || value === "working" || value === "attention" ? value : undefined;
-}
-
-function normalizeActivityEvent(value: unknown): GxserverAgentActivityEvent | undefined {
-  return value === "launch" ||
-    value === "resume" ||
-    value === "agentDetected" ||
-    value === "title" ||
-    value === "bell" ||
-    value === "acknowledge"
-    ? value
-    : undefined;
 }
 
 function normalizeObject(value: unknown): Record<string, unknown> {

@@ -1219,18 +1219,19 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-groups-top {
   margin-top: 4px;
   padding-left: 6px;
-  /*
-   * CDXC:SidebarSearch 2026-05-31-18:33:
-   * The active top Search sessions field should sit 5px farther from the
-   * sidebar's right edge while keeping its left edge and internal icon/text
-   * spacing unchanged.
-   */
-  padding-right: 12px;
+  padding-right: 7px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-toolbar {
   padding: 0;
-  width: 100%;
+  /*
+   * CDXC:SidebarSearch 2026-05-31-18:39:
+   * The active top Search sessions field needs 5px more right-edge gap. Shrink
+   * the toolbar width instead of changing parent padding so the search box's
+   * left edge and internal icon/text spacing stay fixed.
+   */
+  justify-self: start;
+  width: calc(100% - 5px);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-search-input-shell {

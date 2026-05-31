@@ -46,12 +46,6 @@ import {
 } from "../../shared/find-previous-session-prompt";
 import { parseRepositoryCloneInput } from "../../shared/repository-clone";
 import {
-  acknowledgeTitleDerivedSessionActivity,
-  getTitleDerivedSessionActivityFromTransition,
-  haveSameTitleDerivedSessionActivity,
-  type TitleDerivedSessionActivity,
-} from "../../shared/session-title-activity";
-import {
   clampVisibleSessionCount,
   createAgentSessionDefaultTitle,
   createDefaultCommandsPanelState,
@@ -319,6 +313,7 @@ import type {
   GxserverSessionDomainState,
   GxserverSessionTitleProjection,
   GxserverTerminalTitleEventResult,
+  GxserverUpdateAgentActivityResult,
 } from "../../shared/gxserver-protocol";
 import "../../sidebar/styles.css";
 
@@ -1567,7 +1562,6 @@ type PendingNativeTerminalSurfaceCreationState = {
 };
 const pendingNativeTerminalSurfaceCreationBySessionId =
   new Map<string, PendingNativeTerminalSurfaceCreationState>();
-const titleDerivedActivityBySessionId = new Map<string, TitleDerivedSessionActivity>();
 const nativeActivitySuppressedUntilBySessionId = new Map<string, number>();
 const nativeWorkingStartedAtBySessionId = new Map<string, number>();
 const nativeAttentionEnteredAtBySessionId = new Map<string, number>();
@@ -11199,7 +11193,6 @@ function clearStaleTerminalRuntimeStateBeforeWake(
    */
   terminalStateById.delete(sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
-  titleDerivedActivityBySessionId.delete(sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(sessionId);
   nativeWorkingStartedAtBySessionId.delete(sessionId);
   clearNativeSessionAttentionTracking(sessionId);
@@ -13237,58 +13230,6 @@ function getNativeActivitySuppressedUntil(sessionId: string): number | undefined
   }
 
   return suppressedUntil;
-}
-
-function getNativeEffectiveTitleActivity(
-  sessionId: string,
-  nextDerivedActivity: TitleDerivedSessionActivity,
-): TitleDerivedSessionActivity {
-  const now = Date.now();
-  const suppressedUntil = getNativeActivitySuppressedUntil(sessionId);
-  if (suppressedUntil !== undefined && Number.isFinite(suppressedUntil) && now < suppressedUntil) {
-    nativeWorkingStartedAtBySessionId.delete(sessionId);
-    /**
-     * CDXC:SessionAttention 2026-05-27-09:17:
-     * Bootstrap suppression must not preserve hasSeenWorking from spinner
-     * titles. Keeping that flag lets a later idle title become false attention
-     * after the window expires, which is the sticky-green status users see
-     * after resume, fork, or manual Codex startup.
-     */
-    return {
-      activity: "idle",
-      agentName: nextDerivedActivity.agentName,
-      hasSeenWorking: false,
-      isAcknowledged: true,
-    };
-  }
-
-  if (nextDerivedActivity.activity === "working") {
-    if (!nativeWorkingStartedAtBySessionId.has(sessionId)) {
-      nativeWorkingStartedAtBySessionId.set(sessionId, now);
-    }
-    return nextDerivedActivity;
-  }
-
-  if (nextDerivedActivity.activity === "attention") {
-    const workingStartedAt = nativeWorkingStartedAtBySessionId.get(sessionId);
-    const workingDurationMs =
-      workingStartedAt === undefined ? undefined : Math.max(0, now - workingStartedAt);
-    if (
-      workingStartedAt === undefined ||
-      (workingDurationMs ?? 0) < NATIVE_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS
-    ) {
-      nativeWorkingStartedAtBySessionId.delete(sessionId);
-      appendAgentDetectionDebugLog("nativeSidebar.activitySuppression.attentionSuppressed", {
-        sessionId,
-        workingDurationMs,
-      });
-      return { ...nextDerivedActivity, activity: "idle" };
-    }
-    return nextDerivedActivity;
-  }
-
-  nativeWorkingStartedAtBySessionId.delete(sessionId);
-  return nextDerivedActivity;
 }
 
 function buildNativeResumeCommandDisplay(session: TerminalSessionRecord): string | undefined {
@@ -15574,8 +15515,9 @@ function syncSessionTitleFromNativeTerminalTitle(
   /*
   CDXC:SessionTitleSync 2026-05-31-15:00:
   macOS is a title-event client. It forwards raw terminal title observations to
-  gxserver and applies the canonical title/provenance response instead of
-  deciding whether a terminal title should become the session title locally.
+  gxserver and applies the canonical title, provenance, and status response
+  instead of deciding whether a terminal title should rename, work, or need
+  attention locally.
   */
   void syncSessionTitleFromGxserverTerminalTitle(sessionId, rawTitle, previousTerminalTitle);
   return true;
@@ -15672,6 +15614,9 @@ function applyGxserverTerminalTitleResult(
     }
     didChangeLocalState = true;
   }
+  if (applyGxserverSessionActivityResult(sessionId, result, "terminal-title")) {
+    didChangeLocalState = true;
+  }
   if (didChangeLocalState) {
     publish();
   }
@@ -15683,6 +15628,82 @@ function applyGxserverTerminalTitleResult(
     sessionId,
     visibleTitle: result.visibleTitle,
   });
+}
+
+function applyGxserverSessionActivityResult(
+  sessionId: string,
+  result: Pick<GxserverTerminalTitleEventResult | GxserverUpdateAgentActivityResult, "activity" | "enteredAttention" | "session">,
+  source: string,
+): boolean {
+  const terminalState = terminalStateById.get(sessionId);
+  if (!terminalState) {
+    return false;
+  }
+  let didChange = false;
+  const nextActivity = result.activity.activity;
+  const previousActivity = terminalState.activity;
+  if (result.activity.agentName && terminalState.agentName !== result.activity.agentName) {
+    terminalState.agentName = result.activity.agentName;
+    setTerminalSessionAgentName(sessionId, result.activity.agentName);
+    didChange = true;
+  }
+  if (previousActivity !== nextActivity) {
+    terminalState.activity = nextActivity;
+    didChange = true;
+  }
+  if (result.session.lastActiveAt && isNativeTimestampNewer(result.session.lastActiveAt, terminalState.lastActivityAt)) {
+    terminalState.lastActivityAt = result.session.lastActiveAt;
+    persistTerminalSessionLastActivityAt(sessionId, result.session.lastActiveAt);
+    didChange = true;
+  }
+  if (nextActivity === "working") {
+    if (previousActivity !== "working") {
+      clearNativeSessionAttentionTracking(sessionId);
+      persistTerminalSessionRestoreActivity(sessionId, "working");
+    }
+  } else if (nextActivity === "attention") {
+    if (result.enteredAttention) {
+      handleNativeSessionEnteredAttention(sessionId, source);
+    } else if (previousActivity !== "attention") {
+      persistTerminalSessionRestoreActivity(sessionId, "attention");
+    }
+  } else if (previousActivity !== "idle") {
+    clearNativeSessionAttentionTracking(sessionId);
+    persistTerminalSessionRestoreActivity(sessionId, undefined);
+  }
+  return didChange;
+}
+
+async function syncNativeSessionActivityWithGxserver(
+  sessionId: string,
+  params: Record<string, unknown>,
+  source: string,
+): Promise<void> {
+  const terminalState = terminalStateById.get(sessionId);
+  if (!terminalState) {
+    return;
+  }
+  const reference = resolveSidebarSessionReference(sessionId);
+  try {
+    const result = await gxserverClient.rpc<GxserverUpdateAgentActivityResult>(
+      "/api/updateAgentActivity",
+      {
+        agentName: terminalState.agentName,
+        projectId: reference.project.projectId,
+        sessionId: reference.sessionId,
+        ...params,
+      },
+    );
+    if (applyGxserverSessionActivityResult(sessionId, result, source)) {
+      publish();
+    }
+  } catch (error) {
+    appendAgentDetectionDebugLog("nativeSidebar.gxserver.sessionActivityEventFailed", {
+      message: error instanceof Error ? error.message : String(error),
+      sessionId,
+      source,
+    });
+  }
 }
 
 function isValidNativeAgentTerminalTitle(title: string, agentName: string | undefined): boolean {
@@ -16059,24 +16080,6 @@ function syncNativePersistedCommandPaneActivity(
   return true;
 }
 
-function getNativeCurrentTitleDerivedActivity(
-  sessionId: string,
-  terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
-): TitleDerivedSessionActivity | undefined {
-  const previousDerivedActivity = titleDerivedActivityBySessionId.get(sessionId);
-  const terminalTitle = terminalState.terminalTitle?.trim();
-  if (!terminalTitle) {
-    return previousDerivedActivity;
-  }
-
-  return getTitleDerivedSessionActivityFromTransition(
-    terminalTitle,
-    terminalTitle,
-    previousDerivedActivity,
-    terminalState.agentName,
-  );
-}
-
 function syncNativePersistedAgentActivity(
   sessionId: string,
   terminalState: NonNullable<ReturnType<typeof terminalStateById.get>>,
@@ -16101,52 +16104,13 @@ function syncNativePersistedAgentActivity(
   the final idle/attention event. Live terminal-title working remains valid even
   when the persisted heartbeat ages out.
 
-  CDXC:SharedSessionStatus 2026-05-26-13:10:
-  A mounted terminal's current title-derived idle/attention signal must clear a
-  shared `working` file immediately. Codex and other agent processes remain
-  alive while ready, so a recent persisted working timestamp is only a
-  cross-surface bridge when the live terminal is not already showing a
-  non-working state.
+  CDXC:SharedSessionStatus 2026-05-31-14:36:
+  gxserver owns live title-derived status. The macOS sidebar may still hydrate
+  persisted hook status, but it must not locally reinterpret terminal titles
+  into working or attention because that duplicates server transition rules.
   */
   if (persistedState.status === "working") {
-    const liveTitleActivity = getNativeCurrentTitleDerivedActivity(sessionId, terminalState);
-    const hasLiveWorkingTitle = liveTitleActivity?.activity === "working";
-    if (liveTitleActivity && liveTitleActivity.activity !== "working") {
-      const previousActivity = terminalState.activity;
-      titleDerivedActivityBySessionId.set(sessionId, liveTitleActivity);
-      terminalState.agentName = liveTitleActivity.agentName;
-      setTerminalSessionAgentName(sessionId, liveTitleActivity.agentName);
-      nativeWorkingStartedAtBySessionId.delete(sessionId);
-
-      if (liveTitleActivity.activity === "attention") {
-        terminalState.activity = "attention";
-        persistNativeSessionObservedStatus(sessionId, "attention", "live-title-cleared-working");
-        if (previousActivity !== "attention") {
-          handleNativeSessionEnteredAttention(sessionId, "live-title-cleared-working");
-        }
-        appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.workingClearedByLiveTitle", {
-          liveActivity: liveTitleActivity.activity,
-          previousActivity,
-          sessionId,
-          statusUpdatedAt: persistedState.statusUpdatedAt,
-        });
-        return true;
-      }
-
-      terminalState.activity = "idle";
-      clearNativeSessionAttentionTracking(sessionId);
-      persistTerminalSessionRestoreActivity(sessionId, undefined);
-      persistNativeSessionObservedStatus(sessionId, "idle", "live-title-cleared-working");
-      appendAgentDetectionDebugLog("nativeSidebar.persistedActivity.workingClearedByLiveTitle", {
-        liveActivity: liveTitleActivity.activity,
-        previousActivity,
-        sessionId,
-        statusUpdatedAt: persistedState.statusUpdatedAt,
-      });
-      return previousActivity !== "idle";
-    }
-
-    if (!isNativePersistedWorkingFresh(persistedState) && !hasLiveWorkingTitle) {
+    if (!isNativePersistedWorkingFresh(persistedState)) {
       if (terminalState.activity === "working") {
         terminalState.activity = "idle";
         nativeWorkingStartedAtBySessionId.delete(sessionId);
@@ -16873,7 +16837,6 @@ function closeTerminal(
     terminalStateById.delete(reference.sessionId);
     forgetProviderSessionState(reference.project.projectId, reference.sessionId);
     pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
-    titleDerivedActivityBySessionId.delete(reference.sessionId);
     nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
     nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
     clearNativeSessionAttentionTracking(reference.sessionId);
@@ -16919,7 +16882,6 @@ function closeTerminal(
   terminalStateById.delete(reference.sessionId);
   forgetProviderSessionState(reference.project.projectId, reference.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
-  titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
   clearNativeSessionAttentionTracking(reference.sessionId);
@@ -18031,14 +17993,9 @@ function completeNativeTerminalAttentionAcknowledgement(
    * CDXC:SessionAttention 2026-05-16-23:35:
    * Pane/tab clicks should always acknowledge the current green attention state. If the click arrives before the 1.5-second visibility floor, acknowledgement is completed by the deferred timer above so the border and dot disappear only after the user has had enough time to perceive them.
    */
-  const previousDerivedActivity = titleDerivedActivityBySessionId.get(sessionId);
-  const acknowledgedDerivedActivity =
-    acknowledgeTitleDerivedSessionActivity(previousDerivedActivity);
-  if (acknowledgedDerivedActivity) {
-    titleDerivedActivityBySessionId.set(sessionId, acknowledgedDerivedActivity);
-  }
   terminalState.activity = "idle";
   persistTerminalSessionRestoreActivity(sessionId, undefined);
+  void syncNativeSessionActivityWithGxserver(sessionId, { event: "acknowledge" }, "attention-acknowledge");
   if (terminalState.sessionStateFilePath) {
     void persistNativeSessionAttentionAcknowledged(
       terminalState.sessionStateFilePath,
@@ -18052,8 +18009,6 @@ function completeNativeTerminalAttentionAcknowledgement(
   appendAgentDetectionDebugLog("nativeSidebar.sessionAttentionAcknowledged", {
     attentionEnteredAt:
       attentionEnteredAt === undefined ? undefined : new Date(attentionEnteredAt).toISOString(),
-    acknowledgedDerivedActivity,
-    previousDerivedActivity,
     reason,
     sessionId,
   });
@@ -18376,7 +18331,6 @@ function stopNativeSleepingSessionRuntime(sessionId: string, project = activePro
   clearNativeSidebarCommandSessionBySessionId(sessionId);
   terminalStateById.delete(sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
-  titleDerivedActivityBySessionId.delete(sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(sessionId);
   nativeWorkingStartedAtBySessionId.delete(sessionId);
   clearNativeSessionAttentionTracking(sessionId);
@@ -19091,7 +19045,6 @@ function replaceNativeTerminalWithFreshSession(
   clearNativeSidebarCommandSessionBySessionId(reference.sessionId);
   terminalStateById.delete(reference.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
-  titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
   clearNativeSessionAttentionTracking(reference.sessionId);
@@ -19286,7 +19239,6 @@ function restartNativeSession(sessionId: string): void {
   clearNativeSidebarCommandSessionBySessionId(reference.sessionId);
   terminalStateById.delete(reference.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
-  titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
   clearNativeSessionAttentionTracking(reference.sessionId);
@@ -20580,7 +20532,6 @@ function cleanupExitedNativeCommandPaneSession(
   });
   terminalStateById.delete(reference.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(reference.sessionId);
-  titleDerivedActivityBySessionId.delete(reference.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(reference.sessionId);
   nativeWorkingStartedAtBySessionId.delete(reference.sessionId);
   clearNativeSessionAttentionTracking(reference.sessionId);
@@ -21673,7 +21624,6 @@ function closeAllNativeSessions(): void {
     postNative({ sessionId: nativeSessionId, type: "closeTerminal" });
     terminalStateById.delete(sessionId);
     pendingNativeTerminalStartupTextBySessionId.delete(sessionId);
-    titleDerivedActivityBySessionId.delete(sessionId);
     clearNativeSessionAttentionTracking(sessionId);
   }
   sidebarCommandSessionByCommandId.clear();
@@ -23535,7 +23485,6 @@ function removeProject(projectId: string): void {
       nativeSessionIdBySidebarSessionId.delete(session.sessionId);
       terminalStateById.delete(session.sessionId);
       pendingNativeTerminalStartupTextBySessionId.delete(session.sessionId);
-      titleDerivedActivityBySessionId.delete(session.sessionId);
       nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
       nativeWorkingStartedAtBySessionId.delete(session.sessionId);
       clearNativeSessionAttentionTracking(session.sessionId);
@@ -24330,7 +24279,6 @@ function disposeNativeRecentProjectSessionSurface(
   clearNativeSidebarCommandSessionBySessionId(session.sessionId);
   terminalStateById.delete(session.sessionId);
   pendingNativeTerminalStartupTextBySessionId.delete(session.sessionId);
-  titleDerivedActivityBySessionId.delete(session.sessionId);
   nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
   nativeWorkingStartedAtBySessionId.delete(session.sessionId);
   clearNativeSessionAttentionTracking(session.sessionId);
@@ -26578,7 +26526,6 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       for (const session of group?.snapshot.sessions ?? []) {
         terminalStateById.delete(session.sessionId);
         pendingNativeTerminalStartupTextBySessionId.delete(session.sessionId);
-        titleDerivedActivityBySessionId.delete(session.sessionId);
         nativeActivitySuppressedUntilBySessionId.delete(session.sessionId);
         nativeWorkingStartedAtBySessionId.delete(session.sessionId);
         clearNativeSessionAttentionTracking(session.sessionId);
@@ -28779,32 +28726,6 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       const previousTerminalTitle = terminalState.terminalTitle;
       const knownAgentNameBeforeDetection = terminalState.agentName;
       const previousVisibleTerminalTitle = getVisibleTerminalTitle(previousTerminalTitle);
-      const previousDerivedActivity = titleDerivedActivityBySessionId.get(sidebarSessionId);
-      const nextDerivedActivity = getTitleDerivedSessionActivityFromTransition(
-        previousTerminalTitle,
-        hostEvent.title,
-        previousDerivedActivity,
-        knownAgentNameBeforeDetection,
-      );
-      const previousDetectedAgentName =
-        knownAgentNameBeforeDetection ?? previousDerivedActivity?.agentName;
-      if (
-        nextDerivedActivity &&
-        previousDetectedAgentName !== nextDerivedActivity.agentName
-      ) {
-        /**
-         * CDXC:SessionAttention 2026-05-27-09:17:
-         * Plain terminals can become agent sessions long after pane creation
-         * when a user manually starts Codex, Claude, or another detected CLI.
-         * Start the same bootstrap suppression on first title-based agent
-         * detection so delayed manual startup gets the 12-second grace window
-         * that launch/resume/fork paths already receive.
-         */
-        suppressNativeSessionActivityIndicators(sidebarSessionId, "agent-detected");
-      }
-      const effectiveDerivedActivity = nextDerivedActivity
-        ? getNativeEffectiveTitleActivity(sidebarSessionId, nextDerivedActivity)
-        : undefined;
       const didUpdateSessionPersistenceName =
         hostEvent.sessionPersistenceName !== undefined &&
         terminalState.sessionPersistenceName !== hostEvent.sessionPersistenceName;
@@ -28831,33 +28752,6 @@ window.addEventListener("ghostex-native-host-event", (event) => {
           terminalState.sessionPersistenceProvider,
         );
       }
-      /**
-       * CDXC:AgentDetection 2026-04-26-10:50
-       * Native Ghostty sessions may start as plain shells and only later reveal
-       * the active agent through terminal titles. Mirror demo-project's title
-       * detector so Codex, Claude, Pi, Gemini, and Copilot titles update the sidebar
-       * icon/status without requiring launch through an agent button.
-       */
-      if (effectiveDerivedActivity) {
-        titleDerivedActivityBySessionId.set(sidebarSessionId, effectiveDerivedActivity);
-        terminalState.agentName = effectiveDerivedActivity.agentName;
-        terminalState.activity = effectiveDerivedActivity.activity;
-        setTerminalSessionAgentName(sidebarSessionId, effectiveDerivedActivity.agentName);
-        if (previousActivity !== "idle" && terminalState.activity === "idle") {
-          persistTerminalSessionRestoreActivity(sidebarSessionId, undefined);
-        }
-        if (previousActivity !== "working" && terminalState.activity === "working") {
-          markNativeSessionSemanticActivityAt(sidebarSessionId, "working", "terminal-title");
-        }
-        if (previousActivity === "working" && terminalState.activity === "attention") {
-          markNativeSessionSemanticActivityAt(sidebarSessionId, "attention", "terminal-title");
-        }
-        if (previousActivity !== "attention" && terminalState.activity === "attention") {
-          handleNativeSessionEnteredAttention(sidebarSessionId, "terminal-title");
-        }
-      } else {
-        titleDerivedActivityBySessionId.delete(sidebarSessionId);
-      }
       const didSyncSessionTitle = syncSessionTitleFromNativeTerminalTitle(
         sidebarSessionId,
         hostEvent.title,
@@ -28866,15 +28760,14 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       /**
        * CDXC:AgentDetection 2026-04-29-09:16
        * Codex/Claude spinner glyphs can change terminal titles many times per
-       * second. Preserve the title-derived activity state above, but skip sidebar
-       * publishes when only the spinner glyph changed and the visible title/status
-       * stayed equivalent.
+       * second. gxserver now owns semantic status for those titles; the local
+       * event path only suppresses publishes when visible title metadata did
+       * not change.
        */
       if (
         previousVisibleTerminalTitle === getVisibleTerminalTitle(hostEvent.title) &&
         previousActivity === terminalState.activity &&
         knownAgentNameBeforeDetection === terminalState.agentName &&
-        haveSameTitleDerivedSessionActivity(previousDerivedActivity, effectiveDerivedActivity) &&
         !didUpdateSessionPersistenceName &&
         !didSyncSessionTitle
       ) {
@@ -28896,24 +28789,22 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       terminalState.activity = "idle";
       persistTerminalSessionRestoreActivity(sidebarSessionId, undefined);
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
+      void syncNativeSessionActivityWithGxserver(sidebarSessionId, { event: "terminalExited" }, "terminal-exited");
       finishGitWorkflowToastForSession(sidebarSessionId, "success", terminalState.agentName);
       if (handleNativeSidebarCommandSessionExit(sidebarSessionId, hostEvent.exitCode)) {
         return;
       }
     } else if (hostEvent.type === "terminalError") {
       clearNativeTerminalSurfaceCreationPending(sidebarSessionId);
-      const previousActivity = terminalState.activity;
       terminalState.lifecycleState = "error";
-      terminalState.activity = "attention";
       terminalState.terminalTitle = hostEvent.message;
       nativeWorkingStartedAtBySessionId.delete(sidebarSessionId);
       finishGitWorkflowToastForSession(sidebarSessionId, "error", hostEvent.message);
-      if (previousActivity !== "attention") {
-        if (previousActivity === "working") {
-          markNativeSessionSemanticActivityAt(sidebarSessionId, "attention", "terminal-error");
-        }
-        handleNativeSessionEnteredAttention(sidebarSessionId, "terminal-error");
-      }
+      void syncNativeSessionActivityWithGxserver(
+        sidebarSessionId,
+        { event: "terminalError", title: hostEvent.message },
+        "terminal-error",
+      );
     } else if (hostEvent.type === "terminalBell") {
       const suppressedUntil = getNativeActivitySuppressedUntil(sidebarSessionId);
       if (
@@ -28927,14 +28818,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
         });
         return;
       }
-      const previousActivity = terminalState.activity;
-      terminalState.activity = "attention";
-      if (previousActivity !== "attention") {
-        if (previousActivity === "working") {
-          markNativeSessionSemanticActivityAt(sidebarSessionId, "attention", "terminal-bell");
-        }
-        handleNativeSessionEnteredAttention(sidebarSessionId, "terminal-bell");
-      }
+      void syncNativeSessionActivityWithGxserver(sidebarSessionId, { event: "bell" }, "terminal-bell");
     } else if (hostEvent.type === "terminalReady") {
       const pendingSurfaceCreate = takeNativeTerminalSurfaceCreationPending(sidebarSessionId);
       nativeTerminalReadyAtBySessionId.set(sidebarSessionId, Date.now());

@@ -182,6 +182,19 @@ test("Codex action-required title blink remains one attention transition", () =>
   assert.equal(dotFrame.activity, "attention");
   assert.equal(dotFrame.lastChangedAt, attention.lastChangedAt);
 
+  const middleDotFrame = applyAgentActivityTransition({
+    agentId: "codex",
+    nowIso: "2026-05-30T12:00:22.000Z",
+    nowMs: Date.parse("2026-05-30T12:00:22.000Z"),
+    previous: {
+      ...attention,
+      activity: "idle",
+      isAcknowledged: true,
+    },
+    title: "[ · ] Action Required",
+  });
+  assert.equal(middleDotFrame.activity, "idle");
+
   const nonCodex = applyAgentActivityTransition({
     agentId: "claude",
     nowIso: "2026-05-30T12:00:20.000Z",

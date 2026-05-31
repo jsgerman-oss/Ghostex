@@ -602,7 +602,10 @@ export interface GxserverTerminalTitleEventParams extends GxserverSessionLifecyc
 
 export interface GxserverTerminalTitleEventResult {
   agentSessionId?: string;
+  activity: GxserverAgentActivityState;
   changed: boolean;
+  enteredAttention: boolean;
+  previousActivity: GxserverAgentActivityState["activity"];
   projection: GxserverSessionTitleProjection;
   reason: string;
   session: GxserverSessionDomainState;
@@ -627,13 +630,24 @@ export interface GxserverAgentLaunchPlan {
   startupTextDisposition: GxserverAgentStartupTextDisposition;
 }
 
-export type GxserverAgentActivityEvent = "acknowledge" | "agentDetected" | "bell" | "launch" | "resume" | "title";
+export type GxserverAgentActivityEvent =
+  | "acknowledge"
+  | "agentDetected"
+  | "bell"
+  | "launch"
+  | "resume"
+  | "terminalError"
+  | "terminalExited"
+  | "title";
 
 export interface GxserverAgentActivityState {
   activity: "attention" | "idle" | "working";
+  agentName?: "antigravity" | "claude" | "codex" | "copilot" | "cursor" | "gemini" | "opencode" | "pi";
+  attentionEventId?: string;
   hasSeenWorking?: boolean;
   isAcknowledged?: boolean;
   lastChangedAt?: string;
+  lastTitleChangeAt?: string;
   suppressedUntil?: string;
   workingStartedAt?: string;
 }
@@ -650,9 +664,17 @@ export interface GxserverAgentActivityInput {
 
 export interface GxserverUpdateAgentActivityParams extends GxserverSessionLifecycleParams {
   activity?: GxserverAgentActivityState["activity"];
+  agentName?: string;
   event?: GxserverAgentActivityEvent;
   nowMs?: number;
   title?: string;
+}
+
+export interface GxserverUpdateAgentActivityResult {
+  activity: GxserverAgentActivityState;
+  enteredAttention: boolean;
+  previousActivity: GxserverAgentActivityState["activity"];
+  session: GxserverSessionDomainState;
 }
 
 export interface GxserverProviderProbeResult {
