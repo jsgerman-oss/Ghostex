@@ -555,9 +555,12 @@ private func nativeGtePromptEditorLogURL() -> URL {
 private func nativeLogGtePromptEditor(_ event: String, details: [String: String] = [:]) {
   /**
    CDXC:Diagnostics 2026-05-16-07:23:
-   Gte prompt-editor breadcrumbs are persistent regular diagnostics. Do not
-   create or append gte-prompt-editor.log unless Settings Debugging Mode is
-   enabled.
+  Gte prompt-editor breadcrumbs are persistent regular diagnostics. Do not
+  create or append gte-prompt-editor.log unless Settings Debugging Mode is
+  enabled.
+
+   CDXC:DiagnosticsPrivacy 2026-05-31-00:31:
+   The prompt-editor log is part of the support bundle users zip and send. Route payloads through NativeLogPrivacy before serialization so editor commands, shim paths, and user shell paths do not persist as plain text.
    */
   guard NativeDebugLogging.isEnabled else {
     return
@@ -566,15 +569,16 @@ private func nativeLogGtePromptEditor(_ event: String, details: [String: String]
   let directory = url.deletingLastPathComponent()
   try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-  var payload = details
+  var payload: [String: Any] = details
   payload["event"] = event
   payload["source"] = "ghostex-native"
   payload["timestamp"] = ISO8601DateFormatter().string(from: Date())
 
+  let sanitizedPayload = NativeLogPrivacy.sanitizePayload(payload)
   let json =
-    (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]))
+    (try? JSONSerialization.data(withJSONObject: sanitizedPayload, options: [.sortedKeys]))
     .flatMap { String(data: $0, encoding: .utf8) }
-    ?? "\(payload)"
+    ?? "{\"event\":\"serializationFailed\"}"
   guard let data = (json + "\n").data(using: .utf8) else {
     return
   }
@@ -742,7 +746,7 @@ private func nativeEnsureGteZdotdirShim(promptEditorCommand: String) -> String? 
     }
     return directory.path
   } catch {
-    NSLog("Failed to prepare gte zsh startup shim: \(error.localizedDescription)")
+    NSLog("Failed to prepare gte zsh startup shim: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
     nativeLogGtePromptEditor("shim.prepare_failed", details: [
       "error": error.localizedDescription
     ])
@@ -1758,11 +1762,15 @@ final class TerminalWorkspaceView: NSView {
    by 3pt so the bar catches up to the rendered tab extent.
 
    CDXC:PaneTabs 2026-05-30-06:53:
-   Native workspace tabs should not leave a few pixels of empty titlebar chrome
-   above or below the tabs. Keep the non-command titlebar at 42pt and let the
-   workspace tab controls fill that height.
+   Native workspace tabs needed to stop leaving a few pixels of empty titlebar
+   chrome above or below the tabs. The prior fix used a 42pt non-command
+   titlebar and made workspace tab controls fill that height.
+
+   CDXC:PaneTabs 2026-05-31-02:17:
+   Main workspace native tab bars should be 6px shorter while retaining zero
+   top/bottom chrome gap, so the non-command titlebar height returns to 36pt.
    */
-  private static let terminalTitleBarHeight: CGFloat = 42
+  private static let terminalTitleBarHeight: CGFloat = 36
   /**
    CDXC:PaneTabs 2026-05-15-08:29:
    Command pane tabs must match the visible command tab bar height exactly.
@@ -3408,7 +3416,12 @@ final class TerminalWorkspaceView: NSView {
           "windowNumber": self.window?.windowNumber ?? NSNull(),
         ])
         if message.contains("[Ghostex Agentation]") || message.contains("Agentation") {
-          NSLog("Browser CEF console [%@:%ld] %@", source, line, message)
+          NSLog(
+            "Browser CEF console [%@:%ld] %@",
+            NativeLogPrivacy.sanitizeLogLine(source),
+            line,
+            NativeLogPrivacy.sanitizeLogLine(message)
+          )
         }
       }
     }
@@ -5089,8 +5102,12 @@ final class TerminalWorkspaceView: NSView {
        directly from the current shell instead of spawning cat plus eval or
        launching a fresh non-interactive zsh.
        */
+      /**
+       CDXC:CommandPanes 2026-05-31-06:22:
+       Reused action panes stage command scripts through writeTerminalScript. Ghostty may insert carriage-return text without submitting it, leaving the visible `. /tmp/...zsh` line stuck until the next user action. Stage the source command as plain text, then submit it through sendTerminalEnter so reruns execute on the first click.
+       */
       let command =
-        ". \(quotedPath); /bin/rm -f -- \(quotedPath)\r"
+        ". \(quotedPath); /bin/rm -f -- \(quotedPath)"
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.writeTerminalScript",
         details: [
@@ -5101,6 +5118,7 @@ final class TerminalWorkspaceView: NSView {
           "visibleSessionIds": orderedVisibleSessionIds(),
         ])
       sessions[sessionId]?.view.surfaceModel?.sendText(command)
+      sendTerminalEnter(sessionId: sessionId)
     } catch {
       TerminalFocusDebugLog.append(
         event: "nativeWorkspace.writeTerminalScript.failed",
@@ -5110,8 +5128,9 @@ final class TerminalWorkspaceView: NSView {
           "scriptLength": text.count,
         ],
         force: true)
-      let message = "printf '%s\\n' \(shellQuote("Ghostex could not stage the restore script: \(error.localizedDescription)"))\r"
+      let message = "printf '%s\\n' \(shellQuote("Ghostex could not stage the restore script: \(error.localizedDescription)"))"
       sessions[sessionId]?.view.surfaceModel?.sendText(message)
+      sendTerminalEnter(sessionId: sessionId)
     }
   }
 
@@ -10990,7 +11009,18 @@ final class TerminalWorkspaceView: NSView {
      Non-persistent native Ghostty panes must show the same per-session title
      bar that the reference workspace renders in React. The AppKit surface is
      therefore laid out below native chrome instead of covering the full pane.
+
+     CDXC:PaneTabs 2026-05-31-06:35:
+     A newly created command-pane session can reach its first layout before the
+     active-terminal sync loop has applied command chrome to the fresh
+     titlebar. Apply the role from command-panel ownership in the frame path so
+     the first paint uses 26px command tabs instead of a 36px workspace tab
+     clipped inside the command tab bar.
      */
+    let chromeRole: TerminalPaneChromeRole =
+      commandsPanelActiveSessionIds.contains(sessionId) ? .commands : .workspace
+    session.titleBarView.setChromeRole(chromeRole)
+    session.borderView.setChromeRole(chromeRole)
     let titleBarHeight = min(titleBarHeight(for: sessionId), max(rect.height, 0))
     mountTerminalPaneContainer(for: session)
     session.containerView.frame = rect
@@ -11237,7 +11267,17 @@ final class TerminalWorkspaceView: NSView {
       resolvedRect = rect
     }
     let paneRect = session.chromiumView == nil ? resolvedRect : chromiumBackingPixelAlignedFrame(resolvedRect)
-    let titleBarHeight = min(Self.terminalTitleBarHeight, max(paneRect.height, 0))
+    /*
+     CDXC:PaneTabs 2026-05-31-06:35:
+     Web panes share the native pane titlebar implementation, so command-panel
+     ownership must also drive their chrome role and titlebar height before
+     first layout.
+     */
+    let chromeRole: TerminalPaneChromeRole =
+      commandsPanelActiveSessionIds.contains(session.sessionId) ? .commands : .workspace
+    session.titleBarView.setChromeRole(chromeRole)
+    session.borderView.setChromeRole(chromeRole)
+    let titleBarHeight = min(titleBarHeight(for: session.sessionId), max(paneRect.height, 0))
     mountWebPaneContainer(for: session)
     session.containerView.frame = paneRect
     session.containerView.isHidden = false
@@ -16570,9 +16610,10 @@ private final class TerminalTitleBarActionButton: NSButton {
   private static let normalTintColor = NSColor(calibratedWhite: 0.88, alpha: 0.72)
   private static let hoverTintColor = NSColor(calibratedWhite: 0.96, alpha: 0.88)
   private static let activeTintColor = NSColor(calibratedWhite: 1.0, alpha: 0.96)
-  private static let hoverBackgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.11).cgColor
-  private static let activeBackgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.18).cgColor
+  fileprivate static let hoverBackgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.11).cgColor
+  fileprivate static let activeBackgroundColor = NSColor(calibratedWhite: 1.0, alpha: 0.18).cgColor
 
+  private let leftBorderLayer = CALayer()
   private var hoverTrackingArea: NSTrackingArea?
   private var baseToolTip: String?
   private var isOverlayInteractionSuppressed = false
@@ -16587,6 +16628,25 @@ private final class TerminalTitleBarActionButton: NSButton {
     didSet { updateActionChrome() }
   }
   var chromeCornerRadius: CGFloat = 0 {
+    didSet { needsLayout = true }
+  }
+  var normalBackgroundColor: CGColor? {
+    didSet { updateActionChrome() }
+  }
+  var hoverBackgroundColor: CGColor = TerminalTitleBarActionButton.hoverBackgroundColor {
+    didSet { updateActionChrome() }
+  }
+  var activeBackgroundColor: CGColor = TerminalTitleBarActionButton.activeBackgroundColor {
+    didSet { updateActionChrome() }
+  }
+  var leftBorderColor: CGColor? {
+    didSet {
+      leftBorderLayer.backgroundColor = leftBorderColor
+      leftBorderLayer.isHidden = leftBorderColor == nil
+      needsLayout = true
+    }
+  }
+  var leftBorderWidth: CGFloat = 0 {
     didSet { needsLayout = true }
   }
 
@@ -16622,6 +16682,8 @@ private final class TerminalTitleBarActionButton: NSButton {
     wantsLayer = true
     layer?.backgroundColor = NSColor.clear.cgColor
     layer?.masksToBounds = true
+    leftBorderLayer.isHidden = true
+    layer?.addSublayer(leftBorderLayer)
     imageScaling = .scaleProportionallyDown
     contentTintColor = Self.normalTintColor
   }
@@ -16656,6 +16718,8 @@ private final class TerminalTitleBarActionButton: NSButton {
   override func layout() {
     super.layout()
     layer?.cornerRadius = chromeCornerRadius
+    let borderWidth = max(0, leftBorderWidth)
+    leftBorderLayer.frame = CGRect(x: 0, y: 0, width: borderWidth, height: bounds.height)
   }
 
   override func updateTrackingAreas() {
@@ -16696,18 +16760,18 @@ private final class TerminalTitleBarActionButton: NSButton {
   private func updateActionChrome() {
     guard isEnabled else {
       contentTintColor = Self.normalTintColor.withAlphaComponent(0.4)
-      layer?.backgroundColor = NSColor.clear.cgColor
+      layer?.backgroundColor = normalBackgroundColor ?? NSColor.clear.cgColor
       return
     }
     if isHighlighted {
       contentTintColor = Self.activeTintColor
-      layer?.backgroundColor = Self.activeBackgroundColor
+      layer?.backgroundColor = activeBackgroundColor
     } else if isPointerInside {
       contentTintColor = Self.hoverTintColor
-      layer?.backgroundColor = Self.hoverBackgroundColor
+      layer?.backgroundColor = hoverBackgroundColor
     } else {
       contentTintColor = Self.normalTintColor
-      layer?.backgroundColor = NSColor.clear.cgColor
+      layer?.backgroundColor = normalBackgroundColor ?? NSColor.clear.cgColor
     }
   }
 }
@@ -17816,6 +17880,41 @@ private final class TerminalSessionTitleBarView: NSView {
   private static let activeTabRevealScrollMargin: CGFloat = 12
   private static let activeTabRevealMinimumVisibleWidth: CGFloat = 60
   /**
+   CDXC:PaneTabs 2026-05-31-05:51:
+   Main workspace native tab-bar actions must visually match the React titlebar
+   buttons above them: 42px-wide controls, 34px height, 12px horizontal icon
+   padding, #0e0e0e normal background, and a 1px #252525 left separator.
+
+   CDXC:PaneTabs 2026-05-31-06:17:
+   The native tab-bar action glyphs should be 1px larger while preserving the
+   existing button width, height, padding, background, and separator styling.
+
+   CDXC:PaneTabs 2026-05-31-06:26:
+   The 17pt native tab-bar action glyphs were visually too large. Reduce them
+   by half a point while keeping the same button chrome and layout.
+
+   CDXC:PaneTabs 2026-05-31-06:32:
+   The native tab-bar action glyphs should settle at 16pt exactly after the
+   half-point reduction still read too large.
+   */
+  private static let workspaceTabBarActionButtonWidth: CGFloat = 42
+  private static let workspaceTabBarActionButtonHeight: CGFloat = 34
+  private static let workspaceTabBarActionIconPointSize: CGFloat = 16
+  private static let workspaceTabBarActionBackgroundColor = NSColor(
+    calibratedRed: 0x0E / 255,
+    green: 0x0E / 255,
+    blue: 0x0E / 255,
+    alpha: 1
+  ).cgColor
+  private static let workspaceTabBarActionHoverBackgroundColor = NSColor(calibratedWhite: 0x21 / 255, alpha: 1).cgColor
+  private static let workspaceTabBarActionActiveBackgroundColor = NSColor(calibratedWhite: 0x39 / 255, alpha: 1).cgColor
+  private static let workspaceTabBarActionLeftBorderColor = NSColor(
+    calibratedRed: 0x25 / 255,
+    green: 0x25 / 255,
+    blue: 0x25 / 255,
+    alpha: 1
+  ).cgColor
+  /**
    CDXC:PaneTabs 2026-05-14-09:23:
    Non-command pane tabs need 2px more vertical reach above and below the old tab strip. Command pane tabs keep their existing full command-titlebar height.
 
@@ -17841,10 +17940,14 @@ private final class TerminalSessionTitleBarView: NSView {
    Tab activation should preserve the user's current tab-strip position when the selected tab is already visibly usable. Share horizontal offsets across title-bar instances in the same tab group, and reveal only when the active tab is offscreen or clipped down below 60px of visible width so visible tab clicks and visible session switches do not move tabs around.
 
    CDXC:PaneTabs 2026-05-30-06:53:
-   Workspace tab buttons should consume the full non-command titlebar height so
-   the native tab bar has no top or bottom gap.
+   Workspace tab buttons were updated to consume the full non-command titlebar
+   height so the native tab bar had no top or bottom gap.
+
+   CDXC:PaneTabs 2026-05-31-02:17:
+   Main workspace tab buttons must shrink with the 36pt native tab bar instead
+   of preserving the older 42pt control height.
    */
-  private static let workspaceTabButtonHeight: CGFloat = 42
+  private static let workspaceTabButtonHeight: CGFloat = 36
   private static var tabScrollOffsetByGroupSignature: [String: CGFloat] = [:]
 
   private let faviconImageView = NSImageView(frame: .zero)
@@ -17853,6 +17956,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private let tabClipView = NSView(frame: .zero)
   private let tabContentView = NSView(frame: .zero)
   private let tabAddButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
+  private let tabBrowserButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private let commandCollapsedTrailingBackgroundView = NSView(frame: .zero)
   private let bottomBorderView = NSView(frame: .zero)
   private let actionMenuButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
@@ -17960,6 +18064,7 @@ private final class TerminalSessionTitleBarView: NSView {
       button.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     }
     tabAddButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
+    tabBrowserButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     actionMenuButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     projectEditorCompanionCloseButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     for item in actionButtons {
@@ -18219,6 +18324,7 @@ private final class TerminalSessionTitleBarView: NSView {
     tabContentView.wantsLayer = true
     tabClipView.addSubview(tabContentView)
     configureTabAddButton()
+    configureTabBrowserButton()
 
     commandCollapsedTrailingBackgroundView.wantsLayer = true
     commandCollapsedTrailingBackgroundView.layer?.backgroundColor =
@@ -18233,6 +18339,7 @@ private final class TerminalSessionTitleBarView: NSView {
     addSubview(activityIndicatorView)
     addSubview(tabClipView)
     addSubview(tabAddButton)
+    addSubview(tabBrowserButton)
     addSubview(commandCollapsedTrailingBackgroundView, positioned: .below, relativeTo: tabClipView)
     /**
      CDXC:PaneTabs 2026-05-12-12:44
@@ -18416,6 +18523,9 @@ private final class TerminalSessionTitleBarView: NSView {
        use performTitleBarAction(_:).
        */
       return actionButton
+    }
+    if let browserButton = tabBrowserButton(at: point) {
+      return browserButton
     }
     if let addButton = tabAddButton(at: point) {
       return addButton
@@ -18671,6 +18781,17 @@ private final class TerminalSessionTitleBarView: NSView {
     return tabAddButton
   }
 
+  private func tabBrowserButton(at point: NSPoint) -> NSButton? {
+    guard tabBrowserButton.frame.contains(point),
+      !tabBrowserButton.isHidden,
+      tabBrowserButton.isEnabled,
+      tabBrowserButton.alphaValue > 0
+    else {
+      return nil
+    }
+    return tabBrowserButton
+  }
+
   private func isEmptyTitleBarDoubleClickPoint(_ point: NSPoint) -> Bool {
     /**
      CDXC:PaneTabs 2026-05-11-11:47
@@ -18689,6 +18810,9 @@ private final class TerminalSessionTitleBarView: NSView {
       return true
     }
     if tabAddButton(at: point) != nil {
+      return false
+    }
+    if tabBrowserButton(at: point) != nil {
       return false
     }
     if tabInlineAction(at: point) != nil || tabSessionId(at: point) != nil {
@@ -18810,6 +18934,10 @@ private final class TerminalSessionTitleBarView: NSView {
   override func layout() {
     super.layout()
     let isCommandChrome = chromeRole == .commands
+    let isWorkspaceTabbedChrome = !isCommandChrome && !tabItems.isEmpty
+    setWorkspaceTabBarActionChrome(for: tabAddButton, enabled: isWorkspaceTabbedChrome)
+    setWorkspaceTabBarActionChrome(for: tabBrowserButton, enabled: isWorkspaceTabbedChrome)
+    setWorkspaceTabBarActionChrome(for: actionMenuButton, enabled: isWorkspaceTabbedChrome)
     let insetX: CGFloat = isCommandChrome ? 0 : 8
     /**
      CDXC:PaneTabs 2026-05-30-06:47:
@@ -18860,9 +18988,10 @@ private final class TerminalSessionTitleBarView: NSView {
      Action NSButton frames are the real hit targets. Use larger stable frames
      with centered icons instead of compact visual buttons plus titlebar-level
      invisible hit expansion.
-     */
+    */
     var nextLayoutHiddenActions = Set<TerminalTitleBarAction>()
     let nonCloseActions = actionButtons.map(\.action).filter { $0 != .close }
+    let collapsedMenuEligibleActions = nonCloseActions.filter { $0 != .newTerminal && $0 != .openBrowser }
     /**
      CDXC:PaneTitleBarUX 2026-05-11-11:47
      Narrow tabbed panes must keep native tabs clickable and draggable. Action
@@ -18878,11 +19007,16 @@ private final class TerminalSessionTitleBarView: NSView {
      width. Keep the full action-strip layout branch intact for future reuse, but
      route current layouts through the compact menu so panes do not switch back
      to the expanded icon cluster on wider widths.
+
+     CDXC:PaneTabs 2026-05-31-05:51:
+     New Terminal and Open Browser Pane are first-class native tab-bar buttons,
+     so the overflow menu must start with split/session actions and avoid the
+     extra separator that used to sit under Open Browser Pane.
      */
     let shouldCollapseActionMenu =
       !showsProjectEditorCompanionControls
       && !Self.isCommandsPanelChromeActionSet(actionButtons.map(\.action))
-      && !nonCloseActions.isEmpty
+      && !collapsedMenuEligibleActions.isEmpty
     let minimumContentWidthForCollapsedControls =
       tabItems.isEmpty ? 0 : Self.minimumVisibleTabViewportWidth
     let hasCloseAction = actionButtons.contains { $0.action == .close }
@@ -18914,7 +19048,7 @@ private final class TerminalSessionTitleBarView: NSView {
         separator.frame = .zero
       }
     } else if shouldCollapseActionMenu {
-      collapsedActionMenuActions = canReserveCollapsedActionMenu ? nonCloseActions : []
+      collapsedActionMenuActions = canReserveCollapsedActionMenu ? collapsedMenuEligibleActions : []
       for item in actionButtons {
         if item.action == .close && canReserveCloseActionInCollapsedLayout {
           trailingX -= buttonSize
@@ -19011,29 +19145,62 @@ private final class TerminalSessionTitleBarView: NSView {
       activityIndicatorView.isHidden = true
       activityIndicatorView.frame = .zero
       tabClipView.isHidden = false
-      let tabAreaMaxX = max(tabStripLeadingInset, trailingX - tabViewportTrailingGap)
+      let canUseWorkspacePinnedControls = isWorkspaceTabbedChrome && showsTabAddButton
+      let workspacePinnedControlCount =
+        canUseWorkspacePinnedControls
+        ? 2 + (shouldShowCollapsedActionMenu ? 1 : 0)
+        : 0
+      let workspacePinnedControlsWidth =
+        CGFloat(workspacePinnedControlCount) * Self.workspaceTabBarActionButtonWidth
+      let canShowWorkspacePinnedControls =
+        workspacePinnedControlCount > 0
+        && (bounds.width - tabStripLeadingInset
+          >= Self.minimumVisibleTabViewportWidthWithDoubleClickTarget + workspacePinnedControlsWidth)
+      let workspacePinnedControlsMinX =
+        canShowWorkspacePinnedControls
+        ? max(tabStripLeadingInset, bounds.width - workspacePinnedControlsWidth)
+        : bounds.width
+      let tabAreaMaxX = canShowWorkspacePinnedControls
+        ? workspacePinnedControlsMinX
+        : max(tabStripLeadingInset, trailingX - tabViewportTrailingGap)
       let canShowTabAddButton =
-        showsTabAddButton
-        && (tabAreaMaxX - tabStripLeadingInset
-          >= Self.minimumVisibleTabViewportWidthWithDoubleClickTarget + tabAddButtonGap + tabAddButtonSize)
-      let tabViewportMaxX =
-        canShowTabAddButton
-        ? max(tabStripLeadingInset, tabAreaMaxX - tabAddButtonGap - tabAddButtonSize)
-        : reserveDoubleClickNewTerminalTarget(from: tabStripLeadingInset, to: tabAreaMaxX)
-      if canShowTabAddButton {
+        canShowWorkspacePinnedControls
+        || (showsTabAddButton
+          && (tabAreaMaxX - tabStripLeadingInset
+            >= Self.minimumVisibleTabViewportWidthWithDoubleClickTarget + tabAddButtonGap + tabAddButtonSize))
+      let tabViewportMaxX: CGFloat
+      if canShowWorkspacePinnedControls {
+        tabViewportMaxX = max(tabStripLeadingInset, tabAreaMaxX)
         doubleClickNewTerminalFrame = .zero
+      } else if canShowTabAddButton {
+        tabViewportMaxX = max(tabStripLeadingInset, tabAreaMaxX - tabAddButtonGap - tabAddButtonSize)
+        doubleClickNewTerminalFrame = .zero
+      } else {
+        tabViewportMaxX = reserveDoubleClickNewTerminalTarget(from: tabStripLeadingInset, to: tabAreaMaxX)
       }
       layoutTabButtons(
         from: tabStripLeadingInset,
         to: tabViewportMaxX,
         centerY: tabCenterY,
         height: tabButtonHeight)
-      layoutTabAddButton(
-        maxX: tabAreaMaxX,
-        centerY: tabCenterY,
-        size: tabAddButtonSize,
-        gap: tabAddButtonGap,
-        isVisible: canShowTabAddButton)
+      if canShowWorkspacePinnedControls {
+        let workspaceActionCenterY = floor((bounds.height - Self.workspaceTabBarActionButtonHeight) / 2)
+        layoutWorkspaceTabBarActionButtons(
+          minX: workspacePinnedControlsMinX,
+          centerY: workspaceActionCenterY,
+          height: Self.workspaceTabBarActionButtonHeight,
+          showsAddButton: true,
+          showsBrowserButton: true,
+          showsMenuButton: shouldShowCollapsedActionMenu)
+      } else {
+        hideTabBrowserButton()
+        layoutTabAddButton(
+          maxX: tabAreaMaxX,
+          centerY: tabCenterY,
+          size: tabAddButtonSize,
+          gap: tabAddButtonGap,
+          isVisible: canShowTabAddButton)
+      }
       logPaneTabLayoutGeometryIfNeeded(
         canShowTabAddButton: canShowTabAddButton,
         tabAreaMaxX: tabAreaMaxX,
@@ -19071,6 +19238,7 @@ private final class TerminalSessionTitleBarView: NSView {
     tabContentWidth = 0
     tabScrollOffsetX = 0
     hideTabAddButton()
+    hideTabBrowserButton()
     for button in tabButtons {
       button.frame = .zero
     }
@@ -19312,6 +19480,88 @@ private final class TerminalSessionTitleBarView: NSView {
     tabAddButton.isEnabled = true
   }
 
+  private func layoutWorkspaceTabBarActionButtons(
+    minX: CGFloat,
+    centerY: CGFloat,
+    height: CGFloat,
+    showsAddButton: Bool,
+    showsBrowserButton: Bool,
+    showsMenuButton: Bool
+  ) {
+    /*
+     CDXC:PaneTabs 2026-05-31-05:51:
+     Main workspace native tab-bar actions are a right-stuck control group.
+     Keep the visible order as New Terminal, New Browser Tab, Overflow menu so
+     the tab run scrolls underneath a stable React-titlebar-matched cluster.
+     */
+    var nextX = minX
+    let buttonWidth = Self.workspaceTabBarActionButtonWidth
+    if showsAddButton {
+      tabAddButton.chromeCornerRadius = 0
+      tabAddButton.frame = CGRect(x: nextX, y: centerY, width: buttonWidth, height: height)
+      tabAddButton.isHidden = false
+      tabAddButton.alphaValue = 1
+      tabAddButton.isEnabled = true
+      nextX += buttonWidth
+    } else {
+      hideTabAddButton()
+    }
+    if showsBrowserButton {
+      tabBrowserButton.chromeCornerRadius = 0
+      tabBrowserButton.frame = CGRect(x: nextX, y: centerY, width: buttonWidth, height: height)
+      tabBrowserButton.isHidden = false
+      tabBrowserButton.alphaValue = 1
+      tabBrowserButton.isEnabled = true
+      nextX += buttonWidth
+    } else {
+      hideTabBrowserButton()
+    }
+    if showsMenuButton {
+      actionMenuButton.chromeCornerRadius = 0
+      actionMenuButton.frame = CGRect(x: nextX, y: centerY, width: buttonWidth, height: height)
+      actionMenuButton.isHidden = false
+      actionMenuButton.alphaValue = 1
+      actionMenuButton.isEnabled = true
+    } else {
+      actionMenuButton.frame = .zero
+      actionMenuButton.isHidden = true
+      actionMenuButton.alphaValue = 0
+      actionMenuButton.isEnabled = false
+    }
+  }
+
+  private func setWorkspaceTabBarActionChrome(
+    for button: TerminalTitleBarActionButton,
+    enabled: Bool
+  ) {
+    let isAlreadyEnabled = button.normalBackgroundColor != nil && button.leftBorderWidth > 0
+    guard isAlreadyEnabled != enabled else {
+      return
+    }
+    if enabled {
+      button.normalBackgroundColor = Self.workspaceTabBarActionBackgroundColor
+      button.hoverBackgroundColor = Self.workspaceTabBarActionHoverBackgroundColor
+      button.activeBackgroundColor = Self.workspaceTabBarActionActiveBackgroundColor
+      button.leftBorderColor = Self.workspaceTabBarActionLeftBorderColor
+      button.leftBorderWidth = 1
+    } else {
+      button.normalBackgroundColor = nil
+      button.hoverBackgroundColor = TerminalTitleBarActionButton.hoverBackgroundColor
+      button.activeBackgroundColor = TerminalTitleBarActionButton.activeBackgroundColor
+      button.leftBorderColor = nil
+      button.leftBorderWidth = 0
+    }
+    if button === actionMenuButton {
+      button.image = enabled
+        ? Self.workspaceTabBarActionImage(
+          systemSymbolName: "line.3.horizontal",
+          accessibilityDescription: "Pane Actions")
+        : NSImage(
+          systemSymbolName: "line.3.horizontal",
+          accessibilityDescription: "Pane Actions")
+    }
+  }
+
   private func logPaneTabLayoutGeometryIfNeeded(
     canShowTabAddButton: Bool,
     tabAreaMaxX: CGFloat,
@@ -19411,6 +19661,13 @@ private final class TerminalSessionTitleBarView: NSView {
     tabAddButton.isHidden = true
     tabAddButton.alphaValue = 0
     tabAddButton.isEnabled = false
+  }
+
+  private func hideTabBrowserButton() {
+    tabBrowserButton.frame = .zero
+    tabBrowserButton.isHidden = true
+    tabBrowserButton.alphaValue = 0
+    tabBrowserButton.isEnabled = false
   }
 
   func setTitle(_ title: String) {
@@ -19542,6 +19799,13 @@ private final class TerminalSessionTitleBarView: NSView {
     onAction?(.newTerminal)
   }
 
+  @objc private func performTabBrowserButton(_ sender: NSButton) {
+    guard showsTabAddButton, sender === tabBrowserButton, !tabBrowserButton.isHidden, tabBrowserButton.isEnabled else {
+      return
+    }
+    onAction?(.openBrowser)
+  }
+
   @objc private func performActionMenuButton(_ sender: NSButton) {
     showCollapsedActionMenu(from: sender, source: "buttonAction")
   }
@@ -19550,10 +19814,15 @@ private final class TerminalSessionTitleBarView: NSView {
     /**
      CDXC:PaneTitleBarUX 2026-05-15-17:54:
      The collapsed pane hamburger menu must not include New Terminal. Terminal
-     creation remains available from the tab-bar plus button, so the menu starts
-     with Open Browser Pane and keeps the remaining pane/session actions.
+     creation remains available from the tab-bar plus button, so the menu keeps
+     the remaining pane/session actions.
+
+     CDXC:PaneTabs 2026-05-31-05:51:
+     Open Browser Pane moved out of the overflow menu and into the right-stuck
+     native tab-bar browser button, which also removes the old separator below
+     the browser menu item.
      */
-    let actions = collapsedActionMenuActions.filter { $0 != .close && $0 != .newTerminal }
+    let actions = collapsedActionMenuActions.filter { $0 != .close && $0 != .newTerminal && $0 != .openBrowser }
     logCollapsedActionMenuEvent(
       "nativePaneActionMenu.openRequested",
       point: actionMenuButton.frame.origin,
@@ -19658,13 +19927,42 @@ private final class TerminalSessionTitleBarView: NSView {
      command-surface terminal creation from the source session.
      */
     tabAddButton.sendAction(on: [.leftMouseDown])
-    if let image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Terminal") {
+    if let image = Self.workspaceTabBarActionImage(
+      systemSymbolName: "plus",
+      accessibilityDescription: "New Terminal")
+    {
       tabAddButton.image = image
     } else {
       tabAddButton.title = "+"
       tabAddButton.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
     }
     hideTabAddButton()
+  }
+
+  private func configureTabBrowserButton() {
+    tabBrowserButton.bezelStyle = .texturedRounded
+    tabBrowserButton.isBordered = false
+    tabBrowserButton.imagePosition = .imageOnly
+    tabBrowserButton.toolTip = "New Browser Tab"
+    tabBrowserButton.target = self
+    tabBrowserButton.action = #selector(performTabBrowserButton(_:))
+    /*
+     CDXC:PaneTabs 2026-05-31-05:51:
+     The main workspace native tab bar needs a fixed browser creation button
+     beside New Terminal so Open Browser Pane no longer has to live in the
+     overflow menu.
+    */
+    tabBrowserButton.sendAction(on: [.leftMouseDown])
+    if let image = Self.workspaceTabBarActionImage(
+      systemSymbolName: "globe",
+      accessibilityDescription: "New Browser Tab")
+    {
+      tabBrowserButton.image = image
+    } else {
+      tabBrowserButton.title = "B"
+      tabBrowserButton.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+    }
+    hideTabBrowserButton()
   }
 
   private func configureActionMenuButton() {
@@ -19687,6 +19985,22 @@ private final class TerminalSessionTitleBarView: NSView {
     actionMenuButton.isHidden = true
     actionMenuButton.alphaValue = 0
     addSubview(actionMenuButton)
+  }
+
+  private static func workspaceTabBarActionImage(
+    systemSymbolName: String,
+    accessibilityDescription: String
+  ) -> NSImage? {
+    guard let image = NSImage(
+      systemSymbolName: systemSymbolName,
+      accessibilityDescription: accessibilityDescription)
+    else {
+      return nil
+    }
+    let configuration = NSImage.SymbolConfiguration(
+      pointSize: workspaceTabBarActionIconPointSize,
+      weight: .regular)
+    return image.withSymbolConfiguration(configuration) ?? image
   }
 
   private func configureProjectEditorCompanionButton(
@@ -20953,7 +21267,7 @@ final class WebPaneHostView: NSView, NSTextFieldDelegate {
     NSLog(
       "Browser feedback toolbar action: %@ url=%@",
       browserFeedbackTool.rawValue,
-      currentURLString() ?? "<nil>")
+      NativeLogPrivacy.sanitizeLogLine(currentURLString() ?? "<nil>"))
     logBrowserToolbarActionDiagnostics(action: action, phase: "before", details: [
       "currentURL": currentURLString() ?? NSNull(),
       "feedbackTool": browserFeedbackTool.rawValue,
