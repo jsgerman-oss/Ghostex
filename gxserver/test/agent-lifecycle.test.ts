@@ -78,6 +78,37 @@ test("resume and fallback command construction follows current sidebar rules", (
   assert.match(startupText ?? "", /__ghostex_restore_resume_primary/);
 });
 
+test("temporary Search by Text titles are not trusted resume fallbacks", () => {
+  const project = projectFixture();
+  const searchSession = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentCommand: "codex",
+      titleSource: "user",
+    },
+    title: "Search by Text",
+  });
+
+  assert.equal(buildAgentResumeCommand(project, searchSession), undefined);
+  assert.equal(buildAgentResumeFallbackCommand(project, searchSession), undefined);
+  assert.equal(buildAgentResumeStartupText(project, searchSession), undefined);
+
+  const identifiedSession = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentCommand: "codex",
+      agentSessionId: "019e7c39-7ba7-7ac3-b79c-02757e299516",
+      titleSource: "placeholder",
+    },
+    title: "Search by Text",
+  });
+  assert.equal(
+    buildAgentResumeCommand(project, identifiedSession),
+    'codex resume "019e7c39-7ba7-7ac3-b79c-02757e299516"',
+  );
+  assert.equal(buildAgentResumeFallbackCommand(project, identifiedSession), undefined);
+});
+
 test("agent activity transitions suppress bootstrap noise and require real working before attention", () => {
   const launched = applyAgentActivityTransition({
     event: "launch",
@@ -121,6 +152,44 @@ test("agent activity transitions suppress bootstrap noise and require real worki
     previous: working,
   });
   assert.equal(attention.activity, "attention");
+});
+
+test("Codex action-required title blink remains one attention transition", () => {
+  const working = applyAgentActivityTransition({
+    activity: "working",
+    agentId: "codex",
+    nowIso: "2026-05-30T12:00:14.000Z",
+    nowMs: Date.parse("2026-05-30T12:00:14.000Z"),
+  });
+
+  const attention = applyAgentActivityTransition({
+    agentId: "codex",
+    nowIso: "2026-05-30T12:00:20.000Z",
+    nowMs: Date.parse("2026-05-30T12:00:20.000Z"),
+    previous: working,
+    title: "[ ! ] Action Required",
+  });
+  assert.equal(attention.activity, "attention");
+  assert.equal(attention.lastChangedAt, "2026-05-30T12:00:20.000Z");
+
+  const dotFrame = applyAgentActivityTransition({
+    agentId: "codex",
+    nowIso: "2026-05-30T12:00:21.000Z",
+    nowMs: Date.parse("2026-05-30T12:00:21.000Z"),
+    previous: attention,
+    title: "[ . ] Action Required",
+  });
+  assert.equal(dotFrame.activity, "attention");
+  assert.equal(dotFrame.lastChangedAt, attention.lastChangedAt);
+
+  const nonCodex = applyAgentActivityTransition({
+    agentId: "claude",
+    nowIso: "2026-05-30T12:00:20.000Z",
+    nowMs: Date.parse("2026-05-30T12:00:20.000Z"),
+    previous: working,
+    title: "[ . ] Action Required",
+  });
+  assert.equal(nonCodex.activity, "idle");
 });
 
 function projectFixture(): GxserverProjectDomainState {

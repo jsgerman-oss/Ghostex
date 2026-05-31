@@ -8,6 +8,7 @@ import type {
   GxserverSessionDomainState,
   GxserverUpdateAgentActivityParams,
 } from "../protocol/index.js";
+import { isRejectedResumeTitle as isRejectedSessionTitle } from "./session-title/index.js";
 
 export type GxserverAgentAcceptAllMode = "inherit" | "enabled" | "disabled";
 
@@ -127,6 +128,7 @@ const GROK_PERMISSION_MODE_FLAG = "--permission-mode";
 const GROK_BYPASS_PERMISSIONS_VALUE = "bypassPermissions";
 export const GXSERVER_INITIAL_ACTIVITY_SUPPRESSION_MS = 12_000;
 export const GXSERVER_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
+const CODEX_ACTION_REQUIRED_TITLE_PATTERN = /^\[\s*[!.]\s*\]\s*Action Required\b/u;
 
 /*
 CDXC:GxserverAgentLifecycle 2026-05-30-15:04:
@@ -356,7 +358,8 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
       lastChangedAt: nowIso,
     };
   }
-  const requested = input.activity ?? detectActivityFromTitle(input.title);
+  const requested = input.activity ?? detectActivityFromTitle(input.title, input.agentId);
+  const isCodexActionRequiredTitle = matchesCodexActionRequiredTitle(input.title, input.agentId);
   if (input.event === "acknowledge") {
     return {
       ...previous,
@@ -375,6 +378,19 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     };
   }
   if (requested === "attention") {
+    /*
+    CDXC:CodexAttention 2026-05-31-14:36:
+    Codex action-required terminal titles blink between `[ ! ] Action Required` and `[ . ] Action Required`. gxserver must classify both frames as one Codex-only attention state so Ghostex posts a single attention notification instead of treating the dot frame as idle or a fresh completion.
+    */
+    if (isCodexActionRequiredTitle && previous.activity === "attention") {
+      return previous;
+    }
+    if (isCodexActionRequiredTitle && previous.isAcknowledged) {
+      return {
+        ...previous,
+        activity: "idle",
+      };
+    }
     const workingStartedMs = previous.workingStartedAt ? Date.parse(previous.workingStartedAt) : Number.NaN;
     if (!Number.isFinite(workingStartedMs) || nowMs - workingStartedMs < GXSERVER_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS) {
       return {
@@ -411,6 +427,7 @@ export function updateSessionActivitySettings(
   const activity = applyAgentActivityTransition({
     activity: normalizeActivity(params.activity),
     event: normalizeActivityEvent(params.event),
+    agentId: session.agentId,
     nowIso: new Date(nowMs).toISOString(),
     nowMs,
     previous,
@@ -628,21 +645,10 @@ function getTrustedResumeTitle(input: GxserverAgentResumeInput): string | undefi
     return undefined;
   }
   const title = normalizeText(input.title);
-  if (!title || isRejectedResumeTitle(title)) {
+  if (!title || isRejectedSessionTitle(title)) {
     return undefined;
   }
   return title;
-}
-
-function isRejectedResumeTitle(title: string): boolean {
-  const normalized = title.trim();
-  const lower = normalized.toLowerCase();
-  return (
-    normalized === "ð^ß^Ñ»" ||
-    /[\u0000-\u001f\u007f]/u.test(normalized) ||
-    normalizeDefaultAgentId(lower) !== undefined ||
-    normalizeDefaultAgentId(getCommandExecutableName(lower) ?? "") !== undefined
-  );
 }
 
 function getExactAgentSessionReference(agentId: RestorableAgentId, input: GxserverAgentResumeInput): string | undefined {
@@ -802,9 +808,15 @@ sys.exit(1)
 `;
 }
 
-function detectActivityFromTitle(title: string | undefined): GxserverAgentActivityState["activity"] | undefined {
+function detectActivityFromTitle(
+  title: string | undefined,
+  agentId?: string,
+): GxserverAgentActivityState["activity"] | undefined {
   if (!title) {
     return undefined;
+  }
+  if (matchesCodexActionRequiredTitle(title, agentId)) {
+    return "attention";
   }
   if (/⏳ Working|[⠐⠂⠸⠴⠼⠧⠦⠏⠋⠇⠙⠹✦🤖]/u.test(title)) {
     return "working";
@@ -816,6 +828,10 @@ function detectActivityFromTitle(title: string | undefined): GxserverAgentActivi
     return "idle";
   }
   return undefined;
+}
+
+function matchesCodexActionRequiredTitle(title: string | undefined, agentId?: string): boolean {
+  return normalizeDefaultAgentId(agentId) === "codex" && title !== undefined && CODEX_ACTION_REQUIRED_TITLE_PATTERN.test(title);
 }
 
 function normalizeAgentActivityState(value: unknown, fallback: Pick<GxserverAgentActivityState, "activity">): GxserverAgentActivityState {
