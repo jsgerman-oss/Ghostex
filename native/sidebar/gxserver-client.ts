@@ -221,6 +221,26 @@ export function createNativeSidebarGxserverClient(
     return session;
   }
 
+  function addProjectPathSync(params: { name?: string; path: string }): GxserverProjectDomainState {
+    /*
+    CDXC:GxserverProjectIdentity 2026-05-31-17:47:
+    Project rows shown in the native sidebar must be registered through gxserver before any zmx-backed terminal is created. The daemon returns the canonical P-id, keeping macOS aligned with CLI/TUI/mobile clients instead of persisting sidebar-minted `project-*` ids into shared session calls.
+    */
+    const { project } = rpcSync<{ project: GxserverProjectDomainState }>(
+      "/api/addProjectPath",
+      params as unknown as Record<string, unknown>,
+    );
+    return project;
+  }
+
+  async function addProjectPath(params: { name?: string; path: string }): Promise<GxserverProjectDomainState> {
+    const { project } = await rpc<{ project: GxserverProjectDomainState }>(
+      "/api/addProjectPath",
+      params as unknown as Record<string, unknown>,
+    );
+    return project;
+  }
+
   async function probeSessionProvider(
     params: Pick<GxserverAttachSessionMetadataParams, "projectId" | "sessionId">,
   ): Promise<GxserverSessionProviderProbeResponse> {
@@ -250,6 +270,8 @@ export function createNativeSidebarGxserverClient(
   }
 
   return {
+    addProjectPath,
+    addProjectPathSync,
     applyNativeStatus,
     createTerminalSessionSync,
     fetchAttachSessionMetadata,
