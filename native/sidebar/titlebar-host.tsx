@@ -2033,24 +2033,28 @@ function App() {
     projectState.editorIsOpen &&
     !projectState.editorIsSleeping &&
     projectState.projectEditorCompanionPaneHidden;
+  /*
+   * CDXC:TitlebarModeTabs 2026-05-31-12:00:
+   * macOS titlebar mode switcher labels use title case (Agents, Source, GitHub, Kanban), not all-caps, so the segmented control reads like navigation chrome rather than shouting labels.
+   */
   const titlebarModes = [
     {
-      label: "AGENTS",
+      label: "Agents",
       onSelect: openAgentsMode,
       value: "agents" as const,
     },
     {
-      label: "SOURCE",
+      label: "Source",
       onSelect: openCodeMode,
       value: "code" as const,
     },
     {
-      label: "GITHUB",
+      label: "GitHub",
       onSelect: openGitMode,
       value: "git" as const,
     },
     {
-      label: "KANBAN",
+      label: "Kanban",
       onSelect: openTasksMode,
       value: "tasks" as const,
     },
