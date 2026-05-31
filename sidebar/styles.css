@@ -614,7 +614,9 @@ button,
 
 .ghostex-settings-shadcn .first-launch-setup-discord-link {
   align-items: center;
+  align-self: center;
   background: var(--primary);
+  border-color: var(--primary);
   border-radius: 0;
   color: var(--primary-foreground);
   display: inline-flex;
@@ -623,10 +625,14 @@ button,
   gap: 0.5rem;
   justify-content: center;
   justify-self: center;
-  align-self: center;
   min-height: 2.75rem;
   padding: 0.75rem 1rem;
   text-decoration: none;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-discord-link:hover {
+  background: color-mix(in srgb, var(--primary) 88%, white 12%);
+  color: var(--primary-foreground);
 }
 
 .ghostex-settings-shadcn .first-launch-setup-discord-logo {
@@ -901,22 +907,23 @@ button,
   margin-top: 0.125rem;
 }
 
-.ghostex-settings-shadcn .first-launch-setup-mobile-benefits strong {
-  color: var(--foreground);
-  font-weight: 700;
+.ghostex-settings-shadcn .first-launch-setup-mobile-benefit-copy {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
 }
 
-.ghostex-settings-shadcn .first-launch-setup-mobile-benefits code {
+.ghostex-settings-shadcn .first-launch-setup-mobile-benefit-title {
   color: var(--foreground);
-  font-family:
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Monaco,
-    Consolas,
-    "Liberation Mono",
-    monospace;
+  font-size: 0.8125rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-mobile-benefit-text {
+  color: var(--muted-foreground);
   font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .ghostex-settings-shadcn .first-launch-setup-app-links {
@@ -925,10 +932,9 @@ button,
   gap: 0.625rem;
 }
 
-.ghostex-settings-shadcn .first-launch-setup-app-links a {
+.ghostex-settings-shadcn .first-launch-setup-app-link-button {
   align-items: center;
   background: var(--secondary);
-  border: 1px solid var(--border);
   border-radius: 0;
   color: var(--secondary-foreground);
   display: inline-flex;
@@ -937,7 +943,13 @@ button,
   gap: 0.375rem;
   min-height: 2.25rem;
   padding: 0.5rem 0.75rem;
-  text-decoration: none;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-mobile-download-note {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  margin: 0;
 }
 
 .ghostex-settings-shadcn .first-launch-setup-mobile-visual {
@@ -1248,11 +1260,50 @@ button,
   padding: 0.875rem;
 }
 
+.ghostex-settings-shadcn .first-launch-setup-guide-callout-heading {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-guide-callout-title {
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-guide-callout-subtitle {
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
 .ghostex-settings-shadcn .first-launch-setup-guide-callout p {
   color: var(--muted-foreground);
   font-size: 0.8125rem;
   line-height: 1.45;
   margin: 0;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-guide-examples {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  display: grid;
+  gap: 0.625rem;
+  padding: 0.875rem;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-guide-examples-title {
+  color: var(--foreground);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  margin: 0;
+  text-transform: uppercase;
 }
 
 .ghostex-settings-shadcn .first-launch-setup-guide-snippet {
@@ -1301,6 +1352,25 @@ button,
   justify-content: center;
   margin-top: 0.0625rem;
   width: 1.5rem;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-guide-list-copy {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-guide-list-title {
+  color: var(--foreground);
+  font-size: 0.8125rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.ghostex-settings-shadcn .first-launch-setup-guide-list-text {
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .ghostex-settings-shadcn .first-launch-setup-hooks-actions {

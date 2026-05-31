@@ -7,6 +7,11 @@ export const FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY = "ghostex-native-first-launch-
  * First launch setup reuses the Settings main tab with a filtered subset of
  * controls. Add setting keys to this list as product requirements specify which
  * options appear in the post-tips onboarding modal.
+ *
+ * CDXC:FirstLaunchPreferences 2026-05-31-07:10:
+ * ZMU-71: the first-time defaults step must include keepAwakePreventLidSleep
+ * ("Keep awake when lid is closed") alongside the other high-impact toggles on
+ * FirstLaunchPreferencesPage. Keep this list aligned with that page.
  */
 export type FirstLaunchSetupMainSettingKey =
   | keyof ghostexSettings
@@ -16,9 +21,18 @@ export type FirstLaunchSetupMainSettingKey =
   | "ghosttySettingsActions"
   | "sidebarSettingsPreset";
 
-export const FIRST_LAUNCH_SETUP_VISIBLE_MAIN_SETTINGS = new Set<FirstLaunchSetupMainSettingKey>([
+export const FIRST_LAUNCH_PREFERENCES_MAIN_SETTING_KEYS = [
+  "sidebarSettingsPreset",
+  "defaultPromptAgentId",
+  "keepAwakePreventLidSleep",
   "agentAcceptAllEnabled",
-]);
+  "showMacOSAttentionNotifications",
+  "completionBellEnabled",
+] as const satisfies readonly FirstLaunchSetupMainSettingKey[];
+
+export const FIRST_LAUNCH_SETUP_VISIBLE_MAIN_SETTINGS = new Set<FirstLaunchSetupMainSettingKey>(
+  FIRST_LAUNCH_PREFERENCES_MAIN_SETTING_KEYS,
+);
 
 export function isFirstLaunchSetupMainSettingVisible(
   settingKey: FirstLaunchSetupMainSettingKey,
