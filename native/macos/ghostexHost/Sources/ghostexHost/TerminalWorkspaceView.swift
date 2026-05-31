@@ -407,19 +407,55 @@ private let nativeSshConnectionEnvironmentKeys = [
 ]
 
 private func nativePromptEditorCommand(backend: String, customCommand: String? = nil) -> String {
-  if backend == "gte" {
-    return "gte"
-  }
   if backend == "custom" {
     let trimmed = customCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return trimmed.isEmpty ? "code --wait" : trimmed
   }
-  if let executablePath = Bundle.main.executableURL?.path,
-    !executablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-  {
-    return "\(nativeShellQuote(executablePath)) floating-monaco-editor"
+  return nativePromptEditorWrapperCommand()
+}
+
+private func nativePromptEditorWrapperCommand() -> String {
+  let wrapperURL = nativePromptEditorWrapperURL()
+  nativeEnsurePromptEditorWrapper(at: wrapperURL)
+  return wrapperURL.path
+}
+
+private func nativePromptEditorWrapperURL() -> URL {
+  GhostexAppStorage.sharedStateDirectory.appendingPathComponent(
+    "prompt-editor",
+    isDirectory: false
+  )
+}
+
+private func nativeEnsurePromptEditorWrapper(at wrapperURL: URL) {
+  /**
+   CDXC:PromptEditor 2026-05-31-11:58:
+   Ctrl+G prompt editing must expose EDITOR/VISUAL as a single executable path.
+   zehn and other editor callers execute EDITOR as argv[0], so command strings
+   such as `Ghostex floating-monaco-editor` fail before the CLI can choose
+   Monaco or gte.
+   */
+  let executablePath =
+    Bundle.main.executableURL?.path.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let launcher = executablePath.isEmpty ? "ghostex" : executablePath
+  let contents = """
+    #!/bin/zsh
+    # CDXC:PromptEditor 2026-05-31-11:58: EDITOR is a single executable wrapper; the Ghostex CLI decides Monaco vs gte from runtime client/session environment.
+    exec \(nativeShellQuote(launcher)) prompt-editor "$@"
+    """
+  do {
+    try FileManager.default.createDirectory(
+      at: wrapperURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try contents.write(to: wrapperURL, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: wrapperURL.path)
+  } catch {
+    NSLog("Failed to prepare prompt editor wrapper: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
+    nativeLogGtePromptEditor("prompt_editor_wrapper.prepare_failed", details: [
+      "error": error.localizedDescription
+    ])
   }
-  return "ghostex floating-monaco-editor"
 }
 
 private func nativePromptEditorBackend(from environment: [String: String]) -> String? {
@@ -480,7 +516,7 @@ private func nativeIsGhostexPromptEditorValue(
   else {
     return false
   }
-  if trimmed.contains("floating-monaco-editor") || trimmed.contains("floating-editor -- gte") {
+  if trimmed.contains("prompt-editor") || trimmed.contains("floating-monaco-editor") || trimmed.contains("floating-editor -- gte") {
     return true
   }
   if backend == "custom" {
@@ -637,6 +673,7 @@ private func nativeGhosttyFloatingEditorEnvironment(
     "ZDOTDIR",
     "GHOSTEX_ORIGINAL_ZDOTDIR",
     "GHOSTEX_PROMPT_EDITOR_BACKEND",
+    "GHOSTEX_PROMPT_EDITOR_CLIENT",
     "GHOSTEX_PROMPT_EDITING_ENABLED",
     "GHOSTEX_RICH_PROMPT_EDITING_WITH_GTE",
     "GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND",
@@ -682,6 +719,8 @@ private func nativeApplyGtePromptEditingEnvironment(_ environment: inout [String
   )
   environment["EDITOR"] = promptEditor
   environment["VISUAL"] = promptEditor
+  environment["GHOSTEX_PROMPT_EDITOR_BACKEND"] = promptEditorBackend
+  environment["GHOSTEX_PROMPT_EDITOR_CLIENT"] = "macos-app"
   environment["GHOSTEX_DEBUGGING_MODE"] = NativeDebugLogging.isEnabled ? "1" : "0"
   environment["GHOSTEX_GTE_PROMPT_EDITOR_LOG"] = nativeGtePromptEditorLogURL().path
   if let appVariant = ProcessInfo.processInfo.environment["GHOSTEX_APP_VARIANT"], !appVariant.isEmpty {
@@ -775,6 +814,7 @@ private func nativeGteZshStartupShim(
 
       # CDXC:PromptEditorBackend 2026-05-17-08:46: SSH logins without an explicit Ghostex prompt-editor backend keep their existing EDITOR/VISUAL instead of being rewritten to a stale local floating editor command.
       # CDXC:PromptEditorBackend 2026-05-25-11:23: SSH sessions use the already-resolved terminal-native prompt editor command, so explicit gte and Monaco-over-SSH both export gte instead of leaving Ctrl+G pointed at an unavailable floating overlay.
+      # CDXC:PromptEditor 2026-05-31-11:58: Native app terminals export a single prompt-editor wrapper path after user startup files, so prompt editor callers do not need shell command parsing and the wrapper can route macOS app requests to Monaco.
       export EDITOR=\(nativeShellQuote(promptEditorCommand))
       export VISUAL=\(nativeShellQuote(promptEditorCommand))
       if [ "${_ghostex_gte_debug}" = "1" ]; then
@@ -1823,10 +1863,10 @@ final class TerminalWorkspaceView: NSView {
    */
   private static let minimumCommandsPanelHeightRatio: CGFloat = 0.05
   private static let maximumCommandsPanelHeightRatio: CGFloat = 0.9
-  private static let defaultCommandsPanelHeightPoints: CGFloat = 125
+  private static let fallbackCommandsPanelDefaultHeightPoints: CGFloat = 125
   private static let defaultCommandsPanelReferenceWorkspaceHeight: CGFloat = 900
   private static let defaultCommandsPanelHeightRatio: CGFloat =
-    defaultCommandsPanelHeightPoints / defaultCommandsPanelReferenceWorkspaceHeight
+    fallbackCommandsPanelDefaultHeightPoints / defaultCommandsPanelReferenceWorkspaceHeight
   /**
    CDXC:ProjectEditorCompanion 2026-05-14-09:19:
    Embedded VS Code should open with the currently active terminal or T3 Code session visible as a simple left companion pane.
@@ -1876,6 +1916,8 @@ final class TerminalWorkspaceView: NSView {
   private var commandsPanelActiveSessionIds = Set<String>()
   private var commandsPanelFocusedSessionId: String?
   private var commandsPanelHeightRatio: CGFloat = TerminalWorkspaceView.defaultCommandsPanelHeightRatio
+  private var commandsPanelDefaultHeightPoints: CGFloat =
+    TerminalWorkspaceView.fallbackCommandsPanelDefaultHeightPoints
   private var commandsPanelIsVisible = false
   private var commandsPanelLayout: NativeTerminalLayout?
   private var commandsPanelMode: String = "pinned"
@@ -3730,6 +3772,13 @@ final class TerminalWorkspaceView: NSView {
       view.setDebugContext(ownerSessionId: command.projectId, paneKind: "projectEditorGit")
       view.setOverlayInteractionSuppressed(suppressNativeChromeInteractivity)
       view.setShowsTabAddButton(true)
+      /**
+       CDXC:GitProjectTabs 2026-05-31-07:30:
+       GitHub project tabs already expose a native + control that opens another
+       Git tab. Hide the workspace browser-tab button on that strip so users are
+       not offered a redundant globe action beside +.
+       */
+      view.setShowsTabBrowserButton(false)
       view.setAllowsTabClosing(true)
       view.onAction = { [weak self] action in
         guard action == .newTerminal else { return }
@@ -5372,6 +5421,12 @@ final class TerminalWorkspaceView: NSView {
      */
     commandsPanelFocusedSessionId =
       passiveResponderCommandSessionId ?? command.commandsPanelFocusedSessionId
+    if let defaultHeightPx = command.commandsPanelDefaultHeightPx,
+      defaultHeightPx.isFinite,
+      defaultHeightPx > 0
+    {
+      commandsPanelDefaultHeightPoints = CGFloat(defaultHeightPx)
+    }
     commandsPanelHeightRatio = clampedCommandsPanelHeightRatio(command.commandsPanelHeightRatio)
     commandsPanelIsVisible = command.commandsPanelIsVisible == true
     commandsPanelLayout = command.commandsPanelLayout
@@ -9198,7 +9253,7 @@ final class TerminalWorkspaceView: NSView {
      The default restore height is 125px of workspace height, clamped to the same 5%-90% ratio limits used during drag resize.
      */
     commandsPanelResizeDrag = nil
-    let defaultHeight = clampedCommandsPanelHeight(Self.defaultCommandsPanelHeightPoints)
+    let defaultHeight = clampedCommandsPanelHeight(commandsPanelDefaultHeightPoints)
     commandsPanelHeightRatio = Self.clampedCommandsPanelHeightRatio(
       Double(defaultHeight / max(bounds.height, 1)))
     needsLayout = true
@@ -11016,11 +11071,22 @@ final class TerminalWorkspaceView: NSView {
      titlebar. Apply the role from command-panel ownership in the frame path so
      the first paint uses 26px command tabs instead of a 36px workspace tab
      clipped inside the command tab bar.
+
+     CDXC:CommandsPanel 2026-05-31-07:34:
+     The command-pane titlebar can be laid out before React's
+     sessionTitleBarActions map reaches the freshly created AppKit titlebar.
+     Apply the command-panel action set from native command-panel state during
+     frame layout so first paint shows Pin/Unpin and Minimize/Expand controls
+     instead of the generic pane overflow menu.
      */
     let chromeRole: TerminalPaneChromeRole =
       commandsPanelActiveSessionIds.contains(sessionId) ? .commands : .workspace
     session.titleBarView.setChromeRole(chromeRole)
     session.borderView.setChromeRole(chromeRole)
+    if chromeRole == .commands {
+      session.titleBarView.setActions(
+        sessionTitleBarActions[sessionId] ?? commandPanelTitleBarActions())
+    }
     let titleBarHeight = min(titleBarHeight(for: sessionId), max(rect.height, 0))
     mountTerminalPaneContainer(for: session)
     session.containerView.frame = rect
@@ -11091,6 +11157,16 @@ final class TerminalWorkspaceView: NSView {
       availableTerminalRect: availableTerminalRect,
       terminalRect: terminalRect)
     updateTerminalBorder(for: sessionId)
+  }
+
+  private func commandPanelTitleBarActions() -> [TerminalTitleBarAction] {
+    if commandsPanelIsVisible {
+      return [
+        commandsPanelMode == "pinned" ? .unpinCommandsPanel : .pinCommandsPanel,
+        .closeCommandsPanel,
+      ]
+    }
+    return [.expandCommandsPanel]
   }
 
   private func persistenceLabelFrame(
@@ -13370,18 +13446,27 @@ final class TerminalWorkspaceView: NSView {
 
   private func clampedCommandsPanelHeightRatio(_ value: Double?) -> CGFloat {
     guard let value, value.isFinite else {
-      return Self.defaultCommandsPanelHeightRatio(for: bounds.height)
+      return defaultCommandsPanelHeightRatio(for: bounds.height)
     }
     return Self.clampedCommandsPanelHeightRatio(value)
   }
 
-  private static func defaultCommandsPanelHeightRatio(for workspaceHeight: CGFloat) -> CGFloat {
+  private func defaultCommandsPanelHeightRatio(for workspaceHeight: CGFloat) -> CGFloat {
+    Self.defaultCommandsPanelHeightRatio(
+      for: workspaceHeight,
+      defaultHeightPoints: commandsPanelDefaultHeightPoints)
+  }
+
+  private static func defaultCommandsPanelHeightRatio(
+    for workspaceHeight: CGFloat,
+    defaultHeightPoints: CGFloat = fallbackCommandsPanelDefaultHeightPoints
+  ) -> CGFloat {
     let resolvedWorkspaceHeight =
       workspaceHeight > 0 ? workspaceHeight : defaultCommandsPanelReferenceWorkspaceHeight
     let minimumHeight = resolvedWorkspaceHeight * minimumCommandsPanelHeightRatio
     let maximumHeight = max(minimumHeight, resolvedWorkspaceHeight * maximumCommandsPanelHeightRatio)
     let defaultHeight = min(
-      max(defaultCommandsPanelHeightPoints, minimumHeight),
+      max(defaultHeightPoints, minimumHeight),
       maximumHeight)
     return clampedCommandsPanelHeightRatio(Double(defaultHeight / resolvedWorkspaceHeight))
   }
@@ -17896,18 +17981,26 @@ private final class TerminalSessionTitleBarView: NSView {
    CDXC:PaneTabs 2026-05-31-06:32:
    The native tab-bar action glyphs should settle at 16pt exactly after the
    half-point reduction still read too large.
+
+   CDXC:PaneTabs 2026-05-31-06:59:
+   The native tab-bar action glyphs should settle at 15pt so New Terminal, New
+   Browser Tab, and Overflow read smaller within the unchanged 42px controls.
+
+   CDXC:PaneTabs 2026-05-31-07:00:
+   Native tab-bar action button backgrounds should stay #0e0e0e in normal,
+   hover, and pressed states so the button row reads as one continuous bar.
    */
   private static let workspaceTabBarActionButtonWidth: CGFloat = 42
   private static let workspaceTabBarActionButtonHeight: CGFloat = 34
-  private static let workspaceTabBarActionIconPointSize: CGFloat = 16
+  private static let workspaceTabBarActionIconPointSize: CGFloat = 15
   private static let workspaceTabBarActionBackgroundColor = NSColor(
     calibratedRed: 0x0E / 255,
     green: 0x0E / 255,
     blue: 0x0E / 255,
     alpha: 1
   ).cgColor
-  private static let workspaceTabBarActionHoverBackgroundColor = NSColor(calibratedWhite: 0x21 / 255, alpha: 1).cgColor
-  private static let workspaceTabBarActionActiveBackgroundColor = NSColor(calibratedWhite: 0x39 / 255, alpha: 1).cgColor
+  private static let workspaceTabBarActionHoverBackgroundColor = workspaceTabBarActionBackgroundColor
+  private static let workspaceTabBarActionActiveBackgroundColor = workspaceTabBarActionBackgroundColor
   private static let workspaceTabBarActionLeftBorderColor = NSColor(
     calibratedRed: 0x25 / 255,
     green: 0x25 / 255,
@@ -17985,6 +18078,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private var tabItems: [TabItem] = []
   private var allowsTabClosing = true
   private var showsTabAddButton = true
+  private var showsTabBrowserButton = true
   private var debugOwnerSessionId: String?
   private var debugPaneKind = "unknown"
   private var lastLoggedPaneTabGeometrySignature: String?
@@ -18206,6 +18300,14 @@ private final class TerminalSessionTitleBarView: NSView {
     needsLayout = true
   }
 
+  func setShowsTabBrowserButton(_ isVisible: Bool) {
+    guard showsTabBrowserButton != isVisible else {
+      return
+    }
+    showsTabBrowserButton = isVisible
+    needsLayout = true
+  }
+
   fileprivate func setChromeRole(_ role: TerminalPaneChromeRole) {
     guard chromeRole != role else {
       return
@@ -18214,9 +18316,28 @@ private final class TerminalSessionTitleBarView: NSView {
     layer?.backgroundColor = backgroundColor(for: role)
     bottomBorderView.layer?.backgroundColor = borderColor(for: role)
     titleLabel.textColor = titleColor(for: role)
+    /*
+     CDXC:CommandsPanel 2026-05-31-08:03:
+     Command-pane tabs keep only the inline New Terminal tab button after the
+     visible tab run. Clear workspace-only browser/right-pinned tab-bar chrome
+     as soon as the titlebar enters command role so stale workspace controls
+     cannot overlap Pin/Unpin and Minimize/Expand buttons before the next
+     resize/layout pass.
+     */
+    if role == .commands {
+      hideTabBrowserButton()
+      actionMenuButton.frame = .zero
+      actionMenuButton.isHidden = true
+      actionMenuButton.alphaValue = 0
+      actionMenuButton.isEnabled = false
+      setWorkspaceTabBarActionChrome(for: tabAddButton, enabled: false)
+      setWorkspaceTabBarActionChrome(for: tabBrowserButton, enabled: false)
+      setWorkspaceTabBarActionChrome(for: actionMenuButton, enabled: false)
+    }
     for button in tabButtons {
       button.setChromeRole(role)
     }
+    needsLayout = true
     needsDisplay = true
   }
 
@@ -19145,15 +19266,23 @@ private final class TerminalSessionTitleBarView: NSView {
       activityIndicatorView.isHidden = true
       activityIndicatorView.frame = .zero
       tabClipView.isHidden = false
-      let canUseWorkspacePinnedControls = isWorkspaceTabbedChrome && showsTabAddButton
       let workspacePinnedControlCount =
-        canUseWorkspacePinnedControls
-        ? 2 + (shouldShowCollapsedActionMenu ? 1 : 0)
-        : 0
+        (showsTabAddButton ? 1 : 0)
+        + (showsTabBrowserButton ? 1 : 0)
+        + (shouldShowCollapsedActionMenu ? 1 : 0)
+      let canUseWorkspacePinnedControls =
+        isWorkspaceTabbedChrome && workspacePinnedControlCount > 0
       let workspacePinnedControlsWidth =
         CGFloat(workspacePinnedControlCount) * Self.workspaceTabBarActionButtonWidth
+      /*
+       CDXC:CommandsPanel 2026-05-31-08:03:
+       The right-pinned New Terminal/New Browser/Overflow cluster is workspace
+       chrome only. Command-pane tab bars must keep New Terminal inline after
+       the rightmost tab and reserve the far-right edge for Pin/Unpin plus
+       Minimize/Expand action buttons.
+       */
       let canShowWorkspacePinnedControls =
-        workspacePinnedControlCount > 0
+        canUseWorkspacePinnedControls
         && (bounds.width - tabStripLeadingInset
           >= Self.minimumVisibleTabViewportWidthWithDoubleClickTarget + workspacePinnedControlsWidth)
       let workspacePinnedControlsMinX =
@@ -19189,8 +19318,8 @@ private final class TerminalSessionTitleBarView: NSView {
           minX: workspacePinnedControlsMinX,
           centerY: workspaceActionCenterY,
           height: Self.workspaceTabBarActionButtonHeight,
-          showsAddButton: true,
-          showsBrowserButton: true,
+          showsAddButton: showsTabAddButton,
+          showsBrowserButton: showsTabBrowserButton,
           showsMenuButton: shouldShowCollapsedActionMenu)
       } else {
         hideTabBrowserButton()
@@ -19493,6 +19622,10 @@ private final class TerminalSessionTitleBarView: NSView {
      Main workspace native tab-bar actions are a right-stuck control group.
      Keep the visible order as New Terminal, New Browser Tab, Overflow menu so
      the tab run scrolls underneath a stable React-titlebar-matched cluster.
+
+     CDXC:GitProjectTabs 2026-05-31-07:30:
+     GitHub project tab strips keep only the + control from this cluster; the
+     browser button is hidden via setShowsTabBrowserButton(false).
      */
     var nextX = minX
     let buttonWidth = Self.workspaceTabBarActionButtonWidth
@@ -19800,7 +19933,7 @@ private final class TerminalSessionTitleBarView: NSView {
   }
 
   @objc private func performTabBrowserButton(_ sender: NSButton) {
-    guard showsTabAddButton, sender === tabBrowserButton, !tabBrowserButton.isHidden, tabBrowserButton.isEnabled else {
+    guard showsTabBrowserButton, sender === tabBrowserButton, !tabBrowserButton.isHidden, tabBrowserButton.isEnabled else {
       return
     }
     onAction?(.openBrowser)

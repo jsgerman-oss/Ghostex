@@ -7195,7 +7195,21 @@ final class ghostexRootView: NSView {
     super.layout()
     let frames = rootLayoutFrames()
     validateRootLayoutFrames(frames)
-    sidebarView.frame = frames.sidebar
+    let sidebarResizeUnderlayFrame = CGRect(
+      x: sidebarSide == .left ? frames.sidebar.maxX : frames.sidebar.minX - Self.dividerWidth,
+      y: frames.sidebar.minY,
+      width: Self.dividerWidth,
+      height: frames.sidebar.height)
+    /**
+     CDXC:NativeSidebarChrome 2026-05-31-15:13:
+     The sidebar resize strip must stay a transparent hit target instead of a
+     colored layout gap. Render the sidebar webview underneath the divider so
+     New Session, Agents Hub, Plugins, Search, Recent Projects, and Settings
+     keep their normal CSS bounds while the native drag area has no visible
+     background of its own. Limit the underlay to the fixed divider width so
+     the workspace-side resize extension remains a native hit target only.
+     */
+    sidebarView.frame = frames.sidebar.union(sidebarResizeUnderlayFrame)
     divider.frame = frames.divider
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
