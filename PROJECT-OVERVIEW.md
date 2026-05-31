@@ -3,13 +3,13 @@ CDXC:ProjectOverview 2026-05-24-15:46:
 The repository needs a concise markdown overview that explains what Ghostex is, who it is for, and how the major product surfaces fit together without replacing the README or release handover docs.
 -->
 
-# Project Overview
+### Project Overview
 
 Ghostex is a native macOS workarea for running, organizing, and resuming agent CLI sessions. It is built around low-overhead Ghostty terminals, a project-aware sidebar, embedded browser and code panes, and companion mobile apps for connecting to live sessions remotely.
 
 The project is positioned as a free and open source alternative to Codex App for developers who work with multiple agent CLIs across multiple repositories. It focuses on keeping terminal sessions stable, persistent, easy to scan, and easy to reopen after the app or machine restarts.
 
-## What Ghostex Does
+#### What Ghostex Does
 
 - Runs popular agent CLIs such as Codex, Claude Code, OpenCode, Gemini, Copilot, Cursor CLI, Amp CLI, and others in native Ghostty-backed terminal panes.
 - Groups sessions by project so related agents, browsers, editor panes, actions, and history stay together.
@@ -21,13 +21,13 @@ The project is positioned as a free and open source alternative to Codex App for
 - Exposes `ghostex` and `gx` CLI commands for listing, attaching, sleeping, waking, focusing, and managing sessions from a shell.
 - Supports Android and iOS companion apps for live remote control of sessions running on the Mac.
 
-## Main Product Areas
+### Main Product Areas
 
-### Native macOS Host
+#### Native macOS Host
 
 The macOS app shell owns the native window, title bar, pane layout, Ghostty terminal hosting, browser/editor hosting, menu bar integration, notifications, and Sparkle updates.
 
-### Sidebar and Workspace UI
+#### Sidebar and Workspace UI
 
 The sidebar is a React/TypeScript interface for project groups, session cards, commands, settings, recent projects, previous sessions, project actions, worktrees, and project-board views. It is designed around quickly scanning many live agent sessions and switching between them.
 
