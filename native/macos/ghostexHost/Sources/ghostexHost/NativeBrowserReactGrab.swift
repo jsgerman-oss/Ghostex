@@ -48,7 +48,7 @@ enum NativeBrowserReactGrabScriptLoader {
       cachedVersion = version
       return script
     } catch {
-      NSLog("ReactGrab: fetch failed for v%@: %@", version, error.localizedDescription)
+      NSLog("ReactGrab: fetch failed for v%@: %@", version, NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))
       return nil
     }
   }
@@ -84,7 +84,7 @@ enum NativeBrowserReactGrabInjector {
     do {
       _ = try await webView.evaluateJavaScript(combined)
     } catch {
-      NSLog("ReactGrab: injection failed: %@", error.localizedDescription)
+      NSLog("ReactGrab: injection failed: %@", NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))
       NSSound.beep()
     }
   }
@@ -318,7 +318,7 @@ enum NativeBrowserAgentationInjector {
       _ = try await webView.evaluateJavaScript(combinedScript())
       NSLog("Agentation: WKWebView evaluateJavaScript completed")
     } catch {
-      NSLog("Agentation: injection failed: %@", error.localizedDescription)
+      NSLog("Agentation: injection failed: %@", NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))
       NSSound.beep()
     }
   }

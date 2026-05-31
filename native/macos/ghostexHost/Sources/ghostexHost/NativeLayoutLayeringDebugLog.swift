@@ -27,7 +27,7 @@ enum NativeLayoutLayeringDebugLog {
 
     var payload = details
     payload["event"] = event
-    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(payload))\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
 
     do {
       if !didCreateLogsDirectory {
@@ -45,7 +45,7 @@ enum NativeLayoutLayeringDebugLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      NSLog("failed to write native layout/layering debug log: \(error.localizedDescription)")
+      NSLog("failed to write native layout/layering debug log: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
     }
   }
 

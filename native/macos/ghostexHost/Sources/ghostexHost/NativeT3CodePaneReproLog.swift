@@ -42,7 +42,7 @@ enum NativeT3CodePaneReproLog {
 
     var payload = details
     payload["event"] = event
-    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(payload))\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
 
     do {
       if !didCreateLogsDirectory {
@@ -60,7 +60,8 @@ enum NativeT3CodePaneReproLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      logger.warning("failed to write T3 Code pane repro log: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      logger.warning("failed to write T3 Code pane repro log: \(sanitizedError)")
     }
   }
 

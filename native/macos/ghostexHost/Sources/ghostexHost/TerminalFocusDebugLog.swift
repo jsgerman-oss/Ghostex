@@ -62,7 +62,7 @@ enum TerminalFocusDebugLog {
 
     var payload = details
     payload["event"] = event
-    let serializedPayload = serialize(payload)
+    let serializedPayload = serialize(NativeLogPrivacy.sanitizePayload(payload))
     let line = "[\(logDateFormatter.string(from: Date()))] \(serializedPayload)\n"
 
     do {
@@ -81,7 +81,7 @@ enum TerminalFocusDebugLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      NSLog("failed to write terminal focus debug log: \(error.localizedDescription)")
+      NSLog("failed to write terminal focus debug log: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
     }
   }
 
@@ -98,4 +98,167 @@ enum TerminalFocusDebugLog {
 
 func nullableLogString(_ value: String?) -> Any {
   value ?? NSNull()
+}
+
+enum NativeLogPrivacy {
+  private static let redactedText = "[redacted]"
+  private static let redactedPath = "[redacted:path]"
+  private static let redactedURL = "[redacted:url]"
+  private static let redactedSecret = "[redacted:secret]"
+
+  /*
+   CDXC:DiagnosticsPrivacy 2026-05-30-23:56:
+   Users must be able to zip and send Ghostex diagnostic log files without exposing project names, session titles, workspace paths, browser URLs with private query strings, command text, terminal text, or credentials. Sanitize all file-backed native log payloads and the remaining native system-log diagnostics at the writer boundary so individual call sites can keep logging useful IDs, counts, phases, and geometry without leaking user content.
+   */
+  static func sanitizePayload(_ payload: [String: Any]) -> [String: Any] {
+    var sanitized: [String: Any] = [:]
+    for (key, value) in payload {
+      sanitized[key] = sanitizeValue(value, key: key)
+    }
+    return sanitized
+  }
+
+  static func sanitizeLogLine(_ message: String) -> String {
+    redactSensitiveText(message)
+  }
+
+  private static func sanitizeValue(_ value: Any, key: String) -> Any {
+    if value is NSNull {
+      return value
+    }
+
+    let normalizedKey = key.lowercased()
+    if let string = value as? String {
+      return sanitizeString(string, key: normalizedKey)
+    }
+    if let bool = value as? Bool {
+      return bool
+    }
+    if let number = value as? NSNumber {
+      return number
+    }
+    if let array = value as? [Any] {
+      if isSensitiveCollectionKey(normalizedKey) {
+        return ["count": array.count, "redacted": true] as [String: Any]
+      }
+      return array.map { sanitizeValue($0, key: key) }
+    }
+    if let dictionary = value as? [String: Any] {
+      if isSensitiveCollectionKey(normalizedKey) {
+        return ["redacted": true] as [String: Any]
+      }
+      return sanitizePayload(dictionary)
+    }
+
+    return redactSensitiveText(String(describing: value))
+  }
+
+  private static func sanitizeString(_ value: String, key: String) -> Any {
+    if key == "event" || key == "phase" || key == "reason" || key == "kind" || key == "type" {
+      return redactSensitiveText(value)
+    }
+    if isSecretKey(key) {
+      return redactedSecret
+    }
+    if isIdentifierKey(key), isSafeIdentifier(value) {
+      return value
+    }
+    if isURLKey(key) || looksLikeURL(value) {
+      return summarizeURL(value)
+    }
+    if isPathKey(key) || looksLikePath(value) {
+      return redactedPath
+    }
+    if isSensitiveTextKey(key) {
+      return redactedText
+    }
+    return redactSensitiveText(value)
+  }
+
+  private static func summarizeURL(_ value: String) -> [String: Any] {
+    guard let components = URLComponents(string: value) else {
+      return ["redacted": true, "type": "url"]
+    }
+    var summary: [String: Any] = [
+      "redacted": true,
+      "type": "url",
+    ]
+    if let scheme = components.scheme {
+      summary["protocol"] = scheme
+    }
+    if let host = components.host {
+      summary["host"] = components.port.map { "\(host):\($0)" } ?? host
+    }
+    return summary
+  }
+
+  private static func redactSensitiveText(_ value: String) -> String {
+    var redacted = value
+    redacted = redacted.replacingOccurrences(
+      of:
+        #"(?i)"(title|name|projectName|sessionName|cwd|path|projectPath|workspaceRoot|worktreePath|url|input|comment|description|command|text|message|details|token|authToken|bearer|credential|password|secret)"\s*:\s*"[^"]*""#,
+      with: #""$1":"[redacted]""#,
+      options: .regularExpression)
+    redacted = redacted.replacingOccurrences(
+      of: #"(?i)\b(bearer|token|authorization|password|secret|credential)=?[^\s"']+"#,
+      with: redactedSecret,
+      options: .regularExpression)
+    redacted = redacted.replacingOccurrences(
+      of: #"https?://[^\s"')]+"#,
+      with: redactedURL,
+      options: .regularExpression)
+    redacted = redacted.replacingOccurrences(
+      of: #"(~|/Users/[^\s/"']+|/(private/)?tmp|/var/folders|/Volumes)/[^\s"']+"#,
+      with: redactedPath,
+      options: .regularExpression)
+    return redacted
+  }
+
+  private static func isIdentifierKey(_ key: String) -> Bool {
+    key == "id" || key.hasSuffix("id") || key.hasSuffix("ids") || key.hasSuffix("ref")
+      || key.hasSuffix("refs")
+  }
+
+  private static func isSafeIdentifier(_ value: String) -> Bool {
+    value.range(of: #"^[A-Za-z0-9._:-]{1,128}$"#, options: .regularExpression) != nil
+  }
+
+  private static func isSecretKey(_ key: String) -> Bool {
+    key.contains("token") || key.contains("bearer") || key.contains("secret")
+      || key.contains("credential") || key.contains("password") || key.contains("cookie")
+      || key.contains("authorization") || key.contains("auth")
+  }
+
+  private static func isURLKey(_ key: String) -> Bool {
+    key == "url" || key.hasSuffix("url") || key.contains("uri") || key == "href"
+      || key == "origin"
+  }
+
+  private static func isPathKey(_ key: String) -> Bool {
+    key == "path" || key == "cwd" || key.hasSuffix("path") || key.hasSuffix("dir")
+      || key.hasSuffix("directory") || key.hasSuffix("root") || key.hasSuffix("file")
+      || key.hasSuffix("filename") || key.contains("workspace")
+  }
+
+  private static func isSensitiveTextKey(_ key: String) -> Bool {
+    key == "title" || key.hasSuffix("title") || key == "name" || key.hasSuffix("name")
+      || key == "message" || key == "details" || key.hasSuffix("details") || key == "input"
+      || key == "text" || key.hasSuffix("text") || key == "comment" || key == "description"
+      || key == "label" || key == "command" || key.hasSuffix("command") || key == "stdout"
+      || key == "stderr" || key == "body" || key.hasSuffix("body")
+  }
+
+  private static func isSensitiveCollectionKey(_ key: String) -> Bool {
+    key == "args" || key.hasSuffix("args") || key == "arguments" || key.hasSuffix("arguments")
+  }
+
+  private static func looksLikeURL(_ value: String) -> Bool {
+    value.range(of: #"^https?://"#, options: [.regularExpression, .caseInsensitive]) != nil
+  }
+
+  private static func looksLikePath(_ value: String) -> Bool {
+    value.range(
+      of: #"^(~/|/Users/|/Volumes/|/private/|/tmp/|/var/folders/)"#,
+      options: .regularExpression) != nil
+  }
 }

@@ -30,7 +30,7 @@ enum PromptEditorDebugLog {
     var payload = details
     payload["event"] = event
     payload["source"] = payload["source"] ?? "native"
-    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(payload))\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
 
     do {
       if !didCreateLogsDirectory {
@@ -48,7 +48,8 @@ enum PromptEditorDebugLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      logger.warning("failed to write prompt editor debug log: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      logger.warning("failed to write prompt editor debug log: \(sanitizedError)")
     }
   }
 

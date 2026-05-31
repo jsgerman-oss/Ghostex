@@ -27,7 +27,7 @@ enum SidebarRefreshDebugLog {
       "details": details ?? NSNull(),
       "event": event,
     ]
-    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(payload))\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
 
     do {
       if !didCreateLogsDirectory {
@@ -45,7 +45,7 @@ enum SidebarRefreshDebugLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      NSLog("failed to write sidebar refresh debug log: \(error.localizedDescription)")
+      NSLog("failed to write sidebar refresh debug log: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
     }
   }
 

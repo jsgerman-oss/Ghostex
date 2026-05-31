@@ -28,7 +28,7 @@ enum NativePaneReorderReproLog {
 
     var payload = details
     payload["event"] = event
-    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(payload))\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
 
     do {
       if !didCreateLogsDirectory {
@@ -46,7 +46,7 @@ enum NativePaneReorderReproLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      NSLog("failed to write native pane reorder repro log: \(error.localizedDescription)")
+      NSLog("failed to write native pane reorder repro log: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
     }
   }
 
@@ -94,7 +94,7 @@ enum NativePaneTabDragReproLog {
 
     var payload = details
     payload["event"] = event
-    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(payload))\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
 
     do {
       if !didCreateLogsDirectory {
@@ -112,7 +112,7 @@ enum NativePaneTabDragReproLog {
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      NSLog("failed to write native pane tab drag repro log: \(error.localizedDescription)")
+      NSLog("failed to write native pane tab drag repro log: \(NativeLogPrivacy.sanitizeLogLine(error.localizedDescription))")
     }
   }
 
