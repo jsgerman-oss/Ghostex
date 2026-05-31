@@ -44,6 +44,7 @@ export type GxserverEndpointPath =
   | "/api/control/stop"
   | "/api/createSession"
   | "/api/createAgentSession"
+  | "/api/ingestTerminalTitleEvent"
   | "/api/updateAgentActivity"
   | "/api/sleepSession"
   | "/api/wakeSession"
@@ -552,7 +553,9 @@ export interface GxserverCreateSessionParams {
   launchSettings?: Record<string, unknown>;
   lifecycleState?: GxserverDomainLifecycleState;
   notificationRules?: Record<string, unknown>;
-  projectId: GxserverProjectId;
+  projectId?: GxserverProjectId;
+  projectName?: string;
+  projectPath?: string;
   providerState?: Partial<GxserverSessionDomainState["providerState"]>;
   restoredFromHistoryId?: string;
   restoredFromSessionId?: GxserverSessionId;
@@ -570,6 +573,40 @@ export interface GxserverSessionLifecycleParams {
   projectId: GxserverProjectId;
   reason?: string;
   sessionId: GxserverSessionId;
+}
+
+export type GxserverSessionTitleSource =
+  | "browser-auto"
+  | "generated"
+  | "placeholder"
+  | "terminal-auto"
+  | "user";
+
+export interface GxserverSessionTitleProjection {
+  isPrimaryTitleTerminalTitle: boolean;
+  isTemporaryTitle: boolean;
+  primaryTitle?: string;
+  terminalTitle?: string;
+  title: string;
+  titleSource: GxserverSessionTitleSource;
+  trustedResumeTitle?: string;
+}
+
+export interface GxserverTerminalTitleEventParams extends GxserverSessionLifecycleParams {
+  agentName?: string;
+  previousTerminalTitle?: string;
+  protectStoredTitleFromAutomation?: boolean;
+  rawTitle?: string;
+  sessionPersistenceProvider?: "off" | "tmux" | "zellij" | "zmx";
+}
+
+export interface GxserverTerminalTitleEventResult {
+  agentSessionId?: string;
+  changed: boolean;
+  projection: GxserverSessionTitleProjection;
+  reason: string;
+  session: GxserverSessionDomainState;
+  visibleTitle?: string;
 }
 
 export interface GxserverAttachSessionMetadataParams extends GxserverSessionLifecycleParams {
@@ -603,6 +640,7 @@ export interface GxserverAgentActivityState {
 
 export interface GxserverAgentActivityInput {
   activity?: GxserverAgentActivityState["activity"];
+  agentId?: string;
   event?: GxserverAgentActivityEvent;
   nowIso?: string;
   nowMs?: number;

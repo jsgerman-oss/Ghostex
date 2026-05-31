@@ -8,6 +8,7 @@ import {
   isGxserverSessionId,
   type GxserverCandidateFactory,
 } from "./ids.js";
+import { normalizeSessionTitleRuntimeSettings } from "./session-title/index.js";
 import type {
   GxserverClientLayoutState,
   GxserverCreateProjectParams,
@@ -47,6 +48,7 @@ type DomainJsonField =
   | "providerState"
   | "runtimeSettings"
   | "worktree";
+type GxserverCreateSessionDomainParams = GxserverCreateSessionParams & { projectId: GxserverProjectId };
 
 export const GXSERVER_DOMAIN_STATE_JSON_LIMIT_CHARS = 1_000_000;
 export const GXSERVER_DOMAIN_STATE_JSON_MAX_DEPTH = 10;
@@ -154,8 +156,8 @@ export class GxserverDomainRepository {
     return row ? fromProjectRow(row) : undefined;
   }
 
-  createSession(params: GxserverCreateSessionParams): GxserverSessionDomainState {
-    return this.#db.transaction((input: GxserverCreateSessionParams) => {
+  createSession(params: GxserverCreateSessionDomainParams): GxserverSessionDomainState {
+    return this.#db.transaction((input: GxserverCreateSessionDomainParams) => {
       if (!this.getProject(input.projectId)) {
         throw new GxserverDomainStateError("notFound", `Project ${input.projectId} does not exist.`);
       }
@@ -388,7 +390,7 @@ function normalizeSessionInput(
   serverId: GxserverServerId,
   sessionId: GxserverSessionId,
   timestamp: string,
-  input: GxserverCreateSessionParams,
+  input: GxserverCreateSessionDomainParams,
 ): GxserverSessionDomainState {
   const zmxName = createZmxSessionName(input.projectId, sessionId);
   const inputProviderState = normalizeObject(input.providerState);
@@ -418,7 +420,7 @@ function normalizeSessionInput(
     notificationRules: normalizeObject(input.notificationRules),
     projectId: input.projectId,
     providerState,
-    runtimeSettings: normalizeObject(input.runtimeSettings),
+    runtimeSettings: normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title),
     sessionId,
     title: normalizeOptionalText(input.title) ?? sessionId,
     updatedAt: timestamp,
@@ -467,7 +469,9 @@ function mergeSessionUpdate(
           zmxName: normalizeProviderZmxName(inputProviderState.zmxName, zmxName),
         }
       : { ...current.providerState, zmxName: normalizeProviderZmxName(current.providerState.zmxName, zmxName) },
-    runtimeSettings: hasOwn(input, "runtimeSettings") ? normalizeObject(input.runtimeSettings) : current.runtimeSettings,
+    runtimeSettings: hasOwn(input, "runtimeSettings")
+      ? normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title ?? current.title)
+      : current.runtimeSettings,
     title: hasOwn(input, "title") ? normalizeOptionalText(input.title) ?? current.sessionId : current.title,
     updatedAt,
     worktree: hasOwn(input, "worktree") ? normalizeOptionalObject(input.worktree) : current.worktree,

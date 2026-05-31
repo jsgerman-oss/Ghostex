@@ -484,6 +484,70 @@ test("project and session domain-state APIs create, update, list, and keep clien
   });
 });
 
+test("terminal title event API stores gxserver-decided canonical titles", async () => {
+  await withApiServer("local", async ({ baseUrl, token }) => {
+    const createdProject = await requestJson(baseUrl, "/api/createProject", {
+      body: {
+        params: { name: "Ghostex", path: "/repo/ghostex" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const project = createdProject.body.result.project;
+    const createdSession = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          runtimeSettings: { titleSource: "placeholder" },
+          title: "Search by Text",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const session = createdSession.body.result.session;
+
+    const ignored = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          rawTitle: "Search by Text",
+          sessionId: session.sessionId,
+          sessionPersistenceProvider: "zmx",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(ignored.status, 200);
+    assert.equal(ignored.body.result.changed, false);
+    assert.equal(ignored.body.result.projection.isTemporaryTitle, true);
+    assert.equal(ignored.body.result.session.title, "Search by Text");
+
+    const updated = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          rawTitle: "Find previous Codex work",
+          sessionId: session.sessionId,
+          sessionPersistenceProvider: "zmx",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(updated.status, 200);
+    assert.equal(updated.body.result.changed, true);
+    assert.equal(updated.body.result.session.title, "Find previous Codex work");
+    assert.equal(updated.body.result.session.runtimeSettings.titleSource, "terminal-auto");
+    assert.equal(updated.body.result.projection.primaryTitle, "Find previous Codex work");
+  });
+});
+
 test("domain-state APIs reject oversized and too-deep project/session JSON before SQLite persistence", async () => {
   await withApiServer("local", async ({ baseUrl, token }) => {
     const oversizedProjectBody = {
@@ -1541,6 +1605,56 @@ test("remote project add validates server-side paths and typed operations stay s
     });
     assert.equal(genericRunProcess.status, 403);
     assert.equal(genericRunProcess.body.error, "forbidden");
+  });
+});
+
+test("project path registration is idempotent and session creation resolves stale client ids by cwd", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    /*
+    CDXC:GxserverVerification 2026-05-31-17:47:
+    macOS, CLI/TUI, and mobile clients must not have to invent daemon project ids. Adding the same filesystem project twice returns the existing P-id, and createSession resolves cwd/projectPath before honoring stale client-local ids such as `project-*`.
+    */
+    const repoPath = path.join(paths.rootDir, "registered-repo");
+    await mkdir(repoPath, { recursive: true });
+
+    const firstAdd = await requestJson(baseUrl, "/api/addProjectPath", {
+      body: {
+        params: { name: "Registered Repo", path: repoPath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(firstAdd.status, 200);
+    const projectId = firstAdd.body.result.project.projectId;
+    assert.equal(projectId, "P3a91");
+
+    const secondAdd = await requestJson(baseUrl, "/api/addProjectPath", {
+      body: {
+        params: { path: repoPath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(secondAdd.status, 200);
+    assert.equal(secondAdd.body.result.project.projectId, projectId);
+
+    const created = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: {
+          cwd: repoPath,
+          projectId: "project-vanvq8",
+          title: "Terminal",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(created.status, 200);
+    assert.equal(created.body.result.session.projectId, projectId);
+    assert.equal(created.body.result.session.cwd, repoPath);
   });
 });
 

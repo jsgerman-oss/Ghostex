@@ -110,6 +110,29 @@ test("sessions use G IDs, zmx names, hidden previous-session metadata, and indep
   });
 });
 
+test("temporary Search by Text session titles default to placeholder provenance", async () => {
+  await withDomainRepository(async (repository) => {
+    const project = repository.createProject({ name: "Ghostex", path: "/repo/ghostex" });
+    const session = repository.createSession({
+      kind: "terminal",
+      projectId: project.projectId,
+      title: "Search by Text",
+    });
+
+    assert.equal(session.title, "Search by Text");
+    assert.equal(session.runtimeSettings.titleSource, "placeholder");
+
+    const updated = repository.updateSession({
+      projectId: project.projectId,
+      runtimeSettings: { ...session.runtimeSettings, titleSource: "terminal-auto" },
+      sessionId: session.sessionId,
+      title: "Session Title From Terminal",
+    });
+    assert.equal(updated.title, "Session Title From Terminal");
+    assert.equal(updated.runtimeSettings.titleSource, "terminal-auto");
+  });
+});
+
 test("client-local layout round-trips separately from shared project and session state", async () => {
   await withDomainRepository(async (repository) => {
     const project = repository.createProject({

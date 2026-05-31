@@ -31,6 +31,7 @@ import {
   getAgentStartupTextForSession,
   updateSessionActivitySettings,
 } from "./agent-lifecycle.js";
+import { applyTerminalTitleEvent } from "./session-title/index.js";
 import { type GxserverPaths, getGxserverPaths } from "./paths.js";
 import { GxserverProjectPathError, normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "./project-paths.js";
 import { removeRuntimeMetadata, writeRuntimeMetadata } from "./runtime.js";
@@ -80,6 +81,7 @@ import type {
   GxserverListenerKind,
   GxserverMinimalHealthResponse,
   GxserverMigrationStatus,
+  GxserverProjectDomainState,
   GxserverProjectId,
   GxserverProviderKillResult,
   GxserverProviderProbeResult,
@@ -91,6 +93,8 @@ import type {
   GxserverServerId,
   GxserverSessionDomainState,
   GxserverSessionLifecycleParams,
+  GxserverTerminalTitleEventParams,
+  GxserverTerminalTitleEventResult,
   GxserverUpdateProjectParams,
   GxserverUpdateAgentActivityParams,
   GxserverUpdateSessionParams,
@@ -124,6 +128,7 @@ export interface GxserverApiRuntime {
     runZsh?: GxserverZmxCommandRunner;
   };
 }
+type GxserverCreateSessionDomainParams = GxserverCreateSessionParams & { projectId: GxserverProjectId };
 
 /*
 CDXC:GxserverApi 2026-05-30-20:04:
@@ -601,16 +606,40 @@ function dispatchDomainStateEndpoint(
       return { project, sessions: repository.listSessions(projectId) };
     }
     case "/api/addProjectPath":
-      return { project: repository.createProject(normalizeAddProjectPathParams(params)) };
+      return { project: addProjectPath(repository, params) };
     case "/api/createSession":
     case "/api/createAgentSession": {
       const createParams =
         endpointPath === "/api/createAgentSession"
           ? normalizeCreateAgentSessionParams(repository, params)
-          : (params as unknown as GxserverCreateSessionParams);
+          : normalizeCreateSessionParams(repository, params);
       return {
         session: repository.createSession(createParams),
       };
+    }
+    case "/api/ingestTerminalTitleEvent": {
+      const titleEvent = params as unknown as GxserverTerminalTitleEventParams;
+      const lifecycle = readSessionLifecycleParams(params);
+      const current = repository.getSession(lifecycle.projectId, lifecycle.sessionId);
+      if (!current) {
+        throw new GxserverDomainStateError(
+          "notFound",
+          `Session ${lifecycle.projectId}/${lifecycle.sessionId} does not exist.`,
+        );
+      }
+      const decision = applyTerminalTitleEvent(repository, {
+        ...titleEvent,
+        projectId: lifecycle.projectId,
+        sessionId: lifecycle.sessionId,
+      });
+      return {
+        agentSessionId: decision.agentSessionId,
+        changed: decision.changed,
+        projection: decision.projection,
+        reason: decision.reason,
+        session: decision.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? current,
+        visibleTitle: decision.visibleTitle,
+      } satisfies GxserverTerminalTitleEventResult;
     }
     case "/api/updateAgentActivity": {
       const activity = params as unknown as GxserverUpdateAgentActivityParams;
@@ -1017,6 +1046,8 @@ async function createAttachSessionMetadata(
   return {
     attachCommand: buildZmxAttachCommand({
       cwd: cwd ?? "",
+      globalSessionRef: probedSession.globalRef,
+      gxserverBaseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
       sessionName: zmxSessionName,
       title: probedSession.title,
       zmxExecutablePath: zmx.executablePath,
@@ -1125,6 +1156,7 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/addProjectPath" ||
     path === "/api/createSession" ||
     path === "/api/createAgentSession" ||
+    path === "/api/ingestTerminalTitleEvent" ||
     path === "/api/updateAgentActivity" ||
     path === "/api/updateSession" ||
     path === "/api/listSessions" ||
@@ -1169,20 +1201,90 @@ function normalizeAddProjectPathParams(params: Record<string, unknown>): Gxserve
   };
 }
 
+function addProjectPath(
+  repository: GxserverDomainRepository,
+  params: Record<string, unknown>,
+): GxserverProjectDomainState {
+  const createParams = normalizeAddProjectPathParams(params);
+  const existingProject = findProjectByPath(repository.listProjects(), createParams.path);
+  if (existingProject) {
+    return existingProject;
+  }
+  return repository.createProject(createParams);
+}
+
+function normalizeCreateSessionParams(
+  repository: GxserverDomainRepository,
+  params: Record<string, unknown>,
+): GxserverCreateSessionDomainParams {
+  const project = resolveCreateSessionProject(repository, params);
+  return {
+    ...(params as unknown as GxserverCreateSessionParams),
+    projectId: project.projectId,
+  };
+}
+
 function normalizeCreateAgentSessionParams(
   repository: GxserverDomainRepository,
   params: Record<string, unknown>,
-): GxserverCreateSessionParams {
-  const projectId = readProjectId(params);
-  const project = repository.getProject(projectId);
-  if (!project) {
-    throw new GxserverDomainStateError("notFound", `Project ${projectId} does not exist.`);
-  }
+): GxserverCreateSessionDomainParams {
+  const project = resolveCreateSessionProject(repository, params);
   return createAgentSessionParams(project, {
     ...(params as unknown as GxserverCreateSessionParams),
     kind: "agent",
-    projectId,
-  });
+    projectId: project.projectId,
+  }) as GxserverCreateSessionDomainParams;
+}
+
+function resolveCreateSessionProject(
+  repository: GxserverDomainRepository,
+  params: Record<string, unknown>,
+): GxserverProjectDomainState {
+  const projectId = typeof params.projectId === "string" ? params.projectId.trim() : "";
+  if (isGxserverProjectId(projectId)) {
+    const project = repository.getProject(projectId);
+    if (project) {
+      return project;
+    }
+  }
+
+  /*
+  CDXC:GxserverProjectIdentity 2026-05-31-17:47:
+  Session creation is a shared API used by macOS, CLI/TUI, mobile, and future desktop clients. Resolve `projectPath` or `cwd` to the canonical gxserver project before creating sessions so clients do not need to mint daemon-facing IDs, and so stale legacy `project-*` sidebar IDs cannot create orphaned or missing-project requests.
+  */
+  const projectPath = params.projectPath ?? params.cwd;
+  if (typeof projectPath === "string" && projectPath.trim()) {
+    const normalizedPath = normalizeExistingDirectoryPath(projectPath, params.projectPath ? "projectPath" : "cwd");
+    const existingProject = findProjectByPath(repository.listProjects(), normalizedPath);
+    if (existingProject) {
+      return existingProject;
+    }
+    return repository.createProject({
+      name:
+        typeof params.projectName === "string" && params.projectName.trim()
+          ? params.projectName.trim()
+          : normalizedPath.split(/[\\/]/).filter(Boolean).at(-1) ?? normalizedPath,
+      path: normalizedPath,
+    });
+  }
+
+  if (projectId && !isGxserverProjectId(projectId)) {
+    throw new GxserverDomainStateError("badRequest", `Invalid gxserver project ID: ${projectId}.`);
+  }
+  if (projectId) {
+    throw new GxserverDomainStateError("notFound", `Project ${projectId} does not exist.`);
+  }
+  throw new GxserverDomainStateError("badRequest", "createSession requires projectId, projectPath, or cwd.");
+}
+
+function findProjectByPath(
+  projects: readonly GxserverProjectDomainState[],
+  normalizedPath: string | undefined,
+): GxserverProjectDomainState | undefined {
+  if (!normalizedPath) {
+    return undefined;
+  }
+  return projects.find((project) => project.path === normalizedPath);
 }
 
 function readOperationRpcParams(body: unknown): Record<string, unknown> {

@@ -20,6 +20,7 @@ export const GXSERVER_ENDPOINTS: readonly GxserverEndpointDescriptor[] = [
   descriptor("/api/control/stop", "remoteBlocked", true, true, "http"),
   descriptor("/api/createSession", "remoteAllowed", true, true, "http"),
   descriptor("/api/createAgentSession", "remoteAllowed", true, true, "http"),
+  descriptor("/api/ingestTerminalTitleEvent", "remoteAllowed", true, true, "http"),
   descriptor("/api/updateAgentActivity", "remoteAllowed", true, true, "http"),
   descriptor("/api/sleepSession", "remoteAllowed", true, true, "http"),
   descriptor("/api/wakeSession", "remoteAllowed", true, true, "http"),
