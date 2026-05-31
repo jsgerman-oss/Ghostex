@@ -22,6 +22,8 @@ import type { GxserverZmxCommandResult } from "../src/zmx-lifecycle.js";
 test("zmx attach command preserves the renderer shell contract", () => {
   const command = buildZmxAttachCommand({
     cwd: "/repo/ghostex",
+    globalSessionRef: "S1a:P3a91:G8v20",
+    gxserverBaseUrl: "http://127.0.0.1:58744",
     sessionName: "P3a91-G8v20",
     title: "Agent task",
     zmxExecutablePath: "/Applications/Ghostex.app/Contents/Resources/Web/bin/zmx",
@@ -30,6 +32,10 @@ test("zmx attach command preserves the renderer shell contract", () => {
   assert.match(command, /^\/bin\/zsh -lc '/);
   assert.match(command, /zmx_bin=.*\/Applications\/Ghostex\.app\/Contents\/Resources\/Web\/bin\/zmx/);
   assert.match(command, /unset ZMX_SESSION ZMX_SESSION_PREFIX/);
+  assert.match(command, /export GHOSTEX_GLOBAL_SESSION_REF="\$zmx_global_session_ref"/);
+  assert.match(command, /export GHOSTEX_GXSERVER_BASE_URL="\$zmx_gxserver_base_url"/);
+  assert.match(command, /S1a:P3a91:G8v20/);
+  assert.match(command, /http:\/\/127\.0\.0\.1:58744/);
   assert.match(command, /"\$zmx_bin" list --short/);
   assert.match(command, /\/bin\/zsh -lc "\$zmx_title_notice_command"/);
   assert.match(command, /\/bin\/zsh -lc "\$zmx_persistence_notice_command"/);

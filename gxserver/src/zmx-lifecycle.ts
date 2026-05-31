@@ -44,6 +44,8 @@ export const GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES = 512 * 1024;
 
 export interface GxserverZmxAttachCommandInput {
   cwd: string;
+  globalSessionRef?: string;
+  gxserverBaseUrl?: string;
   sessionName: GxserverZmxSessionName;
   title?: string;
   zmxExecutablePath: string;
@@ -69,6 +71,9 @@ gxserver owns zmx lifecycle decisions without owning daemon lifetime. Starting o
 
 CDXC:GxserverZmxLifecycle 2026-05-30-14:48:
 The renderer still receives one `/bin/zsh -lc` attach command string. That script resolves the bundled zmx path, clears inherited zmx client/session identity, checks existing sessions, prints title context for existing sessions, prints the persistence notice for new sessions, changes to the saved cwd, then execs direct `zmx attach` so startup/resume text remains outside the attach script.
+
+CDXC:PromptEditor 2026-05-31-11:58:
+New zmx provider sessions need canonical gxserver identity in their launch environment so prompt-editor wrappers can address S:P:G sessions without assuming a single connected server. Attach scripts export only stable server/session identity here; client-specific Monaco vs gte routing remains a wrapper/runtime decision.
 */
 
 export function buildZmxAttachCommand(input: GxserverZmxAttachCommandInput): string {
@@ -77,6 +82,8 @@ export function buildZmxAttachCommand(input: GxserverZmxAttachCommandInput): str
   const script = `
 zmx_session=${shellQuote(input.sessionName)}
 zmx_cwd=${shellQuote(input.cwd)}
+zmx_global_session_ref=${shellQuote(input.globalSessionRef ?? "")}
+zmx_gxserver_base_url=${shellQuote(input.gxserverBaseUrl ?? "")}
 zmx_persistence_notice_command=${shellQuote(persistenceNoticeCommand)}
 zmx_title_notice_command=${shellQuote(titleNoticeCommand)}
 zmx_bin=${shellQuote(input.zmxExecutablePath)}
@@ -85,6 +92,12 @@ if [ ! -x "$zmx_bin" ]; then
   exit 127
 fi
 unset ZMX_SESSION ZMX_SESSION_PREFIX
+if [ -n "$zmx_global_session_ref" ]; then
+  export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
+fi
+if [ -n "$zmx_gxserver_base_url" ]; then
+  export GHOSTEX_GXSERVER_BASE_URL="$zmx_gxserver_base_url"
+fi
 if "$zmx_bin" list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
   if [ -n "$zmx_title_notice_command" ]; then
     /bin/zsh -lc "$zmx_title_notice_command"
