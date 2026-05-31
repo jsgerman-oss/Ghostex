@@ -1495,21 +1495,73 @@
    move both active indicators 1px right from the earlier May 30 placement.
    CDXC:SessionStatusIndicators 2026-05-30-06:54: The old border spinner must
    explicitly override the base square status-dot radius so the working
-   indicator renders as a rounded ring. */
+   indicator renders as a rounded ring.
+
+   CDXC:SidebarSessions 2026-05-31-15:38:
+   Session button surfaces must also reach the native sidebar's left edge.
+   Expand the frame with the shared main-row bleed while increasing the
+   session's left padding by the same amount so session titles keep their
+   existing scan position.
+
+   CDXC:SidebarSessions 2026-05-31-16:31:
+   Session buttons need 13px more left padding after becoming fully flush with
+   the sidebar edge, so titles retain a comfortable inset inside the expanded
+   row surface.
+
+   CDXC:SidebarSessions 2026-05-31-17:31:
+   The reference scroll viewport now expands to the sidebar edge, so session
+   rows use the scroll-row bleed instead of the main navigation bleed. This
+   keeps row surfaces visible from the left edge without pushing leading icons
+   or titles into the wrong columns.
+
+   CDXC:SidebarSessions 2026-05-31-17:36:
+   Scroll-area session rows should stop at the right edge instead of relying on
+   clipping, so trailing agent/status chrome never appears to overflow.
+
+   CDXC:SidebarSessions 2026-05-31-17:43:
+   The additional 6px should move the leading agent icon, not the session title.
+   Keep the title padding at the previous 13px offset and move only the
+   leading icon inset right.
+
+   CDXC:SidebarSessions 2026-05-31-18:02:
+   Session titles should sit 6px further left while the leading session icons
+   move 2px right, so adjust the reference-only title padding and icon inset
+   independently without changing the full-width row surface.
+
+   CDXC:SidebarSessions 2026-05-31-18:08:
+   Session title text needs another 2px left shift while preserving the icon
+   position and full-width button bounds.
+
+   CDXC:SidebarSessions 2026-05-31-18:16:
+   Session rows stay full-width, but all internal content should move 6px
+   inward from both edges. Increase the leading icon/title offsets and trailing
+   inset without changing the row bleed.
+
+   CDXC:SidebarSessions 2026-05-31-18:24:
+   Session row contents need another 2px left inset only. Move the leading icon
+   and title padding together while preserving the right inset and full-width
+   button surface.
+ */
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame {
   --reference-session-agent-icon-size: 13px;
   --reference-session-icon-size: 15px;
-  --reference-session-leading-inset: 10px;
+  --reference-session-leading-inset: 26px;
   --reference-session-title-inset: 36px;
-  --reference-session-trailing-inset: 10px;
+  --reference-session-full-width-left-padding: 13px;
+  --reference-session-trailing-inset: 16px;
   /*
    * CDXC:SidebarSessions 2026-05-10-13:49
    * Terminal, T3 Code, and browser session titles need 15px more readable
    * width before the right-side status/close slot starts.
-   */
+  */
   --reference-session-trailing-slot-width: 29px;
+  margin-left: calc(-1 * var(--reference-sidebar-scroll-row-bleed-left, 7px));
+  margin-right: calc(-1 * var(--reference-sidebar-scroll-row-bleed-right, 0px));
   min-height: 34px;
-  width: 100%;
+  width: calc(
+    100% + var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+      var(--reference-sidebar-scroll-row-bleed-right, 0px)
+  );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session {
@@ -1520,11 +1572,18 @@
   min-height: 34px;
   outline: none;
   padding: 7px var(--reference-session-trailing-inset) 7px
-    var(--reference-session-title-inset);
+    calc(
+      var(--reference-session-title-inset) +
+        var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+        var(--reference-session-full-width-left-padding)
+    );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .session {
-  padding-left: var(--reference-session-title-inset);
+  padding-left: calc(
+    var(--reference-session-title-inset) + var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+      var(--reference-session-full-width-left-padding)
+  );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .session::before {
@@ -1595,7 +1654,11 @@
   letter-spacing: 0;
   line-height: 20px;
   padding: 7px var(--reference-session-trailing-inset) 7px
-    var(--reference-session-title-inset);
+    calc(
+      var(--reference-session-title-inset) +
+        var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+        var(--reference-session-full-width-left-padding)
+    );
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"]

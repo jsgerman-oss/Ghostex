@@ -1378,12 +1378,33 @@
    * cannot peek through the header's rounded corners. Keep the actual
    * interactive button radius on the ::before surface while the sticky header
    * element paints the unrounded background behind it.
+   *
+   * CDXC:ProjectHeaders 2026-05-31-15:38:
+   * Project header buttons must start at the sidebar's left edge in the native
+   * reference layout. Use the shared main-row over-bleed and compensate with
+   * equal padding so folder icons, titles, git summaries, and header actions
+   * do not shift while the button surface reaches both edges.
+   *
+   * CDXC:ProjectHeaders 2026-05-31-17:31:
+   * The reference scroll viewport now owns the content-column over-bleed, so
+   * project headers use the smaller scroll-row bleed. This keeps the header
+   * surface flush without shifting folder titles farther left.
+   *
+   * CDXC:ProjectHeaders 2026-05-31-18:16:
+   * Project header rows stay full-width, but every leading header element
+   * should sit 6px farther inward from the left edge.
+   *
+   * CDXC:ProjectHeaders 2026-05-31-18:24:
+   * Project header contents need another 2px left inset without changing the
+   * right inset or the full-width header bounds.
    */
   background: var(--app-background);
   border-radius: 0;
   box-sizing: border-box;
-  padding-left: 10px;
-  padding-right: 10px;
+  margin-left: calc(-1 * var(--reference-sidebar-scroll-row-bleed-left, 7px));
+  margin-right: calc(-1 * var(--reference-sidebar-scroll-row-bleed-right, 0px));
+  padding-left: calc(18px + var(--reference-sidebar-scroll-row-bleed-left, 7px));
+  padding-right: calc(10px + var(--reference-sidebar-scroll-row-bleed-right, 0px));
   position: sticky;
   top: var(--reference-sidebar-project-sticky-top, 0px);
   z-index: 28;
@@ -1787,6 +1808,16 @@
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-session-connector="true"] .session-frame {
-  margin-left: 0;
-  width: 100%;
+  /*
+   * CDXC:SidebarSessions 2026-05-31-15:43:
+   * Connector groups use the same visible session buttons as project groups,
+   * so their rows must keep the shared full-width sidebar bleed instead of
+   * resetting back to the padded content column.
+   */
+  margin-left: calc(-1 * var(--reference-sidebar-scroll-row-bleed-left, 7px));
+  margin-right: calc(-1 * var(--reference-sidebar-scroll-row-bleed-right, 0px));
+  width: calc(
+    100% + var(--reference-sidebar-scroll-row-bleed-left, 7px) +
+      var(--reference-sidebar-scroll-row-bleed-right, 0px)
+  );
 }
