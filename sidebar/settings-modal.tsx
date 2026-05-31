@@ -106,6 +106,8 @@ import {
   SIDEBAR_THEME_SETTING_OPTIONS,
   applySidebarSettingsPreset,
   getSidebarSettingsPresetId,
+  MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
+  MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
   normalizeghostexSettings,
   type BrowserFeedbackTool,
   type AutoSleepIdleMinutes,
@@ -335,6 +337,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
   workspace: [
     "workspaceActivePaneBorderColor",
     "workspaceBackgroundColor",
+    "commandsPanelDefaultHeightPx",
     "debuggingMode",
   ],
   editor: [
@@ -1224,6 +1227,11 @@ export function SettingsModal({
         title: "Terminal Background",
       },
       {
+        key: "commandsPanelDefaultHeightPx",
+        subtitle: "Height used when opening the command pane and when double-clicking its top resize rail.",
+        title: "Command Pane Default Height",
+      },
+      {
         key: "debuggingMode",
         subtitle: "Expose debugging-only sidebar controls.",
         title: "Show debugging UI",
@@ -1924,6 +1932,19 @@ export function SettingsModal({
                 {...getSettingModificationProps("workspaceBackgroundColor")}
                 onChange={(value) => updateDraft("workspaceBackgroundColor", value)}
                 value={draft.workspaceBackgroundColor}
+              />
+              ) : null}
+              {mainSettingVisible(settingsSearch.workspace, "commandsPanelDefaultHeightPx") ? (
+              <SliderNumberField
+                description="Used when opening the command pane (F12 or sidebar) and when double-clicking its top resize rail."
+                label="Command Pane Default Height"
+                {...getSettingModificationProps("commandsPanelDefaultHeightPx")}
+                max={MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX}
+                min={MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX}
+                onCommit={(value) => updateDraft("commandsPanelDefaultHeightPx", value)}
+                onChange={(value) => updateDraftDebounced("commandsPanelDefaultHeightPx", value)}
+                step={1}
+                value={draft.commandsPanelDefaultHeightPx}
               />
               ) : null}
               {mainSettingVisible(settingsSearch.workspace, "debuggingMode") ? (

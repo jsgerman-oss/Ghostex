@@ -533,6 +533,7 @@ struct SetActiveTerminalSet: Decodable {
   let commandsPanelActiveSessionIds: [String]?
   let commandsPanelFocusedSessionId: String?
   let commandsPanelHeightRatio: Double?
+  let commandsPanelDefaultHeightPx: Double?
   let commandsPanelIsVisible: Bool?
   let commandsPanelLayout: NativeTerminalLayout?
   let commandsPanelMode: String?

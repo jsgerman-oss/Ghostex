@@ -222,6 +222,13 @@ describe("normalizeghostexSettings", () => {
      * normalize to zero so existing installations lose pane spacing immediately.
      */
     expect(DEFAULT_ghostex_SETTINGS.workspacePaneGap).toBe(0);
+    expect(DEFAULT_ghostex_SETTINGS.commandsPanelDefaultHeightPx).toBe(125);
+    expect(normalizeghostexSettings({ commandsPanelDefaultHeightPx: 9999 })).toMatchObject({
+      commandsPanelDefaultHeightPx: 600,
+    });
+    expect(normalizeghostexSettings({ commandsPanelDefaultHeightPx: 12 })).toMatchObject({
+      commandsPanelDefaultHeightPx: 40,
+    });
     expect(normalizeghostexSettings({ workspacePaneGap: 24 })).toMatchObject({
       workspacePaneGap: 0,
     });

@@ -6,6 +6,7 @@ import {
 import {
   clampAgentManagerZoomPercent,
   clampSidebarThemeSetting,
+  DEFAULT_COMMANDS_PANEL_HEIGHT_PX,
   normalizeTerminalEngine,
 } from "./session-grid-contract-session";
 import {
@@ -61,6 +62,18 @@ const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
 const MIN_GHOSTTY_SCROLLBACK_LIMIT_MB = 1;
 const MAX_GHOSTTY_SCROLLBACK_LIMIT_MB = 200;
+export const MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 40;
+export const MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 600;
+
+export function clampCommandsPanelDefaultHeightPx(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_COMMANDS_PANEL_HEIGHT_PX;
+  }
+  return Math.min(
+    MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
+    Math.max(MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX, Math.round(value)),
+  );
+}
 
 /**
  * CDXC:Branding 2026-05-12-07:35
@@ -183,6 +196,13 @@ export type ghostexSettings = {
   workspaceOpenTargetAvailability: WorkspaceOpenTargetAvailability;
   workspaceOpenTargetHiddenIds: string[];
   workspacePaneGap: number;
+  /**
+   * CDXC:CommandsPanel 2026-05-30-10:05:
+   * Opening the command pane (F12, sidebar button) and double-clicking its top
+   * resize rail must restore this pixel height, clamped to the same 5%-90%
+   * workspace limits enforced during drag resize.
+   */
+  commandsPanelDefaultHeightPx: number;
 };
 
 export const SIDEBAR_SETTINGS_PRESET_KEYS = [
@@ -555,6 +575,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * native panes always render without configurable spacing.
    */
   workspacePaneGap: 0,
+  commandsPanelDefaultHeightPx: DEFAULT_COMMANDS_PANEL_HEIGHT_PX,
 };
 
 export const SIDEBAR_THEME_SETTING_OPTIONS: ReadonlyArray<{
@@ -1290,6 +1311,13 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source.workspaceOpenTargetHiddenIds,
     ),
     workspacePaneGap: 0,
+    commandsPanelDefaultHeightPx: clampCommandsPanelDefaultHeightPx(
+      readNumber(
+        source,
+        "commandsPanelDefaultHeightPx",
+        DEFAULT_ghostex_SETTINGS.commandsPanelDefaultHeightPx,
+      ),
+    ),
   };
 }
 

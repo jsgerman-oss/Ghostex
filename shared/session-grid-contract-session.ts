@@ -61,10 +61,10 @@ export const DEFAULT_TERMINAL_SESSION_TITLE = "Terminal Session";
  * Users need the bottom command pane to shrink to 5% of the window height.
  *
  * CDXC:CommandsPanel 2026-05-30-09:20:
- * The command pane may grow up to 90% of the workspace height. Double-clicking the top resize rail and other default-height restores must target 125px, not a percentage of the window.
+ * The command pane may grow up to 90% of the workspace height. Opening the pane and double-clicking the top resize rail restore a pixel default height from Settings, not a percentage of the window.
  *
  * CDXC:CommandsPanel 2026-05-30-09:45:
- * Default command-pane height was raised by 60px (65px -> 125px) so reset/double-click restores leave more room for command tabs and input.
+ * The built-in default height is 125px until the user changes Command Pane Default Height in Workspace settings.
  */
 export const MIN_COMMANDS_PANEL_HEIGHT_RATIO = 0.05;
 export const MAX_COMMANDS_PANEL_HEIGHT_RATIO = 0.9;
@@ -77,6 +77,7 @@ export const DEFAULT_COMMANDS_PANEL_REFERENCE_WORKSPACE_HEIGHT_PX = 900;
 
 export function resolveDefaultCommandsPanelHeightRatio(
   workspaceHeightPx?: number,
+  defaultHeightPx: number = DEFAULT_COMMANDS_PANEL_HEIGHT_PX,
 ): number {
   const workspaceHeight =
     typeof workspaceHeightPx === "number" &&
@@ -84,11 +85,15 @@ export function resolveDefaultCommandsPanelHeightRatio(
     workspaceHeightPx > 0
       ? workspaceHeightPx
       : DEFAULT_COMMANDS_PANEL_REFERENCE_WORKSPACE_HEIGHT_PX;
+  const resolvedDefaultHeightPx =
+    Number.isFinite(defaultHeightPx) && defaultHeightPx > 0
+      ? defaultHeightPx
+      : DEFAULT_COMMANDS_PANEL_HEIGHT_PX;
   return Math.max(
     MIN_COMMANDS_PANEL_HEIGHT_RATIO,
     Math.min(
       MAX_COMMANDS_PANEL_HEIGHT_RATIO,
-      DEFAULT_COMMANDS_PANEL_HEIGHT_PX / workspaceHeight,
+      resolvedDefaultHeightPx / workspaceHeight,
     ),
   );
 }
@@ -299,10 +304,16 @@ export function createDefaultSessionGridSnapshot(): SessionGridSnapshot {
   };
 }
 
-export function createDefaultCommandsPanelState() {
+export function createDefaultCommandsPanelState(options?: {
+  defaultHeightPx?: number;
+  workspaceHeightPx?: number;
+}) {
   return {
     activeSessionId: undefined,
-    heightRatio: DEFAULT_COMMANDS_PANEL_HEIGHT_RATIO,
+    heightRatio: resolveDefaultCommandsPanelHeightRatio(
+      options?.workspaceHeightPx,
+      options?.defaultHeightPx,
+    ),
     isVisible: false,
     mode: "pinned" as const,
     paneLayout: undefined,

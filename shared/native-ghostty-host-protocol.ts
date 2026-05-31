@@ -257,6 +257,7 @@ export type NativeGhosttyHostCommand =
       commandsPanelActiveSessionIds?: string[];
       commandsPanelFocusedSessionId?: string;
       commandsPanelHeightRatio?: number;
+      commandsPanelDefaultHeightPx?: number;
       commandsPanelIsVisible?: boolean;
       commandsPanelLayout?: NativeTerminalLayout;
       commandsPanelMode?: "floating" | "pinned";
