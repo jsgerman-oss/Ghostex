@@ -115,6 +115,7 @@ const COMMANDS = new Map([
   ["fe", floatingEditorCommand],
   ["floating-monaco-editor", floatingMonacoEditorCommand],
   ["fme", floatingMonacoEditorCommand],
+  ["prompt-editor", promptEditorCommand],
   ["state", bridgeAction("state")],
   ["dump-state", bridgeAction("dumpState")],
   ["open", bridgeAction("openPaths", parseOpenPaths, { failOnNotOk: true })],
@@ -1416,37 +1417,41 @@ async function sendGxserverCliAction(action, payload = {}, flags = {}) {
     case "addProject":
       return callGxserverRpc("/api/addProjectPath", payload, flags);
     case "closeSession":
-      return callGxserverRpc("/api/killSession", withResolvedSessionParams(payload), flags);
+      return callGxserverRpc("/api/killSession", await withResolvedGxserverSessionParams(payload, flags), flags);
     case "sleepSession":
-      return callGxserverRpc(payload?.sleeping === false ? "/api/wakeSession" : "/api/sleepSession", withResolvedSessionParams(payload), flags);
+      return callGxserverRpc(
+        payload?.sleeping === false ? "/api/wakeSession" : "/api/sleepSession",
+        await withResolvedGxserverSessionParams(payload, flags),
+        flags,
+      );
     case "renameSession":
-      return callGxserverRpc("/api/updateSession", withResolvedSessionParams(payload), flags);
+      return callGxserverRpc("/api/updateSession", await withResolvedGxserverSessionParams(payload, flags), flags);
     case "favoriteSession":
       return callGxserverRpc(
         "/api/updateSession",
-        withResolvedSessionParams({ ...payload, isFavorite: payload?.favorite }),
+        await withResolvedGxserverSessionParams({ ...payload, isFavorite: payload?.favorite }, flags),
         flags,
       );
     case "pinSession":
       return callGxserverRpc(
         "/api/updateSession",
-        withResolvedSessionParams({ ...payload, isPinned: payload?.pinned }),
+        await withResolvedGxserverSessionParams({ ...payload, isPinned: payload?.pinned }, flags),
         flags,
       );
     case "acknowledgeSessionAttention":
       return callGxserverRpc(
         "/api/updateAgentActivity",
-        withResolvedSessionParams({ ...payload, event: "acknowledge" }),
+        await withResolvedGxserverSessionParams({ ...payload, event: "acknowledge" }, flags),
         flags,
       );
     case "focusSession":
-      return callGxserverRpc("/api/focusSession", withResolvedSessionParams(payload), flags);
+      return callGxserverRpc("/api/focusSession", await withResolvedGxserverSessionParams(payload, flags), flags);
     case "readSessionText":
-      return callGxserverRpc("/api/readSessionText", withResolvedSessionParams(payload), flags);
+      return callGxserverRpc("/api/readSessionText", await withResolvedGxserverSessionParams(payload, flags), flags);
     case "sendText":
-      return callGxserverRpc("/api/sendSessionText", withResolvedSessionParams(payload), flags);
+      return callGxserverRpc("/api/sendSessionText", await withResolvedGxserverSessionParams(payload, flags), flags);
     case "sendEnter":
-      return callGxserverRpc("/api/sendSessionEnter", withResolvedSessionParams(payload), flags);
+      return callGxserverRpc("/api/sendSessionEnter", await withResolvedGxserverSessionParams(payload, flags), flags);
     case "sendMessage":
       return callGxserverRpc("/api/sendSessionMessage", payload, flags);
     default:
@@ -1523,13 +1528,53 @@ function normalizeRequiredProjectId(value, commandName) {
   return projectId;
 }
 
-function withResolvedSessionParams(payload = {}) {
+function withResolvedSessionParams(payload = {}, flags = {}) {
   const globalParts = isGxserverGlobalSessionRef(payload.sessionId) ? String(payload.sessionId).split(":") : undefined;
   return compactObject({
     ...payload,
-    projectId: payload.projectId ?? globalParts?.[1],
+    globalRef: payload.globalRef ?? (globalParts ? payload.sessionId : undefined),
+    projectId: payload.projectId ?? flags.projectId ?? globalParts?.[1],
     sessionId: globalParts?.[2] ?? payload.sessionId,
   });
+}
+
+async function withResolvedGxserverSessionParams(payload = {}, flags = {}) {
+  const params = withResolvedSessionParams(payload, flags);
+  if (params.projectId || !params.sessionId) {
+    return params;
+  }
+  /*
+   * CDXC:GxserverSessionLifecycle 2026-05-31-08:45:
+   * Android, iOS, the gx TUI, and plain `gx` lifecycle commands send stable
+   * `--session-id G...` selectors from `ghostex sessions --json`. gxserver
+   * lifecycle RPCs require projectId too, so resolve bare session ids through
+   * the daemon inventory instead of falling back to the retired macOS bridge or
+   * making every client learn project-scoped RPC payloads.
+   */
+  const session = await resolveGxserverInventorySession(params.sessionId, flags);
+  return compactObject({
+    ...params,
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+}
+
+async function resolveGxserverInventorySession(sessionId, flags = {}) {
+  const selector = String(sessionId ?? "").trim();
+  if (!selector) {
+    throw new Error("Session action requires --session-id.");
+  }
+  const result = await fetchGxserverSessionList({ ...flags, all: true, includeStopped: true });
+  const matches = (result.sessions ?? []).filter(
+    (session) => session.sessionId === selector || session.globalRef === selector,
+  );
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  if (matches.length > 1) {
+    throw new Error(`Multiple gxserver sessions matched "${selector}". Use the full globalRef from ghostex sessions --json.`);
+  }
+  throw new Error(`No gxserver session matched "${selector}".`);
 }
 
 async function fetchGxserverSessionList(flags = {}) {
@@ -1540,13 +1585,31 @@ async function fetchGxserverSessionList(flags = {}) {
   const projects = Array.isArray(projectsResponse.projects) ? projectsResponse.projects : [];
   const sessions = Array.isArray(sessionsResponse.sessions) ? sessionsResponse.sessions : [];
   const projectById = new Map(projects.map((project) => [project.projectId, project]));
+  /*
+   * CDXC:GxserverSessionInventory 2026-05-31-08:45:
+   * All five clients render the same gxserver inventory contract: macOS owns
+   * local tab/split layout, but gxserver owns which zmx sessions still exist.
+   * Default lists include running and sleeping sessions and hide stopped rows;
+   * diagnostic callers may opt into stopped rows with --all/--include-stopped.
+   */
+  const listedSessions = shouldIncludeStoppedGxserverSessions(flags)
+    ? sessions
+    : sessions.filter((session) => !isStoppedGxserverSession(session));
   return {
     ok: true,
     product: GXSERVER_PRODUCT,
     projects,
     revision: sessionsResponse.requestId,
-    sessions: sessions.map((session, index) => toCliSession(session, projectById.get(session.projectId), index)),
+    sessions: listedSessions.map((session, index) => toCliSession(session, projectById.get(session.projectId), index)),
   };
+}
+
+function shouldIncludeStoppedGxserverSessions(flags = {}) {
+  return flags.all === true || flags.includeStopped === true || flags.stopped === true;
+}
+
+function isStoppedGxserverSession(session) {
+  return String(session?.lifecycleState ?? "") === "stopped";
 }
 
 function toCliSession(session, project, index) {
@@ -1557,23 +1620,29 @@ function toCliSession(session, project, index) {
       ? "sleep"
       : lifecycleState === "stopped"
         ? "stopped"
-        : providerState === "exists"
+        : lifecycleState === "running"
           ? "running"
           : providerState || lifecycleState || "unknown";
+  const providerSessionName = session.zmxName ?? session.providerState?.zmxName;
   return {
     agent: session.agentId,
     agentId: session.agentId,
     alias: index + 1,
     globalRef: session.globalRef,
     isFocused: false,
+    isLive: lifecycleState === "running" || providerState === "exists",
     isSleeping: lifecycleState === "sleeping",
     lastInteractionAt: session.lastActiveAt ?? session.updatedAt,
+    lifecycleState,
     projectId: session.projectId,
     projectName: project?.name ?? session.projectId,
     projectPath: session.cwd ?? project?.path ?? "",
     provider: "zmx",
-    providerSessionName: session.zmxName ?? session.providerState?.zmxName,
+    providerSessionName,
+    providerSessionState: providerState || undefined,
     sessionId: session.sessionId,
+    sessionPersistenceName: providerSessionName,
+    sessionPersistenceProvider: "zmx",
     status,
     title: session.title,
   };
@@ -2433,8 +2502,84 @@ async function floatingEditorCommand(args) {
   }
 }
 
+async function promptEditorCommand(args) {
+  /**
+   * CDXC:PromptEditor 2026-05-31-11:58:
+   * Agent Ctrl+G launches through a single-file EDITOR wrapper because prompt
+   * editor callers such as zehn execute EDITOR as argv[0] and do not split
+   * command strings. Runtime selection must keep macOS app terminals on Monaco
+   * while Android, iOS, plain SSH, CLI, and TUI attaches use terminal-native
+   * gte even when Settings selected Monaco.
+   */
+  const { flags, rest } = parseArgs(args);
+  const filePath = rest.find((arg) => arg && arg.trim() !== "");
+  if (!filePath) {
+    throw new Error("Usage: ghostex prompt-editor <file>");
+  }
+
+  const cwd = path.resolve(String(flags.cwd ?? process.cwd()));
+  const resolvedFilePath = path.resolve(cwd, filePath);
+  const backend = promptEditorBackendFromEnvironment();
+  const selection = selectPromptEditorCommand({
+    backend,
+    filePath: resolvedFilePath,
+  });
+
+  await appendFloatingEditorLog({
+    backend,
+    command: selection.commandArgs.join(" "),
+    cwd,
+    event: "cli.prompt_editor_select",
+    globalSessionRef: process.env.GHOSTEX_GLOBAL_SESSION_REF ?? "",
+    gxserverBaseUrl: process.env.GHOSTEX_GXSERVER_BASE_URL ?? "",
+    macosAppClient: isMacosAppPromptEditorClient(),
+    originatingSessionId: process.env.GHOSTEX_NATIVE_SESSION_ID ?? "",
+  });
+
+  if (selection.kind === "monaco") {
+    await floatingMonacoEditorCommand(args);
+    return;
+  }
+  await runEditorInline(selection.commandArgs, cwd);
+}
+
+function promptEditorBackendFromEnvironment() {
+  const backend = String(process.env.GHOSTEX_PROMPT_EDITOR_BACKEND ?? "").trim();
+  if (backend === "monaco" || backend === "gte" || backend === "custom") {
+    return backend;
+  }
+  if (process.env.GHOSTEX_RICH_PROMPT_EDITING_WITH_GTE === "1") {
+    return "gte";
+  }
+  return "gte";
+}
+
+function isMacosAppPromptEditorClient() {
+  return process.env.GHOSTEX_PROMPT_EDITOR_CLIENT === "macos-app";
+}
+
+function selectPromptEditorCommand({ backend, filePath }) {
+  if (backend === "custom") {
+    const customCommand = String(process.env.GHOSTEX_CUSTOM_PROMPT_EDITOR_COMMAND ?? "").trim() || "code --wait";
+    return {
+      commandArgs: ["/bin/zsh", "-lc", `exec ${customCommand} "$@"`, "ghostex-prompt-editor", filePath],
+      kind: "custom",
+    };
+  }
+  if (backend === "monaco" && isMacosAppPromptEditorClient()) {
+    return { commandArgs: ["ghostex", "floating-monaco-editor", filePath], kind: "monaco" };
+  }
+  return { commandArgs: ["gte", filePath], kind: "gte" };
+}
+
 async function floatingMonacoEditorCommand(args) {
-  throw new GxserverCliUnsupportedError("floating-monaco-editor");
+  /**
+   * CDXC:PromptEditor 2026-05-31-10:24:
+   * Monaco prompt editing is still rendered by the running macOS app, not
+   * gxserver. Keep this EDITOR-facing command on the native bridge until
+   * gxserver owns an equivalent blocking save/cancel endpoint, otherwise Ctrl+G
+   * prompt editing exits before the floating editor can open.
+   */
   const { flags, rest } = parseArgs(args);
   const filePath = rest.find((arg) => arg && arg.trim() !== "");
   if (!filePath) {
@@ -3281,6 +3426,7 @@ function sessionActionCommand(action, pastTense, extraPayload = {}) {
         action,
         {
           ...extraPayload,
+          projectId: session.projectId,
           sessionId: session.sessionId,
         },
         flags,
@@ -4087,10 +4233,14 @@ function parseRename(rest, flags) {
 }
 
 function parseSessionBoolean(name) {
-  return (rest, flags) => ({
-    ...parseSessionSelector(rest, flags),
-    [name]: parseBoolean(flags[name] ?? flags.value ?? rest[1] ?? "true"),
-  });
+  return (rest, flags) => {
+    const hasFlagSelector =
+      flags.sessionId !== undefined || flags.index !== undefined || flags.sessionNumber !== undefined;
+    return {
+      ...parseSessionSelector(rest, flags),
+      [name]: parseBoolean(flags[name] ?? flags.value ?? rest[hasFlagSelector ? 0 : 1] ?? "true"),
+    };
+  };
 }
 
 function parseSendText(rest, flags) {
@@ -4625,6 +4775,7 @@ export {
   buildSessionAttachCommand,
   computerUseUsage,
   createCliSshForwardPlan,
+  fetchGxserverSessionList,
   formatCompactSessionLine,
   generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
@@ -4642,5 +4793,6 @@ export {
   resolveGxserverServerTarget,
   resolveListedSessions,
   resolveZehnLaunchFromRoot,
+  sendGxserverCliAction,
   usage,
 };
