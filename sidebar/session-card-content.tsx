@@ -277,6 +277,7 @@ export function getSessionCardTitleTooltip({
     | "isPrimaryTitleTerminalTitle"
     | "primaryTitle"
     | "sessionKind"
+    | "sessionRoutingId"
     | "sessionPersistenceName"
     | "sessionPersistenceProvider"
     | "sessionNumber"
@@ -327,10 +328,16 @@ export function getSessionCardTitleTooltip({
    *
    * CDXC:SessionRestore 2026-05-23-00:25:
    * The hover tooltip should show the captured session id directly, without a "captured session id" label, so the tooltip stays compact and copyable.
+   *
+   * CDXC:SessionTooltips 2026-05-31-06:25:
+   * macOS gxserver session-card tooltips should show the full routed session id
+   * such as S7k-P3a91-G8v20 when available. The legacy two-digit display id is
+   * only a visual row shortcut and should not replace the routed identity.
    */
+  const sessionIdTooltipValue = session.sessionRoutingId?.trim() || session.sessionNumber?.trim();
   const sessionIdTooltip =
-    showDebugSessionNumbers && session.sessionNumber !== undefined
-      ? `ID: ${session.sessionNumber}`
+    showDebugSessionNumbers && sessionIdTooltipValue
+      ? `ID: ${sessionIdTooltipValue}`
       : undefined;
   const agentSessionIdTooltip = getCapturedAgentSessionIdTooltipText(session);
   const tooltipMetadata = [

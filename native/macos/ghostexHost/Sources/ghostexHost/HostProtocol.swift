@@ -45,6 +45,7 @@ enum HostCommand: Decodable {
   case projectBoardResponse(ProjectBoardResponse)
   case playSound(PlaySound)
   case runProcess(RunProcess)
+  case gxserverRequest(GxserverRequest)
   case setKeepAwakeLidSleepPrevention(SetKeepAwakeLidSleepPrevention)
   case syncGhosttyTerminalSettings(SyncGhosttyTerminalSettings)
   case applyGhosttyConfigSettings(ApplyGhosttyConfigSettings)
@@ -75,6 +76,10 @@ enum HostCommand: Decodable {
   case togglePetOverlayFromTitlebar
   case toggleCommandsPanelFromTitlebar
   case showUpdateDialogFromTitlebar
+  case startGxserverFromTitlebar
+  case stopGxserverFromTitlebar
+  case restartGxserverFromTitlebar
+  case setGxserverAlwaysStartFromTitlebar(SetGxserverAlwaysStartFromTitlebar)
   case focusResourceSessionFromTitlebar(FocusResourceSessionFromTitlebar)
   case sleepInactiveSessionsFromTitlebar(SleepInactiveSessionsFromTitlebar)
   case quitResourcesFromTitlebar(QuitResourcesFromTitlebar)
@@ -133,6 +138,7 @@ enum HostCommand: Decodable {
     case projectBoardResponse
     case playSound
     case runProcess
+    case gxserverRequest
     case setKeepAwakeLidSleepPrevention
     case syncGhosttyTerminalSettings
     case applyGhosttyConfigSettings
@@ -163,6 +169,10 @@ enum HostCommand: Decodable {
     case togglePetOverlayFromTitlebar
     case toggleCommandsPanelFromTitlebar
     case showUpdateDialogFromTitlebar
+    case startGxserverFromTitlebar
+    case stopGxserverFromTitlebar
+    case restartGxserverFromTitlebar
+    case setGxserverAlwaysStartFromTitlebar
     case focusResourceSessionFromTitlebar
     case sleepInactiveSessionsFromTitlebar
     case quitResourcesFromTitlebar
@@ -265,6 +275,8 @@ enum HostCommand: Decodable {
       self = .playSound(try PlaySound(from: decoder))
     case .runProcess:
       self = .runProcess(try RunProcess(from: decoder))
+    case .gxserverRequest:
+      self = .gxserverRequest(try GxserverRequest(from: decoder))
     case .setKeepAwakeLidSleepPrevention:
       self = .setKeepAwakeLidSleepPrevention(try SetKeepAwakeLidSleepPrevention(from: decoder))
     case .syncGhosttyTerminalSettings:
@@ -325,6 +337,14 @@ enum HostCommand: Decodable {
       self = .toggleCommandsPanelFromTitlebar
     case .showUpdateDialogFromTitlebar:
       self = .showUpdateDialogFromTitlebar
+    case .startGxserverFromTitlebar:
+      self = .startGxserverFromTitlebar
+    case .stopGxserverFromTitlebar:
+      self = .stopGxserverFromTitlebar
+    case .restartGxserverFromTitlebar:
+      self = .restartGxserverFromTitlebar
+    case .setGxserverAlwaysStartFromTitlebar:
+      self = .setGxserverAlwaysStartFromTitlebar(try SetGxserverAlwaysStartFromTitlebar(from: decoder))
     case .focusResourceSessionFromTitlebar:
       self = .focusResourceSessionFromTitlebar(try FocusResourceSessionFromTitlebar(from: decoder))
     case .sleepInactiveSessionsFromTitlebar:
@@ -532,6 +552,7 @@ struct SetActiveTerminalSet: Decodable {
   let layoutChanged: Bool?
   let layout: NativeTerminalLayout?
   let keepAwake: TitlebarKeepAwakeSettings?
+  let gxserverDaemon: TitlebarGxserverDaemon?
   let paneGap: Double?
   let petOverlayEnabled: Bool?
   /**
@@ -613,6 +634,18 @@ struct TitlebarKeepAwakeSettings: Decodable {
   let deactivateOnUserSwitch: Bool
   let defaultDurationMinutes: Int
   let preventLidSleep: Bool
+}
+
+struct TitlebarGxserverDaemon: Decodable {
+  let alwaysStart: Bool?
+  let message: String?
+  let nodePath: String?
+  let nodeVersion: String?
+  let ok: Bool?
+  let pid: Int?
+  let startedAt: String?
+  let state: String
+  let version: String?
 }
 
 struct TitlebarResourceSession: Decodable {
@@ -863,6 +896,13 @@ struct RunProcess: Decodable {
   let requestId: String
 }
 
+struct GxserverRequest: Decodable {
+  let method: String
+  let paramsJson: String?
+  let path: String
+  let requestId: String
+}
+
 struct SetKeepAwakeLidSleepPrevention: Decodable {
   let enabled: Bool
   let installIfNeeded: Bool?
@@ -972,6 +1012,10 @@ struct FocusResourceSessionFromTitlebar: Decodable {
 
 struct SleepInactiveSessionsFromTitlebar: Decodable {
   let sessionIds: [String]
+}
+
+struct SetGxserverAlwaysStartFromTitlebar: Decodable {
+  let enabled: Bool
 }
 
 struct QuitResourcesFromTitlebar: Decodable {
@@ -1089,6 +1133,8 @@ enum HostEvent: Encodable {
     sessionId: String, projectId: String, threadId: String, serverOrigin: String, workspaceRoot: String)
   case t3ThreadChanged(sessionId: String, threadId: String, title: String?)
   case processResult(requestId: String, exitCode: Int32, stdout: String, stderr: String)
+  case gxserverResponse(
+    requestId: String, path: String, ok: Bool, statusCode: Int?, bodyJson: String?, error: String?)
   case sidebarCliResult(requestId: String, ok: Bool, payloadJson: String)
   case gxserverStatus(payloadJson: String)
 
@@ -1120,7 +1166,9 @@ enum HostEvent: Encodable {
     case workspaceRoot
     case requestId
     case ok
+    case bodyJson
     case payloadJson
+    case path
     case projectPath
     case prompt
     case error
@@ -1133,6 +1181,7 @@ enum HostEvent: Encodable {
     case sessionPersistenceName
     case scope
     case status
+    case statusCode
     case ticketTitle
     case position
     case sourceSessionId
@@ -1400,6 +1449,14 @@ enum HostEvent: Encodable {
       try container.encode(exitCode, forKey: .exitCode)
       try container.encode(stdout, forKey: .stdout)
       try container.encode(stderr, forKey: .stderr)
+    case .gxserverResponse(let requestId, let path, let ok, let statusCode, let bodyJson, let error):
+      try container.encode("gxserverResponse", forKey: .type)
+      try container.encode(requestId, forKey: .requestId)
+      try container.encode(path, forKey: .path)
+      try container.encode(ok, forKey: .ok)
+      try container.encodeIfPresent(statusCode, forKey: .statusCode)
+      try container.encodeIfPresent(bodyJson, forKey: .bodyJson)
+      try container.encodeIfPresent(error, forKey: .error)
     case .sidebarCliResult(let requestId, let ok, let payloadJson):
       try container.encode("sidebarCliResult", forKey: .type)
       try container.encode(requestId, forKey: .requestId)

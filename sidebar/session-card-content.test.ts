@@ -127,6 +127,29 @@ describe("getSessionCardTitleTooltip", () => {
     });
   });
 
+  test("should prefer routed session ids over display numbers in the tooltip", () => {
+    expect(
+      getSessionCardTitleTooltip({
+        session: {
+          activityLabel: undefined,
+          agentIcon: "codex",
+          alias: "Session 1",
+          detail: "OpenAI Codex",
+          isPrimaryTitleTerminalTitle: true,
+          primaryTitle: "Lost actions after migration",
+          sessionNumber: "05",
+          sessionRoutingId: "S7k-P3a91-G8v20",
+          terminalTitle: undefined,
+        },
+        showDebugSessionNumbers: true,
+      }),
+    ).toEqual({
+      headingText: "Lost actions after migration",
+      tooltip: "Lost actions after migration\n\nID: S7k-P3a91-G8v20",
+      tooltipWhen: "always",
+    });
+  });
+
   test("should expand ellipsized first-prompt titles in the tooltip heading", () => {
     expect(
       getSessionCardTitleTooltip({

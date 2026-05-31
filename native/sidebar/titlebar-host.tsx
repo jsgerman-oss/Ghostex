@@ -22,6 +22,7 @@ import {
   IconLoader2,
   IconMoon,
   IconPlayerPlay,
+  IconRefresh,
   IconRocket,
   IconSearch,
   IconSettings,
@@ -177,6 +178,18 @@ type TitlebarBrowserTabResource = {
   url?: string;
 };
 
+type TitlebarGxserverDaemonStatus = {
+  alwaysStart: boolean;
+  message?: string;
+  nodePath?: string;
+  nodeVersion?: string;
+  ok?: boolean;
+  pid?: number;
+  startedAt?: string;
+  state: string;
+  version?: string;
+};
+
 type TitlebarProjectState = {
   activeMode: TitlebarMode;
   browserTabs: TitlebarBrowserTabResource[];
@@ -186,6 +199,7 @@ type TitlebarProjectState = {
   editorIsSleeping: boolean;
   editorStatus: ProjectEditorLoadStatus;
   git: SidebarGitState;
+  gxserverDaemon: TitlebarGxserverDaemonStatus;
   keepAwake: TitlebarKeepAwakeSettings;
   projectEditorCompanionPaneHidden: boolean;
   projectIconDataUrl?: string | null;
@@ -254,6 +268,10 @@ type NativeTitlebarCommand =
   | { type: "refreshWorkspaceOpenTargetAvailabilityFromTitlebar" }
   | { type: "toggleCommandsPanelFromTitlebar" }
   | { type: "showUpdateDialogFromTitlebar" }
+  | { type: "startGxserverFromTitlebar" }
+  | { type: "stopGxserverFromTitlebar" }
+  | { type: "restartGxserverFromTitlebar" }
+  | { enabled: boolean; type: "setGxserverAlwaysStartFromTitlebar" }
   | { sessionId: string; type: "focusResourceSessionFromTitlebar" }
   | { sessionIds: string[]; type: "sleepInactiveSessionsFromTitlebar" }
   | { projectIds: string[]; sessionIds: string[]; type: "quitResourcesFromTitlebar" }
@@ -1388,6 +1406,7 @@ function App() {
     tipsMenuOpen,
     resourceProcesses.length,
     projectState.projectEditorCompanionPaneHidden,
+    projectState.gxserverDaemon.state,
     projectState.projectIconDataUrl,
     projectState.isFocusModeActive,
     projectState.projectName,
@@ -1443,6 +1462,7 @@ function App() {
           debuggingMode: state.debuggingMode ?? current.debuggingMode,
           diffStats: state.diffStats ?? current.diffStats,
           git: state.git ?? current.git,
+          gxserverDaemon: state.gxserverDaemon ?? current.gxserverDaemon,
           keepAwake: state.keepAwake ?? current.keepAwake,
           browserTabs: state.browserTabs ?? current.browserTabs,
           projectEditorCompanionPaneHidden:
@@ -1749,6 +1769,22 @@ function App() {
       sessionIds: inactiveTerminalSleepSessionIds,
       type: "sleepInactiveSessionsFromTitlebar",
     });
+  };
+
+  const startGxserverDaemon = () => {
+    postNative({ type: "startGxserverFromTitlebar" });
+  };
+
+  const stopGxserverDaemon = () => {
+    postNative({ type: "stopGxserverFromTitlebar" });
+  };
+
+  const restartGxserverDaemon = () => {
+    postNative({ type: "restartGxserverFromTitlebar" });
+  };
+
+  const setGxserverAlwaysStart = (enabled: boolean) => {
+    postNative({ enabled, type: "setGxserverAlwaysStartFromTitlebar" });
   };
 
   const stopKeepAwake = useCallback(async () => {
@@ -2341,9 +2377,14 @@ function App() {
                 <TitlebarResourcesMenu
                   browserBundles={resourceViews.browserBundles}
                   collapsedKeys={collapsedResourceKeys}
+                  daemon={projectState.gxserverDaemon}
                   groupViews={resourceViews.groupViews}
                   inactiveTerminalSleepSessionCount={inactiveTerminalSleepSessionIds.length}
                   onFocusSession={focusResourceSession}
+                  onGxserverAlwaysStartChange={setGxserverAlwaysStart}
+                  onGxserverRestart={restartGxserverDaemon}
+                  onGxserverStart={startGxserverDaemon}
+                  onGxserverStop={stopGxserverDaemon}
                   onQuit={quitResourceBundles}
                   onSetSectionsCollapsed={setResourceSectionsCollapsed}
                   onSleepInactiveSessions={sleepInactiveTerminalSessions}
@@ -2641,6 +2682,10 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
     editorIsSleeping: false,
     editorStatus: "idle",
     git: createDefaultSidebarGitState(),
+    gxserverDaemon: {
+      alwaysStart: true,
+      state: "unknown",
+    },
     keepAwake: createTitlebarKeepAwakeSettings(settings),
     projectEditorCompanionPaneHidden: false,
     projectName:
@@ -2966,9 +3011,14 @@ function getTitlebarTipIcon(icon: TitlebarTip["icon"]): ReactNode {
 function TitlebarResourcesMenu({
   browserBundles,
   collapsedKeys,
+  daemon,
   groupViews,
   inactiveTerminalSleepSessionCount,
   onFocusSession,
+  onGxserverAlwaysStartChange,
+  onGxserverRestart,
+  onGxserverStart,
+  onGxserverStop,
   onQuit,
   onSetSectionsCollapsed,
   onSleepInactiveSessions,
@@ -2979,9 +3029,14 @@ function TitlebarResourcesMenu({
 }: {
   browserBundles: ResourceProcessBundle[];
   collapsedKeys: Set<string>;
+  daemon: TitlebarGxserverDaemonStatus;
   groupViews: ResourceGroupView[];
   inactiveTerminalSleepSessionCount: number;
   onFocusSession: (sessionId: string) => void;
+  onGxserverAlwaysStartChange: (enabled: boolean) => void;
+  onGxserverRestart: () => void;
+  onGxserverStart: () => void;
+  onGxserverStop: () => void;
   onQuit: (bundles: ResourceProcessBundle[]) => void;
   onSetSectionsCollapsed: (keys: string[], collapsed: boolean) => void;
   onSleepInactiveSessions: () => void;
@@ -3160,6 +3215,13 @@ function TitlebarResourcesMenu({
         </div>
       </div>
       <div className="titlebar-resources-scroll">
+        <TitlebarGxserverDaemonSection
+          daemon={daemon}
+          onAlwaysStartChange={onGxserverAlwaysStartChange}
+          onRestart={onGxserverRestart}
+          onStart={onGxserverStart}
+          onStop={onGxserverStop}
+        />
         <div className="titlebar-resources-info-note">
           This app uses native Ghostty terminals as they're lighter on CPU & RAM than electron/web terminals.<br />
           Long conversations with agents will still take up 100-200mbs each.<br />
@@ -3204,6 +3266,96 @@ function TitlebarResourcesMenu({
         />
       </div>
     </div>
+  );
+}
+
+function TitlebarGxserverDaemonSection({
+  daemon,
+  onAlwaysStartChange,
+  onRestart,
+  onStart,
+  onStop,
+}: {
+  daemon: TitlebarGxserverDaemonStatus;
+  onAlwaysStartChange: (enabled: boolean) => void;
+  onRestart: () => void;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const isRunning = daemon.state === "running";
+  const isStarting = daemon.state === "starting";
+  const statusLabel = daemon.version
+    ? `${daemon.state} - v${daemon.version}`
+    : daemon.state;
+  return (
+    <section className="titlebar-gxserver-daemon">
+      <div className="titlebar-gxserver-daemon-main">
+        <span className="titlebar-gxserver-daemon-dot" data-state={daemon.ok === false ? "error" : daemon.state} />
+        <div className="titlebar-gxserver-daemon-copy">
+          <span>Daemon</span>
+          <span>{statusLabel}</span>
+        </div>
+      </div>
+      <div className="titlebar-gxserver-daemon-controls">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                aria-label="Start gxserver"
+                className="titlebar-gxserver-daemon-icon-button"
+                disabled={isRunning || isStarting}
+                onClick={onStart}
+                type="button"
+              >
+                <IconPlayerPlay aria-hidden="true" size={14} stroke={1.9} />
+              </button>
+            }
+          />
+          <TooltipContent className="titlebar-resource-tooltip">Start daemon</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                aria-label="Restart gxserver"
+                className="titlebar-gxserver-daemon-icon-button"
+                disabled={isStarting}
+                onClick={onRestart}
+                type="button"
+              >
+                <IconRefresh aria-hidden="true" size={14} stroke={1.9} />
+              </button>
+            }
+          />
+          <TooltipContent className="titlebar-resource-tooltip">Restart daemon</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                aria-label="Stop gxserver"
+                className="titlebar-gxserver-daemon-icon-button"
+                disabled={!isRunning && !isStarting}
+                onClick={onStop}
+                type="button"
+              >
+                <IconX aria-hidden="true" size={14} stroke={1.9} />
+              </button>
+            }
+          />
+          <TooltipContent className="titlebar-resource-tooltip">Stop daemon</TooltipContent>
+        </Tooltip>
+        <label className="titlebar-gxserver-daemon-checkbox">
+          <input
+            checked={daemon.alwaysStart}
+            onChange={(event) => onAlwaysStartChange(event.currentTarget.checked)}
+            type="checkbox"
+          />
+          <span>Always start</span>
+        </label>
+      </div>
+      {daemon.message ? <div className="titlebar-gxserver-daemon-message">{daemon.message}</div> : null}
+    </section>
   );
 }
 
@@ -4930,6 +5082,109 @@ styleElement.textContent = `
     font: 600 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
     margin-bottom: 8px;
     padding: 8px 10px;
+  }
+  .titlebar-gxserver-daemon {
+    /*
+     * CDXC:TitlebarResources 2026-05-31-03:56:
+     * The Resources dropdown must expose gxserver daemon status, version, stop/restart controls, and a small Always start checkbox without changing the sidebar session restore list.
+     */
+    align-items: center;
+    background: rgba(255,255,255,0.045);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.72);
+    display: grid;
+    gap: 6px 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-bottom: 8px;
+    min-width: 0;
+    padding: 8px 10px;
+  }
+  .titlebar-gxserver-daemon-main,
+  .titlebar-gxserver-daemon-controls,
+  .titlebar-gxserver-daemon-checkbox {
+    align-items: center;
+    display: inline-flex;
+    min-width: 0;
+  }
+  .titlebar-gxserver-daemon-main {
+    gap: 8px;
+  }
+  .titlebar-gxserver-daemon-dot {
+    background: rgba(255,255,255,0.35);
+    border-radius: 999px;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.05);
+    flex: 0 0 auto;
+    height: 7px;
+    width: 7px;
+  }
+  .titlebar-gxserver-daemon-dot[data-state="running"] {
+    background: #4ade80;
+    box-shadow: 0 0 0 3px rgba(74,222,128,0.14);
+  }
+  .titlebar-gxserver-daemon-dot[data-state="starting"] {
+    background: #facc15;
+    box-shadow: 0 0 0 3px rgba(250,204,21,0.16);
+  }
+  .titlebar-gxserver-daemon-dot[data-state="error"],
+  .titlebar-gxserver-daemon-dot[data-state="nodeUnavailable"],
+  .titlebar-gxserver-daemon-dot[data-state="startFailed"] {
+    background: #fb7185;
+    box-shadow: 0 0 0 3px rgba(251,113,133,0.16);
+  }
+  .titlebar-gxserver-daemon-copy {
+    display: grid;
+    font: 650 11px/1.25 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    gap: 1px;
+    min-width: 0;
+  }
+  .titlebar-gxserver-daemon-copy span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .titlebar-gxserver-daemon-copy span:first-child {
+    color: rgba(255,255,255,0.92);
+    font-weight: 760;
+  }
+  .titlebar-gxserver-daemon-controls {
+    gap: 6px;
+  }
+  .titlebar-gxserver-daemon-icon-button {
+    align-items: center;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: rgba(255,255,255,0.78);
+    display: inline-flex;
+    height: 24px;
+    justify-content: center;
+    width: 24px;
+  }
+  .titlebar-gxserver-daemon-icon-button:disabled {
+    color: rgba(255,255,255,0.28);
+  }
+  .titlebar-gxserver-daemon-icon-button:not(:disabled):hover {
+    background: rgba(255,255,255,0.14);
+    color: rgba(255,255,255,0.94);
+  }
+  .titlebar-gxserver-daemon-checkbox {
+    color: rgba(255,255,255,0.58);
+    gap: 4px;
+    font: 650 10px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    white-space: nowrap;
+  }
+  .titlebar-gxserver-daemon-checkbox input {
+    height: 12px;
+    margin: 0;
+    width: 12px;
+  }
+  .titlebar-gxserver-daemon-message {
+    color: rgba(255,255,255,0.48);
+    font: 600 10px/1.25 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    grid-column: 1 / -1;
+    max-height: 26px;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .titlebar-resource-section + .titlebar-resource-section {
     margin-top: 8px;

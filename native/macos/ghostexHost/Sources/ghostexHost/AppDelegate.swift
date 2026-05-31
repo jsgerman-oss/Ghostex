@@ -1135,7 +1135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
      formatting and avoid recreating the logs directory on every append so
      enabled diagnostics do not become the app's hot path.
      */
-    let line = "[\(logDateFormatter.string(from: Date()))] \(message)\n"
+    let line = "[\(logDateFormatter.string(from: Date()))] \(NativeLogPrivacy.sanitizeLogLine(message))\n"
 
     do {
       if !createdLogDirectories.contains(logsDirectory.path) {
@@ -1153,7 +1153,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         try line.write(to: logURL, atomically: true, encoding: .utf8)
       }
     } catch {
-      logger.warning("failed to write \(label) log: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      logger.warning("failed to write \(label) log: \(sanitizedError)")
     }
   }
 
@@ -1621,6 +1622,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       },
       showUpdateDialogFromTitlebar: { [weak self] in
         self?.showUpdateDialogFromTitlebar()
+      },
+      startGxserverFromTitlebar: { [weak self] in
+        self?.startGxserverFromUserAction(reason: "start")
+      },
+      stopGxserverFromTitlebar: { [weak self] in
+        self?.stopGxserverFromUserAction()
+      },
+      restartGxserverFromTitlebar: { [weak self] in
+        self?.restartGxserverFromUserAction()
+      },
+      setGxserverAlwaysStartFromTitlebar: { [weak self] enabled in
+        self?.setGxserverAlwaysStartFromUserAction(enabled: enabled)
       }
     )
     workspaceView = root.workspaceView
@@ -2087,8 +2100,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     (window?.contentView as? ghostexRootView)?.postHostEvent(event)
     Self.appendNativeHostLifecycleLog(
       "gxserver.bootstrap state=\(status.state) ok=\(status.ok) message=\(status.message)")
-    if !status.ok {
-      showMessage(.init(level: .error, message: status.message))
+  }
+
+  @MainActor
+  private func startGxserverFromUserAction(reason: String) {
+    publishGxserverBootstrapStatus(gxserverClient.startingStatus(message: "Starting gxserver..."))
+    Task { [weak self] in
+      guard let self else { return }
+      let status = await self.gxserverClient.startOrReuse(allowStart: true)
+      await MainActor.run {
+        Self.appendNativeHostLifecycleLog("gxserver.\(reason) state=\(status.state) ok=\(status.ok)")
+        self.publishGxserverBootstrapStatus(status)
+      }
+    }
+  }
+
+  @MainActor
+  private func stopGxserverFromUserAction() {
+    publishGxserverBootstrapStatus(gxserverClient.startingStatus(message: "Stopping gxserver..."))
+    Task { [weak self] in
+      guard let self else { return }
+      let status = await self.gxserverClient.stopControlPlane()
+      await MainActor.run {
+        Self.appendNativeHostLifecycleLog("gxserver.stop state=\(status.state) ok=\(status.ok)")
+        self.publishGxserverBootstrapStatus(status)
+      }
+    }
+  }
+
+  @MainActor
+  private func restartGxserverFromUserAction() {
+    publishGxserverBootstrapStatus(gxserverClient.startingStatus(message: "Restarting gxserver..."))
+    Task { [weak self] in
+      guard let self else { return }
+      _ = await self.gxserverClient.stopControlPlane()
+      let status = await self.gxserverClient.startOrReuse(allowStart: true)
+      await MainActor.run {
+        Self.appendNativeHostLifecycleLog("gxserver.restart state=\(status.state) ok=\(status.ok)")
+        self.publishGxserverBootstrapStatus(status)
+      }
+    }
+  }
+
+  @MainActor
+  private func setGxserverAlwaysStartFromUserAction(enabled: Bool) {
+    /**
+     CDXC:GxserverBootstrap 2026-05-31-03:56:
+     The Resources dropdown owns the compact daemon controls. The Always start
+     checkbox changes only future Ghostex launch behavior; explicit Start and
+     Restart still run immediately so users can recover a stopped daemon.
+    */
+    gxserverClient.alwaysStartOnLaunch = enabled
+    Task { [weak self] in
+      guard let self else { return }
+      let status = await self.gxserverClient.startOrReuse(allowStart: false)
+      await MainActor.run {
+        self.publishGxserverBootstrapStatus(status)
+      }
     }
   }
 
@@ -2103,10 +2171,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
 
        CDXC:GxserverBootstrap 2026-05-30-15:39:
        gxserver owns port 58744 in the hard cutover. The dev-only native CLI bridge uses 58742 so local desktop automation cannot bind or mask the daemon API port.
+
+       CDXC:GxserverMacBootstrap 2026-05-30-15:13:
+       gxserver owns fixed local API port 58744, so the dev-only native CLI
+       bridge must not bind that port before daemon bootstrap. Keep production
+       on 58743 and move dev bridge traffic to 58742.
        */
       let bridgePort: UInt16 = Self.isDevBundleIdentifier(Bundle.main.bundleIdentifier)
-	        ? 58742
-	        : 58743
+        ? 58742
+        : 58743
       let bridgeAuthToken = try Self.prepareBridgeAuthToken()
       let bridge = try NativeHostBridge(port: bridgePort, authToken: bridgeAuthToken) { [weak self] command in
         self?.handle(command)
@@ -2206,6 +2279,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         userInfo: [NSLocalizedDescriptionKey: "Failed to create bridge token."])
     }
     return Data(bytes).base64EncodedString()
+  }
+
+  @MainActor
+  private func startGxserverBootstrap() {
+    Task { [weak self] in
+      guard let self else { return }
+      let result = await self.gxserverClient.startOrReuse()
+      await MainActor.run {
+        Self.appendNativeHostLifecycleLog("gxserver.bootstrap ok=\(result.ok) message=\(result.message)")
+        if !result.ok {
+          self.showMessage(.init(level: .error, message: result.message))
+        }
+      }
+    }
   }
 
   @MainActor
@@ -2340,6 +2427,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       runProcess(command) { [weak self] event in
         self?.bridge?.send(event)
       }
+    case .gxserverRequest(let command):
+      Task { [weak self] in
+        let event = await GxserverClient.request(command)
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
+      }
     case .setKeepAwakeLidSleepPrevention(let command):
       LidSleepPrivilegedHelperClient.shared.setEnabled(
         command.enabled,
@@ -2419,6 +2513,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       break
     case .showUpdateDialogFromTitlebar:
       showUpdateDialogFromTitlebar()
+    case .startGxserverFromTitlebar:
+      startGxserverFromUserAction(reason: "start")
+    case .stopGxserverFromTitlebar:
+      stopGxserverFromUserAction()
+    case .restartGxserverFromTitlebar:
+      restartGxserverFromUserAction()
+    case .setGxserverAlwaysStartFromTitlebar(let command):
+      setGxserverAlwaysStartFromUserAction(enabled: command.enabled)
     case .focusResourceSessionFromTitlebar:
       break
     case .sleepInactiveSessionsFromTitlebar:
@@ -2600,7 +2702,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         "cwd": command.cwd,
         "error": error.localizedDescription,
       ])
-      Self.logger.error("Failed to start T3 Code runtime: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to start T3 Code runtime: \(sanitizedError)")
     }
   }
 
@@ -2709,7 +2812,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         "cwd": command.cwd,
         "error": error.localizedDescription,
       ])
-      Self.logger.error("Failed to start code-server runtime: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to start code-server runtime: \(sanitizedError)")
     }
   }
 
@@ -3130,12 +3234,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       """
     sidebarView.evaluateJavaScript(script) { [weak self] result, error in
       if let error {
-        Self.logger.error("OS Integration sidebar dispatch failed: \(error.localizedDescription, privacy: .public)")
+        let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+        Self.logger.error("OS Integration sidebar dispatch failed: \(sanitizedError, privacy: .public)")
         self?.pendingOSIntegrationCommands.append((action: action, payloadJson: payloadJson))
         return
       }
       if let text = result as? String, text.contains(#""ok":false"#) {
-        Self.logger.error("OS Integration sidebar command failed: \(text, privacy: .public)")
+        let sanitizedText = NativeLogPrivacy.sanitizeLogLine(text)
+        Self.logger.error("OS Integration sidebar command failed: \(sanitizedText, privacy: .public)")
       }
     }
   }
@@ -3208,7 +3314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       try mergedConfig.write(to: configURL, atomically: true, encoding: .utf8)
       scheduleGhosttyConfigReload(immediate: command.reloadImmediately == true)
     } catch {
-      Self.logger.error("Failed to sync Ghostty terminal settings: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to sync Ghostty terminal settings: \(sanitizedError)")
     }
   }
 
@@ -3236,7 +3343,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       try mergedConfig.write(to: configURL, atomically: true, encoding: .utf8)
       scheduleGhosttyConfigReload(immediate: command.reloadImmediately == true)
     } catch {
-      Self.logger.error("Failed to apply Ghostty config settings: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to apply Ghostty config settings: \(sanitizedError)")
     }
   }
 
@@ -3547,7 +3655,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     do {
       try process.run()
     } catch {
-      Self.logger.error("Failed to open workspace in IDE: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to open workspace in IDE: \(sanitizedError)")
     }
   }
 
@@ -3585,7 +3694,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       }
       NSWorkspace.shared.open(configURL)
     } catch {
-      Self.logger.error("Failed to open Ghostty config file: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to open Ghostty config file: \(sanitizedError)")
     }
   }
 
@@ -3869,7 +3979,8 @@ private final class NativeSettingsStore {
       )
       try data.write(to: url, options: [.atomic])
     } catch {
-      Self.logger.error("Failed to persist sidebar width: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to persist sidebar width: \(sanitizedError)")
     }
   }
 
@@ -3886,8 +3997,9 @@ private final class NativeSettingsStore {
       )
       try data.write(to: url, options: [.atomic])
     } catch {
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
       Self.logger.error(
-        "Failed to persist project editor companion width ratio: \(error.localizedDescription)")
+        "Failed to persist project editor companion width ratio: \(sanitizedError)")
     }
   }
 
@@ -3949,7 +4061,8 @@ private final class NativeSettingsStore {
       )
       try data.write(to: url, options: [.atomic])
     } catch {
-      Self.logger.error("Failed to persist main window chrome: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      Self.logger.error("Failed to persist main window chrome: \(sanitizedError)")
     }
   }
 
@@ -4270,6 +4383,10 @@ final class ghostexRootView: NSView {
   private let setSessionStatusIndicators: (SetSessionStatusIndicators) -> Void
   private let setPetOverlayState: (SetPetOverlayState) -> Void
   private let showUpdateDialogFromTitlebar: () -> Void
+  private let startGxserverFromTitlebar: () -> Void
+  private let stopGxserverFromTitlebar: () -> Void
+  private let restartGxserverFromTitlebar: () -> Void
+  private let setGxserverAlwaysStartFromTitlebar: (Bool) -> Void
   private let sendHostEvent: (HostEvent) -> Void
   private let nativeSettingsStore = NativeSettingsStore()
   private var isModalHostReady = false
@@ -4328,7 +4445,11 @@ final class ghostexRootView: NSView {
     setAppTitlebarTitle: @escaping (String?) -> Void,
     setSessionStatusIndicators: @escaping (SetSessionStatusIndicators) -> Void,
     setPetOverlayState: @escaping (SetPetOverlayState) -> Void,
-    showUpdateDialogFromTitlebar: @escaping () -> Void
+    showUpdateDialogFromTitlebar: @escaping () -> Void,
+    startGxserverFromTitlebar: @escaping () -> Void,
+    stopGxserverFromTitlebar: @escaping () -> Void,
+    restartGxserverFromTitlebar: @escaping () -> Void,
+    setGxserverAlwaysStartFromTitlebar: @escaping (Bool) -> Void
   ) {
     let settingsStore = NativeSettingsStore()
     let storedSidebarChrome = settingsStore.readSidebarChrome()
@@ -4351,6 +4472,10 @@ final class ghostexRootView: NSView {
     self.setSessionStatusIndicators = setSessionStatusIndicators
     self.setPetOverlayState = setPetOverlayState
     self.showUpdateDialogFromTitlebar = showUpdateDialogFromTitlebar
+    self.startGxserverFromTitlebar = startGxserverFromTitlebar
+    self.stopGxserverFromTitlebar = stopGxserverFromTitlebar
+    self.restartGxserverFromTitlebar = restartGxserverFromTitlebar
+    self.setGxserverAlwaysStartFromTitlebar = setGxserverAlwaysStartFromTitlebar
     self.sendHostEvent = sendEvent
     self.sidebarWidth = storedSidebarChrome.width ?? Self.defaultSidebarWidth
     self.sidebarSide = nativeSettingsStore.readSidebarSide()
@@ -5514,6 +5639,34 @@ final class ghostexRootView: NSView {
         "preventLidSleep": keepAwake.preventLidSleep,
       ]
     }
+    if let daemon = command.gxserverDaemon {
+      var daemonPayload: [String: Any] = [
+        "alwaysStart": daemon.alwaysStart ?? true,
+        "state": daemon.state,
+      ]
+      if let message = daemon.message {
+        daemonPayload["message"] = message
+      }
+      if let nodePath = daemon.nodePath {
+        daemonPayload["nodePath"] = nodePath
+      }
+      if let nodeVersion = daemon.nodeVersion {
+        daemonPayload["nodeVersion"] = nodeVersion
+      }
+      if let ok = daemon.ok {
+        daemonPayload["ok"] = ok
+      }
+      if let pid = daemon.pid {
+        daemonPayload["pid"] = pid
+      }
+      if let startedAt = daemon.startedAt {
+        daemonPayload["startedAt"] = startedAt
+      }
+      if let version = daemon.version {
+        daemonPayload["version"] = version
+      }
+      payload["gxserverDaemon"] = daemonPayload
+    }
     if let sidebarActions = command.sidebarActions {
       payload["sidebarActions"] = [
         "commands": sidebarActions.commands?.map { command in
@@ -6050,6 +6203,13 @@ final class ghostexRootView: NSView {
       NativeSoundPlayer.shared.play(command)
     case .runProcess(let command):
       runProcess(command)
+    case .gxserverRequest(let command):
+      Task { [weak self] in
+        let event = await GxserverClient.request(command)
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
     case .setKeepAwakeLidSleepPrevention(let command):
       LidSleepPrivilegedHelperClient.shared.setEnabled(
         command.enabled,
@@ -6141,6 +6301,14 @@ final class ghostexRootView: NSView {
       toggleCommandsPanelFromTitlebar()
     case .showUpdateDialogFromTitlebar:
       showUpdateDialogFromTitlebar()
+    case .startGxserverFromTitlebar:
+      startGxserverFromTitlebar()
+    case .stopGxserverFromTitlebar:
+      stopGxserverFromTitlebar()
+    case .restartGxserverFromTitlebar:
+      restartGxserverFromTitlebar()
+    case .setGxserverAlwaysStartFromTitlebar(let command):
+      setGxserverAlwaysStartFromTitlebar(command.enabled)
     case .focusResourceSessionFromTitlebar(let command):
       focusResourceSessionFromTitlebar(command)
     case .sleepInactiveSessionsFromTitlebar(let command):
@@ -6417,7 +6585,8 @@ final class ghostexRootView: NSView {
         "cwd": command.cwd,
         "error": error.localizedDescription,
       ])
-      ghostexRootView.logger.error("Failed to start T3 Code runtime: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      ghostexRootView.logger.error("Failed to start T3 Code runtime: \(sanitizedError)")
     }
   }
 
@@ -6524,7 +6693,8 @@ final class ghostexRootView: NSView {
         "cwd": command.cwd,
         "error": error.localizedDescription,
       ])
-      ghostexRootView.logger.error("Failed to start code-server runtime: \(error.localizedDescription)")
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
+      ghostexRootView.logger.error("Failed to start code-server runtime: \(sanitizedError)")
     }
   }
 
@@ -7962,7 +8132,8 @@ final class ghostexRootView: NSView {
       let url = URL(string: urlString)
     {
       if NativeDebugLogging.isEnabled {
-        Self.logger.info("Loading sidebar URL \(url.absoluteString, privacy: .public)")
+        let sanitizedURL = NativeLogPrivacy.sanitizeLogLine(url.absoluteString)
+        Self.logger.info("Loading sidebar URL \(sanitizedURL, privacy: .public)")
       }
       sidebarView.load(URLRequest(url: url))
       return
@@ -7972,13 +8143,15 @@ final class ghostexRootView: NSView {
     let builtSidebar = webAssets.appendingPathComponent("index.html")
     if FileManager.default.fileExists(atPath: builtSidebar.path) {
       if NativeDebugLogging.isEnabled {
-        Self.logger.info("Loading built sidebar from \(builtSidebar.path, privacy: .public)")
+        let sanitizedPath = NativeLogPrivacy.sanitizeLogLine(builtSidebar.path)
+        Self.logger.info("Loading built sidebar from \(sanitizedPath, privacy: .public)")
       }
       sidebarView.loadFileURL(builtSidebar, allowingReadAccessTo: webAssets)
       return
     }
 
-    Self.logger.error("Built sidebar not found at \(builtSidebar.path, privacy: .public)")
+    let sanitizedSidebarPath = NativeLogPrivacy.sanitizeLogLine(builtSidebar.path)
+    Self.logger.error("Built sidebar not found at \(sanitizedSidebarPath, privacy: .public)")
     let repoRoot = Self.resolveRepoRoot()
     let html = """
       <!doctype html>
@@ -8023,7 +8196,8 @@ final class ghostexRootView: NSView {
     let builtModalHost = webAssets.appendingPathComponent("modal-host.html")
     if FileManager.default.fileExists(atPath: builtModalHost.path) {
       if NativeDebugLogging.isEnabled {
-        Self.logger.info("Loading modal host from \(builtModalHost.path, privacy: .public)")
+        let sanitizedPath = NativeLogPrivacy.sanitizeLogLine(builtModalHost.path)
+        Self.logger.info("Loading modal host from \(sanitizedPath, privacy: .public)")
       }
       modalHostView.loadFileURL(
         builtModalHost,
@@ -8032,7 +8206,8 @@ final class ghostexRootView: NSView {
       return
     }
 
-    Self.logger.error("Built modal host not found at \(builtModalHost.path, privacy: .public)")
+    let sanitizedModalHostPath = NativeLogPrivacy.sanitizeLogLine(builtModalHost.path)
+    Self.logger.error("Built modal host not found at \(sanitizedModalHostPath, privacy: .public)")
     let repoRoot = Self.resolveRepoRoot()
     modalHostView.loadHTMLString(
       "<!doctype html><html><body style=\"margin:0;background:transparent\"></body></html>",
@@ -8045,7 +8220,8 @@ final class ghostexRootView: NSView {
     let builtTitlebarChrome = webAssets.appendingPathComponent("titlebar-host.html")
     if FileManager.default.fileExists(atPath: builtTitlebarChrome.path) {
       if NativeDebugLogging.isEnabled {
-        Self.logger.info("Loading React titlebar chrome from \(builtTitlebarChrome.path, privacy: .public)")
+        let sanitizedPath = NativeLogPrivacy.sanitizeLogLine(builtTitlebarChrome.path)
+        Self.logger.info("Loading React titlebar chrome from \(sanitizedPath, privacy: .public)")
       }
       titlebarChromeWebView.loadFileURL(
         builtTitlebarChrome,
@@ -8060,7 +8236,8 @@ final class ghostexRootView: NSView {
      missing-asset behavior observable and blank instead of silently falling
      back to native AppKit controls, because the requirement is React chrome.
      */
-    Self.logger.error("Built React titlebar chrome not found at \(builtTitlebarChrome.path, privacy: .public)")
+    let sanitizedTitlebarChromePath = NativeLogPrivacy.sanitizeLogLine(builtTitlebarChrome.path)
+    Self.logger.error("Built React titlebar chrome not found at \(sanitizedTitlebarChromePath, privacy: .public)")
     let repoRoot = Self.resolveRepoRoot()
     titlebarChromeWebView.loadHTMLString(
       "<!doctype html><html><body style=\"margin:0;background:transparent\"></body></html>",
@@ -8687,25 +8864,29 @@ extension ghostexRootView: WKNavigationDelegate {
       "JSON.stringify({ text: document.body.innerText.slice(0, 240), rootHTML: document.getElementById('root')?.innerHTML.slice(0, 240) || '', bootError: window.__ghostex_BOOT_ERROR__ || null })"
     ) { result, error in
       if let error {
+        let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
         Self.logger.error(
-          "Sidebar DOM probe failed: \(error.localizedDescription, privacy: .public)")
+          "Sidebar DOM probe failed: \(sanitizedError, privacy: .public)")
         return
       }
-      Self.logger.info("Sidebar DOM probe: \(String(describing: result), privacy: .public)")
+      let sanitizedResult = NativeLogPrivacy.sanitizeLogLine(String(describing: result))
+      Self.logger.info("Sidebar DOM probe: \(sanitizedResult, privacy: .public)")
     }
   }
 
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+    let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
     Self.logger.error(
-      "Sidebar webview navigation failed: \(error.localizedDescription, privacy: .public)")
+      "Sidebar webview navigation failed: \(sanitizedError, privacy: .public)")
   }
 
   func webView(
     _ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
     withError error: Error
   ) {
+    let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
     Self.logger.error(
-      "Sidebar webview provisional navigation failed: \(error.localizedDescription, privacy: .public)"
+      "Sidebar webview provisional navigation failed: \(sanitizedError, privacy: .public)"
     )
   }
 
@@ -8923,12 +9104,13 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
   ) {
     if message.name == "ghostexNativeHostDiagnostics" {
       let diagnostic = String(describing: message.body)
+      let sanitizedDiagnostic = NativeLogPrivacy.sanitizeLogLine(diagnostic)
       if diagnostic.contains("diagnostics-ready") {
         if NativeDebugLogging.isEnabled {
-          Self.logger.info("Sidebar diagnostic: \(diagnostic, privacy: .public)")
+          Self.logger.info("Sidebar diagnostic: \(sanitizedDiagnostic, privacy: .public)")
         }
       } else {
-        Self.logger.error("Sidebar diagnostic: \(diagnostic, privacy: .public)")
+        Self.logger.error("Sidebar diagnostic: \(sanitizedDiagnostic, privacy: .public)")
       }
       return
     }
@@ -8974,8 +9156,9 @@ final class SidebarScriptBridge: NSObject, WKScriptMessageHandler {
         "messageName": message.name,
         "type": commandType,
       ])
+      let sanitizedError = NativeLogPrivacy.sanitizeLogLine(error.localizedDescription)
       Self.logger.error(
-        "Sidebar command decode failed type=\(commandType, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+        "Sidebar command decode failed type=\(commandType, privacy: .public) error=\(sanitizedError, privacy: .public)"
       )
     }
   }

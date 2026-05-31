@@ -170,6 +170,13 @@ export type SidebarSessionItem = {
   isPinned?: boolean;
   lastInteractionAt?: string;
   sessionId: string;
+  /**
+   * CDXC:SessionTooltips 2026-05-31-06:25:
+   * macOS gxserver sessions need their full routed identity in hover tooltips
+   * instead of the legacy two-digit display number, because the short display
+   * number does not identify the server/project/session being restored.
+   */
+  sessionRoutingId?: string;
   sessionNumber?: string;
   sessionPersistenceName?: string;
   sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
@@ -640,6 +647,14 @@ export type ExtensionToSidebarMessage =
   | SidebarShowT3ThreadIdModalMessage;
 
 export type SidebarToExtensionMessage =
+  | {
+      /**
+       * CDXC:GxserverBootstrap 2026-05-31-03:56:
+       * The gxserver failure toast needs a Retry action that returns to the
+       * trusted sidebar command router, then native performs the daemon restart.
+       */
+      type: "retryGxserverStart";
+    }
   | {
       type: "openSettings";
     }

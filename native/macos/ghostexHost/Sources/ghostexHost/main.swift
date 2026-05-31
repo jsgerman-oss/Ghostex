@@ -30,6 +30,10 @@ private func runBundledCli(arguments: [String]) -> Never {
    of production state.
    CDXC:GxserverBootstrap 2026-05-30-15:39:
    gxserver owns 58744. Dev CLI bridge automation must use 58742 so launching ghostex-dev cannot occupy or hide the daemon API port.
+
+   CDXC:GxserverMacBootstrap 2026-05-30-15:13:
+   gxserver reserves local API port 58744. Keep ghostex-dev CLI bridge traffic
+   on 58742 so launching the dev app cannot block daemon startup.
    */
   environment["GHOSTEX_HOME"] = GhostexAppStorage.sharedRootDirectory.path
   if isGhostexDevBundleIdentifier(Bundle.main.bundleIdentifier) {

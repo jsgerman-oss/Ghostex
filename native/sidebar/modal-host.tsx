@@ -38,6 +38,7 @@ import type {
   SidebarGhostexCliStatusMessage,
   SidebarGhostexFolderStatsMessage,
   SidebarOSIntegrationStatusMessage,
+  SidebarToExtensionMessage,
 } from "../../shared/session-grid-contract";
 import {
   getWorkspaceThemeForeground,
@@ -120,6 +121,10 @@ type AppModalHostMessage =
     }
   | { type: "close" }
   | {
+      action?: {
+        label: string;
+        sidebarMessage: SidebarToExtensionMessage;
+      };
       description?: string;
       level?: "info" | "success" | "warning" | "error";
       persistent?: boolean;
@@ -2654,6 +2659,16 @@ function useModalStateFromNative() {
             .filter(Boolean)
             .join(" ");
           const toastOptions = {
+            action: message.action
+              ? {
+                  label: message.action.label,
+                  onClick: () => {
+                    if (message.action) {
+                      vscode.postMessage(message.action.sidebarMessage);
+                    }
+                  },
+                }
+              : undefined,
             className: toastClassName,
             description: message.description,
             duration: isPersistent ? Number.POSITIVE_INFINITY : undefined,

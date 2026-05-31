@@ -21,8 +21,11 @@ export type NativeSidebarGxserverBootstrap = {
 };
 
 export type NativeSidebarGxserverStatus = NativeSidebarGxserverBootstrap & {
+  alwaysStart?: boolean;
   health?: GxserverServerHealthResponse;
   message?: string;
+  nodePath?: string;
+  nodeVersion?: string;
   ok?: boolean;
   state?: string;
 };
@@ -32,6 +35,46 @@ export type NativeSidebarGxserverStartupSnapshot = {
   projects: GxserverProjectDomainState[];
   sessions: GxserverSessionDomainState[];
 };
+
+export type NativeGxserverHttpMethod = "GET" | "POST";
+
+export type NativeGxserverRequestCommand = {
+  method: NativeGxserverHttpMethod;
+  paramsJson?: string;
+  path: GxserverEndpointPath;
+  requestId: string;
+  type: "gxserverRequest";
+};
+
+export type NativeGxserverResponseEvent = {
+  bodyJson?: string;
+  error?: string;
+  ok: boolean;
+  path: GxserverEndpointPath;
+  requestId: string;
+  statusCode?: number;
+  type: "gxserverResponse";
+};
+
+export type NativeGxserverRequestOptions = {
+  method?: NativeGxserverHttpMethod;
+  params?: Record<string, unknown>;
+  requestId?: string;
+};
+
+export class NativeGxserverClientError extends Error {
+  readonly response: NativeGxserverResponseEvent;
+
+  constructor(response: NativeGxserverResponseEvent) {
+    const message =
+      parseGxserverErrorMessage(response.bodyJson) ??
+      response.error ??
+      `gxserver request failed for ${response.path}`;
+    super(message);
+    this.name = "NativeGxserverClientError";
+    this.response = response;
+  }
+}
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:58744";
 const NETWORK_RETRY_DELAYS_MS = [120, 300, 700] as const;
@@ -50,6 +93,11 @@ export function createNativeSidebarGxserverClient(
     protocolVersion: bootstrap?.protocolVersion ?? GXSERVER_PROTOCOL_VERSION,
     tokenFile: bootstrap?.tokenFile,
   };
+  let currentStatus: NativeSidebarGxserverStatus = {
+    ...config,
+    alwaysStart: true,
+    state: "unknown",
+  };
 
   function applyNativeStatus(payloadJson: string): NativeSidebarGxserverStatus | undefined {
     const parsed = parseObject(payloadJson) as NativeSidebarGxserverStatus | undefined;
@@ -63,7 +111,16 @@ export function createNativeSidebarGxserverClient(
       protocolVersion: parsed.protocolVersion ?? config.protocolVersion,
       tokenFile: parsed.tokenFile ?? config.tokenFile,
     };
+    currentStatus = {
+      ...currentStatus,
+      ...parsed,
+      ...config,
+    };
     return parsed;
+  }
+
+  function getCurrentStatus(): NativeSidebarGxserverStatus {
+    return currentStatus;
   }
 
   async function fetchHealth(): Promise<GxserverServerHealthResponse> {
@@ -198,10 +255,40 @@ export function createNativeSidebarGxserverClient(
     fetchAttachSessionMetadata,
     fetchHealth,
     fetchStartupSnapshot,
+    getCurrentStatus,
     probeSessionProvider,
     rpc,
     updateSessionLifecycle,
   };
+}
+
+/*
+CDXC:GxserverMacClient 2026-05-31-01:32:
+During the main-worktree merge, preserve the native-bridge gxserver request path for sidebar code that cannot use direct fetch. The bridge still uses the same gxserver protocol envelope and response validation as the direct sidebar client, while Swift owns token-file access.
+*/
+export function createNativeGxserverRequest(
+  path: GxserverEndpointPath,
+  options: NativeGxserverRequestOptions = {},
+): NativeGxserverRequestCommand {
+  return {
+    method: options.method ?? (path === "/api/health/server" || path === "/api/health" ? "GET" : "POST"),
+    paramsJson: options.params ? JSON.stringify(options.params) : undefined,
+    path,
+    requestId: options.requestId ?? createGxserverRequestId(),
+    type: "gxserverRequest",
+  };
+}
+
+export function parseNativeGxserverResponse<TResult extends Record<string, unknown>>(
+  response: NativeGxserverResponseEvent,
+): GxserverRpcSuccessResponse<TResult> | Record<string, unknown> {
+  if (!response.ok) {
+    throw new NativeGxserverClientError(response);
+  }
+  if (!response.bodyJson) {
+    return {};
+  }
+  return JSON.parse(response.bodyJson) as GxserverRpcSuccessResponse<TResult> | Record<string, unknown>;
 }
 
 function parseRpcResponse<TResult>(
@@ -306,4 +393,22 @@ function createGxserverError(body: unknown, status: number): Error {
     return new Error((body as GxserverRpcErrorResponse).message);
   }
   return new Error(`gxserver request failed with HTTP ${status}.`);
+}
+
+function createGxserverRequestId(): string {
+  return `gxserver-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function parseGxserverErrorMessage(bodyJson: string | undefined): string | undefined {
+  if (!bodyJson) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(bodyJson) as { message?: unknown };
+    return typeof parsed.message === "string" && parsed.message.trim()
+      ? parsed.message
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

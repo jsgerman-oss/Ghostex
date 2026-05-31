@@ -1,14 +1,38 @@
 import Foundation
 
 struct GxserverClientStatus {
+  let alwaysStart: Bool
   let authToken: String?
   let health: [String: Any]?
   let message: String
+  let nodePath: String?
+  let nodeVersion: String?
   let ok: Bool
   let state: String
 
+  init(
+    alwaysStart: Bool,
+    authToken: String?,
+    health: [String: Any]?,
+    message: String,
+    nodePath: String? = nil,
+    nodeVersion: String? = nil,
+    ok: Bool,
+    state: String
+  ) {
+    self.alwaysStart = alwaysStart
+    self.authToken = authToken
+    self.health = health
+    self.message = message
+    self.nodePath = nodePath
+    self.nodeVersion = nodeVersion
+    self.ok = ok
+    self.state = state
+  }
+
   func payload(baseURL: String, tokenFile: String) -> [String: Any] {
     var payload: [String: Any] = [
+      "alwaysStart": alwaysStart,
       "baseUrl": baseURL,
       "message": message,
       "ok": ok,
@@ -21,6 +45,12 @@ struct GxserverClientStatus {
     }
     if let health {
       payload["health"] = health
+    }
+    if let nodePath {
+      payload["nodePath"] = nodePath
+    }
+    if let nodeVersion {
+      payload["nodeVersion"] = nodeVersion
     }
     return payload
   }
@@ -36,6 +66,7 @@ final class GxserverClient {
   static let localBaseURL = "http://127.0.0.1:58744"
   static let protocolVersion = 1
 
+  private static let alwaysStartOnLaunchDefaultsKey = "ghostex.gxserver.alwaysStartOnLaunch"
   private static let expectedProduct = "gxserver"
   private static let minimumNodeMajor = 22
   private static let nodeInstallURL = "https://nodejs.org/en/download"
@@ -44,21 +75,46 @@ final class GxserverClient {
   /*
    CDXC:GxserverBootstrap 2026-05-30-15:39:
    The macOS app hard-cutover starts or reuses the local gxserver control plane on 127.0.0.1:58744, authenticates with ~/.ghostex/gxserver/auth/token, and never owns daemon shutdown after launch. Missing or old system Node is a user-visible dependency error with install guidance, not an auto-install or bundled fallback.
+
+   CDXC:GxserverBootstrap 2026-05-31-03:56:
+   LaunchServices does not inherit the user's interactive shell PATH after a Mac restart. Resolve Node from deterministic system install locations before PATH shims, surface the exact daemon status to React, and let users disable future auto-start without adding sidebar restore fallbacks.
   */
-  func startOrReuse() async -> GxserverClientStatus {
+  func startOrReuse(allowStart: Bool? = nil) async -> GxserverClientStatus {
+    let shouldStart = allowStart ?? alwaysStartOnLaunch
     let expectedBuildIdentity = expectedBundledBuildIdentity()
     if let running = await authenticatedHealthStatus(expectedBuildIdentity: expectedBuildIdentity) {
       if !Self.reuseFailureRequiresRestart(running.state) {
         return running
       }
+      guard shouldStart else {
+        return running
+      }
       await stopRunningGxserverControlPlane()
     }
 
-    if let nodeError = systemNodeDependencyError() {
+    guard shouldStart else {
+      let stoppedMessage = alwaysStartOnLaunch
+        ? "gxserver is stopped."
+        : "gxserver is stopped. Enable Always start or start it from Resources when you need session restore."
       return GxserverClientStatus(
+        alwaysStart: alwaysStartOnLaunch,
+        authToken: readAuthToken(),
+        health: nil,
+        message: stoppedMessage,
+        ok: true,
+        state: "stopped"
+      )
+    }
+
+    let nodeResolution = resolveSystemNode()
+    if let nodeError = systemNodeDependencyError(resolution: nodeResolution) {
+      return GxserverClientStatus(
+        alwaysStart: alwaysStartOnLaunch,
         authToken: readAuthToken(),
         health: nil,
         message: nodeError,
+        nodePath: nodeResolution.path,
+        nodeVersion: nodeResolution.version,
         ok: false,
         state: "nodeUnavailable"
       )
@@ -66,20 +122,26 @@ final class GxserverClient {
 
     guard let cliURL = resolveGxserverCliURL() else {
       return GxserverClientStatus(
+        alwaysStart: alwaysStartOnLaunch,
         authToken: readAuthToken(),
         health: nil,
         message:
           "gxserver CLI build output is missing. Run `npm run build` in gxserver/ for development, or reinstall Ghostex so gxserver/dist/src/cli.js is present.",
+        nodePath: nodeResolution.path,
+        nodeVersion: nodeResolution.version,
         ok: false,
         state: "missingGxserverCli"
       )
     }
 
-    if let launchError = launchGxserverForeground(cliURL: cliURL) {
+    if let launchError = launchGxserverForeground(cliURL: cliURL, nodePath: nodeResolution.path) {
       return GxserverClientStatus(
+        alwaysStart: alwaysStartOnLaunch,
         authToken: readAuthToken(),
         health: nil,
         message: launchError,
+        nodePath: nodeResolution.path,
+        nodeVersion: nodeResolution.version,
         ok: false,
         state: "startFailed"
       )
@@ -94,12 +156,54 @@ final class GxserverClient {
     }
 
     return GxserverClientStatus(
+      alwaysStart: alwaysStartOnLaunch,
       authToken: readAuthToken(),
       health: nil,
       message: "gxserver launch completed, but authenticated health did not become ready on 127.0.0.1:58744.",
+      nodePath: nodeResolution.path,
+      nodeVersion: nodeResolution.version,
       ok: false,
       state: "starting"
     )
+  }
+
+  var alwaysStartOnLaunch: Bool {
+    get {
+      if UserDefaults.standard.object(forKey: Self.alwaysStartOnLaunchDefaultsKey) == nil {
+        return true
+      }
+      return UserDefaults.standard.bool(forKey: Self.alwaysStartOnLaunchDefaultsKey)
+    }
+    set {
+      UserDefaults.standard.set(newValue, forKey: Self.alwaysStartOnLaunchDefaultsKey)
+    }
+  }
+
+  func startingStatus(message: String = "Starting gxserver...") -> GxserverClientStatus {
+    GxserverClientStatus(
+      alwaysStart: alwaysStartOnLaunch,
+      authToken: readAuthToken(),
+      health: nil,
+      message: message,
+      ok: true,
+      state: "starting"
+    )
+  }
+
+  func stoppedStatus(message: String = "gxserver is stopped.") -> GxserverClientStatus {
+    GxserverClientStatus(
+      alwaysStart: alwaysStartOnLaunch,
+      authToken: readAuthToken(),
+      health: nil,
+      message: message,
+      ok: true,
+      state: "stopped"
+    )
+  }
+
+  func stopControlPlane() async -> GxserverClientStatus {
+    await stopRunningGxserverControlPlane()
+    return stoppedStatus()
   }
 
   func webBootstrap() -> [String: Any] {
@@ -116,6 +220,38 @@ final class GxserverClient {
 
   func statusPayload(_ status: GxserverClientStatus) -> [String: Any] {
     status.payload(baseURL: Self.localBaseURL, tokenFile: authTokenURL.path)
+  }
+
+  /*
+   CDXC:GxserverMacClient 2026-05-31-01:32:
+   Some native sidebar calls still travel through the authenticated Swift bridge instead of direct WebKit fetch so React never reads the bearer token from disk. Keep this bridge path on the same fixed local gxserver endpoint, bearer-token header, and protocol header as the bootstrap client.
+   */
+  static func request(_ command: GxserverRequest) async -> HostEvent {
+    await withCheckedContinuation { continuation in
+      DispatchQueue.global(qos: .utility).async {
+        do {
+          let token = try readBridgeAuthToken()
+          let response = try performBridgeRequest(command, token: token)
+          continuation.resume(returning: .gxserverResponse(
+            requestId: command.requestId,
+            path: command.path,
+            ok: (200..<300).contains(response.statusCode),
+            statusCode: response.statusCode,
+            bodyJson: response.body,
+            error: nil
+          ))
+        } catch {
+          continuation.resume(returning: .gxserverResponse(
+            requestId: command.requestId,
+            path: command.path,
+            ok: false,
+            statusCode: nil,
+            bodyJson: nil,
+            error: error.localizedDescription
+          ))
+        }
+      }
+    }
   }
 
   private func authenticatedHealthStatus(expectedBuildIdentity: String?) async -> GxserverClientStatus? {
@@ -138,6 +274,7 @@ final class GxserverClient {
     }
     guard protocolVersion == Self.protocolVersion else {
       return GxserverClientStatus(
+        alwaysStart: alwaysStartOnLaunch,
         authToken: token,
         health: response,
         message:
@@ -151,6 +288,7 @@ final class GxserverClient {
       break
     case .incompatible:
       return GxserverClientStatus(
+        alwaysStart: alwaysStartOnLaunch,
         authToken: token,
         health: response,
         message:
@@ -161,6 +299,7 @@ final class GxserverClient {
     }
     let usableTools = requiredBundledToolsAvailable(in: response)
     return GxserverClientStatus(
+      alwaysStart: alwaysStartOnLaunch,
       authToken: token,
       health: response,
       message: usableTools
@@ -248,12 +387,11 @@ final class GxserverClient {
     }
   }
 
-  private func launchGxserverForeground(cliURL: URL) -> String? {
+  private func launchGxserverForeground(cliURL: URL, nodePath: String) -> String? {
     /*
      CDXC:GxserverBootstrap 2026-05-30-17:06:
      LaunchServices-started macOS apps should create gxserver as an app-independent background daemon by running `nohup node <gxserver> --foreground &` and then polling authenticated health. The UI app must not retain a Swift Process handle as daemon ownership, because gxserver must survive closing the macOS app and continue managing zmx sessions.
      */
-    let nodePath = systemNodeExecutablePath() ?? "node"
     let launchLogPath = gxserverLaunchLogURL.path
     try? fileManager.createDirectory(
       at: gxserverLaunchLogURL.deletingLastPathComponent(),
@@ -272,19 +410,6 @@ final class GxserverClient {
       return stderr.isEmpty ? (stdout.isEmpty ? "gxserver failed to launch." : stdout) : stderr
     }
     return nil
-  }
-
-  private func systemNodeExecutablePath() -> String? {
-    let result = runProcess(
-      executable: "/usr/bin/env",
-      arguments: ["node", "-p", "process.execPath"],
-      timeoutSeconds: 3
-    )
-    guard result.exitCode == 0 else {
-      return nil
-    }
-    let path = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    return path.isEmpty ? nil : path
   }
 
   private func shellQuote(_ value: String) -> String {
@@ -315,6 +440,71 @@ final class GxserverClient {
       return nil
     }
     return token
+  }
+
+  private static func readBridgeAuthToken() throws -> String {
+    let tokenURL = FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".ghostex", isDirectory: true)
+      .appendingPathComponent("gxserver", isDirectory: true)
+      .appendingPathComponent("auth", isDirectory: true)
+      .appendingPathComponent("token", isDirectory: false)
+    let token = try String(contentsOf: tokenURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+    if token.isEmpty {
+      throw NSError(
+        domain: "GxserverAuth",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "gxserver auth token file is empty at \(tokenURL.path)."])
+    }
+    return token
+  }
+
+  private static func performBridgeRequest(_ command: GxserverRequest, token: String) throws -> (statusCode: Int, body: String?) {
+    guard command.path.hasPrefix("/api/") else {
+      throw NSError(
+        domain: "GxserverRequest",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid gxserver API path: \(command.path)"])
+    }
+    guard let url = URL(string: "\(Self.localBaseURL)\(command.path)") else {
+      throw NSError(
+        domain: "GxserverRequest",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Invalid gxserver API URL for \(command.path)."])
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = command.method.uppercased()
+    request.timeoutInterval = 10
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    request.setValue(String(Self.protocolVersion), forHTTPHeaderField: "x-gxserver-protocol-version")
+    if request.httpMethod == "POST" {
+      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      let paramsJson = command.paramsJson?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let params = (paramsJson?.isEmpty == false) ? paramsJson! : "{}"
+      request.httpBody = Data(#"{"protocolVersion":\#(protocolVersion),"params":\#(params)}"#.utf8)
+    }
+    return try sendSynchronousBridgeRequest(request)
+  }
+
+  private static func sendSynchronousBridgeRequest(_ request: URLRequest) throws -> (statusCode: Int, body: String?) {
+    let semaphore = DispatchSemaphore(value: 0)
+    var result: Result<(statusCode: Int, body: String?), Error>?
+    URLSession.shared.dataTask(with: request) { data, response, error in
+      defer { semaphore.signal() }
+      if let error {
+        result = .failure(error)
+        return
+      }
+      let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+      result = .success((statusCode, data.flatMap { String(data: $0, encoding: .utf8) }))
+    }.resume()
+    _ = semaphore.wait(timeout: .now() + 12)
+    guard let result else {
+      throw NSError(
+        domain: "GxserverRequest",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "gxserver request timed out."])
+    }
+    return try result.get()
   }
 
   private func resolveGxserverCliURL() -> URL? {
@@ -364,25 +554,83 @@ final class GxserverClient {
     return "gxserver:\(version):source"
   }
 
-  private func systemNodeDependencyError() -> String? {
-    let result = runProcess(
+  private struct SystemNodeResolution {
+    let path: String
+    let source: String
+    let version: String
+  }
+
+  private func resolveSystemNode() -> SystemNodeResolution {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    var firstVersionedCandidate: SystemNodeResolution?
+    let candidates = [
+      (path: "/opt/homebrew/bin/node", source: "Homebrew Apple Silicon"),
+      (path: "/usr/local/bin/node", source: "Homebrew Intel/usr-local"),
+      (path: "\(home)/.local/share/mise/shims/node", source: "mise shim"),
+      (path: "\(home)/.local/bin/node", source: "user local bin"),
+      (path: "\(home)/.asdf/shims/node", source: "asdf shim"),
+    ]
+    for candidate in candidates where fileManager.isExecutableFile(atPath: candidate.path) {
+      let result = runProcess(executable: candidate.path, arguments: ["-v"], timeoutSeconds: 3)
+      let version = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+      if result.exitCode == 0, let major = Self.nodeVersionMajor(version) {
+        let resolution = SystemNodeResolution(path: candidate.path, source: candidate.source, version: version)
+        if major >= Self.minimumNodeMajor {
+          return resolution
+        }
+        if firstVersionedCandidate == nil {
+          firstVersionedCandidate = resolution
+        }
+      }
+    }
+    let envPathResult = runProcess(
+      executable: "/usr/bin/env",
+      arguments: ["node", "-p", "process.execPath"],
+      timeoutSeconds: 3
+    )
+    let envVersionResult = runProcess(
       executable: "/usr/bin/env",
       arguments: ["node", "-v"],
       timeoutSeconds: 3
     )
-    if result.exitCode != 0 {
+    let envPath = envPathResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    let envVersion = envVersionResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    if envPathResult.exitCode == 0,
+      envVersionResult.exitCode == 0,
+      !envPath.isEmpty,
+      let major = Self.nodeVersionMajor(envVersion)
+    {
+      let resolution = SystemNodeResolution(path: envPath, source: "PATH", version: envVersion)
+      if major >= Self.minimumNodeMajor {
+        return resolution
+      }
+      if firstVersionedCandidate == nil {
+        firstVersionedCandidate = resolution
+      }
+    }
+    if let firstVersionedCandidate {
+      return firstVersionedCandidate
+    }
+    return SystemNodeResolution(path: "", source: "unresolved", version: "")
+  }
+
+  private func systemNodeDependencyError(resolution: SystemNodeResolution) -> String? {
+    if resolution.path.isEmpty {
       return
         "gxserver requires Node.js \(Self.minimumNodeMajor) LTS or newer, but Node was not found. Install Node \(Self.minimumNodeMajor) LTS or newer from \(Self.nodeInstallURL) or with a system package manager such as Homebrew. Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
     }
-    let version = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    let normalized = version.hasPrefix("v") ? String(version.dropFirst()) : version
-    let majorText = normalized.split(separator: ".").first.map(String.init) ?? ""
-    let major = Int(majorText)
+    let major = Self.nodeVersionMajor(resolution.version)
     if major == nil || major! < Self.minimumNodeMajor {
       return
-        "gxserver requires Node.js \(Self.minimumNodeMajor) LTS or newer, but found \(version.isEmpty ? "an unknown Node version" : version). Install Node \(Self.minimumNodeMajor) LTS or newer from \(Self.nodeInstallURL) or with a system package manager such as Homebrew. Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
+        "gxserver requires Node.js \(Self.minimumNodeMajor) LTS or newer, but found \(resolution.version.isEmpty ? "an unknown Node version" : resolution.version) at \(resolution.path). Install Node \(Self.minimumNodeMajor) LTS or newer from \(Self.nodeInstallURL) or with a system package manager such as Homebrew. Ghostex does not bundle, auto-install, or fall back to a private Node runtime for gxserver."
     }
     return nil
+  }
+
+  private static func nodeVersionMajor(_ version: String) -> Int? {
+    let normalized = version.hasPrefix("v") ? String(version.dropFirst()) : version
+    let majorText = normalized.split(separator: ".").first.map(String.init) ?? ""
+    return Int(majorText)
   }
 
   private func runProcess(
