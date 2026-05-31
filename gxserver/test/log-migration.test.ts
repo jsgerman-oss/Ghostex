@@ -18,6 +18,7 @@ test("legacy log migration writes structured event categories into gxserver JSON
       [
         "[2026-05-30 11:00:00.000 +0400] nativeSidebar.agentDetected {\"projectId\":\"P3a91\",\"sessionId\":\"G8v20\"}",
         "[2026-05-30 11:01:00.000 +0400] nativeSidebar.persistedActivity.working {\"sessionId\":\"G8v20\"}",
+        "[2026-05-30 11:01:30.000 +0400] nativeSidebar.sessionTitle.changed {\"sessionId\":\"G8v20\",\"title\":\"Private launch\",\"workspaceRoot\":\"/Users/person/dev/private-project\"}",
       ].join("\n"),
       "utf8",
     );
@@ -45,7 +46,7 @@ test("legacy log migration writes structured event categories into gxserver JSON
     assert.deepEqual(result, {
       filesRead: 3,
       malformedLineCount: 1,
-      migratedLineCount: 5,
+      migratedLineCount: 6,
     });
 
     const entries = (await readFile(paths.logFile, "utf8"))
@@ -67,6 +68,7 @@ test("legacy log migration writes structured event categories into gxserver JSON
     assert.equal(migratedAgent?.sessionId, "G8v20");
     assert.equal(migratedAgent?.legacyFile, "agent-detection-debug.log");
     assert.equal(migratedAgent?.client, "legacy");
+    assert.doesNotMatch(JSON.stringify(entries), /Private launch|private-project/);
   } finally {
     await rm(homeDir, { force: true, recursive: true });
   }

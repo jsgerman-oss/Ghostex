@@ -62,3 +62,50 @@ test("log normalization keeps optional identity fields absent when unknown", () 
     event: "storageMigrated",
   });
 });
+
+test("log normalization redacts project/session names, paths, command text, urls, and secrets", () => {
+  const normalized = normalizeLogEntry({
+    details: {
+      args: ["comments", "add", "gxserver-1", "private project note"],
+      comment: "private project note",
+      cwd: "/Users/person/dev/private-project",
+      nested: {
+        authToken: "secret-token",
+        sessionTitle: "Customer deploy",
+        url: "https://example.test/path?token=secret",
+      },
+      projectId: "P3a91",
+      sessionId: "G8v20",
+      title: "Customer deploy",
+      worktreePath: "/Users/person/dev/private-project-feature",
+    },
+    error: "failed in /Users/person/dev/private-project with token=secret-token",
+    event: "https://example.test/private?token=secret-token",
+    legacyFile: "/Users/person/dev/private-project/legacy.log",
+    level: "warn",
+    message: 'legacy {"title":"Customer deploy","workspaceRoot":"/Users/person/dev/private-project"}',
+    source: "/Users/person/dev/private-project/source.log",
+    ts: "now",
+  });
+
+  assert.equal(normalized.projectId, undefined);
+  assert.equal(normalized.details?.projectId, "P3a91");
+  assert.equal(normalized.details?.sessionId, "G8v20");
+  assert.deepEqual(normalized.details?.args, { count: 4, redacted: true });
+  assert.equal(normalized.details?.comment, "[redacted]");
+  assert.equal(normalized.details?.cwd, "[redacted:path]");
+  assert.equal(normalized.details?.title, "[redacted]");
+  assert.equal(normalized.details?.worktreePath, "[redacted:path]");
+  assert.deepEqual((normalized.details?.nested as Record<string, unknown>)?.url, {
+    host: "example.test",
+    protocol: "https",
+    redacted: true,
+    type: "url",
+  });
+  assert.equal((normalized.details?.nested as Record<string, unknown>)?.authToken, "[redacted:secret]");
+  assert.equal((normalized.details?.nested as Record<string, unknown>)?.sessionTitle, "[redacted]");
+  assert.equal(normalized.event, "[redacted:url]");
+  assert.equal(normalized.legacyFile, "[redacted:path]");
+  assert.equal(normalized.source, "[redacted:path]");
+  assert.doesNotMatch(JSON.stringify(normalized), /Customer deploy|private-project|secret-token|private project note/);
+});

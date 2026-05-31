@@ -155,7 +155,6 @@ export function migrateLegacyLogLine(options: {
     event: `legacy.${category}.${slugEventName(legacyEvent)}`,
     legacyFile: options.fileName,
     level: inferLegacyLogLevel(legacyEvent, parsed.message),
-    message: parsed.message,
     projectId: extractProjectId(details),
     serverId: options.serverId,
     sessionId: extractSessionId(details),

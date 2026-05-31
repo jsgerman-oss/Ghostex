@@ -681,8 +681,8 @@ async function handleTypedOperationEndpoint(
     await runtime.logger.log({
       details: {
         action: result.action,
-        args: result.command?.args,
-        cwd,
+        argumentCount: result.command?.args.length,
+        commandBuilt: result.command !== undefined,
         executable: result.command?.executable,
         exitCode: result.exitCode,
         operationError: result.error,
@@ -995,7 +995,7 @@ async function createAttachSessionMetadata(
       serverId: runtime.metadata.serverId,
       sessionId: lifecycle.sessionId,
       details: {
-        cwd: cwd ?? "",
+        cwdConfigured: cwd !== undefined,
         reason: "missingCwd",
         zmxName: zmxSessionName,
       },
