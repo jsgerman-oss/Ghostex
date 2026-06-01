@@ -31,6 +31,9 @@ export type ProjectBoardAgentOption = {
    * CDXC:PromptAgents 2026-05-29-10:53:
    * Project-board title generation runs through the native Beads bridge, so the
    * board state must carry the configured prompt-agent command as well as the id.
+   *
+   * CDXC:PromptAgents 2026-06-01-12:23:
+   * The command carried here is the gxserver launch-plan command, not the raw stored command, so Accept All policy is still resolved in gxserver before the native Beads bridge runs title generation.
    */
   command?: string;
   label: string;

@@ -2,12 +2,22 @@ import type {
   GxserverAgentLaunchPlan,
   GxserverCreateSessionParams,
   GxserverProjectDomainState,
+  GxserverAgentResumePlan,
   GxserverSessionDomainState,
 } from "../protocol/index.js";
+import {
+  appendCursorResumeFlag,
+  getClaudeSessionReference,
+  getCodexSessionReference,
+  getCursorSessionReference,
+  getExactAgentSessionReference,
+  getOpenCodeSessionReference,
+  getPiSessionReference,
+} from "./agent-resume/identity.js";
+import { getTrustedAgentResumeTitle } from "./agent-resume/title.js";
 import { normalizeAgentActivityState } from "./session-status/index.js";
 
 export { applyAgentActivityTransition, updateSessionActivitySettings } from "./session-status/index.js";
-import { isRejectedResumeTitle as isRejectedSessionTitle } from "./session-title/index.js";
 
 export type GxserverAgentAcceptAllMode = "inherit" | "enabled" | "disabled";
 
@@ -24,10 +34,12 @@ export interface GxserverAgentLaunchInput {
 
 export interface GxserverAgentResumeInput {
   agentCommand?: string;
+  agentLookupCommand?: string;
   agentId?: string;
   agentSessionId?: string;
   agentSessionPath?: string;
   projectPath?: string;
+  storedCommandCandidates?: readonly string[];
   title?: string;
   titleSource?: string;
 }
@@ -129,6 +141,15 @@ const GROK_BYPASS_PERMISSIONS_VALUE = "bypassPermissions";
 /*
 CDXC:GxserverAgentLifecycle 2026-05-30-15:04:
 gxserver owns agent launch/resume decisions for the hard cutover while preserving the current sidebar TypeScript rules. Launch commands get runtime Accept All flags, restore commands keep the raw configured command, startup text is queued after terminalReady, and exact-id resume may use the existing title fallback wrapper instead of replaying into live zmx sessions.
+
+CDXC:GxserverAgentLifecycle 2026-06-01-12:07:
+Resume, wake, and fork-style restored commands must apply the same global/per-agent Accept All policy as launch while leaving the stored base command unchanged. gxserver owns this runtime command shaping so macOS, CLI, TUI, and mobile clients do not each decide whether to append permission-bypass flags.
+
+CDXC:GxserverAgentLifecycle 2026-06-01-12:23:
+Clients must not rebuild agent launch or resume shell commands locally. gxserver returns launch/resume command plans with separate base, runtime, lookup, display, copy, fallback, and startup-script fields so OpenCode title lookup can use the base command while the final launched command still receives Accept All flags.
+
+CDXC:GxserverAgentLifecycle 2026-06-01-12:59:
+Resume plans must resolve exact agent conversation identity before title lookup and must use shared gxserver title trust for any lookup fallback. Placeholder or status-prefixed titles are display-only and must not become Cursor/OpenCode/Codex lookup input.
 */
 export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverAgentLaunchPlan {
   const baseCommand = normalizeText(input.command) ?? resolveDefaultAgentCommand(input.agentId) ?? "";
@@ -157,6 +178,21 @@ export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverA
     startupText: command ? `${command}\r` : "",
     startupTextDisposition: command ? "queueAfterTerminalReady" : "none",
   };
+}
+
+export function buildProjectAgentLaunchPlan(
+  project: GxserverProjectDomainState,
+  input: Pick<GxserverAgentLaunchInput, "agentId" | "agentSessionId">,
+): GxserverAgentLaunchPlan {
+  const agentConfig = resolveProjectAgentConfig(project, input.agentId, {});
+  return buildAgentLaunchPlan({
+    acceptAllMode: normalizeAcceptAllMode(agentConfig.acceptAllMode),
+    agentId: input.agentId,
+    agentSessionId: input.agentSessionId,
+    command: normalizeText(agentConfig.command),
+    globalAcceptAllEnabled: readBoolean(project.launchSettings.agentAcceptAllEnabled ?? project.launchSettings.acceptAll),
+    icon: normalizeText(agentConfig.icon),
+  });
 }
 
 export function createAgentSessionParams(
@@ -217,13 +253,32 @@ export function buildAgentResumeStartupText(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
 ): string | undefined {
-  const command = buildAgentResumeCommand(project, session);
-  if (!command) {
-    return undefined;
-  }
-  const displayCommand = buildAgentResumeCommand(project, session, { display: true }) ?? command;
+  return buildAgentResumePlan(project, session).startupText;
+}
+
+export function buildAgentResumePlan(
+  project: GxserverProjectDomainState,
+  session: GxserverSessionDomainState,
+): GxserverAgentResumePlan {
+  const input = toAgentResumeInput(project, session);
+  const primaryCommand = buildAgentResumeCommand(project, session);
+  const displayCommand = primaryCommand ? (buildAgentResumeCommand(project, session, { display: true }) ?? primaryCommand) : undefined;
   const fallbackCommand = buildAgentResumeFallbackCommand(project, session);
-  return `${wrapRestoredTerminalResumeCommand(command, displayCommand, fallbackCommand)}\r`;
+  const startupText = primaryCommand
+    ? `${wrapRestoredTerminalResumeCommand(primaryCommand, displayCommand ?? primaryCommand, fallbackCommand)}\r`
+    : undefined;
+  return {
+    agentId: normalizeText(input.agentId),
+    baseCommand: normalizeText(input.agentLookupCommand),
+    copyCommand: primaryCommand,
+    displayCommand,
+    fallbackCommand,
+    lookupCommand: normalizeText(input.agentLookupCommand),
+    primaryCommand,
+    runtimeCommand: normalizeText(input.agentCommand),
+    startupText,
+    startupTextDisposition: startupText ? "queueAfterTerminalReady" : "none",
+  };
 }
 
 export function buildAgentResumeCommand(
@@ -234,10 +289,11 @@ export function buildAgentResumeCommand(
   const input = toAgentResumeInput(project, session);
   const agentId = normalizeRestorableAgentId(input.agentId);
   const agentCommand = input.agentCommand;
+  const agentLookupCommand = input.agentLookupCommand ?? agentCommand;
   if (!agentId || !agentCommand) {
     return undefined;
   }
-  const resumeTitle = agentId === "pi" ? undefined : getTrustedResumeTitle(input);
+  const resumeTitle = agentId === "pi" ? undefined : getTrustedAgentResumeTitle(input);
   const exactReference = getExactAgentSessionReference(agentId, input);
   const codexReference = agentId === "codex" ? (getCodexSessionReference(input) ?? resumeTitle) : undefined;
   const claudeReference = agentId === "claude" ? (getClaudeSessionReference(input) ?? resumeTitle) : undefined;
@@ -282,7 +338,7 @@ export function buildAgentResumeCommand(
       }
       return options.display
         ? `${agentCommand} -s ${quoteShellDoubleArg(resumeTitle)}  # lookup session id in OpenCode session list`
-        : buildOpenCodeResumeCommand(agentCommand, resumeTitle);
+        : buildOpenCodeResumeCommand(agentCommand, resumeTitle, agentLookupCommand);
     case "pi":
       return piReference ? `${agentCommand} --session ${quoteShellDoubleArg(piReference)}` : undefined;
     case "rovodev":
@@ -297,7 +353,8 @@ export function buildAgentResumeFallbackCommand(
   const input = toAgentResumeInput(project, session);
   const agentId = normalizeRestorableAgentId(input.agentId);
   const agentCommand = input.agentCommand;
-  const resumeTitle = getTrustedResumeTitle(input);
+  const agentLookupCommand = input.agentLookupCommand ?? agentCommand;
+  const resumeTitle = getTrustedAgentResumeTitle(input);
   if (!agentId || !agentCommand || !resumeTitle) {
     return undefined;
   }
@@ -317,7 +374,7 @@ export function buildAgentResumeFallbackCommand(
     case "opencode": {
       const exactReference = getOpenCodeSessionReference(input);
       return exactReference && exactReference !== resumeTitle
-        ? buildOpenCodeResumeCommand(agentCommand, resumeTitle)
+        ? buildOpenCodeResumeCommand(agentCommand, resumeTitle, agentLookupCommand)
         : undefined;
     }
     case "cursor": {
@@ -502,18 +559,58 @@ function toAgentResumeInput(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
 ): GxserverAgentResumeInput {
+  const agentConfig = resolveProjectAgentConfig(project, session.agentId ?? "", session.launchSettings);
+  const baseAgentCommand =
+    normalizeText(session.runtimeSettings.agentCommand) ??
+    normalizeText(agentConfig.command) ??
+    resolveDefaultAgentCommand(session.agentId);
+  const agentId = session.agentId;
+  const runtimeAgentCommand = agentId && baseAgentCommand
+    ? resolveAgentLaunchCommand({
+        acceptAllMode: normalizeAcceptAllMode(agentConfig.acceptAllMode ?? session.launchSettings.acceptAllMode),
+        agentId,
+        command: baseAgentCommand,
+        globalAcceptAllEnabled: readBoolean(project.launchSettings.agentAcceptAllEnabled ?? project.launchSettings.acceptAll),
+        icon: normalizeText(agentConfig.icon ?? session.launchSettings.icon),
+      })
+    : baseAgentCommand;
   return {
-    agentCommand:
-      normalizeText(session.runtimeSettings.agentCommand) ??
-      normalizeText(resolveProjectAgentConfig(project, session.agentId ?? "", session.launchSettings).command) ??
-      resolveDefaultAgentCommand(session.agentId),
-    agentId: session.agentId,
+    agentCommand: runtimeAgentCommand,
+    agentId,
+    agentLookupCommand: baseAgentCommand,
     agentSessionId: normalizeText(session.runtimeSettings.agentSessionId),
     agentSessionPath: normalizeText(session.runtimeSettings.agentSessionPath),
     projectPath: session.cwd ?? project.path,
+    storedCommandCandidates: collectStoredAgentResumeCommandCandidates(session),
     title: session.title,
     titleSource: normalizeText(session.runtimeSettings.titleSource) ?? normalizeText(session.runtimeSettings.restoreTitleSource) ?? "user",
   };
+}
+
+function collectStoredAgentResumeCommandCandidates(session: GxserverSessionDomainState): readonly string[] {
+  const runtimeSettings = session.runtimeSettings;
+  const launchSettings = session.launchSettings;
+  const launchPlan = normalizeObject(launchSettings.agentLaunchPlan);
+  const resumePlan = normalizeObject(launchSettings.agentResumePlan);
+  const candidates = [
+    runtimeSettings.agentResumeCommand,
+    runtimeSettings.resumeCommand,
+    runtimeSettings.resumeFallbackCommand,
+    runtimeSettings.copyCommand,
+    runtimeSettings.startupText,
+    launchSettings.agentResumeCommand,
+    launchSettings.resumeCommand,
+    launchSettings.resumeFallbackCommand,
+    launchSettings.copyCommand,
+    launchSettings.startupText,
+    launchPlan.command,
+    launchPlan.startupText,
+    resumePlan.primaryCommand,
+    resumePlan.copyCommand,
+    resumePlan.displayCommand,
+    resumePlan.startupText,
+  ];
+  return [...new Set(candidates.map(normalizeText).filter((value): value is string => value !== undefined))];
 }
 
 function resolveProjectAgentConfig(
@@ -527,74 +624,6 @@ function resolveProjectAgentConfig(
     return candidateId === normalizedAgentId;
   });
   return customAgent ?? (normalizeText(launchSettings.agentCommand) ? launchSettings : {});
-}
-
-function getTrustedResumeTitle(input: GxserverAgentResumeInput): string | undefined {
-  if (input.titleSource === "placeholder") {
-    return undefined;
-  }
-  const title = normalizeText(input.title);
-  if (!title || isRejectedSessionTitle(title)) {
-    return undefined;
-  }
-  return title;
-}
-
-function getExactAgentSessionReference(agentId: RestorableAgentId, input: GxserverAgentResumeInput): string | undefined {
-  if (agentId === "codex") {
-    return getCodexSessionReference(input);
-  }
-  if (agentId === "cursor") {
-    return getCursorSessionReference(input);
-  }
-  if (agentId === "pi") {
-    return getPiSessionReference(input);
-  }
-  return normalizeText(input.agentSessionId);
-}
-
-function getCodexSessionReference(input: GxserverAgentResumeInput): string | undefined {
-  const sessionId = normalizeText(input.agentSessionId);
-  return sessionId ? getCodexSessionIdFromTitle(sessionId) ?? sessionId : undefined;
-}
-
-function getClaudeSessionReference(input: GxserverAgentResumeInput): string | undefined {
-  return normalizeText(input.agentSessionId);
-}
-
-function getOpenCodeSessionReference(input: GxserverAgentResumeInput): string | undefined {
-  return normalizeText(input.agentSessionId);
-}
-
-function getPiSessionReference(input: GxserverAgentResumeInput): string | undefined {
-  return normalizeText(input.agentSessionPath) ?? normalizeText(input.agentSessionId);
-}
-
-function getCursorSessionReference(input: GxserverAgentResumeInput): string | undefined {
-  return getCursorChatSessionId(normalizeText(input.agentSessionId)) ?? getCursorChatSessionId(normalizeText(input.agentSessionPath));
-}
-
-function appendCursorResumeFlag(command: string, chatId: string): string {
-  const normalizedChatId = getCursorChatSessionId(chatId);
-  return normalizedChatId ? `${command.trim()} --resume ${quoteShellDoubleArg(normalizedChatId)}`.trim() : command.trim();
-}
-
-function getCursorChatSessionId(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  if (!normalized) {
-    return undefined;
-  }
-  const direct = normalized.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu);
-  if (direct) {
-    return normalized.toLowerCase();
-  }
-  return normalized
-    .match(/(?:^|[/\\])agent-transcripts(?:[/\\])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/\\])/iu)?.[1]
-    ?.toLowerCase();
-}
-
-function getCodexSessionIdFromTitle(value: string): string | undefined {
-  return value.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu)?.[0]?.toLowerCase();
 }
 
 function buildRovoDevResumeCommand(agentCommand: string, sessionReference: string): string {
@@ -618,8 +647,8 @@ function buildCursorResumeLookupCommand(agentCommand: string, projectPath: strin
   ].join(" ");
 }
 
-function buildOpenCodeResumeCommand(agentCommand: string, resumeTitle: string): string {
-  return `${agentCommand} -s "$(${agentCommand} session list --format json | /usr/bin/python3 -c ${quoteShellArg(getOpenCodeSessionLookupScript())} ${quoteShellArg(resumeTitle)})"`;
+function buildOpenCodeResumeCommand(agentCommand: string, resumeTitle: string, lookupAgentCommand = agentCommand): string {
+  return `${agentCommand} -s "$(${lookupAgentCommand} session list --format json | /usr/bin/python3 -c ${quoteShellArg(getOpenCodeSessionLookupScript())} ${quoteShellArg(resumeTitle)})"`;
 }
 
 function getCursorChatSessionLookupScript(): string {

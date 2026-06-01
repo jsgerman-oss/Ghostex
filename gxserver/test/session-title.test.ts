@@ -114,6 +114,7 @@ function sessionFixture(
     providerState: { lifecycleState: "exists", zmxName: "P3a91-G8v20" },
     runtimeSettings: {},
     sessionId: "G8v20",
+    surface: "workspace",
     title: "Terminal Session",
     updatedAt: "2026-05-31T11:00:00.000Z",
     zmxName: "P3a91-G8v20",

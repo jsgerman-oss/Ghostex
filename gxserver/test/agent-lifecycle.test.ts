@@ -5,6 +5,7 @@ import {
   buildAgentLaunchPlan,
   buildAgentResumeCommand,
   buildAgentResumeFallbackCommand,
+  buildAgentResumePlan,
   buildAgentResumeStartupText,
 } from "../src/agent-lifecycle.js";
 import type { GxserverProjectDomainState, GxserverSessionDomainState } from "../protocol/index.js";
@@ -55,6 +56,59 @@ test("Cursor launch appends resume after runtime Accept All flags when a chat id
   );
 });
 
+test("Cursor resume uses exact identity before title lookup", () => {
+  const project = projectFixture();
+  const session = sessionFixture({
+    agentId: "cursor",
+    runtimeSettings: {
+      agentCommand: "cursor-agent",
+      agentSessionId: "E10971DA-CBD7-459A-9AC3-B9B0313199A3",
+      titleSource: "user",
+    },
+    title: "∗ Cursor CLI Session",
+  });
+
+  const plan = buildAgentResumePlan(project, session);
+  assert.equal(plan.primaryCommand, 'cursor-agent --resume "e10971da-cbd7-459a-9ac3-b9b0313199a3"');
+  assert.equal(plan.displayCommand, plan.primaryCommand);
+  assert.equal(plan.fallbackCommand, undefined);
+  assert.doesNotMatch(plan.startupText ?? "", /lookup chat id|Cursor CLI Session/);
+});
+
+test("Cursor resume extracts exact identity from stored raw resume commands", () => {
+  const project = projectFixture();
+  const session = sessionFixture({
+    agentId: "cursor",
+    runtimeSettings: {
+      agentCommand: "cursor-agent",
+      resumeCommand: "cd '/repo/ghostex' && cursor-agent --resume \"e10971da-cbd7-459a-9ac3-b9b0313199a3\"",
+      titleSource: "user",
+    },
+    title: "∗ Cursor CLI Session",
+  });
+
+  const plan = buildAgentResumePlan(project, session);
+  assert.equal(plan.primaryCommand, 'cursor-agent --resume "e10971da-cbd7-459a-9ac3-b9b0313199a3"');
+  assert.equal(plan.fallbackCommand, undefined);
+  assert.doesNotMatch(plan.startupText ?? "", /lookup chat id|Unable to find Cursor/);
+});
+
+test("Cursor placeholder titles are not used for chat-store lookup", () => {
+  const project = projectFixture();
+  const session = sessionFixture({
+    agentId: "cursor",
+    runtimeSettings: {
+      agentCommand: "cursor-agent",
+      titleSource: "user",
+    },
+    title: "∗ Cursor CLI Session",
+  });
+
+  assert.equal(buildAgentResumeCommand(project, session), undefined);
+  assert.equal(buildAgentResumeFallbackCommand(project, session), undefined);
+  assert.equal(buildAgentResumeStartupText(project, session), undefined);
+});
+
 test("resume and fallback command construction follows current sidebar rules", () => {
   const project = projectFixture();
   const session = sessionFixture({
@@ -76,6 +130,54 @@ test("resume and fallback command construction follows current sidebar rules", (
   assert.match(startupText ?? "", /Restoring session/);
   assert.match(startupText ?? "", /Exact resume failed; trying saved fallback resume command/);
   assert.match(startupText ?? "", /__ghostex_restore_resume_primary/);
+});
+
+test("resume startup commands apply Accept All at runtime without changing stored command", () => {
+  const project = {
+    ...projectFixture(),
+    launchSettings: { agentAcceptAllEnabled: true },
+  };
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentCommand: "codex",
+      agentSessionId: "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56",
+      titleSource: "user",
+    },
+    title: "Readable thread title",
+  });
+
+  assert.equal(
+    buildAgentResumeCommand(project, session),
+    'codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
+  );
+  assert.equal(buildAgentResumeFallbackCommand(project, session), 'codex --yolo resume "Readable thread title"');
+  assert.equal(session.runtimeSettings.agentCommand, "codex");
+});
+
+test("resume plan separates OpenCode lookup command from runtime Accept All command", () => {
+  const project = {
+    ...projectFixture(),
+    launchSettings: { agentAcceptAllEnabled: true },
+  };
+  const session = sessionFixture({
+    agentId: "opencode",
+    runtimeSettings: {
+      agentCommand: "opencode",
+      titleSource: "user",
+    },
+    title: "Readable thread title",
+  });
+
+  const plan = buildAgentResumePlan(project, session);
+  assert.equal(plan.runtimeCommand, "opencode --dangerously-skip-permissions");
+  assert.equal(plan.lookupCommand, "opencode");
+  assert.match(
+    plan.primaryCommand ?? "",
+    /opencode --dangerously-skip-permissions -s "\$\(opencode session list --format json/,
+  );
+  assert.doesNotMatch(plan.primaryCommand ?? "", /opencode --dangerously-skip-permissions session list/);
+  assert.equal(plan.copyCommand, plan.primaryCommand);
 });
 
 test("temporary Search by Text titles are not trusted resume fallbacks", () => {
@@ -250,6 +352,7 @@ function sessionFixture(
     providerState: { lifecycleState: "missing", zmxName: "P3a91-G8v20" },
     runtimeSettings: {},
     sessionId: "G8v20",
+    surface: "workspace",
     title: "Agent task",
     updatedAt: "2026-05-30T12:00:00.000Z",
     zmxName: "P3a91-G8v20",

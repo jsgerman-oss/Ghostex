@@ -1,6 +1,10 @@
 export const DEFAULT_TERMINAL_SESSION_TITLE = "Terminal Session";
 
-const LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*✶✻✽✸✹✺✷✴✦◇🤖🔔]+/u;
+/*
+CDXC:AgentResume 2026-06-01-12:59:
+The sidebar status marker uses the mathematical asterisk `∗`, not only ASCII `*`. Strip it before title trust checks so display markers cannot make placeholder titles look like real restore lookup titles.
+*/
+const LEADING_TERMINAL_TITLE_STATUS_MARKER_PATTERN = /^[\s\u2800-\u28ff·•⋅◦✳*∗✶✻✽✸✹✺✷✴✦◇🤖🔔]+/u;
 const ANTIGRAVITY_ATTENTION_TITLE_PATTERN = /^🔔\s*agy$/iu;
 const ANTIGRAVITY_IDLE_TITLE_PATTERN = /^agy$/iu;
 const LEADING_TERMINAL_TITLE_PREFIX_PATTERN = /^(?:OC\s*\|\s*)+/iu;
