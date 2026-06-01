@@ -2654,11 +2654,101 @@
   min-width: 0;
 }
 
+.add-repository-options-row {
+  /*
+   * CDXC:AddRepository 2026-06-01-10:28:
+   * Clone scope controls should be visible together in one row under the folder
+   * chooser, unchecked by default, without competing with the primary Clone &
+   * Add action. Keep the layout compact and allow labels to shrink before they
+   * can push the modal wider than its shell.
+   */
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.add-repository-option {
+  align-items: center;
+  color: color-mix(in srgb, var(--foreground) 88%, var(--muted-foreground) 12%);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 13px;
+  gap: 7px;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.add-repository-option-checkbox {
+  appearance: none;
+  background: color-mix(in srgb, var(--input) 30%, transparent);
+  border: 1px solid var(--input);
+  border-radius: 0;
+  flex: none;
+  height: 16px;
+  margin: 0;
+  position: relative;
+  width: 16px;
+}
+
+.add-repository-option-checkbox:checked {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.add-repository-option-checkbox:checked::after {
+  border: solid var(--primary-foreground);
+  border-width: 0 2px 2px 0;
+  content: "";
+  height: 8px;
+  left: 5px;
+  position: absolute;
+  top: 2px;
+  transform: rotate(45deg);
+  width: 4px;
+}
+
+.add-repository-option-checkbox:disabled {
+  opacity: 0.55;
+}
+
+.add-repository-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-repository-option-info {
+  align-items: center;
+  color: color-mix(in srgb, var(--muted-foreground) 82%, var(--foreground) 18%);
+  cursor: help;
+  display: inline-flex;
+  flex: none;
+  justify-content: center;
+}
+
+.add-repository-option-info:hover,
+.add-repository-option-info:focus-visible {
+  color: var(--foreground);
+}
+
 .add-repository-error {
   background: color-mix(in srgb, var(--destructive) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--destructive) 38%, transparent);
   border-radius: 0;
   color: color-mix(in srgb, var(--destructive) 82%, var(--foreground) 18%);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+}
+
+.add-repository-warning {
+  background: color-mix(in srgb, #f59e0b 13%, transparent);
+  border: 1px solid color-mix(in srgb, #f59e0b 42%, transparent);
+  border-radius: 0;
+  color: color-mix(in srgb, #fbbf24 78%, var(--foreground) 22%);
   font-size: 13px;
   line-height: 1.45;
   padding: 10px 12px;

@@ -126,6 +126,7 @@ type AppModalHostMessage =
         sidebarMessage: SidebarToExtensionMessage;
       };
       description?: string;
+      interactive?: boolean;
       level?: "info" | "success" | "warning" | "error";
       persistent?: boolean;
       title: string;
@@ -141,6 +142,13 @@ type AppModalHostMessage =
       projectPath?: string;
       requestId: string;
       type: "repositoryCloneResult";
+    }
+  | {
+      error?: string;
+      ok: boolean;
+      preview?: unknown;
+      requestId: string;
+      type: "repositoryClonePreviewResult";
     }
   | { type: "pickWorktreeImages" }
   | { paths: string[]; type: "worktreeImageFilesPicked" }
@@ -2004,6 +2012,18 @@ function AppModalHost() {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "installBrowserControl" });
         }}
+        onInstallComputerUseSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installComputerUseSkill" });
+        }}
+        onInstallAgentOrchestrationSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installAgentOrchestrationSkill" });
+        }}
+        onInstallGenerateTitleSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installGenerateTitleSkill" });
+        }}
         onInstallCuaDriver={() => {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "installCuaDriver" });
@@ -2098,6 +2118,18 @@ function AppModalHost() {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "installBrowserControl" });
         }}
+        onInstallComputerUseSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installComputerUseSkill" });
+        }}
+        onInstallAgentOrchestrationSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installAgentOrchestrationSkill" });
+        }}
+        onInstallGenerateTitleSkill={() => {
+          setGhostexCliStatusLoading(true);
+          vscode.postMessage({ type: "installGenerateTitleSkill" });
+        }}
         onInstallCuaDriver={() => {
           setGhostexCliStatusLoading(true);
           vscode.postMessage({ type: "installCuaDriver" });
@@ -2172,14 +2204,33 @@ function AppModalHost() {
         isOpen={activeModal === "addRepository"}
         onCancel={closeModal}
         onClone={(request) => {
+          /*
+           * CDXC:AddRepository 2026-06-01-10:33:
+           * Clone & Add should leave the dialog immediately and move long-running
+           * Git feedback into the app toast layer, including cancellation. Native
+           * owns clone progress and final success/error toasts after this message.
+           */
           vscode.postMessage({
+            cloneMainOnly: request.cloneMainOnly,
             folderPath: request.folderPath,
+            newFolderName: request.newFolderName,
             repositoryInput: request.repositoryInput,
             requestId: request.requestId,
+            shallowClone: request.shallowClone,
             type: "cloneRepository",
           });
+          closeModal();
         }}
         onCloneSuccess={closeModal}
+        onPreview={(request) => {
+          vscode.postMessage({
+            folderPath: request.folderPath,
+            newFolderName: request.newFolderName,
+            repositoryInput: request.repositoryInput,
+            requestId: request.requestId,
+            type: "previewRepositoryClone",
+          });
+        }}
       />
       <CommandConfigModal
         draft={config.commandDraft ?? createEmptyCommandDraft()}

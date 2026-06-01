@@ -2,6 +2,10 @@ import {
   GXSERVER_PRODUCT,
   GXSERVER_PROTOCOL_VERSION,
   type GxserverEndpointPath,
+  type GxserverAgentLaunchPlan,
+  type GxserverAgentLaunchPlanParams,
+  type GxserverAgentResumePlan,
+  type GxserverAgentResumePlanParams,
   type GxserverAttachSessionMetadataParams,
   type GxserverAttachSessionMetadataResult,
   type GxserverCreateSessionParams,
@@ -11,6 +15,8 @@ import {
   type GxserverRpcSuccessResponse,
   type GxserverServerHealthResponse,
   type GxserverSessionDomainState,
+  type GxserverSessionTransitionParams,
+  type GxserverSessionTransitionResult,
 } from "../../shared/gxserver-protocol";
 
 export type NativeSidebarGxserverBootstrap = {
@@ -207,6 +213,58 @@ export function createNativeSidebarGxserverClient(
     return attach;
   }
 
+  async function fetchWakeSessionMetadata(
+    params: GxserverAttachSessionMetadataParams,
+  ): Promise<GxserverAttachSessionMetadataResult> {
+    /*
+    CDXC:GxserverTerminalWake 2026-06-01-12:07:
+    Sleeping-session selection is a wake intent, not a plain attach. Call gxserver's wake endpoint so the daemon marks the session running and returns the server-built resume startup text for newly recreated zmx sessions.
+    */
+    const { attach } = await rpc<{ attach: GxserverAttachSessionMetadataResult }>(
+      "/api/wakeSession",
+      params as unknown as Record<string, unknown>,
+    );
+    return attach;
+  }
+
+  function fetchAgentLaunchPlanSync(
+    params: GxserverAgentLaunchPlanParams,
+  ): GxserverAgentLaunchPlan {
+    /*
+    CDXC:GxserverAgentCommands 2026-06-01-12:23:
+    Agent launch commands are gxserver policy, including Accept All flag insertion. Native callers that need a command synchronously ask gxserver for the launch plan instead of reconstructing per-agent command rules in React.
+    */
+    const { plan } = rpcSync<{ plan: GxserverAgentLaunchPlan }>(
+      "/api/readAgentLaunchPlan",
+      params as unknown as Record<string, unknown>,
+    );
+    return plan;
+  }
+
+  async function fetchAgentResumePlan(
+    params: GxserverAgentResumePlanParams,
+  ): Promise<GxserverAgentResumePlan> {
+    /*
+    CDXC:GxserverAgentCommands 2026-06-01-12:23:
+    Copy/restore/resume commands come from gxserver so OpenCode can use a base lookup command while the actual launched command carries runtime Accept All flags.
+    */
+    const { plan } = await rpc<{ plan: GxserverAgentResumePlan }>(
+      "/api/readAgentResumePlan",
+      params as unknown as Record<string, unknown>,
+    );
+    return plan;
+  }
+
+  function fetchAgentResumePlanSync(
+    params: GxserverAgentResumePlanParams,
+  ): GxserverAgentResumePlan {
+    const { plan } = rpcSync<{ plan: GxserverAgentResumePlan }>(
+      "/api/readAgentResumePlan",
+      params as unknown as Record<string, unknown>,
+    );
+    return plan;
+  }
+
   function createTerminalSessionSync(
     params: GxserverCreateSessionParams,
   ): GxserverSessionDomainState {
@@ -257,6 +315,15 @@ export function createNativeSidebarGxserverClient(
     await rpc(path, params as unknown as Record<string, unknown>);
   }
 
+  function transitionSessionSync(
+    params: GxserverSessionTransitionParams,
+  ): GxserverSessionTransitionResult {
+    return rpcSync<GxserverSessionTransitionResult>(
+      "/api/transitionSession",
+      params as unknown as Record<string, unknown>,
+    );
+  }
+
   function createHeaders(): Record<string, string> {
     if (!config.authToken) {
       throw new Error(
@@ -274,12 +341,17 @@ export function createNativeSidebarGxserverClient(
     addProjectPathSync,
     applyNativeStatus,
     createTerminalSessionSync,
+    fetchAgentLaunchPlanSync,
+    fetchAgentResumePlan,
+    fetchAgentResumePlanSync,
     fetchAttachSessionMetadata,
     fetchHealth,
     fetchStartupSnapshot,
+    fetchWakeSessionMetadata,
     getCurrentStatus,
     probeSessionProvider,
     rpc,
+    transitionSessionSync,
     updateSessionLifecycle,
   };
 }

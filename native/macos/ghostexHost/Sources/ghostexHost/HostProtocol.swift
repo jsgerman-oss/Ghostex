@@ -45,6 +45,7 @@ enum HostCommand: Decodable {
   case projectBoardResponse(ProjectBoardResponse)
   case playSound(PlaySound)
   case runProcess(RunProcess)
+  case cancelRunProcess(CancelRunProcess)
   case gxserverRequest(GxserverRequest)
   case setKeepAwakeLidSleepPrevention(SetKeepAwakeLidSleepPrevention)
   case syncGhosttyTerminalSettings(SyncGhosttyTerminalSettings)
@@ -138,6 +139,7 @@ enum HostCommand: Decodable {
     case projectBoardResponse
     case playSound
     case runProcess
+    case cancelRunProcess
     case gxserverRequest
     case setKeepAwakeLidSleepPrevention
     case syncGhosttyTerminalSettings
@@ -275,6 +277,8 @@ enum HostCommand: Decodable {
       self = .playSound(try PlaySound(from: decoder))
     case .runProcess:
       self = .runProcess(try RunProcess(from: decoder))
+    case .cancelRunProcess:
+      self = .cancelRunProcess(try CancelRunProcess(from: decoder))
     case .gxserverRequest:
       self = .gxserverRequest(try GxserverRequest(from: decoder))
     case .setKeepAwakeLidSleepPrevention:
@@ -894,6 +898,10 @@ struct RunProcess: Decodable {
   let cwd: String?
   let env: [String: String]?
   let executable: String
+  let requestId: String
+}
+
+struct CancelRunProcess: Decodable {
   let requestId: String
 }
 

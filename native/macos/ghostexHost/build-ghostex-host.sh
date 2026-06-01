@@ -180,8 +180,8 @@ cp "$REPO_ROOT/scripts/ghostex-cli.mjs" "$WEB_DIR/cli/ghostex-cli.mjs"
 cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/ghostex"
 cp "$REPO_ROOT/scripts/ghostex-cli-launcher.sh" "$WEB_DIR/cli/gx"
 chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
-# CDXC:BrowserAgentControl 2026-05-26-22:17: First-launch CLI setup installs
-# the Ghostex Browser Use skill after Homebrew installs the app bundle.
+# CDXC:BrowserAgentControl 2026-05-26-22:17: First launch and Settings install
+# the Ghostex Browser Use skill only after the user explicitly chooses that skill.
 # Bundle the skill beside the CLI so `ghostex browser install-skill` can copy the
 # exact version that matches the installed `ghostex browser mcp`
 # command into ~/agents/skills.

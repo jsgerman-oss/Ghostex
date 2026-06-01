@@ -101,6 +101,12 @@ export type SidebarGhostexCliStatusMessage = {
    * skill, because Cua Driver alone does not teach agents the Ghostex-named
    * computer-use workflow.
    *
+   * CDXC:AgentSkills 2026-05-31-09:18:
+   * First launch and Settings must show each bundled Ghostex skill as an
+   * explicit install item. Carry per-skill status for Browser Use, Computer Use,
+   * Agent Orchestration, and Generate Title instead of only exposing the skills
+   * that also have standalone guide pages.
+   *
    * CDXC:CuaPermissions 2026-05-29-06:00:
    * The Cua Permissions row must report Cua Driver's own macOS privacy grants,
    * not Ghostex's Accessibility grant. Carry both Accessibility and Screen
@@ -110,6 +116,10 @@ export type SidebarGhostexCliStatusMessage = {
   browserSkillPath?: string;
   computerUseSkillInstalled: boolean;
   computerUseSkillPath?: string;
+  agentOrchestrationSkillInstalled: boolean;
+  agentOrchestrationSkillPath?: string;
+  generateTitleSkillInstalled: boolean;
+  generateTitleSkillPath?: string;
   cuaDriverAccessibilityPermissionGranted?: boolean;
   cuaAppInstalled: boolean;
   cuaDriverInstalled: boolean;
@@ -695,7 +705,13 @@ export type SidebarToExtensionMessage =
        * actions for optional integrations. Native runs the actual commands and
        * refreshes the shared integration status afterward.
        */
-      type: "installGhostexCli" | "installBrowserControl" | "installCuaDriver";
+      type:
+        | "installGhostexCli"
+        | "installBrowserControl"
+        | "installComputerUseSkill"
+        | "installAgentOrchestrationSkill"
+        | "installGenerateTitleSkill"
+        | "installCuaDriver";
     }
   | {
       /**
@@ -928,11 +944,43 @@ export type SidebarToExtensionMessage =
        * The full-window Clone Repository modal sends clone requests through the
        * native sidebar so Git runs in the trusted native process bridge, errors
        * return to the modal, and the project is added only after clone success.
+       *
+       * CDXC:AddRepository 2026-06-01-10:28:
+       * Reference-only repository clones can request main-only and shallow Git
+       * options from the modal. Keep both flags explicit in the native bridge
+       * contract so the UI state determines the exact clone command.
        */
+      cloneMainOnly?: boolean;
       folderPath: string;
+      newFolderName?: string;
       repositoryInput: string;
       requestId: string;
+      shallowClone?: boolean;
       type: "cloneRepository";
+    }
+  | {
+      /**
+       * CDXC:AddRepository 2026-06-01-11:18:
+       * Repository clone destination preview is routed through gxserver so the
+       * modal can warn about an existing default folder without reimplementing
+       * filesystem and repository parsing logic in the macOS UI layer.
+       */
+      folderPath: string;
+      newFolderName?: string;
+      repositoryInput: string;
+      requestId: string;
+      type: "previewRepositoryClone";
+    }
+  | {
+      /**
+       * CDXC:AddRepository 2026-06-01-10:33:
+       * Repository clone progress moved from the modal to a persistent toast.
+       * The toast Cancel action must target the active clone request instead of
+       * only dismissing UI, so native can terminate the corresponding Git
+       * process.
+       */
+      requestId: string;
+      type: "cancelRepositoryClone";
     }
   | {
       type: "createSessionInGroup";

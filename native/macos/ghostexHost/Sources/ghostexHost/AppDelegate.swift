@@ -9,6 +9,56 @@ import UniformTypeIdentifiers
 import UserNotifications
 import WebKit
 
+private final class NativeProcessRegistry {
+  static let shared = NativeProcessRegistry()
+
+  private let lock = NSLock()
+  private var canceledRequestIds = Set<String>()
+  private var processesByRequestId: [String: Process] = [:]
+
+  func register(requestId: String, process: Process) -> Bool {
+    /*
+     CDXC:AddRepository 2026-06-01-10:33:
+     Repository clone cancellation is a native process concern, not just a toast
+     dismissal. Track runProcess children by request id so the sidebar can cancel
+     the active Git clone and so an early cancel wins before Process.run starts.
+     */
+    lock.lock()
+    defer { lock.unlock() }
+    if canceledRequestIds.remove(requestId) != nil {
+      return false
+    }
+    processesByRequestId[requestId] = process
+    return true
+  }
+
+  func unregister(requestId: String) {
+    lock.lock()
+    processesByRequestId.removeValue(forKey: requestId)
+    canceledRequestIds.remove(requestId)
+    lock.unlock()
+  }
+
+  func cancel(requestId: String) {
+    lock.lock()
+    let process = processesByRequestId[requestId]
+    if process?.isRunning != true {
+      canceledRequestIds.insert(requestId)
+    }
+    lock.unlock()
+
+    if process?.isRunning == true {
+      process?.terminate()
+    }
+  }
+
+  func isCanceled(requestId: String) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return canceledRequestIds.contains(requestId)
+  }
+}
+
 /**
  CDXC:SidebarReference 2026-05-08-02:40
  The reference sidebar and standalone macOS title bar must share the same
@@ -2427,6 +2477,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       runProcess(command) { [weak self] event in
         self?.bridge?.send(event)
       }
+    case .cancelRunProcess(let command):
+      NativeProcessRegistry.shared.cancel(requestId: command.requestId)
     case .gxserverRequest(let command):
       Task { [weak self] in
         let event = await GxserverClient.request(command)
@@ -3713,6 +3765,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       process.standardInput = FileHandle.nullDevice
       process.standardOutput = stdoutPipe
       process.standardError = stderrPipe
+      guard NativeProcessRegistry.shared.register(requestId: command.requestId, process: process) else {
+        await MainActor.run {
+          sendEvent(
+            .processResult(
+              requestId: command.requestId,
+              exitCode: 130,
+              stdout: "",
+              stderr: "Process canceled."
+            ))
+        }
+        return
+      }
       let outputLock = NSLock()
       var stdoutData = Data()
       var stderrData = Data()
@@ -3746,6 +3810,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
 
       do {
         try process.run()
+        if NativeProcessRegistry.shared.isCanceled(requestId: command.requestId) {
+          process.terminate()
+        }
         process.waitUntilExit()
         stdoutHandle.readabilityHandler = nil
         stderrHandle.readabilityHandler = nil
@@ -3758,6 +3825,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
         outputLock.unlock()
         await MainActor.run {
+          NativeProcessRegistry.shared.unregister(requestId: command.requestId)
           sendEvent(
             .processResult(
               requestId: command.requestId,
@@ -3770,6 +3838,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
         stdoutHandle.readabilityHandler = nil
         stderrHandle.readabilityHandler = nil
         await MainActor.run {
+          NativeProcessRegistry.shared.unregister(requestId: command.requestId)
           sendEvent(
             .processResult(
               requestId: command.requestId,
@@ -6203,6 +6272,8 @@ final class ghostexRootView: NSView {
       NativeSoundPlayer.shared.play(command)
     case .runProcess(let command):
       runProcess(command)
+    case .cancelRunProcess(let command):
+      NativeProcessRegistry.shared.cancel(requestId: command.requestId)
     case .gxserverRequest(let command):
       Task { [weak self] in
         let event = await GxserverClient.request(command)
@@ -7195,21 +7266,14 @@ final class ghostexRootView: NSView {
     super.layout()
     let frames = rootLayoutFrames()
     validateRootLayoutFrames(frames)
-    let sidebarResizeUnderlayFrame = CGRect(
-      x: sidebarSide == .left ? frames.sidebar.maxX : frames.sidebar.minX - Self.dividerWidth,
-      y: frames.sidebar.minY,
-      width: Self.dividerWidth,
-      height: frames.sidebar.height)
     /**
-     CDXC:NativeSidebarChrome 2026-05-31-15:13:
-     The sidebar resize strip must stay a transparent hit target instead of a
-     colored layout gap. Render the sidebar webview underneath the divider so
-     New Session, Agents Hub, Plugins, Search, Recent Projects, and Settings
-     keep their normal CSS bounds while the native drag area has no visible
-     background of its own. Limit the underlay to the fixed divider width so
-     the workspace-side resize extension remains a native hit target only.
+     CDXC:NativeSidebarChrome 2026-05-31-18:58:
+     The native #252525 sidebar/workarea border and resize strip must remain
+     owned by AppKit. Keep the sidebar WKWebView inside frames.sidebar so web
+     content cannot cover the non-interactive border line or interfere with the
+     transparent native drag handle.
      */
-    sidebarView.frame = frames.sidebar.union(sidebarResizeUnderlayFrame)
+    sidebarView.frame = frames.sidebar
     divider.frame = frames.divider
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
@@ -7747,7 +7811,11 @@ final class ghostexRootView: NSView {
       }
       dispatchModalHostMessage(message)
       if activeAppModalKind == nil {
-        modalHostView.setTopLeftHitRegions([])
+        if (message["interactive"] as? Bool) == true {
+          modalHostView.setTopLeftHitRegions(appModalToastHitRegions())
+        } else {
+          modalHostView.setTopLeftHitRegions([])
+        }
       }
       modalHostView.isHidden = false
       updateSidebarModalBackdrop()
@@ -7825,6 +7893,21 @@ final class ghostexRootView: NSView {
         )
       }
     }
+  }
+
+  private func appModalToastHitRegions() -> [CGRect] {
+    /**
+     CDXC:AddRepository 2026-06-01-10:33:
+     Clone progress toasts have a real Cancel action. Toast-only modal hosts
+     normally pass clicks through to the workspace, so interactive toasts need a
+     narrow bottom-center hit region that covers Sonner's toast without making
+     the full transparent WKWebView block terminal panes.
+     */
+    let width = min(CGFloat(520), max(CGFloat(280), modalHostView.bounds.width - 32))
+    let height = CGFloat(150)
+    let left = max(CGFloat(16), (modalHostView.bounds.width - width) / 2)
+    let top = max(CGFloat(16), modalHostView.bounds.height - height - 16)
+    return [CGRect(x: left, y: top, width: width, height: height)]
   }
 
   private func dispatchSidebarModalCommand(_ message: Any) {
@@ -8071,6 +8154,21 @@ final class ghostexRootView: NSView {
       process.standardInput = FileHandle.nullDevice
       process.standardOutput = stdoutPipe
       process.standardError = stderrPipe
+      guard NativeProcessRegistry.shared.register(requestId: command.requestId, process: process) else {
+        let result = HostEvent.processResult(
+          requestId: command.requestId,
+          exitCode: 130,
+          stdout: "",
+          stderr: "Process canceled."
+        )
+        await MainActor.run { [weak self] in
+          guard let self else {
+            return
+          }
+          self.postHostEvent(result)
+        }
+        return
+      }
       let outputLock = NSLock()
       var stdoutData = Data()
       var stderrData = Data()
@@ -8105,6 +8203,9 @@ final class ghostexRootView: NSView {
       let result: HostEvent
       do {
         try process.run()
+        if NativeProcessRegistry.shared.isCanceled(requestId: command.requestId) {
+          process.terminate()
+        }
         process.waitUntilExit()
         stdoutHandle.readabilityHandler = nil
         stderrHandle.readabilityHandler = nil
@@ -8133,6 +8234,7 @@ final class ghostexRootView: NSView {
         )
       }
       await MainActor.run { [weak self] in
+        NativeProcessRegistry.shared.unregister(requestId: command.requestId)
         guard let self else {
           return
         }

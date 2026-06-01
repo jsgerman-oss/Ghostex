@@ -36,6 +36,8 @@ const initialHookStatus: SidebarAgentHookStatusMessage = {
 };
 
 const installedCliStatus: SidebarGhostexCliStatusMessage = {
+  agentOrchestrationSkillInstalled: true,
+  agentOrchestrationSkillPath: "/Users/madda/agents/skills/ghostex-agent-orchestration/SKILL.md",
   browserSkillInstalled: true,
   browserSkillPath: "/Users/madda/agents/skills/ghostex-browser-use/SKILL.md",
   computerUseSkillInstalled: true,
@@ -44,6 +46,8 @@ const installedCliStatus: SidebarGhostexCliStatusMessage = {
   cuaDriverInstalled: true,
   cuaDriverPath: "/Users/madda/.local/bin/cua-driver",
   detail: "ghostex is available on PATH. gx is not currently linked, so Ghostex will keep using the primary command until the alias can be installed safely. Browser MCP skill is installed for agents.",
+  generateTitleSkillInstalled: true,
+  generateTitleSkillPath: "/Users/madda/agents/skills/ghostex-generate-title/SKILL.md",
   generatedAt: "2026-05-26T13:12:00.000Z",
   ghostexPath: "/opt/homebrew/bin/ghostex",
   gxBlockedByExistingCommand: false,
@@ -53,11 +57,13 @@ const installedCliStatus: SidebarGhostexCliStatusMessage = {
 };
 
 const missingCliStatus: SidebarGhostexCliStatusMessage = {
+  agentOrchestrationSkillInstalled: false,
   browserSkillInstalled: false,
   computerUseSkillInstalled: false,
   cuaAppInstalled: false,
   cuaDriverInstalled: false,
   detail: "Ghostex CLI was not found on PATH. Ghostex Browser Use and Ghostex Computer Use are not installed yet.",
+  generateTitleSkillInstalled: false,
   generatedAt: "2026-05-27T04:17:00.000Z",
   gxBlockedByExistingCommand: false,
   gxUsable: false,
@@ -128,6 +134,43 @@ function FirstLaunchSetupModalStory({
             setGhostexCliStatusLoading(false);
           }, 500);
         }}
+        onInstallComputerUseSkill={() => {
+          setGhostexCliStatusLoading(true);
+          window.setTimeout(() => {
+            setGhostexCliStatus({
+              ...ghostexCliStatus,
+              computerUseSkillInstalled: true,
+              computerUseSkillPath: "/Users/madda/agents/skills/ghostex-computer-use/SKILL.md",
+              detail: "Ghostex Computer Use skill is installed for agents.",
+            });
+            setGhostexCliStatusLoading(false);
+          }, 500);
+        }}
+        onInstallAgentOrchestrationSkill={() => {
+          setGhostexCliStatusLoading(true);
+          window.setTimeout(() => {
+            setGhostexCliStatus({
+              ...ghostexCliStatus,
+              agentOrchestrationSkillInstalled: true,
+              agentOrchestrationSkillPath:
+                "/Users/madda/agents/skills/ghostex-agent-orchestration/SKILL.md",
+              detail: "Ghostex Agent Orchestration skill is installed for agents.",
+            });
+            setGhostexCliStatusLoading(false);
+          }, 500);
+        }}
+        onInstallGenerateTitleSkill={() => {
+          setGhostexCliStatusLoading(true);
+          window.setTimeout(() => {
+            setGhostexCliStatus({
+              ...ghostexCliStatus,
+              generateTitleSkillInstalled: true,
+              generateTitleSkillPath: "/Users/madda/agents/skills/ghostex-generate-title/SKILL.md",
+              detail: "Ghostex Generate Title skill is installed for agents.",
+            });
+            setGhostexCliStatusLoading(false);
+          }, 500);
+        }}
         onInstallCuaDriver={() => {
           setGhostexCliStatusLoading(true);
           window.setTimeout(() => {
@@ -148,8 +191,11 @@ function FirstLaunchSetupModalStory({
           window.setTimeout(() => {
             setGhostexCliStatus({
               ...installedCliStatus,
+              agentOrchestrationSkillInstalled:
+                ghostexCliStatus.agentOrchestrationSkillInstalled,
               browserSkillInstalled: ghostexCliStatus.browserSkillInstalled,
               computerUseSkillInstalled: ghostexCliStatus.computerUseSkillInstalled,
+              generateTitleSkillInstalled: ghostexCliStatus.generateTitleSkillInstalled,
             });
             setGhostexCliStatusLoading(false);
           }, 500);

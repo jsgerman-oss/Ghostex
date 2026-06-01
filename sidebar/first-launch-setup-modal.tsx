@@ -55,6 +55,7 @@ import {
   type ghostexSettings,
 } from "../shared/ghostex-settings";
 import { DEFAULT_SIDEBAR_AGENTS } from "../shared/sidebar-agents";
+import { BundledAgentSkillsPanel } from "./bundled-agent-skills-panel";
 import type { WebviewApi } from "./webview-api";
 import ghostexIntroImage from "./assets/first-launch/ghostex-intro.png";
 import ghostexMobileDevicesImage from "./assets/first-launch/ghostex-mobile-devices.png";
@@ -64,6 +65,7 @@ export type FirstLaunchSetupPage =
   | "preferences"
   | "hooks"
   | "cli"
+  | "skills"
   | "browserControl"
   | "desktopCua"
   | "workspace"
@@ -83,8 +85,11 @@ export type FirstLaunchSetupModalProps = {
   onClose: () => void;
   onChange: (settings: ghostexSettings) => void;
   onInstallAgentHooks?: () => void;
+  onInstallAgentOrchestrationSkill?: () => void;
   onInstallBrowserControl?: () => void;
+  onInstallComputerUseSkill?: () => void;
   onInstallCuaDriver?: () => void;
+  onInstallGenerateTitleSkill?: () => void;
   onInstallGhostexCli?: () => void;
   onOpenAccessibilityPreferences?: () => void;
   onOpenScreenRecordingPreferences?: () => void;
@@ -169,8 +174,7 @@ const FIRST_LAUNCH_SIDEBAR_PRESETS = FIRST_LAUNCH_SIDEBAR_PRESET_ORDER.flatMap((
   return preset ? [preset] : [];
 });
 
-const FIRST_LAUNCH_CLI_COMMAND =
-  "brew install --cask maddada/tap/ghostex --force && ghostex browser install-skill && ghostex computer-use install-skill && ghostex agent-orchestration install-skill && ghostex generate-title install-skill";
+const FIRST_LAUNCH_CLI_COMMAND = "brew install --cask maddada/tap/ghostex --force";
 /*
  * CDXC:FirstLaunchSetup 2026-05-31-07:15:
  * ZMU-72: Mobile download buttons must match README.md stable release URLs so
@@ -204,6 +208,7 @@ const FIRST_LAUNCH_SETUP_PAGES: readonly FirstLaunchSetupPage[] = [
   "preferences",
   "hooks",
   "cli",
+  "skills",
   "browserControl",
   "desktopCua",
   "workspace",
@@ -624,15 +629,14 @@ type FirstLaunchHookStatusGroup = {
  * status, and describe `gx` as usable only when Ghostex owns that alias.
  *
  * CDXC:BrowserAgentControl 2026-05-26-22:17:
- * The second first-launch page should install the Ghostex Browser Use skill
- * together with the CLI, because agents need a local skill that explains how
- * to configure `ghostex browser mcp` for CEF control, console logs,
- * snapshots, screenshots, and form interactions.
+ * The bundled skills page should expose the Ghostex Browser Use skill after CLI
+ * setup, because agents need local instructions for `ghostex browser mcp`, CEF
+ * control, console logs, snapshots, screenshots, and form interactions.
  *
  * CDXC:BrowserAgentControl 2026-05-27-01:59:
  * Browser control setup should teach the `ghostex browser ...` namespace
  * because "browser" is now the durable CLI keyword for agent-facing embedded
- * CEF control. The first-launch install command therefore uses
+ * CEF control. The explicit skill install button therefore uses
  * `ghostex browser install-skill` instead of the older top-level alias.
  *
  * CDXC:FirstLaunchSetup 2026-05-27-02:41:
@@ -659,14 +663,15 @@ type FirstLaunchHookStatusGroup = {
  * undiscoverable by agents.
  *
  * CDXC:AgentOrchestration 2026-05-27-07:15:
- * CLI setup also installs `$ghostex-agent-orchestration`, because agents should
- * learn Ghostex's supported pane/session commands for cross-agent messaging,
- * status checks, and terminal reads through `ghostex --help` instead of raw zmx.
+ * The bundled skills page installs `$ghostex-agent-orchestration`, because
+ * agents should learn Ghostex's supported pane/session commands for cross-agent
+ * messaging, status checks, and terminal reads through `ghostex --help` instead
+ * of raw zmx.
  *
  * CDXC:GenerateTitleSkill 2026-05-27-07:28:
- * CLI setup installs `$ghostex-generate-title` so every Ghostex agent session can
- * generate a title under 47 characters and stage `/rename <title>` into its own
- * prompt without submitting it.
+ * The bundled skills page installs `$ghostex-generate-title` so every Ghostex
+ * agent session can generate a title under 47 characters and stage
+ * `/rename <title>` into its own prompt without submitting it.
  *
  * CDXC:FirstLaunchWelcome 2026-05-27-05:04:
  * First launch should start with a candid product welcome before setup tasks.
@@ -709,6 +714,11 @@ type FirstLaunchHookStatusGroup = {
  * mobile benefit rows use title plus subtitle layout, README stable Android APK and
  * Discord TestFlight URLs, and the Browser Use page keeps install guidance at the top
  * with command examples in a bottom Examples card.
+ *
+ * CDXC:AgentSkills 2026-05-31-09:18:
+ * CLI setup no longer silently installs bundled skills. First launch includes a
+ * dedicated skills page so users explicitly choose Browser Use, Computer Use,
+ * Agent Orchestration, and Generate Title with a short explanation for each one.
  */
 export function FirstLaunchSetupModal({
   agentHookStatus,
@@ -719,8 +729,11 @@ export function FirstLaunchSetupModal({
   isOpen,
   onClose,
   onInstallAgentHooks,
+  onInstallAgentOrchestrationSkill,
   onInstallBrowserControl,
+  onInstallComputerUseSkill,
   onInstallCuaDriver,
+  onInstallGenerateTitleSkill,
   onInstallGhostexCli,
   onOpenAccessibilityPreferences,
   onOpenScreenRecordingPreferences,
@@ -841,10 +854,19 @@ export function FirstLaunchSetupModal({
             <FirstLaunchCliPage
               ghostexCliStatus={ghostexCliStatus}
               ghostexCliStatusLoading={ghostexCliStatusLoading}
-              onInstallBrowserControl={onInstallBrowserControl}
               onInstallGhostexCli={onInstallGhostexCli}
               onRequestGhostexCliStatus={onRequestGhostexCliStatus}
               vscode={vscode}
+            />
+          ) : activePage === "skills" ? (
+            <FirstLaunchSkillsPage
+              ghostexCliStatus={ghostexCliStatus}
+              ghostexCliStatusLoading={ghostexCliStatusLoading}
+              onInstallAgentOrchestrationSkill={onInstallAgentOrchestrationSkill}
+              onInstallBrowserControl={onInstallBrowserControl}
+              onInstallComputerUseSkill={onInstallComputerUseSkill}
+              onInstallGenerateTitleSkill={onInstallGenerateTitleSkill}
+              onRequestGhostexCliStatus={onRequestGhostexCliStatus}
             />
           ) : (
             <FirstLaunchGuidePageView
@@ -1350,39 +1372,82 @@ function FirstLaunchContinueWarningView({
   );
 }
 
+function FirstLaunchSkillsPage({
+  ghostexCliStatus,
+  ghostexCliStatusLoading,
+  onInstallAgentOrchestrationSkill,
+  onInstallBrowserControl,
+  onInstallComputerUseSkill,
+  onInstallGenerateTitleSkill,
+  onRequestGhostexCliStatus,
+}: {
+  ghostexCliStatus?: SidebarGhostexCliStatusMessage;
+  ghostexCliStatusLoading: boolean;
+  onInstallAgentOrchestrationSkill?: () => void;
+  onInstallBrowserControl?: () => void;
+  onInstallComputerUseSkill?: () => void;
+  onInstallGenerateTitleSkill?: () => void;
+  onRequestGhostexCliStatus?: () => void;
+}) {
+  return (
+    <section className="first-launch-setup-guide-page" aria-labelledby="first-launch-skills-title">
+      <div className="first-launch-setup-guide-hero">
+        <span className="first-launch-setup-guide-icon-shell">
+          <IconSparkles aria-hidden="true" className="first-launch-setup-guide-icon" size={26} />
+        </span>
+        <div className="first-launch-setup-guide-copy">
+          <div className="first-launch-setup-kicker">Bundled Agent Skills</div>
+          <h2 className="first-launch-setup-title" id="first-launch-skills-title">
+            Install the skills you want agents to use.
+          </h2>
+          <p className="first-launch-setup-description">
+            Ghostex bundles these skills with the app, but each one is installed
+            into your shared agent skills folder only after you choose it here.
+          </p>
+        </div>
+      </div>
+      <BundledAgentSkillsPanel
+        ghostexCliStatus={ghostexCliStatus}
+        ghostexCliStatusLoading={ghostexCliStatusLoading}
+        onInstallSkill={{
+          agentOrchestration: onInstallAgentOrchestrationSkill,
+          browserUse: onInstallBrowserControl,
+          computerUse: onInstallComputerUseSkill,
+          generateTitle: onInstallGenerateTitleSkill,
+        }}
+        onRefreshStatus={onRequestGhostexCliStatus}
+        showHeader={false}
+      />
+    </section>
+  );
+}
+
 function FirstLaunchCliPage({
   ghostexCliStatus,
   ghostexCliStatusLoading,
-  onInstallBrowserControl,
   onInstallGhostexCli,
   onRequestGhostexCliStatus,
   vscode,
 }: {
   ghostexCliStatus?: SidebarGhostexCliStatusMessage;
   ghostexCliStatusLoading: boolean;
-  onInstallBrowserControl?: () => void;
   onInstallGhostexCli?: () => void;
   onRequestGhostexCliStatus?: () => void;
   vscode?: WebviewApi;
 }) {
   const isInstalled = ghostexCliStatus?.installed === true;
-  const isBrowserSkillInstalled = ghostexCliStatus?.browserSkillInstalled === true;
   const isChecking = ghostexCliStatusLoading && !ghostexCliStatus;
   const commandLabel = isChecking
     ? "checking CLI status"
     : isInstalled
-      ? isBrowserSkillInstalled
-        ? "installed command and skill"
-        : "browser skill install command"
+      ? "installed command"
       : "macOS install command";
   const commandText = isChecking
     ? "Checking for ghostex..."
     : isInstalled
-      ? isBrowserSkillInstalled
-        ? ghostexCliStatus.gxUsable
-          ? "ghostex / gx + Ghostex Browser Use"
-          : "ghostex + Ghostex Browser Use"
-        : "ghostex browser install-skill"
+      ? ghostexCliStatus.gxUsable
+        ? "ghostex / gx"
+        : "ghostex"
       : FIRST_LAUNCH_CLI_COMMAND;
 
   return (
@@ -1392,18 +1457,14 @@ function FirstLaunchCliPage({
         className="first-launch-setup-cli-copy"
       >
         <h2 className="first-launch-setup-title" id="first-launch-cli-title">
-          {isInstalled && isBrowserSkillInstalled
+          {isInstalled
             ? "Ghostex CLI is installed already."
-            : isInstalled
-              ? "Ghostex CLI is installed already."
-              : "Install the Ghostex CLI when you want mobile access."}
+            : "Install the Ghostex CLI when you want mobile access."}
         </h2>
         <p className="first-launch-setup-description">
-          {isInstalled && isBrowserSkillInstalled
-            ? "Your Mac already has the Ghostex CLI and Ghostex Browser Use skill. Mobile apps can attach to sessions, and agents can connect to embedded browser panes."
-            : isInstalled
-              ? "The CLI is ready. You can add Ghostex Browser Use on the next page so agents know how to inspect console logs, snapshots, screenshots, clicks, fills, and key presses."
-              : "The Android and iOS apps connect back to your Mac through the Ghostex CLI. You can continue without it, but mobile access and CLI-backed integrations will not work until it is installed."}
+          {isInstalled
+            ? "The CLI is ready. The next page lets you explicitly install the bundled Ghostex agent skills you want available in ~/agents/skills."
+            : "The Android and iOS apps connect back to your Mac through the Ghostex CLI. You can continue without it, but mobile access and CLI-backed integrations will not work until it is installed."}
         </p>
 
         <div className="first-launch-setup-command-card" data-installed={isInstalled}>
@@ -1429,17 +1490,6 @@ function FirstLaunchCliPage({
               <IconDownload aria-hidden="true" data-icon="inline-start" />
               {isInstalled ? "Reinstall CLI" : "Install CLI"}
             </Button>
-            {!isBrowserSkillInstalled ? (
-              <Button
-                disabled={ghostexCliStatusLoading || !onInstallBrowserControl || !isInstalled}
-                onClick={onInstallBrowserControl}
-                type="button"
-                variant="outline"
-              >
-                <IconBrowser aria-hidden="true" data-icon="inline-start" />
-                Install Ghostex Browser Use
-              </Button>
-            ) : null}
             <Button
               disabled={ghostexCliStatusLoading || !onRequestGhostexCliStatus}
               onClick={onRequestGhostexCliStatus}
@@ -1609,7 +1659,7 @@ function FirstLaunchGuidePageView({
                   ) : (
                     <IconDownload aria-hidden="true" data-icon="inline-start" />
                   )}
-                  {desktopControlInstalled ? "Ghostex Computer Use Installed" : "Install Ghostex Computer Use"}
+                  {desktopControlInstalled ? "Desktop Control Installed" : "Install Desktop Control"}
                 </Button>
                 <Button
                   disabled={!onOpenAccessibilityPreferences}

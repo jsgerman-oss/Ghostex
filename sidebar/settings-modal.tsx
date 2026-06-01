@@ -55,7 +55,6 @@ import {
 import {
   IconAsterisk,
   IconAlertTriangle,
-  IconBrowser,
   IconChevronDown,
   IconCircleCheckFilled,
   IconCircleX,
@@ -167,6 +166,7 @@ import {
 import { PET_OPTIONS, type PetId } from "../shared/pets";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "./agent-logos";
 import { EditorBrandIcon, getEditorBrandIconId } from "./brand-icons";
+import { BundledAgentSkillsPanel } from "./bundled-agent-skills-panel";
 import { HotkeyRecorderField } from "./hotkey-recorder-field";
 import { PetAvatar } from "./pet-avatar";
 import { CommandIconPicker } from "./command-icon-picker";
@@ -474,8 +474,11 @@ export type SettingsModalProps = {
   onOpenScreenRecordingPreferences?: () => void;
   onOpenGhostexFolder?: () => void;
   onGhosttySettingsAction?: (action: GhosttySettingsAction) => void;
+  onInstallAgentOrchestrationSkill?: () => void;
   onInstallBrowserControl?: () => void;
+  onInstallComputerUseSkill?: () => void;
   onInstallCuaDriver?: () => void;
+  onInstallGenerateTitleSkill?: () => void;
   onInstallGte?: () => void;
   onInstallGhostexCli?: () => void;
   onPlayCompletionSound?: (sound: CompletionSoundSetting) => void;
@@ -515,8 +518,11 @@ export function SettingsModal({
   onOpenScreenRecordingPreferences,
   onOpenGhostexFolder,
   onGhosttySettingsAction,
+  onInstallAgentOrchestrationSkill,
   onInstallBrowserControl,
+  onInstallComputerUseSkill,
   onInstallCuaDriver,
+  onInstallGenerateTitleSkill,
   onInstallGte,
   onInstallGhostexCli,
   onPlayCompletionSound,
@@ -2877,9 +2883,12 @@ export function SettingsModal({
               agentHookStatusLoading={agentHookStatusLoading}
               ghostexCliStatus={ghostexCliStatus}
               ghostexCliStatusLoading={ghostexCliStatusLoading}
+              onInstallAgentOrchestrationSkill={onInstallAgentOrchestrationSkill}
               onInstallAgentHooks={onInstallAgentHooks}
               onInstallBrowserControl={onInstallBrowserControl}
+              onInstallComputerUseSkill={onInstallComputerUseSkill}
               onInstallCuaDriver={onInstallCuaDriver}
+              onInstallGenerateTitleSkill={onInstallGenerateTitleSkill}
               onInstallGhostexCli={onInstallGhostexCli}
               onOpenAccessibilityPreferences={onOpenAccessibilityPreferences}
               onOpenFirstLaunchSetup={onOpenFirstLaunchSetup}
@@ -3562,9 +3571,12 @@ function IntegrationsSettingsTab({
   agentHookStatusLoading,
   ghostexCliStatus,
   ghostexCliStatusLoading,
+  onInstallAgentOrchestrationSkill,
   onInstallAgentHooks,
   onInstallBrowserControl,
+  onInstallComputerUseSkill,
   onInstallCuaDriver,
+  onInstallGenerateTitleSkill,
   onInstallGhostexCli,
   onOpenAccessibilityPreferences,
   onOpenFirstLaunchSetup,
@@ -3576,9 +3588,12 @@ function IntegrationsSettingsTab({
   agentHookStatusLoading: boolean;
   ghostexCliStatus?: SidebarGhostexCliStatusMessage;
   ghostexCliStatusLoading: boolean;
+  onInstallAgentOrchestrationSkill?: () => void;
   onInstallAgentHooks?: () => void;
   onInstallBrowserControl?: () => void;
+  onInstallComputerUseSkill?: () => void;
   onInstallCuaDriver?: () => void;
+  onInstallGenerateTitleSkill?: () => void;
   onInstallGhostexCli?: () => void;
   onOpenAccessibilityPreferences?: () => void;
   onOpenFirstLaunchSetup?: () => void;
@@ -3598,7 +3613,6 @@ function IntegrationsSettingsTab({
       ? "Checking"
       : "Not checked";
   const cliReady = ghostexCliStatus?.installed === true;
-  const browserControlReady = ghostexCliStatus?.browserSkillInstalled === true;
   const desktopControlReady =
     ghostexCliStatus?.cuaDriverInstalled === true &&
     ghostexCliStatus?.computerUseSkillInstalled === true;
@@ -3617,9 +3631,14 @@ function IntegrationsSettingsTab({
         {/*
          * CDXC:IntegrationsSetup 2026-05-27-04:17:
          * Settings owns one Integrations tab for post-onboarding setup. Keep
-         * CLI, Ghostex Browser Use, agent hooks, Cua Driver, and macOS privacy
+         * CLI, bundled Ghostex skills, agent hooks, Cua Driver, and macOS privacy
          * permissions on the same page so users can recover skipped first-launch
          * steps without hunting through unrelated tabs.
+         *
+         * CDXC:AgentSkills 2026-05-31-09:18:
+         * Bundled Ghostex skills are explicit per-skill installs in Settings,
+         * not hidden side effects of CLI setup. Each row explains what the skill
+         * teaches agents and remains disabled until the Ghostex CLI is present.
          */}
         <SettingsSection title="Integrations">
           <IntegrationSettingsRow
@@ -3649,28 +3668,17 @@ function IntegrationsSettingsTab({
             </Button>
           </IntegrationSettingsRow>
 
-          <IntegrationSettingsRow
-            description="Install the Ghostex Browser Use skill so agents can inspect Ghostex browser panes, read console logs, take screenshots, and interact with pages."
-            icon={IconBrowser}
-            status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : browserControlReady ? "Installed" : "Not installed"}
-            tone={browserControlReady ? "success" : "warning"}
-            title="Ghostex Browser Use"
-          >
-            <Button
-              disabled={
-                ghostexCliStatusLoading ||
-                browserControlReady ||
-                !cliReady ||
-                !onInstallBrowserControl
-              }
-              onClick={onInstallBrowserControl}
-              type="button"
-              variant={browserControlReady ? "outline" : "default"}
-            >
-              <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {browserControlReady ? "Installed" : "Install Ghostex Browser Use"}
-            </Button>
-          </IntegrationSettingsRow>
+          <BundledAgentSkillsPanel
+            ghostexCliStatus={ghostexCliStatus}
+            ghostexCliStatusLoading={ghostexCliStatusLoading}
+            onInstallSkill={{
+              agentOrchestration: onInstallAgentOrchestrationSkill,
+              browserUse: onInstallBrowserControl,
+              computerUse: onInstallComputerUseSkill,
+              generateTitle: onInstallGenerateTitleSkill,
+            }}
+            onRefreshStatus={onRequestGhostexCliStatus}
+          />
 
           <IntegrationSettingsRow
             description="Install agent hooks for supported CLIs so Ghostex can show In Progress and Needs Attention notifications and name sessions from the first message."
@@ -3700,11 +3708,11 @@ function IntegrationsSettingsTab({
           </IntegrationSettingsRow>
 
           <IntegrationSettingsRow
-            description="Install Cua Driver and the Ghostex Computer Use skill so agents can control native macOS desktop apps. You can skip it until a workflow needs desktop control."
+            description="Install Cua Driver for native macOS desktop automation. The bundled Ghostex Computer Use skill above teaches agents when and how to use it."
             icon={IconDeviceDesktop}
             status={ghostexCliStatusLoading && !ghostexCliStatus ? "Checking" : desktopControlReady ? "Installed" : "Not installed"}
             tone={desktopControlReady ? "success" : "warning"}
-            title="Ghostex Computer Use"
+            title="Desktop Control Runtime"
           >
             <Button
               disabled={ghostexCliStatusLoading || desktopControlReady || !onInstallCuaDriver}
@@ -3713,7 +3721,7 @@ function IntegrationsSettingsTab({
               variant={desktopControlReady ? "outline" : "default"}
             >
               <IconDownload aria-hidden="true" data-icon="inline-start" />
-              {desktopControlReady ? "Installed" : "Install Ghostex Computer Use"}
+              {desktopControlReady ? "Installed" : "Install Desktop Control"}
             </Button>
           </IntegrationSettingsRow>
 

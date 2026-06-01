@@ -1,4 +1,4 @@
-import { IconFolderOpen } from "@tabler/icons-react";
+import { IconFolderOpen, IconInfoCircle } from "@tabler/icons-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,13 +11,24 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { parseRepositoryCloneInput } from "../shared/repository-clone";
+import type { GxserverRepositoryClonePreviewResult } from "../shared/gxserver-protocol";
+import { AppTooltip, TooltipProvider } from "./app-tooltip";
 import { postAppModalHostMessage } from "./app-modal-host-bridge";
 
 const ADD_REPOSITORY_LAST_LOCATION_STORAGE_KEY = "ghostex.addRepository.lastLocation";
 
 type AddRepositoryCloneRequest = {
+  cloneMainOnly: boolean;
   folderPath: string;
+  newFolderName: string;
+  repositoryInput: string;
+  requestId: string;
+  shallowClone: boolean;
+};
+
+type AddRepositoryClonePreviewRequest = {
+  folderPath: string;
+  newFolderName: string;
   repositoryInput: string;
   requestId: string;
 };
@@ -27,6 +38,7 @@ export type AddRepositoryModalProps = {
   onCancel: () => void;
   onClone: (request: AddRepositoryCloneRequest) => void;
   onCloneSuccess: () => void;
+  onPreview: (request: AddRepositoryClonePreviewRequest) => void;
 };
 
 type RepositoryFolderPickedMessage = {
@@ -42,25 +54,49 @@ type RepositoryCloneResultMessage = {
   type: "repositoryCloneResult";
 };
 
+type RepositoryClonePreviewResultMessage = {
+  error?: unknown;
+  ok: boolean;
+  preview?: unknown;
+  requestId: string;
+  type: "repositoryClonePreviewResult";
+};
+
 /**
  * CDXC:AddRepository 2026-05-29-11:45:
  * Projects needs a full-window Clone Repository dialog next to Add Project. Keep
  * the visual shell aligned with Rename Session, accept flexible repository
- * paste formats, remember the last clone parent folder across the app, and keep
- * errors in the modal until a clone succeeds.
+ * paste formats, and remember the last clone parent folder across the app.
+ *
+ * CDXC:AddRepository 2026-06-01-10:33:
+ * Submitting Clone & Add closes the modal immediately. Long-running clone
+ * progress, cancellation, and final errors live in toasts so the modal does not
+ * block the workspace while Git runs.
  */
 export function AddRepositoryModal({
   isOpen,
   onCancel,
   onClone,
   onCloneSuccess,
+  onPreview,
 }: AddRepositoryModalProps) {
   const repositoryId = useId();
   const folderId = useId();
+  const newFolderId = useId();
+  const cloneMainOnlyId = useId();
+  const shallowCloneId = useId();
   const repositoryRef = useRef<HTMLInputElement>(null);
   const activeRequestIdRef = useRef<string | undefined>(undefined);
+  const hasEditedNewFolderNameRef = useRef(false);
+  const previewRequestIdRef = useRef<string | undefined>(undefined);
+  const [cloneMainOnly, setCloneMainOnly] = useState(false);
   const [repositoryInput, setRepositoryInput] = useState("");
   const [folderPath, setFolderPath] = useState(readLastRepositoryLocation);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [hasEditedNewFolderName, setHasEditedNewFolderName] = useState(false);
+  const [clonePreview, setClonePreview] = useState<GxserverRepositoryClonePreviewResult | undefined>(undefined);
+  const [previewErrorMessage, setPreviewErrorMessage] = useState<string | undefined>(undefined);
+  const [shallowClone, setShallowClone] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
   const [isCloning, setIsCloning] = useState(false);
 
@@ -70,9 +106,17 @@ export function AddRepositoryModal({
     }
 
     setRepositoryInput("");
+    setCloneMainOnly(false);
+    setShallowClone(false);
+    setNewFolderName("");
+    setHasEditedNewFolderName(false);
+    hasEditedNewFolderNameRef.current = false;
+    setClonePreview(undefined);
+    setPreviewErrorMessage(undefined);
     setErrorMessage(undefined);
     setIsCloning(false);
     activeRequestIdRef.current = undefined;
+    previewRequestIdRef.current = undefined;
     setFolderPath(readLastRepositoryLocation());
 
     const animationFrame = window.requestAnimationFrame(() => {
@@ -82,6 +126,38 @@ export function AddRepositoryModal({
       window.cancelAnimationFrame(animationFrame);
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    hasEditedNewFolderNameRef.current = hasEditedNewFolderName;
+  }, [hasEditedNewFolderName]);
+
+  useEffect(() => {
+    if (!isOpen || isCloning) {
+      return;
+    }
+    const normalizedRepositoryInput = repositoryInput.trim();
+    const normalizedFolderPath = folderPath.trim();
+    if (!normalizedRepositoryInput || !normalizedFolderPath) {
+      setClonePreview(undefined);
+      setPreviewErrorMessage(undefined);
+      return;
+    }
+    const requestId = `repository-clone-preview-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
+    previewRequestIdRef.current = requestId;
+    const timeout = window.setTimeout(() => {
+      onPreview({
+        folderPath: normalizedFolderPath,
+        newFolderName,
+        repositoryInput: normalizedRepositoryInput,
+        requestId,
+      });
+    }, 220);
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [folderPath, isCloning, isOpen, newFolderName, onPreview, repositoryInput]);
 
   useEffect(() => {
     const handleModalHostMessage = (event: Event) => {
@@ -94,6 +170,27 @@ export function AddRepositoryModal({
         if (nextPath) {
           rememberLastRepositoryLocation(nextPath);
           setFolderPath(nextPath);
+        }
+        return;
+      }
+      if (isRepositoryClonePreviewResultMessage(message)) {
+        if (message.requestId !== previewRequestIdRef.current) {
+          return;
+        }
+        if (!message.ok) {
+          setClonePreview(undefined);
+          setPreviewErrorMessage(
+            typeof message.error === "string" && message.error.trim()
+              ? message.error.trim()
+              : "Repository clone preview failed.",
+          );
+          return;
+        }
+        const preview = isRepositoryClonePreview(message.preview) ? message.preview : undefined;
+        setClonePreview(preview);
+        setPreviewErrorMessage(undefined);
+        if (preview && !hasEditedNewFolderNameRef.current) {
+          setNewFolderName(preview.destinationFolderName);
         }
         return;
       }
@@ -126,20 +223,34 @@ export function AddRepositoryModal({
     return null;
   }
 
-  const parsedRepository = parseRepositoryCloneInput(repositoryInput);
-  const hasInvalidRepositoryInput = repositoryInput.trim().length > 0 && !parsedRepository;
-  const canClone = !isCloning && Boolean(parsedRepository) && folderPath.trim().length > 0;
+  const hasInvalidRepositoryInput = repositoryInput.trim().length > 0 && Boolean(previewErrorMessage);
+  const destinationWarning = clonePreview?.destinationExists ? clonePreview.warning : undefined;
+  const canClone =
+    !isCloning &&
+    Boolean(clonePreview) &&
+    !clonePreview?.destinationExists &&
+    !previewErrorMessage &&
+    folderPath.trim().length > 0 &&
+    newFolderName.trim().length > 0;
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setErrorMessage(undefined);
     const normalizedFolderPath = folderPath.trim();
-    if (!parsedRepository) {
+    if (!clonePreview || previewErrorMessage) {
       setErrorMessage("Enter a Git repository to clone.");
       return;
     }
     if (!normalizedFolderPath) {
       setErrorMessage("Choose a folder location.");
+      return;
+    }
+    if (!newFolderName.trim()) {
+      setErrorMessage("Enter a new folder name.");
+      return;
+    }
+    if (clonePreview.destinationExists) {
+      setErrorMessage(clonePreview.warning ?? "Choose a new folder name before cloning.");
       return;
     }
 
@@ -149,7 +260,14 @@ export function AddRepositoryModal({
     rememberLastRepositoryLocation(normalizedFolderPath);
     activeRequestIdRef.current = requestId;
     setIsCloning(true);
-    onClone({ folderPath: normalizedFolderPath, repositoryInput, requestId });
+    onClone({
+      cloneMainOnly,
+      folderPath: normalizedFolderPath,
+      newFolderName: newFolderName.trim(),
+      repositoryInput,
+      requestId,
+      shallowClone,
+    });
   };
 
   return (
@@ -181,6 +299,11 @@ export function AddRepositoryModal({
                 id={repositoryId}
                 onChange={(event) => {
                   setRepositoryInput(event.currentTarget.value);
+                  setNewFolderName("");
+                  setHasEditedNewFolderName(false);
+                  hasEditedNewFolderNameRef.current = false;
+                  setClonePreview(undefined);
+                  setPreviewErrorMessage(undefined);
                   setErrorMessage(undefined);
                 }}
                 placeholder="maddada/zehn"
@@ -188,7 +311,7 @@ export function AddRepositoryModal({
                 value={repositoryInput}
               />
               <FieldDescription>
-                {parsedRepository?.cloneUrl ?? "Paste a GitHub shorthand, HTTPS URL, or SSH URL."}
+                {clonePreview?.cloneUrl ?? "Paste a GitHub shorthand, HTTPS URL, or SSH URL."}
               </FieldDescription>
             </Field>
             <Field>
@@ -200,6 +323,8 @@ export function AddRepositoryModal({
                   id={folderId}
                   onChange={(event) => {
                     setFolderPath(event.currentTarget.value);
+                    setClonePreview(undefined);
+                    setPreviewErrorMessage(undefined);
                     setErrorMessage(undefined);
                   }}
                   value={folderPath}
@@ -220,9 +345,88 @@ export function AddRepositoryModal({
                 </Button>
               </div>
             </Field>
-            {errorMessage ? (
+            <Field data-invalid={destinationWarning ? true : undefined}>
+              {/*
+              CDXC:AddRepository 2026-06-01-11:18:
+              The modal needs an explicit editable new-folder name because gxserver now blocks clone start when the resolved destination already exists. Keep the warning tied to server preview results so all clients enforce the same destination rule.
+              */}
+              <FieldLabel htmlFor={newFolderId}>New folder</FieldLabel>
+              <Input
+                aria-invalid={destinationWarning ? true : undefined}
+                className="h-10 px-3 text-sm md:text-sm"
+                disabled={isCloning}
+                id={newFolderId}
+                onChange={(event) => {
+                  setNewFolderName(event.currentTarget.value);
+                  setHasEditedNewFolderName(true);
+                  hasEditedNewFolderNameRef.current = true;
+                  setErrorMessage(undefined);
+                }}
+                placeholder="Repository folder name"
+                value={newFolderName}
+              />
+              <FieldDescription>
+                {clonePreview?.destinationPath ?? "The repository will be cloned into this folder."}
+              </FieldDescription>
+            </Field>
+            <TooltipProvider delayDuration={300}>
+              <div className="add-repository-options-row">
+                {/*
+                CDXC:AddRepository 2026-06-01-10:28:
+                The Clone Repository modal needs explicit unchecked clone-scope options for reference-only repositories. Keep the option help adjacent to each checkbox so users understand main-only and shallow clones are for repos they want to inspect, not repos they expect to work on heavily.
+                */}
+                <label className="add-repository-option" htmlFor={cloneMainOnlyId}>
+                  <input
+                    checked={cloneMainOnly}
+                    className="add-repository-option-checkbox"
+                    disabled={isCloning}
+                    id={cloneMainOnlyId}
+                    onChange={(event) => setCloneMainOnly(event.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  <span className="add-repository-option-label">Clone main only</span>
+                  <AppTooltip content="Use for repos you mostly want as references. This fetches only the main branch, so avoid it for repos you plan to work on heavily across branches.">
+                    <span
+                      aria-label="Clone main only help"
+                      className="add-repository-option-info"
+                      role="img"
+                      tabIndex={0}
+                    >
+                      <IconInfoCircle aria-hidden="true" size={14} stroke={2.2} />
+                    </span>
+                  </AppTooltip>
+                </label>
+                <label className="add-repository-option" htmlFor={shallowCloneId}>
+                  <input
+                    checked={shallowClone}
+                    className="add-repository-option-checkbox"
+                    disabled={isCloning}
+                    id={shallowCloneId}
+                    onChange={(event) => setShallowClone(event.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  <span className="add-repository-option-label">Shallow clone</span>
+                  <AppTooltip content="Use for repos you mostly want as references. This fetches only the latest history depth, so avoid it for repos you plan to work on heavily with blame, bisect, or older commits.">
+                    <span
+                      aria-label="Shallow clone help"
+                      className="add-repository-option-info"
+                      role="img"
+                      tabIndex={0}
+                    >
+                      <IconInfoCircle aria-hidden="true" size={14} stroke={2.2} />
+                    </span>
+                  </AppTooltip>
+                </label>
+              </div>
+            </TooltipProvider>
+            {destinationWarning ? (
+              <div className="add-repository-warning" role="alert">
+                {destinationWarning}
+              </div>
+            ) : null}
+            {errorMessage || previewErrorMessage ? (
               <div className="add-repository-error" role="alert">
-                {errorMessage}
+                {errorMessage ?? previewErrorMessage}
               </div>
             ) : null}
           </FieldGroup>
@@ -267,5 +471,30 @@ function isRepositoryCloneResultMessage(message: object): message is RepositoryC
     typeof message.requestId === "string" &&
     "ok" in message &&
     typeof message.ok === "boolean"
+  );
+}
+
+function isRepositoryClonePreviewResultMessage(message: object): message is RepositoryClonePreviewResultMessage {
+  return (
+    "type" in message &&
+    message.type === "repositoryClonePreviewResult" &&
+    "requestId" in message &&
+    typeof message.requestId === "string" &&
+    "ok" in message &&
+    typeof message.ok === "boolean"
+  );
+}
+
+function isRepositoryClonePreview(value: unknown): value is GxserverRepositoryClonePreviewResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    typeof (value as GxserverRepositoryClonePreviewResult).cloneUrl === "string" &&
+    typeof (value as GxserverRepositoryClonePreviewResult).destinationFolderName === "string" &&
+    typeof (value as GxserverRepositoryClonePreviewResult).destinationPath === "string" &&
+    typeof (value as GxserverRepositoryClonePreviewResult).parentPath === "string" &&
+    typeof (value as GxserverRepositoryClonePreviewResult).repositoryName === "string" &&
+    typeof (value as GxserverRepositoryClonePreviewResult).destinationExists === "boolean"
   );
 }
