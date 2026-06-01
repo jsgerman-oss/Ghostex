@@ -551,6 +551,73 @@ test("terminal title event API stores gxserver-decided canonical titles", async 
   });
 });
 
+test("session state event API resolves resumed Codex sessions from shared history", async () => {
+  await withApiServer("local", async ({ baseUrl, token }) => {
+    const codexSessionId = "019e7af5-c610-7f62-a129-db7bb510b48d";
+    const createdProject = await requestJson(baseUrl, "/api/createProject", {
+      body: {
+        params: {
+          name: "Ghostex",
+          path: "/repo/ghostex",
+          previousSessionHistory: [
+            {
+              agentSessionId: codexSessionId,
+              closedAt: "2026-05-31T12:04:13.807Z",
+              primaryTitle: "Shorter native tabs bar",
+              sessionRecord: {
+                agentName: "codex",
+                agentSessionId: codexSessionId,
+                title: "Shorter native tabs bar",
+                titleSource: "terminal-auto",
+              },
+            },
+          ],
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const project = createdProject.body.result.project;
+    const createdSession = await requestJson(baseUrl, "/api/createSession", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          runtimeSettings: { titleSource: "placeholder" },
+          title: "Terminal Session",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const session = createdSession.body.result.session;
+
+    const ingested = await requestJson(baseUrl, "/api/ingestSessionStateEvent", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          sessionId: session.sessionId,
+          startupText: `cd '/repo/ghostex' && codex resume "${codexSessionId}"`,
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+
+    assert.equal(ingested.status, 200);
+    assert.equal(ingested.body.result.changed, true);
+    assert.equal(ingested.body.result.reason, "previous-session-record-title");
+    assert.equal(ingested.body.result.session.agentId, "codex");
+    assert.equal(ingested.body.result.session.kind, "agent");
+    assert.equal(ingested.body.result.session.runtimeSettings.agentSessionId, codexSessionId);
+    assert.equal(ingested.body.result.session.runtimeSettings.titleSource, "terminal-auto");
+    assert.equal(ingested.body.result.session.title, "Shorter native tabs bar");
+    assert.equal(ingested.body.result.projection.primaryTitle, "Shorter native tabs bar");
+  });
+});
+
 test("domain-state APIs reject oversized and too-deep project/session JSON before SQLite persistence", async () => {
   await withApiServer("local", async ({ baseUrl, token }) => {
     const oversizedProjectBody = {
@@ -804,6 +871,32 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
       ).body.result.session;
       assert.equal(session.launchSettings.agentLaunchPlan.command, "codex --yolo");
 
+      const launchPlan = await requestJson(baseUrl, "/api/readAgentLaunchPlan", {
+        body: {
+          params: { agentId: "codex", projectId: project.projectId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(launchPlan.status, 200);
+      assert.equal(launchPlan.body.result.plan.command, "codex");
+
+      const resumePlan = await requestJson(baseUrl, "/api/readAgentResumePlan", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(resumePlan.status, 200);
+      assert.equal(
+        resumePlan.body.result.plan.primaryCommand,
+        'codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
+      );
+      assert.equal(resumePlan.body.result.plan.copyCommand, resumePlan.body.result.plan.primaryCommand);
+
       probeExitCode = 0;
       const existing = await requestJson(baseUrl, "/api/attachSessionMetadata", {
         body: {
@@ -823,7 +916,7 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
       probeExitCode = 1;
       const missing = await requestJson(baseUrl, "/api/wakeSession", {
         body: {
-          params: { projectId: project.projectId, sessionId: session.sessionId },
+          params: { projectId: project.projectId, sessionId: session.sessionId, startupText: "" },
           protocolVersion: GXSERVER_PROTOCOL_VERSION,
         },
         method: "POST",
@@ -833,7 +926,7 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
       assert.equal(missing.body.result.attach.providerState.lifecycleState, "missing");
       assert.equal(missing.body.result.attach.persistenceSessionCreated, true);
       assert.equal(missing.body.result.attach.startupTextDisposition, "queueAfterTerminalReady");
-      assert.match(missing.body.result.attach.startupText, /codex resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"/);
+      assert.match(missing.body.result.attach.startupText, /codex --yolo resume "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"/);
       assert.equal(missing.body.result.session.lifecycleState, "running");
       assert.ok(calls.some((script) => script.includes("list --short")));
     },
@@ -1308,6 +1401,147 @@ test("explicit sleep and close kill the zmx provider session", async () => {
   );
 });
 
+test("transitionSession mutates lifecycle and returns gxserver-selected focus target", async () => {
+  const calls: string[] = [];
+  const probeExitCodes = [1, 0];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const sessions: Array<{ sessionId: string }> = [];
+      for (const title of ["Closing", "Missing Backend", "Live Backend"]) {
+        sessions.push(
+          (
+            await requestJson(baseUrl, "/api/createSession", {
+              body: {
+                params: {
+                  lifecycleState: "running",
+                  projectId: project.projectId,
+                  providerState: { lifecycleState: "exists" },
+                  title,
+                },
+                protocolVersion: GXSERVER_PROTOCOL_VERSION,
+              },
+              method: "POST",
+              token,
+            })
+          ).body.result.session,
+        );
+      }
+
+      const transition = await requestJson(baseUrl, "/api/transitionSession", {
+        body: {
+          params: {
+            action: "close",
+            origin: {
+              kind: "projectSessionList",
+              orderedSessions: sessions.map((session) => ({ sessionId: session.sessionId })),
+            },
+            projectId: project.projectId,
+            sessionId: sessions[0].sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+
+      assert.equal(transition.status, 200);
+      assert.equal(transition.body.result.action, "close");
+      assert.equal(transition.body.result.session.lifecycleState, "stopped");
+      assert.equal(transition.body.result.transition.kill.killed, true);
+      assert.deepEqual(transition.body.result.focusTarget, {
+        projectId: project.projectId,
+        reason: "nextLiveProjectSession",
+        sessionId: sessions[2].sessionId,
+      });
+      assert.equal(calls.filter((script) => script.includes('kill "$zmx_session" --force')).length, 1);
+      assert.equal(calls.filter((script) => script.includes("list --short")).length, 2);
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle(calls, () => probeExitCodes.shift() ?? 1),
+    },
+  );
+});
+
+test("transitionSession sleep keeps the sidebar row but skips sleeping tab targets", async () => {
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const sessions: Array<{ sessionId: string }> = [];
+      for (const title of ["Left", "Sleep Me", "Already Sleeping", "Right"]) {
+        sessions.push(
+          (
+            await requestJson(baseUrl, "/api/createSession", {
+              body: {
+                params: {
+                  lifecycleState: title === "Already Sleeping" ? "sleeping" : "running",
+                  projectId: project.projectId,
+                  providerState: { lifecycleState: "exists" },
+                  title,
+                },
+                protocolVersion: GXSERVER_PROTOCOL_VERSION,
+              },
+              method: "POST",
+              token,
+            })
+          ).body.result.session,
+        );
+      }
+
+      const transition = await requestJson(baseUrl, "/api/transitionSession", {
+        body: {
+          params: {
+            action: "sleep",
+            origin: {
+              kind: "paneTabGroup",
+              orderedSessions: sessions.map((session) => ({ sessionId: session.sessionId })),
+            },
+            projectId: project.projectId,
+            sessionId: sessions[1].sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+
+      assert.equal(transition.status, 200);
+      assert.equal(transition.body.result.action, "sleep");
+      assert.equal(transition.body.result.session.lifecycleState, "sleeping");
+      assert.deepEqual(transition.body.result.focusTarget, {
+        projectId: project.projectId,
+        reason: "nextPaneTab",
+        sessionId: sessions[3].sessionId,
+      });
+
+      const list = await requestJson(baseUrl, "/api/listSessions", {
+        body: { params: { projectId: project.projectId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      const slept = list.body.result.sessions.find((session: Record<string, unknown>) => session.sessionId === sessions[1].sessionId);
+      assert.equal(slept.lifecycleState, "sleeping");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle([], () => 0),
+    },
+  );
+});
+
 test("sleep failure keeps stored zmx provider route unknown instead of missing", async () => {
   await withApiServer(
     "local",
@@ -1632,7 +1866,7 @@ test("project path registration is idempotent and session creation resolves stal
     });
     assert.equal(firstAdd.status, 200);
     const projectId = firstAdd.body.result.project.projectId;
-    assert.equal(projectId, "P3a91");
+    assert.match(projectId, /^P[0-9][a-z0-9]{3}$/u);
 
     const secondAdd = await requestJson(baseUrl, "/api/addProjectPath", {
       body: {
@@ -1660,6 +1894,61 @@ test("project path registration is idempotent and session creation resolves stal
     assert.equal(created.status, 200);
     assert.equal(created.body.result.session.projectId, projectId);
     assert.equal(created.body.result.session.cwd, repoPath);
+  });
+});
+
+test("repository clone preview reports existing default destination and start rejects it", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    const parentPath = path.join(paths.rootDir, "clone-parent");
+    await mkdir(path.join(parentPath, "opencode"), { recursive: true });
+
+    const preview = await requestJson(baseUrl, "/api/previewRepositoryClone", {
+      body: {
+        params: {
+          folderPath: parentPath,
+          repositoryInput: "gh repo clone anomalyco/opencode",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.result.preview.defaultFolderName, "opencode");
+    assert.equal(preview.body.result.preview.destinationFolderName, "opencode");
+    assert.equal(preview.body.result.preview.destinationExists, true);
+    assert.equal(preview.body.result.preview.destinationExistsKind, "directory");
+
+    const rejectedStart = await requestJson(baseUrl, "/api/startRepositoryClone", {
+      body: {
+        params: {
+          folderPath: parentPath,
+          repositoryInput: "gh repo clone anomalyco/opencode",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(rejectedStart.status, 400);
+    assert.equal(rejectedStart.body.error, "badRequest");
+    assert.match(rejectedStart.body.message, /already exists/);
+
+    const renamedPreview = await requestJson(baseUrl, "/api/previewRepositoryClone", {
+      body: {
+        params: {
+          folderPath: parentPath,
+          newFolderName: "opencode-copy",
+          repositoryInput: "gh repo clone anomalyco/opencode",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(renamedPreview.status, 200);
+    assert.equal(renamedPreview.body.result.preview.destinationFolderName, "opencode-copy");
+    assert.equal(renamedPreview.body.result.preview.destinationExists, false);
   });
 });
 

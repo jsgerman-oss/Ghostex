@@ -27,13 +27,26 @@ import { createGxserverLogger, logLevelFromStatus, type GxserverLogger } from ".
 import { GxserverLogQueryInputError, queryGxserverLogs } from "./logs.js";
 import { assertSupportedNodeVersion } from "./node-version.js";
 import {
+  buildAgentResumePlan,
+  buildProjectAgentLaunchPlan,
   createAgentSessionParams,
   getAgentStartupTextForSession,
   updateSessionActivitySettings,
 } from "./agent-lifecycle.js";
 import { applyTerminalTitleEvent } from "./session-title/index.js";
+import { projectSessionTitle } from "./session-title/projection.js";
+import { applySessionTransition, normalizeSessionTransitionParams } from "./session-transition/index.js";
+import {
+  applySessionRenameRequest,
+  applySessionStateEvent,
+  createAgentTitleDebouncer,
+  reconcileAgentMetadataTitle,
+  shouldCheckAgentMetadataTitle,
+  type GxserverAgentTitleDebounceDecision,
+} from "./session-presentation/index.js";
 import { type GxserverPaths, getGxserverPaths } from "./paths.js";
 import { GxserverProjectPathError, normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "./project-paths.js";
+import { GxserverRepositoryCloneError, GxserverRepositoryCloneJobManager } from "./repository-clone/index.js";
 import { removeRuntimeMetadata, writeRuntimeMetadata } from "./runtime.js";
 import {
   createGxserverMigrationStatus,
@@ -70,6 +83,7 @@ import {
   type GxserverZmxCommandOptions,
   type GxserverZmxCommandRunner,
 } from "./zmx-lifecycle.js";
+import { GxserverZmxTitleObserver } from "./zmx-title-observer.js";
 import type {
   GxserverAttachSessionMetadataParams,
   GxserverAttachSessionMetadataResult,
@@ -86,6 +100,8 @@ import type {
   GxserverProviderKillResult,
   GxserverProviderProbeResult,
   GxserverRunBeadsActionParams,
+  GxserverRepositoryCloneJobRpcResult,
+  GxserverRepositoryClonePreviewRpcResult,
   GxserverRunGitActionParams,
   GxserverRunWorktreeActionParams,
   GxserverRpcSuccessResponse,
@@ -93,6 +109,12 @@ import type {
   GxserverServerId,
   GxserverSessionDomainState,
   GxserverSessionLifecycleParams,
+  GxserverSessionTransitionParams,
+  GxserverSessionTransitionResult,
+  GxserverSessionRenameRequestParams,
+  GxserverSessionRenameRequestResult,
+  GxserverSessionStateEventParams,
+  GxserverSessionStateEventResult,
   GxserverTerminalTitleEventParams,
   GxserverTerminalTitleEventResult,
   GxserverUpdateProjectParams,
@@ -122,6 +144,8 @@ export interface GxserverApiRuntime {
   paths: GxserverPaths;
   shutdown: () => void;
   version: string;
+  repositoryCloneJobs?: GxserverRepositoryCloneJobManager;
+  zmxTitleObserver?: GxserverZmxTitleObserver;
   zmxLifecycle?: {
     cwdExists?: GxserverCwdExists;
     requireZmx?: () => Promise<GxserverResolvedTool>;
@@ -135,6 +159,10 @@ CDXC:GxserverApi 2026-05-30-20:04:
 Authenticated HTTP RPC clients must not be able to grow gxserver memory by streaming unbounded JSON bodies. Keep POST body parsing capped at 1 MiB, reject larger Content-Length values before reading, and stop retaining chunks as soon as chunked transfer input crosses the same limit.
 */
 export const GXSERVER_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
+const GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS = 3_000;
+const agentTitleMetadataDebouncer = createAgentTitleDebouncer({
+  delayMs: GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS,
+});
 
 export async function runGxserverForeground(options: GxserverForegroundOptions): Promise<GxserverForegroundResult> {
   assertSupportedNodeVersion();
@@ -171,12 +199,20 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
   const servers: http.Server[] = [];
   let shuttingDown = false;
   let resolveShutdown: () => void = () => {};
+  let runtime: GxserverApiRuntime;
+  const zmxTitleObserver = new GxserverZmxTitleObserver({
+    authToken: auth.token,
+    logger,
+    metadata,
+    requireZmx: () => (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)(),
+  });
 
   const shutdown = (): void => {
     if (shuttingDown) {
       return;
     }
     shuttingDown = true;
+    zmxTitleObserver.close();
     eventHub.broadcast({
       protocolVersion: GXSERVER_PROTOCOL_VERSION,
       serverId: metadata.serverId,
@@ -189,7 +225,7 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
       .finally(resolveShutdown);
   };
 
-  const runtime: GxserverApiRuntime = {
+  runtime = {
     authToken: auth.token,
     buildIdentity,
     config,
@@ -202,6 +238,7 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
     paths,
     shutdown,
     version: options.version,
+    zmxTitleObserver,
   };
 
   /*
@@ -231,6 +268,7 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
     level: "info",
     serverId: metadata.serverId,
   });
+  await syncZmxTitleObserversFromStorage(runtime, "server-start");
   eventHub.broadcast({
     protocolVersion: GXSERVER_PROTOCOL_VERSION,
     serverId: metadata.serverId,
@@ -522,6 +560,24 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
     return endpoint.path;
   }
 
+  if (isRepositoryCloneEndpoint(endpoint.path)) {
+    try {
+      const result = await handleRepositoryCloneEndpoint(runtime, endpoint.path, body, requestId);
+      sendJson(response, 200, result);
+    } catch (caught) {
+      if (caught instanceof GxserverRepositoryCloneError) {
+        sendJson(response, statusForRepositoryCloneError(caught.code), createRpcError(caught.code, caught.message, requestId));
+      } else if (caught instanceof GxserverDomainStateError) {
+        sendJson(response, statusForDomainStateError(caught.code), createRpcError(caught.code, caught.message, requestId));
+      } else if (caught instanceof GxserverProjectPathError) {
+        sendJson(response, statusForOperationError(caught.code), createRpcError(caught.code, caught.message, requestId));
+      } else {
+        throw caught;
+      }
+    }
+    return endpoint.path;
+  }
+
   /*
   CDXC:GxserverApi 2026-05-30-17:30:
   Domain-state endpoints run after gxserver-5 auth, protocol-version, listener-permission, logging, and event semantics. zmx lifecycle and typed Git/worktree/Beads operations have their own handlers so project/session persistence cannot accidentally accept process-execution payloads or lifecycle commands.
@@ -572,7 +628,7 @@ function handleDomainStateEndpoint(
   const db = openGxserverDatabase(runtime.paths);
   try {
     const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
-    const result = dispatchDomainStateEndpoint(repository, endpointPath, readDomainRpcParams(body));
+    const result = dispatchDomainStateEndpoint(runtime, repository, endpointPath, readDomainRpcParams(body));
     return {
       ok: true,
       product: GXSERVER_PRODUCT,
@@ -586,6 +642,7 @@ function handleDomainStateEndpoint(
 }
 
 function dispatchDomainStateEndpoint(
+  runtime: GxserverApiRuntime,
   repository: GxserverDomainRepository,
   endpointPath: GxserverEndpointPath,
   params: Record<string, unknown>,
@@ -603,6 +660,7 @@ function dispatchDomainStateEndpoint(
       if (!project) {
         throw new GxserverDomainStateError("notFound", `Project ${projectId} does not exist.`);
       }
+      scheduleAgentTitleMetadataChecksForSessions(runtime, repository, repository.listSessions(projectId), "read-project-status");
       return { project, sessions: repository.listSessions(projectId) };
     }
     case "/api/addProjectPath":
@@ -613,9 +671,109 @@ function dispatchDomainStateEndpoint(
         endpointPath === "/api/createAgentSession"
           ? normalizeCreateAgentSessionParams(repository, params)
           : normalizeCreateSessionParams(repository, params);
+      const createdSession = repository.createSession(createParams);
+      const presentation = applySessionStateEvent(repository, {
+        agentName: createParams.agentId,
+        agentSessionId: readRuntimeText(createParams.runtimeSettings, "agentSessionId"),
+        agentSessionPath: readRuntimeText(createParams.runtimeSettings, "agentSessionPath"),
+        projectId: createdSession.projectId,
+        sessionId: createdSession.sessionId,
+        startupText: readRuntimeText(createParams.runtimeSettings, "startupText") ?? readRuntimeText(createParams.launchSettings, "startupText"),
+        title: createParams.title,
+        titleSource: readRuntimeText(createParams.runtimeSettings, "titleSource") as GxserverSessionStateEventParams["titleSource"],
+      });
+      const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
+        force: true,
+        projectId: presentation.session.projectId,
+        reason: "create-session",
+        sessionId: presentation.session.sessionId,
+      });
+      const session = reconciled?.session ?? repository.getSession(presentation.session.projectId, presentation.session.sessionId) ?? presentation.session;
+      observeZmxTitleForSession(runtime, session, "create-session");
       return {
-        session: repository.createSession(createParams),
+        session,
       };
+    }
+    case "/api/readAgentLaunchPlan": {
+      const projectId = readProjectId(params);
+      const project = repository.getProject(projectId);
+      if (!project) {
+        throw new GxserverDomainStateError("notFound", `Project ${projectId} does not exist.`);
+      }
+      const agentId = readRequiredText(params.agentId, "agentId");
+      return {
+        plan: buildProjectAgentLaunchPlan(project, {
+          agentId,
+          agentSessionId: readOptionalText(params.agentSessionId),
+        }),
+      };
+    }
+    case "/api/readAgentResumePlan": {
+      const lifecycle = readSessionLifecycleParams(params);
+      const project = repository.getProject(lifecycle.projectId);
+      const session = repository.getSession(lifecycle.projectId, lifecycle.sessionId);
+      if (!project) {
+        throw new GxserverDomainStateError("notFound", `Project ${lifecycle.projectId} does not exist.`);
+      }
+      if (!session) {
+        throw new GxserverDomainStateError(
+          "notFound",
+          `Session ${lifecycle.projectId}/${lifecycle.sessionId} does not exist.`,
+        );
+      }
+      return {
+        plan: buildAgentResumePlan(project, session),
+        session,
+      };
+    }
+    case "/api/requestSessionRename": {
+      const renameParams = params as unknown as GxserverSessionRenameRequestParams;
+      const lifecycle = readSessionLifecycleParams(params);
+      const result = applySessionRenameRequest(repository, {
+        ...renameParams,
+        projectId: lifecycle.projectId,
+        sessionId: lifecycle.sessionId,
+      });
+      const reconciled = result.pendingAgentMetadata
+        ? scheduleAgentTitleMetadataCheck(runtime, repository, {
+            force: true,
+            projectId: lifecycle.projectId,
+            reason: "rename-request",
+            sessionId: lifecycle.sessionId,
+          })
+        : undefined;
+      const session = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? result.session;
+      observeZmxTitleForSession(runtime, session, "rename-request");
+      return {
+        ...result,
+        changed: result.changed || reconciled?.changed === true,
+        projection: projectSessionTitle(session),
+        reason: reconciled?.changed === true ? reconciled.reason : result.reason,
+        session,
+      } satisfies Record<string, unknown> & GxserverSessionRenameRequestResult;
+    }
+    case "/api/ingestSessionStateEvent": {
+      const stateEvent = params as unknown as GxserverSessionStateEventParams;
+      const lifecycle = readSessionLifecycleParams(params);
+      const result = applySessionStateEvent(repository, {
+        ...stateEvent,
+        projectId: lifecycle.projectId,
+        sessionId: lifecycle.sessionId,
+      });
+      const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
+        force: true,
+        projectId: lifecycle.projectId,
+        reason: "session-state-event",
+        sessionId: lifecycle.sessionId,
+      });
+      const session = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? result.session;
+      return {
+        ...result,
+        changed: result.changed || reconciled?.changed === true,
+        projection: projectSessionTitle(session),
+        reason: reconciled?.changed === true ? reconciled.reason : result.reason,
+        session,
+      } satisfies Record<string, unknown> & GxserverSessionStateEventResult;
     }
     case "/api/ingestTerminalTitleEvent": {
       const titleEvent = params as unknown as GxserverTerminalTitleEventParams;
@@ -633,7 +791,17 @@ function dispatchDomainStateEndpoint(
         sessionId: lifecycle.sessionId,
       });
       const titledSession = decision.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? current;
-      const statusUpdate = updateSessionActivitySettings(titledSession, {
+      const presentation =
+        decision.agentSessionId
+          ? applySessionStateEvent(repository, {
+              agentName: titleEvent.agentName,
+              agentSessionId: decision.agentSessionId,
+              projectId: lifecycle.projectId,
+              sessionId: lifecycle.sessionId,
+            })
+          : undefined;
+      const presentedSession = presentation?.session ?? titledSession;
+      const statusUpdate = updateSessionActivitySettings(presentedSession, {
         agentName: titleEvent.agentName,
         event: "title",
         projectId: lifecycle.projectId,
@@ -642,19 +810,26 @@ function dispatchDomainStateEndpoint(
       });
       const session = repository.updateSession({
         lastActiveAt: statusUpdate.lastActiveAt,
-        projectId: titledSession.projectId,
+        projectId: presentedSession.projectId,
         runtimeSettings: statusUpdate.runtimeSettings,
-        sessionId: titledSession.sessionId,
+        sessionId: presentedSession.sessionId,
       });
+      const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
+        force: true,
+        projectId: lifecycle.projectId,
+        reason: "terminal-title-event",
+        sessionId: lifecycle.sessionId,
+      });
+      const responseSession = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? session;
       return {
         agentSessionId: decision.agentSessionId,
         activity: statusUpdate.activity,
-        changed: decision.changed,
+        changed: decision.changed || presentation?.changed === true || reconciled?.changed === true,
         enteredAttention: statusUpdate.enteredAttention,
         previousActivity: statusUpdate.previousActivity,
-        projection: decision.projection,
-        reason: decision.reason,
-        session,
+        projection: projectSessionTitle(responseSession),
+        reason: reconciled?.changed === true ? reconciled.reason : decision.reason,
+        session: responseSession,
         visibleTitle: decision.visibleTitle,
       } satisfies GxserverTerminalTitleEventResult;
     }
@@ -675,6 +850,12 @@ function dispatchDomainStateEndpoint(
         runtimeSettings: update.runtimeSettings,
         sessionId: current.sessionId,
       });
+      scheduleAgentTitleMetadataCheck(runtime, repository, {
+        force: true,
+        projectId: lifecycle.projectId,
+        reason: "agent-activity",
+        sessionId: lifecycle.sessionId,
+      });
       return {
         activity: update.activity,
         enteredAttention: update.enteredAttention,
@@ -683,9 +864,13 @@ function dispatchDomainStateEndpoint(
       };
     }
     case "/api/updateSession":
-    case "/api/attachSessionMetadata":
-      return { session: repository.updateSession(params as unknown as GxserverUpdateSessionParams) };
+    case "/api/attachSessionMetadata": {
+      const session = repository.updateSession(params as unknown as GxserverUpdateSessionParams);
+      scheduleZmxTitleObserverSync(runtime, repository, endpointPath === "/api/updateSession" ? "update-session" : "attach-session-metadata");
+      return { session };
+    }
     case "/api/listSessions":
+      scheduleAgentTitleMetadataChecksForSessions(runtime, repository, repository.listSessions(readOptionalProjectId(params)), "list-sessions");
       return { sessions: repository.listSessions(readOptionalProjectId(params)) };
     case "/api/readClientLayout":
       return {
@@ -705,6 +890,257 @@ function dispatchDomainStateEndpoint(
       };
     default:
       throw new GxserverDomainStateError("notFound", `${endpointPath} is not a gxserver domain-state endpoint.`);
+  }
+}
+
+async function handleRepositoryCloneEndpoint(
+  runtime: GxserverApiRuntime,
+  endpointPath: GxserverEndpointPath,
+  body: unknown,
+  requestId: string,
+): Promise<GxserverRpcSuccessResponse<Record<string, unknown>>> {
+  /*
+  CDXC:RepositoryClone 2026-06-01-11:18:
+  Clone Repository is a gxserver API, not a macOS implementation detail. Keep preview, start, polling, cancellation, and project registration behind these RPCs so all clients share the same existing-folder warning and clone job lifecycle.
+  */
+  const params = readRepositoryCloneRpcParams(body);
+  const manager = getRepositoryCloneJobManager(runtime);
+  let result: GxserverRepositoryClonePreviewRpcResult | GxserverRepositoryCloneJobRpcResult;
+  switch (endpointPath) {
+    case "/api/previewRepositoryClone":
+      result = { preview: await manager.preview(params) };
+      break;
+    case "/api/startRepositoryClone":
+      result = {
+        job: await manager.start(
+          {
+            logger: runtime.logger,
+            paths: runtime.paths,
+            serverId: runtime.metadata.serverId,
+          },
+          params,
+        ),
+      };
+      break;
+    case "/api/readRepositoryCloneJob":
+      result = { job: manager.read(params.jobId) };
+      break;
+    case "/api/cancelRepositoryCloneJob":
+      result = { job: manager.cancel(params.jobId) };
+      break;
+    default:
+      throw new GxserverRepositoryCloneError("notFound", `${endpointPath} is not a gxserver repository clone endpoint.`);
+  }
+  return {
+    ok: true,
+    product: GXSERVER_PRODUCT,
+    protocolVersion: GXSERVER_PROTOCOL_VERSION,
+    requestId,
+    result: result as unknown as Record<string, unknown>,
+  };
+}
+
+function getRepositoryCloneJobManager(runtime: GxserverApiRuntime): GxserverRepositoryCloneJobManager {
+  runtime.repositoryCloneJobs ??= new GxserverRepositoryCloneJobManager();
+  return runtime.repositoryCloneJobs;
+}
+
+function scheduleAgentTitleMetadataChecksForSessions(
+  runtime: GxserverApiRuntime,
+  leadingRepository: GxserverDomainRepository | undefined,
+  sessions: readonly GxserverSessionDomainState[],
+  reason: string,
+): void {
+  for (const session of sessions) {
+    if (!shouldCheckAgentMetadataTitle(session)) {
+      continue;
+    }
+    scheduleAgentTitleMetadataCheck(runtime, leadingRepository, {
+      projectId: session.projectId,
+      reason,
+      sessionId: session.sessionId,
+    });
+  }
+}
+
+async function syncZmxTitleObserversFromStorage(runtime: GxserverApiRuntime, reason: string): Promise<void> {
+  const db = openGxserverDatabase(runtime.paths);
+  try {
+    const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
+    await syncZmxTitleObserversFromRepository(runtime, repository, reason);
+  } catch (error) {
+    await runtime.logger.log({
+      details: { message: error instanceof Error ? error.message : String(error), reason },
+      event: "zmxTitleObserver.syncFailed",
+      level: "warn",
+      serverId: runtime.metadata.serverId,
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function syncZmxTitleObserversFromRepository(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  reason: string,
+): Promise<void> {
+  if (!runtime.zmxTitleObserver) {
+    return;
+  }
+  await runtime.zmxTitleObserver.syncSessions(repository.listSessions(), reason);
+}
+
+function scheduleZmxTitleObserverSync(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  reason: string,
+): void {
+  void syncZmxTitleObserversFromRepository(runtime, repository, reason).catch((error) =>
+    runtime.logger.log({
+      details: { message: error instanceof Error ? error.message : String(error), reason },
+      event: "zmxTitleObserver.syncFailed",
+      level: "warn",
+      serverId: runtime.metadata.serverId,
+    }),
+  );
+}
+
+function observeZmxTitleForSession(runtime: GxserverApiRuntime, session: GxserverSessionDomainState, reason: string): void {
+  if (!runtime.zmxTitleObserver) {
+    return;
+  }
+  void runtime.zmxTitleObserver.observeSession(session, reason).catch((error) =>
+    runtime.logger.log({
+      details: { message: error instanceof Error ? error.message : String(error), reason },
+      event: "zmxTitleObserver.observeFailed",
+      level: "warn",
+      projectId: session.projectId,
+      serverId: runtime.metadata.serverId,
+      sessionId: session.sessionId,
+    }),
+  );
+}
+
+function scheduleAgentTitleMetadataCheck(
+  runtime: GxserverApiRuntime,
+  leadingRepository: GxserverDomainRepository | undefined,
+  input: {
+    force?: boolean;
+    projectId: GxserverProjectId;
+    reason: string;
+    sessionId: GxserverSessionLifecycleParams["sessionId"];
+  },
+):
+  | {
+      changed: boolean;
+      metadataTitleFound: boolean;
+      reason: string;
+      session?: GxserverSessionDomainState;
+    }
+  | undefined {
+  let latestResult:
+    | {
+        changed: boolean;
+        metadataTitleFound: boolean;
+        reason: string;
+        session?: GxserverSessionDomainState;
+      }
+    | undefined;
+  agentTitleMetadataDebouncer.schedule({
+    key: `${runtime.paths.rootDir}:${runtime.metadata.serverId}:${input.projectId}:${input.sessionId}`,
+    run: (decision) => {
+      latestResult = runAgentTitleMetadataCheck(runtime, leadingRepository, input, decision);
+    },
+  });
+  return latestResult;
+}
+
+function runAgentTitleMetadataCheck(
+  runtime: GxserverApiRuntime,
+  leadingRepository: GxserverDomainRepository | undefined,
+  input: {
+    force?: boolean;
+    projectId: GxserverProjectId;
+    reason: string;
+    sessionId: GxserverSessionLifecycleParams["sessionId"];
+  },
+  decision: GxserverAgentTitleDebounceDecision,
+):
+  | {
+      changed: boolean;
+      metadataTitleFound: boolean;
+      reason: string;
+      session?: GxserverSessionDomainState;
+    }
+  | undefined {
+  const useLeadingRepository = decision.edge === "leading" && leadingRepository !== undefined;
+  let db: ReturnType<typeof openGxserverDatabase> | undefined;
+  try {
+    db = useLeadingRepository ? undefined : openGxserverDatabase(runtime.paths);
+    const repository = useLeadingRepository ? leadingRepository! : new GxserverDomainRepository(db!, runtime.metadata.serverId);
+    const session = repository.getSession(input.projectId, input.sessionId);
+    if (!session || (input.force !== true && !shouldCheckAgentMetadataTitle(session))) {
+      void runtime.logger.log({
+        details: {
+          edge: decision.edge,
+          reason: input.reason,
+          skippedReason: session ? "not-needed" : "session-missing",
+          suppressedCount: decision.suppressedCount,
+        },
+        event: "agentTitleMetadata.checkSkipped",
+        level: "debug",
+        projectId: input.projectId,
+        serverId: runtime.metadata.serverId,
+        sessionId: input.sessionId,
+      });
+      return session
+        ? { changed: false, metadataTitleFound: false, reason: "metadata-check-not-needed", session }
+        : undefined;
+    }
+    /*
+    CDXC:GxserverAgentTitles 2026-06-01-09:03:
+    Rename and title-observation triggers enter one gxserver metadata-check path with structured logging under `agentTitleMetadata.*`. The log label lets clients verify whether rename checks are noisy while the debouncer keeps Codex session-index reads to a leading check plus one trailing check per burst.
+    */
+    const result = reconcileAgentMetadataTitle(repository, {
+      homeDir: runtime.paths.homeDir,
+      pendingMismatchStatus: decision.edge === "leading" ? "pending" : "metadata-mismatch",
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+    });
+    void runtime.logger.log({
+      details: {
+        changed: result.changed,
+        edge: decision.edge,
+        metadataTitleFound: result.metadataTitleFound,
+        reason: input.reason,
+        reconcileReason: result.reason,
+        suppressedCount: decision.suppressedCount,
+      },
+      event: "agentTitleMetadata.check",
+      level: "debug",
+      projectId: input.projectId,
+      serverId: runtime.metadata.serverId,
+      sessionId: input.sessionId,
+    });
+    return result;
+  } catch (error) {
+    void runtime.logger.log({
+      details: {
+        edge: decision.edge,
+        reason: input.reason,
+        suppressedCount: decision.suppressedCount,
+      },
+      error: error instanceof Error ? error : String(error),
+      event: "agentTitleMetadata.checkFailed",
+      level: "warn",
+      projectId: input.projectId,
+      serverId: runtime.metadata.serverId,
+      sessionId: input.sessionId,
+    });
+    return undefined;
+  } finally {
+    db?.close();
   }
 }
 
@@ -809,10 +1245,13 @@ async function dispatchZmxLifecycleEndpoint(
           : attach.session;
       const normalizedAttach: GxserverAttachSessionMetadataResult =
         session === attach.session ? attach : { ...attach, session };
+      observeZmxTitleForSession(runtime, normalizedAttach.session, endpointPath === "/api/wakeSession" ? "wake-session" : "attach-session-metadata");
       return endpointPath === "/api/wakeSession"
         ? { attach: normalizedAttach, session }
         : { attach: normalizedAttach };
     }
+    case "/api/transitionSession":
+      return dispatchSessionTransitionEndpoint(runtime, repository, normalizeSessionTransitionParams(params), requestId) as unknown as Record<string, unknown>;
     case "/api/sleepSession": {
       const lifecycle = readSessionLifecycleParams(params);
       const { kill, session } = await killAndCacheSessionProvider(
@@ -822,6 +1261,7 @@ async function dispatchZmxLifecycleEndpoint(
         normalizeLifecycleReason(lifecycle.reason, "sleepSession"),
         "sleeping",
       );
+      scheduleZmxTitleObserverSync(runtime, repository, "sleep-session");
       return { kill, session };
     }
     case "/api/killSession": {
@@ -833,11 +1273,49 @@ async function dispatchZmxLifecycleEndpoint(
         normalizeLifecycleReason(lifecycle.reason, "killSession"),
         "stopped",
       );
+      scheduleZmxTitleObserverSync(runtime, repository, "kill-session");
       return { kill, session };
     }
     default:
       throw new GxserverDomainStateError("notFound", `${endpointPath} is not a gxserver zmx lifecycle endpoint.`);
   }
+}
+
+async function dispatchSessionTransitionEndpoint(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  params: GxserverSessionTransitionParams,
+  requestId: string,
+): Promise<GxserverSessionTransitionResult> {
+  return applySessionTransition({
+    params,
+    repository,
+    transitionSession: async (transitionParams) => {
+      const { kill, session } = await killAndCacheSessionProvider(
+        runtime,
+        repository,
+        transitionParams,
+        normalizeLifecycleReason(
+          transitionParams.reason,
+          transitionParams.action === "sleep" ? "transitionSessionSleep" : "transitionSessionClose",
+        ),
+        transitionParams.action === "sleep" ? "sleeping" : "stopped",
+      );
+      return { kill, session };
+    },
+    isLiveProjectSession: async (session) => {
+      const { probe } = await probeAndCacheSessionProvider(
+        runtime,
+        repository,
+        {
+          projectId: session.projectId,
+          reason: `transitionSessionFocus:${requestId}`,
+          sessionId: session.sessionId,
+        },
+      );
+      return probe.lifecycleState === "exists";
+    },
+  });
 }
 
 async function handleZmxSessionInteractionEndpoint(
@@ -1030,7 +1508,11 @@ async function createAttachSessionMetadata(
     repository,
     lifecycle,
   );
-  const startupText = params.startupText ?? getAgentStartupTextForSession(project, probedSession);
+  /*
+  CDXC:GxserverTerminalWake 2026-06-01-12:07:
+  Sleeping-session wake should let gxserver rebuild the real agent resume command from shared session metadata. A macOS renderer can legitimately pass an empty string when its legacy local resume builder has no text; treat blank startupText as absent instead of suppressing the server-owned resume plan.
+  */
+  const startupText = normalizeOptionalStartupText(params.startupText) ?? getAgentStartupTextForSession(project, probedSession);
   const startupTextDisposition = decideStartupTextDisposition({
     providerState: probe.lifecycleState,
     startupText,
@@ -1082,6 +1564,10 @@ async function createAttachSessionMetadata(
     startupTextDisposition,
     zmxName: zmxSessionName,
   };
+}
+
+function normalizeOptionalStartupText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 async function probeAndCacheSessionProvider(
@@ -1177,6 +1663,10 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/addProjectPath" ||
     path === "/api/createSession" ||
     path === "/api/createAgentSession" ||
+    path === "/api/readAgentLaunchPlan" ||
+    path === "/api/readAgentResumePlan" ||
+    path === "/api/requestSessionRename" ||
+    path === "/api/ingestSessionStateEvent" ||
     path === "/api/ingestTerminalTitleEvent" ||
     path === "/api/updateAgentActivity" ||
     path === "/api/updateSession" ||
@@ -1190,10 +1680,20 @@ function isTypedOperationEndpoint(path: GxserverEndpointPath): boolean {
   return path === "/api/runGitAction" || path === "/api/runWorktreeAction" || path === "/api/runBeadsAction";
 }
 
+function isRepositoryCloneEndpoint(path: GxserverEndpointPath): boolean {
+  return (
+    path === "/api/previewRepositoryClone" ||
+    path === "/api/startRepositoryClone" ||
+    path === "/api/readRepositoryCloneJob" ||
+    path === "/api/cancelRepositoryCloneJob"
+  );
+}
+
 function isZmxLifecycleEndpoint(path: GxserverEndpointPath): boolean {
   return (
     path === "/api/attachSessionMetadata" ||
     path === "/api/probeSessionProvider" ||
+    path === "/api/transitionSession" ||
     path === "/api/sleepSession" ||
     path === "/api/wakeSession" ||
     path === "/api/killSession"
@@ -1243,6 +1743,26 @@ function normalizeCreateSessionParams(
     ...(params as unknown as GxserverCreateSessionParams),
     projectId: project.projectId,
   };
+}
+
+function readRuntimeText(value: unknown, key: string): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const candidate = value[key];
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined;
+}
+
+function readOptionalText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readRequiredText(value: unknown, field: string): string {
+  const text = readOptionalText(value);
+  if (!text) {
+    throw new GxserverDomainStateError("badRequest", `${field} is required.`);
+  }
+  return text;
 }
 
 function normalizeCreateAgentSessionParams(
@@ -1321,7 +1841,33 @@ function readOperationRpcParams(body: unknown): Record<string, unknown> {
   return body.params;
 }
 
+function readRepositoryCloneRpcParams(body: unknown): Record<string, unknown> {
+  if (!isRecord(body)) {
+    throw new GxserverRepositoryCloneError("badRequest", "RPC request body must be an object.");
+  }
+  if (body.params === undefined) {
+    return {};
+  }
+  if (!isRecord(body.params)) {
+    throw new GxserverRepositoryCloneError("badRequest", "RPC params must be an object.");
+  }
+  return body.params;
+}
+
 function statusForOperationError(code: GxserverTypedOperationError["code"] | GxserverProjectPathError["code"]): number {
+  switch (code) {
+    case "dependencyUnavailable":
+      return 503;
+    case "forbidden":
+      return 403;
+    case "notFound":
+      return 404;
+    default:
+      return 400;
+  }
+}
+
+function statusForRepositoryCloneError(code: GxserverRepositoryCloneError["code"]): number {
   switch (code) {
     case "dependencyUnavailable":
       return 503;
