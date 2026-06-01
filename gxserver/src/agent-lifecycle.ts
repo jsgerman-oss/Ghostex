@@ -17,7 +17,12 @@ import {
 import { getTrustedAgentResumeTitle } from "./agent-resume/title.js";
 import { normalizeAgentActivityState } from "./session-status/index.js";
 
-export { applyAgentActivityTransition, updateSessionActivitySettings } from "./session-status/index.js";
+export {
+  applyAgentActivityTransition,
+  getAgentActivityStaleProjectionDelayMs,
+  getEffectiveAgentActivityState,
+  updateSessionActivitySettings,
+} from "./session-status/index.js";
 
 export type GxserverAgentAcceptAllMode = "inherit" | "enabled" | "disabled";
 

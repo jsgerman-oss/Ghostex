@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import http from "node:http";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
@@ -481,6 +481,36 @@ test("project and session domain-state APIs create, update, list, and keep clien
     assert.equal(projectStatus.body.result.project.runtimeSettings.defaultPromptAgentId, "codex");
     assert.equal("layout" in projectStatus.body.result.project, false);
     assert.equal(projectStatus.body.result.sessions.length, 2);
+
+    const presentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+      body: {
+        params: {},
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(presentation.status, 200);
+    assert.equal(presentation.body.result.snapshot.projects.length, 1);
+    assert.equal(presentation.body.result.snapshot.sessions.length, 2);
+    assert.equal(presentation.body.result.snapshot.sessions[0].visibleInSidebarByDefault, true);
+
+    const presentationSearch = await requestJson(baseUrl, "/api/searchSessions", {
+      body: {
+        params: {
+          includeActive: true,
+          includePrevious: true,
+          query: "Restored",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(presentationSearch.status, 200);
+    assert.deepEqual(presentationSearch.body.result.results.map((result: { sessionId: string }) => result.sessionId), [
+      restored.sessionId,
+    ]);
   });
 });
 
@@ -1897,6 +1927,69 @@ test("project path registration is idempotent and session creation resolves stal
   });
 });
 
+test("project path registration attaches linked worktrees to an existing registered main project", async (t) => {
+  if (spawnSync("git", ["--version"], { encoding: "utf8" }).status !== 0) {
+    t.skip("git is unavailable");
+    return;
+  }
+
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    /*
+    CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
+    gxserver owns Add Project worktree detection. Registering a linked worktree path should return a project whose worktree metadata points at the already registered main project P-id, preserving idempotent path registration for repeat adds.
+    */
+    const repoPath = path.join(paths.rootDir, "registered-main");
+    const worktreePath = path.join(paths.rootDir, "registered-main-feature");
+    await mkdir(repoPath, { recursive: true });
+    runGitForTest(repoPath, ["init"]);
+    runGitForTest(repoPath, ["config", "user.email", "ghostex@example.invalid"]);
+    runGitForTest(repoPath, ["config", "user.name", "Ghostex Test"]);
+    await writeFile(path.join(repoPath, "README.md"), "main\n", "utf8");
+    runGitForTest(repoPath, ["add", "README.md"]);
+    runGitForTest(repoPath, ["commit", "-m", "Initial commit"]);
+    runGitForTest(repoPath, ["worktree", "add", "-b", "feature/existing-worktree", worktreePath]);
+
+    const mainAdd = await requestJson(baseUrl, "/api/addProjectPath", {
+      body: {
+        params: { name: "Registered Main", path: repoPath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(mainAdd.status, 200);
+    const mainProject = mainAdd.body.result.project;
+
+    const worktreeAdd = await requestJson(baseUrl, "/api/addProjectPath", {
+      body: {
+        params: { path: worktreePath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(worktreeAdd.status, 200);
+    const worktreeProject = worktreeAdd.body.result.project;
+    assert.equal(worktreeProject.path, worktreePath);
+    assert.equal(worktreeProject.worktree.parentProjectId, mainProject.projectId);
+    assert.equal(worktreeProject.worktree.parentProjectName, "Registered Main");
+    assert.equal(worktreeProject.worktree.parentProjectPath, repoPath);
+    assert.equal(worktreeProject.worktree.branch, "feature/existing-worktree");
+
+    const secondWorktreeAdd = await requestJson(baseUrl, "/api/addProjectPath", {
+      body: {
+        params: { path: worktreePath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(secondWorktreeAdd.status, 200);
+    assert.equal(secondWorktreeAdd.body.result.project.projectId, worktreeProject.projectId);
+    assert.equal(secondWorktreeAdd.body.result.project.worktree.parentProjectId, mainProject.projectId);
+  });
+});
+
 test("repository clone preview reports existing default destination and start rejects it", async () => {
   await withApiServer("local", async ({ baseUrl, paths, token }) => {
     const parentPath = path.join(paths.rootDir, "clone-parent");
@@ -2064,6 +2157,15 @@ test("WebSocket events require auth and protocol version, then stream JSON serve
     const ready = JSON.parse(String(await readyMessage)) as Record<string, unknown>;
     assert.equal(ready.type, "eventStreamReady");
     assert.equal(ready.protocolVersion, GXSERVER_PROTOCOL_VERSION);
+
+    const browserSocket = new WebSocket(
+      `${toWebSocketUrl(baseUrl, "/api/events")}?protocolVersion=${GXSERVER_PROTOCOL_VERSION}&authToken=${encodeURIComponent(token)}`,
+    );
+    const browserReadyMessage = onceMessage(browserSocket);
+    await waitFor(once(browserSocket, "open"), "browser WebSocket open");
+    const browserReady = JSON.parse(String(await browserReadyMessage)) as Record<string, unknown>;
+    assert.equal(browserReady.type, "eventStreamReady");
+    browserSocket.close();
 
     const handledMessage = onceMessage(socket);
     const response = await requestJson(baseUrl, "/api/listSessions", {
@@ -2400,6 +2502,13 @@ async function waitForProcessExit(child: ChildProcessWithoutNullStreams, timeout
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function runGitForTest(cwd: string, args: readonly string[]): void {
+  const result = spawnSync("git", [...args], { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${args.join(" ")} failed`);
+  }
 }
 
 async function onceMessage(socket: WebSocket): Promise<WebSocket.RawData> {

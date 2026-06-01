@@ -38,6 +38,26 @@ const AGENT_COMMAND_EXECUTABLE_NAMES = new Set([
   "qodercli",
 ]);
 
+/*
+CDXC:GxserverSessionTitles 2026-06-01-20:59:
+Terminal titles can legitimately start with an agent name, such as "Codex zshrc additions". Reject only titles that still look like an agent launch command, so gxserver trusts settled zmx title observations without letting resume commands become durable sidebar titles.
+*/
+const AGENT_COMMAND_SUBCOMMAND_NAMES = new Set([
+  "auth",
+  "completion",
+  "debug",
+  "exec",
+  "help",
+  "login",
+  "logout",
+  "mcp",
+  "resume",
+  "run",
+  "sandbox",
+  "session",
+  "sessions",
+]);
+
 export function normalizeTitleSource(value: unknown, title: unknown): GxserverSessionTitleSource {
   if (
     value === "browser-auto" ||
@@ -102,8 +122,7 @@ export function isRejectedResumeTitle(title: string): boolean {
     isGhostPlaceholderSessionTitle(normalizedTitle) ||
     /[\u0000-\u001f\u007f]/u.test(normalizedTitle) ||
     (normalizedTitle.startsWith("ð") && normalizedTitle.endsWith("»")) ||
-    AGENT_COMMAND_EXECUTABLE_NAMES.has(normalizedLowerTitle) ||
-    AGENT_COMMAND_EXECUTABLE_NAMES.has(getCommandExecutableName(normalizedLowerTitle) ?? "")
+    isAgentCommandNoiseTitle(normalizedLowerTitle)
   );
 }
 
@@ -147,6 +166,25 @@ export function isValidAgentTerminalTitle(title: string, agentName: string | und
 function getCommandExecutableName(command: string | undefined): string | undefined {
   const firstPart = command?.trim().split(/\s+/u)[0]?.trim();
   return firstPart ? firstPart.replace(/^['"]|['"]$/gu, "").toLowerCase() : undefined;
+}
+
+function isAgentCommandNoiseTitle(title: string): boolean {
+  const executableName = getCommandExecutableName(title);
+  if (!executableName || !AGENT_COMMAND_EXECUTABLE_NAMES.has(executableName)) {
+    return false;
+  }
+  if (title === executableName) {
+    return true;
+  }
+  const rest = title.slice(executableName.length).trim();
+  if (!rest) {
+    return true;
+  }
+  if (rest.startsWith("-")) {
+    return true;
+  }
+  const firstArg = rest.split(/\s+/u)[0];
+  return firstArg ? AGENT_COMMAND_SUBCOMMAND_NAMES.has(firstArg) : false;
 }
 
 function normalizeText(value: unknown): string | undefined {

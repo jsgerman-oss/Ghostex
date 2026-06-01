@@ -21,6 +21,8 @@ const CURSOR_TITLE_KEYWORD = "cursor";
 const ANTIGRAVITY_TITLE_KEYWORD = "agy";
 const ANTIGRAVITY_ATTENTION_TITLE_PATTERN = /^🔔\s*agy$/iu;
 const ANTIGRAVITY_IDLE_TITLE_PATTERN = /^agy$/iu;
+export const GXSERVER_TITLE_ACTIVITY_WINDOW_MS = 1_000;
+export const GXSERVER_SLOW_SPINNER_ACTIVITY_WINDOW_MS = 3_000;
 
 export function classifyTerminalTitleStatus(
   title: string | undefined,
@@ -45,11 +47,6 @@ export function classifyTerminalTitleStatus(
     return { agentName: "antigravity", state: antigravityTitleState };
   }
 
-  const codexTitleState = getCodexTitleState(title, normalizedAgentName === "codex");
-  if (codexTitleState) {
-    return { agentName: "codex", state: codexTitleState };
-  }
-
   const claudeCodeTitleState = getClaudeCodeTitleState(title, normalizedAgentName === "claude");
   if (claudeCodeTitleState) {
     return { agentName: "claude", state: claudeCodeTitleState };
@@ -58,6 +55,11 @@ export function classifyTerminalTitleStatus(
   const piTitleState = getPiTitleState(title, normalizedAgentName === "pi");
   if (piTitleState) {
     return { agentName: "pi", state: piTitleState };
+  }
+
+  const codexTitleState = getCodexTitleState(title, normalizedAgentName === "codex");
+  if (codexTitleState) {
+    return { agentName: "codex", state: codexTitleState };
   }
 
   const geminiTitleState = getGeminiTitleState(title, normalizedAgentName === "gemini");
@@ -105,6 +107,18 @@ export function normalizeStatusAgentName(knownAgentName: string | undefined): Gx
     normalizedAgentName === "pi"
     ? normalizedAgentName
     : undefined;
+}
+
+export function requiresObservedTitleTransitions(
+  agentName: GxserverSessionStatusAgentName | undefined,
+): boolean {
+  return agentName === "claude" || agentName === "codex" || agentName === "cursor" || agentName === "pi";
+}
+
+export function getTitleActivityWindowMs(agentName: GxserverSessionStatusAgentName | undefined): number {
+  return requiresObservedTitleTransitions(agentName)
+    ? GXSERVER_SLOW_SPINNER_ACTIVITY_WINDOW_MS
+    : GXSERVER_TITLE_ACTIVITY_WINDOW_MS;
 }
 
 function getCursorTitleState(title: string, allowAgentHintMatch = false): "idle" | "working" | undefined {

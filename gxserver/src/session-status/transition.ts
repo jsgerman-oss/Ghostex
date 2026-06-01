@@ -3,7 +3,13 @@ import type {
   GxserverAgentActivityInput,
   GxserverAgentActivityState,
 } from "../../protocol/index.js";
-import { classifyTerminalTitleStatus, normalizeStatusAgentName } from "./title-classifier.js";
+import {
+  classifyTerminalTitleStatus,
+  getTitleActivityWindowMs,
+  normalizeStatusAgentName,
+  requiresObservedTitleTransitions,
+} from "./title-classifier.js";
+import type { GxserverSessionStatusAgentName, GxserverTitleStatusSignal } from "./types.js";
 
 export const GXSERVER_INITIAL_ACTIVITY_SUPPRESSION_MS = 12_000;
 export const GXSERVER_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS = 5_000;
@@ -34,9 +40,11 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
   }
 
   const titleSignal = classifyTerminalTitleStatus(input.title, input.agentId ?? previous.agentName);
+  const titleTransition = resolveTitleTransition(input, previous, titleSignal, nowIso);
   if (
     input.event === "title" &&
     titleSignal &&
+    previous.agentName !== undefined &&
     previous.agentName !== titleSignal.agentName &&
     previous.activity === "idle" &&
     !previous.hasSeenWorking
@@ -47,6 +55,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
       hasSeenWorking: false,
       isAcknowledged: true,
       lastChangedAt: nowIso,
+      ...titleTransition,
       suppressedUntil: new Date(nowMs + GXSERVER_INITIAL_ACTIVITY_SUPPRESSION_MS).toISOString(),
     };
   }
@@ -65,17 +74,29 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
   const requested =
     input.activity ??
     activityFromEvent(input.event) ??
-    activityFromTitleSignal(titleSignal?.state, previous, titleSignal?.agentName);
+    activityFromTitleSignal(titleSignal?.state, previous, titleSignal?.agentName, input.event);
   const agentName = titleSignal?.agentName ?? normalizeStatusAgentName(input.agentId) ?? previous.agentName;
 
   if (requested === "working") {
+    const workingSource = input.event === "title" && titleSignal?.state === "working" ? "title" : "explicit";
+    if (
+      workingSource === "title" &&
+      isTitleDerivedWorkingStale(titleSignal?.agentName, titleTransition.lastTitleChangeAt, nowMs)
+    ) {
+      return stateForStaleTitleWorking(previous, agentName, titleTransition, nowIso);
+    }
+    /*
+    CDXC:SessionStatus 2026-06-01-20:26:
+    gxserver inherited the macOS title-status contract: Codex/Claude/Cursor/Pi spinner glyphs mean working only while the terminal title is still changing. Preserve the original title-change timestamp for unchanged spinner frames so a frozen glyph cannot keep every client orange forever.
+    */
     return {
       activity: "working",
       agentName,
       hasSeenWorking: true,
       isAcknowledged: false,
       lastChangedAt: previousActivity === "working" ? previous.lastChangedAt ?? nowIso : nowIso,
-      lastTitleChangeAt: previousActivity === "working" ? previous.lastTitleChangeAt ?? nowIso : nowIso,
+      ...titleTransition,
+      workingSource,
       workingStartedAt: previousActivity === "working" ? previous.workingStartedAt ?? nowIso : nowIso,
     };
   }
@@ -93,12 +114,14 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
         ...previous,
         activity: "idle",
         agentName,
+        ...titleTransition,
       };
     }
     const workingStartedMs = previous.workingStartedAt ? Date.parse(previous.workingStartedAt) : Number.NaN;
     const canEnterAttention =
       input.event === "bell" ||
       input.event === "terminalError" ||
+      titleSignal?.agentName === "antigravity" ||
       (Number.isFinite(workingStartedMs) && nowMs - workingStartedMs >= GXSERVER_MIN_WORKING_DURATION_BEFORE_ATTENTION_MS);
     if (!canEnterAttention) {
       return {
@@ -116,6 +139,7 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
       hasSeenWorking: true,
       isAcknowledged: false,
       lastChangedAt: nowIso,
+      ...titleTransition,
       workingStartedAt: previous.workingStartedAt,
     };
   }
@@ -125,8 +149,45 @@ export function applyAgentActivityTransition(input: GxserverAgentActivityInput):
     activity: "idle",
     agentName,
     lastChangedAt: previousActivity === "idle" ? previous.lastChangedAt ?? nowIso : nowIso,
+    ...titleTransition,
+    workingSource: undefined,
     workingStartedAt: undefined,
   };
+}
+
+export function getEffectiveAgentActivityState(
+  value: unknown,
+  fallback: Pick<GxserverAgentActivityState, "activity"> = { activity: "idle" },
+  nowMs = Date.now(),
+): GxserverAgentActivityState {
+  const state = normalizeAgentActivityState(value, fallback);
+  if (!isStoredTitleDerivedWorkingStale(state, nowMs)) {
+    return state;
+  }
+  return stateForStaleTitleWorking(state, state.agentName, {
+    lastTitle: state.lastTitle,
+    lastTitleChangeAt: state.lastTitleChangeAt,
+  }, new Date(nowMs).toISOString());
+}
+
+export function getAgentActivityStaleProjectionDelayMs(
+  value: unknown,
+  nowMs = Date.now(),
+): number | undefined {
+  const state = normalizeAgentActivityState(value, { activity: "idle" });
+  if (
+    state.activity !== "working" ||
+    state.workingSource === "explicit" ||
+    !state.lastTitleChangeAt ||
+    !requiresObservedTitleTransitions(state.agentName)
+  ) {
+    return undefined;
+  }
+  const lastTitleChangeMs = Date.parse(state.lastTitleChangeAt);
+  if (!Number.isFinite(lastTitleChangeMs)) {
+    return undefined;
+  }
+  return Math.max(0, lastTitleChangeMs + getTitleActivityWindowMs(state.agentName) - nowMs);
 }
 
 export function normalizeAgentActivityState(
@@ -141,8 +202,10 @@ export function normalizeAgentActivityState(
     hasSeenWorking: readBoolean(record.hasSeenWorking),
     isAcknowledged: readBoolean(record.isAcknowledged),
     lastChangedAt: normalizeText(record.lastChangedAt),
+    lastTitle: normalizeText(record.lastTitle),
     lastTitleChangeAt: normalizeText(record.lastTitleChangeAt),
     suppressedUntil: normalizeText(record.suppressedUntil),
+    workingSource: normalizeWorkingSource(record.workingSource),
     workingStartedAt: normalizeText(record.workingStartedAt),
   };
 }
@@ -182,6 +245,7 @@ function activityFromTitleSignal(
   signal: "attention" | "idle" | "working" | undefined,
   previous: GxserverAgentActivityState,
   agentName: string | undefined,
+  event: GxserverAgentActivityEvent | undefined,
 ): GxserverAgentActivityState["activity"] | undefined {
   if (signal === "working" || signal === "attention") {
     return signal;
@@ -190,7 +254,72 @@ function activityFromTitleSignal(
     const sameAgent = previous.agentName === undefined || agentName === undefined || previous.agentName === agentName;
     return sameAgent && previous.hasSeenWorking && !previous.isAcknowledged ? "attention" : "idle";
   }
+  if (event === "title" && previous.hasSeenWorking) {
+    return previous.isAcknowledged ? "idle" : "attention";
+  }
   return undefined;
+}
+
+function resolveTitleTransition(
+  input: GxserverAgentActivityInput,
+  previous: GxserverAgentActivityState,
+  titleSignal: GxserverTitleStatusSignal | undefined,
+  nowIso: string,
+): Pick<GxserverAgentActivityState, "lastTitle" | "lastTitleChangeAt"> {
+  const title = input.event === "title" ? normalizeText(input.title) : undefined;
+  if (!title) {
+    return {
+      lastTitle: previous.lastTitle,
+      lastTitleChangeAt: previous.lastTitleChangeAt,
+    };
+  }
+  const sameAgent = previous.agentName === undefined ||
+    titleSignal?.agentName === undefined ||
+    previous.agentName === titleSignal.agentName;
+  const sameTitle = previous.lastTitle?.trim() === title.trim();
+  return {
+    lastTitle: title,
+    lastTitleChangeAt: sameAgent && sameTitle ? previous.lastTitleChangeAt ?? nowIso : nowIso,
+  };
+}
+
+function isTitleDerivedWorkingStale(
+  agentName: GxserverSessionStatusAgentName | undefined,
+  lastTitleChangeAt: string | undefined,
+  nowMs: number,
+): boolean {
+  if (!requiresObservedTitleTransitions(agentName)) {
+    return false;
+  }
+  const lastTitleChangeMs = lastTitleChangeAt ? Date.parse(lastTitleChangeAt) : Number.NaN;
+  return !Number.isFinite(lastTitleChangeMs) || nowMs - lastTitleChangeMs > getTitleActivityWindowMs(agentName);
+}
+
+function isStoredTitleDerivedWorkingStale(state: GxserverAgentActivityState, nowMs: number): boolean {
+  return (
+    state.activity === "working" &&
+    state.workingSource !== "explicit" &&
+    state.lastTitleChangeAt !== undefined &&
+    isTitleDerivedWorkingStale(state.agentName, state.lastTitleChangeAt, nowMs)
+  );
+}
+
+function stateForStaleTitleWorking(
+  previous: GxserverAgentActivityState,
+  agentName: GxserverSessionStatusAgentName | undefined,
+  titleTransition: Pick<GxserverAgentActivityState, "lastTitle" | "lastTitleChangeAt">,
+  nowIso: string,
+): GxserverAgentActivityState {
+  const nextActivity = previous.hasSeenWorking && !previous.isAcknowledged ? "attention" : "idle";
+  return {
+    ...previous,
+    activity: nextActivity,
+    agentName,
+    lastChangedAt: previous.activity === nextActivity ? previous.lastChangedAt ?? nowIso : nowIso,
+    ...titleTransition,
+    workingSource: undefined,
+    workingStartedAt: undefined,
+  };
 }
 
 function createAttentionEventId(nowMs: number): string {
@@ -203,4 +332,8 @@ function normalizeObject(value: unknown): Record<string, unknown> {
 
 function readBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function normalizeWorkingSource(value: unknown): GxserverAgentActivityState["workingSource"] | undefined {
+  return value === "explicit" || value === "title" ? value : undefined;
 }

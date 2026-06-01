@@ -16,9 +16,15 @@ import {
   GXSERVER_PRODUCT,
   GXSERVER_PROTOCOL_VERSION,
 } from "./constants.js";
-import { ensureGxserverAuthToken, isAuthorizedGxserverRequest, readGxserverAuthToken } from "./auth.js";
+import {
+  ensureGxserverAuthToken,
+  isAuthorizedGxserverRequest,
+  isExpectedGxserverAuthToken,
+  readGxserverAuthToken,
+} from "./auth.js";
 import { GxserverDomainRepository, GxserverDomainStateError } from "./domain-state.js";
 import { GxserverEventHub } from "./events.js";
+import { detectRegisteredGitWorktreeMetadata } from "./git-worktrees.js";
 import { isGxserverProjectId, isGxserverSessionId } from "./ids.js";
 import { fetchServerHealth } from "./http-client.js";
 import { ensureGxserverIdentity } from "./identity.js";
@@ -31,6 +37,7 @@ import {
   buildProjectAgentLaunchPlan,
   createAgentSessionParams,
   getAgentStartupTextForSession,
+  getAgentActivityStaleProjectionDelayMs,
   updateSessionActivitySettings,
 } from "./agent-lifecycle.js";
 import { applyTerminalTitleEvent } from "./session-title/index.js";
@@ -40,6 +47,14 @@ import {
   applySessionRenameRequest,
   applySessionStateEvent,
   createAgentTitleDebouncer,
+  defaultGroupId,
+  GxserverPresentationDeltaCoalescer,
+  incrementPresentationRevision,
+  projectPresentationProject,
+  projectPresentationSession,
+  readGxserverPresentationSnapshot,
+  searchGxserverPresentation,
+  shouldIncludePresentationSession,
   reconcileAgentMetadataTitle,
   shouldCheckAgentMetadataTitle,
   type GxserverAgentTitleDebounceDecision,
@@ -99,6 +114,8 @@ import type {
   GxserverProjectId,
   GxserverProviderKillResult,
   GxserverProviderProbeResult,
+  GxserverPresentationSearchParams,
+  GxserverPresentationDelta,
   GxserverRunBeadsActionParams,
   GxserverRepositoryCloneJobRpcResult,
   GxserverRepositoryClonePreviewRpcResult,
@@ -108,6 +125,7 @@ import type {
   GxserverRuntimeMetadata,
   GxserverServerId,
   GxserverSessionDomainState,
+  GxserverSessionId,
   GxserverSessionLifecycleParams,
   GxserverSessionTransitionParams,
   GxserverSessionTransitionResult,
@@ -145,6 +163,9 @@ export interface GxserverApiRuntime {
   shutdown: () => void;
   version: string;
   repositoryCloneJobs?: GxserverRepositoryCloneJobManager;
+  presentationDeltaCoalescer?: GxserverPresentationDeltaCoalescer;
+  presentationLastDeltaJsonBySessionKey?: Map<string, string>;
+  presentationStaleActivityTimers?: Map<string, ReturnType<typeof setTimeout>>;
   zmxTitleObserver?: GxserverZmxTitleObserver;
   zmxLifecycle?: {
     cwdExists?: GxserverCwdExists;
@@ -240,6 +261,29 @@ export async function runGxserverForeground(options: GxserverForegroundOptions):
     version: options.version,
     zmxTitleObserver,
   };
+
+  eventHub.setPresentationSnapshotProvider(async ({ clientId, lastRevision }) => {
+    const db = openGxserverDatabase(paths);
+    try {
+      const snapshot = readGxserverPresentationSnapshot(db, metadata.serverId);
+      await logger.log({
+        client: clientId,
+        details: {
+          groupCount: snapshot.groups.length,
+          lastRevision,
+          projectCount: snapshot.projects.length,
+          revision: snapshot.revision,
+          sessionCount: snapshot.sessions.length,
+        },
+        event: "session-presentation.snapshot",
+        level: "debug",
+        serverId: metadata.serverId,
+      });
+      return snapshot;
+    } finally {
+      db.close();
+    }
+  });
 
   /*
   CDXC:GxserverLifecycle 2026-05-30-20:09:
@@ -628,7 +672,7 @@ function handleDomainStateEndpoint(
   const db = openGxserverDatabase(runtime.paths);
   try {
     const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
-    const result = dispatchDomainStateEndpoint(runtime, repository, endpointPath, readDomainRpcParams(body));
+    const result = dispatchDomainStateEndpoint(runtime, db, repository, endpointPath, readDomainRpcParams(body));
     return {
       ok: true,
       product: GXSERVER_PRODUCT,
@@ -643,15 +687,30 @@ function handleDomainStateEndpoint(
 
 function dispatchDomainStateEndpoint(
   runtime: GxserverApiRuntime,
+  db: ReturnType<typeof openGxserverDatabase>,
   repository: GxserverDomainRepository,
   endpointPath: GxserverEndpointPath,
   params: Record<string, unknown>,
 ): Record<string, unknown> {
   switch (endpointPath) {
-    case "/api/createProject":
-      return { project: repository.createProject(params as unknown as GxserverCreateProjectParams) };
-    case "/api/updateProject":
-      return { project: repository.updateProject(params as unknown as GxserverUpdateProjectParams) };
+    case "/api/createProject": {
+      const project = repository.createProject(params as unknown as GxserverCreateProjectParams);
+      schedulePresentationProjectDelta(runtime, db, repository, {
+        projectId: project.projectId,
+        reason: "create-project",
+        type: "projectAdded",
+      });
+      return { project };
+    }
+    case "/api/updateProject": {
+      const project = repository.updateProject(params as unknown as GxserverUpdateProjectParams);
+      schedulePresentationProjectDelta(runtime, db, repository, {
+        projectId: project.projectId,
+        reason: "update-project",
+        type: "projectUpdated",
+      });
+      return { project };
+    }
     case "/api/listProjects":
       return { projects: repository.listProjects() };
     case "/api/readProjectStatus": {
@@ -663,8 +722,15 @@ function dispatchDomainStateEndpoint(
       scheduleAgentTitleMetadataChecksForSessions(runtime, repository, repository.listSessions(projectId), "read-project-status");
       return { project, sessions: repository.listSessions(projectId) };
     }
-    case "/api/addProjectPath":
-      return { project: addProjectPath(repository, params) };
+    case "/api/addProjectPath": {
+      const project = addProjectPath(repository, params);
+      schedulePresentationProjectDelta(runtime, db, repository, {
+        projectId: project.projectId,
+        reason: "add-project-path",
+        type: "projectAdded",
+      });
+      return { project };
+    }
     case "/api/createSession":
     case "/api/createAgentSession": {
       const createParams =
@@ -690,6 +756,11 @@ function dispatchDomainStateEndpoint(
       });
       const session = reconciled?.session ?? repository.getSession(presentation.session.projectId, presentation.session.sessionId) ?? presentation.session;
       observeZmxTitleForSession(runtime, session, "create-session");
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: session.projectId,
+        reason: "create-session",
+        sessionId: session.sessionId,
+      });
       return {
         session,
       };
@@ -744,6 +815,11 @@ function dispatchDomainStateEndpoint(
         : undefined;
       const session = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? result.session;
       observeZmxTitleForSession(runtime, session, "rename-request");
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: lifecycle.projectId,
+        reason: "rename-request",
+        sessionId: lifecycle.sessionId,
+      });
       return {
         ...result,
         changed: result.changed || reconciled?.changed === true,
@@ -767,6 +843,11 @@ function dispatchDomainStateEndpoint(
         sessionId: lifecycle.sessionId,
       });
       const session = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? result.session;
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: lifecycle.projectId,
+        reason: "session-state-event",
+        sessionId: lifecycle.sessionId,
+      });
       return {
         ...result,
         changed: result.changed || reconciled?.changed === true,
@@ -814,6 +895,7 @@ function dispatchDomainStateEndpoint(
         runtimeSettings: statusUpdate.runtimeSettings,
         sessionId: presentedSession.sessionId,
       });
+      scheduleStaleActivityPresentationRefresh(runtime, session, "terminal-title-stale-activity");
       const reconciled = scheduleAgentTitleMetadataCheck(runtime, repository, {
         force: true,
         projectId: lifecycle.projectId,
@@ -821,7 +903,12 @@ function dispatchDomainStateEndpoint(
         sessionId: lifecycle.sessionId,
       });
       const responseSession = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? session;
-      return {
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: lifecycle.projectId,
+        reason: "terminal-title-event",
+        sessionId: lifecycle.sessionId,
+      });
+      const response = {
         agentSessionId: decision.agentSessionId,
         activity: statusUpdate.activity,
         changed: decision.changed || presentation?.changed === true || reconciled?.changed === true,
@@ -832,6 +919,42 @@ function dispatchDomainStateEndpoint(
         session: responseSession,
         visibleTitle: decision.visibleTitle,
       } satisfies GxserverTerminalTitleEventResult;
+      /*
+      CDXC:GxserverSessionTitles 2026-06-01-20:59:
+      Title ownership lives in gxserver for every client. Log terminal-title ingest decisions at the shared API boundary so noisy settled-title streams, rejected titles, metadata reconciliation, and final presentation title source can be diagnosed without duplicating title logic in macOS, TUI, CLI, or mobile clients.
+      */
+      const rawTitleForLog = titleEvent.rawTitle ?? "";
+      void runtime.logger.log({
+        details: {
+          activity: statusUpdate.activity,
+          agentName: titleEvent.agentName,
+          agentSessionIdCaptured: decision.agentSessionId !== undefined,
+          changed: response.changed,
+          decisionChanged: decision.changed,
+          decisionReason: decision.reason,
+          metadataChanged: reconciled?.changed === true,
+          metadataReason: reconciled?.reason,
+          metadataTitleFound: reconciled?.metadataTitleFound,
+          presentationChanged: presentation?.changed === true,
+          provider: titleEvent.sessionPersistenceProvider,
+          rawTitleLength: rawTitleForLog.length,
+          rawTitlePreview: rawTitleForLog.slice(0, 80),
+          responseReason: response.reason,
+          responseTitleSource: responseSession.runtimeSettings.titleSource,
+          sessionTitleBeforeLength: current.title.length,
+          sessionTitleBeforePreview: current.title.slice(0, 80),
+          sessionTitleDecisionLength: titledSession.title.length,
+          sessionTitleDecisionPreview: titledSession.title.slice(0, 80),
+          visibleTitleLength: decision.visibleTitle?.length,
+          visibleTitlePreview: decision.visibleTitle?.slice(0, 80),
+        },
+        event: "sessionTitle.terminalTitleEvent",
+        level: response.changed ? "info" : "debug",
+        projectId: lifecycle.projectId,
+        serverId: runtime.metadata.serverId,
+        sessionId: lifecycle.sessionId,
+      });
+      return response;
     }
     case "/api/updateAgentActivity": {
       const activity = params as unknown as GxserverUpdateAgentActivityParams;
@@ -850,8 +973,14 @@ function dispatchDomainStateEndpoint(
         runtimeSettings: update.runtimeSettings,
         sessionId: current.sessionId,
       });
+      scheduleStaleActivityPresentationRefresh(runtime, session, "agent-activity-stale-activity");
       scheduleAgentTitleMetadataCheck(runtime, repository, {
         force: true,
+        projectId: lifecycle.projectId,
+        reason: "agent-activity",
+        sessionId: lifecycle.sessionId,
+      });
+      schedulePresentationSessionDelta(runtime, repository, {
         projectId: lifecycle.projectId,
         reason: "agent-activity",
         sessionId: lifecycle.sessionId,
@@ -863,10 +992,31 @@ function dispatchDomainStateEndpoint(
         session,
       };
     }
+    case "/api/readPresentationSnapshot":
+      return {
+        snapshot: readGxserverPresentationSnapshot(db, runtime.metadata.serverId),
+      };
+    case "/api/searchSessions":
+      return searchGxserverPresentation(
+        db,
+        runtime.metadata.serverId,
+        params as unknown as GxserverPresentationSearchParams,
+      ) as unknown as Record<string, unknown>;
+    case "/api/listPreviousSessions":
+      return searchGxserverPresentation(db, runtime.metadata.serverId, {
+        ...(params as unknown as GxserverPresentationSearchParams),
+        includeActive: false,
+        includePrevious: true,
+      }) as unknown as Record<string, unknown>;
     case "/api/updateSession":
     case "/api/attachSessionMetadata": {
       const session = repository.updateSession(params as unknown as GxserverUpdateSessionParams);
       scheduleZmxTitleObserverSync(runtime, repository, endpointPath === "/api/updateSession" ? "update-session" : "attach-session-metadata");
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: session.projectId,
+        reason: endpointPath === "/api/updateSession" ? "update-session" : "attach-session-metadata",
+        sessionId: session.sessionId,
+      });
       return { session };
     }
     case "/api/listSessions":
@@ -1020,6 +1170,225 @@ function observeZmxTitleForSession(runtime: GxserverApiRuntime, session: Gxserve
       sessionId: session.sessionId,
     }),
   );
+}
+
+function schedulePresentationProjectDelta(
+  runtime: GxserverApiRuntime,
+  db: ReturnType<typeof openGxserverDatabase>,
+  repository: GxserverDomainRepository,
+  input: {
+    projectId: GxserverProjectId;
+    reason: string;
+    type: "projectAdded" | "projectUpdated";
+  },
+): void {
+  if (runtime.eventHub.server.clients.size === 0) {
+    return;
+  }
+  const delta = buildPresentationProjectDelta(repository, input.projectId, input.type);
+  if (!delta) {
+    return;
+  }
+  /*
+  CDXC:GxserverPresentationProjects 2026-06-01-21:14:
+  Add Project is user-visible sidebar state, not only database state. Publish a project presentation delta immediately when a path is registered or updated so connected clients can render empty project rows before any session delta exists.
+  */
+  const revision = incrementPresentationRevision(db);
+  runtime.eventHub.broadcast({
+    delta,
+    protocolVersion: GXSERVER_PROTOCOL_VERSION,
+    revision,
+    serverId: runtime.metadata.serverId,
+    type: "presentationDelta",
+  });
+  void runtime.logger.log({
+    details: {
+      deltaType: delta.type,
+      reason: input.reason,
+      revision,
+    },
+    event: "session-presentation.projectDelta",
+    level: "debug",
+    projectId: input.projectId,
+    serverId: runtime.metadata.serverId,
+  });
+}
+
+function schedulePresentationSessionDelta(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  input: {
+    projectId: GxserverProjectId;
+    reason: string;
+    sessionId: GxserverSessionId;
+  },
+): void {
+  if (runtime.eventHub.server.clients.size === 0) {
+    return;
+  }
+  const delta = buildPresentationSessionDelta(repository, input.projectId, input.sessionId);
+  if (!delta) {
+    return;
+  }
+  getPresentationDeltaCoalescer(runtime).schedule(
+    { projectId: input.projectId, sessionId: input.sessionId },
+    input.reason,
+    delta,
+    (decision) => {
+      const db = openGxserverDatabase(runtime.paths);
+      try {
+        const flushRepository = new GxserverDomainRepository(db, runtime.metadata.serverId);
+        const latestDelta = buildPresentationSessionDelta(flushRepository, input.projectId, input.sessionId);
+        if (!latestDelta) {
+          return;
+        }
+        const deltaJson = stringifyPresentationDelta(latestDelta);
+        const previousDeltaJson = getPresentationLastDeltaJsonBySessionKey(runtime).get(decision.key);
+        if (previousDeltaJson === deltaJson) {
+          void runtime.logger.log({
+            details: {
+              coalescedCount: decision.coalescedCount,
+              reason: decision.reason,
+              skipped: "unchanged-projection",
+            },
+            event: "session-presentation.deltaSkipped",
+            level: "debug",
+            projectId: input.projectId,
+            serverId: runtime.metadata.serverId,
+            sessionId: input.sessionId,
+          });
+          return;
+        }
+        getPresentationLastDeltaJsonBySessionKey(runtime).set(decision.key, deltaJson);
+        const revision = incrementPresentationRevision(db);
+        runtime.eventHub.broadcast({
+          delta: latestDelta,
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          revision,
+          serverId: runtime.metadata.serverId,
+          type: "presentationDelta",
+        });
+        void runtime.logger.log({
+          details: {
+            coalescedCount: decision.coalescedCount,
+            deltaType: latestDelta.type,
+            reason: decision.reason,
+            revision,
+          },
+          event: "session-presentation.delta",
+          level: "debug",
+          projectId: input.projectId,
+          serverId: runtime.metadata.serverId,
+          sessionId: input.sessionId,
+        });
+      } finally {
+        db.close();
+      }
+    },
+  );
+}
+
+function buildPresentationProjectDelta(
+  repository: GxserverDomainRepository,
+  projectId: GxserverProjectId,
+  type: "projectAdded" | "projectUpdated",
+): GxserverPresentationDelta | undefined {
+  const project = repository.getProject(projectId);
+  if (!project) {
+    return {
+      projectId,
+      type: "projectRemoved",
+    };
+  }
+  return {
+    project: projectPresentationProject(project),
+    type,
+  };
+}
+
+function scheduleStaleActivityPresentationRefresh(
+  runtime: GxserverApiRuntime,
+  session: GxserverSessionDomainState,
+  reason: string,
+): void {
+  const key = `${session.projectId}/${session.sessionId}`;
+  const timers = getPresentationStaleActivityTimers(runtime);
+  const existingTimer = timers.get(key);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    timers.delete(key);
+  }
+  const delayMs = getAgentActivityStaleProjectionDelayMs(session.runtimeSettings.agentActivity);
+  if (delayMs === undefined) {
+    return;
+  }
+  /*
+  CDXC:SessionStatus 2026-06-01-20:26:
+  zmx emits title observations only when the terminal title changes. Schedule one presentation refresh at the old macOS spinner window boundary so connected clients clear a frozen Codex/Claude/Cursor/Pi working glyph even when no further title event arrives.
+  */
+  const timer = setTimeout(() => {
+    timers.delete(key);
+    const db = openGxserverDatabase(runtime.paths);
+    try {
+      schedulePresentationSessionDelta(runtime, new GxserverDomainRepository(db, runtime.metadata.serverId), {
+        projectId: session.projectId,
+        reason,
+        sessionId: session.sessionId,
+      });
+    } finally {
+      db.close();
+    }
+  }, delayMs + 25);
+  timer.unref();
+  timers.set(key, timer);
+}
+
+function getPresentationStaleActivityTimers(
+  runtime: GxserverApiRuntime,
+): Map<string, ReturnType<typeof setTimeout>> {
+  runtime.presentationStaleActivityTimers ??= new Map();
+  return runtime.presentationStaleActivityTimers;
+}
+
+function buildPresentationSessionDelta(
+  repository: GxserverDomainRepository,
+  projectId: GxserverProjectId,
+  sessionId: GxserverSessionId,
+): GxserverPresentationDelta | undefined {
+  const project = repository.getProject(projectId);
+  const session = repository.getSession(projectId, sessionId);
+  if (!project || !session) {
+    return {
+      projectId,
+      sessionId,
+      type: "sessionRemoved",
+    };
+  }
+  if (!shouldIncludePresentationSession(session)) {
+    return {
+      projectId,
+      sessionId,
+      type: "sessionRemoved",
+    };
+  }
+  return {
+    session: projectPresentationSession(project, defaultGroupId(projectId), session),
+    type: "sessionPresentationChanged",
+  };
+}
+
+function stringifyPresentationDelta(delta: GxserverPresentationDelta): string {
+  return JSON.stringify(delta);
+}
+
+function getPresentationLastDeltaJsonBySessionKey(runtime: GxserverApiRuntime): Map<string, string> {
+  runtime.presentationLastDeltaJsonBySessionKey ??= new Map();
+  return runtime.presentationLastDeltaJsonBySessionKey;
+}
+
+function getPresentationDeltaCoalescer(runtime: GxserverApiRuntime): GxserverPresentationDeltaCoalescer {
+  runtime.presentationDeltaCoalescer ??= new GxserverPresentationDeltaCoalescer();
+  return runtime.presentationDeltaCoalescer;
 }
 
 function scheduleAgentTitleMetadataCheck(
@@ -1224,6 +1593,11 @@ async function dispatchZmxLifecycleEndpoint(
   switch (endpointPath) {
     case "/api/probeSessionProvider": {
       const { session, probe } = await probeAndCacheSessionProvider(runtime, repository, readSessionLifecycleParams(params));
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: session.projectId,
+        reason: "probe-session-provider",
+        sessionId: session.sessionId,
+      });
       return { provider: "zmx", providerState: probe, session };
     }
     case "/api/attachSessionMetadata":
@@ -1246,12 +1620,24 @@ async function dispatchZmxLifecycleEndpoint(
       const normalizedAttach: GxserverAttachSessionMetadataResult =
         session === attach.session ? attach : { ...attach, session };
       observeZmxTitleForSession(runtime, normalizedAttach.session, endpointPath === "/api/wakeSession" ? "wake-session" : "attach-session-metadata");
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: normalizedAttach.session.projectId,
+        reason: endpointPath === "/api/wakeSession" ? "wake-session" : "attach-session-metadata",
+        sessionId: normalizedAttach.session.sessionId,
+      });
       return endpointPath === "/api/wakeSession"
         ? { attach: normalizedAttach, session }
         : { attach: normalizedAttach };
     }
-    case "/api/transitionSession":
-      return dispatchSessionTransitionEndpoint(runtime, repository, normalizeSessionTransitionParams(params), requestId) as unknown as Record<string, unknown>;
+    case "/api/transitionSession": {
+      const result = await dispatchSessionTransitionEndpoint(runtime, repository, normalizeSessionTransitionParams(params), requestId);
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: result.session.projectId,
+        reason: "transition-session",
+        sessionId: result.session.sessionId,
+      });
+      return result as unknown as Record<string, unknown>;
+    }
     case "/api/sleepSession": {
       const lifecycle = readSessionLifecycleParams(params);
       const { kill, session } = await killAndCacheSessionProvider(
@@ -1262,6 +1648,11 @@ async function dispatchZmxLifecycleEndpoint(
         "sleeping",
       );
       scheduleZmxTitleObserverSync(runtime, repository, "sleep-session");
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: session.projectId,
+        reason: "sleep-session",
+        sessionId: session.sessionId,
+      });
       return { kill, session };
     }
     case "/api/killSession": {
@@ -1274,6 +1665,11 @@ async function dispatchZmxLifecycleEndpoint(
         "stopped",
       );
       scheduleZmxTitleObserverSync(runtime, repository, "kill-session");
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: session.projectId,
+        reason: "kill-session",
+        sessionId: session.sessionId,
+      });
       return { kill, session };
     }
     default:
@@ -1669,6 +2065,9 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/ingestSessionStateEvent" ||
     path === "/api/ingestTerminalTitleEvent" ||
     path === "/api/updateAgentActivity" ||
+    path === "/api/readPresentationSnapshot" ||
+    path === "/api/searchSessions" ||
+    path === "/api/listPreviousSessions" ||
     path === "/api/updateSession" ||
     path === "/api/listSessions" ||
     path === "/api/readClientLayout" ||
@@ -1727,11 +2126,40 @@ function addProjectPath(
   params: Record<string, unknown>,
 ): GxserverProjectDomainState {
   const createParams = normalizeAddProjectPathParams(params);
-  const existingProject = findProjectByPath(repository.listProjects(), createParams.path);
+  const projects = repository.listProjects();
+  const worktree = detectRegisteredGitWorktreeMetadata(
+    projects,
+    createParams.path ?? "",
+    createParams.name,
+  );
+  const existingProject = findProjectByPath(projects, createParams.path);
   if (existingProject) {
+    if (worktree && !areProjectWorktreeMetadataEqual(existingProject.worktree, worktree)) {
+      return repository.updateProject({
+        projectId: existingProject.projectId,
+        worktree,
+      });
+    }
     return existingProject;
   }
-  return repository.createProject(createParams);
+  return repository.createProject({
+    ...createParams,
+    ...(worktree ? { worktree } : {}),
+  });
+}
+
+function areProjectWorktreeMetadataEqual(left: unknown, right: Record<string, unknown>): boolean {
+  if (!left || typeof left !== "object" || Array.isArray(left)) {
+    return false;
+  }
+  const current = left as Record<string, unknown>;
+  return (
+    current.branch === right.branch &&
+    current.name === right.name &&
+    current.parentProjectId === right.parentProjectId &&
+    current.parentProjectName === right.parentProjectName &&
+    current.parentProjectPath === right.parentProjectPath
+  );
 }
 
 function normalizeCreateSessionParams(
@@ -1960,7 +2388,14 @@ async function handleUpgrade(options: HandleUpgradeOptions): Promise<void> {
     reject(404, createRpcError("notFound", `No gxserver WebSocket endpoint for ${url.pathname}.`, requestId));
     return;
   }
-  if (!isAuthorizedGxserverRequest(request, runtime.authToken)) {
+  /*
+  CDXC:GxserverPresentationEvents 2026-06-01-15:08:
+  Browser WebSocket constructors cannot set Authorization headers. Allow the same bearer token as an `authToken` query value on the authenticated event-stream upgrade so native WebKit clients can subscribe to presentation deltas without adding a polling fallback.
+  */
+  const isAuthorizedUpgrade =
+    isAuthorizedGxserverRequest(request, runtime.authToken) ||
+    isExpectedGxserverAuthToken(url.searchParams.get("authToken") ?? "", runtime.authToken);
+  if (!isAuthorizedUpgrade) {
     reject(401, createRpcError("unauthorized", "gxserver auth token is required for this endpoint.", requestId));
     return;
   }

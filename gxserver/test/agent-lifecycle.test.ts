@@ -7,6 +7,7 @@ import {
   buildAgentResumeFallbackCommand,
   buildAgentResumePlan,
   buildAgentResumeStartupText,
+  getEffectiveAgentActivityState,
 } from "../src/agent-lifecycle.js";
 import type { GxserverProjectDomainState, GxserverSessionDomainState } from "../protocol/index.js";
 
@@ -305,6 +306,138 @@ test("Codex action-required title blink remains one attention transition", () =>
     title: "[ . ] Action Required",
   });
   assert.equal(nonCodex.activity, "idle");
+});
+
+test("Codex spinner title working expires when the title frame is stuck", () => {
+  const firstFrame = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowIso: "2026-06-01T12:00:00.000Z",
+    nowMs: Date.parse("2026-06-01T12:00:00.000Z"),
+    title: "⠏ Skip migration issue 2 options",
+  });
+  assert.equal(firstFrame.activity, "working");
+  assert.equal(firstFrame.lastTitle, "⠏ Skip migration issue 2 options");
+  assert.equal(firstFrame.lastTitleChangeAt, "2026-06-01T12:00:00.000Z");
+  assert.equal(firstFrame.workingSource, "title");
+
+  const sameFrameInsideWindow = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowIso: "2026-06-01T12:00:02.000Z",
+    nowMs: Date.parse("2026-06-01T12:00:02.000Z"),
+    previous: firstFrame,
+    title: "⠏ Skip migration issue 2 options",
+  });
+  assert.equal(sameFrameInsideWindow.activity, "working");
+  assert.equal(sameFrameInsideWindow.lastTitleChangeAt, "2026-06-01T12:00:00.000Z");
+
+  const sameFrameAfterWindow = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowIso: "2026-06-01T12:00:03.025Z",
+    nowMs: Date.parse("2026-06-01T12:00:03.025Z"),
+    previous: sameFrameInsideWindow,
+    title: "⠏ Skip migration issue 2 options",
+  });
+  assert.equal(sameFrameAfterWindow.activity, "attention");
+  assert.equal(sameFrameAfterWindow.workingSource, undefined);
+
+  const refreshedSpinnerFrame = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowIso: "2026-06-01T12:00:04.000Z",
+    nowMs: Date.parse("2026-06-01T12:00:04.000Z"),
+    previous: sameFrameInsideWindow,
+    title: "⠋ Skip migration issue 2 options",
+  });
+  assert.equal(refreshedSpinnerFrame.activity, "working");
+  assert.equal(refreshedSpinnerFrame.lastTitleChangeAt, "2026-06-01T12:00:04.000Z");
+});
+
+test("presentation activity expires stale title-derived working without expiring explicit working", () => {
+  const titleDerived = getEffectiveAgentActivityState(
+    {
+      activity: "working",
+      agentName: "codex",
+      hasSeenWorking: true,
+      isAcknowledged: false,
+      lastTitle: "⠏ Skip migration issue 2 options",
+      lastTitleChangeAt: "2026-06-01T12:00:00.000Z",
+      workingSource: "title",
+      workingStartedAt: "2026-06-01T12:00:00.000Z",
+    },
+    { activity: "idle" },
+    Date.parse("2026-06-01T12:00:04.000Z"),
+  );
+  assert.equal(titleDerived.activity, "attention");
+
+  const explicit = getEffectiveAgentActivityState(
+    {
+      activity: "working",
+      agentName: "codex",
+      hasSeenWorking: true,
+      isAcknowledged: false,
+      lastTitle: "⠏ Skip migration issue 2 options",
+      lastTitleChangeAt: "2026-06-01T12:00:00.000Z",
+      workingSource: "explicit",
+      workingStartedAt: "2026-06-01T12:00:00.000Z",
+    },
+    { activity: "idle" },
+    Date.parse("2026-06-01T12:10:00.000Z"),
+  );
+  assert.equal(explicit.activity, "working");
+});
+
+test("title-derived activity preserves macOS agent edge cases", () => {
+  const cursor = applyAgentActivityTransition({
+    agentId: "claude",
+    event: "title",
+    nowIso: "2026-06-01T12:00:00.000Z",
+    nowMs: Date.parse("2026-06-01T12:00:00.000Z"),
+    title: "My Task - ⏳ Working ..·",
+  });
+  assert.equal(cursor.agentName, "cursor");
+  assert.equal(cursor.activity, "working");
+
+  const cursorReady = applyAgentActivityTransition({
+    event: "title",
+    nowIso: "2026-06-01T12:00:01.000Z",
+    nowMs: Date.parse("2026-06-01T12:00:01.000Z"),
+    previous: cursor,
+    title: "My Task - ✅ Ready",
+  });
+  assert.equal(cursorReady.agentName, "cursor");
+  assert.equal(cursorReady.activity, "idle");
+
+  const antigravityAttention = applyAgentActivityTransition({
+    agentId: "codex",
+    event: "title",
+    nowIso: "2026-06-01T12:00:00.000Z",
+    nowMs: Date.parse("2026-06-01T12:00:00.000Z"),
+    title: "🔔 agy",
+  });
+  assert.equal(antigravityAttention.agentName, "antigravity");
+  assert.equal(antigravityAttention.activity, "attention");
+
+  const pi = applyAgentActivityTransition({
+    event: "title",
+    nowIso: "2026-06-01T12:00:00.000Z",
+    nowMs: Date.parse("2026-06-01T12:00:00.000Z"),
+    title: "π - ghostex",
+  });
+  assert.equal(pi.agentName, "pi");
+  assert.equal(pi.activity, "idle");
+
+  const piWorking = applyAgentActivityTransition({
+    event: "title",
+    nowIso: "2026-06-01T12:00:01.000Z",
+    nowMs: Date.parse("2026-06-01T12:00:01.000Z"),
+    previous: pi,
+    title: "⠸ π - Restore Pi support - ghostex",
+  });
+  assert.equal(piWorking.agentName, "pi");
+  assert.equal(piWorking.activity, "working");
 });
 
 function projectFixture(): GxserverProjectDomainState {

@@ -50,6 +50,9 @@ export type GxserverEndpointPath =
   | "/api/ingestSessionStateEvent"
   | "/api/ingestTerminalTitleEvent"
   | "/api/updateAgentActivity"
+  | "/api/readPresentationSnapshot"
+  | "/api/searchSessions"
+  | "/api/listPreviousSessions"
   | "/api/transitionSession"
   | "/api/sleepSession"
   | "/api/wakeSession"
@@ -702,6 +705,154 @@ export interface GxserverSessionTitleProjection {
   trustedResumeTitle?: string;
 }
 
+export type GxserverPresentationRevision = number & { readonly __gxserverPresentationRevision: unique symbol };
+export type GxserverPresentationSessionActivity = "attention" | "idle" | "working";
+
+export interface GxserverPresentationAttentionState {
+  acknowledged: boolean;
+  enteredAt?: string;
+}
+
+export interface GxserverPresentationProject {
+  createdAt: string;
+  groupIds: readonly string[];
+  isFavorite: boolean;
+  isPinned: boolean;
+  path?: string;
+  projectId: GxserverProjectId;
+  sortKey: string;
+  title: string;
+  updatedAt: string;
+}
+
+export interface GxserverPresentationGroup {
+  groupId: string;
+  projectId: GxserverProjectId;
+  sessionIds: readonly GxserverSessionId[];
+  sortKey: string;
+  title: string;
+}
+
+export interface GxserverPresentationSession {
+  activity: GxserverPresentationSessionActivity;
+  agentIcon?: string;
+  agentId?: string;
+  agentName?: string;
+  attention?: GxserverPresentationAttentionState;
+  createdAt: string;
+  cwd?: string;
+  groupId: string;
+  isFavorite: boolean;
+  isPinned: boolean;
+  kind: GxserverSessionKind;
+  lastActiveAt?: string;
+  lifecycleState: GxserverDomainLifecycleState;
+  projectId: GxserverProjectId;
+  sessionId: GxserverSessionId;
+  sortKey: string;
+  subtitle?: string;
+  surface: GxserverSessionSurface;
+  isPrimaryTitleTerminalTitle: boolean;
+  isTemporaryTitle: boolean;
+  primaryTitle?: string;
+  terminalTitle?: string;
+  title: string;
+  titleSource: GxserverSessionTitleSource;
+  trustedResumeTitle?: string;
+  tooltip?: string;
+  updatedAt: string;
+  visibleInSidebarByDefault: boolean;
+  zmxName: GxserverZmxSessionName;
+}
+
+export interface GxserverPresentationSnapshot {
+  generatedAt: string;
+  groups: readonly GxserverPresentationGroup[];
+  projects: readonly GxserverPresentationProject[];
+  revision: GxserverPresentationRevision;
+  sessions: readonly GxserverPresentationSession[];
+}
+
+export type GxserverPresentationDelta =
+  | {
+      project: GxserverPresentationProject;
+      type: "projectAdded" | "projectUpdated";
+    }
+  | {
+      projectId: GxserverProjectId;
+      type: "projectRemoved";
+    }
+  | {
+      group: GxserverPresentationGroup;
+      type: "groupAdded" | "groupUpdated" | "groupOrderChanged";
+    }
+  | {
+      groupId: string;
+      projectId: GxserverProjectId;
+      type: "groupRemoved";
+    }
+  | {
+      session: GxserverPresentationSession;
+      type:
+        | "sessionAdded"
+        | "sessionUpdated"
+        | "sessionMoved"
+        | "sessionTitleChanged"
+        | "sessionActivityChanged"
+        | "sessionLifecycleChanged"
+        | "sessionSurfaceChanged"
+        | "sessionPresentationChanged";
+    }
+  | {
+      projectId: GxserverProjectId;
+      sessionId: GxserverSessionId;
+      type: "sessionRemoved";
+    };
+
+export interface GxserverPresentationDeltaEvent {
+  delta: GxserverPresentationDelta;
+  revision: GxserverPresentationRevision;
+}
+
+export interface GxserverPresentationSubscribeMessage {
+  clientId?: string;
+  lastRevision?: GxserverPresentationRevision;
+  type: "subscribePresentation";
+}
+
+export interface GxserverPresentationSearchParams {
+  cursor?: string;
+  includeActive?: boolean;
+  includePrevious?: boolean;
+  limit?: number;
+  projectId?: GxserverProjectId;
+  query?: string;
+}
+
+export interface GxserverPresentationSearchResult {
+  agentId?: string;
+  cwd?: string;
+  isFavorite: boolean;
+  isPinned: boolean;
+  lastActiveAt?: string;
+  lifecycleState: GxserverDomainLifecycleState;
+  match?: {
+    field: "agent" | "command" | "cwd" | "id" | "project" | "timestamp" | "title";
+    snippet?: string;
+  };
+  projectId: GxserverProjectId;
+  projectTitle: string;
+  sessionId: GxserverSessionId;
+  subtitle?: string;
+  surface: GxserverSessionSurface;
+  title: string;
+}
+
+export interface GxserverPresentationSearchResponse {
+  cursor?: string;
+  results: readonly GxserverPresentationSearchResult[];
+}
+
 export interface GxserverTerminalTitleEventParams extends GxserverSessionLifecycleParams {
   agentName?: string;
   previousTerminalTitle?: string;
@@ -812,8 +963,10 @@ export interface GxserverAgentActivityState {
   hasSeenWorking?: boolean;
   isAcknowledged?: boolean;
   lastChangedAt?: string;
+  lastTitle?: string;
   lastTitleChangeAt?: string;
   suppressedUntil?: string;
+  workingSource?: "explicit" | "title";
   workingStartedAt?: string;
 }
 
@@ -910,4 +1063,19 @@ export type GxserverEvent =
       requestId: string;
       serverId: GxserverServerId;
       type: "apiRequestHandled";
+    }
+  | {
+      clientId?: string;
+      protocolVersion: GxserverProtocolVersion;
+      revision: GxserverPresentationRevision;
+      serverId: GxserverServerId;
+      snapshot: GxserverPresentationSnapshot;
+      type: "presentationSnapshot";
+    }
+  | {
+      delta: GxserverPresentationDelta;
+      protocolVersion: GxserverProtocolVersion;
+      revision: GxserverPresentationRevision;
+      serverId: GxserverServerId;
+      type: "presentationDelta";
     };

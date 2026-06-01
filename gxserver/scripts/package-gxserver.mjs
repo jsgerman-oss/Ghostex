@@ -51,6 +51,9 @@ await writeFile(path.join(packageDir, "README.md"), serverReadme(), "utf8");
 
 if (args.includeNodeModules) {
   await copyProductionNodeModules(packageDir);
+  if (args.nativeNode) {
+    await rebuildPackagedNativeModules(packageDir, args);
+  }
 }
 
 await writeBuildIdentity(packageDir);
@@ -92,6 +95,10 @@ function parseArgs(argv) {
       parsed.zmxBin = requiredValue(argv, ++index, arg);
     } else if (arg === "--zehn-bin") {
       parsed.zehnBin = requiredValue(argv, ++index, arg);
+    } else if (arg === "--native-node") {
+      parsed.nativeNode = requiredValue(argv, ++index, arg);
+    } else if (arg === "--native-npm") {
+      parsed.nativeNpm = requiredValue(argv, ++index, arg);
     } else {
       throw new Error(`Unknown package-gxserver option: ${arg}`);
     }
@@ -197,6 +204,82 @@ async function copyProductionNodeModules(targetDir) {
   if (prune.status !== 0) {
     throw new Error(`Failed to prune gxserver production node_modules:\n${prune.stderr || prune.stdout}`);
   }
+}
+
+async function rebuildPackagedNativeModules(targetDir, options) {
+  /*
+  CDXC:GxserverPackaging 2026-06-01-16:22:
+  The macOS app launches gxserver with a selected system Node, but the repository may be installed with a different Node ABI. Rebuild native production modules inside the staged app package and smoke-test SQLite there so app packaging does not mutate the repository's node_modules or ship an ABI mismatch.
+  */
+  const nodePath = path.resolve(options.nativeNode);
+  await assertExecutableFile(nodePath, "Selected --native-node is not executable.");
+  const npmPath = await resolveNativeNpm(options.nativeNpm, nodePath);
+  const betterSqliteRoot = path.join(targetDir, "node_modules", "better-sqlite3");
+  await assertDirectory(betterSqliteRoot, "Packaged better-sqlite3 is missing from production node_modules.");
+  const env = nativeModuleBuildEnv(nodePath);
+  const rebuild = spawnSync(npmPath, ["exec", "--yes", "--", "node-gyp", "rebuild", "--release"], {
+    cwd: betterSqliteRoot,
+    encoding: "utf8",
+    env,
+    stdio: "pipe",
+  });
+  if (rebuild.status !== 0) {
+    throw new Error(`Failed to rebuild packaged better-sqlite3:\n${rebuild.stderr || rebuild.stdout}`);
+  }
+  const smoke = spawnSync(
+    nodePath,
+    [
+      "-e",
+      "const Database = require(process.argv[1]); const db = new Database(':memory:'); db.prepare('select 1').get(); db.close();",
+      path.join(targetDir, "node_modules", "better-sqlite3"),
+    ],
+    {
+      cwd: targetDir,
+      encoding: "utf8",
+      env,
+      stdio: "pipe",
+    },
+  );
+  if (smoke.status !== 0) {
+    throw new Error(`Packaged better-sqlite3 did not load under ${nodePath}:\n${smoke.stderr || smoke.stdout}`);
+  }
+}
+
+async function assertExecutableFile(filePath, guidance) {
+  try {
+    const fileStat = await stat(filePath);
+    if (fileStat.isFile()) {
+      await access(filePath, fsConstants.X_OK);
+      return;
+    }
+  } catch {
+    // Handled below.
+  }
+  throw new Error(`${filePath} is missing or not executable. ${guidance}`);
+}
+
+async function resolveNativeNpm(explicitPath, nodePath) {
+  const nodeDir = path.dirname(nodePath);
+  const candidates = [
+    explicitPath,
+    path.join(nodeDir, "npm"),
+    path.join(nodeDir, "npm-cli.js"),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate);
+    if (await isExecutableFile(resolved)) {
+      return resolved;
+    }
+  }
+  throw new Error(`Could not resolve npm beside --native-node ${nodePath}. Pass --native-npm explicitly.`);
+}
+
+function nativeModuleBuildEnv(nodePath) {
+  const nodeDir = path.dirname(nodePath);
+  return {
+    ...process.env,
+    PATH: [nodeDir, process.env.PATH].filter(Boolean).join(path.delimiter),
+  };
 }
 
 async function assertDirectory(dirPath, guidance) {

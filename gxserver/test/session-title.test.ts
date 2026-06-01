@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   decideTerminalTitleEvent,
+  isRejectedResumeTitle,
+  isValidAgentTerminalTitle,
   normalizeSessionTitleRuntimeSettings,
   projectSessionTitle,
 } from "../src/session-title/index.js";
@@ -55,6 +57,35 @@ test("Codex UUID terminal titles update agent session identity without becoming 
   assert.equal(decision.agentSessionId, "019e7c39-7ba7-7ac3-b79c-02757e299516");
   assert.equal(decision.title, undefined);
   assert.equal(decision.projection.primaryTitle, "Codex Session");
+});
+
+test("Codex terminal titles may start with Codex without being treated as CLI command noise", () => {
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: { agentName: "codex" },
+    title: "Codex Session",
+  });
+
+  const decision = decideTerminalTitleEvent(session, {
+    agentName: "codex",
+    projectId: session.projectId,
+    rawTitle: "⠏ Codex zshrc additions",
+    sessionId: session.sessionId,
+    sessionPersistenceProvider: "zmx",
+  });
+
+  assert.equal(isRejectedResumeTitle("Codex zshrc additions"), false);
+  assert.equal(isValidAgentTerminalTitle("Codex zshrc additions", "codex"), true);
+  assert.equal(decision.shouldUpdateSession, true);
+  assert.equal(decision.reason, "valid-agent-terminal-title-from-user");
+  assert.equal(decision.title, "Codex zshrc additions");
+  assert.equal(decision.projection.primaryTitle, "Codex zshrc additions");
+});
+
+test("agent launch command titles are still rejected as resume/title noise", () => {
+  assert.equal(isRejectedResumeTitle("codex"), true);
+  assert.equal(isRejectedResumeTitle("codex resume 019e7f01-8243-7aa1-88db-dd84ebcf6aa4"), true);
+  assert.equal(isRejectedResumeTitle("codex --search"), true);
 });
 
 test("protected trusted titles block automatic terminal retitles", () => {

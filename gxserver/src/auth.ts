@@ -65,6 +65,10 @@ export function isAuthorizedGxserverRequest(request: http.IncomingMessage, expec
   if (!providedToken) {
     return false;
   }
+  return isExpectedGxserverAuthToken(providedToken, expectedToken);
+}
+
+export function isExpectedGxserverAuthToken(providedToken: string, expectedToken: GxserverAuthToken): boolean {
   const expected = Buffer.from(expectedToken);
   const provided = Buffer.from(providedToken);
   return provided.length === expected.length && timingSafeEqual(provided, expected);
