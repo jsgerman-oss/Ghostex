@@ -7,9 +7,14 @@ import {
   applySessionRenameRequest,
   applySessionStateEvent,
   createAgentTitleDebouncer,
+  GxserverPresentationDeltaCoalescer,
+  projectGxserverPresentationSnapshot,
   reconcileAgentMetadataTitle,
+  searchGxserverPresentationSessions,
 } from "../src/session-presentation/index.js";
 import type {
+  GxserverPresentationDelta,
+  GxserverPresentationRevision,
   GxserverProjectDomainState,
   GxserverProjectId,
   GxserverSessionDomainState,
@@ -202,6 +207,220 @@ test("agent title metadata debounce runs leading and trailing checks for a burst
   assert.deepEqual(calls, ["leading:0", "trailing:2"]);
 });
 
+test("presentation delta coalescer flushes the latest session projection once per cadence", () => {
+  const timers: Array<() => void> = [];
+  const flushes: Array<{ coalescedCount: number; delta: GxserverPresentationDelta; reason: string }> = [];
+  const coalescer = new GxserverPresentationDeltaCoalescer({
+    delayMs: 250,
+    setTimeout: ((callback: () => void) => {
+      timers.push(callback);
+      return { unref() {} } as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout,
+  });
+  const projectId = "P3lv0" as GxserverProjectId;
+  const sessionId = "G5tpf" as GxserverSessionId;
+
+  coalescer.schedule(
+    { projectId, sessionId },
+    "title-1",
+    presentationDeltaFixture("One"),
+    (decision) => flushes.push(decision),
+  );
+  coalescer.schedule(
+    { projectId, sessionId },
+    "title-2",
+    presentationDeltaFixture("Two"),
+    (decision) => flushes.push(decision),
+  );
+
+  assert.equal(timers.length, 1);
+  timers[0]!();
+  assert.equal(flushes.length, 1);
+  assert.equal(flushes[0]?.coalescedCount, 1);
+  assert.equal(flushes[0]?.reason, "title-2");
+  assert.equal(flushes[0]?.delta.type, "sessionPresentationChanged");
+  assert.equal(flushes[0]?.delta.type === "sessionPresentationChanged" ? flushes[0].delta.session.title : undefined, "Two");
+});
+
+test("presentation snapshot marks command sessions without showing them in workspace sidebar by default", () => {
+  const project = projectFixture({});
+  const workspace = sessionFixture({
+    sessionId: "G5tpf",
+    title: "Workspace Agent",
+  });
+  const command = sessionFixture({
+    commandId: "lint",
+    sessionId: "G6cmd",
+    surface: "commands",
+    title: "Lint Command",
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    generatedAt: "2026-06-01T11:08:00.000Z",
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [workspace, command],
+  });
+
+  assert.deepEqual(snapshot.sessions.map((session) => [session.sessionId, session.surface, session.visibleInSidebarByDefault]), [
+    ["G5tpf", "workspace", true],
+    ["G6cmd", "commands", false],
+  ]);
+  assert.deepEqual(snapshot.groups[0]?.sessionIds, ["G5tpf", "G6cmd"]);
+});
+
+test("presentation snapshot includes empty projects before their first session", () => {
+  const project = projectFixture({
+    name: "opencode",
+    path: "/Users/madda/dev/_references/opencode",
+    projectId: "Popen" as GxserverProjectId,
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    generatedAt: "2026-06-01T21:14:00.000Z",
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [],
+  });
+
+  assert.equal(snapshot.projects[0]?.projectId, "Popen");
+  assert.equal(snapshot.projects[0]?.title, "opencode");
+  assert.deepEqual(snapshot.projects[0]?.groupIds, ["Popen:active"]);
+  assert.deepEqual(snapshot.groups[0]?.sessionIds, []);
+  assert.equal(snapshot.sessions.length, 0);
+});
+
+test("presentation snapshot carries gxserver title projection semantics", () => {
+  const project = projectFixture({});
+  const session = sessionFixture({
+    runtimeSettings: { titleSource: "terminal-auto" },
+    title: "Missing sidebar sessions",
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    generatedAt: "2026-06-01T11:08:00.000Z",
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [session],
+  });
+
+  const presentation = snapshot.sessions[0];
+  assert.ok(presentation, "presentation session exists");
+  assert.equal(presentation.title, "Missing sidebar sessions");
+  assert.equal(presentation.primaryTitle, "Missing sidebar sessions");
+  assert.equal(presentation.terminalTitle, undefined);
+  assert.equal(presentation.isPrimaryTitleTerminalTitle, true);
+  assert.equal(presentation.isTemporaryTitle, false);
+  assert.equal(presentation.titleSource, "terminal-auto");
+  assert.equal(presentation.trustedResumeTitle, "Missing sidebar sessions");
+});
+
+test("presentation snapshot excludes unpinned stopped history but keeps pinned previous sessions", () => {
+  const project = projectFixture({});
+  const stoppedNoise = sessionFixture({
+    lifecycleState: "stopped",
+    sessionId: "G1old",
+    title: "Old Placeholder",
+    updatedAt: "2026-05-01T11:08:00.000Z",
+  });
+  const pinnedStopped = sessionFixture({
+    isPinned: true,
+    lifecycleState: "stopped",
+    sessionId: "G2pin",
+    title: "Pinned History",
+    updatedAt: "2026-05-02T11:08:00.000Z",
+  });
+  const running = sessionFixture({
+    lifecycleState: "running",
+    sessionId: "G3run",
+    title: "Running Shell",
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 2 as GxserverPresentationRevision,
+    sessions: [stoppedNoise, pinnedStopped, running],
+  });
+
+  assert.deepEqual(snapshot.sessions.map((session) => session.sessionId), ["G3run", "G2pin"]);
+});
+
+test("presentation snapshot applies stale spinner activity semantics", () => {
+  const project = projectFixture({});
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentActivity: {
+        activity: "working",
+        agentName: "codex",
+        hasSeenWorking: true,
+        isAcknowledged: false,
+        lastTitle: "⠏ Skip migration issue 2 options",
+        lastTitleChangeAt: "2026-06-01T12:00:00.000Z",
+        workingSource: "title",
+        workingStartedAt: "2026-06-01T12:00:00.000Z",
+      },
+      agentName: "codex",
+      titleSource: "terminal-auto",
+    },
+    title: "Skip migration issue 2 options",
+  });
+
+  const freshSnapshot = projectGxserverPresentationSnapshot({
+    generatedAt: "2026-06-01T12:00:02.000Z",
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [session],
+  });
+  assert.equal(freshSnapshot.sessions[0]?.activity, "working");
+
+  const staleSnapshot = projectGxserverPresentationSnapshot({
+    generatedAt: "2026-06-01T12:00:04.000Z",
+    projects: [project],
+    revision: 2 as GxserverPresentationRevision,
+    sessions: [session],
+  });
+  assert.equal(staleSnapshot.sessions[0]?.activity, "attention");
+});
+
+test("metadata search can page previous sessions without hydrating them into the active snapshot", () => {
+  const project = projectFixture({ name: "Ghostex" });
+  const active = sessionFixture({
+    lifecycleState: "running",
+    sessionId: "G3run",
+    title: "Active Build",
+  });
+  const previous = sessionFixture({
+    agentId: "codex",
+    cwd: "/Users/madda/dev/_active/zmux",
+    lifecycleState: "stopped",
+    sessionId: "G4old",
+    title: "Presentation Cutover",
+    updatedAt: "2026-06-01T10:08:00.000Z",
+  });
+
+  const activeSnapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 3 as GxserverPresentationRevision,
+    sessions: [active, previous],
+  });
+  assert.deepEqual(activeSnapshot.sessions.map((session) => session.sessionId), ["G3run"]);
+
+  const search = searchGxserverPresentationSessions(
+    { projects: [project], sessions: [active, previous] },
+    {
+      includeActive: false,
+      includePrevious: true,
+      query: "cutover",
+    },
+  );
+
+  assert.equal(search.results.length, 1);
+  assert.equal(search.results[0]?.sessionId, "G4old");
+  assert.equal(search.results[0]?.match?.field, "title");
+  assert.equal(search.results[0]?.surface, "workspace");
+});
+
 class MockPresentationRepository {
   readonly #project: GxserverProjectDomainState;
   #sessions: GxserverSessionDomainState[];
@@ -289,5 +508,20 @@ function sessionFixture(partial: Partial<GxserverSessionDomainState>): GxserverS
     updatedAt: "2026-05-31T21:00:00.000Z",
     zmxName: "P3lv0-G5tpf",
     ...partial,
+  };
+}
+
+function presentationDeltaFixture(title: string): GxserverPresentationDelta {
+  const project = projectFixture({});
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [sessionFixture({ title })],
+  });
+  const session = snapshot.sessions[0];
+  assert.ok(session, "presentation session exists");
+  return {
+    session,
+    type: "sessionPresentationChanged",
   };
 }

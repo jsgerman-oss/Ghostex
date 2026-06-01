@@ -1,0 +1,219 @@
+import type {
+  GxserverAgentActivityState,
+  GxserverPresentationAttentionState,
+  GxserverPresentationGroup,
+  GxserverPresentationProject,
+  GxserverPresentationRevision,
+  GxserverPresentationSession,
+  GxserverPresentationSessionActivity,
+  GxserverPresentationSnapshot,
+  GxserverProjectDomainState,
+  GxserverSessionDomainState,
+} from "../../protocol/index.js";
+import { getEffectiveAgentActivityState } from "../session-status/index.js";
+import { projectSessionTitle } from "../session-title/projection.js";
+
+export interface GxserverPresentationProjectorInput {
+  generatedAt?: string;
+  projects: readonly GxserverProjectDomainState[];
+  revision: GxserverPresentationRevision;
+  sessions: readonly GxserverSessionDomainState[];
+}
+
+const ACTIVE_LIFECYCLE_STATES = new Set(["running", "sleeping"]);
+const RECENT_STOPPED_LIMIT_PER_PROJECT = 20;
+
+/*
+CDXC:GxserverPresentation 2026-06-01-15:08:
+The hard cutover feed is active-focused presentation state, not raw session history. Project sessions into shared rows with surface, title provenance, activity, and sidebar visibility while keeping stopped history out unless pinned or favorited so clients do not hydrate the entire database at startup.
+*/
+export function projectGxserverPresentationSnapshot(
+  input: GxserverPresentationProjectorInput,
+): GxserverPresentationSnapshot {
+  const generatedAt = input.generatedAt ?? new Date().toISOString();
+  const sessionsByProject = new Map<string, GxserverSessionDomainState[]>();
+  for (const session of input.sessions) {
+    const sessions = sessionsByProject.get(session.projectId) ?? [];
+    sessions.push(session);
+    sessionsByProject.set(session.projectId, sessions);
+  }
+
+  const projects: GxserverPresentationProject[] = [];
+  const groups: GxserverPresentationGroup[] = [];
+  const sessions: GxserverPresentationSession[] = [];
+
+  for (const project of [...input.projects].sort(compareProjects)) {
+    const projectSessions = sessionsByProject.get(project.projectId) ?? [];
+    const visibleProjectSessions = selectPresentationSessions(projectSessions);
+
+    const groupId = defaultGroupId(project.projectId);
+    const presentationSessions = visibleProjectSessions.map((session) =>
+      projectPresentationSession(project, groupId, session, generatedAt)
+    );
+    presentationSessions.sort(comparePresentationSessions);
+
+    /*
+    CDXC:GxserverPresentationProjects 2026-06-01-21:14:
+    Newly added code projects must appear in the sidebar before their first terminal session exists. Keep every active project in the presentation project list while still filtering old stopped sessions out of the session rows.
+    */
+    projects.push(projectPresentationProject(project));
+    groups.push({
+      groupId,
+      projectId: project.projectId,
+      sessionIds: presentationSessions.map((session) => session.sessionId),
+      sortKey: `${projectSortKey(project)}:active`,
+      title: "Active",
+    });
+    sessions.push(...presentationSessions);
+  }
+
+  return {
+    generatedAt,
+    groups,
+    projects,
+    revision: input.revision,
+    sessions,
+  };
+}
+
+export function projectPresentationProject(project: GxserverProjectDomainState): GxserverPresentationProject {
+  return {
+    createdAt: project.createdAt,
+    groupIds: [defaultGroupId(project.projectId)],
+    isFavorite: project.isFavorite,
+    isPinned: project.isPinned,
+    path: project.path,
+    projectId: project.projectId,
+    sortKey: projectSortKey(project),
+    title: project.name,
+    updatedAt: project.updatedAt,
+  };
+}
+
+export function projectPresentationSession(
+  project: GxserverProjectDomainState,
+  groupId: string,
+  session: GxserverSessionDomainState,
+  generatedAt?: string,
+): GxserverPresentationSession {
+  const titleProjection = projectSessionTitle(session);
+  const activityState = normalizePresentationActivityState(session.runtimeSettings.agentActivity, generatedAt);
+  const agentName = readText(session.runtimeSettings.agentName) ?? session.agentId;
+  const subtitle = session.cwd ?? project.path;
+  return {
+    activity: activityState.activity,
+    ...(agentName ? { agentName } : {}),
+    ...(session.agentId ? { agentId: session.agentId, agentIcon: session.agentId } : {}),
+    ...(activityState.attention ? { attention: activityState.attention } : {}),
+    createdAt: session.createdAt,
+    ...(session.cwd ? { cwd: session.cwd } : {}),
+    groupId,
+    isFavorite: session.isFavorite,
+    isPinned: session.isPinned,
+    isPrimaryTitleTerminalTitle: titleProjection.isPrimaryTitleTerminalTitle,
+    isTemporaryTitle: titleProjection.isTemporaryTitle,
+    kind: session.kind,
+    ...(session.lastActiveAt ? { lastActiveAt: session.lastActiveAt } : {}),
+    lifecycleState: session.lifecycleState,
+    ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+    sortKey: sessionSortKey(session),
+    ...(subtitle ? { subtitle } : {}),
+    surface: session.surface,
+    ...(titleProjection.terminalTitle !== undefined ? { terminalTitle: titleProjection.terminalTitle } : {}),
+    title: titleProjection.title,
+    titleSource: titleProjection.titleSource,
+    ...(titleProjection.trustedResumeTitle !== undefined ? { trustedResumeTitle: titleProjection.trustedResumeTitle } : {}),
+    tooltip: buildSessionTooltip(project, session, titleProjection.title),
+    updatedAt: session.updatedAt,
+    visibleInSidebarByDefault: isVisibleInWorkspaceSidebar(session),
+    zmxName: session.zmxName,
+  };
+}
+
+export function isActivePresentationSession(session: GxserverSessionDomainState): boolean {
+  return ACTIVE_LIFECYCLE_STATES.has(session.lifecycleState);
+}
+
+export function isVisibleInWorkspaceSidebar(session: GxserverSessionDomainState): boolean {
+  return session.surface === "workspace" && isActivePresentationSession(session);
+}
+
+export function shouldIncludePresentationSession(session: GxserverSessionDomainState): boolean {
+  return isActivePresentationSession(session) || session.isPinned || session.isFavorite;
+}
+
+export function defaultGroupId(projectId: string): string {
+  return `${projectId}:active`;
+}
+
+function selectPresentationSessions(sessions: readonly GxserverSessionDomainState[]): GxserverSessionDomainState[] {
+  const active = sessions.filter(isActivePresentationSession);
+  const pinnedStopped = sessions
+    .filter((session) => !isActivePresentationSession(session) && shouldIncludePresentationSession(session))
+    .sort(compareDomainSessions)
+    .slice(0, RECENT_STOPPED_LIMIT_PER_PROJECT);
+  return [...active, ...pinnedStopped];
+}
+
+function normalizePresentationActivityState(value: unknown, generatedAt: string | undefined): {
+  activity: GxserverPresentationSessionActivity;
+  attention?: GxserverPresentationAttentionState;
+} {
+  const generatedAtMs = generatedAt ? Date.parse(generatedAt) : Number.NaN;
+  const state = getEffectiveAgentActivityState(
+    value,
+    { activity: "idle" },
+    Number.isFinite(generatedAtMs) ? generatedAtMs : Date.now(),
+  );
+  const activity = state.activity === "attention" || state.activity === "working" ? state.activity : "idle";
+  if (activity !== "attention") {
+    return { activity };
+  }
+  return {
+    activity,
+    attention: {
+      acknowledged: state.isAcknowledged === true,
+      ...(typeof state.lastChangedAt === "string" ? { enteredAt: state.lastChangedAt } : {}),
+    },
+  };
+}
+
+function buildSessionTooltip(
+  project: GxserverProjectDomainState,
+  session: GxserverSessionDomainState,
+  title: string,
+): string {
+  return [title, project.name, session.cwd, session.agentId, session.commandId].filter(Boolean).join(" - ");
+}
+
+function projectSortKey(project: GxserverProjectDomainState): string {
+  const pinRank = project.isPinned ? "0" : project.isFavorite ? "1" : "2";
+  return `${pinRank}:${project.name.toLocaleLowerCase()}:${project.projectId}`;
+}
+
+function sessionSortKey(session: GxserverSessionDomainState): string {
+  const activeRank = isActivePresentationSession(session) ? "0" : "1";
+  const pinRank = session.isPinned ? "0" : session.isFavorite ? "1" : "2";
+  return `${activeRank}:${pinRank}:${session.lastActiveAt ?? session.updatedAt}:${session.sessionId}`;
+}
+
+function compareProjects(left: GxserverProjectDomainState, right: GxserverProjectDomainState): number {
+  return projectSortKey(left).localeCompare(projectSortKey(right));
+}
+
+function compareDomainSessions(left: GxserverSessionDomainState, right: GxserverSessionDomainState): number {
+  return sessionSortKey(left).localeCompare(sessionSortKey(right));
+}
+
+function comparePresentationSessions(
+  left: GxserverPresentationSession,
+  right: GxserverPresentationSession,
+): number {
+  return left.sortKey.localeCompare(right.sortKey);
+}
+
+function readText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
