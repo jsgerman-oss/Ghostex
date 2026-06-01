@@ -7832,6 +7832,16 @@ final class ghostexRootView: NSView {
     case "sidebarState":
       latestModalHostSidebarState = message
       dispatchModalHostMessage(message)
+    case "projectWorktreesResult":
+      /**
+       CDXC:WorktreeProjectRegistration 2026-06-01-21:33:
+       The New Worktree modal asks the sidebar webview to list existing Git
+       worktrees, then the sidebar sends this result back through the native
+       modal bridge. Forward the result into the modal host instead of treating
+       it as an unknown bridge command, otherwise the Open Existing selector
+       remains stuck in its loading state.
+       */
+      dispatchModalHostMessage(message)
     case "sidebarCommand":
       guard let sidebarMessage = message["message"] else {
         AppDelegate.appendAppModalErrorLog(

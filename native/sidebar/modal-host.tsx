@@ -1962,13 +1962,13 @@ function AppModalHost() {
         onCancel={closeModal}
         onConfirm={(draft) => {
           vscode.postMessage({
-            agentId: draft.agentId,
+            agentId: draft.mode === "create" ? draft.agentId : undefined,
             existingWorktreePath:
               draft.mode === "openExisting" ? draft.existingWorktreePath : undefined,
             mode: draft.mode,
             projectId: worktree?.projectId,
             projectPath: worktree?.projectPath,
-            prompt: draft.prompt,
+            prompt: draft.mode === "create" ? draft.prompt : undefined,
             type: "createProjectWorktree",
           } satisfies SidebarToExtensionMessage);
           closeModal();

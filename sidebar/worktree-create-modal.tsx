@@ -45,7 +45,7 @@ export type ExistingWorktreeOption = {
 
 export type WorktreeCreateModalDraft =
   | { agentId: string; mode: "create"; prompt: string }
-  | { agentId: string; existingWorktreePath: string; mode: "openExisting"; prompt: string };
+  | { existingWorktreePath: string; mode: "openExisting" };
 
 export type WorktreeCreateModalProps = {
   agents: SidebarAgentButton[];
@@ -121,8 +121,13 @@ export function WorktreeCreateModal({
    * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
    * New Worktree supports creating a fresh checkout or opening an existing Git
    * worktree from the same machine. The existing-worktree list is requested when
-   * the modal opens and submit carries the selected path so native registers it
-   * through gxserver before launching the agent.
+   * the modal opens and submit carries the selected path so native registers and
+   * opens it through gxserver.
+   *
+   * CDXC:WorktreeProjectRegistration 2026-06-01-21:33:
+   * Open Existing is a project-open flow, not an agent-start flow. In that mode
+   * the modal only shows the worktree picker and primary Open Worktree action;
+   * hide agent, prompt, image attachment, and prompt-helper controls.
    */
   const hasInitializedOpenDraftRef = useRef(false);
   useEffect(() => {
@@ -178,9 +183,9 @@ export function WorktreeCreateModal({
   const normalizedPrompt = trimPromptEditorTrailingSpaces(prompt);
   const trimmedPrompt = normalizedPrompt.trim();
   const canCreate = Boolean(
-    trimmedPrompt &&
-      selectedAgentId &&
-      (mode === "create" || selectedExistingWorktreePath),
+    mode === "openExisting"
+      ? selectedExistingWorktreePath
+      : trimmedPrompt && selectedAgentId,
   );
 
   const insertImageLinks = (files: readonly File[]) => {
@@ -397,66 +402,72 @@ export function WorktreeCreateModal({
                 </FieldDescription>
               </Field>
             ) : null}
-            <Field>
-              <FieldLabel htmlFor={agentId}>Agent</FieldLabel>
-              <Select
-                items={agentSelectItems}
-                onValueChange={setSelectedAgentId}
-                value={selectedAgentId}
-              >
-                <SelectTrigger
-                  aria-label="Agent"
-                  className="worktree-create-agent-select"
-                  id={agentId}
-                >
-                  <SelectValue placeholder="Select agent" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {commandAgents.map((agent) => (
-                      <SelectItem key={agent.agentId} value={agent.agentId}>
-                        {agent.name}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor={promptId}>First prompt</FieldLabel>
-              <Textarea
-                aria-label="First prompt"
-                autoFocus
-                id={promptId}
-                onChange={(event) => setPrompt(event.currentTarget.value)}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                placeholder="Describe the worktree task"
-                ref={inputRef}
-                value={prompt}
-              />
-              <FieldDescription>
-                Paste images or pick files to insert image links into the prompt.
-              </FieldDescription>
-            </Field>
+            {mode === "create" ? (
+              <>
+                <Field>
+                  <FieldLabel htmlFor={agentId}>Agent</FieldLabel>
+                  <Select
+                    items={agentSelectItems}
+                    onValueChange={setSelectedAgentId}
+                    value={selectedAgentId}
+                  >
+                    <SelectTrigger
+                      aria-label="Agent"
+                      className="worktree-create-agent-select"
+                      id={agentId}
+                    >
+                      <SelectValue placeholder="Select agent" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        {commandAgents.map((agent) => (
+                          <SelectItem key={agent.agentId} value={agent.agentId}>
+                            {agent.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor={promptId}>First prompt</FieldLabel>
+                  <Textarea
+                    aria-label="First prompt"
+                    autoFocus
+                    id={promptId}
+                    onChange={(event) => setPrompt(event.currentTarget.value)}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    placeholder="Describe the worktree task"
+                    ref={inputRef}
+                    value={prompt}
+                  />
+                  <FieldDescription>
+                    Paste images or pick files to insert image links into the prompt.
+                  </FieldDescription>
+                </Field>
+              </>
+            ) : null}
           </FieldGroup>
           <DialogFooter>
             <Button onClick={onCancel} type="button" variant="outline">
               Cancel
             </Button>
-            <Button
-              onClick={() =>
-                postAppModalHostMessage(
-                  { type: "pickWorktreeImages" },
-                  "AppModals:pickWorktreeImages",
-                )
-              }
-              type="button"
-              variant="secondary"
-            >
-              <IconPhotoPlus aria-hidden="true" data-icon="inline-start" />
-              Add Images
-            </Button>
+            {mode === "create" ? (
+              <Button
+                onClick={() =>
+                  postAppModalHostMessage(
+                    { type: "pickWorktreeImages" },
+                    "AppModals:pickWorktreeImages",
+                  )
+                }
+                type="button"
+                variant="secondary"
+              >
+                <IconPhotoPlus aria-hidden="true" data-icon="inline-start" />
+                Add Images
+              </Button>
+            ) : null}
             <Button disabled={!canCreate} type="submit">
               {mode === "openExisting" ? "Open Worktree" : "New Worktree"}
             </Button>
@@ -486,10 +497,8 @@ function createDraft(
 ): WorktreeCreateModalDraft {
   if (mode === "openExisting") {
     return {
-      agentId,
       existingWorktreePath,
       mode,
-      prompt,
     };
   }
   return { agentId, mode, prompt };

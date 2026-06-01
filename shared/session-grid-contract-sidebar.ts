@@ -1481,10 +1481,10 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "createProjectWorktree";
-      agentId: string;
+      agentId?: string;
       existingWorktreePath?: string;
       mode?: "create" | "openExisting";
-      prompt: string;
+      prompt?: string;
       projectId?: string;
       projectPath?: string;
     }

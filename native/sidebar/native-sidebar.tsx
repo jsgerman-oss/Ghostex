@@ -23804,24 +23804,24 @@ async function createProjectWorktreeFromPrompt(
   message: Extract<SidebarToExtensionMessage, { type: "createProjectWorktree" }>,
 ): Promise<void> {
   const sourceProject = resolveWorktreeSourceProject(message) ?? activeProject();
-  const prompt = message.prompt.trim();
-  const agent = agents.find((candidate) => candidate.agentId === message.agentId);
-  if (!prompt) {
-    showAppToast("warning", "Worktree prompt is empty");
-    return;
-  }
-  if (!agent?.command?.trim()) {
-    showAppToast("error", "Agent is unavailable", "Choose an agent with a configured command.");
-    return;
-  }
   try {
     if (message.mode === "openExisting" || message.existingWorktreePath?.trim()) {
-      await openExistingNativeWorktreeForAgentPrompt({
-        agent,
-        prompt,
+      await openExistingNativeWorktreeProject({
         sourceProject,
         worktreePath: message.existingWorktreePath,
       });
+      return;
+    }
+
+    const prompt = message.prompt?.trim() ?? "";
+    const agent = agents.find((candidate) => candidate.agentId === message.agentId);
+    if (!prompt) {
+      showAppToast("warning", "Worktree prompt is empty");
+      return;
+    }
+    if (!agent?.command?.trim()) {
+      showAppToast("error", "Agent is unavailable", "Choose an agent with a configured command.");
+      return;
     } else {
       await createNativeWorktreeForAgentPrompt({ agent, prompt, sourceProject });
     }
@@ -23834,12 +23834,10 @@ async function createProjectWorktreeFromPrompt(
   }
 }
 
-async function openExistingNativeWorktreeForAgentPrompt(input: {
-  agent: SidebarAgentButton;
-  prompt: string;
+async function openExistingNativeWorktreeProject(input: {
   sourceProject: NativeProject;
   worktreePath?: string;
-}): Promise<{ project: NativeProject; session: TerminalSessionRecord }> {
+}): Promise<NativeProject> {
   const normalizedPath = input.worktreePath?.trim().replace(/\/+$/u, "") ?? "";
   if (!normalizedPath) {
     throw new Error("Choose an existing worktree.");
@@ -23862,7 +23860,12 @@ async function openExistingNativeWorktreeForAgentPrompt(input: {
    * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
    * Opening an existing worktree from the New Worktree modal must register the
    * selected checkout through gxserver, focus the canonical worktree project,
-   * and launch the selected agent there without creating another checkout.
+   * and create a starter terminal when the project has no visible sessions,
+   * without creating another checkout.
+   *
+   * CDXC:WorktreeProjectRegistration 2026-06-01-21:33:
+   * Open Existing is intentionally not an agent prompt flow. It only opens the
+   * selected checkout as a worktree project under the canonical parent.
    */
   const projectId = gxserverProject.projectId;
   const existingProject = projects.find(
@@ -23908,24 +23911,13 @@ async function openExistingNativeWorktreeForAgentPrompt(input: {
   loadActiveProjectCommands();
   writeStoredProjects("openExistingProjectWorktree");
   await refreshGitState();
-  publish();
-
-  showAppToast("info", "Opening agent", input.agent.name);
-  const session = await launchAgentTerminal(input.agent, undefined);
-  if (!session || session.kind !== "terminal") {
-    throw new Error("Could not create an agent session in the worktree.");
+  if (activeSnapshot().sessions.length === 0) {
+    createTerminal(DEFAULT_TERMINAL_SESSION_TITLE);
+  } else {
+    publish();
   }
-  await stageNativeAgentPrompt({
-    agent: input.agent,
-    projectId,
-    prompt: input.prompt,
-    session,
-  });
   showAppToast("success", "Worktree ready", nextProject.name);
-  return {
-    project: findProject(projectId) ?? nextProject,
-    session,
-  };
+  return findProject(projectId) ?? nextProject;
 }
 
 async function resolveUniqueNativeWorktreeTarget(
