@@ -44,8 +44,13 @@ export type GxserverEndpointPath =
   | "/api/control/stop"
   | "/api/createSession"
   | "/api/createAgentSession"
+  | "/api/readAgentLaunchPlan"
+  | "/api/readAgentResumePlan"
+  | "/api/requestSessionRename"
+  | "/api/ingestSessionStateEvent"
   | "/api/ingestTerminalTitleEvent"
   | "/api/updateAgentActivity"
+  | "/api/transitionSession"
   | "/api/sleepSession"
   | "/api/wakeSession"
   | "/api/killSession"
@@ -68,6 +73,10 @@ export type GxserverEndpointPath =
   | "/api/runGitAction"
   | "/api/runWorktreeAction"
   | "/api/runBeadsAction"
+  | "/api/previewRepositoryClone"
+  | "/api/startRepositoryClone"
+  | "/api/readRepositoryCloneJob"
+  | "/api/cancelRepositoryCloneJob"
   | "/api/queryLogs"
   | "/api/runProcess"
   | "/api/updateAuth"
@@ -316,6 +325,65 @@ export interface GxserverRunBeadsActionParams extends GxserverProjectOperationSc
   title?: string;
 }
 
+export interface GxserverRepositoryCloneOptions {
+  cloneMainOnly?: boolean;
+  shallowClone?: boolean;
+}
+
+export interface GxserverRepositoryClonePreviewParams extends GxserverRepositoryCloneOptions {
+  destinationFolderName?: string;
+  folderPath?: string;
+  newFolderName?: string;
+  parentPath?: string;
+  repositoryInput: string;
+}
+
+export interface GxserverRepositoryCloneStartParams extends GxserverRepositoryClonePreviewParams {}
+
+export interface GxserverRepositoryCloneJobParams {
+  jobId: string;
+}
+
+export interface GxserverRepositoryClonePreviewResult {
+  cloneMainOnly: boolean;
+  cloneUrl: string;
+  defaultFolderName: string;
+  destinationExists: boolean;
+  destinationExistsKind?: "directory" | "file" | "other";
+  destinationFolderName: string;
+  destinationIsEmpty?: boolean;
+  destinationPath: string;
+  parentPath: string;
+  repositoryName: string;
+  shallowClone: boolean;
+  warning?: string;
+}
+
+export type GxserverRepositoryCloneJobState = "running" | "completed" | "failed" | "canceled";
+
+export interface GxserverRepositoryCloneJobStatus {
+  completedAt?: string;
+  error?: string;
+  exitCode?: number;
+  jobId: string;
+  message: string;
+  preview: GxserverRepositoryClonePreviewResult;
+  project?: GxserverProjectDomainState;
+  projectPath?: string;
+  startedAt: string;
+  state: GxserverRepositoryCloneJobState;
+  stderr?: string;
+  stdout?: string;
+}
+
+export interface GxserverRepositoryClonePreviewRpcResult {
+  preview: GxserverRepositoryClonePreviewResult;
+}
+
+export interface GxserverRepositoryCloneJobRpcResult {
+  job: GxserverRepositoryCloneJobStatus;
+}
+
 export interface GxserverTypedCommand {
   args: readonly string[];
   cwd: string;
@@ -380,6 +448,7 @@ export type GxserverMixedStateArea =
   | "theme";
 
 export type GxserverSessionKind = "terminal" | "agent";
+export type GxserverSessionSurface = "workspace" | "commands";
 export type GxserverDomainLifecycleState = "running" | "sleeping" | "stopped" | "missing" | "unknown";
 export type GxserverProviderLifecycleState = "exists" | "missing" | "unknown";
 export type GxserverStartupTextDisposition =
@@ -500,6 +569,7 @@ export interface GxserverSessionDomainState {
   } & Record<string, unknown>;
   runtimeSettings: Record<string, unknown>;
   sessionId: GxserverSessionId;
+  surface: GxserverSessionSurface;
   title: string;
   updatedAt: string;
   worktree?: Record<string, unknown>;
@@ -560,6 +630,7 @@ export interface GxserverCreateSessionParams {
   restoredFromHistoryId?: string;
   restoredFromSessionId?: GxserverSessionId;
   runtimeSettings?: Record<string, unknown>;
+  surface?: GxserverSessionSurface;
   title?: string;
   worktree?: Record<string, unknown>;
 }
@@ -573,6 +644,45 @@ export interface GxserverSessionLifecycleParams {
   projectId: GxserverProjectId;
   reason?: string;
   sessionId: GxserverSessionId;
+}
+
+export type GxserverSessionTransitionAction = "close" | "sleep";
+export interface GxserverSessionTransitionOriginSession {
+  lifecycleState?: GxserverDomainLifecycleState;
+  sessionId: string;
+}
+export type GxserverSessionTransitionOrigin =
+  | {
+      kind: "projectSessionList";
+      orderedSessions: readonly (GxserverSessionTransitionOriginSession & {
+        sessionId: GxserverSessionId;
+      })[];
+    }
+  | {
+      kind: "paneTabGroup";
+      orderedSessions: readonly GxserverSessionTransitionOriginSession[];
+    };
+
+export interface GxserverSessionTransitionParams extends GxserverSessionLifecycleParams {
+  action: GxserverSessionTransitionAction;
+  origin: GxserverSessionTransitionOrigin;
+}
+
+export type GxserverSessionTransitionFocusReason = "nextLiveProjectSession" | "nextPaneTab";
+
+export interface GxserverSessionTransitionFocusTarget {
+  projectId: GxserverProjectId;
+  reason: GxserverSessionTransitionFocusReason;
+  sessionId: string;
+}
+
+export interface GxserverSessionTransitionResult {
+  action: GxserverSessionTransitionAction;
+  focusTarget?: GxserverSessionTransitionFocusTarget;
+  session: GxserverSessionDomainState;
+  transition: Record<string, unknown> & {
+    session: GxserverSessionDomainState;
+  };
 }
 
 export type GxserverSessionTitleSource =
@@ -612,11 +722,51 @@ export interface GxserverTerminalTitleEventResult {
   visibleTitle?: string;
 }
 
+export interface GxserverSessionStateEventParams extends GxserverSessionLifecycleParams {
+  agentName?: string;
+  agentSessionId?: string;
+  agentSessionPath?: string;
+  firstUserMessage?: string;
+  startupText?: string;
+  title?: string;
+  titleSource?: GxserverSessionTitleSource;
+}
+
+export interface GxserverSessionStateEventResult {
+  changed: boolean;
+  projection: GxserverSessionTitleProjection;
+  reason: string;
+  session: GxserverSessionDomainState;
+}
+
+export interface GxserverSessionRenameRequestParams extends GxserverSessionLifecycleParams {
+  agentName?: string;
+  agentSessionId?: string;
+  agentSessionPath?: string;
+  title: string;
+  titleSource?: Extract<GxserverSessionTitleSource, "generated" | "user">;
+}
+
+export interface GxserverSessionRenameRequestResult {
+  changed: boolean;
+  pendingAgentMetadata: boolean;
+  projection: GxserverSessionTitleProjection;
+  reason: string;
+  session: GxserverSessionDomainState;
+  shouldSendAgentRenameCommand: boolean;
+}
+
 export interface GxserverAttachSessionMetadataParams extends GxserverSessionLifecycleParams {
   startupText?: string;
 }
 
 export type GxserverAgentStartupTextDisposition = "none" | "queueAfterTerminalReady";
+
+export interface GxserverAgentLaunchPlanParams {
+  agentId: string;
+  agentSessionId?: string;
+  projectId: GxserverProjectId;
+}
 
 export interface GxserverAgentLaunchPlan {
   agentCommand?: string;
@@ -627,6 +777,21 @@ export interface GxserverAgentLaunchPlan {
   };
   firstUserMessage?: string;
   startupText: string;
+  startupTextDisposition: GxserverAgentStartupTextDisposition;
+}
+
+export interface GxserverAgentResumePlanParams extends GxserverSessionLifecycleParams {}
+
+export interface GxserverAgentResumePlan {
+  agentId?: string;
+  baseCommand?: string;
+  copyCommand?: string;
+  displayCommand?: string;
+  fallbackCommand?: string;
+  lookupCommand?: string;
+  primaryCommand?: string;
+  runtimeCommand?: string;
+  startupText?: string;
   startupTextDisposition: GxserverAgentStartupTextDisposition;
 }
 
