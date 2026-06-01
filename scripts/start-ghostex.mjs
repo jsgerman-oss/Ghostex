@@ -37,10 +37,13 @@ const installedExecutable = path.join(installedApp, "Contents", "MacOS", appName
 
 /*
 CDXC:LocalStartGxserver 2026-05-31-15:52:
-Local start commands must share one orchestrator so `bun run start`, `bun run start dev`, and `bun run start:dev` all build the matching app bundle, close the visible app first, restart stale gxserver only while the app is closed, then launch the newly installed app.
+Local start commands must share one orchestrator so `bun run start`, `bun run start dev`, and `bun run start:dev` all build the matching app bundle, close the visible app first, restart gxserver only while the app is closed, then launch the newly installed app.
 
 CDXC:LocalStartGxserver 2026-05-31-15:52:
 gxserver implementation changes are detected through the packaged daemon build identity generated from the staged gxserver folder contents. The macOS client protocol version changes only when the HTTP contract changes, while same-protocol gxserver code rebuilds still force a daemon restart before the sidebar connects.
+
+CDXC:LocalStartGxserver 2026-06-01-12:47:
+`bun run start` is the local test reset path: after closing the app it must stop the gxserver control plane on every run while preserving existing zmx servers, so the relaunched macOS app starts the freshly built daemon and any later zmx restart uses the newly packaged zmx binary.
 */
 run("bun", ["scripts/build-t3code-if-needed.mjs"], { env: buildEnv });
 run(path.join(hostScriptDir, "build-ghostex-host.sh"), [], { env: buildEnv });
@@ -51,7 +54,7 @@ if (!existsSync(builtApp)) {
 }
 
 await closeInstalledApp();
-await stopGxserverIfBundledBuildChanged(builtApp);
+await stopRunningGxserverControlPlaneBeforeLaunch(builtApp);
 installAndOpenApp(builtApp);
 
 function parseVariant(args, envVariant) {
@@ -156,11 +159,10 @@ function findRunningAppPids() {
     .filter(Boolean);
 }
 
-async function stopGxserverIfBundledBuildChanged(appPath) {
+async function stopRunningGxserverControlPlaneBeforeLaunch(appPath) {
   const expectedBuildIdentity = readBundledGxserverBuildIdentity(appPath);
   if (!expectedBuildIdentity) {
-    console.warn("Skipping gxserver build-identity preflight because the built app has no bundled identity.");
-    return;
+    console.warn("The built app has no bundled gxserver build identity; stopping any running control plane anyway.");
   }
 
   const token = readGxserverToken();
@@ -174,11 +176,12 @@ async function stopGxserverIfBundledBuildChanged(appPath) {
   }
 
   const actualBuildIdentity = typeof health.buildIdentity === "string" ? health.buildIdentity.trim() : "";
-  if (actualBuildIdentity === expectedBuildIdentity) {
-    return;
-  }
+  const buildIdentitySuffix =
+    actualBuildIdentity && expectedBuildIdentity && actualBuildIdentity !== expectedBuildIdentity
+      ? ` (build identity ${actualBuildIdentity} -> ${expectedBuildIdentity})`
+      : "";
 
-  console.log("gxserver build identity changed; stopping the old control plane before opening Ghostex.");
+  console.log(`Stopping gxserver control plane before opening ${appName}${buildIdentitySuffix}.`);
   await fetchGxserverJson("/api/control/stop", { method: "POST", token });
   const stopped = await waitForGxserverStop(token, 5000);
   if (!stopped) {

@@ -1790,6 +1790,10 @@
  * reference sidebar sample: the Show more/Show less control sits below the
  * sessions, aligns with session titles, and uses muted text instead of a
  * framed button.
+ *
+ * CDXC:ProjectSessionLists 2026-05-31-18:31:
+ * The Show more/Show less label should move 10px to the right while the toggle
+ * remains a full-width row.
  */
 .sidebar-reference-layout[data-reference-sidebar="true"] .project-session-list-toggle {
   color: #8b8b8b;
@@ -1799,7 +1803,7 @@
   line-height: 20px;
   min-height: 34px;
   padding: 7px var(--reference-session-trailing-inset, 10px) 7px
-    var(--reference-session-title-inset, 36px);
+    calc(var(--reference-session-title-inset, 36px) + 10px);
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .project-session-list-toggle:hover,

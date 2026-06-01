@@ -487,6 +487,10 @@
 
 .session-history-frame .session-floating-agent-icon,
 .session-history-frame .session-floating-agent-tabler-icon {
+  /*
+   * CDXC:PreviousSessions 2026-05-31-20:55:
+   * Agentless Terminal history rows must keep the Tabler terminal glyph in the same left identity slot as agent-logo rows. The active-card terminal glyph nudge is scoped away from history frames so previous-session modal buttons do not pull terminal icons off the left edge.
+   */
   left: calc(10px * var(--sidebar-density-scale));
   opacity: 0.52;
   top: 50%;
@@ -1004,7 +1008,7 @@
   width: calc(16px * var(--sidebar-density-scale));
 }
 
-.session-floating-agent-tabler-icon[data-agent-icon="terminal"] {
+.session-frame:not(.session-history-frame) .session-floating-agent-tabler-icon[data-agent-icon="terminal"] {
   left: calc(-5px * var(--sidebar-density-scale));
   top: calc(4px * var(--sidebar-density-scale));
 }
@@ -1541,13 +1545,17 @@
    Session row contents need another 2px left inset only. Move the leading icon
    and title padding together while preserving the right inset and full-width
    button surface.
+
+   CDXC:SidebarSessions 2026-05-31-18:31:
+   Session title text needs a 2px left correction without moving the leading
+   icons, trailing chrome, or full-width button surface.
  */
 .sidebar-reference-layout[data-reference-sidebar="true"] .session-frame {
   --reference-session-agent-icon-size: 13px;
   --reference-session-icon-size: 15px;
   --reference-session-leading-inset: 26px;
   --reference-session-title-inset: 36px;
-  --reference-session-full-width-left-padding: 13px;
+  --reference-session-full-width-left-padding: 11px;
   --reference-session-trailing-inset: 16px;
   /*
    * CDXC:SidebarSessions 2026-05-10-13:49
