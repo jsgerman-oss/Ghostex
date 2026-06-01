@@ -2,6 +2,11 @@
 
 <!-- CDXC:Distribution 2026-05-30-09:52: Release notes for 3.26.0 must include all user-facing commits after v3.25.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
 
+## 3.26.1 - 2026-06-01
+
+- Mobile and remote CLI session commands fall back to persisted sidebar session state when the live Ghostex bridge is unavailable, so Android and other clients no longer show a misleading empty session list.
+- Sidebar CLI bridge failures now return clearer JSON errors and more helpful guidance when a stale bridge token or closed socket causes the command to fail.
+
 ## 3.26.0 - 2026-05-30
 
 - Project board adds a Backlog swim lane before Todo, per-lane + ticket creation, status selects with friendly labels, and more reliable Create & Start that launches the agent session before secondary board refresh work.

@@ -54,7 +54,7 @@
 - The Ghostex terminal TUI uses the Herdr-backed terminal runtime, includes hotkey overlay polish, requests full zmx replay, and syncs working/attention/idle status from persisted sessions.
 - Titlebar and workspace chrome use cleaner resource controls, tighter traffic-light alignment, and safer modal/menu click handling above native panes.
 - Cross-platform Ghostex parity covers project workflows, workspace persistence, browser/code/git panes, settings, modals, and release packaging.
-- Mobile and persistent-session stability includes clearer Android remote-session activity, more responsive iOS direct attach, and better cleanup for zmx, zellij, and other persisted terminal sessions.
+- Mobile and persistent-session stability includes clearer Android remote-session activity, more responsive iOS direct attach, persisted-sidebar fallback for remote CLI session inventory when the live bridge is unavailable, and better cleanup for zmx, zellij, and other persisted terminal sessions.
 - Monaco is again the default local Ctrl+G prompt editor while SSH sessions keep terminal-native prompt editing.
 - Version 2.0 refreshes the whole UI around a simplified Codex-style workspace with cleaner top chrome, project groups, action controls, tooltips, session cards, Previous Sessions rows, settings surfaces, and updated screenshots.
 - Version 2.0 includes broad stability and performance work across native sidebar sync, AppKit relayouts, shared storage writes, diagnostic logging, and workspace visibility.
