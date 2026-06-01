@@ -1142,7 +1142,7 @@ async function generateAppcast(version, buildVersion, sparkleBinDir, artifact) {
   await run(`xmllint --noout ${shellQuote(appcastPath)}`);
   await run(`${shellQuote(path.join(sparkleBinDir, "sign_update"))} ${shellQuote(appcastPath)}`);
   const enclosureSignature = await capture(
-    `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@sparkle:edSignature)[1])" ${shellQuote(appcastPath)}`,
+    `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@*[local-name()='edSignature'])[1])" ${shellQuote(appcastPath)}`,
   );
   await run(
     `${shellQuote(path.join(sparkleBinDir, "sign_update"))} --verify ${shellQuote(artifact.finalDmg)} ${shellQuote(enclosureSignature)}`,
@@ -1252,7 +1252,7 @@ async function validateLiveSparkleAndAssets(version, buildVersion, sparkleBinDir
     await run(`curl -fsSL ${shellQuote(entry.feedUrl)} -o ${shellQuote(output)}`);
     await run(`xmllint --noout ${shellQuote(output)}`);
     const liveSignature = await capture(
-      `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@sparkle:edSignature)[1])" ${shellQuote(output)}`,
+      `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@*[local-name()='edSignature'])[1])" ${shellQuote(output)}`,
     );
     const liveDmgUrl = await capture(
       `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@url)[1])" ${shellQuote(output)}`,
