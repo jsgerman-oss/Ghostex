@@ -1,8 +1,8 @@
 ### Please join the Discord to support Ghostex 🙏🏻 https://discord.gg/df7b3G92CS
 
-# Native Ghostty Based Open Source Alternative to Codex App
-Low Ram Use. Longer Battery. Desktop/Browser use. All Agent CLIs. T3code. Notifications. Pets.<br/>
-Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
+# Native Ghostty-based Opensource Alternative to Codex App
+Low Ram Use. Longer Battery. Computer/Browser use. All Agent CLIs. T3code. Notifications. Pets.<br/>
+Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps. Much more.
 
 > Looking for contributers! Please join the discord if interested!
 
