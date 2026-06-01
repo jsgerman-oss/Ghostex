@@ -9,6 +9,10 @@ import {
   type GxserverCandidateFactory,
 } from "./ids.js";
 import { normalizeSessionTitleRuntimeSettings } from "./session-title/index.js";
+import {
+  normalizeSessionLaunchSettingsWithSurface,
+  resolveSessionSurface,
+} from "./session-presentation/index.js";
 import type {
   GxserverClientLayoutState,
   GxserverCreateProjectParams,
@@ -394,6 +398,8 @@ function normalizeSessionInput(
 ): GxserverSessionDomainState {
   const zmxName = createZmxSessionName(input.projectId, sessionId);
   const inputProviderState = normalizeObject(input.providerState);
+  const runtimeSettings = normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title);
+  const launchSettings = normalizeSessionLaunchSettingsWithSurface(normalizeObject(input.launchSettings), input.surface);
   const providerState = {
     lifecycleState: normalizeProviderLifecycleState(input.providerState?.lifecycleState),
     ...inputProviderState,
@@ -415,13 +421,14 @@ function normalizeSessionInput(
     isPinned: input.isPinned === true,
     kind: normalizeSessionKind(input.kind),
     lastActiveAt: normalizeOptionalText(input.lastActiveAt),
-    launchSettings: normalizeObject(input.launchSettings),
+    launchSettings,
     lifecycleState: normalizeDomainLifecycleState(input.lifecycleState),
     notificationRules: normalizeObject(input.notificationRules),
     projectId: input.projectId,
     providerState,
-    runtimeSettings: normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title),
+    runtimeSettings,
     sessionId,
+    surface: resolveSessionSurface({ launchSettings, runtimeSettings, surface: input.surface }),
     title: normalizeOptionalText(input.title) ?? sessionId,
     updatedAt: timestamp,
     worktree: normalizeOptionalObject(input.worktree),
@@ -437,6 +444,15 @@ function mergeSessionUpdate(
 ): GxserverSessionDomainState {
   const zmxName = createZmxSessionName(current.projectId, current.sessionId);
   const inputProviderState = normalizeObject(input.providerState);
+  const runtimeSettings = hasOwn(input, "runtimeSettings")
+    ? normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title ?? current.title)
+    : current.runtimeSettings;
+  const launchSettings = hasOwn(input, "launchSettings") || hasOwn(input, "surface")
+    ? normalizeSessionLaunchSettingsWithSurface(
+        hasOwn(input, "launchSettings") ? normalizeObject(input.launchSettings) : current.launchSettings,
+        hasOwn(input, "surface") ? input.surface : undefined,
+      )
+    : current.launchSettings;
   return {
     ...current,
     agentId: hasOwn(input, "agentId") ? normalizeOptionalText(input.agentId) : current.agentId,
@@ -457,7 +473,7 @@ function mergeSessionUpdate(
     isPinned: hasOwn(input, "isPinned") ? input.isPinned === true : current.isPinned,
     kind: hasOwn(input, "kind") ? normalizeSessionKind(input.kind) : current.kind,
     lastActiveAt: hasOwn(input, "lastActiveAt") ? normalizeOptionalText(input.lastActiveAt) : current.lastActiveAt,
-    launchSettings: hasOwn(input, "launchSettings") ? normalizeObject(input.launchSettings) : current.launchSettings,
+    launchSettings,
     lifecycleState: hasOwn(input, "lifecycleState")
       ? normalizeDomainLifecycleState(input.lifecycleState)
       : current.lifecycleState,
@@ -469,9 +485,12 @@ function mergeSessionUpdate(
           zmxName: normalizeProviderZmxName(inputProviderState.zmxName, zmxName),
         }
       : { ...current.providerState, zmxName: normalizeProviderZmxName(current.providerState.zmxName, zmxName) },
-    runtimeSettings: hasOwn(input, "runtimeSettings")
-      ? normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title ?? current.title)
-      : current.runtimeSettings,
+    runtimeSettings,
+    surface: resolveSessionSurface({
+      launchSettings,
+      runtimeSettings,
+      surface: hasOwn(input, "surface") ? input.surface : undefined,
+    }),
     title: hasOwn(input, "title") ? normalizeOptionalText(input.title) ?? current.sessionId : current.title,
     updatedAt,
     worktree: hasOwn(input, "worktree") ? normalizeOptionalObject(input.worktree) : current.worktree,
@@ -642,6 +661,8 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
   const zmxName = createZmxSessionName(projectId, sessionId);
   const providerState: JsonObject = parseObject(row.providerStateJson, "providerStateJson", "session", rowId);
   const worktree = parseObject(row.worktreeJson, "worktreeJson", "session", rowId);
+  const launchSettings = parseObject(row.launchSettingsJson, "launchSettingsJson", "session", rowId);
+  const runtimeSettings = parseObject(row.runtimeSettingsJson, "runtimeSettingsJson", "session", rowId);
   return {
     agentId: row.agentId ?? undefined,
     attentionRules: parseObject(row.attentionRulesJson, "attentionRulesJson", "session", rowId),
@@ -658,7 +679,7 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
     isPinned: row.isPinned === 1,
     kind: normalizeSessionKind(row.kind),
     lastActiveAt: row.lastActiveAt ?? undefined,
-    launchSettings: parseObject(row.launchSettingsJson, "launchSettingsJson", "session", rowId),
+    launchSettings,
     lifecycleState: normalizeDomainLifecycleState(row.lifecycleState),
     notificationRules: parseObject(row.notificationRulesJson, "notificationRulesJson", "session", rowId),
     projectId,
@@ -667,8 +688,9 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
       lifecycleState: normalizeProviderLifecycleState(providerState.lifecycleState),
       zmxName: normalizeProviderZmxName(providerState.zmxName, zmxName),
     },
-    runtimeSettings: parseObject(row.runtimeSettingsJson, "runtimeSettingsJson", "session", rowId),
+    runtimeSettings,
     sessionId,
+    surface: resolveSessionSurface({ launchSettings, runtimeSettings }),
     title: row.title,
     updatedAt: row.updatedAt,
     ...(Object.keys(worktree).length > 0 ? { worktree } : {}),

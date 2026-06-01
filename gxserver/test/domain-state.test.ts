@@ -133,6 +133,23 @@ test("temporary Search by Text session titles default to placeholder provenance"
   });
 });
 
+test("sessions expose command-pane surface without a separate migration column", async () => {
+  await withDomainRepository(async (repository) => {
+    const project = repository.createProject({ name: "Ghostex", path: "/repo/ghostex" });
+    const session = repository.createSession({
+      commandId: "bun run start",
+      launchSettings: { commandTitle: "bun run start" },
+      projectId: project.projectId,
+      surface: "commands",
+      title: "bun run start",
+    });
+
+    assert.equal(session.surface, "commands");
+    assert.equal(session.launchSettings.surface, "commands");
+    assert.equal(repository.listSessions(project.projectId)[0]?.surface, "commands");
+  });
+});
+
 test("client-local layout round-trips separately from shared project and session state", async () => {
   await withDomainRepository(async (repository) => {
     const project = repository.createProject({
