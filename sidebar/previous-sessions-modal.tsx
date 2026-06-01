@@ -16,6 +16,7 @@ import {
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
 import { TooltipProvider } from "./app-tooltip";
 import type { WebviewApi } from "./webview-api";
+import type { ExtensionToSidebarMessage, SidebarPreviousSessionItem } from "../shared/session-grid-contract";
 
 export type PreviousSessionsModalProps = {
   isOpen: boolean;
@@ -27,12 +28,14 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
   const previousSessions = useSidebarStore((state) => state.previousSessions);
   const showDebugSessionNumbers = useSidebarStore((state) => state.hud.debuggingMode);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [remotePreviousSessions, setRemotePreviousSessions] = useState<SidebarPreviousSessionItem[] | undefined>(undefined);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const latestRequestIdRef = useRef<string | undefined>(undefined);
   const pendingSelectionRef = useRef<{ end: number; start: number } | undefined>(undefined);
   const modalPreviousSessions = useMemo(
-    () => filterPreviousSessionsModalItems(previousSessions),
-    [previousSessions],
+    () => filterPreviousSessionsModalItems(remotePreviousSessions ?? previousSessions),
+    [previousSessions, remotePreviousSessions],
   );
   const filteredSessions = useMemo(
     () => filterPreviousSessions(modalPreviousSessions, searchQuery, { favoritesOnly }),
@@ -96,9 +99,53 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
     if (!isOpen) {
       setFavoritesOnly(false);
       setSearchQuery("");
+      setRemotePreviousSessions(undefined);
       pendingSelectionRef.current = undefined;
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    const handleMessage = (event: MessageEvent<ExtensionToSidebarMessage>) => {
+      if (event.data.type !== "previousSessionsResult") {
+        return;
+      }
+      if (event.data.requestId !== latestRequestIdRef.current) {
+        return;
+      }
+      setRemotePreviousSessions(event.data.previousSessions);
+    };
+    window.addEventListener("message", handleMessage);
+    return () => {
+      window.removeEventListener("message", handleMessage);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      const requestId = `previous-sessions-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      latestRequestIdRef.current = requestId;
+      /*
+      CDXC:GxserverPresentationSearch 2026-06-01-15:08:
+      Previous Sessions no longer depends on a startup-hydrated history array. Request recent/history metadata from gxserver on open and debounce typed search at 200ms so the modal remains bounded by current query results.
+      */
+      vscode.postMessage({
+        favoritesOnly,
+        limit: 80,
+        query: searchQuery.trim() || undefined,
+        requestId,
+        type: "requestPreviousSessions",
+      });
+    }, 200);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [favoritesOnly, isOpen, searchQuery, vscode]);
 
   useEffect(() => {
     if (!isOpen) {

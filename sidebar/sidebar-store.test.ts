@@ -153,6 +153,99 @@ describe("sidebar store", () => {
     expect(after.sessionsById["session-2"]).toBe(previousSiblingSession);
   });
 
+  test("should keep locally closed sessions hidden until the host snapshot drops them", () => {
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage([
+          createGroup("group-1", [
+            createSession("session-1", "groups"),
+            createSession("session-2", "notes"),
+          ]),
+        ]),
+      );
+
+    useSidebarStore.getState().hideSessionLocally("session-2");
+    expect(useSidebarStore.getState().sessionsById["session-2"]).toBeUndefined();
+    expect(useSidebarStore.getState().sessionIdsByGroup["group-1"]).toEqual(["session-1"]);
+
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage(
+          [
+            createGroup("group-1", [
+              createSession("session-1", "groups"),
+              createSession("session-2", "notes"),
+            ]),
+          ],
+          { revision: 2 },
+        ),
+      );
+
+    expect(useSidebarStore.getState().sessionsById["session-2"]).toBeUndefined();
+    expect(useSidebarStore.getState().sessionIdsByGroup["group-1"]).toEqual(["session-1"]);
+
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage(
+          [createGroup("group-1", [createSession("session-1", "groups")])],
+          { revision: 3 },
+        ),
+      );
+
+    expect(useSidebarStore.getState().localHiddenSessionIds).toEqual({});
+  });
+
+  test("should keep local sleep state until the host snapshot confirms it", () => {
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage([
+          createGroup("group-1", [createSession("session-1", "groups")]),
+        ]),
+      );
+
+    useSidebarStore.getState().setSessionSleepingLocally("session-1", true);
+    expect(useSidebarStore.getState().sessionsById["session-1"]?.isSleeping).toBe(true);
+    expect(useSidebarStore.getState().sessionsById["session-1"]?.lifecycleState).toBe("sleeping");
+
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage(
+          [createGroup("group-1", [createSession("session-1", "groups")])],
+          { revision: 2 },
+        ),
+      );
+
+    expect(useSidebarStore.getState().sessionsById["session-1"]?.isSleeping).toBe(true);
+    expect(useSidebarStore.getState().localSessionSleepingOverrides).toEqual({
+      "session-1": true,
+    });
+
+    useSidebarStore
+      .getState()
+      .applySidebarMessage(
+        createHydrateMessage(
+          [
+            createGroup("group-1", [
+              {
+                ...createSession("session-1", "groups"),
+                isRunning: false,
+                isSleeping: true,
+                lifecycleState: "sleeping",
+              },
+            ]),
+          ],
+          { revision: 3 },
+        ),
+      );
+
+    expect(useSidebarStore.getState().localSessionSleepingOverrides).toEqual({});
+  });
+
   test("should preserve unchanged HUD slice references across session snapshots", () => {
     useSidebarStore
       .getState()

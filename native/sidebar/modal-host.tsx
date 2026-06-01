@@ -101,6 +101,7 @@ type AppModalHostMessage =
       message?: string;
       projectId?: string;
       projectName?: string;
+      projectPath?: string;
       filePath?: string;
       gitCommitDraft?: GitCommitModalDraft;
       gitFileDiff?: GitFileDiffModalDraft;
@@ -152,6 +153,13 @@ type AppModalHostMessage =
     }
   | { type: "pickWorktreeImages" }
   | { paths: string[]; type: "worktreeImageFilesPicked" }
+  | {
+      error?: string;
+      ok: boolean;
+      requestId: string;
+      type: "projectWorktreesResult";
+      worktrees?: unknown;
+    }
   | { details?: string; event: string; type: "debugLog" }
   | { requestId: string; type: "floatingPromptEditorCloseAndSave" }
   | {
@@ -267,6 +275,7 @@ type T3ThreadIdModalState = {
 type WorktreeModalState = {
   projectId?: string;
   projectName?: string;
+  projectPath?: string;
 };
 
 const APP_MODAL_CONTEXT_MENU_EDITABLE_SELECTOR =
@@ -1954,11 +1963,23 @@ function AppModalHost() {
         onConfirm={(draft) => {
           vscode.postMessage({
             agentId: draft.agentId,
+            existingWorktreePath:
+              draft.mode === "openExisting" ? draft.existingWorktreePath : undefined,
+            mode: draft.mode,
             projectId: worktree?.projectId,
+            projectPath: worktree?.projectPath,
             prompt: draft.prompt,
             type: "createProjectWorktree",
-          });
+          } satisfies SidebarToExtensionMessage);
           closeModal();
+        }}
+        onRequestExistingWorktrees={(requestId) => {
+          vscode.postMessage({
+            projectId: worktree?.projectId,
+            projectPath: worktree?.projectPath,
+            requestId,
+            type: "requestProjectWorktrees",
+          } satisfies SidebarToExtensionMessage);
         }}
         projectName={worktree?.projectName}
       />
@@ -2556,6 +2577,7 @@ function useModalStateFromNative() {
             setWorktree({
               projectId: typeof message.projectId === "string" ? message.projectId : undefined,
               projectName: typeof message.projectName === "string" ? message.projectName : undefined,
+              projectPath: typeof message.projectPath === "string" ? message.projectPath : undefined,
             });
             setConfig({});
             setDelayedSend(undefined);

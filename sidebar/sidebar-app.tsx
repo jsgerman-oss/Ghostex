@@ -53,6 +53,7 @@ import { Button } from "@/components/ui/button";
 import {
   MAX_GROUP_COUNT,
   type ExtensionToSidebarMessage,
+  type SidebarPreviousSessionItem,
 } from "../shared/session-grid-contract";
 import {
   getWorkspaceThemeForeground,
@@ -505,6 +506,8 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const previousExpandedReferenceProjectGroupIdsRef = useRef<string[]>([]);
   const [recentProjectsQuery, setRecentProjectsQuery] = useState("");
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
+  const [remoteSessionSearchPreviousSessions, setRemoteSessionSearchPreviousSessions] =
+    useState<SidebarPreviousSessionItem[] | undefined>(undefined);
   const [groupDropIndicator, setGroupDropIndicator] = useState<SidebarGroupDropTarget>();
   const [groupDragPreview, setGroupDragPreview] = useState<SidebarGroupDragPreview>();
   const [pinnedSessionDropIndicator, setPinnedSessionDropIndicator] =
@@ -524,6 +527,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const sessionIdsByGroupRef = useRef<SessionIdsByGroup>({});
   const pinnedSessionDropTargetLogKeyRef = useRef<string | undefined>(undefined);
   const previousSessionCountsByGroupRef = useRef<Record<string, number>>({});
+  const latestSessionSearchPreviousRequestIdRef = useRef<string | undefined>(undefined);
   const didApplyStartupEmptyChatsCollapseRef = useRef(false);
   const hasEstablishedStartupGroupCollapseBaselineRef = useRef(false);
   const previousNormalizedSessionSearchQueryRef = useRef("");
@@ -866,6 +870,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
     if (event.data.type === "promptGitCommit") {
       setGitCommitDraft(event.data);
+      return;
+    }
+
+    if (event.data.type === "previousSessionsResult") {
+      if (event.data.requestId !== latestSessionSearchPreviousRequestIdRef.current) {
+        return;
+      }
+      setRemoteSessionSearchPreviousSessions(event.data.previousSessions);
       return;
     }
 
@@ -1320,6 +1332,30 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const normalizedSessionSearchQuery = sessionSearchQuery.trim();
   const isSessionSearchFiltering =
     isSessionSearchOpen && normalizedSessionSearchQuery.length >= MIN_SESSION_SEARCH_QUERY_LENGTH;
+  useEffect(() => {
+    if (!isSessionSearchFiltering) {
+      latestSessionSearchPreviousRequestIdRef.current = undefined;
+      setRemoteSessionSearchPreviousSessions(undefined);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      const requestId = `sidebar-search-previous-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      latestSessionSearchPreviousRequestIdRef.current = requestId;
+      /*
+      CDXC:GxserverPresentationSearch 2026-06-01-15:08:
+      Main sidebar search must show active-session matches immediately from the hydrated presentation snapshot, then query gxserver for previous/history metadata with a 200ms debounce. Do not depend on startup-hydrated previousSessions after the hard cutover.
+      */
+      vscode.postMessage({
+        limit: 20,
+        query: normalizedSessionSearchQuery,
+        requestId,
+        type: "requestPreviousSessions",
+      });
+    }, 200);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isSessionSearchFiltering, normalizedSessionSearchQuery, vscode]);
   /**
    * CDXC:ProjectBrowserTabs 2026-05-16-12:59:
    * Do not render a standalone Browsers group in the sidebar. Browser pane
@@ -1366,8 +1402,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     () =>
       !isSessionSearchFiltering
         ? []
-        : filterPreviousSessions(previousSessions, normalizedSessionSearchQuery),
-    [isSessionSearchFiltering, normalizedSessionSearchQuery, previousSessions],
+        : (remoteSessionSearchPreviousSessions ??
+          filterPreviousSessions(previousSessions, normalizedSessionSearchQuery)),
+    [
+      isSessionSearchFiltering,
+      normalizedSessionSearchQuery,
+      previousSessions,
+      remoteSessionSearchPreviousSessions,
+    ],
   );
   const filteredRecentProjects = useMemo(
     () => filterRecentProjects(recentProjects, recentProjectsQuery),

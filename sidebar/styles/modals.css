@@ -2767,7 +2767,24 @@
   min-height: 150px;
 }
 
-.worktree-create-agent-select {
+.worktree-create-mode-toggle {
+  /*
+   * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
+   * New Worktree has two explicit modes: create a fresh checkout or open an
+   * existing Git worktree. Keep the mode switch compact so the first prompt and
+   * agent selector remain visible in the full-window modal.
+   */
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.worktree-create-mode-toggle [data-slot="button"] {
+  min-width: 0;
+}
+
+.worktree-create-agent-select,
+.worktree-create-existing-select {
   width: 100%;
 }
 

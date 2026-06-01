@@ -9,6 +9,11 @@ import {
   type GxserverAttachSessionMetadataParams,
   type GxserverAttachSessionMetadataResult,
   type GxserverCreateSessionParams,
+  type GxserverEvent,
+  type GxserverPresentationDelta,
+  type GxserverPresentationSearchParams,
+  type GxserverPresentationSearchResponse,
+  type GxserverPresentationSnapshot,
   type GxserverSessionProviderProbeResponse,
   type GxserverProjectDomainState,
   type GxserverRpcErrorResponse,
@@ -38,8 +43,8 @@ export type NativeSidebarGxserverStatus = NativeSidebarGxserverBootstrap & {
 
 export type NativeSidebarGxserverStartupSnapshot = {
   health: GxserverServerHealthResponse;
+  presentation?: GxserverPresentationSnapshot;
   projects: GxserverProjectDomainState[];
-  sessions: GxserverSessionDomainState[];
 };
 
 export type NativeGxserverHttpMethod = "GET" | "POST";
@@ -66,6 +71,16 @@ export type NativeGxserverRequestOptions = {
   method?: NativeGxserverHttpMethod;
   params?: Record<string, unknown>;
   requestId?: string;
+};
+
+export type NativeSidebarPresentationSubscription = {
+  close: () => void;
+};
+
+export type NativeSidebarPresentationSubscriptionHandlers = {
+  onDelta?: (delta: GxserverPresentationDelta, revision: number) => void;
+  onError?: (error: Event) => void;
+  onSnapshot?: (snapshot: GxserverPresentationSnapshot) => void;
 };
 
 export class NativeGxserverClientError extends Error {
@@ -192,11 +207,76 @@ export function createNativeSidebarGxserverClient(
 
   async function fetchStartupSnapshot(): Promise<NativeSidebarGxserverStartupSnapshot> {
     const health = await fetchHealth();
-    const [{ projects }, { sessions }] = await Promise.all([
+    const [{ projects }, { snapshot }] = await Promise.all([
       rpc<{ projects: GxserverProjectDomainState[] }>("/api/listProjects"),
-      rpc<{ sessions: GxserverSessionDomainState[] }>("/api/listSessions"),
+      rpc<{ snapshot: GxserverPresentationSnapshot }>("/api/readPresentationSnapshot"),
     ]);
-    return { health, projects, sessions };
+    /*
+    CDXC:GxserverPresentation 2026-06-01-15:08:
+    Startup must no longer hydrate all gxserver session history into the macOS sidebar. The startup snapshot carries projects plus the bounded active-focused presentation snapshot only; raw session inventory stays behind gxserver APIs.
+    */
+    return { health, presentation: snapshot, projects };
+  }
+
+  async function fetchPresentationSnapshot(): Promise<GxserverPresentationSnapshot> {
+    /*
+    CDXC:GxserverPresentation 2026-06-01-15:08:
+    Native sidebar startup is moving to gxserver's active-focused presentation feed. Keep a dedicated client method for the hard cutover path so UI code can consume snapshot/delta rows without calling raw listSessions or hydrating all previous sessions.
+    */
+    const { snapshot } = await rpc<{ snapshot: GxserverPresentationSnapshot }>("/api/readPresentationSnapshot");
+    return snapshot;
+  }
+
+  async function searchSessions(
+    params: GxserverPresentationSearchParams,
+  ): Promise<GxserverPresentationSearchResponse> {
+    return rpc<GxserverPresentationSearchResponse>("/api/searchSessions", params as unknown as Record<string, unknown>);
+  }
+
+  async function listPreviousSessions(
+    params: GxserverPresentationSearchParams = {},
+  ): Promise<GxserverPresentationSearchResponse> {
+    return rpc<GxserverPresentationSearchResponse>("/api/listPreviousSessions", params as unknown as Record<string, unknown>);
+  }
+
+  function subscribePresentation(
+    clientId: string,
+    handlers: NativeSidebarPresentationSubscriptionHandlers,
+    lastRevision?: number,
+  ): NativeSidebarPresentationSubscription {
+    /*
+    CDXC:GxserverPresentationEvents 2026-06-01-15:08:
+    The native sidebar consumes gxserver presentation as snapshot plus WebSocket deltas. WebKit cannot attach bearer headers to WebSocket, so the server accepts the same token in the event-stream query string and this client sends the subscription message immediately after open.
+    */
+    const url = new URL(`${config.baseUrl}/api/events`);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set("protocolVersion", String(GXSERVER_PROTOCOL_VERSION));
+    url.searchParams.set("authToken", config.authToken ?? "");
+    const socket = new WebSocket(url.toString());
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({
+        clientId,
+        ...(lastRevision !== undefined ? { lastRevision } : {}),
+        type: "subscribePresentation",
+      }));
+    });
+    socket.addEventListener("message", (event) => {
+      const parsed = parseGxserverEvent(event.data);
+      if (!parsed) {
+        return;
+      }
+      if (parsed.type === "presentationSnapshot") {
+        handlers.onSnapshot?.(parsed.snapshot);
+      } else if (parsed.type === "presentationDelta") {
+        handlers.onDelta?.(parsed.delta, parsed.revision);
+      }
+    });
+    socket.addEventListener("error", (event) => {
+      handlers.onError?.(event);
+    });
+    return {
+      close: () => socket.close(),
+    };
   }
 
   async function fetchAttachSessionMetadata(
@@ -346,11 +426,15 @@ export function createNativeSidebarGxserverClient(
     fetchAgentResumePlanSync,
     fetchAttachSessionMetadata,
     fetchHealth,
+    fetchPresentationSnapshot,
     fetchStartupSnapshot,
     fetchWakeSessionMetadata,
     getCurrentStatus,
     probeSessionProvider,
+    listPreviousSessions,
     rpc,
+    searchSessions,
+    subscribePresentation,
     transitionSessionSync,
     updateSessionLifecycle,
   };
@@ -442,6 +526,24 @@ function parseObject(payloadJson: string): Record<string, unknown> | undefined {
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseGxserverEvent(value: unknown): GxserverEvent | undefined {
+  try {
+    const text = typeof value === "string" ? value : String(value);
+    const parsed = JSON.parse(text.trim()) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed) ||
+      (parsed as { protocolVersion?: unknown }).protocolVersion !== GXSERVER_PROTOCOL_VERSION
+    ) {
+      return undefined;
+    }
+    return parsed as GxserverEvent;
   } catch {
     return undefined;
   }

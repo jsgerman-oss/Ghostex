@@ -636,6 +636,13 @@ export type SidebarShowT3ThreadIdModalMessage = {
   type: "showT3ThreadIdModal";
 };
 
+export type SidebarPreviousSessionsResultMessage = {
+  previousSessions: SidebarPreviousSessionItem[];
+  query?: string;
+  requestId: string;
+  type: "previousSessionsResult";
+};
+
 export type ExtensionToSidebarMessage =
   | SidebarHydrateMessage
   | SidebarSessionStateMessage
@@ -654,7 +661,8 @@ export type ExtensionToSidebarMessage =
   | SidebarOSIntegrationStatusMessage
   | SidebarShowSessionRenameModalMessage
   | SidebarShowFindPreviousSessionModalMessage
-  | SidebarShowT3ThreadIdModalMessage;
+  | SidebarShowT3ThreadIdModalMessage
+  | SidebarPreviousSessionsResultMessage;
 
 export type SidebarToExtensionMessage =
   | {
@@ -1279,6 +1287,17 @@ export type SidebarToExtensionMessage =
       type: "runBrowserPaneAction";
     }
   | {
+      /**
+       * CDXC:GxserverPresentationSearch 2026-06-01-15:08:
+       * Previous Sessions is loaded on demand from gxserver after the presentation hard cutover. React sends debounced metadata queries through native so startup no longer hydrates all previous-session history into the sidebar store.
+       */
+      favoritesOnly?: boolean;
+      limit?: number;
+      query?: string;
+      requestId: string;
+      type: "requestPreviousSessions";
+    }
+  | {
       historyId: string;
       type: "restorePreviousSession";
     }
@@ -1463,8 +1482,17 @@ export type SidebarToExtensionMessage =
   | {
       type: "createProjectWorktree";
       agentId: string;
+      existingWorktreePath?: string;
+      mode?: "create" | "openExisting";
       prompt: string;
       projectId?: string;
+      projectPath?: string;
+    }
+  | {
+      type: "requestProjectWorktrees";
+      projectId?: string;
+      projectPath?: string;
+      requestId: string;
     }
   | {
       type: "setProjectWorktreeCommand";

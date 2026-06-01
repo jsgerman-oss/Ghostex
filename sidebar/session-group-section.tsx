@@ -1135,6 +1135,7 @@ export function SessionGroupSection({
       modal: "worktree",
       projectId: projectContext.editor.projectId,
       projectName: group.title,
+      projectPath: projectContext.path,
       type: "open",
     });
   };

@@ -59,6 +59,7 @@ import { openAppModal } from "./app-modal-host-bridge";
 import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
+import { flushSync } from "react-dom";
 
 const CONTEXT_MENU_MARGIN_PX = 12;
 const CONTEXT_MENU_WIDTH_PX = 178;
@@ -166,6 +167,18 @@ export function SortableSessionCard({
 }: SortableSessionCardProps) {
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
   const canFocusMode = useSidebarStore((state) => state.groupsById[groupId]?.canFocusMode === true);
+  const shouldKeepLastProjectSessionVisibleOnClose = useSidebarStore(
+    useShallow((state) => {
+      const group = state.groupsById[groupId];
+      const groupSessionIds = state.sessionIdsByGroup[groupId] ?? [];
+      return (
+        group?.projectContext !== undefined &&
+        group.isChatCollection !== true &&
+        groupSessionIds.length === 1 &&
+        groupSessionIds[0] === sessionId
+      );
+    }),
+  );
   const {
     hideSessionAgentIconUntilHover,
     hideBrowserFaviconUntilHover,
@@ -531,6 +544,15 @@ export function SortableSessionCard({
     }
 
     setContextMenuPosition(undefined);
+    if (shouldKeepLastProjectSessionVisibleOnClose) {
+      /*
+      CDXC:LocalFirstSidebar 2026-06-01-20:52:
+      Closing a project's final sidebar session parks it instead of removing it. Keep the card visible immediately and mark it sleeping locally so the project does not blink out before gxserver publishes the parked-session presentation.
+      */
+      useSidebarStore.getState().setSessionSleepingLocally(session.sessionId, true);
+    } else {
+      useSidebarStore.getState().hideSessionLocally(session.sessionId);
+    }
     vscode.postMessage({
       sessionId: session.sessionId,
       type: "closeSession",
@@ -719,7 +741,10 @@ export function SortableSessionCard({
   };
 
   const requestSetSleeping = (sleeping: boolean) => {
-    setContextMenuPosition(undefined);
+    flushSync(() => {
+      setContextMenuPosition(undefined);
+      useSidebarStore.getState().setSessionSleepingLocally(session.sessionId, sleeping);
+    });
     vscode.postMessage({
       sessionId: session.sessionId,
       sleeping,

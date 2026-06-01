@@ -86,7 +86,7 @@ export type OpenAppModalMessage =
       type: "open";
     }
   | { initialTitle: string; modal: "renameSession"; sessionId: string; type: "open" }
-  | { modal: "worktree"; projectId?: string; projectName?: string; type: "open" };
+  | { modal: "worktree"; projectId?: string; projectName?: string; projectPath?: string; type: "open" };
 
 declare global {
   interface Window {

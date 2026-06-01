@@ -8,7 +8,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { IconPhotoPlus } from "@tabler/icons-react";
+import { IconFolderOpen, IconGitBranch, IconPhotoPlus } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -35,13 +35,36 @@ import {
 } from "../shared/sidebar-agents";
 import { postAppModalHostMessage } from "./app-modal-host-bridge";
 
+export type ExistingWorktreeOption = {
+  branch: string;
+  isCurrentProject?: boolean;
+  isRegistered?: boolean;
+  name: string;
+  path: string;
+};
+
+export type WorktreeCreateModalDraft =
+  | { agentId: string; mode: "create"; prompt: string }
+  | { agentId: string; existingWorktreePath: string; mode: "openExisting"; prompt: string };
+
 export type WorktreeCreateModalProps = {
   agents: SidebarAgentButton[];
   defaultAgentId?: string;
   isOpen: boolean;
   onCancel: () => void;
-  onConfirm: (draft: { agentId: string; prompt: string }) => void;
+  onConfirm: (draft: WorktreeCreateModalDraft) => void;
+  onRequestExistingWorktrees?: (requestId: string) => void;
   projectName?: string;
+};
+
+type WorktreeCreateMode = WorktreeCreateModalDraft["mode"];
+
+type ProjectWorktreesResultMessage = {
+  error?: unknown;
+  ok: boolean;
+  requestId: string;
+  type: "projectWorktreesResult";
+  worktrees?: unknown;
 };
 
 export function WorktreeCreateModal({
@@ -50,11 +73,14 @@ export function WorktreeCreateModal({
   isOpen,
   onCancel,
   onConfirm,
+  onRequestExistingWorktrees,
   projectName,
 }: WorktreeCreateModalProps) {
   const promptId = useId();
   const agentId = useId();
+  const existingWorktreeId = useId();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const worktreeListRequestIdRef = useRef<string | undefined>(undefined);
   const commandAgents = useMemo(
     () => agents.filter((agent) => agent.command?.trim()),
     [agents],
@@ -65,6 +91,11 @@ export function WorktreeCreateModal({
   );
   const [prompt, setPrompt] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState(commandAgents[0]?.agentId ?? "");
+  const [mode, setMode] = useState<WorktreeCreateMode>("create");
+  const [existingWorktrees, setExistingWorktrees] = useState<ExistingWorktreeOption[]>([]);
+  const [selectedExistingWorktreePath, setSelectedExistingWorktreePath] = useState("");
+  const [worktreeListError, setWorktreeListError] = useState<string | undefined>(undefined);
+  const [isLoadingWorktrees, setIsLoadingWorktrees] = useState(false);
   const [imageCount, setImageCount] = useState(0);
 
   /**
@@ -86,6 +117,12 @@ export function WorktreeCreateModal({
    * typing. The New Worktree draft is initialized only when the modal opens;
    * later agent-list updates may repair an invalid selection but must not clear
    * the prompt, images, or a still-valid selected agent.
+   *
+   * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
+   * New Worktree supports creating a fresh checkout or opening an existing Git
+   * worktree from the same machine. The existing-worktree list is requested when
+   * the modal opens and submit carries the selected path so native registers it
+   * through gxserver before launching the agent.
    */
   const hasInitializedOpenDraftRef = useRef(false);
   useEffect(() => {
@@ -100,7 +137,17 @@ export function WorktreeCreateModal({
 
     setPrompt("");
     setImageCount(0);
+    setMode("create");
+    setExistingWorktrees([]);
+    setSelectedExistingWorktreePath("");
+    setWorktreeListError(undefined);
     setSelectedAgentId(resolveInitialWorktreeAgentId(commandAgents, defaultAgentId));
+    if (onRequestExistingWorktrees) {
+      const requestId = `worktrees-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      worktreeListRequestIdRef.current = requestId;
+      setIsLoadingWorktrees(true);
+      onRequestExistingWorktrees(requestId);
+    }
   }, [commandAgents, defaultAgentId, isOpen]);
 
   useEffect(() => {
@@ -130,7 +177,11 @@ export function WorktreeCreateModal({
 
   const normalizedPrompt = trimPromptEditorTrailingSpaces(prompt);
   const trimmedPrompt = normalizedPrompt.trim();
-  const canCreate = Boolean(trimmedPrompt && selectedAgentId);
+  const canCreate = Boolean(
+    trimmedPrompt &&
+      selectedAgentId &&
+      (mode === "create" || selectedExistingWorktreePath),
+  );
 
   const insertImageLinks = (files: readonly File[]) => {
     if (files.length === 0) {
@@ -184,7 +235,7 @@ export function WorktreeCreateModal({
     if (!canCreate) {
       return;
     }
-    onConfirm({ agentId: selectedAgentId, prompt: trimmedPrompt });
+    onConfirm(createDraft(mode, selectedAgentId, trimmedPrompt, selectedExistingWorktreePath));
   };
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -193,7 +244,7 @@ export function WorktreeCreateModal({
     }
     event.preventDefault();
     if (canCreate) {
-      onConfirm({ agentId: selectedAgentId, prompt: trimmedPrompt });
+      onConfirm(createDraft(mode, selectedAgentId, trimmedPrompt, selectedExistingWorktreePath));
     }
   };
 
@@ -227,6 +278,28 @@ export function WorktreeCreateModal({
         return;
       }
       if (message.type !== "worktreeImageFilesPicked") {
+        if (message.type === "projectWorktreesResult") {
+          const result = message as ProjectWorktreesResultMessage;
+          if (result.requestId !== worktreeListRequestIdRef.current) {
+            return;
+          }
+          setIsLoadingWorktrees(false);
+          if (!result.ok) {
+            setWorktreeListError(
+              typeof result.error === "string" ? result.error : "Could not load existing worktrees.",
+            );
+            setExistingWorktrees([]);
+            return;
+          }
+          const worktrees = normalizeExistingWorktreeOptions(result.worktrees);
+          setExistingWorktrees(worktrees);
+          setSelectedExistingWorktreePath((current) =>
+            worktrees.some((worktree) => worktree.path === current)
+              ? current
+              : worktrees.find((worktree) => !worktree.isRegistered)?.path ?? worktrees[0]?.path ?? "",
+          );
+          return;
+        }
         return;
       }
       const candidate = message as { paths?: unknown };
@@ -269,6 +342,61 @@ export function WorktreeCreateModal({
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="session-rename-field-group">
+            <Field>
+              <FieldLabel>Mode</FieldLabel>
+              <div className="worktree-create-mode-toggle" role="group" aria-label="Worktree mode">
+                <Button
+                  onClick={() => setMode("create")}
+                  type="button"
+                  variant={mode === "create" ? "default" : "outline"}
+                >
+                  <IconGitBranch aria-hidden="true" data-icon="inline-start" />
+                  Create New
+                </Button>
+                <Button
+                  onClick={() => setMode("openExisting")}
+                  type="button"
+                  variant={mode === "openExisting" ? "default" : "outline"}
+                >
+                  <IconFolderOpen aria-hidden="true" data-icon="inline-start" />
+                  Open Existing
+                </Button>
+              </div>
+            </Field>
+            {mode === "openExisting" ? (
+              <Field>
+                <FieldLabel htmlFor={existingWorktreeId}>Existing worktree</FieldLabel>
+                <Select
+                  onValueChange={setSelectedExistingWorktreePath}
+                  value={selectedExistingWorktreePath}
+                >
+                  <SelectTrigger
+                    aria-label="Existing worktree"
+                    className="worktree-create-existing-select"
+                    id={existingWorktreeId}
+                  >
+                    <SelectValue placeholder={isLoadingWorktrees ? "Loading worktrees" : "Select worktree"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {existingWorktrees.map((worktree) => (
+                        <SelectItem
+                          key={worktree.path}
+                          value={worktree.path}
+                        >
+                          {worktree.name} {worktree.branch ? `(${worktree.branch})` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  {worktreeListError ??
+                    (selectedExistingWorktreePath ||
+                      (isLoadingWorktrees ? "Loading existing worktrees." : "No existing worktrees found."))}
+                </FieldDescription>
+              </Field>
+            ) : null}
             <Field>
               <FieldLabel htmlFor={agentId}>Agent</FieldLabel>
               <Select
@@ -330,7 +458,7 @@ export function WorktreeCreateModal({
               Add Images
             </Button>
             <Button disabled={!canCreate} type="submit">
-              New Worktree
+              {mode === "openExisting" ? "Open Worktree" : "New Worktree"}
             </Button>
           </DialogFooter>
         </form>
@@ -348,4 +476,47 @@ function resolveInitialWorktreeAgentId(
     commandAgents[0]?.agentId ??
     ""
   );
+}
+
+function createDraft(
+  mode: WorktreeCreateMode,
+  agentId: string,
+  prompt: string,
+  existingWorktreePath: string,
+): WorktreeCreateModalDraft {
+  if (mode === "openExisting") {
+    return {
+      agentId,
+      existingWorktreePath,
+      mode,
+      prompt,
+    };
+  }
+  return { agentId, mode, prompt };
+}
+
+function normalizeExistingWorktreeOptions(candidate: unknown): ExistingWorktreeOption[] {
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  return candidate.flatMap((entry): ExistingWorktreeOption[] => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const worktree = entry as Partial<ExistingWorktreeOption>;
+    const path = worktree.path?.trim();
+    const name = worktree.name?.trim();
+    if (!path || !name) {
+      return [];
+    }
+    return [
+      {
+        branch: worktree.branch?.trim() ?? "",
+        isCurrentProject: worktree.isCurrentProject === true,
+        isRegistered: worktree.isRegistered === true,
+        name,
+        path,
+      },
+    ];
+  });
 }
