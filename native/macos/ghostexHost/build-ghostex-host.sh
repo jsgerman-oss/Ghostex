@@ -23,6 +23,61 @@ case "$GHOSTEX_MACOS_ARCH" in
 		;;
 esac
 
+resolve_gxserver_node() {
+	local home
+	home="$HOME"
+	local candidates=(
+		"/opt/homebrew/bin/node"
+		"/usr/local/bin/node"
+		"$home/.local/share/mise/shims/node"
+		"$home/.local/bin/node"
+		"$home/.asdf/shims/node"
+	)
+	local candidate version major
+	for candidate in "${candidates[@]}"; do
+		if [[ -x "$candidate" ]]; then
+			version="$("$candidate" -p 'process.versions.node' 2>/dev/null || true)"
+			major="${version%%.*}"
+			if [[ "$major" =~ ^[0-9]+$ && "$major" -ge 22 ]]; then
+				printf '%s\n' "$candidate"
+				return 0
+			fi
+		fi
+	done
+	candidate="$(command -v node || true)"
+	if [[ -n "$candidate" ]]; then
+		version="$("$candidate" -p 'process.versions.node' 2>/dev/null || true)"
+		major="${version%%.*}"
+		if [[ "$major" =~ ^[0-9]+$ && "$major" -ge 22 ]]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	fi
+	return 1
+}
+
+# CDXC:GxserverPackaging 2026-06-01-16:11: The packaged gxserver native modules must be built with the same system Node that GxserverClient will use at runtime. Rebuild better-sqlite3 through that Node/npm before staging app resources so local starts do not ship a Node-ABI mismatch into /Applications/Ghostex.app.
+GXSERVER_NODE_BIN="${GXSERVER_NODE:-$(resolve_gxserver_node || true)}"
+if [[ -z "$GXSERVER_NODE_BIN" ]]; then
+	cat >&2 <<EOF
+Node.js 22 or newer is required to package gxserver for the macOS app.
+
+Install Node 22 LTS or newer from https://nodejs.org or with a system package manager such as Homebrew.
+EOF
+	exit 1
+fi
+GXSERVER_NODE_DIR="$(cd "$(dirname "$GXSERVER_NODE_BIN")" && pwd)"
+GXSERVER_NPM_BIN="${GXSERVER_NPM:-$GXSERVER_NODE_DIR/npm}"
+if [[ ! -x "$GXSERVER_NPM_BIN" ]]; then
+	GXSERVER_NPM_BIN="$(PATH="$GXSERVER_NODE_DIR:$PATH" command -v npm || true)"
+fi
+if [[ -z "$GXSERVER_NPM_BIN" || ! -x "$GXSERVER_NPM_BIN" ]]; then
+	echo "npm is required beside the selected gxserver Node runtime: $GXSERVER_NODE_BIN" >&2
+	exit 1
+fi
+GXSERVER_NODE_VERSION="$("$GXSERVER_NODE_BIN" -p 'process.version')"
+GXSERVER_NODE_MODULE_VERSION="$("$GXSERVER_NODE_BIN" -p 'process.versions.modules')"
+
 # CDXC:NativeBuild 2026-05-29-11:24: `bun run start` builds zmx and its Ghostty Zig dependency, which require Zig 0.15.2. A global Homebrew `zig` upgrade to 0.16 breaks the build API, so the local native build must choose the compatible Zig binary deliberately instead of inheriting the first PATH entry.
 ZIG_BIN="${ZIG:-}"
 if [[ -z "$ZIG_BIN" && -x /opt/homebrew/opt/zig@0.15/bin/zig ]]; then
@@ -299,8 +354,9 @@ chmod 755 "$WEB_DIR/bin/zehn"
 # CDXC:GxserverPackaging 2026-05-30-15:49: The macOS app bundles the same gxserver server package used by standalone installs. The app only starts/reuses gxserver through system Node and does not own shutdown, so app resources must include compiled gxserver JS plus pinned zmx/zehn artifacts without bundling Node or Beads.
 (
 	cd "$REPO_ROOT/gxserver"
-	npm run build
-	npm run package:app -- --zmx-bin "$WEB_DIR/bin/zmx" --zehn-bin "$WEB_DIR/bin/zehn"
+	echo "Packaging gxserver with $GXSERVER_NODE_BIN ($GXSERVER_NODE_VERSION, NODE_MODULE_VERSION $GXSERVER_NODE_MODULE_VERSION)"
+	env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run build
+	env PATH="$GXSERVER_NODE_DIR:$PATH" "$GXSERVER_NPM_BIN" run package:app -- --zmx-bin "$WEB_DIR/bin/zmx" --zehn-bin "$WEB_DIR/bin/zehn" --native-node "$GXSERVER_NODE_BIN" --native-npm "$GXSERVER_NPM_BIN"
 )
 rm -rf "$WEB_DIR/gxserver"
 cp -R "$REPO_ROOT/gxserver/dist/server-package" "$WEB_DIR/gxserver"
