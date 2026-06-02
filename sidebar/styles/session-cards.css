@@ -52,6 +52,18 @@
   opacity: 1;
 }
 
+/*
+ * CDXC:SidebarDragDrop 2026-06-02-20:22:
+ * A pointer between two session rows can make adjacent droppable halves both
+ * resolve the same gap. Keep only one visual insertion line for that boundary
+ * so dragging never shows stacked/double separators between two sessions.
+ */
+.session-local-tooltip-shell:has(.session-frame[data-drop-position="after"])
+  + .session-local-tooltip-shell
+  .session-frame[data-drop-position="before"]::before {
+  opacity: 0;
+}
+
 .session {
   --session-visible-surface: linear-gradient(
     160deg,

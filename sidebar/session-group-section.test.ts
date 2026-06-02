@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
   formatProjectEditorDiffStatsLabel,
+  getPinnedSessionDropGapKey,
+  PINNED_SESSION_DROP_GAP_AFTER_LAST,
   shouldTreatProjectAsEmptySessionGroup,
   shouldShowOpenProjectFolderIcon,
   shouldShowProjectEditorDiffStats,
@@ -134,5 +136,69 @@ describe("shouldShowProjectEditorDiffStats", () => {
         isRepo: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("getPinnedSessionDropGapKey", () => {
+  const visibleSessionIds = ["first", "second", "third"];
+
+  test("maps before the first pinned target to the first visible gap", () => {
+    expect(
+      getPinnedSessionDropGapKey({
+        dropTarget: {
+          groupId: "project",
+          kind: "session",
+          position: "before",
+          sessionId: "first",
+        },
+        groupId: "project",
+        visibleSessionIds,
+      }),
+    ).toBe("before:first");
+  });
+
+  test("maps after a row to the next visible gap instead of a row pseudo-element", () => {
+    expect(
+      getPinnedSessionDropGapKey({
+        dropTarget: {
+          groupId: "project",
+          kind: "session",
+          position: "after",
+          sessionId: "first",
+        },
+        groupId: "project",
+        visibleSessionIds,
+      }),
+    ).toBe("before:second");
+  });
+
+  test("maps after the final row to the stable trailing gap", () => {
+    expect(
+      getPinnedSessionDropGapKey({
+        dropTarget: {
+          groupId: "project",
+          kind: "session",
+          position: "after",
+          sessionId: "third",
+        },
+        groupId: "project",
+        visibleSessionIds,
+      }),
+    ).toBe(PINNED_SESSION_DROP_GAP_AFTER_LAST);
+  });
+
+  test("ignores targets for another group", () => {
+    expect(
+      getPinnedSessionDropGapKey({
+        dropTarget: {
+          groupId: "other",
+          kind: "session",
+          position: "before",
+          sessionId: "first",
+        },
+        groupId: "project",
+        visibleSessionIds,
+      }),
+    ).toBeUndefined();
   });
 });

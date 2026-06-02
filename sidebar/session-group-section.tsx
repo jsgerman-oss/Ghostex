@@ -29,6 +29,7 @@ import { useDroppable } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { createPortal } from "react-dom";
 import {
+  Fragment,
   forwardRef,
   startTransition,
   useCallback,
@@ -451,6 +452,53 @@ export function shouldTreatProjectAsEmptySessionGroup({
   return hasProjectContext && sessionCount === 0;
 }
 
+export const PINNED_SESSION_DROP_GAP_AFTER_LAST = "after-last";
+
+function getSessionDropGapKeyBefore(sessionId: string): string {
+  return `before:${sessionId}`;
+}
+
+/**
+ * CDXC:PinnedSessions 2026-06-02-20:35:
+ * Pinned project-session reorder feedback should paint one stable insertion
+ * line in a fixed gap slot, including the slot before the first pinned row.
+ * Map row-based drop targets to visible list gaps so the line does not jitter
+ * with per-row hover halves while the drag pointer moves over a session.
+ */
+export function getPinnedSessionDropGapKey({
+  dropTarget,
+  groupId,
+  visibleSessionIds,
+}: {
+  dropTarget: SidebarSessionDropTarget | undefined;
+  groupId: string;
+  visibleSessionIds: readonly string[];
+}): string | undefined {
+  if (!dropTarget || dropTarget.groupId !== groupId || visibleSessionIds.length === 0) {
+    return undefined;
+  }
+
+  if (dropTarget.kind === "group") {
+    return dropTarget.position === "start"
+      ? getSessionDropGapKeyBefore(visibleSessionIds[0])
+      : PINNED_SESSION_DROP_GAP_AFTER_LAST;
+  }
+
+  const targetIndex = visibleSessionIds.indexOf(dropTarget.sessionId);
+  if (targetIndex < 0) {
+    return undefined;
+  }
+
+  if (dropTarget.position === "before") {
+    return getSessionDropGapKeyBefore(dropTarget.sessionId);
+  }
+
+  const nextSessionId = visibleSessionIds[targetIndex + 1];
+  return nextSessionId
+    ? getSessionDropGapKeyBefore(nextSessionId)
+    : PINNED_SESSION_DROP_GAP_AFTER_LAST;
+}
+
 export function shouldShowOpenProjectFolderIcon({
   isCollapsed,
   sessionCount,
@@ -839,6 +887,15 @@ export function SessionGroupSection({
     isToggleEnabled: enableProjectSessionListToggle,
     sessionIds: orderedSessionIds,
   });
+  const shouldRenderPinnedSessionDropGaps =
+    allowPinnedSessionReorder && showSessionDropPositionIndicators && orderedSessionIds.length > 0;
+  const pinnedSessionDropGapKey = shouldRenderPinnedSessionDropGaps
+    ? getPinnedSessionDropGapKey({
+        dropTarget: pinnedSessionDropIndicator,
+        groupId: group.groupId,
+        visibleSessionIds,
+      })
+    : undefined;
   const visibleGroupSessions = visibleSessionIds
     .map((sessionId) => sessionsById[sessionId])
     .filter((session): session is NonNullable<typeof session> => session !== undefined);
@@ -1930,6 +1987,7 @@ export function SessionGroupSection({
         >
           <div
             className="group-sessions sidebar-collapse-content"
+            data-pinned-drop-gaps={String(shouldRenderPinnedSessionDropGaps)}
             data-drop-target={String(isSessionDropTargetVisible)}
             id={sessionsRegionId}
             ref={contentRef}
@@ -1952,36 +2010,60 @@ export function SessionGroupSection({
             {orderedSessionIds.length > 0 ? (
               <>
                 {visibleSessionIds.map((sessionId, sessionIndex) => (
-                  <SortableSessionCard
-                    completionFlashNonce={completionFlashNonceBySessionId?.[sessionId] ?? 0}
-                    dragDisabled={
-                      draggingDisabled ||
-                      (sessionDraggingDisabled &&
-                        !(allowPinnedSessionReorder && sessionsById[sessionId]?.isPinned === true)
-                      )
-                    }
-                    dropDisabled={
-                      draggingDisabled || (sessionDraggingDisabled && !allowPinnedSessionReorder)
-                    }
-                    groupId={group.groupId}
-                    forcedDropPosition={
-                      pinnedSessionDropIndicator?.kind === "session" &&
-                      pinnedSessionDropIndicator.groupId === group.groupId &&
-                      pinnedSessionDropIndicator.sessionId === sessionId
-                        ? pinnedSessionDropIndicator.position
-                        : undefined
-                    }
-                    index={sessionIndex}
-                    isSearchSelected={selectedSearchSessionId === sessionId}
-                    key={sessionId}
-                    onFocusRequested={onFocusRequested}
-                    sessionId={sessionId}
-                    showGroupDropTargetChrome={!allowPinnedSessionReorder}
-                    showGroupConnector={showSessionGroupConnector}
-                    showDropPositionIndicator={showSessionDropPositionIndicators}
-                    vscode={vscode}
-                  />
+                  <Fragment key={sessionId}>
+                    {shouldRenderPinnedSessionDropGaps ? (
+                      <div
+                        aria-hidden
+                        className="pinned-session-drop-gap"
+                        data-active={String(
+                          pinnedSessionDropGapKey === getSessionDropGapKeyBefore(sessionId),
+                        )}
+                        data-edge={sessionIndex === 0 ? "start" : undefined}
+                      />
+                    ) : null}
+                    <SortableSessionCard
+                      completionFlashNonce={completionFlashNonceBySessionId?.[sessionId] ?? 0}
+                      dragDisabled={
+                        draggingDisabled ||
+                        (sessionDraggingDisabled &&
+                          !(allowPinnedSessionReorder && sessionsById[sessionId]?.isPinned === true)
+                        )
+                      }
+                      dropDisabled={
+                        draggingDisabled || (sessionDraggingDisabled && !allowPinnedSessionReorder)
+                      }
+                      groupId={group.groupId}
+                      forcedDropPosition={
+                        allowPinnedSessionReorder
+                          ? undefined
+                          : pinnedSessionDropIndicator?.kind === "session" &&
+                              pinnedSessionDropIndicator.groupId === group.groupId &&
+                              pinnedSessionDropIndicator.sessionId === sessionId
+                            ? pinnedSessionDropIndicator.position
+                            : undefined
+                      }
+                      index={sessionIndex}
+                      isSearchSelected={selectedSearchSessionId === sessionId}
+                      onFocusRequested={onFocusRequested}
+                      sessionId={sessionId}
+                      showGroupDropTargetChrome={!allowPinnedSessionReorder}
+                      showGroupConnector={showSessionGroupConnector}
+                      showDropPositionIndicator={
+                        showSessionDropPositionIndicators && !allowPinnedSessionReorder
+                      }
+                      vscode={vscode}
+                    />
+                  </Fragment>
                 ))}
+                {shouldRenderPinnedSessionDropGaps ? (
+                  <div
+                    aria-hidden
+                    className="pinned-session-drop-gap"
+                    data-active={String(
+                      pinnedSessionDropGapKey === PINNED_SESSION_DROP_GAP_AFTER_LAST,
+                    )}
+                  />
+                ) : null}
                 {shouldShowProjectSessionListToggle ? (
                   <button
                     aria-label={

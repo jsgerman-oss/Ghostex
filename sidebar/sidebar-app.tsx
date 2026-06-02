@@ -108,7 +108,11 @@ import {
 import { SessionGroupSection } from "./session-group-section";
 import { isEditableKeyboardTarget } from "./text-input-keyboard";
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
-import { AppTooltip, TooltipProvider } from "./app-tooltip";
+import {
+  AppTooltip,
+  setSidebarTooltipsSuppressedForDrag,
+  TooltipProvider,
+} from "./app-tooltip";
 import { useScrollGlowState } from "./use-scroll-glow-state";
 import type { WebviewApi } from "./webview-api";
 import { createDisplaySessionLayout } from "../shared/active-sessions-sort";
@@ -333,17 +337,6 @@ type SidebarPointerDownSessionTarget = {
 
 type SidebarSessionPointerDragState = {
   didMove: boolean;
-  /*
-   * CDXC:PinnedSessions 2026-06-02-19:19:
-   * Dragging two pinned sessions inside one project must reorder on drop even
-   * when the dnd drag-end event no longer carries client coordinates. Keep the
-   * last pointer position observed during move/over so pinned drop resolution
-   * can still use the visible pinned row geometry instead of skipping sync.
-   */
-  lastPoint?: {
-    x: number;
-    y: number;
-  };
   startPoint?: {
     x: number;
     y: number;
@@ -565,6 +558,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     resetSidebarStore();
     didResetStoreRef.current = true;
   }
+
+  useEffect(() => {
+    return () => {
+      setSidebarTooltipsSuppressedForDrag(false);
+    };
+  }, []);
 
   const applyLocalFocus = useSidebarStore((state) => state.applyLocalFocus);
   const applyCommandRunStateClearedMessage = useSidebarStore(
@@ -944,7 +943,8 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     postSidebarOrderReproLog(vscode, "repro.sidebarOrder.webview.messageReceived", {
       agentIds: event.data.hud.agents.map((agent) => agent.agentId),
       commandIds: event.data.hud.commands.map((command) => command.commandId),
-      groupTitles: event.data.groups.map((group) => group.title),
+      groupCount: event.data.groups.length,
+      groupIds: event.data.groups.map((group) => group.groupId),
       messageType: event.data.type,
       revision: event.data.revision,
     });
@@ -1649,6 +1649,28 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       },
       sessionId,
     };
+
+    if (sessionsById[sessionId]?.isPinned === true) {
+      /*
+       * CDXC:PinnedSessions 2026-06-02-19:53:
+       * Pinned project-session reorder regressions can fail before dnd-kit
+       * emits a session drag. Persist one pointer-down breadcrumb for pinned
+       * rows so support can distinguish "drag never started" from "drop guard
+       * skipped sync" without logging titles, paths, commands, or user text.
+       */
+      postPinnedSessionReorderLog("pointerDown", {
+        groupCollapsed: collapsedGroupsById[groupId] === true,
+        pointer: summarizePointerEventForPinnedReorder(event),
+        state: createPinnedSessionReorderDebugState(
+          { groupId, kind: "session", sessionId },
+          sessionIdsByGroupRef.current,
+          effectiveSessionIdsByGroup,
+          authoritativeSessionIdsByGroup,
+          sessionsById,
+        ),
+        targetDom: createPinnedSessionDomDebugState(groupId, sessionId),
+      });
+    }
   });
 
   useEffect(() => {
@@ -1759,6 +1781,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   );
 
   const handleDragStart = ((event) => {
+    setSidebarTooltipsSuppressedForDrag(true);
     const nativeEvent = getDragNativeEvent(event);
     const sourceData = getSidebarDropData(event.operation.source);
     const pointerDownSessionTarget = pointerDownSessionTargetRef.current;
@@ -1812,6 +1835,34 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     setGroupDropIndicator(undefined);
     setPinnedSessionDropIndicator(undefined);
     setSessionDropIndicatorGroupId(undefined);
+    if (
+      pointerDownSessionTarget &&
+      sessionsById[pointerDownSessionTarget.sessionId]?.isPinned === true &&
+      !(
+        sourceData?.kind === "session" &&
+        sourceData.groupId === pointerDownSessionTarget.groupId &&
+        sourceData.sessionId === pointerDownSessionTarget.sessionId
+      )
+    ) {
+      postPinnedSessionReorderLog("dragStartSourceMismatch", {
+        point: getClientPoint(nativeEvent),
+        pointerDownSessionTarget,
+        sourceData,
+        sourceKind: sourceData?.kind,
+        state: createPinnedSessionReorderDebugState(
+          {
+            groupId: pointerDownSessionTarget.groupId,
+            kind: "session",
+            sessionId: pointerDownSessionTarget.sessionId,
+          },
+          sessionIdsByGroupRef.current,
+          effectiveSessionIdsByGroup,
+          authoritativeSessionIdsByGroup,
+          sessionsById,
+        ),
+        targetData: getSidebarDropData(event.operation.target),
+      });
+    }
     if (sourceData?.kind === "session" && sessionsById[sourceData.sessionId]?.isPinned === true) {
       postPinnedSessionReorderLog("dragStart", {
         point: getClientPoint(nativeEvent),
@@ -1851,6 +1902,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   }) satisfies DragDropEventHandlers["onDragOver"];
 
   const handleDragEnd = ((event) => {
+    setSidebarTooltipsSuppressedForDrag(false);
     setGroupDropIndicator(undefined);
     setGroupDragPreview(undefined);
     setPinnedSessionDropIndicator(undefined);
@@ -1959,10 +2011,15 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         sourceData,
         currentSessionIdsByGroup,
         sessionsById,
-        sessionPointerDragState?.lastPoint,
       );
       postPinnedSessionReorderLog("dragEndResolved", {
         point: getClientPoint(nativeEvent),
+        resolution: createPinnedSessionDropResolutionDebugState(
+          nativeEvent,
+          sourceData,
+          currentSessionIdsByGroup,
+          sessionsById,
+        ),
         resolvedPinnedSessionDropTarget,
         resolvedSessionDropTarget,
         sourceData,
@@ -3675,25 +3732,132 @@ function createPinnedSessionReorderDebugState(
   authoritativeSessionIdsByGroup: SessionIdsByGroup,
   sessionsById: Record<
     string,
-    { isPinned?: boolean; primaryTitle?: string; sessionId?: string } | undefined
+    { isPinned?: boolean; sessionId?: string } | undefined
   >,
 ): Record<string, unknown> {
   const currentSessionIds = currentSessionIdsByGroup[sourceData.groupId] ?? [];
   const effectiveSessionIds = effectiveSessionIdsByGroup[sourceData.groupId] ?? [];
   const authoritativeSessionIds = authoritativeSessionIdsByGroup[sourceData.groupId] ?? [];
+  const currentPinnedSessionIds = currentSessionIds.filter(
+    (sessionId) => sessionsById[sessionId]?.isPinned === true,
+  );
+  const effectivePinnedSessionIds = effectiveSessionIds.filter(
+    (sessionId) => sessionsById[sessionId]?.isPinned === true,
+  );
 
   return {
     authoritativeSessionIds,
-    currentPinnedSessionIds: currentSessionIds.filter(
-      (sessionId) => sessionsById[sessionId]?.isPinned === true,
-    ),
+    currentPinnedSessionIds,
     currentSessionIds,
-    effectivePinnedSessionIds: effectiveSessionIds.filter(
-      (sessionId) => sessionsById[sessionId]?.isPinned === true,
-    ),
+    effectivePinnedSessionIds,
     effectiveSessionIds,
+    pinnedCount: currentPinnedSessionIds.length,
+    sourceCurrentIndex: currentSessionIds.indexOf(sourceData.sessionId),
+    sourceCurrentPinnedIndex: currentPinnedSessionIds.indexOf(sourceData.sessionId),
+    sourceEffectiveIndex: effectiveSessionIds.indexOf(sourceData.sessionId),
+    sourceEffectivePinnedIndex: effectivePinnedSessionIds.indexOf(sourceData.sessionId),
     sourceIsPinned: sessionsById[sourceData.sessionId]?.isPinned === true,
-    sourceTitle: sessionsById[sourceData.sessionId]?.primaryTitle,
+  };
+}
+
+function summarizePointerEventForPinnedReorder(event: PointerEvent): Record<string, unknown> {
+  return {
+    button: event.button,
+    buttons: event.buttons,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    isPrimary: event.isPrimary,
+    pointerType: event.pointerType,
+  };
+}
+
+function createPinnedSessionDomDebugState(
+  groupId: string,
+  sessionId: string,
+): Record<string, unknown> {
+  const groupElement = getSidebarGroupElementById(groupId);
+  const sessionElement = getTargetSessionElement(sessionId, undefined);
+  const frameElement = sessionElement?.closest<HTMLElement>(".session-frame");
+
+  return {
+    group: {
+      collapsed: groupElement?.dataset.collapsed,
+      dragging: groupElement?.dataset.dragging,
+      found: Boolean(groupElement),
+      rect: summarizeElementRectForPinnedReorder(groupElement),
+    },
+    session: {
+      dragging: sessionElement?.dataset.dragging,
+      found: Boolean(sessionElement),
+      frameFound: Boolean(frameElement),
+      pinned: sessionElement?.dataset.pinned,
+      rect: summarizeElementRectForPinnedReorder(sessionElement),
+      visible: sessionElement?.dataset.visible,
+    },
+  };
+}
+
+function createPinnedSessionDropResolutionDebugState(
+  nativeEvent: Event | undefined,
+  sourceData: Extract<ReturnType<typeof getSidebarDropData>, { kind: "session" }>,
+  sessionIdsByGroup: SessionIdsByGroup,
+  sessionsById: Record<string, { isPinned?: boolean } | undefined>,
+): Record<string, unknown> {
+  const point = getClientPoint(nativeEvent);
+  const groupElement = getSidebarGroupElementById(sourceData.groupId);
+  const groupBounds = groupElement?.getBoundingClientRect();
+  const groupSessionIds = sessionIdsByGroup[sourceData.groupId] ?? [];
+  const pinnedSessionIds = groupSessionIds.filter(
+    (sessionId) => sessionsById[sessionId]?.isPinned === true,
+  );
+  const targetMetrics = pinnedSessionIds
+    .filter((sessionId) => sessionId !== sourceData.sessionId)
+    .map((sessionId) => {
+      const element = getTargetSessionElement(sessionId, point);
+      const bounds = element?.getBoundingClientRect();
+      return {
+        elementFound: Boolean(element),
+        height: bounds?.height,
+        midpointY: bounds ? bounds.top + bounds.height / 2 : undefined,
+        pinnedIndex: pinnedSessionIds.indexOf(sessionId),
+        pointBeforeMidpoint:
+          bounds && point ? point.y <= bounds.top + bounds.height / 2 : undefined,
+        top: bounds?.top,
+      };
+    });
+  const pointInsideGroup =
+    point !== undefined &&
+    groupBounds !== undefined &&
+    point.y >= groupBounds.top &&
+    point.y <= groupBounds.bottom;
+
+  return {
+    groupElementFound: Boolean(groupElement),
+    groupRect: summarizeElementRectForPinnedReorder(groupElement),
+    groupSessionCount: groupSessionIds.length,
+    hasPoint: Boolean(point),
+    pinnedCount: pinnedSessionIds.length,
+    point,
+    pointInsideGroup,
+    sourceInPinnedSet: pinnedSessionIds.includes(sourceData.sessionId),
+    sourcePinnedIndex: pinnedSessionIds.indexOf(sourceData.sessionId),
+    targetMetricCount: targetMetrics.filter((metric) => metric.elementFound).length,
+    targetMetrics,
+  };
+}
+
+function summarizeElementRectForPinnedReorder(
+  element: Element | null | undefined,
+): Record<string, number> | undefined {
+  if (!element) {
+    return undefined;
+  }
+
+  const bounds = element.getBoundingClientRect();
+  return {
+    bottom: bounds.bottom,
+    height: bounds.height,
+    top: bounds.top,
   };
 }
 
@@ -3967,9 +4131,8 @@ function resolvePinnedSessionDropTargetFromPoint(
   sourceData: Extract<ReturnType<typeof getSidebarDropData>, { kind: "session" }>,
   sessionIdsByGroup: SessionIdsByGroup,
   sessionsById: Record<string, { isPinned?: boolean } | undefined>,
-  fallbackPoint?: { x: number; y: number },
 ): SidebarSessionDropTarget | undefined {
-  const point = getClientPoint(nativeEvent) ?? fallbackPoint;
+  const point = getClientPoint(nativeEvent);
   if (!point) {
     return undefined;
   }
@@ -4341,7 +4504,6 @@ function createSessionPointerDragState(
   pointerDownSessionTarget: SidebarPointerDownSessionTarget | undefined,
   nativeEvent: Event | undefined,
 ): SidebarSessionPointerDragState {
-  const currentPoint = getClientPoint(nativeEvent);
   const startPoint =
     pointerDownSessionTarget &&
     pointerDownSessionTarget.groupId === sourceData.groupId &&
@@ -4350,8 +4512,7 @@ function createSessionPointerDragState(
       : undefined;
 
   return {
-    didMove: hasPointerDragMovedPastThreshold(startPoint, currentPoint),
-    lastPoint: currentPoint ?? startPoint,
+    didMove: hasPointerDragMovedPastThreshold(startPoint, getClientPoint(nativeEvent)),
     startPoint,
   };
 }
@@ -4360,19 +4521,13 @@ function updateSessionPointerDragState(
   pointerDragState: SidebarSessionPointerDragState | undefined,
   nativeEvent: Event | undefined,
 ): void {
-  if (!pointerDragState) {
-    return;
-  }
-
-  const currentPoint = getClientPoint(nativeEvent);
-  pointerDragState.lastPoint = currentPoint ?? pointerDragState.lastPoint;
-  if (pointerDragState.didMove) {
+  if (!pointerDragState || pointerDragState.didMove) {
     return;
   }
 
   pointerDragState.didMove = hasPointerDragMovedPastThreshold(
     pointerDragState.startPoint,
-    currentPoint,
+    getClientPoint(nativeEvent),
   );
 }
 
