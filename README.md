@@ -1,44 +1,21 @@
-### Please join the Discord to support Ghostex 🙏🏻 https://discord.gg/df7b3G92CS
+### Please join the Discord to give feedback, support, or contribute to Ghostex 🙏🏻 https://discord.gg/df7b3G92CS
 
-# Native Ghostty Based Open Source Alternative to Codex App
-Low Ram Use. Longer Battery. Desktop/Browser use. All Agent CLIs. T3code. Notifications. Pets.<br/>
-Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
-
-> Looking for contributers! Please join the discord if interested!
+# Native Ghostty-based Opensource Alternative to Codex App
+Low Ram Use. Longer Battery. Computer/Browser use. All Agent CLIs. T3code. Notifications. Pets.<br/>
+Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps. Much more.
 
 <img width="3322" height="2060" alt="ghostex-main" src="https://github.com/user-attachments/assets/49862e2d-1edd-4647-8161-5afb25ed8341" />
 
 ## Highlights:
-### 1. Ghostty Terminals for low RAM usage, longer Battery life, great Agent CLIs stability
-### 2. Native swift for all the parts that require it to improve performance and UX
-### 3. T3code for GUI panes
-### 4. Chromium CEF Browser (Devtools & Profiles)
-### 5. Light embedded VS Code (for MD files/Reviewing Code & PRs)
-### 6. Android & iOS apps for connecting to sessions easily
-### 7. TUI mode (ghostex cli) to connect to all your sessions from any other machine.
+#### 1. Ghostty Terminals for low ram usage, longer battery life, best Agent CLIs stability
+#### 2. Native swift for all the parts that require it to improve performance and UX
+#### 3. Chromium CEF Browser (Devtools & Profiles)
+#### 4. Light embedded VS Code (for MD files/Reviewing Code & PRs)
+#### 5. Android & iOS apps for connecting to sessions easily
+#### 6. TUI mode (ghostex cli) to connect to all your sessions from any other machine.
+#### 7. T3code for GUI panes
 
-### Main Features (not full list, see release notes, I'm adding more daily):
-- First-launch preferences help new installs set common defaults before opening sessions
-- Git workflows include Sync with Main, split Git menus, prompt-agent PR review, and persistent running toasts for long actions
-- First-prompt title generation can auto-name new agent sessions from the opening prompt
-- Pinned sessions keep important agent terminals at the top of each project and support `ghostex pin-session`
-- Auto-sleep policies now cover idle browser and project panes as well as terminals
-- Embedded Chromium Browser w Devtools and profiles
-- Embedded Light Code/MD Files Editor
-- Access your sessions with any Agent CLI live from the Android/iOS apps
-- Built in SSH continuation with live session persistence (zmx/tmux/zellij)
-- The best agent CLI rich prompt editor with Image insert/preview support. Press ctrl+g to use it.
-- Native Swift macOS app shell for better performance
-- Auto sleep unused terminals to save ram (auto-restore when clicked)
-- Auto session naming for all popular agents 
-- Reopening the app always resumes your agent cli sessions
-- Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
-- Menu bar working & done indicators and notification sounds for almost all agent clis
-- Supports Pets so you can see session status at a glance :)
-- Works with all Agent CLIs (Claude Code, Codex CLI, OpenCode, Pi Agent, Gemini, Copilot, etc.)
-- Schedule sending messages to agents (more automation features coming soon)
-- Way more features to fit here
-<br/>
+Full list of features at the bottom :)
 
 # Installation
 
@@ -48,7 +25,7 @@ Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps.
 The same Homebrew command installs the correct Apple Silicon or Intel Mac build automatically.
 
 ```bash
-brew install --cask maddada/tap/ghostex --force
+brew update && brew install --cask maddada/tap/ghostex --force
 ```
 
 Or just download the latest dmg from the releases page
@@ -68,6 +45,13 @@ Or just download the latest dmg from the releases page
 <img width="250" alt="74733" src="https://github.com/user-attachments/assets/e7af9c54-e8ef-4e0b-a934-8b2f9ea56c70" /> <img width="250" alt="74068" src="https://github.com/user-attachments/assets/563dbb8a-5a9d-4db7-8946-1dfc383e09c8" />
 
 <br />
+
+## Planned client-server architecture in v4 :)
+Currently the macOS app is the client (for showing the UI) + it has all the logic for managing the zmx providers and agents (backend logic)
+I'm planning to move this logic to a new gxserver daemon that you can run on your local/remote machines.
+This will allow connecting from any client app to projects on local + multiple remote machines.
+
+<img width="1540" height="620" alt="image" src="https://github.com/user-attachments/assets/a33a3ed0-4b25-4a38-bdd7-1abfeecc8e51" />
 
 ### 2 Rich Prompt Editor Modes! Monaco based & TUI based:
 
@@ -94,10 +78,33 @@ Or just download the latest dmg from the releases page
 
 <br />
 
-### Notifications for All Agent CLIs. Menu bar indicator and minimal floating numbers also supported.
+### Notifications for All Agent CLIs. Menu bar indicator. Pets or minimal floating numbers also supported.
 
 <img width="331" height="309" alt="2026-05-23_CleanShot_14-26-43" src="https://github.com/user-attachments/assets/ad0f7af5-b0e9-4b24-988c-cb6bf02c6c9f" />
 
+<br/>
+
+### Highlighted Features (not full list, see release notes, I'm adding more daily):
+- First-launch preferences help new installs set common defaults before opening sessions
+- Git workflows include Sync with Main, split Git menus, prompt-agent PR review, and persistent running toasts for long actions
+- First-prompt title generation can auto-name new agent sessions from the opening prompt
+- Pinned sessions keep important agent terminals at the top of each project and support `ghostex pin-session`
+- Auto-sleep policies now cover idle browser and project panes as well as terminals
+- Embedded Chromium Browser w Devtools and profiles
+- Embedded Light Code/MD Files Editor
+- Access your sessions with any Agent CLI live from the Android/iOS apps
+- Built in SSH continuation with live session persistence (zmx/tmux/zellij)
+- The best agent CLI rich prompt editor with Image insert/preview support. Press ctrl+g to use it.
+- Native Swift macOS app shell for better performance
+- Auto sleep unused terminals to save ram (auto-restore when clicked)
+- Auto session naming for all popular agents 
+- Reopening the app always resumes your agent cli sessions
+- Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
+- Menu bar working & done indicators and notification sounds for almost all agent clis
+- Supports Pets so you can see session status at a glance :)
+- Works with all Agent CLIs (Claude Code, Codex CLI, OpenCode, Pi Agent, Gemini, Copilot, etc.)
+- Schedule sending messages to agents (more automation features coming soon)
+- Way more features to fit here
 <br/>
 
 ## Other useful stuff:
