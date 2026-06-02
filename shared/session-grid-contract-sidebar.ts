@@ -513,6 +513,12 @@ export type SidebarDaemonSessionItem = {
   errorMessage?: string;
   exitCode?: number;
   isCurrentWorkspace: boolean;
+  isLocalOnly?: boolean;
+  /**
+   * CDXC:SessionInventoryOwnership 2026-06-02-17:19:
+   * Running Sessions may show gxserver-backed terminal rows and macOS-local panes in one modal. Carry ownership on the contract so the UI and external consumers can label local-only rows instead of treating every row as shared daemon state.
+   */
+  ownership?: "gxserver" | "local";
   restoreState: "live" | "replayed";
   rows: number;
   sessionId: string;
@@ -543,9 +549,11 @@ export type SidebarT3SessionItem = {
   detail?: string;
   isCurrentWorkspace: boolean;
   isFocused: boolean;
+  isLocalOnly?: boolean;
   isRunning: boolean;
   isSleeping: boolean;
   lastInteractionAt?: string;
+  ownership?: "local";
   sessionId: string;
   threadId?: string;
   title?: string;

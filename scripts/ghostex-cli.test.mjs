@@ -1139,7 +1139,9 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
       expect(result.sessions.map((session) => session.sessionId)).toEqual(["G1a", "G2a"]);
       expect(result.sessions[0]).toMatchObject({
         isLive: true,
+        isLocalOnly: false,
         lifecycleState: "running",
+        ownership: "gxserver",
         provider: "zmx",
         providerSessionName: "P1a-G1a",
         providerSessionState: "missing",

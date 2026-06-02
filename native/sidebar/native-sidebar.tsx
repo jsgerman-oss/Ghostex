@@ -237,6 +237,9 @@ import {
   createLocalPersistableSessionRecord,
   isGxserverBackedLocalPersistedSession,
 } from "./native-project-local-persistence";
+import { normalizeLiveCommandsPanelState } from "./native-command-panel-local-state";
+import { resolveNativeSessionInventoryOwnership } from "./native-session-inventory-ownership";
+import { countRemovableWorkspaceDockProjects } from "./native-workspace-dock-local-state";
 import {
   compareRecentProjectsByClosedAt,
   countRecentProjectSessions,
@@ -1395,10 +1398,12 @@ type NativeCliSessionListItem = {
   groupTitle: string;
   isFavorite?: boolean;
   isFocused: boolean;
+  isLocalOnly: boolean;
   isLive?: boolean;
   isVisible: boolean;
   lastInteractionAt: string;
   nativePaneState?: NativePaneState;
+  ownership: "gxserver" | "local";
   projectId: string;
   projectName: string;
   projectPath: string;
@@ -1419,10 +1424,12 @@ type AgentManagerXWorkspaceSession = {
   alias: string;
   displayName: string;
   isFocused: boolean;
+  isLocalOnly: boolean;
   isRunning: boolean;
   isVisible: boolean;
   kind: "t3" | "terminal";
   lastActiveAt: string;
+  ownership: "gxserver" | "local";
   projectName?: string;
   projectPath?: string;
   sessionId: string;
@@ -2345,6 +2352,24 @@ function isGxserverPresentationProjectLocallyHidden(projectId: string): boolean 
 
 function isGxserverPresentationSessionLocallyHidden(projectId: string, sessionId: string): boolean {
   return localFirstHiddenPresentationSessions.has(localFirstPresentationSessionKey(projectId, sessionId));
+}
+
+function countCurrentRemovableWorkspaceDockProjects(): number {
+  const presentation = gxserverStartupSnapshot?.presentation;
+  if (!presentation) {
+    return countRemovableWorkspaceDockProjects({ localProjectCount: projects.length });
+  }
+  const presentationProjectIds = presentation.projects
+    .map((project) => project.projectId);
+  const quickProjectIds = projects
+    .filter((project) => project.isRecentProject !== true && isQuickProject(project))
+    .map((project) => project.projectId);
+  return countRemovableWorkspaceDockProjects({
+    hiddenPresentationProjectIds: new Set(localFirstHiddenPresentationProjects.keys()),
+    localProjectCount: projects.length,
+    localQuickProjectIds: quickProjectIds,
+    presentationProjectIds,
+  });
 }
 
 function pruneLocalFirstPresentationHides(snapshot: GxserverPresentationSnapshot): void {
@@ -9985,7 +10010,9 @@ function updateProjectCommandsPanel(
     project.projectId === projectId
       ? {
           ...project,
-          commandsPanel: normalizeStoredCommandsPanelState(updater(project.commandsPanel)),
+          commandsPanel: normalizeLiveCommandsPanelState(updater(project.commandsPanel), {
+            defaultHeightPx: settings.commandsPanelDefaultHeightPx,
+          }),
         }
       : project,
   );
@@ -12171,16 +12198,23 @@ function createAgentManagerXWorkspaceSessionFromSidebarSession(
   const primaryTitle = session.primaryTitle?.trim();
   const terminalTitle = session.terminalTitle?.trim();
   const alias = session.alias.trim();
+  const ownership = resolveNativeSessionInventoryOwnership({
+    hasGxserverProjectContext: session.sessionKind === "terminal" && Boolean(group.projectContext),
+    hasGxserverSessionReference:
+      session.sessionKind === "terminal" && Boolean(parseCombinedProjectSessionId(session.sessionId)),
+  });
   return [
     {
       agent: session.agentIcon ?? "unknown",
       alias: session.alias,
       displayName: primaryTitle || terminalTitle || alias || "Session",
       isFocused: group.isActive && session.isFocused,
+      isLocalOnly: ownership.isLocalOnly,
       isRunning: session.isRunning,
       isVisible: group.isActive && session.isVisible,
       kind: session.sessionKind === "t3" ? "t3" : "terminal",
       lastActiveAt: session.lastInteractionAt ?? updatedAt,
+      ownership: ownership.ownership,
       projectName: projectMetadata.projectName ?? group.title,
       projectPath: projectMetadata.projectPath ?? group.projectContext?.path,
       sessionId: session.sessionId,
@@ -22571,6 +22605,12 @@ function listNativeCliSessionsFromSidebarMessage(
       const provider = sidebarSession.sessionPersistenceProvider;
       const providerSessionName = sidebarSession.sessionPersistenceName;
       const status = getNativeCliSessionStatusFromSidebarSession(sidebarSession);
+      const ownership = resolveNativeSessionInventoryOwnership({
+        hasGxserverProjectContext:
+          sidebarSession.sessionKind === "terminal" && Boolean(projectContext),
+        hasGxserverSessionReference:
+          sidebarSession.sessionKind === "terminal" && Boolean(combinedReference),
+      });
       items.push({
         activity: sidebarSession.activity,
         agent: sidebarSession.agentIcon,
@@ -22583,10 +22623,12 @@ function listNativeCliSessionsFromSidebarMessage(
         groupTitle: group.title,
         isFavorite: sidebarSession.isFavorite,
         isFocused: sidebarSession.isFocused,
+        isLocalOnly: ownership.isLocalOnly,
         isLive: sidebarSession.isLive,
         isVisible: sidebarSession.isVisible,
         lastInteractionAt: sidebarSession.lastInteractionAt ?? new Date().toISOString(),
         nativePaneState: sidebarSession.nativePaneState,
+        ownership: ownership.ownership,
         projectId,
         projectName: group.title,
         projectPath: projectContext?.path ?? "",
@@ -22741,11 +22783,13 @@ function listNativeCliSessionsFromNativeProjects(): NativeCliSessionListItem[] {
            */
           isFavorite: session.isFavorite,
           isFocused: group.snapshot.focusedSessionId === session.sessionId,
+          isLocalOnly: true,
           isLive,
           isVisible: Boolean(projectedSession?.isVisible),
           lastInteractionAt:
             projectedSession?.lastInteractionAt ?? terminalState?.lastActivityAt ?? session.createdAt,
           nativePaneState,
+          ownership: "local",
           projectId: project.projectId,
           projectName: project.name,
           projectPath: project.path,
@@ -23498,6 +23542,17 @@ function cleanupExitedNativeCommandPaneSession(
   }
 
   const commandId = sidebarCommandCommandIdBySessionId.get(reference.sessionId);
+  const sessionRecord = findSessionRecordInProject(reference.project, reference.sessionId);
+  const commandTransitionOrigin = createCommandPaneTransitionOrigin(
+    reference.project,
+    reference.sessionId,
+  );
+  const commandTransitionResult = applyGxserverSessionTransition(
+    reference,
+    sessionRecord,
+    "close",
+    commandTransitionOrigin,
+  );
   const sessionsBefore = reference.project.commandsPanel.sessions.map((session) => session.sessionId);
   const nativeSessionId = forgetNativeSessionMappingForProject(
     reference.project.projectId,
@@ -23529,6 +23584,13 @@ function cleanupExitedNativeCommandPaneSession(
   nativeAttentionNotificationLastSentAtBySessionId.delete(reference.sessionId);
   clearDelayedSendTimer(reference.sessionId, reference.project.projectId);
   /*
+   * CDXC:ProjectSidebarOwnership 2026-06-02-17:06:
+   * A command-pane terminal exit removes the macOS tab surface, but the backing
+   * P/G command session lifecycle remains gxserver-owned. Route exit cleanup
+   * through the same close transition as tab-close before pruning local command
+   * panel placement so a stale shared command row cannot survive only because
+   * native removed its tab.
+   *
    * CDXC:CommandsPanel 2026-05-19-16:55:
    * Native terminal exit means the command-pane Ghostty surface is gone. The
    * command-panel model must prune that tab immediately so the next native
@@ -23543,12 +23605,14 @@ function cleanupExitedNativeCommandPaneSession(
     reason,
     resolvedProjectId: reference.project.projectId,
     resolvedSessionId: reference.sessionId,
+    transitionHandled: commandTransitionResult.handled,
     sessionsBefore,
     sessionsAfter: findProject(reference.project.projectId)?.commandsPanel.sessions.map(
       (session) => session.sessionId,
     ),
   });
   publish();
+  focusGxserverSessionTransitionTarget(commandTransitionResult.focusTarget, commandTransitionOrigin.kind);
   return true;
 }
 
@@ -24551,12 +24615,18 @@ function createDaemonTerminalSessionsFromSidebarMessage(
       const terminalState = combinedReference
         ? terminalStateById.get(combinedReference.sessionId)
         : terminalStateById.get(localReference?.session.sessionId ?? sidebarSession.sessionId);
+      const ownership = resolveNativeSessionInventoryOwnership({
+        hasGxserverProjectContext: Boolean(projectContext),
+        hasGxserverSessionReference: Boolean(combinedReference),
+      });
       sessions.push({
         agentName: sidebarSession.agentIcon,
         agentStatus: sidebarSession.activity,
         cols: 80,
         cwd: projectContext?.path ?? localReference?.project.path ?? "",
         isCurrentWorkspace: projectId === activeProjectId,
+        isLocalOnly: ownership.isLocalOnly,
+        ownership: ownership.ownership,
         restoreState: "live",
         rows: 24,
         sessionId: sidebarSession.sessionId,
@@ -24615,6 +24685,8 @@ function createDaemonTerminalSessionsFromNativeProjects(now: string): SidebarDae
           cols: 80,
           cwd: project.path,
           isCurrentWorkspace: project.projectId === activeProjectId,
+          isLocalOnly: true,
+          ownership: "local",
           restoreState: "live",
           rows: 24,
           sessionId: session.sessionId,
@@ -24649,9 +24721,11 @@ function createDaemonT3SessionsFromNativeProjects(now: string): SidebarT3Session
           detail: session.t3?.serverOrigin ?? "Native T3 Code pane",
           isCurrentWorkspace: project.projectId === activeProjectId,
           isFocused: group.snapshot.focusedSessionId === session.sessionId,
+          isLocalOnly: true,
           isRunning: !isSleeping,
           isSleeping,
           lastInteractionAt: now,
+          ownership: "local",
           sessionId: session.sessionId,
           threadId: session.t3?.threadId,
           title: session.title,
@@ -26955,12 +27029,27 @@ async function createNativeBrowserChat(): Promise<void> {
 }
 
 function removeProject(projectId: string): void {
-  if (projects.length <= 1) {
+  if (countCurrentRemovableWorkspaceDockProjects() <= 1) {
     showNativeMessage("warning", "Keep at least one workspace in Ghostex.");
     return;
   }
   const projectIndex = projects.findIndex((project) => project.projectId === projectId);
   if (projectIndex < 0) {
+    const presentationProject = gxserverStartupSnapshot?.presentation?.projects.find(
+      (project) => project.projectId === projectId,
+    );
+    if (presentationProject) {
+      /*
+      CDXC:WorkspaceDock 2026-06-02-17:06:
+      The workspace dock can render gxserver presentation projects before the macOS pane/layout cache has a native project row. Right-click Remove must still mutate gxserver ownership directly instead of returning early and leaving a presentation-only shared project stuck in dock chrome.
+      */
+      hideGxserverPresentationProjectLocally(projectId, "removeProject.presentationOnly");
+      if (activeProjectId === projectId) {
+        activeProjectId = projects[0]?.projectId ?? activeProjectId;
+      }
+      publish();
+      removeGxserverProjectById(projectId, "removeProject.presentationOnly");
+    }
     return;
   }
   hideGxserverPresentationProjectLocally(projectId, "removeProject");
@@ -27018,16 +27107,23 @@ function removeGxserverProjectAfterLocalRemoval(project: NativeProject, reason: 
   ) {
     return;
   }
+  removeGxserverProjectById(project.projectId, reason);
+}
+
+function removeGxserverProjectById(projectId: string, reason: string): void {
+  if (!GXSERVER_CANONICAL_PROJECT_ID_PATTERN.test(projectId)) {
+    return;
+  }
   /*
   CDXC:ProjectSidebarOwnership 2026-06-02-08:24:
   Remove Project is local-first in the macOS sidebar, but the canonical deletion belongs to gxserver. Hide and tear down native layout immediately, then ask gxserver to remove the shared project row and broadcast the projectRemoved delta.
   */
-  void gxserverClient.removeProject(project.projectId).catch((error) => {
+  void gxserverClient.removeProject(projectId).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     appendSidebarRefreshDebugLog("nativeSidebar.gxserver.projectRemoveFailed", {
       errorType: error instanceof Error ? error.name : typeof error,
       hasMessage: message.length > 0,
-      projectIdIsCanonical: GXSERVER_CANONICAL_PROJECT_ID_PATTERN.test(project.projectId),
+      projectIdIsCanonical: GXSERVER_CANONICAL_PROJECT_ID_PATTERN.test(projectId),
       reason,
     });
     showAppToast("error", "Could not remove project from gxserver", message);
