@@ -116,8 +116,8 @@ export function getSidebarGitActionCategory(
   action: SidebarGitAction,
 ): SidebarGitActionCategory {
   /**
-   * CDXC:GitActionModel 2026-05-30-05:34:
-   * The Git dropdown separates deterministic native Git operations from
+   * CDXC:GitActionModel 2026-06-02-13:41:
+   * The Git dropdown separates direct gxserver-backed Git operations from
    * agent-run workflows. Create PR belongs with agent workflows, while View PR
    * stays direct because it only opens the existing pull request.
    */

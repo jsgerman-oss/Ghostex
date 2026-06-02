@@ -88,28 +88,6 @@ export function parseGitZeroDelimitedPaths(stdout: string): string[] {
   return stdout.split("\0").filter((path) => path.length > 0);
 }
 
-export function parseWcLineCountStdout(stdout: string): number {
-  const lineCounts = stdout
-    .trim()
-    .split("\n")
-    .map((line) => {
-      const match = line.match(/^\s*(\d+)\s+(.+)$/);
-      if (!match) {
-        return undefined;
-      }
-      return {
-        count: Number(match[1]),
-        label: match[2]?.trim() ?? "",
-      };
-    })
-    .filter((entry): entry is { count: number; label: string } => entry !== undefined);
-  const total = lineCounts.find((entry) => entry.label === "total");
-  if (total) {
-    return total.count;
-  }
-  return lineCounts.reduce((sum, entry) => sum + entry.count, 0);
-}
-
 function normalizeGitNumstatValue(value: string | undefined): number {
   if (!value || value === "-") {
     return 0;

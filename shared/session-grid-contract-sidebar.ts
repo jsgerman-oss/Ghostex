@@ -948,15 +948,15 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
-       * CDXC:AddRepository 2026-05-29-11:45:
-       * The full-window Clone Repository modal sends clone requests through the
-       * native sidebar so Git runs in the trusted native process bridge, errors
-       * return to the modal, and the project is added only after clone success.
-       *
        * CDXC:AddRepository 2026-06-01-10:28:
        * Reference-only repository clones can request main-only and shallow Git
        * options from the modal. Keep both flags explicit in the native bridge
        * contract so the UI state determines the exact clone command.
+       *
+       * CDXC:AddRepository 2026-06-02-13:41:
+       * The full-window Clone Repository modal sends clone requests through the
+       * native sidebar UI bridge, but gxserver owns preview, git clone execution,
+       * cancellation, and the canonical project returned after clone success.
        */
       cloneMainOnly?: boolean;
       folderPath: string;
@@ -981,11 +981,11 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
-       * CDXC:AddRepository 2026-06-01-10:33:
+       * CDXC:AddRepository 2026-06-02-13:41:
        * Repository clone progress moved from the modal to a persistent toast.
        * The toast Cancel action must target the active clone request instead of
-       * only dismissing UI, so native can terminate the corresponding Git
-       * process.
+       * only dismissing UI, so the native sidebar can ask gxserver to cancel the
+       * corresponding clone job.
        */
       requestId: string;
       type: "cancelRepositoryClone";
@@ -1150,8 +1150,10 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
-       * CDXC:WorktreeDelete 2026-05-28-07:46:
-       * Delete Worktree first asks native for a fresh git status summary, then opens the full-window confirmation modal before any checkout directory is removed.
+       * CDXC:WorktreeDelete 2026-06-02-13:41:
+       * Delete Worktree first asks gxserver for a fresh Git status summary,
+       * then the native sidebar opens the full-window confirmation modal before
+       * any checkout directory is removed.
        */
       type: "promptDeleteWorktreeForGroup";
       groupId: string;
@@ -1328,9 +1330,6 @@ export type SidebarToExtensionMessage =
        * project, not in the Quick/projectless terminal area.
        */
       type: "searchPreviousSessionsByText";
-    }
-  | {
-      type: "clearGeneratedPreviousSessions";
     }
   | {
       content: string;

@@ -53,13 +53,21 @@ describe("native sidebar gxserver client", () => {
             result: { projects: [] },
           });
         }
-        if (url.endsWith("/api/listSessions")) {
+        if (url.endsWith("/api/readPresentationSnapshot")) {
           return jsonResponse({
             ok: true,
             product: "gxserver",
             protocolVersion: 1,
-            requestId: "sessions-request",
-            result: { sessions: [] },
+            requestId: "presentation-request",
+            result: {
+              snapshot: {
+                generatedAt: "2026-06-02T07:16:00.000Z",
+                groups: [],
+                projects: [],
+                revision: 1,
+                sessions: [],
+              },
+            },
           });
         }
         throw new Error(`Unexpected request ${url}`);
@@ -73,11 +81,11 @@ describe("native sidebar gxserver client", () => {
     const snapshot = await client.fetchStartupSnapshot();
 
     expect(snapshot.projects).toEqual([]);
-    expect(snapshot.sessions).toEqual([]);
+    expect(snapshot.presentation?.sessions).toEqual([]);
     expect(requests.map((request) => request.url)).toEqual([
       "http://127.0.0.1:60000/api/health/server",
       "http://127.0.0.1:60000/api/listProjects",
-      "http://127.0.0.1:60000/api/listSessions",
+      "http://127.0.0.1:60000/api/readPresentationSnapshot",
     ]);
     for (const request of requests) {
       expect(request.headers.authorization).toBe("Bearer token-123");
@@ -118,6 +126,52 @@ describe("native sidebar gxserver client", () => {
     );
 
     await expect(client.rpc("/api/listSessions")).rejects.toThrow(/Update Ghostex and gxserver/);
+  });
+
+  test("routes arbitrary path Git-root lookup through gxserver RPC", async () => {
+    const requests: Array<{ body?: unknown; headers: Record<string, string>; method: string; url: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const bodyText = typeof init?.body === "string" ? init.body : undefined;
+        requests.push({
+          body: bodyText ? JSON.parse(bodyText) : undefined,
+          headers: normalizeHeaders(init?.headers),
+          method: init?.method ?? "GET",
+          url,
+        });
+        return jsonResponse({
+          ok: true,
+          product: "gxserver",
+          protocolVersion: 1,
+          requestId: "resolve-git-root",
+          result: { gitRoot: "/tmp/example-repo" },
+        });
+      }),
+    );
+
+    /*
+    CDXC:GxserverVerification 2026-06-02-12:14:
+    Native CLI open-path routing must call gxserver's local-only repository fact endpoint instead of shelling out to Git in the macOS app. The client test pins the RPC envelope so UI code has one ownership-compliant path.
+    */
+    const client = createNativeSidebarGxserverClient({
+      authToken: "token-123",
+      baseUrl: "http://127.0.0.1:60000",
+    });
+    await expect(client.resolveGitRootForPath({ path: "/tmp/example-repo/src" })).resolves.toEqual({
+      gitRoot: "/tmp/example-repo",
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe("http://127.0.0.1:60000/api/resolveGitRootForPath");
+    expect(requests[0].method).toBe("POST");
+    expect(requests[0].headers.authorization).toBe("Bearer token-123");
+    expect(requests[0].headers["x-gxserver-protocol-version"]).toBe("1");
+    expect(requests[0].body).toEqual({
+      params: { path: "/tmp/example-repo/src" },
+      protocolVersion: 1,
+    });
   });
 });
 

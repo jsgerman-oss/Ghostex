@@ -3754,34 +3754,10 @@ function resolveInitialTitlebarMode(bootstrap: Record<string, unknown>): Titleba
   if (explicitMode !== "agents") {
     return explicitMode;
   }
-  const sharedProjectsJson = isRecord(bootstrap.sharedSidebarStorage)
-    ? bootstrap.sharedSidebarStorage.projects
-    : undefined;
-  if (typeof sharedProjectsJson !== "string") {
-    return "agents";
-  }
-  try {
-    const candidate = JSON.parse(sharedProjectsJson);
-    const projects = Array.isArray(candidate?.projects) ? candidate.projects : [];
-    const activeProjectId =
-      typeof candidate?.activeProjectId === "string" ? candidate.activeProjectId : undefined;
-    const activeProject =
-      projects.find(
-        (project: unknown) =>
-          isRecord(project) &&
-          typeof project.projectId === "string" &&
-          project.projectId === activeProjectId,
-      ) ?? projects[0];
-    if (
-      isRecord(activeProject) &&
-      isRecord(activeProject.projectEditor) &&
-      activeProject.projectEditor.isOpen === true
-    ) {
-      return "code";
-    }
-  } catch {
-    return "agents";
-  }
+  /*
+  CDXC:ProjectSidebarOwnership 2026-06-02-12:29:
+  The titlebar must not infer startup mode from the old native-sidebar-projects.json payload. gxserver owns shared project/session inventory now, while the macOS window owns the explicit active mode passed in bootstrap state.
+  */
   return "agents";
 }
 

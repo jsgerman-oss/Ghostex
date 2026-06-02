@@ -340,8 +340,11 @@ function ProjectBoardApp() {
    * A generated title improves the board card later, but terminal creation and prompt submission must not wait on or be canceled by board refreshes or title generation failures.
    *
    * CDXC:ProjectBoard 2026-05-30-09:36:
-   * The native Beads create command can persist the issue while the web create path still lacks a usable created-issue id.
-   * Resolve the newly persisted bead from refreshed Beads data before dependency/status/label updates, title generation, or Create & Start so the terminal session is keyed to the real board ticket instead of silently skipping start.
+   * The gxserver Beads create action can persist the issue while the board web surface still lacks a usable created-issue id.
+   * Resolve the newly persisted bead from refreshed gxserver Beads data before dependency/status/label updates, title generation, or Create & Start so the terminal session is keyed to the real board ticket instead of silently skipping start.
+   *
+   * CDXC:ProjectBoard 2026-06-02-15:10:
+   * Project Board Beads commands are gxserver-owned after the split. This React surface owns modal/form sequencing and bridge requests only; do not move bd command construction or subprocess execution back into the macOS sidebar.
    *
    * CDXC:ProjectBoard 2026-05-30-09:45:
    * Create & Start should hand the created bead to native session launch as soon as the bead id is available.

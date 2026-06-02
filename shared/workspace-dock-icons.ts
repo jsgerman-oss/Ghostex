@@ -14,7 +14,6 @@ export type WorkspaceProjectIconSource = {
 };
 
 export const DEFAULT_WORKSPACE_THEME_COLOR = "#2f6feb";
-export const WORKSPACE_THEME_COLOR_HISTORY_STORAGE_KEY = "ghostex-workspace-theme-color-history";
 const MAX_WORKSPACE_THEME_COLOR_HISTORY = 8;
 
 /**
@@ -71,27 +70,6 @@ export function updateWorkspaceThemeColorHistory(
     color,
     ...history.filter((candidate) => normalizeWorkspaceThemeColor(candidate) !== color),
   ]);
-}
-
-export function readWorkspaceThemeColorHistory(): string[] {
-  try {
-    return normalizeWorkspaceThemeColorHistory(
-      JSON.parse(localStorage.getItem(WORKSPACE_THEME_COLOR_HISTORY_STORAGE_KEY) ?? "[]"),
-    );
-  } catch {
-    return [];
-  }
-}
-
-export function writeWorkspaceThemeColorHistory(history: readonly string[]): void {
-  try {
-    localStorage.setItem(
-      WORKSPACE_THEME_COLOR_HISTORY_STORAGE_KEY,
-      JSON.stringify(normalizeWorkspaceThemeColorHistory([...history])),
-    );
-  } catch {
-    // Ignore storage failures; the chosen project theme color still persists on the project.
-  }
 }
 
 export function normalizeWorkspaceDockIcon(value: unknown): WorkspaceDockIcon | undefined {

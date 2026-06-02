@@ -22,6 +22,8 @@ type MergeGxserverAgentsResult = {
   order: string[];
 };
 
+type GxserverProjectActionsSyncMode = "hydrateMissing" | "replaceFromGxserver";
+
 type GxserverGitPreferences = {
   confirmCommit?: boolean;
   generateCommitBody?: boolean;
@@ -31,27 +33,54 @@ type GxserverGitPreferences = {
 /*
 CDXC:ProjectActions 2026-05-30-23:59:
 Project Actions are shared gxserver project state after the daemon cutover, while the existing sidebar renderer still needs its local command cache to draw action buttons synchronously. Hydrate empty P-id cache entries from gxserver instead of treating the cache as authoritative, so first-launch ID migration cannot make imported actions disappear from the UI.
+
+CDXC:ProjectActions 2026-06-02-10:59:
+After presentation deltas carry the gxserver domain project, native action caches are no longer allowed to remain authoritative. Startup may still hydrate missing cache entries, but gxserver-driven reconciliation must replace the local render cache, including empty action state after the user deletes all custom project actions.
 */
 export function mergeGxserverProjectActionsIntoCommandsStore(
   store: ProjectSidebarCommandsStore,
   gxserverProjects: readonly GxserverProjectDomainState[],
   ownerIdByProjectId: Readonly<Record<string, string>> = {},
+  options: { mode?: GxserverProjectActionsSyncMode } = {},
 ): MergeGxserverProjectActionsResult {
+  const mode = options.mode ?? "hydrateMissing";
   let changed = false;
   const restoredOwnerIds: string[] = [];
   const nextStore: ProjectSidebarCommandsStore = { ...store };
-  for (const project of gxserverProjects) {
-    const ownerProjectId = ownerIdByProjectId[project.projectId] || project.projectId;
+  const sourceProjects =
+    mode === "replaceFromGxserver"
+      ? selectAuthoritativeProjectActionSources(gxserverProjects, ownerIdByProjectId)
+      : gxserverProjects.map((project) => ({
+          ownerProjectId: ownerIdByProjectId[project.projectId] || project.projectId,
+          project,
+        }));
+  for (const { ownerProjectId, project } of sourceProjects) {
     const gxserverState = normalizeProjectSidebarCommandsState({
       commands: project.customCommands,
       deletedDefaultCommandIds: project.deletedDefaultCommandIds,
       order: project.customCommandOrder,
     });
-    if (!gxserverState || !hasProjectSidebarCommandsStateContent(gxserverState)) {
+    if (!gxserverState) {
+      continue;
+    }
+    if (
+      mode === "hydrateMissing" &&
+      !hasProjectSidebarCommandsStateContent(gxserverState)
+    ) {
       continue;
     }
     const existingState = nextStore[ownerProjectId];
-    if (existingState && hasProjectSidebarCommandsStateContent(existingState)) {
+    if (
+      mode === "hydrateMissing" &&
+      existingState &&
+      hasProjectSidebarCommandsStateContent(existingState)
+    ) {
+      continue;
+    }
+    if (
+      mode === "replaceFromGxserver" &&
+      areProjectSidebarCommandsStatesEqual(existingState, gxserverState)
+    ) {
       continue;
     }
     nextStore[ownerProjectId] = gxserverState;
@@ -75,16 +104,36 @@ export function hasProjectSidebarCommandsStateContent(
 /*
 CDXC:SidebarAgents 2026-05-31-00:24:
 Custom Agents follow the same cutover rule as Actions: gxserver imports them into shared project domain state, while the current macOS sidebar still renders from a synchronous local cache. Rehydrate only empty local agent stores so a stale WKWebView key cannot hide imported agents, without overwriting edits already made in the current sidebar.
+
+CDXC:SidebarAgents 2026-06-02-10:59:
+Gxserver project-domain deltas are authoritative for shared custom-agent definitions. Native keeps agents in localStorage only as a synchronous renderer/editor cache, so daemon reconciliation replaces that cache and can clear it when gxserver has no custom agents.
 */
 export function mergeGxserverAgentsIntoSidebarStore(
   storedAgents: readonly StoredSidebarAgent[],
   storedOrder: readonly string[],
   gxserverProjects: readonly GxserverProjectDomainState[],
+  options: { mode?: GxserverProjectActionsSyncMode } = {},
 ): MergeGxserverAgentsResult {
+  const mode = options.mode ?? "hydrateMissing";
   const sourceProject = gxserverProjects.find(
     (project) => project.customAgents.length > 0 || project.customAgentOrder.length > 0,
   );
+  if (mode === "replaceFromGxserver" && gxserverProjects.length === 0) {
+    return {
+      agents: [...storedAgents],
+      changed: false,
+      order: [...storedOrder],
+    };
+  }
   if (!sourceProject) {
+    if (mode === "replaceFromGxserver") {
+      const changed = storedAgents.length > 0 || storedOrder.length > 0;
+      return {
+        agents: [],
+        changed,
+        order: [],
+      };
+    }
     return {
       agents: [...storedAgents],
       changed: false,
@@ -92,28 +141,36 @@ export function mergeGxserverAgentsIntoSidebarStore(
     };
   }
   const nextAgents =
-    storedAgents.length > 0
+    mode === "hydrateMissing" && storedAgents.length > 0
       ? [...storedAgents]
       : normalizeStoredSidebarAgents(sourceProject.customAgents);
   const nextOrder =
-    storedOrder.length > 0
+    mode === "hydrateMissing" && storedOrder.length > 0
       ? [...storedOrder]
       : normalizeStoredSidebarAgentOrder(sourceProject.customAgentOrder);
-  const changed = nextAgents.length !== storedAgents.length || nextOrder.length !== storedOrder.length;
+  const changed =
+    JSON.stringify(nextAgents) !== JSON.stringify(storedAgents) ||
+    JSON.stringify(nextOrder) !== JSON.stringify(storedOrder);
   return { agents: nextAgents, changed, order: nextOrder };
 }
 
 export function readGxserverGitPreferences(
   gxserverProjects: readonly GxserverProjectDomainState[],
 ): GxserverGitPreferences {
-  const source = gxserverProjects.find((project) => {
-    const config = project.gitConfig;
-    return (
-      isGitPrimaryAction(config.primaryAction) ||
-      typeof config.confirmCommit === "boolean" ||
-      typeof config.generateCommitBody === "boolean"
-    );
-  });
+  /*
+  CDXC:NativeSidebarGit 2026-06-02-14:01:
+  Git preferences are mirrored to project gitConfig rows. During local-first saves, gxserver can publish one updated project before every mirrored row has caught up, so read the newest explicit preference row instead of the first row in project order.
+  */
+  const source = [...gxserverProjects]
+    .filter((project) => {
+      const config = project.gitConfig;
+      return (
+        isGitPrimaryAction(config.primaryAction) ||
+        typeof config.confirmCommit === "boolean" ||
+        typeof config.generateCommitBody === "boolean"
+      );
+    })
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
   if (!source) {
     return {};
   }
@@ -132,4 +189,55 @@ export function readGxserverGitPreferences(
 
 function isGitPrimaryAction(value: unknown): value is "commit" | "push" | "pr" {
   return value === "commit" || value === "push" || value === "pr";
+}
+
+function selectAuthoritativeProjectActionSources(
+  gxserverProjects: readonly GxserverProjectDomainState[],
+  ownerIdByProjectId: Readonly<Record<string, string>>,
+): { ownerProjectId: string; project: GxserverProjectDomainState }[] {
+  const sourceByOwnerProjectId = new Map<
+    string,
+    { ownerProjectId: string; project: GxserverProjectDomainState }
+  >();
+  for (const project of gxserverProjects) {
+    const ownerProjectId = ownerIdByProjectId[project.projectId] || project.projectId;
+    if (project.projectId !== ownerProjectId && !projectActionsProjectHasContent(project)) {
+      continue;
+    }
+    const existing = sourceByOwnerProjectId.get(ownerProjectId);
+    if (!existing) {
+      sourceByOwnerProjectId.set(ownerProjectId, { ownerProjectId, project });
+      continue;
+    }
+    if (project.projectId === ownerProjectId && existing.project.projectId !== ownerProjectId) {
+      sourceByOwnerProjectId.set(ownerProjectId, { ownerProjectId, project });
+      continue;
+    }
+    if (
+      existing.project.projectId !== ownerProjectId &&
+      !projectActionsProjectHasContent(existing.project) &&
+      projectActionsProjectHasContent(project)
+    ) {
+      sourceByOwnerProjectId.set(ownerProjectId, { ownerProjectId, project });
+    }
+  }
+  return [...sourceByOwnerProjectId.values()];
+}
+
+function projectActionsProjectHasContent(project: GxserverProjectDomainState): boolean {
+  return (
+    project.customCommands.length > 0 ||
+    project.customCommandOrder.length > 0 ||
+    project.deletedDefaultCommandIds.length > 0
+  );
+}
+
+function areProjectSidebarCommandsStatesEqual(
+  left: ProjectSidebarCommandsState | undefined,
+  right: ProjectSidebarCommandsState,
+): boolean {
+  if (!left) {
+    return !hasProjectSidebarCommandsStateContent(right);
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
 }

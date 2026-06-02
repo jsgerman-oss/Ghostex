@@ -76,7 +76,10 @@ export type BeadsBridgeRequest = {
   /*
    * CDXC:PromptAgents 2026-05-29-10:53:
    * Project-board generated ticket titles should use the board's selected/default
-   * prompt agent instead of hardcoding Codex in the native Beads bridge.
+   * prompt agent instead of hardcoding Codex in the board bridge request.
+   *
+   * CDXC:ProjectBoard 2026-06-02-15:18:
+   * This request shape is a WebKit/UI bridge contract only. gxserver owns the Beads action execution behind the bridge, so request fields must describe intent rather than native subprocess commands.
    */
   action: BeadsBridgeAction;
   agentCommand?: string;

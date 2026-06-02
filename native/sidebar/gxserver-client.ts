@@ -14,14 +14,22 @@ import {
   type GxserverPresentationSearchParams,
   type GxserverPresentationSearchResponse,
   type GxserverPresentationSnapshot,
+  type GxserverResolveGitRootForPathParams,
+  type GxserverResolveGitRootForPathResult,
+  type GxserverRunBeadsActionParams,
+  type GxserverRunGitActionParams,
+  type GxserverRunGitHubActionParams,
+  type GxserverRunWorktreeActionParams,
   type GxserverSessionProviderProbeResponse,
   type GxserverProjectDomainState,
+  type GxserverRemoveSessionParams,
   type GxserverRpcErrorResponse,
   type GxserverRpcSuccessResponse,
   type GxserverServerHealthResponse,
   type GxserverSessionDomainState,
   type GxserverSessionTransitionParams,
   type GxserverSessionTransitionResult,
+  type GxserverTypedOperationResult,
 } from "../../shared/gxserver-protocol";
 
 export type NativeSidebarGxserverBootstrap = {
@@ -239,6 +247,43 @@ export function createNativeSidebarGxserverClient(
     return rpc<GxserverPresentationSearchResponse>("/api/listPreviousSessions", params as unknown as Record<string, unknown>);
   }
 
+  async function removeSession(params: GxserverRemoveSessionParams): Promise<GxserverSessionDomainState> {
+    const { session } = await rpc<{ session: GxserverSessionDomainState }>(
+      "/api/removeSession",
+      params as unknown as Record<string, unknown>,
+    );
+    return session;
+  }
+
+  async function runGitAction(params: GxserverRunGitActionParams): Promise<GxserverTypedOperationResult> {
+    return rpc<GxserverTypedOperationResult>("/api/runGitAction", params as unknown as Record<string, unknown>);
+  }
+
+  async function runGitHubAction(params: GxserverRunGitHubActionParams): Promise<GxserverTypedOperationResult> {
+    return rpc<GxserverTypedOperationResult>("/api/runGitHubAction", params as unknown as Record<string, unknown>);
+  }
+
+  async function runBeadsAction(params: GxserverRunBeadsActionParams): Promise<GxserverTypedOperationResult> {
+    return rpc<GxserverTypedOperationResult>("/api/runBeadsAction", params as unknown as Record<string, unknown>);
+  }
+
+  async function runWorktreeAction(params: GxserverRunWorktreeActionParams): Promise<GxserverTypedOperationResult> {
+    return rpc<GxserverTypedOperationResult>("/api/runWorktreeAction", params as unknown as Record<string, unknown>);
+  }
+
+  async function resolveGitRootForPath(
+    params: GxserverResolveGitRootForPathParams,
+  ): Promise<GxserverResolveGitRootForPathResult> {
+    /*
+    CDXC:OSIntegration 2026-06-02-12:14:
+    Native open-file/open-folder routing stays local UI behavior, but repository root detection is gxserver-owned after the split. This endpoint is intentionally local-only because it accepts arbitrary paths that may not be registered projects yet.
+    */
+    return rpc<GxserverResolveGitRootForPathResult>(
+      "/api/resolveGitRootForPath",
+      params as unknown as Record<string, unknown>,
+    );
+  }
+
   function subscribePresentation(
     clientId: string,
     handlers: NativeSidebarPresentationSubscriptionHandlers,
@@ -362,7 +407,7 @@ export function createNativeSidebarGxserverClient(
   function addProjectPathSync(params: { name?: string; path: string }): GxserverProjectDomainState {
     /*
     CDXC:GxserverProjectIdentity 2026-05-31-17:47:
-    Project rows shown in the native sidebar must be registered through gxserver before any zmx-backed terminal is created. The daemon returns the canonical P-id, keeping macOS aligned with CLI/TUI/mobile clients instead of persisting sidebar-minted `project-*` ids into shared session calls.
+    Project rows shown in the native sidebar must be registered through gxserver before any shared terminal/session is created. The daemon returns the canonical P-id, keeping macOS aligned with CLI/TUI/mobile clients instead of persisting sidebar-minted `project-*` ids into shared session calls.
     */
     const { project } = rpcSync<{ project: GxserverProjectDomainState }>(
       "/api/addProjectPath",
@@ -376,6 +421,13 @@ export function createNativeSidebarGxserverClient(
       "/api/addProjectPath",
       params as unknown as Record<string, unknown>,
     );
+    return project;
+  }
+
+  async function removeProject(projectId: string): Promise<GxserverProjectDomainState> {
+    const { project } = await rpc<{ project: GxserverProjectDomainState }>("/api/removeProject", {
+      projectId,
+    });
     return project;
   }
 
@@ -432,7 +484,14 @@ export function createNativeSidebarGxserverClient(
     getCurrentStatus,
     probeSessionProvider,
     listPreviousSessions,
+    removeProject,
+    removeSession,
+    resolveGitRootForPath,
     rpc,
+    runBeadsAction,
+    runGitAction,
+    runGitHubAction,
+    runWorktreeAction,
     searchSessions,
     subscribePresentation,
     transitionSessionSync,

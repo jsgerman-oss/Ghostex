@@ -2771,8 +2771,8 @@
   /*
    * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
    * New Worktree has two explicit modes: create a fresh checkout or open an
-   * existing Git worktree. Keep the mode switch compact so the first prompt and
-   * agent selector remain visible in the full-window modal.
+   * existing Git worktree. Keep the mode switch compact and let Open Existing
+   * hide the create-only prompt and agent controls below it.
    */
   display: grid;
   gap: 8px;

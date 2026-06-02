@@ -1952,8 +1952,16 @@ function AppModalHost() {
         }}
       />
       {/*
-       * CDXC:Worktrees 2026-05-18-23:07:
-       * Creating a project worktree is a full-window modal flow because it selects an agent, collects a first prompt, and can attach image file paths before native creates the branch/worktree.
+       * CDXC:Worktrees 2026-06-02-13:41:
+       * Creating a project worktree is a full-window modal flow because macOS
+       * owns the agent, first prompt, and image attachment drafts before submit,
+       * while gxserver owns the branch/worktree mutation and returned project.
+       *
+       * CDXC:WorktreeProjectRegistration 2026-06-02-12:53:
+       * Open Existing mode in this same modal is selection-only UI. It sends
+       * only the selected worktree path through the native sidebar to gxserver
+       * and must not expose agent, first-prompt, image attachment, or prompt
+       * helper controls.
        */}
       <WorktreeCreateModal
         agents={agents}
@@ -2706,8 +2714,8 @@ function useModalStateFromNative() {
 
         if (message.type === "toast") {
           /**
-           * CDXC:Worktrees 2026-05-18-23:07:
-           * Native worktree and git actions report progress through the app-modal host toast layer so command feedback appears over the full Ghostex window without stealing focus from terminal panes.
+           * CDXC:Worktrees 2026-06-02-15:27:
+           * Git and worktree command execution belongs to gxserver after the ownership split. The app-modal host owns only the visible toast surface, so gxserver-backed progress feedback appears over the full Ghostex window without stealing focus from terminal panes.
            *
            * CDXC:GitActionModel 2026-05-30-05:34:
            * Long-running Git actions and agent workflows need persistent status

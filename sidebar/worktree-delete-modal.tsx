@@ -34,8 +34,11 @@ export function WorktreeDeleteModal({
   onDelete,
 }: WorktreeDeleteModalProps) {
   /*
-   * CDXC:WorktreeDelete 2026-05-28-07:46:
-   * Delete Worktree must be a full-window confirmation modal. Dirty worktrees show the native git status summary and offer Commit, which switches to the existing commit review modal; clean worktrees show a green checkmark instead of an empty status block.
+   * CDXC:WorktreeDelete 2026-06-02-13:41:
+   * Delete Worktree must be a full-window confirmation modal. Dirty worktrees
+   * show the gxserver-provided Git status summary and offer Commit, which
+   * switches to the existing commit review modal; clean worktrees show a green
+   * checkmark instead of an empty status block.
    */
   return (
     <Dialog
