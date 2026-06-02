@@ -7,13 +7,13 @@ Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps. Mu
 <img width="3322" height="2060" alt="ghostex-main" src="https://github.com/user-attachments/assets/49862e2d-1edd-4647-8161-5afb25ed8341" />
 
 ## Highlights:
-### 1. Ghostty Terminals for low ram usage, longer battery life, best Agent CLIs stability
-### 2. Native swift for all the parts that require it to improve performance and UX
-### 3. Chromium CEF Browser (Devtools & Profiles)
-### 4. Light embedded VS Code (for MD files/Reviewing Code & PRs)
-### 5. Android & iOS apps for connecting to sessions easily
-### 6. TUI mode (ghostex cli) to connect to all your sessions from any other machine.
-### 7. T3code for GUI panes
+#### 1. Ghostty Terminals for low ram usage, longer battery life, best Agent CLIs stability
+#### 2. Native swift for all the parts that require it to improve performance and UX
+#### 3. Chromium CEF Browser (Devtools & Profiles)
+#### 4. Light embedded VS Code (for MD files/Reviewing Code & PRs)
+#### 5. Android & iOS apps for connecting to sessions easily
+#### 6. TUI mode (ghostex cli) to connect to all your sessions from any other machine.
+#### 7. T3code for GUI panes
 
 Full list of features at the bottom :)
 
