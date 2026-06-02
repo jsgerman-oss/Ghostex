@@ -50,21 +50,31 @@ function toSearchResult(
   session: GxserverSessionDomainState,
   match: NonNullable<GxserverPresentationSearchResult["match"]>,
 ): GxserverPresentationSearchResult {
-  const title = projectSessionTitle(session).title;
+  const titleProjection = projectSessionTitle(session);
+  /*
+  CDXC:GxserverPresentationSearch 2026-06-01-22:06:
+  Previous Sessions uses the same session-card renderer as the live sidebar. Search results must carry gxserver's full title projection, not only `title`, so every client can suppress the unsynced `∗` marker for terminal-synced persisted titles and keep placeholders marked.
+  */
   return {
     ...(session.agentId ? { agentId: session.agentId } : {}),
     ...(session.cwd ? { cwd: session.cwd } : {}),
     isFavorite: session.isFavorite,
     isPinned: session.isPinned,
+    isPrimaryTitleTerminalTitle: titleProjection.isPrimaryTitleTerminalTitle,
+    isTemporaryTitle: titleProjection.isTemporaryTitle,
     ...(session.lastActiveAt ? { lastActiveAt: session.lastActiveAt } : {}),
     lifecycleState: session.lifecycleState,
     match,
     projectId: session.projectId,
     projectTitle: project?.name ?? session.projectId,
+    ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
     sessionId: session.sessionId,
     subtitle: session.cwd ?? project?.path,
     surface: session.surface,
-    title,
+    ...(titleProjection.terminalTitle !== undefined ? { terminalTitle: titleProjection.terminalTitle } : {}),
+    title: titleProjection.title,
+    titleSource: titleProjection.titleSource,
+    ...(titleProjection.trustedResumeTitle !== undefined ? { trustedResumeTitle: titleProjection.trustedResumeTitle } : {}),
   };
 }
 

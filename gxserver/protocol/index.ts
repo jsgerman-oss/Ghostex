@@ -834,6 +834,8 @@ export interface GxserverPresentationSearchResult {
   cwd?: string;
   isFavorite: boolean;
   isPinned: boolean;
+  isPrimaryTitleTerminalTitle: boolean;
+  isTemporaryTitle: boolean;
   lastActiveAt?: string;
   lifecycleState: GxserverDomainLifecycleState;
   match?: {
@@ -842,10 +844,14 @@ export interface GxserverPresentationSearchResult {
   };
   projectId: GxserverProjectId;
   projectTitle: string;
+  primaryTitle?: string;
   sessionId: GxserverSessionId;
   subtitle?: string;
   surface: GxserverSessionSurface;
+  terminalTitle?: string;
   title: string;
+  titleSource: GxserverSessionTitleSource;
+  trustedResumeTitle?: string;
 }
 
 export interface GxserverPresentationSearchResponse {

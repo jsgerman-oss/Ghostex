@@ -394,6 +394,7 @@ test("metadata search can page previous sessions without hydrating them into the
     agentId: "codex",
     cwd: "/Users/madda/dev/_active/zmux",
     lifecycleState: "stopped",
+    runtimeSettings: { titleSource: "terminal-auto" },
     sessionId: "G4old",
     title: "Presentation Cutover",
     updatedAt: "2026-06-01T10:08:00.000Z",
@@ -418,6 +419,12 @@ test("metadata search can page previous sessions without hydrating them into the
   assert.equal(search.results.length, 1);
   assert.equal(search.results[0]?.sessionId, "G4old");
   assert.equal(search.results[0]?.match?.field, "title");
+  assert.equal(search.results[0]?.primaryTitle, "Presentation Cutover");
+  assert.equal(search.results[0]?.terminalTitle, undefined);
+  assert.equal(search.results[0]?.isPrimaryTitleTerminalTitle, true);
+  assert.equal(search.results[0]?.isTemporaryTitle, false);
+  assert.equal(search.results[0]?.titleSource, "terminal-auto");
+  assert.equal(search.results[0]?.trustedResumeTitle, "Presentation Cutover");
   assert.equal(search.results[0]?.surface, "workspace");
 });
 
