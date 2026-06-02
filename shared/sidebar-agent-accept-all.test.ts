@@ -1,98 +1,28 @@
 import { describe, expect, test } from "vitest";
 import {
-  applySidebarAgentAcceptAllFlag,
-  commandIncludesAcceptAllFlag,
-  resolveAgentAcceptAllEnabled,
-  resolveSidebarAgentLaunchCommand,
-  stripAgentAcceptAllFlags,
+  normalizeAgentAcceptAllMode,
+  resolveAgentAcceptAllFlagSpec,
+  supportsAgentAcceptAll,
 } from "./sidebar-agent-accept-all";
 
-describe("resolveAgentAcceptAllEnabled", () => {
-  test("should inherit the global Accept All toggle by default", () => {
-    expect(resolveAgentAcceptAllEnabled(true, undefined)).toBe(true);
-    expect(resolveAgentAcceptAllEnabled(true, "inherit")).toBe(true);
-    expect(resolveAgentAcceptAllEnabled(false, undefined)).toBe(false);
+describe("sidebar Accept All support metadata", () => {
+  test("should normalize per-agent Accept All modes for Settings UI", () => {
+    expect(normalizeAgentAcceptAllMode("inherit")).toBe("inherit");
+    expect(normalizeAgentAcceptAllMode("enabled")).toBe("enabled");
+    expect(normalizeAgentAcceptAllMode("disabled")).toBe("disabled");
+    expect(normalizeAgentAcceptAllMode("invalid")).toBeUndefined();
   });
 
-  test("should allow per-agent overrides to break inheritance", () => {
-    expect(resolveAgentAcceptAllEnabled(true, "disabled")).toBe(false);
-    expect(resolveAgentAcceptAllEnabled(false, "enabled")).toBe(true);
-  });
-});
-
-describe("applySidebarAgentAcceptAllFlag", () => {
-  test("should append Codex --yolo once when Accept All is enabled", () => {
-    expect(applySidebarAgentAcceptAllFlag("codex", "codex", true)).toBe("codex --yolo");
+  test("should expose support detection without shaping commands in the sidebar", () => {
+    expect(supportsAgentAcceptAll("codex")).toBe(true);
+    expect(supportsAgentAcceptAll("pi")).toBe(false);
+    expect(supportsAgentAcceptAll("custom-codex", "codex")).toBe(true);
   });
 
-  test("should never duplicate Codex --yolo when it is already present", () => {
-    expect(applySidebarAgentAcceptAllFlag("codex --yolo", "codex", true)).toBe("codex --yolo");
-    expect(applySidebarAgentAcceptAllFlag("codex --yolo --yolo", "codex", true)).toBe("codex --yolo");
-  });
-
-  test("should only strip Accept All flags for explicit per-agent disable overrides", () => {
-    expect(applySidebarAgentAcceptAllFlag("codex --yolo", "codex", false)).toBe("codex --yolo");
-    expect(
-      applySidebarAgentAcceptAllFlag("codex --yolo", "codex", false, undefined, {
-        stripWhenDisabled: true,
-      }),
-    ).toBe("codex");
-  });
-
-  test("should use Antigravity CLI dangerously-skip-permissions flag", () => {
-    expect(applySidebarAgentAcceptAllFlag("agy", "antigravity", true)).toBe(
-      "agy --dangerously-skip-permissions",
+  test("should keep display-only flag metadata for supported CLIs", () => {
+    expect(resolveAgentAcceptAllFlagSpec("codex")?.canonicalFlag).toBe("--yolo");
+    expect(resolveAgentAcceptAllFlagSpec("claude")?.canonicalFlag).toBe(
+      "--dangerously-skip-permissions",
     );
-  });
-
-  test("should use Claude's permission bypass flag", () => {
-    expect(applySidebarAgentAcceptAllFlag("claude", "claude", true)).toBe(
-      "claude --dangerously-skip-permissions",
-    );
-  });
-
-  test("should treat Gemini -y as an existing Accept All flag", () => {
-    expect(applySidebarAgentAcceptAllFlag("gemini -y", "gemini", true)).toBe("gemini -y");
-    expect(applySidebarAgentAcceptAllFlag("gemini", "gemini", true)).toBe("gemini --yolo");
-  });
-
-  test("should leave Pi without an Accept All flag", () => {
-    expect(applySidebarAgentAcceptAllFlag("pi", "pi", true)).toBe("pi");
-  });
-
-  test("should inherit custom agent icons from their default engine", () => {
-    expect(
-      applySidebarAgentAcceptAllFlag("codex --profile fast", "custom-codex", true, "codex"),
-    ).toBe("codex --profile fast --yolo");
-  });
-});
-
-describe("stripAgentAcceptAllFlags", () => {
-  test("should detect existing flags after stripping", () => {
-    const spec = { aliases: ["--yolo"], canonicalFlag: "--yolo" } as const;
-    const stripped = stripAgentAcceptAllFlags("codex --yolo", spec);
-    expect(commandIncludesAcceptAllFlag(stripped, spec)).toBe(false);
-  });
-});
-
-describe("resolveSidebarAgentLaunchCommand", () => {
-  test("should resolve launch commands from global and per-agent settings", () => {
-    expect(
-      resolveSidebarAgentLaunchCommand({
-        acceptAllMode: "inherit",
-        agentId: "codex",
-        command: "codex",
-        globalAcceptAllEnabled: true,
-      }),
-    ).toBe("codex --yolo");
-
-    expect(
-      resolveSidebarAgentLaunchCommand({
-        acceptAllMode: "disabled",
-        agentId: "codex",
-        command: "codex --yolo",
-        globalAcceptAllEnabled: true,
-      }),
-    ).toBe("codex");
   });
 });

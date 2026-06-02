@@ -93,10 +93,10 @@ export function clampCommandsPanelDefaultHeightPx(value: number): number {
 export type ghostexSettings = {
   actionCompletionSound: CompletionSoundSetting;
   /**
-   * CDXC:SidebarAgents 2026-05-19-10:05:
-   * When enabled, built-in and custom agent launches inherit Accept All mode and
-   * append each CLI's permission-bypass flag at runtime unless a specific agent
-   * overrides the behavior in its own configuration.
+   * CDXC:GxserverAgentSettings 2026-06-02-22:23:
+   * This field is the sidebar render cache for gxserver-owned global Accept All
+   * settings. Settings UI can display and edit it, but gxserver persists the
+   * canonical value and applies runtime permission-bypass flags.
    */
   agentAcceptAllEnabled: boolean;
   agentManagerZoomPercent: number;
@@ -275,9 +275,10 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    */
   actionCompletionSound: "shamisen",
   /**
-   * CDXC:SidebarAgents 2026-05-29-12:00:
-   * New installs should start with Accept All enabled so built-in and custom
-   * agent launches inherit permission-bypass mode unless the user turns it off.
+   * CDXC:GxserverAgentSettings 2026-06-02-22:23:
+   * New installs should start with gxserver-owned Accept All enabled so built-in
+   * and custom agent launches inherit permission-bypass mode unless the user
+   * turns it off.
    */
   agentAcceptAllEnabled: true,
   agentManagerZoomPercent: DEFAULT_AGENT_MANAGER_ZOOM_PERCENT,
