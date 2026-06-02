@@ -6456,6 +6456,32 @@ final class TerminalWorkspaceView: NSView {
       && (sessions[sessionId] != nil || webPaneSessions[sessionId] != nil)
   }
 
+  func focusProjectEditorCompanionSession(
+    sessionId: String,
+    reason: String = "explicitProjectEditorCompanionFocusCommand"
+  ) {
+    /*
+     CDXC:ProjectEditorCompanion 2026-06-02-19:06:
+     Sidebar clicks in Source view must retarget the left companion pane without reusing the normal focusTerminal/focusWebPane commands. Those commands are allowed to clear activeProjectEditorId when the companion target is not currently eligible, which can flicker or tear down the VS Code embed instead of changing only the companion session.
+     */
+    if activateProjectEditorCompanionPane(sessionId: sessionId, focus: true, reason: reason) {
+      return
+    }
+    TerminalFocusDebugLog.append(
+      event: "nativeFocusTrace.projectEditorCompanionFocusCommandSkipped",
+      details: [
+        "activeProjectEditorId": nullableString(activeProjectEditorId),
+        "activeSessionIds": Array(activeSessionIds).sorted(),
+        "companionPaneHidden": projectEditorCompanionPaneHidden,
+        "knownTerminalSession": sessions[sessionId] != nil,
+        "knownWebPaneSession": webPaneSessions[sessionId] != nil,
+        "reason": reason,
+        "requestedSessionId": sessionId,
+        "sleepingSessionIds": Array(sleepingSessionIds).sorted(),
+        "visibleSessionIds": orderedVisibleSessionIds(),
+      ])
+  }
+
   @discardableResult
   private func activateProjectEditorCompanionPane(
     sessionId: String,

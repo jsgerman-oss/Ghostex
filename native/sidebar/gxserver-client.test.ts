@@ -53,6 +53,18 @@ describe("native sidebar gxserver client", () => {
             result: { projects: [] },
           });
         }
+        if (url.endsWith("/api/readAgentSettings")) {
+          return jsonResponse({
+            ok: true,
+            product: "gxserver",
+            protocolVersion: 1,
+            requestId: "agent-settings-request",
+            result: {
+              isPersisted: true,
+              settings: { agentAcceptAllEnabled: true },
+            },
+          });
+        }
         if (url.endsWith("/api/readPresentationSnapshot")) {
           return jsonResponse({
             ok: true,
@@ -84,6 +96,7 @@ describe("native sidebar gxserver client", () => {
     expect(snapshot.presentation?.sessions).toEqual([]);
     expect(requests.map((request) => request.url)).toEqual([
       "http://127.0.0.1:60000/api/health/server",
+      "http://127.0.0.1:60000/api/readAgentSettings",
       "http://127.0.0.1:60000/api/listProjects",
       "http://127.0.0.1:60000/api/readPresentationSnapshot",
     ]);
@@ -93,6 +106,7 @@ describe("native sidebar gxserver client", () => {
     }
     expect(requests[1].body).toEqual({ params: {}, protocolVersion: 1 });
     expect(requests[2].body).toEqual({ params: {}, protocolVersion: 1 });
+    expect(requests[3].body).toEqual({ params: {}, protocolVersion: 1 });
   });
 
   test("updates bootstrap from native status events and hard-fails protocol mismatch", async () => {

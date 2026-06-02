@@ -2,6 +2,8 @@ import {
   GXSERVER_PRODUCT,
   GXSERVER_PROTOCOL_VERSION,
   type GxserverEndpointPath,
+  type GxserverAgentSettings,
+  type GxserverReadAgentSettingsResult,
   type GxserverAgentLaunchPlan,
   type GxserverAgentLaunchPlanParams,
   type GxserverAgentResumePlan,
@@ -50,6 +52,8 @@ export type NativeSidebarGxserverStatus = NativeSidebarGxserverBootstrap & {
 };
 
 export type NativeSidebarGxserverStartupSnapshot = {
+  agentSettings: GxserverAgentSettings;
+  agentSettingsIsPersisted: boolean;
   health: GxserverServerHealthResponse;
   presentation?: GxserverPresentationSnapshot;
   projects: GxserverProjectDomainState[];
@@ -215,7 +219,8 @@ export function createNativeSidebarGxserverClient(
 
   async function fetchStartupSnapshot(): Promise<NativeSidebarGxserverStartupSnapshot> {
     const health = await fetchHealth();
-    const [{ projects }, { snapshot }] = await Promise.all([
+    const [agentSettingsResult, { projects }, { snapshot }] = await Promise.all([
+      rpc<GxserverReadAgentSettingsResult>("/api/readAgentSettings"),
       rpc<{ projects: GxserverProjectDomainState[] }>("/api/listProjects"),
       rpc<{ snapshot: GxserverPresentationSnapshot }>("/api/readPresentationSnapshot"),
     ]);
@@ -223,7 +228,27 @@ export function createNativeSidebarGxserverClient(
     CDXC:GxserverPresentation 2026-06-01-15:08:
     Startup must no longer hydrate all gxserver session history into the macOS sidebar. The startup snapshot carries projects plus the bounded active-focused presentation snapshot only; raw session inventory stays behind gxserver APIs.
     */
-    return { health, presentation: snapshot, projects };
+    return {
+      agentSettings: agentSettingsResult.settings,
+      agentSettingsIsPersisted: agentSettingsResult.isPersisted,
+      health,
+      presentation: snapshot,
+      projects,
+    };
+  }
+
+  async function updateAgentSettings(
+    settings: Partial<GxserverAgentSettings>,
+  ): Promise<GxserverAgentSettings> {
+    /*
+    CDXC:GxserverAgentSettings 2026-06-02-22:23:
+    The macOS settings UI edits global agent policy through gxserver. The sidebar may keep a local render cache, but inherited Accept All command behavior must come from the daemon API used by every client.
+    */
+    const result = await rpc<{ settings: GxserverAgentSettings }>(
+      "/api/updateAgentSettings",
+      settings as Record<string, unknown>,
+    );
+    return result.settings;
   }
 
   async function fetchPresentationSnapshot(): Promise<GxserverPresentationSnapshot> {
@@ -495,6 +520,7 @@ export function createNativeSidebarGxserverClient(
     searchSessions,
     subscribePresentation,
     transitionSessionSync,
+    updateAgentSettings,
     updateSessionLifecycle,
   };
 }

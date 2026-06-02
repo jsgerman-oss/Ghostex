@@ -2369,6 +2369,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       workspaceView?.closeWebPane(sessionId: command.sessionId)
     case .focusTerminal(let command):
       workspaceView?.focusTerminal(sessionId: command.sessionId)
+    case .focusProjectEditorCompanionSession(let command):
+      workspaceView?.focusProjectEditorCompanionSession(sessionId: command.sessionId)
     case .focusWebPane(let command):
       workspaceView?.focusWebPane(sessionId: command.sessionId)
     case .reloadWebPane(let command):
@@ -6148,6 +6150,10 @@ final class ghostexRootView: NSView {
       workspaceView.closeWebPane(sessionId: command.sessionId)
     case .focusTerminal(let command):
       focusWorkspaceSessionAfterSidebarActivation(sessionId: command.sessionId, kind: .terminal)
+    case .focusProjectEditorCompanionSession(let command):
+      focusWorkspaceSessionAfterSidebarActivation(
+        sessionId: command.sessionId,
+        kind: .projectEditorCompanion)
     case .focusWebPane(let command):
       focusWorkspaceSessionAfterSidebarActivation(sessionId: command.sessionId, kind: .webPane)
     case .reloadWebPane(let command):
@@ -6389,11 +6395,14 @@ final class ghostexRootView: NSView {
   }
 
   private enum SidebarWorkspaceFocusKind {
+    case projectEditorCompanion
     case terminal
     case webPane
 
     var debugName: String {
       switch self {
+      case .projectEditorCompanion:
+        return "projectEditorCompanion"
       case .terminal:
         return "terminal"
       case .webPane:
@@ -6442,6 +6451,10 @@ final class ghostexRootView: NSView {
           "workspaceSnapshotBeforeDispatch": self.workspaceView.activationDebugSnapshot(),
         ])
       switch kind {
+      case .projectEditorCompanion:
+        self.workspaceView.focusProjectEditorCompanionSession(
+          sessionId: sessionId,
+          reason: "sidebarFocusCommand")
       case .terminal:
         self.workspaceView.focusTerminal(sessionId: sessionId, reason: "sidebarFocusCommand")
       case .webPane:

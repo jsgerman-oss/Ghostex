@@ -191,7 +191,6 @@ import {
   type SidebarAgentButton,
   type StoredSidebarAgent,
 } from "../../shared/sidebar-agents";
-import { resolveSidebarAgentLaunchCommand } from "../../shared/sidebar-agent-accept-all";
 import {
   getCursorChatSessionIdFromIdentity,
   getCursorChatSessionLookupScript,
@@ -318,6 +317,7 @@ import {
   upsertPresentationProjectGroup,
 } from "./gxserver-presentation-cache";
 import type {
+  GxserverAgentSettings,
   GxserverAttachSessionMetadataResult,
   GxserverPresentationDelta,
   GxserverPresentationProject,
@@ -411,6 +411,7 @@ type NativeHostCommand =
   | { preservePersistenceSession?: boolean; sessionId: string; type: "closeTerminal" }
   | { sessionId: string; type: "closeWebPane" }
   | { sessionId: string; type: "focusTerminal" }
+  | { sessionId: string; type: "focusProjectEditorCompanionSession" }
   | { sessionId: string; type: "focusWebPane" }
   | { sessionId: string; type: "reloadWebPane" }
   | { cwd: string; type: "startT3CodeRuntime" }
@@ -1545,6 +1546,15 @@ let nextNativeLayoutFocusRequestId = 0;
 let pendingNativeLayoutFocusRequest:
   | { reason: string; requestId: number; sessionId: string }
   | undefined;
+type NativeSidebarFocusIntent = {
+  projectId: string;
+  reason: string;
+  requestId: number;
+  sessionId: string;
+};
+type NativeSidebarFocusSurface = "projectEditorCompanion" | "workspaceTerminal";
+let nextNativeSidebarFocusIntentId = 0;
+let latestNativeSidebarFocusIntent: NativeSidebarFocusIntent | undefined;
 let sidebarCardFocusTraceSequence = 0;
 let latestSidebarCardFocusTrace:
   | { details?: unknown; nativeReceivedAt: number; requestId: number; sessionId?: string }
@@ -2232,6 +2242,21 @@ async function refreshGxserverStartupSnapshot(reason: string): Promise<void> {
       ok: true,
       state: "running",
     };
+    if (!snapshot.agentSettingsIsPersisted) {
+      /*
+      CDXC:GxserverAgentSettings 2026-06-02-22:23:
+      First launch after moving global Accept All into gxserver must preserve the user's existing macOS-local setting. Only when gxserver has no stored agent settings record, write the local render-cache value once before treating daemon state as authoritative.
+      */
+      const migratedAgentSettings = await gxserverClient.updateAgentSettings({
+        agentAcceptAllEnabled: settings.agentAcceptAllEnabled,
+      });
+      snapshot.agentSettings = migratedAgentSettings;
+      snapshot.agentSettingsIsPersisted = true;
+    }
+    const restoredAgentSettings = applyGxserverAgentSettingsToLocalSettings(
+      snapshot.agentSettings,
+      `startupSnapshot:${reason}`,
+    );
     const gxserverSharedStateSync = syncSidebarSharedStateFromGxserverSnapshot(snapshot);
     if (snapshot.presentation) {
       applyGxserverPresentationSessionsToNativePaneChrome(snapshot.presentation.sessions, "startup-snapshot");
@@ -2240,7 +2265,10 @@ async function refreshGxserverStartupSnapshot(reason: string): Promise<void> {
       previousProjectCount: previousSnapshot?.projects.length,
       projectCount: snapshot.projects.length,
       presentationSessionCount: snapshot.presentation?.sessions.length,
-      gxserverSharedStateSync,
+      gxserverSharedStateSync: {
+        ...gxserverSharedStateSync,
+        restoredAgentSettings,
+      },
       reason,
       serverId: snapshot.health.serverId,
     });
@@ -2595,6 +2623,62 @@ function setGxserverPresentationSessionLifecycleLocally(
   return true;
 }
 
+function setGxserverPresentationSessionActivityLocally(
+  sidebarSessionId: string,
+  activity: GxserverPresentationSession["activity"],
+  reason: string,
+): boolean {
+  const snapshot = gxserverStartupSnapshot;
+  const presentation = snapshot?.presentation;
+  if (!snapshot || !presentation) {
+    return false;
+  }
+  const reference = resolveSidebarSessionReference(sidebarSessionId);
+  let didChange = false;
+  /*
+  CDXC:SessionAttention 2026-06-02-18:31:
+  Clicking an attention terminal should clear the same green border and tab dot immediately even when those were rendered from gxserver presentation instead of local terminalState. Keep this as a local-first mirror of the existing acknowledgement path; gxserver remains the durable owner and reconciles through the normal presentation delta.
+  */
+  const sessions = presentation.sessions.map((session) => {
+    if (
+      session.projectId !== reference.project.projectId ||
+      session.sessionId !== reference.sessionId ||
+      session.activity === activity
+    ) {
+      return session;
+    }
+    didChange = true;
+    if (activity !== "attention") {
+      const { attention: _attention, ...withoutAttention } = session;
+      return {
+        ...withoutAttention,
+        activity,
+      };
+    }
+    return {
+      ...session,
+      activity,
+    };
+  });
+  if (!didChange) {
+    return false;
+  }
+  gxserverStartupSnapshot = {
+    ...snapshot,
+    presentation: {
+      ...presentation,
+      sessions,
+    },
+  };
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationActivity.localFirst", {
+    activity,
+    projectId: reference.project.projectId,
+    reason,
+    sessionId: reference.sessionId,
+  });
+  return true;
+}
+
 function titleProjectionFromGxserverPresentation(
   presentation: GxserverPresentationSession,
 ): GxserverSessionTitleProjection {
@@ -2795,7 +2879,12 @@ async function postNativeCreateTerminalWithGxserverAttach(
   project: NativeProject,
   sidebarSessionId: string,
   startupText: string,
-  options: { focusAfterCreate?: boolean; intent?: "attach" | "wake" } = {},
+  options: {
+    focusAfterCreate?: boolean;
+    focusIntent?: NativeSidebarFocusIntent;
+    focusSurface?: NativeSidebarFocusSurface;
+    intent?: "attach" | "wake";
+  } = {},
 ): Promise<void> {
   if (command.sessionPersistenceProvider !== "zmx") {
     postNative(command);
@@ -2880,7 +2969,20 @@ async function postNativeCreateTerminalWithGxserverAttach(
   });
   publish();
   if (options.focusAfterCreate === true) {
-    postNative({ sessionId: command.sessionId, type: "focusTerminal" });
+    const focusSurface = options.focusSurface ?? "workspaceTerminal";
+    if (focusSurface === "projectEditorCompanion") {
+      postNativeFocusProjectEditorCompanionForCurrentIntent(
+        command.sessionId,
+        options.focusIntent,
+        "gxserver-attach-focus-after-create-project-editor-companion",
+      );
+    } else {
+      postNativeFocusTerminalForCurrentIntent(
+        command.sessionId,
+        options.focusIntent,
+        "gxserver-attach-focus-after-create",
+      );
+    }
   }
 }
 
@@ -3377,6 +3479,7 @@ function isTerminalFocusDebugCommand(command: NativeHostCommand): boolean {
     command.type === "createTerminal" ||
     command.type === "createWebPane" ||
     command.type === "focusTerminal" ||
+    command.type === "focusProjectEditorCompanionSession" ||
     command.type === "focusWebPane" ||
     command.type === "sendTerminalEnter" ||
     command.type === "setActiveTerminalSet" ||
@@ -3436,6 +3539,84 @@ function queueNativeLayoutFocusRequest(sessionId: string, reason: string): void 
     sidebarCardFocusTrace: summarizeSidebarCardFocusTrace(sidebarCardFocusTrace),
     sessionId,
   }, { force: sidebarCardFocusTrace !== undefined });
+}
+
+function beginNativeSidebarFocusIntent(
+  reference: ReturnType<typeof resolveSidebarSessionReference>,
+  reason: string,
+): NativeSidebarFocusIntent {
+  const intent: NativeSidebarFocusIntent = {
+    projectId: reference.project.projectId,
+    reason,
+    requestId: ++nextNativeSidebarFocusIntentId,
+    sessionId: reference.sessionId,
+  };
+  latestNativeSidebarFocusIntent = intent;
+  /*
+  CDXC:SidebarSessionFocus 2026-06-02-18:45:
+  Sleeping-session focus now waits on gxserver wake/attach metadata. Record a latest-focus intent before starting that async work so an older wake completion can restore its terminal surface without stealing workspace focus after the user has already selected another session.
+  */
+  appendTerminalFocusDebugLog("nativeFocusTrace.sidebarFocusIntentStarted", {
+    projectId: intent.projectId,
+    reason,
+    requestId: intent.requestId,
+    sessionId: intent.sessionId,
+  });
+  return intent;
+}
+
+function isNativeSidebarFocusIntentCurrent(intent: NativeSidebarFocusIntent | undefined): boolean {
+  return (
+    !intent ||
+    (latestNativeSidebarFocusIntent?.requestId === intent.requestId &&
+      latestNativeSidebarFocusIntent.projectId === intent.projectId &&
+      latestNativeSidebarFocusIntent.sessionId === intent.sessionId)
+  );
+}
+
+function postNativeFocusTerminalForCurrentIntent(
+  nativeSessionId: string,
+  intent: NativeSidebarFocusIntent | undefined,
+  reason: string,
+): void {
+  if (!isNativeSidebarFocusIntentCurrent(intent)) {
+    appendTerminalFocusDebugLog("nativeFocusTrace.sidebarFocusIntentStaleSkipped", {
+      latestProjectId: latestNativeSidebarFocusIntent?.projectId,
+      latestRequestId: latestNativeSidebarFocusIntent?.requestId,
+      latestSessionId: latestNativeSidebarFocusIntent?.sessionId,
+      nativeSessionId,
+      projectId: intent?.projectId,
+      reason,
+      requestId: intent?.requestId,
+      sessionId: intent?.sessionId,
+    });
+    return;
+  }
+  postNative({ sessionId: nativeSessionId, type: "focusTerminal" });
+}
+
+function postNativeFocusProjectEditorCompanionForCurrentIntent(
+  nativeSessionId: string,
+  intent: NativeSidebarFocusIntent | undefined,
+  reason: string,
+): void {
+  if (!isNativeSidebarFocusIntentCurrent(intent)) {
+    appendTerminalFocusDebugLog("nativeFocusTrace.sidebarFocusIntentStaleSkipped", {
+      latestProjectId: latestNativeSidebarFocusIntent?.projectId,
+      latestRequestId: latestNativeSidebarFocusIntent?.requestId,
+      latestSessionId: latestNativeSidebarFocusIntent?.sessionId,
+      nativeSessionId,
+      projectId: intent?.projectId,
+      reason,
+      requestId: intent?.requestId,
+      sessionId: intent?.sessionId,
+    });
+    return;
+  }
+  postNative({
+    sessionId: nativeSessionId,
+    type: "focusProjectEditorCompanionSession",
+  });
 }
 
 function summarizeNativeLayoutLeafSessionIds(layout: NativeTerminalLayout | undefined): string[] {
@@ -4868,6 +5049,7 @@ function saveSettings(nextSettings: ghostexSettings): void {
   const previousSettings = settings;
   settings = normalizeghostexSettings(nextSettings);
   persistSharedSettingsSnapshot(settings);
+  syncGxserverAgentSettings(settings, previousSettings, "settings-save");
   syncNativeSidebarSide(settings.sidebarSide, previousSettings.sidebarSide);
   syncGhosttyTerminalSettings(settings, previousSettings);
   syncCodeServerRuntimeSettings(settings, previousSettings);
@@ -4880,6 +5062,56 @@ function saveSettings(nextSettings: ghostexSettings): void {
   }
   publish();
   previewNativeSoundSettingChange(previousSettings, settings);
+}
+
+function syncGxserverAgentSettings(
+  nextSettings: ghostexSettings,
+  previousSettings: ghostexSettings,
+  reason: string,
+): void {
+  if (nextSettings.agentAcceptAllEnabled === previousSettings.agentAcceptAllEnabled) {
+    return;
+  }
+  /*
+  CDXC:GxserverAgentSettings 2026-06-02-22:23:
+  Settings UI changes for global Accept All must write through `/api/updateAgentSettings`; local settings storage is only the synchronous render cache. Do not mirror this value into project launchSettings or rebuild agent commands in macOS, because gxserver owns inherited agent launch policy for every client.
+  */
+  void gxserverClient
+    .updateAgentSettings({ agentAcceptAllEnabled: nextSettings.agentAcceptAllEnabled })
+    .then((agentSettings) => {
+      applyGxserverAgentSettingsToLocalSettings(agentSettings, `${reason}:persistResponse`);
+    })
+    .catch((error) => {
+      appendSidebarRefreshDebugLog("nativeSidebar.gxserver.agentSettings.persistFailed", {
+        errorType: error instanceof Error ? error.name : typeof error,
+        hasMessage: (error instanceof Error ? error.message : String(error)).length > 0,
+        reason,
+      });
+    });
+}
+
+function applyGxserverAgentSettingsToLocalSettings(
+  agentSettings: GxserverAgentSettings,
+  reason: string,
+): boolean {
+  if (settings.agentAcceptAllEnabled === agentSettings.agentAcceptAllEnabled) {
+    return false;
+  }
+  /*
+  CDXC:GxserverAgentSettings 2026-06-02-22:23:
+  Startup and gxserver update responses replace the local render cache for global Accept All. This keeps Settings controls aligned with daemon-owned agent policy without letting macOS localStorage become a competing source for launch command behavior.
+  */
+  settings = normalizeghostexSettings({
+    ...settings,
+    agentAcceptAllEnabled: agentSettings.agentAcceptAllEnabled,
+  });
+  persistSharedSettingsSnapshot(settings);
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.agentSettings.localSync", {
+    agentAcceptAllEnabled: agentSettings.agentAcceptAllEnabled,
+    reason,
+  });
+  publish();
+  return true;
 }
 
 function syncNativeSidebarSide(
@@ -12308,7 +12540,10 @@ function publish(): void {
   postAppModalHost({ message: sidebarMessage, type: "sidebarState" });
   postWorkspaceBarState();
   syncNativeT3RuntimeSessionState(sidebarMessage);
-  syncNativeLayout({ force: didCreateNativeSession || didMaterializeVirtualPaneTabs });
+  syncNativeLayout({
+    force: didCreateNativeSession || didMaterializeVirtualPaneTabs,
+    sidebarMessage,
+  });
   syncNativeSessionStatusIndicators(sidebarMessage);
   syncNativePetOverlayState(sidebarMessage);
 }
@@ -12681,6 +12916,8 @@ function restoreNativeTerminalSession(
 function materializeGxserverPresentationSessionForFocus(
   reference: ReturnType<typeof resolveSidebarSessionReference>,
   reason: string,
+  focusIntent?: NativeSidebarFocusIntent,
+  focusSurface: NativeSidebarFocusSurface = "workspaceTerminal",
 ): TerminalSessionRecord | undefined {
   const existingSession = findTerminalSessionInProject(reference.project, reference.sessionId);
   if (existingSession) {
@@ -12781,9 +13018,10 @@ function materializeGxserverPresentationSessionForFocus(
     title: presentation.title,
     type: "createTerminal",
   }, reference.project, session.sessionId, "", {
+    focusAfterCreate: true,
+    focusIntent,
+    focusSurface,
     intent: presentation.lifecycleState === "sleeping" ? "wake" : "attach",
-  }).then(() => {
-    postNative({ sessionId: nativeSessionId, type: "focusTerminal" });
   });
   appendTerminalFocusDebugLog("nativeSidebar.gxserverPresentationFocus.materialized", {
     lifecycleState: presentation.lifecycleState,
@@ -15037,131 +15275,6 @@ function getNativeActivitySuppressedUntil(sessionId: string): number | undefined
   return suppressedUntil;
 }
 
-function buildNativeResumeCommandDisplay(session: TerminalSessionRecord): string | undefined {
-  const agentId = resolveNativeResumeAgentIdForSession(session);
-  const agentCommand = resolveNativeAgentRuntimeCommand(agentId);
-  if (!agentId || !agentCommand) {
-    return undefined;
-  }
-
-  const resumeTitle = agentId === "pi" ? undefined : getNativeTrustedResumeTitle(session);
-  const claudeSessionReference =
-    agentId === "claude" ? (getNativeClaudeSessionReference(session) ?? resumeTitle) : undefined;
-  const codexSessionReference =
-    agentId === "codex" ? (getNativeCodexSessionReference(session) ?? resumeTitle) : undefined;
-  const cursorSessionReference =
-    agentId === "cursor" ? getNativeCursorSessionReference(session) : undefined;
-  const openCodeSessionReference =
-    agentId === "opencode" ? getNativeOpenCodeSessionReference(session) : undefined;
-  const piSessionReference = agentId === "pi" ? getNativePiSessionReference(session) : undefined;
-  const exactSessionReference = getNativeExactAgentSessionReference(agentId, session);
-
-  switch (agentId) {
-    case "amp":
-      return exactSessionReference
-        ? `${agentCommand} threads continue ${quoteShellDoubleArg(exactSessionReference)}`
-        : undefined;
-    case "antigravity":
-      return exactSessionReference
-        ? `${agentCommand} --conversation ${quoteShellDoubleArg(exactSessionReference)}`
-        : undefined;
-    case "codebuddy":
-    case "copilot":
-    case "droid":
-    case "gemini":
-    case "hermes-agent":
-    case "qoder":
-      return exactSessionReference
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(exactSessionReference)}`
-        : undefined;
-    case "grok":
-      return exactSessionReference
-        ? `${agentCommand} -r ${quoteShellDoubleArg(exactSessionReference)}`
-        : undefined;
-    case "codex":
-      return codexSessionReference
-        ? `${agentCommand} resume ${quoteShellDoubleArg(codexSessionReference)}`
-        : undefined;
-    case "claude":
-      return claudeSessionReference
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(claudeSessionReference)}`
-        : undefined;
-    case "cursor":
-      if (cursorSessionReference) {
-        return `${agentCommand} --resume ${quoteShellDoubleArg(cursorSessionReference)}`;
-      }
-      return resumeTitle
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)}  # lookup chat id in Cursor chat store`
-        : undefined;
-    case "opencode":
-      if (openCodeSessionReference) {
-        return `${agentCommand} --session ${quoteShellDoubleArg(openCodeSessionReference)}`;
-      }
-      return resumeTitle
-        ? `${agentCommand} -s ${quoteShellDoubleArg(resumeTitle)}  # lookup session id in OpenCode session list`
-        : undefined;
-    case "pi":
-      return piSessionReference
-        ? `${agentCommand} --session ${quoteShellDoubleArg(piSessionReference)}`
-        : undefined;
-    case "rovodev":
-      return exactSessionReference
-        ? `${buildNativeRovoDevResumeCommand(agentCommand, exactSessionReference)}`
-        : undefined;
-    default:
-      return undefined;
-  }
-}
-
-function wrapNativeRestoredTerminalResumeCommand(
-  command: string,
-  displayCommand: string,
-  fallbackCommand?: string,
-): string {
-  /**
-   * CDXC:SessionRestore 2026-05-20-08:45:
-   * Wake, full reload, and previous-session restore can take several seconds while
-   * lookup/resume commands run. Print the pending command first so users know to
-   * wait instead of assuming the terminal is idle.
-   *
-   * CDXC:SessionRestore 2026-05-23-10:51:
-   * Exact hook-captured session ids can go stale if the agent CLI prunes or
-   * cannot find the session. Keep the restored pane open and try the older
-   * title-based fallback when one is available instead of leaving users with a
-   * failed exact-id command only.
-   *
-   * CDXC:SessionRestore 2026-05-26-15:52:
-   * The restore wrapper stays as a plain script for native temp-file staging.
-   * Native evaluates that file in the current interactive shell so aliases and
-   * functions such as `x` work while the terminal only echoes a short command.
-   */
-  const lines = [
-    `printf '%s\\n' ${quoteNativeShellArg("Restoring session...")}`,
-    `printf '> %s\\n\\n' ${quoteNativeShellArg(displayCommand)}`,
-    "__ghostex_restore_resume_status=0",
-    "__ghostex_restore_resume_primary() {",
-    command,
-    "}",
-    "__ghostex_restore_resume_primary || __ghostex_restore_resume_status=$?",
-    "unset -f __ghostex_restore_resume_primary",
-  ];
-  if (fallbackCommand && fallbackCommand !== command) {
-    lines.push(
-      'if [ "$__ghostex_restore_resume_status" -ne 0 ]; then',
-      `  printf '%s\\n' ${quoteNativeShellArg("Exact resume failed; trying saved fallback resume command.")}`,
-      "  __ghostex_restore_resume_status=0",
-      "  __ghostex_restore_resume_fallback() {",
-      fallbackCommand,
-      "  }",
-      "  __ghostex_restore_resume_fallback || __ghostex_restore_resume_status=$?",
-      "  unset -f __ghostex_restore_resume_fallback",
-      "fi",
-    );
-  }
-  lines.push("unset __ghostex_restore_resume_status");
-  return lines.join("\n");
-}
-
 function buildNativeRestoredTerminalInitialInput(session: TerminalSessionRecord): string {
   return readGxserverAgentResumePlanSync(session)?.startupText ?? "";
 }
@@ -15334,270 +15447,8 @@ function resolveNativeResumeAgentIdForSession(
   return resolveNativeResumeAgentId(session.agentName);
 }
 
-function buildNativeResumeAgentCommand(session: TerminalSessionRecord): string | undefined {
-  const agentId = resolveNativeResumeAgentIdForSession(session);
-  if (
-    agentId !== "claude" &&
-    agentId !== "codex" &&
-    agentId !== "cursor" &&
-    agentId !== "amp" &&
-    agentId !== "antigravity" &&
-    agentId !== "codebuddy" &&
-    agentId !== "copilot" &&
-    agentId !== "droid" &&
-    agentId !== "gemini" &&
-    agentId !== "grok" &&
-    agentId !== "hermes-agent" &&
-    agentId !== "opencode" &&
-    agentId !== "pi" &&
-    agentId !== "qoder" &&
-    agentId !== "rovodev"
-  ) {
-    return undefined;
-  }
-  const agentCommand = resolveNativeAgentRuntimeCommand(agentId);
-  const resumeTitle = agentId === "pi" ? undefined : getNativeTrustedResumeTitle(session);
-  const claudeSessionReference =
-    agentId === "claude" ? (getNativeClaudeSessionReference(session) ?? resumeTitle) : undefined;
-  const codexSessionReference =
-    agentId === "codex" ? (getNativeCodexSessionReference(session) ?? resumeTitle) : undefined;
-  const cursorSessionReference =
-    agentId === "cursor" ? getNativeCursorSessionReference(session) : undefined;
-  const openCodeSessionReference =
-    agentId === "opencode" ? getNativeOpenCodeSessionReference(session) : undefined;
-  const piSessionReference = agentId === "pi" ? getNativePiSessionReference(session) : undefined;
-  const exactSessionReference = getNativeExactAgentSessionReference(agentId, session);
-  if (!agentId || !agentCommand) {
-    return undefined;
-  }
-  if (agentId === "cursor") {
-    if (cursorSessionReference) {
-      return `${agentCommand} --resume ${quoteShellDoubleArg(cursorSessionReference)}`;
-    }
-    if (!resumeTitle) {
-      return undefined;
-    }
-    const projectPath = resolveNativeSessionProjectPath(session);
-    return projectPath
-      ? buildNativeCursorResumeLookupCommand(agentCommand, projectPath, resumeTitle)
-      : undefined;
-  }
-  if (
-    agentId === "pi"
-      ? !piSessionReference
-      : agentId === "codex"
-        ? !codexSessionReference
-        : agentId === "claude"
-          ? !claudeSessionReference
-          : agentId === "opencode"
-            ? !openCodeSessionReference && !resumeTitle
-            : !exactSessionReference
-  ) {
-    return undefined;
-  }
-
-  /**
-   * CDXC:SessionRestore 2026-04-27-07:38
-   * Automatic reopen uses the agent-specific resume syntax that users expect:
-   * Claude receives `claude --resume <title>`, Codex receives
-   * `codex resume <title>`, and OpenCode resolves the stored title to its
-   * session ID before launching so restored terminals attach to saved sessions.
-   *
-   * CDXC:SessionRestore 2026-05-22-23:33:
-   * Hook-captured native session ids are more reliable than thread titles.
-   * Prefer those exact ids for Claude, Codex, and OpenCode; keep the existing
-   * title-based command path when the hooks have not captured a session id yet.
-   *
-   * CDXC:SessionRestore 2026-05-23-00:25:
-   * Ghostex supports the broader restorable-agent matrix. Agents whose CLIs
-   * expose native resume flags must use the captured session id directly;
-   * title lookup remains limited to the older Codex, Claude, Cursor, and
-   * OpenCode fallback paths that already supported it.
-   *
-   * CDXC:PiAgent 2026-05-08-09:42
-   * Pi restore must use the Pi jsonl session path/id captured by the global Pi
-   * extension. Titles are display labels only and are not unique enough for Pi
-   * resume or fork parity with Codex.
-   */
-  switch (agentId) {
-    case "amp":
-      return exactSessionReference
-        ? `${agentCommand} threads continue ${quoteShellDoubleArg(exactSessionReference)}`
-        : undefined;
-    case "antigravity":
-      return exactSessionReference
-        ? `${agentCommand} --conversation ${quoteShellDoubleArg(exactSessionReference)}`
-        : undefined;
-    case "codebuddy":
-    case "copilot":
-    case "droid":
-    case "gemini":
-    case "hermes-agent":
-    case "qoder":
-      return exactSessionReference
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(exactSessionReference)}`
-        : undefined;
-    case "codex":
-      if (!codexSessionReference) {
-        return undefined;
-      }
-      return `${agentCommand} resume ${quoteShellDoubleArg(codexSessionReference)}`;
-    case "claude":
-      if (!claudeSessionReference) {
-        return undefined;
-      }
-      return `${agentCommand} --resume ${quoteShellDoubleArg(claudeSessionReference)}`;
-    case "opencode":
-      if (openCodeSessionReference) {
-        return `${agentCommand} --session ${quoteShellDoubleArg(openCodeSessionReference)}`;
-      }
-      if (!resumeTitle) {
-        return undefined;
-      }
-      return buildNativeOpenCodeResumeCommand(agentCommand, resumeTitle);
-    case "pi":
-      if (!piSessionReference) {
-        return undefined;
-      }
-      return `${agentCommand} --session ${quoteShellDoubleArg(piSessionReference)}`;
-    case "grok":
-      return exactSessionReference
-        ? `${agentCommand} -r ${quoteShellDoubleArg(exactSessionReference)}`
-        : undefined;
-    case "rovodev":
-      return exactSessionReference
-        ? buildNativeRovoDevResumeCommand(agentCommand, exactSessionReference)
-        : undefined;
-    default:
-      return undefined;
-  }
-}
-
-function buildNativeCopyResumeCommand(
-  session: TerminalSessionRecord,
-): string | undefined {
-  const agentId = resolveNativeResumeAgentIdForSession(session);
-  const agentCommand = resolveNativeAgentCommand(agentId);
-  if (!agentId || !agentCommand) {
-    return undefined;
-  }
-  const resumeTitle = getNativeTrustedResumeTitle(session);
-
-  switch (agentId) {
-    case "amp": {
-      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
-      return sessionReference
-        ? `${agentCommand} threads continue ${quoteShellDoubleArg(sessionReference)}`
-        : undefined;
-    }
-    case "antigravity": {
-      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
-      return sessionReference
-        ? `${agentCommand} --conversation ${quoteShellDoubleArg(sessionReference)}`
-        : undefined;
-    }
-    case "codebuddy":
-    case "copilot":
-    case "droid":
-    case "gemini":
-    case "hermes-agent":
-    case "qoder": {
-      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
-      return sessionReference
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(sessionReference)}`
-        : `${agentCommand} --resume`;
-    }
-    case "codex": {
-      const codexSessionReference = getNativeCodexSessionReference(session) ?? resumeTitle;
-      return codexSessionReference
-        ? `${agentCommand} resume ${quoteShellDoubleArg(codexSessionReference)}`
-        : `${agentCommand} resume`;
-    }
-    case "claude": {
-      const claudeSessionReference = getNativeClaudeSessionReference(session) ?? resumeTitle;
-      return claudeSessionReference
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(claudeSessionReference)}`
-        : `${agentCommand} --resume`;
-    }
-    case "opencode":
-      return buildNativeOpenCodeCopyResumeCommand(agentCommand, session);
-    case "pi": {
-      const piSessionReference = getNativePiSessionReference(session);
-      return piSessionReference
-        ? `${agentCommand} --session ${quoteShellDoubleArg(piSessionReference)}`
-        : `${agentCommand} --resume`;
-    }
-    case "cursor": {
-      const cursorSessionReference = getNativeCursorSessionReference(session);
-      if (cursorSessionReference) {
-        return `${agentCommand} --resume ${quoteShellDoubleArg(cursorSessionReference)}`;
-      }
-      const resumeTitle = getNativeTrustedResumeTitle(session);
-      const projectPath = resumeTitle ? resolveNativeSessionProjectPath(session) : undefined;
-      return resumeTitle && projectPath
-        ? buildNativeCursorResumeLookupCommand(agentCommand, projectPath, resumeTitle)
-        : `${agentCommand} ls`;
-    }
-    case "grok": {
-      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
-      return sessionReference
-        ? `${agentCommand} -r ${quoteShellDoubleArg(sessionReference)}`
-        : `${agentCommand} -r`;
-    }
-    case "rovodev": {
-      const sessionReference = getNativeExactAgentSessionReference(agentId, session);
-      return sessionReference
-        ? buildNativeRovoDevResumeCommand(agentCommand, sessionReference)
-        : buildNativeRovoDevResumeCommand(agentCommand, "");
-    }
-    default:
-      return undefined;
-  }
-}
-
-function buildNativeCopyResumeFallbackCommand(
-  session: TerminalSessionRecord,
-): string | undefined {
-  const agentId = resolveNativeResumeAgentIdForSession(session);
-  const agentCommand = resolveNativeAgentRuntimeCommand(agentId);
-  const resumeTitle = getNativeTrustedResumeTitle(session);
-  if (!agentId || !agentCommand || !resumeTitle) {
-    return undefined;
-  }
-
-  switch (agentId) {
-    case "codex": {
-      const exactReference = getNativeCodexSessionReference(session);
-      return exactReference && exactReference !== resumeTitle
-        ? `${agentCommand} resume ${quoteShellDoubleArg(resumeTitle)}`
-        : undefined;
-    }
-    case "claude": {
-      const exactReference = getNativeClaudeSessionReference(session);
-      return exactReference && exactReference !== resumeTitle
-        ? `${agentCommand} --resume ${quoteShellDoubleArg(resumeTitle)}`
-        : undefined;
-    }
-    case "opencode": {
-      const exactReference = getNativeOpenCodeSessionReference(session);
-      return exactReference && exactReference !== resumeTitle
-        ? buildNativeOpenCodeResumeCommand(agentCommand, resumeTitle)
-        : undefined;
-    }
-    case "cursor": {
-      const exactReference = getNativeCursorSessionReference(session);
-      const projectPath = resolveNativeSessionProjectPath(session);
-      return exactReference && projectPath
-        ? buildNativeCursorResumeLookupCommand(agentCommand, projectPath, resumeTitle)
-        : undefined;
-    }
-    default:
-      return undefined;
-  }
-}
-
 function buildNativeCodexForkCommand(session: TerminalSessionRecord): string | undefined {
-  const agentCommand = resolveNativeAgentRuntimeCommand("codex");
+  const agentCommand = readGxserverAgentRuntimeCommandForSession("codex", session);
   const codexSessionReference = getNativeCodexSessionReference(session);
   const resumeTitle = getNativeTrustedResumeTitle(session);
   if (!agentCommand || (!codexSessionReference && !resumeTitle)) {
@@ -15633,7 +15484,7 @@ function buildNativeCodexForkCommand(session: TerminalSessionRecord): string | u
 }
 
 function buildNativeClaudeForkCommand(session: TerminalSessionRecord): string | undefined {
-  const agentCommand = resolveNativeAgentRuntimeCommand("claude");
+  const agentCommand = readGxserverAgentRuntimeCommandForSession("claude", session);
   const claudeSessionReference = getNativeClaudeSessionReference(session);
   const resumeTitle = getNativeTrustedResumeTitle(session);
   if (!agentCommand || (!claudeSessionReference && !resumeTitle)) {
@@ -15694,41 +15545,6 @@ function getNativeExactAgentSessionReference(
     return getNativePiSessionReference(session);
   }
   return session.agentSessionId?.trim() || undefined;
-}
-
-function buildNativeRovoDevResumeCommand(agentCommand: string, sessionReference: string): string {
-  const quotedSessionReference = quoteShellDoubleArg(sessionReference);
-  return /\brovodev\b/u.test(agentCommand)
-    ? `${agentCommand} --restore ${quotedSessionReference}`
-    : `${agentCommand} rovodev run --restore ${quotedSessionReference}`;
-}
-
-function resolveNativeSessionProjectPath(session: TerminalSessionRecord): string | undefined {
-  const projectPath = resolveSidebarSessionReference(session.sessionId).project.path.trim();
-  return projectPath || undefined;
-}
-
-function buildNativeCursorResumeLookupCommand(
-  agentCommand: string,
-  projectPath: string,
-  resumeTitle: string,
-): string {
-  /**
-   * CDXC:CursorCLI 2026-05-20-08:20:
-   * Externally started Cursor sessions may lack a stored chat UUID. Resolve the
-   * newest matching Cursor chat `name` for the active project, then resume it.
-   */
-  return [
-    "CURSOR_CHAT_ID=\"$(",
-    `/usr/bin/python3 -c ${quoteNativeShellArg(getCursorChatSessionLookupScript())} ${quoteNativeShellArg(projectPath)} ${quoteNativeShellArg(resumeTitle)}`,
-    ")\"",
-    "&&",
-    "test -n \"$CURSOR_CHAT_ID\"",
-    "&&",
-    `${agentCommand} --resume \"$CURSOR_CHAT_ID\"`,
-    "||",
-    `printf '%s\\n' ${quoteNativeShellArg(`Unable to find Cursor chat id for "${resumeTitle}".`)}`,
-  ].join(" ");
 }
 
 async function createCursorCliChatId(
@@ -15873,15 +15689,11 @@ async function stageNativeAgentPrompt(input: {
 }
 
 function buildNativePiForkCommand(session: TerminalSessionRecord): string | undefined {
-  const agentCommand = resolveNativeAgentRuntimeCommand("pi");
+  const agentCommand = readGxserverAgentRuntimeCommandForSession("pi", session);
   const piSessionReference = getNativePiSessionReference(session);
   return agentCommand && piSessionReference
     ? `${agentCommand} --fork ${quoteShellDoubleArg(piSessionReference)}`
     : undefined;
-}
-
-function buildNativeOpenCodeResumeCommand(agentCommand: string, resumeTitle: string): string {
-  return `${agentCommand} -s "$(${agentCommand} session list --format json | /usr/bin/python3 -c ${quoteNativeShellArg(getNativeOpenCodeSessionLookupScript())} ${quoteNativeShellArg(resumeTitle)})"`;
 }
 
 function getNativeCodexSessionIdLookupScript(): string {
@@ -15936,20 +15748,6 @@ if not matches:
 matches.sort()
 sys.stdout.write(matches[-1][1])
 `;
-}
-
-function buildNativeOpenCodeCopyResumeCommand(
-  agentCommand: string,
-  session: TerminalSessionRecord,
-): string {
-  const openCodeSessionReference = getNativeOpenCodeSessionReference(session);
-  if (openCodeSessionReference) {
-    return `${agentCommand} --session ${quoteShellDoubleArg(openCodeSessionReference)}`;
-  }
-  const resumeTitle = getNativeTrustedResumeTitle(session);
-  return resumeTitle
-    ? buildNativeOpenCodeResumeCommand(agentCommand, resumeTitle)
-    : `${agentCommand} session list && echo 'Enter ${agentCommand} -s id' to resume a session`;
 }
 
 function getNativeTrustedResumeTitle(session: TerminalSessionRecord): string | undefined {
@@ -16044,20 +15842,6 @@ function getNativeCommandExecutableName(command: string | undefined): string | u
   return firstPart ? firstPart.replace(/^['"]|['"]$/gu, "").toLowerCase() : undefined;
 }
 
-function getNativeOpenCodeSessionLookupScript(): string {
-  return `import json, os, sys
-title = sys.argv[1].strip()
-sessions = json.load(sys.stdin)
-cwd = os.getcwd()
-match = next((session for session in sessions if session.get("title") == title and session.get("directory") == cwd), None)
-if match is None:
-    match = next((session for session in sessions if session.get("title") == title), None)
-if not match or not match.get("id"):
-    sys.exit(1)
-sys.stdout.write(str(match["id"]))
-`;
-}
-
 function resolveNativeResumeAgentId(
   agentName: string | undefined,
 ): NativeResumeAgentId | undefined {
@@ -16145,42 +15929,30 @@ function resolveNativeAgentCommand(agentId: NativeResumeAgentId | undefined): st
   );
 }
 
-/**
- * CDXC:SidebarAgents 2026-05-19-10:05:
- * Agent sessions launch from the stored base command plus runtime Accept All
- * flags.
- *
- * CDXC:SidebarAgents 2026-06-01-12:07:
- * macOS still owns a few local resume/fork command builders for non-zmx and tab-creation flows. Apply the same runtime Accept All policy there too, without changing the stored command, so forked and restored panes match gxserver-owned wake behavior.
- */
-function resolveNativeAgentRuntimeCommand(agentId: NativeResumeAgentId | undefined): string | undefined {
-  if (!agentId) {
+function readGxserverAgentRuntimeCommandForSession(
+  agentId: NativeResumeAgentId,
+  session: TerminalSessionRecord,
+): string | undefined {
+  const reference = resolveSidebarSessionReference(session.sessionId);
+  try {
+    /*
+    CDXC:GxserverAgentCommands 2026-06-02-22:23:
+    Native fork UI still composes provider-specific fork subcommands, but the executable plus runtime Accept All flags come from gxserver's launch plan. Do not use macOS-local settings or shared/sidebar Accept All helpers here, because gxserver owns agent command shaping for all clients.
+    */
+    return gxserverClient.fetchAgentLaunchPlanSync({
+      agentId,
+      projectId: reference.project.projectId as never,
+    }).command;
+  } catch (error) {
+    appendRestoreDebugLog("nativeSidebar.gxserverAgentLaunchPlanForFork.failed", {
+      agentId,
+      errorType: error instanceof Error ? error.name : typeof error,
+      hasMessage: (error instanceof Error ? error.message : String(error)).length > 0,
+      projectId: reference.project.projectId,
+      sessionId: reference.sessionId,
+    });
     return undefined;
   }
-  const baseCommand = resolveNativeAgentCommand(agentId);
-  if (!baseCommand) {
-    return undefined;
-  }
-  const storedAgent = agents.find((candidate) => candidate.agentId === agentId);
-  const defaultAgent = getDefaultSidebarAgentById(agentId);
-  return resolveSidebarAgentLaunchCommand({
-    acceptAllMode: storedAgent?.acceptAllMode,
-    agentId,
-    command: baseCommand,
-    globalAcceptAllEnabled: settings.agentAcceptAllEnabled,
-    icon: storedAgent?.icon ?? defaultAgent?.icon,
-  });
-}
-
-function resolveAgentLaunchCommand(agent: SidebarAgentButton): string {
-  const baseCommand = agent.command?.trim() ?? "";
-  return resolveSidebarAgentLaunchCommand({
-    acceptAllMode: agent.acceptAllMode,
-    agentId: agent.agentId,
-    command: baseCommand,
-    globalAcceptAllEnabled: settings.agentAcceptAllEnabled,
-    icon: agent.icon,
-  });
 }
 
 const GXSERVER_CANONICAL_PROJECT_ID_PATTERN = /^P[0-9][a-z0-9]{3}$/u;
@@ -19460,17 +19232,23 @@ function focusTerminal(sessionId: string): void {
     focusQuickFileEditorProject(reference.project);
     return;
   }
+  const focusIntent = beginNativeSidebarFocusIntent(reference, "focusTerminal");
   const sidebarCardFocusTrace = getRecentSidebarCardFocusTrace(reference.sessionId);
   const forceSidebarCardFocusTrace = sidebarCardFocusTrace !== undefined;
   const focusTargetBefore = summarizeSidebarSessionFocusTarget(
     reference.project,
     reference.sessionId,
   );
+  const shouldKeepProjectEditorOpen = shouldKeepProjectEditorOpenForSessionFocus(
+    reference.project.projectId,
+  );
   let sessionRecord = findSessionRecordInProject(reference.project, reference.sessionId);
   if (!sessionRecord) {
     sessionRecord = materializeGxserverPresentationSessionForFocus(
       reference,
       "sidebar-presentation-focus",
+      focusIntent,
+      shouldKeepProjectEditorOpen ? "projectEditorCompanion" : "workspaceTerminal",
     );
   }
   const terminalState = terminalStateById.get(reference.sessionId);
@@ -19554,18 +19332,16 @@ function focusTerminal(sessionId: string): void {
       }
     }
     publish();
-    postNative({
-      sessionId: nativeSessionIdForProjectSidebarSession(
+    postNativeFocusTerminalForCurrentIntent(
+      nativeSessionIdForProjectSidebarSession(
         reference.project.projectId,
         reference.sessionId,
       ),
-      type: "focusTerminal",
-    });
+      focusIntent,
+      "focus-command-terminal",
+    );
     return;
   }
-  const shouldKeepProjectEditorOpen = shouldKeepProjectEditorOpenForSessionFocus(
-    reference.project.projectId,
-  );
   /**
    * CDXC:ProjectEditorCompanion 2026-05-14-09:19:
    * Session-card clicks inside an active embedded VS Code project should select
@@ -19590,8 +19366,14 @@ function focusTerminal(sessionId: string): void {
     activeProject().workspace,
     reference.sessionId,
   );
-  updateActiveProjectWorkspace(
-    (workspace) => focusSidebarSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
+  updateActiveProjectWorkspace((workspace) =>
+    /*
+    CDXC:ProjectEditorCompanion 2026-06-02-19:06:
+    Source view session-card clicks retarget the native companion pane through a dedicated host command. Keep the sidebar selection/focus state current, but do not run the Agents-view pane-tab selection helper while the project editor companion is visible because that changes the native workspace layout command and can flicker the VS Code embed.
+    */
+    shouldKeepProjectEditorOpen
+      ? focusSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot
+      : focusSidebarSessionInSimpleWorkspace(workspace, reference.sessionId).snapshot,
   );
   const focusTargetAfter = summarizeSidebarSessionFocusTarget(activeProject(), reference.sessionId);
   if (!shouldKeepProjectEditorOpen) {
@@ -19630,6 +19412,18 @@ function focusTerminal(sessionId: string): void {
       } else {
         restoreNativeBrowserSession(activeProject(), sessionRecord, "focus-restored-session");
       }
+    }
+    if (shouldKeepProjectEditorOpen) {
+      publish();
+      postNativeFocusProjectEditorCompanionForCurrentIntent(
+        nativeSessionIdForProjectSidebarSession(
+          reference.project.projectId,
+          reference.sessionId,
+        ),
+        focusIntent,
+        "focus-project-editor-companion-web-pane",
+      );
+      return;
     }
     postNative({
       sessionId: nativeSessionIdForProjectSidebarSession(
@@ -19696,28 +19490,47 @@ function focusTerminal(sessionId: string): void {
   acknowledgeNativeTerminalAttention(reference.sessionId, "sidebar-focus");
   if (restoredSleepingTerminal) {
     publish();
-    postNative({
-      sessionId: nativeSessionIdForProjectSidebarSession(
+    if (shouldKeepProjectEditorOpen) {
+      postNativeFocusProjectEditorCompanionForCurrentIntent(
+        nativeSessionIdForProjectSidebarSession(
+          reference.project.projectId,
+          reference.sessionId,
+        ),
+        focusIntent,
+        "focus-project-editor-companion-restored-terminal",
+      );
+      return;
+    }
+    postNativeFocusTerminalForCurrentIntent(
+      nativeSessionIdForProjectSidebarSession(
         reference.project.projectId,
         reference.sessionId,
       ),
-      type: "focusTerminal",
-    });
+      focusIntent,
+      "focus-restored-sleeping-terminal",
+    );
     return;
   }
-  postNative({
-    sessionId: nativeSessionIdForProjectSidebarSession(
+  if (shouldKeepProjectEditorOpen) {
+    publish();
+    postNativeFocusProjectEditorCompanionForCurrentIntent(
+      nativeSessionIdForProjectSidebarSession(
+        reference.project.projectId,
+        reference.sessionId,
+      ),
+      focusIntent,
+      "focus-project-editor-companion-direct",
+    );
+    return;
+  }
+  postNativeFocusTerminalForCurrentIntent(
+    nativeSessionIdForProjectSidebarSession(
       reference.project.projectId,
       reference.sessionId,
     ),
-    type: activeSnapshot().sessions.some(
-      (candidate) =>
-        candidate.sessionId === reference.sessionId &&
-        (candidate.kind === "t3" || candidate.kind === "browser"),
-    )
-      ? "focusWebPane"
-      : "focusTerminal",
-  });
+    focusIntent,
+    "focus-terminal-direct",
+  );
   publish();
 }
 
@@ -20474,7 +20287,10 @@ function acknowledgeNativeTerminalAttention(
   reason: "native-focus" | "sidebar-focus" | "tui-attach",
 ): boolean {
   const terminalState = terminalStateById.get(sessionId);
-  if (terminalState?.activity !== "attention") {
+  if (
+    terminalState?.activity !== "attention" &&
+    getGxserverPresentationActivityForSidebarSession(sessionId) !== "attention"
+  ) {
     return false;
   }
 
@@ -20516,7 +20332,11 @@ function completeNativeTerminalAttentionAcknowledgement(
   attentionEnteredAt?: number,
 ): boolean {
   const terminalState = terminalStateById.get(sessionId);
-  if (terminalState?.activity !== "attention") {
+  if (
+    !terminalState ||
+    (terminalState.activity !== "attention" &&
+      getGxserverPresentationActivityForSidebarSession(sessionId) !== "attention")
+  ) {
     return false;
   }
   const latestAttentionEnteredAt = nativeAttentionEnteredAtBySessionId.get(sessionId);
@@ -20536,8 +20356,16 @@ function completeNativeTerminalAttentionAcknowledgement(
    *
    * CDXC:SessionAttention 2026-05-16-23:35:
    * Pane/tab clicks should always acknowledge the current green attention state. If the click arrives before the 1.5-second visibility floor, acknowledgement is completed by the deferred timer above so the border and dot disappear only after the user has had enough time to perceive them.
+   *
+   * CDXC:SessionAttention 2026-06-02-18:31:
+   * Native pane chrome can now render attention from gxserver presentation even when local terminalState still contains stale title-derived working. Treat presentation attention as the same acknowledgeable event so clicking the green terminal border or tab routes through the existing gxserver acknowledgement path.
    */
   terminalState.activity = "idle";
+  setGxserverPresentationSessionActivityLocally(
+    sessionId,
+    "idle",
+    "attention-acknowledge",
+  );
   persistTerminalSessionRestoreActivity(sessionId, undefined);
   void syncNativeSessionActivityWithGxserver(sessionId, { event: "acknowledge" }, "attention-acknowledge");
   if (terminalState.sessionStateFilePath) {
@@ -20557,6 +20385,13 @@ function completeNativeTerminalAttentionAcknowledgement(
     sessionId,
   });
   return true;
+}
+
+function getGxserverPresentationActivityForSidebarSession(
+  sessionId: string,
+): "attention" | "idle" | "working" | undefined {
+  const reference = resolveSidebarSessionReference(sessionId);
+  return findGxserverPresentationSession(reference.project.projectId, reference.sessionId)?.activity;
 }
 
 async function persistNativeSessionAttentionAcknowledged(
@@ -30889,6 +30724,43 @@ function getNativeCommandPaneTabActivity(
   return undefined;
 }
 
+function createNativePaneSidebarSessionProjectionMap(
+  sidebarMessage: SidebarHydrateMessage | undefined,
+): Map<string, SidebarSessionItem> {
+  const sessionsByNativeId = new Map<string, SidebarSessionItem>();
+  if (!sidebarMessage) {
+    return sessionsByNativeId;
+  }
+
+  /*
+  CDXC:PaneTabs 2026-06-02-18:31:
+  Native pane tabs and terminal borders are visible sidebar chrome. When gxserver presentation supplies the rendered sidebar row, AppKit must use that projected activity before local terminalState so stale title-derived working cannot keep a tab orange while the sidebar card and green border are already attention.
+  */
+  for (const group of sidebarMessage.groups) {
+    const groupProjectId = group.projectContext?.editor.projectId;
+    for (const session of group.sessions) {
+      const combinedReference = parseCombinedProjectSessionId(session.sessionId);
+      const projectId = groupProjectId ?? combinedReference?.projectId;
+      const sessionId = combinedReference?.sessionId ?? session.sessionId;
+      if (!projectId) {
+        continue;
+      }
+      sessionsByNativeId.set(
+        nativeSessionIdForProjectSidebarSession(projectId, sessionId),
+        session,
+      );
+    }
+  }
+
+  return sessionsByNativeId;
+}
+
+function getNativePaneProjectedSessionTitle(
+  session: SidebarSessionItem | undefined,
+): string | undefined {
+  return session?.primaryTitle ?? session?.terminalTitle ?? session?.alias;
+}
+
 function createNativeLayoutSyncKey(command: NativeSetActiveTerminalSetCommand): string {
   /**
    * CDXC:NativeGpu 2026-05-08-16:45
@@ -30927,11 +30799,16 @@ function normalizeNativeLayoutSyncValue(value: unknown): unknown {
   );
 }
 
-function syncNativeLayout(options: { force?: boolean } = {}): void {
+function syncNativeLayout(
+  options: { force?: boolean; sidebarMessage?: SidebarHydrateMessage } = {},
+): void {
   const currentProject = activeProject();
   const currentProjectEditor = createSidebarProjectEditorState(currentProject);
   const currentProjectEditorSurfaceState = projectEditorSurfaceByProjectId.get(currentProject.projectId);
-  const sidebarSessionsById = new Map(
+  const sidebarSessionsByNativeId = createNativePaneSidebarSessionProjectionMap(
+    options.sidebarMessage,
+  );
+  const localSidebarSessionsById = new Map(
     createProjectedSidebarSessionsForGroup(activeWorkspaceGroup()).map((session) => [
       session.sessionId,
       session,
@@ -31006,15 +30883,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     ...workspaceSleepingSessionIds,
     ...commandPanelSleepingSessionIds,
   ]);
-  const attentionSessionIds = visibleSessions
-    .filter((session) => {
-      if (session.kind !== "terminal") {
-        return false;
-      }
-      const terminalState = terminalStateById.get(session.sessionId);
-      return terminalState?.activity === "attention";
-    })
-    .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
+  const attentionSessionIds: string[] = [];
   const sessionActivities: Record<string, "attention" | "sleeping" | "working"> = {};
   const sessionAgentIconColors: Record<string, string> = {};
   const sessionAgentIconDataUrls: Record<string, string> = {};
@@ -31026,7 +30895,11 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
   const poppedOutSessionIds: string[] = [];
   for (const session of [...visibleSessions, ...commandPanelVisibleSessions]) {
     const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
-    sessionTitles[nativeSessionId] = session.title;
+    const projectedSidebarSession =
+      sidebarSessionsByNativeId.get(nativeSessionId) ??
+      localSidebarSessionsById.get(session.sessionId);
+    sessionTitles[nativeSessionId] =
+      getNativePaneProjectedSessionTitle(projectedSidebarSession) ?? session.title;
     const delayedSend = getDelayedSendProjectionForSidebarSession(session.sessionId);
     if (delayedSend) {
       sessionDelayedSendRemainingLabels[nativeSessionId] = delayedSend.remainingLabel;
@@ -31043,7 +30916,7 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
      * favicon first, otherwise the projected agent/browser SVG mask. Send both
      * maps because AppKit tab buttons are native controls outside React.
      */
-    const agentIcon = sidebarSessionsById.get(session.sessionId)?.agentIcon;
+    const agentIcon = projectedSidebarSession?.agentIcon;
     if (agentIcon) {
       sessionAgentIconDataUrls[nativeSessionId] = AGENT_LOGOS[agentIcon];
       sessionAgentIconColors[nativeSessionId] = AGENT_LOGO_COLORS[agentIcon];
@@ -31092,10 +30965,16 @@ function syncNativeLayout(options: { force?: boolean } = {}): void {
     }
     const activity =
       session.surface === "commands"
-        ? getNativeCommandPaneTabActivity(session.sessionId, terminalState?.activity)
-        : terminalState?.activity;
+        ? getNativeCommandPaneTabActivity(
+            session.sessionId,
+            projectedSidebarSession?.activity ?? terminalState?.activity,
+          )
+        : projectedSidebarSession?.activity ?? terminalState?.activity;
     if (activity === "attention" || activity === "working") {
       sessionActivities[nativeSessionId] = activity;
+      if (activity === "attention") {
+        attentionSessionIds.push(nativeSessionId);
+      }
     }
   }
   const persistedWorkspaceNativeLayout = snapshot.paneLayout

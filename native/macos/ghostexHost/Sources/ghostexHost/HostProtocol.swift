@@ -7,6 +7,7 @@ enum HostCommand: Decodable {
   case closeTerminal(SessionCommand)
   case closeWebPane(SessionCommand)
   case focusTerminal(SessionCommand)
+  case focusProjectEditorCompanionSession(SessionCommand)
   case focusWebPane(SessionCommand)
   case reloadWebPane(SessionCommand)
   case startT3CodeRuntime(StartT3CodeRuntime)
@@ -101,6 +102,7 @@ enum HostCommand: Decodable {
     case closeTerminal
     case closeWebPane
     case focusTerminal
+    case focusProjectEditorCompanionSession
     case focusWebPane
     case reloadWebPane
     case startT3CodeRuntime
@@ -200,6 +202,8 @@ enum HostCommand: Decodable {
       self = .closeWebPane(try SessionCommand(from: decoder))
     case .focusTerminal:
       self = .focusTerminal(try SessionCommand(from: decoder))
+    case .focusProjectEditorCompanionSession:
+      self = .focusProjectEditorCompanionSession(try SessionCommand(from: decoder))
     case .focusWebPane:
       self = .focusWebPane(try SessionCommand(from: decoder))
     case .reloadWebPane:
