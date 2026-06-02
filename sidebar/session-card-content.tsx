@@ -26,7 +26,11 @@ import {
 } from "../shared/session-grid-contract";
 import { getSidebarAgentNameByIcon, type SidebarAgentIcon } from "../shared/sidebar-agents";
 import { AGENT_LOGOS } from "./agent-logos";
-import { SIDEBAR_TOOLTIP_DISMISS_EVENT } from "./app-tooltip";
+import {
+  areSidebarTooltipsSuppressed,
+  SIDEBAR_TOOLTIP_DISMISS_EVENT,
+  SIDEBAR_TOOLTIP_SUPPRESSION_CHANGED_EVENT,
+} from "./app-tooltip";
 import { formatRelativeTime } from "./relative-time";
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
 import { useRelativeTimeTick } from "./use-relative-time-tick";
@@ -1043,6 +1047,10 @@ export function OverflowTooltipText({
 
   const openTooltip = () => {
     clearOpenTimeout();
+    if (areSidebarTooltipsSuppressed()) {
+      setIsOpen(false);
+      return;
+    }
     const shouldOpen = tooltipWhen === "always" ? Boolean(tooltip ?? text) : hasOverflow();
     if (!shouldOpen) {
       setIsOpen(false);
@@ -1050,6 +1058,10 @@ export function OverflowTooltipText({
     }
 
     openTimeoutIdRef.current = window.setTimeout(() => {
+      if (areSidebarTooltipsSuppressed()) {
+        closeTooltip();
+        return;
+      }
       if (activeOverflowTooltipId !== tooltipIdRef.current) {
         activeOverflowTooltipClose?.();
       }
@@ -1063,9 +1075,22 @@ export function OverflowTooltipText({
 
   useEffect(() => {
     const handleSidebarTooltipDismiss = () => closeTooltip();
+    const handleSidebarTooltipSuppressionChanged = () => {
+      if (areSidebarTooltipsSuppressed()) {
+        closeTooltip();
+      }
+    };
     window.addEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleSidebarTooltipDismiss);
+    window.addEventListener(
+      SIDEBAR_TOOLTIP_SUPPRESSION_CHANGED_EVENT,
+      handleSidebarTooltipSuppressionChanged,
+    );
     return () => {
       window.removeEventListener(SIDEBAR_TOOLTIP_DISMISS_EVENT, handleSidebarTooltipDismiss);
+      window.removeEventListener(
+        SIDEBAR_TOOLTIP_SUPPRESSION_CHANGED_EVENT,
+        handleSidebarTooltipSuppressionChanged,
+      );
       clearOpenTimeout();
       if (activeOverflowTooltipId === tooltipIdRef.current) {
         activeOverflowTooltipId = undefined;
