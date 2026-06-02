@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="1200" height="630" alt="Ghostex" src="media/readme/ghostex-og.png" />
+  <img width="1200" height="630" alt="og" src="https://github.com/user-attachments/assets/8b0417ff-a320-43a2-a7e2-1a6c24f86c5c" />
 </p>
 
 <p align="center">
