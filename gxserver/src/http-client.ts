@@ -62,8 +62,20 @@ export async function requestServerStop(options: {
   return Boolean(response?.ok);
 }
 
+export async function requestServerStopAll(options: {
+  token?: GxserverAuthToken;
+  timeoutMs?: number;
+} = {}): Promise<Record<string, unknown> | undefined> {
+  const response = await fetchLocalJson("/api/control/stopAll", {
+    method: "POST",
+    timeoutMs: options.timeoutMs ?? 10_000,
+    token: options.token,
+  });
+  return response?.ok === true ? response : undefined;
+}
+
 async function fetchLocalJson(
-  path: "/api/health/server" | "/api/control/stop",
+  path: "/api/health/server" | "/api/control/stop" | "/api/control/stopAll",
   options: { method: "GET" | "POST"; timeoutMs: number; token?: GxserverAuthToken },
 ): Promise<Record<string, unknown> | undefined> {
   const controller = new AbortController();

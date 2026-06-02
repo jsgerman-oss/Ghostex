@@ -29,9 +29,12 @@ Run it in the background:
 gxserver start
 gxserver status --json
 gxserver stop
+gxserver stop-all
 ```
 
 `gxserver stop` stops only the control plane. It must not kill zmx sessions, shells, or agent processes. Existing zmx sessions remain attachable after a daemon restart.
+
+`gxserver stop-all` is destructive: it kills gxserver-tracked zmx provider sessions, marks killed sessions stopped, and then stops the control plane.
 
 ## App-launched mode
 

@@ -34,6 +34,7 @@ import {
   resolveListedSessions,
   resolveZehnLaunchFromRoot,
   sendGxserverCliAction,
+  serverUsage,
   usage,
 } from "./ghostex-cli.mjs";
 
@@ -242,6 +243,64 @@ describe("ghostex CLI Android remote-session contract", () => {
     expect(help).not.toContain("search | find");
     expect(help).toMatch(/^\s+ghostex$/m);
     expect(help).toMatch(/^\s+gx$/m);
+  });
+
+  test("documents gx server commands in top-level and server help", () => {
+    /**
+     * CDXC:GxserverCli 2026-06-02-18:36:
+     * The user-facing `gx`/`ghostex` help must expose gxserver lifecycle
+     * commands through the `server` namespace so normal users can manage the
+     * background process without switching to the internal daemon command name.
+     */
+    const help = usage();
+    const serverHelp = serverUsage();
+
+    expect(help).toContain("Server:");
+    expect(help).toContain("server start [--json]");
+    expect(help).toContain("server stop [--json]");
+    expect(help).toContain("server stop-all [--json]");
+    expect(help).toContain("server status [--json]");
+    expect(help).toContain("server --help");
+    expect(serverHelp).toContain("Ghostex Server - manage the gxserver background process");
+    expect(serverHelp).toContain("gx server <command> [args...] [--flags]");
+    expect(serverHelp).toContain("server version");
+    expect(serverHelp).toContain("server --version");
+    expect(serverHelp).toContain("gx server stop stops only the control plane");
+    expect(serverHelp).toContain("gx server stop-all is destructive");
+  });
+
+  test("forwards gx server subcommands to the gxserver CLI", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-gxserver-cli-"));
+    const markerPath = path.join(tempDir, "argv.txt");
+    const gxserverCliPath = path.join(tempDir, "gxserver");
+    try {
+      await writeFile(
+        gxserverCliPath,
+        `#!/bin/sh
+printf '%s\\n' "$@" > ${JSON.stringify(markerPath)}
+printf 'forwarded:%s\\n' "$1"
+`,
+      );
+      await chmod(gxserverCliPath, 0o755);
+
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "server",
+        "status",
+        "--json",
+      ], {
+        env: {
+          ...process.env,
+          GHOSTEX_GXSERVER_CLI: gxserverCliPath,
+        },
+      });
+
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("forwarded:status");
+      expect((await readFile(markerPath, "utf8")).trim().split("\n")).toEqual(["status", "--json"]);
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
   });
 
   test("resolves bundled zehn from the pinned submodule output", async () => {
@@ -1329,7 +1388,7 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
         {},
         { timeoutMs: 50 },
       ),
-    ).rejects.toThrow(/Start it with "gxserver start"/);
+    ).rejects.toThrow(/Start it with "gx server start"/);
   });
 
   test("plans remote ssh targets and direct trusted-network targets with explicit tokens", async () => {

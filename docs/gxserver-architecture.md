@@ -33,6 +33,7 @@ Operational commands, install paths, server-only packaging, remote setup, and tr
 - Direct `gxserver` runs the server in the foreground.
 - `gxserver start` launches the server in the background.
 - `gxserver stop` stops only the gxserver control plane. It must not kill zmx, tmux, zellij, shell, or agent sessions.
+- `gxserver stop-all` is the explicit destructive shutdown path. It kills gxserver-tracked zmx sessions before stopping the control plane.
 - `gxserver status` reports runtime state.
 - The local full API listens on fixed port `58744`. The current macOS bridge remains `58743`.
 - Runtime metadata lives at `~/.ghostex/gxserver/runtime/server.json` and includes `port`, `pid`, `serverId`, `startedAt`, `version`, and `protocolVersion`.

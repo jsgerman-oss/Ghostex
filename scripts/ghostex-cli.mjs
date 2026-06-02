@@ -161,6 +161,7 @@ const COMMANDS = new Map([
   ["browser", browserCommand],
   ["browser-devtools-mcp", browserDevToolsMcpCommand],
   ["browser-mcp", browserDevToolsMcpCommand],
+  ["server", serverCommand],
   ["install-browser-skill", installBrowserSkillCommand],
   ["install-browser-mcp-skill", installBrowserSkillCommand],
   ["computer-use", computerUseCommand],
@@ -235,7 +236,7 @@ async function main() {
     throw new Error(`Unknown command: ${commandName}\n\n${usage()}`);
   }
   if (
-    !["agent-orchestration", "browser", "computer-use", "f", "find", "generate-title"].includes(commandName) &&
+    !["agent-orchestration", "browser", "computer-use", "f", "find", "generate-title", "server"].includes(commandName) &&
     (args.includes("-h") || args.includes("--help"))
   ) {
     helpCommand();
@@ -335,6 +336,31 @@ async function browserCommand(args) {
     default:
       throw new Error(`Unknown browser command: ${subcommand}\n\n${browserUsage()}`);
   }
+}
+
+async function serverCommand(args) {
+  const [subcommand = ""] = args;
+  /*
+   * CDXC:GxserverCli 2026-06-02-18:36:
+   * Users should operate the background daemon through the public `gx`/`ghostex`
+   * CLI instead of learning a second top-level command. Keep `gx server ...` as
+   * a thin launcher over the existing gxserver CLI so daemon lifecycle behavior,
+   * Node checks, protocol reuse, and control-plane stop semantics remain owned
+   * by gxserver.
+   */
+  if (subcommand === "help" || subcommand === "-h" || subcommand === "--help") {
+    console.log(serverUsage());
+    return;
+  }
+  await runGxserverCliCommand(args);
+}
+
+async function runGxserverCliCommand(args) {
+  const launch = resolveGxserverCliLaunch();
+  await runInteractiveProcess(launch.command, [...launch.args, ...args], {
+    cwd: launch.cwd,
+    env: launch.env,
+  });
 }
 
 async function installBrowserSkillCommand(args) {
@@ -1728,10 +1754,13 @@ async function requestGxserverRpc(target, pathname, params = {}, flags = {}) {
     if (error instanceof GxserverCliRpcError) {
       throw error;
     }
+    const localTarget = isLocalGxserverTarget(target);
     throw new GxserverCliConnectionError(
       target.kind === "ssh"
         ? `Could not connect to SSH gxserver profile${target.profileId ? ` "${target.profileId}"` : ""} at ${target.baseUrl}. Check SSH access, remote gxserver status, and the local tunnel, then retry.`
-        : `Could not connect to ${target.kind === "local" ? "local" : "remote"} gxserver at ${target.baseUrl}. Start it with "gxserver start" and retry.`,
+        : localTarget
+          ? `Could not connect to local gxserver at ${target.baseUrl}. Start it with "gx server start" and retry.`
+          : `Could not connect to remote gxserver at ${target.baseUrl}. Start gxserver on that host and retry.`,
       { cause: error },
     );
   } finally {
@@ -1739,6 +1768,18 @@ async function requestGxserverRpc(target, pathname, params = {}, flags = {}) {
       clearTimeout(timeout);
     }
     releaseSshTunnel();
+  }
+}
+
+function isLocalGxserverTarget(target) {
+  if (target?.kind === "local") {
+    return true;
+  }
+  try {
+    const url = new URL(String(target?.baseUrl ?? ""));
+    return ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
+  } catch {
+    return false;
   }
 }
 
@@ -2045,7 +2086,7 @@ async function readLocalGxserverAuthToken() {
   const token = (await readFile(GXSERVER_AUTH_TOKEN_PATH, "utf8").catch(() => "")).trim();
   if (!token) {
     throw new GxserverCliConnectionError(
-      `Could not read local gxserver auth token at ${GXSERVER_AUTH_TOKEN_PATH}. Start gxserver with "gxserver start" and retry.`,
+      `Could not read local gxserver auth token at ${GXSERVER_AUTH_TOKEN_PATH}. Start gxserver with "gx server start" and retry.`,
     );
   }
   return token;
@@ -3192,6 +3233,42 @@ function resolveZehnLaunchFromRoot(root) {
     cwd: path.join(root, "zehn"),
     env: process.env,
   };
+}
+
+function resolveGxserverCliLaunch() {
+  const explicitCli = String(
+    process.env.GHOSTEX_GXSERVER_CLI ?? process.env.GHOSTEX_GXSERVER_BIN ?? "",
+  ).trim();
+  if (explicitCli) {
+    return resolveGxserverCliLaunchForPath(explicitCli);
+  }
+
+  const cliDir = path.dirname(fileURLToPath(import.meta.url));
+  const roots = uniquePaths([
+    path.resolve(cliDir, ".."),
+    process.env.GHOSTEX_SOURCE_ROOT,
+    findGhostexSourceRoot(process.cwd()),
+  ]);
+  for (const root of roots) {
+    const cliPath = path.join(root, "gxserver", "dist", "src", "cli.js");
+    if (fileExistsSync(cliPath)) {
+      return resolveGxserverCliLaunchForPath(cliPath);
+    }
+  }
+
+  throw new Error(
+    "gxserver CLI build output is missing. Run `npm run build` in gxserver/ for development, or reinstall Ghostex so gxserver/dist/src/cli.js is present.",
+  );
+}
+
+function resolveGxserverCliLaunchForPath(cliPath) {
+  const resolvedPath = path.resolve(cliPath);
+  if (!fileExistsSync(resolvedPath)) {
+    throw new Error(`gxserver CLI path does not exist: ${resolvedPath}`);
+  }
+  return path.extname(resolvedPath) === ".js"
+    ? { args: [resolvedPath], command: process.execPath, cwd: undefined, env: process.env }
+    : { args: [], command: resolvedPath, cwd: undefined, env: process.env };
 }
 
 function resolveGhostexTuiLaunch(flags = {}) {
@@ -4538,6 +4615,16 @@ function usage() {
     formatHelpCommand("move-sidebar", "Move the sidebar"),
   ].join("\n");
 
+  const serverCommands = [
+    formatHelpCommand("server", "Run gxserver in the foreground"),
+    formatHelpCommand("server start [--json]", "Start gxserver in the background"),
+    formatHelpCommand("server stop [--json]", "Stop only the gxserver control plane"),
+    formatHelpCommand("server stop-all [--json]", "Stop gxserver and kill tracked zmx sessions"),
+    formatHelpCommand("server status [--json]", "Print gxserver runtime state"),
+    formatHelpCommand("server version | server --version", "Print the gxserver package version"),
+    formatHelpCommand("server --help", "Show gxserver lifecycle command help"),
+  ].join("\n");
+
   const evidenceCommands = [
     formatHelpCommand("screenshot [output.png]", "Capture the Ghostex window"),
     formatHelpCommand("logs [--file name] [--lines n] [--grep text] [--json]", "Print recent logs"),
@@ -4568,6 +4655,9 @@ ${inputCommands}
 UI:
 ${uiCommands}
 
+Server:
+${serverCommands}
+
 Evidence:
 ${evidenceCommands}
 
@@ -4595,8 +4685,53 @@ Global flags:
   --token-stdin         Read a temporary remote gxserver token from stdin
   --token <token>       Bridge token; legacy remote one-shot only because argv can expose secrets
   --timeout <ms>        Bridge request timeout
+  server --help         Show server command help
   help | h              Show this help
   -h, --help            Show this help
+`;
+}
+
+function serverUsage() {
+  /*
+   * CDXC:GxserverCli 2026-06-02-18:36:
+   * `gx server --help` should expose every existing gxserver lifecycle command
+   * under the user-facing CLI while still naming gxserver as the background
+   * control plane. Do not add new daemon behavior here; this help mirrors the
+   * existing gxserver command surface.
+   */
+  const commands = [
+    formatHelpCommand("server", "Run gxserver in the foreground"),
+    formatHelpCommand("server start [--json]", "Start gxserver in the background"),
+    formatHelpCommand("server stop [--json]", "Stop only the gxserver control plane"),
+    formatHelpCommand("server stop-all [--json]", "Stop gxserver and kill tracked zmx sessions"),
+    formatHelpCommand("server status [--json]", "Print gxserver runtime state"),
+    formatHelpCommand("server version", "Print the gxserver package version"),
+    formatHelpCommand("server --version", "Alias for server version"),
+    formatHelpCommand("server help | server --help", "Show this help"),
+  ].join("\n");
+
+  return `Ghostex Server - manage the gxserver background process
+
+Usage:
+  gx server
+  gx server <command> [args...] [--flags]
+  ghostex server <command> [args...] [--flags]
+
+Commands:
+${commands}
+
+Lifecycle:
+  gxserver is the Ghostex background control plane for projects, sessions,
+  zmx lifecycle, auth, local APIs, logs, and remote/headless access.
+  Closing the macOS app does not stop gxserver.
+  gx server stop stops only the control plane; it does not kill zmx, tmux,
+  zellij, shell, or agent sessions.
+  gx server stop-all is destructive: it kills gxserver-tracked zmx sessions,
+  marks killed sessions stopped, then stops the control plane.
+
+Compatibility:
+  The gxserver command remains available for server-only/headless installs.
+  These gx server commands forward to the same gxserver implementation.
 `;
 }
 
@@ -4796,5 +4931,6 @@ export {
   resolveListedSessions,
   resolveZehnLaunchFromRoot,
   sendGxserverCliAction,
+  serverUsage,
   usage,
 };

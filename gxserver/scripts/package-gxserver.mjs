@@ -423,6 +423,7 @@ npm ci --omit=dev --no-audit --no-fund
 - \`bin/gxserver start\`: start gxserver in the background.
 - \`bin/gxserver status --json\`: check runtime state for health/status automation.
 - \`bin/gxserver stop\`: stop only the gxserver control plane; zmx sessions are not killed.
+- \`bin/gxserver stop-all\`: kill gxserver-tracked zmx sessions, then stop the control plane.
 
 The package includes Ghostex's pinned zmx and zehn artifacts in \`bin/\`. Beads is not bundled; install \`bd\` separately when Project board operations are needed.
 `;

@@ -3,7 +3,12 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readGxserverBuildIdentity } from "./build-identity.js";
-import { getGxserverStatus, startGxserverBackground, stopGxserverControlPlane } from "./lifecycle.js";
+import {
+  getGxserverStatus,
+  startGxserverBackground,
+  stopGxserverAndZmxSessions,
+  stopGxserverControlPlane,
+} from "./lifecycle.js";
 import { getUnsupportedNodeMessage } from "./node-version.js";
 import { runGxserverForeground } from "./server.js";
 
@@ -27,6 +32,8 @@ try {
     printStatus(await startGxserverBackground({ buildIdentity, version }), rest.includes("--json"));
   } else if (command === "stop") {
     printStatus(await stopGxserverControlPlane({ buildIdentity, version }), rest.includes("--json"));
+  } else if (command === "stop-all") {
+    printStatus(await stopGxserverAndZmxSessions({ buildIdentity, version }), rest.includes("--json"));
   } else if (command === "status") {
     printStatus(await getGxserverStatus({ buildIdentity, version }), rest.includes("--json"));
   } else if (command === "--version" || command === "version") {
@@ -65,6 +72,7 @@ Usage:
   gxserver           Run gxserver in the foreground
   gxserver start     Start gxserver in the background
   gxserver stop      Stop only the gxserver control plane
+  gxserver stop-all  Stop gxserver and kill tracked zmx sessions
   gxserver status    Print gxserver runtime state
   gxserver --version Print the gxserver package version
 `);
