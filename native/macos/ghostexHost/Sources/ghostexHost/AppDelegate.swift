@@ -4441,9 +4441,6 @@ final class ghostexRootView: NSView {
   private let sidebarWorkareaBorderView = NonInteractiveChromeLineView()
   private let workareaTitlebarBorderView = NonInteractiveChromeLineView()
   private let eventEncoder = JSONEncoder()
-  private var appModalToastHoverShieldRegions: [CGRect] = []
-  private var isOverlayShieldingNativeChrome = false
-  private var isToastHoverShieldingNativeChrome = false
   private let syncGhosttyTerminalSettings: (SyncGhosttyTerminalSettings) -> Void
   private let applyGhosttyConfigSettings: (ApplyGhosttyConfigSettings) -> Void
   private let openGhosttyConfigFile: () -> Void
@@ -5017,7 +5014,6 @@ final class ghostexRootView: NSView {
     isPrewarmingFloatingPromptEditor = false
     activeFloatingPromptEditor = nil
     modalHostView.setTopLeftHitRegions(nil)
-    setAppModalToastHoverShieldRegions([])
     dispatchModalHostMessage(["type": "close"])
     modalHostView.isHidden = true
     if let tempURL = floatingPromptEditorPrewarmTempFileURL {
@@ -6918,7 +6914,6 @@ final class ghostexRootView: NSView {
     appModalPresentationPending = false
     pendingModalHostOpenMessage = nil
     modalHostView.setTopLeftHitRegions(nil)
-    setAppModalToastHoverShieldRegions([])
     modalHostView.isHidden = true
     updateSidebarModalBackdrop()
     restoreAppModalReturnFocusIfNeeded(sessionId: returnFocusSessionId, reason: reason)
@@ -6995,60 +6990,11 @@ final class ghostexRootView: NSView {
     let shouldShieldWorkspace =
       backdropModalActive || isTitlebarOverlayOpen
     workspaceInteractionShieldView.isHidden = !shouldShieldWorkspace
-    isOverlayShieldingNativeChrome = shouldShieldWorkspace
-    applyNativeChromeInteractivitySuppression()
+    workspaceView.setNativeChromeInteractivitySuppressed(shouldShieldWorkspace)
     logWorkspaceInteractionShieldStateIfNeeded(
       shouldShieldWorkspace: shouldShieldWorkspace,
       backdropModalActive: backdropModalActive
     )
-  }
-
-  private func applyNativeChromeInteractivitySuppression() {
-    workspaceView.setNativeChromeInteractivitySuppressed(
-      isOverlayShieldingNativeChrome || isToastHoverShieldingNativeChrome)
-  }
-
-  private func updateToastHoverShield(for point: NSPoint) {
-    let shouldSuppress = isAppModalToastHoverShieldPoint(point)
-    guard isToastHoverShieldingNativeChrome != shouldSuppress else {
-      return
-    }
-    isToastHoverShieldingNativeChrome = shouldSuppress
-    applyNativeChromeInteractivitySuppression()
-  }
-
-  private func setAppModalToastHoverShieldRegions(_ regions: [CGRect]) {
-    appModalToastHoverShieldRegions = regions
-    if regions.isEmpty, isToastHoverShieldingNativeChrome {
-      isToastHoverShieldingNativeChrome = false
-      applyNativeChromeInteractivitySuppression()
-    }
-  }
-
-  private func isAppModalToastHoverShieldPoint(_ point: NSPoint) -> Bool {
-    guard activeAppModalKind == nil,
-      !modalHostView.isHidden,
-      !appModalToastHoverShieldRegions.isEmpty
-    else {
-      return false
-    }
-    /**
-     CDXC:AppToasts 2026-06-02-19:55:
-     Toast-only modal hosts are visually above the workspace while remaining
-     click-through. Hovering a visible toast must still suppress native pane-tab
-     hover and tooltips underneath the toast rectangle, otherwise AppKit tab
-     chrome can appear to draw over the toast title.
-     */
-    let modalPoint = convert(point, to: modalHostView)
-    let directPoint = CGPoint(x: modalPoint.x, y: modalPoint.y)
-    let invertedPoint = CGPoint(x: modalPoint.x, y: modalHostView.bounds.height - modalPoint.y)
-    let candidatePoints =
-      modalHostView.isFlipped ? [directPoint, invertedPoint] : [invertedPoint, directPoint]
-    return candidatePoints.contains { candidate in
-      appModalToastHoverShieldRegions.contains { region in
-        region.insetBy(dx: -2, dy: -2).contains(candidate)
-      }
-    }
   }
 
   private func logWorkspaceInteractionShieldStateIfNeeded(
@@ -7328,9 +7274,6 @@ final class ghostexRootView: NSView {
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
     modalHostView.frame = frames.modalHost
-    if !appModalToastHoverShieldRegions.isEmpty {
-      setAppModalToastHoverShieldRegions(appModalToastHitRegions())
-    }
     sidebarModalBackdropView.frame = frames.sidebar.union(frames.divider)
     sidebarWorkareaBorderView.frame = frames.sidebarWorkareaBorder
     workareaTitlebarBorderView.frame = frames.workareaTitlebarBorder
@@ -7381,7 +7324,6 @@ final class ghostexRootView: NSView {
     {
       return startupOverlayView
     }
-    updateToastHoverShield(for: point)
     if let hitView = sidebarModalBackdropView.hitTest(convert(point, to: sidebarModalBackdropView))
     {
       /**
@@ -7802,7 +7744,6 @@ final class ghostexRootView: NSView {
       }
       appModalPresentationPending = true
       pendingModalHostOpenMessage = nil
-      setAppModalToastHoverShieldRegions([])
       if (message["modal"] as? String) != "floatingPromptEditor" {
         modalHostView.setTopLeftHitRegions(nil)
       }
@@ -7866,10 +7807,8 @@ final class ghostexRootView: NSView {
       }
       dispatchModalHostMessage(message)
       if activeAppModalKind == nil {
-        let toastHitRegions = appModalToastHitRegions()
-        setAppModalToastHoverShieldRegions(toastHitRegions)
         if (message["interactive"] as? Bool) == true {
-          modalHostView.setTopLeftHitRegions(toastHitRegions)
+          modalHostView.setTopLeftHitRegions(appModalToastHitRegions())
         } else {
           modalHostView.setTopLeftHitRegions([])
         }
@@ -7879,7 +7818,6 @@ final class ghostexRootView: NSView {
     case "toastDismissed":
       if (message["keepOpen"] as? Bool) != true {
         modalHostView.setTopLeftHitRegions(nil)
-        setAppModalToastHoverShieldRegions([])
         modalHostView.isHidden = true
       }
       updateSidebarModalBackdrop()

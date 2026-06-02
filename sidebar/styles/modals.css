@@ -2574,25 +2574,18 @@
    * Persistent Git/worktree toasts show a top-right spinner while the action is
    * still running. Error and success toasts keep subtle tinted shadows so final
    * states are visually distinct from normal dark status toasts.
+   *
+   * CDXC:AppToasts 2026-06-02-21:10:
+   * Sonner owns toast `::after` while the stack expands on hover. App toast
+   * spinner chrome must not use that pseudo-element, because Sonner resizes it
+   * into a full-width hover spacer and any Ghostex border on it appears as a
+   * rounded tooltip-like pill over the toast title.
    */
   position: relative;
 }
 
 .ghostex-app-toast-persistent {
   padding-right: 52px !important;
-}
-
-.ghostex-app-toast-persistent::after {
-  border: 2px solid color-mix(in srgb, var(--app-muted) 46%, transparent);
-  border-radius: 999px;
-  content: "";
-  height: 16px;
-  pointer-events: none;
-  position: absolute;
-  right: 18px;
-  top: 18px;
-  width: 16px;
-  z-index: 0;
 }
 
 .ghostex-app-toast-persistent::before {
