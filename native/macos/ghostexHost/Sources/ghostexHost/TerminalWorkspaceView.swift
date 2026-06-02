@@ -8452,6 +8452,16 @@ final class TerminalWorkspaceView: NSView {
       }
       return projectEditorInteractionHitView(at: point)
     }
+    if suppressNativeChromeInteractivity {
+      /**
+       CDXC:AppToasts 2026-06-02-19:55:
+       Toast hover shielding suppresses native pane title/tab chrome without
+       installing a full workspace click shield. While that suppression is
+       active, route only pane content hits and do not let AppKit title bars,
+       tab buttons, or resize rails draw hover chrome under a visible toast.
+       */
+      return paneContentHitView(at: point)
+    }
     if let paneResizeHandleHitView = paneResizeHandleHitView(at: point) {
       return paneResizeHandleHitView
     }
