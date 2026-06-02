@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoreImage
+import Darwin
 import GhosttyKit
 import OSLog
 import Security
@@ -47,6 +48,10 @@ private let ghostexOSIntegrationEditorExtensions = [
   "rs", "swift", "java", "kt", "c", "h", "cpp", "hpp", "cs", "php", "lua", "sql",
 ]
 private let ghostexOSIntegrationScriptExtensions = ["command", "tool", "sh"]
+private let ghostexNativeShellPathSentinel = "__GHOSTEX_NATIVE_SHELL_PATH__"
+private let ghostexNativeShellPathDiscoveryTimeout: DispatchTimeInterval = .seconds(2)
+private let ghostexNativeShellPathCacheLock = NSLock()
+private var ghostexNativeShellPathCache: [String]?
 
 private func normalizedNativeProcessEnvironment(overrides: [String: String]?) -> [String: String] {
   /**
@@ -57,17 +62,18 @@ private func normalizedNativeProcessEnvironment(overrides: [String: String]?) ->
    generation run Codex through this process bridge instead of inside a terminal.
    */
   var environment = ProcessInfo.processInfo.environment
-  environment["PATH"] = normalizedNativeProcessPath(environment["PATH"])
+  environment["PATH"] = normalizedNativeProcessPath(environment["PATH"], environment: environment)
   if let overrides {
     environment.merge(overrides) { _, newValue in newValue }
-    environment["PATH"] = normalizedNativeProcessPath(environment["PATH"])
+    environment["PATH"] = normalizedNativeProcessPath(environment["PATH"], environment: environment)
   }
   return environment
 }
 
-private func normalizedNativeProcessPath(_ path: String?) -> String {
+private func normalizedNativeProcessPath(_ path: String?, environment: [String: String]) -> String {
   let homeDirectory = NSHomeDirectory()
   let defaultEntries = [
+    "\(homeDirectory)/.opencode/bin",
     "\(homeDirectory)/.local/share/mise/shims",
     "\(homeDirectory)/.local/bin",
     "\(homeDirectory)/.asdf/shims",
@@ -83,8 +89,9 @@ private func normalizedNativeProcessPath(_ path: String?) -> String {
   let existingEntries = (path ?? "")
     .split(separator: ":")
     .map(String.init)
+  let shellEntries = nativeShellPathEntries(environment: environment)
   var seen = Set<String>()
-  return (defaultEntries + existingEntries)
+  return (shellEntries + existingEntries + defaultEntries)
     .filter { entry in
       let normalizedEntry = entry.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !normalizedEntry.isEmpty, !seen.contains(normalizedEntry) else {
@@ -94,6 +101,120 @@ private func normalizedNativeProcessPath(_ path: String?) -> String {
       return true
     }
     .joined(separator: ":")
+}
+
+private func nativeShellPathEntries(environment: [String: String]) -> [String] {
+  ghostexNativeShellPathCacheLock.lock()
+  if let cached = ghostexNativeShellPathCache {
+    ghostexNativeShellPathCacheLock.unlock()
+    return cached
+  }
+
+  let discovered = discoverNativeShellPathEntries(environment: environment)
+  ghostexNativeShellPathCache = discovered
+  ghostexNativeShellPathCacheLock.unlock()
+  return discovered
+}
+
+private func discoverNativeShellPathEntries(environment: [String: String]) -> [String] {
+  /**
+   CDXC:NativeCommandBridge 2026-06-02-10:18
+   OpenCode's official installer writes ~/.opencode/bin into shell startup
+   files, and npm/NVM Gemini installs often live in versioned Node bin folders.
+   GUI app launches do not receive those shell-mutated PATH entries, so probe
+   the user's interactive login shell once and merge the result with Ghostex's
+   static fallbacks.
+   */
+  let configuredShell = environment["SHELL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let shellPath = configuredShell?.isEmpty == false ? configuredShell! : "/bin/zsh"
+  let candidates = shellPath == "/bin/zsh" ? [shellPath] : [shellPath, "/bin/zsh"]
+
+  for candidate in candidates {
+    guard FileManager.default.isExecutableFile(atPath: candidate) else {
+      continue
+    }
+    if let entries = runNativeShellPathDiscovery(shellPath: candidate, environment: environment),
+       !entries.isEmpty
+    {
+      return entries
+    }
+  }
+
+  return []
+}
+
+private func runNativeShellPathDiscovery(
+  shellPath: String,
+  environment: [String: String]
+) -> [String]? {
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: shellPath)
+  process.arguments = [
+    "-ilc",
+    "printf '\\n\(ghostexNativeShellPathSentinel)%s\\n' \"$PATH\"",
+  ]
+  process.environment = environment
+  process.standardInput = FileHandle.nullDevice
+  process.standardError = FileHandle.nullDevice
+
+  let stdoutPipe = Pipe()
+  process.standardOutput = stdoutPipe
+  let outputLock = NSLock()
+  var stdoutData = Data()
+  let stdoutHandle = stdoutPipe.fileHandleForReading
+  stdoutHandle.readabilityHandler = { handle in
+    let data = handle.availableData
+    if data.isEmpty {
+      return
+    }
+    outputLock.lock()
+    if stdoutData.count < 128 * 1024 {
+      stdoutData.append(data)
+    }
+    outputLock.unlock()
+  }
+
+  let finished = DispatchSemaphore(value: 0)
+  process.terminationHandler = { _ in
+    finished.signal()
+  }
+
+  do {
+    try process.run()
+  } catch {
+    stdoutHandle.readabilityHandler = nil
+    return nil
+  }
+
+  if finished.wait(timeout: .now() + ghostexNativeShellPathDiscoveryTimeout) == .timedOut {
+    process.terminate()
+    if process.isRunning {
+      kill(process.processIdentifier, SIGKILL)
+    }
+    stdoutHandle.readabilityHandler = nil
+    return nil
+  }
+
+  stdoutHandle.readabilityHandler = nil
+  let remainingData = stdoutHandle.readDataToEndOfFile()
+  outputLock.lock()
+  stdoutData.append(remainingData)
+  let output = String(data: stdoutData, encoding: .utf8) ?? ""
+  outputLock.unlock()
+
+  return output
+    .split(whereSeparator: \.isNewline)
+    .compactMap { line -> [String]? in
+      let value = String(line)
+      guard value.hasPrefix(ghostexNativeShellPathSentinel) else {
+        return nil
+      }
+      return value
+        .dropFirst(ghostexNativeShellPathSentinel.count)
+        .split(separator: ":")
+        .map(String.init)
+    }
+    .last
 }
 
 private final class SessionAttentionNotificationController: NSObject, UNUserNotificationCenterDelegate {
