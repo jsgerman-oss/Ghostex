@@ -145,6 +145,7 @@ import type {
   GxserverUpdateAgentSettingsParams,
   GxserverUpdateProjectParams,
   GxserverUpdateAgentActivityParams,
+  GxserverUpdateSessionOrderParams,
   GxserverUpdateSessionParams,
 } from "../protocol/index.js";
 import { createSourceGxserverBuildIdentity } from "./build-identity.js";
@@ -1176,6 +1177,17 @@ function dispatchDomainStateEndpoint(
         sessionId: session.sessionId,
       });
       return { session };
+    }
+    case "/api/updateSessionOrder": {
+      const sessions = repository.updateSessionOrder(params as unknown as GxserverUpdateSessionOrderParams);
+      for (const session of sessions) {
+        schedulePresentationSessionDelta(runtime, repository, {
+          projectId: session.projectId,
+          reason: "update-session-order",
+          sessionId: session.sessionId,
+        });
+      }
+      return { sessions };
     }
     case "/api/listSessions":
       scheduleAgentTitleMetadataChecksForSessions(runtime, repository, repository.listSessions(readOptionalProjectId(params)), "list-sessions");
@@ -2263,6 +2275,7 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/searchSessions" ||
     path === "/api/listPreviousSessions" ||
     path === "/api/updateSession" ||
+    path === "/api/updateSessionOrder" ||
     path === "/api/listSessions" ||
     path === "/api/removeSession"
   );

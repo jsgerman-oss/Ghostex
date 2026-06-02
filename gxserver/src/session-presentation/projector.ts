@@ -123,6 +123,7 @@ export function projectPresentationSession(
     ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
     projectId: session.projectId,
     sessionId: session.sessionId,
+    ...(session.sidebarOrder !== undefined ? { sidebarOrder: session.sidebarOrder } : {}),
     sortKey: sessionSortKey(session),
     ...(subtitle ? { subtitle } : {}),
     surface: session.surface,
@@ -201,7 +202,18 @@ function projectSortKey(project: GxserverProjectDomainState): string {
 function sessionSortKey(session: GxserverSessionDomainState): string {
   const activeRank = isActivePresentationSession(session) ? "0" : "1";
   const pinRank = session.isPinned ? "0" : session.isFavorite ? "1" : "2";
-  return `${activeRank}:${pinRank}:${session.lastActiveAt ?? session.updatedAt}:${session.sessionId}`;
+  /*
+  CDXC:PinnedSessions 2026-06-02-20:11:
+  Pinned sessions under a project need a durable user-defined order. Sort pinned rows by the explicit gxserver sidebar order before recency so drag-to-reorder cannot be undone by the next presentation snapshot or lifecycle/title delta.
+  */
+  const sidebarOrder = session.isPinned ? formatSidebarOrder(session.sidebarOrder) : "z";
+  return `${activeRank}:${pinRank}:${sidebarOrder}:${session.lastActiveAt ?? session.updatedAt}:${session.sessionId}`;
+}
+
+function formatSidebarOrder(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? String(Math.floor(value)).padStart(12, "0")
+    : "z";
 }
 
 function compareProjects(left: GxserverProjectDomainState, right: GxserverProjectDomainState): number {

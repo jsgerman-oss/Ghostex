@@ -369,6 +369,33 @@ test("presentation snapshot excludes unpinned stopped history but keeps pinned p
   assert.deepEqual(snapshot.sessions.map((session) => session.sessionId), ["G3run", "G2pin"]);
 });
 
+test("presentation snapshot orders pinned project sessions by sidebar order", () => {
+  const project = projectFixture({});
+  const first = sessionFixture({
+    isPinned: true,
+    sessionId: "G1aaa",
+    sidebarOrder: 1000,
+    title: "First",
+    updatedAt: "2026-06-02T18:00:00.000Z",
+  });
+  const second = sessionFixture({
+    isPinned: true,
+    sessionId: "G2bbb",
+    sidebarOrder: 0,
+    title: "Second",
+    updatedAt: "2026-06-02T17:00:00.000Z",
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 2 as GxserverPresentationRevision,
+    sessions: [first, second],
+  });
+
+  assert.deepEqual(snapshot.sessions.map((session) => session.sessionId), ["G2bbb", "G1aaa"]);
+  assert.deepEqual(snapshot.sessions.map((session) => session.sidebarOrder), [0, 1000]);
+});
+
 test("presentation snapshot applies stale spinner activity semantics", () => {
   const project = projectFixture({});
   const session = sessionFixture({

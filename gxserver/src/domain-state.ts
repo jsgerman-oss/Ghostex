@@ -26,6 +26,7 @@ import type {
   GxserverSessionId,
   GxserverSessionKind,
   GxserverUpdateProjectParams,
+  GxserverUpdateSessionOrderParams,
   GxserverUpdateSessionParams,
   GxserverZmxSessionName,
 } from "../protocol/index.js";
@@ -198,12 +199,12 @@ export class GxserverDomainRepository {
             projectId, sessionId, kind, title, lifecycleState, providerStateJson, zmxName, cwd,
             agentId, commandId, isPinned, isFavorite, restoredFromSessionId, restoredFromHistoryId,
             launchSettingsJson, runtimeSettingsJson, completionRulesJson, attentionRulesJson,
-            notificationRulesJson, worktreeJson, createdAt, updatedAt, lastActiveAt
+            notificationRulesJson, worktreeJson, createdAt, updatedAt, lastActiveAt, sidebarOrder
           ) VALUES (
             @projectId, @sessionId, @kind, @title, @lifecycleState, @providerStateJson, @zmxName, @cwd,
             @agentId, @commandId, @isPinned, @isFavorite, @restoredFromSessionId, @restoredFromHistoryId,
             @launchSettingsJson, @runtimeSettingsJson, @completionRulesJson, @attentionRulesJson,
-            @notificationRulesJson, @worktreeJson, @createdAt, @updatedAt, @lastActiveAt
+            @notificationRulesJson, @worktreeJson, @createdAt, @updatedAt, @lastActiveAt, @sidebarOrder
           )`,
         )
         .run(toSessionRow(session));
@@ -242,11 +243,66 @@ export class GxserverDomainRepository {
             notificationRulesJson = @notificationRulesJson,
             worktreeJson = @worktreeJson,
             updatedAt = @updatedAt,
-            lastActiveAt = @lastActiveAt
+            lastActiveAt = @lastActiveAt,
+            sidebarOrder = @sidebarOrder
           WHERE projectId = @projectId AND sessionId = @sessionId`,
         )
         .run(toSessionRow(next));
       return next;
+    })(params);
+  }
+
+  updateSessionOrder(params: GxserverUpdateSessionOrderParams): GxserverSessionDomainState[] {
+    return this.#db.transaction((input: GxserverUpdateSessionOrderParams) => {
+      if (!this.getProject(input.projectId)) {
+        throw new GxserverDomainStateError("notFound", `Project ${input.projectId} does not exist.`);
+      }
+      const sessionIds = normalizeSessionOrderIds(input.sessionIds);
+      const updatedAt = this.#now();
+      const updated: GxserverSessionDomainState[] = [];
+      for (const [index, sessionId] of sessionIds.entries()) {
+        const current = this.getSession(input.projectId, sessionId);
+        if (!current) {
+          throw new GxserverDomainStateError(
+            "notFound",
+            `Session ${input.projectId}/${sessionId} does not exist.`,
+          );
+        }
+        const next = mergeSessionUpdate(this.#serverId, current, updatedAt, {
+          projectId: input.projectId,
+          sessionId,
+          sidebarOrder: index * 1000,
+        });
+        this.#db
+          .prepare(
+            `UPDATE sessions SET
+              kind = @kind,
+              title = @title,
+              lifecycleState = @lifecycleState,
+              providerStateJson = @providerStateJson,
+              zmxName = @zmxName,
+              cwd = @cwd,
+              agentId = @agentId,
+              commandId = @commandId,
+              isPinned = @isPinned,
+              isFavorite = @isFavorite,
+              restoredFromSessionId = @restoredFromSessionId,
+              restoredFromHistoryId = @restoredFromHistoryId,
+              launchSettingsJson = @launchSettingsJson,
+              runtimeSettingsJson = @runtimeSettingsJson,
+              completionRulesJson = @completionRulesJson,
+              attentionRulesJson = @attentionRulesJson,
+              notificationRulesJson = @notificationRulesJson,
+              worktreeJson = @worktreeJson,
+              updatedAt = @updatedAt,
+              lastActiveAt = @lastActiveAt,
+              sidebarOrder = @sidebarOrder
+            WHERE projectId = @projectId AND sessionId = @sessionId`,
+          )
+          .run(toSessionRow(next));
+        updated.push(next);
+      }
+      return updated;
     })(params);
   }
 
@@ -429,6 +485,7 @@ function normalizeSessionInput(
     providerState,
     runtimeSettings,
     sessionId,
+    sidebarOrder: normalizeOptionalSidebarOrder(input.sidebarOrder),
     surface: resolveSessionSurface({ launchSettings, runtimeSettings, surface: input.surface }),
     title: normalizeOptionalText(input.title) ?? sessionId,
     updatedAt: timestamp,
@@ -487,6 +544,9 @@ function mergeSessionUpdate(
         }
       : { ...current.providerState, zmxName: normalizeProviderZmxName(current.providerState.zmxName, zmxName) },
     runtimeSettings,
+    sidebarOrder: hasOwn(input, "sidebarOrder")
+      ? normalizeOptionalSidebarOrder(input.sidebarOrder)
+      : current.sidebarOrder,
     surface: resolveSessionSurface({
       launchSettings,
       runtimeSettings,
@@ -545,6 +605,7 @@ interface SessionRow {
   restoredFromSessionId: string | null;
   runtimeSettingsJson: string;
   sessionId: string;
+  sidebarOrder: number | null;
   title: string;
   updatedAt: string;
   worktreeJson: string;
@@ -641,6 +702,7 @@ function toSessionRow(session: GxserverSessionDomainState): SessionRow {
     restoredFromSessionId: session.hiddenMetadata.restoredFromSessionId ?? null,
     runtimeSettingsJson: stringifyDomainJsonField("runtimeSettings", session.runtimeSettings),
     sessionId: session.sessionId,
+    sidebarOrder: session.sidebarOrder ?? null,
     title: session.title,
     updatedAt: session.updatedAt,
     worktreeJson: stringifyDomainJsonField("worktree", session.worktree ?? {}),
@@ -684,6 +746,9 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
     },
     runtimeSettings,
     sessionId,
+    ...(typeof row.sidebarOrder === "number" && Number.isFinite(row.sidebarOrder)
+      ? { sidebarOrder: row.sidebarOrder }
+      : {}),
     surface: resolveSessionSurface({ launchSettings, runtimeSettings }),
     title: row.title,
     updatedAt: row.updatedAt,
@@ -722,6 +787,31 @@ function normalizeStringArray(value: unknown): readonly string[] {
         .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
         .map((item) => item.trim())
     : [];
+}
+
+function normalizeSessionOrderIds(value: unknown): readonly GxserverSessionId[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new GxserverDomainStateError("badRequest", "sessionIds must contain at least one session ID.");
+  }
+  const seen = new Set<string>();
+  const sessionIds: GxserverSessionId[] = [];
+  for (const item of value) {
+    if (!isGxserverSessionId(item)) {
+      throw new GxserverDomainStateError("badRequest", `Invalid sessionId: ${String(item)}.`);
+    }
+    if (seen.has(item)) {
+      throw new GxserverDomainStateError("badRequest", `Duplicate sessionId: ${String(item)}.`);
+    }
+    seen.add(item);
+    sessionIds.push(item);
+  }
+  return sessionIds;
+}
+
+function normalizeOptionalSidebarOrder(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.floor(value)
+    : undefined;
 }
 
 function normalizeSessionKind(value: unknown): GxserverSessionKind {

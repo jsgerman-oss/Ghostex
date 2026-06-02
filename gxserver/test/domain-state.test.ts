@@ -108,6 +108,19 @@ test("sessions use G IDs, zmx names, hidden previous-session metadata, and indep
       ["G1z99", "G8v20"],
     );
 
+    const ordered = repository.updateSessionOrder({
+      projectId: project.projectId,
+      sessionIds: [original.sessionId, restored.sessionId],
+    });
+
+    assert.deepEqual(
+      ordered.map((session) => [session.sessionId, session.sidebarOrder]),
+      [
+        ["G8v20", 0],
+        ["G1z99", 1000],
+      ],
+    );
+
     /*
     CDXC:PreviousSessions 2026-06-02-11:24:
     Previous-session delete/restore cleanup must remove the canonical gxserver G-session row. A native-only delete would let stopped history reappear on the next gxserver listPreviousSessions query.

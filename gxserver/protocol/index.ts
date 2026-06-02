@@ -76,6 +76,7 @@ export type GxserverEndpointPath =
   | "/api/addProjectPath"
   | "/api/removeProject"
   | "/api/updateSession"
+  | "/api/updateSessionOrder"
   | "/api/runGitAction"
   | "/api/runGitHubAction"
   | "/api/runWorktreeAction"
@@ -673,6 +674,7 @@ export interface GxserverSessionDomainState {
   } & Record<string, unknown>;
   runtimeSettings: Record<string, unknown>;
   sessionId: GxserverSessionId;
+  sidebarOrder?: number;
   surface: GxserverSessionSurface;
   title: string;
   updatedAt: string;
@@ -727,6 +729,7 @@ export interface GxserverCreateSessionParams {
   restoredFromHistoryId?: string;
   restoredFromSessionId?: GxserverSessionId;
   runtimeSettings?: Record<string, unknown>;
+  sidebarOrder?: number;
   surface?: GxserverSessionSurface;
   title?: string;
   worktree?: Record<string, unknown>;
@@ -736,6 +739,15 @@ export type GxserverUpdateSessionParams = Partial<Omit<GxserverCreateSessionPara
   projectId: GxserverProjectId;
   sessionId: GxserverSessionId;
 };
+
+export interface GxserverUpdateSessionOrderParams {
+  projectId: GxserverProjectId;
+  sessionIds: readonly GxserverSessionId[];
+}
+
+export interface GxserverUpdateSessionOrderResult {
+  sessions: readonly GxserverSessionDomainState[];
+}
 
 export interface GxserverRemoveSessionParams {
   projectId: GxserverProjectId;
@@ -828,6 +840,7 @@ export interface GxserverPresentationSession {
   lifecycleState: GxserverDomainLifecycleState;
   projectId: GxserverProjectId;
   sessionId: GxserverSessionId;
+  sidebarOrder?: number;
   sortKey: string;
   subtitle?: string;
   surface: GxserverSessionSurface;

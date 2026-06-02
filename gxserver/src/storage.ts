@@ -145,6 +145,17 @@ export const GxserverStorageMigrations: readonly GxserverMigration[] = [
       PRAGMA user_version = 2;
     `,
   },
+  {
+    id: "0003_session_sidebar_order",
+    sql: `
+      ALTER TABLE sessions ADD COLUMN sidebarOrder REAL;
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_project_sidebar_order
+        ON sessions(projectId, sidebarOrder);
+
+      PRAGMA user_version = 3;
+    `,
+  },
 ];
 
 /*
@@ -156,6 +167,9 @@ gxserver owns shared project/session metadata: stable P/G IDs, zmx names, lifecy
 
 CDXC:ProjectSidebarOwnership 2026-06-02-14:01:
 Client-local pane, tab, and chrome layout belongs to the macOS app after the ownership split. Do not create a gxserver client-layout table or HTTP API; keeping layout out of gxserver prevents selected tab/pane state from becoming shared daemon state.
+
+CDXC:PinnedSessions 2026-06-02-20:11:
+Pinned session row order is shared project-session metadata, not current-window pane layout. Store the explicit sidebar order beside gxserver sessions so drag-to-reorder under a project survives presentation refreshes, restarts, and other clients.
 */
 export async function initializeGxserverStorage(paths: GxserverPaths): Promise<GxserverStorageInitResult> {
   await ensureGxserverStorageLayout(paths);

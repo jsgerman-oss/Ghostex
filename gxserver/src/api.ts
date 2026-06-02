@@ -52,6 +52,7 @@ export const GXSERVER_ENDPOINTS: readonly GxserverEndpointDescriptor[] = [
   descriptor("/api/addProjectPath", "remoteAllowed", true, true, "http"),
   descriptor("/api/removeProject", "remoteAllowed", true, true, "http"),
   descriptor("/api/updateSession", "remoteAllowed", true, true, "http"),
+  descriptor("/api/updateSessionOrder", "remoteAllowed", true, true, "http"),
   descriptor("/api/runGitAction", "remoteAllowed", true, true, "http"),
   descriptor("/api/runGitHubAction", "remoteAllowed", true, true, "http"),
   descriptor("/api/runWorktreeAction", "remoteAllowed", true, true, "http"),
