@@ -10805,12 +10805,9 @@ def is_installed(agent):
     if kind == "antigravity":
         return any("ghostex" in (load_json(path) or {}) for path in paths)
     if kind == "opencode":
-        plugin_path, config_path = paths
+        plugin_path = paths[0]
         plugin_ok = "ghostex-opencode-session-plugin-marker" in text(plugin_path)
-        config = load_json(config_path) or {}
-        plugins = config.get("plugin")
-        config_ok = isinstance(plugins, list) and "./plugins/ghostex-session.js" in plugins
-        return plugin_ok and config_ok
+        return plugin_ok
     if kind == "amp":
         return any("ghostex-amp-session-extension-marker" in text(path) for path in paths)
     if kind == "pi":
@@ -11470,10 +11467,18 @@ function send(eventName, ctx, event) {
 export default async function ghostexSessionPlugin(ctx) {
   const bus = ctx && (ctx.bus || ctx.events || ctx.event);
   const on = bus && typeof bus.on === "function" ? bus.on.bind(bus) : ctx && typeof ctx.on === "function" ? ctx.on.bind(ctx) : null;
-  if (!on) return;
-  for (const eventName of ["session.start", "session.updated", "message.updated", "permission.updated"]) {
-    on(eventName, (event) => send(eventName, ctx, event));
+  if (on) {
+    for (const eventName of ["session.start", "session.updated", "message.updated", "permission.updated"]) {
+      on(eventName, (event) => send(eventName, ctx, event));
+    }
+    return {};
   }
+
+  return {
+    event: async ({ event }) => {
+      send(event && event.type ? event.type : "event", ctx, event);
+    },
+  };
 }
 '''.replace("__GHOSTEX_NOTIFY_HOOK__", str(notify_hook_path))
 
@@ -11482,18 +11487,19 @@ plugin_path.write_text(plugin_source, encoding="utf-8")
 
 try:
     data = json.loads(config_path.read_text(encoding="utf-8"))
+except FileNotFoundError:
+    data = None
 except Exception:
-    data = {}
-if not isinstance(data, dict):
-    data = {}
-plugins = data.get("plugin")
-if not isinstance(plugins, list):
-    plugins = []
-spec = "./plugins/ghostex-session.js"
-if spec not in plugins:
-    plugins.append(spec)
-data["plugin"] = plugins
-config_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+    data = None
+if isinstance(data, dict):
+    plugins = data.get("plugin")
+    if isinstance(plugins, list) and "./plugins/ghostex-session.js" in plugins:
+        next_plugins = [plugin for plugin in plugins if plugin != "./plugins/ghostex-session.js"]
+        if next_plugins:
+            data["plugin"] = next_plugins
+        else:
+            data.pop("plugin", None)
+        config_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 print(f"opencodePluginPath={plugin_path}")
 `;
 }
