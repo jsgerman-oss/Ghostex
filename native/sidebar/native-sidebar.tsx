@@ -312,6 +312,7 @@ import {
   createPresentationProjectFromGxserverProject,
   reduceGxserverPresentationDelta,
   reduceGxserverProjectCacheForPresentationDelta,
+  reorderPresentationProjectSessions,
   upsertGxserverProjectDomainState,
   upsertPresentationProject,
   upsertPresentationProjectGroup,
@@ -325,9 +326,11 @@ import type {
   GxserverPresentationSession,
   GxserverPresentationSnapshot,
   GxserverProjectDomainState,
+  GxserverProjectId,
   GxserverRepositoryCloneJobStatus,
   GxserverRepositoryClonePreviewResult,
   GxserverSessionDomainState,
+  GxserverSessionId,
   GxserverSessionRenameRequestResult,
   GxserverSessionStateEventResult,
   GxserverSessionTitleProjection,
@@ -6218,6 +6221,79 @@ function persistSessionSharedFlagsToGxserver(
         sessionId,
       });
     });
+}
+
+function setGxserverPresentationProjectSessionOrderLocally(
+  projectId: string,
+  sessionIds: readonly string[],
+  reason: string,
+): boolean {
+  const snapshot = gxserverStartupSnapshot;
+  const presentation = snapshot?.presentation;
+  if (!snapshot || !presentation) {
+    return false;
+  }
+  const gxserverSessionIds = sessionIds.filter(isNativeGxserverSessionId);
+  if (gxserverSessionIds.length === 0) {
+    return false;
+  }
+  const nextPresentation = reorderPresentationProjectSessions(
+    presentation,
+    projectId as GxserverProjectId,
+    gxserverSessionIds,
+  );
+  if (nextPresentation === presentation) {
+    return false;
+  }
+  /*
+  CDXC:PinnedSessions 2026-06-02-20:11:
+  Project pinned-session drag reorder is visible gxserver presentation state. Update the local presentation cache first, then persist the same session order through gxserver so snapshots and deltas cannot restore the pre-drag order.
+  */
+  gxserverStartupSnapshot = {
+    ...snapshot,
+    presentation: nextPresentation,
+  };
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.sessionOrder.localFirst", {
+    projectId,
+    reason,
+    sessionCount: gxserverSessionIds.length,
+  });
+  return true;
+}
+
+function persistProjectSessionSidebarOrderToGxserver(
+  projectId: string,
+  sessionIds: readonly string[],
+): void {
+  if (!gxserverStartupSnapshot) {
+    return;
+  }
+  const gxserverSessionIds = sessionIds.filter(isNativeGxserverSessionId);
+  if (gxserverSessionIds.length === 0) {
+    return;
+  }
+  void gxserverClient
+    .rpc("/api/updateSessionOrder", {
+      projectId: projectId as GxserverProjectId,
+      sessionIds: gxserverSessionIds,
+    })
+    .then(() => {
+      appendSidebarRefreshDebugLog("nativeSidebar.gxserver.sessionOrder.persisted", {
+        projectId,
+        sessionCount: gxserverSessionIds.length,
+      });
+    })
+    .catch((error) => {
+      appendSidebarRefreshDebugLog("nativeSidebar.gxserver.sessionOrder.persistFailed", {
+        message: error instanceof Error ? error.message : String(error),
+        projectId,
+        sessionCount: gxserverSessionIds.length,
+      });
+    });
+}
+
+function isNativeGxserverSessionId(sessionId: string): sessionId is GxserverSessionId {
+  return sessionId.startsWith("G");
 }
 
 function setNativeSessionFavoriteLocalFirst(
@@ -30585,16 +30661,26 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
           return reference?.projectId === combinedProjectId ? [reference.sessionId] : [];
         });
         /**
-         * CDXC:PinnedSessions 2026-05-28-20:27:
-         * Pinned reorder in the reference sidebar is sent against the synthetic
-         * combined project group. Route it to the real project workspace and
-         * unwrap combined session ids before syncing, otherwise native drops
-         * the valid syncSessionOrder message and the row appears to snap back.
+         * CDXC:PinnedSessions 2026-06-02-20:11:
+         * Pinned reorder in the project sidebar is sent against the synthetic
+         * combined project group, but the visible rows now render from
+         * gxserver presentation. Unwrap combined session ids and update the
+         * gxserver presentation/order path instead of the retired local
+         * workspace path so dragging pinned sessions actually changes the
+         * project list.
          */
-        updateProjectWorkspace(
+        const didApplyPresentationOrder = setGxserverPresentationProjectSessionOrderLocally(
           combinedProjectId,
-          (workspace) => syncSessionOrderAcrossSimpleWorkspaceGroups(workspace, sessionIds).snapshot,
+          sessionIds,
+          "syncSessionOrder",
         );
+        persistProjectSessionSidebarOrderToGxserver(combinedProjectId, sessionIds);
+        if (!didApplyPresentationOrder) {
+          updateProjectWorkspace(
+            combinedProjectId,
+            (workspace) => syncSessionOrderAcrossSimpleWorkspaceGroups(workspace, sessionIds).snapshot,
+          );
+        }
         publish();
         return;
       }
