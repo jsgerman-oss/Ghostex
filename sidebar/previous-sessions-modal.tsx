@@ -18,19 +18,31 @@ import { TooltipProvider } from "./app-tooltip";
 import type { WebviewApi } from "./webview-api";
 import type { ExtensionToSidebarMessage, SidebarPreviousSessionItem } from "../shared/session-grid-contract";
 
+const PREVIOUS_SESSIONS_INITIAL_LOAD_TIMEOUT_MS = 2_000;
+const PREVIOUS_SESSIONS_QUERY_DEBOUNCE_MS = 200;
+
 export type PreviousSessionsModalProps = {
   isOpen: boolean;
   onClose: () => void;
+  onInitialLoadReady?: () => void;
   vscode: WebviewApi;
 };
 
-export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessionsModalProps) {
+export function PreviousSessionsModal({
+  isOpen,
+  onClose,
+  onInitialLoadReady,
+  vscode,
+}: PreviousSessionsModalProps) {
   const previousSessions = useSidebarStore((state) => state.previousSessions);
   const showDebugSessionNumbers = useSidebarStore((state) => state.hud.debuggingMode);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [remotePreviousSessions, setRemotePreviousSessions] = useState<SidebarPreviousSessionItem[] | undefined>(undefined);
+  const [hasInitialLoadResolved, setHasInitialLoadResolved] = useState(false);
+  const [hasInitialLoadTimedOut, setHasInitialLoadTimedOut] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const hasRequestedInitialLoadRef = useRef(false);
   const latestRequestIdRef = useRef<string | undefined>(undefined);
   const pendingSelectionRef = useRef<{ end: number; start: number } | undefined>(undefined);
   const modalPreviousSessions = useMemo(
@@ -45,6 +57,7 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
     () => groupPreviousSessionsByDay(filteredSessions),
     [filteredSessions],
   );
+  const canShowModal = isOpen && (hasInitialLoadResolved || hasInitialLoadTimedOut);
 
   useEffect(() => {
     if (!isOpen) {
@@ -100,9 +113,32 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
       setFavoritesOnly(false);
       setSearchQuery("");
       setRemotePreviousSessions(undefined);
+      setHasInitialLoadResolved(false);
+      setHasInitialLoadTimedOut(false);
+      hasRequestedInitialLoadRef.current = false;
+      latestRequestIdRef.current = undefined;
       pendingSelectionRef.current = undefined;
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || hasInitialLoadResolved) {
+      return;
+    }
+
+    /*
+    CDXC:PreviousSessions 2026-06-02-20:39:
+    Opening Previous Sessions must not flash the empty, short modal while gxserver history is still loading. Keep the modal hidden until the first result proves sessions exist or do not exist, with a two-second max cap so the UI cannot appear stuck behind an unreachable query.
+    */
+    const timeoutId = window.setTimeout(() => {
+      setHasInitialLoadTimedOut(true);
+      onInitialLoadReady?.();
+    }, PREVIOUS_SESSIONS_INITIAL_LOAD_TIMEOUT_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [hasInitialLoadResolved, isOpen, onInitialLoadReady]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -116,19 +152,25 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
         return;
       }
       setRemotePreviousSessions(event.data.previousSessions);
+      setHasInitialLoadResolved(true);
+      onInitialLoadReady?.();
     };
     window.addEventListener("message", handleMessage);
     return () => {
       window.removeEventListener("message", handleMessage);
     };
-  }, [isOpen]);
+  }, [isOpen, onInitialLoadReady]);
 
   useEffect(() => {
     if (!isOpen) {
       return;
     }
+    const requestDelay = hasRequestedInitialLoadRef.current
+      ? PREVIOUS_SESSIONS_QUERY_DEBOUNCE_MS
+      : 0;
     const timeoutId = window.setTimeout(() => {
       const requestId = `previous-sessions-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      hasRequestedInitialLoadRef.current = true;
       latestRequestIdRef.current = requestId;
       /*
       CDXC:GxserverPresentationSearch 2026-06-01-15:08:
@@ -141,14 +183,14 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
         requestId,
         type: "requestPreviousSessions",
       });
-    }, 200);
+    }, requestDelay);
     return () => {
       window.clearTimeout(timeoutId);
     };
   }, [favoritesOnly, isOpen, searchQuery, vscode]);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!canShowModal) {
       return;
     }
 
@@ -166,10 +208,10 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [isOpen]);
+  }, [canShowModal]);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!canShowModal) {
       pendingSelectionRef.current = undefined;
       return;
     }
@@ -187,9 +229,9 @@ export function PreviousSessionsModal({ isOpen, onClose, vscode }: PreviousSessi
     pendingSelectionRef.current = undefined;
     input.focus();
     input.setSelectionRange(pendingSelection.start, pendingSelection.end);
-  }, [isOpen, searchQuery]);
+  }, [canShowModal, searchQuery]);
 
-  if (!isOpen) {
+  if (!canShowModal) {
     return null;
   }
 

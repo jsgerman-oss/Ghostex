@@ -1569,6 +1569,7 @@ function AppModalHost() {
   const [ghostexCliStatusLoading, setGhostexCliStatusLoading] = useState(false);
   const [ghostexFolderStatsLoading, setGhostexFolderStatsLoading] = useState(false);
   const [osIntegrationStatusLoading, setOSIntegrationStatusLoading] = useState(false);
+  const [isPreviousSessionsInitialLoadReady, setIsPreviousSessionsInitialLoadReady] = useState(false);
   const settings = useSidebarStore((state) => state.hud.settings);
   const agents = useSidebarStore((state) => state.hud.agents);
   const commands = useSidebarStore((state) => state.hud.commands);
@@ -1596,7 +1597,7 @@ function AppModalHost() {
   );
   const isSettingsRenderable = isSettingsModalKind(activeModal) && settings !== undefined;
   const settingsInitialTab = getSettingsInitialTab(activeModal);
-  const isActiveModalRenderable = isModalRenderable({
+  const isBaseActiveModalRenderable = isModalRenderable({
     activeModal,
     config,
     delayedSend,
@@ -1612,6 +1613,23 @@ function AppModalHost() {
     t3ThreadId,
     worktree,
   });
+  /*
+  CDXC:PreviousSessions 2026-06-02-20:39:
+  The native app-modal host is hidden until React posts `presented`. Previous Sessions must delay that presented signal until its first gxserver history query resolves, proves empty, or hits the two-second cap, otherwise the user sees the empty short modal before loaded rows expand it.
+  */
+  const isActiveModalRenderable =
+    isBaseActiveModalRenderable &&
+    (activeModal !== "previousSessions" || isPreviousSessionsInitialLoadReady);
+
+  useEffect(() => {
+    if (activeModal !== "previousSessions") {
+      setIsPreviousSessionsInitialLoadReady(false);
+    }
+  }, [activeModal]);
+
+  const handlePreviousSessionsInitialLoadReady = useCallback(() => {
+    setIsPreviousSessionsInitialLoadReady(true);
+  }, []);
 
   useEffect(() => {
     const previousDefaultPromptAgentId = previousDefaultPromptAgentIdRef.current;
@@ -1775,6 +1793,7 @@ function AppModalHost() {
       <PreviousSessionsModal
         isOpen={activeModal === "previousSessions"}
         onClose={closeModal}
+        onInitialLoadReady={handlePreviousSessionsInitialLoadReady}
         vscode={vscode}
       />
       <PinnedPromptsModal
