@@ -103,6 +103,7 @@ import {
   getAutoCollapseGroupIds,
   getSessionCountsByGroup,
   reconcileCollapsedGroupsById,
+  shouldPersistSidebarUiCollapseState,
 } from "./group-collapse";
 import { SessionGroupSection } from "./session-group-section";
 import { isEditableKeyboardTarget } from "./text-input-keyboard";
@@ -332,6 +333,17 @@ type SidebarPointerDownSessionTarget = {
 
 type SidebarSessionPointerDragState = {
   didMove: boolean;
+  /*
+   * CDXC:PinnedSessions 2026-06-02-19:19:
+   * Dragging two pinned sessions inside one project must reorder on drop even
+   * when the dnd drag-end event no longer carries client coordinates. Keep the
+   * last pointer position observed during move/over so pinned drop resolution
+   * can still use the visible pinned row geometry instead of skipping sync.
+   */
+  lastPoint?: {
+    x: number;
+    y: number;
+  };
   startPoint?: {
     x: number;
     y: number;
@@ -661,7 +673,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   );
 
   useLayoutEffect(() => {
-    if (!hasAppliedHydrateRef.current) {
+    if (!hasAppliedHydrateRef.current || groupOrder.length === 0) {
       return;
     }
 
@@ -1448,6 +1460,17 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   }, [authoritativeSessionIdsByGroup, displayedReferenceChatGroupIds]);
 
   useEffect(() => {
+    if (
+      !shouldPersistSidebarUiCollapseState({
+        groupCount: groupOrder.length,
+        hasAppliedHydrate: hasAppliedHydrateRef.current,
+        hasEstablishedStartupGroupCollapseBaseline:
+          hasEstablishedStartupGroupCollapseBaselineRef.current,
+      })
+    ) {
+      return;
+    }
+
     /**
      * CDXC:SidebarReference 2026-05-10-15:51
      * Combined section headers, Recent Projects, and per-group collapse state are
@@ -1456,6 +1479,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * CDXC:SidebarReference 2026-05-20-12:00
      * The first post-hydrate group-collapse reconcile seeds session-count baseline
      * without expand-on-count-increase so restored projects do not reopen on launch.
+     *
+     * CDXC:SidebarReference 2026-06-02-22:39:
+     * Do not persist the initial default-expanded mount state. Wait until native
+     * hydrate has produced real groups and the startup collapse baseline exists,
+     * otherwise app restart can overwrite saved collapsed Quick, Projects, and
+     * project rows before the restored sidebar tree is available.
      */
     writeSidebarUiCollapseState({
       collapsedGroupsById,
@@ -1465,6 +1494,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     });
   }, [
     collapsedGroupsById,
+    groupOrder.length,
     isRecentProjectsOpen,
     isReferenceChatsCollapsed,
     isReferenceProjectsCollapsed,
@@ -1929,6 +1959,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
         sourceData,
         currentSessionIdsByGroup,
         sessionsById,
+        sessionPointerDragState?.lastPoint,
       );
       postPinnedSessionReorderLog("dragEndResolved", {
         point: getClientPoint(nativeEvent),
@@ -3936,8 +3967,9 @@ function resolvePinnedSessionDropTargetFromPoint(
   sourceData: Extract<ReturnType<typeof getSidebarDropData>, { kind: "session" }>,
   sessionIdsByGroup: SessionIdsByGroup,
   sessionsById: Record<string, { isPinned?: boolean } | undefined>,
+  fallbackPoint?: { x: number; y: number },
 ): SidebarSessionDropTarget | undefined {
-  const point = getClientPoint(nativeEvent);
+  const point = getClientPoint(nativeEvent) ?? fallbackPoint;
   if (!point) {
     return undefined;
   }
@@ -4309,6 +4341,7 @@ function createSessionPointerDragState(
   pointerDownSessionTarget: SidebarPointerDownSessionTarget | undefined,
   nativeEvent: Event | undefined,
 ): SidebarSessionPointerDragState {
+  const currentPoint = getClientPoint(nativeEvent);
   const startPoint =
     pointerDownSessionTarget &&
     pointerDownSessionTarget.groupId === sourceData.groupId &&
@@ -4317,7 +4350,8 @@ function createSessionPointerDragState(
       : undefined;
 
   return {
-    didMove: hasPointerDragMovedPastThreshold(startPoint, getClientPoint(nativeEvent)),
+    didMove: hasPointerDragMovedPastThreshold(startPoint, currentPoint),
+    lastPoint: currentPoint ?? startPoint,
     startPoint,
   };
 }
@@ -4326,13 +4360,19 @@ function updateSessionPointerDragState(
   pointerDragState: SidebarSessionPointerDragState | undefined,
   nativeEvent: Event | undefined,
 ): void {
-  if (!pointerDragState || pointerDragState.didMove) {
+  if (!pointerDragState) {
+    return;
+  }
+
+  const currentPoint = getClientPoint(nativeEvent);
+  pointerDragState.lastPoint = currentPoint ?? pointerDragState.lastPoint;
+  if (pointerDragState.didMove) {
     return;
   }
 
   pointerDragState.didMove = hasPointerDragMovedPastThreshold(
     pointerDragState.startPoint,
-    getClientPoint(nativeEvent),
+    currentPoint,
   );
 }
 

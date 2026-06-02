@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   getAutoCollapseGroupIds,
   reconcileCollapsedGroupsById,
+  shouldPersistSidebarUiCollapseState,
 } from "./group-collapse";
 
 describe("getAutoCollapseGroupIds", () => {
@@ -177,5 +178,35 @@ describe("reconcileCollapsedGroupsById", () => {
         },
       }),
     ).toBe(collapsedGroupsById);
+  });
+});
+
+describe("shouldPersistSidebarUiCollapseState", () => {
+  test("blocks default expanded startup writes before hydrate baseline is ready", () => {
+    expect(
+      shouldPersistSidebarUiCollapseState({
+        groupCount: 0,
+        hasAppliedHydrate: false,
+        hasEstablishedStartupGroupCollapseBaseline: false,
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldPersistSidebarUiCollapseState({
+        groupCount: 2,
+        hasAppliedHydrate: true,
+        hasEstablishedStartupGroupCollapseBaseline: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("allows persistence after real hydrated groups establish the startup baseline", () => {
+    expect(
+      shouldPersistSidebarUiCollapseState({
+        groupCount: 2,
+        hasAppliedHydrate: true,
+        hasEstablishedStartupGroupCollapseBaseline: true,
+      }),
+    ).toBe(true);
   });
 });

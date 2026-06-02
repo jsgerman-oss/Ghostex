@@ -114,3 +114,19 @@ export function reconcileCollapsedGroupsById({
 
   return changed ? next : previousCollapsedGroupsById;
 }
+
+export function shouldPersistSidebarUiCollapseState({
+  groupCount,
+  hasAppliedHydrate,
+  hasEstablishedStartupGroupCollapseBaseline,
+}: {
+  groupCount: number;
+  hasAppliedHydrate: boolean;
+  hasEstablishedStartupGroupCollapseBaseline: boolean;
+}): boolean {
+  /*
+  CDXC:SidebarReference 2026-06-02-22:39:
+  Sidebar disclosure persistence must wait until native has delivered a real hydrate and the startup group-count baseline is established. The first React mount can render with no sidebar groups and default-expanded sections; writing during that window erases the user's collapsed Quick, Projects, and project-row state before restart restore can apply it.
+  */
+  return hasAppliedHydrate && hasEstablishedStartupGroupCollapseBaseline && groupCount > 0;
+}
