@@ -2822,6 +2822,20 @@ export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
   if (!group) {
     return { changed: false, snapshot: normalizedSnapshot };
   }
+  if (
+    group.snapshot.visibleCount === 1 &&
+    group.snapshot.fullscreenRestoreVisibleCount !== undefined
+  ) {
+    /*
+     * CDXC:SessionFocusMode 2026-06-02-18:45:
+     * Publish-time virtual tab materialization must not rewrite paneLayout while Focus mode is active.
+     * Focus mode intentionally renders only the focused tab group, so treating visibleSessionIds as the complete rendered owner set would prune the hidden split branches and make Exit focus restore only a tab group instead of the original split.
+     */
+    return {
+      changed: !areSnapshotsEqual(snapshot, normalizedSnapshot),
+      snapshot: normalizedSnapshot,
+    };
+  }
   const nextGroupSnapshot = materializeAllSessionsInFocusedPaneTabGroup(group.snapshot);
   const nextSnapshot = updateGroup(normalizedSnapshot, groupId, (targetGroup) => ({
     ...targetGroup,

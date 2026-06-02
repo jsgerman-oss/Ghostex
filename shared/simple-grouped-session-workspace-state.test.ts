@@ -36,6 +36,7 @@ import {
   swapVisibleSessionsInSimpleWorkspace,
   syncSessionOrderAcrossSimpleWorkspaceGroups,
   syncSessionOrderInSimpleWorkspace,
+  toggleFullscreenSessionInSimpleWorkspace,
   wakePaneTabSessionInSimpleWorkspace,
 } from "./simple-grouped-session-workspace-state";
 
@@ -786,6 +787,88 @@ describe("focusSessionInSimpleWorkspace", () => {
      * can restore the original split when focus mode exits.
      */
     expect(group?.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: rightSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
+  test("should preserve the split layout when virtual tab materialization runs during focus mode", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const rightSessionId = sessionIdForDisplay(1);
+    const rightSiblingSessionId = sessionIdForDisplay(2);
+    const originalPaneLayout: SessionPaneLayoutNode = {
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: rightSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const focused = focusSessionExclusivelyInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: leftSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: originalPaneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+              ],
+              viewMode: "grid",
+              visibleCount: 4,
+              visibleSessionIds: [leftSessionId, rightSessionId, rightSiblingSessionId],
+            },
+            title: "Main",
+          },
+        ],
+      }),
+      rightSiblingSessionId,
+    ).snapshot;
+
+    const materialized = ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
+      focused,
+      DEFAULT_MAIN_GROUP_ID,
+    ).snapshot;
+    const restored = toggleFullscreenSessionInSimpleWorkspace(materialized);
+
+    /*
+     * CDXC:SessionFocusMode 2026-06-02-18:45:
+     * publish() calls virtual tab materialization before native layout sync.
+     * While Focus mode is active that materialization must be a no-op for paneLayout, otherwise Exit focus can restore the saved visible count but has no preserved split tree left to render.
+     */
+    expect(materialized.groups[0]?.snapshot.visibleCount).toBe(1);
+    expect(materialized.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        { kind: "leaf", sessionId: leftSessionId },
+        {
+          activeSessionId: rightSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+    expect(restored.groups[0]?.snapshot.visibleCount).toBe(4);
+    expect(restored.groups[0]?.snapshot.fullscreenRestoreVisibleCount).toBeUndefined();
+    expect(restored.groups[0]?.snapshot.paneLayout).toEqual({
       children: [
         { kind: "leaf", sessionId: leftSessionId },
         {
