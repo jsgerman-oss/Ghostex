@@ -3168,8 +3168,7 @@ function TitlebarResourcesMenu({
    * tooltips so Live CPU and Live memory do not stretch across the toolbar.
    *
    * CDXC:TitlebarResources 2026-05-28-12:16:
-   * The Resources header needs a compact collapse-all / expand-all control
-   * beside the title.
+   * The Resources header needs a compact collapse-all / expand-all control.
    *
    * CDXC:TitlebarResources 2026-05-28-12:28:
    * Match the sidebar reference Projects bulk-action icons: Collapse All uses
@@ -3181,6 +3180,10 @@ function TitlebarResourcesMenu({
    * hovered or focused, matching Sleep Inactive and Sleep All. Reuse the same
    * action-button surface and rotate the diagonal icons 90deg clockwise so
    * Resources and the sidebar share the same bulk-control orientation.
+   *
+   * CDXC:TitlebarResources 2026-06-02-19:54:
+   * Place the Resources bulk toggle in the header action cluster immediately
+   * before Sleep Inactive so all resource actions are grouped on the right side.
    */
   const resourceTooltipStyle = { maxWidth: 220 };
   return (
@@ -3189,6 +3192,8 @@ function TitlebarResourcesMenu({
         <div className="titlebar-resources-title">
           <IconDeviceDesktop aria-hidden="true" size={18} />
           <span>Resources</span>
+        </div>
+        <div className="titlebar-resources-actions">
           <button
             aria-label={allResourceSectionsCollapsed ? "Expand all resources" : "Collapse all resources"}
             className="titlebar-resources-collapse-all-button titlebar-resources-action-button"
@@ -3200,8 +3205,6 @@ function TitlebarResourcesMenu({
           >
             <ResourceBulkCollapseIcon aria-hidden="true" size={14} stroke={1.9} />
           </button>
-        </div>
-        <div className="titlebar-resources-actions">
           <Tooltip>
             <TooltipTrigger
               render={
