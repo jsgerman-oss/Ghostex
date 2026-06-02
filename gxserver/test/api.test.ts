@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import http from "node:http";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
@@ -334,8 +334,8 @@ test("local listener has full API while remote listener blocks dangerous local-o
       protocolVersion: GXSERVER_PROTOCOL_VERSION,
       token,
     });
-    assert.equal(localRunProcess.status, 501);
-    assert.equal(localRunProcess.body.error, "notImplemented");
+    assert.equal(localRunProcess.status, 404);
+    assert.equal(localRunProcess.body.error, "notFound");
   });
 
   await withApiServer("remote", async ({ baseUrl, token }) => {
@@ -345,8 +345,8 @@ test("local listener has full API while remote listener blocks dangerous local-o
       protocolVersion: GXSERVER_PROTOCOL_VERSION,
       token,
     });
-    assert.equal(remoteRunProcess.status, 403);
-    assert.equal(remoteRunProcess.body.error, "forbidden");
+    assert.equal(remoteRunProcess.status, 404);
+    assert.equal(remoteRunProcess.body.error, "notFound");
 
     const remoteQueryLogs = await requestJson(baseUrl, "/api/queryLogs", {
       body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
@@ -356,6 +356,15 @@ test("local listener has full API while remote listener blocks dangerous local-o
     });
     assert.equal(remoteQueryLogs.status, 403);
     assert.equal(remoteQueryLogs.body.error, "forbidden");
+
+    const remoteResolveGitRoot = await requestJson(baseUrl, "/api/resolveGitRootForPath", {
+      body: { params: { path: "/tmp" }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      token,
+    });
+    assert.equal(remoteResolveGitRoot.status, 403);
+    assert.equal(remoteResolveGitRoot.body.error, "forbidden");
 
     const remoteListSessions = await requestJson(baseUrl, "/api/listSessions", {
       body: {},
@@ -368,7 +377,7 @@ test("local listener has full API while remote listener blocks dangerous local-o
   });
 });
 
-test("project and session domain-state APIs create, update, list, and keep client layout separate", async () => {
+test("project and session domain-state APIs create, update, and list shared domain state", async () => {
   await withApiServer("local", async ({ baseUrl, token }) => {
     const createdProject = await requestJson(baseUrl, "/api/createProject", {
       body: {
@@ -454,21 +463,6 @@ test("project and session domain-state APIs create, update, list, and keep clien
     assert.equal(updatedSession.body.result.session.isFavorite, true);
     assert.equal(updatedSession.body.result.session.runtimeSettings.delayedSendMs, 250);
 
-    const layout = await requestJson(baseUrl, "/api/updateClientLayout", {
-      body: {
-        params: {
-          clientId: "macos-sidebar",
-          layout: { split: "right", tabs: [restored.sessionId], visibleSessionCount: 1 },
-          projectId: project.projectId,
-        },
-        protocolVersion: GXSERVER_PROTOCOL_VERSION,
-      },
-      method: "POST",
-      token,
-    });
-    assert.equal(layout.status, 200);
-    assert.equal(layout.body.result.layout.layout.split, "right");
-
     const projectStatus = await requestJson(baseUrl, "/api/readProjectStatus", {
       body: {
         params: { projectId: project.projectId },
@@ -511,6 +505,124 @@ test("project and session domain-state APIs create, update, list, and keep clien
     assert.deepEqual(presentationSearch.body.result.results.map((result: { sessionId: string }) => result.sessionId), [
       restored.sessionId,
     ]);
+
+    const stoppedRestored = await requestJson(baseUrl, "/api/updateSession", {
+      body: {
+        params: {
+          lifecycleState: "stopped",
+          projectId: project.projectId,
+          sessionId: restored.sessionId,
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(stoppedRestored.status, 200);
+
+    const previousBeforeRemove = await requestJson(baseUrl, "/api/listPreviousSessions", {
+      body: {
+        params: {
+          query: "Restored",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(previousBeforeRemove.status, 200);
+    assert.deepEqual(
+      previousBeforeRemove.body.result.results.map((result: { sessionId: string }) => result.sessionId),
+      [restored.sessionId],
+    );
+
+    /*
+    CDXC:PreviousSessions 2026-06-02-11:24:
+    Previous Sessions delete/restore cleanup is a gxserver mutation. Removing the stopped G-session must make it disappear from listPreviousSessions instead of relying on native modal-local filtering.
+    */
+    const removedSession = await requestJson(baseUrl, "/api/removeSession", {
+      body: {
+        params: {
+          projectId: project.projectId,
+          reason: "previous-session-delete",
+          sessionId: restored.sessionId,
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(removedSession.status, 200);
+    assert.equal(removedSession.body.result.session.sessionId, restored.sessionId);
+
+    const previousAfterRemove = await requestJson(baseUrl, "/api/listPreviousSessions", {
+      body: {
+        params: {
+          query: "Restored",
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(previousAfterRemove.status, 200);
+    assert.deepEqual(previousAfterRemove.body.result.results, []);
+
+    const removedProject = await requestJson(baseUrl, "/api/removeProject", {
+      body: {
+        params: { projectId: project.projectId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(removedProject.status, 200);
+    assert.equal(removedProject.body.result.project.projectId, project.projectId);
+
+    const projectsAfterRemove = await requestJson(baseUrl, "/api/listProjects", {
+      body: {
+        params: {},
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(projectsAfterRemove.status, 200);
+    assert.deepEqual(projectsAfterRemove.body.result.projects, []);
+
+    const sessionsAfterRemove = await requestJson(baseUrl, "/api/listSessions", {
+      body: {
+        params: {},
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(sessionsAfterRemove.status, 200);
+    assert.deepEqual(sessionsAfterRemove.body.result.sessions, []);
+
+    const removedPresentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+      body: {
+        params: {},
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(removedPresentation.status, 200);
+    assert.deepEqual(removedPresentation.body.result.snapshot.projects, []);
+    assert.deepEqual(removedPresentation.body.result.snapshot.sessions, []);
+
+    const missingProjectStatus = await requestJson(baseUrl, "/api/readProjectStatus", {
+      body: {
+        params: { projectId: project.projectId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(missingProjectStatus.status, 404);
+    assert.equal(missingProjectStatus.body.error, "notFound");
   });
 });
 
@@ -1431,9 +1543,8 @@ test("explicit sleep and close kill the zmx provider session", async () => {
   );
 });
 
-test("transitionSession mutates lifecycle and returns gxserver-selected focus target", async () => {
+test("transitionSession mutates lifecycle without owning client focus target", async () => {
   const calls: string[] = [];
-  const probeExitCodes = [1, 0];
   await withApiServer(
     "local",
     async ({ baseUrl, paths, token }) => {
@@ -1469,10 +1580,6 @@ test("transitionSession mutates lifecycle and returns gxserver-selected focus ta
         body: {
           params: {
             action: "close",
-            origin: {
-              kind: "projectSessionList",
-              orderedSessions: sessions.map((session) => ({ sessionId: session.sessionId })),
-            },
             projectId: project.projectId,
             sessionId: sessions[0].sessionId,
           },
@@ -1486,21 +1593,21 @@ test("transitionSession mutates lifecycle and returns gxserver-selected focus ta
       assert.equal(transition.body.result.action, "close");
       assert.equal(transition.body.result.session.lifecycleState, "stopped");
       assert.equal(transition.body.result.transition.kill.killed, true);
-      assert.deepEqual(transition.body.result.focusTarget, {
-        projectId: project.projectId,
-        reason: "nextLiveProjectSession",
-        sessionId: sessions[2].sessionId,
-      });
+      /*
+      CDXC:ProjectSidebarOwnership 2026-06-02-13:01:
+      gxserver transition owns close/sleep lifecycle only. The macOS app computes next selected row/tab from local visual order, so the API must not return a focus target or probe sibling sessions for focus eligibility.
+      */
+      assert.equal("focusTarget" in transition.body.result, false);
       assert.equal(calls.filter((script) => script.includes('kill "$zmx_session" --force')).length, 1);
-      assert.equal(calls.filter((script) => script.includes("list --short")).length, 2);
+      assert.equal(calls.filter((script) => script.includes("list --short")).length, 0);
     },
     {
-      zmxLifecycle: fakeZmxLifecycle(calls, () => probeExitCodes.shift() ?? 1),
+      zmxLifecycle: fakeZmxLifecycle(calls, () => 0),
     },
   );
 });
 
-test("transitionSession sleep keeps the sidebar row but skips sleeping tab targets", async () => {
+test("transitionSession sleep keeps the sidebar row without owning pane-tab focus", async () => {
   await withApiServer(
     "local",
     async ({ baseUrl, paths, token }) => {
@@ -1536,10 +1643,6 @@ test("transitionSession sleep keeps the sidebar row but skips sleeping tab targe
         body: {
           params: {
             action: "sleep",
-            origin: {
-              kind: "paneTabGroup",
-              orderedSessions: sessions.map((session) => ({ sessionId: session.sessionId })),
-            },
             projectId: project.projectId,
             sessionId: sessions[1].sessionId,
           },
@@ -1552,11 +1655,7 @@ test("transitionSession sleep keeps the sidebar row but skips sleeping tab targe
       assert.equal(transition.status, 200);
       assert.equal(transition.body.result.action, "sleep");
       assert.equal(transition.body.result.session.lifecycleState, "sleeping");
-      assert.deepEqual(transition.body.result.focusTarget, {
-        projectId: project.projectId,
-        reason: "nextPaneTab",
-        sessionId: sessions[3].sessionId,
-      });
+      assert.equal("focusTarget" in transition.body.result, false);
 
       const list = await requestJson(baseUrl, "/api/listSessions", {
         body: { params: { projectId: project.projectId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
@@ -1872,8 +1971,12 @@ test("remote project add validates server-side paths and typed operations stay s
       method: "POST",
       token,
     });
-    assert.equal(genericRunProcess.status, 403);
-    assert.equal(genericRunProcess.body.error, "forbidden");
+    /*
+    CDXC:GxserverTypedOperations 2026-06-02-15:33:
+    Generic process execution is not a gxserver API. Git, worktree, Beads, clone, and GitHub workflows must stay on typed endpoints so native clients cannot bypass project scoping or reintroduce a broad backend shell bridge.
+    */
+    assert.equal(genericRunProcess.status, 404);
+    assert.equal(genericRunProcess.body.error, "notFound");
   });
 });
 
@@ -1987,6 +2090,56 @@ test("project path registration attaches linked worktrees to an existing registe
     assert.equal(secondWorktreeAdd.status, 200);
     assert.equal(secondWorktreeAdd.body.result.project.projectId, worktreeProject.projectId);
     assert.equal(secondWorktreeAdd.body.result.project.worktree.parentProjectId, mainProject.projectId);
+  });
+});
+
+test("/api/resolveGitRootForPath resolves arbitrary local directories without registering projects", async (t) => {
+  if (spawnSync("git", ["--version"], { encoding: "utf8" }).status !== 0) {
+    t.skip("git is unavailable");
+    return;
+  }
+
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    /*
+    CDXC:GxserverVerification 2026-06-02-12:14:
+    CLI/open-file routing asks gxserver for a repository root before the target path is a registered project. The endpoint must return that local fact without mutating project inventory, while the remote listener remains blocked by the endpoint permission test.
+    */
+    const repoPath = path.join(paths.rootDir, "open-path-repo");
+    const nestedPath = path.join(repoPath, "src", "feature");
+    const outsidePath = path.join(paths.rootDir, "outside-repo");
+    await mkdir(nestedPath, { recursive: true });
+    await mkdir(outsidePath, { recursive: true });
+    runGitForTest(repoPath, ["init"]);
+
+    const resolved = await requestJson(baseUrl, "/api/resolveGitRootForPath", {
+      body: {
+        params: { path: nestedPath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(resolved.status, 200);
+    assert.equal(resolved.body.result.gitRoot, await realpath(repoPath));
+
+    const projectsAfterResolve = await requestJson(baseUrl, "/api/listProjects", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(projectsAfterResolve.status, 200);
+    assert.deepEqual(projectsAfterResolve.body.result.projects, []);
+
+    const outside = await requestJson(baseUrl, "/api/resolveGitRootForPath", {
+      body: {
+        params: { path: outsidePath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(outside.status, 200);
+    assert.deepEqual(outside.body.result, {});
   });
 });
 
@@ -2179,6 +2332,115 @@ test("WebSocket events require auth and protocol version, then stream JSON serve
     assert.equal(handled.type, "apiRequestHandled");
     assert.equal(handled.path, "/api/listSessions");
     socket.close();
+  });
+});
+
+test("project mutations publish complete presentation deltas for connected clients", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    /*
+    CDXC:GxserverPresentationProjects 2026-06-02-15:04:
+    Add/remove project mutations must notify connected clients with enough
+    presentation state to update the sidebar without a native project-list
+    refetch. Project add/update deltas carry the gxserver domain project cache;
+    project removal publishes projectRemoved so clients can suppress stale rows.
+    */
+    const socket = new WebSocket(toWebSocketUrl(baseUrl, "/api/events"), {
+      headers: authHeaders(token, GXSERVER_PROTOCOL_VERSION),
+    });
+    const readyEventPromise = nextWebSocketEvent(socket, "eventStreamReady");
+    await waitFor(once(socket, "open"), "WebSocket open");
+    assert.equal((await readyEventPromise).type, "eventStreamReady");
+
+    const projectPath = path.join(paths.rootDir, "presentation-delta-project");
+    await mkdir(projectPath, { recursive: true });
+    const addedEventPromise = nextWebSocketEvent(socket, "presentationDelta");
+    const addedProjectResponse = await requestJson(baseUrl, "/api/addProjectPath", {
+      body: {
+        params: { name: "Presentation Delta Project", path: projectPath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(addedProjectResponse.status, 200);
+    const projectId = addedProjectResponse.body.result.project.projectId;
+
+    const addedEvent = await addedEventPromise;
+    assert.equal(addedEvent.type, "presentationDelta");
+    const addedDelta = addedEvent.delta as Record<string, unknown>;
+    assert.equal(addedDelta.type, "projectAdded");
+    assert.equal((addedDelta.project as Record<string, unknown>).projectId, projectId);
+    assert.equal((addedDelta.project as Record<string, unknown>).path, projectPath);
+    assert.equal((addedDelta.domainProject as Record<string, unknown>).projectId, projectId);
+    assert.equal((addedDelta.domainProject as Record<string, unknown>).path, projectPath);
+
+    const removedEventPromise = nextWebSocketEvent(socket, "presentationDelta");
+    const removedProjectResponse = await requestJson(baseUrl, "/api/removeProject", {
+      body: {
+        params: { projectId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(removedProjectResponse.status, 200);
+
+    const removedEvent = await removedEventPromise;
+    assert.equal(removedEvent.type, "presentationDelta");
+    assert.deepEqual(removedEvent.delta, {
+      projectId,
+      type: "projectRemoved",
+    });
+    socket.close();
+  });
+});
+
+test("session mutations advance presentation revision without connected clients", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    /*
+    CDXC:GxserverPresentationSessions 2026-06-02-19:31:
+    Shared session mutations must update gxserver presentation revision even when no WebSocket client is connected. Reconnecting macOS sidebars then receive a current snapshot/revision instead of compensating with native-owned project/session refetches.
+    */
+    const projectPath = path.join(paths.rootDir, "session-revision-project");
+    await mkdir(projectPath, { recursive: true });
+    const createdProject = await requestJson(baseUrl, "/api/addProjectPath", {
+      body: {
+        params: { name: "Session Revision Project", path: projectPath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(createdProject.status, 200);
+    const projectId = createdProject.body.result.project.projectId;
+
+    const snapshotBeforeSession = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(snapshotBeforeSession.status, 200);
+    const revisionBeforeSession = Number(snapshotBeforeSession.body.result.snapshot.revision);
+
+    const createdSession = await requestJson(baseUrl, "/api/createAgentSession", {
+      body: {
+        params: { agentId: "codex", projectId, title: "Revision Session" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(createdSession.status, 200);
+    const sessionId = createdSession.body.result.session.sessionId;
+
+    const snapshotAfterSession = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(snapshotAfterSession.status, 200);
+    assert.equal(snapshotAfterSession.body.result.snapshot.sessions[0]?.sessionId, sessionId);
+    assert.ok(Number(snapshotAfterSession.body.result.snapshot.revision) > revisionBeforeSession);
   });
 });
 
@@ -2514,6 +2776,18 @@ function runGitForTest(cwd: string, args: readonly string[]): void {
 async function onceMessage(socket: WebSocket): Promise<WebSocket.RawData> {
   const [message] = (await waitFor(once(socket, "message"), "WebSocket message")) as [WebSocket.RawData];
   return message;
+}
+
+async function nextWebSocketEvent(socket: WebSocket, type: string): Promise<Record<string, unknown>> {
+  const seenTypes: string[] = [];
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const event = JSON.parse(String(await onceMessage(socket))) as Record<string, unknown>;
+    seenTypes.push(typeof event.type === "string" ? event.type : "<unknown>");
+    if (event.type === type) {
+      return event;
+    }
+  }
+  throw new Error(`Timed out waiting for WebSocket event ${type}; saw ${seenTypes.join(", ") || "no events"}.`);
 }
 
 async function waitFor<T>(promise: Promise<T>, label: string): Promise<T> {

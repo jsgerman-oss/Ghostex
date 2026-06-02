@@ -132,16 +132,12 @@ test("SQLite migrations are idempotent and create foundation schema", async () =
       const sessionsTable = db
         .prepare<[string], { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get("sessions");
-      const clientLayoutsTable = db
-        .prepare<[string], { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-        .get("client_layouts");
 
       assert.equal(migrations?.count, 2);
       assert.equal(metadataTable?.name, "metadata");
       assert.equal(idsTable?.name, "id_allocations");
       assert.equal(projectsTable?.name, "projects");
       assert.equal(sessionsTable?.name, "sessions");
-      assert.equal(clientLayoutsTable?.name, "client_layouts");
     } finally {
       db.close();
     }

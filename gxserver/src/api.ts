@@ -35,6 +35,7 @@ export const GXSERVER_ENDPOINTS: readonly GxserverEndpointDescriptor[] = [
   descriptor("/api/killSession", "remoteAllowed", true, true, "http"),
   descriptor("/api/probeSessionProvider", "remoteAllowed", true, true, "http"),
   descriptor("/api/listSessions", "remoteAllowed", true, true, "http"),
+  descriptor("/api/removeSession", "remoteAllowed", true, true, "http"),
   descriptor("/api/readSessionText", "remoteAllowed", true, true, "http"),
   descriptor("/api/sendSessionText", "remoteAllowed", true, true, "http"),
   descriptor("/api/sendSessionMessage", "remoteAllowed", true, true, "http"),
@@ -46,18 +47,22 @@ export const GXSERVER_ENDPOINTS: readonly GxserverEndpointDescriptor[] = [
   descriptor("/api/listProjects", "remoteAllowed", true, true, "http"),
   descriptor("/api/readProjectStatus", "remoteAllowed", true, true, "http"),
   descriptor("/api/addProjectPath", "remoteAllowed", true, true, "http"),
+  descriptor("/api/removeProject", "remoteAllowed", true, true, "http"),
   descriptor("/api/updateSession", "remoteAllowed", true, true, "http"),
-  descriptor("/api/readClientLayout", "remoteAllowed", true, true, "http"),
-  descriptor("/api/updateClientLayout", "remoteAllowed", true, true, "http"),
   descriptor("/api/runGitAction", "remoteAllowed", true, true, "http"),
+  descriptor("/api/runGitHubAction", "remoteAllowed", true, true, "http"),
   descriptor("/api/runWorktreeAction", "remoteAllowed", true, true, "http"),
   descriptor("/api/runBeadsAction", "remoteAllowed", true, true, "http"),
   descriptor("/api/previewRepositoryClone", "remoteAllowed", true, true, "http"),
   descriptor("/api/startRepositoryClone", "remoteAllowed", true, true, "http"),
   descriptor("/api/readRepositoryCloneJob", "remoteAllowed", true, true, "http"),
   descriptor("/api/cancelRepositoryCloneJob", "remoteAllowed", true, true, "http"),
+  descriptor("/api/resolveGitRootForPath", "remoteBlocked", true, true, "http"),
   descriptor("/api/queryLogs", "fullLocal", true, true, "http"),
-  descriptor("/api/runProcess", "remoteBlocked", true, true, "http"),
+  /*
+  CDXC:GxserverTypedOperations 2026-06-02-15:33:
+  gxserver must not expose a generic process RPC after the native/gxserver ownership split. Shared project operations use typed Git, worktree, Beads, clone, and lifecycle endpoints; macOS keeps its separate native runProcess bridge only for current-window OS-local hosting tasks.
+  */
   descriptor("/api/updateAuth", "remoteBlocked", true, true, "http"),
   descriptor("/api/updateListenerConfig", "remoteBlocked", true, true, "http"),
   descriptor("/api/installTool", "remoteBlocked", true, true, "http"),

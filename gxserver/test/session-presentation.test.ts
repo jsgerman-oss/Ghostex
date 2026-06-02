@@ -290,6 +290,30 @@ test("presentation snapshot includes empty projects before their first session",
   assert.equal(snapshot.sessions.length, 0);
 });
 
+test("presentation snapshot carries worktree project metadata", () => {
+  const project = projectFixture({
+    name: "zmux-feature",
+    path: "/Users/madda/dev/_active/zmux-feature",
+    projectId: "Pwt01" as GxserverProjectId,
+    worktree: {
+      branch: "feature",
+      name: "feature",
+      parentProjectId: "P3lv0",
+      parentProjectName: "zmux",
+      parentProjectPath: "/Users/madda/dev/_active/zmux",
+    },
+  });
+
+  const snapshot = projectGxserverPresentationSnapshot({
+    generatedAt: "2026-06-02T04:16:00.000Z",
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [],
+  });
+
+  assert.deepEqual(snapshot.projects[0]?.worktree, project.worktree);
+});
+
 test("presentation snapshot carries gxserver title projection semantics", () => {
   const project = projectFixture({});
   const session = sessionFixture({

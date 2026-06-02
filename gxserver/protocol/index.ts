@@ -59,6 +59,7 @@ export type GxserverEndpointPath =
   | "/api/killSession"
   | "/api/probeSessionProvider"
   | "/api/listSessions"
+  | "/api/removeSession"
   | "/api/readSessionText"
   | "/api/sendSessionText"
   | "/api/sendSessionMessage"
@@ -70,18 +71,18 @@ export type GxserverEndpointPath =
   | "/api/listProjects"
   | "/api/readProjectStatus"
   | "/api/addProjectPath"
+  | "/api/removeProject"
   | "/api/updateSession"
-  | "/api/readClientLayout"
-  | "/api/updateClientLayout"
   | "/api/runGitAction"
+  | "/api/runGitHubAction"
   | "/api/runWorktreeAction"
   | "/api/runBeadsAction"
   | "/api/previewRepositoryClone"
   | "/api/startRepositoryClone"
   | "/api/readRepositoryCloneJob"
   | "/api/cancelRepositoryCloneJob"
+  | "/api/resolveGitRootForPath"
   | "/api/queryLogs"
-  | "/api/runProcess"
   | "/api/updateAuth"
   | "/api/updateListenerConfig"
   | "/api/installTool"
@@ -292,10 +293,63 @@ export interface GxserverQueryLogsResult {
   truncatedReason?: "fileWindowExceeded";
 }
 
-export type GxserverGitAction = "branch" | "diff" | "list" | "status";
-export type GxserverWorktreeAction = "create" | "list" | "remove" | "switch";
-export type GxserverBeadsAction = "board" | "close" | "comment" | "list" | "show" | "update";
+export type GxserverGitAction =
+  | "branch"
+  | "addAll"
+  | "checkout"
+  | "checkoutNewBranch"
+  | "commit"
+  | "countFileLines"
+  | "diff"
+  | "diffCached"
+  | "diffCachedNoExt"
+  | "diffCachedStat"
+  | "diffNoExt"
+  | "diffNoIndexAgainstNull"
+  | "diffNumstat"
+  | "getOriginRemoteUrl"
+  | "isInsideWorkTree"
+  | "isUntrackedFile"
+  | "list"
+  | "listRemotes"
+  | "listUntracked"
+  | "merge"
+  | "push"
+  | "pushSetUpstream"
+  | "status"
+  | "statusPorcelain"
+  | "upstreamCounts"
+  | "verifyRef";
+export type GxserverWorktreeAction = "create" | "list" | "pathExists" | "prune" | "remove" | "switch";
+export type GxserverBeadsAction =
+  | "addLabel"
+  | "board"
+  | "close"
+  | "comment"
+  | "configGet"
+  | "configGetIssuePrefix"
+  | "configSet"
+  | "configSetIssuePrefix"
+  | "create"
+  | "delete"
+  | "depAdd"
+  | "depRemove"
+  | "list"
+  | "listAllLabels"
+  | "removeLabel"
+  | "search"
+  | "setLabels"
+  | "show"
+  | "status"
+  | "storageExists"
+  | "update"
+  | "updateDescription"
+  | "updateEstimate"
+  | "updatePriority"
+  | "updateStatus"
+  | "updateTitle";
 export type GxserverBeadsStatus = "backlog" | "closed" | "in_progress" | "open" | "review" | "test";
+export type GxserverGitHubAction = "prCreateFill" | "prView" | "version";
 
 export interface GxserverProjectOperationScope {
   projectId?: GxserverProjectId;
@@ -304,7 +358,13 @@ export interface GxserverProjectOperationScope {
 
 export interface GxserverRunGitActionParams extends GxserverProjectOperationScope {
   action: GxserverGitAction;
+  branch?: string;
   filePath?: string;
+  filePaths?: readonly string[];
+  messageBody?: string;
+  messageSubject?: string;
+  noVerify?: boolean;
+  ref?: string;
 }
 
 export interface GxserverRunWorktreeActionParams extends GxserverProjectOperationScope {
@@ -315,17 +375,33 @@ export interface GxserverRunWorktreeActionParams extends GxserverProjectOperatio
   worktreePath?: string;
 }
 
+export interface GxserverRunGitHubActionParams extends GxserverProjectOperationScope {
+  action: GxserverGitHubAction;
+}
+
 export interface GxserverRunBeadsActionParams extends GxserverProjectOperationScope {
   action: GxserverBeadsAction;
   comment?: string;
+  dependsOnId?: string;
   description?: string;
+  depType?: string;
   estimate?: number;
   issueId?: string;
+  label?: string;
   labels?: readonly string[];
   priority?: string;
   query?: string;
   status?: GxserverBeadsStatus;
   title?: string;
+  value?: string;
+}
+
+export interface GxserverResolveGitRootForPathParams {
+  path: string;
+}
+
+export interface GxserverResolveGitRootForPathResult {
+  gitRoot?: string;
 }
 
 export interface GxserverRepositoryCloneOptions {
@@ -396,6 +472,7 @@ export interface GxserverTypedCommand {
 export type GxserverTypedOperationFailureCode =
   | "aborted"
   | "stderrLimitExceeded"
+  | "stdinFailed"
   | "stdoutLimitExceeded"
   | "timeout";
 
@@ -408,13 +485,21 @@ export interface GxserverTypedOperationFailure {
   timeoutMs?: number;
 }
 
+export interface GxserverWorktreeListEntry {
+  bare: boolean;
+  branch: string;
+  detached: boolean;
+  path: string;
+}
+
 export interface GxserverTypedOperationResult {
-  action: GxserverGitAction | GxserverWorktreeAction | GxserverBeadsAction;
+  action: GxserverGitAction | GxserverGitHubAction | GxserverWorktreeAction | GxserverBeadsAction;
   command?: GxserverTypedCommand;
   error?: GxserverTypedOperationFailure;
   exitCode: number;
   stderr: string;
   stdout: string;
+  worktrees?: readonly GxserverWorktreeListEntry[];
 }
 
 export interface GxserverBeadsBoardResult extends GxserverTypedOperationResult {
@@ -579,13 +664,6 @@ export interface GxserverSessionDomainState {
   zmxName: GxserverZmxSessionName;
 }
 
-export interface GxserverClientLayoutState {
-  clientId: string;
-  layout: Record<string, unknown>;
-  projectId?: GxserverProjectId;
-  updatedAt: string;
-}
-
 export interface GxserverCreateProjectParams {
   attentionRules?: Record<string, unknown>;
   completionRules?: Record<string, unknown>;
@@ -643,6 +721,12 @@ export type GxserverUpdateSessionParams = Partial<Omit<GxserverCreateSessionPara
   sessionId: GxserverSessionId;
 };
 
+export interface GxserverRemoveSessionParams {
+  projectId: GxserverProjectId;
+  reason?: string;
+  sessionId: GxserverSessionId;
+}
+
 export interface GxserverSessionLifecycleParams {
   projectId: GxserverProjectId;
   reason?: string;
@@ -650,38 +734,16 @@ export interface GxserverSessionLifecycleParams {
 }
 
 export type GxserverSessionTransitionAction = "close" | "sleep";
-export interface GxserverSessionTransitionOriginSession {
-  lifecycleState?: GxserverDomainLifecycleState;
-  sessionId: string;
-}
-export type GxserverSessionTransitionOrigin =
-  | {
-      kind: "projectSessionList";
-      orderedSessions: readonly (GxserverSessionTransitionOriginSession & {
-        sessionId: GxserverSessionId;
-      })[];
-    }
-  | {
-      kind: "paneTabGroup";
-      orderedSessions: readonly GxserverSessionTransitionOriginSession[];
-    };
-
 export interface GxserverSessionTransitionParams extends GxserverSessionLifecycleParams {
+  /*
+  CDXC:ProjectSidebarOwnership 2026-06-02-13:01:
+  gxserver owns the shared lifecycle mutation for close/sleep, but macOS owns selected tab and local pane focus. Keep visual order and focus-target selection out of this protocol so pane-tab layout cannot become gxserver-owned state.
+  */
   action: GxserverSessionTransitionAction;
-  origin: GxserverSessionTransitionOrigin;
-}
-
-export type GxserverSessionTransitionFocusReason = "nextLiveProjectSession" | "nextPaneTab";
-
-export interface GxserverSessionTransitionFocusTarget {
-  projectId: GxserverProjectId;
-  reason: GxserverSessionTransitionFocusReason;
-  sessionId: string;
 }
 
 export interface GxserverSessionTransitionResult {
   action: GxserverSessionTransitionAction;
-  focusTarget?: GxserverSessionTransitionFocusTarget;
   session: GxserverSessionDomainState;
   transition: Record<string, unknown> & {
     session: GxserverSessionDomainState;
@@ -723,6 +785,7 @@ export interface GxserverPresentationProject {
   sortKey: string;
   title: string;
   updatedAt: string;
+  worktree?: Record<string, unknown>;
 }
 
 export interface GxserverPresentationGroup {
@@ -775,6 +838,7 @@ export interface GxserverPresentationSnapshot {
 
 export type GxserverPresentationDelta =
   | {
+      domainProject?: GxserverProjectDomainState;
       project: GxserverPresentationProject;
       type: "projectAdded" | "projectUpdated";
     }

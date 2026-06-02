@@ -107,6 +107,33 @@ test("sessions use G IDs, zmx names, hidden previous-session metadata, and indep
       repository.listSessions(project.projectId).map((session) => session.sessionId),
       ["G1z99", "G8v20"],
     );
+
+    /*
+    CDXC:PreviousSessions 2026-06-02-11:24:
+    Previous-session delete/restore cleanup must remove the canonical gxserver G-session row. A native-only delete would let stopped history reappear on the next gxserver listPreviousSessions query.
+    */
+    const removed = repository.removeSession({
+      projectId: project.projectId,
+      reason: "previous-session-delete",
+      sessionId: restored.sessionId,
+    });
+
+    assert.equal(removed.sessionId, restored.sessionId);
+    assert.deepEqual(
+      repository.listSessions(project.projectId).map((session) => session.sessionId),
+      ["G8v20"],
+    );
+    assert.throws(
+      () =>
+        repository.removeSession({
+          projectId: project.projectId,
+          sessionId: restored.sessionId,
+        }),
+      (error) =>
+        error instanceof GxserverDomainStateError &&
+        error.code === "notFound" &&
+        /does not exist/.test(error.message),
+    );
   });
 });
 
@@ -147,39 +174,6 @@ test("sessions expose command-pane surface without a separate migration column",
     assert.equal(session.surface, "commands");
     assert.equal(session.launchSettings.surface, "commands");
     assert.equal(repository.listSessions(project.projectId)[0]?.surface, "commands");
-  });
-});
-
-test("client-local layout round-trips separately from shared project and session state", async () => {
-  await withDomainRepository(async (repository) => {
-    const project = repository.createProject({
-      isPinned: true,
-      launchSettings: { terminalEngine: "ghostty" },
-      name: "Ghostex",
-    });
-    const session = repository.createSession({ projectId: project.projectId, title: "Shared title" });
-    const layout = repository.updateClientLayout({
-      clientId: "macos-sidebar",
-      layout: {
-        browserPanes: ["docs"],
-        split: "right",
-        tabs: [session.sessionId],
-        visibleSessionCount: 1,
-      },
-      projectId: project.projectId,
-    });
-
-    assert.equal(layout.projectId, project.projectId);
-    assert.equal(layout.layout.split, "right");
-    assert.deepEqual(repository.readClientLayout({ clientId: "macos-sidebar", projectId: project.projectId }), layout);
-
-    const rereadProject = repository.getProject(project.projectId);
-    const rereadSession = repository.getSession(project.projectId, session.sessionId);
-    assert.equal(rereadProject?.isPinned, true);
-    assert.deepEqual(rereadProject?.launchSettings, { terminalEngine: "ghostty" });
-    assert.equal(rereadSession?.title, "Shared title");
-    assert.equal("layout" in (rereadProject ?? {}), false);
-    assert.equal("layout" in (rereadSession ?? {}), false);
   });
 });
 

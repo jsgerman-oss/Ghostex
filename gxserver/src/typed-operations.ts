@@ -8,15 +8,18 @@ import type {
   GxserverBeadsAction,
   GxserverBeadsBoardResult,
   GxserverGitAction,
+  GxserverGitHubAction,
   GxserverProjectDomainState,
   GxserverRunBeadsActionParams,
   GxserverRunGitActionParams,
+  GxserverRunGitHubActionParams,
   GxserverRunWorktreeActionParams,
   GxserverTypedCommand,
   GxserverTypedOperationFailure,
   GxserverTypedOperationResult,
   GxserverWorktreeAction,
 } from "../protocol/index.js";
+import { normalizeGitWorktreeBranch, parseGitWorktreeListPorcelain } from "./git-worktrees.js";
 import { getBdToolStatus } from "./toolchain.js";
 
 export const GXSERVER_TYPED_OPERATION_TIMEOUT_MS = 120_000;
@@ -64,6 +67,11 @@ export interface GxserverTypedCommandLimits {
   timeoutMs: number;
 }
 
+interface GxserverProcessCommand extends GxserverTypedCommand {
+  resultCommand?: GxserverTypedCommand;
+  stdin?: string;
+}
+
 /*
 CDXC:GxserverTypedOperations 2026-05-30-14:53:
 gxserver exposes Git, worktree, and Beads through typed allowlisted operations only. Remote clients may request these workflows, but they cannot provide arbitrary executables or arguments; gxserver constructs each command after validating project scope, paths, refs, statuses, and destructive worktree targets.
@@ -74,26 +82,106 @@ Typed Git, worktree, and Beads subprocesses must have bounded runtime and bounde
 CDXC:GxserverTypedOperations 2026-05-30-23:08:
 Beads board reads bypass the subprocess stdout cap because gxserver reads `.beads/issues.jsonl` directly for UI board state. Apply file-size, row-count, and serialized-response limits before returning `issues` so a remote Project board request cannot make gxserver load or JSON-encode unbounded board data.
 */
-export function buildGitCommand(params: GxserverRunGitActionParams, cwd: string): GxserverTypedCommand {
+export function buildGitCommand(params: GxserverRunGitActionParams, cwd: string): GxserverProcessCommand {
   const action = normalizeGitAction(params.action);
+  /*
+  CDXC:GitOperations 2026-06-02-12:01:
+  Shared repository mutations and inspections used by sidebar worktree merge flows belong to gxserver typed Git operations. Native owns toasts, confirmation UI, conflict-agent placement, and local focus, while gxserver owns the allowlisted checkout/merge/ref/status command execution.
+
+  CDXC:GitOperations 2026-06-02-12:21:
+  Sidebar project-header diff stats, changed-file previews, upstream badges, and GitHub editor detection are native UI, but the repository checks and Git diff/list/remote commands are shared backend inspections. Keep those Git commands in gxserver typed operations so native renders loading/local-first state without shelling out to Git for shared project data.
+
+  CDXC:GitOperations 2026-06-02-12:52:
+  Commit and push mutations are shared backend Git workflows after the gxserver/native split. Commit messages are user-authored content, so gxserver passes them over stdin with `git commit -F -` and returns only a redacted command summary to clients and logs.
+  */
   switch (action) {
+    case "addAll": {
+      const filePaths = optionalRelativeFilePaths(params.filePaths);
+      return {
+        args: ["add", "-A", ...(filePaths.length > 0 ? ["--", ...filePaths] : [])],
+        cwd,
+        executable: "git",
+        resultCommand:
+          filePaths.length > 0
+            ? { args: ["add", "-A", "--", `<${filePaths.length} files>`], cwd, executable: "git" }
+            : undefined,
+      };
+    }
     case "branch":
       return { args: ["branch", "--show-current"], cwd, executable: "git" };
+    case "checkout":
+      return { args: ["checkout", normalizeGitRef(params.branch, "branch")], cwd, executable: "git" };
+    case "checkoutNewBranch":
+      return { args: ["checkout", "-b", normalizeGitRef(params.branch, "branch")], cwd, executable: "git" };
     case "diff":
       return { args: ["diff", "--", ...optionalRelativeFilePath(params.filePath)], cwd, executable: "git" };
+    case "diffCached":
+      return { args: ["diff", "--cached"], cwd, executable: "git" };
+    case "diffCachedNoExt":
+      return { args: ["diff", "--cached", "--no-ext-diff", "--", normalizeRelativeFilePath(params.filePath)], cwd, executable: "git" };
+    case "diffCachedStat":
+      return { args: ["diff", "--cached", "--stat"], cwd, executable: "git" };
+    case "diffNoExt":
+      return { args: ["diff", "--no-ext-diff", "--", normalizeRelativeFilePath(params.filePath)], cwd, executable: "git" };
+    case "diffNoIndexAgainstNull":
+      return { args: ["diff", "--no-index", "--no-ext-diff", "--", "/dev/null", normalizeRelativeFilePath(params.filePath)], cwd, executable: "git" };
+    case "diffNumstat":
+      return { args: ["diff", "--numstat", "HEAD"], cwd, executable: "git" };
+    case "getOriginRemoteUrl":
+      return { args: ["remote", "get-url", "origin"], cwd, executable: "git" };
+    case "isInsideWorkTree":
+      return { args: ["rev-parse", "--is-inside-work-tree"], cwd, executable: "git" };
+    case "isUntrackedFile":
+      return { args: ["ls-files", "--others", "--exclude-standard", "--", normalizeRelativeFilePath(params.filePath)], cwd, executable: "git" };
     case "list":
       return {
         args: ["ls-files", "--cached", "--modified", "--others", "--exclude-standard"],
         cwd,
         executable: "git",
       };
+    case "listRemotes":
+      return { args: ["remote"], cwd, executable: "git" };
+    case "listUntracked":
+      return { args: ["ls-files", "--others", "--exclude-standard", "-z"], cwd, executable: "git" };
     case "status":
       return { args: ["status", "--short", "--branch"], cwd, executable: "git" };
+    case "statusPorcelain":
+      return { args: ["status", "--porcelain"], cwd, executable: "git" };
+    case "upstreamCounts":
+      return { args: ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"], cwd, executable: "git" };
+    case "merge":
+      return { args: ["merge", normalizeGitRef(params.branch, "branch")], cwd, executable: "git" };
+    case "commit": {
+      const message = normalizeGitCommitMessage(params.messageSubject, params.messageBody);
+      return {
+        args: ["commit", ...(params.noVerify === true ? ["--no-verify"] : []), "-F", "-"],
+        cwd,
+        executable: "git",
+        resultCommand: {
+          args: ["commit", ...(params.noVerify === true ? ["--no-verify"] : []), "-F", "<stdin>"],
+          cwd,
+          executable: "git",
+        },
+        stdin: message,
+      };
+    }
+    case "countFileLines":
+      throw new GxserverTypedOperationError("badRequest", "countFileLines is handled by gxserver without spawning a subprocess.");
+    case "push":
+      return { args: ["push"], cwd, executable: "git" };
+    case "pushSetUpstream":
+      return { args: ["push", "-u", "origin", normalizeGitRef(params.branch, "branch")], cwd, executable: "git" };
+    case "verifyRef":
+      return { args: ["rev-parse", "--verify", normalizeGitRef(params.ref, "ref")], cwd, executable: "git" };
   }
 }
 
 export function buildWorktreeCommand(params: GxserverRunWorktreeActionParams, context: GxserverTypedOperationContext): GxserverTypedCommand {
   const action = normalizeWorktreeAction(params.action);
+  /*
+  CDXC:WorktreeProjectRegistration 2026-06-02-11:45:
+  Worktree create, list, remove, prune, and switch are gxserver-owned typed operations after the ownership split. Keep the allowlist here so native owns picker/layout/local-first UI but never shells out to `git worktree` for shared project mutations.
+  */
   switch (action) {
     case "create": {
       const worktreePath = normalizeWorktreeTargetPath(params.worktreePath, context);
@@ -107,6 +195,10 @@ export function buildWorktreeCommand(params: GxserverRunWorktreeActionParams, co
     }
     case "list":
       return { args: ["worktree", "list", "--porcelain"], cwd: context.cwd, executable: "git" };
+    case "pathExists":
+      throw new GxserverTypedOperationError("badRequest", "pathExists is handled by gxserver without spawning a subprocess.");
+    case "prune":
+      return { args: ["worktree", "prune"], cwd: context.cwd, executable: "git" };
     case "remove": {
       const worktreePath = normalizeExistingWorktreePath(params.worktreePath, context);
       return {
@@ -126,11 +218,22 @@ export async function buildBeadsCommand(
   params: GxserverRunBeadsActionParams,
   context: GxserverTypedOperationContext,
 ): Promise<GxserverTypedCommand | undefined> {
-  const bd = await requireBd(context.envPath);
   const action = normalizeBeadsAction(params.action);
+  if (action === "board" || action === "storageExists") {
+    return undefined;
+  }
+  const bd = await requireBd(context.envPath);
+  /*
+  CDXC:ProjectBoard 2026-06-02-13:31:
+  Project board Beads reads and mutations are gxserver-owned backend operations after the native/gxserver split. Keep the full board command surface as typed allowlisted `bd` actions here so the macOS WKWebView bridge only forwards requests and no longer constructs or runs Beads subprocesses.
+  */
   switch (action) {
-    case "board":
-      return undefined;
+    case "addLabel":
+      return {
+        args: ["label", "add", normalizeIssueId(params.issueId), normalizeRequiredText(params.label, "label"), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
     case "close":
       return { args: ["close", normalizeIssueId(params.issueId), "--json"], cwd: context.cwd, executable: bd };
     case "comment":
@@ -139,12 +242,120 @@ export async function buildBeadsCommand(
         cwd: context.cwd,
         executable: bd,
       };
+    case "configGet":
+      return { args: ["config", "get", "status.custom", "--json"], cwd: context.cwd, executable: bd };
+    case "configGetIssuePrefix":
+      return { args: ["config", "get", "issue_prefix", "--json"], cwd: context.cwd, executable: bd };
+    case "configSet":
+      return {
+        args: ["config", "set", "status.custom", normalizeRequiredText(params.value, "value"), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "configSetIssuePrefix":
+      return {
+        args: ["config", "set", "issue_prefix", normalizeRequiredText(params.value, "value"), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "create":
+      return {
+        args: buildBeadsCreateArgs(params),
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "delete":
+      return { args: ["delete", normalizeIssueId(params.issueId), "--force", "--json"], cwd: context.cwd, executable: bd };
+    case "depAdd":
+      return {
+        args: [
+          "dep",
+          "add",
+          normalizeIssueId(params.issueId),
+          normalizeIssueId(params.dependsOnId),
+          "--type",
+          normalizeBeadsDependencyType(params.depType),
+          "--json",
+        ],
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "depRemove":
+      return {
+        args: ["dep", "remove", normalizeIssueId(params.issueId), normalizeIssueId(params.dependsOnId), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
     case "list":
       return { args: ["list", "--all", "--json"], cwd: context.cwd, executable: bd };
+    case "listAllLabels":
+      return { args: ["label", "list-all", "--json"], cwd: context.cwd, executable: bd };
+    case "removeLabel":
+      return {
+        args: ["label", "remove", normalizeIssueId(params.issueId), normalizeRequiredText(params.label, "label"), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "search":
+      return { args: ["search", normalizeRequiredText(params.query, "query"), "--json"], cwd: context.cwd, executable: bd };
+    case "setLabels":
+      return {
+        args: ["update", normalizeIssueId(params.issueId), ...buildBeadsSetLabelArgs(params.labels), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
     case "show":
       return { args: ["show", normalizeIssueId(params.issueId), "--json"], cwd: context.cwd, executable: bd };
+    case "status":
+      return { args: ["status"], cwd: context.cwd, executable: bd };
     case "update":
       return { args: ["update", normalizeIssueId(params.issueId), ...buildBeadsUpdateArgs(params), "--json"], cwd: context.cwd, executable: bd };
+    case "updateDescription":
+      return {
+        args: ["update", normalizeIssueId(params.issueId), "--description", String(params.description ?? ""), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "updateEstimate":
+      return {
+        args: ["update", normalizeIssueId(params.issueId), "--estimate", normalizeBeadsEstimate(params.estimate), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "updatePriority":
+      return {
+        args: ["update", normalizeIssueId(params.issueId), "--priority", normalizeRequiredText(params.priority, "priority"), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "updateStatus":
+      return {
+        args: ["update", normalizeIssueId(params.issueId), "--status", normalizeBeadsStatus(params.status), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
+    case "updateTitle":
+      return {
+        args: ["update", normalizeIssueId(params.issueId), "--title", normalizeRequiredText(params.title, "title"), "--json"],
+        cwd: context.cwd,
+        executable: bd,
+      };
+  }
+}
+
+export function buildGitHubCommand(params: GxserverRunGitHubActionParams, cwd: string): GxserverTypedCommand {
+  const action = normalizeGitHubAction(params.action);
+  /*
+  CDXC:GitHubOperations 2026-06-02-13:18:
+  Pull-request view/create is part of the shared project Git workflow, so gxserver owns the allowlisted `gh` execution while native owns review modals, success toasts, and opening the returned PR URL in a local browser pane.
+  */
+  switch (action) {
+    case "prCreateFill":
+      return { args: ["pr", "create", "--fill"], cwd, executable: "gh" };
+    case "prView":
+      return { args: ["pr", "view", "--json", "number,state,title,url"], cwd, executable: "gh" };
+    case "version":
+      return { args: ["--version"], cwd, executable: "gh" };
   }
 }
 
@@ -152,16 +363,81 @@ export async function runGitAction(
   params: GxserverRunGitActionParams,
   context: GxserverTypedOperationContext,
 ): Promise<GxserverTypedOperationResult> {
+  if (normalizeGitAction(params.action) === "countFileLines") {
+    /*
+    CDXC:GxserverTypedOperations 2026-06-02-12:35:
+    Project-header untracked line totals are repository inspections even though native renders the UI. Count project-relative files inside gxserver and return only the numeric total so the macOS sidebar does not shell out to `wc` or expose file paths/content through command metadata.
+    */
+    return {
+      action: "countFileLines",
+      exitCode: 0,
+      stderr: "",
+      stdout: String(await countProjectFileLines(context.cwd, optionalRelativeFilePaths(params.filePaths))),
+    };
+  }
   const command = buildGitCommand(params, context.cwd);
-  return { action: normalizeGitAction(params.action), command, ...(await runTypedCommand(command, commandOptions(context))) };
+  return {
+    action: normalizeGitAction(params.action),
+    command: command.resultCommand ?? command,
+    ...(await runTypedCommand(command, commandOptions(context))),
+  };
+}
+
+export async function runGitHubAction(
+  params: GxserverRunGitHubActionParams,
+  context: GxserverTypedOperationContext,
+): Promise<GxserverTypedOperationResult> {
+  const command = buildGitHubCommand(params, context.cwd);
+  const action = normalizeGitHubAction(params.action);
+  try {
+    return { action, command, ...(await runTypedCommand(command, commandOptions(context))) };
+  } catch (error) {
+    return {
+      action,
+      command,
+      exitCode: 1,
+      stderr: error instanceof Error ? error.message : "GitHub CLI operation failed.",
+      stdout: "",
+    };
+  }
 }
 
 export async function runWorktreeAction(
   params: GxserverRunWorktreeActionParams,
   context: GxserverTypedOperationContext,
 ): Promise<GxserverTypedOperationResult> {
+  /*
+  CDXC:WorktreeProjectRegistration 2026-06-02-13:01:
+  Existing-worktree discovery is gxserver-owned, including parsing `git worktree list --porcelain`. Return structured worktree entries from the typed list operation so native owns only picker rendering and selection state.
+
+  CDXC:WorktreeProjectRegistration 2026-06-02-13:16:
+  Worktree target-path availability is part of the shared worktree creation decision. Check candidate paths inside gxserver typed operations instead of letting native shell out with `/bin/test`, while keeping native responsible for naming attempts and UI feedback.
+  */
+  const action = normalizeWorktreeAction(params.action);
+  if (action === "pathExists") {
+    const worktreePath = normalizeWorktreeTargetPath(params.worktreePath, context);
+    const exists = await pathExists(worktreePath);
+    return {
+      action,
+      exitCode: exists ? 0 : 1,
+      stderr: "",
+      stdout: exists ? "true" : "false",
+    };
+  }
   const command = buildWorktreeCommand(params, context);
-  return { action: normalizeWorktreeAction(params.action), command, ...(await runTypedCommand(command, commandOptions(context))) };
+  const result = { action, command, ...(await runTypedCommand(command, commandOptions(context))) };
+  if (action !== "list" || result.exitCode !== 0) {
+    return result;
+  }
+  return {
+    ...result,
+    worktrees: parseGitWorktreeListPorcelain(result.stdout).map((entry) => ({
+      bare: entry.bare,
+      branch: normalizeGitWorktreeBranch(entry.branch),
+      detached: entry.detached,
+      path: entry.path,
+    })),
+  };
 }
 
 export async function runBeadsAction(
@@ -180,6 +456,19 @@ export async function runBeadsAction(
       stdout,
     };
   }
+  if (action === "storageExists") {
+    /*
+    CDXC:GxserverTypedOperations 2026-06-02-12:14:
+    The macOS commit UI may need to know whether a registered project has tracked Beads storage before deciding to request `git commit --no-verify` for the precise missing-db hook failure. Keep that project filesystem probe in gxserver so native does not inspect shared project repository state directly.
+    */
+    const exists = await beadsStorageDirectoryExists(context.cwd);
+    return {
+      action,
+      exitCode: exists ? 0 : 1,
+      stderr: "",
+      stdout: String(exists),
+    };
+  }
   if (!command) {
     throw new GxserverTypedOperationError("badRequest", `No command was constructed for Beads action ${action}.`);
   }
@@ -187,7 +476,7 @@ export async function runBeadsAction(
 }
 
 async function runTypedCommand(
-  command: GxserverTypedCommand,
+  command: GxserverProcessCommand,
   options: {
     env?: Record<string, string>;
     limits?: Partial<GxserverTypedCommandLimits>;
@@ -196,10 +485,12 @@ async function runTypedCommand(
 ): Promise<{ error?: GxserverTypedOperationFailure; exitCode: number; stderr: string; stdout: string }> {
   const limits = resolveTypedCommandLimits(options.limits);
   return await new Promise((resolve, reject) => {
+    const usesStdin = command.stdin !== undefined;
     const child = spawn(command.executable, command.args, {
       cwd: command.cwd,
+      detached: process.platform !== "win32",
       env: { ...process.env, ...options.env },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [usesStdin ? "pipe" : "ignore", "pipe", "pipe"],
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -217,16 +508,49 @@ async function runTypedCommand(
     }, limits.timeoutMs);
     timeout.unref();
 
+    /*
+    CDXC:GxserverTypedOperations 2026-06-02-13:38:
+    Typed operations that do not send stdin should not open a stdin pipe, because fast-exiting Git commands can close it before Node writes the empty payload. Operations that do send user-authored stdin must convert pipe failures into structured gxserver command failures instead of leaking child-process errors to clients or tests.
+    */
+    if (usesStdin) {
+      child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+        failAndTerminate({
+          code: "stdinFailed",
+          message: error.code === "EPIPE" ? "Typed operation stdin closed before input was accepted." : "Typed operation stdin write failed.",
+        });
+      });
+      child.stdin?.end(command.stdin);
+    }
+
+    const terminateChild = (signal: NodeJS.Signals): void => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return;
+      }
+      /*
+      CDXC:GxserverTypedOperations 2026-06-02-08:24:
+      Typed operation timeouts must stop the whole subprocess tree, not only the shell process. Detached POSIX children get their own process group so a fake git/script that starts a long-running child still returns a structured timeout within the bounded runtime.
+      */
+      if (process.platform !== "win32" && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // Fall through to the direct child kill for spawn races or platforms without process-group support.
+        }
+      }
+      child.kill(signal);
+    };
+
     const failAndTerminate = (nextFailure: GxserverTypedOperationFailure): void => {
       if (failure) {
         return;
       }
       failure = nextFailure;
       if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGTERM");
+        terminateChild("SIGTERM");
         killTimer = setTimeout(() => {
           if (child.exitCode === null && child.signalCode === null) {
-            child.kill("SIGKILL");
+            terminateChild("SIGKILL");
           }
         }, GXSERVER_TYPED_OPERATION_KILL_GRACE_MS);
         killTimer.unref();
@@ -245,7 +569,7 @@ async function runTypedCommand(
       options.signal?.addEventListener("abort", abort, { once: true });
     }
 
-    child.stdout.on("data", (chunk: Buffer) => {
+    child.stdout?.on("data", (chunk: Buffer) => {
       if (failure) {
         return;
       }
@@ -268,7 +592,7 @@ async function runTypedCommand(
       stdoutBytes = nextBytes;
       stdoutChunks.push(chunk);
     });
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr?.on("data", (chunk: Buffer) => {
       if (failure) {
         return;
       }
@@ -431,6 +755,50 @@ async function readBeadsIssuesJsonl(
   }
 }
 
+async function beadsStorageDirectoryExists(cwd: string): Promise<boolean> {
+  try {
+    const stats = await statFile(path.join(cwd, ".beads"));
+    return stats.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function countProjectFileLines(cwd: string, filePaths: readonly string[]): Promise<number> {
+  let total = 0;
+  for (const filePath of filePaths) {
+    total += await countProjectFileLineBreaks(cwd, filePath);
+  }
+  return total;
+}
+
+async function countProjectFileLineBreaks(cwd: string, filePath: string): Promise<number> {
+  const absolutePath = path.resolve(cwd, filePath);
+  if (!isPathInside(cwd, absolutePath)) {
+    throw new GxserverTypedOperationError("forbidden", "filePath must stay inside the project.");
+  }
+  return await new Promise<number>((resolve, reject) => {
+    let lines = 0;
+    const stream = createReadStream(absolutePath);
+    stream.on("data", (chunk: Buffer) => {
+      for (let index = 0; index < chunk.length; index += 1) {
+        if (chunk[index] === 10) {
+          lines += 1;
+        }
+      }
+    });
+    stream.on("error", (error: NodeJS.ErrnoException) => {
+      reject(
+        new GxserverTypedOperationError(
+          error.code === "ENOENT" ? "notFound" : "badRequest",
+          error.message || "Could not count project file lines.",
+        ),
+      );
+    });
+    stream.on("end", () => resolve(lines));
+  });
+}
+
 function buildBeadsUpdateArgs(params: GxserverRunBeadsActionParams): string[] {
   const args: string[] = [];
   if (params.status !== undefined) {
@@ -460,6 +828,51 @@ function buildBeadsUpdateArgs(params: GxserverRunBeadsActionParams): string[] {
     throw new GxserverTypedOperationError("badRequest", "Beads update requires at least one typed field.");
   }
   return args;
+}
+
+function buildBeadsCreateArgs(params: GxserverRunBeadsActionParams): string[] {
+  const args = [
+    "create",
+    "--title", normalizeRequiredText(params.title, "title"),
+    "--description", String(params.description ?? ""),
+    "--priority", normalizeRequiredText(params.priority ?? "2", "priority"),
+    "--type", "task",
+  ];
+  if (params.estimate !== undefined) {
+    args.push("--estimate", normalizeBeadsEstimate(params.estimate));
+  }
+  if (params.labels?.length) {
+    args.push("--labels", params.labels.map((label) => normalizeRequiredText(label, "label")).join(","));
+  }
+  const dependsOnId = typeof params.dependsOnId === "string" ? params.dependsOnId.trim() : "";
+  if (dependsOnId) {
+    args.push("--deps", `${normalizeBeadsDependencyType(params.depType)}:${normalizeIssueId(dependsOnId)}`);
+  }
+  args.push("--json");
+  return args;
+}
+
+function buildBeadsSetLabelArgs(labels: readonly string[] | undefined): string[] {
+  const args: string[] = [];
+  for (const label of labels ?? []) {
+    args.push("--set-labels", normalizeRequiredText(label, "label"));
+  }
+  return args;
+}
+
+function normalizeBeadsEstimate(input: unknown): string {
+  if (!Number.isInteger(input) || Number(input) < 0) {
+    throw new GxserverTypedOperationError("badRequest", "estimate must be a non-negative integer.");
+  }
+  return String(input);
+}
+
+function normalizeBeadsDependencyType(input: unknown): string {
+  const depType = typeof input === "string" && input.trim() ? input.trim() : "blocks";
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(depType)) {
+    throw new GxserverTypedOperationError("badRequest", "depType contains unsupported characters.");
+  }
+  return depType;
 }
 
 function normalizeWorktreeTargetPath(input: unknown, context: GxserverTypedOperationContext): string {
@@ -510,10 +923,41 @@ function optionalRelativeFilePath(input: unknown): string[] {
   if (input === undefined || input === null || input === "") {
     return [];
   }
+  return [normalizeRelativeFilePath(input)];
+}
+
+function optionalRelativeFilePaths(input: unknown): string[] {
+  if (input === undefined || input === null) {
+    return [];
+  }
+  if (!Array.isArray(input)) {
+    throw new GxserverTypedOperationError("badRequest", "filePaths must be an array of relative paths.");
+  }
+  if (input.length > 500) {
+    throw new GxserverTypedOperationError("badRequest", "filePaths exceeds the 500-file limit.");
+  }
+  return input.map((filePath) => normalizeRelativeFilePath(filePath));
+}
+
+function normalizeRelativeFilePath(input: unknown): string {
   if (typeof input !== "string" || path.isAbsolute(input) || input.split(/[\\/]/).includes("..")) {
     throw new GxserverTypedOperationError("badRequest", "filePath must be a relative path inside the project.");
   }
-  return [input];
+  const normalized = input.replaceAll("\\", "/").replace(/^\/+/u, "").trim();
+  if (!normalized) {
+    throw new GxserverTypedOperationError("badRequest", "filePath must be a relative path inside the project.");
+  }
+  return normalized;
+}
+
+function normalizeGitCommitMessage(subjectInput: unknown, bodyInput: unknown): string {
+  const subject = normalizeRequiredText(subjectInput, "messageSubject");
+  const body = typeof bodyInput === "string" ? bodyInput.trim() : "";
+  const message = body ? `${subject}\n\n${body}` : subject;
+  if (Buffer.byteLength(message, "utf8") > 64 * 1024) {
+    throw new GxserverTypedOperationError("badRequest", "Commit message exceeds the 65536-byte limit.");
+  }
+  return `${message}\n`;
 }
 
 function normalizeGitRef(input: unknown, field: string): string {
@@ -555,21 +999,105 @@ function normalizeRequiredText(input: unknown, field: string): string {
 }
 
 function normalizeGitAction(action: unknown): GxserverGitAction {
-  if (action === "branch" || action === "diff" || action === "list" || action === "status") {
+  if (
+    action === "addAll" ||
+    action === "branch" ||
+    action === "commit" ||
+    action === "countFileLines" ||
+    action === "checkout" ||
+    action === "checkoutNewBranch" ||
+    action === "diff" ||
+    action === "diffCached" ||
+    action === "diffCachedNoExt" ||
+    action === "diffCachedStat" ||
+    action === "diffNoExt" ||
+    action === "diffNoIndexAgainstNull" ||
+    action === "diffNumstat" ||
+    action === "getOriginRemoteUrl" ||
+    action === "isInsideWorkTree" ||
+    action === "isUntrackedFile" ||
+    action === "list" ||
+    action === "listRemotes" ||
+    action === "listUntracked" ||
+    action === "merge" ||
+    action === "push" ||
+    action === "pushSetUpstream" ||
+    action === "status" ||
+    action === "statusPorcelain" ||
+    action === "upstreamCounts" ||
+    action === "verifyRef"
+  ) {
     return action;
   }
   throw new GxserverTypedOperationError("badRequest", `Unsupported Git action: ${String(action)}`);
 }
 
+function normalizeGitHubAction(action: unknown): GxserverGitHubAction {
+  if (action === "prCreateFill" || action === "prView" || action === "version") {
+    return action;
+  }
+  throw new GxserverTypedOperationError("badRequest", `Unsupported GitHub action: ${String(action)}`);
+}
+
 function normalizeWorktreeAction(action: unknown): GxserverWorktreeAction {
-  if (action === "create" || action === "list" || action === "remove" || action === "switch") {
+  if (
+    action === "create" ||
+    action === "list" ||
+    action === "pathExists" ||
+    action === "prune" ||
+    action === "remove" ||
+    action === "switch"
+  ) {
     return action;
   }
   throw new GxserverTypedOperationError("badRequest", `Unsupported worktree action: ${String(action)}`);
 }
 
+async function pathExists(candidatePath: string): Promise<boolean> {
+  try {
+    await statFile(candidatePath);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string";
+}
+
 function normalizeBeadsAction(action: unknown): GxserverBeadsAction {
-  if (action === "board" || action === "close" || action === "comment" || action === "list" || action === "show" || action === "update") {
+  if (
+    action === "addLabel" ||
+    action === "board" ||
+    action === "close" ||
+    action === "comment" ||
+    action === "configGet" ||
+    action === "configGetIssuePrefix" ||
+    action === "configSet" ||
+    action === "configSetIssuePrefix" ||
+    action === "create" ||
+    action === "delete" ||
+    action === "depAdd" ||
+    action === "depRemove" ||
+    action === "list" ||
+    action === "listAllLabels" ||
+    action === "removeLabel" ||
+    action === "search" ||
+    action === "setLabels" ||
+    action === "show" ||
+    action === "status" ||
+    action === "storageExists" ||
+    action === "update" ||
+    action === "updateDescription" ||
+    action === "updateEstimate" ||
+    action === "updatePriority" ||
+    action === "updateStatus" ||
+    action === "updateTitle"
+  ) {
     return action;
   }
   throw new GxserverTypedOperationError("badRequest", `Unsupported Beads action: ${String(action)}`);

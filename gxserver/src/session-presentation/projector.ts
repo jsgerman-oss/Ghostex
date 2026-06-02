@@ -77,6 +77,10 @@ export function projectGxserverPresentationSnapshot(
 }
 
 export function projectPresentationProject(project: GxserverProjectDomainState): GxserverPresentationProject {
+  /*
+  CDXC:GxserverPresentationProjects 2026-06-02-08:16:
+  Worktree project rows are shared gxserver presentation state. Include worktree parent metadata in the presentation project so clients can render a newly added checkout under its main project from the projectAdded delta without waiting for a separate domain-project refresh.
+  */
   return {
     createdAt: project.createdAt,
     groupIds: [defaultGroupId(project.projectId)],
@@ -87,6 +91,7 @@ export function projectPresentationProject(project: GxserverProjectDomainState):
     sortKey: projectSortKey(project),
     title: project.name,
     updatedAt: project.updatedAt,
+    ...(project.worktree ? { worktree: project.worktree } : {}),
   };
 }
 

@@ -1,5 +1,3 @@
-import type { GxserverDomainRepository } from "../domain-state.js";
-import { resolveSessionTransitionFocusTarget } from "./focus-target.js";
 import type {
   GxserverSessionDomainState,
   GxserverSessionTransitionParams,
@@ -7,31 +5,24 @@ import type {
 } from "../../protocol/index.js";
 
 export type ApplySessionTransitionOptions = {
-  isLiveProjectSession: (session: GxserverSessionDomainState) => boolean | Promise<boolean>;
   params: GxserverSessionTransitionParams;
-  repository: GxserverDomainRepository;
   transitionSession: (params: GxserverSessionTransitionParams) => Promise<Record<string, unknown> & {
     session: GxserverSessionDomainState;
   }>;
 };
 
 export async function applySessionTransition({
-  isLiveProjectSession,
   params,
-  repository,
   transitionSession,
 }: ApplySessionTransitionOptions): Promise<GxserverSessionTransitionResult> {
+  /*
+  CDXC:ProjectSidebarOwnership 2026-06-02-13:01:
+  Session transition stays in gxserver only for the shared close/sleep lifecycle mutation. Native owns local focus and selected-tab decisions, so this service intentionally does not inspect client visual ordering or compute a focus target.
+  */
   const transition = await transitionSession(params);
-  const sessions = repository.listSessions(params.projectId);
-  const focusTarget = await resolveSessionTransitionFocusTarget({
-    isLiveProjectSession,
-    params,
-    sessions,
-  });
 
   return {
     action: params.action,
-    focusTarget,
     session: transition.session,
     transition,
   };

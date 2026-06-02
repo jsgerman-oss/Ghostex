@@ -24,6 +24,7 @@ import {
 } from "./auth.js";
 import { GxserverDomainRepository, GxserverDomainStateError } from "./domain-state.js";
 import { GxserverEventHub } from "./events.js";
+import { resolveGitRootForExistingDirectory } from "./git-root.js";
 import { detectRegisteredGitWorktreeMetadata } from "./git-worktrees.js";
 import { isGxserverProjectId, isGxserverSessionId } from "./ids.js";
 import { fetchServerHealth } from "./http-client.js";
@@ -75,6 +76,7 @@ import {
   GxserverTypedOperationError,
   runBeadsAction,
   runGitAction,
+  runGitHubAction,
   runWorktreeAction,
 } from "./typed-operations.js";
 import {
@@ -116,10 +118,13 @@ import type {
   GxserverProviderProbeResult,
   GxserverPresentationSearchParams,
   GxserverPresentationDelta,
+  GxserverResolveGitRootForPathResult,
+  GxserverRemoveSessionParams,
   GxserverRunBeadsActionParams,
   GxserverRepositoryCloneJobRpcResult,
   GxserverRepositoryClonePreviewRpcResult,
   GxserverRunGitActionParams,
+  GxserverRunGitHubActionParams,
   GxserverRunWorktreeActionParams,
   GxserverRpcSuccessResponse,
   GxserverRuntimeMetadata,
@@ -623,6 +628,30 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
   }
 
   /*
+  CDXC:OSIntegration 2026-06-02-12:14:
+  Native owns local open-file/open-folder routing, but gxserver owns repository fact lookup. Keep this arbitrary-path Git-root probe local-only so remote clients cannot enumerate or test paths outside registered projects.
+  */
+  if (endpoint.path === "/api/resolveGitRootForPath") {
+    try {
+      const result = handleResolveGitRootForPathEndpoint(body);
+      sendJson(response, 200, {
+        ok: true,
+        product: GXSERVER_PRODUCT,
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        requestId,
+        result,
+      });
+    } catch (caught) {
+      if (caught instanceof GxserverProjectPathError) {
+        sendJson(response, statusForOperationError(caught.code), createRpcError(caught.code, caught.message, requestId));
+      } else {
+        throw caught;
+      }
+    }
+    return endpoint.path;
+  }
+
+  /*
   CDXC:GxserverApi 2026-05-30-17:30:
   Domain-state endpoints run after gxserver-5 auth, protocol-version, listener-permission, logging, and event semantics. zmx lifecycle and typed Git/worktree/Beads operations have their own handlers so project/session persistence cannot accidentally accept process-execution payloads or lifecycle commands.
   */
@@ -728,6 +757,16 @@ function dispatchDomainStateEndpoint(
         projectId: project.projectId,
         reason: "add-project-path",
         type: "projectAdded",
+      });
+      return { project };
+    }
+    case "/api/removeProject": {
+      const projectId = readProjectId(params);
+      const project = repository.removeProject(projectId);
+      schedulePresentationProjectDelta(runtime, db, repository, {
+        projectId,
+        reason: "remove-project",
+        type: "projectUpdated",
       });
       return { project };
     }
@@ -1022,22 +1061,20 @@ function dispatchDomainStateEndpoint(
     case "/api/listSessions":
       scheduleAgentTitleMetadataChecksForSessions(runtime, repository, repository.listSessions(readOptionalProjectId(params)), "list-sessions");
       return { sessions: repository.listSessions(readOptionalProjectId(params)) };
-    case "/api/readClientLayout":
-      return {
-        layout:
-          repository.readClientLayout({
-            clientId: String(params.clientId ?? ""),
-            projectId: readOptionalProjectId(params),
-          }) ?? null,
-      };
-    case "/api/updateClientLayout":
-      return {
-        layout: repository.updateClientLayout({
-          clientId: String(params.clientId ?? ""),
-          layout: isRecord(params.layout) ? params.layout : {},
-          projectId: readOptionalProjectId(params),
-        }),
-      };
+    case "/api/removeSession": {
+      const removeParams = params as unknown as GxserverRemoveSessionParams;
+      const session = repository.removeSession(removeParams);
+      /*
+      CDXC:PreviousSessions 2026-06-02-11:24:
+      Previous-session delete/restore cleanup must mutate gxserver session history and notify subscribed clients. Reuse the normal sessionRemoved presentation delta so native local-first deletion reconciles through the shared websocket feed instead of staying hidden only in WK memory.
+      */
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: session.projectId,
+        reason: removeParams.reason ?? "remove-session",
+        sessionId: session.sessionId,
+      });
+      return { session };
+    }
     default:
       throw new GxserverDomainStateError("notFound", `${endpointPath} is not a gxserver domain-state endpoint.`);
   }
@@ -1182,9 +1219,6 @@ function schedulePresentationProjectDelta(
     type: "projectAdded" | "projectUpdated";
   },
 ): void {
-  if (runtime.eventHub.server.clients.size === 0) {
-    return;
-  }
   const delta = buildPresentationProjectDelta(repository, input.projectId, input.type);
   if (!delta) {
     return;
@@ -1192,6 +1226,9 @@ function schedulePresentationProjectDelta(
   /*
   CDXC:GxserverPresentationProjects 2026-06-01-21:14:
   Add Project is user-visible sidebar state, not only database state. Publish a project presentation delta immediately when a path is registered or updated so connected clients can render empty project rows before any session delta exists.
+
+  CDXC:GxserverPresentationProjects 2026-06-02-15:04:
+  Project mutations must advance presentation revision even when no client is currently connected. WebSocket broadcast is already a no-op without clients, while the stored revision lets reconnecting clients detect that project presentation changed without native refetch fallbacks.
   */
   const revision = incrementPresentationRevision(db);
   runtime.eventHub.broadcast({
@@ -1223,11 +1260,12 @@ function schedulePresentationSessionDelta(
     sessionId: GxserverSessionId;
   },
 ): void {
-  if (runtime.eventHub.server.clients.size === 0) {
-    return;
-  }
   const delta = buildPresentationSessionDelta(repository, input.projectId, input.sessionId);
   if (!delta) {
+    return;
+  }
+  if (runtime.eventHub.server.clients.size === 0) {
+    recordPresentationSessionRevisionWithoutClients(runtime, input, delta);
     return;
   }
   getPresentationDeltaCoalescer(runtime).schedule(
@@ -1288,6 +1326,47 @@ function schedulePresentationSessionDelta(
   );
 }
 
+function recordPresentationSessionRevisionWithoutClients(
+  runtime: GxserverApiRuntime,
+  input: {
+    projectId: GxserverProjectId;
+    reason: string;
+    sessionId: GxserverSessionId;
+  },
+  delta: GxserverPresentationDelta,
+): void {
+  const deltaJson = stringifyPresentationDelta(delta);
+  const key = `${input.projectId}/${input.sessionId}`;
+  const previousDeltaJson = getPresentationLastDeltaJsonBySessionKey(runtime).get(key);
+  if (previousDeltaJson === deltaJson) {
+    return;
+  }
+  getPresentationLastDeltaJsonBySessionKey(runtime).set(key, deltaJson);
+  const db = openGxserverDatabase(runtime.paths);
+  try {
+    /*
+    CDXC:GxserverPresentationSessions 2026-06-02-19:31:
+    Session mutations are shared presentation state even when no macOS sidebar is currently subscribed. Advance the durable presentation revision for the latest projected session delta so reconnecting clients can observe that session state changed through gxserver snapshots instead of relying on native refetch or stale WK project storage.
+    */
+    const revision = incrementPresentationRevision(db);
+    void runtime.logger.log({
+      details: {
+        deltaType: delta.type,
+        reason: input.reason,
+        revision,
+        subscribers: 0,
+      },
+      event: "session-presentation.deltaRecorded",
+      level: "debug",
+      projectId: input.projectId,
+      serverId: runtime.metadata.serverId,
+      sessionId: input.sessionId,
+    });
+  } finally {
+    db.close();
+  }
+}
+
 function buildPresentationProjectDelta(
   repository: GxserverDomainRepository,
   projectId: GxserverProjectId,
@@ -1301,6 +1380,7 @@ function buildPresentationProjectDelta(
     };
   }
   return {
+    domainProject: project,
     project: projectPresentationProject(project),
     type,
   };
@@ -1530,9 +1610,11 @@ async function handleTypedOperationEndpoint(
     const result =
       endpointPath === "/api/runGitAction"
         ? await runGitAction(params as unknown as GxserverRunGitActionParams, context)
-        : endpointPath === "/api/runWorktreeAction"
-          ? await runWorktreeAction(params as unknown as GxserverRunWorktreeActionParams, context)
-          : await runBeadsAction(params as unknown as GxserverRunBeadsActionParams, context);
+        : endpointPath === "/api/runGitHubAction"
+          ? await runGitHubAction(params as unknown as GxserverRunGitHubActionParams, context)
+          : endpointPath === "/api/runWorktreeAction"
+            ? await runWorktreeAction(params as unknown as GxserverRunWorktreeActionParams, context)
+            : await runBeadsAction(params as unknown as GxserverRunBeadsActionParams, context);
     await runtime.logger.log({
       details: {
         action: result.action,
@@ -1630,7 +1712,7 @@ async function dispatchZmxLifecycleEndpoint(
         : { attach: normalizedAttach };
     }
     case "/api/transitionSession": {
-      const result = await dispatchSessionTransitionEndpoint(runtime, repository, normalizeSessionTransitionParams(params), requestId);
+      const result = await dispatchSessionTransitionEndpoint(runtime, repository, normalizeSessionTransitionParams(params));
       schedulePresentationSessionDelta(runtime, repository, {
         projectId: result.session.projectId,
         reason: "transition-session",
@@ -1681,11 +1763,9 @@ async function dispatchSessionTransitionEndpoint(
   runtime: GxserverApiRuntime,
   repository: GxserverDomainRepository,
   params: GxserverSessionTransitionParams,
-  requestId: string,
 ): Promise<GxserverSessionTransitionResult> {
   return applySessionTransition({
     params,
-    repository,
     transitionSession: async (transitionParams) => {
       const { kill, session } = await killAndCacheSessionProvider(
         runtime,
@@ -1698,18 +1778,6 @@ async function dispatchSessionTransitionEndpoint(
         transitionParams.action === "sleep" ? "sleeping" : "stopped",
       );
       return { kill, session };
-    },
-    isLiveProjectSession: async (session) => {
-      const { probe } = await probeAndCacheSessionProvider(
-        runtime,
-        repository,
-        {
-          projectId: session.projectId,
-          reason: `transitionSessionFocus:${requestId}`,
-          sessionId: session.sessionId,
-        },
-      );
-      return probe.lifecycleState === "exists";
     },
   });
 }
@@ -2057,6 +2125,7 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/listProjects" ||
     path === "/api/readProjectStatus" ||
     path === "/api/addProjectPath" ||
+    path === "/api/removeProject" ||
     path === "/api/createSession" ||
     path === "/api/createAgentSession" ||
     path === "/api/readAgentLaunchPlan" ||
@@ -2070,13 +2139,17 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/listPreviousSessions" ||
     path === "/api/updateSession" ||
     path === "/api/listSessions" ||
-    path === "/api/readClientLayout" ||
-    path === "/api/updateClientLayout"
+    path === "/api/removeSession"
   );
 }
 
 function isTypedOperationEndpoint(path: GxserverEndpointPath): boolean {
-  return path === "/api/runGitAction" || path === "/api/runWorktreeAction" || path === "/api/runBeadsAction";
+  return (
+    path === "/api/runGitAction" ||
+    path === "/api/runGitHubAction" ||
+    path === "/api/runWorktreeAction" ||
+    path === "/api/runBeadsAction"
+  );
 }
 
 function isRepositoryCloneEndpoint(path: GxserverEndpointPath): boolean {
@@ -2086,6 +2159,11 @@ function isRepositoryCloneEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/readRepositoryCloneJob" ||
     path === "/api/cancelRepositoryCloneJob"
   );
+}
+
+function handleResolveGitRootForPathEndpoint(body: unknown): GxserverResolveGitRootForPathResult {
+  const params = readDomainRpcParams(body);
+  return { gitRoot: resolveGitRootForExistingDirectory(params.path) };
 }
 
 function isZmxLifecycleEndpoint(path: GxserverEndpointPath): boolean {

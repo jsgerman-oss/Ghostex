@@ -14,13 +14,13 @@ import {
   resolveSessionSurface,
 } from "./session-presentation/index.js";
 import type {
-  GxserverClientLayoutState,
   GxserverCreateProjectParams,
   GxserverCreateSessionParams,
   GxserverDomainLifecycleState,
   GxserverProjectDomainState,
   GxserverProjectId,
   GxserverProviderLifecycleState,
+  GxserverRemoveSessionParams,
   GxserverServerId,
   GxserverSessionDomainState,
   GxserverSessionId,
@@ -59,7 +59,10 @@ export const GXSERVER_DOMAIN_STATE_JSON_MAX_DEPTH = 10;
 
 /*
 CDXC:GxserverDomainState 2026-05-30-17:30:
-The domain repository stores only state that must follow users across Ghostex clients: project/session identity, provider lifecycle metadata, launch/runtime-affecting settings, custom agents/commands, completion/attention rules, pinned/favorite flags, and hidden previous-session restore links. Visual layout and pane chrome stay in separate client-layout rows so normal UI state cannot corrupt shared records.
+The domain repository stores only state that must follow users across Ghostex clients: project/session identity, provider lifecycle metadata, launch/runtime-affecting settings, custom agents/commands, completion/attention rules, pinned/favorite flags, and hidden previous-session restore links. Visual layout, pane chrome, selected tab, and focus state stay out of gxserver tables and APIs because those are macOS current-window responsibilities after the ownership split.
+
+CDXC:GxserverDomainState 2026-06-02-15:10:
+The previous client-layout table/API idea was removed during the gxserver/native split. Do not reintroduce gxserver rows for pane/tab layout; keep that state in native current-window storage while gxserver owns only the shared project/session/worktree graph.
 
 CDXC:GxserverDomainState 2026-05-30-20:20:
 Project/session JSON blobs are shared durable state and appear in list/read responses, so create/update APIs must reject oversized or deeply nested runtimeSettings, previousSessionHistory, launchSettings, providerState, and related JSON columns before SQLite persistence. Use the same 1,000,000-character and depth-10 envelope as first-run migration, but reject live API writes instead of silently truncating user-owned state.
@@ -160,6 +163,21 @@ export class GxserverDomainRepository {
     return row ? fromProjectRow(row) : undefined;
   }
 
+  removeProject(projectId: GxserverProjectId): GxserverProjectDomainState {
+    return this.#db.transaction((id: GxserverProjectId) => {
+      const current = this.getProject(id);
+      if (!current) {
+        throw new GxserverDomainStateError("notFound", `Project ${id} does not exist.`);
+      }
+      /*
+      CDXC:ProjectSidebarOwnership 2026-06-02-08:24:
+      Project removal is a shared gxserver mutation. Delete the canonical project row here and let SQLite cascade sessions so clients do not keep removing shared project inventory from macOS-only state.
+      */
+      this.#db.prepare("DELETE FROM projects WHERE projectId = ?").run(id);
+      return current;
+    })(projectId);
+  }
+
   createSession(params: GxserverCreateSessionDomainParams): GxserverSessionDomainState {
     return this.#db.transaction((input: GxserverCreateSessionDomainParams) => {
       if (!this.getProject(input.projectId)) {
@@ -248,41 +266,24 @@ export class GxserverDomainRepository {
     return row ? fromSessionRow(this.#serverId, row) : undefined;
   }
 
-  updateClientLayout(input: { clientId: string; layout: JsonObject; projectId?: GxserverProjectId }): GxserverClientLayoutState {
-    const clientId = normalizeRequiredText(input.clientId, "clientId");
-    const projectId = input.projectId;
-    if (projectId !== undefined && !isGxserverProjectId(projectId)) {
-      throw new GxserverDomainStateError("badRequest", `Invalid gxserver project ID: ${String(projectId)}.`);
-    }
-    const layout = normalizeObject(input.layout);
-    const updatedAt = this.#now();
-    this.#db
-      .prepare(
-        `INSERT INTO client_layouts (clientId, projectId, layoutJson, updatedAt)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(clientId, projectId) DO UPDATE SET layoutJson = excluded.layoutJson, updatedAt = excluded.updatedAt`,
-      )
-      .run(clientId, projectId ?? "", stringifyJson(layout), updatedAt);
-    return { clientId, layout, ...(projectId ? { projectId } : {}), updatedAt };
-  }
-
-  readClientLayout(input: { clientId: string; projectId?: GxserverProjectId }): GxserverClientLayoutState | undefined {
-    const clientId = normalizeRequiredText(input.clientId, "clientId");
-    const projectId = input.projectId;
-    if (projectId !== undefined && !isGxserverProjectId(projectId)) {
-      throw new GxserverDomainStateError("badRequest", `Invalid gxserver project ID: ${String(projectId)}.`);
-    }
-    const row = this.#db
-      .prepare<[string, string], ClientLayoutRow>("SELECT * FROM client_layouts WHERE clientId = ? AND projectId = ?")
-      .get(clientId, projectId ?? "");
-    return row
-      ? {
-          clientId: row.clientId,
-          layout: parseObject(row.layoutJson, "layoutJson", "clientLayout", `${row.clientId}/${row.projectId || "global"}`),
-          ...(row.projectId ? { projectId: row.projectId as GxserverProjectId } : {}),
-          updatedAt: row.updatedAt,
-        }
-      : undefined;
+  removeSession(params: GxserverRemoveSessionParams): GxserverSessionDomainState {
+    return this.#db.transaction((input: GxserverRemoveSessionParams) => {
+      const current = this.getSession(input.projectId, input.sessionId);
+      if (!current) {
+        throw new GxserverDomainStateError(
+          "notFound",
+          `Session ${input.projectId}/${input.sessionId} does not exist.`,
+        );
+      }
+      /*
+      CDXC:PreviousSessions 2026-06-02-11:24:
+      Previous-session rows are gxserver-owned stopped session records after the cutover. Delete them from the domain repository so modal delete/restore cleanup cannot keep a native-only hidden history list that reappears on the next gxserver query.
+      */
+      this.#db
+        .prepare("DELETE FROM sessions WHERE projectId = ? AND sessionId = ?")
+        .run(input.projectId, input.sessionId);
+      return current;
+    })(params);
   }
 
   #existingProjectIds(): ReadonlySet<string> {
@@ -550,13 +551,6 @@ interface SessionRow {
   zmxName: string;
 }
 
-interface ClientLayoutRow {
-  clientId: string;
-  layoutJson: string;
-  projectId: string;
-  updatedAt: string;
-}
-
 function toProjectRow(project: GxserverProjectDomainState): ProjectRow {
   return {
     attentionRulesJson: stringifyDomainJsonField("attentionRules", project.attentionRules),
@@ -814,7 +808,7 @@ function assertDomainJsonDepth(field: DomainJsonField, value: unknown, depth: nu
   }
 }
 
-function parseObject(value: string, column: string, rowKind: "clientLayout" | "project" | "session", rowId: string): JsonObject {
+function parseObject(value: string, column: string, rowKind: "project" | "session", rowId: string): JsonObject {
   const parsed = parseJsonColumn(value, column, rowKind, rowId);
   if (!isRecord(parsed)) {
     throw corruptJsonColumn(column, rowKind, rowId, "expected a JSON object");
@@ -855,7 +849,7 @@ function parseStringArray(value: string, column: string, rowKind: "project", row
 function parseJsonColumn(
   value: string,
   column: string,
-  rowKind: "clientLayout" | "project" | "session",
+  rowKind: "project" | "session",
   rowId: string,
 ): unknown {
   try {
@@ -868,7 +862,7 @@ function parseJsonColumn(
 
 function corruptJsonColumn(
   column: string,
-  rowKind: "clientLayout" | "project" | "session",
+  rowKind: "project" | "session",
   rowId: string,
   detail: string,
 ): GxserverDomainStateError {

@@ -142,14 +142,6 @@ export const GxserverStorageMigrations: readonly GxserverMigration[] = [
       CREATE INDEX IF NOT EXISTS idx_sessions_project_updated
         ON sessions(projectId, updatedAt);
 
-      CREATE TABLE IF NOT EXISTS client_layouts (
-        clientId TEXT NOT NULL,
-        projectId TEXT NOT NULL DEFAULT '',
-        layoutJson TEXT NOT NULL,
-        updatedAt TEXT NOT NULL,
-        PRIMARY KEY (clientId, projectId)
-      );
-
       PRAGMA user_version = 2;
     `,
   },
@@ -160,7 +152,10 @@ CDXC:GxserverStorage 2026-05-30-14:16:
 `state.db` starts with an idempotent SQLite migration framework and only foundation tables. Project/session domain records, state import, and API query tables belong to later beads; this layer provides durable metadata and ID allocation plumbing without prebuilding those domains.
 
 CDXC:GxserverDomainState 2026-05-30-17:30:
-gxserver owns shared project/session metadata: stable P/G IDs, zmx names, lifecycle/provider state, pinned/favorite, custom agents/commands/order, previous-session history links, launch/runtime settings, completion/attention rules, and worktree/Git/project-board launch config. Client-local pane/layout/chrome state is stored in `client_layouts` so UI round-trips cannot overwrite shared domain records.
+gxserver owns shared project/session metadata: stable P/G IDs, zmx names, lifecycle/provider state, pinned/favorite, custom agents/commands/order, previous-session history links, launch/runtime settings, completion/attention rules, and worktree/Git/project-board launch config.
+
+CDXC:ProjectSidebarOwnership 2026-06-02-14:01:
+Client-local pane, tab, and chrome layout belongs to the macOS app after the ownership split. Do not create a gxserver client-layout table or HTTP API; keeping layout out of gxserver prevents selected tab/pane state from becoming shared daemon state.
 */
 export async function initializeGxserverStorage(paths: GxserverPaths): Promise<GxserverStorageInitResult> {
   await ensureGxserverStorageLayout(paths);
