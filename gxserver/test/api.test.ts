@@ -61,6 +61,66 @@ test("minimal health is unauthenticated and non-health APIs require auth", async
   });
 });
 
+test("agent settings API owns inherited Accept All launch policy", async () => {
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    const project = (
+      await requestJson(baseUrl, "/api/createProject", {
+        body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      })
+    ).body.result.project;
+
+    const initialSettings = await requestJson(baseUrl, "/api/readAgentSettings", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(initialSettings.status, 200);
+    assert.equal(initialSettings.body.result.isPersisted, false);
+    assert.equal(initialSettings.body.result.settings.agentAcceptAllEnabled, true);
+
+    const initialPlan = await requestJson(baseUrl, "/api/readAgentLaunchPlan", {
+      body: {
+        params: { agentId: "codex", projectId: project.projectId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(initialPlan.body.result.plan.command, "codex --yolo");
+
+    const updatedSettings = await requestJson(baseUrl, "/api/updateAgentSettings", {
+      body: {
+        params: { agentAcceptAllEnabled: false },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(updatedSettings.status, 200);
+    assert.equal(updatedSettings.body.result.settings.agentAcceptAllEnabled, false);
+
+    const persistedSettings = await requestJson(baseUrl, "/api/readAgentSettings", {
+      body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+      method: "POST",
+      token,
+    });
+    assert.equal(persistedSettings.body.result.isPersisted, true);
+    assert.equal(persistedSettings.body.result.settings.agentAcceptAllEnabled, false);
+
+    const updatedPlan = await requestJson(baseUrl, "/api/readAgentLaunchPlan", {
+      body: {
+        params: { agentId: "codex", projectId: project.projectId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(updatedPlan.body.result.plan.command, "codex");
+  });
+});
+
 test("foreground gxserver process uses temporary HOME, writes daemon state, and stops only the control plane", async (t) => {
   /*
   CDXC:GxserverVerification 2026-05-30-18:37:
@@ -1022,7 +1082,7 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
         token,
       });
       assert.equal(launchPlan.status, 200);
-      assert.equal(launchPlan.body.result.plan.command, "codex");
+      assert.equal(launchPlan.body.result.plan.command, "codex --yolo");
 
       const resumePlan = await requestJson(baseUrl, "/api/readAgentResumePlan", {
         body: {
@@ -1910,6 +1970,79 @@ test("control-plane stop preserves zmx sessions", async () => {
       zmxLifecycle: fakeZmxLifecycle(calls, () => {
         throw new Error("control-plane stop must not probe or kill zmx");
       }),
+    },
+  );
+});
+
+test("stop-all kills tracked zmx sessions before stopping the control plane", async () => {
+  const calls: string[] = [];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      /*
+      CDXC:GxserverCli 2026-06-02-18:45:
+      stop-all is the user-requested destructive companion to control-plane
+      stop. It must kill tracked zmx sessions and persist stopped state before
+      shutdown, while ordinary stop keeps preserving zmx.
+      */
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: {
+            params: { name: "Ghostex", path: paths.rootDir },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const first = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: { projectId: project.projectId, title: "First" },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+      const second = (
+        await requestJson(baseUrl, "/api/createSession", {
+          body: {
+            params: { projectId: project.projectId, title: "Second" },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const response = await requestJson(baseUrl, "/api/control/stopAll", {
+        body: { protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual(response.body.result, {
+        attemptedSessions: 2,
+        failedSessions: 0,
+        killedSessions: 2,
+        skippedSessions: 0,
+        uniqueZmxSessions: 2,
+      });
+      assert.equal(calls.filter((script) => script.includes('kill "$zmx_session" --force')).length, 2);
+
+      const listed = await requestJson(baseUrl, "/api/listSessions", {
+        body: { params: {}, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      });
+      assert.equal(listed.status, 200);
+      const sessions = listed.body.result.sessions;
+      assert.equal(sessions.find((session: any) => session.sessionId === first.sessionId)?.lifecycleState, "stopped");
+      assert.equal(sessions.find((session: any) => session.sessionId === second.sessionId)?.lifecycleState, "stopped");
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle(calls, () => 0),
     },
   );
 });

@@ -40,7 +40,8 @@ import {
   getAgentStartupTextForSession,
   getAgentActivityStaleProjectionDelayMs,
   updateSessionActivitySettings,
-} from "./agent-lifecycle.js";
+} from "./agents/lifecycle.js";
+import { GxserverAgentSettingsRepository } from "./agents/settings.js";
 import { applyTerminalTitleEvent } from "./session-title/index.js";
 import { projectSessionTitle } from "./session-title/projection.js";
 import { applySessionTransition, normalizeSessionTransitionParams } from "./session-transition/index.js";
@@ -104,6 +105,7 @@ import { GxserverZmxTitleObserver } from "./zmx-title-observer.js";
 import type {
   GxserverAttachSessionMetadataParams,
   GxserverAttachSessionMetadataResult,
+  GxserverAgentSettings,
   GxserverAuthToken,
   GxserverCreateProjectParams,
   GxserverCreateSessionParams,
@@ -140,6 +142,7 @@ import type {
   GxserverSessionStateEventResult,
   GxserverTerminalTitleEventParams,
   GxserverTerminalTitleEventResult,
+  GxserverUpdateAgentSettingsParams,
   GxserverUpdateProjectParams,
   GxserverUpdateAgentActivityParams,
   GxserverUpdateSessionParams,
@@ -670,6 +673,21 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
     return endpoint.path;
   }
 
+  if (endpoint.path === "/api/control/stopAll") {
+    const result = await stopAllTrackedZmxSessions(runtime);
+    sendJson(response, 200, {
+      ok: true,
+      product: GXSERVER_PRODUCT,
+      protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      requestId,
+      result,
+    });
+    setTimeout(() => {
+      runtime.shutdown();
+    }, 25).unref();
+    return endpoint.path;
+  }
+
   if (endpoint.path === "/api/control/stop") {
     sendJson(response, 200, {
       ok: true,
@@ -690,6 +708,98 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
     createRpcError("notImplemented", `${endpoint.path} is defined but not implemented in this milestone.`, requestId),
   );
   return endpoint.path;
+}
+
+async function stopAllTrackedZmxSessions(runtime: GxserverApiRuntime): Promise<Record<string, unknown>> {
+  /*
+  CDXC:GxserverCli 2026-06-02-18:45:
+  `stop-all` is intentionally separate from `stop`: it is the explicit
+  destructive path that kills gxserver-tracked zmx sessions before shutting down
+  the control plane. Keep this local-only control API on existing zmx lifecycle
+  helpers so provider state, failed-kill handling, and logging match ordinary
+  session kill requests.
+  */
+  const db = openGxserverDatabase(runtime.paths);
+  try {
+    const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
+    const sessions = repository.listSessions().filter(shouldStopAllKillSession);
+    if (sessions.length === 0) {
+      return {
+        attemptedSessions: 0,
+        failedSessions: 0,
+        killedSessions: 0,
+        skippedSessions: repository.listSessions().length,
+      };
+    }
+
+    const zmx = await (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)();
+    const killByZmxName = new Map<string, Promise<GxserverProviderKillResult>>();
+    for (const session of sessions) {
+      const zmxName = providerZmxSessionName(session);
+      if (!killByZmxName.has(zmxName)) {
+        killByZmxName.set(
+          zmxName,
+          killZmxSession({
+            runZsh: runtime.zmxLifecycle?.runZsh,
+            sessionName: zmxName,
+            zmxExecutablePath: zmx.executablePath,
+          }),
+        );
+      }
+    }
+
+    let failedSessions = 0;
+    let killedSessions = 0;
+    for (const session of sessions) {
+      const zmxName = providerZmxSessionName(session);
+      const kill = await killByZmxName.get(zmxName)!;
+      const timestamp = new Date().toISOString();
+      const updated = repository.updateSession({
+        lifecycleState: kill.killed ? "stopped" : "unknown",
+        projectId: session.projectId,
+        providerState: kill.killed
+          ? missingProviderStatePatch(session, timestamp)
+          : failedKillProviderStatePatch(session, kill, timestamp),
+        sessionId: session.sessionId,
+      });
+      if (kill.killed) {
+        killedSessions += 1;
+      } else {
+        failedSessions += 1;
+      }
+      await runtime.logger.log({
+        event: kill.killed ? "zmx.stopAll.kill.completed" : "zmx.stopAll.kill.failed",
+        level: kill.killed ? "info" : "warn",
+        projectId: session.projectId,
+        serverId: runtime.metadata.serverId,
+        sessionId: session.sessionId,
+        details: {
+          exitCode: kill.exitCode,
+          zmxName,
+        },
+        ...(kill.error ? { error: kill.error } : {}),
+      });
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: updated.projectId,
+        reason: "stop-all",
+        sessionId: updated.sessionId,
+      });
+    }
+    scheduleZmxTitleObserverSync(runtime, repository, "stop-all");
+    return {
+      attemptedSessions: sessions.length,
+      failedSessions,
+      killedSessions,
+      skippedSessions: repository.listSessions().length - sessions.length,
+      uniqueZmxSessions: killByZmxName.size,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+function shouldStopAllKillSession(session: GxserverSessionDomainState): boolean {
+  return session.lifecycleState !== "stopped" && session.providerState.lifecycleState !== "missing";
 }
 
 function handleDomainStateEndpoint(
@@ -721,7 +831,16 @@ function dispatchDomainStateEndpoint(
   endpointPath: GxserverEndpointPath,
   params: Record<string, unknown>,
 ): Record<string, unknown> {
+  const agentSettingsRepository = new GxserverAgentSettingsRepository(db);
   switch (endpointPath) {
+    case "/api/readAgentSettings": {
+      return agentSettingsRepository.readWithMetadata() as unknown as Record<string, unknown>;
+    }
+    case "/api/updateAgentSettings": {
+      return {
+        settings: agentSettingsRepository.update(params as unknown as GxserverUpdateAgentSettingsParams),
+      };
+    }
     case "/api/createProject": {
       const project = repository.createProject(params as unknown as GxserverCreateProjectParams);
       schedulePresentationProjectDelta(runtime, db, repository, {
@@ -774,7 +893,7 @@ function dispatchDomainStateEndpoint(
     case "/api/createAgentSession": {
       const createParams =
         endpointPath === "/api/createAgentSession"
-          ? normalizeCreateAgentSessionParams(repository, params)
+          ? normalizeCreateAgentSessionParams(repository, params, agentSettingsRepository.read())
           : normalizeCreateSessionParams(repository, params);
       const createdSession = repository.createSession(createParams);
       const presentation = applySessionStateEvent(repository, {
@@ -815,7 +934,7 @@ function dispatchDomainStateEndpoint(
         plan: buildProjectAgentLaunchPlan(project, {
           agentId,
           agentSessionId: readOptionalText(params.agentSessionId),
-        }),
+        }, agentSettingsRepository.read()),
       };
     }
     case "/api/readAgentResumePlan": {
@@ -832,7 +951,7 @@ function dispatchDomainStateEndpoint(
         );
       }
       return {
-        plan: buildAgentResumePlan(project, session),
+        plan: buildAgentResumePlan(project, session, agentSettingsRepository.read()),
         session,
       };
     }
@@ -1652,7 +1771,8 @@ async function handleZmxLifecycleEndpoint(
   const db = openGxserverDatabase(runtime.paths);
   try {
     const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
-    const result = await dispatchZmxLifecycleEndpoint(runtime, repository, endpointPath, params, requestId);
+    const agentSettings = new GxserverAgentSettingsRepository(db).read();
+    const result = await dispatchZmxLifecycleEndpoint(runtime, repository, endpointPath, params, requestId, agentSettings);
     return {
       ok: true,
       product: GXSERVER_PRODUCT,
@@ -1671,6 +1791,7 @@ async function dispatchZmxLifecycleEndpoint(
   endpointPath: GxserverEndpointPath,
   params: Record<string, unknown>,
   requestId: string,
+  agentSettings: GxserverAgentSettings,
 ): Promise<Record<string, unknown>> {
   switch (endpointPath) {
     case "/api/probeSessionProvider": {
@@ -1689,6 +1810,7 @@ async function dispatchZmxLifecycleEndpoint(
         repository,
         params as unknown as GxserverAttachSessionMetadataParams,
         requestId,
+        agentSettings,
       );
       const session =
         endpointPath === "/api/wakeSession" && !attach.restoreBlocked
@@ -1952,6 +2074,7 @@ async function createAttachSessionMetadata(
   repository: GxserverDomainRepository,
   params: GxserverAttachSessionMetadataParams,
   requestId: string,
+  agentSettings: GxserverAgentSettings,
 ): Promise<GxserverAttachSessionMetadataResult> {
   const lifecycle = readSessionLifecycleParams(params as unknown as Record<string, unknown>);
   const project = repository.getProject(lifecycle.projectId);
@@ -1976,7 +2099,7 @@ async function createAttachSessionMetadata(
   CDXC:GxserverTerminalWake 2026-06-01-12:07:
   Sleeping-session wake should let gxserver rebuild the real agent resume command from shared session metadata. A macOS renderer can legitimately pass an empty string when its legacy local resume builder has no text; treat blank startupText as absent instead of suppressing the server-owned resume plan.
   */
-  const startupText = normalizeOptionalStartupText(params.startupText) ?? getAgentStartupTextForSession(project, probedSession);
+  const startupText = normalizeOptionalStartupText(params.startupText) ?? getAgentStartupTextForSession(project, probedSession, agentSettings);
   const startupTextDisposition = decideStartupTextDisposition({
     providerState: probe.lifecycleState,
     startupText,
@@ -2121,6 +2244,8 @@ function requireSession(
 function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
   return (
     path === "/api/createProject" ||
+    path === "/api/readAgentSettings" ||
+    path === "/api/updateAgentSettings" ||
     path === "/api/updateProject" ||
     path === "/api/listProjects" ||
     path === "/api/readProjectStatus" ||
@@ -2274,13 +2399,14 @@ function readRequiredText(value: unknown, field: string): string {
 function normalizeCreateAgentSessionParams(
   repository: GxserverDomainRepository,
   params: Record<string, unknown>,
+  agentSettings: GxserverAgentSettings,
 ): GxserverCreateSessionDomainParams {
   const project = resolveCreateSessionProject(repository, params);
   return createAgentSessionParams(project, {
     ...(params as unknown as GxserverCreateSessionParams),
     kind: "agent",
     projectId: project.projectId,
-  }) as GxserverCreateSessionDomainParams;
+  }, agentSettings) as GxserverCreateSessionDomainParams;
 }
 
 function resolveCreateSessionProject(

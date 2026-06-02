@@ -3,8 +3,9 @@ import type {
   GxserverCreateSessionParams,
   GxserverProjectDomainState,
   GxserverAgentResumePlan,
+  GxserverAgentSettings,
   GxserverSessionDomainState,
-} from "../protocol/index.js";
+} from "../../protocol/index.js";
 import {
   appendCursorResumeFlag,
   getClaudeSessionReference,
@@ -13,16 +14,16 @@ import {
   getExactAgentSessionReference,
   getOpenCodeSessionReference,
   getPiSessionReference,
-} from "./agent-resume/identity.js";
-import { getTrustedAgentResumeTitle } from "./agent-resume/title.js";
-import { normalizeAgentActivityState } from "./session-status/index.js";
+} from "../agent-resume/identity.js";
+import { getTrustedAgentResumeTitle } from "../agent-resume/title.js";
+import { normalizeAgentActivityState } from "../session-status/index.js";
 
 export {
   applyAgentActivityTransition,
   getAgentActivityStaleProjectionDelayMs,
   getEffectiveAgentActivityState,
   updateSessionActivitySettings,
-} from "./session-status/index.js";
+} from "../session-status/index.js";
 
 export type GxserverAgentAcceptAllMode = "inherit" | "enabled" | "disabled";
 
@@ -188,6 +189,7 @@ export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverA
 export function buildProjectAgentLaunchPlan(
   project: GxserverProjectDomainState,
   input: Pick<GxserverAgentLaunchInput, "agentId" | "agentSessionId">,
+  agentSettings?: GxserverAgentSettings,
 ): GxserverAgentLaunchPlan {
   const agentConfig = resolveProjectAgentConfig(project, input.agentId, {});
   return buildAgentLaunchPlan({
@@ -195,7 +197,7 @@ export function buildProjectAgentLaunchPlan(
     agentId: input.agentId,
     agentSessionId: input.agentSessionId,
     command: normalizeText(agentConfig.command),
-    globalAcceptAllEnabled: readBoolean(project.launchSettings.agentAcceptAllEnabled ?? project.launchSettings.acceptAll),
+    globalAcceptAllEnabled: resolveGlobalAcceptAllEnabled(project, agentSettings),
     icon: normalizeText(agentConfig.icon),
   });
 }
@@ -203,6 +205,7 @@ export function buildProjectAgentLaunchPlan(
 export function createAgentSessionParams(
   project: GxserverProjectDomainState,
   params: GxserverCreateSessionParams,
+  agentSettings?: GxserverAgentSettings,
 ): GxserverCreateSessionParams {
   const agentId = normalizeText(params.agentId) ?? "codex";
   const launchSettings = normalizeObject(params.launchSettings);
@@ -215,7 +218,7 @@ export function createAgentSessionParams(
     command: normalizeText(agentConfig.command) ?? normalizeText(launchSettings.agentCommand),
     delayedSendDeadlineAt: normalizeText(launchSettings.delayedSendDeadlineAt),
     firstUserMessage: normalizeText(runtimeSettings.firstUserMessage),
-    globalAcceptAllEnabled: readBoolean(project.launchSettings.agentAcceptAllEnabled ?? project.launchSettings.acceptAll),
+    globalAcceptAllEnabled: resolveGlobalAcceptAllEnabled(project, agentSettings),
     icon: normalizeText(agentConfig.icon ?? launchSettings.icon),
   });
   return {
@@ -245,8 +248,9 @@ export function createAgentSessionParams(
 export function getAgentStartupTextForSession(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
+  agentSettings?: GxserverAgentSettings,
 ): string | undefined {
-  const resumeStartupText = buildAgentResumeStartupText(project, session);
+  const resumeStartupText = buildAgentResumeStartupText(project, session, agentSettings);
   if (resumeStartupText?.trim()) {
     return resumeStartupText;
   }
@@ -257,18 +261,20 @@ export function getAgentStartupTextForSession(
 export function buildAgentResumeStartupText(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
+  agentSettings?: GxserverAgentSettings,
 ): string | undefined {
-  return buildAgentResumePlan(project, session).startupText;
+  return buildAgentResumePlan(project, session, agentSettings).startupText;
 }
 
 export function buildAgentResumePlan(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
+  agentSettings?: GxserverAgentSettings,
 ): GxserverAgentResumePlan {
-  const input = toAgentResumeInput(project, session);
-  const primaryCommand = buildAgentResumeCommand(project, session);
-  const displayCommand = primaryCommand ? (buildAgentResumeCommand(project, session, { display: true }) ?? primaryCommand) : undefined;
-  const fallbackCommand = buildAgentResumeFallbackCommand(project, session);
+  const input = toAgentResumeInput(project, session, agentSettings);
+  const primaryCommand = buildAgentResumeCommand(project, session, {}, agentSettings);
+  const displayCommand = primaryCommand ? (buildAgentResumeCommand(project, session, { display: true }, agentSettings) ?? primaryCommand) : undefined;
+  const fallbackCommand = buildAgentResumeFallbackCommand(project, session, agentSettings);
   const startupText = primaryCommand
     ? `${wrapRestoredTerminalResumeCommand(primaryCommand, displayCommand ?? primaryCommand, fallbackCommand)}\r`
     : undefined;
@@ -290,8 +296,9 @@ export function buildAgentResumeCommand(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
   options: { display?: boolean } = {},
+  agentSettings?: GxserverAgentSettings,
 ): string | undefined {
-  const input = toAgentResumeInput(project, session);
+  const input = toAgentResumeInput(project, session, agentSettings);
   const agentId = normalizeRestorableAgentId(input.agentId);
   const agentCommand = input.agentCommand;
   const agentLookupCommand = input.agentLookupCommand ?? agentCommand;
@@ -354,8 +361,9 @@ export function buildAgentResumeCommand(
 export function buildAgentResumeFallbackCommand(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
+  agentSettings?: GxserverAgentSettings,
 ): string | undefined {
-  const input = toAgentResumeInput(project, session);
+  const input = toAgentResumeInput(project, session, agentSettings);
   const agentId = normalizeRestorableAgentId(input.agentId);
   const agentCommand = input.agentCommand;
   const agentLookupCommand = input.agentLookupCommand ?? agentCommand;
@@ -563,6 +571,7 @@ function wrapRestoredTerminalResumeCommand(
 function toAgentResumeInput(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,
+  agentSettings?: GxserverAgentSettings,
 ): GxserverAgentResumeInput {
   const agentConfig = resolveProjectAgentConfig(project, session.agentId ?? "", session.launchSettings);
   const baseAgentCommand =
@@ -575,7 +584,7 @@ function toAgentResumeInput(
         acceptAllMode: normalizeAcceptAllMode(agentConfig.acceptAllMode ?? session.launchSettings.acceptAllMode),
         agentId,
         command: baseAgentCommand,
-        globalAcceptAllEnabled: readBoolean(project.launchSettings.agentAcceptAllEnabled ?? project.launchSettings.acceptAll),
+        globalAcceptAllEnabled: resolveGlobalAcceptAllEnabled(project, agentSettings),
         icon: normalizeText(agentConfig.icon ?? session.launchSettings.icon),
       })
     : baseAgentCommand;
@@ -590,6 +599,19 @@ function toAgentResumeInput(
     title: session.title,
     titleSource: normalizeText(session.runtimeSettings.titleSource) ?? normalizeText(session.runtimeSettings.restoreTitleSource) ?? "user",
   };
+}
+
+function resolveGlobalAcceptAllEnabled(
+  project: GxserverProjectDomainState,
+  agentSettings?: GxserverAgentSettings,
+): boolean {
+  /*
+  CDXC:GxserverAgentSettings 2026-06-02-22:23:
+  Global Accept All resolves from gxserver daemon agent settings. Project launchSettings are a legacy migration fallback only for rows imported before the daemon-level settings record existed; new clients must read/write `/api/readAgentSettings` and `/api/updateAgentSettings` instead of shaping commands locally.
+  */
+  return agentSettings
+    ? agentSettings.agentAcceptAllEnabled
+    : readBoolean(project.launchSettings.agentAcceptAllEnabled ?? project.launchSettings.acceptAll);
 }
 
 function collectStoredAgentResumeCommandCandidates(session: GxserverSessionDomainState): readonly string[] {

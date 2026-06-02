@@ -42,6 +42,9 @@ export type GxserverEndpointPath =
   | "/api/health/server"
   | "/api/events"
   | "/api/control/stop"
+  | "/api/control/stopAll"
+  | "/api/readAgentSettings"
+  | "/api/updateAgentSettings"
   | "/api/createSession"
   | "/api/createAgentSession"
   | "/api/readAgentLaunchPlan"
@@ -226,6 +229,19 @@ export interface GxserverRpcErrorResponse {
   product: GxserverProduct;
   protocolVersion?: GxserverProtocolVersion;
   requestId?: string;
+}
+
+export interface GxserverAgentSettings {
+  agentAcceptAllEnabled: boolean;
+}
+
+export interface GxserverReadAgentSettingsResult {
+  isPersisted: boolean;
+  settings: GxserverAgentSettings;
+}
+
+export interface GxserverUpdateAgentSettingsParams {
+  agentAcceptAllEnabled?: boolean;
 }
 
 export interface GxserverEndpointDescriptor {

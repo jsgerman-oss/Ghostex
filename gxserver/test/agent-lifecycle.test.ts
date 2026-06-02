@@ -8,7 +8,7 @@ import {
   buildAgentResumePlan,
   buildAgentResumeStartupText,
   getEffectiveAgentActivityState,
-} from "../src/agent-lifecycle.js";
+} from "../src/agents/lifecycle.js";
 import type { GxserverProjectDomainState, GxserverSessionDomainState } from "../protocol/index.js";
 
 test("agent launch command generation preserves Accept All flags and delayed send metadata", () => {
