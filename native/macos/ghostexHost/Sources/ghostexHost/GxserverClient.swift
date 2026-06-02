@@ -473,7 +473,11 @@ final class GxserverClient {
     }
     var request = URLRequest(url: url)
     request.httpMethod = command.method.uppercased()
-    request.timeoutInterval = 10
+    /*
+     CDXC:ProjectBoard 2026-06-02-13:31:
+     Project-board Beads actions now flow through gxserver from the WK bridge. Preserve the board's existing 60-second command window for create/update/delete/search while keeping ordinary sidebar gxserver bridge calls on the shorter timeout.
+     */
+    request.timeoutInterval = command.path == "/api/runBeadsAction" ? 60 : 10
     request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     request.setValue(String(Self.protocolVersion), forHTTPHeaderField: "x-gxserver-protocol-version")
     if request.httpMethod == "POST" {

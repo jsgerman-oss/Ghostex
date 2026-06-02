@@ -1073,11 +1073,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
 
   fileprivate static func appendRestoreDebugLog(event: String, details: String?) {
     /**
-     CDXC:WorkspaceRestore 2026-04-26-10:00
-     The packaged native sidebar owns workspace/session persistence. Write
-     restore diagnostics into a dedicated app storage logs file so project load,
-     localStorage persistence, and native terminal recreation can be traced
-     independently from session-title logs.
+     CDXC:WorkspaceRestore 2026-06-02-15:27:
+     The native sidebar owns current-window layout restore while gxserver owns shared project/session persistence. Write restore diagnostics into a dedicated app storage logs file so local layout cache, localStorage persistence, and native terminal recreation can be traced independently from session-title logs.
      */
     guard NativeDebugLogging.isEnabled else {
       return
@@ -1162,13 +1159,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
   fileprivate static func persistSharedSidebarStorage(_ command: PersistSharedSidebarStorage) {
     do {
       try GhostexAppStorage.persistSharedSidebarStorage(
-        key: command.key, payloadJson: command.payloadJson)
+        key: command.key.rawValue, payloadJson: command.payloadJson)
     } catch {
       appendRestoreDebugLog(
         event: "nativeSidebar.sharedStorage.persistFailed",
         details: jsonObjectString([
           "error": error.localizedDescription,
-          "key": command.key,
+          "key": command.key.rawValue,
         ]))
     }
   }
@@ -5575,10 +5572,11 @@ final class ghostexRootView: NSView {
       """
     sidebarView.evaluateJavaScript(script)
     /**
-     CDXC:ReactTitlebar 2026-05-09-17:34
-     The React titlebar can request native process work for Git stats. Broadcast
-     host events to that webview too so processResult replies resolve in the
-     same bridge contract used by the sidebar.
+     CDXC:ReactTitlebar 2026-06-02-13:41:
+     The React titlebar can request native process work for macOS-local actions
+     such as resource checks and Open In targets. Broadcast host events to that
+     webview too so processResult replies resolve in the same bridge contract
+     used by the sidebar, while shared Git state remains gxserver-owned.
      */
     titlebarChromeWebView.evaluateJavaScript(script)
   }
@@ -5658,8 +5656,8 @@ final class ghostexRootView: NSView {
     }
     if let git = command.activeProjectGitState {
       /**
-       CDXC:TitlebarGit 2026-05-24-17:41:
-       The titlebar Git split button must mirror the sidebar-owned git status instead of polling separately, so disabled states and commit/push/PR labels stay identical across chrome and sidebar.
+       CDXC:TitlebarGit 2026-06-02-15:27:
+       The titlebar Git split button mirrors the sidebar adapter's gxserver-backed Git status instead of polling separately, so disabled states and commit/push/PR labels stay identical across chrome and sidebar while repository command execution remains gxserver-owned.
        */
       payload["git"] = [
         "additions": git.additions,
@@ -5765,10 +5763,8 @@ final class ghostexRootView: NSView {
     }
     if let resourceGroups = command.titlebarResourceGroups {
       /**
-       CDXC:TitlebarResources 2026-05-16-16:08:
-       Forward the sidebar-owned session grouping into the isolated React
-       titlebar so its resource dropdown can render Quick/project sections
-       while the titlebar webview polls process metrics independently.
+       CDXC:TitlebarResources 2026-06-02-15:27:
+       Forward the sidebar adapter's gxserver-backed presentation grouping into the isolated React titlebar so its resource dropdown can render shared project rows plus local Quick sections while the titlebar webview polls process metrics independently.
        */
       payload["resourceGroups"] = resourceGroups.map { group in
         var item: [String: Any] = [
@@ -5892,10 +5888,8 @@ final class ghostexRootView: NSView {
 
   private func openActiveProjectEditorFromTitlebar() {
     /**
-     CDXC:TitlebarOpenIn 2026-05-11-00:22
-     Titlebar Code and Embedded Editor clicks must enter the same sidebar-owned
-     project-editor flow as the project header. Forward the command into the
-     sidebar webview instead of reimplementing code-server startup in Swift.
+     CDXC:TitlebarOpenIn 2026-06-02-15:27:
+     Titlebar Code and Embedded Editor clicks are app-chrome actions that enter the same sidebar-adapter project-editor flow as the project header. Forward the command into the sidebar webview instead of reimplementing code-server startup or project surface state in Swift.
 
      CDXC:ModeSwitcher 2026-05-16-07:23:
      Code-tab lag reports need a native bridge timestamp before and after the
@@ -5924,8 +5918,8 @@ final class ghostexRootView: NSView {
 
   private func exitFocusModeFromTitlebar() {
     /**
-     CDXC:SessionFocusMode 2026-05-23-14:35:
-     The titlebar exit-focus control must restore the pre-focus Code/Git/Project surface through the same sidebar-owned toggle path as native pane-tab double click.
+     CDXC:SessionFocusMode 2026-06-02-15:27:
+     The titlebar exit-focus control restores current-window layout state. Route it through the sidebar adapter, matching native pane-tab double click, so Swift does not own pane focus or mode history.
      */
     sidebarView.evaluateJavaScript(
       """
@@ -5950,10 +5944,8 @@ final class ghostexRootView: NSView {
 
   private func openGitHubProjectFromTitlebar() {
     /**
-     CDXC:ModeSwitcher 2026-05-15-12:38:
-     Git mode must open the active project's GitHub remote inside the workarea,
-     not in an external browser, so the sidebar owner resolves the remote and
-     creates or focuses the browser-backed project surface.
+     CDXC:ModeSwitcher 2026-06-02-15:27:
+     Git mode opens the active project's GitHub remote inside the workarea, not in an external browser. Forward to the sidebar adapter so gxserver-backed Git inspection and macOS-owned browser surface focus stay in the normal paths.
      */
     sidebarView.evaluateJavaScript(
       """
@@ -5964,10 +5956,8 @@ final class ghostexRootView: NSView {
 
   private func showProjectEditorCompanionFromTitlebar() {
     /**
-     CDXC:ProjectEditorCompanion 2026-05-16-14:42:
-     The titlebar restore button must clear the sidebar-owned project
-     preference before native reopens the agent side pane. Forward through
-     React state so Code, Git, and Project modes continue sharing one value.
+     CDXC:ProjectEditorCompanion 2026-06-02-15:27:
+     The titlebar restore button updates macOS current-window companion-pane preference before native reopens the agent side pane. Forward through React state so Code, Git, and Project modes continue sharing one local value.
      */
     sidebarView.evaluateJavaScript(
       """
@@ -5978,10 +5968,8 @@ final class ghostexRootView: NSView {
 
   private func openTasksPlaceholderFromTitlebar() {
     /**
-     CDXC:ModeSwitcher 2026-05-15-12:38:
-     Project mode is currently a bundled placeholder React page backed by the
-     existing tasks bridge. Let the sidebar owner open it as a project workarea
-     surface so it keeps the sessions list visible like Code mode.
+     CDXC:ModeSwitcher 2026-06-02-15:27:
+     Project mode is a bundled React workarea backed by the project-board bridge. Let the sidebar adapter open it as a macOS project surface while gxserver remains responsible for Beads/project-board data and mutations.
      */
     sidebarView.evaluateJavaScript(
       """
@@ -6050,11 +6038,8 @@ final class ghostexRootView: NSView {
 
   private func focusResourceSessionFromTitlebar(_ command: FocusResourceSessionFromTitlebar) {
     /**
-     CDXC:TitlebarResources 2026-05-28-10:39:
-     Resource-row Focus is a React titlebar action, but the sidebar owns
-     project/session focus state. Forward the selected combined session id into
-     the sidebar webview so existing cross-project and sleeping-session focus
-     behavior remains authoritative.
+     CDXC:TitlebarResources 2026-06-02-15:27:
+     Resource-row Focus is React titlebar chrome, but current-window focus routing belongs to the sidebar adapter. Forward the selected combined session id into the sidebar webview so cross-project focus and gxserver-backed sleeping-session wake behavior stay in one path.
      */
     guard let sessionIdJson = Self.javascriptStringLiteral(command.sessionId) else {
       return
@@ -6068,10 +6053,8 @@ final class ghostexRootView: NSView {
 
   private func quitResourcesFromTitlebar(_ command: QuitResourcesFromTitlebar) {
     /**
-     CDXC:TitlebarResources 2026-05-21-16:38:
-     React titlebar resource Quit controls can only identify sidebar-owned
-     sessions and project editors. Forward those ids to the sidebar webview so
-     app state, persisted cards, and native surfaces close from one owner.
+     CDXC:TitlebarResources 2026-06-02-15:27:
+     React titlebar resource Quit controls identify presentation session ids and local project-editor ids. Forward them to the sidebar adapter so shared terminal lifecycle routes through gxserver while native surfaces and local panes close from the current-window coordinator.
      */
     guard
       let sessionIdsData = try? JSONSerialization.data(withJSONObject: command.sessionIds),

@@ -13,16 +13,18 @@ enum GhostexAppStorage {
   }
 
   private static let sharedSidebarStorageFiles: [String: SharedSidebarStorageFile] = [
-    "projects": SharedSidebarStorageFile(
-      fileName: "native-sidebar-projects.json",
-      localStorageKey: "ghostex-native-projects"),
-    "previousSessions": SharedSidebarStorageFile(
-      fileName: "native-sidebar-previous-sessions.json",
-      localStorageKey: "ghostex-native-previous-sessions"),
     "settings": SharedSidebarStorageFile(
       fileName: "native-sidebar-settings.json",
       localStorageKey: "ghostex-native-settings"),
   ]
+
+  /**
+   CDXC:ProjectSidebarOwnership 2026-06-02-12:29:
+   gxserver owns canonical project, worktree, session, and shared sidebar presentation state after the hard cutover. The macOS host must not expose `native-sidebar-projects.json` as active shared sidebar storage or copy WK `ghostex-native-projects` back into that file; native project localStorage is only a window-local pane/layout cache while gxserver supplies shared inventory through its APIs.
+
+   CDXC:PreviousSessions 2026-06-02-12:44:
+   gxserver owns previous-session history and search results after the hard cutover. The macOS host must not expose `native-sidebar-previous-sessions.json` as active shared sidebar storage or copy WK `ghostex-native-previous-sessions` back into that file; legacy previous-session imports belong to gxserver's migration path, while the native sidebar requests current history through gxserver APIs.
+   */
 
   /**
    CDXC:DevAppFlavor 2026-04-28-02:01
@@ -83,27 +85,11 @@ enum GhostexAppStorage {
       let sharedValue = readSharedSidebarStorageFile(file.fileName)
       let legacyValue = readLegacyDefaultAppLocalStorageValue(key: file.localStorageKey)
       let selectedValue = selectSharedSidebarStorageValue(
-        key: file.localStorageKey,
         sharedValue: sharedValue,
         legacyValue: legacyValue
       )
       if selectedValue == legacyValue, sharedValue != legacyValue, let selectedValue {
         try? persistSharedSidebarStorage(key: key, payloadJson: selectedValue)
-      }
-      if selectedValue != sharedValue,
-        selectedValue != legacyValue,
-        let selectedValue,
-        shouldReplaceLegacyLocalStorageValue(key: file.localStorageKey, payloadJson: selectedValue)
-      {
-        try? persistSharedSidebarStorage(key: key, payloadJson: selectedValue)
-        persistLegacyDefaultAppLocalStorageValue(key: file.localStorageKey, payloadJson: selectedValue)
-      }
-      if selectedValue == sharedValue,
-        sharedValue != legacyValue,
-        let selectedValue,
-        shouldReplaceLegacyLocalStorageValue(key: file.localStorageKey, payloadJson: selectedValue)
-      {
-        persistLegacyDefaultAppLocalStorageValue(key: file.localStorageKey, payloadJson: selectedValue)
       }
       if let selectedValue,
         selectedValue == sharedValue,
@@ -169,177 +155,10 @@ enum GhostexAppStorage {
   }
 
   private static func selectSharedSidebarStorageValue(
-    key: String,
     sharedValue: String?,
     legacyValue: String?
   ) -> String? {
-    guard let sharedValue else {
-      if key == "ghostex-native-previous-sessions",
-        isSharedProjectsSnapshotGxserverMigrated()
-      {
-        return "[]"
-      }
-      return legacyValue
-    }
-    guard let legacyValue else {
-      return sharedValue
-    }
-    if key == "ghostex-native-projects",
-      isGxserverMigratedProjectSnapshot(sharedValue)
-    {
-      /**
-       CDXC:GxserverMigration 2026-05-30-17:45:
-       Once gxserver has rewritten the shared sidebar snapshot to canonical P/G IDs, the shared file is authoritative. Legacy WK localStorage may still contain the larger pre-daemon `project-*`/`g-*` tree, but choosing it would make the macOS app overwrite the migrated file and send stale IDs back to gxserver.
-       */
-      return sharedValue
-    }
-    if key == "ghostex-native-previous-sessions",
-      isGxserverMigratedPreviousSessionsSnapshot(
-        sharedValue,
-        allowEmpty: isSharedProjectsSnapshotGxserverMigrated()
-      )
-    {
-      return sharedValue
-    }
-    if key == "ghostex-native-projects",
-      projectSnapshotScore(legacyValue) > projectSnapshotScore(sharedValue)
-    {
-      return legacyValue
-    }
-    if key == "ghostex-native-previous-sessions",
-      previousSessionsSnapshotScore(legacyValue) > previousSessionsSnapshotScore(sharedValue)
-    {
-      return legacyValue
-    }
-    return sharedValue
-  }
-
-  private static func shouldReplaceLegacyLocalStorageValue(
-    key: String,
-    payloadJson: String
-  ) -> Bool {
-    switch key {
-    case "ghostex-native-projects":
-      return isGxserverMigratedProjectSnapshot(payloadJson)
-    case "ghostex-native-previous-sessions":
-      return isGxserverMigratedPreviousSessionsSnapshot(
-        payloadJson,
-        allowEmpty: isSharedProjectsSnapshotGxserverMigrated()
-      )
-    default:
-      return false
-    }
-  }
-
-  private static func isSharedProjectsSnapshotGxserverMigrated() -> Bool {
-    guard let projectsJson = readSharedSidebarStorageFile("native-sidebar-projects.json") else {
-      return false
-    }
-    return isGxserverMigratedProjectSnapshot(projectsJson)
-  }
-
-  private static func isGxserverMigratedProjectSnapshot(_ payloadJson: String) -> Bool {
-    guard let data = payloadJson.data(using: .utf8),
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    else {
-      return false
-    }
-    if object["gxserverMigratedAt"] is String {
-      return true
-    }
-    guard let projects = object["projects"] as? [[String: Any]], !projects.isEmpty else {
-      return false
-    }
-    let projectIds = projects.compactMap { $0["projectId"] as? String }
-    return !projectIds.isEmpty && projectIds.allSatisfy(isCanonicalGxserverProjectId)
-  }
-
-  private static func isGxserverMigratedPreviousSessionsSnapshot(
-    _ payloadJson: String,
-    allowEmpty: Bool = false
-  ) -> Bool {
-    guard let data = payloadJson.data(using: .utf8),
-      let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-    else {
-      return false
-    }
-    /**
-     CDXC:PreviousSessions 2026-05-30-22:14:
-     Once gxserver has marked the adjacent projects snapshot migrated, a shared previous-sessions `[]` is an intentional empty history. Native bootstrap must keep that empty shared file ahead of stale WK localStorage and write it back into WK so old restorable sessions cannot reappear.
-     */
-    if sessions.isEmpty {
-      return allowEmpty
-    }
-    return sessions.allSatisfy { item in
-      let projectId = item["projectId"] as? String
-      let sessionId = item["sessionId"] as? String
-      return (projectId == nil || projectId.map(isCanonicalGxserverProjectId) == true)
-        && (sessionId == nil || sessionId.map(isCanonicalGxserverSessionId) == true)
-    }
-  }
-
-  private static func isCanonicalGxserverProjectId(_ value: String) -> Bool {
-    isCanonicalGxserverId(value, prefix: "P", suffixLength: 4)
-  }
-
-  private static func isCanonicalGxserverSessionId(_ value: String) -> Bool {
-    isCanonicalGxserverId(value, prefix: "G", suffixLength: 4)
-  }
-
-  private static func isCanonicalGxserverId(
-    _ value: String,
-    prefix: Character,
-    suffixLength: Int
-  ) -> Bool {
-    guard value.first == prefix, value.count == suffixLength + 1 else {
-      return false
-    }
-    let suffix = value.dropFirst()
-    guard let first = suffix.first, first.isNumber else {
-      return false
-    }
-    return suffix.allSatisfy { character in
-      character.isNumber || ("a"..."z").contains(character)
-    }
-  }
-
-  private static func projectSnapshotScore(_ payloadJson: String) -> Int {
-    guard let data = payloadJson.data(using: .utf8),
-      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let projects = object["projects"] as? [Any]
-    else {
-      return 0
-    }
-    let sessionCount = projects.reduce(0) { count, project in
-      count + projectSessionCount(project)
-    }
-    return (projects.count * 100_000) + (sessionCount * 1_000) + payloadJson.count
-  }
-
-  private static func projectSessionCount(_ project: Any) -> Int {
-    guard let project = project as? [String: Any],
-      let workspace = project["workspace"] as? [String: Any],
-      let groups = workspace["groups"] as? [[String: Any]]
-    else {
-      return 0
-    }
-    return groups.reduce(0) { count, group in
-      guard let snapshot = group["snapshot"] as? [String: Any],
-        let sessions = snapshot["sessions"] as? [Any]
-      else {
-        return count
-      }
-      return count + sessions.count
-    }
-  }
-
-  private static func previousSessionsSnapshotScore(_ payloadJson: String) -> Int {
-    guard let data = payloadJson.data(using: .utf8),
-      let sessions = try? JSONSerialization.jsonObject(with: data) as? [Any]
-    else {
-      return 0
-    }
-    return (sessions.count * 1_000) + payloadJson.count
+    sharedValue ?? legacyValue
   }
 
   private static func readLegacyDefaultAppLocalStorageValue(key: String) -> String? {
@@ -347,8 +166,8 @@ enum GhostexAppStorage {
      CDXC:DevAppFlavor 2026-04-28-02:01
      Existing user state lives in the default app's WKWebView localStorage under
      com.madda.ghostex.host. Production can import missing shared
-     settings/workspace snapshots from that localStorage before falling back to
-     empty defaults.
+     settings snapshots from that localStorage before falling back to empty
+     defaults.
      CDXC:DevAppFlavor 2026-05-11-12:10
      ghostex-dev must start from its own ~/.ghostex-dev state instead of cloning or
      reading production localStorage. Only the production shared home may run
@@ -386,7 +205,6 @@ enum GhostexAppStorage {
         value: value
       )
       selectedCandidate = selectLegacyLocalStorageValueCandidate(
-        key: key,
         current: selectedCandidate,
         candidate: candidate
       )
@@ -396,18 +214,17 @@ enum GhostexAppStorage {
 
   /**
    CDXC:GxserverMigration 2026-05-30-19:55:
-   WKWebView may retain more than one `localstorage.sqlite3` with Ghostex sidebar keys. Native bootstrap must use the same canonical/richer snapshot rules as shared-storage selection, then database freshness and path, so stale filesystem enumeration cannot rehydrate old projects, settings, agents, or commands before gxserver migration repairs state.
+   WKWebView may retain more than one `localstorage.sqlite3` with Ghostex sidebar settings. Native bootstrap picks the richest settings payload, then database freshness and path, so filesystem enumeration order cannot choose a stale settings snapshot.
    */
   private static func selectLegacyLocalStorageValueCandidate(
-    key: String,
     current: LegacyLocalStorageValueCandidate?,
     candidate: LegacyLocalStorageValueCandidate
   ) -> LegacyLocalStorageValueCandidate {
     guard let current else {
       return candidate
     }
-    let currentScore = legacyLocalStorageValueScore(key: key, value: current.value)
-    let candidateScore = legacyLocalStorageValueScore(key: key, value: candidate.value)
+    let currentScore = legacyLocalStorageValueScore(current.value)
+    let candidateScore = legacyLocalStorageValueScore(candidate.value)
     if candidateScore != currentScore {
       return candidateScore > currentScore ? candidate : current
     }
@@ -420,17 +237,8 @@ enum GhostexAppStorage {
     return candidate.databasePath < current.databasePath ? candidate : current
   }
 
-  private static func legacyLocalStorageValueScore(key: String, value: String) -> Int {
-    switch key {
-    case "ghostex-native-projects":
-      return isGxserverMigratedProjectSnapshot(value) ? 1_000_000_000 : projectSnapshotScore(value)
-    case "ghostex-native-previous-sessions":
-      return isGxserverMigratedPreviousSessionsSnapshot(value)
-        ? 1_000_000_000
-        : previousSessionsSnapshotScore(value)
-    default:
-      return genericJsonPayloadScore(value)
-    }
+  private static func legacyLocalStorageValueScore(_ value: String) -> Int {
+    genericJsonPayloadScore(value)
   }
 
   private static func genericJsonPayloadScore(_ payloadJson: String) -> Int {
@@ -446,63 +254,6 @@ enum GhostexAppStorage {
       return (dictionary.keys.count * 1_000) + payloadJson.count
     }
     return payloadJson.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
-  }
-
-  private static func persistLegacyDefaultAppLocalStorageValue(key: String, payloadJson: String) {
-    /**
-     CDXC:GxserverMigration 2026-05-30-17:45:
-     First launch after the gxserver cutover must make both storage sources agree on canonical P/G IDs. The sidebar can read WK localStorage before its first shared-file write, so replacing the old localStorage blob prevents stale `project-*`/`g-*` IDs from rehydrating native layout and causing gxserver attach notFound failures.
-     */
-    guard sharedHomeDirectoryName == ".ghostex",
-      Bundle.main.bundleIdentifier == "com.madda.ghostex.host"
-    else {
-      return
-    }
-    let webKitRoot = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent("Library/WebKit/com.madda.ghostex.host", isDirectory: true)
-    guard let enumerator = FileManager.default.enumerator(
-      at: webKitRoot,
-      includingPropertiesForKeys: nil,
-      options: [.skipsHiddenFiles]
-    ) else {
-      return
-    }
-    for case let url as URL in enumerator where url.lastPathComponent == "localstorage.sqlite3" {
-      guard readLocalStorageValue(databaseURL: url, key: key) != nil else {
-        continue
-      }
-      writeLocalStorageValue(databaseURL: url, key: key, payloadJson: payloadJson)
-    }
-  }
-
-  private static func writeLocalStorageValue(
-    databaseURL: URL,
-    key: String,
-    payloadJson: String
-  ) {
-    guard let valueData = payloadJson.data(using: .utf16LittleEndian) else {
-      return
-    }
-    let escapedKey = key.replacingOccurrences(of: "'", with: "''")
-    let hexValue = hexString(from: valueData)
-    let process = Process()
-    let input = Pipe()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-    process.arguments = [databaseURL.path]
-    process.standardInput = input
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    do {
-      try process.run()
-      let sql = "insert or replace into ItemTable(key, value) values('\(escapedKey)', x'\(hexValue)');\n"
-      if let data = sql.data(using: .utf8) {
-        input.fileHandleForWriting.write(data)
-      }
-      input.fileHandleForWriting.closeFile()
-      process.waitUntilExit()
-    } catch {
-      try? input.fileHandleForWriting.close()
-    }
   }
 
   private static func readLocalStorageValue(databaseURL: URL, key: String) -> String? {
@@ -540,8 +291,7 @@ enum GhostexAppStorage {
      CDXC:DevAppFlavor 2026-04-28-03:05
      WKWebView localStorage stores sidebar snapshots as UTF-16 blobs on this
      machine. Shared ghostex-dev state must normalize those blobs to UTF-8 JSON
-     before the sidebar can read or rewrite them, otherwise the dev app starts
-     from an empty fallback workspace and persists that over the shared file.
+     before the sidebar can read imported settings.
      */
     for encoding in [String.Encoding.utf8, .utf16LittleEndian, .utf16] {
       guard let value = String(data: data, encoding: encoding),
@@ -554,10 +304,6 @@ enum GhostexAppStorage {
       return value
     }
     return nil
-  }
-
-  private static func hexString(from data: Data) -> String {
-    data.map { String(format: "%02X", $0) }.joined()
   }
 
   private static func dataFromHexString(_ hex: String) -> Data? {

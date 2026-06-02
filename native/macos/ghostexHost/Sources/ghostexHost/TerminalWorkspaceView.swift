@@ -64,6 +64,18 @@ private let projectBeadsResponseEventName = "ghostex-project-beads-response"
 private let projectBoardResponseEventName = "ghostex-project-board-response"
 private let projectBoardImageResponseEventName = "ghostex-project-board-image-response"
 
+/*
+CDXC:ProjectBoard 2026-06-02-13:43:
+Project board Beads requests run through a detached gxserver call so native UI remains responsive. Hold the WKWebView weakly behind a sendable response target and dispatch only on MainActor so the bridge does not capture AppKit/WebKit objects directly in backend work.
+*/
+private final class ProjectBeadsBridgeResponseTarget: @unchecked Sendable {
+  weak var webView: WKWebView?
+
+  init(webView: WKWebView) {
+    self.webView = webView
+  }
+}
+
 private struct ProjectBeadsBridgeRequest: Decodable {
   let action: String
   let agentCommand: String?
@@ -346,9 +358,8 @@ private func isProjectBoardImageFileURL(_ url: URL) -> Bool {
 
 private func projectBoardNativeProcessEnvironment() -> [String: String] {
   /**
-   CDXC:ProjectBoard 2026-05-23-03:00:
-   Project board commands execute the upstream bd binary from a WebKit project pane.
-   GUI launches often miss Homebrew, mise, asdf, and ~/.local paths, so normalize PATH here instead of making the React board know CLI installation details.
+   CDXC:ProjectBoard 2026-06-02-13:31:
+   Beads commands now execute in gxserver, not this Swift host. This environment remains only for Project-board prompt-agent title generation, which runs the user-selected agent command and is separate from Beads shared-state ownership.
    */
   var environment = ProcessInfo.processInfo.environment
   environment["PATH"] = projectBoardNativeProcessPath(environment["PATH"])
@@ -3864,9 +3875,9 @@ final class TerminalWorkspaceView: NSView {
     let browserView: NSView
     if useWebKitProjectView {
       /**
-       CDXC:ProjectBoard 2026-05-23-03:00:
+       CDXC:ProjectBoard 2026-06-02-13:31:
        The Project mode board is a first-party local React app and should use WKWebView, not the Chromium/CEF browser path used by Code and Git.
-       WebKit gives the board a direct native message handler for whitelisted bd CLI calls while preserving the project-editor companion layout.
+       WebKit gives the board a native message handler that forwards Beads requests to gxserver typed operations while preserving the project-editor companion layout.
        */
       let configuration = WKWebViewConfiguration()
       configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -4402,9 +4413,7 @@ final class TerminalWorkspaceView: NSView {
 
      CDXC:PaneClose 2026-05-23-10:03:
      Cmd-W is a session-removal command, not a local native-surface disposal.
-     Route focused terminal/web pane closes through the sidebar owner so the
-     sidebar card, workspace layout, Ghostty surface, and provider-backed zmx/tmux
-     runtime are removed together by the normal close path.
+     Route focused terminal/web pane closes through the sidebar adapter so macOS layout/surface cleanup and gxserver-owned shared terminal lifecycle stay on the normal close path.
      */
     if let activeProjectEditorId, projectEditorPaneSessions[activeProjectEditorId] != nil {
       closeProjectEditorPane(projectId: activeProjectEditorId)
@@ -7117,8 +7126,8 @@ final class TerminalWorkspaceView: NSView {
   ) {
     /**
      CDXC:ProjectBoard 2026-05-23-03:16:
-     The Project board runs inside WKWebView and must persist work through the upstream Beads CLI, not a forked library or custom storage.
-     Only expose the exact bd subcommands the board needs so the local web app can list, create, update, and comment on issues without gaining arbitrary shell access.
+     The Project board runs inside WKWebView and must persist work through upstream Beads behavior, not a forked library or custom storage.
+     Forward only the exact board actions to gxserver's typed Beads allowlist so the local web app can list, create, update, and comment on issues without gaining arbitrary shell access.
 
      CDXC:ProjectBoard 2026-05-26-10:08:
      Project board ticket deletion must route through Beads deletion so dependencies, labels, events, and deletion manifests stay consistent with bd CLI behavior.
@@ -7126,14 +7135,18 @@ final class TerminalWorkspaceView: NSView {
 
      CDXC:ProjectBoard 2026-05-30-08:58:
      The Project Kanban workflow includes Backlog before Todo, so the native Beads bridge must allow the custom `backlog` status instead of rejecting valid drag/drop and edit-status moves from the web board.
+
+     CDXC:ProjectBoard 2026-06-02-13:31:
+     Beads backend execution is gxserver-owned after the native/gxserver split. This WK bridge now only adapts the Project board webview request into gxserver's typed `/api/runBeadsAction` request; it must not construct or run `bd` subprocesses in AppKit.
      */
     guard let webView else {
       return
     }
-    DispatchQueue.global(qos: .userInitiated).async { [weak webView] in
-      let response = Self.runProjectBeadsBridgeRequest(request)
-      DispatchQueue.main.async {
-        guard let webView else {
+    let responseTarget = ProjectBeadsBridgeResponseTarget(webView: webView)
+    Task.detached(priority: .userInitiated) {
+      let response = await Self.runProjectBeadsBridgeRequest(request)
+      await MainActor.run {
+        guard let webView = responseTarget.webView else {
           return
         }
         Self.dispatchProjectBeadsBridgeResponse(response, to: webView)
@@ -7143,7 +7156,7 @@ final class TerminalWorkspaceView: NSView {
 
   private static func runProjectBeadsBridgeRequest(
     _ request: ProjectBeadsBridgeRequest
-  ) -> ProjectBeadsBridgeResponse {
+  ) async -> ProjectBeadsBridgeResponse {
     do {
       let cwd = try projectBeadsWorkingDirectory(request.cwd)
       if request.action == "generateTitle" {
@@ -7160,41 +7173,14 @@ final class TerminalWorkspaceView: NSView {
           stderr: "",
           stdout: String(data: payload, encoding: .utf8) ?? "")
       }
-      if request.action == "listIssues" {
-        let issues = try projectBeadsReadIssuesJsonl(cwd: cwd)
-        let payload = try JSONSerialization.data(withJSONObject: issues)
-        return ProjectBeadsBridgeResponse(
-          error: nil,
-          exitCode: 0,
-          requestId: request.requestId,
-          stderr: "",
-          stdout: String(data: payload, encoding: .utf8) ?? "[]")
-      }
-      let arguments = try projectBeadsArguments(for: request)
-      if arguments.isEmpty {
-        throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads action: \(request.action)")
-      }
-      let stdoutPipe = Pipe()
-      let stderrPipe = Pipe()
-      let stdoutCollector = projectBeadsPipeCollector(stdoutPipe)
-      let stderrCollector = projectBeadsPipeCollector(stderrPipe)
-      let process = Process()
-      process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-      process.arguments = ["bd"] + arguments
-      process.currentDirectoryURL = cwd
-      var environment = projectBoardNativeProcessEnvironment()
-      environment["BD_JSON_ENVELOPE"] = "1"
-      process.environment = environment
-      process.standardOutput = stdoutPipe
-      process.standardError = stderrPipe
-      try process.run()
-      process.waitUntilExit()
-      return ProjectBeadsBridgeResponse(
-        error: nil,
-        exitCode: process.terminationStatus,
-        requestId: request.requestId,
-        stderr: stderrCollector(),
-        stdout: stdoutCollector())
+      let paramsJson = try projectBeadsGxserverParamsJson(for: request, projectPath: cwd.path)
+      let event = await GxserverClient.request(
+        GxserverRequest(
+          method: "POST",
+          paramsJson: paramsJson,
+          path: "/api/runBeadsAction",
+          requestId: request.requestId))
+      return try projectBeadsResponse(from: event, requestId: request.requestId)
     } catch {
       return ProjectBeadsBridgeResponse(
         error: error.localizedDescription,
@@ -7205,177 +7191,113 @@ final class TerminalWorkspaceView: NSView {
     }
   }
 
-  private static func projectBeadsArguments(for request: ProjectBeadsBridgeRequest) throws -> [String] {
-    switch request.action {
-    case "addComment":
-      return [
-        "comments", "add",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        try projectBeadsRequired(request.comment, field: "comment"),
-        "--json",
-      ]
-    case "configGet":
-      return ["config", "get", "status.custom", "--json"]
-    case "configSet":
-      return ["config", "set", "status.custom", try projectBeadsRequired(request.value, field: "value"), "--json"]
-    case "create":
-      var createArguments = [
-        "create",
-        "--title", try projectBeadsRequired(request.title, field: "title"),
-        "--description", request.description ?? "",
-        "--priority", request.priority ?? "2",
-        "--type", "task",
-      ]
-      if let estimate = request.estimate {
-        createArguments.append(contentsOf: ["--estimate", String(estimate)])
-      }
-      if let labels = request.labels, !labels.isEmpty {
-        createArguments.append(contentsOf: ["--labels", labels.joined(separator: ",")])
-      }
-      if let dependsOnId = request.dependsOnId?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !dependsOnId.isEmpty
-      {
-        let depType = request.depType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "blocks"
-        createArguments.append(contentsOf: ["--deps", "\(depType):\(dependsOnId)"])
-      }
-      createArguments.append("--json")
-      return createArguments
-    case "delete":
-      return [
-        "delete",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        "--force",
-        "--json",
-      ]
-    case "list":
-      return ["list", "--all", "--json"]
-    case "listIssues":
-      return []
-    case "show":
-      return ["show", try projectBeadsRequired(request.issueId, field: "issueId"), "--json"]
-    case "updateDescription":
-      return [
-        "update",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        "--description", request.description ?? "",
-        "--json",
-      ]
-    case "updateStatus":
-      let status = try projectBeadsRequired(request.status, field: "status")
-      guard ["backlog", "closed", "in_progress", "open", "review", "test"].contains(status) else {
-        throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads status: \(status)")
-      }
-      return [
-        "update",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        "--status", status,
-        "--json",
-      ]
-    case "updateTitle":
-      return [
-        "update",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        "--title", try projectBeadsRequired(request.title, field: "title"),
-        "--json",
-      ]
-    case "updatePriority":
-      return [
-        "update",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        "--priority", try projectBeadsRequired(request.priority, field: "priority"),
-        "--json",
-      ]
-    case "updateEstimate":
-      guard let estimate = request.estimate else {
-        throw ProjectBeadsBridgeError.invalidRequest("Missing required Beads field: estimate")
-      }
-      return [
-        "update",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        "--estimate", String(estimate),
-        "--json",
-      ]
-    case "setLabels":
-      var arguments = [
-        "update",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-      ]
-      if let labels = request.labels, !labels.isEmpty {
-        for label in labels {
-          arguments.append(contentsOf: ["--set-labels", label])
-        }
-      }
-      arguments.append("--json")
-      return arguments
-    case "addLabel":
-      return [
-        "label", "add",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        try projectBeadsRequired(request.label, field: "label"),
-        "--json",
-      ]
-    case "removeLabel":
-      return [
-        "label", "remove",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        try projectBeadsRequired(request.label, field: "label"),
-        "--json",
-      ]
-    case "listAllLabels":
-      return ["label", "list-all", "--json"]
-    case "depAdd":
-      let depType = request.depType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "blocks"
-      return [
-        "dep", "add",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        try projectBeadsRequired(request.dependsOnId, field: "dependsOnId"),
-        "--type", depType,
-        "--json",
-      ]
-    case "depRemove":
-      return [
-        "dep", "remove",
-        try projectBeadsRequired(request.issueId, field: "issueId"),
-        try projectBeadsRequired(request.dependsOnId, field: "dependsOnId"),
-        "--json",
-      ]
-    case "search":
-      return [
-        "search",
-        try projectBeadsRequired(request.query, field: "query"),
-        "--json",
-      ]
-    case "configGetIssuePrefix":
-      return ["config", "get", "issue_prefix", "--json"]
-    case "configSetIssuePrefix":
-      return [
-        "config", "set", "issue_prefix",
-        try projectBeadsRequired(request.value, field: "value"),
-        "--json",
-      ]
+  private static func projectBeadsGxserverParamsJson(
+    for request: ProjectBeadsBridgeRequest,
+    projectPath: String
+  ) throws -> String {
+    var params: [String: Any] = [
+      "action": try projectBeadsGxserverAction(for: request.action),
+      "projectPath": projectPath,
+    ]
+    if let comment = request.comment { params["comment"] = comment }
+    if let dependsOnId = request.dependsOnId { params["dependsOnId"] = dependsOnId }
+    if let depType = request.depType { params["depType"] = depType }
+    if let description = request.description { params["description"] = description }
+    if let estimate = request.estimate { params["estimate"] = estimate }
+    if let issueId = request.issueId { params["issueId"] = issueId }
+    if let label = request.label { params["label"] = label }
+    if let labels = request.labels { params["labels"] = labels }
+    if let priority = request.priority { params["priority"] = priority }
+    if let query = request.query { params["query"] = query }
+    if let status = request.status { params["status"] = status }
+    if let title = request.title { params["title"] = title }
+    if let value = request.value { params["value"] = value }
+    return try projectBeadsJsonString(params)
+  }
+
+  private static func projectBeadsGxserverAction(for action: String) throws -> String {
+    switch action {
+    case "addComment": return "comment"
+    case "addLabel": return "addLabel"
+    case "configGet": return "configGet"
+    case "configGetIssuePrefix": return "configGetIssuePrefix"
+    case "configSet": return "configSet"
+    case "configSetIssuePrefix": return "configSetIssuePrefix"
+    case "create": return "create"
+    case "delete": return "delete"
+    case "depAdd": return "depAdd"
+    case "depRemove": return "depRemove"
+    case "list": return "list"
+    case "listIssues": return "board"
+    case "listAllLabels": return "listAllLabels"
+    case "removeLabel": return "removeLabel"
+    case "search": return "search"
+    case "setLabels": return "setLabels"
+    case "show": return "show"
+    case "updateDescription": return "updateDescription"
+    case "updateEstimate": return "updateEstimate"
+    case "updatePriority": return "updatePriority"
+    case "updateStatus": return "updateStatus"
+    case "updateTitle": return "updateTitle"
     default:
-      throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads action: \(request.action)")
+      throw ProjectBeadsBridgeError.invalidRequest("Unsupported Beads action: \(action)")
     }
   }
 
-  private static func projectBeadsReadIssuesJsonl(cwd: URL) throws -> [[String: Any]] {
-    let jsonlURL = cwd.appendingPathComponent(".beads/issues.jsonl")
-    guard FileManager.default.fileExists(atPath: jsonlURL.path) else {
-      return []
+  private static func projectBeadsResponse(
+    from event: HostEvent,
+    requestId: String
+  ) throws -> ProjectBeadsBridgeResponse {
+    guard case .gxserverResponse(_, _, let ok, let statusCode, let bodyJson, let error) = event else {
+      throw ProjectBeadsBridgeError.invalidRequest("gxserver did not return a Beads response.")
     }
-    let contents = try String(contentsOf: jsonlURL, encoding: .utf8)
-    var issues: [[String: Any]] = []
-    for line in contents.split(whereSeparator: \.isNewline) {
-      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !trimmed.isEmpty,
-        let data = trimmed.data(using: .utf8),
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-      else {
-        continue
+    guard ok, let bodyJson,
+      let bodyData = bodyJson.data(using: .utf8),
+      let body = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+      let result = body["result"] as? [String: Any]
+    else {
+      return ProjectBeadsBridgeResponse(
+        error: error ?? projectBeadsGxserverErrorMessage(bodyJson: bodyJson, statusCode: statusCode),
+        exitCode: Int32(statusCode ?? 127),
+        requestId: requestId,
+        stderr: error ?? projectBeadsGxserverErrorMessage(bodyJson: bodyJson, statusCode: statusCode),
+        stdout: "")
+    }
+    let exitCode = (result["exitCode"] as? NSNumber)?.int32Value ?? 1
+    return ProjectBeadsBridgeResponse(
+      error: nil,
+      exitCode: exitCode,
+      requestId: requestId,
+      stderr: result["stderr"] as? String ?? "",
+      stdout: result["stdout"] as? String ?? "")
+  }
+
+  private static func projectBeadsGxserverErrorMessage(
+    bodyJson: String?,
+    statusCode: Int?
+  ) -> String {
+    if let bodyJson,
+      let bodyData = bodyJson.data(using: .utf8),
+      let body = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any]
+    {
+      if let error = body["error"] as? [String: Any],
+        let message = error["message"] as? String
+      {
+        return message
       }
-      issues.append(object)
+      if let message = body["message"] as? String {
+        return message
+      }
     }
-    return issues
+    return "gxserver Beads request failed\(statusCode.map { " with HTTP \($0)" } ?? "")."
+  }
+
+  private static func projectBeadsJsonString(_ value: [String: Any]) throws -> String {
+    guard JSONSerialization.isValidJSONObject(value) else {
+      throw ProjectBeadsBridgeError.invalidRequest("Beads request is not valid JSON.")
+    }
+    let data = try JSONSerialization.data(withJSONObject: value, options: [])
+    return String(data: data, encoding: .utf8) ?? "{}"
   }
 
   private static func projectBeadsGenerateTitle(

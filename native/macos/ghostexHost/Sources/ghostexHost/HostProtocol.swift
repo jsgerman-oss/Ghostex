@@ -878,8 +878,19 @@ struct AppendWorkspaceDockIndicatorDebugLog: Decodable {
 }
 
 struct PersistSharedSidebarStorage: Decodable {
-  let key: String
+  let key: SharedSidebarStorageKey
   let payloadJson: String
+}
+
+enum SharedSidebarStorageKey: String, Decodable {
+  /**
+   CDXC:ProjectSidebarOwnership 2026-06-02-15:04:
+   After the gxserver/native ownership cutoff, Swift accepts shared-sidebar
+   persistence only for settings. Projects, worktrees, sessions, and previous
+   sessions are gxserver-owned and must not decode as valid native shared
+   storage commands.
+   */
+  case settings
 }
 
 struct PlaySound: Decodable {
@@ -1415,10 +1426,8 @@ enum HostEvent: Encodable {
       try container.encode(payloadJson, forKey: .payloadJson)
     case .sessionStatusIndicatorClicked(let status):
       /**
-       CDXC:SessionStatusIndicators 2026-05-05-19:47
-       Floating AppKit status circles report only the clicked aggregate status
-       back to the sidebar. The sidebar owns the live session graph, so it
-       selects and focuses the correct matching session at click time.
+       CDXC:SessionStatusIndicators 2026-06-02-15:27:
+       Floating AppKit status circles report only the clicked aggregate status back to the sidebar adapter. The adapter chooses the current-window focus target from gxserver presentation plus local-only panes instead of letting AppKit own shared session inventory.
       */
       try container.encode("sessionStatusIndicatorClicked", forKey: .type)
       try container.encode(status, forKey: .status)
