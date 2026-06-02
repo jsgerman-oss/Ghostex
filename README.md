@@ -78,7 +78,7 @@ This will allow connecting from any client app to projects on local + multiple r
 
 <br />
 
-### Notifications for All Agent CLIs. Menu bar indicator and minimal floating numbers also supported.
+### Notifications for All Agent CLIs. Menu bar indicator. Pets or minimal floating numbers also supported.
 
 <img width="331" height="309" alt="2026-05-23_CleanShot_14-26-43" src="https://github.com/user-attachments/assets/ad0f7af5-b0e9-4b24-988c-cb6bf02c6c9f" />
 
