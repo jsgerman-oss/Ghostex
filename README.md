@@ -15,28 +15,7 @@ Light VScode Embed. Embedded Browser. Rich Prompt Editor. Android & iOS Apps. Mu
 ### 6. TUI mode (ghostex cli) to connect to all your sessions from any other machine.
 ### 7. T3code for GUI panes
 
-### Main Features (not full list, see release notes, I'm adding more daily):
-- First-launch preferences help new installs set common defaults before opening sessions
-- Git workflows include Sync with Main, split Git menus, prompt-agent PR review, and persistent running toasts for long actions
-- First-prompt title generation can auto-name new agent sessions from the opening prompt
-- Pinned sessions keep important agent terminals at the top of each project and support `ghostex pin-session`
-- Auto-sleep policies now cover idle browser and project panes as well as terminals
-- Embedded Chromium Browser w Devtools and profiles
-- Embedded Light Code/MD Files Editor
-- Access your sessions with any Agent CLI live from the Android/iOS apps
-- Built in SSH continuation with live session persistence (zmx/tmux/zellij)
-- The best agent CLI rich prompt editor with Image insert/preview support. Press ctrl+g to use it.
-- Native Swift macOS app shell for better performance
-- Auto sleep unused terminals to save ram (auto-restore when clicked)
-- Auto session naming for all popular agents 
-- Reopening the app always resumes your agent cli sessions
-- Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
-- Menu bar working & done indicators and notification sounds for almost all agent clis
-- Supports Pets so you can see session status at a glance :)
-- Works with all Agent CLIs (Claude Code, Codex CLI, OpenCode, Pi Agent, Gemini, Copilot, etc.)
-- Schedule sending messages to agents (more automation features coming soon)
-- Way more features to fit here
-<br/>
+Full list of features at the bottom :)
 
 # Installation
 
@@ -103,6 +82,29 @@ This will allow connecting from any client app to projects on local + multiple r
 
 <img width="331" height="309" alt="2026-05-23_CleanShot_14-26-43" src="https://github.com/user-attachments/assets/ad0f7af5-b0e9-4b24-988c-cb6bf02c6c9f" />
 
+<br/>
+
+### Highlighted Features (not full list, see release notes, I'm adding more daily):
+- First-launch preferences help new installs set common defaults before opening sessions
+- Git workflows include Sync with Main, split Git menus, prompt-agent PR review, and persistent running toasts for long actions
+- First-prompt title generation can auto-name new agent sessions from the opening prompt
+- Pinned sessions keep important agent terminals at the top of each project and support `ghostex pin-session`
+- Auto-sleep policies now cover idle browser and project panes as well as terminals
+- Embedded Chromium Browser w Devtools and profiles
+- Embedded Light Code/MD Files Editor
+- Access your sessions with any Agent CLI live from the Android/iOS apps
+- Built in SSH continuation with live session persistence (zmx/tmux/zellij)
+- The best agent CLI rich prompt editor with Image insert/preview support. Press ctrl+g to use it.
+- Native Swift macOS app shell for better performance
+- Auto sleep unused terminals to save ram (auto-restore when clicked)
+- Auto session naming for all popular agents 
+- Reopening the app always resumes your agent cli sessions
+- Light embedded VS Code based editor & git manager & managing PRs with github PR extension.
+- Menu bar working & done indicators and notification sounds for almost all agent clis
+- Supports Pets so you can see session status at a glance :)
+- Works with all Agent CLIs (Claude Code, Codex CLI, OpenCode, Pi Agent, Gemini, Copilot, etc.)
+- Schedule sending messages to agents (more automation features coming soon)
+- Way more features to fit here
 <br/>
 
 ## Other useful stuff:
