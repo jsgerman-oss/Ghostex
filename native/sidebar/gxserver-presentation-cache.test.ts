@@ -12,6 +12,7 @@ import type {
 import {
   reduceGxserverPresentationDelta,
   reduceGxserverProjectCacheForPresentationDelta,
+  reorderPresentationProjectSessions,
 } from "./gxserver-presentation-cache";
 
 function snapshot(
@@ -181,5 +182,29 @@ describe("gxserver presentation cache reducer", () => {
     );
 
     expect(nextProjects[0]?.name).toBe("New");
+  });
+
+  test("reorders project presentation sessions for local-first pinned drag", () => {
+    const next = reorderPresentationProjectSessions(
+      snapshot({
+        groups: [
+          group({
+            sessionIds: ["G1aaa" as GxserverSessionId, "G2bbb" as GxserverSessionId],
+          }),
+        ],
+        sessions: [
+          session("G1aaa", { isPinned: true, sortKey: "0:0:z:2026-06-02T07:18:00.000Z:G1aaa" }),
+          session("G2bbb", { isPinned: true, sortKey: "0:0:z:2026-06-02T07:18:00.000Z:G2bbb" }),
+        ],
+      }),
+      "Pmain" as GxserverProjectId,
+      ["G2bbb" as GxserverSessionId, "G1aaa" as GxserverSessionId],
+    );
+
+    expect(next.groups[0]?.sessionIds).toEqual(["G2bbb", "G1aaa"]);
+    expect(next.sessions.map((item) => [item.sessionId, item.sidebarOrder])).toEqual([
+      ["G2bbb", 0],
+      ["G1aaa", 1000],
+    ]);
   });
 });

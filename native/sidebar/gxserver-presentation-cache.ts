@@ -4,6 +4,7 @@ import type {
   GxserverPresentationProject,
   GxserverPresentationSnapshot,
   GxserverProjectDomainState,
+  GxserverProjectId,
   GxserverSessionId,
 } from "../../shared/gxserver-protocol";
 
@@ -98,6 +99,46 @@ export function reduceGxserverProjectCacheForPresentationDelta(
     return projects.filter((project) => project.projectId !== delta.projectId);
   }
   return [...projects];
+}
+
+export function reorderPresentationProjectSessions(
+  presentation: GxserverPresentationSnapshot,
+  projectId: GxserverProjectId,
+  orderedSessionIds: readonly GxserverSessionId[],
+): GxserverPresentationSnapshot {
+  const sidebarOrderBySessionId = new Map<GxserverSessionId, number>();
+  orderedSessionIds.forEach((sessionId, index) => {
+    sidebarOrderBySessionId.set(sessionId, index * 1000);
+  });
+  let didChange = false;
+  /*
+  CDXC:PinnedSessions 2026-06-02-20:11:
+  Dragging pinned sessions posts an order against the synthetic project group while the visible sidebar renders from gxserver presentation. Apply the same explicit sidebar order to the local presentation cache first so the row moves immediately and then persists through gxserver.
+  */
+  const sessions = presentation.sessions.map((session) => {
+    if (session.projectId !== projectId) {
+      return session;
+    }
+    const sidebarOrder = sidebarOrderBySessionId.get(session.sessionId);
+    if (sidebarOrder === undefined || (session as { sidebarOrder?: number }).sidebarOrder === sidebarOrder) {
+      return session;
+    }
+    didChange = true;
+    return {
+      ...session,
+      sidebarOrder,
+      sortKey: createPresentationSessionSortKeyWithSidebarOrder(session, sidebarOrder),
+    };
+  });
+  if (!didChange) {
+    return presentation;
+  }
+  const orderedSessions = orderPresentationSessions(sessions);
+  return {
+    ...presentation,
+    groups: reconcilePresentationGroupSessionIds(presentation.groups, orderedSessions),
+    sessions: orderedSessions,
+  };
 }
 
 export function createPresentationProjectFromGxserverProject(
@@ -248,4 +289,14 @@ function orderPresentationSessions(
     left.sortKey.localeCompare(right.sortKey) ||
     left.sessionId.localeCompare(right.sessionId),
   );
+}
+
+function createPresentationSessionSortKeyWithSidebarOrder(
+  session: GxserverPresentationSnapshot["sessions"][number],
+  sidebarOrder: number,
+): string {
+  const activeRank = session.lifecycleState === "running" || session.lifecycleState === "sleeping" ? "0" : "1";
+  const pinRank = session.isPinned ? "0" : session.isFavorite ? "1" : "2";
+  const timestamp = session.lastActiveAt ?? session.updatedAt;
+  return `${activeRank}:${pinRank}:${String(sidebarOrder).padStart(12, "0")}:${timestamp}:${session.sessionId}`;
 }
