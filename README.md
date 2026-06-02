@@ -67,12 +67,12 @@ Or just download the latest dmg from the releases page
 
 <br />
 
-## gxserver Planned architecture in v4 :)
-
-Will allow connecting from any client app to projects on local + multiple remote machines
+## Planned client-server architecture in v4 :)
+Currently the macOS app is the client (for showing the UI) + it has all the logic for managing the zmx providers and agents (backend logic)
+I'm planning to move this logic to a new gxserver daemon that you can run on your local/remote machines.
+This will allow connecting from any client app to projects on local + multiple remote machines.
 
 <img width="1540" height="620" alt="image" src="https://github.com/user-attachments/assets/a33a3ed0-4b25-4a38-bdd7-1abfeecc8e51" />
-
 
 ### 2 Rich Prompt Editor Modes! Monaco based & TUI based:
 
