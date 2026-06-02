@@ -8699,31 +8699,35 @@ async function requestPreviousSessionsFromGxserver(input: {
     CDXC:GxserverPresentationSearch 2026-06-01-15:08:
     Previous Sessions modal results come from gxserver metadata search on open and while typing. Cache the current result page in memory only so restore/delete actions can resolve the selected row without restoring the retired native previous-session persistence cache.
     */
-    sidebarBus.post({
+    const message: ExtensionToSidebarMessage = {
       previousSessions: items,
       query: input.query,
       requestId: input.requestId,
       type: "previousSessionsResult",
-    });
+    };
+    sidebarBus.post(message);
+    postAppModalHost({ message, type: "sidebarState" });
   } catch (error) {
     appendSidebarRefreshDebugLog("nativeSidebar.gxserver.previousSessions.requestFailed", {
       message: error instanceof Error ? error.message : String(error),
       queryLength: input.query?.length ?? 0,
       requestId: input.requestId,
     });
-    sidebarBus.post({
+    const message: ExtensionToSidebarMessage = {
       previousSessions: [],
       query: input.query,
       requestId: input.requestId,
       type: "previousSessionsResult",
-    });
+    };
+    sidebarBus.post(message);
+    postAppModalHost({ message, type: "sidebarState" });
   }
 }
 
 function gxserverSearchResultToPreviousSessionItem(
   result: GxserverPresentationSearchResult,
 ): SidebarPreviousSessionItem {
-  const title = result.title || "Previous Session";
+  const title = result.primaryTitle || result.title || "Previous Session";
   const closedAt = result.lastActiveAt ?? new Date().toISOString();
   const archivedRecord = {
     alias: title,
@@ -8734,9 +8738,13 @@ function gxserverSearchResultToPreviousSessionItem(
     kind: "terminal",
     sessionId: result.sessionId,
     sessionPersistenceProvider: "zmx",
-    title,
-    titleSource: "terminal-auto",
+    title: result.title || title,
+    titleSource: result.titleSource,
   } satisfies Partial<TerminalSessionRecord>;
+  /*
+  CDXC:GxserverPresentationSearch 2026-06-01-22:06:
+  Previous-session rows are dumb receivers of gxserver title projection. Preserve `isPrimaryTitleTerminalTitle` and terminal/primary title fields from search results so the shared card renderer only shows the `∗` unsynced marker for placeholders or non-persistent titles.
+  */
   return {
     activity: result.lifecycleState === "running" ? "idle" : "idle",
     alias: title,
@@ -8751,7 +8759,8 @@ function gxserverSearchResultToPreviousSessionItem(
     isRunning: false,
     isVisible: false,
     lifecycleState: "done",
-    primaryTitle: title,
+    isPrimaryTitleTerminalTitle: result.isPrimaryTitleTerminalTitle,
+    primaryTitle: result.primaryTitle ?? title,
     projectId: result.projectId,
     projectName: result.projectTitle,
     row: 0,
@@ -8759,6 +8768,7 @@ function gxserverSearchResultToPreviousSessionItem(
     sessionKind: "terminal",
     sessionRecord: archivedRecord as TerminalSessionRecord,
     shortcutLabel: "",
+    terminalTitle: result.terminalTitle,
     ...(result.cwd ? { projectPath: result.cwd } : {}),
     ...(result.lastActiveAt ? { lastInteractionAt: result.lastActiveAt } : {}),
   };
@@ -10975,13 +10985,11 @@ function createPresentationSidebarGroups(
       isGxserverPresentationChatProject(project, localProjectsById.get(project.projectId)),
     ),
   );
-  const chatSessions = chatProjects.flatMap((project) => {
-    const localProject = localProjectsById.get(project.projectId);
-    const isActiveProject = project.projectId === activeProjectId;
-    return (presentationSessionsByProject.get(project.projectId) ?? []).map((session, index) =>
-      createPresentationSidebarSession(project.projectId, session, index, isActiveProject, localProject),
-    );
-  });
+  const chatSessions = createPresentationQuickSidebarSessions(
+    chatProjects,
+    presentationSessionsByProject,
+    localProjectsById,
+  );
   const groups = orderGxserverPresentationProjectsForNativeSidebar(
     visiblePresentationProjects.filter(
       (project) => !isGxserverPresentationChatProject(project, localProjectsById.get(project.projectId)),
@@ -11013,7 +11021,14 @@ function createPresentationSidebarGroups(
   return [
     {
       groupId: COMBINED_CHATS_GROUP_ID,
-      isActive: chatProjects.some((project) => project.projectId === activeProjectId),
+      isActive:
+        chatProjects.some((project) => project.projectId === activeProjectId) ||
+        projects.some(
+          (project) =>
+            project.projectId === activeProjectId &&
+            project.isRecentProject !== true &&
+            isQuickProject(project),
+        ),
       isChatCollection: true,
       isFocusModeActive: false,
       kind: "workspace",
@@ -11024,6 +11039,54 @@ function createPresentationSidebarGroups(
       visibleCount: clampVisibleSessionCount(Math.max(1, chatSessions.filter((session) => session.isVisible).length)),
     },
     ...groups,
+  ];
+}
+
+function createPresentationQuickSidebarSessions(
+  chatProjects: readonly GxserverPresentationProject[],
+  presentationSessionsByProject: ReadonlyMap<string, readonly GxserverPresentationSession[]>,
+  localProjectsById: ReadonlyMap<string, NativeProject>,
+): SidebarSessionItem[] {
+  const chatProjectsById = new Map<string, GxserverPresentationProject>(
+    chatProjects.map((project) => [project.projectId, project]),
+  );
+  const localQuickProjects = orderNativeProjectsForSidebar(projects).filter(
+    (project) => project.isRecentProject !== true && isQuickProject(project),
+  );
+  const localQuickProjectIds = new Set(localQuickProjects.map((project) => project.projectId));
+  const presentationOnlyChatProjects = chatProjects.filter((project) => !localQuickProjectIds.has(project.projectId));
+
+  /*
+  CDXC:GxserverPresentationQuick 2026-06-01-22:01:
+  Quick browser/file rows are still local macOS panes, not gxserver sessions. The gxserver presentation adapter must merge those local Quick panes into the synthetic Quick/Chats group while preferring gxserver projection for any terminal session that already has a matching presentation row.
+  */
+  return [
+    ...localQuickProjects.flatMap((project, projectIndex) => {
+      if (quickKindForProject(project) === "editor") {
+        return [createQuickFileSidebarSession(project, projectIndex)];
+      }
+      const presentationProject = chatProjectsById.get(project.projectId);
+      const presentationSessionKeys = new Set<string>(
+        (presentationSessionsByProject.get(project.projectId) ?? []).map((session) => session.sessionId),
+      );
+      const isActiveProject = project.projectId === activeProjectId;
+      const presentationSessions = (presentationSessionsByProject.get(project.projectId) ?? []).map((session, index) =>
+        createPresentationSidebarSession(project.projectId, session, index, isActiveProject, project),
+      );
+      const localOnlySessions = createProjectedSidebarGroupsForProject(project)
+        .flatMap((group) => group.sessions)
+        .filter((session) => !presentationSessionKeys.has(session.sessionId));
+      return presentationProject || localOnlySessions.length > 0
+        ? [...presentationSessions, ...localOnlySessions]
+        : localOnlySessions;
+    }),
+    ...presentationOnlyChatProjects.flatMap((project) => {
+      const localProject = localProjectsById.get(project.projectId);
+      const isActiveProject = project.projectId === activeProjectId;
+      return (presentationSessionsByProject.get(project.projectId) ?? []).map((session, index) =>
+        createPresentationSidebarSession(project.projectId, session, index, isActiveProject, localProject),
+      );
+    }),
   ];
 }
 

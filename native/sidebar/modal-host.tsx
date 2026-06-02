@@ -2811,6 +2811,10 @@ function useModalStateFromNative() {
             setOSIntegrationStatus(message.message);
             return;
           }
+          if (isPreviousSessionsResultMessage(message.message)) {
+            window.postMessage(message.message, "*");
+            return;
+          }
           applySidebarStateMessage(message.message);
         }
       } catch (error) {
@@ -2888,6 +2892,21 @@ function isOSIntegrationStatusMessage(message: unknown): message is SidebarOSInt
       typeof message === "object" &&
       "type" in message &&
       message.type === "osIntegrationStatus",
+  );
+}
+
+function isPreviousSessionsResultMessage(
+  message: unknown,
+): message is Extract<ExtensionToSidebarMessage, { type: "previousSessionsResult" }> {
+  /*
+  CDXC:PreviousSessionsModal 2026-06-01-22:01:
+  The full-window Previous Sessions modal lives in the app modal host WebView, while gxserver previous-session queries are requested through the native sidebar bridge. Forward the result as a normal window message so the shared modal component receives the same response path it uses inside the sidebar WebView.
+  */
+  return Boolean(
+    message &&
+      typeof message === "object" &&
+      "type" in message &&
+      message.type === "previousSessionsResult",
   );
 }
 
