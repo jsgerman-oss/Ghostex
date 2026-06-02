@@ -25,7 +25,7 @@ Full list of features at the bottom :)
 The same Homebrew command installs the correct Apple Silicon or Intel Mac build automatically.
 
 ```bash
-brew install --cask maddada/tap/ghostex --force
+brew update && brew install --cask maddada/tap/ghostex --force
 ```
 
 Or just download the latest dmg from the releases page
