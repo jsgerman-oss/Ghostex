@@ -67,6 +67,13 @@ Or just download the latest dmg from the releases page
 
 <br />
 
+## gxserver Planned architecture in v4 :)
+
+Will allow connecting from any client app to projects on local + multiple remote machines
+
+<img width="1540" height="620" alt="image" src="https://github.com/user-attachments/assets/a33a3ed0-4b25-4a38-bdd7-1abfeecc8e51" />
+
+
 ### 2 Rich Prompt Editor Modes! Monaco based & TUI based:
 
 <img width="2048" height="1270" alt="74730" src="https://github.com/user-attachments/assets/a94c00ea-d373-4d72-acc9-b6a16318b4b3" />
