@@ -93,17 +93,17 @@ Ghostex supports notifications, menu bar indicators, minimal floating counters, 
 
 | Feature | Ghostex | Codex app | cmux |
 | --- | --- | --- | --- |
-| Open source | Yes | No | Yes |
-| Ghostty terminal | Yes | No | Yes |
-| Built-in Computer use | Yes | Yes | No |
+| Open source | Yes | - | Yes |
+| Ghostty terminal | Yes | - | Yes |
+| Built-in Computer use | Yes | Yes | - |
 | Built-in Browser use | Yes | Yes | Yes |
-| Use any model | Yes | No | Yes |
-| Cross Model Orchestration | Yes | No | Yes |
-| Rich Prompt Editor | Yes | N/A | No |
-| iOS & Android | Yes | Yes | No |
-| Pets | Yes | Yes | No |
-| Appshots | Soon | Yes | No |
-| Automations | Soon | Yes | No |
+| Use any model | Yes | - | Yes |
+| Cross Model Orchestration | Yes | - | Yes |
+| Rich Prompt Editor | Yes | N/A | - |
+| iOS & Android | Yes | Yes | - |
+| Pets | Yes | Yes | - |
+| Appshots | Soon™ | Yes | - |
+| Automations | Soon™ | Yes | - |
 
 ## Main Features
 
