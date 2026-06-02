@@ -1,6 +1,8 @@
 
 ## All features:
 
+- Native command bridge probes the login shell PATH so GUI-started agents can find OpenCode, mise, npm, and other shell-installed tools.
+- OpenCode integration setup refreshes the Ghostex session plugin for newer OpenCode event APIs.
 - Project board Backlog lane, per-lane ticket creation, improved Create & Start, bead-comment Start Work prompts, and immediate session focus when starting work from Kanban.
 - Command pane defaults to 125px height, supports up to 90% workspace height, and native Beads accepts backlog status updates.
 - Floating menus, selects, popovers, and tooltips share sidebar tooltip border styling for clearer edges.

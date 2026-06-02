@@ -2,6 +2,11 @@
 
 <!-- CDXC:Distribution 2026-05-30-09:52: Release notes for 3.26.0 must include all user-facing commits after v3.25.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
 
+## 3.26.2 - 2026-06-02
+
+- Native command bridge probes the login shell PATH once at launch so GUI-started agents can find OpenCode, mise, npm, and other tools installed through shell startup files.
+- OpenCode integration setup refreshes the session plugin for newer OpenCode event APIs and reports installed when the Ghostex plugin file is present.
+
 ## 3.26.1 - 2026-06-01
 
 - Mobile and remote CLI session commands fall back to persisted sidebar session state when the live Ghostex bridge is unavailable, so Android and other clients no longer show a misleading empty session list.
