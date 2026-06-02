@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -150,6 +151,55 @@ function getViewportClampedMenuStyle(
   };
 }
 
+export function getSidebarContextMenuBackdropRetarget({
+  backdrop,
+  clientX,
+  clientY,
+  elementFromPoint,
+}: {
+  backdrop: HTMLElement;
+  clientX: number;
+  clientY: number;
+  elementFromPoint: (x: number, y: number) => Element | null;
+}): Element | undefined {
+  const previousPointerEvents = backdrop.style.pointerEvents;
+  backdrop.style.pointerEvents = "none";
+
+  try {
+    const target = elementFromPoint(clientX, clientY);
+    if (!target || target === backdrop || backdrop.contains(target)) {
+      return undefined;
+    }
+
+    return target;
+  } finally {
+    backdrop.style.pointerEvents = previousPointerEvents;
+  }
+}
+
+function dispatchBackdropContextMenuToRetarget(
+  event: ReactMouseEvent<HTMLButtonElement>,
+  target: Element,
+): void {
+  target.dispatchEvent(
+    new MouseEvent("contextmenu", {
+      altKey: event.altKey,
+      bubbles: true,
+      button: event.button,
+      buttons: event.buttons,
+      cancelable: true,
+      clientX: event.clientX,
+      clientY: event.clientY,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      screenX: event.screenX,
+      screenY: event.screenY,
+      shiftKey: event.shiftKey,
+      view: window,
+    }),
+  );
+}
+
 /**
  * CDXC:SidebarContextMenu 2026-05-20-12:30:
  * Session and project context menus use a transparent backdrop above sidebar
@@ -161,6 +211,12 @@ function getViewportClampedMenuStyle(
  * CDXC:SidebarContextMenu 2026-05-21-04:35:
  * Native open/close notifications must run in useLayoutEffect so the AppKit
  * outside-click monitor is armed before the user can click a terminal pane.
+ *
+ * CDXC:SidebarContextMenu 2026-06-02-21:07:
+ * A second right-click on a sidebar session while another context menu is open
+ * must dismiss the old menu and open the menu owned by the session under the
+ * pointer. Retarget backdrop contextmenu events to the underlying element so
+ * session rows keep priority over the surrounding project/group menu.
  */
 export function SidebarContextMenuPortal({
   children,
@@ -235,7 +291,17 @@ export function SidebarContextMenuPortal({
         onClick={onDismiss}
         onContextMenu={(event) => {
           event.preventDefault();
+          event.stopPropagation();
+          const retarget = getSidebarContextMenuBackdropRetarget({
+            backdrop: event.currentTarget,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            elementFromPoint: (x, y) => document.elementFromPoint(x, y),
+          });
           onDismiss();
+          if (retarget) {
+            dispatchBackdropContextMenuToRetarget(event, retarget);
+          }
         }}
         type="button"
       />
