@@ -1916,14 +1916,51 @@
 }
 
 .git-commit-modal-textarea {
+  /*
+   * CDXC:TitlebarGit 2026-06-02-18:59:
+   * Commit review needs a fixed message editor that is 20px shorter than the
+   * previous 180px box. Do not let manual resize or content-driven field sizing
+   * change the modal layout; long messages should scroll inside the textarea.
+   *
+   * CDXC:TitlebarGit 2026-06-02-19:07:
+   * The commit message editor should be 10px shorter again, for a fixed 150px
+   * total height. Long messages need a visible thin scrollbar with transparent
+   * track and #757575 thumb so overflow is discoverable without adding chrome.
+   *
+   * CDXC:TitlebarGit 2026-06-02-19:12:
+   * The same fixed editor should be reduced by another 4px to a 146px total
+   * height while keeping the non-resizable overflow-scroll behavior unchanged.
+   */
+  field-sizing: fixed;
   font-family: inherit;
   font-size: 14px;
   font-weight: 500;
+  height: 146px;
   letter-spacing: 0;
   line-height: 1.5;
-  min-height: 180px;
-  resize: vertical;
+  max-height: 146px;
+  min-height: 146px;
+  overflow-y: auto;
+  resize: none;
+  scrollbar-color: #757575 transparent;
+  scrollbar-width: thin;
   text-transform: none;
+}
+
+.git-commit-modal-textarea::-webkit-scrollbar {
+  background: transparent;
+  display: block;
+  height: 6px;
+  width: 6px;
+}
+
+.git-commit-modal-textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.git-commit-modal-textarea::-webkit-scrollbar-thumb {
+  background-color: #757575;
+  border-radius: 999px;
 }
 
 .git-commit-files-panel {
@@ -2124,6 +2161,14 @@
 }
 
 .git-commit-modal-button {
+  /*
+   * CDXC:TitlebarGit 2026-06-02-19:47:
+   * Commit review footer actions should match the prompt-agent dropdown height
+   * in the same row so Cancel, generated-commit actions, and Commit align as
+   * one control group.
+   */
+  height: 2.25rem;
+  min-height: 2.25rem;
   min-width: 132px;
 }
 
