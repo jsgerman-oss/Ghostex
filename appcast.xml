@@ -8,6 +8,16 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
         <link>https://github.com/maddada/Ghostex/releases</link>
         <description>Sparkle appcast for Ghostex macOS releases.</description>
         <item>
+            <title>3.26.2</title>
+            <pubDate>Tue, 02 Jun 2026 13:36:13 +0400</pubDate>
+            <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.26.2</sparkle:fullReleaseNotesLink>
+            <sparkle:version>32602</sparkle:version>
+            <sparkle:shortVersionString>3.26.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/maddada/Ghostex/releases/download/v3.26.2/ghostex-3.26.2-arm64.dmg" length="187040448" type="application/octet-stream" sparkle:edSignature="UAXBqredQ0WL0C4mBIPdj7VvIOeJGRoj0lG49pHJsq4PDGO2DRQRftzlFCZXr5dxwF1dAXlILQEErbSsM+irAw=="/>
+        </item>
+        <item>
             <title>3.26.1</title>
             <pubDate>Mon, 01 Jun 2026 18:43:20 +0400</pubDate>
             <sparkle:fullReleaseNotesLink>https://github.com/maddada/Ghostex/releases/tag/v3.26.1</sparkle:fullReleaseNotesLink>
@@ -69,6 +79,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </channel>
 </rss>
 <!-- sparkle-signatures:
-edSignature: bmCIQn7lxPhLbDycuyBoYk51TZ9UGY5SVM4UVdOtApI3SX9qXw5XsrneGmCuLDafsPpF7OMb7SesAU81s679Aw==
-length: 5532
+edSignature: KxyknmA6LirmZgBY8ayHAnuU+qrgdIKhvdlpzwreC+rIf478xZ0ea2LwYuvldZRwEVpvM8fHnPHn+SkhOdPfDQ==
+length: 6275
 -->
