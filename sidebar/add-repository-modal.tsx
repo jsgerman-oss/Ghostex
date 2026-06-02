@@ -1,5 +1,5 @@
 import { IconFolderOpen, IconInfoCircle } from "@tabler/icons-react";
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,6 +16,9 @@ import { AppTooltip, TooltipProvider } from "./app-tooltip";
 import { postAppModalHostMessage } from "./app-modal-host-bridge";
 
 const ADD_REPOSITORY_LAST_LOCATION_STORAGE_KEY = "ghostex.addRepository.lastLocation";
+const ADD_REPOSITORY_OPTION_HELP_TOOLTIP_STYLE = {
+  maxWidth: "min(230px, 90vw)",
+} satisfies CSSProperties;
 
 type AddRepositoryCloneRequest = {
   cloneMainOnly: boolean;
@@ -374,6 +377,9 @@ export function AddRepositoryModal({
                 {/*
                 CDXC:AddRepository 2026-06-01-10:28:
                 The Clone Repository modal needs explicit unchecked clone-scope options for reference-only repositories. Keep the option help adjacent to each checkbox so users understand main-only and shallow clones are for repos they want to inspect, not repos they expect to work on heavily.
+
+                CDXC:AddRepository 2026-06-02-20:12:
+                Clone option help tooltips must wrap within a 230px maximum width so explanatory copy stays readable and does not span across the modal.
                 */}
                 <label className="add-repository-option" htmlFor={cloneMainOnlyId}>
                   <input
@@ -385,7 +391,10 @@ export function AddRepositoryModal({
                     type="checkbox"
                   />
                   <span className="add-repository-option-label">Clone main only</span>
-                  <AppTooltip content="Use for repos you mostly want as references. This fetches only the main branch, so avoid it for repos you plan to work on heavily across branches.">
+                  <AppTooltip
+                    content="Use for repos you mostly want as references. This fetches only the main branch, so avoid it for repos you plan to work on heavily across branches."
+                    contentStyle={ADD_REPOSITORY_OPTION_HELP_TOOLTIP_STYLE}
+                  >
                     <span
                       aria-label="Clone main only help"
                       className="add-repository-option-info"
@@ -406,7 +415,10 @@ export function AddRepositoryModal({
                     type="checkbox"
                   />
                   <span className="add-repository-option-label">Shallow clone</span>
-                  <AppTooltip content="Use for repos you mostly want as references. This fetches only the latest history depth, so avoid it for repos you plan to work on heavily with blame, bisect, or older commits.">
+                  <AppTooltip
+                    content="Use for repos you mostly want as references. This fetches only the latest history depth, so avoid it for repos you plan to work on heavily with blame, bisect, or older commits."
+                    contentStyle={ADD_REPOSITORY_OPTION_HELP_TOOLTIP_STYLE}
+                  >
                     <span
                       aria-label="Shallow clone help"
                       className="add-repository-option-info"
