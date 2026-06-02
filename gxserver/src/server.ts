@@ -516,7 +516,7 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
 
   /*
   CDXC:GxserverApi 2026-05-30-17:08:
-  `/api/queryLogs` now implements the gxserver-16 read-only local log API while preserving gxserver-5 auth, method, protocol, and listener gates. The endpoint stays local-only until remote log redaction/scope rules are defined, so remote clients must use a local/tunneled authenticated daemon connection rather than scraping `~/.ghostex/gxserver/logs/gxserver.jsonl`.
+  `/api/queryLogs` now implements the gxserver-16 read-only local log API while preserving gxserver-5 auth, method, protocol, and listener gates. The endpoint stays local-only until remote log redaction/scope rules are defined, so remote clients must use a local/tunneled authenticated daemon connection rather than scraping `~/.ghostex/logs/gxserver.jsonl`.
   */
   if (endpoint.path === "/api/queryLogs") {
     try {

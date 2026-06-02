@@ -24,7 +24,7 @@ export class GxserverLogQueryInputError extends Error {
 
 /*
 CDXC:GxserverLogs 2026-05-30-16:58:
-`/api/queryLogs` is a read-only API over `~/.ghostex/gxserver/logs/gxserver.jsonl`. Keep the parser tolerant of malformed historical lines, but validate query filters up front so future gx logs clients get deterministic filter, limit, and ordering behavior instead of local filesystem scraping.
+`/api/queryLogs` is a read-only API over `~/.ghostex/logs/gxserver.jsonl`. Keep the parser tolerant of malformed historical lines, but validate query filters up front so future gx logs clients get deterministic filter, limit, and ordering behavior instead of local filesystem scraping.
 
 CDXC:GxserverLogs 2026-05-30-20:09:
 Large gxserver JSONL files must not be loaded, filtered, and sorted as one unbounded string for common recent/tail log queries. Exact scans are limited to small files; larger files read a bounded head or tail window sized from the requested limit, and the result metadata reports when total and malformed counts only describe the scanned window.

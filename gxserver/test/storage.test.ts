@@ -15,7 +15,8 @@ test("gxserver storage paths represent the required root layout", async () => {
     assert.equal(paths.authTokenFile, path.join(paths.rootDir, "auth", "token"));
     assert.equal(paths.configFile, path.join(paths.rootDir, "config.json"));
     assert.equal(paths.stateDbFile, path.join(paths.rootDir, "state.db"));
-    assert.equal(paths.logFile, path.join(paths.rootDir, "logs", "gxserver.jsonl"));
+    assert.equal(paths.logsDir, path.join(homeDir, ".ghostex", "logs"));
+    assert.equal(paths.logFile, path.join(homeDir, ".ghostex", "logs", "gxserver.jsonl"));
     assert.equal(paths.runtimeDir, path.join(paths.rootDir, "runtime"));
     assert.equal(paths.zmxDir, path.join(paths.rootDir, "zmx"));
     assert.equal(paths.migrationsDir, path.join(paths.rootDir, "migrations"));

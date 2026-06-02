@@ -20,11 +20,14 @@ export interface GxserverPaths {
 /*
 CDXC:GxserverStorage 2026-05-30-14:16:
 gxserver owns durable shared daemon state under `~/.ghostex/gxserver`, with explicit paths for auth, config, SQLite state, JSONL logs, runtime metadata, zmx working files, migration artifacts, and stable daemon identity. Keep these paths centralized so future client/API beads do not invent parallel storage locations.
+
+CDXC:GxserverStorage 2026-06-01-21:39:
+Users need one support-bundle folder to zip for diagnostics. Keep gxserver state under `~/.ghostex/gxserver`, but write persistent gxserver logs to the shared `~/.ghostex/logs` directory with the native diagnostic logs.
 */
 export function getGxserverPaths(homeDir = os.homedir()): GxserverPaths {
   const rootDir = path.join(homeDir, ".ghostex", "gxserver");
   const authDir = path.join(rootDir, "auth");
-  const logsDir = path.join(rootDir, "logs");
+  const logsDir = path.join(homeDir, ".ghostex", "logs");
   const migrationsDir = path.join(rootDir, "migrations");
   const runtimeDir = path.join(rootDir, "runtime");
   const zmxDir = path.join(rootDir, "zmx");

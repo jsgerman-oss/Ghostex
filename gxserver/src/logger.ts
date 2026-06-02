@@ -18,7 +18,7 @@ const REDACTED_SECRET = "[redacted:secret]";
 
 /*
 CDXC:GxserverLogs 2026-05-30-14:16:
-gxserver writes structured JSONL to `~/.ghostex/gxserver/logs/gxserver.jsonl` with camelCase fields. This is the foundation for later log query/migration APIs, so every line must be independently parseable JSON and include stable request/session/project identity fields when available.
+gxserver writes structured JSONL to `~/.ghostex/logs/gxserver.jsonl` with camelCase fields. This is the foundation for later log query/migration APIs, so every line must be independently parseable JSON and include stable request/session/project identity fields when available.
 
 CDXC:GxserverLogs 2026-05-30-23:52:
 Users must be able to zip and share gxserver logs without leaking project/session names, filesystem paths, prompt text, command text, URLs with private query strings, or credentials. Sanitize every optional message/error/details field and legacy-derived string field at the JSONL boundary so future call sites cannot bypass the ID-first logging contract.
