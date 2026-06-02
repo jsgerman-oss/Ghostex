@@ -40,8 +40,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type CSSProperties,
+  type Dispatch,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 import { createRoot } from "react-dom/client";
 import { motion } from "motion/react";
@@ -335,12 +338,19 @@ const TITLEBAR_PROJECT_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_CENTER_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const TITLEBAR_RIGHT_CONTROLS_TOP = TITLEBAR_CONTROL_TOP;
 const RESOURCE_POLL_INTERVAL_MS = 5_000;
+type DropdownMenuOpenChange = NonNullable<ComponentProps<typeof DropdownMenu>["onOpenChange"]>;
+type TitlebarDropdownOpenChangeDetails = Parameters<DropdownMenuOpenChange>[1];
 /**
  * CDXC:ReactTitlebar 2026-05-11-09:17
  * Titlebar split-button menus are triggered from their chevrons but should
  * visually land under the whole grouped control. Use shadcn/Radix tooltips for
  * hover labels instead of native title attributes so the titlebar matches the
  * sidebar interaction model.
+ *
+ * CDXC:ReactTitlebar 2026-06-02-19:21:
+ * Top-right macOS titlebar dropdowns must stay open when the pointer leaves
+ * the dropdown or the isolated titlebar WKWebView. Dismiss them only from an
+ * explicit item/escape/outside-click close or the native AppKit close hook.
  */
 const TITLEBAR_SPLIT_MENU_CENTER_OFFSET = -14;
 
@@ -528,6 +538,24 @@ async function readResourceProcesses(): Promise<ResourceProcess[]> {
     "pid=,ppid=,pcpu=,rss=,command=",
   ]);
   return result.exitCode === 0 ? parseResourceProcessTable(result.stdout) : [];
+}
+
+function setTitlebarDropdownOpen(
+  setOpen: Dispatch<SetStateAction<boolean>>,
+  open: boolean,
+  details?: TitlebarDropdownOpenChangeDetails,
+): void {
+  if (!open && shouldIgnoreTitlebarPointerExitClose(details)) {
+    details?.cancel();
+    return;
+  }
+  setOpen(open);
+}
+
+function shouldIgnoreTitlebarPointerExitClose(
+  details?: TitlebarDropdownOpenChangeDetails,
+): boolean {
+  return details?.reason === "trigger-hover" || details?.reason === "focus-out";
 }
 
 /**
@@ -1447,6 +1475,7 @@ function App() {
         setActionsMenuOpen(false);
         setGitMenuOpen(false);
         setKeepAwakeMenuOpen(false);
+        setModeMenuOpen(false);
         setOpenInMenuOpen(false);
         setResourcesMenuOpen(false);
         setTipsMenuOpen(false);
@@ -2107,7 +2136,9 @@ function App() {
             <TitlebarModeDropdown
               activeMode={activeMode}
               modes={titlebarModes}
-              onOpenChange={setModeMenuOpen}
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setModeMenuOpen, open, details)
+              }
               open={modeMenuOpen}
             />
           </div>
@@ -2169,7 +2200,12 @@ function App() {
              * titlebar control order, keeping the info/help affordance closer to
              * the mode switcher while power controls remain farther right.
              */}
-            <DropdownMenu onOpenChange={setTipsMenuOpen} open={tipsMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setTipsMenuOpen, open, details)
+              }
+              open={tipsMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group titlebar-tips-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -2235,7 +2271,12 @@ function App() {
               </DropdownMenuContent>
             </DropdownMenu>
             {!projectState.keepAwake.hideTitlebarControl ? (
-              <DropdownMenu onOpenChange={setKeepAwakeMenuOpen} open={keepAwakeMenuOpen}>
+              <DropdownMenu
+                onOpenChange={(open, details) =>
+                  setTitlebarDropdownOpen(setKeepAwakeMenuOpen, open, details)
+                }
+                open={keepAwakeMenuOpen}
+              >
                 <ButtonGroup className="titlebar-open-group titlebar-keep-awake-group" data-titlebar-hit-region>
                   <Tooltip>
                     <TooltipTrigger
@@ -2323,7 +2364,12 @@ function App() {
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : null}
-            <DropdownMenu onOpenChange={setResourcesMenuOpen} open={resourcesMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setResourcesMenuOpen, open, details)
+              }
+              open={resourcesMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -2399,7 +2445,12 @@ function App() {
                 />
               </DropdownMenuContent>
             </DropdownMenu>
-            <DropdownMenu onOpenChange={setGitMenuOpen} open={gitMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setGitMenuOpen, open, details)
+              }
+              open={gitMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group titlebar-git-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -2479,7 +2530,12 @@ function App() {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            <DropdownMenu onOpenChange={setActionsMenuOpen} open={actionsMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setActionsMenuOpen, open, details)
+              }
+              open={actionsMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group titlebar-actions-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -2586,7 +2642,12 @@ function App() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <DropdownMenu onOpenChange={setOpenInMenuOpen} open={openInMenuOpen}>
+            <DropdownMenu
+              onOpenChange={(open, details) =>
+                setTitlebarDropdownOpen(setOpenInMenuOpen, open, details)
+              }
+              open={openInMenuOpen}
+            >
               <ButtonGroup className="titlebar-open-group" data-titlebar-hit-region>
                 <Tooltip>
                   <TooltipTrigger
@@ -3796,7 +3857,7 @@ function TitlebarModeDropdown({
 }: {
   activeMode: TitlebarMode;
   modes: TitlebarModeOption[];
-  onOpenChange: (open: boolean) => void;
+  onOpenChange: (open: boolean, details?: TitlebarDropdownOpenChangeDetails) => void;
   open: boolean;
 }) {
   const activeModeOption = modes.find((mode) => mode.value === activeMode) ?? modes[0];
