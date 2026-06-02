@@ -31,6 +31,7 @@ import { createPortal } from "react-dom";
 import {
   forwardRef,
   startTransition,
+  useCallback,
   useLayoutEffect,
   useEffect,
   useEffectEvent,
@@ -79,10 +80,12 @@ import {
 import {
   DEFAULT_WORKSPACE_THEME_COLOR,
   normalizeWorkspaceThemeColor,
-  readWorkspaceThemeColorHistory,
   updateWorkspaceThemeColorHistory,
-  writeWorkspaceThemeColorHistory,
 } from "../shared/workspace-dock-icons";
+import {
+  readWorkspaceThemeColorHistory,
+  writeWorkspaceThemeColorHistory,
+} from "./workspace-theme-color-history";
 
 const CONTEXT_MENU_MARGIN_PX = 12;
 const CONTEXT_MENU_WIDTH_PX = 196;
@@ -98,6 +101,14 @@ const GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_GROUP_DRAG_HOLD_DELAY_MS = 180;
 const TOUCH_GROUP_DRAG_HOLD_TOLERANCE_PX = 12;
 const PROJECT_EDITOR_DISPLAY_MAX_FILES = 99;
+const DISABLED_GROUP_DND_AX_ATTRIBUTES = [
+  "aria-describedby",
+  "aria-disabled",
+  "aria-grabbed",
+  "aria-pressed",
+  "aria-roledescription",
+  "tabindex",
+] as const;
 const NESTED_CONTEXT_MENU_INTERACTIVE_SELECTOR =
   "button, input, textarea, select, a[href], [role='button'], [role='menuitem'], [contenteditable='true'], .group-header-actions";
 
@@ -692,6 +703,7 @@ export function SessionGroupSection({
   const menuRef = useRef<HTMLDivElement>(null);
   const controlMenuRef = useRef<HTMLDivElement>(null);
   const projectAgentButtonRef = useRef<HTMLButtonElement>(null);
+  const groupSectionRef = useRef<HTMLElement | null>(null);
   const debugInstanceIdRef = useRef(createSessionGroupDebugInstanceId());
 
   useEffect(() => {
@@ -788,6 +800,13 @@ export function SessionGroupSection({
     sensors: groupSensors,
     type: "group",
   });
+  const setGroupSectionElement = useCallback(
+    (element: HTMLElement | null) => {
+      groupSectionRef.current = element;
+      sortable.ref(element);
+    },
+    [sortable],
+  );
   const emptyGroupDropTarget = useDroppable({
     accept: "session",
     data: createSessionDropTargetData({
@@ -827,6 +846,7 @@ export function SessionGroupSection({
     Boolean(projectContext) &&
     enableProjectSessionListToggle &&
     orderedSessionIds.length > PROJECT_SESSION_LIST_COLLAPSED_COUNT;
+  const shouldScrubDisabledGroupDndAccessibility = isChatCollection || draggingDisabled;
   const sessionSummary = getGroupSessionSummary(groupSessions);
   const actualSessionCount = storedSessionIds.length;
   const allSessionsSleeping =
@@ -981,6 +1001,49 @@ export function SessionGroupSection({
     postGroupDebugLog,
     sortable.isDropTarget,
   ]);
+
+  useEffect(() => {
+    if (!shouldScrubDisabledGroupDndAccessibility) {
+      return;
+    }
+
+    const element = groupSectionRef.current;
+    if (!element) {
+      return;
+    }
+
+    const scrubDndAccessibilityAttributes = () => {
+      for (const attribute of DISABLED_GROUP_DND_AX_ATTRIBUTES) {
+        element.removeAttribute(attribute);
+      }
+    };
+
+    scrubDndAccessibilityAttributes();
+
+    const observer = new MutationObserver((mutations) => {
+      if (
+        mutations.some(
+          (mutation) =>
+            mutation.type === "attributes" &&
+            mutation.attributeName !== null &&
+            DISABLED_GROUP_DND_AX_ATTRIBUTES.includes(
+              mutation.attributeName as (typeof DISABLED_GROUP_DND_AX_ATTRIBUTES)[number],
+            ),
+        )
+      ) {
+        window.queueMicrotask(scrubDndAccessibilityAttributes);
+      }
+    });
+
+    observer.observe(element, {
+      attributeFilter: [...DISABLED_GROUP_DND_AX_ATTRIBUTES],
+      attributes: true,
+    });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [shouldScrubDisabledGroupDndAccessibility]);
 
   useEffect(() => {
     if (isEditing) {
@@ -1433,6 +1496,7 @@ export function SessionGroupSection({
         data-session-connector={String(showSessionGroupConnector)}
         data-sidebar-group-id={group.groupId}
         data-workspace-custom-theme={String(Boolean(projectContext?.themeColor))}
+        aria-label={shouldScrubDisabledGroupDndAccessibility ? `${group.title} sessions` : undefined}
         onClick={() => {
           if (isCollapsed) {
             return;
@@ -1473,7 +1537,8 @@ export function SessionGroupSection({
             ),
           );
         }}
-        ref={sortable.ref}
+        ref={setGroupSectionElement}
+        role={shouldScrubDisabledGroupDndAccessibility ? "group" : undefined}
       >
         <div
           className="group-head"
@@ -2505,10 +2570,8 @@ function writeProjectSessionListCollapsedState(state: ProjectSessionListCollapse
    * Persist only the collapsed project ids so new projects and projects the
    * user has never collapsed continue to start with all sessions shown.
    *
-   * CDXC:WorktreeProjectOrder 2026-05-25-12:38:
-   * Native worktree creation can activate Show less for the source project so
-   * only the top six sessions remain visible. Broadcast same-document updates
-   * because localStorage storage events do not fire in the writing webview.
+   * CDXC:WorktreeProjectOrder 2026-06-02-15:27:
+   * gxserver owns worktree creation, but the macOS sidebar owns the local Show less state for the source project after submit. Broadcast same-document updates because localStorage storage events do not fire in the writing webview.
    */
   localStorage.setItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY, JSON.stringify(state));
   window.dispatchEvent(new Event(PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT));

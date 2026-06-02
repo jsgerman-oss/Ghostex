@@ -27,6 +27,7 @@ import { useDroppable } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import {
   Fragment,
+  useCallback,
   useEffect,
   useEffectEvent,
   useRef,
@@ -71,6 +72,18 @@ const SESSION_CARD_DRAG_HOLD_TOLERANCE_PX = 12;
 const TOUCH_SESSION_CARD_DRAG_HOLD_DELAY_MS = 130;
 const TOUCH_SESSION_CARD_DRAG_HOLD_TOLERANCE_PX = 12;
 const COMPLETION_FLASH_DURATION_MS = 3_000;
+const DND_SESSION_CARD_AX_ATTRIBUTES = [
+  "aria-describedby",
+  "aria-disabled",
+  "aria-grabbed",
+  "aria-pressed",
+  "aria-roledescription",
+] as const;
+const DND_SESSION_FRAME_AX_ATTRIBUTES = [
+  ...DND_SESSION_CARD_AX_ATTRIBUTES,
+  "role",
+  "tabindex",
+] as const;
 
 function getBrowserFeedbackToolLabel(tool: BrowserFeedbackTool): string {
   return tool === "agentation" ? "Agentation" : "React Grab";
@@ -127,6 +140,17 @@ export type SortableSessionCardProps = {
   showDropPositionIndicator?: boolean;
   vscode: WebviewApi;
 };
+
+export function getSessionCardAccessibleLabel({
+  isFocused,
+  title,
+}: {
+  isFocused: boolean;
+  title: string;
+}): string {
+  const fallbackTitle = title.trim() || "Session";
+  return isFocused ? `${fallbackTitle}, current session` : fallbackTitle;
+}
 
 function clampContextMenuPosition(
   clientX: number,
@@ -218,6 +242,8 @@ export function SortableSessionCard({
   const [completionFlashRunId, setCompletionFlashRunId] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const aliasHeadingRef = useRef<HTMLDivElement>(null);
+  const sessionFrameRef = useRef<HTMLDivElement | null>(null);
+  const sessionCardRef = useRef<HTMLElement | null>(null);
   const debugInstanceIdRef = useRef(createSidebarDebugInstanceId());
   const lastAgentIconRenderDebugKeyRef = useRef<string | undefined>(undefined);
   const isBrowserSession = session?.sessionKind === "browser" || session?.kind === "browser";
@@ -324,6 +350,10 @@ export function SortableSessionCard({
     session,
     showDebugSessionNumbers,
   });
+  const sessionAccessibleLabel = getSessionCardAccessibleLabel({
+    isFocused: session.isFocused,
+    title: sessionTitleTooltip.headingText,
+  });
   const lifecycleState = getSidebarSessionLifecycleState(session);
   const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
   const hasSessionCardIcon =
@@ -335,10 +365,84 @@ export function SortableSessionCard({
   const sessionAnchorStyle = {
     anchorName: getSessionStatusAnchorName(sessionId),
   } as CSSProperties;
+  const setSessionFrameElement = useCallback(
+    (element: HTMLDivElement | null) => {
+      sessionFrameRef.current = element;
+      sortable.ref(element);
+    },
+    [sortable],
+  );
+  const setSessionCardElement = useCallback(
+    (element: HTMLElement | null) => {
+      sessionCardRef.current = element;
+      sortable.sourceRef(element);
+    },
+    [sortable],
+  );
 
   useEffect(() => {
     setContextMenuPosition(undefined);
   }, [session.alias, session.sessionId]);
+
+  useEffect(() => {
+    const targets: Array<{ attributes: readonly string[]; element: HTMLElement }> = [];
+    if (sessionFrameRef.current) {
+      targets.push({
+        attributes: DND_SESSION_FRAME_AX_ATTRIBUTES,
+        element: sessionFrameRef.current,
+      });
+    }
+    if (sessionCardRef.current) {
+      targets.push({
+        attributes: DND_SESSION_CARD_AX_ATTRIBUTES,
+        element: sessionCardRef.current,
+      });
+    }
+    if (targets.length === 0) {
+      return;
+    }
+
+    const scrubDndAccessibilityAttributes = (target: {
+      attributes: readonly string[];
+      element: HTMLElement;
+    }) => {
+      for (const attribute of target.attributes) {
+        target.element.removeAttribute(attribute);
+      }
+    };
+
+    for (const target of targets) {
+      scrubDndAccessibilityAttributes(target);
+    }
+
+    const observers = targets.map((target) => {
+      const observer = new MutationObserver((mutations) => {
+        if (
+          mutations.some(
+            (mutation) =>
+              mutation.type === "attributes" &&
+              mutation.attributeName !== null &&
+              target.attributes.includes(mutation.attributeName),
+          )
+        ) {
+          window.queueMicrotask(() => scrubDndAccessibilityAttributes(target));
+        }
+      });
+
+      observer.observe(target.element, {
+        attributeFilter: [...target.attributes],
+        attributes: true,
+      });
+
+      return observer;
+    });
+
+    return () => {
+      for (const observer of observers) {
+        observer.disconnect();
+      }
+    };
+  }, [sessionAccessibleLabel]);
 
   useEffect(() => {
     if (completionFlashNonce <= 0) {
@@ -1168,7 +1272,7 @@ export function SortableSessionCard({
           data-running={String(lifecycleState === "running")}
           data-sleeping={String(Boolean(session.isSleeping))}
           data-visible={String(session.isVisible)}
-          ref={sortable.ref}
+          ref={setSessionFrameElement}
         >
           <div
             aria-hidden
@@ -1181,9 +1285,8 @@ export function SortableSessionCard({
             ref={afterDropTarget.ref}
           />
           <article
-            aria-expanded={contextMenuPosition ? true : undefined}
-            aria-haspopup="menu"
-            aria-pressed={session.isFocused}
+            aria-current={session.isFocused ? "page" : undefined}
+            aria-label={sessionAccessibleLabel}
             className="session"
             data-activity={session.activity}
             data-completion-flash={
@@ -1272,7 +1375,7 @@ export function SortableSessionCard({
               openContextMenu(event.clientX, event.clientY);
             }}
             onKeyDown={handleKeyDown}
-            ref={sortable.sourceRef}
+            ref={setSessionCardElement}
             role="button"
             style={sessionAnchorStyle}
             tabIndex={0}
