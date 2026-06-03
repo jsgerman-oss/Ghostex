@@ -1190,6 +1190,8 @@ let lastPersistedProjectsPayloadJson: string | undefined;
 const projectEditorSleepTimeoutByProjectId = new Map<string, number>();
 const projectEditorOpenTimeoutByProjectId = new Map<string, number>();
 let nativeAutoSleepMonitorIntervalId: number | undefined;
+let gxserverPresentationRecoveryTimeout: number | undefined;
+let gxserverPresentationRecoveryAttempt = 0;
 const sessionFocusPreviousProjectModeByProjectId = new Map<string, ProjectEditorSurfaceMode>();
 const awakeProjectEditorModesByProjectId = new Map<string, Set<ProjectEditorSurfaceMode>>();
 const projectEditorSurfaceByProjectId = new Map<
@@ -1240,6 +1242,7 @@ const pendingRemoteGxserverResults = new Map<
     timeout: number;
   }
 >();
+const remoteGxserverPresentationRecoveryTimeouts = new Map<string, number>();
 const pendingPersistenceSessionStateResults = new Map<
   string,
   {
@@ -2296,16 +2299,25 @@ function startGxserverPresentationSubscription(): void {
   if (!gxserverStartupSnapshot?.presentation || gxserverPresentationSubscription) {
     return;
   }
+  if (gxserverPresentationRecoveryTimeout !== undefined) {
+    window.clearTimeout(gxserverPresentationRecoveryTimeout);
+    gxserverPresentationRecoveryTimeout = undefined;
+  }
+  gxserverPresentationRecoveryAttempt = 0;
   gxserverPresentationSubscription = gxserverClient.subscribePresentation(
     "macos-main-sidebar",
     {
       onDelta: (delta, revision) => {
         applyGxserverPresentationDelta(delta, revision);
       },
+      onClose: () => {
+        scheduleGxserverPresentationSubscriptionRecovery("close");
+      },
       onError: () => {
         appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationStream.error", {
           revision: gxserverStartupSnapshot?.presentation?.revision,
         });
+        scheduleGxserverPresentationSubscriptionRecovery("error");
       },
       onSnapshot: (snapshot) => {
         applyGxserverPresentationSnapshot(snapshot, "websocket-snapshot");
@@ -2315,10 +2327,58 @@ function startGxserverPresentationSubscription(): void {
   );
 }
 
+function scheduleGxserverPresentationSubscriptionRecovery(reason: string): void {
+  if (!gxserverStartupSnapshot?.presentation) {
+    return;
+  }
+  if (gxserverPresentationRecoveryTimeout !== undefined) {
+    return;
+  }
+  gxserverPresentationSubscription?.close();
+  gxserverPresentationSubscription = undefined;
+  const attempt = gxserverPresentationRecoveryAttempt;
+  const delayMs = Math.min(5_000, 250 * 2 ** attempt);
+  gxserverPresentationRecoveryAttempt = Math.min(attempt + 1, 5);
+  /*
+  CDXC:GxserverPresentationEvents 2026-06-03-19:56:
+  Local, remote, macOS, Electron, and future mobile/TUI clients must recover missed presentation deltas by rereading gxserver's authoritative snapshot before resubscribing. A stream error cannot leave the macOS sidebar on stale terminal titles such as `Terminal Session` when gxserver has already projected a newer title.
+  */
+  gxserverPresentationRecoveryTimeout = window.setTimeout(() => {
+    gxserverPresentationRecoveryTimeout = undefined;
+    void recoverGxserverPresentationSubscription(reason);
+  }, delayMs);
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationStream.recoveryScheduled", {
+    attempt,
+    delayMs,
+    reason,
+    revision: gxserverStartupSnapshot.presentation.revision,
+  });
+}
+
+async function recoverGxserverPresentationSubscription(reason: string): Promise<void> {
+  try {
+    const snapshot = await gxserverClient.fetchPresentationSnapshot();
+    applyGxserverPresentationSnapshot(snapshot, `stream-recovery:${reason}`);
+    startGxserverPresentationSubscription();
+  } catch (error) {
+    appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationStream.recoveryFailed", {
+      errorType: error instanceof Error ? error.name : typeof error,
+      hasMessage: (error instanceof Error ? error.message : String(error)).length > 0,
+      reason,
+    });
+    scheduleGxserverPresentationSubscriptionRecovery(`retry:${reason}`);
+  }
+}
+
 function stopGxserverPresentationSubscription(reason: string): void {
   if (!gxserverPresentationSubscription && !gxserverStartupSnapshot?.presentation) {
     return;
   }
+  if (gxserverPresentationRecoveryTimeout !== undefined) {
+    window.clearTimeout(gxserverPresentationRecoveryTimeout);
+    gxserverPresentationRecoveryTimeout = undefined;
+  }
+  gxserverPresentationRecoveryAttempt = 0;
   gxserverPresentationSubscription?.close();
   gxserverPresentationSubscription = undefined;
   if (gxserverStartupSnapshot?.presentation) {
@@ -2530,7 +2590,15 @@ function applyGxserverPresentationSessionToNativePaneChrome(
     }
   }
 
-  if (localSession?.kind === "terminal" && localSession.title !== presentation.title) {
+  if (
+    localSession?.kind === "terminal" &&
+    (presentation.kind === "terminal" || presentation.kind === "agent") &&
+    localSession.title !== presentation.title
+  ) {
+    /*
+    CDXC:GxserverPresentationTitles 2026-06-03-19:56:
+    gxserver owns projected titles for terminal and agent sessions. Mirror presentation titles into materialized macOS pane chrome for both kinds so Codex/Claude agent tabs do not stay on a stale local `Terminal Session` after the sidebar has accepted the server-owned title.
+    */
     if (localSession.surface === "commands") {
       updateProjectCommandsPanel(presentation.projectId, (panel) => ({
         ...panel,
@@ -2790,6 +2858,10 @@ function handleRemoteGxserverStatusEvent(remoteMachineId: string, payloadJson: s
       .finally(() => startRemoteGxserverPresentationSubscription(remoteMachineId));
     return;
   }
+  if (status.state === "presentationStreamFailed") {
+    scheduleRemoteGxserverPresentationRecovery(remoteMachineId, "stream-failed");
+    return;
+  }
   if (status.state === "installApprovalRequired") {
     openAppModal({
       modal: "remoteGxserverInstall",
@@ -2815,6 +2887,11 @@ function startRemoteGxserverPresentationSubscription(remoteMachineId: string): v
   if (!remoteMachine) {
     return;
   }
+  const recoveryTimeout = remoteGxserverPresentationRecoveryTimeouts.get(remoteMachineId);
+  if (recoveryTimeout !== undefined) {
+    window.clearTimeout(recoveryTimeout);
+    remoteGxserverPresentationRecoveryTimeouts.delete(remoteMachineId);
+  }
   const snapshot = remotePresentationSnapshotsByMachineId.get(remoteMachineId);
   const requestId = `remote-presentation-${Date.now().toString(36)}-${Math.random()
     .toString(36)
@@ -2838,6 +2915,27 @@ function startRemoteGxserverPresentationSubscription(remoteMachineId: string): v
     hasSnapshot: Boolean(snapshot),
     machineKnown: true,
     revision: snapshot?.revision,
+  });
+}
+
+function scheduleRemoteGxserverPresentationRecovery(remoteMachineId: string, reason: string): void {
+  if (remoteGxserverPresentationRecoveryTimeouts.has(remoteMachineId)) {
+    return;
+  }
+  remotePresentationSubscribedMachineIds.delete(remoteMachineId);
+  /*
+  CDXC:RemotePresentation 2026-06-03-19:56:
+  Remote presentation streams follow the same gxserver title ownership contract as the local sidebar. When Swift reports a stream failure, React must reread the remote snapshot and resubscribe from that revision so missed title/session deltas cannot leave remote rows stale until manual reconnect.
+  */
+  const timeout = window.setTimeout(() => {
+    remoteGxserverPresentationRecoveryTimeouts.delete(remoteMachineId);
+    void refreshRemoteGxserverPresentationSnapshot(remoteMachineId, `stream-recovery:${reason}`)
+      .finally(() => startRemoteGxserverPresentationSubscription(remoteMachineId));
+  }, 500);
+  remoteGxserverPresentationRecoveryTimeouts.set(remoteMachineId, timeout);
+  appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationStream.recoveryScheduled", {
+    machineKnown: settings.remoteMachines.some((machine) => machine.id === remoteMachineId),
+    reason,
   });
 }
 
