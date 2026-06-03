@@ -284,6 +284,13 @@ const floatingPromptEditorDefaultHeight = 320;
 const floatingPromptEditorDefaultWidth = 400;
 const floatingPromptEditorMaximumWidth = 700;
 /**
+ * CDXC:AppToasts 2026-06-03-16:12:
+ * macOS and crossplatform app-modal toasts should sit 23px higher than
+ * Sonner's 24px bottom default, so progress notices stay clear of lower app
+ * chrome while preserving the bottom-center stack behavior.
+ */
+const APP_MODAL_TOAST_BOTTOM_OFFSET_PX = 47;
+/**
  * CDXC:PromptEditor 2026-05-14-09:55:
  * Users can shrink the floating prompt editor after expanding it. The minimum
  * width must still leave room for both titlebar actions anchored to the live
@@ -2524,6 +2531,7 @@ function AppModalHost() {
        * and menu overlays instead of the older #181818 surface.
        */}
       <Toaster
+        offset={{ bottom: APP_MODAL_TOAST_BOTTOM_OFFSET_PX }}
         position="bottom-center"
         richColors
         theme="dark"
