@@ -772,4 +772,44 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
+  test("normalizes SSH-only remote machine settings for sidebar sections", () => {
+    /**
+     * CDXC:RemoteMachines 2026-06-02-23:47:
+     * Remote machine settings require a display name and SSH host because the
+     * sidebar renders each saved machine as its own named section and v1 remote
+     * connection support is SSH-only.
+     */
+    expect(
+      normalizeghostexSettings({
+        remoteMachines: [
+          {
+            id: "remote-main",
+            name: " Main machine ",
+            sshHost: " 100.77.81.4 ",
+            sshIdentityFile: " ~/.ssh/id_ed25519 ",
+            sshPort: 2222,
+            sshUser: " madda ",
+          },
+          { id: "remote-main", name: "Second", sshHost: "example.local", sshPort: 100000 },
+          { id: "remote-blank-name", name: "", sshHost: "example.local" },
+          { id: "remote-blank-host", name: "Blank host", sshHost: "" },
+        ],
+      }).remoteMachines,
+    ).toEqual([
+      {
+        id: "remote-main",
+        name: "Main machine",
+        sshHost: "100.77.81.4",
+        sshIdentityFile: "~/.ssh/id_ed25519",
+        sshPort: 2222,
+        sshUser: "madda",
+      },
+      {
+        id: "remote-2",
+        name: "Second",
+        sshHost: "example.local",
+      },
+    ]);
+  });
+
 });

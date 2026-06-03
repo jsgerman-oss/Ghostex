@@ -58,6 +58,14 @@ export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
 export type KeepAwakeDurationMinutes = 0 | 120 | 300;
 export type AutoSleepIdleMinutes = 5 | 10 | 15 | 30 | 60 | 120 | 300;
+export type RemoteMachineSettings = {
+  id: string;
+  name: string;
+  sshHost: string;
+  sshIdentityFile?: string;
+  sshPort?: number;
+  sshUser?: string;
+};
 const MIN_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 0.25;
 const MAX_GHOSTTY_MOUSE_SCROLL_MULTIPLIER = 8;
 const MIN_GHOSTTY_SCROLLBACK_LIMIT_MB = 1;
@@ -196,6 +204,11 @@ export type ghostexSettings = {
   workspaceOpenTargetAvailability: WorkspaceOpenTargetAvailability;
   workspaceOpenTargetHiddenIds: string[];
   workspacePaneGap: number;
+  /**
+   * CDXC:RemoteMachines 2026-06-02-23:47:
+   * Settings owns the saved Remote machine list and its sidebar section order. Each machine requires a user-visible name and SSH host; live connection state, projects, sessions, and gxserver tokens stay outside settings so reconnect/start/install flows refresh from the remote daemon.
+   */
+  remoteMachines: RemoteMachineSettings[];
   /**
    * CDXC:CommandsPanel 2026-05-30-10:05:
    * Opening the command pane (F12, sidebar button) and double-clicking its top
@@ -576,6 +589,7 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * native panes always render without configurable spacing.
    */
   workspacePaneGap: 0,
+  remoteMachines: [],
   commandsPanelDefaultHeightPx: DEFAULT_COMMANDS_PANEL_HEIGHT_PX,
 };
 
@@ -1312,6 +1326,7 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       source.workspaceOpenTargetHiddenIds,
     ),
     workspacePaneGap: 0,
+    remoteMachines: normalizeRemoteMachineSettings(source.remoteMachines),
     commandsPanelDefaultHeightPx: clampCommandsPanelDefaultHeightPx(
       readNumber(
         source,
@@ -1320,6 +1335,44 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
       ),
     ),
   };
+}
+
+export function normalizeRemoteMachineSettings(candidate: unknown): RemoteMachineSettings[] {
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+  const seenIds = new Set<string>();
+  const normalized: RemoteMachineSettings[] = [];
+  for (const item of candidate) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const name = readLooseString(item.name).slice(0, 80);
+    const sshHost = readLooseString(item.sshHost).slice(0, 200);
+    if (!name || !sshHost) {
+      continue;
+    }
+    let id = normalizeRemoteMachineId(item.id);
+    if (!id || seenIds.has(id)) {
+      id = `remote-${normalized.length + 1}`;
+      while (seenIds.has(id)) {
+        id = `remote-${normalized.length + 1}-${seenIds.size + 1}`;
+      }
+    }
+    seenIds.add(id);
+    const sshUser = readLooseString(item.sshUser).slice(0, 120);
+    const sshIdentityFile = readLooseString(item.sshIdentityFile).slice(0, 500);
+    const sshPort = normalizeRemoteMachineSshPort(item.sshPort);
+    normalized.push({
+      id,
+      name,
+      sshHost,
+      ...(sshIdentityFile ? { sshIdentityFile } : {}),
+      ...(sshPort ? { sshPort } : {}),
+      ...(sshUser ? { sshUser } : {}),
+    });
+  }
+  return normalized;
 }
 
 export function getTerminalFontFamilyForghostexSettings(settings: ghostexSettings): string {
@@ -1433,6 +1486,22 @@ function normalizePromptEditorBackend(source: Record<string, unknown>): PromptEd
   return DEFAULT_ghostex_SETTINGS.promptEditorBackend;
 }
 
+function normalizeRemoteMachineId(input: unknown): string | undefined {
+  const id = readLooseString(input).slice(0, 80);
+  return /^remote-[a-z0-9_-]+$/iu.test(id) ? id : undefined;
+}
+
+function normalizeRemoteMachineSshPort(input: unknown): number | undefined {
+  if (input === undefined || input === null || input === "") {
+    return undefined;
+  }
+  const value = typeof input === "number" ? input : Number(input);
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    return undefined;
+  }
+  return value;
+}
+
 function normalizeGhosttyTheme(value: string | undefined): string {
   if (!value || value === "__ghostex_ghostty_theme_unmanaged__") {
     return "";
@@ -1503,4 +1572,8 @@ function readString(
 ): string {
   const value = source[key];
   return typeof value === "string" ? value : fallback;
+}
+
+function readLooseString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
