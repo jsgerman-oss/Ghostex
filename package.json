@@ -8,6 +8,7 @@
     "s": "bun run start",
     "start": "bun scripts/start-ghostex.mjs",
     "start:dev": "bun scripts/start-ghostex.mjs dev",
+    "electron": "bun scripts/start-electron.mjs",
     "build": "native/macos/ghostexHost/build-ghostex-host.sh",
     "build:dev": "GHOSTEX_APP_VARIANT=dev native/macos/ghostexHost/build-ghostex-host.sh",
     "android:verify-release": "scripts/ghostex-android-release-readiness.sh",
