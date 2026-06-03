@@ -1,10 +1,15 @@
 import AppKit
+import Darwin
 import GhosttyKit
 
 private func terminalCliArguments() -> [String] {
   CommandLine.arguments.dropFirst().filter { argument in
     !argument.hasPrefix("-psn_")
   }
+}
+
+private func isTerminalCliInvocation() -> Bool {
+  isatty(STDIN_FILENO) == 1 || isatty(STDOUT_FILENO) == 1 || isatty(STDERR_FILENO) == 1
 }
 
 private func runBundledCli(arguments: [String]) -> Never {
@@ -63,7 +68,7 @@ private func isGhostexDevBundleIdentifier(_ bundleIdentifier: String?) -> Bool {
 }
 
 let cliArguments = terminalCliArguments()
-if !cliArguments.isEmpty {
+if !cliArguments.isEmpty || isTerminalCliInvocation() {
   /**
    CDXC:CliSessions 2026-05-10-03:28
    The installed executable is also what shells resolve from PATH. When users
@@ -75,6 +80,11 @@ if !cliArguments.isEmpty {
    command when that binary name is available.
    LaunchServices `-psn_*` arguments are ignored above so Dock and Finder
    launches still start the app normally.
+   CDXC:CliEntrypoint 2026-06-03-20:28:
+   Nightly's gxserver cutover keeps `ghostex`/`gx` as terminal CLI entrypoints.
+   If PATH resolves the command to the app executable rather than the bundled
+   shell launcher, a bare terminal invocation still means CLI/TUI intent while
+   Dock/Finder launches remain non-TTY GUI launches.
    */
   runBundledCli(arguments: cliArguments)
 }

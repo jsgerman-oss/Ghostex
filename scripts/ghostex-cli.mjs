@@ -51,7 +51,9 @@ const CLI_DIR = path.join(GHOSTEX_HOME, "cli");
 const BRIDGE_TOKEN_PATH = path.join(CLI_DIR, "bridge-token");
 const GXSERVER_ROOT = path.join(homedir(), ".ghostex", "gxserver");
 const GXSERVER_AUTH_TOKEN_PATH = path.join(GXSERVER_ROOT, "auth", "token");
+const GXSERVER_IDENTITY_PATH = path.join(GXSERVER_ROOT, "identity.json");
 const GXSERVER_LOG_PATH = path.join(GXSERVER_ROOT, "logs", "gxserver.jsonl");
+const GXSERVER_STATE_DB_PATH = path.join(GXSERVER_ROOT, "state.db");
 const GXSERVER_CONNECTIONS_PATH = path.join(homedir(), ".ghostex", "clients", "connections.json");
 const SESSION_ALIAS_CACHE_PATH = path.join(CLI_DIR, "session-aliases.json");
 const SHARED_SETTINGS_PATH = path.join(GHOSTEX_HOME, "state", "native-sidebar-settings.json");
@@ -182,9 +184,18 @@ const COMMANDS = new Map([
 
 if (isDirectCliEntryPoint()) {
   main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
+    const message = error instanceof Error ? error.message : String(error);
+    if (cliArgsWantJson(process.argv.slice(2))) {
+      printJson({ error: message, ok: false });
+    } else {
+      console.error(message);
+    }
     process.exitCode = 1;
   });
+}
+
+function cliArgsWantJson(args) {
+  return args.some((arg) => arg === "--json" || arg === "-json" || arg.startsWith("--json="));
 }
 
 function isDirectCliEntryPoint() {
@@ -1604,6 +1615,18 @@ async function resolveGxserverInventorySession(sessionId, flags = {}) {
 }
 
 async function fetchGxserverSessionList(flags = {}) {
+  try {
+    return await fetchLiveGxserverSessionList(flags);
+  } catch (error) {
+    const fallback = await readPersistedGxserverSessionList(error, flags);
+    if (fallback) {
+      return fallback;
+    }
+    throw error;
+  }
+}
+
+async function fetchLiveGxserverSessionList(flags = {}) {
   const [projectsResponse, sessionsResponse] = await Promise.all([
     callGxserverRpc("/api/listProjects", {}, flags),
     callGxserverRpc("/api/listSessions", {}, flags),
@@ -1628,6 +1651,82 @@ async function fetchGxserverSessionList(flags = {}) {
     revision: sessionsResponse.requestId,
     sessions: listedSessions.map((session, index) => toCliSession(session, projectById.get(session.projectId), index)),
   };
+}
+
+async function readPersistedGxserverSessionList(cause, flags = {}) {
+  if (!shouldUseLocalGxserverStateFallback(flags)) {
+    return undefined;
+  }
+  if (!existsSync(GXSERVER_STATE_DB_PATH)) {
+    return undefined;
+  }
+  const sqlitePath = existsSync("/usr/bin/sqlite3") ? "/usr/bin/sqlite3" : "sqlite3";
+  const sql = [
+    "SELECT 'project' AS rowType, projectId, name, path, NULL AS sessionId, NULL AS kind, NULL AS title, NULL AS lifecycleState, NULL AS providerStateJson, NULL AS zmxName, NULL AS cwd, NULL AS agentId, NULL AS updatedAt, NULL AS lastActiveAt FROM projects",
+    "UNION ALL",
+    "SELECT 'session' AS rowType, projectId, NULL AS name, NULL AS path, sessionId, kind, title, lifecycleState, providerStateJson, zmxName, cwd, agentId, updatedAt, lastActiveAt FROM sessions",
+    "ORDER BY rowType ASC, updatedAt DESC, projectId ASC, sessionId ASC",
+  ].join(" ");
+  const { stdout } = await execFileAsync(sqlitePath, ["-json", GXSERVER_STATE_DB_PATH, sql], {
+    timeout: 2_000,
+  }).catch(() => ({ stdout: "" }));
+  const rows = parseJson(stdout);
+  if (!Array.isArray(rows)) {
+    return undefined;
+  }
+  const serverId = await readPersistedGxserverServerId();
+  const projects = rows
+    .filter((row) => row?.rowType === "project")
+    .map((row) => ({
+      name: row.name,
+      path: row.path,
+      projectId: row.projectId,
+    }));
+  const projectById = new Map(projects.map((project) => [project.projectId, project]));
+  const sessions = rows
+    .filter((row) => row?.rowType === "session")
+    .map((row) => ({
+      agentId: row.agentId ?? undefined,
+      cwd: row.cwd ?? undefined,
+      globalRef: serverId && row.projectId && row.sessionId ? `${serverId}:${row.projectId}:${row.sessionId}` : undefined,
+      kind: row.kind,
+      lastActiveAt: row.lastActiveAt ?? undefined,
+      lifecycleState: row.lifecycleState,
+      projectId: row.projectId,
+      providerState: parseJson(row.providerStateJson) ?? {},
+      sessionId: row.sessionId,
+      title: row.title,
+      updatedAt: row.updatedAt,
+      zmxName: row.zmxName,
+    }));
+  const listedSessions = shouldIncludeStoppedGxserverSessions(flags)
+    ? sessions
+    : sessions.filter((session) => !isStoppedGxserverSession(session));
+  /*
+   * CDXC:CliSessions 2026-06-03-20:28:
+   * After the gxserver cutover, bridge-down session inventory should degrade
+   * from gxserver's own durable state instead of the retired native-sidebar
+   * project JSON. Keep the fallback read-only and visibly marked so humans and
+   * Android can distinguish stale persisted rows from live daemon data.
+   */
+  return {
+    error: cause instanceof Error ? cause.message : String(cause),
+    fallback: "persisted-gxserver-state",
+    ok: true,
+    product: GXSERVER_PRODUCT,
+    projects,
+    sessions: listedSessions.map((session, index) => toCliSession(session, projectById.get(session.projectId), index)),
+  };
+}
+
+function shouldUseLocalGxserverStateFallback(flags = {}) {
+  const server = String(flags.server ?? process.env.GHOSTEX_GXSERVER_SERVER ?? "local").trim() || "local";
+  return server === "local";
+}
+
+async function readPersistedGxserverServerId() {
+  const identity = parseJson(await readFile(GXSERVER_IDENTITY_PATH, "utf8").catch(() => ""));
+  return typeof identity?.serverId === "string" ? identity.serverId : undefined;
 }
 
 function shouldIncludeStoppedGxserverSessions(flags = {}) {

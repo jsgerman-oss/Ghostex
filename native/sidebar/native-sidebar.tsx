@@ -15723,6 +15723,7 @@ async function ensureNativeAgentFirstPromptHooks(): Promise<void> {
 async function installNativeAgentHooksFromSettings(): Promise<void> {
   try {
     await ensureNativeAgentFirstPromptHooks();
+    await gxserverClient.installAgentHooks(["opencode"]);
     showAppToast("success", "Agent hooks installed", "Reliable resume hooks were installed or repaired.");
   } catch (error) {
     showNativeMessage(
@@ -15738,6 +15739,12 @@ async function requestNativeAgentHookStatus(): Promise<void> {
   /**
    * CDXC:AgentHookSettings 2026-05-23-10:05:
    * Settings -> Agents status must inspect the same reliable-resume hook files that startup installation mutates. Keep this native-side so React does not own shell paths, and keep title-based restore untouched when a hook is missing.
+   *
+   * CDXC:AgentHooks 2026-06-03-20:28:
+   * OpenCode plugin detection moved to gxserver with the nightly ownership
+   * split. Merge the daemon-owned OpenCode row into the existing native status
+   * payload so Settings stays a view over hook state instead of owning plugin
+   * marker/config logic.
    */
   const result = await runNativeProcess("/usr/bin/python3", [
     "-c",
@@ -15760,7 +15767,17 @@ async function requestNativeAgentHookStatus(): Promise<void> {
   }
 
   try {
-    postAgentHookStatus(JSON.parse(result.stdout) as SidebarAgentHookStatusMessage);
+    const nativeStatus = JSON.parse(result.stdout) as SidebarAgentHookStatusMessage;
+    try {
+      const openCodeStatus = await gxserverClient.readAgentHookStatus(["opencode"]);
+      postAgentHookStatus(mergeAgentHookStatusMessages(nativeStatus, openCodeStatus as SidebarAgentHookStatusMessage));
+    } catch (gxserverError) {
+      showNativeMessage(
+        "error",
+        gxserverError instanceof Error ? gxserverError.message : "Unable to inspect OpenCode hook status through gxserver.",
+      );
+      postAgentHookStatus(nativeStatus);
+    }
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : "Unable to parse agent hook status.";
@@ -15770,6 +15787,23 @@ async function requestNativeAgentHookStatus(): Promise<void> {
     );
     postAgentHookStatus(createNativeAgentHookStatusErrorMessage(errorMessage));
   }
+}
+
+function mergeAgentHookStatusMessages(
+  nativeStatus: SidebarAgentHookStatusMessage,
+  gxserverStatus: SidebarAgentHookStatusMessage,
+): SidebarAgentHookStatusMessage {
+  const gxserverAgents = new Map((gxserverStatus.agents ?? []).map((agent) => [agent.agentId, agent]));
+  return {
+    ...nativeStatus,
+    agents: [
+      ...(nativeStatus.agents ?? []).filter((agent) => !gxserverAgents.has(agent.agentId)),
+      ...gxserverAgents.values(),
+    ],
+    generatedAt: gxserverStatus.generatedAt || nativeStatus.generatedAt,
+    hookStateDirectory: nativeStatus.hookStateDirectory || gxserverStatus.hookStateDirectory,
+    notifyHookPath: nativeStatus.notifyHookPath || gxserverStatus.notifyHookPath,
+  };
 }
 
 async function requestNativeGhostexCliStatus(): Promise<void> {
@@ -16004,7 +16038,6 @@ agents = [
     {"agentId": "claude", "cli": "claude", "kind": "json", "paths": [home / ".claude" / "settings.json"], "commandAgent": None},
     {"agentId": "cursor", "cli": "cursor-agent", "kind": "json", "paths": [home / ".cursor" / "hooks.json"], "commandAgent": "cursor"},
     {"agentId": "pi", "cli": "pi", "kind": "pi", "paths": [pi_extension_path], "commandAgent": "pi"},
-    {"agentId": "opencode", "cli": "opencode", "kind": "opencode", "paths": [home / ".config" / "opencode" / "plugins" / "ghostex-session.js", home / ".config" / "opencode" / "opencode.json"], "commandAgent": "opencode"},
     {"agentId": "gemini", "cli": "gemini", "kind": "json", "paths": [home / ".gemini" / "settings.json"], "commandAgent": "gemini"},
     {"agentId": "copilot", "cli": "copilot", "kind": "json", "paths": [home / ".copilot" / "config.json"], "commandAgent": "copilot"},
     {"agentId": "droid", "cli": "droid", "kind": "json", "paths": [home / ".factory" / "settings.json"], "commandAgent": "droid"},
@@ -16071,13 +16104,6 @@ def is_installed(agent):
         return any(has_notify_command_in_json(path, agent.get("commandAgent")) for path in paths)
     if kind == "antigravity":
         return any("ghostex" in (load_json(path) or {}) for path in paths)
-    if kind == "opencode":
-        plugin_path, config_path = paths
-        plugin_ok = "ghostex-opencode-session-plugin-marker" in text(plugin_path)
-        config = load_json(config_path) or {}
-        plugins = config.get("plugin")
-        config_ok = isinstance(plugins, list) and "./plugins/ghostex-session.js" in plugins
-        return plugin_ok and config_ok
     if kind == "amp":
         return any("ghostex-amp-session-extension-marker" in text(path) for path in paths)
     if kind == "pi":
@@ -16146,9 +16172,6 @@ function buildEnsureNativeAgentHooksCommand(): string {
     `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_GENERIC_AGENT_HOOK_MERGE'`,
     getNativeGenericAgentHookMergeScript(),
     "ghostex_GENERIC_AGENT_HOOK_MERGE",
-    `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_OPENCODE_PLUGIN_INSTALL'`,
-    getNativeOpenCodePluginInstallScript(),
-    "ghostex_OPENCODE_PLUGIN_INSTALL",
     `/usr/bin/python3 - ${quoteNativeShellArg(notifyHookPath)} ${quoteNativeShellArg(homeDirectory)} <<'ghostex_AMP_PLUGIN_INSTALL'`,
     getNativeAmpPluginInstallScript(),
     "ghostex_AMP_PLUGIN_INSTALL",
@@ -16673,95 +16696,6 @@ if shutil.which("hermes") is not None and hermes_dir.exists():
     hermes_path = hermes_dir / "config.yaml"
     install_hermes_hooks(hermes_path, command_for("hermes-agent"))
     print(f"agentHooksPath={hermes_path}")
-`;
-}
-
-function getNativeOpenCodePluginInstallScript(): string {
-  return `import json
-import pathlib
-import shutil
-import sys
-
-notify_hook_path = pathlib.Path(sys.argv[1])
-home_path = pathlib.Path(sys.argv[2])
-if shutil.which("opencode") is None:
-    sys.exit(0)
-config_dir = home_path / ".config" / "opencode"
-plugins_dir = config_dir / "plugins"
-plugin_path = plugins_dir / "ghostex-session.js"
-config_path = config_dir / "opencode.json"
-plugin_source = r'''// ghostex-opencode-session-plugin-marker v1
-import { spawn } from "node:child_process";
-
-function firstString(...values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-}
-
-function props(event) {
-  return (event && typeof event === "object" && event.properties) || {};
-}
-
-function sessionIdFor(event) {
-  const p = props(event);
-  return firstString(p.info && p.info.id, p.sessionID, p.sessionId, p.session_id, p.session && p.session.id, event && event.sessionID, event && event.sessionId, event && event.id);
-}
-
-function cwdFor(ctx, event) {
-  const p = props(event);
-  return firstString(p.info && p.info.directory, p.cwd, p.directory, ctx && ctx.directory, process.cwd());
-}
-
-function send(eventName, ctx, event) {
-  if (process.env.GHOSTEX_OPENCODE_HOOKS_DISABLED === "1") return;
-  const sessionId = sessionIdFor(event);
-  if (!sessionId) return;
-  const payload = {
-    agent: "opencode",
-    cwd: cwdFor(ctx, event),
-    event: eventName,
-    hook_event_name: eventName,
-    session_id: sessionId,
-  };
-  try {
-    const child = spawn("__GHOSTEX_NOTIFY_HOOK__", [], { stdio: ["pipe", "ignore", "ignore"], env: { ...process.env, GHOSTEX_AGENT: "opencode" }, detached: true });
-    child.on("error", () => {});
-    child.stdin.on("error", () => {});
-    child.stdin.end(JSON.stringify(payload));
-    child.unref();
-  } catch (_) {}
-}
-
-export default async function ghostexSessionPlugin(ctx) {
-  const bus = ctx && (ctx.bus || ctx.events || ctx.event);
-  const on = bus && typeof bus.on === "function" ? bus.on.bind(bus) : ctx && typeof ctx.on === "function" ? ctx.on.bind(ctx) : null;
-  if (!on) return;
-  for (const eventName of ["session.start", "session.updated", "message.updated", "permission.updated"]) {
-    on(eventName, (event) => send(eventName, ctx, event));
-  }
-}
-'''.replace("__GHOSTEX_NOTIFY_HOOK__", str(notify_hook_path))
-
-plugins_dir.mkdir(parents=True, exist_ok=True)
-plugin_path.write_text(plugin_source, encoding="utf-8")
-
-try:
-    data = json.loads(config_path.read_text(encoding="utf-8"))
-except Exception:
-    data = {}
-if not isinstance(data, dict):
-    data = {}
-plugins = data.get("plugin")
-if not isinstance(plugins, list):
-    plugins = []
-spec = "./plugins/ghostex-session.js"
-if spec not in plugins:
-    plugins.append(spec)
-data["plugin"] = plugins
-config_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
-print(f"opencodePluginPath={plugin_path}")
 `;
 }
 

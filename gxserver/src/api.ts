@@ -21,6 +21,14 @@ export const GXSERVER_ENDPOINTS: readonly GxserverEndpointDescriptor[] = [
   descriptor("/api/control/stopAll", "remoteBlocked", true, true, "http"),
   descriptor("/api/readAgentSettings", "remoteAllowed", true, true, "http"),
   descriptor("/api/updateAgentSettings", "remoteAllowed", true, true, "http"),
+  /*
+  CDXC:AgentHooks 2026-06-03-20:28:
+  Agent hook file probes and plugin writes inspect/mutate user-local dotfiles.
+  Keep those setup endpoints local-only while shared agent policy remains
+  remote-readable through the existing settings endpoints.
+  */
+  descriptor("/api/readAgentHookStatus", "fullLocal", true, true, "http"),
+  descriptor("/api/installAgentHooks", "fullLocal", true, true, "http"),
   descriptor("/api/createSession", "remoteAllowed", true, true, "http"),
   descriptor("/api/createAgentSession", "remoteAllowed", true, true, "http"),
   descriptor("/api/readAgentLaunchPlan", "remoteAllowed", true, true, "http"),

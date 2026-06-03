@@ -9,6 +9,7 @@ import {
   isRemoteEndpointAllowed,
   readProtocolVersion,
 } from "./api.js";
+import { installGxserverAgentHooks, readGxserverAgentHookStatus } from "./agent-hooks.js";
 import {
   GXSERVER_CONTROL_PLANE_CAPABILITIES,
   GXSERVER_LOCAL_API_HOST,
@@ -114,6 +115,7 @@ import type {
   GxserverCreateProjectParams,
   GxserverCreateSessionParams,
   GxserverEndpointPath,
+  GxserverInstallAgentHooksParams,
   GxserverListenerConfig,
   GxserverListenerKind,
   GxserverMinimalHealthResponse,
@@ -151,6 +153,7 @@ import type {
   GxserverTerminalTitleEventParams,
   GxserverTerminalTitleEventResult,
   GxserverUpdateAgentSettingsParams,
+  GxserverReadAgentHookStatusParams,
   GxserverUpdateProjectParams,
   GxserverUpdateAgentActivityParams,
   GxserverUpdateSessionOrderParams,
@@ -553,6 +556,12 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
         throw caught;
       }
     }
+    return endpoint.path;
+  }
+
+  if (isAgentHookEndpoint(endpoint.path)) {
+    const result = await handleAgentHookEndpoint(runtime, endpoint.path, body, requestId);
+    sendJson(response, 200, result);
     return endpoint.path;
   }
 
@@ -2422,6 +2431,35 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/listSessions" ||
     path === "/api/removeSession"
   );
+}
+
+function isAgentHookEndpoint(path: GxserverEndpointPath): boolean {
+  return path === "/api/readAgentHookStatus" || path === "/api/installAgentHooks";
+}
+
+async function handleAgentHookEndpoint(
+  runtime: GxserverApiRuntime,
+  path: GxserverEndpointPath,
+  body: unknown,
+  requestId: string,
+): Promise<GxserverRpcSuccessResponse> {
+  /*
+  CDXC:AgentHooks 2026-06-03-20:28:
+  OpenCode hook setup moved out of the macOS sidebar after nightly's gxserver
+  split. Keep plugin status/install behind local authenticated daemon APIs so
+  settings surfaces render results without owning plugin scripts or PATH probes.
+  */
+  const params = readRpcParams(body);
+  const result = path === "/api/installAgentHooks"
+    ? await installGxserverAgentHooks(runtime.paths, params as GxserverInstallAgentHooksParams)
+    : await readGxserverAgentHookStatus(runtime.paths, params as GxserverReadAgentHookStatusParams);
+  return {
+    ok: true,
+    product: GXSERVER_PRODUCT,
+    protocolVersion: GXSERVER_PROTOCOL_VERSION,
+    requestId,
+    result: result as unknown as Record<string, unknown>,
+  };
 }
 
 function isTypedOperationEndpoint(path: GxserverEndpointPath): boolean {

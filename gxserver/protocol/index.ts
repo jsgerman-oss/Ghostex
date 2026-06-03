@@ -45,6 +45,8 @@ export type GxserverEndpointPath =
   | "/api/control/stopAll"
   | "/api/readAgentSettings"
   | "/api/updateAgentSettings"
+  | "/api/readAgentHookStatus"
+  | "/api/installAgentHooks"
   | "/api/createSession"
   | "/api/createAgentSession"
   | "/api/readAgentLaunchPlan"
@@ -246,6 +248,38 @@ export interface GxserverReadAgentSettingsResult {
 
 export interface GxserverUpdateAgentSettingsParams {
   agentAcceptAllEnabled?: boolean;
+}
+
+export type GxserverAgentHookStatus = "cliMissing" | "installed" | "missing";
+
+export interface GxserverAgentHookStatusRow {
+  agentId: string;
+  cliCommand: string;
+  cliInstalled: boolean;
+  detail: string;
+  hookInstalled: boolean;
+  paths: readonly string[];
+  status: GxserverAgentHookStatus;
+}
+
+export interface GxserverReadAgentHookStatusParams {
+  agentIds?: readonly string[];
+}
+
+export interface GxserverReadAgentHookStatusResult {
+  agents: readonly GxserverAgentHookStatusRow[];
+  generatedAt: string;
+  hookStateDirectory: string;
+  notifyHookPath: string;
+  type: "agentHookStatus";
+}
+
+export interface GxserverInstallAgentHooksParams {
+  agentIds?: readonly string[];
+}
+
+export interface GxserverInstallAgentHooksResult extends GxserverReadAgentHookStatusResult {
+  installedPaths: readonly string[];
 }
 
 export interface GxserverEndpointDescriptor {

@@ -1141,7 +1141,19 @@ async function generateAppcast(version, buildVersion, sparkleBinDir, artifact) {
   await run(`cp ${shellQuote(workAppcast)} ${shellQuote(appcastPath)}`);
   await run(`xmllint --noout ${shellQuote(appcastPath)}`);
   await run(`${shellQuote(path.join(sparkleBinDir, "sign_update"))} ${shellQuote(appcastPath)}`);
-  await run(`${shellQuote(path.join(sparkleBinDir, "sign_update"))} --verify ${shellQuote(appcastPath)}`);
+  /*
+   CDXC:ReleaseAutomation 2026-06-03-20:28:
+   Sparkle verification must prove the appcast enclosure signature validates
+   the generated DMG artifact, not merely that the XML feed can be signed.
+   Use namespace-agnostic XPath because appcast namespace prefixes can vary
+   across generated feeds.
+   */
+  const enclosureSignature = await capture(
+    `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@*[local-name()='edSignature'])[1])" ${shellQuote(appcastPath)}`,
+  );
+  await run(
+    `${shellQuote(path.join(sparkleBinDir, "sign_update"))} --verify ${shellQuote(artifact.finalDmg)} ${shellQuote(enclosureSignature)}`,
+  );
   await run(`xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='version'])[1])" ${shellQuote(appcastPath)} | grep -Fx ${shellQuote(String(buildVersion))}`);
   await run(`xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='shortVersionString'])[1])" ${shellQuote(appcastPath)} | grep -Fx ${shellQuote(version)}`);
   await run(`rg ${shellQuote(`ghostex-${version}-${artifact.arch}.dmg|sparkle:version|sparkle:shortVersionString|sparkle:edSignature|sparkle-signatures`)} ${shellQuote(appcastPath)} -g '!node_modules/**' -g '!dist/**' -g '!build/**' -g '!coverage/**' -g '!.git/**'`);
@@ -1246,7 +1258,17 @@ async function validateLiveSparkleAndAssets(version, buildVersion, sparkleBinDir
     const output = path.join(tmpdir(), `ghostex-live-${version}-${entry.feed}`);
     await run(`curl -fsSL ${shellQuote(entry.feedUrl)} -o ${shellQuote(output)}`);
     await run(`xmllint --noout ${shellQuote(output)}`);
-    await run(`${shellQuote(path.join(sparkleBinDir, "sign_update"))} --verify ${shellQuote(output)}`);
+    const liveSignature = await capture(
+      `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@*[local-name()='edSignature'])[1])" ${shellQuote(output)}`,
+    );
+    const liveDmgUrl = await capture(
+      `xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='enclosure']/@url)[1])" ${shellQuote(output)}`,
+    );
+    const liveDmgPath = path.join(tmpdir(), `ghostex-live-${version}-${entry.arch}.dmg`);
+    await run(`curl -fsSL ${shellQuote(liveDmgUrl)} -o ${shellQuote(liveDmgPath)}`);
+    await run(
+      `${shellQuote(path.join(sparkleBinDir, "sign_update"))} --verify ${shellQuote(liveDmgPath)} ${shellQuote(liveSignature)}`,
+    );
     await run(`xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='version'])[1])" ${shellQuote(output)} | grep -Fx ${shellQuote(String(buildVersion))}`);
     await run(`xmllint --xpath "string((//*[local-name()='item'][1]/*[local-name()='shortVersionString'])[1])" ${shellQuote(output)} | grep -Fx ${shellQuote(version)}`);
     await run(`rg ${shellQuote(`ghostex-${version}-${entry.arch}.dmg|sparkle:version|sparkle:shortVersionString|sparkle-signatures`)} ${shellQuote(output)} -g '!node_modules/**' -g '!dist/**' -g '!build/**' -g '!coverage/**' -g '!.git/**'`);

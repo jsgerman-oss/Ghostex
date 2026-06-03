@@ -4,6 +4,7 @@ import {
   type GxserverEndpointPath,
   type GxserverAgentSettings,
   type GxserverReadAgentSettingsResult,
+  type GxserverInstallAgentHooksResult,
   type GxserverAgentLaunchPlan,
   type GxserverAgentLaunchPlanParams,
   type GxserverAgentResumePlan,
@@ -16,6 +17,7 @@ import {
   type GxserverPresentationSearchParams,
   type GxserverPresentationSearchResponse,
   type GxserverPresentationSnapshot,
+  type GxserverReadAgentHookStatusResult,
   type GxserverResolveGitRootForPathParams,
   type GxserverResolveGitRootForPathResult,
   type GxserverRunBeadsActionParams,
@@ -250,6 +252,26 @@ export function createNativeSidebarGxserverClient(
       settings as Record<string, unknown>,
     );
     return result.settings;
+  }
+
+  async function readAgentHookStatus(agentIds: readonly string[] = ["opencode"]): Promise<GxserverReadAgentHookStatusResult> {
+    /*
+    CDXC:AgentHooks 2026-06-03-20:28:
+    OpenCode plugin setup is gxserver-owned after the nightly split. The sidebar
+    asks the daemon for hook status instead of embedding OpenCode marker,
+    opencode.json, or login-shell PATH rules in React.
+    */
+    return rpc<GxserverReadAgentHookStatusResult>("/api/readAgentHookStatus", { agentIds });
+  }
+
+  async function installAgentHooks(agentIds: readonly string[] = ["opencode"]): Promise<GxserverInstallAgentHooksResult> {
+    /*
+    CDXC:AgentHooks 2026-06-03-20:28:
+    Settings remains the user-facing install button, but gxserver owns the
+    OpenCode plugin write/update and legacy config cleanup so clients do not
+    reintroduce app-owned integration scripts.
+    */
+    return rpc<GxserverInstallAgentHooksResult>("/api/installAgentHooks", { agentIds });
   }
 
   async function fetchPresentationSnapshot(): Promise<GxserverPresentationSnapshot> {
@@ -517,6 +539,7 @@ export function createNativeSidebarGxserverClient(
     fetchAgentResumePlanSync,
     fetchAttachSessionMetadata,
     fetchHealth,
+    installAgentHooks,
     fetchPresentationSnapshot,
     fetchStartupSnapshot,
     fetchWakeSessionMetadata,
@@ -526,6 +549,7 @@ export function createNativeSidebarGxserverClient(
     removeProject,
     removeSession,
     resolveGitRootForPath,
+    readAgentHookStatus,
     rpc,
     runBeadsAction,
     runGitAction,

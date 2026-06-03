@@ -1,4 +1,5 @@
 export * from "./api.js";
+export * from "./agent-hooks.js";
 export * from "../protocol/index.js";
 export * from "./auth.js";
 export * from "./connection-profiles.js";
