@@ -76,7 +76,7 @@ export type GitCommitModalProps = {
     },
   ) => void;
   onMultipleCommits: (requestId: string, agentId?: string) => void;
-  onOpenFileDiff: (filePath: string) => void;
+  onOpenFileDiff: (filePath: string, requestId: string) => void;
   onPromptAgentIdChange?: (agentId: string) => void;
   promptAgentId?: string;
 };
@@ -315,7 +315,7 @@ export function GitCommitModal({
                           return next;
                         });
                       }}
-                      onOpenFile={onOpenFileDiff}
+                      onOpenFile={(filePath) => onOpenFileDiff(filePath, draft.requestId)}
                     />
                   </div>
                   <div className="git-commit-files-summary">

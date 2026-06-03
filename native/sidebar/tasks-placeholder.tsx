@@ -244,6 +244,7 @@ function ProjectBoardApp() {
   const projectName = new URLSearchParams(window.location.search).get("projectName") || "Project";
   const projectPath = new URLSearchParams(window.location.search).get("projectPath") || "";
   const projectId = new URLSearchParams(window.location.search).get("projectId") || "";
+  const remoteMachineId = new URLSearchParams(window.location.search).get("remoteMachineId") || "";
   const displayKey = normalizeDisplayIssueKey(
     new URLSearchParams(window.location.search).get("beadsDisplayKey") ?? projectName,
   );
@@ -367,13 +368,17 @@ function ProjectBoardApp() {
       if (!projectPath) {
         throw new Error("No active project path is available.");
       }
-      const response = await sendBeadsRequest({ ...request, cwd: projectPath });
+      const response = await sendBeadsRequest({
+        ...request,
+        cwd: projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
+      });
       if (response.exitCode !== 0) {
         throw new Error(beadsErrorMessage(response.stderr || response.stdout));
       }
       return parseBeadsJson(response.stdout);
     },
-    [projectPath],
+    [projectPath, remoteMachineId],
   );
 
   const loadConversationState = useCallback(async () => {
@@ -382,6 +387,7 @@ function ProjectBoardApp() {
         action: "getState",
         projectId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
       });
       if (!response.ok) {
         throw new Error(response.error || "Could not load linked conversations.");
@@ -405,11 +411,12 @@ function ProjectBoardApp() {
         event,
         projectId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
       }).catch((error) => {
         console.warn("Project board debug log unavailable.", error);
       });
     },
-    [conversationState.debuggingMode, projectId, projectPath],
+    [conversationState.debuggingMode, projectId, projectPath, remoteMachineId],
   );
 
   const loadTickets = useCallback(async (options: BoardRefreshOptions = {}) => {
@@ -1001,6 +1008,7 @@ function ProjectBoardApp() {
         projectId,
         projectPath,
         prompt,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
         startLocation,
         ticketTitle: ticket.title,
       });
@@ -1050,6 +1058,7 @@ function ProjectBoardApp() {
         beadId: ticket.id,
         projectId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
         ticketTitle: ticket.title,
       });
       if (!response.ok) {
@@ -1076,6 +1085,7 @@ function ProjectBoardApp() {
         beadId: link.beadId,
         projectId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
         sessionId: link.ghostexSessionId,
       });
       if (!response.ok) {
@@ -1102,6 +1112,7 @@ function ProjectBoardApp() {
         beadId: link.beadId,
         projectId,
         projectPath,
+        ...(remoteMachineId ? { remoteMachineId } : {}),
         sessionId: link.ghostexSessionId,
       });
       if (!response.ok) {

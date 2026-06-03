@@ -82,7 +82,7 @@ import {
   DEFAULT_WORKSPACE_THEME_COLOR,
   normalizeWorkspaceThemeColor,
   updateWorkspaceThemeColorHistory,
-} from "../shared/workspace-dock-icons";
+} from "../shared/workspace-project-appearance";
 import {
   readWorkspaceThemeColorHistory,
   writeWorkspaceThemeColorHistory,
@@ -183,7 +183,7 @@ function getProjectThemeSwatchStyle(themeColor: string | undefined): CSSProperti
   }
 
   return {
-    "--workspace-dock-button-background": themeColor,
+    "--workspace-theme-swatch-background": themeColor,
   } as CSSProperties;
 }
 
@@ -1256,6 +1256,8 @@ export function SessionGroupSection({
       projectId: projectContext.editor.projectId,
       projectName: group.title,
       projectPath: projectContext.path,
+      remoteMachineId: group.remoteMachineContext?.machineId,
+      remoteMachineName: group.remoteMachineContext?.machineName,
       type: "open",
     });
   };
@@ -2139,14 +2141,14 @@ export function SessionGroupSection({
                     </button>
                     <div className="session-context-menu-divider" role="separator" />
                     <button
-                      className="session-context-menu-item workspace-dock-theme-menu-item"
+                      className="session-context-menu-item workspace-theme-menu-item"
                       data-selected={String(Boolean(projectContext.themeColor))}
                       onClick={openProjectCustomThemeMenu}
                       role="menuitemradio"
                       type="button"
                     >
                       <span
-                        className="workspace-dock-theme-swatch"
+                        className="workspace-theme-swatch"
                         style={getProjectThemeSwatchStyle(
                           projectContext.themeColor ??
                             recentThemeColors[0] ??
@@ -2162,7 +2164,7 @@ export function SessionGroupSection({
                     </button>
                     {PROJECT_CONTEXT_THEME_OPTIONS.map((theme) => (
                       <button
-                        className="session-context-menu-item workspace-dock-theme-menu-item"
+                        className="session-context-menu-item workspace-theme-menu-item"
                         data-selected={String(
                           !projectContext.themeColor && projectContext.theme === theme.value,
                         )}
@@ -2172,7 +2174,7 @@ export function SessionGroupSection({
                         type="button"
                       >
                         <span
-                          className="workspace-dock-theme-swatch"
+                          className="workspace-theme-swatch"
                           data-workspace-theme={theme.value}
                         />
                         {theme.label}
@@ -2198,10 +2200,7 @@ export function SessionGroupSection({
                     <div className="workspace-theme-custom-picker">
                       {/*
                        * CDXC:WorkspaceTheme 2026-05-05-02:58
-                       * Combined-mode project headers use the same Theme menu
-                       * custom color picker as the workspace dock. Applying a
-                       * color posts a validated project theme color and records
-                       * it in the local recent-color palette.
+                       * Combined-mode project headers own the Theme menu custom color picker after the far-left project list was removed. Applying a color posts a validated project theme color and records it in the local recent-color palette.
                        */}
                       <input
                         aria-label="Custom workspace theme color"

@@ -13,6 +13,9 @@ import { FindPreviousSessionModal } from "../../sidebar/find-previous-session-mo
 import { FirstUserMessageModal } from "../../sidebar/first-user-message-modal";
 import { PinnedPromptsModal } from "../../sidebar/pinned-prompts-modal";
 import { PreviousSessionsModal } from "../../sidebar/previous-sessions-modal";
+import { RemoteGxserverInstallModal } from "../../sidebar/remote-gxserver-install-modal";
+import { RemoteProjectPickerModal } from "../../sidebar/remote-project-picker/remote-project-picker-modal";
+import type { T3FilesystemBrowseResult } from "../../sidebar/remote-project-picker/t3-filesystem";
 import { ScratchPadModal } from "../../sidebar/scratch-pad-modal";
 import {
   SettingsModal,
@@ -43,7 +46,7 @@ import type {
 import {
   getWorkspaceThemeForeground,
   normalizeWorkspaceThemeColor,
-} from "../../shared/workspace-dock-icons";
+} from "../../shared/workspace-project-appearance";
 import {
   installAppModalGlobalErrorLogging,
   logAppModalError,
@@ -74,6 +77,8 @@ type AppModalKind =
   | "floatingPromptEditor"
   | "previousSessions"
   | "firstUserMessage"
+  | "remoteGxserverInstall"
+  | "remoteProjectPicker"
   | "renameSession"
   | "scratchPad"
   | "settings"
@@ -102,6 +107,8 @@ type AppModalHostMessage =
       projectId?: string;
       projectName?: string;
       projectPath?: string;
+      remoteMachineId?: string;
+      remoteMachineName?: string;
       filePath?: string;
       gitCommitDraft?: GitCommitModalDraft;
       gitFileDiff?: GitFileDiffModalDraft;
@@ -150,6 +157,20 @@ type AppModalHostMessage =
       preview?: unknown;
       requestId: string;
       type: "repositoryClonePreviewResult";
+    }
+  | {
+      error?: string;
+      ok: boolean;
+      requestId: string;
+      result?: T3FilesystemBrowseResult;
+      type: "remoteProjectDirectoryBrowseResult";
+    }
+  | {
+      error?: string;
+      ok: boolean;
+      projectPath?: string;
+      requestId: string;
+      type: "remoteProjectAddResult";
     }
   | { type: "pickWorktreeImages" }
   | { paths: string[]; type: "worktreeImageFilesPicked" }
@@ -201,6 +222,22 @@ const PROMPT_AGENT_MODAL_STORAGE_KEYS: Record<PromptAgentModalKey, string> = {
 type FirstUserMessageModalState = {
   message: string;
   title?: string;
+};
+
+type RemoteProjectPickerState = {
+  initialQuery?: string;
+  remoteMachineId: string;
+  remoteMachineName: string;
+};
+
+type RemoteGxserverInstallState = {
+  remoteMachineId: string;
+  remoteMachineName: string;
+};
+
+type AddRepositoryModalState = {
+  remoteMachineId?: string;
+  remoteMachineName?: string;
 };
 
 type DelayedSendModalState = {
@@ -276,6 +313,8 @@ type WorktreeModalState = {
   projectId?: string;
   projectName?: string;
   projectPath?: string;
+  remoteMachineId?: string;
+  remoteMachineName?: string;
 };
 
 const APP_MODAL_CONTEXT_MENU_EDITABLE_SELECTOR =
@@ -306,9 +345,6 @@ declare global {
           postMessage: (message: unknown) => void;
         };
         ghostexNativeHostDiagnostics?: {
-          postMessage: (message: unknown) => void;
-        };
-        ghostexWorkspaceBar?: {
           postMessage: (message: unknown) => void;
         };
       };
@@ -1540,9 +1576,94 @@ function resolvePromptAgentModalSelection(
   );
 }
 
+function createRemoteProjectRequestId(kind: "add" | "browse"): string {
+  return `remote-project-${kind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function waitForRemoteProjectDirectoryBrowseResult(
+  requestId: string,
+): Promise<T3FilesystemBrowseResult> {
+  return new Promise((resolve, reject) => {
+    let timeoutId = 0;
+    const handleMessage = (event: Event) => {
+      const message = (event as CustomEvent<AppModalHostMessage>).detail;
+      if (
+        !message ||
+        typeof message !== "object" ||
+        message.type !== "remoteProjectDirectoryBrowseResult" ||
+        message.requestId !== requestId
+      ) {
+        return;
+      }
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
+      if (!message.ok || !isT3FilesystemBrowseResult(message.result)) {
+        reject(new Error(message.error || "Remote directory browse failed."));
+        return;
+      }
+      resolve(message.result);
+    };
+
+    window.addEventListener("ghostex-app-modal-host-message", handleMessage);
+    timeoutId = window.setTimeout(() => {
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
+      reject(new Error("Remote directory browse timed out."));
+    }, 15_000);
+  });
+}
+
+function waitForRemoteProjectAddResult(requestId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timeoutId = 0;
+    const handleMessage = (event: Event) => {
+      const message = (event as CustomEvent<AppModalHostMessage>).detail;
+      if (
+        !message ||
+        typeof message !== "object" ||
+        message.type !== "remoteProjectAddResult" ||
+        message.requestId !== requestId
+      ) {
+        return;
+      }
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
+      if (!message.ok) {
+        reject(new Error(message.error || "Remote project add failed."));
+        return;
+      }
+      resolve();
+    };
+
+    window.addEventListener("ghostex-app-modal-host-message", handleMessage);
+    timeoutId = window.setTimeout(() => {
+      window.removeEventListener("ghostex-app-modal-host-message", handleMessage);
+      reject(new Error("Remote project add timed out."));
+    }, 20_000);
+  });
+}
+
+function isT3FilesystemBrowseResult(value: unknown): value is T3FilesystemBrowseResult {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<T3FilesystemBrowseResult>;
+  return (
+    typeof candidate.parentPath === "string" &&
+    Array.isArray(candidate.entries) &&
+    candidate.entries.every(
+      (entry) =>
+        Boolean(entry) &&
+        typeof entry === "object" &&
+        typeof (entry as { fullPath?: unknown }).fullPath === "string" &&
+        typeof (entry as { name?: unknown }).name === "string",
+    )
+  );
+}
+
 function AppModalHost() {
   const {
     activeModal,
+    addRepository,
     agentsHubCatalog,
     config,
     delayedSend,
@@ -1555,6 +1676,8 @@ function AppModalHost() {
     floatingPromptEditorCloseAndSaveRequestId,
     closeGitFileDiff,
     closeModal,
+    remoteGxserverInstall,
+    remoteProjectPicker,
     renameSession,
     t3BrowserAccess,
     t3ThreadId,
@@ -1607,6 +1730,8 @@ function AppModalHost() {
     gitFileDiff,
     worktreeDelete,
     floatingPromptEditor,
+    remoteGxserverInstall,
+    remoteProjectPicker,
     renameSession,
     settings,
     t3BrowserAccess,
@@ -1812,6 +1937,54 @@ function AppModalHost() {
         onClose={closeModal}
         title={firstUserMessage?.title}
       />
+      <RemoteGxserverInstallModal
+        isOpen={activeModal === "remoteGxserverInstall" && remoteGxserverInstall !== undefined}
+        machineName={remoteGxserverInstall?.remoteMachineName ?? "Remote"}
+        onApprove={() => {
+          if (!remoteGxserverInstall) {
+            return;
+          }
+          vscode.postMessage({
+            installApproved: true,
+            remoteMachineId: remoteGxserverInstall.remoteMachineId,
+            type: "reconnectRemoteMachine",
+          });
+          closeModal();
+        }}
+        onCancel={closeModal}
+      />
+      <RemoteProjectPickerModal
+        initialQuery={remoteProjectPicker?.initialQuery}
+        isOpen={activeModal === "remoteProjectPicker" && remoteProjectPicker !== undefined}
+        machineName={remoteProjectPicker?.remoteMachineName ?? "Remote"}
+        onAddProject={async (path) => {
+          if (!remoteProjectPicker) {
+            return;
+          }
+          const requestId = createRemoteProjectRequestId("add");
+          vscode.postMessage({
+            path,
+            remoteMachineId: remoteProjectPicker.remoteMachineId,
+            requestId,
+            type: "addRemoteProjectPath",
+          });
+          await waitForRemoteProjectAddResult(requestId);
+        }}
+        onBrowse={async (input) => {
+          if (!remoteProjectPicker) {
+            return null;
+          }
+          const requestId = createRemoteProjectRequestId("browse");
+          vscode.postMessage({
+            partialPath: input.partialPath,
+            remoteMachineId: remoteProjectPicker.remoteMachineId,
+            requestId,
+            type: "browseRemoteProjectDirectories",
+          });
+          return waitForRemoteProjectDirectoryBrowseResult(requestId);
+        }}
+        onClose={closeModal}
+      />
       <DaemonSessionsModal
         isOpen={activeModal === "daemonSessions"}
         onClose={closeModal}
@@ -1932,8 +2105,8 @@ function AppModalHost() {
           vscode.postMessage({ agentId, requestId, type: "runSidebarGitMultipleCommits" });
           closeModal();
         }}
-        onOpenFileDiff={(filePath) => {
-          vscode.postMessage({ filePath, type: "openSidebarGitChangedFileDiff" });
+        onOpenFileDiff={(filePath, requestId) => {
+          vscode.postMessage({ filePath, requestId, type: "openSidebarGitChangedFileDiff" });
         }}
         onPromptAgentIdChange={updateGitCommitPromptAgentId}
         promptAgentId={resolvedGitCommitPromptAgentId}
@@ -1996,6 +2169,7 @@ function AppModalHost() {
             projectId: worktree?.projectId,
             projectPath: worktree?.projectPath,
             prompt: draft.mode === "create" ? draft.prompt : undefined,
+            remoteMachineId: worktree?.remoteMachineId,
             type: "createProjectWorktree",
           } satisfies SidebarToExtensionMessage);
           closeModal();
@@ -2004,6 +2178,7 @@ function AppModalHost() {
           vscode.postMessage({
             projectId: worktree?.projectId,
             projectPath: worktree?.projectPath,
+            remoteMachineId: worktree?.remoteMachineId,
             requestId,
             type: "requestProjectWorktrees",
           } satisfies SidebarToExtensionMessage);
@@ -2250,6 +2425,8 @@ function AppModalHost() {
       />
       <AddRepositoryModal
         isOpen={activeModal === "addRepository"}
+        remoteMachineId={addRepository.remoteMachineId}
+        remoteMachineName={addRepository.remoteMachineName}
         onCancel={closeModal}
         onClone={(request) => {
           /*
@@ -2262,6 +2439,7 @@ function AppModalHost() {
             cloneMainOnly: request.cloneMainOnly,
             folderPath: request.folderPath,
             newFolderName: request.newFolderName,
+            remoteMachineId: addRepository.remoteMachineId,
             repositoryInput: request.repositoryInput,
             requestId: request.requestId,
             shallowClone: request.shallowClone,
@@ -2270,10 +2448,28 @@ function AppModalHost() {
           closeModal();
         }}
         onCloneSuccess={closeModal}
+        onRemoteBrowse={
+          addRepository.remoteMachineId
+            ? async (input) => {
+                if (!addRepository.remoteMachineId) {
+                  return null;
+                }
+                const requestId = createRemoteProjectRequestId("browse");
+                vscode.postMessage({
+                  partialPath: input.partialPath,
+                  remoteMachineId: addRepository.remoteMachineId,
+                  requestId,
+                  type: "browseRemoteProjectDirectories",
+                });
+                return waitForRemoteProjectDirectoryBrowseResult(requestId);
+              }
+            : undefined
+        }
         onPreview={(request) => {
           vscode.postMessage({
             folderPath: request.folderPath,
             newFolderName: request.newFolderName,
+            remoteMachineId: addRepository.remoteMachineId,
             repositoryInput: request.repositoryInput,
             requestId: request.requestId,
             type: "previewRepositoryClone",
@@ -2351,6 +2547,7 @@ function AppModalHost() {
  */
 function useModalStateFromNative() {
   const [activeModal, setActiveModal] = useState<AppModalKind | undefined>();
+  const [addRepository, setAddRepository] = useState<AddRepositoryModalState>({});
   const [agentsHubCatalog, setAgentsHubCatalog] = useState<AgentsHubCatalogMessage>();
   const [config, setConfig] = useState<ConfigModalState>({});
   const [delayedSend, setDelayedSend] = useState<DelayedSendModalState>();
@@ -2362,6 +2559,9 @@ function useModalStateFromNative() {
   const [floatingPromptEditor, setFloatingPromptEditor] = useState<FloatingPromptEditorState>();
   const [floatingPromptEditorCloseAndSaveRequestId, setFloatingPromptEditorCloseAndSaveRequestId] =
     useState<string>();
+  const [remoteGxserverInstall, setRemoteGxserverInstall] =
+    useState<RemoteGxserverInstallState>();
+  const [remoteProjectPicker, setRemoteProjectPicker] = useState<RemoteProjectPickerState>();
   const [renameSession, setRenameSession] = useState<RenameSessionModalState>();
   const [t3BrowserAccess, setT3BrowserAccess] = useState<T3BrowserAccessMessage>();
   const [t3ThreadId, setT3ThreadId] = useState<T3ThreadIdModalState>();
@@ -2377,6 +2577,7 @@ function useModalStateFromNative() {
 
   const clearActiveModalState = useCallback(() => {
     setActiveModal(undefined);
+    setAddRepository({});
     setConfig({});
     setDelayedSend(undefined);
     setFindPreviousSession(undefined);
@@ -2385,6 +2586,8 @@ function useModalStateFromNative() {
     setGitFileDiff(undefined);
     setWorktreeDelete(undefined);
     setFloatingPromptEditor(undefined);
+    setRemoteGxserverInstall(undefined);
+    setRemoteProjectPicker(undefined);
     setRenameSession(undefined);
     setT3BrowserAccess(undefined);
     setT3ThreadId(undefined);
@@ -2451,6 +2654,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
@@ -2467,6 +2672,66 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
+            setWorktree(undefined);
+            setWorktreeDelete(undefined);
+          } else if (message.modal === "remoteGxserverInstall") {
+            if (
+              typeof message.remoteMachineId !== "string" ||
+              !message.remoteMachineId.trim() ||
+              typeof message.remoteMachineName !== "string" ||
+              !message.remoteMachineName.trim()
+            ) {
+              throw new Error("Remote gxserver install request is missing machine details.");
+            }
+            setRemoteGxserverInstall({
+              remoteMachineId: message.remoteMachineId,
+              remoteMachineName: message.remoteMachineName,
+            });
+            setConfig({});
+            setDelayedSend(undefined);
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
+            setRenameSession(undefined);
+            setT3BrowserAccess(undefined);
+            setT3ThreadId(undefined);
+            setWorktree(undefined);
+            setWorktreeDelete(undefined);
+          } else if (message.modal === "remoteProjectPicker") {
+            if (
+              typeof message.remoteMachineId !== "string" ||
+              !message.remoteMachineId.trim() ||
+              typeof message.remoteMachineName !== "string" ||
+              !message.remoteMachineName.trim()
+            ) {
+              throw new Error("Remote project picker request is missing machine details.");
+            }
+            /*
+             * CDXC:RemoteProjectPicker 2026-06-03-00:18:
+             * Remote machine Add Project opens in the full-window modal host
+             * with the selected machine carried as immutable request state.
+             * Directory browsing remains machine-scoped through native so the
+             * picker cannot accidentally browse local folders.
+             */
+            setRemoteProjectPicker({
+              initialQuery:
+                typeof message.initialQuery === "string" ? message.initialQuery : undefined,
+              remoteMachineId: message.remoteMachineId,
+              remoteMachineName: message.remoteMachineName,
+            });
+            setConfig({});
+            setDelayedSend(undefined);
+            setFindPreviousSession(undefined);
+            setFirstUserMessage(undefined);
+            setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2519,6 +2784,8 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2544,6 +2811,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2558,6 +2827,8 @@ function useModalStateFromNative() {
             setDelayedSend(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2579,6 +2850,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3ThreadId(undefined);
             setWorktree(undefined);
@@ -2596,6 +2869,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setWorktree(undefined);
@@ -2605,12 +2880,16 @@ function useModalStateFromNative() {
               projectId: typeof message.projectId === "string" ? message.projectId : undefined,
               projectName: typeof message.projectName === "string" ? message.projectName : undefined,
               projectPath: typeof message.projectPath === "string" ? message.projectPath : undefined,
+              remoteMachineId: typeof message.remoteMachineId === "string" ? message.remoteMachineId : undefined,
+              remoteMachineName: typeof message.remoteMachineName === "string" ? message.remoteMachineName : undefined,
             });
             setConfig({});
             setDelayedSend(undefined);
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2626,6 +2905,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2642,6 +2923,7 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2665,6 +2947,8 @@ function useModalStateFromNative() {
             setFirstUserMessage(undefined);
             setFindPreviousSession(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2679,6 +2963,8 @@ function useModalStateFromNative() {
             setFirstUserMessage(undefined);
             setFindPreviousSession(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2690,6 +2976,8 @@ function useModalStateFromNative() {
             setFindPreviousSession(undefined);
             setFirstUserMessage(undefined);
             setFloatingPromptEditor(undefined);
+            setRemoteGxserverInstall(undefined);
+            setRemoteProjectPicker(undefined);
             setRenameSession(undefined);
             setT3BrowserAccess(undefined);
             setT3ThreadId(undefined);
@@ -2706,6 +2994,20 @@ function useModalStateFromNative() {
           }
           if (message.modal !== "agentsHub") {
             setAgentsHubCatalog(undefined);
+          }
+          if (message.modal === "addRepository") {
+            setAddRepository({
+              remoteMachineId:
+                typeof message.remoteMachineId === "string" && message.remoteMachineId.trim()
+                  ? message.remoteMachineId
+                  : undefined,
+              remoteMachineName:
+                typeof message.remoteMachineName === "string" && message.remoteMachineName.trim()
+                  ? message.remoteMachineName
+                  : undefined,
+            });
+          } else {
+            setAddRepository({});
           }
           setActiveModal(message.modal);
           return;
@@ -2862,6 +3164,7 @@ function useModalStateFromNative() {
 
   return {
     activeModal,
+    addRepository,
     agentsHubCatalog,
     config,
     delayedSend,
@@ -2874,7 +3177,9 @@ function useModalStateFromNative() {
     floatingPromptEditorCloseAndSaveRequestId,
     closeGitFileDiff,
     closeModal,
+    remoteProjectPicker,
     renameSession,
+    remoteGxserverInstall,
     t3BrowserAccess,
     t3ThreadId,
     worktree,
@@ -2972,6 +3277,8 @@ function isModalRenderable({
   gitFileDiff,
   worktreeDelete,
   floatingPromptEditor,
+  remoteProjectPicker,
+  remoteGxserverInstall,
   renameSession,
   settings,
   t3BrowserAccess,
@@ -2987,6 +3294,8 @@ function isModalRenderable({
   gitFileDiff: GitFileDiffModalDraft | undefined;
   worktreeDelete: WorktreeDeleteModalDraft | undefined;
   floatingPromptEditor: FloatingPromptEditorState | undefined;
+  remoteProjectPicker: RemoteProjectPickerState | undefined;
+  remoteGxserverInstall: RemoteGxserverInstallState | undefined;
   renameSession: RenameSessionModalState | undefined;
   settings: unknown;
   t3BrowserAccess: T3BrowserAccessMessage | undefined;
@@ -3019,6 +3328,10 @@ function isModalRenderable({
       return worktreeDelete !== undefined;
     case "floatingPromptEditor":
       return floatingPromptEditor !== undefined;
+    case "remoteProjectPicker":
+      return remoteProjectPicker !== undefined;
+    case "remoteGxserverInstall":
+      return remoteGxserverInstall !== undefined;
     case "renameSession":
       return renameSession !== undefined;
     case "settings":

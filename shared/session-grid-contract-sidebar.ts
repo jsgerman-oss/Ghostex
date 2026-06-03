@@ -2,7 +2,7 @@ import type { CompletionSoundSetting } from "./completion-sound";
 import type { AgentAcceptAllMode } from "./sidebar-agent-accept-all";
 import type { SidebarAgentButton, SidebarAgentIcon } from "./sidebar-agents";
 import type { SidebarCommandIcon } from "./sidebar-command-icons";
-import type { WorkspaceDockIcon } from "./workspace-dock-icons";
+import type { WorkspaceProjectIcon } from "./workspace-project-appearance";
 import type {
   SidebarActionType,
   SidebarCommandButton,
@@ -335,6 +335,10 @@ export type SidebarSessionGroup = {
     themeColor?: string;
     worktree?: SidebarProjectWorktreeMetadata;
   };
+  remoteMachineContext?: {
+    machineId: string;
+    machineName: string;
+  };
   sessions: SidebarSessionItem[];
   title: string;
   viewMode: TerminalViewMode;
@@ -365,7 +369,7 @@ export type SidebarProjectSettingsItem = {
 };
 
 export type SidebarRecentProject = {
-  icon?: WorkspaceDockIcon;
+  icon?: WorkspaceProjectIcon;
   iconDataUrl?: string;
   path: string;
   projectId: string;
@@ -651,6 +655,18 @@ export type SidebarPreviousSessionsResultMessage = {
   type: "previousSessionsResult";
 };
 
+export type SidebarRemoteMachineStatusMessage = {
+  machineId: string;
+  state:
+    | "connecting"
+    | "connected"
+    | "disconnected"
+    | "installApprovalRequired"
+    | "installing"
+    | "failed";
+  type: "remoteMachineStatus";
+};
+
 export type ExtensionToSidebarMessage =
   | SidebarHydrateMessage
   | SidebarSessionStateMessage
@@ -670,7 +686,8 @@ export type ExtensionToSidebarMessage =
   | SidebarShowSessionRenameModalMessage
   | SidebarShowFindPreviousSessionModalMessage
   | SidebarShowT3ThreadIdModalMessage
-  | SidebarPreviousSessionsResultMessage;
+  | SidebarPreviousSessionsResultMessage
+  | SidebarRemoteMachineStatusMessage;
 
 export type SidebarToExtensionMessage =
   | {
@@ -950,9 +967,59 @@ export type SidebarToExtensionMessage =
       /**
        * CDXC:NativeWorkspacePicker 2026-05-08-18:45
        * The reference Projects header add button should open the trusted native
-       * folder picker, matching the workspace dock plus button.
+       * folder picker.
        */
       type: "pickWorkspaceFolder";
+    }
+  | {
+      /**
+       * CDXC:RemoteMachines 2026-06-02-23:47:
+       * Disconnected Remote sidebar sections stay visible and expose only Reload. Native owns the SSH reconnect/start/install gxserver flow, so React sends the saved machine id instead of handling SSH details in the sidebar.
+       *
+       * CDXC:RemoteMachines 2026-06-02-23:38:
+       * Missing gxserver installation requires explicit React modal approval.
+       * The approval flag is carried back through the same reconnect command
+       * so native can upload/install only after the user accepts.
+       */
+      installApproved?: boolean;
+      remoteMachineId: string;
+      type: "reconnectRemoteMachine";
+    }
+  | {
+      /**
+       * CDXC:RemoteProjectPicker 2026-06-02-23:22:
+       * Remote Add Project uses a T3 Code-style directory picker, but every
+       * browse request is machine-scoped. Native must route it to that
+       * machine's gxserver after SSH reconnect/token setup instead of exposing
+       * local filesystem browsing for remote machines.
+       */
+      partialPath: string;
+      remoteMachineId: string;
+      requestId: string;
+      type: "browseRemoteProjectDirectories";
+    }
+  | {
+      /**
+       * CDXC:RemoteProjects 2026-06-03-00:18:
+       * Adding a remote project is not the local Add Project command. Carry the
+       * remote machine id with the selected path so native can add the project
+       * through that machine's gxserver and later render it under that machine's
+       * sidebar section.
+       */
+      path: string;
+      remoteMachineId: string;
+      requestId: string;
+      type: "addRemoteProjectPath";
+    }
+  | {
+      /**
+       * CDXC:RemoteClone 2026-06-02-23:38:
+       * Connected Remote machine headers expose Clone Repository beside Add
+       * Project, but the command must stay machine-scoped. Do not route this
+       * through the local clone modal without a remote gxserver target.
+       */
+      remoteMachineId: string;
+      type: "openRemoteCloneRepository";
     }
   | {
       /**
@@ -969,6 +1036,7 @@ export type SidebarToExtensionMessage =
       cloneMainOnly?: boolean;
       folderPath: string;
       newFolderName?: string;
+      remoteMachineId?: string;
       repositoryInput: string;
       requestId: string;
       shallowClone?: boolean;
@@ -983,6 +1051,7 @@ export type SidebarToExtensionMessage =
        */
       folderPath: string;
       newFolderName?: string;
+      remoteMachineId?: string;
       repositoryInput: string;
       requestId: string;
       type: "previewRepositoryClone";
@@ -994,7 +1063,8 @@ export type SidebarToExtensionMessage =
        * The toast Cancel action must target the active clone request instead of
        * only dismissing UI, so the native sidebar can ask gxserver to cancel the
        * corresponding clone job.
-       */
+      */
+      remoteMachineId?: string;
       requestId: string;
       type: "cancelRepositoryClone";
     }
@@ -1150,8 +1220,8 @@ export type SidebarToExtensionMessage =
       /**
        * CDXC:RecentProjects 2026-05-04-14:25
        * Combined project context menus close projects into the Recent Projects
-       * drawer instead of deleting their stored sessions. Native keeps the
-       * legacy remove message for the workspace dock path.
+       * drawer instead of deleting their stored sessions. Remove remains the
+       * explicit project-delete path.
        */
       type: "closeWorkspaceProjectForGroup" | "removeWorkspaceProjectForGroup";
       groupId: string;
@@ -1446,6 +1516,7 @@ export type SidebarToExtensionMessage =
     }
   | {
       filePath: string;
+      requestId?: string;
       type: "openSidebarGitChangedFileDiff";
     }
   | {
@@ -1494,12 +1565,14 @@ export type SidebarToExtensionMessage =
       prompt?: string;
       projectId?: string;
       projectPath?: string;
+      remoteMachineId?: string;
     }
   | {
       type: "requestProjectWorktrees";
       projectId?: string;
       projectPath?: string;
       requestId: string;
+      remoteMachineId?: string;
     }
   | {
       type: "setProjectWorktreeCommand";

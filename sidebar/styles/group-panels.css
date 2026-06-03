@@ -1416,6 +1416,35 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   margin-bottom: 12px;
 }
 
+.reference-remote-section-list {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.reference-remote-machine-section[data-disconnected="true"] {
+  opacity: 0.48;
+}
+
+.reference-remote-machine-section[data-disconnected="true"]:hover,
+.reference-remote-machine-section[data-disconnected="true"]:focus-within {
+  opacity: 0.68;
+}
+
+.reference-remote-machine-section[data-dragging="true"] {
+  opacity: 0.28;
+}
+
+.reference-remote-machine-section .reference-sidebar-section-row {
+  margin-bottom: 0;
+  margin-top: 10px;
+}
+
+.reference-remote-machine-section .reference-sidebar-section-chevron {
+  opacity: 0;
+  visibility: hidden;
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-groups-content
   > .reference-sidebar-section-row:first-child {

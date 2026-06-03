@@ -720,6 +720,7 @@ function toSidebarGroupRecord(group: SidebarSessionGroup): SidebarGroupRecord {
     kind: group.kind,
     layoutVisibleCount: group.layoutVisibleCount,
     projectContext: group.projectContext,
+    remoteMachineContext: group.remoteMachineContext,
     title: group.title,
     viewMode: group.viewMode,
     visibleCount: group.visibleCount,
@@ -736,10 +737,21 @@ function haveSameSidebarGroupRecord(left: SidebarGroupRecord, right: SidebarGrou
     left.kind === right.kind &&
     left.layoutVisibleCount === right.layoutVisibleCount &&
     haveSameSidebarProjectContext(left.projectContext, right.projectContext) &&
+    haveSameSidebarRemoteMachineContext(left.remoteMachineContext, right.remoteMachineContext) &&
     left.title === right.title &&
     left.viewMode === right.viewMode &&
     left.visibleCount === right.visibleCount
   );
+}
+
+function haveSameSidebarRemoteMachineContext(
+  left: SidebarGroupRecord["remoteMachineContext"],
+  right: SidebarGroupRecord["remoteMachineContext"],
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return left.machineId === right.machineId && left.machineName === right.machineName;
 }
 
 function haveSameSidebarProjectContext(

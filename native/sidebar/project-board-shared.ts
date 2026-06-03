@@ -96,6 +96,7 @@ export type BeadsBridgeRequest = {
   priority?: string;
   prompt?: string;
   query?: string;
+  remoteMachineId?: string;
   requestId: string;
   status?: string;
   title?: string;

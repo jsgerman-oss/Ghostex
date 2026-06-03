@@ -89,6 +89,7 @@ export type ProjectBoardBridgeRequest = {
   prompt?: string;
   projectId?: string;
   projectPath?: string;
+  remoteMachineId?: string;
   requestId: string;
   sessionId?: string;
   startLocation?: ProjectBoardStartLocation;

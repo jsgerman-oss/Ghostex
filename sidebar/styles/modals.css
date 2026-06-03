@@ -2985,3 +2985,32 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.remote-gxserver-install-modal {
+  max-width: 520px;
+}
+
+.remote-gxserver-install-modal-body {
+  color: rgba(244, 244, 245, 0.76);
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  gap: 12px;
+  line-height: 1.5;
+}
+
+.remote-gxserver-install-modal-body code {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: rgba(244, 244, 245, 0.92);
+  font-size: 12px;
+  padding: 1px 4px;
+}
+
+.remote-gxserver-install-modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  padding-top: 6px;
+}

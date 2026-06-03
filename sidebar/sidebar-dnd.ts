@@ -18,6 +18,11 @@ type CreateGroupDropData = {
   kind: "create-group";
 };
 
+type RemoteMachineDragData = {
+  kind: "remote-machine";
+  remoteMachineId: string;
+};
+
 export type SidebarSessionDropTarget =
   | {
       groupId: string;
@@ -39,6 +44,7 @@ type SessionDropTargetData = {
 export type SidebarDropData =
   | SessionDragData
   | GroupDropData
+  | RemoteMachineDragData
   | CreateGroupDropData
   | SessionDropTargetData;
 
@@ -63,6 +69,13 @@ export function createGroupDropData(groupId: string): GroupDropData {
 export function createCreateGroupDropData(): CreateGroupDropData {
   return {
     kind: "create-group",
+  };
+}
+
+export function createRemoteMachineDragData(remoteMachineId: string): RemoteMachineDragData {
+  return {
+    kind: "remote-machine",
+    remoteMachineId,
   };
 }
 
@@ -113,6 +126,14 @@ export function getSidebarDropData(candidate: unknown): SidebarDropData | undefi
 
     case "create-group":
       return { kind: "create-group" };
+
+    case "remote-machine":
+      return typeof data.remoteMachineId === "string"
+        ? {
+            kind: "remote-machine",
+            remoteMachineId: data.remoteMachineId,
+          }
+        : undefined;
 
     case "session-drop-target":
       return isSidebarSessionDropTarget(data.dropTarget)

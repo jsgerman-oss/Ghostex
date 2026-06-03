@@ -14,6 +14,11 @@ import { Input } from "@/components/ui/input";
 import type { GxserverRepositoryClonePreviewResult } from "../shared/gxserver-protocol";
 import { AppTooltip, TooltipProvider } from "./app-tooltip";
 import { postAppModalHostMessage } from "./app-modal-host-bridge";
+import { RemoteProjectPickerModal } from "./remote-project-picker/remote-project-picker-modal";
+import type {
+  T3FilesystemBrowseInput,
+  T3FilesystemBrowseResult,
+} from "./remote-project-picker/t3-filesystem";
 
 const ADD_REPOSITORY_LAST_LOCATION_STORAGE_KEY = "ghostex.addRepository.lastLocation";
 const ADD_REPOSITORY_OPTION_HELP_TOOLTIP_STYLE = {
@@ -41,7 +46,10 @@ export type AddRepositoryModalProps = {
   onCancel: () => void;
   onClone: (request: AddRepositoryCloneRequest) => void;
   onCloneSuccess: () => void;
+  onRemoteBrowse?: (input: T3FilesystemBrowseInput) => Promise<T3FilesystemBrowseResult | null>;
   onPreview: (request: AddRepositoryClonePreviewRequest) => void;
+  remoteMachineId?: string;
+  remoteMachineName?: string;
 };
 
 type RepositoryFolderPickedMessage = {
@@ -81,7 +89,10 @@ export function AddRepositoryModal({
   onCancel,
   onClone,
   onCloneSuccess,
+  onRemoteBrowse,
   onPreview,
+  remoteMachineId,
+  remoteMachineName,
 }: AddRepositoryModalProps) {
   const repositoryId = useId();
   const folderId = useId();
@@ -102,6 +113,13 @@ export function AddRepositoryModal({
   const [shallowClone, setShallowClone] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
   const [isCloning, setIsCloning] = useState(false);
+  const [isRemoteDestinationPickerOpen, setIsRemoteDestinationPickerOpen] = useState(false);
+  const isRemoteClone =
+    typeof remoteMachineId === "string" &&
+    remoteMachineId.trim().length > 0 &&
+    typeof remoteMachineName === "string" &&
+    remoteMachineName.trim().length > 0 &&
+    typeof onRemoteBrowse === "function";
 
   useEffect(() => {
     if (!isOpen) {
@@ -118,9 +136,10 @@ export function AddRepositoryModal({
     setPreviewErrorMessage(undefined);
     setErrorMessage(undefined);
     setIsCloning(false);
+    setIsRemoteDestinationPickerOpen(false);
     activeRequestIdRef.current = undefined;
     previewRequestIdRef.current = undefined;
-    setFolderPath(readLastRepositoryLocation());
+    setFolderPath(isRemoteClone ? "~/" : readLastRepositoryLocation());
 
     const animationFrame = window.requestAnimationFrame(() => {
       repositoryRef.current?.focus();
@@ -128,7 +147,7 @@ export function AddRepositoryModal({
     return () => {
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [isOpen]);
+  }, [isOpen, isRemoteClone]);
 
   useEffect(() => {
     hasEditedNewFolderNameRef.current = hasEditedNewFolderName;
@@ -260,7 +279,9 @@ export function AddRepositoryModal({
     const requestId = `repository-clone-${Date.now().toString(36)}-${Math.random()
       .toString(36)
       .slice(2)}`;
-    rememberLastRepositoryLocation(normalizedFolderPath);
+    if (!isRemoteClone) {
+      rememberLastRepositoryLocation(normalizedFolderPath);
+    }
     activeRequestIdRef.current = requestId;
     setIsCloning(true);
     onClone({
@@ -289,7 +310,11 @@ export function AddRepositoryModal({
         <form className="session-rename-form add-repository-form" onSubmit={submit}>
           <DialogHeader>
             <DialogTitle className="text-xl">Clone Repository</DialogTitle>
-            <DialogDescription>Clone a Git repository and add it as a project.</DialogDescription>
+            <DialogDescription>
+              {isRemoteClone
+                ? `Clone a Git repository on ${remoteMachineName} and add it as a remote project.`
+                : "Clone a Git repository and add it as a project."}
+            </DialogDescription>
           </DialogHeader>
           <FieldGroup className="session-rename-field-group">
             <Field data-invalid={hasInvalidRepositoryInput || undefined}>
@@ -334,12 +359,16 @@ export function AddRepositoryModal({
                 />
                 <Button
                   disabled={isCloning}
-                  onClick={() =>
+                  onClick={() => {
+                    if (isRemoteClone) {
+                      setIsRemoteDestinationPickerOpen(true);
+                      return;
+                    }
                     postAppModalHostMessage(
                       { initialPath: folderPath.trim(), type: "pickRepositoryFolder" },
                       "AppModals:pickRepositoryFolder",
-                    )
-                  }
+                    );
+                  }}
                   type="button"
                   variant="secondary"
                 >
@@ -347,6 +376,11 @@ export function AddRepositoryModal({
                   Choose
                 </Button>
               </div>
+              {isRemoteClone ? (
+                <FieldDescription>
+                  Folder path on {remoteMachineName}; Choose browses that machine.
+                </FieldDescription>
+              ) : null}
             </Field>
             <Field data-invalid={destinationWarning ? true : undefined}>
               {/*
@@ -451,6 +485,31 @@ export function AddRepositoryModal({
             </Button>
           </DialogFooter>
         </form>
+        {isRemoteClone ? (
+          /*
+           * CDXC:RemoteClone 2026-06-02-23:53:
+           * Remote Clone Repository must use the copied T3-style browse picker
+           * for destination selection. The local macOS folder picker stays
+           * local-only; remote browsing is machine-scoped through gxserver.
+           */
+          <RemoteProjectPickerModal
+            actionLabel="Select"
+            description={`Choose a clone destination folder on ${remoteMachineName}`}
+            initialQuery={folderPath.trim() || "~/"}
+            isOpen={isRemoteDestinationPickerOpen}
+            machineName={remoteMachineName ?? "Remote"}
+            onAddProject={(path) => {
+              setFolderPath(path);
+              setClonePreview(undefined);
+              setPreviewErrorMessage(undefined);
+              setErrorMessage(undefined);
+            }}
+            onBrowse={onRemoteBrowse}
+            onClose={() => setIsRemoteDestinationPickerOpen(false)}
+            pendingLabel="Selecting"
+            title="Select clone destination"
+          />
+        ) : null}
       </DialogContent>
     </Dialog>
   );

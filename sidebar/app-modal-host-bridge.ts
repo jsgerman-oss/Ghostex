@@ -24,6 +24,8 @@ export type AppModalKind =
   | "pinnedPrompts"
   | "previousSessions"
   | "firstUserMessage"
+  | "remoteGxserverInstall"
+  | "remoteProjectPicker"
   | "delayedSend"
   | "renameSession"
   | "scratchPad"
@@ -47,14 +49,34 @@ export type OpenAppModalMessage =
         | "floatingPromptEditor"
         | "gitFileDiff"
         | "deleteWorktree"
+        | "remoteGxserverInstall"
         | "renameSession"
+        | "remoteProjectPicker"
         | "t3BrowserAccess"
         | "t3ThreadId"
         | "worktree"
       >;
       type: "open";
     }
-  | { modal: "addRepository"; type: "open" }
+  | {
+      modal: "addRepository";
+      remoteMachineId?: string;
+      remoteMachineName?: string;
+      type: "open";
+    }
+  | {
+      modal: "remoteGxserverInstall";
+      remoteMachineId: string;
+      remoteMachineName: string;
+      type: "open";
+    }
+  | {
+      initialQuery?: string;
+      modal: "remoteProjectPicker";
+      remoteMachineId: string;
+      remoteMachineName: string;
+      type: "open";
+    }
   | { initialQuery?: string; modal: "findPreviousSession"; type: "open" }
   | { access: T3BrowserAccessMessage; modal: "t3BrowserAccess"; type: "open" }
   | { modal: "t3ThreadId"; sessionId: string; threadId: string; type: "open" }
@@ -86,7 +108,15 @@ export type OpenAppModalMessage =
       type: "open";
     }
   | { initialTitle: string; modal: "renameSession"; sessionId: string; type: "open" }
-  | { modal: "worktree"; projectId?: string; projectName?: string; projectPath?: string; type: "open" };
+  | {
+      modal: "worktree";
+      projectId?: string;
+      projectName?: string;
+      projectPath?: string;
+      remoteMachineId?: string;
+      remoteMachineName?: string;
+      type: "open";
+    };
 
 declare global {
   interface Window {
@@ -99,9 +129,6 @@ declare global {
           postMessage: (message: unknown) => void;
         };
         ghostexNativeHostDiagnostics?: {
-          postMessage: (message: unknown) => void;
-        };
-        ghostexWorkspaceBar?: {
           postMessage: (message: unknown) => void;
         };
       };

@@ -1,25 +1,5 @@
 import { createRoot } from "react-dom/client";
-import {
-  IconCheck,
-  IconChevronLeft,
-  IconChevronRight,
-  IconCode,
-  IconFolderOpen,
-  IconGitBranch,
-  IconMessageCirclePlus,
-  IconPlus,
-  IconPalette,
-  IconTrash,
-} from "@tabler/icons-react";
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
+import { useEffect, useRef } from "react";
 import { installAppModalGlobalErrorLogging } from "../../sidebar/app-modal-error-log";
 import { AppTooltip, dismissSidebarTooltips, TooltipProvider } from "../../sidebar/app-tooltip";
 import { openAppModal, postAppModalHostMessage } from "../../sidebar/app-modal-host-bridge";
@@ -30,6 +10,7 @@ import { TOOLTIP_DELAY_MS } from "../../sidebar/tooltip-delay";
 import {
   createNativeGxserverRequest,
   parseNativeGxserverResponse,
+  type NativeGxserverHttpMethod,
   type NativeGxserverRequestCommand,
   type NativeGxserverResponseEvent,
 } from "./gxserver-client";
@@ -238,25 +219,18 @@ import {
 } from "./native-project-local-persistence";
 import { normalizeLiveCommandsPanelState } from "./native-command-panel-local-state";
 import { resolveNativeSessionInventoryOwnership } from "./native-session-inventory-ownership";
-import { countRemovableWorkspaceDockProjects } from "./native-workspace-dock-local-state";
 import {
   compareRecentProjectsByClosedAt,
   countRecentProjectSessions,
 } from "./recent-projects";
 import {
   DEFAULT_WORKSPACE_THEME_COLOR,
-  getWorkspaceThemeForeground,
-  normalizeWorkspaceDockIcon,
-  normalizeWorkspaceDockIconDataUrl,
+  normalizeWorkspaceProjectIcon,
+  normalizeWorkspaceProjectIconDataUrl,
   normalizeWorkspaceThemeColor,
   resolveWorkspaceProjectIconDataUrl,
-  updateWorkspaceThemeColorHistory,
-  type WorkspaceDockIcon,
-} from "../../shared/workspace-dock-icons";
-import {
-  readWorkspaceThemeColorHistory,
-  writeWorkspaceThemeColorHistory,
-} from "../../sidebar/workspace-theme-color-history";
+  type WorkspaceProjectIcon,
+} from "../../shared/workspace-project-appearance";
 import {
   DEFAULT_ghostex_SETTINGS,
   getDefaultEditorCommandForSettings,
@@ -318,13 +292,16 @@ import {
   upsertPresentationProjectGroup,
 } from "./gxserver-presentation-cache";
 import type {
+  GxserverAgentResumePlan,
   GxserverAgentSettings,
   GxserverAttachSessionMetadataResult,
   GxserverPresentationDelta,
   GxserverPresentationProject,
+  GxserverPresentationSearchResponse,
   GxserverPresentationSearchResult,
   GxserverPresentationSession,
   GxserverPresentationSnapshot,
+  GxserverProjectDirectoryBrowseResult,
   GxserverProjectDomainState,
   GxserverProjectId,
   GxserverRepositoryCloneJobStatus,
@@ -335,6 +312,7 @@ import type {
   GxserverSessionStateEventResult,
   GxserverSessionTitleProjection,
   GxserverTerminalTitleEventResult,
+  GxserverTypedOperationResult,
   GxserverUpdateAgentActivityResult,
 } from "../../shared/gxserver-protocol";
 import "../../sidebar/styles.css";
@@ -608,7 +586,6 @@ type NativeHostCommand =
   | { layout?: NativeTerminalLayout; type: "setTerminalLayout" }
   | { sessionId: string; type: "setTerminalVisibility"; visible: boolean }
   | { type: "pickWorkspaceFolder" }
-  | { projectId: string; type: "pickWorkspaceIcon" }
   | { type: "showMessage"; level: "info" | "warning" | "error"; message: string }
   | { details?: string; event: string; type: "appendAgentDetectionDebugLog" }
   | { details?: string; event: string; force?: boolean; type: "appendLayoutLayeringDebugLog" }
@@ -616,8 +593,8 @@ type NativeHostCommand =
   | { details?: string; event: string; force?: boolean; type: "appendTerminalFocusDebugLog" }
   | { details?: string; event: string; type: "appendRestoreDebugLog" }
   | { details?: string; event: string; force?: boolean; type: "appendSessionTitleDebugLog" }
+  | { details?: string; event: string; type: "appendSidebarCollapseStateDebugLog" }
   | { details?: string; event: string; type: "appendSidebarRefreshDebugLog" }
-  | { details?: string; event: string; type: "appendWorkspaceDockIndicatorDebugLog" }
   | {
       key: "settings";
       payloadJson: string;
@@ -647,6 +624,32 @@ type NativeHostCommand =
     }
   | { requestId: string; type: "cancelRunProcess" }
   | NativeGxserverRequestCommand
+  | {
+      identityFile?: string;
+      installApproved?: boolean;
+      remoteMachineId: string;
+      remoteMachineName: string;
+      requestId: string;
+      sshHost: string;
+      sshPort?: number;
+      sshUser?: string;
+      type: "remoteGxserverConnect";
+    }
+  | {
+      method: NativeGxserverHttpMethod;
+      paramsJson?: string;
+      path: NativeGxserverRequestCommand["path"];
+      remoteMachineId: string;
+      requestId: string;
+      type: "remoteGxserverRequest";
+    }
+  | {
+      clientId?: string;
+      lastRevision?: number;
+      remoteMachineId: string;
+      requestId: string;
+      type: "remoteGxserverSubscribePresentation";
+    }
   | {
       adjustCellHeightPercent: number;
       adjustCellWidth: number;
@@ -719,37 +722,6 @@ type NativeSetActiveTerminalSetCommand = Extract<
   NativeHostCommand,
   { type: "setActiveTerminalSet" }
 >;
-
-export type WorkspaceBarProject = {
-  icon?: WorkspaceDockIcon;
-  iconDataUrl?: string;
-  isActive: boolean;
-  isChat?: boolean;
-  isWorktree?: boolean;
-  path: string;
-  projectId: string;
-  /**
-   * CDXC:WorkspaceDock 2026-04-27-06:19
-   * The native workspace rail must split session-card state into three badges:
-   * idle running sessions are gray, working sessions are orange, and completed
-   * sessions are green. Use "working" instead of "active" because "active"
-   * already means selected/current workspace, group, session, or modal.
-   */
-  sessionCounts: {
-    done: number;
-    running: number;
-    working: number;
-  };
-  theme?: SidebarTheme;
-  themeColor?: string;
-  title: string;
-};
-
-export type WorkspaceBarStateMessage = {
-  activeProjectId: string;
-  projects: WorkspaceBarProject[];
-  type: "workspaceBarState";
-};
 
 type NativeTerminalLayout =
   | { kind: "leaf"; sessionId: string }
@@ -871,12 +843,25 @@ type NativeHostEvent =
   | { sessionId: string; threadId: string; title?: string; type: "t3ThreadChanged" }
   | { exitCode: number; requestId: string; stderr: string; stdout: string; type: "processResult" }
   | { payloadJson: string; type: "gxserverStatus" }
+  | { payloadJson: string; remoteMachineId: string; type: "remoteGxserverStatus" }
+  | { payloadJson: string; remoteMachineId: string; type: "remoteGxserverPresentationEvent" }
+  | {
+      bodyJson?: string;
+      error?: string;
+      ok: boolean;
+      path: NativeGxserverRequestCommand["path"];
+      remoteMachineId: string;
+      requestId: string;
+      statusCode?: number;
+      type: "remoteGxserverResponse";
+    }
   | NativeGxserverResponseEvent
   | { actionId: ghostexHotkeyActionId; type: "nativeHotkey" }
   | { protocolVersion: 1; type: "hostReady" };
 
 type NativeProcessResult = Extract<NativeHostEvent, { type: "processResult" }>;
 type NativeGxserverResult = Extract<NativeHostEvent, { type: "gxserverResponse" }>;
+type NativeRemoteGxserverResult = Extract<NativeHostEvent, { type: "remoteGxserverResponse" }>;
 type NativePersistenceSessionStateResult = Extract<
   NativeHostEvent,
   { type: "persistenceSessionState" }
@@ -906,23 +891,10 @@ declare global {
         ghostexNativeHost?: {
           postMessage: (message: unknown) => void;
         };
-        ghostexWorkspaceBar?: {
-          postMessage: (message: unknown) => void;
-        };
         ghostexNativeHostDiagnostics?: {
           postMessage: (message: unknown) => void;
         };
       };
-    };
-    __ghostex_NATIVE_WORKSPACE_BAR__?: {
-      addProject: (path: string, name?: string) => void;
-      focusProject: (projectId: string) => void;
-      getState: () => WorkspaceBarStateMessage;
-      removeProject: (projectId: string) => void;
-      reorderProjects: (projectIds: string[]) => void;
-      setProjectIcon: (projectId: string, iconDataUrl: string | undefined) => void;
-      setProjectTheme: (projectId: string, theme: SidebarTheme) => void;
-      setProjectThemeColor: (projectId: string, themeColor: string) => void;
     };
     __ghostex_NATIVE_CLI__?: {
       handleCommand: (action: string, payload: Record<string, unknown>) => Promise<unknown>;
@@ -963,6 +935,8 @@ const gxserverClient = createNativeSidebarGxserverClient(window.__ghostex_NATIVE
 let gxserverStartupSnapshot: NativeSidebarGxserverStartupSnapshot | undefined;
 let currentGxserverStatus: NativeSidebarGxserverStatus = gxserverClient.getCurrentStatus();
 let gxserverPresentationSubscription: ReturnType<typeof gxserverClient.subscribePresentation> | undefined;
+const remotePresentationSnapshotsByMachineId = new Map<string, GxserverPresentationSnapshot>();
+const remotePresentationSubscribedMachineIds = new Set<string>();
 const localFirstHiddenPresentationSessions = new Map<
   string,
   { hiddenAt: string; projectId: string; reason: string; sessionId: string }
@@ -996,7 +970,6 @@ const GIT_CONFIRM_COMMIT_STORAGE_KEY = "ghostex-native-git-confirm-commit";
 const GIT_GENERATE_COMMIT_BODY_STORAGE_KEY = "ghostex-native-git-generate-commit-body";
 const TIPS_AND_TRICKS_SEEN_STORAGE_KEY = "ghostex-native-tips-and-tricks-seen";
 const OS_INTEGRATION_ONBOARDING_SEEN_STORAGE_KEY = "ghostex-os-integration-onboarding-seen";
-const WORKSPACE_DOCK_STATE_EVENT = "ghostex-workspace-dock-state";
 const COMBINED_CHATS_GROUP_ID = "combined-chats";
 const PLUGINS_BROWSER_CHAT_URL = "https://skills.sh/";
 const NATIVE_T3_REMOTE_ACCESS_ORIGIN = "http://127.0.0.1:3774";
@@ -1119,12 +1092,12 @@ function buildGitSyncWithMainPrompt(input: {
     .join("\n");
 }
 /**
- * CDXC:WorkspaceDock 2026-04-27-08:48
- * Workspace context-menu themes use the same concrete theme palette names as
+ * CDXC:WorkspaceTheme 2026-04-27-08:48:
+ * Project context-menu themes use the same concrete theme palette names as
  * Settings, excluding Auto because per-workspace selection must persist a
  * deterministic color and apply that theme when the workspace becomes active.
  */
-const WORKSPACE_DOCK_THEME_OPTIONS: ReadonlyArray<{ label: string; value: SidebarTheme }> = [
+const WORKSPACE_PROJECT_THEME_OPTIONS: ReadonlyArray<{ label: string; value: SidebarTheme }> = [
   { label: "Dark Gray", value: "plain-dark" },
   { label: "Dark Green", value: "dark-green" },
   { label: "Dark Blue", value: "dark-blue" },
@@ -1247,6 +1220,7 @@ const activeRepositoryCloneRequests = new Map<
     destinationName: string;
     jobId: string;
     pollTimer: number;
+    remoteMachineId?: string;
     toastId: string;
   }
 >();
@@ -1255,6 +1229,14 @@ const pendingGxserverResults = new Map<
   {
     reject: (reason?: unknown) => void;
     resolve: (result: NativeGxserverResult) => void;
+    timeout: number;
+  }
+>();
+const pendingRemoteGxserverResults = new Map<
+  string,
+  {
+    reject: (reason?: unknown) => void;
+    resolve: (result: NativeRemoteGxserverResult) => void;
     timeout: number;
   }
 >();
@@ -1276,12 +1258,22 @@ const pendingTerminalTextResults = new Map<
 >();
 const pendingGitCommitRequests = new Map<
   string,
-  { action: SidebarGitAction; body?: string; hasCommit: boolean; projectId: string; subject: string }
+  PendingSidebarGitCommitRequest
 >();
+
+type PendingSidebarGitCommitRequest = {
+  action: SidebarGitAction;
+  body?: string;
+  hasCommit: boolean;
+  projectId: string;
+  remoteReference?: { machineId: string; projectId: string };
+  remoteTitle?: string;
+  subject: string;
+};
 
 type NativeProject = {
   commandsPanel: CommandsPanelState;
-  icon?: WorkspaceDockIcon;
+  icon?: WorkspaceProjectIcon;
   iconDataUrl?: string;
   isChat?: boolean;
   isQuick?: boolean;
@@ -2385,22 +2377,18 @@ function isGxserverPresentationSessionLocallyHidden(projectId: string, sessionId
   return localFirstHiddenPresentationSessions.has(localFirstPresentationSessionKey(projectId, sessionId));
 }
 
-function countCurrentRemovableWorkspaceDockProjects(): number {
+function countCurrentRemovableProjects(): number {
   const presentation = gxserverStartupSnapshot?.presentation;
   if (!presentation) {
-    return countRemovableWorkspaceDockProjects({ localProjectCount: projects.length });
+    return projects.filter((project) => project.isRecentProject !== true).length;
   }
-  const presentationProjectIds = presentation.projects
-    .map((project) => project.projectId);
-  const quickProjectIds = projects
-    .filter((project) => project.isRecentProject !== true && isQuickProject(project))
-    .map((project) => project.projectId);
-  return countRemovableWorkspaceDockProjects({
-    hiddenPresentationProjectIds: new Set(localFirstHiddenPresentationProjects.keys()),
-    localProjectCount: projects.length,
-    localQuickProjectIds: quickProjectIds,
-    presentationProjectIds,
-  });
+  const visiblePresentationCount = presentation.projects.filter(
+    (project) => !localFirstHiddenPresentationProjects.has(project.projectId),
+  ).length;
+  const quickProjectCount = projects.filter(
+    (project) => project.isRecentProject !== true && isQuickProject(project),
+  ).length;
+  return visiblePresentationCount + quickProjectCount;
 }
 
 function pruneLocalFirstPresentationHides(snapshot: GxserverPresentationSnapshot): void {
@@ -2761,6 +2749,209 @@ function handleGxserverStatusEvent(payloadJson: string): void {
   if (status.state === "running") {
     showGxserverReadyToast();
     void refreshGxserverStartupSnapshot("native-status");
+  }
+}
+
+function handleRemoteGxserverStatusEvent(remoteMachineId: string, payloadJson: string): void {
+  const status = parseJsonObject(payloadJson) as
+    | {
+        baseUrl?: string;
+        localPort?: number;
+        message?: string;
+        ok?: boolean;
+        state?: string;
+      }
+    | undefined;
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === remoteMachineId);
+  const normalizedState = normalizeRemoteMachineRuntimeState(status?.state, status?.ok === true);
+  sidebarBus.post({
+    machineId: remoteMachineId,
+    state: normalizedState,
+    type: "remoteMachineStatus",
+  });
+  if (!status) {
+    showAppToast("error", "Remote status failed", "Remote gxserver returned an invalid status payload.");
+    return;
+  }
+  const machineName = remoteMachine?.name || "Remote";
+  appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.status", {
+    hasBaseUrl: typeof status.baseUrl === "string",
+    machineKnown: Boolean(remoteMachine),
+    ok: status.ok === true,
+    state: status.state ?? "unknown",
+  });
+  if (status.state === "connecting") {
+    showAppToast("info", `Connecting ${machineName}`, status.message || "Connecting to remote gxserver over SSH.");
+    return;
+  }
+  if (status.state === "connected") {
+    showAppToast("success", `${machineName} connected`, status.message || "Remote gxserver is connected.");
+    void refreshRemoteGxserverPresentationSnapshot(remoteMachineId, "connected")
+      .finally(() => startRemoteGxserverPresentationSubscription(remoteMachineId));
+    return;
+  }
+  if (status.state === "installApprovalRequired") {
+    openAppModal({
+      modal: "remoteGxserverInstall",
+      remoteMachineId,
+      remoteMachineName: machineName,
+      type: "open",
+    });
+    return;
+  }
+  if (status.ok === false) {
+    remotePresentationSubscribedMachineIds.delete(remoteMachineId);
+    remotePresentationSnapshotsByMachineId.delete(remoteMachineId);
+    publish();
+    showAppToast("error", `${machineName} failed`, status.message || "Remote gxserver connection failed.");
+  }
+}
+
+function startRemoteGxserverPresentationSubscription(remoteMachineId: string): void {
+  if (remotePresentationSubscribedMachineIds.has(remoteMachineId)) {
+    return;
+  }
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === remoteMachineId);
+  if (!remoteMachine) {
+    return;
+  }
+  const snapshot = remotePresentationSnapshotsByMachineId.get(remoteMachineId);
+  const requestId = `remote-presentation-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  /*
+   * CDXC:RemotePresentation 2026-06-03-00:01:
+   * Connected Remote sections must stream the same gxserver presentation model
+   * as the local Projects section. React requests the native host subscription
+   * by machine id only; Swift keeps the remote bearer token inside the SSH
+   * tunnel boundary and forwards sanitized snapshot/delta events back here.
+   */
+  remotePresentationSubscribedMachineIds.add(remoteMachineId);
+  postNative({
+    clientId: `macos-remote-sidebar:${remoteMachineId}`,
+    ...(snapshot ? { lastRevision: snapshot.revision } : {}),
+    remoteMachineId,
+    requestId,
+    type: "remoteGxserverSubscribePresentation",
+  });
+  appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationStream.started", {
+    hasSnapshot: Boolean(snapshot),
+    machineKnown: true,
+    revision: snapshot?.revision,
+  });
+}
+
+function handleRemoteGxserverPresentationEvent(remoteMachineId: string, payloadJson: string): void {
+  const event = parseJsonObject(payloadJson) as
+    | {
+        delta?: GxserverPresentationDelta;
+        revision?: number;
+        snapshot?: GxserverPresentationSnapshot;
+        type?: string;
+      }
+    | undefined;
+  if (!event) {
+    appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationStream.invalid", {
+      machineKnown: settings.remoteMachines.some((machine) => machine.id === remoteMachineId),
+    });
+    return;
+  }
+  if (event.type === "presentationSnapshot" && event.snapshot) {
+    remotePresentationSnapshotsByMachineId.set(remoteMachineId, event.snapshot);
+    appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationSnapshot.applied", {
+      groupCount: event.snapshot.groups.length,
+      projectCount: event.snapshot.projects.length,
+      revision: event.snapshot.revision,
+      sessionCount: event.snapshot.sessions.length,
+      source: "stream",
+    });
+    publish();
+    return;
+  }
+  if (event.type === "presentationDelta" && event.delta && typeof event.revision === "number") {
+    const previous = remotePresentationSnapshotsByMachineId.get(remoteMachineId);
+    if (!previous) {
+      appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationDelta.missingSnapshot", {
+        deltaType: event.delta.type,
+        revision: event.revision,
+      });
+      void refreshRemoteGxserverPresentationSnapshot(remoteMachineId, "presentation-delta-missing-snapshot");
+      return;
+    }
+    if (event.revision <= previous.revision) {
+      return;
+    }
+    const nextPresentation = reduceGxserverPresentationDelta(previous, event.delta, event.revision);
+    remotePresentationSnapshotsByMachineId.set(remoteMachineId, nextPresentation);
+    appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationDelta.applied", {
+      deltaType: event.delta.type,
+      projectCount: nextPresentation.projects.length,
+      revision: event.revision,
+      sessionCount: nextPresentation.sessions.length,
+    });
+    publish();
+  }
+}
+
+async function refreshRemoteGxserverPresentationSnapshot(
+  remoteMachineId: string,
+  reason: string,
+): Promise<void> {
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === remoteMachineId);
+  if (!remoteMachine) {
+    remotePresentationSnapshotsByMachineId.delete(remoteMachineId);
+    publish();
+    return;
+  }
+  try {
+    const response = await requestRemoteGxserver<{ snapshot: GxserverPresentationSnapshot }>(
+      remoteMachineId,
+      "/api/readPresentationSnapshot",
+      { timeoutMs: 15_000 },
+    ) as { result: { snapshot: GxserverPresentationSnapshot } };
+    remotePresentationSnapshotsByMachineId.set(remoteMachineId, response.result.snapshot);
+    appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationSnapshot", {
+      machineKnown: true,
+      projectCount: response.result.snapshot.projects.length,
+      reason,
+      revision: response.result.snapshot.revision,
+      sessionCount: response.result.snapshot.sessions.length,
+    });
+    publish();
+  } catch (error) {
+    appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationSnapshot.failed", {
+      errorType: error instanceof Error ? error.name : typeof error,
+      hasMessage: (error instanceof Error ? error.message : String(error)).length > 0,
+      machineKnown: true,
+      reason,
+    });
+  }
+}
+
+function normalizeRemoteMachineRuntimeState(
+  state: string | undefined,
+  ok: boolean,
+): "connecting" | "connected" | "disconnected" | "installApprovalRequired" | "installing" | "failed" {
+  if (state === "connecting" || state === "connected" || state === "installApprovalRequired") {
+    return state;
+  }
+  if (state === "installing") {
+    return "installing";
+  }
+  if (ok) {
+    return "connected";
+  }
+  return state ? "failed" : "disconnected";
+}
+
+function parseJsonObject(payloadJson: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(payloadJson) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -3402,6 +3593,24 @@ function appendSidebarRefreshDebugLog(event: string, details?: unknown): void {
   });
 }
 
+function appendSidebarCollapseStateDebugLog(event: string, details?: unknown): void {
+  /**
+   * CDXC:SidebarCollapseDiagnostics 2026-06-02-23:52:
+   * Sidebar section/project disclosure-state repros need their own support log
+   * so localStorage read/write and hydrate timing can be inspected without
+   * mixing with broad refresh diagnostics. Persist only while Debugging Mode is
+   * enabled and rely on the sidebar webview to send privacy-safe summaries.
+   */
+  if (!isNativeSidebarDebugLoggingEnabled()) {
+    return;
+  }
+  postNative({
+    details: details === undefined ? undefined : safeSerializeForNativeLog(details),
+    event,
+    type: "appendSidebarCollapseStateDebugLog",
+  });
+}
+
 function appendPinnedSessionReorderDebugLog(event: string, details?: unknown): void {
   /**
    * CDXC:PinnedSessions 2026-05-28-15:33:
@@ -3432,20 +3641,6 @@ function appendProjectBoardDebugLog(event: string, details?: unknown): void {
     details: details === undefined ? undefined : safeSerializeForNativeLog(details),
     event,
     type: "appendProjectBoardDebugLog",
-  });
-}
-
-function appendWorkspaceDockIndicatorDebugLog(event: string, details?: unknown): void {
-  if (!isNativeSidebarDebugLoggingEnabled()) {
-    return;
-  }
-  if (!shouldPersistNativeSidebarDiagnostic(event)) {
-    return;
-  }
-  postNative({
-    details: details === undefined ? undefined : safeSerializeForNativeLog(details),
-    event,
-    type: "appendWorkspaceDockIndicatorDebugLog",
   });
 }
 
@@ -4701,6 +4896,78 @@ function requestGxserver<TResult extends Record<string, unknown>>(
       },
       timeout,
     });
+  });
+}
+
+function requestRemoteGxserver<TResult extends Record<string, unknown>>(
+  remoteMachineId: string,
+  path: NativeGxserverRequestCommand["path"],
+  options: {
+    method?: NativeGxserverHttpMethod;
+    params?: Record<string, unknown>;
+    timeoutMs?: number;
+  } = {},
+): Promise<ReturnType<typeof parseNativeGxserverResponse<TResult>>> {
+  const requestId = `remote-gxserver-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const command: NativeHostCommand = {
+    method: options.method ?? (path === "/api/health/server" || path === "/api/health" ? "GET" : "POST"),
+    paramsJson: options.params ? JSON.stringify(options.params) : undefined,
+    path,
+    remoteMachineId,
+    requestId,
+    type: "remoteGxserverRequest",
+  };
+  postNative(command);
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      pendingRemoteGxserverResults.delete(requestId);
+      reject(new Error(`${command.method} ${command.path} on remote gxserver timed out`));
+    }, options.timeoutMs ?? 15_000);
+    pendingRemoteGxserverResults.set(requestId, {
+      reject,
+      resolve: (result) => {
+        try {
+          resolve(parseNativeGxserverResponse<TResult>({
+            bodyJson: result.bodyJson,
+            error: result.error,
+            ok: result.ok,
+            path: result.path,
+            requestId: result.requestId,
+            statusCode: result.statusCode,
+            type: "gxserverResponse",
+          }));
+        } catch (error) {
+          reject(error);
+        }
+      },
+      timeout,
+    });
+  });
+}
+
+function connectRemoteGxserver(remoteMachineId: string, installApproved = false): void {
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === remoteMachineId);
+  if (!remoteMachine) {
+    showAppToast("warning", "Remote machine missing", "Open Settings > Remote and add the machine again.");
+    return;
+  }
+  remotePresentationSubscribedMachineIds.delete(remoteMachineId);
+  /*
+   * CDXC:RemoteMachines 2026-06-03-00:18:
+   * Remote reconnect is a native SSH/gxserver operation. React sends only
+   * saved machine metadata and an approval flag; Swift owns SSH execution,
+   * tunnel process lifetime, remote token read, and Keychain storage.
+   */
+  postNative({
+    identityFile: remoteMachine.sshIdentityFile || undefined,
+    installApproved,
+    remoteMachineId: remoteMachine.id,
+    remoteMachineName: remoteMachine.name,
+    requestId: `remote-connect-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+    sshHost: remoteMachine.sshHost,
+    sshPort: remoteMachine.sshPort,
+    sshUser: remoteMachine.sshUser || undefined,
+    type: "remoteGxserverConnect",
   });
 }
 
@@ -6016,9 +6283,9 @@ function restoreProjectMetadataFromGxserver(
   );
   const iconDataUrl = textValue(identityIcon.iconDataUrl);
   const icon =
-    normalizeWorkspaceDockIcon(identityIcon.icon) ??
-    (iconDataUrl ? ({ dataUrl: iconDataUrl, kind: "image" } satisfies WorkspaceDockIcon) : undefined);
-  const theme = normalizeWorkspaceDockTheme(identityIcon.theme);
+    normalizeWorkspaceProjectIcon(identityIcon.icon) ??
+    (iconDataUrl ? ({ dataUrl: iconDataUrl, kind: "image" } satisfies WorkspaceProjectIcon) : undefined);
+  const theme = normalizeWorkspaceProjectTheme(identityIcon.theme);
   const themeColor = normalizeWorkspaceThemeColor(identityIcon.themeColor);
   const worktree = resolveNativeProjectWorktreeParentMetadata(
     normalizeNativeProjectWorktreeMetadata(gxserverProject.worktree),
@@ -7360,8 +7627,8 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
   }
   const projectId = project.projectId?.trim() || createProjectId(path);
   const normalizedProject: NativeProject = {
-      icon: normalizeWorkspaceDockIcon(project.icon) ?? normalizeLegacyWorkspaceDockIcon(project),
-      iconDataUrl: normalizeWorkspaceDockIconDataUrl(project.iconDataUrl),
+      icon: normalizeWorkspaceProjectIcon(project.icon) ?? normalizeLegacyWorkspaceProjectIcon(project),
+      iconDataUrl: normalizeWorkspaceProjectIconDataUrl(project.iconDataUrl),
       commandsPanel: normalizeStoredCommandsPanelState(project.commandsPanel),
       isChat: project.isChat === true || isNativeChatProjectPath(path),
       isQuick: project.isQuick === true || project.isChat === true || isNativeChatProjectPath(path),
@@ -7388,7 +7655,7 @@ function normalizeStoredNativeProject(candidate: unknown): NativeProject[] {
         !Number.isNaN(Date.parse(project.recentClosedAt))
           ? project.recentClosedAt
           : undefined,
-      theme: normalizeWorkspaceDockTheme(project.theme),
+      theme: normalizeWorkspaceProjectTheme(project.theme),
       themeColor: normalizeWorkspaceThemeColor(project.themeColor),
       worktree: normalizeNativeProjectWorktreeMetadata(project.worktree),
       worktreeCommand:
@@ -7752,15 +8019,15 @@ function createInitialProject(): NativeProject {
   };
 }
 
-function normalizeLegacyWorkspaceDockIcon(
+function normalizeLegacyWorkspaceProjectIcon(
   project: Partial<NativeProject>,
-): WorkspaceDockIcon | undefined {
-  const legacyIconDataUrl = normalizeWorkspaceDockIconDataUrl(project.iconDataUrl);
+): WorkspaceProjectIcon | undefined {
+  const legacyIconDataUrl = normalizeWorkspaceProjectIconDataUrl(project.iconDataUrl);
   return legacyIconDataUrl ? { dataUrl: legacyIconDataUrl, kind: "image" } : undefined;
 }
 
-function normalizeWorkspaceDockTheme(value: unknown): SidebarTheme | undefined {
-  return WORKSPACE_DOCK_THEME_OPTIONS.some((theme) => theme.value === value)
+function normalizeWorkspaceProjectTheme(value: unknown): SidebarTheme | undefined {
+  return WORKSPACE_PROJECT_THEME_OPTIONS.some((theme) => theme.value === value)
     ? (value as SidebarTheme)
     : undefined;
 }
@@ -8119,6 +8386,654 @@ async function refreshProjectDiffStats(projectId: string): Promise<void> {
   }
 }
 
+async function refreshRemoteProjectDiffStats(
+  remoteReference: { machineId: string; projectId: string },
+): Promise<void> {
+  const scopedProjectId = createRemotePresentationProjectId(remoteReference.machineId, remoteReference.projectId);
+  if (pendingProjectDiffRefreshProjectIds.has(scopedProjectId)) {
+    return;
+  }
+  pendingProjectDiffRefreshProjectIds.add(scopedProjectId);
+  projectDiffStatsByProjectId.set(scopedProjectId, {
+    ...getProjectDiffStats(scopedProjectId),
+    isLoading: true,
+  });
+  publish();
+  try {
+    /*
+     * CDXC:RemoteGit 2026-06-03-00:26:
+     * Remote project header Git stats must read from the owning machine's
+     * gxserver. Store the parsed stats under the scoped remote project id so a
+     * remote refresh cannot overwrite local Projects or another machine's row.
+     */
+    const repoCheck = await runRemoteGxserverGitAction(remoteReference, { action: "isInsideWorkTree" });
+    if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
+      projectDiffStatsByProjectId.set(scopedProjectId, createDefaultSidebarProjectDiffStats(false));
+      return;
+    }
+
+    const trackedDiff = await runRemoteGxserverGitAction(remoteReference, { action: "diffNumstat" });
+    const trackedStats = parseGitNumstatDiffStats(trackedDiff.stdout);
+    const hasTrackedLineChanges = trackedStats.additions > 0 || trackedStats.deletions > 0;
+    const shouldLoadUntrackedStats =
+      settings.showUntrackedProjectDiffWhenNoTrackedChanges && !hasTrackedLineChanges;
+    let resolvedStats = trackedStats;
+    if (shouldLoadUntrackedStats) {
+      const untrackedFiles = await runRemoteGxserverGitAction(remoteReference, { action: "listUntracked" });
+      const untrackedPaths = parseGitZeroDelimitedPaths(untrackedFiles.stdout);
+      resolvedStats = resolveSidebarProjectDiffStats({
+        showUntrackedWhenNoTrackedChanges: true,
+        trackedStats,
+        untrackedStats: {
+          additions: await countRemoteUntrackedProjectLines(remoteReference, untrackedPaths),
+          deletions: 0,
+          files: untrackedPaths.length,
+          isLoading: false,
+          isRepo: true,
+        },
+      });
+    }
+    projectDiffStatsByProjectId.set(scopedProjectId, resolvedStats);
+  } catch (error) {
+    appendRestoreDebugLog("nativeSidebar.remoteGxserver.projectDiff.refreshFailed", {
+      errorType: error instanceof Error ? error.name : typeof error,
+      hasMessage: (error instanceof Error ? error.message : String(error)).length > 0,
+      machineKnown: settings.remoteMachines.some((machine) => machine.id === remoteReference.machineId),
+    });
+    projectDiffStatsByProjectId.set(scopedProjectId, {
+      ...getProjectDiffStats(scopedProjectId),
+      isLoading: false,
+    });
+  } finally {
+    pendingProjectDiffRefreshProjectIds.delete(scopedProjectId);
+    publish();
+  }
+}
+
+async function countRemoteUntrackedProjectLines(
+  remoteReference: { machineId: string; projectId: string },
+  paths: readonly string[],
+): Promise<number> {
+  let lines = 0;
+  for (const path of paths) {
+    const result = await runRemoteGxserverGitAction(remoteReference, {
+      action: "countFileLines",
+      filePaths: [path],
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(gxserverGitTypedOperationFailureMessage(result, "Could not count remote untracked file lines."));
+    }
+    lines += Number(result.stdout.trim()) || 0;
+  }
+  return lines;
+}
+
+async function runRemoteGxserverGitAction(
+  remoteReference: { machineId: string; projectId: string },
+  params: Omit<Parameters<typeof gxserverClient.runGitAction>[0], "projectId" | "projectPath">,
+): Promise<GxserverTypedOperationResult> {
+  const response = await requestRemoteGxserver<Record<string, unknown>>(
+    remoteReference.machineId,
+    "/api/runGitAction",
+    {
+      params: {
+        ...params,
+        projectId: remoteReference.projectId,
+      },
+    },
+  ) as { result: Record<string, unknown> };
+  return response.result as unknown as GxserverTypedOperationResult;
+}
+
+async function runRemoteGxserverGitHubAction(
+  remoteReference: { machineId: string; projectId: string },
+  params: Omit<Parameters<typeof gxserverClient.runGitHubAction>[0], "projectId" | "projectPath">,
+): Promise<GxserverTypedOperationResult> {
+  const response = await requestRemoteGxserver<Record<string, unknown>>(
+    remoteReference.machineId,
+    "/api/runGitHubAction",
+    {
+      params: {
+        ...params,
+        projectId: remoteReference.projectId,
+      },
+    },
+  ) as { result: Record<string, unknown> };
+  return response.result as unknown as GxserverTypedOperationResult;
+}
+
+async function runRemoteGxserverWorktreeAction(
+  remoteReference: { machineId: string; projectId: string },
+  params: Omit<Parameters<typeof gxserverClient.runWorktreeAction>[0], "projectId" | "projectPath">,
+): Promise<GxserverTypedOperationResult> {
+  const response = await requestRemoteGxserver<Record<string, unknown>>(
+    remoteReference.machineId,
+    "/api/runWorktreeAction",
+    {
+      params: {
+        ...params,
+        projectId: remoteReference.projectId,
+      },
+    },
+  ) as { result: Record<string, unknown> };
+  return response.result as unknown as GxserverTypedOperationResult;
+}
+
+async function runRemoteGxserverProjectSetupCommand(input: {
+  machineId: string;
+  setupCommandProjectId: string;
+  targetProjectId: string;
+}): Promise<GxserverTypedOperationResult> {
+  const response = await requestRemoteGxserver<Record<string, unknown>>(
+    input.machineId,
+    "/api/runProjectSetupCommand",
+    {
+      params: {
+        action: "worktreeSetupCommand",
+        projectId: input.targetProjectId,
+        setupCommandProjectId: input.setupCommandProjectId,
+      },
+      timeoutMs: 125_000,
+    },
+  ) as { result: Record<string, unknown> };
+  return response.result as unknown as GxserverTypedOperationResult;
+}
+
+async function readRemoteSidebarGitState(
+  remoteReference: { machineId: string; projectId: string },
+): Promise<SidebarGitState> {
+  const baseState = createDefaultSidebarGitState(
+    gitPrimaryAction,
+    gitConfirmCommit,
+    gitGenerateCommitBody,
+  );
+  const repoCheck = await runRemoteGxserverGitAction(remoteReference, { action: "isInsideWorkTree" });
+  if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
+    return { ...baseState, isRepo: false };
+  }
+  /*
+   * CDXC:RemoteGit 2026-06-03-00:24:
+   * Remote Git actions cannot reuse the global local gitState because it is
+   * bound to the active local project. Read a temporary machine-scoped state
+   * from the owning gxserver before direct remote push/view-PR decisions.
+   */
+  const [branch, status, diff, untrackedFiles, upstream, remotes, ghVersion, pr] = await Promise.all([
+    runRemoteGxserverGitAction(remoteReference, { action: "branch" }),
+    runRemoteGxserverGitAction(remoteReference, { action: "statusPorcelain" }),
+    runRemoteGxserverGitAction(remoteReference, { action: "diffNumstat" }),
+    runRemoteGxserverGitAction(remoteReference, { action: "listUntracked" }),
+    runRemoteGxserverGitAction(remoteReference, { action: "upstreamCounts" }),
+    runRemoteGxserverGitAction(remoteReference, { action: "listRemotes" }),
+    runRemoteGxserverGitHubAction(remoteReference, { action: "version" }),
+    runRemoteGxserverGitHubAction(remoteReference, { action: "prView" }),
+  ]);
+  const files = [
+    ...parseGitNumstatFiles(diff.stdout),
+    ...parseGitZeroDelimitedPaths(untrackedFiles.stdout).map((path) => ({
+      additions: 0,
+      deletions: 0,
+      path,
+    })),
+  ];
+  const totals = summarizeGitChangedFiles(files);
+  const upstreamParts = upstream.exitCode === 0 ? upstream.stdout.trim().split(/\s+/) : [];
+  const presentationProject = remotePresentationSnapshotsByMachineId
+    .get(remoteReference.machineId)
+    ?.projects.find((project) => project.projectId === remoteReference.projectId);
+  return {
+    ...baseState,
+    additions: totals.additions,
+    aheadCount: Number(upstreamParts[0] || 0) || 0,
+    behindCount: Number(upstreamParts[1] || 0) || 0,
+    branch: branch.stdout.trim() || null,
+    deletions: totals.deletions,
+    hasGitHubCli: ghVersion.exitCode === 0,
+    hasOriginRemote: remotes.stdout.split(/\s+/).includes("origin"),
+    hasUpstream: upstream.exitCode === 0,
+    hasWorkingTreeChanges: status.stdout.trim().length > 0,
+    isBusy: false,
+    isRepo: true,
+    files,
+    isWorktree: normalizeNativeProjectWorktreeMetadata(presentationProject?.worktree) !== undefined,
+    pr: parseGitHubPullRequest(pr.stdout, pr.exitCode === 0),
+  };
+}
+
+async function runRemoteSidebarGitAction(
+  action: SidebarGitAction,
+  groupId: string,
+): Promise<void> {
+  const remoteReference = parseRemotePresentationGroupId(groupId);
+  if (!remoteReference) {
+    return;
+  }
+  const projectTitle =
+    remotePresentationSnapshotsByMachineId
+      .get(remoteReference.machineId)
+      ?.projects.find((project) => project.projectId === remoteReference.projectId)
+      ?.title || "Remote project";
+  try {
+    const remoteGitState = await readRemoteSidebarGitState(remoteReference);
+    if (!remoteGitState.isRepo) {
+      showAppToast("warning", "Git unavailable", "Open a Git repository to use Git actions.");
+      return;
+    }
+    if (action === "multiRelease") {
+      await runRemoteSidebarGitPromptAction(
+        remoteReference,
+        projectTitle,
+        "Multicommit & Release",
+        GIT_MULTICOMMIT_RELEASE_PROMPT,
+      );
+      return;
+    }
+    if (action === "release") {
+      await runRemoteSidebarGitPromptAction(
+        remoteReference,
+        projectTitle,
+        "Release",
+        GIT_RELEASE_ONLY_PROMPT,
+      );
+      return;
+    }
+    if (action === "syncMain") {
+      const presentationProject = getRemotePresentationProject(remoteReference);
+      if (!presentationProject || !normalizeNativeProjectWorktreeMetadata(presentationProject.worktree)) {
+        showAppToast("warning", "Remote worktree unavailable", "Open a remote worktree project to sync with main.");
+        return;
+      }
+      await runRemoteSidebarGitPromptAction(
+        remoteReference,
+        projectTitle,
+        "Sync with Main",
+        buildRemoteGitSyncWithMainPrompt({ branch: remoteGitState.branch, project: presentationProject }),
+      );
+      return;
+    }
+    if (action === "commit") {
+      promptRemoteSidebarGitActionReview(action, remoteReference, remoteGitState, projectTitle);
+      return;
+    }
+    if (action === "push") {
+      if (remoteGitState.hasWorkingTreeChanges) {
+        promptRemoteSidebarGitActionReview(action, remoteReference, remoteGitState, projectTitle);
+        return;
+      }
+      await pushRemoteCurrentBranch(remoteReference, remoteGitState);
+      void refreshRemoteProjectDiffStats(remoteReference);
+      showAppToast("success", "Remote push complete", projectTitle);
+      return;
+    }
+    if (action === "pr") {
+      if (remoteGitState.pr?.state === "open") {
+        createNativeBrowserSession(remoteGitState.pr.url);
+        return;
+      }
+      if (remoteGitState.hasWorkingTreeChanges) {
+        promptRemoteSidebarGitActionReview(action, remoteReference, remoteGitState, projectTitle);
+        return;
+      }
+      await createRemotePullRequest(remoteReference, remoteGitState);
+      void refreshRemoteProjectDiffStats(remoteReference);
+      showAppToast("success", "Remote PR created", projectTitle);
+    }
+  } catch (error) {
+    showAppToast(
+      "error",
+      `${resolveSidebarGitActionNoun(action)} failed`,
+      error instanceof Error ? error.message : `Remote Git ${action} failed.`,
+    );
+  }
+}
+
+function getRemotePresentationProject(
+  remoteReference: { machineId: string; projectId: string },
+): GxserverPresentationProject | undefined {
+  return remotePresentationSnapshotsByMachineId
+    .get(remoteReference.machineId)
+    ?.projects.find((project) => project.projectId === remoteReference.projectId);
+}
+
+async function runRemoteSidebarGitPromptAction(
+  remoteReference: { machineId: string; projectId: string },
+  projectTitle: string,
+  title: string,
+  prompt: string,
+  agentId?: string,
+): Promise<void> {
+  const agent = resolveDefaultPromptAgent(agentId);
+  if (!agent?.command?.trim()) {
+    showAppToast(
+      "error",
+      "Agent unavailable",
+      `Choose a configured default prompt agent to use ${title}.`,
+    );
+    return;
+  }
+  /*
+   * CDXC:RemoteGit 2026-06-03-03:04:
+   * Remote Git agent workflows should be visible remote sessions, not local
+   * background shell commands. Use the owning gxserver to create/start the agent
+   * session and send the existing Git workflow prompt through the bounded zmx
+   * message endpoint so Multiple Commits, Release, and Sync with Main run in
+   * the remote repository.
+   */
+  showAppToast("info", `${title} starting`, `Opening ${agent.name} on ${projectTitle}`);
+  const createResponse = await requestRemoteGxserver<{ session: GxserverSessionDomainState }>(
+    remoteReference.machineId,
+    "/api/createAgentSession",
+    {
+      params: {
+        agentId: agent.agentId,
+        launchSettings: {
+          agentCommand: agent.command,
+          icon: agent.icon,
+        },
+        projectId: remoteReference.projectId,
+        runtimeSettings: {
+          firstUserMessage: prompt,
+        },
+        surface: "workspace",
+        title: formatGitAgentWorkflowTitle(title),
+      },
+      timeoutMs: 15_000,
+    },
+  ) as { result: { session: GxserverSessionDomainState } };
+  const session = createResponse.result.session;
+  await requestRemoteGxserver(
+    remoteReference.machineId,
+    "/api/startSessionProvider",
+    {
+      params: {
+        projectId: remoteReference.projectId,
+        sessionId: session.sessionId,
+      },
+      timeoutMs: 15_000,
+    },
+  );
+  await delayNativeAgentPromptStep(AGENT_PROMPT_READY_DELAY_MS);
+  await requestRemoteGxserver(
+    remoteReference.machineId,
+    "/api/sendSessionMessage",
+    {
+      params: {
+        projectId: remoteReference.projectId,
+        sessionId: session.sessionId,
+        submit: true,
+        text: prompt,
+      },
+      timeoutMs: 15_000,
+    },
+  );
+  void refreshRemoteGxserverPresentationSnapshot(remoteReference.machineId, "remote-git-agent-workflow");
+  showAppToast("success", `${title} running in ${agent.name}`, projectTitle);
+}
+
+function buildRemoteGitSyncWithMainPrompt(input: {
+  branch: string | null;
+  project: GxserverPresentationProject;
+}): string {
+  const worktree = normalizeNativeProjectWorktreeMetadata(input.project.worktree);
+  return [
+    "Please sync the latest main branch changes into this worktree so it can be merged back to main afterward.",
+    "",
+    `Repository: ${input.project.path ?? "(unknown remote path)"}`,
+    `Current worktree branch: ${input.branch ?? worktree?.branch ?? "(unknown)"}`,
+    worktree ? `Main project: ${worktree.parentProjectName} (${worktree.parentProjectPath})` : "",
+    "",
+    "Requirements:",
+    "- Fetch the latest remote refs before syncing.",
+    "- Bring main into this worktree branch using the safest normal project workflow for this repository, such as merge or rebase only if that is clearly the repo convention.",
+    "- Preserve work from both main and this worktree. If conflicts happen, resolve them without dropping code, behavior, or UX from either side.",
+    "- After resolving conflicts, run the relevant checks you can run locally.",
+    "- Leave the worktree branch ready for the user to merge back to main.",
+    "- Stop and explain clearly if the repository state is unsafe or if a decision is needed.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function promptRemoteSidebarGitActionReview(
+  action: SidebarGitAction,
+  remoteReference: { machineId: string; projectId: string },
+  remoteGitState: SidebarGitState,
+  projectTitle: string,
+): void {
+  const draft = { subject: "", body: undefined };
+  const requestId = `remote-git-action-${Date.now().toString(36)}`;
+  const scopedProjectId = createRemotePresentationProjectId(remoteReference.machineId, remoteReference.projectId);
+  pendingGitCommitRequests.set(requestId, {
+    action,
+    hasCommit: remoteGitState.hasWorkingTreeChanges,
+    projectId: scopedProjectId,
+    remoteReference,
+    remoteTitle: projectTitle,
+    ...draft,
+  });
+  /*
+   * CDXC:RemoteGit 2026-06-03-00:59:
+   * Remote Git commit/push/PR review reuses the local modal, but the pending
+   * request id carries machine/project scope. Confirm, file diff, and cancel
+   * must resolve from that pending record so modal actions never fall through
+   * to the active local repository.
+   */
+  postAppModalHostMessage(
+    {
+      gitCommitDraft: {
+        action,
+        agentId: resolveDefaultPromptAgentId(),
+        branch: remoteGitState.branch,
+        changedFiles: remoteGitState.files,
+        confirmLabel: resolveSidebarGitConfirmLabel(action, remoteGitState.hasWorkingTreeChanges),
+        deleteWorktreeAfterDefault: false,
+        description: remoteGitState.hasWorkingTreeChanges
+          ? `Review and confirm your remote commit for ${projectTitle}. Leave the message blank to auto-generate one.`
+          : resolveRemoteSidebarGitPromptDescription(action, projectTitle),
+        isDefaultRef: remoteGitState.branch === "main" || remoteGitState.branch === "master",
+        isWorktree: remoteGitState.isWorktree,
+        requestId,
+        showCommitMessage: remoteGitState.hasWorkingTreeChanges,
+        suggestedBody: draft.body,
+        suggestedSubject: draft.subject,
+        worktreeName: remoteGitState.isWorktree ? projectTitle : undefined,
+      },
+      modal: "gitCommit",
+      type: "open",
+    },
+    "AppModals:remoteGitCommit",
+  );
+}
+
+function resolveRemoteSidebarGitPromptDescription(action: SidebarGitAction, projectTitle: string): string {
+  if (action === "commit") {
+    return `Review and commit changes on ${projectTitle}.`;
+  }
+  if (action === "push") {
+    return `Push the current branch for ${projectTitle}.`;
+  }
+  return `Push the current branch for ${projectTitle}, then create or open a PR.`;
+}
+
+async function pushRemoteCurrentBranch(
+  remoteReference: { machineId: string; projectId: string },
+  remoteGitState: Pick<SidebarGitState, "branch" | "hasOriginRemote" | "hasUpstream">,
+): Promise<void> {
+  const branch = remoteGitState.branch;
+  if (!branch) {
+    throw new Error("Create and checkout a branch before pushing.");
+  }
+  const push = remoteGitState.hasUpstream
+    ? await runRemoteGxserverGitAction(remoteReference, { action: "push" })
+    : remoteGitState.hasOriginRemote
+      ? await runRemoteGxserverGitAction(remoteReference, { action: "pushSetUpstream", branch })
+      : undefined;
+  if (!push) {
+    throw new Error('Add an "origin" remote before pushing.');
+  }
+  if (push.exitCode !== 0) {
+    throw new Error(gxserverGitTypedOperationFailureMessage(push, "Could not push remote branch."));
+  }
+}
+
+async function createRemotePullRequest(
+  remoteReference: { machineId: string; projectId: string },
+  remoteGitState: SidebarGitState,
+): Promise<void> {
+  await pushRemoteCurrentBranch(remoteReference, remoteGitState);
+  const createPr = await runRemoteGxserverGitHubAction(remoteReference, { action: "prCreateFill" });
+  if (createPr.exitCode !== 0) {
+    throw new Error(gxserverGitTypedOperationFailureMessage(createPr, "Could not create remote pull request."));
+  }
+  const pr = await runRemoteGxserverGitHubAction(remoteReference, { action: "prView" });
+  const parsedPr = parseGitHubPullRequest(pr.stdout, pr.exitCode === 0);
+  if (parsedPr?.url) {
+    createNativeBrowserSession(parsedPr.url);
+  }
+}
+
+async function runRemoteGxserverBeadsAction(
+  remoteReference: { machineId: string; projectId: string },
+  params: Omit<Parameters<typeof gxserverClient.runBeadsAction>[0], "projectId" | "projectPath">,
+): Promise<GxserverTypedOperationResult> {
+  const response = await requestRemoteGxserver<Record<string, unknown>>(
+    remoteReference.machineId,
+    "/api/runBeadsAction",
+    {
+      params: {
+        ...params,
+        projectId: remoteReference.projectId,
+      },
+    },
+  ) as { result: Record<string, unknown> };
+  return response.result as unknown as GxserverTypedOperationResult;
+}
+
+async function commitRemoteWithMessage(
+  remoteReference: { machineId: string; projectId: string },
+  subject: string,
+  body?: string,
+  filePaths?: readonly string[],
+  options: { agentId?: string; commitOnNewRef?: boolean; branch?: string | null } = {},
+): Promise<void> {
+  const addResult = await runRemoteGxserverGitAction(remoteReference, {
+    action: "addAll",
+    filePaths,
+  });
+  if (addResult.exitCode !== 0) {
+    throw new Error(gxserverGitTypedOperationFailureMessage(addResult, "Could not stage remote changes."));
+  }
+  const message = parseSidebarGitCommitMessage(subject, body);
+  const resolvedMessage = message.subject
+    ? message
+    : await generateRemoteSidebarGitCommitMessageFromStagedChanges(remoteReference, {
+        agentId: options.agentId,
+        branch: options.branch,
+      });
+  if (options.commitOnNewRef) {
+    await checkoutRemoteSidebarGitFeatureBranch(remoteReference, resolvedMessage.subject);
+  }
+  const commitResult = await runRemoteGxserverGitAction(remoteReference, {
+    action: "commit",
+    messageBody: resolvedMessage.body,
+    messageSubject: resolvedMessage.subject,
+    noVerify: await shouldBypassRemoteMissingBeadsDatabasePreCommitHook(remoteReference),
+  });
+  if (commitResult.exitCode !== 0) {
+    throw new Error(gxserverGitTypedOperationFailureMessage(commitResult, "Could not commit remote changes."));
+  }
+}
+
+async function generateRemoteSidebarGitCommitMessageFromStagedChanges(
+  remoteReference: { machineId: string; projectId: string },
+  options: { agentId?: string; branch?: string | null } = {},
+): Promise<{ body: string; subject: string }> {
+  showAppToast("info", "Generating remote commit message");
+  const [summary, patch] = await Promise.all([
+    runRemoteGxserverGitAction(remoteReference, { action: "diffCachedStat" }),
+    runRemoteGxserverGitAction(remoteReference, { action: "diffCached" }),
+  ]);
+  const stagedSummary = summary.stdout.trim();
+  const stagedPatch = patch.stdout.trim();
+  if (!stagedSummary && !stagedPatch) {
+    throw new Error("No staged remote changes are available for commit message generation.");
+  }
+  const prompt = buildSidebarGitCommitMessagePrompt({
+    branch: options.branch ?? null,
+    generateBody: gitGenerateCommitBody,
+    stagedPatch,
+    stagedSummary,
+  });
+  const agent = resolveDefaultPromptAgent(options.agentId);
+  if (!agent) {
+    throw new Error("Choose a configured prompt agent before generating a commit message.");
+  }
+  const delimiter = `ghostex_REMOTE_GIT_COMMIT_${Date.now().toString(36)}`;
+  const command = buildNativePromptGenerationShellCommand({
+    agent,
+    delimiter,
+    prompt,
+    purpose: "remote commit message",
+  });
+  /*
+   * CDXC:RemoteGit 2026-06-03-00:59:
+   * Remote commit-message generation is text-only local prompt-agent work over
+   * a remote gxserver-provided staged diff. Run from the user's home directory
+   * instead of requiring the remote project path to exist locally.
+   */
+  const result = await runNativePromptGenerationShellCommand(command, {
+    cwd: nativeHomeDirectory(),
+    timeoutMs: 120_000,
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      result.stderr.trim() ||
+        result.stdout.trim() ||
+        `${agent.name} remote commit message generation failed.`,
+    );
+  }
+  return parseSidebarGitGeneratedCommitMessage(result.stdout, agent.name);
+}
+
+async function checkoutRemoteSidebarGitFeatureBranch(
+  remoteReference: { machineId: string; projectId: string },
+  subject: string,
+): Promise<string> {
+  const baseName = sanitizeSidebarGitBranchName(subject);
+  for (let index = 0; index < 20; index += 1) {
+    const candidate = index === 0 ? baseName : `${baseName}-${index + 1}`;
+    const exists = await runRemoteGxserverGitAction(remoteReference, {
+      action: "verifyRef",
+      ref: candidate,
+    });
+    if (exists.exitCode !== 0) {
+      const checkout = await runRemoteGxserverGitAction(remoteReference, {
+        action: "checkoutNewBranch",
+        branch: candidate,
+      });
+      if (checkout.exitCode !== 0) {
+        throw new Error(gxserverGitTypedOperationFailureMessage(checkout, `Could not create remote branch ${candidate}.`));
+      }
+      return candidate;
+    }
+  }
+  throw new Error(`Could not create a unique remote branch for ${baseName}.`);
+}
+
+async function shouldBypassRemoteMissingBeadsDatabasePreCommitHook(
+  remoteReference: { machineId: string; projectId: string },
+): Promise<boolean> {
+  const beadsStorage = await runRemoteGxserverBeadsAction(remoteReference, { action: "storageExists" });
+  if (beadsStorage.exitCode !== 0 || beadsStorage.stdout.trim() !== "true") {
+    return false;
+  }
+  try {
+    const status = await runRemoteGxserverBeadsAction(remoteReference, { action: "status" });
+    return status.exitCode !== 0 && isMissingBeadsDatabaseError(`${status.stderr}\n${status.stdout}`);
+  } catch {
+    return false;
+  }
+}
+
 async function countUntrackedProjectLines(
   project: NativeProject,
   paths: readonly string[],
@@ -8348,6 +9263,9 @@ function promptSidebarGitActionReview(action: SidebarGitAction): void {
 }
 
 async function promptDeleteWorktreeForGroup(groupId: string): Promise<void> {
+  if (await promptDeleteRemoteWorktreeForGroup(groupId)) {
+    return;
+  }
   const groupReference = resolveSidebarGroupReference(groupId);
   const project = groupReference.project;
   const worktree = project.worktree;
@@ -8396,6 +9314,9 @@ async function promptDeleteWorktreeForGroup(groupId: string): Promise<void> {
 }
 
 async function deleteWorktreeProject(projectId: string): Promise<void> {
+  if (await deleteRemoteWorktreeProject(projectId)) {
+    return;
+  }
   const project = findProject(projectId);
   if (!project?.worktree) {
     showAppToast("warning", "Worktree unavailable", "The selected worktree no longer exists.");
@@ -8436,6 +9357,133 @@ async function deleteWorktreeProject(projectId: string): Promise<void> {
       error instanceof Error ? error.message : "git worktree remove failed.",
     );
   }
+}
+
+async function promptDeleteRemoteWorktreeForGroup(groupId: string): Promise<boolean> {
+  const remoteReference = parseRemotePresentationGroupId(groupId);
+  if (!remoteReference) {
+    return false;
+  }
+  const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+  const project = presentation?.projects.find((candidate) => candidate.projectId === remoteReference.projectId);
+  const worktree = normalizeNativeProjectWorktreeMetadata(project?.worktree);
+  if (!presentation || !project || !worktree) {
+    showAppToast("warning", "Remote worktree unavailable", "Reconnect the remote machine and try deleting the worktree again.");
+    return true;
+  }
+
+  try {
+    const [branch, status] = await Promise.all([
+      runRemoteGxserverGitAction(remoteReference, { action: "branch" }),
+      runRemoteGxserverGitAction(remoteReference, { action: "status" }),
+    ]);
+    if (branch.exitCode !== 0 || status.exitCode !== 0) {
+      throw new Error(
+        gxserverGitTypedOperationFailureMessage(status.exitCode !== 0 ? status : branch, "Could not read remote worktree status."),
+      );
+    }
+    /*
+     * CDXC:RemoteWorktrees 2026-06-03-00:51:
+     * Remote worktree deletion should use the same confirmation modal as local
+     * deletion, but every inspection comes from the owning machine's gxserver.
+     * Carry the scoped remote project id through the modal so confirmation
+     * cannot accidentally delete a local project with the same P-id.
+     */
+    postAppModalHostMessage(
+      {
+        modal: "deleteWorktree",
+        type: "open",
+        worktreeDeleteDraft: {
+          branch: branch.stdout.trim() || worktree.branch || null,
+          groupId,
+          hasChanges: hasGxserverShortStatusChanges(status.stdout),
+          projectId: createRemotePresentationProjectId(remoteReference.machineId, remoteReference.projectId),
+          statusSummary: status.stdout.trim(),
+          worktreeName: project.title || worktree.name,
+        },
+      },
+      "AppModals:deleteWorktree.remote",
+    );
+  } catch (error) {
+    showAppToast(
+      "error",
+      "Could not inspect remote worktree",
+      error instanceof Error ? error.message : "git status failed.",
+    );
+  }
+  return true;
+}
+
+async function deleteRemoteWorktreeProject(
+  projectId: string,
+  options: { suppressToast?: boolean; throwOnFailure?: boolean } = {},
+): Promise<boolean> {
+  const remoteReference = parseRemotePresentationProjectId(projectId);
+  if (!remoteReference) {
+    return false;
+  }
+  const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+  const project = presentation?.projects.find((candidate) => candidate.projectId === remoteReference.projectId);
+  const worktree = normalizeNativeProjectWorktreeMetadata(project?.worktree);
+  if (!presentation || !project?.path || !worktree?.parentProjectId) {
+    const message = "Reconnect the remote machine and try deleting the worktree again.";
+    if (options.throwOnFailure) {
+      throw new Error(message);
+    }
+    showAppToast("warning", "Remote worktree unavailable", message);
+    return true;
+  }
+  const parentProject = presentation.projects.find((candidate) => candidate.projectId === worktree.parentProjectId);
+  const parentReference = {
+    machineId: remoteReference.machineId,
+    projectId: parentProject?.projectId ?? worktree.parentProjectId,
+  };
+  let toastId: string | undefined;
+  try {
+    const status = await runRemoteGxserverGitAction(remoteReference, { action: "status" });
+    if (status.exitCode !== 0) {
+      throw new Error(gxserverGitTypedOperationFailureMessage(status, "Could not read remote worktree status."));
+    }
+    toastId = options.suppressToast
+      ? undefined
+      : showRunningAppToast("Deleting remote worktree", project.title);
+    const removeResult = await runRemoteGxserverWorktreeAction(parentReference, {
+      action: "remove",
+      force: hasGxserverShortStatusChanges(status.stdout),
+      worktreePath: project.path,
+    });
+    if (removeResult.exitCode !== 0) {
+      throw new Error(gxserverTypedOperationFailureMessage(removeResult, "git worktree remove failed."));
+    }
+    await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+      remoteReference.machineId,
+      "/api/removeProject",
+      {
+        params: {
+          projectId: remoteReference.projectId,
+        },
+      },
+    );
+    const pruneResult = await runRemoteGxserverWorktreeAction(parentReference, { action: "prune" });
+    if (pruneResult.exitCode !== 0) {
+      appendSidebarRefreshDebugLog("nativeSidebar.remoteWorktree.pruneFailed", {
+        errorCode: pruneResult.error?.code,
+        exitCode: pruneResult.exitCode,
+        machineKnown: settings.remoteMachines.some((machine) => machine.id === remoteReference.machineId),
+      });
+    }
+    void refreshRemoteGxserverPresentationSnapshot(remoteReference.machineId, "delete-remote-worktree");
+    if (!options.suppressToast) {
+      finishRunningAppToast(toastId, "success", "Remote worktree deleted", project.title);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "git worktree remove failed.";
+    if (options.throwOnFailure) {
+      throw new Error(message);
+    }
+    finishRunningAppToast(toastId, "error", "Could not delete remote worktree", message);
+  }
+  return true;
 }
 
 function removeWorktreeProjectRecord(
@@ -8635,7 +9683,18 @@ function focusPendingGitProject(projectId: string): NativeProject {
 }
 
 async function runSidebarGitMultipleCommits(requestId: string, agentId?: string): Promise<void> {
+  const pending = pendingGitCommitRequests.get(requestId);
   pendingGitCommitRequests.delete(requestId);
+  if (pending?.remoteReference) {
+    await runRemoteSidebarGitPromptAction(
+      pending.remoteReference,
+      pending.remoteTitle ?? "Remote project",
+      "Multiple Commits",
+      GIT_MULTIPLE_COMMITS_PROMPT,
+      agentId,
+    );
+    return;
+  }
   gitState = { ...gitState, isBusy: false };
   publish();
 
@@ -8702,7 +9761,12 @@ function resolveActiveProjectRelativePath(relativePath: string): string {
   return `${activeProject().path.replace(/\/+$/, "")}/${normalizedRelativePath}`;
 }
 
-async function openSidebarGitChangedFileDiff(filePath: string): Promise<void> {
+async function openSidebarGitChangedFileDiff(filePath: string, requestId?: string): Promise<void> {
+  const remoteReference = requestId ? pendingGitCommitRequests.get(requestId)?.remoteReference : undefined;
+  if (remoteReference) {
+    await openRemoteSidebarGitChangedFileDiff(remoteReference, filePath, requestId);
+    return;
+  }
   const project = activeProject();
   const normalizedFilePath = filePath.replaceAll("\\", "/").replace(/^\/+/, "");
   if (!normalizedFilePath) {
@@ -8761,6 +9825,64 @@ async function openSidebarGitChangedFileDiff(filePath: string): Promise<void> {
     showAppToast(
       "error",
       "Could not open file diff",
+      error instanceof Error ? error.message : normalizedFilePath,
+    );
+  }
+}
+
+async function openRemoteSidebarGitChangedFileDiff(
+  remoteReference: { machineId: string; projectId: string },
+  filePath: string,
+  requestId?: string,
+): Promise<void> {
+  const normalizedFilePath = filePath.replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!normalizedFilePath) {
+    return;
+  }
+  try {
+    const [stagedDiff, unstagedDiff] = await Promise.all([
+      runRemoteGxserverGitAction(remoteReference, {
+        action: "diffCachedNoExt",
+        filePath: normalizedFilePath,
+      }),
+      runRemoteGxserverGitAction(remoteReference, {
+        action: "diffNoExt",
+        filePath: normalizedFilePath,
+      }),
+    ]);
+    const patchParts = [stagedDiff.stdout.trimEnd(), unstagedDiff.stdout.trimEnd()].filter(
+      (part) => part.trim().length > 0,
+    );
+    let patch = patchParts.join("\n\n");
+
+    if (!patch.trim()) {
+      const untracked = await runRemoteGxserverGitAction(remoteReference, {
+        action: "isUntrackedFile",
+        filePath: normalizedFilePath,
+      });
+      if (untracked.stdout.trim()) {
+        const noIndexDiff = await runRemoteGxserverGitAction(remoteReference, {
+          action: "diffNoIndexAgainstNull",
+          filePath: normalizedFilePath,
+        });
+        patch = noIndexDiff.stdout.trimEnd() || noIndexDiff.stderr.trimEnd();
+      }
+    }
+    postAppModalHostMessage(
+      {
+        gitFileDiff: {
+          filePath: normalizedFilePath,
+          patch: patch.trim() || `No remote diff is available for ${normalizedFilePath}.`,
+        },
+        modal: "gitFileDiff",
+        type: "open",
+      },
+      "AppModals:remoteGitFileDiff",
+    );
+  } catch (error) {
+    showAppToast(
+      "error",
+      "Could not open remote file diff",
       error instanceof Error ? error.message : normalizedFilePath,
     );
   }
@@ -9030,6 +10152,18 @@ async function continueGitActionAfterCommitConfirmation(
     return;
   }
   pendingGitCommitRequests.delete(requestId);
+  const remoteReference = pending.remoteReference;
+  if (remoteReference) {
+    await continueRemoteGitActionAfterCommitConfirmation(
+      { ...pending, remoteReference },
+      message,
+      filePaths,
+      deleteWorktreeAfter,
+      commitOnNewRef,
+      agentId,
+    );
+    return;
+  }
   let toastId: string | undefined;
   try {
     const project = focusPendingGitProject(pending.projectId);
@@ -9070,6 +10204,67 @@ async function continueGitActionAfterCommitConfirmation(
       "error",
       `${resolveSidebarGitActionNoun(pending.action)} failed`,
       error instanceof Error ? error.message : "Git action failed.",
+    );
+  }
+}
+
+async function continueRemoteGitActionAfterCommitConfirmation(
+  pending: PendingSidebarGitCommitRequest & { remoteReference: { machineId: string; projectId: string } },
+  message: string,
+  filePaths?: readonly string[],
+  deleteWorktreeAfter = false,
+  commitOnNewRef = false,
+  agentId?: string,
+): Promise<void> {
+  let toastId: string | undefined;
+  const remoteTitle = pending.remoteTitle ?? "Remote project";
+  try {
+    toastId = showRunningAppToast(resolveSidebarGitStartedTitle(pending.action), remoteTitle);
+    const remoteGitState = await readRemoteSidebarGitState(pending.remoteReference);
+    if (!remoteGitState.isRepo) {
+      throw new Error("Remote project is not a Git repository.");
+    }
+    if (pending.hasCommit) {
+      await commitRemoteWithMessage(pending.remoteReference, message.trim() || pending.subject, pending.body, filePaths, {
+        agentId,
+        branch: remoteGitState.branch,
+        commitOnNewRef,
+      });
+    }
+    const nextRemoteGitState = await readRemoteSidebarGitState(pending.remoteReference);
+    if (pending.action === "push") {
+      await pushRemoteCurrentBranch(pending.remoteReference, nextRemoteGitState);
+    }
+    if (pending.action === "pr") {
+      if (nextRemoteGitState.pr?.state === "open") {
+        createNativeBrowserSession(nextRemoteGitState.pr.url);
+      } else {
+        await createRemotePullRequest(pending.remoteReference, nextRemoteGitState);
+      }
+    }
+    if (deleteWorktreeAfter) {
+      /*
+       * CDXC:RemoteWorktrees 2026-06-03-01:21:
+       * Remote Git review can now honor the modal's "delete worktree after"
+       * choice because deleteRemoteWorktreeProject is scoped by the prefixed
+       * machine/project id and performs removal through the owning gxserver.
+       */
+      await deleteRemoteWorktreeProject(
+        createRemotePresentationProjectId(
+          pending.remoteReference.machineId,
+          pending.remoteReference.projectId,
+        ),
+        { suppressToast: true, throwOnFailure: true },
+      );
+    }
+    void refreshRemoteProjectDiffStats(pending.remoteReference);
+    finishRunningAppToast(toastId, "success", resolveSidebarGitFinishedTitle(pending.action), remoteTitle);
+  } catch (error) {
+    finishRunningAppToast(
+      toastId,
+      "error",
+      `${resolveSidebarGitActionNoun(pending.action)} failed`,
+      error instanceof Error ? error.message : "Remote Git action failed.",
     );
   }
 }
@@ -9199,6 +10394,16 @@ async function continueGitDirectMergeAfterConfirmation(
     return;
   }
   pendingGitCommitRequests.delete(requestId);
+  if (pending.remoteReference) {
+    await continueRemoteGitDirectMergeAfterConfirmation(
+      pending as PendingSidebarGitCommitRequest & { remoteReference: { machineId: string; projectId: string } },
+      message,
+      filePaths,
+      deleteWorktreeAfter,
+      agentId,
+    );
+    return;
+  }
   let toastId: string | undefined;
   try {
     const worktreeProject = focusPendingGitProject(pending.projectId);
@@ -9240,6 +10445,196 @@ async function continueGitDirectMergeAfterConfirmation(
       error instanceof Error ? error.message : "Could not merge worktree.",
     );
   }
+}
+
+async function continueRemoteGitDirectMergeAfterConfirmation(
+  pending: PendingSidebarGitCommitRequest & { remoteReference: { machineId: string; projectId: string } },
+  message: string,
+  filePaths: readonly string[] | undefined,
+  deleteWorktreeAfter: boolean,
+  agentId?: string,
+): Promise<void> {
+  let toastId: string | undefined;
+  const remoteTitle = pending.remoteTitle ?? "Remote worktree";
+  try {
+    const worktreeProject = getRemotePresentationProject(pending.remoteReference);
+    const worktree = normalizeNativeProjectWorktreeMetadata(worktreeProject?.worktree);
+    if (!worktreeProject || !worktree) {
+      throw new Error("Direct merge is only available from a remote worktree project.");
+    }
+    const conflictAgent = resolveDefaultPromptAgent(agentId);
+    if (!conflictAgent?.command?.trim()) {
+      throw new Error("Choose a configured prompt agent before merging.");
+    }
+    /*
+     * CDXC:RemoteGit 2026-06-03-03:18:
+     * Remote direct merge should mirror the local worktree flow without adding
+     * broad remote process execution. Commit selected changes through typed
+     * remote Git operations, merge the worktree branch into the remote parent
+     * main branch through gxserver, and launch a remote conflict-resolution
+     * agent only when the merge exits with conflicts.
+     */
+    toastId = showRunningAppToast("Merging remote worktree into main", remoteTitle);
+    const remoteGitState = await readRemoteSidebarGitState(pending.remoteReference);
+    if (pending.hasCommit) {
+      await commitRemoteWithMessage(
+        pending.remoteReference,
+        message.trim() || pending.subject,
+        pending.body,
+        filePaths,
+        {
+          agentId,
+          branch: remoteGitState.branch,
+        },
+      );
+    }
+    const nextRemoteGitState = await readRemoteSidebarGitState(pending.remoteReference);
+    const result = await mergeRemoteWorktreeIntoMain({
+      branch: nextRemoteGitState.branch,
+      conflictAgent,
+      deleteWorktreeAfter,
+      remoteReference: pending.remoteReference,
+      worktree,
+      worktreeProject,
+    });
+    if (result === "conflicts") {
+      finishRunningAppToast(toastId, "warning", "Remote merge conflicts need resolution", remoteTitle);
+      return;
+    }
+    void refreshRemoteProjectDiffStats(pending.remoteReference);
+    finishRunningAppToast(toastId, "success", "Remote worktree merged to main", remoteTitle);
+  } catch (error) {
+    finishRunningAppToast(
+      toastId,
+      "error",
+      "Remote direct merge failed",
+      error instanceof Error ? error.message : "Could not merge remote worktree.",
+    );
+  }
+}
+
+async function mergeRemoteWorktreeIntoMain(input: {
+  branch: string | null;
+  conflictAgent: SidebarAgentButton;
+  deleteWorktreeAfter: boolean;
+  remoteReference: { machineId: string; projectId: string };
+  worktree: NativeProjectWorktreeMetadata;
+  worktreeProject: GxserverPresentationProject;
+}): Promise<"merged" | "conflicts"> {
+  const branch = input.branch || input.worktree.branch;
+  if (!branch) {
+    throw new Error("Create and checkout a branch before merging.");
+  }
+  const parentProject = await resolveRemoteWorktreeParentProject(
+    input.remoteReference.machineId,
+    input.worktree,
+  );
+  const parentReference = {
+    machineId: input.remoteReference.machineId,
+    projectId: parentProject.projectId,
+  };
+  const mainCheck = await runRemoteGxserverGitAction(parentReference, {
+    action: "verifyRef",
+    ref: "main",
+  });
+  if (mainCheck.exitCode !== 0) {
+    throw new Error('The remote parent project does not have a local "main" branch.');
+  }
+  const parentStatus = await runRemoteGxserverGitAction(parentReference, { action: "status" });
+  if (parentStatus.exitCode !== 0) {
+    throw new Error(gxserverGitTypedOperationFailureMessage(parentStatus, "Could not read remote parent project status."));
+  }
+  if (hasGxserverShortStatusChanges(parentStatus.stdout)) {
+    throw new Error("Commit or stash changes in the remote main project before merging this worktree.");
+  }
+  const checkoutResult = await runRemoteGxserverGitAction(parentReference, {
+    action: "checkout",
+    branch: "main",
+  });
+  if (checkoutResult.exitCode !== 0) {
+    throw new Error(gxserverGitTypedOperationFailureMessage(checkoutResult, "Could not checkout remote main."));
+  }
+  const mergeResult = await runRemoteGxserverGitAction(parentReference, {
+    action: "merge",
+    branch,
+  });
+  if (mergeResult.exitCode !== 0) {
+    await launchRemoteMergeConflictAgent({
+      agent: input.conflictAgent,
+      branch,
+      machineId: input.remoteReference.machineId,
+      mergeOutput: mergeResult.stderr.trim() || mergeResult.stdout.trim(),
+      parentProject,
+      worktree: input.worktree,
+      worktreeProject: input.worktreeProject,
+    });
+    return "conflicts";
+  }
+  if (input.deleteWorktreeAfter) {
+    await deleteRemoteWorktreeProject(
+      createRemotePresentationProjectId(input.remoteReference.machineId, input.remoteReference.projectId),
+      { suppressToast: true, throwOnFailure: true },
+    );
+  }
+  return "merged";
+}
+
+async function resolveRemoteWorktreeParentProject(
+  machineId: string,
+  worktree: NativeProjectWorktreeMetadata,
+): Promise<GxserverProjectDomainState> {
+  const projects = await readRemoteGxserverProjects(machineId);
+  return (
+    projects.find((candidate) => candidate.projectId === worktree.parentProjectId) ??
+    await addRemoteGxserverProjectPath(machineId, worktree.parentProjectPath, worktree.parentProjectName)
+  );
+}
+
+async function launchRemoteMergeConflictAgent(input: {
+  agent: SidebarAgentButton;
+  branch: string;
+  machineId: string;
+  mergeOutput: string;
+  parentProject: GxserverProjectDomainState;
+  worktree: NativeProjectWorktreeMetadata;
+  worktreeProject: GxserverPresentationProject;
+}): Promise<void> {
+  const prompt = buildRemoteMergeConflictPrompt(input);
+  await runRemoteSidebarGitPromptAction(
+    {
+      machineId: input.machineId,
+      projectId: input.parentProject.projectId,
+    },
+    input.parentProject.name || input.worktree.parentProjectName,
+    "Merge Conflicts",
+    prompt,
+    input.agent.agentId,
+  );
+  showAppToast("warning", "Remote merge conflicts need resolution", input.agent.name);
+}
+
+function buildRemoteMergeConflictPrompt(input: {
+  branch: string;
+  mergeOutput: string;
+  parentProject: GxserverProjectDomainState;
+  worktree: NativeProjectWorktreeMetadata;
+  worktreeProject: GxserverPresentationProject;
+}): string {
+  const output = input.mergeOutput.trim();
+  return [
+    "Please handle the current Git merge conflicts on the main branch.",
+    "",
+    `Repository: ${input.parentProject.path ?? input.worktree.parentProjectPath}`,
+    "Target branch: main",
+    `Merged worktree branch: ${input.branch}`,
+    `Worktree: ${input.worktreeProject.title} (${input.worktreeProject.path ?? "(unknown remote path)"})`,
+    "",
+    "Resolve the conflicts without losing any code, behavior, or UX from either side.",
+    "Inspect the conflict markers, preserve the important intent from main and the worktree branch, run the relevant checks you can run locally, stage the resolved files, and leave the final state ready for review.",
+    output ? `\nMerge output:\n${output}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function mergeActiveWorktreeIntoMain(input: {
@@ -9474,15 +10869,24 @@ async function requestPreviousSessionsFromGxserver(input: {
   requestId: string;
 }): Promise<void> {
   try {
+    const limit = input.limit ?? 80;
     const response = await gxserverClient.listPreviousSessions({
       includeActive: false,
       includePrevious: true,
-      limit: input.limit ?? 80,
+      limit,
       query: input.query,
     });
-    const items = response.results
+    const localItems = response.results
       .filter((result) => input.favoritesOnly !== true || result.isFavorite)
-      .map(gxserverSearchResultToPreviousSessionItem);
+      .map((result) => gxserverSearchResultToPreviousSessionItem(result));
+    const remoteItems = await requestRemotePreviousSessionsFromConnectedMachines({
+      favoritesOnly: input.favoritesOnly,
+      limit,
+      query: input.query,
+    });
+    const items = [...localItems, ...remoteItems]
+      .sort(comparePreviousSessionItemsByRecentActivity)
+      .slice(0, limit);
     previousSessions = items;
     /*
     CDXC:GxserverPresentationSearch 2026-06-01-15:08:
@@ -9516,6 +10920,7 @@ async function requestPreviousSessionsFromGxserver(input: {
 
 function gxserverSearchResultToPreviousSessionItem(
   result: GxserverPresentationSearchResult,
+  options: { historyIdPrefix?: string; projectNamePrefix?: string } = {},
 ): SidebarPreviousSessionItem {
   const title = result.primaryTitle || result.title || "Previous Session";
   const closedAt = result.lastActiveAt ?? new Date().toISOString();
@@ -9540,7 +10945,7 @@ function gxserverSearchResultToPreviousSessionItem(
     alias: title,
     closedAt,
     column: 0,
-    historyId: `gxserver:${result.projectId}:${result.sessionId}`,
+    historyId: `${options.historyIdPrefix ?? "gxserver"}:${result.projectId}:${result.sessionId}`,
     isFavorite: result.isFavorite,
     isFocused: false,
     isGeneratedName: false,
@@ -9552,7 +10957,9 @@ function gxserverSearchResultToPreviousSessionItem(
     isPrimaryTitleTerminalTitle: result.isPrimaryTitleTerminalTitle,
     primaryTitle: result.primaryTitle ?? title,
     projectId: result.projectId,
-    projectName: result.projectTitle,
+    projectName: options.projectNamePrefix
+      ? `${options.projectNamePrefix} / ${result.projectTitle}`
+      : result.projectTitle,
     row: 0,
     sessionId: result.sessionId,
     sessionKind: "terminal",
@@ -9562,6 +10969,74 @@ function gxserverSearchResultToPreviousSessionItem(
     ...(result.cwd ? { projectPath: result.cwd } : {}),
     ...(result.lastActiveAt ? { lastInteractionAt: result.lastActiveAt } : {}),
   };
+}
+
+async function requestRemotePreviousSessionsFromConnectedMachines(input: {
+  favoritesOnly?: boolean;
+  limit: number;
+  query?: string;
+}): Promise<SidebarPreviousSessionItem[]> {
+  const machines = settings.remoteMachines.filter((machine) =>
+    remotePresentationSnapshotsByMachineId.has(machine.id),
+  );
+  const results = await Promise.all(
+    machines.map(async (machine) => {
+      try {
+        const response = await requestRemoteGxserver<{ results: GxserverPresentationSearchResponse["results"] }>(
+          machine.id,
+          "/api/listPreviousSessions",
+          {
+            params: {
+              includeActive: false,
+              includePrevious: true,
+              limit: input.limit,
+              query: input.query,
+            },
+          },
+        ) as { result: GxserverPresentationSearchResponse };
+        return response.result.results
+          .filter((result) => input.favoritesOnly !== true || result.isFavorite)
+          .map((result) =>
+            gxserverSearchResultToPreviousSessionItem(result, {
+              historyIdPrefix: `remote-gxserver:${machine.id}`,
+              projectNamePrefix: machine.name,
+            }),
+          );
+      } catch (error) {
+        appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.previousSessions.requestFailed", {
+          errorType: error instanceof Error ? error.name : typeof error,
+          hasMessage: (error instanceof Error ? error.message : String(error)).length > 0,
+          machineKnown: true,
+          queryLength: input.query?.length ?? 0,
+        });
+        return [] satisfies SidebarPreviousSessionItem[];
+      }
+    }),
+  );
+  return results.flat();
+}
+
+function comparePreviousSessionItemsByRecentActivity(
+  left: SidebarPreviousSessionItem,
+  right: SidebarPreviousSessionItem,
+): number {
+  return previousSessionTime(right) - previousSessionTime(left);
+}
+
+function previousSessionTime(session: SidebarPreviousSessionItem): number {
+  const value = session.lastInteractionAt ?? session.closedAt;
+  const time = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function parseRemotePreviousSessionHistoryId(
+  historyId: string,
+): { machineId: string; projectId: string; sessionId: string } | undefined {
+  const match = /^remote-gxserver:([^:]+):([^:]+):([^:]+)$/.exec(historyId);
+  if (!match) {
+    return undefined;
+  }
+  return { machineId: match[1]!, projectId: match[2]!, sessionId: match[3]! };
 }
 
 function rememberPreviousSession(sessionId: string, project = activeProject()): void {
@@ -9757,7 +11232,43 @@ function deleteResolvedPreviousSession(
 ): void {
   writePreviousSessions(previousSessions.filter((session) => session.historyId !== historyId));
   publish();
+  const remoteReference = parseRemotePreviousSessionHistoryId(historyId);
+  if (remoteReference) {
+    removeRemotePreviousSessionAfterLocalDelete(remoteReference, reason);
+    return;
+  }
   removeGxserverPreviousSessionAfterLocalDelete(previousSession, reason);
+}
+
+function removeRemotePreviousSessionAfterLocalDelete(
+  reference: { machineId: string; projectId: string; sessionId: string },
+  reason: string,
+): void {
+  /*
+   * CDXC:RemotePreviousSessions 2026-06-03-00:01:
+   * Remote previous-session rows carry the owning machine in their history id.
+   * Delete must mutate that remote gxserver through the native tunnel instead
+   * of removing a local macOS session or a local gxserver history row.
+   */
+  void requestRemoteGxserver<{ session: GxserverSessionDomainState }>(
+    reference.machineId,
+    "/api/removeSession",
+    {
+      params: {
+        projectId: reference.projectId,
+        reason,
+        sessionId: reference.sessionId,
+      },
+    },
+  ).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.previousSessionRemoveFailed", {
+      errorType: error instanceof Error ? error.name : typeof error,
+      hasMessage: message.length > 0,
+      reason,
+    });
+    showAppToast("error", "Could not delete remote previous session", message);
+  });
 }
 
 function removeGxserverPreviousSessionAfterLocalDelete(
@@ -9794,6 +11305,11 @@ function removeGxserverPreviousSessionAfterLocalDelete(
 
 function restorePreviousSession(historyId: string): void {
   const previousSession = previousSessions.find((session) => session.historyId === historyId);
+  const remoteReference = parseRemotePreviousSessionHistoryId(historyId);
+  if (remoteReference) {
+    void restoreRemotePreviousSession(remoteReference, previousSession, historyId);
+    return;
+  }
   appendPreviousSessionRestoreTraceDebugLog("request.received", {
     historyId,
     isRestorable: previousSession?.isRestorable === true,
@@ -9843,6 +11359,56 @@ function restorePreviousSession(historyId: string): void {
   });
   createTerminal(previousSession.primaryTitle || previousSession.alias || "Restored Session");
   deletePreviousSession(historyId);
+}
+
+async function restoreRemotePreviousSession(
+  reference: { machineId: string; projectId: string; sessionId: string },
+  previousSession: SidebarPreviousSessionItem | undefined,
+  historyId: string,
+): Promise<void> {
+  if (!previousSession?.isRestorable) {
+    return;
+  }
+  const title =
+    previousSession.primaryTitle ||
+    previousSession.terminalTitle ||
+    previousSession.alias ||
+    DEFAULT_TERMINAL_SESSION_TITLE;
+  try {
+    /*
+     * CDXC:RemotePreviousSessions 2026-06-03-00:01:
+     * Restoring remote history is a remote gxserver session recreation. The
+     * local Mac must not create a Ghostty pane for that row; it asks the owning
+     * machine to create a replacement workspace session and lets the remote
+     * presentation stream render the new session under that machine section.
+     */
+    await requestRemoteGxserver<{ session: GxserverSessionDomainState }>(
+      reference.machineId,
+      "/api/createSession",
+      {
+        params: {
+          kind: "terminal",
+          lifecycleState: "running",
+          projectId: reference.projectId,
+          restoredFromSessionId: reference.sessionId,
+          surface: "workspace",
+          title,
+        },
+      },
+    );
+    removeRemotePreviousSessionAfterLocalDelete(reference, "restorePreviousSession");
+    writePreviousSessions(previousSessions.filter((session) => session.historyId !== historyId));
+    publish();
+    void refreshRemoteGxserverPresentationSnapshot(reference.machineId, "restore-previous-session");
+    showAppToast("success", "Remote session restored", previousSession.projectName ?? "Remote");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.previousSessionRestoreFailed", {
+      errorType: error instanceof Error ? error.name : typeof error,
+      hasMessage: message.length > 0,
+    });
+    showAppToast("error", "Could not restore remote previous session", message);
+  }
 }
 
 type PreviousTerminalSessionRestoreResult = {
@@ -11504,7 +13070,7 @@ function createSidebarRecentProjects(): SidebarRecentProject[] {
     )
     .sort(compareRecentProjectsByClosedAt)
     .map((project) => ({
-      icon: project.icon ?? normalizeLegacyWorkspaceDockIcon(project),
+      icon: project.icon ?? normalizeLegacyWorkspaceProjectIcon(project),
       iconDataUrl: project.iconDataUrl,
       path: project.path,
       projectId: project.projectId,
@@ -12055,6 +13621,297 @@ function createPresentationSidebarGroups(
   ];
 }
 
+function createRemotePresentationSidebarGroups(): SidebarSessionGroup[] {
+  return settings.remoteMachines.flatMap((machine) => {
+    const presentation = remotePresentationSnapshotsByMachineId.get(machine.id);
+    if (!presentation) {
+      return [];
+    }
+    return createRemoteMachinePresentationSidebarGroups(machine.id, machine.name, presentation);
+  });
+}
+
+function createRemoteMachinePresentationSidebarGroups(
+  machineId: string,
+  machineName: string,
+  presentation: GxserverPresentationSnapshot,
+): SidebarSessionGroup[] {
+  const sessionsByProject = createRemotePresentationSessionsByProjectFromGroups(presentation);
+  const projectsById = new Map(presentation.projects.map((project) => [project.projectId, project]));
+  return presentation.groups.flatMap((group) => {
+    const project = projectsById.get(group.projectId);
+    if (!project) {
+      return [];
+    }
+    const sessions = sessionsByProject.get(project.projectId) ?? [];
+    return [
+      createRemotePresentationProjectSidebarGroup({
+        machineId,
+        machineName,
+        project,
+        sessions,
+      }),
+    ];
+  });
+}
+
+function createRemotePresentationSessionsByProjectFromGroups(
+  presentation: GxserverPresentationSnapshot,
+): Map<string, GxserverPresentationSession[]> {
+  const sessionByProjectSessionKey = new Map(
+    presentation.sessions.map((session) => [
+      presentationSessionKey(session.projectId, session.sessionId),
+      session,
+    ]),
+  );
+  const sessionsByProject = new Map<string, GxserverPresentationSession[]>();
+  for (const group of presentation.groups) {
+    const sessions: GxserverPresentationSession[] = [];
+    for (const sessionId of group.sessionIds) {
+      const session = sessionByProjectSessionKey.get(
+        presentationSessionKey(group.projectId, sessionId),
+      );
+      if (!session || session.visibleInSidebarByDefault !== true || session.surface === "commands") {
+        continue;
+      }
+      sessions.push(session);
+    }
+    sessionsByProject.set(group.projectId, sessions);
+  }
+  return sessionsByProject;
+}
+
+function createRemotePresentationProjectSidebarGroup({
+  machineId,
+  machineName,
+  project,
+  sessions,
+}: {
+  machineId: string;
+  machineName: string;
+  project: GxserverPresentationProject;
+  sessions: readonly GxserverPresentationSession[];
+}): SidebarSessionGroup {
+  const sidebarSessions = sessions.map((session, index) =>
+    createRemotePresentationSidebarSession(machineId, project.projectId, session, index),
+  );
+  const scopedProjectId = createRemotePresentationProjectId(machineId, project.projectId);
+  const worktree = getRemoteWorktreeMetadataForPresentationProject(machineId, project);
+  /*
+  CDXC:RemotePresentation 2026-06-02-23:46:
+  Connected Remote machines render their gxserver projects under the machine
+  section, not under local Projects. Prefix project/session ids with the machine
+  id so separate gxservers can publish overlapping project ids without colliding
+  in the shared sidebar store.
+
+  CDXC:RemoteWorktrees 2026-06-03-00:29:
+  Remote presentation projects already carry gxserver worktree metadata. Keep
+  that metadata in the sidebar projectContext so remote worktree rows render as
+  worktrees and expose the worktree-specific header affordances without relying
+  on local project storage.
+  */
+  return {
+    groupId: createRemotePresentationGroupId(machineId, project.projectId),
+    canFocusMode: false,
+    isActive: false,
+    isFocusModeActive: false,
+    kind: "workspace",
+    layoutVisibleCount: clampVisibleSessionCount(Math.max(1, sidebarSessions.length)),
+    projectContext: {
+      canRemoveProject: false,
+      editor: {
+        diffStats: getProjectDiffStats(scopedProjectId),
+        isOpen: false,
+        isSleeping: false,
+        projectId: scopedProjectId,
+        status: "idle",
+      },
+      path: project.path ?? "",
+      theme: resolveSidebarTheme(settings.sidebarTheme, "dark"),
+      worktree,
+    },
+    remoteMachineContext: {
+      machineId,
+      machineName,
+    },
+    sessions: sidebarSessions,
+    title: project.title,
+    viewMode: "grid",
+    visibleCount: clampVisibleSessionCount(Math.max(1, sidebarSessions.length)),
+  };
+}
+
+function getRemoteWorktreeMetadataForPresentationProject(
+  machineId: string,
+  project: GxserverPresentationProject,
+): NativeProjectWorktreeMetadata | undefined {
+  const presentation = remotePresentationSnapshotsByMachineId.get(machineId);
+  const candidates: NativeProjectWorktreeParentCandidate[] = (presentation?.projects ?? []).map((candidate) => ({
+    name: candidate.title,
+    path: candidate.path,
+    projectId: candidate.projectId,
+    worktree: candidate.worktree,
+  }));
+  return resolveNativeProjectWorktreeParentMetadata(
+    normalizeNativeProjectWorktreeMetadata(project.worktree),
+    candidates,
+  );
+}
+
+function createRemotePresentationSidebarSession(
+  machineId: string,
+  projectId: string,
+  presentation: GxserverPresentationSession,
+  index: number,
+): SidebarSessionItem {
+  const lifecycleState = presentationLifecycleStateForSidebar(presentation.lifecycleState);
+  const isLive = presentation.lifecycleState === "running";
+  const agentIcon = resolveNativeSidebarAgentIcon(presentation.agentIcon ?? presentation.agentName ?? presentation.agentId);
+  return {
+    activity: presentation.activity,
+    agentIcon,
+    alias: presentation.title,
+    column: index % GRID_COLUMN_COUNT,
+    detail: presentation.subtitle,
+    isFavorite: presentation.isFavorite,
+    isFocused: false,
+    isLive,
+    isPinned: presentation.isPinned,
+    isPrimaryTitleTerminalTitle: presentation.isPrimaryTitleTerminalTitle,
+    isRunning: isLive,
+    isSleeping: lifecycleState === "sleeping",
+    isVisible: index === 0,
+    lastInteractionAt: presentation.lastActiveAt ?? presentation.updatedAt,
+    lifecycleState,
+    primaryTitle: presentation.primaryTitle ?? presentation.title,
+    providerSessionState: presentation.lifecycleState === "running" || presentation.lifecycleState === "sleeping"
+      ? "exists"
+      : "missing",
+    row: Math.floor(index / GRID_COLUMN_COUNT),
+    sessionId: createRemotePresentationSessionId(machineId, projectId, presentation.sessionId),
+    sessionKind: presentation.kind === "agent" ? "terminal" : presentation.kind,
+    sessionNumber: String(index + 1),
+    sessionPersistenceName: presentation.zmxName,
+    sessionPersistenceProvider: "zmx",
+    shortcutLabel: String(index + 1),
+    terminalTitle: presentation.terminalTitle,
+  };
+}
+
+function createRemotePresentationGroupId(machineId: string, projectId: string): string {
+  return `remote:${machineId}:group:${projectId}`;
+}
+
+function parseRemotePresentationGroupId(groupId: string): { machineId: string; projectId: string } | undefined {
+  const match = /^remote:([^:]+):group:(.+)$/.exec(groupId);
+  if (!match) {
+    return undefined;
+  }
+  return { machineId: match[1]!, projectId: match[2]! };
+}
+
+function createRemotePresentationProjectId(machineId: string, projectId: string): string {
+  return `remote:${machineId}:project:${projectId}`;
+}
+
+function parseRemotePresentationProjectId(projectId: string): { machineId: string; projectId: string } | undefined {
+  const match = /^remote:([^:]+):project:(.+)$/.exec(projectId);
+  if (!match) {
+    return undefined;
+  }
+  return { machineId: match[1]!, projectId: match[2]! };
+}
+
+function createRemotePresentationSessionId(
+  machineId: string,
+  projectId: string,
+  sessionId: string,
+): string {
+  return `remote:${machineId}:session:${projectId}:${sessionId}`;
+}
+
+function parseRemotePresentationSessionId(
+  sessionId: string,
+): { machineId: string; projectId: string; sessionId: string } | undefined {
+  const match = /^remote:([^:]+):session:([^:]+):(.+)$/.exec(sessionId);
+  if (!match) {
+    return undefined;
+  }
+  return { machineId: match[1]!, projectId: match[2]!, sessionId: match[3]! };
+}
+
+function setRemotePresentationSessionLifecycleLocally(
+  machineId: string,
+  projectId: string,
+  sessionId: string,
+  lifecycleState: GxserverPresentationSession["lifecycleState"],
+  reason: string,
+): void {
+  const presentation = remotePresentationSnapshotsByMachineId.get(machineId);
+  if (!presentation) {
+    return;
+  }
+  let didChange = false;
+  const updatedAt = new Date().toISOString();
+  const sessions = presentation.sessions.map((session) => {
+    if (session.projectId !== projectId || session.sessionId !== sessionId) {
+      return session;
+    }
+    if (session.lifecycleState === lifecycleState) {
+      return session;
+    }
+    didChange = true;
+    return { ...session, lifecycleState, updatedAt };
+  });
+  if (!didChange) {
+    return;
+  }
+  remotePresentationSnapshotsByMachineId.set(machineId, {
+    ...presentation,
+    sessions,
+  });
+  appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.presentationLifecycle.localFirst", {
+    lifecycleState,
+    reason,
+  });
+  publish();
+}
+
+function setRemotePresentationSessionFlagsLocally(
+  machineId: string,
+  projectId: string,
+  sessionId: string,
+  flags: { isFavorite?: boolean; isPinned?: boolean },
+  reason: string,
+): void {
+  const presentation = remotePresentationSnapshotsByMachineId.get(machineId);
+  if (!presentation) {
+    return;
+  }
+  let didChange = false;
+  const sessions = presentation.sessions.map((session) => {
+    if (session.projectId !== projectId || session.sessionId !== sessionId) {
+      return session;
+    }
+    const nextSession = { ...session, ...flags };
+    didChange = didChange || nextSession.isFavorite !== session.isFavorite || nextSession.isPinned !== session.isPinned;
+    return nextSession;
+  });
+  if (!didChange) {
+    return;
+  }
+  remotePresentationSnapshotsByMachineId.set(machineId, {
+    ...presentation,
+    sessions,
+  });
+  appendSidebarRefreshDebugLog("nativeSidebar.remoteGxserver.sessionFlags.localFirst", {
+    hasFavorite: flags.isFavorite !== undefined,
+    hasPinned: flags.isPinned !== undefined,
+    reason,
+  });
+  publish();
+}
+
 function createPresentationSessionsByProjectFromGroups(
   presentation: GxserverPresentationSnapshot,
 ): Map<string, GxserverPresentationSession[]> {
@@ -12359,6 +14216,10 @@ function presentationLifecycleStateForSidebar(
 function buildSidebarMessage(): SidebarHydrateMessage {
   const project = activeProject();
   const snapshot = activeSnapshot();
+  const localGroups =
+    createPresentationSidebarGroups(gxserverStartupSnapshot?.presentation) ??
+    createGxserverUnavailableSidebarGroups();
+  const remoteGroups = createRemotePresentationSidebarGroups();
   /**
    * CDXC:NativeSidebar 2026-04-27-17:03
    * Native sidebar editor checks must stay aligned with the shipped UX. Keep
@@ -12366,7 +14227,7 @@ function buildSidebarMessage(): SidebarHydrateMessage {
    * passing them to shared sidebar HUD creation.
    */
   return {
-    groups: createPresentationSidebarGroups(gxserverStartupSnapshot?.presentation) ?? createGxserverUnavailableSidebarGroups(),
+    groups: [...localGroups, ...remoteGroups],
     hud: {
       ...createSidebarHudState(
         snapshot,
@@ -12614,7 +14475,6 @@ function publish(): void {
    * instead of letting modals read stale duplicated state.
   */
   postAppModalHost({ message: sidebarMessage, type: "sidebarState" });
-  postWorkspaceBarState();
   syncNativeT3RuntimeSessionState(sidebarMessage);
   syncNativeLayout({
     force: didCreateNativeSession || didMaterializeVirtualPaneTabs,
@@ -13142,148 +15002,6 @@ function clearStaleTerminalRuntimeStateBeforeWake(
   });
 }
 
-function createWorkspaceBarState(): WorkspaceBarStateMessage {
-  /**
-   * CDXC:WorkspaceDock 2026-04-29-09:16
-   * Workspace dock badges are recomputed on every sidebar publish. Keep that
-   * state path silent by default so routine spinner/status updates do not write
-   * dock snapshots continuously.
-   */
-  /**
-   * CDXC:SidebarLayout 2026-05-13-08:11
-   * Combined is the only supported sidebar layout, so recent projects live in
-   * the reference drawer instead of the removed workspace rail/status surface.
-   *
-   * CDXC:WorkspaceDock 2026-06-02-18:23:
-   * The dock is visible sidebar chrome, so normal project/worktree buttons must come from gxserver presentation once it is available. Use local native project data only as UI overlay metadata or fallback, not as canonical project visibility.
-   */
-  const presentationGroups = createPresentationSidebarGroups(gxserverStartupSnapshot?.presentation);
-  if (presentationGroups) {
-    /*
-    CDXC:LocalFirstSidebar 2026-06-02-18:39:
-    Quick browser/file/chat panes remain macOS-owned local rows even when normal projects render from gxserver presentation. Keep Quick workspace-dock buttons from the native pane cache so local-only panes do not disappear from dock chrome during the ownership cutover.
-    */
-    const quickProjects = orderNativeProjectsForSidebar(projects).filter(
-      (project) => project.isRecentProject !== true && isQuickProject(project),
-    );
-    return {
-      activeProjectId,
-      projects: [
-        ...quickProjects.map(createWorkspaceBarProjectFromNativeProject),
-        ...presentationGroups.flatMap((group) => {
-          const projectContext = group.projectContext;
-          const projectId = projectContext?.editor.projectId;
-          if (!projectId) {
-            return [];
-          }
-          const localProject = findProject(projectId);
-          return [
-            {
-              icon: localProject?.icon ?? (localProject ? normalizeLegacyWorkspaceDockIcon(localProject) : undefined),
-              iconDataUrl: localProject?.iconDataUrl,
-              isActive: group.isActive,
-              isChat: false,
-              isWorktree: projectContext.worktree !== undefined,
-              path: projectContext.path,
-              projectId,
-              sessionCounts: countWorkspaceBarSessionsFromSidebarGroup(group),
-              theme: projectContext.theme ?? resolveSidebarTheme(settings.sidebarTheme, "dark"),
-              themeColor: projectContext.themeColor,
-              title: group.title,
-            },
-          ];
-        }),
-      ],
-      type: "workspaceBarState",
-    };
-  }
-  const visibleProjects = projects.filter((project) => project.isRecentProject !== true);
-
-  return {
-    activeProjectId,
-    projects: orderNativeProjectsForSidebar(visibleProjects).map(createWorkspaceBarProjectFromNativeProject),
-    type: "workspaceBarState",
-  };
-}
-
-function createWorkspaceBarProjectFromNativeProject(project: NativeProject): WorkspaceBarProject {
-  return {
-    icon: project.icon ?? normalizeLegacyWorkspaceDockIcon(project),
-    iconDataUrl: project.iconDataUrl,
-    isActive: project.projectId === activeProjectId,
-    isChat: isQuickProject(project),
-    isWorktree: project.worktree !== undefined,
-    path: project.path,
-    projectId: project.projectId,
-    sessionCounts: countWorkspaceBarSessions(project),
-    theme: project.theme ?? resolveSidebarTheme(settings.sidebarTheme, "dark"),
-    themeColor: project.themeColor,
-    title: project.name,
-  };
-}
-
-function countWorkspaceBarSessionsFromSidebarGroup(
-  group: SidebarSessionGroup,
-): WorkspaceBarProject["sessionCounts"] {
-  const counts: WorkspaceBarProject["sessionCounts"] = {
-    done: 0,
-    running: 0,
-    working: 0,
-  };
-  for (const session of group.sessions) {
-    if (session.isSleeping === true || session.lifecycleState === "sleeping") {
-      continue;
-    }
-    if (session.activity === "working") {
-      counts.working += 1;
-    } else if (session.isLive === true || session.isRunning === true) {
-      counts.running += 1;
-    } else {
-      counts.done += 1;
-    }
-  }
-  return counts;
-}
-
-function countWorkspaceBarSessions(project: NativeProject): WorkspaceBarProject["sessionCounts"] {
-  /**
-   * CDXC:WorkspaceDock 2026-04-27-06:19
-   * Count dock badges from the same projection as session cards: the orange
-   * rail badge follows the session-card orange working dot, while running idle
-   * sessions remain gray at the bottom-right of the workspace button.
-   */
-  const counts: WorkspaceBarProject["sessionCounts"] = {
-    done: 0,
-    running: 0,
-    working: 0,
-  };
-  for (const group of project.workspace.groups) {
-    for (const session of group.snapshot.sessions) {
-      if (session.isSleeping === true) {
-        continue;
-      }
-      if (session.kind === "browser") {
-        counts.running += 1;
-        continue;
-      }
-      if (session.kind === "t3") {
-        counts.done += 1;
-        continue;
-      }
-      const terminalState = terminalStateById.get(session.sessionId);
-      const lifecycleState = terminalState?.lifecycleState ?? "done";
-      if (lifecycleState === "running" && terminalState?.activity === "working") {
-        counts.working += 1;
-      } else if (lifecycleState === "running") {
-        counts.running += 1;
-      } else if (lifecycleState === "done" && terminalState?.activity === "attention") {
-        counts.done += 1;
-      }
-    }
-  }
-  return counts;
-}
-
 type NativeSessionStatusIndicatorCandidate = {
   lastInteractionAt?: string;
   order: number;
@@ -13308,7 +15026,7 @@ function createNativeSessionStatusIndicatorCandidates(
    * CDXC:SessionStatusIndicators 2026-05-09-15:53
    * The status-indicator native contract now uses `working` for the orange
    * work state everywhere. Reserve `running` for live runtime state, including
-   * the workspace rail's gray live-idle count.
+   * gray live-idle status counts.
    * CDXC:SessionStatusIndicators 2026-06-02-18:23:
    * Floating and menu-bar indicators are visible sidebar chrome. When gxserver presentation is active, derive candidates from the same hydrate groups so stale native project/session rows cannot remain clickable through AppKit overlays.
    */
@@ -13367,6 +15085,7 @@ function createNativeSessionStatusIndicatorCandidatesFromSidebarGroups(
   }
   return candidates;
 }
+
 
 function getNativeSessionStatusIndicatorStatus(
   session: SidebarSessionItem,
@@ -13705,21 +15424,6 @@ function getNativeIndicatorTimestamp(value: string | undefined): number {
   }
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
-function postWorkspaceBarState(): void {
-  /**
-   * CDXC:WorkspaceDock 2026-04-27-08:45
-   * The workspace dock is rendered inside the same React sidebar tree as the
-   * session sidebar. Publish state through a browser event instead of the old
-   * second WKWebView bridge so context menus, drag feedback, and workspace
-   * buttons share one React surface.
-   */
-  window.dispatchEvent(
-    new CustomEvent<WorkspaceBarStateMessage>(WORKSPACE_DOCK_STATE_EVENT, {
-      detail: createWorkspaceBarState(),
-    }),
-  );
 }
 
 function createNativeSessionStateFilePath(projectId: string, sessionId: string): string {
@@ -24137,6 +25841,53 @@ async function copyResumeCommand(sessionId: string): Promise<void> {
   void navigator.clipboard?.writeText(text).catch(() => undefined);
 }
 
+async function copyRemoteResumeCommand(remoteSessionId: string): Promise<boolean> {
+  const target = parseRemotePresentationSessionId(remoteSessionId);
+  if (!target) {
+    return false;
+  }
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === target.machineId);
+  const presentation = remotePresentationSnapshotsByMachineId.get(target.machineId);
+  const projectPath = presentation?.projects.find((project) => project.projectId === target.projectId)?.path?.trim();
+  if (!remoteMachine) {
+    showAppToast("info", "Remote command unavailable", "Open Settings > Remote and add the machine again.");
+    return true;
+  }
+  try {
+    /*
+     * CDXC:RemoteResume 2026-06-03-00:24:
+     * Remote resume commands must come from the owning gxserver, not from
+     * macOS-local agent parsing. Wrap the gxserver copyCommand in SSH so the
+     * pasted command executes in the remote project directory without exposing
+     * the native tunnel token or rebuilding provider-specific resume syntax.
+     */
+    const response = await requestRemoteGxserver<{ plan: GxserverAgentResumePlan; session: GxserverSessionDomainState }>(
+      target.machineId,
+      "/api/readAgentResumePlan",
+      {
+        params: {
+          projectId: target.projectId,
+          sessionId: target.sessionId,
+        },
+      },
+    ) as { result: { plan: GxserverAgentResumePlan; session: GxserverSessionDomainState } };
+    const resumeCommand = response.result.plan.copyCommand?.trim();
+    if (!resumeCommand) {
+      showAppToast("info", "Remote command unavailable", "No resume command is available for this remote session.");
+      return true;
+    }
+    const remoteCommand = projectPath
+      ? `cd ${quoteNativeShellArg(projectPath)} && ${resumeCommand}`
+      : resumeCommand;
+    const sshCommand = buildRemoteSshShellCommand(remoteMachine, remoteCommand);
+    void navigator.clipboard?.writeText(sshCommand).catch(() => undefined);
+    showAppToast("info", "Remote resume command copied", `SSH command copied for ${remoteMachine.name}.`);
+  } catch (error) {
+    showAppToast("error", "Remote command failed", error instanceof Error ? error.message : String(error));
+  }
+  return true;
+}
+
 async function copyAttachCommand(sessionId: string): Promise<void> {
   const reference = resolveSidebarSessionReference(sessionId);
   const session = findTerminalSessionInProject(reference.project, reference.sessionId);
@@ -24189,6 +25940,186 @@ async function copyAttachCommand(sessionId: string): Promise<void> {
         ? `zmx attach ${quotedName}`
         : `zellij attach ${quotedName}`;
   void navigator.clipboard?.writeText(attachCommand).catch(() => undefined);
+}
+
+function copyRemoteAttachCommand(remoteSessionId: string): boolean {
+  const target = parseRemotePresentationSessionId(remoteSessionId);
+  if (!target) {
+    return false;
+  }
+  void copyRemoteAttachCommandForTarget(target);
+  return true;
+}
+
+function copyRemoteGroupAttachCommand(groupId: string): boolean {
+  const target = parseRemotePresentationGroupId(groupId);
+  if (!target) {
+    return false;
+  }
+  const presentation = remotePresentationSnapshotsByMachineId.get(target.machineId);
+  const sessions = (presentation?.sessions ?? [])
+    .filter((session) =>
+      session.projectId === target.projectId &&
+      (session.kind === "terminal" || session.kind === "agent"),
+    )
+    .sort(compareRemoteAttachCandidateSessions);
+  const session = sessions[0];
+  if (!session) {
+    showAppToast("info", "Remote attach unavailable", "This remote project has no attachable sessions.");
+    return true;
+  }
+  /*
+   * CDXC:RemoteFocus 2026-06-03-03:34:
+   * Remote group focus/zoom has no local pane topology to activate. Use the
+   * same remote-safe equivalent as remote session focus: copy an SSH-wrapped
+   * gxserver attach command for the best session in that machine/project group,
+   * preferring working/attention and recently active sessions.
+   */
+  void copyRemoteAttachCommandForTarget({
+    machineId: target.machineId,
+    projectId: target.projectId,
+    sessionId: session.sessionId,
+  });
+  return true;
+}
+
+function copyRemoteProjectOpenCommandForGroup(
+  groupId: string,
+  source: "folder" | "ide",
+): boolean {
+  const target = parseRemotePresentationGroupId(groupId);
+  if (!target) {
+    return false;
+  }
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === target.machineId);
+  const project = remotePresentationSnapshotsByMachineId
+    .get(target.machineId)
+    ?.projects.find((candidate) => candidate.projectId === target.projectId);
+  const projectPath = project?.path?.trim();
+  if (!remoteMachine || !projectPath) {
+    showAppToast("info", "Remote open unavailable", "Reconnect the remote machine and try opening the project again.");
+    return true;
+  }
+  /*
+   * CDXC:RemoteOpen 2026-06-03-03:42:
+   * Finder and local IDE open actions cannot dereference a remote filesystem
+   * path on the Mac. The SSH-only v1 equivalent is a copied command that opens
+   * an authenticated remote shell already cd'd into the project, using the
+   * saved machine host/user/port/key settings and never exposing gxserver
+   * bearer tokens.
+   */
+  const remoteCommand = `cd ${quoteNativeShellArg(projectPath)} && exec "\${SHELL:-/bin/zsh}" -l`;
+  const sshCommand = buildRemoteSshShellCommand(remoteMachine, remoteCommand);
+  void navigator.clipboard?.writeText(sshCommand).catch(() => undefined);
+  showAppToast(
+    "info",
+    source === "ide" ? "Remote IDE command copied" : "Remote folder command copied",
+    `SSH command copied for ${remoteMachine.name}.`,
+  );
+  return true;
+}
+
+function compareRemoteAttachCandidateSessions(
+  left: GxserverPresentationSession,
+  right: GxserverPresentationSession,
+): number {
+  const score = (session: GxserverPresentationSession): number => {
+    let value = 0;
+    if (session.lifecycleState === "running") {
+      value += 100;
+    }
+    if (session.activity === "attention") {
+      value += 40;
+    } else if (session.activity === "working") {
+      value += 30;
+    }
+    if (session.isPinned) {
+      value += 10;
+    }
+    if (session.isFavorite) {
+      value += 5;
+    }
+    return value;
+  };
+  const scoreDelta = score(right) - score(left);
+  if (scoreDelta !== 0) {
+    return scoreDelta;
+  }
+  const rightTime = Date.parse(right.lastActiveAt ?? right.updatedAt ?? right.createdAt);
+  const leftTime = Date.parse(left.lastActiveAt ?? left.updatedAt ?? left.createdAt);
+  return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+}
+
+async function copyRemoteAttachCommandForTarget(
+  target: { machineId: string; projectId: string; sessionId: string },
+): Promise<void> {
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === target.machineId);
+  const presentation = remotePresentationSnapshotsByMachineId.get(target.machineId);
+  const session = presentation?.sessions.find(
+    (candidate) => candidate.projectId === target.projectId && candidate.sessionId === target.sessionId,
+  );
+  if (!remoteMachine || !session) {
+    showAppToast("info", "Remote command unavailable", "Reconnect the remote machine and try copying the attach command again.");
+    return;
+  }
+  try {
+    /*
+     * CDXC:RemoteAttach 2026-06-03-01:38:
+     * Remote attach commands should come from the owning gxserver, not a bare
+     * `zmx attach` string. The server-owned attach script knows the remote cwd,
+     * bundled zmx path, provider state, title notices, and gxserver identity;
+     * the macOS client only wraps that script in the saved SSH connection.
+     */
+    const response = await requestRemoteGxserver<{ attach: GxserverAttachSessionMetadataResult }>(
+      target.machineId,
+      "/api/attachSessionMetadata",
+      {
+        params: {
+          projectId: target.projectId,
+          sessionId: target.sessionId,
+        },
+      },
+    ) as { result: { attach: GxserverAttachSessionMetadataResult } };
+    const attachCommand = response.result.attach.attachCommand?.trim();
+    if (!attachCommand) {
+      showAppToast("info", "Remote command unavailable", "No attach command is available for this remote session.");
+      return;
+    }
+    const sshCommand = buildRemoteSshShellCommand(remoteMachine, attachCommand);
+    void navigator.clipboard?.writeText(sshCommand).catch(() => undefined);
+    showAppToast("info", "Remote attach command copied", `SSH command copied for ${remoteMachine.name}.`);
+  } catch (error) {
+    showAppToast("error", "Remote command failed", error instanceof Error ? error.message : String(error));
+  }
+}
+
+function buildRemoteSshShellCommand(
+  remoteMachine: ghostexSettings["remoteMachines"][number],
+  remoteCommand: string,
+): string {
+  return buildRemoteSshCommand(remoteMachine, [remoteCommand]);
+}
+
+function buildRemoteSshCommand(
+  remoteMachine: ghostexSettings["remoteMachines"][number],
+  remoteArgs: readonly string[],
+): string {
+  const args = ["ssh"];
+  const identityFile = remoteMachine.sshIdentityFile?.trim();
+  if (identityFile) {
+    args.push("-i", identityFile);
+  }
+  if (remoteMachine.sshPort) {
+    args.push("-p", String(remoteMachine.sshPort));
+  }
+  const sshHost = remoteMachine.sshHost.trim();
+  const sshUser = remoteMachine.sshUser?.trim();
+  args.push(sshUser ? `${sshUser}@${sshHost}` : sshHost, ...remoteArgs);
+  return args.map(quoteRemoteSshCommandArg).join(" ");
+}
+
+function quoteRemoteSshCommandArg(value: string): string {
+  return /^[A-Za-z0-9_/:=@%+.,-]+$/u.test(value) ? value : quoteNativeShellArg(value);
 }
 
 function resolveNativeBrowserAccessT3Session(preferredSessionId?: string): T3SessionRecord | undefined {
@@ -24833,7 +26764,8 @@ async function cloneRepositoryFromModal(
    * requests back to gxserver without constructing Git commands locally.
    */
   try {
-    const result = await gxserverClient.rpc<{ job: GxserverRepositoryCloneJobStatus }>(
+    const result = await repositoryCloneRpc<{ job: GxserverRepositoryCloneJobStatus }>(
+      message.remoteMachineId,
       "/api/startRepositoryClone",
       {
         cloneMainOnly: message.cloneMainOnly === true,
@@ -24868,12 +26800,13 @@ async function cloneRepositoryFromModal(
   const pollTimer = window.setInterval(() => {
     void pollRepositoryCloneJob(requestId);
   }, 700);
-  activeRepositoryCloneRequests.set(requestId, {
-    destinationName,
-    jobId: job.jobId,
-    pollTimer,
-    toastId,
-  });
+    activeRepositoryCloneRequests.set(requestId, {
+      destinationName,
+      jobId: job.jobId,
+      pollTimer,
+      remoteMachineId: message.remoteMachineId,
+      toastId,
+    });
   await handleRepositoryCloneJobStatus(requestId, job);
 }
 
@@ -24881,7 +26814,8 @@ async function previewRepositoryCloneFromModal(
   message: Extract<SidebarToExtensionMessage, { type: "previewRepositoryClone" }>,
 ): Promise<void> {
   try {
-    const result = await gxserverClient.rpc<{ preview: GxserverRepositoryClonePreviewResult }>(
+    const result = await repositoryCloneRpc<{ preview: GxserverRepositoryClonePreviewResult }>(
+      message.remoteMachineId,
       "/api/previewRepositoryClone",
       {
         folderPath: message.folderPath,
@@ -24904,7 +26838,8 @@ async function pollRepositoryCloneJob(requestId: string): Promise<void> {
     return;
   }
   try {
-    const result = await gxserverClient.rpc<{ job: GxserverRepositoryCloneJobStatus }>(
+    const result = await repositoryCloneRpc<{ job: GxserverRepositoryCloneJobStatus }>(
+      activeClone.remoteMachineId,
       "/api/readRepositoryCloneJob",
       { jobId: activeClone.jobId },
     );
@@ -24938,7 +26873,11 @@ async function handleRepositoryCloneJobStatus(
   clearRepositoryClonePoll(requestId);
   if (job.state === "completed") {
     const projectPath = job.projectPath ?? job.preview.destinationPath;
-    await addProject(projectPath, job.preview.destinationFolderName, { gxserverProject: job.project });
+    if (activeClone.remoteMachineId) {
+      await refreshRemoteGxserverPresentationSnapshot(activeClone.remoteMachineId, "clone-completed");
+    } else {
+      await addProject(projectPath, job.preview.destinationFolderName, { gxserverProject: job.project });
+    }
     finishRunningAppToast(activeClone.toastId, "success", "Repository cloned", job.preview.destinationFolderName);
     postRepositoryCloneResult(requestId, { ok: true, projectPath });
     return;
@@ -24983,10 +26922,13 @@ function cancelRepositoryClone(requestId: string): void {
     showAppToast("info", "Repository clone already finished");
     return;
   }
-  void gxserverClient
-    .rpc<{ job: GxserverRepositoryCloneJobStatus }>("/api/cancelRepositoryCloneJob", {
+  void repositoryCloneRpc<{ job: GxserverRepositoryCloneJobStatus }>(
+    activeClone.remoteMachineId,
+    "/api/cancelRepositoryCloneJob",
+    {
       jobId: activeClone.jobId,
-    })
+    },
+  )
     .then((result) => handleRepositoryCloneJobStatus(requestId, result.job))
     .catch((error) => {
       finishRunningAppToast(
@@ -24996,6 +26938,33 @@ function cancelRepositoryClone(requestId: string): void {
         error instanceof Error ? error.message : String(error),
       );
     });
+}
+
+async function repositoryCloneRpc<TResult extends Record<string, unknown>>(
+  remoteMachineId: string | undefined,
+  path:
+    | "/api/previewRepositoryClone"
+    | "/api/startRepositoryClone"
+    | "/api/readRepositoryCloneJob"
+    | "/api/cancelRepositoryCloneJob",
+  params: Record<string, unknown>,
+): Promise<TResult> {
+  /*
+   * CDXC:RemoteClone 2026-06-02-23:46:
+   * Remote Clone Repository uses the same gxserver typed clone endpoints as
+   * local clone, but requests are machine-scoped through the native SSH tunnel.
+   * Keep local and remote clone on one RPC helper so preview/start/poll/cancel
+   * cannot accidentally split across different gxservers.
+   */
+  if (remoteMachineId) {
+    const response = await requestRemoteGxserver<Record<string, unknown>>(
+      remoteMachineId,
+      path,
+      { params, timeoutMs: path === "/api/startRepositoryClone" ? 60_000 : 15_000 },
+    ) as { result: TResult };
+    return response.result;
+  }
+  return gxserverClient.rpc<TResult>(path, params);
 }
 
 function postRepositoryCloneResult(
@@ -25236,6 +27205,21 @@ async function requestProjectWorktrees(
   if (!requestId) {
     return;
   }
+  const remoteReference = resolveRemoteWorktreeProjectReference(message);
+  if (remoteReference) {
+    try {
+      postProjectWorktreesResult(requestId, {
+        ok: true,
+        worktrees: await listRemoteExistingProjectWorktrees(remoteReference),
+      });
+    } catch (error) {
+      postProjectWorktreesResult(requestId, {
+        error: error instanceof Error ? error.message : String(error),
+        ok: false,
+      });
+    }
+    return;
+  }
   const sourceProject = resolveWorktreeSourceProject(message) ?? activeProject();
   try {
     postProjectWorktreesResult(requestId, {
@@ -25248,6 +27232,24 @@ async function requestProjectWorktrees(
       ok: false,
     });
   }
+}
+
+function resolveRemoteWorktreeProjectReference(scope: {
+  projectId?: string;
+  projectPath?: string;
+  remoteMachineId?: string;
+}): { machineId: string; projectId: string; projectPath?: string } | undefined {
+  const parsedProjectId = scope.projectId ? parseRemotePresentationProjectId(scope.projectId) : undefined;
+  const machineId = scope.remoteMachineId?.trim() || parsedProjectId?.machineId;
+  const projectId = parsedProjectId?.projectId ?? (machineId && scope.projectId ? scope.projectId : undefined);
+  if (!machineId || !projectId) {
+    return undefined;
+  }
+  return {
+    machineId,
+    projectId,
+    ...(scope.projectPath?.trim() ? { projectPath: scope.projectPath.trim() } : {}),
+  };
 }
 
 function resolveWorktreeSourceProject(scope: {
@@ -25322,6 +27324,47 @@ async function listNativeExistingProjectWorktrees(
    * worktrees selectable so Open Existing can focus that worktree project
    * without creating another checkout.
    */
+  return entries
+    .filter((entry) => !entry.bare)
+    .map((entry) => ({
+      ...entry,
+      normalizedPath: normalizeNativePathForProjectComparison(entry.path),
+    }))
+    .filter((entry) => entry.normalizedPath && entry.normalizedPath !== mainPath)
+    .map((entry) => ({
+      branch: entry.branch,
+      isCurrentProject: entry.normalizedPath === sourcePath,
+      isRegistered: registeredPaths.has(entry.normalizedPath),
+      name: projectNameFromPath(entry.normalizedPath),
+      path: entry.normalizedPath,
+    }));
+}
+
+async function listRemoteExistingProjectWorktrees(
+  remoteReference: { machineId: string; projectId: string; projectPath?: string },
+): Promise<NativeExistingWorktreeOption[]> {
+  /*
+   * CDXC:RemoteWorktrees 2026-06-03-00:29:
+   * Existing remote worktree discovery should use the same gxserver typed
+   * worktree operation as local rows, but scoped to the owning machine. The
+   * modal receives only normalized paths/labels; command execution and Git
+   * porcelain parsing stay inside the remote gxserver.
+   */
+  const result = await runRemoteGxserverWorktreeAction(remoteReference, { action: "list" });
+  if (result.exitCode !== 0) {
+    throw new Error(gxserverTypedOperationFailureMessage(result, "Could not list remote worktrees."));
+  }
+  const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+  const sourceProject = presentation?.projects.find((project) => project.projectId === remoteReference.projectId);
+  const entries = result.worktrees ?? [];
+  const mainEntry = entries.find((entry) => !entry.bare);
+  const mainPath = normalizeNativePathForProjectComparison(mainEntry?.path ?? sourceProject?.path ?? remoteReference.projectPath ?? "");
+  const sourcePath = normalizeNativePathForProjectComparison(sourceProject?.path ?? remoteReference.projectPath ?? "");
+  const registeredPaths = new Set(
+    (presentation?.projects ?? [])
+      .map((project) => normalizeNativePathForProjectComparison(project.path ?? ""))
+      .filter(Boolean),
+  );
   return entries
     .filter((entry) => !entry.bare)
     .map((entry) => ({
@@ -25563,6 +27606,40 @@ async function createNativeWorktreeForAgentPrompt(input: {
 async function createProjectWorktreeFromPrompt(
   message: Extract<SidebarToExtensionMessage, { type: "createProjectWorktree" }>,
 ): Promise<void> {
+  const remoteReference = resolveRemoteWorktreeProjectReference(message);
+  if (remoteReference) {
+    try {
+      if (message.mode === "openExisting" || message.existingWorktreePath?.trim()) {
+        await openExistingRemoteWorktreeProject({
+          remoteReference,
+          worktreePath: message.existingWorktreePath,
+        });
+        return;
+      }
+      const prompt = message.prompt?.trim() ?? "";
+      const agent = agents.find((candidate) => candidate.agentId === message.agentId);
+      if (!prompt) {
+        showAppToast("warning", "Worktree prompt is empty");
+        return;
+      }
+      if (!agent?.command?.trim()) {
+        showAppToast("error", "Agent is unavailable", "Choose an agent with a configured command.");
+        return;
+      }
+      await createRemoteWorktreeForAgentPrompt({
+        agent,
+        prompt,
+        remoteReference,
+      });
+    } catch (error) {
+      showAppToast(
+        "error",
+        message.mode === "openExisting" ? "Could not open remote worktree" : "Could not create remote worktree",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return;
+  }
   const sourceProject = resolveWorktreeSourceProject(message) ?? activeProject();
   try {
     if (message.mode === "openExisting" || message.existingWorktreePath?.trim()) {
@@ -25592,6 +27669,317 @@ async function createProjectWorktreeFromPrompt(
       error instanceof Error ? error.message : String(error),
     );
   }
+}
+
+async function openExistingRemoteWorktreeProject(input: {
+  remoteReference: { machineId: string; projectId: string };
+  worktreePath?: string;
+}): Promise<void> {
+  const normalizedPath = input.worktreePath?.trim().replace(/\/+$/u, "") ?? "";
+  if (!normalizedPath) {
+    throw new Error("Choose an existing worktree.");
+  }
+  const projectName = projectNameFromPath(normalizedPath);
+  const response = await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+    input.remoteReference.machineId,
+    "/api/addProjectPath",
+    {
+      params: {
+        name: projectName,
+        path: normalizedPath,
+      },
+    },
+  ) as { result: { project: GxserverProjectDomainState } };
+  const worktree = normalizeNativeProjectWorktreeMetadata(response.result.project.worktree);
+  if (!worktree) {
+    throw new Error(`${normalizedPath} is not a registered remote worktree.`);
+  }
+  void refreshRemoteGxserverPresentationSnapshot(input.remoteReference.machineId, "open-existing-remote-worktree");
+  showAppToast("success", "Remote worktree ready", response.result.project.name || projectName);
+}
+
+async function createRemoteWorktreeForAgentPrompt(input: {
+  agent: SidebarAgentButton;
+  logEvent?: (event: string, details?: Record<string, unknown>) => void;
+  prompt: string;
+  remoteReference: { machineId: string; projectId: string; projectPath?: string };
+  sourceProject?: GxserverProjectDomainState;
+  successToastTitle?: string;
+}): Promise<{ project: GxserverProjectDomainState; session: GxserverSessionDomainState }> {
+  const { agent, logEvent, prompt, remoteReference } = input;
+  if (!prompt.trim()) {
+    throw new Error("Worktree prompt is empty.");
+  }
+  if (!agent.command?.trim()) {
+    throw new Error("Choose an agent with a configured command.");
+  }
+
+  /*
+   * CDXC:RemoteWorktrees 2026-06-03-02:44:
+   * Fresh remote worktree creation should reuse the same gxserver-owned typed
+   * boundaries as local worktrees, but scope every repository mutation and
+   * agent launch to the owning machine. Native keeps naming and modal feedback;
+   * remote gxserver owns Git ref checks, path availability, `git worktree add`,
+   * project registration, zmx provider start, and prompt delivery.
+   */
+  const sourceProject = input.sourceProject ?? await readRemoteWorktreeSourceProject(remoteReference);
+  showAppToast("info", "Generating remote worktree name");
+  logEvent?.("remoteWorktree.create.repoCheck.start", {
+    machineKnown: settings.remoteMachines.some((machine) => machine.id === remoteReference.machineId),
+    sourceProjectId: sourceProject.projectId,
+  });
+  const repoCheck = await runRemoteGxserverGitAction(
+    { machineId: remoteReference.machineId, projectId: sourceProject.projectId },
+    { action: "isInsideWorkTree" },
+  );
+  if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== "true") {
+    throw new Error(`${sourceProject.name} is not inside a Git work tree.`);
+  }
+
+  const baseSlug = await generateRemoteWorktreeNameFromPrompt(prompt);
+  const target = await resolveUniqueRemoteWorktreeTarget(
+    { machineId: remoteReference.machineId, projectId: sourceProject.projectId },
+    sourceProject,
+    baseSlug,
+  );
+  logEvent?.("remoteWorktree.create.targetResolved", {
+    branchLength: target.branch.length,
+    sourceProjectId: sourceProject.projectId,
+    targetPathDepth: target.path.split("/").filter(Boolean).length,
+  });
+  showAppToast("info", "Creating remote worktree", target.path);
+  const createResult = await runRemoteGxserverWorktreeAction(
+    { machineId: remoteReference.machineId, projectId: sourceProject.projectId },
+    {
+      action: "create",
+      baseRef: "HEAD",
+      branch: target.branch,
+      worktreePath: target.path,
+    },
+  );
+  if (createResult.exitCode !== 0) {
+    throw new Error(gxserverTypedOperationFailureMessage(createResult, "Remote git worktree add failed."));
+  }
+
+  const parentProject = await resolveRemoteWorktreeFamilyParentProject(remoteReference.machineId, sourceProject);
+  const projectName = `${parentProject.name}-${target.name}`;
+  const worktreeProject = await addRemoteGxserverProjectPath(
+    remoteReference.machineId,
+    target.path,
+    projectName,
+  );
+  const worktree = normalizeNativeProjectWorktreeMetadata(worktreeProject.worktree);
+  if (!worktree) {
+    throw new Error("gxserver did not register the new remote checkout as a worktree project.");
+  }
+
+  /*
+   * CDXC:RemoteWorktrees 2026-06-03-04:08:
+   * Remote worktree creation must honor the same gxserver-owned post-create
+   * setup command as local worktrees. Execute it through the owning gxserver's
+   * narrow project setup endpoint after the target project is registered and
+   * before the agent prompt starts, so the command runs in the remote checkout
+   * cwd without exposing a generic process bridge.
+   */
+  const setupCommand = textValue(sourceProject.gitConfig.worktreeCommand);
+  if (setupCommand) {
+    showAppToast("info", "Running remote worktree command");
+    logEvent?.("remoteWorktree.create.setup.start", {
+      projectId: worktreeProject.projectId,
+      setupProjectId: sourceProject.projectId,
+    });
+    const setupResult = await runRemoteGxserverProjectSetupCommand({
+      machineId: remoteReference.machineId,
+      setupCommandProjectId: sourceProject.projectId,
+      targetProjectId: worktreeProject.projectId,
+    });
+    if (setupResult.exitCode === 0) {
+      showAppToast("success", "Remote worktree command finished");
+      logEvent?.("remoteWorktree.create.setup.completed", { projectId: worktreeProject.projectId });
+    } else {
+      const setupError =
+        setupResult.stderr.trim() || setupResult.stdout.trim() || "Command exited with an error.";
+      showAppToast("error", "Remote worktree command failed", setupError.slice(0, 500));
+      logEvent?.("remoteWorktree.create.setup.failed", {
+        exitCode: setupResult.exitCode,
+        projectId: worktreeProject.projectId,
+        stderrLength: setupResult.stderr.length,
+        stdoutLength: setupResult.stdout.length,
+      });
+    }
+  }
+
+  showAppToast("info", "Opening remote agent", agent.name);
+  const createSessionResponse = await requestRemoteGxserver<{ session: GxserverSessionDomainState }>(
+    remoteReference.machineId,
+    "/api/createAgentSession",
+    {
+      params: {
+        agentId: agent.agentId,
+        launchSettings: {
+          agentCommand: agent.command,
+          icon: agent.icon,
+        },
+        projectId: worktreeProject.projectId,
+        runtimeSettings: {
+          firstUserMessage: prompt,
+        },
+        surface: "workspace",
+        title: createAgentSessionDefaultTitle(agent.name),
+      },
+      timeoutMs: 15_000,
+    },
+  ) as { result: { session: GxserverSessionDomainState } };
+  const session = createSessionResponse.result.session;
+  await requestRemoteGxserver(
+    remoteReference.machineId,
+    "/api/startSessionProvider",
+    {
+      params: {
+        projectId: worktreeProject.projectId,
+        sessionId: session.sessionId,
+      },
+      timeoutMs: 15_000,
+    },
+  );
+  await delayNativeAgentPromptStep(AGENT_PROMPT_READY_DELAY_MS);
+  await requestRemoteGxserver(
+    remoteReference.machineId,
+    "/api/sendSessionMessage",
+    {
+      params: {
+        projectId: worktreeProject.projectId,
+        sessionId: session.sessionId,
+        submit: true,
+        text: prompt,
+      },
+      timeoutMs: 15_000,
+    },
+  );
+  void refreshRemoteGxserverPresentationSnapshot(remoteReference.machineId, "create-remote-worktree");
+  showAppToast("success", input.successToastTitle ?? "Remote worktree ready", worktreeProject.name || projectName);
+  logEvent?.("remoteWorktree.create.agentStarted", {
+    agentId: agent.agentId,
+    projectId: worktreeProject.projectId,
+    sessionId: session.sessionId,
+  });
+  return { project: worktreeProject, session };
+}
+
+async function readRemoteGxserverProjects(machineId: string): Promise<readonly GxserverProjectDomainState[]> {
+  const response = await requestRemoteGxserver<{ projects: readonly GxserverProjectDomainState[] }>(
+    machineId,
+    "/api/listProjects",
+    { timeoutMs: 15_000 },
+  ) as { result: { projects: readonly GxserverProjectDomainState[] } };
+  return response.result.projects;
+}
+
+async function readRemoteWorktreeSourceProject(
+  remoteReference: { machineId: string; projectId: string; projectPath?: string },
+): Promise<GxserverProjectDomainState> {
+  const projects = await readRemoteGxserverProjects(remoteReference.machineId);
+  const normalizedProjectPath = normalizeNativePathForProjectComparison(remoteReference.projectPath ?? "");
+  const project = projects.find((candidate) =>
+    candidate.projectId === remoteReference.projectId ||
+    (normalizedProjectPath &&
+      candidate.path !== undefined &&
+      normalizeNativePathForProjectComparison(candidate.path) === normalizedProjectPath),
+  );
+  if (project) {
+    return project;
+  }
+  if (normalizedProjectPath) {
+    return addRemoteGxserverProjectPath(
+      remoteReference.machineId,
+      normalizedProjectPath,
+      projectNameFromPath(normalizedProjectPath),
+    );
+  }
+  throw new Error("Remote source project was not found.");
+}
+
+async function addRemoteGxserverProjectPath(
+  machineId: string,
+  path: string,
+  name = projectNameFromPath(path),
+): Promise<GxserverProjectDomainState> {
+  const response = await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+    machineId,
+    "/api/addProjectPath",
+    {
+      params: {
+        name,
+        path,
+      },
+      timeoutMs: 15_000,
+    },
+  ) as { result: { project: GxserverProjectDomainState } };
+  return response.result.project;
+}
+
+async function resolveRemoteWorktreeFamilyParentProject(
+  machineId: string,
+  sourceProject: GxserverProjectDomainState,
+): Promise<GxserverProjectDomainState> {
+  const worktree = normalizeNativeProjectWorktreeMetadata(sourceProject.worktree);
+  if (!worktree?.parentProjectId) {
+    return sourceProject;
+  }
+  const projects = await readRemoteGxserverProjects(machineId);
+  const parentProject = projects.find((candidate) => candidate.projectId === worktree.parentProjectId);
+  if (parentProject) {
+    return parentProject;
+  }
+  return addRemoteGxserverProjectPath(machineId, worktree.parentProjectPath, worktree.parentProjectName);
+}
+
+async function generateRemoteWorktreeNameFromPrompt(prompt: string): Promise<string> {
+  try {
+    return normalizeNativeWorktreeSlug(await generateNativeSessionTitleFromPrompt(nativeHomeDirectory(), prompt));
+  } catch (error) {
+    appendSessionTitleGenerationErrorLog("nativeSidebar.remoteWorktree.generateName.failed", {
+      error: error instanceof Error ? error.message : String(error),
+      promptLength: prompt.length,
+    });
+    return normalizeNativeWorktreeSlug(prompt);
+  }
+}
+
+async function resolveUniqueRemoteWorktreeTarget(
+  remoteReference: { machineId: string; projectId: string },
+  sourceProject: GxserverProjectDomainState,
+  baseSlug: string,
+): Promise<{ branch: string; name: string; path: string }> {
+  const sourceProjectPath = sourceProject.path?.trim();
+  if (!sourceProjectPath) {
+    throw new Error("Remote source project path is missing.");
+  }
+  const parentDirectory = dirnameNativePath(sourceProjectPath.replace(/\/+$/, ""));
+  const projectFolderName = projectNameFromPath(sourceProjectPath);
+  const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+  const registeredPaths = new Set(
+    (presentation?.projects ?? [])
+      .map((project) => normalizeNativePathForProjectComparison(project.path ?? ""))
+      .filter(Boolean),
+  );
+  for (let index = 0; index < 50; index += 1) {
+    const name = index === 0 ? baseSlug : `${baseSlug}-${index + 1}`;
+    const branch = name;
+    const path = `${parentDirectory}/${projectFolderName}-${name}`;
+    const branchCheck = await runRemoteGxserverGitAction(remoteReference, {
+      action: "verifyRef",
+      ref: `refs/heads/${branch}`,
+    });
+    const pathCheck = await runRemoteGxserverWorktreeAction(remoteReference, {
+      action: "pathExists",
+      worktreePath: path,
+    });
+    if (branchCheck.exitCode !== 0 && pathCheck.exitCode !== 0 && !registeredPaths.has(path)) {
+      return { branch, name, path };
+    }
+  }
+  throw new Error(`Could not find an unused remote worktree name for ${baseSlug}.`);
 }
 
 async function openExistingNativeWorktreeProject(input: {
@@ -26940,7 +29328,7 @@ async function createNativeBrowserChat(): Promise<void> {
 }
 
 function removeProject(projectId: string): void {
-  if (countCurrentRemovableWorkspaceDockProjects() <= 1) {
+  if (countCurrentRemovableProjects() <= 1) {
     showNativeMessage("warning", "Keep at least one workspace in Ghostex.");
     return;
   }
@@ -26951,8 +29339,8 @@ function removeProject(projectId: string): void {
     );
     if (presentationProject) {
       /*
-      CDXC:WorkspaceDock 2026-06-02-17:06:
-      The workspace dock can render gxserver presentation projects before the macOS pane/layout cache has a native project row. Right-click Remove must still mutate gxserver ownership directly instead of returning early and leaving a presentation-only shared project stuck in dock chrome.
+      CDXC:ProjectRemoval 2026-06-02-17:06:
+      Project headers can target gxserver presentation projects before the macOS pane/layout cache has a native project row. Remove must still mutate gxserver ownership directly instead of returning early and leaving a presentation-only shared project visible.
       */
       hideGxserverPresentationProjectLocally(projectId, "removeProject.presentationOnly");
       if (activeProjectId === projectId) {
@@ -26971,11 +29359,8 @@ function removeProject(projectId: string): void {
   }
   disposeProjectEditorSurface(project.projectId);
   /**
-   * CDXC:WorkspaceDock 2026-04-27-08:45
-   * Right-click removal belongs to the React workspace dock context menu. When
-   * a workspace is removed, close its native terminal surfaces and delete the
-   * sidebar/native id mappings before persisting the remaining workspaces so
-   * removed sessions cannot keep drawing behind the new active project.
+   * CDXC:ProjectRemoval 2026-04-27-08:45:
+   * Project removal must close native terminal surfaces and delete the sidebar/native id mappings before persisting the remaining workspaces so removed sessions cannot keep drawing behind the new active project.
    */
   for (const group of project.workspace.groups) {
     for (const session of group.snapshot.sessions) {
@@ -27605,6 +29990,10 @@ function syncProjectBoardConversationLinksForSession(
 }
 
 async function handleProjectBoardRequest(request: ProjectBoardBridgeRequest): Promise<void> {
+  if (request.remoteMachineId?.trim()) {
+    await handleRemoteProjectBoardRequest(request);
+    return;
+  }
   const project = resolveProjectBoardProject(request);
   if (!project) {
     postProjectBoardResponse(request, undefined, "Project not found.");
@@ -27648,6 +30037,452 @@ async function handleProjectBoardRequest(request: ProjectBoardBridgeRequest): Pr
       error instanceof Error ? error.message : "Project board conversation action failed.",
     );
   }
+}
+
+async function handleRemoteProjectBoardRequest(request: ProjectBoardBridgeRequest): Promise<void> {
+  /*
+   * CDXC:RemoteProjectBoard 2026-06-03-00:45:
+   * Remote Project Board conversation links are shared project metadata on the
+   * owning gxserver. Read and write `projectBoardConfig.beadConversationLinks`
+   * through the remote tunnel so a remote board never stores links in the local
+   * macOS project cache or falls through to the active local project.
+   */
+  const scope = resolveRemoteProjectBoardScope(request);
+  if (!scope) {
+    postProjectBoardResponse(request, undefined, "Remote Project Board target is missing.");
+    return;
+  }
+  try {
+    const project = await readRemoteProjectBoardProject(scope);
+    switch (request.action) {
+      case "getState":
+        postProjectBoardResponse(request, createRemoteProjectBoardConversationState(scope, project));
+        return;
+      case "appendDebugLog":
+        if (request.event?.trim()) {
+          appendProjectBoardDebugLog(request.event.trim(), request.details);
+        }
+        postProjectBoardResponse(request, createRemoteProjectBoardConversationState(scope, project));
+        return;
+      case "jumpToConversation":
+        handleRemoteProjectBoardJumpToConversation(scope, request);
+        postProjectBoardResponse(request, createRemoteProjectBoardConversationState(scope, project));
+        return;
+      case "unlinkConversation": {
+        const updatedProject = await archiveRemoteProjectBoardConversationLink(scope, project, request);
+        postProjectBoardResponse(request, createRemoteProjectBoardConversationState(scope, updatedProject));
+        return;
+      }
+      case "associateFocusedSession":
+        throw new Error("Remote Project Board cannot associate the local focused session.");
+      case "startWork": {
+        const updatedProject = await handleRemoteProjectBoardStartWork(scope, project, request);
+        postProjectBoardResponse(request, createRemoteProjectBoardConversationState(scope, updatedProject));
+        return;
+      }
+    }
+  } catch (error) {
+    appendProjectBoardDebugLog("remoteProjectBoard.request.failed", {
+      action: request.action,
+      beadId: request.beadId,
+      error: error instanceof Error ? error.message : String(error),
+      machineKnown: settings.remoteMachines.some((machine) => machine.id === scope.machineId),
+      projectId: scope.projectId,
+    });
+    postProjectBoardResponse(
+      request,
+      undefined,
+      error instanceof Error ? error.message : "Remote Project Board conversation action failed.",
+    );
+  }
+}
+
+function resolveRemoteProjectBoardScope(
+  request: Pick<ProjectBoardBridgeRequest, "projectId" | "projectPath" | "remoteMachineId">,
+): { machineId: string; projectId: string } | undefined {
+  const machineId = request.remoteMachineId?.trim();
+  if (!machineId) {
+    return undefined;
+  }
+  const projectId = request.projectId?.trim();
+  const unwrappedProjectId = projectId ? projectIdFromProjectEditorId(projectId) : "";
+  const parsedScopedProjectId = parseRemotePresentationProjectId(unwrappedProjectId);
+  if (parsedScopedProjectId) {
+    return parsedScopedProjectId.machineId === machineId
+      ? { machineId, projectId: parsedScopedProjectId.projectId }
+      : undefined;
+  }
+  if (unwrappedProjectId) {
+    return { machineId, projectId: unwrappedProjectId };
+  }
+  const normalizedPath = request.projectPath?.trim().replace(/\/+$/u, "");
+  const project = remotePresentationSnapshotsByMachineId
+    .get(machineId)
+    ?.projects.find((candidate) => candidate.path?.trim().replace(/\/+$/u, "") === normalizedPath);
+  return project ? { machineId, projectId: project.projectId } : undefined;
+}
+
+async function readRemoteProjectBoardProject(scope: {
+  machineId: string;
+  projectId: string;
+}): Promise<GxserverProjectDomainState> {
+  const response = await requestRemoteGxserver<{ projects: readonly GxserverProjectDomainState[] }>(
+    scope.machineId,
+    "/api/listProjects",
+    { timeoutMs: 15_000 },
+  ) as { result: { projects: readonly GxserverProjectDomainState[] } };
+  const project = response.result.projects.find((candidate) => candidate.projectId === scope.projectId);
+  if (!project) {
+    throw new Error("Remote Project Board project was not found.");
+  }
+  return project;
+}
+
+function createRemoteProjectBoardConversationState(
+  scope: { machineId: string; projectId: string },
+  project: GxserverProjectDomainState,
+): ProjectBoardConversationState {
+  const sessionOptions = createRemoteProjectBoardSessionOptions(scope, project);
+  const sessionById = new Map(sessionOptions.map((session) => [session.sessionId, session]));
+  const activeLinks = normalizeBeadConversationLinks(
+    project.projectBoardConfig.beadConversationLinks,
+    project.projectId,
+  ).filter((link) => link.status !== "archived");
+  return {
+    agents: createProjectBoardAgentOptions(),
+    debuggingMode: settings.debuggingMode,
+    defaultAgentId: resolveProjectBoardDefaultAgentId(),
+    links: activeLinks.map<ProjectBoardConversationLinkView>((link) => {
+      const session = sessionById.get(link.ghostexSessionId);
+      return {
+        ...link,
+        agentId: link.agentId ?? session?.agentId,
+        isLive: Boolean(session),
+        isSleeping: session?.isSleeping,
+        sessionTitle: session?.label,
+      };
+    }),
+    projectId: createRemotePresentationProjectId(scope.machineId, project.projectId),
+    sessions: sessionOptions,
+  };
+}
+
+function createRemoteProjectBoardSessionOptions(
+  scope: { machineId: string; projectId: string },
+  project: GxserverProjectDomainState,
+): ProjectBoardSessionOption[] {
+  const presentation = remotePresentationSnapshotsByMachineId.get(scope.machineId);
+  if (!presentation) {
+    return [];
+  }
+  const relatedProjectIds = createRemoteProjectBoardRelatedProjectIds(presentation, project);
+  return presentation.sessions.flatMap((session): ProjectBoardSessionOption[] => {
+    if (session.kind !== "terminal" && session.kind !== "agent") {
+      return [];
+    }
+    if (!relatedProjectIds.has(session.projectId)) {
+      return [];
+    }
+    const presentationProject = presentation.projects.find((candidate) => candidate.projectId === session.projectId);
+    const label = session.projectId === project.projectId
+      ? session.title
+      : `${presentationProject?.title ?? session.projectId} · ${session.title}`;
+    return [{
+      agentId: session.agentName ?? session.agentId,
+      isSleeping: session.lifecycleState !== "running",
+      label,
+      sessionId: session.projectId === project.projectId
+        ? session.sessionId
+        : createCombinedProjectSessionId(session.projectId, session.sessionId),
+    }];
+  });
+}
+
+function createRemoteProjectBoardRelatedProjectIds(
+  presentation: GxserverPresentationSnapshot,
+  project: GxserverProjectDomainState,
+): Set<string> {
+  const boardWorktree = normalizeNativeProjectWorktreeMetadata(project.worktree);
+  const familyParentId = boardWorktree?.parentProjectId ?? project.projectId;
+  return new Set(
+    presentation.projects
+      .filter((candidate) => {
+        const worktree = normalizeNativeProjectWorktreeMetadata(candidate.worktree);
+        return (
+          candidate.projectId === project.projectId ||
+          candidate.projectId === familyParentId ||
+          worktree?.parentProjectId === familyParentId
+        );
+      })
+      .map((candidate) => candidate.projectId),
+  );
+}
+
+function handleRemoteProjectBoardJumpToConversation(
+  scope: { machineId: string; projectId: string },
+  request: ProjectBoardBridgeRequest,
+): void {
+  const sessionId = request.sessionId?.trim();
+  if (!sessionId) {
+    throw new Error("No linked conversation is selected.");
+  }
+  const reference = resolveRemoteProjectBoardLinkSessionReference(scope, sessionId);
+  const remoteSessionId = createRemotePresentationSessionId(
+    scope.machineId,
+    reference.projectId,
+    reference.sessionId,
+  );
+  if (!copyRemoteAttachCommand(remoteSessionId)) {
+    throw new Error("The linked remote session is no longer available.");
+  }
+}
+
+async function handleRemoteProjectBoardStartWork(
+  scope: { machineId: string; projectId: string },
+  project: GxserverProjectDomainState,
+  request: ProjectBoardBridgeRequest,
+): Promise<GxserverProjectDomainState> {
+  const beadId = requireProjectBoardBeadId(request);
+  const prompt = request.prompt?.trim();
+  if (!prompt) {
+    throw new Error("No bead prompt is available.");
+  }
+  const startLocation: ProjectBoardStartLocation =
+    request.startLocation === "newWorktree" ? "newWorktree" : "currentProject";
+  const agentId = request.agentId?.trim() || resolveProjectBoardDefaultAgentId();
+  const agent = agentId ? resolveSidebarAgentButtonById(agentId) : undefined;
+  if (!agent?.command?.trim()) {
+    throw new Error("Choose a configured agent before starting remote work.");
+  }
+  appendProjectBoardDebugLog("remoteProjectBoard.startWork.received", {
+    agentId: agent.agentId,
+    beadId,
+    machineKnown: settings.remoteMachines.some((machine) => machine.id === scope.machineId),
+    projectId: scope.projectId,
+    promptLength: prompt.length,
+    startLocation,
+  });
+  let sessionProjectId = scope.projectId;
+  let session: GxserverSessionDomainState;
+  if (startLocation === "newWorktree") {
+    /*
+     * CDXC:RemoteProjectBoard 2026-06-03-02:50:
+     * Remote new-worktree Start Work should mirror the local board behavior:
+     * create the sibling checkout on the owning machine, start the selected
+     * agent in that new remote project, then store the board link with a
+     * project-qualified session id so Go to Session resolves across the remote
+     * worktree family.
+     */
+    const sourceProject = await resolveRemoteProjectBoardWorktreeSourceProject(scope.machineId, project);
+    appendProjectBoardDebugLog("remoteProjectBoard.startWork.worktree.start", {
+      beadId,
+      machineKnown: settings.remoteMachines.some((machine) => machine.id === scope.machineId),
+      sourceProjectId: sourceProject.projectId,
+    });
+    const created = await createRemoteWorktreeForAgentPrompt({
+      agent,
+      logEvent: appendProjectBoardDebugLog,
+      prompt,
+      remoteReference: {
+        machineId: scope.machineId,
+        projectId: sourceProject.projectId,
+        projectPath: sourceProject.path,
+      },
+      sourceProject,
+      successToastTitle: "Remote worktree started",
+    });
+    sessionProjectId = created.project.projectId;
+    session = created.session;
+  } else {
+    /*
+     * CDXC:RemoteProjectBoard 2026-06-03-01:49:
+     * Remote current-project Start Work is now a real gxserver-owned launch:
+     * create the agent session on the remote daemon, start the missing zmx
+     * provider through `/api/startSessionProvider`, send the prompt through the
+     * bounded zmx message endpoint, and persist the bead conversation link in the
+     * remote project's `projectBoardConfig`.
+     */
+    const createResponse = await requestRemoteGxserver<{ session: GxserverSessionDomainState }>(
+      scope.machineId,
+      "/api/createAgentSession",
+      {
+        params: {
+          agentId: agent.agentId,
+          launchSettings: {
+            agentCommand: agent.command,
+            icon: agent.icon,
+          },
+          projectId: scope.projectId,
+          runtimeSettings: {
+            firstUserMessage: prompt,
+          },
+          surface: "workspace",
+          title: createAgentSessionDefaultTitle(agent.name),
+        },
+        timeoutMs: 15_000,
+      },
+    ) as { result: { session: GxserverSessionDomainState } };
+    session = createResponse.result.session;
+    await requestRemoteGxserver(
+      scope.machineId,
+      "/api/startSessionProvider",
+      {
+        params: {
+          projectId: scope.projectId,
+          sessionId: session.sessionId,
+        },
+        timeoutMs: 15_000,
+      },
+    );
+    await delayNativeAgentPromptStep(AGENT_PROMPT_READY_DELAY_MS);
+    await requestRemoteGxserver(
+      scope.machineId,
+      "/api/sendSessionMessage",
+      {
+        params: {
+          projectId: scope.projectId,
+          sessionId: session.sessionId,
+          submit: true,
+          text: prompt,
+        },
+        timeoutMs: 15_000,
+      },
+    );
+  }
+  const updatedProject = await upsertRemoteProjectBoardConversationLink(scope, project, {
+    agent,
+    beadDisplayId: request.beadDisplayId,
+    beadId,
+    session,
+    sessionProjectId,
+  });
+  appendProjectBoardDebugLog("remoteProjectBoard.startWork.sessionLinked", {
+    beadId,
+    projectId: scope.projectId,
+    sessionId: session.sessionId,
+    sessionProjectId,
+    startLocation,
+  });
+  void refreshRemoteGxserverPresentationSnapshot(scope.machineId, "remote-project-board-start-work");
+  return updatedProject;
+}
+
+async function upsertRemoteProjectBoardConversationLink(
+  scope: { machineId: string; projectId: string },
+  project: GxserverProjectDomainState,
+  args: {
+    agent: SidebarAgentButton;
+    beadDisplayId?: string;
+    beadId: string;
+    session: GxserverSessionDomainState;
+    sessionProjectId?: string;
+  },
+): Promise<GxserverProjectDomainState> {
+  const now = new Date().toISOString();
+  const sessionProjectId = args.sessionProjectId ?? project.projectId;
+  const ghostexSessionId = sessionProjectId === project.projectId
+    ? args.session.sessionId
+    : createCombinedProjectSessionId(sessionProjectId, args.session.sessionId);
+  const nextLink: BeadConversationLink = {
+    agentId: args.agent.agentId,
+    agentName: args.agent.name,
+    beadDisplayId: args.beadDisplayId,
+    beadId: args.beadId,
+    createdAt: now,
+    ghostexSessionId,
+    id: createBeadConversationLinkId(project.projectId, args.beadId, ghostexSessionId),
+    projectId: project.projectId,
+    sessionPersistenceName: args.session.zmxName,
+    sessionPersistenceProvider: "zmx",
+    status: "active",
+    updatedAt: now,
+  };
+  const currentLinks = normalizeBeadConversationLinks(
+    project.projectBoardConfig.beadConversationLinks,
+    project.projectId,
+  );
+  const nextLinks = currentLinks.some((link) => link.id === nextLink.id)
+    ? currentLinks.map((link) =>
+        link.id === nextLink.id ? { ...link, ...nextLink, createdAt: link.createdAt } : link,
+      )
+    : [...currentLinks, nextLink];
+  const response = await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+    scope.machineId,
+    "/api/updateProject",
+    {
+      params: {
+        projectBoardConfig: {
+          ...project.projectBoardConfig,
+          beadConversationLinks: nextLinks,
+        },
+        projectId: project.projectId,
+      },
+      timeoutMs: 15_000,
+    },
+  ) as { result: { project: GxserverProjectDomainState } };
+  return response.result.project;
+}
+
+async function resolveRemoteProjectBoardWorktreeSourceProject(
+  machineId: string,
+  project: GxserverProjectDomainState,
+): Promise<GxserverProjectDomainState> {
+  const worktree = normalizeNativeProjectWorktreeMetadata(project.worktree);
+  if (!worktree?.parentProjectId) {
+    return project;
+  }
+  const projects = await readRemoteGxserverProjects(machineId);
+  const parentProject = projects.find((candidate) => candidate.projectId === worktree.parentProjectId);
+  if (parentProject) {
+    return parentProject;
+  }
+  return addRemoteGxserverProjectPath(machineId, worktree.parentProjectPath, worktree.parentProjectName);
+}
+
+async function archiveRemoteProjectBoardConversationLink(
+  scope: { machineId: string; projectId: string },
+  project: GxserverProjectDomainState,
+  request: ProjectBoardBridgeRequest,
+): Promise<GxserverProjectDomainState> {
+  const beadId = requireProjectBoardBeadId(request);
+  const sessionId = request.sessionId?.trim();
+  if (!sessionId) {
+    throw new Error("No linked conversation is selected.");
+  }
+  const now = new Date().toISOString();
+  const currentLinks = normalizeBeadConversationLinks(
+    project.projectBoardConfig.beadConversationLinks,
+    project.projectId,
+  );
+  const nextLinks = currentLinks.map((link) =>
+    link.beadId === beadId && link.ghostexSessionId === sessionId
+      ? { ...link, status: "archived" as const, updatedAt: now }
+      : link,
+  );
+  const response = await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+    scope.machineId,
+    "/api/updateProject",
+    {
+      params: {
+        projectBoardConfig: {
+          ...project.projectBoardConfig,
+          beadConversationLinks: nextLinks,
+        },
+        projectId: project.projectId,
+      },
+      timeoutMs: 15_000,
+    },
+  ) as { result: { project: GxserverProjectDomainState } };
+  void refreshRemoteGxserverPresentationSnapshot(scope.machineId, "remote-project-board-unlink");
+  return response.result.project;
+}
+
+function resolveRemoteProjectBoardLinkSessionReference(
+  scope: { projectId: string },
+  sessionId: string,
+): { projectId: string; sessionId: string } {
+  const combinedReference = parseCombinedProjectSessionId(sessionId);
+  return combinedReference ?? { projectId: scope.projectId, sessionId };
 }
 
 function handleProjectBoardAssociateFocusedSession(
@@ -27982,36 +30817,6 @@ function findNearestVisibleProjectAfterClose(
       .find((project) => project.projectId !== closedProjectId && project.isRecentProject !== true) ??
     visibleProjects[0]
   );
-}
-
-function setProjectIcon(projectId: string, iconDataUrl: string | undefined): void {
-  /**
-   * CDXC:WorkspaceDock 2026-04-27-08:48
-   * Native-picked workspace images still enter through the legacy data URL API.
-   * Convert them into the typed workspace icon model so the dock can share one
-   * renderer for image and Tabler icon variants.
-   */
-  const icon = iconDataUrl
-    ? ({ dataUrl: iconDataUrl, kind: "image" } satisfies WorkspaceDockIcon)
-    : undefined;
-  projects = projects.map((project) =>
-    project.projectId === projectId ? { ...project, icon, iconDataUrl } : project,
-  );
-  writeStoredProjects("setProjectIcon");
-  const project = findProject(projectId);
-  if (project) {
-    updateGxserverProjectDomainMetadataLocally(
-      projectId,
-      (gxserverProject) => ({
-        ...gxserverProject,
-        identityIcon: buildGxserverIdentityIconMetadata(project, gxserverProject.identityIcon),
-        updatedAt: new Date().toISOString(),
-      }),
-      "setProjectIcon",
-    );
-    persistProjectSharedMetadataToGxserver(project, { identityIcon: true });
-  }
-  publish();
 }
 
 function setProjectTheme(projectId: string, theme: SidebarTheme): void {
@@ -29034,6 +31839,61 @@ function openTasksPlaceholderFromTitlebar(): void {
   openProjectTasksEditorSurface(project, url.toString());
 }
 
+function openRemoteProjectBoardForGroup(groupId: string): boolean {
+  const remoteReference = parseRemotePresentationGroupId(groupId);
+  if (!remoteReference) {
+    return false;
+  }
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === remoteReference.machineId);
+  const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+  const project = presentation?.projects.find((candidate) => candidate.projectId === remoteReference.projectId);
+  if (!remoteMachine || !project) {
+    showAppToast("warning", "Remote project unavailable", "Reconnect the remote machine and try opening Project again.");
+    return true;
+  }
+  const scopedProjectId = createRemotePresentationProjectId(remoteReference.machineId, remoteReference.projectId);
+  const nativeEditorId = createNativeProjectEditorId(scopedProjectId, "tasks");
+  const url = new URL("tasks-placeholder.html", window.location.href);
+  url.searchParams.set("projectName", project.title);
+  url.searchParams.set("projectPath", project.path ?? "");
+  url.searchParams.set("projectId", nativeEditorId);
+  url.searchParams.set("remoteMachineId", remoteReference.machineId);
+  url.searchParams.set("beadsDisplayKey", project.title);
+  /*
+   * CDXC:RemoteProjectBoard 2026-06-03-00:33:
+   * Remote Beads support uses the local Project Board WK surface but all Beads
+   * CRUD bridge requests carry remoteMachineId and execute through the owning
+   * gxserver tunnel. This intentionally opens Project mode only; remote Code,
+   * IDE, and file-opening equivalents remain separate unfinished work.
+   */
+  projectEditorSurfaceByProjectId.set(scopedProjectId, {
+    errorMessage: undefined,
+    isOpen: true,
+    isSleeping: false,
+    lastAccessedAt: new Date().toISOString(),
+    mode: "tasks",
+    nativeEditorId,
+    status: "opening",
+    title: "Project",
+    url: url.toString(),
+  });
+  rememberAwakeProjectEditorMode(scopedProjectId, "tasks");
+  scheduleProjectEditorOpenTimeout(scopedProjectId);
+  postNative({
+    browserFeedbackTool: settings.browserFeedbackTool,
+    companionPaneHidden: false,
+    mode: "tasks",
+    projectId: nativeEditorId,
+    projectTitle: `${remoteMachine.name} · ${project.title}`,
+    title: "Project",
+    type: "createProjectEditorPane",
+    url: url.toString(),
+  });
+  postNative({ projectId: nativeEditorId, type: "focusProjectEditorPane" });
+  publish();
+  return true;
+}
+
 function resolveProjectBoardDisplayMetadata(project: NativeProject): {
   beadsDisplayKey: string;
   name: string;
@@ -29527,10 +32387,8 @@ function reorderProjects(projectIds: string[]): void {
   }
 
   /**
-   * CDXC:WorkspaceDock 2026-04-27-08:22
-   * Workspace rail drag/drop reorders workareas persistently. Preserve any
-   * projects missing from the drag payload at the end so stale rail messages
-   * cannot drop workspaces from localStorage.
+   * CDXC:ProjectOrdering 2026-04-27-08:22:
+   * Project drag/drop reorders workareas persistently. Preserve any projects missing from the drag payload at the end so stale order messages cannot drop workspaces from localStorage.
    */
   const requestedIdSet = new Set(requestedIds);
   const orderedProjects = requestedIds
@@ -29799,6 +32657,369 @@ function areStringArraysEqual(left: readonly string[], right: readonly string[])
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
+function reconnectRemoteMachine(
+  remoteMachineId: string,
+  options: { installApproved?: boolean } = {},
+): void {
+  connectRemoteGxserver(remoteMachineId, options.installApproved === true);
+}
+
+async function browseRemoteProjectDirectoriesFromModal(
+  message: Extract<SidebarToExtensionMessage, { type: "browseRemoteProjectDirectories" }>,
+): Promise<void> {
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === message.remoteMachineId);
+  if (!remoteMachine) {
+    postRemoteProjectDirectoryBrowseResult(message.requestId, {
+      error: "Remote machine missing. Open Settings > Remote and add the machine again.",
+      ok: false,
+    });
+    return;
+  }
+  /*
+   * CDXC:RemoteProjectPicker 2026-06-03-00:18:
+   * Directory browsing for Remote machines uses that machine's gxserver through
+   * the native SSH tunnel bridge. Native owns the token and tunnel, while React
+   * receives only the typed browse result needed by the copied T3 picker.
+   */
+  try {
+    const response = await requestRemoteGxserver<Record<string, unknown>>(
+      message.remoteMachineId,
+      "/api/browseProjectDirectories",
+      {
+        params: { partialPath: message.partialPath },
+      },
+    ) as { result: GxserverProjectDirectoryBrowseResult };
+    postRemoteProjectDirectoryBrowseResult(message.requestId, {
+      ok: true,
+      result: response.result,
+    });
+  } catch (error) {
+    postRemoteProjectDirectoryBrowseResult(message.requestId, {
+      error: error instanceof Error ? error.message : String(error),
+      ok: false,
+    });
+  }
+}
+
+async function addRemoteProjectPathFromModal(
+  message: Extract<SidebarToExtensionMessage, { type: "addRemoteProjectPath" }>,
+): Promise<void> {
+  const remoteMachine = settings.remoteMachines.find((machine) => machine.id === message.remoteMachineId);
+  if (!remoteMachine) {
+    postRemoteProjectAddResult(message.requestId, {
+      error: "Remote machine missing. Open Settings > Remote and add the machine again.",
+      ok: false,
+    });
+    return;
+  }
+  /*
+   * CDXC:RemoteProjects 2026-06-03-00:18:
+   * Remote Add Project must add the selected path through the remote machine's
+   * gxserver and then render the resulting project under that machine section,
+   * not under local Projects. This first bridge registers the remote project
+   * with the remote daemon; connected presentation rendering follows in the
+   * remote snapshot/subscription step.
+   */
+  try {
+    const response = await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+      message.remoteMachineId,
+      "/api/addProjectPath",
+      {
+        params: {
+          name: projectNameFromPath(message.path),
+          path: message.path,
+        },
+      },
+    ) as { result: { project: GxserverProjectDomainState } };
+    postRemoteProjectAddResult(message.requestId, {
+      ok: true,
+      projectPath: response.result.project.path,
+    });
+    void refreshRemoteGxserverPresentationSnapshot(message.remoteMachineId, "add-project");
+  } catch (error) {
+    postRemoteProjectAddResult(message.requestId, {
+      error: error instanceof Error ? error.message : String(error),
+      ok: false,
+    });
+  }
+}
+
+async function createRemoteSessionInGroup(groupId: string): Promise<boolean> {
+  const target = parseRemotePresentationGroupId(groupId);
+  if (!target) {
+    return false;
+  }
+  /*
+   * CDXC:RemoteActions 2026-06-03-00:01:
+   * Remote project-session actions must mutate the selected machine's
+   * gxserver, not the local macOS pane layout. Creating a session in a Remote
+   * section calls that machine's `/api/createSession` and waits for the remote
+   * presentation stream to render the new row.
+   */
+  try {
+    await requestRemoteGxserver<{ session: GxserverSessionDomainState }>(
+      target.machineId,
+      "/api/createSession",
+      {
+        params: {
+          kind: "terminal",
+          lifecycleState: "running",
+          projectId: target.projectId,
+          surface: "workspace",
+          title: DEFAULT_TERMINAL_SESSION_TITLE,
+        },
+      },
+    );
+    void refreshRemoteGxserverPresentationSnapshot(target.machineId, "remote-create-session");
+  } catch (error) {
+    showAppToast("error", "Remote session failed", error instanceof Error ? error.message : String(error));
+  }
+  return true;
+}
+
+async function updateRemotePresentationSession(
+  remoteSessionId: string,
+  params: {
+    isFavorite?: boolean;
+    isPinned?: boolean;
+    lifecycleState?: "running" | "sleeping" | "stopped";
+    title?: string;
+  },
+  reason: string,
+): Promise<boolean> {
+  const target = parseRemotePresentationSessionId(remoteSessionId);
+  if (!target) {
+    return false;
+  }
+  if (params.lifecycleState) {
+    setRemotePresentationSessionLifecycleLocally(
+      target.machineId,
+      target.projectId,
+      target.sessionId,
+      params.lifecycleState,
+      reason,
+    );
+  }
+  if (params.isFavorite !== undefined || params.isPinned !== undefined) {
+    setRemotePresentationSessionFlagsLocally(
+      target.machineId,
+      target.projectId,
+      target.sessionId,
+      {
+        ...(params.isFavorite !== undefined ? { isFavorite: params.isFavorite } : {}),
+        ...(params.isPinned !== undefined ? { isPinned: params.isPinned } : {}),
+      },
+      reason,
+    );
+  }
+  try {
+    const lifecycleState = params.lifecycleState;
+    if (lifecycleState) {
+      const lifecyclePath =
+        lifecycleState === "running"
+          ? "/api/wakeSession"
+          : lifecycleState === "sleeping"
+            ? "/api/sleepSession"
+            : "/api/killSession";
+      await requestRemoteGxserver<{ session: GxserverSessionDomainState }>(
+        target.machineId,
+        lifecyclePath,
+        {
+          params: {
+            projectId: target.projectId,
+            reason,
+            sessionId: target.sessionId,
+          },
+        },
+      );
+    }
+    const metadataParams = {
+      ...(params.isFavorite !== undefined ? { isFavorite: params.isFavorite } : {}),
+      ...(params.isPinned !== undefined ? { isPinned: params.isPinned } : {}),
+      ...(params.title !== undefined ? { title: params.title } : {}),
+    };
+    if (Object.keys(metadataParams).length > 0) {
+      await requestRemoteGxserver<{ session: GxserverSessionDomainState }>(
+        target.machineId,
+        "/api/updateSession",
+        {
+          params: {
+            ...metadataParams,
+            projectId: target.projectId,
+            sessionId: target.sessionId,
+          },
+        },
+      );
+    }
+  } catch (error) {
+    showAppToast("error", "Remote session failed", error instanceof Error ? error.message : String(error));
+    void refreshRemoteGxserverPresentationSnapshot(target.machineId, `remote-session-${reason}-failed`);
+  }
+  return true;
+}
+
+async function reloadRemotePresentationSession(remoteSessionId: string, reason: string): Promise<boolean> {
+  const target = parseRemotePresentationSessionId(remoteSessionId);
+  if (!target) {
+    return false;
+  }
+  /*
+   * CDXC:RemoteLifecycle 2026-06-03-00:26:
+   * Remote Full Reload cannot replace a local Ghostty pane. Treat it as a
+   * gxserver-owned provider restart on the owning machine: kill the zmx-backed
+   * session, then wake it so the remote daemon rebuilds attach metadata and
+   * publishes the resulting lifecycle through the remote presentation stream.
+   */
+  await updateRemotePresentationSession(remoteSessionId, { lifecycleState: "stopped" }, `${reason}-stop`);
+  await updateRemotePresentationSession(remoteSessionId, { lifecycleState: "running" }, `${reason}-wake`);
+  return true;
+}
+
+function sleepInactiveRemoteProjectSessions(remoteReference: { machineId: string; projectId: string }): void {
+  const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+  /*
+   * CDXC:RemoteLifecycle 2026-06-03-01:31:
+   * Remote Sleep Inactive should mirror the local project rule against the
+   * machine-owned gxserver presentation: idle running terminal/agent sessions
+   * can be slept, while working and attention sessions remain awake so active
+   * remote work is not interrupted.
+   */
+  for (const session of presentation?.sessions.filter((candidate) => candidate.projectId === remoteReference.projectId) ?? []) {
+    if (
+      session.kind !== "terminal" &&
+      session.kind !== "agent"
+    ) {
+      continue;
+    }
+    if (
+      session.lifecycleState !== "running" ||
+      session.activity === "working" ||
+      session.activity === "attention"
+    ) {
+      continue;
+    }
+    void updateRemotePresentationSession(
+      createRemotePresentationSessionId(
+        remoteReference.machineId,
+        remoteReference.projectId,
+        session.sessionId,
+      ),
+      { lifecycleState: "sleeping" },
+      "sleep-inactive-project-sessions",
+    );
+  }
+}
+
+async function removeRemotePresentationProjectForGroup(groupId: string, reason: string): Promise<boolean> {
+  const target = parseRemotePresentationGroupId(groupId);
+  if (!target) {
+    return false;
+  }
+  try {
+    await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+      target.machineId,
+      "/api/removeProject",
+      {
+        params: {
+          projectId: target.projectId,
+        },
+      },
+    );
+    void refreshRemoteGxserverPresentationSnapshot(target.machineId, reason);
+  } catch (error) {
+    showAppToast("error", "Remote project failed", error instanceof Error ? error.message : String(error));
+  }
+  return true;
+}
+
+async function renameRemotePresentationProjectForGroup(
+  groupId: string,
+  rawTitle: string,
+  reason: string,
+): Promise<boolean> {
+  const target = parseRemotePresentationGroupId(groupId);
+  if (!target) {
+    return false;
+  }
+  const title = rawTitle.trim();
+  if (!title) {
+    return true;
+  }
+  const presentation = remotePresentationSnapshotsByMachineId.get(target.machineId);
+  const updatedAt = new Date().toISOString();
+  let didChange = false;
+  const projects = (presentation?.projects ?? []).map((project) => {
+    if (project.projectId !== target.projectId || project.title === title) {
+      return project;
+    }
+    didChange = true;
+    return { ...project, title, updatedAt };
+  });
+  /*
+   * CDXC:RemoteProjects 2026-06-03-01:34:
+   * Remote project rename is shared gxserver metadata just like local gxserver
+   * project names. Update the machine-scoped presentation snapshot first for
+   * immediate sidebar feedback, then persist the canonical name through the
+   * owning remote gxserver so reconnects and other clients see the same title.
+   */
+  if (presentation && didChange) {
+    remotePresentationSnapshotsByMachineId.set(target.machineId, {
+      ...presentation,
+      projects,
+    });
+    publish();
+  }
+  try {
+    await requestRemoteGxserver<{ project: GxserverProjectDomainState }>(
+      target.machineId,
+      "/api/updateProject",
+      {
+        params: {
+          name: title,
+          projectId: target.projectId,
+        },
+      },
+    );
+    void refreshRemoteGxserverPresentationSnapshot(target.machineId, reason);
+  } catch (error) {
+    showAppToast("error", "Remote rename failed", error instanceof Error ? error.message : String(error));
+    void refreshRemoteGxserverPresentationSnapshot(target.machineId, `${reason}-failed`);
+  }
+  return true;
+}
+
+function postRemoteProjectDirectoryBrowseResult(
+  requestId: string,
+  result: { error?: string; ok: boolean; result?: unknown },
+): void {
+  postAppModalHostMessage(
+    {
+      error: result.error,
+      ok: result.ok,
+      requestId,
+      result: result.result,
+      type: "remoteProjectDirectoryBrowseResult",
+    },
+    "AppModals:remoteProjectPicker.browseResult",
+  );
+}
+
+function postRemoteProjectAddResult(
+  requestId: string,
+  result: { error?: string; ok: boolean; projectPath?: string },
+): void {
+  postAppModalHostMessage(
+    {
+      error: result.error,
+      ok: result.ok,
+      projectPath: result.projectPath,
+      requestId,
+      type: "remoteProjectAddResult",
+    },
+    "AppModals:remoteProjectPicker.addResult",
+  );
+}
+
 function handleSidebarMessage(message: SidebarToExtensionMessage): void {
   /**
    * CDXC:NativeSidebarCommands 2026-04-26-00:47
@@ -29891,6 +33112,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       void createNativeBrowserChat();
       return;
     case "createSessionInGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        void createRemoteSessionInGroup(message.groupId);
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       if (groupReference.isChatCollection) {
         void createNativeChat();
@@ -29923,6 +33148,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       createNativeBrowserSession(message.url ?? DEFAULT_BROWSER_LAUNCH_URL);
       return;
     case "openBrowserPaneInGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        showAppToast("info", "Remote browser unavailable", "Browser panes are local-only in this version.");
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       if (groupReference.isChatCollection) {
         return;
@@ -29951,6 +33180,32 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "pickWorkspaceFolder":
       postNative({ type: "pickWorkspaceFolder" });
+      return;
+    case "reconnectRemoteMachine":
+      reconnectRemoteMachine(message.remoteMachineId, {
+        installApproved: message.installApproved === true,
+      });
+      return;
+    case "openRemoteCloneRepository":
+      {
+        const remoteMachine = settings.remoteMachines.find((machine) => machine.id === message.remoteMachineId);
+        if (!remoteMachine) {
+          showAppToast("warning", "Remote machine missing", "Open Settings > Remote and add the machine again.");
+          return;
+        }
+        openAppModal({
+          modal: "addRepository",
+          remoteMachineId: remoteMachine.id,
+          remoteMachineName: remoteMachine.name,
+          type: "open",
+        });
+      }
+      return;
+    case "browseRemoteProjectDirectories":
+      void browseRemoteProjectDirectoriesFromModal(message);
+      return;
+    case "addRemoteProjectPath":
+      void addRemoteProjectPathFromModal(message);
       return;
     case "cloneRepository":
       void cloneRepositoryFromModal(message);
@@ -30032,6 +33287,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "focusGroup": {
+      if (copyRemoteGroupAttachCommand(message.groupId)) {
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       if (!groupReference.groupId) {
         focusProject(groupReference.project.projectId);
@@ -30044,9 +33302,24 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "focusSession":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        /*
+         * CDXC:RemoteFocus 2026-06-03-01:18:
+         * Remote session cards do not have a local AppKit pane to focus.
+         * Treat click/focus as the remote-safe equivalent: copy the SSH zmx
+         * attach command for the owning machine so users can open the session
+         * without exposing gxserver tokens or requiring a renderer focus channel.
+         */
+        copyRemoteAttachCommand(message.sessionId);
+        return;
+      }
       focusSidebarSession(message.sessionId);
       return;
     case "focusSessionMode":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        copyRemoteAttachCommand(message.sessionId);
+        return;
+      }
       focusSidebarSessionMode(message.sessionId);
       return;
     case "promptRenameSession": {
@@ -30062,6 +33335,14 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "renameSession":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void updateRemotePresentationSession(
+          message.sessionId,
+          { title: message.title },
+          "rename-session",
+        );
+        return;
+      }
       void renameNativeSidebarTerminalSession(
         message.sessionId,
         message.title,
@@ -30077,6 +33358,14 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       publish();
       return;
     case "renameWorkspaceProjectForGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        void renameRemotePresentationProjectForGroup(
+          message.groupId,
+          message.title,
+          "rename-remote-project-for-group",
+        );
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       renameWorkspaceProjectLocalFirst(
         groupReference.project.projectId,
@@ -30086,6 +33375,17 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "copyWorkspaceProjectPathForGroup": {
+      const remoteReference = parseRemotePresentationGroupId(message.groupId);
+      if (remoteReference) {
+        const path = remotePresentationSnapshotsByMachineId
+          .get(remoteReference.machineId)
+          ?.projects.find((project) => project.projectId === remoteReference.projectId)
+          ?.path;
+        if (path) {
+          void navigator.clipboard?.writeText(path).catch(() => undefined);
+        }
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       /*
        * CDXC:SidebarLayout 2026-05-13-08:11
@@ -30121,22 +33421,41 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "openWorkspaceProjectInFinderForGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        copyRemoteProjectOpenCommandForGroup(message.groupId, "folder");
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       openNativeWorkspaceInFinder(groupReference.project.path);
       return;
     }
     case "openWorkspaceProjectInIdeForGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        copyRemoteProjectOpenCommandForGroup(message.groupId, "ide");
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       openNativeWorkspaceInSelectedIde(groupReference.project.path);
       return;
     }
     case "openWorkspaceProjectEditorForGroup":
+      if (openRemoteProjectBoardForGroup(message.groupId)) {
+        return;
+      }
       openProjectEditorForGroup(message.groupId);
       return;
     case "closeWorkspaceProjectEditorForGroup":
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        return;
+      }
       closeProjectEditorForGroup(message.groupId);
       return;
     case "refreshWorkspaceProjectDiffForGroup": {
+      const remoteReference = parseRemotePresentationGroupId(message.groupId);
+      if (remoteReference) {
+        void refreshRemoteProjectDiffStats(remoteReference);
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       void refreshProjectDiffStats(groupReference.project.projectId);
       return;
@@ -30148,6 +33467,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       openNativeWorkspaceInSelectedIde(activeProject().path, message.targetApp);
       return;
     case "setWorkspaceProjectThemeForGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       const themeColor = normalizeWorkspaceThemeColor(message.themeColor);
       if (themeColor) {
@@ -30160,11 +33482,19 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "closeWorkspaceProjectForGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        void removeRemotePresentationProjectForGroup(message.groupId, "remote-close-project");
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       closeProjectToRecent(groupReference.project.projectId);
       return;
     }
     case "removeWorkspaceProjectForGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        void removeRemotePresentationProjectForGroup(message.groupId, "remote-remove-project");
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       removeProject(groupReference.project.projectId);
       return;
@@ -30173,12 +33503,24 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       void promptDeleteWorktreeForGroup(message.groupId);
       return;
     case "closeSession":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void updateRemotePresentationSession(message.sessionId, { lifecycleState: "stopped" }, "close-session");
+        return;
+      }
       closeTerminal(message.sessionId);
       return;
     case "restartSession":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void reloadRemotePresentationSession(message.sessionId, "restart-session");
+        return;
+      }
       restartNativeSession(message.sessionId);
       return;
     case "forkSession":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        showAppToast("info", "Remote fork unavailable", "Remote fork is not wired yet.");
+        return;
+      }
       forkNativeSession(message.sessionId);
       return;
     case "scheduleDelayedSend":
@@ -30188,9 +33530,17 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       cancelDelayedSend(message.sessionId);
       return;
     case "fullReloadSession":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void reloadRemotePresentationSession(message.sessionId, "full-reload-session");
+        return;
+      }
       restartNativeSession(message.sessionId);
       return;
     case "popOutPane": {
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        showAppToast("info", "Remote pop out unavailable", "Pop Out Pane is local-only.");
+        return;
+      }
       const session = findSessionRecord(message.sessionId);
       handleNativeTerminalTitleBarAction(
         message.sessionId,
@@ -30213,20 +33563,44 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "fullReloadProjectZmxSessions": {
+      const remoteReference = parseRemotePresentationGroupId(message.groupId);
+      if (remoteReference) {
+        const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+        for (const session of presentation?.sessions.filter((candidate) => candidate.projectId === remoteReference.projectId) ?? []) {
+          void reloadRemotePresentationSession(
+            createRemotePresentationSessionId(remoteReference.machineId, remoteReference.projectId, session.sessionId),
+            "full-reload-project",
+          );
+        }
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       fullReloadProjectZmxSessions(groupReference.project.projectId);
       return;
     }
     case "copyResumeCommand":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void copyRemoteResumeCommand(message.sessionId);
+        return;
+      }
       void copyResumeCommand(message.sessionId);
       return;
     case "copyAttachCommand":
+      if (copyRemoteAttachCommand(message.sessionId)) {
+        return;
+      }
       void copyAttachCommand(message.sessionId);
       return;
     case "requestT3SessionBrowserAccess":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        return;
+      }
       void requestNativeT3SessionBrowserAccess(message.sessionId);
       return;
     case "closeGroup": {
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        return;
+      }
       const project = activeProject();
       const group = project.workspace.groups.find(
         (candidate) => candidate.groupId === message.groupId,
@@ -30247,9 +33621,25 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "setSessionSleeping":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void updateRemotePresentationSession(
+          message.sessionId,
+          { lifecycleState: message.sleeping ? "sleeping" : "running" },
+          "set-session-sleeping",
+        );
+        return;
+      }
       setNativeSessionSleeping(message.sessionId, message.sleeping);
       return;
     case "setSessionFavorite":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void updateRemotePresentationSession(
+          message.sessionId,
+          { isFavorite: message.favorite },
+          "set-session-favorite",
+        );
+        return;
+      }
       setNativeSessionFavoriteLocalFirst(
         message.sessionId,
         message.favorite,
@@ -30257,6 +33647,14 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       );
       return;
     case "setSessionPinned":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        void updateRemotePresentationSession(
+          message.sessionId,
+          { isPinned: message.pinned },
+          "set-session-pinned",
+        );
+        return;
+      }
       setNativeSessionPinnedLocalFirst(
         message.sessionId,
         message.pinned,
@@ -30264,6 +33662,18 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       );
       return;
     case "setGroupSleeping": {
+      const remoteReference = parseRemotePresentationGroupId(message.groupId);
+      if (remoteReference) {
+        const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+        for (const session of presentation?.sessions.filter((candidate) => candidate.projectId === remoteReference.projectId) ?? []) {
+          void updateRemotePresentationSession(
+            createRemotePresentationSessionId(remoteReference.machineId, remoteReference.projectId, session.sessionId),
+            { lifecycleState: message.sleeping ? "sleeping" : "running" },
+            "set-group-sleeping",
+          );
+        }
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       if (!groupReference.groupId) {
         return;
@@ -30272,16 +33682,38 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     }
     case "sleepInactiveProjectSessions": {
+      const remoteReference = parseRemotePresentationGroupId(message.groupId);
+      if (remoteReference) {
+        sleepInactiveRemoteProjectSessions(remoteReference);
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       sleepInactiveProjectSessions(groupReference.project.projectId);
       return;
     }
     case "wakeProjectSleepingSessions": {
+      const remoteReference = parseRemotePresentationGroupId(message.groupId);
+      if (remoteReference) {
+        const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+        for (const session of presentation?.sessions.filter((candidate) => candidate.projectId === remoteReference.projectId) ?? []) {
+          if (session.lifecycleState === "sleeping") {
+            void updateRemotePresentationSession(
+              createRemotePresentationSessionId(remoteReference.machineId, remoteReference.projectId, session.sessionId),
+              { lifecycleState: "running" },
+              "wake-project-sleeping-sessions",
+            );
+          }
+        }
+        return;
+      }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       wakeProjectSleepingSessions(groupReference.project.projectId);
       return;
     }
     case "moveSessionToGroup": {
+      if (parseRemotePresentationSessionId(message.sessionId) || parseRemotePresentationGroupId(message.groupId)) {
+        return;
+      }
       const sessionReference = resolveSidebarSessionReference(message.sessionId);
       const groupReference = resolveSidebarGroupReference(message.groupId);
       if (
@@ -30320,6 +33752,9 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       publish();
       return;
     case "syncGroupOrder": {
+      if (message.groupIds.some((groupId) => parseRemotePresentationGroupId(groupId))) {
+        return;
+      }
       const combinedProjectIds = message.groupIds
         .filter((groupId) => groupId !== COMBINED_CHATS_GROUP_ID)
         .map((groupId) => parseCombinedProjectGroupId(groupId));
@@ -30383,9 +33818,16 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       void searchPreviousSessionsByText();
       return;
     case "setT3SessionThreadId":
+      if (parseRemotePresentationSessionId(message.sessionId)) {
+        return;
+      }
       void relinkNativeT3SessionThread(message.sessionId, message.threadId);
       return;
     case "runSidebarGitAction":
+      if (message.groupId && parseRemotePresentationGroupId(message.groupId)) {
+        void runRemoteSidebarGitAction(message.action, message.groupId);
+        return;
+      }
       void runSidebarGitAction(message.action, { groupId: message.groupId });
       return;
     case "setSidebarGitPrimaryAction":
@@ -30427,6 +33869,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       publish();
       return;
     case "commitWorktreeBeforeDelete":
+      if (parseRemotePresentationGroupId(message.groupId)) {
+        void runRemoteSidebarGitAction("commit", message.groupId);
+        return;
+      }
       void runSidebarGitAction("commit", { groupId: message.groupId, forceCommitReview: true });
       return;
     case "confirmDeleteWorktree":
@@ -30436,7 +33882,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       openNativeWorkspaceInSelectedIde(resolveActiveProjectRelativePath(message.filePath));
       return;
     case "openSidebarGitChangedFileDiff":
-      void openSidebarGitChangedFileDiff(message.filePath);
+      void openSidebarGitChangedFileDiff(message.filePath, message.requestId);
       return;
     case "openT3SessionBrowserAccessLink":
       openNativeExternalUrl(message.url);
@@ -30488,6 +33934,10 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         return;
       }
       if (!isNativeSidebarDebugLoggingEnabled()) {
+        return;
+      }
+      if (message.event.startsWith("sidebar.collapseState.")) {
+        appendSidebarCollapseStateDebugLog(message.event, message.details);
         return;
       }
       if (message.event.startsWith(SIDEBAR_REFRESH_DEBUG_EVENT_PREFIX)) {
@@ -30620,6 +34070,17 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       return;
     case "setVisibleCount":
       if (typeof message.groupId === "string") {
+        if (parseRemotePresentationGroupId(message.groupId)) {
+          /*
+           * CDXC:RemoteFocus 2026-06-03-04:18:
+           * Remote group zoom/layout controls cannot mutate local pane
+           * topology. Use the same remote-safe equivalent as group focus:
+           * copy an SSH-wrapped attach command for the best session in that
+           * remote project.
+           */
+          copyRemoteGroupAttachCommand(message.groupId);
+          return;
+        }
         const groupReference = resolveSidebarGroupReference(message.groupId);
         if (groupReference.isChatCollection) {
           return;
@@ -32045,6 +35506,16 @@ window.addEventListener("ghostex-native-host-event", (event) => {
     pending.resolve(hostEvent);
     return;
   }
+  if (hostEvent.type === "remoteGxserverResponse") {
+    const pending = pendingRemoteGxserverResults.get(hostEvent.requestId);
+    if (!pending) {
+      return;
+    }
+    window.clearTimeout(pending.timeout);
+    pendingRemoteGxserverResults.delete(hostEvent.requestId);
+    pending.resolve(hostEvent);
+    return;
+  }
   if (hostEvent.type === "persistenceSessionState") {
     const pending = pendingPersistenceSessionStateResults.get(hostEvent.requestId);
     if (!pending) {
@@ -32067,6 +35538,14 @@ window.addEventListener("ghostex-native-host-event", (event) => {
   }
   if (hostEvent.type === "gxserverStatus") {
     handleGxserverStatusEvent(hostEvent.payloadJson);
+    return;
+  }
+  if (hostEvent.type === "remoteGxserverStatus") {
+    handleRemoteGxserverStatusEvent(hostEvent.remoteMachineId, hostEvent.payloadJson);
+    return;
+  }
+  if (hostEvent.type === "remoteGxserverPresentationEvent") {
+    handleRemoteGxserverPresentationEvent(hostEvent.remoteMachineId, hostEvent.payloadJson);
     return;
   }
   if (hostEvent.type === "nativeHotkey") {
@@ -33446,16 +36925,6 @@ function handleNativeTerminalTitleBarAction(
   }
 }
 
-window.__ghostex_NATIVE_WORKSPACE_BAR__ = {
-  addProject,
-  focusProject,
-  getState: createWorkspaceBarState,
-  removeProject,
-  reorderProjects,
-  setProjectIcon,
-  setProjectTheme,
-  setProjectThemeColor,
-};
 
 window.__ghostex_NATIVE_SIDEBAR__ = {
   dismissSidebarContextMenu: dismissAllSidebarContextMenus,
@@ -33491,33 +36960,14 @@ window.__ghostex_NATIVE_CLI__ = {
   },
 };
 
-type WorkspaceDockMenuState = {
-  left: number;
-  projectId: string;
-  view: "customTheme" | "root" | "themes";
-  top: number;
-};
-
-type WorkspaceDockDragState = {
-  didDrag: boolean;
-  ghostText: string;
-  pointerId: number;
-  projectId: string;
-  startX: number;
-  startY: number;
-  targetProjectId?: string;
-  placeAfterTarget: boolean;
-};
-
 function NativeSidebarRoot() {
+  const didAutoConnectRemoteMachinesRef = useRef(false);
+
   useEffect(() => {
     const suppressWebviewContextMenu = (event: MouseEvent) => {
       /**
        * CDXC:SidebarContextMenu 2026-05-15-17:49:
-       * Right-clicking empty sidebar space must not expose WKWebView's native
-       * Reload menu. Prevent the webview default in capture phase while leaving
-       * propagation intact so React-owned session and project context menus can
-       * still handle the same event.
+       * Right-clicking empty sidebar space must not expose WKWebView's native Reload menu. Prevent the webview default in capture phase while leaving propagation intact so React-owned session and project context menus can still handle the same event.
        */
       event.preventDefault();
     };
@@ -33531,13 +36981,24 @@ function NativeSidebarRoot() {
   }, []);
 
   useEffect(() => {
+    if (didAutoConnectRemoteMachinesRef.current) {
+      return;
+    }
+    didAutoConnectRemoteMachinesRef.current = true;
+    /*
+     * CDXC:RemoteMachines 2026-06-02-23:38:
+     * Saved Remote machines do not have a disabled state. On startup, attempt to connect each saved SSH machine so connected sections can expose Add Project and Clone Repository without a manual first reload.
+     */
+    for (const remoteMachine of settings.remoteMachines) {
+      connectRemoteGxserver(remoteMachine.id);
+    }
+  }, []);
+
+  useEffect(() => {
     const suppressSidebarTooltips = () => {
       /*
        * CDXC:SidebarTooltips 2026-05-25-07:16:
-       * WKWebView can leave React and CSS hover tooltips visible when the user
-       * alt-tabs, clicks another app, or exits the sidebar without a normal
-       * trigger-level leave event. Suppress every sidebar tooltip surface until
-       * pointer movement re-enters this sidebar document.
+       * WKWebView can leave React and CSS hover tooltips visible when the user alt-tabs, clicks another app, or exits the sidebar without a normal trigger-level leave event. Suppress every sidebar tooltip surface until pointer movement re-enters this sidebar document.
        */
       document.body.dataset.sidebarTooltipsSuppressed = "true";
       dismissSidebarTooltips();
@@ -33583,709 +37044,12 @@ function NativeSidebarRoot() {
 
   return (
     <div className="native-sidebar-shell" data-sidebar-mode="combined">
-      {/* CDXC:SidebarLayout 2026-05-13-08:11
-          Combined is the only supported sidebar layout, so projects render as
-          sidebar groups and the old workspace rail is not mounted. */}
+      {/* CDXC:ProjectListRemoval 2026-06-03-15:12: The far-left project list is not mounted; combined project groups receive the full sidebar width. */}
       <main className="native-sidebar-main">
         <SidebarApp messageSource={sidebarBus} vscode={vscode} />
       </main>
     </div>
   );
-}
-
-type WorkspaceDockActions = {
-  focusProject: (projectId: string) => void;
-  openProjectInFinder: (projectId: string) => void;
-  openProjectInIde: (projectId: string) => void;
-  pickWorkspaceFolder: () => void;
-  pickWorkspaceIcon: (projectId: string) => void;
-  removeProject: (projectId: string) => void;
-  reorderProjects: (projectIds: string[]) => void;
-  setProjectTheme: (projectId: string, theme: SidebarTheme) => void;
-  setProjectThemeColor: (projectId: string, themeColor: string) => void;
-};
-
-/**
- * CDXC:WorkspaceDock 2026-04-27-09:23
- * Keep the React workspace dock action-driven so Storybook can exercise icon,
- * remove, and theme menu UX without entering native publish/modal code paths.
- */
-export function WorkspaceDock({
-  actions,
-  state,
-}: {
-  actions?: Partial<WorkspaceDockActions>;
-  state: WorkspaceBarStateMessage;
-}) {
-  const [dragVisual, setDragVisual] = useState<{
-    ghostText: string;
-    isDragging: boolean;
-    line?: { top: number; left: number; width: number };
-    pointerX: number;
-    pointerY: number;
-    sourceProjectId?: string;
-  }>({ ghostText: "", isDragging: false, pointerX: 0, pointerY: 0 });
-  const [menu, setMenu] = useState<WorkspaceDockMenuState>();
-  const [customThemeColor, setCustomThemeColor] = useState(DEFAULT_WORKSPACE_THEME_COLOR);
-  const [recentThemeColors, setRecentThemeColors] = useState(readWorkspaceThemeColorHistory);
-  const dockRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<WorkspaceDockDragState | undefined>(undefined);
-  const workspaceActions: WorkspaceDockActions = {
-    focusProject,
-    openProjectInFinder: (projectId) => {
-      const project = state.projects.find((candidate) => candidate.projectId === projectId);
-      if (project) {
-        openNativeWorkspaceInFinder(project.path);
-      }
-    },
-    openProjectInIde: (projectId) => {
-      const project = state.projects.find((candidate) => candidate.projectId === projectId);
-      if (project) {
-        openNativeWorkspaceInSelectedIde(project.path);
-      }
-    },
-    pickWorkspaceFolder: () => postNative({ type: "pickWorkspaceFolder" }),
-    pickWorkspaceIcon: (projectId) => postNative({ projectId, type: "pickWorkspaceIcon" }),
-    removeProject,
-    reorderProjects,
-    setProjectTheme,
-    setProjectThemeColor,
-    ...actions,
-  };
-
-  const activeProjectIds = useMemo(
-    () => new Set(state.projects.map((project) => project.projectId)),
-    [state.projects],
-  );
-
-  useEffect(() => {
-    const closeMenu = (event: MouseEvent) => {
-      if (!(event.target instanceof Node)) {
-        setMenu(undefined);
-        return;
-      }
-      if (!dockRef.current?.contains(event.target)) {
-        setMenu(undefined);
-      }
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMenu(undefined);
-      }
-    };
-    document.addEventListener("click", closeMenu);
-    document.addEventListener("contextmenu", closeMenu);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("click", closeMenu);
-      document.removeEventListener("contextmenu", closeMenu);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (menu && !activeProjectIds.has(menu.projectId)) {
-      setMenu(undefined);
-    }
-  }, [activeProjectIds, menu]);
-
-  const dragProjectIds = state.projects.map((project) => project.projectId);
-
-  const getDropTarget = (clientY: number, sourceProjectId: string) => {
-    const buttons = Array.from(
-      dockRef.current?.querySelectorAll<HTMLButtonElement>(".workspace-dock-button") ?? [],
-    ).filter((button) => button.dataset.projectId !== sourceProjectId);
-    for (const button of buttons) {
-      const bounds = button.getBoundingClientRect();
-      if (clientY < bounds.top + bounds.height / 2) {
-        return { bounds, placeAfterTarget: false, projectId: button.dataset.projectId };
-      }
-    }
-    const lastButton = buttons.at(-1);
-    if (!lastButton) {
-      return undefined;
-    }
-    const bounds = lastButton.getBoundingClientRect();
-    return { bounds, placeAfterTarget: true, projectId: lastButton.dataset.projectId };
-  };
-
-  const nextProjectOrder = (
-    sourceProjectId: string,
-    targetProjectId: string | undefined,
-    placeAfterTarget: boolean,
-  ) => {
-    if (!targetProjectId || sourceProjectId === targetProjectId) {
-      return undefined;
-    }
-    const ids = [...dragProjectIds];
-    const fromIndex = ids.indexOf(sourceProjectId);
-    if (fromIndex < 0 || !ids.includes(targetProjectId)) {
-      return undefined;
-    }
-    const [movedProjectId] = ids.splice(fromIndex, 1);
-    const targetIndex = ids.indexOf(targetProjectId);
-    ids.splice(targetIndex + (placeAfterTarget ? 1 : 0), 0, movedProjectId);
-    return ids;
-  };
-
-  const wouldReorder = (
-    sourceProjectId: string,
-    targetProjectId: string | undefined,
-    placeAfterTarget: boolean,
-  ) => {
-    const nextIds = nextProjectOrder(sourceProjectId, targetProjectId, placeAfterTarget);
-    return Boolean(
-      nextIds?.some((projectId, index) => projectId !== state.projects[index]?.projectId),
-    );
-  };
-
-  const handlePointerDown = (
-    event: ReactPointerEvent<HTMLButtonElement>,
-    project: WorkspaceBarProject,
-  ) => {
-    if (event.button !== 0) {
-      return;
-    }
-    event.preventDefault();
-    dragRef.current = {
-      didDrag: false,
-      ghostText: workspaceDockInitials(project.title, state.projects.indexOf(project)),
-      pointerId: event.pointerId,
-      projectId: project.projectId,
-      startX: event.clientX,
-      startY: event.clientY,
-      placeAfterTarget: false,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-
-  const handlePointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    const deltaX = event.clientX - drag.startX;
-    const deltaY = event.clientY - drag.startY;
-    if (!drag.didDrag && Math.hypot(deltaX, deltaY) < 5) {
-      return;
-    }
-    drag.didDrag = true;
-    const target = getDropTarget(event.clientY, drag.projectId);
-    const canDrop = wouldReorder(
-      drag.projectId,
-      target?.projectId,
-      target?.placeAfterTarget ?? false,
-    );
-    drag.targetProjectId = canDrop ? target?.projectId : undefined;
-    drag.placeAfterTarget = canDrop ? (target?.placeAfterTarget ?? false) : false;
-    setDragVisual({
-      ghostText: drag.ghostText,
-      isDragging: true,
-      line:
-        canDrop && target
-          ? {
-              left: target.bounds.left + 1,
-              top: target.placeAfterTarget ? target.bounds.bottom + 4 : target.bounds.top - 4,
-              width: Math.max(34, target.bounds.width - 2),
-            }
-          : undefined,
-      pointerX: event.clientX,
-      pointerY: event.clientY,
-      sourceProjectId: drag.projectId,
-    });
-  };
-
-  const handlePointerUp = (event: ReactPointerEvent<HTMLButtonElement>, projectId: string) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) {
-      return;
-    }
-    event.preventDefault();
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    dragRef.current = undefined;
-    setDragVisual({ ghostText: "", isDragging: false, pointerX: 0, pointerY: 0 });
-    if (!drag.didDrag) {
-      workspaceActions.focusProject(projectId);
-      return;
-    }
-    const nextIds = nextProjectOrder(drag.projectId, drag.targetProjectId, drag.placeAfterTarget);
-    if (nextIds) {
-      workspaceActions.reorderProjects(nextIds);
-    }
-  };
-
-  const openMenu = (event: ReactMouseEvent<HTMLButtonElement>, projectId: string) => {
-    event.preventDefault();
-    const offset = 8;
-    const menuWidth = 196;
-    const rootMenuHeight = 196;
-    /**
-     * CDXC:WorkspaceDock 2026-04-27-09:40
-     * Opening the workspace context menu directly under the right-click point
-     * lets the release/click that opened the menu accidentally activate the
-     * first item. Offset the menu from the pointer and require explicit clicks
-     * for destructive/native actions such as picking an icon.
-     */
-    setMenu({
-      left: Math.min(event.clientX + offset, window.innerWidth - menuWidth),
-      projectId,
-      top: Math.min(event.clientY + offset, window.innerHeight - rootMenuHeight),
-      view: "root",
-    });
-  };
-
-  /**
-   * CDXC:WorkspaceDock 2026-04-27-09:17
-   * Workspace theme selection is a submenu, matching the worktree action menu
-   * UX. Open it only from an explicit click so hovering Theme previews nothing
-   * and cannot make the menu feel like it is navigating by itself.
-   */
-  const openThemeMenu = () => {
-    setMenu((currentMenu) => (currentMenu ? { ...currentMenu, view: "themes" } : currentMenu));
-  };
-
-  const openRootMenu = () => {
-    setMenu((currentMenu) => (currentMenu ? { ...currentMenu, view: "root" } : currentMenu));
-  };
-
-  const openCustomThemeMenu = () => {
-    if (!menu) {
-      return;
-    }
-    const project = state.projects.find((candidate) => candidate.projectId === menu.projectId);
-    setCustomThemeColor(
-      project?.themeColor ?? recentThemeColors[0] ?? DEFAULT_WORKSPACE_THEME_COLOR,
-    );
-    setMenu({ ...menu, view: "customTheme" });
-  };
-
-  const chooseTheme = (projectId: string, theme: SidebarTheme) => {
-    workspaceActions.setProjectTheme(projectId, theme);
-    setMenu(undefined);
-  };
-
-  const chooseCustomThemeColor = (projectId: string, themeColor: string) => {
-    const normalizedColor = normalizeWorkspaceThemeColor(themeColor);
-    if (!normalizedColor) {
-      return;
-    }
-
-    workspaceActions.setProjectThemeColor(projectId, normalizedColor);
-    const nextRecentThemeColors = updateWorkspaceThemeColorHistory(
-      recentThemeColors,
-      normalizedColor,
-    );
-    setRecentThemeColors(nextRecentThemeColors);
-    writeWorkspaceThemeColorHistory(nextRecentThemeColors);
-    setMenu(undefined);
-  };
-
-  const menuProject = menu
-    ? state.projects.find((project) => project.projectId === menu.projectId)
-    : undefined;
-
-  return (
-    <TooltipProvider delayDuration={TOOLTIP_DELAY_MS}>
-      <aside className="workspace-dock" ref={dockRef}>
-        <div className="workspace-dock-scroll">
-          {state.projects.map((project, index) => (
-            <AppTooltip content={workspaceDockTitle(project)} key={project.projectId}>
-              <button
-                aria-label={`Open ${project.title}`}
-                className="workspace-dock-button"
-                data-active={String(project.isActive)}
-                data-dragging={String(dragVisual.sourceProjectId === project.projectId)}
-                data-project-id={project.projectId}
-                data-workspace-theme={project.theme ?? "dark-blue"}
-                onContextMenu={(event) => openMenu(event, project.projectId)}
-                onPointerCancel={() => {
-                  dragRef.current = undefined;
-                  setDragVisual({ ghostText: "", isDragging: false, pointerX: 0, pointerY: 0 });
-                }}
-                onPointerDown={(event) => handlePointerDown(event, project)}
-                onPointerMove={handlePointerMove}
-                onPointerUp={(event) => handlePointerUp(event, project.projectId)}
-                style={getWorkspaceDockThemeStyle(project.themeColor)}
-                type="button"
-              >
-                <WorkspaceDockProjectIcon project={project} projectIndex={index} />
-                <WorkspaceDockIndicators project={project} />
-              </button>
-            </AppTooltip>
-          ))}
-        </div>
-        <AppTooltip content="Add Workspace">
-          <button
-            aria-label="Add workspace"
-            className="workspace-dock-add-button"
-            onClick={workspaceActions.pickWorkspaceFolder}
-            type="button"
-          >
-            <IconPlus aria-hidden="true" size={18} stroke={2.4} />
-          </button>
-        </AppTooltip>
-      {dragVisual.isDragging ? (
-        <div
-          aria-hidden="true"
-          className="workspace-dock-drag-ghost"
-          style={{ left: dragVisual.pointerX, top: dragVisual.pointerY }}
-        >
-          {dragVisual.ghostText}
-        </div>
-      ) : null}
-      {dragVisual.line ? (
-        <div
-          aria-hidden="true"
-          className="workspace-dock-drop-line"
-          style={{
-            left: dragVisual.line.left,
-            top: dragVisual.line.top,
-            width: dragVisual.line.width,
-          }}
-        />
-      ) : null}
-      {menu && menuProject ? (
-        <div
-          className="session-context-menu workspace-dock-context-menu"
-          role="menu"
-          style={{ left: menu.left, top: menu.top }}
-          /**
-           * CDXC:WorkspaceDock 2026-04-27-09:46
-           * Workspace context-menu clicks are internal navigation/actions. Stop
-           * them at the menu boundary so the document outside-click listener
-           * does not close the menu before the Theme submenu can replace it.
-           */
-          onClick={(event) => event.stopPropagation()}
-          onContextMenu={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-          onPointerDown={(event) => event.stopPropagation()}
-        >
-          {menu.view === "root" ? (
-            <>
-              <button
-                className="session-context-menu-item"
-                onClick={openThemeMenu}
-                role="menuitem"
-                type="button"
-              >
-                <IconPalette aria-hidden="true" className="session-context-menu-icon" size={14} />
-                Theme
-                <IconChevronRight
-                  aria-hidden="true"
-                  className="session-context-menu-trailing-icon"
-                  size={14}
-                />
-              </button>
-              <button
-                className="session-context-menu-item"
-                onClick={() => {
-                  workspaceActions.openProjectInFinder(menu.projectId);
-                  setMenu(undefined);
-                }}
-                role="menuitem"
-                type="button"
-              >
-                <IconFolderOpen
-                  aria-hidden="true"
-                  className="session-context-menu-icon"
-                  size={14}
-                />
-                Open in Finder
-              </button>
-              {/*
-               * CDXC:WorkspaceActions 2026-05-27-07:24
-               * The workspace dock no longer reads an IDE attachment setting.
-               * Keep this quick action as a direct Zed open while the titlebar Open In menu handles explicit editor choices.
-               */}
-              <button
-                className="session-context-menu-item"
-                onClick={() => {
-                  workspaceActions.openProjectInIde(menu.projectId);
-                  setMenu(undefined);
-                }}
-                role="menuitem"
-                type="button"
-              >
-                <IconCode aria-hidden="true" className="session-context-menu-icon" size={14} />
-                Open in Zed
-              </button>
-              <div className="session-context-menu-divider" role="separator" />
-              <button
-                className="session-context-menu-item session-context-menu-item-danger"
-                disabled={state.projects.length <= 1}
-                onClick={() => {
-                  workspaceActions.removeProject(menu.projectId);
-                  setMenu(undefined);
-                }}
-                role="menuitem"
-                type="button"
-              >
-                <IconTrash aria-hidden="true" className="session-context-menu-icon" size={14} />
-                Remove
-              </button>
-            </>
-          ) : menu.view === "themes" ? (
-            <>
-              <button
-                className="session-context-menu-item"
-                onClick={openRootMenu}
-                role="menuitem"
-                type="button"
-              >
-                <IconChevronLeft
-                  aria-hidden="true"
-                  className="session-context-menu-icon"
-                  size={14}
-                />
-                Back
-              </button>
-              <div className="session-context-menu-divider" role="separator" />
-              <button
-                className="session-context-menu-item workspace-dock-theme-menu-item"
-                data-selected={String(Boolean(menuProject.themeColor))}
-                onClick={openCustomThemeMenu}
-                role="menuitemradio"
-                type="button"
-              >
-                <span
-                  className="workspace-dock-theme-swatch"
-                  style={getWorkspaceDockThemeSwatchStyle(
-                    menuProject.themeColor ?? recentThemeColors[0] ?? DEFAULT_WORKSPACE_THEME_COLOR,
-                  )}
-                />
-                Custom
-                <IconChevronRight
-                  aria-hidden="true"
-                  className="session-context-menu-trailing-icon"
-                  size={14}
-                />
-              </button>
-              {WORKSPACE_DOCK_THEME_OPTIONS.map((theme) => (
-                <button
-                  className="session-context-menu-item workspace-dock-theme-menu-item"
-                  data-selected={String(
-                    !menuProject.themeColor && (menuProject.theme ?? "dark-blue") === theme.value,
-                  )}
-                  key={theme.value}
-                  onClick={() => chooseTheme(menu.projectId, theme.value)}
-                  role="menuitemradio"
-                  type="button"
-                >
-                  <span
-                    className="workspace-dock-theme-swatch"
-                    data-workspace-theme={theme.value}
-                  />
-                  {theme.label}
-                </button>
-              ))}
-            </>
-          ) : (
-            <>
-              <button
-                className="session-context-menu-item"
-                onClick={openThemeMenu}
-                role="menuitem"
-                type="button"
-              >
-                <IconChevronLeft
-                  aria-hidden="true"
-                  className="session-context-menu-icon"
-                  size={14}
-                />
-                Back
-              </button>
-              <div className="session-context-menu-divider" role="separator" />
-              <div className="workspace-theme-custom-picker">
-                {/*
-                 * CDXC:WorkspaceTheme 2026-05-05-02:58
-                 * Custom color selection belongs in the Theme context menu.
-                 * The picker writes a project theme color immediately and also
-                 * records recent validated colors for the palette below.
-                 */}
-                <input
-                  aria-label="Custom workspace theme color"
-                  className="workspace-theme-color-input"
-                  onChange={(event) => {
-                    const normalizedColor = normalizeWorkspaceThemeColor(
-                      event.currentTarget.value,
-                    );
-                    if (normalizedColor) {
-                      setCustomThemeColor(normalizedColor);
-                    }
-                  }}
-                  type="color"
-                  value={customThemeColor}
-                />
-                <input
-                  aria-label="Custom workspace theme color hex"
-                  className="workspace-theme-color-text"
-                  onChange={(event) => {
-                    const normalizedColor = normalizeWorkspaceThemeColor(
-                      event.currentTarget.value,
-                    );
-                    if (normalizedColor) {
-                      setCustomThemeColor(normalizedColor);
-                    }
-                  }}
-                  value={customThemeColor}
-                />
-                <button
-                  aria-label="Apply custom workspace theme color"
-                  className="workspace-theme-color-apply"
-                  onClick={() => chooseCustomThemeColor(menu.projectId, customThemeColor)}
-                  type="button"
-                >
-                  <IconCheck aria-hidden="true" size={14} stroke={2.2} />
-                </button>
-              </div>
-              {recentThemeColors.length > 0 ? (
-                <div className="workspace-theme-color-palette">
-                  {recentThemeColors.map((themeColor) => (
-                    <button
-                      aria-label={`Use ${themeColor}`}
-                      className="workspace-theme-color-palette-button"
-                      key={themeColor}
-                      onClick={() => chooseCustomThemeColor(menu.projectId, themeColor)}
-                      style={getWorkspaceDockThemeSwatchStyle(themeColor)}
-                      type="button"
-                    />
-                  ))}
-                </div>
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
-      </aside>
-    </TooltipProvider>
-  );
-}
-
-function WorkspaceDockProjectIcon({
-  project,
-  projectIndex,
-}: {
-  project: WorkspaceBarProject;
-  projectIndex: number;
-}) {
-  const icon =
-    project.icon ??
-    (project.iconDataUrl ? { dataUrl: project.iconDataUrl, kind: "image" as const } : undefined);
-  if (icon?.kind === "image") {
-    return <img alt="" className="workspace-dock-icon-image" src={icon.dataUrl} />;
-  }
-  if (icon?.kind === "tabler") {
-    return (
-      <SidebarCommandIconGlyph
-        className="workspace-dock-tabler-icon"
-        color={icon.color ?? "currentColor"}
-        icon={icon.icon}
-        size={22}
-        stroke={1.9}
-      />
-    );
-  }
-  if (project.isChat) {
-    return <IconMessageCirclePlus aria-hidden="true" size={21} stroke={2} />;
-  }
-  if (project.isWorktree) {
-    return <IconGitBranch aria-hidden="true" size={21} stroke={2} />;
-  }
-  return (
-    <span className="workspace-dock-initials">
-      {workspaceDockInitials(project.title, projectIndex)}
-    </span>
-  );
-}
-
-function WorkspaceDockIndicators({ project }: { project: WorkspaceBarProject }) {
-  const { done, running, working } = project.sessionCounts;
-  return (
-    <>
-      {done > 0 || working > 0 ? (
-        <span className="workspace-dock-indicators">
-          {done > 0 ? (
-            <span className="workspace-dock-indicator" data-status="done">
-              {formatWorkspaceDockCount(done)}
-            </span>
-          ) : null}
-          {working > 0 ? (
-            <span className="workspace-dock-indicator" data-status="working">
-              {formatWorkspaceDockCount(working)}
-            </span>
-          ) : null}
-        </span>
-      ) : null}
-      {running > 0 ? (
-        <span className="workspace-dock-indicator" data-status="running">
-          {formatWorkspaceDockCount(running)}
-        </span>
-      ) : null}
-    </>
-  );
-}
-
-function workspaceDockInitials(title: string, index: number): string {
-  const trimmed = title.trim();
-  if (!trimmed) {
-    return String(index + 1);
-  }
-  const words = trimmed.split(/\s+/u).filter(Boolean);
-  if (words.length > 1) {
-    return words
-      .slice(0, 2)
-      .map((word) => word[0])
-      .join("")
-      .toUpperCase();
-  }
-  return trimmed.slice(0, 2).toUpperCase();
-}
-
-function workspaceDockTitle(project: WorkspaceBarProject): string {
-  const summary = [
-    project.sessionCounts.running > 0 ? `${project.sessionCounts.running} running` : "",
-    project.sessionCounts.working > 0 ? `${project.sessionCounts.working} working` : "",
-    project.sessionCounts.done > 0 ? `${project.sessionCounts.done} done` : "",
-  ]
-    .filter(Boolean)
-    .join(", ");
-  return summary ? `${project.path || project.title} - ${summary}` : project.path || project.title;
-}
-
-/**
- * CDXC:WorkspaceTheme 2026-05-05-02:58
- * Custom workspace theme colors should tint the same dock button variables as
- * preset themes. Compute the contrast foreground once in React so CSS can keep
- * using the existing workspace-dock variable contract.
- */
-function getWorkspaceDockThemeStyle(themeColor: string | undefined): CSSProperties | undefined {
-  const normalizedColor = normalizeWorkspaceThemeColor(themeColor);
-  if (!normalizedColor) {
-    return undefined;
-  }
-
-  return {
-    "--workspace-dock-button-background": normalizedColor,
-    "--workspace-dock-button-border": `color-mix(in srgb, ${normalizedColor} 68%, white 32%)`,
-    "--workspace-dock-button-foreground": getWorkspaceThemeForeground(normalizedColor),
-  } as CSSProperties;
-}
-
-function getWorkspaceDockThemeSwatchStyle(themeColor: string | undefined): CSSProperties | undefined {
-  const normalizedColor = normalizeWorkspaceThemeColor(themeColor);
-  if (!normalizedColor) {
-    return undefined;
-  }
-
-  return {
-    "--workspace-dock-button-background": normalizedColor,
-  } as CSSProperties;
-}
-
-function formatWorkspaceDockCount(count: number): string {
-  return count > 99 ? "99+" : String(count);
 }
 
 const rootElement = document.getElementById("root");

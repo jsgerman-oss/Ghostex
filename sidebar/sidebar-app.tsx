@@ -1,6 +1,7 @@
 import { Cursor, KeyboardSensor, PointerActivationConstraints, PointerSensor } from "@dnd-kit/dom";
 import { move } from "@dnd-kit/helpers";
 import { DragDropProvider, type DragDropEventHandlers } from "@dnd-kit/react";
+import { useSortable } from "@dnd-kit/react/sortable";
 import {
   IconArrowLeft,
   IconArrowRight,
@@ -27,6 +28,7 @@ import {
   IconPencil,
   IconPlus,
   IconPlusFilled,
+  IconRefresh,
   IconRobotFace,
   IconSearch,
   IconSettings,
@@ -46,6 +48,7 @@ import {
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type RefObject,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
@@ -58,7 +61,7 @@ import {
 import {
   getWorkspaceThemeForeground,
   normalizeWorkspaceThemeColor,
-} from "../shared/workspace-dock-icons";
+} from "../shared/workspace-project-appearance";
 import {
   moveProjectsWithWorktrees,
   type ProjectWorktreeOrderItem,
@@ -83,10 +86,16 @@ import {
   postSidebarRefreshDebugLog,
   summarizeSidebarRefreshMessage,
 } from "./sidebar-refresh-debug-log";
+import {
+  hashSidebarCollapseDebugId,
+  SIDEBAR_COLLAPSE_STATE_DEBUG_EVENT_PREFIX,
+  summarizeSidebarCollapseDebugGroupIds,
+} from "./sidebar-collapse-state-debug";
 import { postSidebarOrderReproLog } from "./sidebar-order-repro-log";
 import { scrollElementIntoViewIfNeeded } from "./scroll-into-view-if-needed";
 import { resetSidebarStore, useSidebarStore } from "./sidebar-store";
 import {
+  createRemoteMachineDragData,
   getClientPoint,
   getSidebarGroupDropTargetAtPoint,
   getSidebarGroupDropTargetFromEvent,
@@ -103,7 +112,6 @@ import {
   getAutoCollapseGroupIds,
   getSessionCountsByGroup,
   reconcileCollapsedGroupsById,
-  shouldPersistSidebarUiCollapseState,
 } from "./group-collapse";
 import { SessionGroupSection } from "./session-group-section";
 import { isEditableKeyboardTarget } from "./text-input-keyboard";
@@ -127,6 +135,7 @@ import {
   normalizeghostexHotkeySettings,
   type ghostexHotkeySettings,
 } from "../shared/ghostex-hotkeys";
+import type { RemoteMachineSettings } from "../shared/ghostex-settings";
 
 export type SidebarAppProps = {
   messageSource?: Pick<Window, "addEventListener" | "removeEventListener">;
@@ -134,6 +143,8 @@ export type SidebarAppProps = {
 };
 
 type SessionIdsByGroup = Record<string, string[]>;
+type RemoteMachineRuntimeStatus = Extract<ExtensionToSidebarMessage, { type: "remoteMachineStatus" }>;
+type RemoteMachineRuntimeStatuses = Record<string, RemoteMachineRuntimeStatus["state"]>;
 type FloatingMenuPosition = {
   right: number;
   top: number;
@@ -350,6 +361,18 @@ type SidebarUiCollapseState = {
   isReferenceProjectsCollapsed: boolean;
 };
 
+type SidebarUiCollapseStateReadResult = {
+  reason?: "invalid-shape" | "missing" | "parse-error" | "storage-unavailable";
+  state: SidebarUiCollapseState;
+  storedByteLength?: number;
+};
+
+type SidebarUiCollapseStateWriteResult = {
+  ok: boolean;
+  reason?: "storage-error" | "storage-unavailable";
+  storedByteLength?: number;
+};
+
 type SidebarProjectGroupOrderItem = ProjectWorktreeOrderItem & {
   orderId: string;
 };
@@ -370,7 +393,7 @@ type SidebarProjectGroupLookup = Record<
   | undefined
 >;
 
-type ReferenceSidebarSectionId = "projects" | "quick";
+type ReferenceSidebarSectionId = "projects" | "quick" | "remote";
 
 const REFERENCE_SECTION_CHILD_ANIMATION_RESET_MS = 420;
 
@@ -390,6 +413,7 @@ const sensors = [
 const SIDEBAR_STARTUP_INTERACTION_BLOCK_MS = 1500;
 const SIDEBAR_STARTUP_REPRO_WINDOW_MS = 15_000;
 const SIDEBAR_POINTER_DRAG_REORDER_THRESHOLD_PX = 8;
+const SIDEBAR_GXSERVER_UNAVAILABLE_GROUP_ID = "gxserver-unavailable";
 const SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY = "ghostex-sidebar-ui-collapse-state";
 const GHOSTEX_DISCORD_URL = "https://discord.gg/df7b3G92CS";
 const MIN_SESSION_SEARCH_QUERY_LENGTH = 2;
@@ -419,32 +443,51 @@ function createDefaultSidebarUiCollapseState(): SidebarUiCollapseState {
   };
 }
 
-function readSidebarUiCollapseState(): SidebarUiCollapseState {
+function readSidebarUiCollapseState(): SidebarUiCollapseStateReadResult {
   if (typeof window === "undefined") {
-    return createDefaultSidebarUiCollapseState();
+    return {
+      reason: "storage-unavailable",
+      state: createDefaultSidebarUiCollapseState(),
+    };
   }
 
   try {
-    const candidate = JSON.parse(
-      window.localStorage.getItem(SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY) ?? "null",
-    );
+    const storedValue = window.localStorage.getItem(SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY);
+    if (storedValue === null) {
+      return {
+        reason: "missing",
+        state: createDefaultSidebarUiCollapseState(),
+      };
+    }
+
+    const candidate = JSON.parse(storedValue);
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-      return createDefaultSidebarUiCollapseState();
+      return {
+        reason: "invalid-shape",
+        state: createDefaultSidebarUiCollapseState(),
+        storedByteLength: storedValue.length,
+      };
     }
 
     return {
-      collapsedGroupsById: normalizeStoredCollapsedGroupsById(
-        (candidate as Partial<SidebarUiCollapseState>).collapsedGroupsById,
-      ),
-      isRecentProjectsOpen:
-        (candidate as Partial<SidebarUiCollapseState>).isRecentProjectsOpen === true,
-      isReferenceChatsCollapsed:
-        (candidate as Partial<SidebarUiCollapseState>).isReferenceChatsCollapsed === true,
-      isReferenceProjectsCollapsed:
-        (candidate as Partial<SidebarUiCollapseState>).isReferenceProjectsCollapsed === true,
+      state: {
+        collapsedGroupsById: normalizeStoredCollapsedGroupsById(
+          (candidate as Partial<SidebarUiCollapseState>).collapsedGroupsById,
+        ),
+        isRecentProjectsOpen:
+          (candidate as Partial<SidebarUiCollapseState>).isRecentProjectsOpen === true,
+        isReferenceChatsCollapsed:
+          (candidate as Partial<SidebarUiCollapseState>).isReferenceChatsCollapsed === true,
+        isReferenceProjectsCollapsed:
+          (candidate as Partial<SidebarUiCollapseState>).isReferenceProjectsCollapsed === true,
+      },
+      storedByteLength: storedValue.length,
     };
   } catch {
-    return createDefaultSidebarUiCollapseState();
+    return {
+      reason: "parse-error",
+      state: createDefaultSidebarUiCollapseState(),
+    };
   }
 }
 
@@ -462,20 +505,45 @@ function normalizeStoredCollapsedGroupsById(candidate: unknown): Record<string, 
   return collapsedGroupsById;
 }
 
-function writeSidebarUiCollapseState(state: SidebarUiCollapseState): void {
+function summarizeSidebarUiCollapseState(state: SidebarUiCollapseState): Record<string, unknown> {
+  return {
+    collapsedGroupCount: Object.keys(state.collapsedGroupsById).length,
+    isRecentProjectsOpen: state.isRecentProjectsOpen,
+    isReferenceChatsCollapsed: state.isReferenceChatsCollapsed,
+    isReferenceProjectsCollapsed: state.isReferenceProjectsCollapsed,
+  };
+}
+
+function summarizeSidebarUiCollapseRead(
+  result: SidebarUiCollapseStateReadResult,
+): Record<string, unknown> {
+  return {
+    ...summarizeSidebarUiCollapseState(result.state),
+    readReason: result.reason ?? "stored",
+    storedByteLength: result.storedByteLength ?? 0,
+  };
+}
+
+function writeSidebarUiCollapseState(
+  state: SidebarUiCollapseState,
+): SidebarUiCollapseStateWriteResult {
   if (typeof window === "undefined") {
-    return;
+    return { ok: false, reason: "storage-unavailable" };
   }
 
   try {
-    window.localStorage.setItem(SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY, JSON.stringify(state));
+    const serialized = JSON.stringify(state);
+    window.localStorage.setItem(SIDEBAR_UI_COLLAPSE_STATE_STORAGE_KEY, serialized);
+    return { ok: true, storedByteLength: serialized.length };
   } catch {
     // Ignore storage failures; the in-memory collapse state should still update.
+    return { ok: false, reason: "storage-error" };
   }
 }
 
 export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) {
-  const [initialUiCollapseState] = useState(readSidebarUiCollapseState);
+  const [initialUiCollapseStateRead] = useState(readSidebarUiCollapseState);
+  const initialUiCollapseState = initialUiCollapseStateRead.state;
   const [isStartupInteractionBlocked, setIsStartupInteractionBlocked] = useState(true);
   const [autoEditingGroupId, setAutoEditingGroupId] = useState<string>();
   const [agentCreateRequestId, setAgentCreateRequestId] = useState(0);
@@ -507,6 +575,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   >({
     projects: false,
     quick: false,
+    remote: false,
   });
   const previousExpandedReferenceProjectGroupIdsRef = useRef<string[]>([]);
   const [recentProjectsQuery, setRecentProjectsQuery] = useState("");
@@ -553,6 +622,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const firstHydrateRevisionRef = useRef<number | undefined>(undefined);
   const lastSidebarStartupRenderStateKeyRef = useRef<string | undefined>(undefined);
   const didLogRefreshInstanceObservedRef = useRef(false);
+  const didLogInitialUiCollapseStateReadRef = useRef(false);
+  const collapseStateHydrateLogCountRef = useRef(0);
+  const lastCollapseStateHydrateShapeRef = useRef<string | undefined>(undefined);
 
   if (!didResetStoreRef.current) {
     resetSidebarStore();
@@ -614,6 +686,8 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   );
   const gitCommitDraft = useSidebarStore((state) => state.gitCommitDraft);
   const authoritativeSessionIdsByGroup = useSidebarStore((state) => state.sessionIdsByGroup);
+  const [remoteMachineRuntimeStatuses, setRemoteMachineRuntimeStatuses] =
+    useState<RemoteMachineRuntimeStatuses>({});
   const buildStamp = useSidebarStore((state) =>
     state.hud.debuggingMode ? state.hud.buildStamp : undefined,
   );
@@ -630,6 +704,40 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       type: "sidebarDebugLog",
     });
   });
+
+  const postSidebarCollapseStateLog = useEffectEvent(
+    (
+      event: string,
+      details: Record<string, unknown>,
+      options: { enabled?: boolean } = {},
+    ) => {
+      /*
+       * CDXC:SidebarCollapseDiagnostics 2026-06-02-23:52:
+       * Sidebar restart repros need a dedicated low-volume trace for localStorage
+       * collapse-state reads, writes, hydrate timing, and user toggles. Keep the
+       * payload privacy-safe by recording counts, booleans, revisions, elapsed
+       * timings, and hashed group identifiers instead of project names or paths.
+       */
+      if (!(options.enabled ?? debuggingMode)) {
+        return;
+      }
+
+      vscode.postMessage({
+        details: {
+          ...details,
+          elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
+          firstHydrateRevision: firstHydrateRevisionRef.current,
+          hasEstablishedStartupGroupCollapseBaseline:
+            hasEstablishedStartupGroupCollapseBaselineRef.current,
+          hasHydrate: hasAppliedHydrateRef.current,
+          instanceId: refreshDebugInstanceIdRef.current,
+          revision,
+        },
+        event: `${SIDEBAR_COLLAPSE_STATE_DEBUG_EVENT_PREFIX}${event}`,
+        type: "sidebarDebugLog",
+      });
+    },
+  );
 
   const postPinnedSessionReorderLog = useEffectEvent((event: string, details: unknown) => {
     /*
@@ -672,7 +780,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   );
 
   useLayoutEffect(() => {
-    if (!hasAppliedHydrateRef.current || groupOrder.length === 0) {
+    if (!hasAppliedHydrateRef.current) {
       return;
     }
 
@@ -686,6 +794,15 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     });
     const isEstablishingStartupGroupCollapseBaseline =
       !hasEstablishedStartupGroupCollapseBaselineRef.current;
+    const hasGxserverUnavailablePlaceholder = groupOrder.includes(
+      SIDEBAR_GXSERVER_UNAVAILABLE_GROUP_ID,
+    );
+    const visibleGroupIds = new Set(groupOrder);
+    const unknownCollapsedGroupCount = Object.keys(collapsedGroupsById).filter(
+      (groupId) => !visibleGroupIds.has(groupId),
+    ).length;
+    const preserveUnknownCollapsedGroups =
+      isEstablishingStartupGroupCollapseBaseline && hasGxserverUnavailablePlaceholder;
     const sessionCountIncreaseGroupIds = isEstablishingStartupGroupCollapseBaseline
       ? []
       : groupOrder.filter((groupId) => {
@@ -696,11 +813,20 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           );
         });
 
+    if (preserveUnknownCollapsedGroups && unknownCollapsedGroupCount > 0) {
+      postSidebarCollapseStateLog("startupPartialHydratePreserved", {
+        groupCount: groupOrder.length,
+        placeholderGroupPresent: true,
+        unknownCollapsedGroupCount,
+      });
+    }
+
     setCollapsedGroupsById((previous) =>
       reconcileCollapsedGroupsById({
         autoCollapseGroupIds,
         expandOnSessionCountIncreaseGroupIds: groupOrder,
         groupIds: groupOrder,
+        preserveUnknownCollapsedGroups,
         previousSessionCountsByGroup: previousSessionCountsByGroupRef.current,
         previousCollapsedGroupsById: previous,
         sessionIdsByGroup: authoritativeSessionIdsByGroup,
@@ -719,27 +845,55 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * baseline pass after restart. Restored session counts are not new sessions.
      */
     if (sessionCountIncreaseGroupIds.some((groupId) => groupsById[groupId]?.isChatCollection)) {
+      postSidebarCollapseStateLog("sectionAutoExpanded", {
+        reason: "session-count-increase",
+        section: "quick",
+        sessionCountIncreaseGroupCount: sessionCountIncreaseGroupIds.length,
+      });
       setIsReferenceChatsCollapsed(false);
     }
 
     if (sessionCountIncreaseGroupIds.some((groupId) => !groupsById[groupId]?.isChatCollection)) {
+      postSidebarCollapseStateLog("sectionAutoExpanded", {
+        reason: "session-count-increase",
+        section: "projects",
+        sessionCountIncreaseGroupCount: sessionCountIncreaseGroupIds.length,
+      });
       setIsReferenceProjectsCollapsed(false);
     }
 
     previousSessionCountsByGroupRef.current = nextSessionCountsByGroup;
-    if (isEstablishingStartupGroupCollapseBaseline) {
+    if (isEstablishingStartupGroupCollapseBaseline && !hasGxserverUnavailablePlaceholder) {
+      postSidebarCollapseStateLog("startupBaselineEstablished", {
+        groupCount: groupOrder.length,
+        sessionCount: Object.keys(sessionsById).length,
+      });
       hasEstablishedStartupGroupCollapseBaselineRef.current = true;
     }
   }, [
     authoritativeSessionIdsByGroup,
+    collapsedGroupsById,
     groupOrder,
     groupsById,
+    sessionsById,
     workspaceGroupIds,
   ]);
 
   const isSidebarInteractionBlocked = isStartupInteractionBlocked;
 
   const setGroupCollapsed = (groupId: string, collapsed: boolean) => {
+    const wasCollapsed = collapsedGroupsById[groupId] === true;
+    const collapsedGroupCountBefore = Object.keys(collapsedGroupsById).length;
+    postSidebarCollapseStateLog("groupToggle", {
+      changed: wasCollapsed !== collapsed,
+      collapsed,
+      collapsedGroupCountBefore,
+      collapsedGroupCountExpectedAfter:
+        collapsedGroupCountBefore + (wasCollapsed === collapsed ? 0 : collapsed ? 1 : -1),
+      groupHash: hashSidebarCollapseDebugId(groupId),
+      groupIndex: groupOrder.indexOf(groupId),
+      wasCollapsed,
+    });
     setCollapsedGroupsById((previous) => {
       if (collapsed) {
         if (previous[groupId]) {
@@ -763,6 +917,20 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   };
 
   const setGroupsCollapsed = (groupIds: readonly string[], collapsed: boolean) => {
+    const targetGroupSet = new Set(groupIds);
+    const collapsedGroupCountBefore = Object.keys(collapsedGroupsById).length;
+    const changedGroupCount = groupIds.filter(
+      (groupId) => collapsedGroupsById[groupId] !== (collapsed ? true : undefined),
+    ).length;
+    postSidebarCollapseStateLog("groupsBulkToggle", {
+      changedGroupCount,
+      collapsed,
+      collapsedGroupCountBefore,
+      collapsedGroupCountExpectedAfter:
+        collapsedGroupCountBefore + (collapsed ? changedGroupCount : -changedGroupCount),
+      groupHashes: summarizeSidebarCollapseDebugGroupIds(groupIds),
+      targetGroupCount: targetGroupSet.size,
+    });
     setCollapsedGroupsById((previous) => {
       if (collapsed) {
         const next = { ...previous };
@@ -892,6 +1060,15 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       return;
     }
 
+    if (event.data.type === "remoteMachineStatus") {
+      const remoteMachineStatus = event.data as RemoteMachineRuntimeStatus;
+      setRemoteMachineRuntimeStatuses((current) => ({
+        ...current,
+        [remoteMachineStatus.machineId]: remoteMachineStatus.state,
+      }));
+      return;
+    }
+
     if (event.data.type === "showT3BrowserAccess") {
       /**
        * CDXC:T3RemoteAccess 2026-05-02-00:57
@@ -965,6 +1142,45 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       hasHydrateBeforeMessage: hasAppliedHydrateRef.current,
       instanceId: refreshDebugInstanceIdRef.current,
     });
+    const sidebarCollapseMessageSessionCount = countSidebarSessions(event.data.groups);
+    const sidebarCollapseMessageShape = [
+      event.data.type,
+      event.data.groups.length,
+      sidebarCollapseMessageSessionCount,
+      event.data.revision < revision ? "stale" : "fresh",
+    ].join(":");
+    const shouldLogSidebarCollapseHydrateMessage =
+      event.data.hud.debuggingMode &&
+      getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current) <=
+        SIDEBAR_STARTUP_REPRO_WINDOW_MS &&
+      (collapseStateHydrateLogCountRef.current < 8 ||
+        lastCollapseStateHydrateShapeRef.current !== sidebarCollapseMessageShape);
+    if (shouldLogSidebarCollapseHydrateMessage) {
+      /**
+       * CDXC:SidebarCollapseDiagnostics 2026-06-02-22:18:
+       * Collapse-state startup logs need the first hydrate sequence and shape
+       * changes, not every repeated gxserver presentation refresh. Limit the
+       * high-frequency message logs so support bundles stay readable while
+       * still capturing partial 2-group startup hydrates.
+       */
+      collapseStateHydrateLogCountRef.current += 1;
+      lastCollapseStateHydrateShapeRef.current = sidebarCollapseMessageShape;
+      postSidebarCollapseStateLog(
+        "messageReceived",
+        {
+          collapsedGroupCount: Object.keys(collapsedGroupsById).length,
+          groupCount: event.data.groups.length,
+          isRecentProjectsOpen,
+          isReferenceChatsCollapsed,
+          isReferenceProjectsCollapsed,
+          messageRevision: event.data.revision,
+          messageType: event.data.type,
+          sessionCount: sidebarCollapseMessageSessionCount,
+          stale: event.data.revision < revision,
+        },
+        { enabled: true },
+      );
+    }
     if (event.data.hud.debuggingMode && !didLogRefreshInstanceObservedRef.current) {
       didLogRefreshInstanceObservedRef.current = true;
       postSidebarRefreshDebugLog(event.data.hud.debuggingMode, vscode, "appInstanceObserved", {
@@ -1022,6 +1238,24 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       hasAppliedHydrateRef.current = true;
       firstHydrateRevisionRef.current = event.data.revision;
     }
+    if (shouldLogSidebarCollapseHydrateMessage) {
+      postSidebarCollapseStateLog(
+        "messageApplied",
+        {
+          collapsedGroupCount: Object.keys(collapsedGroupsById).length,
+          groupCount: event.data.groups.length,
+          isRecentProjectsOpen,
+          isReferenceChatsCollapsed,
+          isReferenceProjectsCollapsed,
+          messageRevision: event.data.revision,
+          messageType: event.data.type,
+          sessionCount: sidebarCollapseMessageSessionCount,
+          storeCollapsedGroupCount: Object.keys(collapsedGroupsById).length,
+          storeRevisionAfterApply: useSidebarStore.getState().revision,
+        },
+        { enabled: true },
+      );
+    }
     postSidebarStartupReproLog("messageApplied", {
       elapsedMs: getSidebarStartupElapsedMs(sidebarStartupStartedAtRef.current),
       groupCount: event.data.groups.length,
@@ -1062,6 +1296,28 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       });
     };
   }, [postSidebarRefreshLifecycleLog, postSidebarStartupReproLog]);
+
+  useEffect(() => {
+    if (!debuggingMode || didLogInitialUiCollapseStateReadRef.current) {
+      return;
+    }
+
+    didLogInitialUiCollapseStateReadRef.current = true;
+    postSidebarCollapseStateLog("initialRead", {
+      ...summarizeSidebarUiCollapseRead(initialUiCollapseStateRead),
+      currentCollapsedGroupCount: Object.keys(collapsedGroupsById).length,
+      groupCount: groupOrder.length,
+      sessionCount: Object.keys(sessionsById).length,
+      workspaceGroupCount: workspaceGroupIds.length,
+    });
+  }, [
+    collapsedGroupsById,
+    debuggingMode,
+    groupOrder,
+    initialUiCollapseStateRead,
+    sessionsById,
+    workspaceGroupIds,
+  ]);
 
   useEffect(() => {
     const renderState = {
@@ -1407,8 +1663,60 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   );
   const displayedReferenceProjectGroupIds = useMemo(
     () =>
-      displayedWorkspaceGroupIds.filter((groupId) => !groupsById[groupId]?.isChatCollection),
+      displayedWorkspaceGroupIds.filter(
+        (groupId) =>
+          !groupsById[groupId]?.isChatCollection &&
+          !groupsById[groupId]?.remoteMachineContext,
+      ),
     [displayedWorkspaceGroupIds, groupsById],
+  );
+  const remoteProjectGroupIdsByMachineId = useMemo(() => {
+    const next: Record<string, string[]> = {};
+    for (const groupId of displayedWorkspaceGroupIds) {
+      const remoteMachineContext = groupsById[groupId]?.remoteMachineContext;
+      if (!remoteMachineContext) {
+        continue;
+      }
+      next[remoteMachineContext.machineId] ??= [];
+      next[remoteMachineContext.machineId].push(groupId);
+    }
+    return next;
+  }, [displayedWorkspaceGroupIds, groupsById]);
+  const remoteMachines = settings?.remoteMachines ?? [];
+  const moveRemoteMachineSection = useEffectEvent(
+    (sourceRemoteMachineId: string, targetRemoteMachineId: string) => {
+      if (!settings || sourceRemoteMachineId === targetRemoteMachineId) {
+        return;
+      }
+      const sourceIndex = settings.remoteMachines.findIndex(
+        (machine) => machine.id === sourceRemoteMachineId,
+      );
+      const targetIndex = settings.remoteMachines.findIndex(
+        (machine) => machine.id === targetRemoteMachineId,
+      );
+      if (sourceIndex < 0 || targetIndex < 0) {
+        return;
+      }
+      const nextRemoteMachines = [...settings.remoteMachines];
+      const [movedMachine] = nextRemoteMachines.splice(sourceIndex, 1);
+      if (!movedMachine) {
+        return;
+      }
+      nextRemoteMachines.splice(targetIndex, 0, movedMachine);
+      /*
+       * CDXC:RemoteMachines 2026-06-03-00:18:
+       * Remote machine sidebar sections are user-orderable peers of Projects.
+       * Persist the order in Settings.remoteMachines so app restart and the
+       * Remote settings tab show the same section order.
+       */
+      vscode.postMessage({
+        settings: {
+          ...settings,
+          remoteMachines: nextRemoteMachines,
+        },
+        type: "updateSettings",
+      });
+    },
   );
   const filteredPreviousSessions = useMemo(
     () =>
@@ -1449,6 +1757,10 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       (groupId) => (authoritativeSessionIdsByGroup[groupId] ?? []).length > 0,
     );
     if (!hasChatSessions) {
+      postSidebarCollapseStateLog("sectionAutoCollapsed", {
+        reason: "startup-empty-quick",
+        section: "quick",
+      });
       /**
        * CDXC:SidebarReference 2026-05-10-15:51
        * Startup restores the user's section/group collapse state, except an empty
@@ -1460,17 +1772,6 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   }, [authoritativeSessionIdsByGroup, displayedReferenceChatGroupIds]);
 
   useEffect(() => {
-    if (
-      !shouldPersistSidebarUiCollapseState({
-        groupCount: groupOrder.length,
-        hasAppliedHydrate: hasAppliedHydrateRef.current,
-        hasEstablishedStartupGroupCollapseBaseline:
-          hasEstablishedStartupGroupCollapseBaselineRef.current,
-      })
-    ) {
-      return;
-    }
-
     /**
      * CDXC:SidebarReference 2026-05-10-15:51
      * Combined section headers, Recent Projects, and per-group collapse state are
@@ -1479,22 +1780,23 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
      * CDXC:SidebarReference 2026-05-20-12:00
      * The first post-hydrate group-collapse reconcile seeds session-count baseline
      * without expand-on-count-increase so restored projects do not reopen on launch.
-     *
-     * CDXC:SidebarReference 2026-06-02-22:39:
-     * Do not persist the initial default-expanded mount state. Wait until native
-     * hydrate has produced real groups and the startup collapse baseline exists,
-     * otherwise app restart can overwrite saved collapsed Quick, Projects, and
-     * project rows before the restored sidebar tree is available.
      */
-    writeSidebarUiCollapseState({
+    const nextCollapseState = {
       collapsedGroupsById,
       isRecentProjectsOpen,
       isReferenceChatsCollapsed,
       isReferenceProjectsCollapsed,
+    };
+    const writeResult = writeSidebarUiCollapseState(nextCollapseState);
+    postSidebarCollapseStateLog("write", {
+      ...summarizeSidebarUiCollapseState(nextCollapseState),
+      groupCount: groupOrder.length,
+      storedByteLength: writeResult.storedByteLength ?? 0,
+      writeOk: writeResult.ok,
+      writeReason: writeResult.reason ?? "stored",
     });
   }, [
     collapsedGroupsById,
-    groupOrder.length,
     isRecentProjectsOpen,
     isReferenceChatsCollapsed,
     isReferenceProjectsCollapsed,
@@ -1937,6 +2239,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       targetData,
     });
     if (!sourceData) {
+      return;
+    }
+
+    if (sourceData.kind === "remote-machine") {
+      if (event.canceled || targetData?.kind !== "remote-machine") {
+        return;
+      }
+      moveRemoteMachineSection(sourceData.remoteMachineId, targetData.remoteMachineId);
       return;
     }
 
@@ -2731,6 +3041,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                       onCreateChat={createReferenceChat}
                       onFilterChats={toggleSessionSearch}
                       onToggleCollapsed={() => {
+                        const nextCollapsed = !isReferenceChatsCollapsed;
+                        postSidebarCollapseStateLog("sectionToggle", {
+                          childGroupCount: displayedReferenceChatGroupIds.length,
+                          collapsed: nextCollapsed,
+                          section: "quick",
+                        });
                         if (isReferenceChatsCollapsed) {
                           triggerReferenceSectionChildAnimation("quick");
                         }
@@ -2797,6 +3113,19 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     onBulkProjectToggle={
                       displayedReferenceProjectGroupIds.length > 0
                         ? () => {
+                            postSidebarCollapseStateLog("projectBulkCommand", {
+                              expandedProjectGroupCount:
+                                displayedReferenceProjectGroupIds.length -
+                                Object.keys(collapsedGroupsById).filter((groupId) =>
+                                  displayedReferenceProjectGroupIds.includes(groupId),
+                                ).length,
+                              mode: hasExpandedReferenceProjects
+                                ? "collapse-all"
+                                : "expand-previous",
+                              previousExpandedGroupCount:
+                                previousExpandedReferenceProjectGroupIdsRef.current.length,
+                              projectGroupCount: displayedReferenceProjectGroupIds.length,
+                            });
                             if (isReferenceProjectsCollapsed && !hasExpandedReferenceProjects) {
                               triggerReferenceSectionChildAnimation("projects");
                             }
@@ -2824,6 +3153,12 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                         : undefined
                     }
                     onToggleCollapsed={() => {
+                      const nextCollapsed = !isReferenceProjectsCollapsed;
+                      postSidebarCollapseStateLog("sectionToggle", {
+                        childGroupCount: displayedReferenceProjectGroupIds.length,
+                        collapsed: nextCollapsed,
+                        section: "projects",
+                      });
                       if (isReferenceProjectsCollapsed) {
                         triggerReferenceSectionChildAnimation("projects");
                       }
@@ -2876,6 +3211,64 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     ) : (
                       <div className="reference-sidebar-empty-state">No projects</div>
                     )}
+                  </div>
+                ) : null}
+                {!shouldHideReferenceSectionsForSearchEmptyState && remoteMachines.length > 0 ? (
+                  <div className="reference-remote-section-list">
+                    {/*
+                     * CDXC:RemoteMachines 2026-06-02-23:47:
+                     * Saved Remote machines render as peer sidebar sections beside local Projects. Until the SSH/gxserver connection is active, each machine remains visible, faded, non-expandable, and exposes only Reload instead of Add Project or Clone Repository.
+                     */}
+                    {remoteMachines.map((machine, index) => (
+                      <RemoteMachineSidebarSection
+                        index={index}
+                        key={machine.id}
+                        machine={machine}
+                        onAddProject={() =>
+                          openAppModal({
+                            modal: "remoteProjectPicker",
+                            remoteMachineId: machine.id,
+                            remoteMachineName: machine.name,
+                            type: "open",
+                          })
+                        }
+                        onCloneRepository={() =>
+                          vscode.postMessage({
+                            remoteMachineId: machine.id,
+                            type: "openRemoteCloneRepository",
+                          })
+                        }
+                        onReconnect={() =>
+                          vscode.postMessage({
+                            remoteMachineId: machine.id,
+                            type: "reconnectRemoteMachine",
+                          })
+                        }
+                        projectGroupIds={remoteProjectGroupIdsByMachineId[machine.id] ?? []}
+                        renderProjectGroup={(groupId, groupIndex) => (
+                          <SessionGroupSection
+                            autoEdit={false}
+                            canClose={false}
+                            completionFlashNonceBySessionId={completionFlashNonceBySessionId}
+                            draggingDisabled={true}
+                            groupId={groupId}
+                            index={groupIndex}
+                            isCollapsed={collapsedGroupsById[groupId] === true}
+                            key={groupId}
+                            onAutoEditHandled={() => undefined}
+                            onCollapsedChange={setGroupCollapsed}
+                            onFocusRequested={() => undefined}
+                            orderedSessionIds={displayedWorkspaceSessionIdsByGroup[groupId] ?? []}
+                            enableProjectSessionListToggle={!isSessionSearchFiltering}
+                            sessionDraggingDisabled={true}
+                            showHeaderActions={false}
+                            showSessionDropPositionIndicators={false}
+                            vscode={vscode}
+                          />
+                        )}
+                        status={remoteMachineRuntimeStatuses[machine.id] ?? "disconnected"}
+                      />
+                    ))}
                   </div>
                 ) : null}
                 {groupDragPreview && typeof document !== "undefined"
@@ -2939,6 +3332,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
               className="recent-projects-drawer-toggle group-head"
               data-collapsible="true"
               onClick={() => {
+                postSidebarCollapseStateLog("sectionToggle", {
+                  collapsed: !isRecentProjectsOpen,
+                  recentProjectCount: recentProjects.length,
+                  section: "recent-projects",
+                });
                 setRecentProjectContextMenuPosition(undefined);
                 setIsRecentProjectsOpen((previous) => !previous);
               }}
@@ -3390,6 +3788,7 @@ function SidebarReferenceSectionHeader({
   onCreateBrowserChat,
   onCreateChat,
   onFilterChats,
+  onReconnect,
   onToggleCollapsed,
   sectionKey,
   title,
@@ -3403,8 +3802,9 @@ function SidebarReferenceSectionHeader({
   onCreateBrowserChat?: () => void;
   onCreateChat?: () => void;
   onFilterChats?: () => void;
+  onReconnect?: () => void;
   onToggleCollapsed: () => void;
-  sectionKey: "projects" | "quick";
+  sectionKey: ReferenceSidebarSectionId;
   title: string;
 }) {
   /**
@@ -3449,7 +3849,8 @@ function SidebarReferenceSectionHeader({
     onBulkProjectToggle ||
     onCreateBrowserChat ||
     onCreateChat ||
-    onFilterChats;
+    onFilterChats ||
+    onReconnect;
 
   return (
     <div
@@ -3505,6 +3906,17 @@ function SidebarReferenceSectionHeader({
               <BulkProjectIcon aria-hidden="true" size={14} stroke={1.9} />
             </button>
           ) : null}
+          {onReconnect ? (
+            <button
+              aria-label={`Reload ${title}`}
+              className="reference-sidebar-section-action reference-sidebar-hover-action-tooltip"
+              data-tooltip="Reload"
+              onClick={onReconnect}
+              type="button"
+            >
+              <IconRefresh aria-hidden="true" size={14} stroke={1.9} />
+            </button>
+          ) : null}
           {onAddRepository ? (
             <button
               aria-label="Clone Repository"
@@ -3527,6 +3939,64 @@ function SidebarReferenceSectionHeader({
               <IconPlus aria-hidden="true" size={14} stroke={2} />
             </button>
           ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RemoteMachineSidebarSection({
+  index,
+  machine,
+  onAddProject,
+  onCloneRepository,
+  onReconnect,
+  projectGroupIds,
+  renderProjectGroup,
+  status,
+}: {
+  index: number;
+  machine: RemoteMachineSettings;
+  onAddProject: () => void;
+  onCloneRepository: () => void;
+  onReconnect: () => void;
+  projectGroupIds: readonly string[];
+  renderProjectGroup: (groupId: string, groupIndex: number) => ReactNode;
+  status: RemoteMachineRuntimeStatus["state"];
+}) {
+  const isConnected = status === "connected";
+  const sortable = useSortable({
+    accept: "remote-machine",
+    data: createRemoteMachineDragData(machine.id),
+    id: `remote-machine:${machine.id}`,
+    index,
+    type: "remote-machine",
+  });
+
+  return (
+    <div
+      className="reference-remote-machine-section"
+      data-disconnected={String(!isConnected)}
+      data-dragging={String(Boolean(sortable.isDragging))}
+      data-sidebar-remote-machine-id={machine.id}
+      ref={sortable.ref}
+    >
+      <SidebarReferenceSectionHeader
+        actionsAlwaysVisible={false}
+        collapsed={true}
+        onAddProject={isConnected ? onAddProject : undefined}
+        onAddRepository={isConnected ? onCloneRepository : undefined}
+        onReconnect={isConnected ? undefined : onReconnect}
+        onToggleCollapsed={() => undefined}
+        sectionKey="remote"
+        title={machine.name}
+      />
+      {isConnected && projectGroupIds.length > 0 ? (
+        <div
+          className="group-list workspace-group-list reference-remote-project-group-list"
+          data-sidebar-remote-project-list="true"
+        >
+          {projectGroupIds.map((groupId, groupIndex) => renderProjectGroup(groupId, groupIndex))}
         </div>
       ) : null}
     </div>
