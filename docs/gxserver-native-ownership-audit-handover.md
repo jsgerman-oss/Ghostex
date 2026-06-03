@@ -74,11 +74,9 @@ High-risk files:
 - `gxserver/src/server.ts`
 - `gxserver/src/domain-state.ts`
 
-### 2. Titlebar and workspace dock resource lists
 
 Expected ownership:
 
-- gxserver owns shared project/session rows represented in titlebar resource menus and workspace dock entries.
 - macOS owns titlebar UI, dock placement, active highlight, hover/open state, and focus routing.
 - native-only Quick/browser/file/T3 rows may be merged only when they have no gxserver shared session record.
 
@@ -92,7 +90,7 @@ High-risk files:
 
 - `native/sidebar/titlebar-host.tsx`
 - `native/sidebar/native-sidebar.tsx`
-- `shared/workspace-dock-icons.ts`
+- `shared/workspace-project-appearance.ts`
 
 ### 3. Agent Manager and gx CLI state
 
@@ -309,7 +307,6 @@ High-risk files:
 ## Suggested audit order
 
 1. Command-panel lifecycle close/sleep/wake.
-2. Titlebar, workspace dock, Agent Manager, and gx CLI state enumeration.
 3. Project board/Beads and Git/clone/worktree native process call sites.
 4. Previous sessions/search/recents.
 5. Persistent storage and shared helper purity.

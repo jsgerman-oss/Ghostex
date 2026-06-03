@@ -60,7 +60,6 @@ Sidebar components must not call Git, Beads, GitHub, filesystem, zmx, gxserver p
 
 - Native window surfaces, split views, tab views, WebViews, Ghostty terminal embedding, browser/editor embedding, and OS-level focus.
 - Local pane commands: create, attach, focus, reorder, hide, restore, split, merge, rotate, and close visual pane surfaces when those commands are presentation-only.
-- Local OS integrations: Finder/IDE/open-file actions, native titlebar controls, workspace dock chrome, WebView lifecycle, and native keyboard/focus routing.
 - Local pane restoration/materialization decisions for already-known sessions and local-only panes.
 - Native terminal and browser surface lifecycle after gxserver has provided shared session identity or attach metadata.
 

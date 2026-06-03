@@ -11,7 +11,6 @@ CDXC:ProjectSidebarOwnership 2026-06-02-17:30:
 The ownership map needs to be the markdown handoff for review, so it must also name browser/editor/code panes, terminal/agent sessions, ordering, no-dual-ownership invariants, and the primary code areas that should be audited.
 
 CDXC:ProjectSidebarOwnership 2026-06-02-20:04:
-The review handoff must enumerate operational sidebar surfaces too, not just model ownership. Titlebar resources, workspace dock rows, Agent Manager bridges, gx CLI/state commands, project sleep/wake/reload actions, status indicators, auto-sleep, and notification reconciliation all need explicit owners so cleanup can remove stale native-owned project/session paths instead of leaving quiet fallbacks.
 
 CDXC:ProjectSidebarOwnership 2026-06-02-15:10:
 The ownership handoff needs an at-a-glance bullet list in addition to the full audit map. Reviewers should be able to see the exact owners for gxserver, macOS current-window state, sidebar React, AppKit/native host, tabs, panes, modals, shared code, notifications, and cleanup before reading the detailed sections.
@@ -28,7 +27,6 @@ The rule is: shared durable state has one owner, and current-window UI state has
 - gxserver owns canonical shared state: project inventory, worktree identity/parent detection, shared session records, project/session/worktree lifecycle, Git/worktree/Beads/clone mutations, previous-session records, shared search results, durable backend configuration, persistence, protocol mutation results, and complete presentation snapshots/deltas.
 - macOS app and native sidebar adapter own current-window state: selected project/session/row, active tab and pane, focus, titlebar/dock/modal visibility, command-panel placement, local search/filter text, picker drafts, local-first optimistic overlays, and reconciliation of gxserver snapshots/deltas into renderable sidebar state.
 - Sidebar React components own visuals and component interactions: sidebar tree layout, project sections, worktree nesting display, session rows/cards, menus, icons, drag handles, empty states, modal/picker rendering, hover/context menu affordances, disclosure toggles, CSS, accessibility, and callbacks supplied by the adapter.
-- Native host and AppKit bridge own OS/window surfaces: split views, tab views, WebViews, Ghostty terminal embedding, browser/editor embedding, native focus, keyboard routing, titlebar chrome, workspace dock chrome, local pane materialization, Finder/IDE/open-file actions, and local pane commands that only affect presentation.
 - Tabs and panes are split by backing state versus placement: gxserver owns the shared terminal/agent/command session behind a tab and shared close/sleep/wake/remove mutations; macOS owns the visible tab instance, selected tab, tab order, pane tree, split ratios, merge/split/rotate behavior, hidden/visible placement, and tab chrome.
 - Command panel follows the tab rule: gxserver owns command terminal session identity and shared metadata once created; macOS owns panel open state, placement, active command tab, tab order, focus, command draft input, and picker UI.
 - Modals, forms, and pickers are macOS-owned until submit: visibility, selected rows, validation, loading/error state, agent selection, first prompt, image attachments, existing-worktree selection, clone drafts, and confirmation UI. gxserver owns the submitted mutation and canonical state it returns or publishes.
@@ -66,14 +64,12 @@ gxserver must not own selected tab, selected pane, pane geometry, split layout, 
 - Calling gxserver mutation APIs for shared actions and reconciling returned state or websocket deltas into gxserver-shaped local presentation cache.
 - Current-window sidebar UI state: filters, local search text, expanded/collapsed sections, transient visibility, hover/context-menu state, and recents display when it is not shared.
 - Temporary pending UI while waiting for gxserver, as long as it does not become the durable project/session source.
-- Current-window workspace layout: visible group selection, active tab, active pane, pane focus, local workspace dock state, and per-window placement of shared sessions.
 - Local process bridge routing for native-only integrations and for forwarding user commands to gxserver APIs.
 
 The adapter must not keep a canonical project/worktree/session inventory, duplicate worktree parent detection, or persist shared session metadata independently from gxserver.
 
 ## macOS App Owns
 
-- Current-window app shell state: selected project, selected pane, selected tab, active view, native titlebar mode, workspace dock visibility, command-panel visibility, and modal stack.
 - Current-window routing of user intent: when a click, keyboard shortcut, titlebar action, dock action, context menu item, or modal submit should call gxserver versus a native-only pane command.
 - Local materialization of gxserver-backed sessions into AppKit/WebView/Ghostty surfaces after gxserver provides shared identity and attach metadata.
 - Local-first reconciliation overlays that make user actions visible immediately while preserving gxserver as the shared source of truth.
@@ -97,7 +93,6 @@ Sidebar React components must not call Git, Beads, GitHub, filesystem, zmx, gxse
 
 - Native window surfaces, split views, tab views, WebViews, Ghostty terminal embedding, browser/editor embedding, and OS-level focus.
 - Local pane commands: create, attach, focus, reorder, hide, restore, split, merge, rotate, and close visual pane surfaces when those commands are presentation-only.
-- Local OS integrations: Finder, IDE open, open-file actions, native titlebar controls, workspace dock chrome, WebView lifecycle, and native keyboard/focus routing.
 - Native terminal and browser surface lifecycle after gxserver has provided shared session identity or attach metadata.
 - Local pane restoration/materialization decisions for already-known sessions and local-only panes.
 - Local WebView-to-AppKit bridges for sidebar commands, modal display, titlebar commands, and native surface commands.
@@ -107,9 +102,6 @@ Native host/AppKit code must not independently decide canonical project/worktree
 
 ## Titlebar, Workspace Dock, and App Chrome
 
-- gxserver owns the shared project/session rows that titlebar resource menus and workspace dock entries represent.
-- macOS owns the titlebar UI, visible resource menu structure, hover/open state, workspace dock placement, active resource highlight, and click/focus routing.
-- Titlebar and workspace dock lists should consume gxserver presentation groups for shared project/session rows whenever gxserver presentation is available.
 - macOS may merge native-only Quick/browser/editor/file rows into titlebar or dock surfaces only when those rows have no gxserver shared session record.
 - Titlebar actions that mutate shared lifecycle, such as sleep/wake/close/remove, must call gxserver-owned lifecycle paths and then apply local-first presentation cache updates.
 - Titlebar actions that only change window chrome, pane focus, local visibility, or tab selection remain macOS-owned.
@@ -313,7 +305,6 @@ These responsibilities must have exactly one durable owner:
 - Command-panel terminal rows that use local timestamp ids when they should use gxserver session ids.
 - Worktree add/open flows that show create-agent, first-prompt, image, or prompt-helper UI in existing-worktree selection mode.
 - Shared helpers that read/write browser storage or call backend/native APIs.
-- Titlebar, workspace dock, Agent Manager, gx command, status-indicator, pet-overlay, project sleep/wake/reload, and auto-sleep paths that enumerate native project/session trees as canonical while gxserver presentation is available.
 - Native direct `git`, `gh`, `bd`, worktree, or clone execution for shared project operations when a gxserver typed operation exists.
 - Native command-panel/shared terminal rows that cannot be reconciled to gxserver session ids.
 
