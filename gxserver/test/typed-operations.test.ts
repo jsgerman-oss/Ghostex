@@ -11,10 +11,11 @@ import {
   GxserverTypedOperationError,
   runBeadsAction,
   runGitAction,
+  runProjectSetupCommand,
   runWorktreeAction,
 } from "../src/typed-operations.js";
 import { normalizeExistingDirectoryPath } from "../src/project-paths.js";
-import type { GxserverProjectDomainState } from "../protocol/index.js";
+import type { GxserverProjectDomainState, GxserverProjectId } from "../protocol/index.js";
 
 test("Git command construction is allowlisted and keeps file paths project-relative", () => {
   const status = buildGitCommand({ action: "status", projectPath: "/repo" }, "/repo");
@@ -258,6 +259,93 @@ test("typed worktree pathExists checks target availability inside gxserver", asy
           { cwd: repo, projects: [project("P3a91", repo)] },
         ),
       /must stay inside the source project worktree family directory/,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("typed project setup command runs stored worktree command with redacted metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-project-setup-"));
+  try {
+    const sourceRepo = path.join(root, "repo");
+    const worktreeRepo = path.join(root, "repo-feature");
+    await mkdir(sourceRepo);
+    await mkdir(worktreeRepo);
+    const sourceProject: GxserverProjectDomainState = {
+      ...project("P3a91", sourceRepo),
+      gitConfig: {
+        worktreeCommand: "pwd > setup-ran.txt && printf 'setup ok'",
+      },
+    };
+    const targetProject = project("P4b22" as GxserverProjectId, worktreeRepo);
+
+    const result = await runProjectSetupCommand(
+      {
+        action: "worktreeSetupCommand",
+        projectId: targetProject.projectId,
+        setupCommandProjectId: sourceProject.projectId,
+      },
+      {
+        cwd: worktreeRepo,
+        projects: [sourceProject, targetProject],
+      },
+    );
+
+    assert.equal(result.action, "worktreeSetupCommand");
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "setup ok");
+    assert.deepEqual(result.command?.args, ["-lc", "<worktree setup command>"]);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("typed project setup command no-ops when stored worktree command is empty", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-project-setup-empty-"));
+  try {
+    const repo = path.join(root, "repo");
+    await mkdir(repo);
+    const result = await runProjectSetupCommand(
+      { action: "worktreeSetupCommand", projectPath: repo },
+      {
+        cwd: repo,
+        projects: [project("P3a91", repo)],
+      },
+    );
+
+    assert.equal(result.action, "worktreeSetupCommand");
+    assert.equal(result.command, undefined);
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, "");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("typed project setup command rejects unregistered setup command project paths", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-project-setup-scope-"));
+  try {
+    const repo = path.join(root, "repo");
+    const outside = path.join(root, "outside");
+    await mkdir(repo);
+    await mkdir(outside);
+
+    await assert.rejects(
+      () =>
+        runProjectSetupCommand(
+          {
+            action: "worktreeSetupCommand",
+            projectPath: repo,
+            setupCommandProjectPath: outside,
+          },
+          {
+            cwd: repo,
+            projects: [project("P3a91", repo)],
+          },
+        ),
+      /setupCommandProjectPath must be a registered gxserver project path/,
     );
   } finally {
     await rm(root, { force: true, recursive: true });
@@ -653,7 +741,7 @@ test("project path normalization expands tilde and rejects files", async () => {
   }
 });
 
-function project(projectId: "P3a91", projectPath: string): GxserverProjectDomainState {
+function project(projectId: GxserverProjectId, projectPath: string): GxserverProjectDomainState {
   return {
     attentionRules: {},
     completionRules: {},

@@ -37,6 +37,7 @@ import {
   buildAgentResumePlan,
   buildProjectAgentLaunchPlan,
   createAgentSessionParams,
+  getAgentLaunchStartupTextForSession,
   getAgentStartupTextForSession,
   getAgentActivityStaleProjectionDelayMs,
   updateSessionActivitySettings,
@@ -62,6 +63,7 @@ import {
   type GxserverAgentTitleDebounceDecision,
 } from "./session-presentation/index.js";
 import { type GxserverPaths, getGxserverPaths } from "./paths.js";
+import { browseProjectDirectories } from "./project-directory-browser.js";
 import { GxserverProjectPathError, normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "./project-paths.js";
 import { GxserverRepositoryCloneError, GxserverRepositoryCloneJobManager } from "./repository-clone/index.js";
 import { removeRuntimeMetadata, writeRuntimeMetadata } from "./runtime.js";
@@ -78,11 +80,13 @@ import {
   runBeadsAction,
   runGitAction,
   runGitHubAction,
+  runProjectSetupCommand,
   runWorktreeAction,
 } from "./typed-operations.js";
 import {
   buildZmxAttachCommand,
   buildZmxHistoryCommand,
+  buildZmxRunCommand,
   buildZmxSendCommand,
   decideStartupTextDisposition,
   defaultCwdExists,
@@ -115,6 +119,7 @@ import type {
   GxserverMinimalHealthResponse,
   GxserverMigrationStatus,
   GxserverProjectDomainState,
+  GxserverProjectDirectoryBrowseParams,
   GxserverProjectId,
   GxserverProviderKillResult,
   GxserverProviderProbeResult,
@@ -127,6 +132,7 @@ import type {
   GxserverRepositoryClonePreviewRpcResult,
   GxserverRunGitActionParams,
   GxserverRunGitHubActionParams,
+  GxserverRunProjectSetupCommandParams,
   GxserverRunWorktreeActionParams,
   GxserverRpcSuccessResponse,
   GxserverRuntimeMetadata,
@@ -134,6 +140,8 @@ import type {
   GxserverSessionDomainState,
   GxserverSessionId,
   GxserverSessionLifecycleParams,
+  GxserverStartSessionProviderParams,
+  GxserverStartSessionProviderResult,
   GxserverSessionTransitionParams,
   GxserverSessionTransitionResult,
   GxserverSessionRenameRequestParams,
@@ -623,6 +631,26 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
       } else if (caught instanceof GxserverDomainStateError) {
         sendJson(response, statusForDomainStateError(caught.code), createRpcError(caught.code, caught.message, requestId));
       } else if (caught instanceof GxserverProjectPathError) {
+        sendJson(response, statusForOperationError(caught.code), createRpcError(caught.code, caught.message, requestId));
+      } else {
+        throw caught;
+      }
+    }
+    return endpoint.path;
+  }
+
+  if (endpoint.path === "/api/browseProjectDirectories") {
+    try {
+      const result = await handleBrowseProjectDirectoriesEndpoint(body);
+      sendJson(response, 200, {
+        ok: true,
+        product: GXSERVER_PRODUCT,
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        requestId,
+        result,
+      });
+    } catch (caught) {
+      if (caught instanceof GxserverProjectPathError) {
         sendJson(response, statusForOperationError(caught.code), createRpcError(caught.code, caught.message, requestId));
       } else {
         throw caught;
@@ -1745,7 +1773,9 @@ async function handleTypedOperationEndpoint(
           ? await runGitHubAction(params as unknown as GxserverRunGitHubActionParams, context)
           : endpointPath === "/api/runWorktreeAction"
             ? await runWorktreeAction(params as unknown as GxserverRunWorktreeActionParams, context)
-            : await runBeadsAction(params as unknown as GxserverRunBeadsActionParams, context);
+            : endpointPath === "/api/runProjectSetupCommand"
+              ? await runProjectSetupCommand(params as unknown as GxserverRunProjectSetupCommandParams, context)
+              : await runBeadsAction(params as unknown as GxserverRunBeadsActionParams, context);
     await runtime.logger.log({
       details: {
         action: result.action,
@@ -1844,6 +1874,21 @@ async function dispatchZmxLifecycleEndpoint(
       return endpointPath === "/api/wakeSession"
         ? { attach: normalizedAttach, session }
         : { attach: normalizedAttach };
+    }
+    case "/api/startSessionProvider": {
+      const result = await startSessionProvider(
+        runtime,
+        repository,
+        params as unknown as GxserverStartSessionProviderParams,
+        requestId,
+        agentSettings,
+      );
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: result.session.projectId,
+        reason: "start-session-provider",
+        sessionId: result.session.sessionId,
+      });
+      return result as unknown as Record<string, unknown>;
     }
     case "/api/transitionSession": {
       const result = await dispatchSessionTransitionEndpoint(runtime, repository, normalizeSessionTransitionParams(params));
@@ -2111,7 +2156,9 @@ async function createAttachSessionMetadata(
   CDXC:GxserverTerminalWake 2026-06-01-12:07:
   Sleeping-session wake should let gxserver rebuild the real agent resume command from shared session metadata. A macOS renderer can legitimately pass an empty string when its legacy local resume builder has no text; treat blank startupText as absent instead of suppressing the server-owned resume plan.
   */
-  const startupText = normalizeOptionalStartupText(params.startupText) ?? getAgentStartupTextForSession(project, probedSession, agentSettings);
+  const startupText =
+    normalizeOptionalStartupText(params.startupText) ??
+    getAgentStartupTextForSession(project, probedSession, agentSettings);
   const startupTextDisposition = decideStartupTextDisposition({
     providerState: probe.lifecycleState,
     startupText,
@@ -2239,6 +2286,102 @@ async function killAndCacheSessionProvider(
   return { kill, session: updated };
 }
 
+async function startSessionProvider(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  params: GxserverStartSessionProviderParams,
+  requestId: string,
+  agentSettings: GxserverAgentSettings,
+): Promise<GxserverStartSessionProviderResult> {
+  const lifecycle = readSessionLifecycleParams(params as unknown as Record<string, unknown>);
+  const project = repository.getProject(lifecycle.projectId);
+  if (!project) {
+    throw new GxserverDomainStateError("notFound", `Project ${lifecycle.projectId} does not exist.`);
+  }
+  const { probe, session: probedSession, zmx, zmxSessionName } = await probeAndCacheSessionProvider(
+    runtime,
+    repository,
+    lifecycle,
+  );
+  const startupText =
+    normalizeOptionalStartupText(params.startupText) ??
+    getAgentLaunchStartupTextForSession(probedSession) ??
+    getAgentStartupTextForSession(project, probedSession, agentSettings);
+  const startupTextDisposition = decideStartupTextDisposition({
+    providerState: probe.lifecycleState,
+    startupText,
+  });
+  if (startupTextDisposition !== "queueAfterTerminalReady" || !startupText?.trim()) {
+    return {
+      provider: "zmx",
+      providerState: probe,
+      session: probedSession,
+      started: false,
+      startupTextDisposition,
+      zmxName: zmxSessionName,
+    };
+  }
+  const cwd = probedSession.cwd ?? project.path;
+  if (!(cwd && (await (runtime.zmxLifecycle?.cwdExists ?? defaultCwdExists)(cwd)))) {
+    throw new GxserverTypedOperationError(
+      "dependencyUnavailable",
+      "Cannot start session provider because the project directory is missing.",
+    );
+  }
+  /*
+  CDXC:GxserverRemoteAgents 2026-06-03-01:47:
+  Remote agent workflows need a real provider launch path without a macOS
+  renderer. Start only missing zmx providers through detached `zmx run`, using
+  the gxserver-owned launch/resume startup text, cwd, bundled zmx path, and
+  global session identity. Existing providers must not receive replayed startup
+  text because that would type a second agent command into a live session.
+  */
+  const result = await runZmxInteractionCommand(
+    runtime,
+    buildZmxRunCommand({
+      cwd,
+      globalSessionRef: probedSession.globalRef,
+      gxserverBaseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
+      sessionName: zmxSessionName,
+      startupText,
+      zmxExecutablePath: zmx.executablePath,
+    }),
+  );
+  const providerState: GxserverProviderProbeResult = {
+    lifecycleState: "exists",
+    probedAt: new Date().toISOString(),
+    zmxName: zmxSessionName,
+  };
+  const session = repository.updateSession({
+    lifecycleState: "running",
+    projectId: probedSession.projectId,
+    providerState: providerStatePatch(probedSession, providerState),
+    sessionId: probedSession.sessionId,
+  });
+  await runtime.logger.log({
+    event: "zmx.startProvider.completed",
+    level: "info",
+    projectId: session.projectId,
+    requestId,
+    serverId: runtime.metadata.serverId,
+    sessionId: session.sessionId,
+    details: {
+      exitCode: result.exitCode,
+      startupTextBytes: Buffer.byteLength(startupText, "utf8"),
+      zmxName: zmxSessionName,
+    },
+  });
+  return {
+    exitCode: result.exitCode,
+    provider: "zmx",
+    providerState,
+    session,
+    started: true,
+    startupTextDisposition,
+    zmxName: zmxSessionName,
+  };
+}
+
 function requireSession(
   repository: GxserverDomainRepository,
   lifecycle: GxserverSessionLifecycleParams,
@@ -2286,6 +2429,7 @@ function isTypedOperationEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/runGitAction" ||
     path === "/api/runGitHubAction" ||
     path === "/api/runWorktreeAction" ||
+    path === "/api/runProjectSetupCommand" ||
     path === "/api/runBeadsAction"
   );
 }
@@ -2311,6 +2455,7 @@ function isZmxLifecycleEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/transitionSession" ||
     path === "/api/sleepSession" ||
     path === "/api/wakeSession" ||
+    path === "/api/startSessionProvider" ||
     path === "/api/killSession"
   );
 }
@@ -2484,6 +2629,24 @@ function readOperationRpcParams(body: unknown): Record<string, unknown> {
     throw new GxserverTypedOperationError("badRequest", "RPC params must be an object.");
   }
   return body.params;
+}
+
+function readProjectDirectoryBrowseParams(body: unknown): GxserverProjectDirectoryBrowseParams {
+  if (!isRecord(body)) {
+    throw new GxserverProjectPathError("badRequest", "RPC request body must be an object.");
+  }
+  if (!isRecord(body.params)) {
+    throw new GxserverProjectPathError("badRequest", "RPC params must be an object.");
+  }
+  return {
+    ...(typeof body.params.cwd === "string" ? { cwd: body.params.cwd } : {}),
+    ...(body.params.limit !== undefined ? { limit: body.params.limit as number } : {}),
+    partialPath: body.params.partialPath as string,
+  };
+}
+
+async function handleBrowseProjectDirectoriesEndpoint(body: unknown) {
+  return await browseProjectDirectories(readProjectDirectoryBrowseParams(body));
 }
 
 function readRepositoryCloneRpcParams(body: unknown): Record<string, unknown> {

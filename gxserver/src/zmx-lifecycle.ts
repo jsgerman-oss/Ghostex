@@ -51,6 +51,15 @@ export interface GxserverZmxAttachCommandInput {
   zmxExecutablePath: string;
 }
 
+export interface GxserverZmxRunCommandInput {
+  cwd: string;
+  globalSessionRef?: string;
+  gxserverBaseUrl?: string;
+  sessionName: GxserverZmxSessionName;
+  startupText: string;
+  zmxExecutablePath: string;
+}
+
 export interface GxserverZmxStartupTextDecisionInput {
   providerState: GxserverProviderLifecycleState;
   startupText?: string;
@@ -159,6 +168,39 @@ if [ ! -x "$zmx_bin" ]; then
 fi
 unset ZMX_SESSION ZMX_SESSION_PREFIX
 exec "$zmx_bin" send "$zmx_session"
+`.trim();
+}
+
+export function buildZmxRunCommand(input: GxserverZmxRunCommandInput): string {
+  /*
+  CDXC:GxserverRemoteAgents 2026-06-03-02:18:
+  Remote gxserver can create agent sessions without a local macOS renderer, so it also needs a bounded way to start the backing zmx provider. This command launches only the named session with server-owned startup text, cwd, bundled zmx, and gxserver identity; it does not expose generic process execution.
+  */
+  const startupCommand = input.startupText.replace(/[\r\n]+$/u, "").trim();
+  return `
+zmx_session=${shellQuote(input.sessionName)}
+zmx_cwd=${shellQuote(input.cwd)}
+zmx_global_session_ref=${shellQuote(input.globalSessionRef ?? "")}
+zmx_gxserver_base_url=${shellQuote(input.gxserverBaseUrl ?? "")}
+zmx_startup_command=${shellQuote(startupCommand)}
+zmx_bin=${shellQuote(input.zmxExecutablePath)}
+if [ ! -x "$zmx_bin" ]; then
+  printf '%s\\n' 'session persistence is set to zmx, but Ghostex bundled zmx was not found.' >&2
+  exit 127
+fi
+if [ -z "$zmx_startup_command" ]; then
+  printf '%s\\n' 'gxserver startSessionProvider requires startup text.' >&2
+  exit 64
+fi
+unset ZMX_SESSION ZMX_SESSION_PREFIX
+if [ -n "$zmx_global_session_ref" ]; then
+  export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
+fi
+if [ -n "$zmx_gxserver_base_url" ]; then
+  export GHOSTEX_GXSERVER_BASE_URL="$zmx_gxserver_base_url"
+fi
+cd "$zmx_cwd" || exit
+exec "$zmx_bin" run "$zmx_session" -d /bin/zsh -lc "$zmx_startup_command"
 `.trim();
 }
 

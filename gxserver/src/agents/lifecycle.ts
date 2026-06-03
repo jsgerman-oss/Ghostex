@@ -258,6 +258,13 @@ export function getAgentStartupTextForSession(
   return launchPlan?.startupText?.trim() ? launchPlan.startupText : undefined;
 }
 
+export function getAgentLaunchStartupTextForSession(
+  session: GxserverSessionDomainState,
+): string | undefined {
+  const launchPlan = readAgentLaunchPlan(session.launchSettings);
+  return launchPlan?.startupText?.trim() ? launchPlan.startupText : undefined;
+}
+
 export function buildAgentResumeStartupText(
   project: GxserverProjectDomainState,
   session: GxserverSessionDomainState,

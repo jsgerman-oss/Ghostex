@@ -59,6 +59,7 @@ export type GxserverEndpointPath =
   | "/api/transitionSession"
   | "/api/sleepSession"
   | "/api/wakeSession"
+  | "/api/startSessionProvider"
   | "/api/killSession"
   | "/api/probeSessionProvider"
   | "/api/listSessions"
@@ -80,11 +81,13 @@ export type GxserverEndpointPath =
   | "/api/runGitAction"
   | "/api/runGitHubAction"
   | "/api/runWorktreeAction"
+  | "/api/runProjectSetupCommand"
   | "/api/runBeadsAction"
   | "/api/previewRepositoryClone"
   | "/api/startRepositoryClone"
   | "/api/readRepositoryCloneJob"
   | "/api/cancelRepositoryCloneJob"
+  | "/api/browseProjectDirectories"
   | "/api/resolveGitRootForPath"
   | "/api/queryLogs"
   | "/api/updateAuth"
@@ -253,6 +256,22 @@ export interface GxserverEndpointDescriptor {
   transport: "http" | "webSocket";
 }
 
+export interface GxserverProjectDirectoryBrowseParams {
+  cwd?: string;
+  limit?: number;
+  partialPath: string;
+}
+
+export interface GxserverProjectDirectoryBrowseEntry {
+  fullPath: string;
+  name: string;
+}
+
+export interface GxserverProjectDirectoryBrowseResult {
+  entries: GxserverProjectDirectoryBrowseEntry[];
+  parentPath: string;
+}
+
 export interface GxserverStoragePaths {
   authToken: "~/.ghostex/gxserver/auth/token";
   config: "~/.ghostex/gxserver/config.json";
@@ -367,6 +386,7 @@ export type GxserverBeadsAction =
   | "updateTitle";
 export type GxserverBeadsStatus = "backlog" | "closed" | "in_progress" | "open" | "review" | "test";
 export type GxserverGitHubAction = "prCreateFill" | "prView" | "version";
+export type GxserverProjectSetupAction = "worktreeSetupCommand";
 
 export interface GxserverProjectOperationScope {
   projectId?: GxserverProjectId;
@@ -394,6 +414,12 @@ export interface GxserverRunWorktreeActionParams extends GxserverProjectOperatio
 
 export interface GxserverRunGitHubActionParams extends GxserverProjectOperationScope {
   action: GxserverGitHubAction;
+}
+
+export interface GxserverRunProjectSetupCommandParams extends GxserverProjectOperationScope {
+  action: GxserverProjectSetupAction;
+  setupCommandProjectId?: GxserverProjectId;
+  setupCommandProjectPath?: string;
 }
 
 export interface GxserverRunBeadsActionParams extends GxserverProjectOperationScope {
@@ -510,7 +536,12 @@ export interface GxserverWorktreeListEntry {
 }
 
 export interface GxserverTypedOperationResult {
-  action: GxserverGitAction | GxserverGitHubAction | GxserverWorktreeAction | GxserverBeadsAction;
+  action:
+    | GxserverGitAction
+    | GxserverGitHubAction
+    | GxserverWorktreeAction
+    | GxserverProjectSetupAction
+    | GxserverBeadsAction;
   command?: GxserverTypedCommand;
   error?: GxserverTypedOperationFailure;
   exitCode: number;
@@ -1115,6 +1146,20 @@ export interface GxserverAttachSessionMetadataResult {
   restoreBlocked?: GxserverSessionRestoreBlocked;
   session: GxserverSessionDomainState;
   startupText?: string;
+  startupTextDisposition: GxserverStartupTextDisposition;
+  zmxName: GxserverZmxSessionName;
+}
+
+export interface GxserverStartSessionProviderParams extends GxserverSessionLifecycleParams {
+  startupText?: string;
+}
+
+export interface GxserverStartSessionProviderResult {
+  exitCode?: number;
+  provider: "zmx";
+  providerState: GxserverProviderProbeResult;
+  session: GxserverSessionDomainState;
+  started: boolean;
   startupTextDisposition: GxserverStartupTextDisposition;
   zmxName: GxserverZmxSessionName;
 }

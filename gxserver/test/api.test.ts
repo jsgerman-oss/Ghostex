@@ -151,7 +151,7 @@ test("foreground gxserver process uses temporary HOME, writes daemon state, and 
     const token = (await waitForFileText(paths.authTokenFile, 5_000)).trim() as GxserverAuthToken;
     const health = await waitForHealth(token, 5_000);
     assert.equal(health.serverId.startsWith("S"), true);
-    assert.equal(health.migration.currentVersion, 2);
+    assert.equal(health.migration.currentVersion, 3);
     assert.equal(health.listeners.local.port, GXSERVER_LOCAL_API_PORT);
 
     const stop = await requestJson(`http://127.0.0.1:${GXSERVER_LOCAL_API_PORT}`, "/api/control/stop", {
@@ -1138,6 +1138,77 @@ test("zmx lifecycle APIs attach existing sessions without replay and create miss
   );
 });
 
+test("zmx lifecycle API starts missing providers through detached zmx run without replaying existing sessions", async () => {
+  const calls: string[] = [];
+  let probeExitCode = 1;
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createAgentSession", {
+          body: {
+            params: {
+              agentId: "codex",
+              launchSettings: { acceptAllMode: "enabled" },
+              projectId: project.projectId,
+              title: "Remote agent",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const start = await requestJson(baseUrl, "/api/startSessionProvider", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(start.status, 200);
+      assert.equal(start.body.result.started, true);
+      assert.equal(start.body.result.startupTextDisposition, "queueAfterTerminalReady");
+      assert.equal(start.body.result.session.lifecycleState, "running");
+      assert.equal(start.body.result.providerState.lifecycleState, "exists");
+      const runScript = calls.find((script) => script.includes('run "$zmx_session" -d /bin/zsh -lc "$zmx_startup_command"'));
+      assert.ok(runScript);
+      assert.match(runScript, /zmx_startup_command='codex --yolo'/);
+      assert.match(runScript, /export GHOSTEX_GLOBAL_SESSION_REF=/);
+      assert.match(runScript, /cd "\$zmx_cwd" \|\| exit/);
+
+      const runCallCount = calls.filter((script) => script.includes('run "$zmx_session" -d')).length;
+      probeExitCode = 0;
+      const existing = await requestJson(baseUrl, "/api/startSessionProvider", {
+        body: {
+          params: { projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(existing.status, 200);
+      assert.equal(existing.body.result.started, false);
+      assert.equal(existing.body.result.startupTextDisposition, "discardExistingProvider");
+      assert.equal(calls.filter((script) => script.includes('run "$zmx_session" -d')).length, runCallCount);
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle(calls, () => probeExitCode, {
+        runExitCode: () => 0,
+      }),
+    },
+  );
+});
+
 test("zmx session interaction APIs read and send through bundled zmx, with explicit unsupported focus", async () => {
   const calls: string[] = [];
   const sendInputs: string[] = [];
@@ -2088,6 +2159,43 @@ test("remote project add validates server-side paths and typed operations stay s
     assert.equal(status.body.result.action, "status");
     assert.deepEqual(status.body.result.command.args, ["status", "--short", "--branch"]);
 
+    const updatedProject = await requestJson(baseUrl, "/api/updateProject", {
+      body: {
+        params: {
+          gitConfig: { worktreeCommand: "printf setup-done > setup-result.txt" },
+          projectId: addedProject.body.result.project.projectId,
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(updatedProject.status, 200);
+
+    const setupCommand = await requestJson(baseUrl, "/api/runProjectSetupCommand", {
+      body: {
+        params: {
+          action: "worktreeSetupCommand",
+          projectId: addedProject.body.result.project.projectId,
+          setupCommandProjectId: addedProject.body.result.project.projectId,
+        },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    /*
+    CDXC:GxserverTypedOperations 2026-06-03-04:08:
+    Remote worktree setup may execute only the command stored on registered
+    project metadata. The API exposes a typed setup endpoint instead of
+    accepting arbitrary process args, and redacts the stored command text from
+    command metadata.
+    */
+    assert.equal(setupCommand.status, 200);
+    assert.equal(setupCommand.body.result.action, "worktreeSetupCommand");
+    assert.deepEqual(setupCommand.body.result.command.args, ["-lc", "<worktree setup command>"]);
+    assert.equal(await readFile(path.join(repoPath, "setup-result.txt"), "utf8"), "setup-done");
+
     const unregistered = await requestJson(baseUrl, "/api/runGitAction", {
       body: {
         params: { action: "status", projectPath: otherPath },
@@ -2110,6 +2218,75 @@ test("remote project add validates server-side paths and typed operations stay s
     */
     assert.equal(genericRunProcess.status, 404);
     assert.equal(genericRunProcess.body.error, "notFound");
+  });
+});
+
+test("remote project directory browse mirrors picker directory filtering without generic filesystem access", async () => {
+  await withApiServer("remote", async ({ baseUrl, paths, token }) => {
+    /*
+    CDXC:RemoteProjectPicker 2026-06-02-23:22:
+    Remote Add Project needs T3 Code-style directory browsing through the remote gxserver. The endpoint is remote-allowed because SSH already authenticated the daemon tunnel, but it returns only directory entries for picker navigation and leaves the broad filesystem endpoint blocked.
+    */
+    const parentPath = path.join(paths.rootDir, "picker-parent");
+    await mkdir(path.join(parentPath, "alpha"), { recursive: true });
+    await mkdir(path.join(parentPath, "alpine"), { recursive: true });
+    await mkdir(path.join(parentPath, "beta"), { recursive: true });
+    await mkdir(path.join(parentPath, ".hidden"), { recursive: true });
+    await writeFile(path.join(parentPath, "alphabet.txt"), "not a directory\n", "utf8");
+
+    const filtered = await requestJson(baseUrl, "/api/browseProjectDirectories", {
+      body: {
+        params: { partialPath: path.join(parentPath, "al"), limit: 5 },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(filtered.status, 200);
+    assert.equal(filtered.body.result.parentPath, parentPath);
+    assert.deepEqual(
+      filtered.body.result.entries.map((entry: any) => entry.name),
+      ["alpha", "alpine"],
+    );
+
+    const hidden = await requestJson(baseUrl, "/api/browseProjectDirectories", {
+      body: {
+        params: { partialPath: `${parentPath}${path.sep}.h` },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(hidden.status, 200);
+    assert.deepEqual(
+      hidden.body.result.entries.map((entry: any) => entry.name),
+      [".hidden"],
+    );
+
+    const relative = await requestJson(baseUrl, "/api/browseProjectDirectories", {
+      body: {
+        params: { cwd: parentPath, partialPath: "./a" },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(relative.status, 200);
+    assert.deepEqual(
+      relative.body.result.entries.map((entry: any) => entry.name),
+      ["alpha", "alpine"],
+    );
+
+    const genericBrowse = await requestJson(baseUrl, "/api/browseFilesystem", {
+      body: {
+        params: { partialPath: parentPath },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    assert.equal(genericBrowse.status, 403);
+    assert.equal(genericBrowse.body.error, "forbidden");
   });
 });
 
@@ -2417,7 +2594,7 @@ test("authenticated health includes listener, tool, and migration status", async
     assert.equal(health.body.serverId, "S7k");
     assert.equal(health.body.listeners.local.port, GXSERVER_LOCAL_API_PORT);
     assert.equal(health.body.listeners.remote.enabled, false);
-    assert.equal(health.body.migration.currentVersion, 2);
+    assert.equal(health.body.migration.currentVersion, 3);
     assert.equal(health.body.migration.stateImports.legacyMacosState.id, LEGACY_MACOS_STATE_IMPORT_ID);
     assert.equal(health.body.migration.stateImports.legacyMacosState.status, "notRun");
     assert.equal(Array.isArray(health.body.tools), true);
@@ -2674,10 +2851,15 @@ function fakeZmxLifecycle(
   probeExitCode: () => number,
   options: {
     killExitCode?: () => number;
+    runExitCode?: () => number;
   } = {},
 ): NonNullable<GxserverApiRuntime["zmxLifecycle"]> {
   const runZsh: GxserverZmxCommandRunner = async (script) => {
     calls.push(script);
+    if (script.includes('run "$zmx_session" -d')) {
+      const exitCode = options.runExitCode?.() ?? 0;
+      return { exitCode, stderr: exitCode === 0 ? "" : `zmx run failed with exit ${exitCode}`, stdout: "" };
+    }
     if (script.includes('kill "$zmx_session" --force')) {
       const exitCode = options.killExitCode?.() ?? 0;
       return { exitCode, stderr: exitCode === 0 ? "" : `zmx kill failed with exit ${exitCode}`, stdout: "" };

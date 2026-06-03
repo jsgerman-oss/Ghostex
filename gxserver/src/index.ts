@@ -13,6 +13,7 @@ export * from "./logger.js";
 export * from "./logs.js";
 export * from "./node-version.js";
 export * from "./paths.js";
+export * from "./project-directory-browser.js";
 export * from "./runtime.js";
 export * from "./remote-listener.js";
 export * from "./remote-routing.js";

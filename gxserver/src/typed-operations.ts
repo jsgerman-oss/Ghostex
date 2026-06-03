@@ -13,6 +13,7 @@ import type {
   GxserverRunBeadsActionParams,
   GxserverRunGitActionParams,
   GxserverRunGitHubActionParams,
+  GxserverRunProjectSetupCommandParams,
   GxserverRunWorktreeActionParams,
   GxserverTypedCommand,
   GxserverTypedOperationFailure,
@@ -437,6 +438,48 @@ export async function runWorktreeAction(
       detached: entry.detached,
       path: entry.path,
     })),
+  };
+}
+
+export async function runProjectSetupCommand(
+  params: GxserverRunProjectSetupCommandParams,
+  context: GxserverTypedOperationContext,
+): Promise<GxserverTypedOperationResult> {
+  if (params.action !== "worktreeSetupCommand") {
+    throw new GxserverTypedOperationError("badRequest", `Unsupported project setup action: ${String(params.action)}`);
+  }
+  const setupProject = resolveProjectSetupCommandProject(params, context);
+  const commandText = normalizeProjectSetupCommand(setupProject.gitConfig.worktreeCommand);
+  /*
+  CDXC:GxserverTypedOperations 2026-06-03-04:08:
+  Worktree setup commands are an explicit project metadata workflow, not a
+  generic remote process bridge. Clients may choose the target project cwd and
+  the registered project whose gitConfig owns the command, but gxserver reads
+  the command text from stored metadata and returns only redacted command
+  metadata so remote worktree setup stays inside the typed operation boundary.
+  */
+  if (!commandText) {
+    return {
+      action: "worktreeSetupCommand",
+      exitCode: 0,
+      stderr: "",
+      stdout: "",
+    };
+  }
+  const command: GxserverProcessCommand = {
+    args: ["-lc", commandText],
+    cwd: context.cwd,
+    executable: "/bin/zsh",
+    resultCommand: {
+      args: ["-lc", "<worktree setup command>"],
+      cwd: context.cwd,
+      executable: "/bin/zsh",
+    },
+  };
+  return {
+    action: "worktreeSetupCommand",
+    command: command.resultCommand,
+    ...(await runTypedCommand(command, commandOptions(context))),
   };
 }
 
@@ -1030,6 +1073,51 @@ function normalizeGitAction(action: unknown): GxserverGitAction {
     return action;
   }
   throw new GxserverTypedOperationError("badRequest", `Unsupported Git action: ${String(action)}`);
+}
+
+function resolveProjectSetupCommandProject(
+  params: GxserverRunProjectSetupCommandParams,
+  context: GxserverTypedOperationContext,
+): GxserverProjectDomainState {
+  if (typeof params.setupCommandProjectId === "string" && params.setupCommandProjectId.trim()) {
+    const project = context.projects.find((candidate) => candidate.projectId === params.setupCommandProjectId);
+    if (!project) {
+      throw new GxserverTypedOperationError("notFound", `Project ${params.setupCommandProjectId} does not exist.`);
+    }
+    return project;
+  }
+  if (typeof params.setupCommandProjectPath === "string" && params.setupCommandProjectPath.trim()) {
+    const setupPath = normalizeExistingDirectoryPath(params.setupCommandProjectPath, "setupCommandProjectPath");
+    const project = context.projects.find(
+      (candidate) =>
+        typeof candidate.path === "string" &&
+        normalizeExistingDirectoryPath(candidate.path, "project.path") === setupPath,
+    );
+    if (!project) {
+      throw new GxserverTypedOperationError("forbidden", "setupCommandProjectPath must be a registered gxserver project path.");
+    }
+    return project;
+  }
+  const targetProject = context.projects.find(
+    (candidate) =>
+      typeof candidate.path === "string" &&
+      normalizeExistingDirectoryPath(candidate.path, "project.path") ===
+        normalizeExistingDirectoryPath(context.cwd, "project.path"),
+  );
+  if (!targetProject) {
+    throw new GxserverTypedOperationError("forbidden", "Project setup command target must be a registered gxserver project.");
+  }
+  return targetProject;
+}
+
+function normalizeProjectSetupCommand(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  if (Buffer.byteLength(value, "utf8") > 16_384) {
+    throw new GxserverTypedOperationError("badRequest", "worktreeCommand exceeds the 16384-byte limit.");
+  }
+  return value.trim();
 }
 
 function normalizeGitHubAction(action: unknown): GxserverGitHubAction {
