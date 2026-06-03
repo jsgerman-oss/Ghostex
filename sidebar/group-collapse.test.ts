@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import {
   getAutoCollapseGroupIds,
   reconcileCollapsedGroupsById,
-  shouldPersistSidebarUiCollapseState,
 } from "./group-collapse";
 
 describe("getAutoCollapseGroupIds", () => {
@@ -40,6 +39,33 @@ describe("reconcileCollapsedGroupsById", () => {
       }),
     ).toEqual({
       "group-1": true,
+    });
+  });
+
+  test("preserves collapse state for temporarily missing startup groups", () => {
+    /**
+     * CDXC:SidebarGroups 2026-06-02-22:18:
+     * The gxserver-unavailable startup placeholder is not a real project list.
+     * Reconcile must keep unknown collapsed project IDs until the authoritative
+     * project hydrate arrives, otherwise restart rewrites them as expanded.
+     */
+    expect(
+      reconcileCollapsedGroupsById({
+        groupIds: ["combined-chats", "gxserver-unavailable"],
+        preserveUnknownCollapsedGroups: true,
+        previousSessionCountsByGroup: {},
+        previousCollapsedGroupsById: {
+          "combined-project-zmux": true,
+          "combined-project-other": true,
+        },
+        sessionIdsByGroup: {
+          "combined-chats": [],
+          "gxserver-unavailable": [],
+        },
+      }),
+    ).toEqual({
+      "combined-project-zmux": true,
+      "combined-project-other": true,
     });
   });
 
@@ -178,35 +204,5 @@ describe("reconcileCollapsedGroupsById", () => {
         },
       }),
     ).toBe(collapsedGroupsById);
-  });
-});
-
-describe("shouldPersistSidebarUiCollapseState", () => {
-  test("blocks default expanded startup writes before hydrate baseline is ready", () => {
-    expect(
-      shouldPersistSidebarUiCollapseState({
-        groupCount: 0,
-        hasAppliedHydrate: false,
-        hasEstablishedStartupGroupCollapseBaseline: false,
-      }),
-    ).toBe(false);
-
-    expect(
-      shouldPersistSidebarUiCollapseState({
-        groupCount: 2,
-        hasAppliedHydrate: true,
-        hasEstablishedStartupGroupCollapseBaseline: false,
-      }),
-    ).toBe(false);
-  });
-
-  test("allows persistence after real hydrated groups establish the startup baseline", () => {
-    expect(
-      shouldPersistSidebarUiCollapseState({
-        groupCount: 2,
-        hasAppliedHydrate: true,
-        hasEstablishedStartupGroupCollapseBaseline: true,
-      }),
-    ).toBe(true);
   });
 });

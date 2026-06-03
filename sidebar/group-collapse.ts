@@ -38,6 +38,7 @@ export function reconcileCollapsedGroupsById({
   collapseBlockedGroupIds = [],
   expandOnSessionCountIncreaseGroupIds,
   groupIds,
+  preserveUnknownCollapsedGroups = false,
   previousSessionCountsByGroup,
   previousCollapsedGroupsById,
   sessionIdsByGroup,
@@ -47,6 +48,14 @@ export function reconcileCollapsedGroupsById({
   collapseBlockedGroupIds?: readonly string[];
   expandOnSessionCountIncreaseGroupIds?: readonly string[];
   groupIds: readonly string[];
+  /**
+   * CDXC:SidebarGroups 2026-06-02-22:18:
+   * App restart can first hydrate the sidebar with temporary gxserver
+   * unavailable groups before the real project groups arrive. That snapshot is
+   * not authoritative for deleting saved collapsed project IDs, because doing
+   * so rewrites localStorage with every project expanded on the next launch.
+   */
+  preserveUnknownCollapsedGroups?: boolean;
   previousSessionCountsByGroup: Readonly<Record<string, number>>;
   previousCollapsedGroupsById: CollapsedGroupsById;
   sessionIdsByGroup: SessionIdsByGroup;
@@ -65,6 +74,11 @@ export function reconcileCollapsedGroupsById({
 
   for (const [groupId, collapsed] of Object.entries(previousCollapsedGroupsById)) {
     if (!validGroupIds.has(groupId)) {
+      if (preserveUnknownCollapsedGroups) {
+        next[groupId] = collapsed;
+        continue;
+      }
+
       changed = true;
       continue;
     }
@@ -113,20 +127,4 @@ export function reconcileCollapsedGroupsById({
   }
 
   return changed ? next : previousCollapsedGroupsById;
-}
-
-export function shouldPersistSidebarUiCollapseState({
-  groupCount,
-  hasAppliedHydrate,
-  hasEstablishedStartupGroupCollapseBaseline,
-}: {
-  groupCount: number;
-  hasAppliedHydrate: boolean;
-  hasEstablishedStartupGroupCollapseBaseline: boolean;
-}): boolean {
-  /*
-  CDXC:SidebarReference 2026-06-02-22:39:
-  Sidebar disclosure persistence must wait until native has delivered a real hydrate and the startup group-count baseline is established. The first React mount can render with no sidebar groups and default-expanded sections; writing during that window erases the user's collapsed Quick, Projects, and project-row state before restart restore can apply it.
-  */
-  return hasAppliedHydrate && hasEstablishedStartupGroupCollapseBaseline && groupCount > 0;
 }
