@@ -40,6 +40,7 @@ enum HostCommand: Decodable {
   case appendTerminalFocusDebugLog(AppendTerminalFocusDebugLog)
   case appendRestoreDebugLog(AppendRestoreDebugLog)
   case appendSessionTitleDebugLog(AppendSessionTitleDebugLog)
+  case appendSidebarCollapseStateDebugLog(AppendSidebarCollapseStateDebugLog)
   case appendSidebarRefreshDebugLog(AppendSidebarRefreshDebugLog)
   case appendWorkspaceDockIndicatorDebugLog(AppendWorkspaceDockIndicatorDebugLog)
   case persistSharedSidebarStorage(PersistSharedSidebarStorage)
@@ -48,6 +49,9 @@ enum HostCommand: Decodable {
   case runProcess(RunProcess)
   case cancelRunProcess(CancelRunProcess)
   case gxserverRequest(GxserverRequest)
+  case remoteGxserverConnect(RemoteGxserverConnect)
+  case remoteGxserverRequest(RemoteGxserverRequest)
+  case remoteGxserverSubscribePresentation(RemoteGxserverPresentationSubscribe)
   case setKeepAwakeLidSleepPrevention(SetKeepAwakeLidSleepPrevention)
   case syncGhosttyTerminalSettings(SyncGhosttyTerminalSettings)
   case applyGhosttyConfigSettings(ApplyGhosttyConfigSettings)
@@ -135,6 +139,7 @@ enum HostCommand: Decodable {
     case appendTerminalFocusDebugLog
     case appendRestoreDebugLog
     case appendSessionTitleDebugLog
+    case appendSidebarCollapseStateDebugLog
     case appendSidebarRefreshDebugLog
     case appendWorkspaceDockIndicatorDebugLog
     case persistSharedSidebarStorage
@@ -143,6 +148,9 @@ enum HostCommand: Decodable {
     case runProcess
     case cancelRunProcess
     case gxserverRequest
+    case remoteGxserverConnect
+    case remoteGxserverRequest
+    case remoteGxserverSubscribePresentation
     case setKeepAwakeLidSleepPrevention
     case syncGhosttyTerminalSettings
     case applyGhosttyConfigSettings
@@ -268,6 +276,9 @@ enum HostCommand: Decodable {
       self = .appendRestoreDebugLog(try AppendRestoreDebugLog(from: decoder))
     case .appendSessionTitleDebugLog:
       self = .appendSessionTitleDebugLog(try AppendSessionTitleDebugLog(from: decoder))
+    case .appendSidebarCollapseStateDebugLog:
+      self = .appendSidebarCollapseStateDebugLog(
+        try AppendSidebarCollapseStateDebugLog(from: decoder))
     case .appendSidebarRefreshDebugLog:
       self = .appendSidebarRefreshDebugLog(try AppendSidebarRefreshDebugLog(from: decoder))
     case .appendWorkspaceDockIndicatorDebugLog:
@@ -285,6 +296,12 @@ enum HostCommand: Decodable {
       self = .cancelRunProcess(try CancelRunProcess(from: decoder))
     case .gxserverRequest:
       self = .gxserverRequest(try GxserverRequest(from: decoder))
+    case .remoteGxserverConnect:
+      self = .remoteGxserverConnect(try RemoteGxserverConnect(from: decoder))
+    case .remoteGxserverRequest:
+      self = .remoteGxserverRequest(try RemoteGxserverRequest(from: decoder))
+    case .remoteGxserverSubscribePresentation:
+      self = .remoteGxserverSubscribePresentation(try RemoteGxserverPresentationSubscribe(from: decoder))
     case .setKeepAwakeLidSleepPrevention:
       self = .setKeepAwakeLidSleepPrevention(try SetKeepAwakeLidSleepPrevention(from: decoder))
     case .syncGhosttyTerminalSettings:
@@ -434,6 +451,7 @@ struct ProjectBoardBridgeRequest: Decodable {
   let prompt: String?
   let projectId: String?
   let projectPath: String?
+  let remoteMachineId: String?
   let requestId: String
   let sessionId: String?
   let startLocation: String?
@@ -866,6 +884,11 @@ struct AppendSessionTitleDebugLog: Decodable {
   let force: Bool?
 }
 
+struct AppendSidebarCollapseStateDebugLog: Decodable {
+  let details: String?
+  let event: String
+}
+
 struct AppendRestoreDebugLog: Decodable {
   let details: String?
   let event: String
@@ -924,6 +947,32 @@ struct GxserverRequest: Decodable {
   let method: String
   let paramsJson: String?
   let path: String
+  let requestId: String
+}
+
+struct RemoteGxserverConnect: Decodable {
+  let identityFile: String?
+  let installApproved: Bool?
+  let remoteMachineId: String
+  let remoteMachineName: String
+  let requestId: String
+  let sshHost: String
+  let sshPort: Int?
+  let sshUser: String?
+}
+
+struct RemoteGxserverRequest: Decodable {
+  let method: String
+  let paramsJson: String?
+  let path: String
+  let remoteMachineId: String
+  let requestId: String
+}
+
+struct RemoteGxserverPresentationSubscribe: Decodable {
+  let clientId: String?
+  let lastRevision: Int?
+  let remoteMachineId: String
   let requestId: String
 }
 
@@ -1159,6 +1208,10 @@ enum HostEvent: Encodable {
   case processResult(requestId: String, exitCode: Int32, stdout: String, stderr: String)
   case gxserverResponse(
     requestId: String, path: String, ok: Bool, statusCode: Int?, bodyJson: String?, error: String?)
+  case remoteGxserverStatus(remoteMachineId: String, payloadJson: String)
+  case remoteGxserverResponse(
+    remoteMachineId: String, requestId: String, path: String, ok: Bool, statusCode: Int?, bodyJson: String?, error: String?)
+  case remoteGxserverPresentationEvent(remoteMachineId: String, payloadJson: String)
   case sidebarCliResult(requestId: String, ok: Bool, payloadJson: String)
   case gxserverStatus(payloadJson: String)
 
@@ -1211,6 +1264,7 @@ enum HostEvent: Encodable {
     case sourceSessionId
     case targetSessionId
     case tmuxSessionName
+    case remoteMachineId
   }
 
   func encode(to encoder: Encoder) throws {
@@ -1422,6 +1476,7 @@ enum HostEvent: Encodable {
       try container.encodeIfPresent(request.prompt, forKey: .prompt)
       try container.encodeIfPresent(request.projectId, forKey: .projectId)
       try container.encodeIfPresent(request.projectPath, forKey: .projectPath)
+      try container.encodeIfPresent(request.remoteMachineId, forKey: .remoteMachineId)
       try container.encode(request.requestId, forKey: .requestId)
       try container.encodeIfPresent(request.sessionId, forKey: .sessionId)
       try container.encodeIfPresent(request.ticketTitle, forKey: .ticketTitle)
@@ -1479,6 +1534,29 @@ enum HostEvent: Encodable {
       try container.encodeIfPresent(statusCode, forKey: .statusCode)
       try container.encodeIfPresent(bodyJson, forKey: .bodyJson)
       try container.encodeIfPresent(error, forKey: .error)
+    case .remoteGxserverStatus(let remoteMachineId, let payloadJson):
+      /**
+       CDXC:RemoteMachines 2026-06-03-00:18:
+       Remote gxserver bootstrap status travels over a native-only event so
+       React can render connection state while Swift keeps SSH, tunnel process,
+       and Keychain token ownership out of the webview.
+       */
+      try container.encode("remoteGxserverStatus", forKey: .type)
+      try container.encode(remoteMachineId, forKey: .remoteMachineId)
+      try container.encode(payloadJson, forKey: .payloadJson)
+    case .remoteGxserverResponse(let remoteMachineId, let requestId, let path, let ok, let statusCode, let bodyJson, let error):
+      try container.encode("remoteGxserverResponse", forKey: .type)
+      try container.encode(remoteMachineId, forKey: .remoteMachineId)
+      try container.encode(requestId, forKey: .requestId)
+      try container.encode(path, forKey: .path)
+      try container.encode(ok, forKey: .ok)
+      try container.encodeIfPresent(statusCode, forKey: .statusCode)
+      try container.encodeIfPresent(bodyJson, forKey: .bodyJson)
+      try container.encodeIfPresent(error, forKey: .error)
+    case .remoteGxserverPresentationEvent(let remoteMachineId, let payloadJson):
+      try container.encode("remoteGxserverPresentationEvent", forKey: .type)
+      try container.encode(remoteMachineId, forKey: .remoteMachineId)
+      try container.encode(payloadJson, forKey: .payloadJson)
     case .sidebarCliResult(let requestId, let ok, let payloadJson):
       try container.encode("sidebarCliResult", forKey: .type)
       try container.encode(requestId, forKey: .requestId)

@@ -1090,6 +1090,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     SidebarRefreshDebugLog.append(event: event, details: details)
   }
 
+  fileprivate static func appendSidebarCollapseStateDebugLog(event: String, details: String?) {
+    /**
+     CDXC:SidebarCollapseDiagnostics 2026-06-02-23:52:
+     Sidebar disclosure-state restart repros need a dedicated log under the
+     shared support-bundle logs directory. Keep writes behind Debugging Mode and
+     persist only the already-sanitized webview summary so project names, paths,
+     and raw localStorage payloads never reach disk.
+     */
+    guard NativeDebugLogging.isEnabled else {
+      return
+    }
+    let logsDirectory = GhostexAppStorage.logsDirectory
+    let logURL = logsDirectory.appendingPathComponent("sidebar-collapse-state-debug.log")
+    let message = details.map { "\(event) \($0)" } ?? event
+    appendLogLine(
+      message, to: logURL, logsDirectory: logsDirectory, label: "sidebar collapse state debug")
+  }
+
   fileprivate static func appendProjectBoardDebugLog(event: String, details: String?) {
     /**
      CDXC:ProjectBoardDiagnostics 2026-05-28-12:32:
@@ -2462,6 +2480,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     case .appendSessionTitleDebugLog(let command):
       Self.appendSessionTitleDebugLog(
         event: command.event, details: command.details, force: command.force == true)
+    case .appendSidebarCollapseStateDebugLog(let command):
+      Self.appendSidebarCollapseStateDebugLog(event: command.event, details: command.details)
     case .appendSidebarRefreshDebugLog(let command):
       Self.appendSidebarRefreshDebugLog(event: command.event, details: command.details)
     case .appendWorkspaceDockIndicatorDebugLog(let command):
@@ -2481,6 +2501,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     case .gxserverRequest(let command):
       Task { [weak self] in
         let event = await GxserverClient.request(command)
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
+      }
+    case .remoteGxserverConnect(let command):
+      bridge?.send(RemoteGxserverClient.shared.connectingStatus(
+        remoteMachineId: command.remoteMachineId,
+        requestId: command.requestId
+      ))
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.connect(command)
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
+      }
+    case .remoteGxserverRequest(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.request(command)
+        await MainActor.run {
+          self?.bridge?.send(event)
+        }
+      }
+    case .remoteGxserverSubscribePresentation(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.subscribePresentation(command) { event in
+          Task { [weak self] in
+            await MainActor.run {
+              self?.bridge?.send(event)
+            }
+          }
+        }
         await MainActor.run {
           self?.bridge?.send(event)
         }
@@ -6242,6 +6293,8 @@ final class ghostexRootView: NSView {
     case .appendSessionTitleDebugLog(let command):
       AppDelegate.appendSessionTitleDebugLog(
         event: command.event, details: command.details, force: command.force == true)
+    case .appendSidebarCollapseStateDebugLog(let command):
+      AppDelegate.appendSidebarCollapseStateDebugLog(event: command.event, details: command.details)
     case .appendSidebarRefreshDebugLog(let command):
       AppDelegate.appendSidebarRefreshDebugLog(event: command.event, details: command.details)
     case .appendWorkspaceDockIndicatorDebugLog(let command):
@@ -6266,6 +6319,37 @@ final class ghostexRootView: NSView {
     case .gxserverRequest(let command):
       Task { [weak self] in
         let event = await GxserverClient.request(command)
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
+    case .remoteGxserverConnect(let command):
+      postHostEvent(RemoteGxserverClient.shared.connectingStatus(
+        remoteMachineId: command.remoteMachineId,
+        requestId: command.requestId
+      ))
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.connect(command)
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
+    case .remoteGxserverRequest(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.request(command)
+        await MainActor.run {
+          self?.postHostEvent(event)
+        }
+      }
+    case .remoteGxserverSubscribePresentation(let command):
+      Task { [weak self] in
+        let event = await RemoteGxserverClient.shared.subscribePresentation(command) { event in
+          Task { [weak self] in
+            await MainActor.run {
+              self?.postHostEvent(event)
+            }
+          }
+        }
         await MainActor.run {
           self?.postHostEvent(event)
         }
