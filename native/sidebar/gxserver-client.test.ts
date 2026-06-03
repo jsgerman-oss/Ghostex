@@ -4,6 +4,7 @@ import { createNativeSidebarGxserverClient } from "./gxserver-client";
 describe("native sidebar gxserver client", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   test("sends authenticated protocol-versioned health and RPC requests from native bootstrap", async () => {
@@ -187,7 +188,70 @@ describe("native sidebar gxserver client", () => {
       protocolVersion: 1,
     });
   });
+
+  test("notifies presentation handlers only for unexpected websocket close", () => {
+    /*
+    CDXC:GxserverVerification 2026-06-03-19:56:
+    The macOS presentation client must distinguish a dropped gxserver event stream from caller-owned teardown. Unexpected close triggers snapshot recovery, while deliberate close during app shutdown must not start a stale resubscribe loop.
+    */
+    const sockets: MockPresentationWebSocket[] = [];
+    vi.stubGlobal(
+      "WebSocket",
+      class extends MockPresentationWebSocket {
+        constructor(url: string) {
+          super(url);
+          sockets.push(this);
+        }
+      },
+    );
+    const client = createNativeSidebarGxserverClient({
+      authToken: "token-123",
+      baseUrl: "http://127.0.0.1:60000",
+    });
+    const onClose = vi.fn();
+
+    client.subscribePresentation("native-sidebar-test", { onClose }, 42);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].url).toBe("ws://127.0.0.1:60000/api/events?protocolVersion=1&authToken=token-123");
+    sockets[0].open();
+    expect(JSON.parse(sockets[0].sent[0])).toEqual({
+      clientId: "native-sidebar-test",
+      lastRevision: 42,
+      type: "subscribePresentation",
+    });
+    sockets[0].drop();
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    const deliberate = client.subscribePresentation("native-sidebar-test", { onClose }, 43);
+    expect(sockets).toHaveLength(2);
+    deliberate.close();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });
+
+class MockPresentationWebSocket extends EventTarget {
+  readonly sent: string[] = [];
+
+  constructor(readonly url: string) {
+    super();
+  }
+
+  close(): void {
+    this.dispatchEvent(new Event("close"));
+  }
+
+  drop(): void {
+    this.dispatchEvent(new Event("close"));
+  }
+
+  open(): void {
+    this.dispatchEvent(new Event("open"));
+  }
+
+  send(payload: string): void {
+    this.sent.push(payload);
+  }
+}
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {

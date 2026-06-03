@@ -90,6 +90,7 @@ export type NativeSidebarPresentationSubscription = {
 };
 
 export type NativeSidebarPresentationSubscriptionHandlers = {
+  onClose?: (event: CloseEvent) => void;
   onDelta?: (delta: GxserverPresentationDelta, revision: number) => void;
   onError?: (error: Event) => void;
   onSnapshot?: (snapshot: GxserverPresentationSnapshot) => void;
@@ -323,6 +324,7 @@ export function createNativeSidebarGxserverClient(
     url.searchParams.set("protocolVersion", String(GXSERVER_PROTOCOL_VERSION));
     url.searchParams.set("authToken", config.authToken ?? "");
     const socket = new WebSocket(url.toString());
+    let closedByClient = false;
     socket.addEventListener("open", () => {
       socket.send(JSON.stringify({
         clientId,
@@ -344,8 +346,20 @@ export function createNativeSidebarGxserverClient(
     socket.addEventListener("error", (event) => {
       handlers.onError?.(event);
     });
+    socket.addEventListener("close", (event) => {
+      /*
+      CDXC:GxserverPresentationEvents 2026-06-03-19:56:
+      All gxserver presentation clients must treat unexpected WebSocket closure as a lost delta cursor. Surface close separately from deliberate teardown so UI adapters can refresh the authoritative snapshot before subscribing again instead of rendering stale session titles indefinitely.
+      */
+      if (!closedByClient) {
+        handlers.onClose?.(event);
+      }
+    });
     return {
-      close: () => socket.close(),
+      close: () => {
+        closedByClient = true;
+        socket.close();
+      },
     };
   }
 
