@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { resolveWorkspaceProjectIconDataUrl } from "./workspace-dock-icons";
+import { resolveWorkspaceProjectIconDataUrl } from "./workspace-project-appearance";
 
 const pngDataUrl = "data:image/png;base64,cHJvamVjdC1pY29u";
 const svgDataUrl = "data:image/svg+xml;base64,PHN2Zy8+";

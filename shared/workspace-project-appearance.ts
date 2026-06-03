@@ -4,12 +4,12 @@ import {
   type SidebarCommandIcon,
 } from "./sidebar-command-icons";
 
-export type WorkspaceDockIcon =
+export type WorkspaceProjectIcon =
   | { kind: "image"; dataUrl: string }
   | { color?: string; icon: SidebarCommandIcon; kind: "tabler" };
 
 export type WorkspaceProjectIconSource = {
-  icon?: WorkspaceDockIcon;
+  icon?: WorkspaceProjectIcon;
   iconDataUrl?: string;
 };
 
@@ -72,13 +72,13 @@ export function updateWorkspaceThemeColorHistory(
   ]);
 }
 
-export function normalizeWorkspaceDockIcon(value: unknown): WorkspaceDockIcon | undefined {
+export function normalizeWorkspaceProjectIcon(value: unknown): WorkspaceProjectIcon | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
   }
-  const icon = value as Partial<WorkspaceDockIcon>;
+  const icon = value as Partial<WorkspaceProjectIcon>;
   if (icon.kind === "image") {
-    const dataUrl = normalizeWorkspaceDockIconDataUrl(icon.dataUrl);
+    const dataUrl = normalizeWorkspaceProjectIconDataUrl(icon.dataUrl);
     return dataUrl ? { dataUrl, kind: "image" } : undefined;
   }
   if (icon.kind === "tabler" && isSidebarCommandIcon(icon.icon)) {
@@ -97,7 +97,7 @@ export function normalizeWorkspaceDockIcon(value: unknown): WorkspaceDockIcon | 
  * choose first-class Tabler glyphs while existing saved PNG/SVG data URLs keep
  * rendering through the image variant after upgrade.
  */
-export function normalizeWorkspaceDockIconDataUrl(value: unknown): string | undefined {
+export function normalizeWorkspaceProjectIconDataUrl(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -113,9 +113,9 @@ export function normalizeWorkspaceDockIconDataUrl(value: unknown): string | unde
 export function resolveWorkspaceProjectIconDataUrl(
   project: WorkspaceProjectIconSource | undefined,
 ): string | undefined {
-  const icon = normalizeWorkspaceDockIcon(project?.icon);
+  const icon = normalizeWorkspaceProjectIcon(project?.icon);
   if (icon?.kind === "image") {
     return icon.dataUrl;
   }
-  return normalizeWorkspaceDockIconDataUrl(project?.iconDataUrl);
+  return normalizeWorkspaceProjectIconDataUrl(project?.iconDataUrl);
 }

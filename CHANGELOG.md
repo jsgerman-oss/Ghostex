@@ -457,7 +457,6 @@ Install with Homebrew: `brew install --cask maddada/tap/ghostex`
 - Replaced native title-bar action controls with compact sidebar Actions dropdowns for project commands and Open In targets.
 - Added explicit Open In choices for Finder, Visual Studio Code, and Zed, including brand icons and persisted primary target selection.
 - Added removable Actions dropdown rows so configured project actions can be deleted from the same menu that runs them.
-- Added custom workspace theme colors that tint the workspace dock, Combined-mode project headers, and active workspace sidebar theme surfaces.
 - Moved custom workspace color selection into the workspace Theme context menu with a recent-color palette, removing the separate workspace config modal.
 - Improved empty Combined-mode Chats and project groups so they auto-collapse while empty, expand when sessions appear, and show static folder/chat icons instead of inactive chevrons.
 - Improved Recent Projects styling to match normal sidebar group rows and show preserved session counts inline.
@@ -511,7 +510,6 @@ Install with Homebrew: `brew install --cask maddada/tap/ghostex`
 - Added a setting to hide the native IDE title-bar attach button without disabling IDE attachment.
 - Improved IDE attachment behavior so the floating Show IDE button raises or launches the configured IDE for the current workspace.
 - Improved T3 runtime startup by rebuilding the local t3code-embed checkout only when source fingerprints or build output require it.
-- Improved workspace dock clarity by dimming inactive project icons.
 - Kept the local release workflow skill available on this machine while removing it from the public repository tree.
 
 ## 1.3.0 - 2026-04-30

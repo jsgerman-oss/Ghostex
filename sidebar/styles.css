@@ -9,7 +9,7 @@
 @import "./styles/session-cards.css";
 @import "./styles/session-chrome.css";
 @import "./styles/session-overlays.css";
-@import "./styles/workspace-dock.css";
+@import "./styles/workspace-theme.css";
 @import "./styles/pets.css";
 
 /**
@@ -49,7 +49,7 @@
 .quick-action-menu-item,
 .session-context-menu-item,
 .session-context-menu-split-item,
-.workspace-dock-theme-menu-item {
+.workspace-theme-menu-item {
   cursor: default !important;
 }
 
@@ -243,7 +243,7 @@ button,
   .session-context-menu,
   .session-context-menu-item,
   .session-context-menu-split-item,
-  .workspace-dock-theme-menu-item
+  .workspace-theme-menu-item
 ) {
   border-radius: 0;
 }

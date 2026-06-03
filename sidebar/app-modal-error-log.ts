@@ -18,9 +18,6 @@ declare global {
         ghostexNativeHostDiagnostics?: {
           postMessage: (message: unknown) => void;
         };
-        ghostexWorkspaceBar?: {
-          postMessage: (message: unknown) => void;
-        };
       };
     };
   }
