@@ -4469,7 +4469,14 @@ document.body.style.overflow = "hidden";
 const styleElement = document.createElement("style");
 styleElement.textContent = `
   :root {
-    --titlebar-font-family: "JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    /**
+     * CDXC:ReactTitlebar 2026-06-04-18:37:
+     * Titlebar text should use the same font family as the macOS sidebar. Bind
+     * the titlebar font token to the imported sidebar shadcn sans token instead
+     * of the older bespoke monospace stack while leaving titlebar sizing and
+     * weight rules unchanged.
+     */
+    --titlebar-font-family: var(--font-sans, "Inter Variable", sans-serif);
     --titlebar-button-border-color: #252525;
   }
   /**
@@ -4579,6 +4586,13 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.84);
   }
   .titlebar-project-title {
+    /**
+     * CDXC:ReactTitlebar 2026-06-04-18:55:
+     * The React titlebar project title in the macOS app should sit 2px lower
+     * without changing the shared titlebar height or moving neighboring
+     * controls. Use a visual transform so layout and hit-region math stay
+     * anchored to the existing titlebar row.
+     */
     align-items: center;
     color: rgba(255,255,255,0.9);
     cursor: default;
@@ -4591,6 +4605,7 @@ styleElement.textContent = `
     min-width: 0;
     overflow: hidden;
     padding: 0 3px;
+    transform: translateY(2px);
   }
   .titlebar-project-title > .truncate {
     display: block;
@@ -4700,6 +4715,13 @@ styleElement.textContent = `
     }
   }
   .titlebar-mode-tab {
+    /**
+     * CDXC:ReactTitlebar 2026-06-04-20:08:
+     * The macOS titlebar mode tabs should be 2px smaller and 100 weight units
+     * heavier than the primary sidebar navigation buttons after visual review.
+     * Use 13.55px / 400 typography while preserving the titlebar-owned line
+     * height for vertical containment.
+     */
     appearance: none;
     -webkit-appearance: none;
     align-items: center;
@@ -4710,7 +4732,7 @@ styleElement.textContent = `
     color: rgba(255,255,255,0.68);
     cursor: default;
     display: inline-flex;
-    font: 720 12px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family);
+    font: 400 13.55px/${TITLEBAR_CONTROL_HEIGHT}px var(--titlebar-font-family);
     height: ${TITLEBAR_CONTROL_HEIGHT}px;
     justify-content: center;
     letter-spacing: 0;
