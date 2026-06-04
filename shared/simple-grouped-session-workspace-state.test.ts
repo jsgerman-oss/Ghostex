@@ -882,6 +882,108 @@ describe("focusSessionInSimpleWorkspace", () => {
     });
   });
 
+  test("should preserve the split layout when selecting a focused-pane tab during focus mode", () => {
+    const leftSessionId = sessionIdForDisplay(0);
+    const leftSiblingSessionId = sessionIdForDisplay(1);
+    const rightSessionId = sessionIdForDisplay(2);
+    const rightSiblingSessionId = sessionIdForDisplay(3);
+    const rightBackgroundSessionId = sessionIdForDisplay(4);
+    const originalPaneLayout: SessionPaneLayoutNode = {
+      children: [
+        {
+          activeSessionId: leftSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, leftSiblingSessionId],
+        },
+        {
+          activeSessionId: rightSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId, rightBackgroundSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    };
+    const focused = focusSessionExclusivelyInSimpleWorkspace(
+      createWorkspaceSnapshot({
+        activeGroupId: DEFAULT_MAIN_GROUP_ID,
+        groups: [
+          {
+            groupId: DEFAULT_MAIN_GROUP_ID,
+            snapshot: {
+              focusedSessionId: leftSiblingSessionId,
+              fullscreenRestoreVisibleCount: undefined,
+              paneLayout: originalPaneLayout,
+              sessions: [
+                createSessionRecord(1, 0),
+                createSessionRecord(2, 1),
+                createSessionRecord(3, 2),
+                createSessionRecord(4, 3),
+                createSessionRecord(5, 4),
+              ],
+              viewMode: "grid",
+              visibleCount: 4,
+              visibleSessionIds: [leftSiblingSessionId, rightSessionId],
+            },
+            title: "Main",
+          },
+        ],
+      }),
+      rightSessionId,
+    ).snapshot;
+
+    const selected = selectPaneTabInSimpleWorkspace(
+      focused,
+      DEFAULT_MAIN_GROUP_ID,
+      rightSiblingSessionId,
+    ).snapshot;
+    const restored = toggleFullscreenSessionInSimpleWorkspace(selected);
+
+    /*
+     * CDXC:SessionFocusMode 2026-06-04-20:37:
+     * Native tab selection can run while Focus mode is active, and that path
+     * must not materialize hidden split branches into the focused tab group.
+     * Keep the left and right pane tab groups separate so Exit focus restores
+     * the original split with all tabs still in their owning panes.
+     */
+    expect(selected.groups[0]?.snapshot.visibleCount).toBe(1);
+    expect(selected.groups[0]?.snapshot.visibleSessionIds).toEqual([rightSiblingSessionId]);
+    expect(selected.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: leftSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, leftSiblingSessionId],
+        },
+        {
+          activeSessionId: rightSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId, rightBackgroundSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+    expect(restored.groups[0]?.snapshot.visibleCount).toBe(4);
+    expect(restored.groups[0]?.snapshot.fullscreenRestoreVisibleCount).toBeUndefined();
+    expect(restored.groups[0]?.snapshot.paneLayout).toEqual({
+      children: [
+        {
+          activeSessionId: leftSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [leftSessionId, leftSiblingSessionId],
+        },
+        {
+          activeSessionId: rightSiblingSessionId,
+          kind: "tabs",
+          sessionIds: [rightSessionId, rightSiblingSessionId, rightBackgroundSessionId],
+        },
+      ],
+      direction: "horizontal",
+      kind: "split",
+    });
+  });
+
   test("should not enter focus mode for a single pane tab group", () => {
     const firstSessionId = sessionIdForDisplay(0);
     const secondSessionId = sessionIdForDisplay(1);

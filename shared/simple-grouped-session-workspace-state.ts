@@ -439,6 +439,62 @@ export function focusSessionExclusivelyInSimpleWorkspace(
   snapshot: GroupedSessionWorkspaceSnapshot,
   sessionId: string,
 ): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const directOwningGroup = getGroupForSession(normalizedSnapshot, sessionId);
+  const directGroupSnapshot = directOwningGroup?.snapshot;
+  const directPaneLayout = directGroupSnapshot
+    ? setActiveSessionInPaneLayout(directGroupSnapshot.paneLayout, sessionId)
+    : undefined;
+  if (
+    directOwningGroup &&
+    directGroupSnapshot &&
+    directPaneLayout &&
+    paneLayoutContainsSession(directPaneLayout, sessionId)
+  ) {
+    const nextSessions = directGroupSnapshot.sessions.map((session) =>
+      session.sessionId === sessionId ? { ...session, isSleeping: false } : session,
+    );
+    const selectedSnapshot = normalizeGroupSnapshot({
+      ...directGroupSnapshot,
+      focusedSessionId: sessionId,
+      paneLayout: directPaneLayout,
+      sessions: nextSessions,
+    });
+    if (!hasMultiplePaneOwners(selectedSnapshot)) {
+      return {
+        changed: !areSnapshotsEqual(directGroupSnapshot, selectedSnapshot),
+        snapshot: updateGroup(normalizedSnapshot, directOwningGroup.groupId, (group) => ({
+          ...group,
+          snapshot: selectedSnapshot,
+        })),
+      };
+    }
+    const restoreVisibleCount =
+      selectedSnapshot.fullscreenRestoreVisibleCount ??
+      (selectedSnapshot.visibleCount > 1
+        ? clampSupportedVisibleCount(selectedSnapshot.visibleCount)
+        : undefined);
+    const nextSnapshot = updateGroup(normalizedSnapshot, directOwningGroup.groupId, (group) => ({
+      ...group,
+      snapshot: normalizeGroupSnapshot({
+        ...selectedSnapshot,
+        /*
+         * CDXC:SessionFocusMode 2026-06-04-20:37:
+         * Double-click Focus targets the paneLayout tab group that already owns the clicked native tab.
+         * Preserve the full split tree and only mark the clicked tab active before zooming, because using generic hidden-session focus can move sibling pane tabs into one tab group and leave Exit focus with no split tree to restore.
+         */
+        fullscreenRestoreVisibleCount: restoreVisibleCount,
+        visibleCount: 1,
+        visibleSessionIds: [sessionId],
+      }),
+    }));
+
+    return {
+      changed: !areSnapshotsEqual(normalizedSnapshot, nextSnapshot),
+      snapshot: nextSnapshot,
+    };
+  }
+
   const focusedResult = focusSessionInSimpleWorkspace(snapshot, sessionId);
   const focusedSnapshot = focusedResult.snapshot;
   const owningGroup = getGroupForSession(focusedSnapshot, sessionId);
@@ -2850,6 +2906,14 @@ export function ensureAllSessionsInFocusedPaneTabGroupInSimpleWorkspace(
 function materializeAllSessionsInFocusedPaneTabGroup(
   snapshot: SessionGroupRecord["snapshot"],
 ): SessionGroupRecord["snapshot"] {
+  if (snapshot.visibleCount === 1 && snapshot.fullscreenRestoreVisibleCount !== undefined) {
+    /*
+     * CDXC:SessionFocusMode 2026-06-04-20:37:
+     * Focus mode intentionally hides other split branches without deleting them from paneLayout.
+     * Keep private virtual-tab materialization as a no-op during Focus too, so callers cannot bypass the public publish-time guard and flatten hidden panes into the focused tab group before Exit focus restores.
+     */
+    return normalizeGroupSnapshot(snapshot);
+  }
   const sessionIds = dedupeVisibleSessionIds(snapshot.sessions.map((session) => session.sessionId));
   if (sessionIds.length === 0) {
     return normalizeGroupSnapshot(snapshot);
