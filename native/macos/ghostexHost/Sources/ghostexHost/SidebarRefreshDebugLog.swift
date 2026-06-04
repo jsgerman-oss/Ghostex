@@ -26,7 +26,7 @@ enum SidebarRefreshDebugLog {
     let logsDirectory = GhostexAppStorage.logsDirectory
     let logURL = logsDirectory.appendingPathComponent("sidebar-refresh-debug.log")
     let payload: [String: Any] = [
-      "details": details ?? NSNull(),
+      "details": parseDetailsPayload(details),
       "event": event,
     ]
     let line = "[\(logDateFormatter.string(from: Date()))] \(serialize(NativeLogPrivacy.sanitizePayload(payload)))\n"
@@ -60,6 +60,17 @@ enum SidebarRefreshDebugLog {
       return "{\"event\":\"serializationFailed\"}"
     }
     return json
+  }
+
+  private static func parseDetailsPayload(_ details: String?) -> Any {
+    guard let details, let data = details.data(using: .utf8) else {
+      return NSNull()
+    }
+    /*
+     CDXC:GxserverPresentationDiagnostics 2026-06-04-19:39:
+     React sends sidebar-refresh details as a JSON string, but sanitizer policy redacts raw `details` strings by design. Parse structured details at the writer boundary before privacy sanitization so targeted gxserver/sidebar/native-tab mismatch counts remain inspectable without allowing titles, paths, URLs, command text, or secrets through as free-form log text.
+     */
+    return (try? JSONSerialization.jsonObject(with: data)) ?? details
   }
 
   private static func rotateLogIfNeeded(logURL: URL, incomingByteCount: UInt64) throws {
