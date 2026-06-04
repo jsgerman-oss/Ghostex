@@ -142,6 +142,7 @@ export function CommandIconPicker({
               <CommandInput
                 aria-label="Search icons"
                 className="command-icon-picker-search"
+                clearLabel="Clear icon search"
                 placeholder="Search icons"
                 spellCheck={false}
               />

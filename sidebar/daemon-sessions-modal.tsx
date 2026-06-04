@@ -1,7 +1,8 @@
 import { IconChevronRight, IconRefresh, IconX } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmationModal } from "./confirmation-modal";
+import { SidebarSessionSearchField } from "./sidebar-session-search-overlay";
 import { useSidebarStore } from "./sidebar-store";
 import type { WebviewApi } from "./webview-api";
 
@@ -14,6 +15,7 @@ export type DaemonSessionsModalProps = {
 export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsModalProps) {
   const state = useSidebarStore((storeState) => storeState.daemonSessionsState);
   const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [expandedPanels, setExpandedPanels] = useState<Record<string, boolean>>({});
   const [isKillDaemonConfirmOpen, setIsKillDaemonConfirmOpen] = useState(false);
   const [isKillT3ServerConfirmOpen, setIsKillT3ServerConfirmOpen] = useState(false);
@@ -141,15 +143,15 @@ export function DaemonSessionsModal({ isOpen, onClose, vscode }: DaemonSessionsM
             {/* </div> */}
           </div>
           <div className="daemon-sessions-toolbar">
-            <input
-              aria-label="Search daemon sessions"
-              className="group-title-input daemon-sessions-search-input"
-              onChange={(event) => {
-                setSearchQuery(event.target.value);
-              }}
+            <SidebarSessionSearchField
+              ariaLabel="Search daemon sessions"
+              clearLabel="Clear daemon sessions search"
+              inputClassName="daemon-sessions-search-input"
+              inputRef={searchInputRef}
               placeholder="Search by workspace, session, cwd, title, or agent"
-              type="text"
-              value={searchQuery}
+              query={searchQuery}
+              setQuery={setSearchQuery}
+              toolbarClassName="daemon-sessions-search-control"
             />
             <div className="daemon-sessions-toolbar-actions">
               <button

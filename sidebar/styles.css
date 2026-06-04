@@ -421,6 +421,22 @@ button,
   padding: 1.25rem;
 }
 
+.ghostex-settings-shadcn .settings-persistence-warning {
+  /*
+   * CDXC:SessionPersistence 2026-06-04-01:57:
+   * The Off choice is valid but makes Android/iOS attach unreliable because mobile clients need durable provider sessions. Keep the warning inline with the Settings control so users see the consequence before leaving the dropdown.
+   */
+  align-items: flex-start;
+  color: #fbbf24;
+  display: grid;
+  font-size: 0.75rem;
+  font-weight: 650;
+  gap: 0.375rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  line-height: 1.4;
+  margin-top: 0.5rem;
+}
+
 .ghostex-settings-shadcn .first-launch-setup-main {
   align-items: stretch;
   display: grid;
@@ -1472,6 +1488,46 @@ button,
 
 .ghostex-settings-shadcn .settings-modal-tabs-scroll [data-slot="tabs-list"] {
   width: 100%;
+}
+
+.ghostex-settings-shadcn .settings-modal-search-toolbar {
+  margin-top: 0.75rem;
+}
+
+.ghostex-settings-shadcn .settings-modal-search-input {
+  background: color-mix(in srgb, var(--input) 30%, transparent);
+  border: 1px solid var(--input);
+  border-radius: 0;
+  box-sizing: border-box;
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 400;
+  height: 2.5rem;
+  letter-spacing: 0;
+  line-height: 1.25rem;
+  min-height: 2.5rem;
+  padding: 0.25rem 2.5rem 0.25rem 0.75rem;
+  width: 100%;
+}
+
+.ghostex-settings-shadcn .settings-modal-search-input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.ghostex-settings-shadcn .settings-modal-search-input:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 50%, transparent);
+  outline: none;
+}
+
+.ghostex-settings-shadcn .settings-modal-search-toolbar .session-search-input-icon,
+.ghostex-settings-shadcn .settings-modal-search-toolbar .session-search-clear-button {
+  color: var(--muted-foreground);
+}
+
+.ghostex-settings-shadcn .settings-modal-search-toolbar .session-search-clear-button:hover,
+.ghostex-settings-shadcn .settings-modal-search-toolbar .session-search-clear-button:focus-visible {
+  color: var(--foreground);
 }
 
 @container settings-modal (max-width: 920px) {

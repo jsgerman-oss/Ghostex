@@ -15,6 +15,7 @@ import {
 } from "./text-input-keyboard";
 import { TOOLTIP_DELAY_MS } from "./tooltip-delay";
 import { TooltipProvider } from "./app-tooltip";
+import { SidebarSessionSearchField } from "./sidebar-session-search-overlay";
 import type { WebviewApi } from "./webview-api";
 import type { ExtensionToSidebarMessage, SidebarPreviousSessionItem } from "../shared/session-grid-contract";
 
@@ -259,16 +260,15 @@ export function PreviousSessionsModal({
             </div>
           </div>
           <div className="previous-sessions-toolbar">
-            <input
-              aria-label="Search previous sessions"
-              className="group-title-input previous-sessions-search-input"
-              onChange={(event) => {
-                setSearchQuery(event.target.value);
-              }}
+            <SidebarSessionSearchField
+              ariaLabel="Search previous sessions"
+              clearLabel="Clear previous sessions search"
+              inputClassName="previous-sessions-search-input"
+              inputRef={searchInputRef}
               placeholder="Search sessions..."
-              ref={searchInputRef}
-              type="text"
-              value={searchQuery}
+              query={searchQuery}
+              setQuery={setSearchQuery}
+              toolbarClassName="previous-sessions-search-control"
             />
             <button
               aria-label={

@@ -4,21 +4,39 @@ import type { SidebarPreviousSessionItem } from "../shared/session-grid-contract
 import { SessionHistoryCard } from "./session-history-card";
 
 export type SidebarSessionSearchFieldProps = {
+  ariaLabel?: string;
+  autoComplete?: string;
+  clearLabel?: string;
+  inputClassName?: string;
   inputRef: RefObject<HTMLInputElement | null>;
   onEmptyBlur?: () => void;
   onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
+  placeholder?: string;
   query: string;
+  shellClassName?: string;
   setQuery: (query: string) => void;
+  toolbarClassName?: string;
 };
 
 export function SidebarSessionSearchField({
+  ariaLabel = "Search current and previous sessions",
+  autoComplete,
+  clearLabel = "Clear session search",
+  inputClassName,
   inputRef,
   onEmptyBlur,
   onKeyDown,
+  placeholder = "Search sessions",
   query,
+  shellClassName,
   setQuery,
+  toolbarClassName,
 }: SidebarSessionSearchFieldProps) {
   const hasQuery = query.length > 0;
+  const clearQueryAndFocus = () => {
+    setQuery("");
+    inputRef.current?.focus();
+  };
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -32,11 +50,24 @@ export function SidebarSessionSearchField({
   }, [query.length]);
 
   return (
-    <div className="session-search-toolbar" data-empty-space-blocking="true">
-      <div className="session-search-input-shell">
+    <div
+      className={["session-search-toolbar", toolbarClassName].filter(Boolean).join(" ")}
+      data-empty-space-blocking="true"
+    >
+      {/*
+       * CDXC:SearchInputs 2026-06-04-02:59:
+       * Settings and Previous Sessions search fields must reuse the Mac sidebar search affordance: show the search icon on the right while empty, then replace it with an X button that clears the typed query and keeps focus in the field.
+       *
+       * CDXC:SearchInputs 2026-06-04-03:11:
+       * Recent Projects and daemon search use this same field now, and Escape on a focused non-empty field must clear the query the same way as the X button instead of moving focus or closing the surrounding surface.
+       */}
+      <div className={["session-search-input-shell", shellClassName].filter(Boolean).join(" ")}>
         <input
-          aria-label="Search current and previous sessions"
-          className="group-title-input session-search-input"
+          aria-label={ariaLabel}
+          autoComplete={autoComplete}
+          className={["group-title-input session-search-input", inputClassName]
+            .filter(Boolean)
+            .join(" ")}
           onBlur={() => {
             /**
              * CDXC:SidebarSearch 2026-05-08-11:49
@@ -52,20 +83,25 @@ export function SidebarSessionSearchField({
           onChange={(event) => {
             setQuery(event.target.value);
           }}
-          onKeyDown={onKeyDown}
-          placeholder="Search sessions"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && query.length > 0) {
+              event.preventDefault();
+              event.stopPropagation();
+              clearQueryAndFocus();
+              return;
+            }
+            onKeyDown?.(event);
+          }}
+          placeholder={placeholder}
           ref={inputRef}
           type="text"
           value={query}
         />
         {hasQuery ? (
           <button
-            aria-label="Clear session search"
+            aria-label={clearLabel}
             className="session-search-clear-button"
-            onClick={() => {
-              setQuery("");
-              inputRef.current?.focus();
-            }}
+            onClick={clearQueryAndFocus}
             type="button"
           >
             <IconX

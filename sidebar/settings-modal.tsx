@@ -52,6 +52,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { SidebarSessionSearchField } from "./sidebar-session-search-overlay";
 import {
   IconAsterisk,
   IconAlertTriangle,
@@ -466,6 +467,7 @@ export type SettingsModalProps = {
   agentHookStatusLoading?: boolean;
   firstLaunchSetupVisibleSettings?: ReadonlySet<FirstLaunchSetupMainSettingKey>;
   initialSection?: MainSettingsInitialSectionId;
+  initialSearchQuery?: string;
   initialTab?: SettingsModalTab;
   isOpen: boolean;
   presentation?: SettingsModalPresentation;
@@ -510,6 +512,7 @@ export function SettingsModal({
   agentHookStatusLoading = false,
   firstLaunchSetupVisibleSettings,
   initialSection,
+  initialSearchQuery,
   initialTab = "settings",
   isOpen,
   onChange,
@@ -652,6 +655,33 @@ export function SettingsModal({
     rememberedSettingsModalTab = nextTab;
     setActiveTabState(nextTab);
   }, [initialTab, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || isFirstLaunchSetup || !initialSearchQuery?.trim()) {
+      return;
+    }
+    const nextQuery = initialSearchQuery.trim();
+    const nextTab = getInitialSettingsModalTab(initialTab);
+    /**
+     * CDXC:SessionPersistence 2026-06-04-02:52:
+     * Titlebar Tips notices can deep-link into Settings by opening a searchable
+     * tab and pre-filling the search box with the setting label. Seed the
+     * correct tab-specific query instead of typing through the DOM so repeated
+     * opens land on the intended control without depending on focus timing.
+     */
+    if (nextTab === "hotkeys") {
+      setHotkeysSearchQuery(nextQuery);
+    } else if (nextTab === "ghostty") {
+      setGhosttySearchQuery(nextQuery);
+    } else if (nextTab === "settings") {
+      setSettingsSearchQuery(nextQuery);
+    }
+    const animationFrame = requestAnimationFrame(() => {
+      searchInputRef.current?.focus({ preventScroll: true });
+      searchInputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(animationFrame);
+  }, [initialSearchQuery, initialTab, isFirstLaunchSetup, isOpen]);
 
   useEffect(() => {
     if (!isOpen || activeTab !== "osIntegration" || osIntegrationStatus || osIntegrationStatusLoading) {
@@ -1071,7 +1101,7 @@ export function SettingsModal({
           { label: "Folder sizes", value: "folderSizes" },
           { label: "Disk usage", value: "diskUsage" },
         ],
-        subtitle: "Show ~/.ghostex folder sizes and open the Ghostex storage folder in Finder.",
+        subtitle: "Show ~/.ghostex folder sizes and open the Ghostex storage folder.",
         title: "Ghostex folder",
       },
     ]),
@@ -1639,18 +1669,32 @@ export function SettingsModal({
             ) : null}
             {!isFirstLaunchSetup &&
             (activeTab === "settings" || activeTab === "ghostty" || activeTab === "hotkeys") ? (
-              <Input
-                aria-label={
+              <SidebarSessionSearchField
+                ariaLabel={
                   activeTab === "hotkeys"
                     ? "Search hotkeys"
                     : activeTab === "ghostty"
                       ? "Search Ghostty settings"
                       : "Search settings"
                 }
-                className="mt-3 h-10 px-3 text-sm"
-                ref={searchInputRef}
-                onChange={(event) => {
-                  const nextQuery = event.currentTarget.value;
+                clearLabel={
+                  activeTab === "hotkeys"
+                    ? "Clear hotkeys search"
+                    : activeTab === "ghostty"
+                      ? "Clear Ghostty settings search"
+                      : "Clear settings search"
+                }
+                inputClassName="settings-modal-search-input"
+                inputRef={searchInputRef}
+                placeholder={activeTab === "hotkeys" ? "Search hotkeys" : "Search settings"}
+                query={
+                  activeTab === "hotkeys"
+                    ? hotkeysSearchQuery
+                    : activeTab === "ghostty"
+                      ? ghosttySearchQuery
+                      : settingsSearchQuery
+                }
+                setQuery={(nextQuery) => {
                   if (activeTab === "hotkeys") {
                     setHotkeysSearchQuery(nextQuery);
                     return;
@@ -1661,14 +1705,7 @@ export function SettingsModal({
                   }
                   setSettingsSearchQuery(nextQuery);
                 }}
-                placeholder={activeTab === "hotkeys" ? "Search hotkeys" : "Search settings"}
-                value={
-                  activeTab === "hotkeys"
-                    ? hotkeysSearchQuery
-                    : activeTab === "ghostty"
-                      ? ghosttySearchQuery
-                      : settingsSearchQuery
-                }
+                toolbarClassName="settings-modal-search-toolbar"
               />
             ) : null}
           </DialogHeader>
@@ -2612,8 +2649,11 @@ export function SettingsModal({
                          CDXC:SessionPersistence 2026-05-26-13:41:
                           zmx is now the default and recommended Settings option. Hide tmux and zellij from the dropdown without removing their code paths, so existing persisted provider sessions still normalize and launch.
 
-                         CDXC:SessionPersistence 2026-05-28-04:24:
-                          The Session Persistence setting should no longer be marked as Beta in Settings copy or search results. */
+                        CDXC:SessionPersistence 2026-05-28-04:24:
+                          The Session Persistence setting should no longer be marked as Beta in Settings copy or search results.
+
+                         CDXC:SessionPersistence 2026-06-04-01:57:
+                          Users can disable persistence, but the Settings dropdown must warn that Android and iOS attach flows depend on persistent provider sessions. Show the warning only while Off is selected so the risk is visible at the decision point without making the default zmx state noisy. */
                       <SelectField
                         description="Use zmx with zmx-session-manager when you care about using ssh from other devices to continue working on sessions created using Ghostex. It doesn't affect the Agent CLI tools at all. Mostly working great, few minor issues left to fix."
                         label="Session Persistence"
@@ -2625,6 +2665,16 @@ export function SettingsModal({
                           )
                         }
                         options={SESSION_PERSISTENCE_PROVIDER_OPTIONS}
+                        supportingContent={
+                          draft.sessionPersistenceProvider === "off" ? (
+                            <div className="settings-persistence-warning" role="note">
+                              <IconAlertTriangle aria-hidden="true" size={14} />
+                              <span>
+                                Android and iOS attach can have issues while persistence is disabled.
+                              </span>
+                            </div>
+                          ) : undefined
+                        }
                         value={draft.sessionPersistenceProvider}
                       />
                     ) : null}
@@ -3495,7 +3545,9 @@ function OpenTargetsSettingsTab({
                       <div className="truncate text-sm font-medium">{target.label}</div>
                       <div className="truncate text-xs text-muted-foreground">
                         {isAvailable
-                          ? target.commands?.join(", ") ?? "macOS"
+                          ? target.id === "finder"
+                            ? "Built-in"
+                            : target.commands?.join(", ") ?? "macOS"
                           : "Not installed"}
                       </div>
                     </div>
@@ -6061,6 +6113,7 @@ function SelectField({
   onResetToDefault,
   options,
   showScrollButtons,
+  supportingContent,
   value,
 }: {
   contentClassName?: string;
@@ -6069,6 +6122,7 @@ function SelectField({
   onChange: (value: string) => void;
   options: ReadonlyArray<{ label: string; value: string }>;
   showScrollButtons?: boolean;
+  supportingContent?: ReactNode;
   value: string;
 } & SettingModificationProps) {
   const id = useId();
@@ -6094,6 +6148,7 @@ function SelectField({
           </SelectGroup>
         </SelectContent>
       </Select>
+      {supportingContent}
     </SettingRow>
   );
 }

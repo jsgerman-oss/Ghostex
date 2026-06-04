@@ -261,6 +261,7 @@ function ProjectBoardApp() {
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [priorityFilter, setPriorityFilter] = useState<BoardPriorityFilter>("all");
   const [estimateFilter, setEstimateFilter] = useState<BoardEstimateFilter>("all");
   const [detail, setDetail] = useState<DetailDraft>(createEmptyDetailDraft);
@@ -1191,13 +1192,44 @@ function ProjectBoardApp() {
 
       <section className="project-board-filters" aria-label="Ticket filters">
         <div className="project-board-search">
-          <IconSearch aria-hidden="true" />
+          {/*
+           * CDXC:SearchInputs 2026-06-04-03:11:
+           * Project Board ticket search is hosted by the native tasks bundle,
+           * so mirror the sidebar search affordance locally: keep the search
+           * icon on the right while empty, replace it with an X button after
+           * typing, and let Escape clear the focused non-empty field.
+           */}
           <Input
             aria-label="Search tickets"
             onChange={(event) => setSearchQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape" || searchQuery.length === 0) {
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              setSearchQuery("");
+              searchInputRef.current?.focus();
+            }}
             placeholder="Search tickets"
+            ref={searchInputRef}
             value={searchQuery}
           />
+          {searchQuery.length > 0 ? (
+            <button
+              aria-label="Clear ticket search"
+              className="project-board-search-clear-button"
+              onClick={() => {
+                setSearchQuery("");
+                searchInputRef.current?.focus();
+              }}
+              type="button"
+            >
+              <IconX aria-hidden="true" />
+            </button>
+          ) : (
+            <IconSearch aria-hidden="true" className="project-board-search-icon" />
+          )}
         </div>
         <Select
           items={PROJECT_BOARD_PRIORITY_FILTER_SELECT_ITEMS}
@@ -2838,19 +2870,49 @@ styleElement.textContent = `
     position: relative;
   }
 
-  .project-board-search svg {
+  .project-board-search-icon {
     color: rgba(244, 244, 245, 0.42);
     height: 16px;
-    left: 12px;
     pointer-events: none;
     position: absolute;
+    right: 12px;
     width: 16px;
     z-index: 1;
   }
 
   .project-board-search input {
     height: var(--project-board-control-height);
-    padding-left: 36px;
+    padding-right: 36px;
+  }
+
+  .project-board-search-clear-button {
+    align-items: center;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    color: rgba(244, 244, 245, 0.42);
+    display: inline-flex;
+    height: 24px;
+    justify-content: center;
+    padding: 0;
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    z-index: 1;
+  }
+
+  .project-board-search-clear-button:hover,
+  .project-board-search-clear-button:focus-visible {
+    color: rgba(244, 244, 245, 0.78);
+    outline: none;
+  }
+
+  .project-board-search-clear-button svg {
+    height: 16px;
+    pointer-events: none;
+    width: 16px;
   }
 
   .project-board-filter-select,

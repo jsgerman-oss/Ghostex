@@ -980,12 +980,20 @@
   min-width: 0;
 }
 
+.daemon-sessions-search-control {
+  min-width: 0;
+}
+
 .daemon-sessions-search-input {
   font-size: 12px;
   font-weight: 600;
+  height: 32px;
   letter-spacing: 0.01em;
+  min-height: 32px;
   min-width: 0;
+  padding-right: 34px;
   text-transform: none;
+  width: 100%;
 }
 
 .daemon-sessions-toolbar-actions {
@@ -1287,6 +1295,10 @@
   min-width: 0;
 }
 
+.previous-sessions-search-control {
+  min-width: 0;
+}
+
 .previous-sessions-search-input {
   background: color-mix(in srgb, var(--app-foreground) 5%, transparent);
   border: 1px solid color-mix(in srgb, #ffffff 10%, transparent);
@@ -1300,8 +1312,9 @@
   line-height: 1.3;
   min-height: 32px;
   min-width: 0;
-  padding: 0 10px;
+  padding: 0 34px 0 10px;
   text-transform: none;
+  width: 100%;
 }
 
 .previous-sessions-favorites-toggle {
@@ -2808,7 +2821,7 @@
 .worktree-create-mode-toggle {
   /*
    * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
-   * New Worktree has two explicit modes: create a fresh checkout or open an
+   * Add Worktree has two explicit modes: create a fresh checkout or open an
    * existing Git worktree. Keep the mode switch compact and let Open Existing
    * hide the create-only prompt and agent controls below it.
    */

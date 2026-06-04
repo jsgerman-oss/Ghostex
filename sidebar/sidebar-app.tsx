@@ -597,6 +597,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const overflowMenuRef = useRef<HTMLDivElement>(null);
   const sessionGroupsPanelRef = useRef<HTMLElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const recentProjectsSearchInputRef = useRef<HTMLInputElement>(null);
   const groupIdsRef = useRef<string[]>([]);
   const sessionIdsByGroupRef = useRef<SessionIdsByGroup>({});
   const pinnedSessionDropTargetLogKeyRef = useRef<string | undefined>(undefined);
@@ -2697,8 +2698,25 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       }
       const searchInput = searchInputRef.current;
       const isSearchInputTarget = searchInput !== null && target === searchInput;
+      const recentProjectsSearchInput = recentProjectsSearchInputRef.current;
+      const isRecentProjectsSearchInputTarget =
+        recentProjectsSearchInput !== null && target === recentProjectsSearchInput;
 
       if (event.key === "Escape") {
+        if (isSearchInputTarget && sessionSearchQuery.length > 0) {
+          event.preventDefault();
+          event.stopPropagation();
+          setSessionSearchQuery("");
+          searchInput.focus();
+          return;
+        }
+        if (isRecentProjectsSearchInputTarget && recentProjectsQuery.length > 0) {
+          event.preventDefault();
+          event.stopPropagation();
+          setRecentProjectsQuery("");
+          recentProjectsSearchInput.focus();
+          return;
+        }
         if (!closeTopmostSidebarOverlay()) {
           return;
         }
@@ -2787,6 +2805,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     isPreviousSessionsOpen,
     isScratchPadOpen,
     isSessionSearchOpen,
+    recentProjectsQuery,
     selectedSessionSearchResult,
     sessionSearchQuery,
     sidebarSessionSearchResults,
@@ -3378,22 +3397,16 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                * icon classes as Search sessions so both boxes stay identical
                * in typography, border, radius, padding, and icon placement.
                */}
-              <label className="session-search-input-shell recent-projects-search">
-                <IconSearch
-                  aria-hidden="true"
-                  className="session-search-input-icon recent-projects-search-icon"
-                  size={16}
-                  stroke={1.9}
-                />
-                <input
-                  autoComplete="off"
-                  className="group-title-input session-search-input"
-                  onChange={(event) => setRecentProjectsQuery(event.currentTarget.value)}
-                  placeholder="Search projects"
-                  type="text"
-                  value={recentProjectsQuery}
-                />
-              </label>
+              <SidebarSessionSearchField
+                ariaLabel="Search recent projects"
+                autoComplete="off"
+                clearLabel="Clear recent projects search"
+                inputRef={recentProjectsSearchInputRef}
+                placeholder="Search projects"
+                query={recentProjectsQuery}
+                setQuery={setRecentProjectsQuery}
+                shellClassName="recent-projects-search"
+              />
               <div className="recent-projects-list">
                   {filteredRecentProjects.length > 0 ? (
                     filteredRecentProjects.map((project) => (
@@ -3451,8 +3464,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                 {/*
                  * CDXC:RecentProjects 2026-05-27-07:04:
                  * Right-clicking a Recent Projects row should expose only the
-                 * parked-project actions: Copy Path, Open in Finder, then a
+                 * parked-project actions: Copy Path, Open Folder, then a
                  * separator before Remove Project.
+                 *
+                 * CDXC:RecentProjects 2026-06-04-13:39:
+                 * User-facing filesystem actions should use Open Folder instead of Finder-specific wording while preserving the existing native reveal behavior.
                  */}
                 <button
                   className="session-context-menu-item"
@@ -3478,7 +3494,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                     className="session-context-menu-icon"
                     size={14}
                   />
-                  Open in Finder
+                  Open Folder
                 </button>
                 <div className="session-context-menu-divider" role="separator" />
                 <button
