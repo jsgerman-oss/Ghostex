@@ -1706,7 +1706,11 @@ private final class TerminalPaneScroller: NSScroller {
 }
 
 private final class GhostexGhosttySurfaceHostView: NSView {
-  private static let scrollButtonSize = CGSize(width: 37.5, height: 37.5)
+  /*
+   CDXC:NativeTerminalScroll 2026-06-04-20:11:
+   The terminal scroll-to-top and scroll-to-bottom overlay buttons should be 25% smaller than the prior 37.5pt square controls while keeping the same stacked lower-right placement.
+   */
+  private static let scrollButtonSize = CGSize(width: 28.125, height: 28.125)
   private static let scrollButtonRightInset: CGFloat = 17
   private static let scrollButtonBottomInset: CGFloat = 17
   private static let scrollButtonGap: CGFloat = 8.5
@@ -2270,6 +2274,7 @@ final class TerminalWorkspaceView: NSView {
   private var sessionFocusModeAvailableSessionIds = Set<String>()
   private var sessionTitleBarActions = [String: [TerminalTitleBarAction]]()
   private var sessionTitles = [String: String]()
+  private var zmxInactiveSessionIds = Set<String>()
   private var showSessionIdInTerminalPanes = false
   private var activeProjectEditorId: String?
   private var focusedSessionId: String?
@@ -3531,6 +3536,7 @@ final class TerminalWorkspaceView: NSView {
     firstPromptTitleGenerationSessionIds.remove(sessionId)
     sessionTitleBarActions.removeValue(forKey: sessionId)
     sessionTitles.removeValue(forKey: sessionId)
+    zmxInactiveSessionIds.remove(sessionId)
     closePoppedOutPaneWindow(sessionId: sessionId, reason: "closeTerminal")
     resizeLogSignatureBySessionId.removeValue(forKey: sessionId)
     /**
@@ -3950,6 +3956,7 @@ final class TerminalWorkspaceView: NSView {
     sessionFaviconDataUrls.removeValue(forKey: sessionId)
     sessionTitleBarActions.removeValue(forKey: sessionId)
     sessionTitles.removeValue(forKey: sessionId)
+    zmxInactiveSessionIds.remove(sessionId)
     closePoppedOutPaneWindow(sessionId: sessionId, reason: "closeWebPane")
     completedWebPaneLoadSessionIds.remove(sessionId)
     pendingAuthenticatedWebPaneLoadSessionIds.remove(sessionId)
@@ -4424,9 +4431,10 @@ final class TerminalWorkspaceView: NSView {
           /*
            CDXC:SessionFocusMode 2026-05-28-13:22:
            Project editor tabs are browser tabs inside one editor pane, not terminal split panes, so their titlebar items must opt out of pane focus mode while still satisfying the shared tab item contract.
-           */
+          */
           allowsFocusMode: false,
           isSleeping: false,
+          isZmxInactive: false,
           sessionId: tab.tabId,
           title: tab.title)
       }
@@ -5730,6 +5738,7 @@ final class TerminalWorkspaceView: NSView {
     let previousSessionFocusModeAvailableSessionIds = sessionFocusModeAvailableSessionIds
     let previousSessionTitleBarActions = sessionTitleBarActions
     let previousSessionTitles = sessionTitles
+    let previousZmxInactiveSessionIds = zmxInactiveSessionIds
     let shouldApplyPaneOwnerSelection =
       command.paneOwnerSelectionChanged == true && !shouldRelayout
     let responderSessionIdBefore = currentResponderSessionId()
@@ -5796,11 +5805,13 @@ final class TerminalWorkspaceView: NSView {
     sessionFocusModeAvailableSessionIds = Set(command.sessionFocusModeAvailableSessionIds ?? [])
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
+    zmxInactiveSessionIds = Set(command.sessionZmxInactiveIds ?? [])
     showSessionIdInTerminalPanes = command.showSessionIdInTerminalPanes == true
     activeProjectEditorId = nextActiveProjectEditorId
     let shouldRefreshPaneTabMetadata =
       previousSessionFocusModeAvailableSessionIds != sessionFocusModeAvailableSessionIds
       || previousSessionTitleBarActions != sessionTitleBarActions || previousSessionTitles != sessionTitles
+      || previousZmxInactiveSessionIds != zmxInactiveSessionIds
     if previousDelayedSendRemainingLabels != sessionDelayedSendRemainingLabels ||
       previousFirstPromptTitleGenerationSessionIds != firstPromptTitleGenerationSessionIds
     {
@@ -6174,6 +6185,7 @@ final class TerminalWorkspaceView: NSView {
       Set(command.sessionFirstPromptTitleGenerationSessionIds ?? [])
     sessionTitleBarActions = command.sessionTitleBarActions ?? [:]
     sessionTitles = command.sessionTitles ?? [:]
+    zmxInactiveSessionIds = Set(command.sessionZmxInactiveIds ?? [])
     if previousFirstPromptTitleGenerationSessionIds != firstPromptTitleGenerationSessionIds {
       needsLayout = true
     }
@@ -11872,6 +11884,7 @@ final class TerminalWorkspaceView: NSView {
         actions: sessionTitleBarActions[sessionId] ?? [],
         allowsFocusMode: sessionFocusModeAvailableSessionIds.contains(sessionId),
         isSleeping: sleepingSessionIds.contains(sessionId),
+        isZmxInactive: zmxInactiveSessionIds.contains(sessionId),
         sessionId: sessionId,
         title: normalizedTerminalSessionTitle(sessionTitles[sessionId], sessionId: sessionId))
     }
@@ -11879,6 +11892,7 @@ final class TerminalWorkspaceView: NSView {
       session.titleBarView.setDebugContext(ownerSessionId: ownerSessionId, paneKind: "terminal")
       session.titleBarView.setTabs(items, activeSessionId: activeSessionId)
       session.titleBarView.setTabActivities(sessionActivities)
+      session.titleBarView.setTabZmxInactiveSessionIds(zmxInactiveSessionIds)
       session.titleBarView.setTabDelayedSendRemainingLabels(sessionDelayedSendRemainingLabels)
       session.titleBarView.setTabIdentityIcons(
         faviconDataUrls: sessionFaviconDataUrls,
@@ -11889,6 +11903,7 @@ final class TerminalWorkspaceView: NSView {
       session.titleBarView.setDebugContext(ownerSessionId: ownerSessionId, paneKind: "web")
       session.titleBarView.setTabs(items, activeSessionId: activeSessionId)
       session.titleBarView.setTabActivities(sessionActivities)
+      session.titleBarView.setTabZmxInactiveSessionIds(zmxInactiveSessionIds)
       session.titleBarView.setTabDelayedSendRemainingLabels(sessionDelayedSendRemainingLabels)
       session.titleBarView.setTabIdentityIcons(
         faviconDataUrls: sessionFaviconDataUrls,
@@ -13609,6 +13624,7 @@ final class TerminalWorkspaceView: NSView {
       setHidden(!isActive, for: session.borderView)
       session.titleBarView.setState(activity: sessionActivities[sessionId])
       session.titleBarView.setTabActivities(sessionActivities)
+      session.titleBarView.setTabZmxInactiveSessionIds(zmxInactiveSessionIds)
       session.titleBarView.setTabDelayedSendRemainingLabels(sessionDelayedSendRemainingLabels)
       session.titleBarView.setTabIdentityIcons(
         faviconDataUrls: sessionFaviconDataUrls,
@@ -13634,6 +13650,7 @@ final class TerminalWorkspaceView: NSView {
       activity: sessionActivities[sessionId]
     )
     session.titleBarView.setTabActivities(sessionActivities)
+    session.titleBarView.setTabZmxInactiveSessionIds(zmxInactiveSessionIds)
     session.titleBarView.setTabDelayedSendRemainingLabels(sessionDelayedSendRemainingLabels)
     session.titleBarView.setTabIdentityIcons(
       faviconDataUrls: sessionFaviconDataUrls,
@@ -17620,13 +17637,13 @@ private final class TerminalTitleBarTabButton: NSButton {
     blue: 0x8A / 255,
     alpha: 1
   ).cgColor
-  private static let sleepingIconColor = NSColor(calibratedWhite: 0.86, alpha: 0.42)
+  private static let zmxInactiveIconColor = NSColor(calibratedWhite: 0.86, alpha: 0.42)
   private static let delayedSendIconColor = NSColor(calibratedRed: 0xF5 / 255, green: 0x9E / 255, blue: 0x0B / 255, alpha: 0.96)
   private static let commandTabSeparatorColor = NSColor(calibratedWhite: 1, alpha: 0.10).cgColor
   private static let workspaceTabBaseRed: CGFloat = 0x05 / 255
   private static let workspaceTabBaseGreen: CGFloat = 0x06 / 255
   private static let workspaceTabBaseBlue: CGFloat = 0x08 / 255
-  private static let sleepingIconSize: CGFloat = 9
+  private static let zmxInactiveIconSize: CGFloat = 9
   private static let delayedSendIconSize: CGFloat = 14
   private static let activityIndicatorSize: CGFloat = 8
   private static let activityIndicatorTrailingPadding: CGFloat = 9
@@ -17685,6 +17702,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   private var chromeRole: TerminalPaneChromeRole = .workspace
   private var delayedSendRemainingLabel: String?
   private var isSleepingTab = false
+  private var isZmxInactiveTab = false
   private var showsCommandTrailingSeparator = false
   private var pendingMouseDownInlineAction: InlineAction?
   private var hoverTrackingArea: NSTrackingArea?
@@ -17735,6 +17753,20 @@ private final class TerminalTitleBarTabButton: NSButton {
     updateChrome()
   }
 
+  func setZmxInactive(_ isInactive: Bool) {
+    guard isZmxInactiveTab != isInactive else {
+      return
+    }
+    /*
+     CDXC:PaneTabs 2026-06-04-20:36:
+     The native pane-tab moon represents an inactive zmx provider session. Keep
+     parked/sleeping tab state separate so unmounted AppKit renderers do not
+     imply the zmx session is gone.
+    */
+    isZmxInactiveTab = isInactive
+    needsDisplay = true
+  }
+
   func setDelayedSendRemainingLabel(_ remainingLabel: String?) {
     let normalizedLabel = remainingLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
     let nextLabel = normalizedLabel?.isEmpty == false ? normalizedLabel : nil
@@ -17745,7 +17777,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     /*
      CDXC:DelayedSend 2026-05-17-03:14:
      Native pane tabs need the active Delayed Send timer beside the session
-     title, using the same right-side status slot as the sleeping moon, and the
+     title, using the same right-side status slot as the zmx-inactive moon, and the
      tooltip must expose the remaining countdown.
     */
     delayedSendRemainingLabel = nextLabel
@@ -17790,7 +17822,8 @@ private final class TerminalTitleBarTabButton: NSButton {
      CDXC:PaneTabs 2026-05-17-01:50:
      Workspace-area sleeping tabs should use the same subdued visual treatment
      as other unsurfaced tab siblings so the pane's surfaced session is the
-     obvious tab. The moon remains the only sleeping-specific visual marker.
+     obvious tab. ZMX inactivity owns the moon marker separately from this
+     parked-tab visual treatment.
      */
     if chromeRole == .workspace {
       let isSurfacedWorkspaceTab = isActiveTab && !isSleepingTab
@@ -17947,11 +17980,10 @@ private final class TerminalTitleBarTabButton: NSButton {
      22px high, but the action chrome is intentionally 18px high so it aligns
      with the native title-bar button icons.
 
-     CDXC:PaneTabs 2026-05-11-06:57
-     Sleeping tabs use the moon itself as the right-side state marker instead
-     of drawing both a leading moon and a gray indicator dot. Keep the marker in
-     the same reserved right slot as working/attention so tab titles truncate
-     before status UI consistently.
+     CDXC:PaneTabs 2026-06-04-20:36:
+     Native tab moons represent inactive zmx provider sessions, not sleeping
+     AppKit renderers. Keep the marker in the same reserved right slot as
+     working/attention so tab titles truncate before status UI consistently.
 
      CDXC:PaneTabs 2026-05-12-12:52
      Production pane tabs must not paint diagnostic hit-region colors. Keep
@@ -18442,7 +18474,7 @@ private final class TerminalTitleBarTabButton: NSButton {
   }
 
   private var hasActivityIndicator: Bool {
-    delayedSendRemainingLabel != nil || isSleepingTab || activity != nil
+    delayedSendRemainingLabel != nil || isZmxInactiveTab || activity == .attention || activity == .working
   }
 
   private var activityIndicatorFrame: CGRect {
@@ -18458,8 +18490,8 @@ private final class TerminalTitleBarTabButton: NSButton {
       drawDelayedSendIcon()
       return
     }
-    if isSleepingTab || activity == .sleeping {
-      drawSleepingIcon()
+    if isZmxInactiveTab {
+      drawZmxInactiveIcon()
       return
     }
     let fillColor: CGColor?
@@ -18486,20 +18518,20 @@ private final class TerminalTitleBarTabButton: NSButton {
     context.restoreGState()
   }
 
-  private func drawSleepingIcon() {
+  private func drawZmxInactiveIcon() {
     let baseRect = activityIndicatorFrame
     let iconRect = CGRect(
-      x: baseRect.midX - Self.sleepingIconSize / 2,
-      y: floor((bounds.height - Self.sleepingIconSize) / 2) + 1,
-      width: Self.sleepingIconSize,
-      height: Self.sleepingIconSize)
+      x: baseRect.midX - Self.zmxInactiveIconSize / 2,
+      y: floor((bounds.height - Self.zmxInactiveIconSize) / 2) + 1,
+      width: Self.zmxInactiveIconSize,
+      height: Self.zmxInactiveIconSize)
     guard let image = NSImage(systemSymbolName: "moon.fill", accessibilityDescription: nil) else {
       return
     }
     drawTintedSymbol(
       image,
       in: iconRect,
-      color: Self.sleepingIconColor,
+      color: Self.zmxInactiveIconColor,
       rotateDegrees: 0,
       mirrorX: false)
   }
@@ -18509,7 +18541,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     /*
      CDXC:DelayedSend 2026-05-21-12:21:
      Native pane-tab Delayed Send indicators should read as a larger orange
-     timer in the same status slot as the sleeping moon. Center it slightly
+     timer in the same status slot as the zmx-inactive moon. Center it slightly
      higher than the default symbol box so it aligns with the tab title text.
      */
     let iconRect = CGRect(
@@ -18620,6 +18652,7 @@ private final class TerminalSessionTitleBarView: NSView {
     let actions: [TerminalTitleBarAction]
     let allowsFocusMode: Bool
     let isSleeping: Bool
+    let isZmxInactive: Bool
     let sessionId: String
     let title: String
   }
@@ -18976,6 +19009,7 @@ private final class TerminalSessionTitleBarView: NSView {
       button.setChromeRole(chromeRole)
       button.setActive(tab.sessionId == activeSessionId)
       button.setSleeping(tab.isSleeping)
+      button.setZmxInactive(tab.isZmxInactive)
       button.setDelayedSendRemainingLabel(nil)
       button.setContextMenuActions(tab.actions)
       button.setAllowsFocusMode(tab.allowsFocusMode)
@@ -19065,6 +19099,12 @@ private final class TerminalSessionTitleBarView: NSView {
   func setTabActivities(_ activities: [String: NativeTerminalActivity]) {
     for button in tabButtons {
       button.setActivity(activities[button.sessionId])
+    }
+  }
+
+  func setTabZmxInactiveSessionIds(_ inactiveSessionIds: Set<String>) {
+    for button in tabButtons {
+      button.setZmxInactive(inactiveSessionIds.contains(button.sessionId))
     }
   }
 
@@ -22685,20 +22725,31 @@ private final class TerminalPaneScrollButton: NSButton {
   }
 
   private static let normalBackgroundColor = NSColor(
-    calibratedRed: 18 / 255,
-    green: 20 / 255,
-    blue: 26 / 255,
-    alpha: 0.82
+    calibratedWhite: 0,
+    alpha: 1
   ).cgColor
   private static let hoverBackgroundColor = NSColor(
-    calibratedRed: 30 / 255,
-    green: 35 / 255,
-    blue: 46 / 255,
-    alpha: 0.92
+    calibratedWhite: 0,
+    alpha: 1
   ).cgColor
-  private static let borderColor = NSColor(calibratedWhite: 0.88, alpha: 0.2).cgColor
-  private static let hoverBorderColor = NSColor(calibratedWhite: 0.88, alpha: 0.34).cgColor
-  private static let glyphColor = NSColor(calibratedWhite: 0.96, alpha: 0.96)
+  private static let borderColor = NSColor(
+    calibratedRed: 0x75 / 255,
+    green: 0x75 / 255,
+    blue: 0x75 / 255,
+    alpha: 1
+  ).cgColor
+  private static let hoverBorderColor = NSColor(
+    calibratedRed: 0x75 / 255,
+    green: 0x75 / 255,
+    blue: 0x75 / 255,
+    alpha: 1
+  ).cgColor
+  private static let glyphColor = NSColor(
+    calibratedRed: 0x75 / 255,
+    green: 0x75 / 255,
+    blue: 0x75 / 255,
+    alpha: 1
+  )
 
   let direction: Direction
   private var hoverTrackingArea: NSTrackingArea?
@@ -22762,6 +22813,10 @@ private final class TerminalPaneScrollButton: NSButton {
      Scroll-to-top and scroll-to-bottom overlay buttons should match the square
      terminal scrollbar treatment. Keep the existing icon-only overlay behavior
      but set button roundness to zero instead of drawing circular controls.
+
+     CDXC:NativeTerminalScroll 2026-06-04-20:11:
+     Scroll-to-top and scroll-to-bottom overlay buttons should render with a
+     black background, #757575 border, and #757575 arrow glyphs in every state.
      */
     title = ""
     isBordered = false
@@ -22820,19 +22875,19 @@ private final class TerminalPaneScrollButton: NSButton {
     let centerX = bounds.midX
     let centerY = bounds.midY
     let path = NSBezierPath()
-    path.lineWidth = 2.2
+    path.lineWidth = 1.65
     path.lineCapStyle = .round
     path.lineJoinStyle = .round
 
     switch direction {
     case .bottom:
-      path.move(to: CGPoint(x: centerX - 6, y: centerY - 3))
-      path.line(to: CGPoint(x: centerX, y: centerY + 4))
-      path.line(to: CGPoint(x: centerX + 6, y: centerY - 3))
+      path.move(to: CGPoint(x: centerX - 4.5, y: centerY - 2.25))
+      path.line(to: CGPoint(x: centerX, y: centerY + 3))
+      path.line(to: CGPoint(x: centerX + 4.5, y: centerY - 2.25))
     case .top:
-      path.move(to: CGPoint(x: centerX - 6, y: centerY + 3))
-      path.line(to: CGPoint(x: centerX, y: centerY - 4))
-      path.line(to: CGPoint(x: centerX + 6, y: centerY + 3))
+      path.move(to: CGPoint(x: centerX - 4.5, y: centerY + 2.25))
+      path.line(to: CGPoint(x: centerX, y: centerY - 3))
+      path.line(to: CGPoint(x: centerX + 4.5, y: centerY + 2.25))
     }
 
     Self.glyphColor.setStroke()

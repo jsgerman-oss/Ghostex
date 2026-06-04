@@ -610,6 +610,12 @@ struct SetActiveTerminalSet: Decodable {
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
   /**
+   CDXC:PaneTabs 2026-06-04-20:36:
+   The native pane-tab moon marks an inactive zmx provider session, not a
+   missing AppKit terminal renderer.
+   */
+  let sessionZmxInactiveIds: [String]?
+  /**
    CDXC:SessionPersistence 2026-05-23-00:50:
    The sidebar owns the preference for showing provider/session ids. Decode it
    with layout sync because AppKit owns the top-right overlay view and still
@@ -640,6 +646,12 @@ struct SetSessionPaneChrome: Decodable {
   let sessionFirstPromptTitleGenerationSessionIds: [String]?
   let sessionTitleBarActions: [String: [TerminalTitleBarAction]]?
   let sessionTitles: [String: String]?
+  /**
+   CDXC:PaneTabs 2026-06-04-20:36:
+   ZMX liveness is pane chrome, so provider inactivity can repaint tab moons
+   without rebuilding the native split/tab layout.
+   */
+  let sessionZmxInactiveIds: [String]?
   let showSessionIdInTerminalPanes: Bool?
 }
 
