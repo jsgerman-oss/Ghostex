@@ -137,3 +137,20 @@ Ghostex supports notifications, menu bar indicators, minimal floating counters, 
 Ghostex is moving quickly, and help is welcome on platform ports, missing agent CLI integrations, docs, testing, and feature polish.
 
 Join the Discord: https://discord.gg/df7b3G92CS
+
+## Credits
+
+Ghostex builds on open source work from these projects and communities:
+
+- [CEF Project](https://github.com/chromiumembedded/cef) — embedded Chromium browser panes
+- [Agentation](https://github.com/benjitaylor/agentation) — browser annotation and feedback tooling
+- [CMUX](https://github.com/manaflow-ai/cmux) — agent hook patterns and notification integration
+- [T3 Code](https://github.com/pingdotgg/t3code) — GUI editor panes for coding agents
+- [VS Code](https://github.com/microsoft/vscode) and [code-server](https://github.com/coder/code-server) — embedded IDE surfaces
+- [zehn](https://github.com/al3rez/zehn) by [al3erz](https://github.com/al3rez) — searching sessions by prompt
+- [vvterm](https://github.com/vivy-company/vvterm) — iOS companion app base
+- [Termux](https://github.com/termux/termux-app) — Android companion app base
+- [Codex on Linux](https://github.com/ilysenko/codex-desktop-linux) — pets implementation
+- [Pierre Computer Company](https://github.com/pierrecomputer/pierre) — diffs and file rendering components
+- [Beads](https://github.com/steveyegge/beads) by [Steve Yegge](https://github.com/steveyegge) — kanban project board
+- [Beads Viewer](https://github.com/Dicklesworthstone/beads_viewer) by [doodlestein](https://github.com/Dicklesworthstone) — kanban view reference
