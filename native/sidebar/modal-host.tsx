@@ -814,6 +814,17 @@ function FloatingPromptEditorModal({
           quickSuggestions: false,
           renderLineHighlight: "none",
           scrollBeyondLastLine: false,
+          /*
+           * CDXC:PromptEditor 2026-06-04-19:29:
+           * The floating prompt editor uses Monaco's internal scrollbar; keep its rail as thin as the Agents Hub sidebar scrollbar so native overlays share one visual density.
+           *
+           * CDXC:PromptEditor 2026-06-04-19:48:
+           * The Monaco rail should be 7px wide after visual review showed 10px still felt too heavy for the macOS editor chrome.
+           */
+          scrollbar: {
+            horizontalScrollbarSize: 7,
+            verticalScrollbarSize: 7,
+          },
           selectionHighlight: false,
           snippetSuggestions: "none",
           suggestOnTriggerCharacters: false,
