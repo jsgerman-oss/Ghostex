@@ -80,7 +80,7 @@ Options:
 
 Expected state:
   Run this only after the agent/user has split-committed feature changes,
-  updated CHANGELOG.md and AllFeatures.md, and pushed main.
+  updated CHANGELOG.md and docs/product/AllFeatures.md, and pushed main.
 
 Timeouts and progress:
   Build steps log heartbeat updates about every minute.
@@ -89,6 +89,13 @@ Timeouts and progress:
   Overall release timeout: 150 minutes.
 `;
 }
+
+/*
+CDXC:ReleaseDocs 2026-06-04-01:42:
+Product and review documentation moved out of the repository root, so release
+operator guidance must name docs/product/AllFeatures.md instead of the old
+root-level AllFeatures.md path.
+*/
 
 function parseArgs(argv) {
   const options = {
