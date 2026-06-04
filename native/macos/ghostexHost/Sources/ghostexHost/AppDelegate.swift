@@ -4464,6 +4464,38 @@ final class AppModalHostWebView: WKWebView {
   }
 }
 
+final class SidebarWebView: WKWebView {
+  var resizeHitExclusionSide: SidebarSide = .left
+  var resizeHitExclusionWidth: CGFloat = 0
+
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    guard bounds.contains(point) else {
+      return nil
+    }
+    /**
+     CDXC:NativeSidebarChrome 2026-06-04-22:20:
+     The sidebar webview visually paints under the native resize divider to
+     remove the right-edge gap, but WebKit must not receive pointer events in
+     that divider strip. Yield that band so the AppKit resize handle remains
+     the single drag owner.
+     */
+    let excludedWidth = min(max(resizeHitExclusionWidth, 0), bounds.width)
+    if excludedWidth > 0 {
+      switch resizeHitExclusionSide {
+      case .left:
+        if point.x >= bounds.maxX - excludedWidth {
+          return nil
+        }
+      case .right:
+        if point.x <= bounds.minX + excludedWidth {
+          return nil
+        }
+      }
+    }
+    return super.hitTest(point)
+  }
+}
+
 final class SidebarModalBackdropView: NSView {
   var onDismiss: (() -> Void)?
 
@@ -4601,7 +4633,7 @@ final class ghostexRootView: NSView {
 
   let workspaceView: TerminalWorkspaceView
   var sidebarWebView: WKWebView { sidebarView }
-  private let sidebarView: WKWebView
+  private let sidebarView: SidebarWebView
   private let modalHostView: AppModalHostWebView
   private let sidebarModalBackdropView = SidebarModalBackdropView(frame: .zero)
   private let workspaceInteractionShieldView = WorkspaceInteractionShieldView(frame: .zero)
@@ -4775,7 +4807,7 @@ final class ghostexRootView: NSView {
         injectionTime: .atDocumentStart,
         forMainFrameOnly: true
       ))
-    self.sidebarView = WKWebView(frame: .zero, configuration: configuration)
+    self.sidebarView = SidebarWebView(frame: .zero, configuration: configuration)
     self.modalHostView = AppModalHostWebView(frame: .zero, configuration: modalHostConfiguration)
     self.titlebarChromeWebView = WKWebView(frame: .zero, configuration: titlebarConfiguration)
     self.titlebarChromeView = ReactTitlebarChromeView(webView: titlebarChromeWebView)
@@ -7499,14 +7531,29 @@ final class ghostexRootView: NSView {
     super.layout()
     let frames = rootLayoutFrames()
     validateRootLayoutFrames(frames)
+    let sidebarVisualFrame = visualSidebarFrame(for: frames)
+    let sidebarResizeHitWidth = min(Self.dividerWidth, max(frames.divider.width, 0))
     /**
      CDXC:NativeSidebarChrome 2026-05-31-18:58:
      The native #252525 sidebar/workarea border and resize strip must remain
-     owned by AppKit. Keep the sidebar WKWebView inside frames.sidebar so web
-     content cannot cover the non-interactive border line or interfere with the
-     transparent native drag handle.
+     owned by AppKit. Keep the divider and border views above the sidebar
+     WKWebView so web content cannot interfere with the transparent native drag
+     handle.
+
+     CDXC:NativeSidebarChrome 2026-06-04-22:14:
+     The reference sidebar must visually reach the workspace edge in the macOS
+     app. Paint the sidebar webview under the standard transparent resize
+     divider while keeping the divider above it for hit testing and drag
+     ownership.
+
+     CDXC:NativeSidebarChrome 2026-06-04-22:20:
+     The sidebar webview's excluded hit-test strip must match the fixed native
+     divider paint width so dragging continues to resize the sidebar after the
+     webview starts painting under that transparent divider.
      */
-    sidebarView.frame = frames.sidebar
+    sidebarView.frame = sidebarVisualFrame
+    sidebarView.resizeHitExclusionSide = sidebarSide
+    sidebarView.resizeHitExclusionWidth = sidebarResizeHitWidth
     divider.frame = frames.divider
     workspaceView.frame = frames.workspace
     workspaceInteractionShieldView.frame = frames.workspace
@@ -7528,6 +7575,32 @@ final class ghostexRootView: NSView {
       height: startupOverlayIconSize
     )
     titlebarChromeView.titlebarHeight = Self.reactTitlebarHeight
+  }
+
+  private func visualSidebarFrame(for frames: RootLayoutFrames) -> CGRect {
+    /**
+     CDXC:NativeSidebarChrome 2026-06-04-22:14:
+     The transparent root divider is the source of the visible right-edge gap
+     beside left-side sidebars. Extend only the webview's paint frame across
+     the fixed divider width; do not include the dynamic workspace edge
+     extension because that belongs to split-pane resize ownership.
+     */
+    let dividerPaintWidth = min(Self.dividerWidth, max(frames.divider.width, 0))
+    guard dividerPaintWidth > 0 else {
+      return frames.sidebar
+    }
+    if sidebarSide == .left {
+      return CGRect(
+        x: frames.sidebar.minX,
+        y: frames.sidebar.minY,
+        width: frames.sidebar.width + dividerPaintWidth,
+        height: frames.sidebar.height)
+    }
+    return CGRect(
+      x: frames.sidebar.minX - dividerPaintWidth,
+      y: frames.sidebar.minY,
+      width: frames.sidebar.width + dividerPaintWidth,
+      height: frames.sidebar.height)
   }
 
   private func promoteSidebarChrome() {
@@ -7572,10 +7645,15 @@ final class ghostexRootView: NSView {
        */
       return hitView
     }
-    if divider.frame.contains(point),
-      let hitView = divider.hitTest(convert(point, to: divider))
-    {
-      return hitView
+    if divider.frame.contains(point) {
+      /**
+       CDXC:NativeSidebarChrome 2026-06-04-22:20:
+       The resize divider is a transparent native overlay above a sidebar
+       webview that now paints beneath it. Return the divider directly for its
+       frame so AppKit resize dragging cannot fall through to WebKit hit
+       testing in the same pixels.
+       */
+      return divider
     }
     if sidebarView.frame.contains(point),
       let hitView = sidebarView.hitTest(convert(point, to: sidebarView))

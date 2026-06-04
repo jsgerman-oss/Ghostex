@@ -713,7 +713,13 @@ body:has(.sidebar-reference-layout[data-reference-sidebar="true"]) .stack {
    * scroll viewport itself handles the layout padding. Keep a separate 0px
    * right row bleed so trailing session chrome cannot paint outside the
    * visible sidebar.
+   *
+   * CDXC:SidebarReferenceBounds 2026-06-04-22:14:
+   * The full reference sidebar container needs a 1px left margin so the whole
+   * sidebar shifts right together instead of changing individual row padding,
+   * hover backgrounds, icons, titles, or trailing controls independently.
    */
+  margin-left: 1px;
   padding: 0 1px 7px 8px;
 }
 
@@ -1902,8 +1908,15 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
 
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .recent-projects-search.session-search-input-shell {
+  /*
+   * CDXC:RecentProjects 2026-06-04-22:29:
+   * The Recent Projects search box should be 5px wider on its left side only.
+   * Keep the drawer body's right edge and project row geometry unchanged by
+   * expanding the shared search shell left with a negative margin.
+   */
   justify-self: center;
-  width: 100%;
+  margin-left: -5px;
+  width: calc(100% + 5px);
 }
 
 /*
