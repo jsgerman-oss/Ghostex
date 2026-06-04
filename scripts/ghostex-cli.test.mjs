@@ -20,6 +20,7 @@ import {
   generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
   isFailedCliResult,
+  manageBeadsUsage,
   moveSessionPickerSelection,
   parseArgs,
   parseCreateSession,
@@ -718,6 +719,43 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
     }
   });
 
+  test("installs the Ghostex Manage Beads skill for agents", async () => {
+    /**
+     * CDXC:ProjectBoardBeads 2026-06-04-03:32:
+     * Project-board work needs a bundled `$ghostex-manage-beads` skill so
+     * agents can discover the `bd` workflow and associate a review bead with
+     * the current Ghostex/Codex session without relying on transcript memory.
+     */
+    const tempDir = await mkdtemp(path.join(tmpdir(), "ghostex-manage-beads-skill-"));
+    try {
+      const targetDir = path.join(tempDir, "ghostex-manage-beads");
+      const result = await execFileAsync(process.execPath, [
+        path.resolve("scripts/ghostex-cli.mjs"),
+        "manage-beads",
+        "install-skill",
+        "--target-dir",
+        targetDir,
+        "--json",
+      ]);
+      const payload = JSON.parse(result.stdout);
+      const skillMarkdown = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
+      const skillMetadata = await readFile(path.join(targetDir, "agents", "openai.yaml"), "utf8");
+
+      expect(payload).toMatchObject({
+        command: "bd --help",
+        ok: true,
+        skill: "ghostex-manage-beads",
+        targetDir,
+      });
+      expect(skillMarkdown).toContain("# ghostex-manage-beads");
+      expect(skillMarkdown).toContain("Associate A Bead With The Current Session");
+      expect(skillMarkdown).toContain("codex-thread:$CODEX_THREAD_ID");
+      expect(skillMetadata).toContain("allow_implicit_invocation: true");
+    } finally {
+      await rm(tempDir, { force: true, recursive: true });
+    }
+  });
+
   test("documents browser control under gx browser help", async () => {
     const help = browserUsage();
     const cliHelpResult = await execFileAsync(process.execPath, [
@@ -779,6 +817,21 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
     expect(help).toContain("$ghostex-generate-title");
     expect(help).toContain("shorter than 47 characters");
     expect(help).toContain("Do not press Enter");
+  });
+
+  test("documents Ghostex Manage Beads under gx manage-beads help", async () => {
+    const help = manageBeadsUsage();
+    const cliHelpResult = await execFileAsync(process.execPath, [
+      path.resolve("scripts/ghostex-cli.mjs"),
+      "manage-beads",
+      "--help",
+    ]);
+
+    expect(cliHelpResult.stdout).toBe(`${help}\n`);
+    expect(help).toContain("gx manage-beads install-skill");
+    expect(help).toContain("$ghostex-manage-beads");
+    expect(help).toContain("codex-thread:$CODEX_THREAD_ID");
+    expect(help).toContain("Ghostex and Codex ids");
   });
 
   test("builds picker rows with intro text, project spacing, and agent indicators", () => {
@@ -1018,6 +1071,35 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
     );
   });
 
+  test("scopes duplicate gxserver session id selectors by project id", async () => {
+    const sessions = [
+      {
+        globalRef: "S1a:P1aa:G1aa",
+        projectId: "P1aa",
+        projectName: "Alpha",
+        provider: "zmx",
+        providerSessionName: "S1a-P1aa-G1aa",
+        sessionId: "G1aa",
+        title: "Shared id in alpha",
+      },
+      {
+        globalRef: "S1a:P2bb:G1aa",
+        projectId: "P2bb",
+        projectName: "Beta",
+        provider: "zmx",
+        providerSessionName: "S1a-P2bb-G1aa",
+        sessionId: "G1aa",
+        title: "Shared id in beta",
+      },
+    ];
+
+    await expect(resolveListedSessions("G1aa", sessions)).resolves.toEqual(sessions);
+    await expect(resolveListedSessions("G1aa", sessions, { projectId: "P2bb" })).resolves.toEqual([
+      sessions[1],
+    ]);
+    await expect(resolveListedSessions("S1a:P1aa:G1aa", sessions)).resolves.toEqual([sessions[0]]);
+  });
+
   test("formats compact session rows without field labels", () => {
     /**
      * CDXC:CliSessions 2026-05-20-12:20:
@@ -1136,46 +1218,92 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
         chunks.push(chunk);
       }
       JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      const result = request.url === "/api/listProjects"
-        ? {
-            projects: [
-              { name: "Ghostex", path: "/Users/madda/zmux", projectId: "P1a" },
-            ],
-          }
-        : {
+      let result;
+      if (request.url === "/api/listProjects") {
+        result = {
+          projects: [
+            { name: "Ghostex", path: "/Users/madda/zmux", projectId: "P1a" },
+          ],
+        };
+      } else if (request.url === "/api/readPresentationSnapshot") {
+        result = {
+          snapshot: {
+            revision: 9,
             sessions: [
+              { activity: "working", projectId: "P1a", sessionId: "G1a" },
               {
-                globalRef: "S1a:P1a:G1a",
-                lifecycleState: "running",
+                actions: {
+                  acknowledgeAttention: false,
+                  attach: true,
+                  focus: true,
+                  kill: true,
+                  readText: true,
+                  sendMessage: true,
+                  sendText: true,
+                  sleep: true,
+                  wake: false,
+                },
+                activity: "idle",
+                agentIcon: "codex",
+                agentName: "codex",
+                groupId: "P1a:active",
+                isFavorite: true,
+                isPinned: false,
+                isPrimaryTitleTerminalTitle: false,
+                isTemporaryTitle: false,
+                kind: "agent",
+                primaryTitle: "Sleeping",
                 projectId: "P1a",
-                providerState: { lifecycleState: "missing", zmxName: "P1a-G1a" },
-                sessionId: "G1a",
-                title: "Live after restart",
-                updatedAt: "2026-05-31T04:00:00.000Z",
-                zmxName: "P1a-G1a",
-              },
-              {
-                globalRef: "S1a:P1a:G2a",
-                lifecycleState: "sleeping",
-                projectId: "P1a",
-                providerState: { lifecycleState: "missing", zmxName: "P1a-G2a" },
                 sessionId: "G2a",
+                sortKey: "0:1:2026-05-31T04:01:00.000Z:G2a",
+                surface: "workspace",
+                terminalTitle: "Sleeping",
                 title: "Sleeping",
+                titleSource: "terminal-auto",
+                trustedResumeTitle: "Sleeping",
                 updatedAt: "2026-05-31T04:01:00.000Z",
-                zmxName: "P1a-G2a",
-              },
-              {
-                globalRef: "S1a:P1a:G3a",
-                lifecycleState: "stopped",
-                projectId: "P1a",
-                providerState: { lifecycleState: "missing", zmxName: "P1a-G3a" },
-                sessionId: "G3a",
-                title: "Stopped",
-                updatedAt: "2026-05-31T04:02:00.000Z",
-                zmxName: "P1a-G3a",
+                visibleInSidebarByDefault: true,
+                zmxName: "S1a-P1a-G2a",
               },
             ],
-          };
+          },
+        };
+      } else {
+        result = {
+          sessions: [
+            {
+              globalRef: "S1a:P1a:G1a",
+              lifecycleState: "running",
+              projectId: "P1a",
+              providerState: { lifecycleState: "missing", zmxName: "S1a-P1a-G1a" },
+              sessionId: "G1a",
+              title: "Live after restart",
+              updatedAt: "2026-05-31T04:00:00.000Z",
+              zmxName: "S1a-P1a-G1a",
+            },
+            {
+              globalRef: "S1a:P1a:G2a",
+              lifecycleState: "sleeping",
+              projectId: "P1a",
+              providerState: { lifecycleState: "missing", zmxName: "S1a-P1a-G2a" },
+              sessionId: "G2a",
+              title: "Sleeping",
+              updatedAt: "2026-05-31T04:01:00.000Z",
+              zmxName: "S1a-P1a-G2a",
+            },
+            {
+              globalRef: "S1a:P1a:G3a",
+              lifecycleState: "stopped",
+              projectId: "P1a",
+              providerState: { lifecycleState: "missing", zmxName: "S1a-P1a-G3a" },
+              sessionId: "G3a",
+              title: "Stopped",
+              updatedAt: "2026-05-31T04:02:00.000Z",
+              zmxName: "S1a-P1a-G3a",
+            },
+          ],
+        };
+      }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
         ok: true,
@@ -1202,15 +1330,30 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
         lifecycleState: "running",
         ownership: "gxserver",
         provider: "zmx",
-        providerSessionName: "P1a-G1a",
+        providerSessionName: "S1a-P1a-G1a",
         providerSessionState: "missing",
         sessionPersistenceProvider: "zmx",
         status: "running",
+        activity: "working",
       });
       expect(result.sessions[1]).toMatchObject({
+        actions: {
+          attach: true,
+          sendMessage: true,
+          wake: false,
+        },
+        activity: "idle",
+        agentIcon: "codex",
+        agentName: "codex",
+        groupId: "P1a:active",
+        isFavorite: true,
+        primaryTitle: "Sleeping",
+        surface: "workspace",
+        titleSource: "terminal-auto",
         isSleeping: true,
         lifecycleState: "sleeping",
         status: "sleep",
+        visibleInSidebarByDefault: true,
       });
 
       const allResult = await fetchGxserverSessionList({ ...flags, all: true });
@@ -1239,11 +1382,11 @@ printf '%s\\n' "$@" > ${JSON.stringify(markerFile)}
                     globalRef: "S1a:P1a:G9a",
                     lifecycleState: "running",
                     projectId: "P1a",
-                    providerState: { lifecycleState: "exists", zmxName: "P1a-G9a" },
+                    providerState: { lifecycleState: "exists", zmxName: "S1a-P1a-G9a" },
                     sessionId: "G9a",
                     title: "Kill me",
                     updatedAt: "2026-05-31T04:03:00.000Z",
-                    zmxName: "P1a-G9a",
+                    zmxName: "S1a-P1a-G9a",
                   },
                 ],
               }

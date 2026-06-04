@@ -245,10 +245,10 @@ chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
 # continue shipping the skill used by `ghostex browser install-skill`.
 # CDXC:ComputerAgentControl 2026-05-27-06:58: Bundle the public
 # `$ghostex-browser-use`, `$ghostex-computer-use`,
-# `$ghostex-agent-orchestration`, and `$ghostex-generate-title` skills so
-# first-launch and Settings can install Ghostex-named agent wrappers without
-# relying on a source checkout, raw zmx, or the lower-level `$cua-driver` skill
-# name.
+# `$ghostex-agent-orchestration`, `$ghostex-generate-title`, and
+# `$ghostex-manage-beads` skills so first-launch, Settings, and CLI installers
+# can install Ghostex-named agent wrappers without relying on a source checkout,
+# raw zmx, or the lower-level `$cua-driver` skill name.
 # CDXC:AgentSkills 2026-05-28-10:38: Keep bundled Ghostex runtime skills under
 # scripts/skills instead of .agents/skills. Codex discovers .agents/skills
 # directly, so keeping installable source copies there duplicates the same skill
@@ -256,11 +256,15 @@ chmod 755 "$WEB_DIR/cli/ghostex" "$WEB_DIR/cli/gx"
 # CDXC:AgentSkills 2026-05-28-13:12: Bundled Ghostex skill titles should match
 # their invocation slugs exactly, such as ghostex-browser-use, so the skill picker
 # does not show a separate marketing-style title from the actual `$skill-name`.
+# CDXC:ProjectBoardBeads 2026-06-04-03:32: Bundle `$ghostex-manage-beads` with
+# the app CLI resources so agents can install project-board bead workflow
+# guidance from the same released Ghostex build that provides the other skills.
 mkdir -p "$WEB_DIR/cli/skills"
 cp -R "$REPO_ROOT/scripts/skills/ghostex-browser-use" "$WEB_DIR/cli/skills/ghostex-browser-use"
 cp -R "$REPO_ROOT/scripts/skills/ghostex-computer-use" "$WEB_DIR/cli/skills/ghostex-computer-use"
 cp -R "$REPO_ROOT/scripts/skills/ghostex-agent-orchestration" "$WEB_DIR/cli/skills/ghostex-agent-orchestration"
 cp -R "$REPO_ROOT/scripts/skills/ghostex-generate-title" "$WEB_DIR/cli/skills/ghostex-generate-title"
+cp -R "$REPO_ROOT/scripts/skills/ghostex-manage-beads" "$WEB_DIR/cli/skills/ghostex-manage-beads"
 # CDXC:ZmxPersistence 2026-05-20-09:57: zmx pane refresh is now a zmx IPC feature, so Ghostex must bundle the pinned submodule binary instead of depending on whichever zmx happens to be on PATH. Build the submodule for the requested macOS architecture and copy it into app resources where TerminalWorkspaceView can launch it directly.
 if [[ ! -f "$ZMX_ROOT/build.zig" ]]; then
 	cat >&2 <<EOF

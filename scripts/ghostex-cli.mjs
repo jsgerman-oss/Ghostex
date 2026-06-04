@@ -63,6 +63,7 @@ const GHOSTEX_BROWSER_LEGACY_SKILL_NAMES = ["ghostex-browser-devtools-mcp"];
 const GHOSTEX_COMPUTER_USE_SKILL_NAME = "ghostex-computer-use";
 const GHOSTEX_AGENT_ORCHESTRATION_SKILL_NAME = "ghostex-agent-orchestration";
 const GHOSTEX_GENERATE_TITLE_SKILL_NAME = "ghostex-generate-title";
+const GHOSTEX_MANAGE_BEADS_SKILL_NAME = "ghostex-manage-beads";
 const GHOSTEX_GENERATE_TITLE_LEGACY_SKILL_NAMES = ["madda-generate-title"];
 const QUICK_TERMINALS_PROJECT_NAME = "Quick Terminals";
 const RESET_ANSI = "\x1b[0m";
@@ -140,7 +141,7 @@ const COMMANDS = new Map([
   ["add-project", bridgeAction("addProject", parseProjectPath)],
   ["close-session", bridgeAction("closeSession", parseSessionSelector)],
   ["restart-session", bridgeAction("restartSession", parseSessionSelector)],
-  ["fork-session", bridgeAction("forkSession", parseSessionSelector)],
+  ["fork-session", forkSessionCommand],
   ["reload-session", bridgeAction("fullReloadSession", parseSessionSelector)],
   ["rename-session", bridgeAction("renameSession", parseRename, { failOnNotOk: true })],
   ["sleep-session", bridgeAction("sleepSession", parseSessionBoolean("sleeping"))],
@@ -172,6 +173,8 @@ const COMMANDS = new Map([
   ["install-agent-orchestration-skill", installAgentOrchestrationSkillCommand],
   ["generate-title", generateTitleCommand],
   ["install-generate-title-skill", installGenerateTitleSkillCommand],
+  ["manage-beads", manageBeadsCommand],
+  ["install-manage-beads-skill", installManageBeadsSkillCommand],
   ["move-sidebar", bridgeAction("moveSidebar")],
   ["assert-card", bridgeAction("assertSidebarCard", parseAssertCard, { assertOk: true })],
   ["wait-for", bridgeAction("waitFor", parseWaitFor, { assertOk: true })],
@@ -247,7 +250,7 @@ async function main() {
     throw new Error(`Unknown command: ${commandName}\n\n${usage()}`);
   }
   if (
-    !["agent-orchestration", "browser", "computer-use", "f", "find", "generate-title", "server"].includes(commandName) &&
+    !["agent-orchestration", "browser", "computer-use", "f", "find", "generate-title", "manage-beads", "server"].includes(commandName) &&
     (args.includes("-h") || args.includes("--help"))
   ) {
     helpCommand();
@@ -285,8 +288,16 @@ function resolvedSessionBridgeAction(action, parser = () => ({}), options = {}) 
     const { flags, rest } = parseArgs(args);
     const payload = parser(rest, flags);
     const selector = sessionSelectorFromArgs(rest, flags);
-    const resolvedPayload = selector
-      ? { ...payload, sessionId: (await resolveCliSessionSelector(selector, flags)).sessionId }
+    const resolvedSession = selector ? await resolveCliSessionSelector(selector, flags) : undefined;
+    /**
+     * CDXC:CliSessionSelectors 2026-06-04-03:20:
+     * gxserver session ids are project-scoped. Selector-backed bridge actions
+     * must carry the resolved projectId with the sessionId so remote and mobile
+     * clients reconnect through the same S/P/G zmx route instead of addressing
+     * a bare G id.
+     */
+    const resolvedPayload = resolvedSession
+      ? { ...payload, projectId: payload.projectId ?? resolvedSession.projectId, sessionId: resolvedSession.sessionId }
       : payload;
     const result = await sendSidebarCliCommand(action, resolvedPayload, flags);
     if ((options.assertOk || options.failOnNotOk) && isFailedCliResult(result)) {
@@ -498,6 +509,42 @@ async function installGenerateTitleSkillCommand(args) {
     envVars: ["GHOSTEX_GENERATE_TITLE_SKILL_SOURCE"],
     legacySkillNames: GHOSTEX_GENERATE_TITLE_LEGACY_SKILL_NAMES,
     skillName: GHOSTEX_GENERATE_TITLE_SKILL_NAME,
+  });
+}
+
+async function manageBeadsCommand(args) {
+  const [subcommand = "help", ...rest] = args;
+  if (rest.includes("-h") || rest.includes("--help")) {
+    console.log(manageBeadsUsage());
+    return;
+  }
+  switch (subcommand) {
+    case "help":
+    case "-h":
+    case "--help":
+      console.log(manageBeadsUsage());
+      return;
+    case "install-skill":
+      await installManageBeadsSkillCommand(rest);
+      return;
+    default:
+      throw new Error(`Unknown manage-beads command: ${subcommand}\n\n${manageBeadsUsage()}`);
+  }
+}
+
+async function installManageBeadsSkillCommand(args) {
+  /**
+   * CDXC:ProjectBoardBeads 2026-06-04-03:32:
+   * Agents need a bundled `$ghostex-manage-beads` skill that teaches the `bd`
+   * project-board workflow and the session-association pattern for review
+   * beads. Installing it through the Ghostex CLI keeps the skill version tied
+   * to the app bundle instead of relying on a local checkout.
+   */
+  await installGhostexAgentSkill({
+    args,
+    command: "bd --help",
+    envVars: ["GHOSTEX_MANAGE_BEADS_SKILL_SOURCE"],
+    skillName: GHOSTEX_MANAGE_BEADS_SKILL_NAME,
   });
 }
 
@@ -1461,6 +1508,8 @@ async function sendGxserverCliAction(action, payload = {}, flags = {}) {
         await withResolvedGxserverSessionParams(payload, flags),
         flags,
       );
+    case "forkSession":
+      return callGxserverRpc("/api/forkSession", await withResolvedGxserverSessionParams(payload, flags), flags);
     case "renameSession":
       return callGxserverRpc("/api/updateSession", await withResolvedGxserverSessionParams(payload, flags), flags);
     case "favoriteSession":
@@ -1627,12 +1676,14 @@ async function fetchGxserverSessionList(flags = {}) {
 }
 
 async function fetchLiveGxserverSessionList(flags = {}) {
-  const [projectsResponse, sessionsResponse] = await Promise.all([
+  const [projectsResponse, sessionsResponse, presentationResponse] = await Promise.all([
     callGxserverRpc("/api/listProjects", {}, flags),
     callGxserverRpc("/api/listSessions", {}, flags),
+    callGxserverRpc("/api/readPresentationSnapshot", {}, flags),
   ]);
   const projects = Array.isArray(projectsResponse.projects) ? projectsResponse.projects : [];
   const sessions = Array.isArray(sessionsResponse.sessions) ? sessionsResponse.sessions : [];
+  const presentationBySessionKey = presentationSessionMap(presentationResponse.snapshot?.sessions);
   const projectById = new Map(projects.map((project) => [project.projectId, project]));
   /*
    * CDXC:GxserverSessionInventory 2026-05-31-08:45:
@@ -1640,6 +1691,12 @@ async function fetchLiveGxserverSessionList(flags = {}) {
    * local tab/split layout, but gxserver owns which zmx sessions still exist.
    * Default lists include running and sleeping sessions and hide stopped rows;
    * diagnostic callers may opt into stopped rows with --all/--include-stopped.
+   *
+   * CDXC:GxserverSessionInventory 2026-06-04-03:33:
+   * Mobile session rows still consume `ghostex sessions --json` over SSH, while
+   * gxserver computes working/attention in the presentation projector. Overlay
+   * presentation activity onto the CLI inventory so Android, iOS, TUI, and gx
+   * share the same status contract without guessing from lifecycle `running`.
    */
   const listedSessions = shouldIncludeStoppedGxserverSessions(flags)
     ? sessions
@@ -1649,7 +1706,14 @@ async function fetchLiveGxserverSessionList(flags = {}) {
     product: GXSERVER_PRODUCT,
     projects,
     revision: sessionsResponse.requestId,
-    sessions: listedSessions.map((session, index) => toCliSession(session, projectById.get(session.projectId), index)),
+    sessions: listedSessions.map((session, index) =>
+      toCliSession(
+        session,
+        projectById.get(session.projectId),
+        index,
+        presentationBySessionKey.get(cliSessionKey(session.projectId, session.sessionId)),
+      )
+    ),
   };
 }
 
@@ -1737,9 +1801,10 @@ function isStoppedGxserverSession(session) {
   return String(session?.lifecycleState ?? "") === "stopped";
 }
 
-function toCliSession(session, project, index) {
+function toCliSession(session, project, index, presentationSession) {
   const lifecycleState = String(session.lifecycleState ?? "");
   const providerState = String(session.providerState?.lifecycleState ?? "");
+  const activity = normalizeCliSessionActivity(presentationSession?.activity);
   const status =
     lifecycleState === "sleeping"
       ? "sleep"
@@ -1749,30 +1814,85 @@ function toCliSession(session, project, index) {
           ? "running"
           : providerState || lifecycleState || "unknown";
   const providerSessionName = session.zmxName ?? session.providerState?.zmxName;
+  const title = presentationSession?.title ?? session.title;
   return {
+    actions: presentationSession?.actions,
     agent: session.agentId,
     agentId: session.agentId,
+    agentIcon: presentationSession?.agentIcon ?? session.agentId,
+    agentName: presentationSession?.agentName,
     alias: index + 1,
+    attention: presentationSession?.attention,
+    createdAt: presentationSession?.createdAt ?? session.createdAt,
     globalRef: session.globalRef,
+    groupId: presentationSession?.groupId,
     isFocused: false,
+    isFavorite: presentationSession?.isFavorite ?? session.isFavorite,
     isLocalOnly: false,
+    isPinned: presentationSession?.isPinned ?? session.isPinned,
     isLive: lifecycleState === "running" || providerState === "exists",
+    isPrimaryTitleTerminalTitle: presentationSession?.isPrimaryTitleTerminalTitle,
     isSleeping: lifecycleState === "sleeping",
-    lastInteractionAt: session.lastActiveAt ?? session.updatedAt,
+    isTemporaryTitle: presentationSession?.isTemporaryTitle,
+    kind: presentationSession?.kind ?? session.kind,
+    lastActiveAt: presentationSession?.lastActiveAt ?? session.lastActiveAt,
+    lastInteractionAt: presentationSession?.lastActiveAt ?? session.lastActiveAt ?? session.updatedAt,
     lifecycleState,
     ownership: "gxserver",
+    primaryTitle: presentationSession?.primaryTitle,
     projectId: session.projectId,
     projectName: project?.name ?? session.projectId,
-    projectPath: session.cwd ?? project?.path ?? "",
+    projectPath: presentationSession?.cwd ?? session.cwd ?? project?.path ?? "",
     provider: "zmx",
     providerSessionName,
     providerSessionState: providerState || undefined,
     sessionId: session.sessionId,
     sessionPersistenceName: providerSessionName,
     sessionPersistenceProvider: "zmx",
+    sidebarOrder: presentationSession?.sidebarOrder,
+    sortKey: presentationSession?.sortKey,
     status,
-    title: session.title,
+    activity,
+    surface: presentationSession?.surface,
+    terminalTitle: presentationSession?.terminalTitle,
+    title,
+    titleSource: presentationSession?.titleSource,
+    trustedResumeTitle: presentationSession?.trustedResumeTitle,
+    updatedAt: presentationSession?.updatedAt ?? session.updatedAt,
+    visibleInSidebarByDefault: presentationSession?.visibleInSidebarByDefault,
+    zmxName: presentationSession?.zmxName ?? session.zmxName,
   };
+}
+
+function presentationSessionMap(sessions) {
+  const map = new Map();
+  if (!Array.isArray(sessions)) {
+    return map;
+  }
+  for (const session of sessions) {
+    const key = cliSessionKey(session?.projectId, session?.sessionId);
+    if (key) {
+      map.set(key, session);
+    }
+  }
+  return map;
+}
+
+function cliSessionKey(projectId, sessionId) {
+  const normalizedProjectId = String(projectId ?? "").trim();
+  const normalizedSessionId = String(sessionId ?? "").trim();
+  return normalizedProjectId && normalizedSessionId ? `${normalizedProjectId}:${normalizedSessionId}` : "";
+}
+
+function normalizeCliSessionActivity(value) {
+  const normalized = String(value ?? "").trim().toLowerCase().replaceAll("_", "-").replaceAll(" ", "-");
+  if (normalized === "attention" || normalized === "needs-attention" || normalized === "attention-required") {
+    return "attention";
+  }
+  if (normalized === "working" || normalized === "active" || normalized === "busy" || normalized === "processing") {
+    return "working";
+  }
+  return "idle";
 }
 
 async function fetchAttachMetadataForSession(session, flags = {}) {
@@ -3191,7 +3311,7 @@ async function attachSessionCommand(args) {
     return;
   }
   const result = await fetchSessionList(flags);
-  const session = await resolveOneListedSession(selector, result.sessions ?? []);
+  const session = await resolveOneListedSession(selector, result.sessions ?? [], flags);
   await attachResolvedSession(session, flags);
 }
 
@@ -3465,6 +3585,7 @@ function resolveGhostexAgentSkillSourceDir(skillName, envVars = []) {
   const candidates = uniquePaths([
     ...explicitSources,
     path.join(cliDir, "skills", skillName),
+    sourceRoot && path.join(sourceRoot, "scripts", "skills", skillName),
     path.join(path.resolve(cliDir, ".."), ".agents", "skills", skillName),
     sourceRoot && path.join(sourceRoot, ".agents", "skills", skillName),
   ]);
@@ -3594,7 +3715,7 @@ function sessionActionCommand(action, pastTense, extraPayload = {}) {
     const sessions =
       selector.toLowerCase() === "all"
         ? (result.sessions ?? [])
-        : [await resolveOneListedSession(selector, result.sessions ?? [])];
+        : [await resolveOneListedSession(selector, result.sessions ?? [], flags)];
     if (sessions.length === 0) {
       throw new Error("No running terminal sessions matched.");
     }
@@ -3636,6 +3757,36 @@ function sessionActionCommand(action, pastTense, extraPayload = {}) {
   };
 }
 
+async function forkSessionCommand(args) {
+  const { flags, rest } = parseArgs(args);
+  const selector = flags.sessionId ?? rest.join(" ").trim();
+  const result = await fetchSessionList(flags);
+  const session = await resolveOneListedSession(selector, result.sessions ?? [], flags);
+  /*
+   * CDXC:GxserverForkSession 2026-06-04-07:42:
+   * CLI/mobile Fork must call gxserver directly, not the macOS app bridge. The daemon owns provider-specific fork command construction, creates the new G-session, starts zmx, and returns the created session for Android/iOS refresh flows.
+   */
+  const actionResult = await sendSidebarCliCommand(
+    "forkSession",
+    { projectId: session.projectId, sessionId: session.sessionId },
+    flags,
+  );
+  if (isFailedCliResult(actionResult)) {
+    if (flags.json) {
+      printJson(actionResult);
+      process.exitCode = 1;
+      return;
+    }
+    throw new Error(actionResult.error ?? `Could not fork ${session.title}.`);
+  }
+  if (flags.json) {
+    printJson(actionResult);
+    return;
+  }
+  const forkedSession = actionResult.fork?.session;
+  console.log(`forked ${session.alias}: ${session.title}${forkedSession?.sessionId ? ` -> ${forkedSession.sessionId}` : ""}`);
+}
+
 async function focusSmartSessionCommand(args) {
   const { flags, rest } = parseArgs(args);
   /**
@@ -3645,10 +3796,10 @@ async function focusSmartSessionCommand(args) {
    */
   const selector = flags.sessionId ?? rest.join(" ").trim();
   const result = await fetchSessionList(flags);
-  const session = await resolveOneListedSession(selector, result.sessions ?? []);
+  const session = await resolveOneListedSession(selector, result.sessions ?? [], flags);
   const actionResult = await sendSidebarCliCommand(
     "focusSession",
-    { sessionId: session.sessionId },
+    { projectId: session.projectId, sessionId: session.sessionId },
     flags,
   );
   /**
@@ -3681,7 +3832,9 @@ async function readSessionTextCommand(args) {
     timeoutMs: flags.timeoutMs === undefined ? undefined : Number(flags.timeoutMs),
   };
   if (selector) {
-    payload.sessionId = (await resolveCliSessionSelector(selector, flags)).sessionId;
+    const session = await resolveCliSessionSelector(selector, flags);
+    payload.projectId = session.projectId;
+    payload.sessionId = session.sessionId;
   }
   const result = await sendSidebarCliCommand("readSessionText", payload, flags);
   if (isFailedCliResult(result)) {
@@ -3714,7 +3867,7 @@ async function sendMessageCommand(args) {
   if (!selector && !agentId && rest[0]) {
     const firstArg = rest[0];
     const result = await fetchSessionList(flags);
-    const matches = await resolveListedSessions(firstArg, result.sessions ?? []);
+    const matches = await resolveListedSessions(firstArg, result.sessions ?? [], flags);
     if (matches.length > 1) {
       throw new Error(`Multiple sessions matched "${firstArg}":\n${formatSessionMatches(matches)}`);
     }
@@ -3735,7 +3888,9 @@ async function sendMessageCommand(args) {
     text,
   };
   if (selector) {
-    payload.sessionId = (await resolveCliSessionSelector(selector, flags)).sessionId;
+    const session = await resolveCliSessionSelector(selector, flags);
+    payload.projectId = session.projectId;
+    payload.sessionId = session.sessionId;
   } else {
     payload.agentId = agentId;
   }
@@ -3807,11 +3962,11 @@ async function resolveCliSessionSelector(selector, flags) {
    * thread without knowing its raw runtime id.
    */
   const result = await fetchSessionList(flags);
-  return resolveOneListedSession(selector, result.sessions ?? []);
+  return resolveOneListedSession(selector, result.sessions ?? [], flags);
 }
 
-async function resolveOneListedSession(selector, sessions) {
-  const matches = await resolveListedSessions(selector, sessions);
+async function resolveOneListedSession(selector, sessions, flags = {}) {
+  const matches = await resolveListedSessions(selector, sessions, flags);
   if (matches.length === 1) {
     return matches[0];
   }
@@ -3821,29 +3976,37 @@ async function resolveOneListedSession(selector, sessions) {
   throw new Error(`Multiple sessions matched "${selector}":\n${formatSessionMatches(matches)}`);
 }
 
-async function resolveListedSessions(selector, sessions) {
+async function resolveListedSessions(selector, sessions, flags = {}) {
   const normalizedSelector = selector.trim();
   if (!normalizedSelector) {
     throw new Error("Provide a session alias, id, provider session name, title, or project:title selector.");
   }
+  /**
+   * CDXC:CliSessionSelectors 2026-06-04-03:20:
+   * Bare G session ids can repeat across projects. Honor --project-id when a
+   * caller has inventory context, and keep unscoped duplicates ambiguous so the
+   * CLI does not silently attach to a different zmx session than the user
+   * selected.
+   */
+  const scopedSessions = projectScopedSessions(sessions, flags);
   if (/^\d+$/.test(normalizedSelector)) {
     const alias = Number(normalizedSelector);
     const cache = await readSessionAliasCache();
     const cachedSessionId = cache?.sessions?.find?.((session) => session.alias === alias)?.sessionId;
     if (cachedSessionId) {
-      const liveSession = sessions.find((session) => session.sessionId === cachedSessionId);
+      const liveSession = scopedSessions.find((session) => session.sessionId === cachedSessionId);
       if (liveSession) {
         return [liveSession];
       }
     }
-    const liveAliasMatch = sessions.find((session) => session.alias === alias);
+    const liveAliasMatch = scopedSessions.find((session) => session.alias === alias);
     return liveAliasMatch ? [liveAliasMatch] : [];
   }
-  const exactId = sessions.find((session) => session.sessionId === normalizedSelector);
-  if (exactId) {
-    return [exactId];
+  const exactIdMatches = scopedSessions.filter((session) => session.sessionId === normalizedSelector);
+  if (exactIdMatches.length > 0) {
+    return exactIdMatches;
   }
-  const exactGlobalRef = sessions.find((session) => session.globalRef === normalizedSelector);
+  const exactGlobalRef = scopedSessions.find((session) => session.globalRef === normalizedSelector);
   if (exactGlobalRef) {
     return [exactGlobalRef];
   }
@@ -3854,7 +4017,7 @@ async function resolveListedSessions(selector, sessions) {
    * id before falling back to title matching so generate-title and agent
    * orchestration can target the current pane reliably.
    */
-  const providerMatches = rankProviderSessionMatches(sessions, normalizedSelector);
+  const providerMatches = rankProviderSessionMatches(scopedSessions, normalizedSelector);
   if (providerMatches.length > 0) {
     return providerMatches;
   }
@@ -3863,7 +4026,7 @@ async function resolveListedSessions(selector, sessions) {
     const projectSelector = normalizedSelector.slice(0, projectSeparatorIndex).trim().toLowerCase();
     const titleSelector = normalizedSelector.slice(projectSeparatorIndex + 1).trim().toLowerCase();
     return rankSessionTitleMatches(
-      sessions.filter(
+      scopedSessions.filter(
         (session) =>
           session.projectName?.toLowerCase() === projectSelector ||
           session.projectPath?.toLowerCase().includes(projectSelector),
@@ -3871,7 +4034,19 @@ async function resolveListedSessions(selector, sessions) {
       titleSelector,
     );
   }
-  return rankSessionTitleMatches(sessions, normalizedSelector.toLowerCase());
+  return rankSessionTitleMatches(scopedSessions, normalizedSelector.toLowerCase());
+}
+
+function projectScopedSessions(sessions, flags = {}) {
+  const projectId = String(flags.projectId ?? "").trim();
+  if (!projectId) {
+    return sessions;
+  }
+  return sessions.filter((session) => sessionProjectId(session) === projectId);
+}
+
+function sessionProjectId(session) {
+  return String(session.projectId ?? projectIdFromGlobalRef(session.globalRef) ?? "").trim();
 }
 
 function rankProviderSessionMatches(sessions, selector) {
@@ -4659,7 +4834,7 @@ function usage() {
     formatHelpCommand("android-check [--json]", "Verify this Mac is ready for Ghostex Android"),
     formatHelpCommand("attach | a [selector]", "Attach to a provider session, or open the picker without a selector"),
     formatHelpCommand("resume | r [selector]", "Alias for attach"),
-    formatHelpCommand("attach | a --session-id <id>", "Flag form used by Android session attach"),
+    formatHelpCommand("attach | a --session-id <id> [--project-id id]", "Flag form used by mobile session attach"),
     formatHelpCommand("kill | k <selector|all> [--json]", "Close one session or every listed session"),
     formatHelpCommand("sleep <selector|all> [--json]", "Sleep one session or every listed session"),
     formatHelpCommand("wake <selector|all> [--json]", "Wake one session or every listed session"),
@@ -4711,6 +4886,7 @@ function usage() {
     formatHelpCommand("computer-use --help", "Show Ghostex Computer Use skill setup for Cua Driver"),
     formatHelpCommand("agent-orchestration --help", "Show Ghostex Agent Orchestration skill setup"),
     formatHelpCommand("generate-title --help", "Show Ghostex Generate Title skill setup"),
+    formatHelpCommand("manage-beads --help", "Show Ghostex Manage Beads skill setup"),
     formatHelpCommand("move-sidebar", "Move the sidebar"),
   ].join("\n");
 
@@ -4944,6 +5120,37 @@ Self-session command:
 `;
 }
 
+function manageBeadsUsage() {
+  /**
+   * CDXC:ProjectBoardBeads 2026-06-04-03:32:
+   * The bead workflow is agent-facing guidance rather than an app runtime API.
+   * Keep the CLI surface focused on installing `$ghostex-manage-beads`; the
+   * skill owns the exact `bd` commands for creating review beads, adding
+   * session-association comments, and moving beads through review.
+   */
+  return `Ghostex Manage Beads - install the agent skill for project board beads
+
+Usage:
+  gx manage-beads --help
+  gx manage-beads install-skill [--json]
+
+Agent skill:
+  Use $ghostex-manage-beads when a task needs project board bead management,
+  including creating review beads, moving beads through statuses, adding
+  comments, and associating a bead with the current Ghostex or Codex session.
+
+What the skill teaches:
+  Inspect existing beads with bd list/show/comments, create review beads with
+  external refs such as codex-thread:$CODEX_THREAD_ID, move work to review, and
+  add a session-association comment containing Ghostex and Codex ids when those
+  environment variables are available.
+
+Boundary:
+  The skill teaches agents to use the existing bd CLI. Ghostex does not wrap bd
+  commands or invent a second project-board API.
+`;
+}
+
 function agentOrchestrationUsage() {
   /**
    * CDXC:AgentOrchestration 2026-05-27-07:15:
@@ -5016,6 +5223,7 @@ export {
   generateTitleUsage,
   groupSessionsPreservingSidebarOrder,
   isFailedCliResult,
+  manageBeadsUsage,
   moveSessionPickerSelection,
   parseArgs,
   parseCreateSession,
