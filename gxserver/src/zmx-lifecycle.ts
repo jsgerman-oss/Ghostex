@@ -45,7 +45,9 @@ export const GXSERVER_ZMX_SEND_TEXT_LIMIT_BYTES = 512 * 1024;
 export interface GxserverZmxAttachCommandInput {
   cwd: string;
   globalSessionRef?: string;
+  gxserverAuthTokenFile?: string;
   gxserverBaseUrl?: string;
+  gxserverProtocolVersion?: number;
   sessionName: GxserverZmxSessionName;
   title?: string;
   zmxExecutablePath: string;
@@ -54,7 +56,9 @@ export interface GxserverZmxAttachCommandInput {
 export interface GxserverZmxRunCommandInput {
   cwd: string;
   globalSessionRef?: string;
+  gxserverAuthTokenFile?: string;
   gxserverBaseUrl?: string;
+  gxserverProtocolVersion?: number;
   sessionName: GxserverZmxSessionName;
   startupText: string;
   zmxExecutablePath: string;
@@ -83,6 +87,9 @@ The renderer still receives one `/bin/zsh -lc` attach command string. That scrip
 
 CDXC:PromptEditor 2026-05-31-11:58:
 New zmx provider sessions need canonical gxserver identity in their launch environment so prompt-editor wrappers can address S:P:G sessions without assuming a single connected server. Attach scripts export only stable server/session identity here; client-specific Monaco vs gte routing remains a wrapper/runtime decision.
+
+CDXC:GxserverSessionTitle 2026-06-04-04:05:
+Agent hooks running inside server-created zmx sessions must report identity and first prompts back to gxserver even when no macOS state file exists. Export the gxserver base URL, protocol version, global session ref, and auth token file path so hooks can call the authenticated session-state API without embedding the bearer token in attach/run command text.
 */
 
 export function buildZmxAttachCommand(input: GxserverZmxAttachCommandInput): string {
@@ -92,7 +99,9 @@ export function buildZmxAttachCommand(input: GxserverZmxAttachCommandInput): str
 zmx_session=${shellQuote(input.sessionName)}
 zmx_cwd=${shellQuote(input.cwd)}
 zmx_global_session_ref=${shellQuote(input.globalSessionRef ?? "")}
+zmx_gxserver_auth_token_file=${shellQuote(input.gxserverAuthTokenFile ?? "")}
 zmx_gxserver_base_url=${shellQuote(input.gxserverBaseUrl ?? "")}
+zmx_gxserver_protocol_version=${shellQuote(String(input.gxserverProtocolVersion ?? ""))}
 zmx_persistence_notice_command=${shellQuote(persistenceNoticeCommand)}
 zmx_title_notice_command=${shellQuote(titleNoticeCommand)}
 zmx_bin=${shellQuote(input.zmxExecutablePath)}
@@ -104,8 +113,14 @@ unset ZMX_SESSION ZMX_SESSION_PREFIX
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
 fi
+if [ -n "$zmx_gxserver_auth_token_file" ]; then
+  export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="$zmx_gxserver_auth_token_file"
+fi
 if [ -n "$zmx_gxserver_base_url" ]; then
   export GHOSTEX_GXSERVER_BASE_URL="$zmx_gxserver_base_url"
+fi
+if [ -n "$zmx_gxserver_protocol_version" ]; then
+  export GHOSTEX_GXSERVER_PROTOCOL_VERSION="$zmx_gxserver_protocol_version"
 fi
 if "$zmx_bin" list --short 2>/dev/null | grep -F -x -- "$zmx_session" >/dev/null 2>&1; then
   if [ -n "$zmx_title_notice_command" ]; then
@@ -181,7 +196,9 @@ export function buildZmxRunCommand(input: GxserverZmxRunCommandInput): string {
 zmx_session=${shellQuote(input.sessionName)}
 zmx_cwd=${shellQuote(input.cwd)}
 zmx_global_session_ref=${shellQuote(input.globalSessionRef ?? "")}
+zmx_gxserver_auth_token_file=${shellQuote(input.gxserverAuthTokenFile ?? "")}
 zmx_gxserver_base_url=${shellQuote(input.gxserverBaseUrl ?? "")}
+zmx_gxserver_protocol_version=${shellQuote(String(input.gxserverProtocolVersion ?? ""))}
 zmx_startup_command=${shellQuote(startupCommand)}
 zmx_bin=${shellQuote(input.zmxExecutablePath)}
 if [ ! -x "$zmx_bin" ]; then
@@ -196,8 +213,14 @@ unset ZMX_SESSION ZMX_SESSION_PREFIX
 if [ -n "$zmx_global_session_ref" ]; then
   export GHOSTEX_GLOBAL_SESSION_REF="$zmx_global_session_ref"
 fi
+if [ -n "$zmx_gxserver_auth_token_file" ]; then
+  export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="$zmx_gxserver_auth_token_file"
+fi
 if [ -n "$zmx_gxserver_base_url" ]; then
   export GHOSTEX_GXSERVER_BASE_URL="$zmx_gxserver_base_url"
+fi
+if [ -n "$zmx_gxserver_protocol_version" ]; then
+  export GHOSTEX_GXSERVER_PROTOCOL_VERSION="$zmx_gxserver_protocol_version"
 fi
 cd "$zmx_cwd" || exit
 exec "$zmx_bin" run "$zmx_session" -d /bin/zsh -lc "$zmx_startup_command"
@@ -400,15 +423,10 @@ export function providerZmxSessionName(
   session: Pick<GxserverSessionDomainState, "providerState" | "zmxName">,
 ): GxserverZmxSessionName {
   /*
-  CDXC:GxserverMigration 2026-05-30-17:27:
-  Imported macOS sessions must keep attaching to the already-running zmx runtime name recorded before gxserver existed. The durable gxserver G ID can change during import, but the provider session name is external runtime state and must remain the legacy `sessionPersistenceName` until the user closes/recreates that session.
+  CDXC:GxserverZmxLifecycle 2026-06-04-01:40:
+  Reconnects should use one canonical server/project/session provider name. If the `S-P-G` zmx session is absent, `zmx attach` may create it and the wake path can run resume startup text there; do not route migrated sessions back to legacy `g-*` names.
   */
-  const legacyProvider = typeof session.providerState.legacyProvider === "string" ? session.providerState.legacyProvider : "";
-  const legacyName =
-    typeof session.providerState.legacyProviderSessionName === "string"
-      ? session.providerState.legacyProviderSessionName.trim()
-      : "";
-  return (legacyProvider === "zmx" && legacyName ? legacyName : session.zmxName) as GxserverZmxSessionName;
+  return session.zmxName as GxserverZmxSessionName;
 }
 
 function persistenceNoticeShellCommand(sessionName: GxserverZmxSessionName): string {

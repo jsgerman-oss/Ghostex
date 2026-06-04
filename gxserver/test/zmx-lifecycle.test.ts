@@ -23,8 +23,10 @@ test("zmx attach command preserves the renderer shell contract", () => {
   const command = buildZmxAttachCommand({
     cwd: "/repo/ghostex",
     globalSessionRef: "S1a:P3a91:G8v20",
+    gxserverAuthTokenFile: "/Users/test/.ghostex/gxserver/auth/token",
     gxserverBaseUrl: "http://127.0.0.1:58744",
-    sessionName: "P3a91-G8v20",
+    gxserverProtocolVersion: 5,
+    sessionName: "S1a-P3a91-G8v20",
     title: "Agent task",
     zmxExecutablePath: "/Applications/Ghostex.app/Contents/Resources/Web/bin/zmx",
   });
@@ -33,9 +35,12 @@ test("zmx attach command preserves the renderer shell contract", () => {
   assert.match(command, /zmx_bin=.*\/Applications\/Ghostex\.app\/Contents\/Resources\/Web\/bin\/zmx/);
   assert.match(command, /unset ZMX_SESSION ZMX_SESSION_PREFIX/);
   assert.match(command, /export GHOSTEX_GLOBAL_SESSION_REF="\$zmx_global_session_ref"/);
+  assert.match(command, /export GHOSTEX_GXSERVER_AUTH_TOKEN_FILE="\$zmx_gxserver_auth_token_file"/);
   assert.match(command, /export GHOSTEX_GXSERVER_BASE_URL="\$zmx_gxserver_base_url"/);
+  assert.match(command, /export GHOSTEX_GXSERVER_PROTOCOL_VERSION="\$zmx_gxserver_protocol_version"/);
   assert.match(command, /S1a:P3a91:G8v20/);
   assert.match(command, /http:\/\/127\.0\.0\.1:58744/);
+  assert.match(command, /\/Users\/test\/\.ghostex\/gxserver\/auth\/token/);
   assert.match(command, /"\$zmx_bin" list --short/);
   assert.match(command, /\/bin\/zsh -lc "\$zmx_title_notice_command"/);
   assert.match(command, /\/bin\/zsh -lc "\$zmx_persistence_notice_command"/);
@@ -63,17 +68,17 @@ test("startup text is queued only for missing provider sessions", () => {
 test("zmx existence probes distinguish exists, missing, and unknown", async () => {
   const exists = await probeZmxSession({
     runZsh: async () => ({ exitCode: 0, stderr: "", stdout: "" }),
-    sessionName: "P3a91-G8v20",
+    sessionName: "S1a-P3a91-G8v20",
     zmxExecutablePath: "/fake/zmx",
   });
   const missing = await probeZmxSession({
     runZsh: async () => ({ exitCode: 1, stderr: "", stdout: "" }),
-    sessionName: "P3a91-G8v20",
+    sessionName: "S1a-P3a91-G8v20",
     zmxExecutablePath: "/fake/zmx",
   });
   const unknown = await probeZmxSession({
     runZsh: async () => ({ exitCode: 127, stderr: "zmx broken", stdout: "" }),
-    sessionName: "P3a91-G8v20",
+    sessionName: "S1a-P3a91-G8v20",
     zmxExecutablePath: "/fake/zmx",
   });
 
@@ -100,7 +105,7 @@ exit 64
 
     const probe = await probeZmxSession({
       runZsh: runZshCommand,
-      sessionName: "P3a91-G8v20",
+      sessionName: "S1a-P3a91-G8v20",
       zmxExecutablePath: zmxPath,
     });
 
@@ -119,7 +124,7 @@ test("successful zmx list without session probes as missing", async () => {
       zmxPath,
       `#!/bin/sh
 if [ "$1" = "list" ] && [ "$2" = "--short" ]; then
-  printf '%s\\n' 'P3a91-G1111'
+  printf '%s\\n' 'S1a-P3a91-G1111'
   exit 0
 fi
 exit 64
@@ -129,7 +134,7 @@ exit 64
 
     const probe = await probeZmxSession({
       runZsh: runZshCommand,
-      sessionName: "P3a91-G8v20",
+      sessionName: "S1a-P3a91-G8v20",
       zmxExecutablePath: zmxPath,
     });
 
@@ -147,7 +152,7 @@ test("probe runner failures probe as unknown with error details", async () => {
     runZsh: async () => {
       throw error;
     },
-    sessionName: "P3a91-G8v20",
+    sessionName: "S1a-P3a91-G8v20",
     zmxExecutablePath: "/fake/zmx",
   });
 
@@ -158,7 +163,7 @@ test("probe runner failures probe as unknown with error details", async () => {
 
 test("sleep and close kill commands use bundled zmx directly", () => {
   const command = buildZmxKillCommand({
-    sessionName: "P3a91-G8v20",
+    sessionName: "S1a-P3a91-G8v20",
     zmxExecutablePath: "/bundle/zmx",
   });
 
@@ -170,11 +175,11 @@ test("sleep and close kill commands use bundled zmx directly", () => {
 
 test("zmx session interaction commands use bundled zmx for history and raw input", () => {
   const history = buildZmxHistoryCommand({
-    sessionName: "P3a91-G8v20",
+    sessionName: "S1a-P3a91-G8v20",
     zmxExecutablePath: "/bundle/zmx",
   });
   const send = buildZmxSendCommand({
-    sessionName: "P3a91-G8v20",
+    sessionName: "S1a-P3a91-G8v20",
     zmxExecutablePath: "/bundle/zmx",
   });
 
@@ -238,7 +243,7 @@ test("startup restore selects active visible sessions, not every stored session"
 
 test("zmx exists command does not use PATH zmx", () => {
   const command = buildZmxExistsCommand({
-    sessionName: "P3a91-G8v20",
+    sessionName: "S1a-P3a91-G8v20",
     zmxExecutablePath: "/bundle/zmx",
   });
 

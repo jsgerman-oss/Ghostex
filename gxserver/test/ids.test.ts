@@ -31,7 +31,7 @@ test("gxserver IDs follow the server/project/session formats", () => {
 
 test("global refs and zmx session names use stable gxserver IDs", () => {
   assert.equal(createGlobalSessionRef("S7k", "P3a91", "G8v20"), "S7k:P3a91:G8v20");
-  assert.equal(createZmxSessionName("P3a91", "G8v20"), "P3a91-G8v20");
+  assert.equal(createZmxSessionName("S7k", "P3a91", "G8v20"), "S7k-P3a91-G8v20");
 });
 
 test("project and session ID allocation skips collisions", () => {

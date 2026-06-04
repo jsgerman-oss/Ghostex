@@ -1213,7 +1213,7 @@ function insertLegacySessionRow(
   },
 ): void {
   const legacySessionId = text(session.sessionId);
-  const zmxName = createZmxSessionName(options.projectId, options.sessionId);
+  const zmxName = createZmxSessionName(options.serverId, options.projectId, options.sessionId);
   const legacyProvider = normalizeLegacyProvider(session.sessionPersistenceProvider, session.tmuxSessionName);
   const legacyProviderName = text(session.sessionPersistenceName) ?? text(session.tmuxSessionName) ?? legacySessionId;
   insertSessionRow(db, {

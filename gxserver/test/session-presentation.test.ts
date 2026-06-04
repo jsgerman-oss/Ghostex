@@ -424,6 +424,17 @@ test("presentation snapshot applies stale spinner activity semantics", () => {
     sessions: [session],
   });
   assert.equal(freshSnapshot.sessions[0]?.activity, "working");
+  assert.deepEqual(freshSnapshot.sessions[0]?.actions, {
+    acknowledgeAttention: false,
+    attach: true,
+    focus: true,
+    kill: true,
+    readText: true,
+    sendMessage: true,
+    sendText: true,
+    sleep: true,
+    wake: false,
+  });
 
   const staleSnapshot = projectGxserverPresentationSnapshot({
     generatedAt: "2026-06-01T12:00:04.000Z",
@@ -432,6 +443,7 @@ test("presentation snapshot applies stale spinner activity semantics", () => {
     sessions: [session],
   });
   assert.equal(staleSnapshot.sessions[0]?.activity, "attention");
+  assert.equal(staleSnapshot.sessions[0]?.actions.acknowledgeAttention, true);
 });
 
 test("metadata search can page previous sessions without hydrating them into the active snapshot", () => {
@@ -558,13 +570,13 @@ function sessionFixture(partial: Partial<GxserverSessionDomainState>): GxserverS
     lifecycleState: "running",
     notificationRules: {},
     projectId: "P3lv0",
-    providerState: { lifecycleState: "exists", zmxName: "P3lv0-G5tpf" },
+    providerState: { lifecycleState: "exists", zmxName: "S90-P3lv0-G5tpf" },
     runtimeSettings: {},
     sessionId: "G5tpf",
     surface: "workspace",
     title: "Terminal Session",
     updatedAt: "2026-05-31T21:00:00.000Z",
-    zmxName: "P3lv0-G5tpf",
+    zmxName: "S90-P3lv0-G5tpf",
     ...partial,
   };
 }

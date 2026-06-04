@@ -1,4 +1,5 @@
 import type {
+  GxserverAgentForkPlan,
   GxserverAgentLaunchPlan,
   GxserverCreateSessionParams,
   GxserverProjectDomainState,
@@ -156,6 +157,9 @@ Clients must not rebuild agent launch or resume shell commands locally. gxserver
 
 CDXC:GxserverAgentLifecycle 2026-06-01-12:59:
 Resume plans must resolve exact agent conversation identity before title lookup and must use shared gxserver title trust for any lookup fallback. Placeholder or status-prefixed titles are display-only and must not become Cursor/OpenCode/Codex lookup input.
+
+CDXC:GxserverForkSession 2026-06-04-07:42:
+Fork is a gxserver-owned lifecycle action for macOS, Electron, CLI, Android, and iOS. Build provider fork commands from the authoritative domain session identity and daemon agent settings so sidebar clients do not reject valid Codex rows because their local presentation cache is missing agentName or agentSessionId.
 */
 export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverAgentLaunchPlan {
   const baseCommand = normalizeText(input.command) ?? resolveDefaultAgentCommand(input.agentId) ?? "";
@@ -183,6 +187,77 @@ export function buildAgentLaunchPlan(input: GxserverAgentLaunchInput): GxserverA
     firstUserMessage: normalizeText(input.firstUserMessage),
     startupText: command ? `${command}\r` : "",
     startupTextDisposition: command ? "queueAfterTerminalReady" : "none",
+  };
+}
+
+export function buildAgentForkPlan(
+  project: GxserverProjectDomainState,
+  session: GxserverSessionDomainState,
+  agentSettings?: GxserverAgentSettings,
+): GxserverAgentForkPlan {
+  const input = toAgentResumeInput(project, session, agentSettings);
+  const agentId = normalizeRestorableAgentId(input.agentId);
+  const agentCommand = input.agentCommand;
+  if (!agentId || !agentCommand) {
+    return { agentId, startupTextDisposition: "none" };
+  }
+  const resumeTitle = agentId === "pi" ? undefined : getTrustedAgentResumeTitle(input);
+  const primaryCommand = buildAgentForkCommand(agentId, agentCommand, input, resumeTitle);
+  const displayCommand = buildAgentForkCommand(agentId, agentCommand, input, resumeTitle, { display: true });
+  const startupText = primaryCommand ? `${primaryCommand}\r` : undefined;
+  return {
+    agentId,
+    baseCommand: normalizeText(input.agentLookupCommand),
+    displayCommand: displayCommand ?? primaryCommand,
+    primaryCommand,
+    runtimeCommand: normalizeText(agentCommand),
+    startupText,
+    startupTextDisposition: startupText ? "queueAfterTerminalReady" : "none",
+  };
+}
+
+export function createAgentForkSessionParams(
+  project: GxserverProjectDomainState,
+  sourceSession: GxserverSessionDomainState,
+  plan: GxserverAgentForkPlan,
+): GxserverCreateSessionParams {
+  const agentId = normalizeText(plan.agentId) ?? normalizeText(sourceSession.agentId) ?? "codex";
+  const startupText = normalizeText(plan.startupText);
+  return {
+    agentId,
+    cwd: sourceSession.cwd ?? project.path,
+    kind: "agent",
+    launchSettings: {
+      agentLaunchPlan: {
+        agentCommand: normalizeText(plan.baseCommand),
+        command: normalizeText(plan.primaryCommand) ?? "",
+        startupText: plan.startupText ?? "",
+        startupTextDisposition: plan.startupTextDisposition,
+      },
+      forkedFromSessionId: sourceSession.sessionId,
+      runtimeRelevant: {
+        queueProviderStartupText: startupText !== undefined,
+      },
+    },
+    lifecycleState: "running",
+    providerState: {
+      lifecycleState: "missing",
+      provider: "zmx",
+    },
+    projectId: project.projectId,
+    restoredFromSessionId: sourceSession.sessionId,
+    runtimeSettings: {
+      agentActivity: normalizeAgentActivityState(undefined, {
+        activity: startupText ? "working" : "idle",
+      }),
+      agentCommand: normalizeText(plan.baseCommand),
+      agentName: agentId,
+      forkedFromSessionId: sourceSession.sessionId,
+      startupText,
+      titleSource: "placeholder",
+    },
+    surface: sourceSession.surface,
+    title: `${sourceSession.title || "Terminal Session"} Fork`,
   };
 }
 
@@ -362,6 +437,41 @@ export function buildAgentResumeCommand(
       return piReference ? `${agentCommand} --session ${quoteShellDoubleArg(piReference)}` : undefined;
     case "rovodev":
       return exactReference ? buildRovoDevResumeCommand(agentCommand, exactReference) : undefined;
+  }
+}
+
+function buildAgentForkCommand(
+  agentId: RestorableAgentId,
+  agentCommand: string,
+  input: GxserverAgentResumeInput,
+  resumeTitle: string | undefined,
+  options: { display?: boolean } = {},
+): string | undefined {
+  switch (agentId) {
+    case "codex": {
+      const exactReference = getCodexSessionReference(input);
+      if (exactReference) {
+        return `${agentCommand} fork ${quoteShellDoubleArg(exactReference)}`;
+      }
+      if (!resumeTitle) {
+        return undefined;
+      }
+      return options.display
+        ? `${agentCommand} fork ${quoteShellDoubleArg(resumeTitle)}  # lookup Codex session id by title`
+        : buildCodexForkLookupCommand(agentCommand, resumeTitle);
+    }
+    case "claude": {
+      const reference = getClaudeSessionReference(input) ?? resumeTitle;
+      return reference
+        ? `${agentCommand} --resume ${quoteShellDoubleArg(reference)} --fork-session`
+        : undefined;
+    }
+    case "pi": {
+      const reference = getPiSessionReference(input);
+      return reference ? `${agentCommand} --fork ${quoteShellDoubleArg(reference)}` : undefined;
+    }
+    default:
+      return undefined;
   }
 }
 
@@ -683,6 +793,74 @@ function buildCursorResumeLookupCommand(agentCommand: string, projectPath: strin
 
 function buildOpenCodeResumeCommand(agentCommand: string, resumeTitle: string, lookupAgentCommand = agentCommand): string {
   return `${agentCommand} -s "$(${lookupAgentCommand} session list --format json | /usr/bin/python3 -c ${quoteShellArg(getOpenCodeSessionLookupScript())} ${quoteShellArg(resumeTitle)})"`;
+}
+
+function buildCodexForkLookupCommand(agentCommand: string, resumeTitle: string): string {
+  return [
+    'CODEX_FORK_SESSION_ID="$(',
+    `/usr/bin/python3 -c ${quoteShellArg(getCodexSessionIdLookupScript())} ${quoteShellArg(resumeTitle)}`,
+    ')"',
+    "&&",
+    'test -n "$CODEX_FORK_SESSION_ID"',
+    "&&",
+    `${agentCommand} fork "$CODEX_FORK_SESSION_ID"`,
+    "||",
+    `printf '%s\\n' ${quoteShellArg(`Unable to find Codex session id for "${resumeTitle}".`)}`,
+  ].join(" ");
+}
+
+function getCodexSessionIdLookupScript(): string {
+  return `import json
+import os
+import pathlib
+import sys
+
+title = sys.argv[1].strip()
+if not title:
+    sys.exit(1)
+
+home = pathlib.Path.home()
+candidate_homes = []
+for value in [os.environ.get("CODEX_HOME")]:
+    if value:
+        candidate_homes.append(pathlib.Path(value).expanduser())
+for value in [
+    home / ".codex-profiles" / "personal",
+    home / ".codex-profiles" / "work",
+    home / ".codex",
+]:
+    candidate_homes.append(value)
+
+seen = set()
+matches = []
+for codex_home in candidate_homes:
+    codex_home = codex_home.resolve() if codex_home.exists() else codex_home
+    if str(codex_home) in seen:
+        continue
+    seen.add(str(codex_home))
+    index_path = codex_home / "session_index.jsonl"
+    try:
+        lines = index_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        continue
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        if str(item.get("thread_name") or "").strip() != title:
+            continue
+        session_id = str(item.get("id") or "").strip()
+        if not session_id:
+            continue
+        matches.append((str(item.get("updated_at") or ""), session_id))
+
+if not matches:
+    sys.exit(1)
+
+matches.sort()
+sys.stdout.write(matches[-1][1])
+`;
 }
 
 function getCursorChatSessionLookupScript(): string {

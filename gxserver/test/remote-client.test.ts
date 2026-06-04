@@ -157,9 +157,9 @@ test("SSH helper plans remote gxserver check, background start, forwarding, and 
     profileId: "studio",
     serverId: "S7k" as never,
     sshUrl: "ssh://madda@example.test:2222",
-    zmxName: "P3a91-G8v20" as never,
+    zmxName: "S7k-P3a91-G8v20" as never,
   });
-  assert.equal(attach.attachCommand, "ssh -p 2222 madda@example.test zmx attach P3a91-G8v20");
+  assert.equal(attach.attachCommand, "ssh -p 2222 madda@example.test zmx attach S7k-P3a91-G8v20");
   assert.equal(attach.transport, "ssh");
 });
 

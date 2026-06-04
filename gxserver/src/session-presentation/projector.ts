@@ -5,6 +5,7 @@ import type {
   GxserverPresentationProject,
   GxserverPresentationRevision,
   GxserverPresentationSession,
+  GxserverPresentationSessionActions,
   GxserverPresentationSessionActivity,
   GxserverPresentationSnapshot,
   GxserverProjectDomainState,
@@ -106,6 +107,7 @@ export function projectPresentationSession(
   const agentName = readText(session.runtimeSettings.agentName) ?? session.agentId;
   const subtitle = session.cwd ?? project.path;
   return {
+    actions: presentationSessionActions(session, activityState.activity),
     activity: activityState.activity,
     ...(agentName ? { agentName } : {}),
     ...(session.agentId ? { agentId: session.agentId, agentIcon: session.agentId } : {}),
@@ -135,6 +137,37 @@ export function projectPresentationSession(
     updatedAt: session.updatedAt,
     visibleInSidebarByDefault: isVisibleInWorkspaceSidebar(session),
     zmxName: session.zmxName,
+  };
+}
+
+function presentationSessionActions(
+  session: GxserverSessionDomainState,
+  activity: GxserverPresentationSessionActivity,
+): GxserverPresentationSessionActions {
+  /*
+  CDXC:GxserverPresentation 2026-06-04-03:33:
+  Clients should not each infer whether a session can be attached, sent to,
+  woken, slept, killed, or acknowledged. Publish coarse action availability
+  with the presentation row so Android, iOS, TUI, CLI, and agent orchestration
+  render and automate against the same gxserver-owned rules.
+  */
+  const isRunning = session.lifecycleState === "running";
+  const isSleeping = session.lifecycleState === "sleeping";
+  const isStopped = session.lifecycleState === "stopped";
+  const providerExists = session.providerState.lifecycleState === "exists";
+  const isLive = isRunning || providerExists;
+  const canAttach = isRunning || isSleeping || providerExists;
+  const canInteract = isLive && !isSleeping && !isStopped;
+  return {
+    acknowledgeAttention: activity === "attention",
+    attach: canAttach,
+    focus: canInteract,
+    kill: !isStopped,
+    readText: canInteract,
+    sendMessage: canInteract,
+    sendText: canInteract,
+    sleep: canInteract,
+    wake: isSleeping,
   };
 }
 

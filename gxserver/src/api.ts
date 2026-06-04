@@ -31,6 +31,7 @@ export const GXSERVER_ENDPOINTS: readonly GxserverEndpointDescriptor[] = [
   descriptor("/api/installAgentHooks", "fullLocal", true, true, "http"),
   descriptor("/api/createSession", "remoteAllowed", true, true, "http"),
   descriptor("/api/createAgentSession", "remoteAllowed", true, true, "http"),
+  descriptor("/api/forkSession", "remoteAllowed", true, true, "http"),
   descriptor("/api/readAgentLaunchPlan", "remoteAllowed", true, true, "http"),
   descriptor("/api/readAgentResumePlan", "remoteAllowed", true, true, "http"),
   descriptor("/api/requestSessionRename", "remoteAllowed", true, true, "http"),

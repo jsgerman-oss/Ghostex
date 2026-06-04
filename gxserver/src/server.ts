@@ -1,6 +1,8 @@
 import http from "node:http";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Duplex } from "node:stream";
+import { promisify } from "node:util";
 import {
   createProtocolMismatchError,
   createRpcError,
@@ -9,7 +11,7 @@ import {
   isRemoteEndpointAllowed,
   readProtocolVersion,
 } from "./api.js";
-import { installGxserverAgentHooks, readGxserverAgentHookStatus } from "./agent-hooks.js";
+import { installGxserverAgentHooks, normalizeGxserverProcessPath, readGxserverAgentHookStatus } from "./agent-hooks.js";
 import {
   GXSERVER_CONTROL_PLANE_CAPABILITIES,
   GXSERVER_LOCAL_API_HOST,
@@ -35,8 +37,10 @@ import { createGxserverLogger, logLevelFromStatus, type GxserverLogger } from ".
 import { GxserverLogQueryInputError, queryGxserverLogs } from "./logs.js";
 import { assertSupportedNodeVersion } from "./node-version.js";
 import {
+  buildAgentForkPlan,
   buildAgentResumePlan,
   buildProjectAgentLaunchPlan,
+  createAgentForkSessionParams,
   createAgentSessionParams,
   getAgentLaunchStartupTextForSession,
   getAgentStartupTextForSession,
@@ -115,6 +119,7 @@ import type {
   GxserverCreateProjectParams,
   GxserverCreateSessionParams,
   GxserverEndpointPath,
+  GxserverForkSessionResult,
   GxserverInstallAgentHooksParams,
   GxserverListenerConfig,
   GxserverListenerKind,
@@ -182,6 +187,9 @@ export interface GxserverApiRuntime {
   paths: GxserverPaths;
   shutdown: () => void;
   version: string;
+  firstPromptTitleGeneration?: {
+    generateTitle?: (input: { cwd?: string; prompt: string }) => Promise<string>;
+  };
   repositoryCloneJobs?: GxserverRepositoryCloneJobManager;
   presentationDeltaCoalescer?: GxserverPresentationDeltaCoalescer;
   presentationLastDeltaJsonBySessionKey?: Map<string, string>;
@@ -201,9 +209,13 @@ Authenticated HTTP RPC clients must not be able to grow gxserver memory by strea
 */
 export const GXSERVER_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
 const GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS = 3_000;
+const GXSERVER_FIRST_PROMPT_TITLE_SOURCE_MAX_LENGTH = 250;
+const GXSERVER_GENERATED_SESSION_TITLE_MAX_LENGTH = 39;
+const GXSERVER_FIRST_PROMPT_TITLE_GENERATION_TIMEOUT_MS = 30_000;
 const agentTitleMetadataDebouncer = createAgentTitleDebouncer({
   delayMs: GXSERVER_AGENT_TITLE_METADATA_DEBOUNCE_MS,
 });
+const execFileAsync = promisify(execFile);
 
 export async function runGxserverForeground(options: GxserverForegroundOptions): Promise<GxserverForegroundResult> {
   assertSupportedNodeVersion();
@@ -698,7 +710,7 @@ async function routeRequest(options: HandleRequestOptions, requestId: string): P
   */
   if (isDomainStateEndpoint(endpoint.path)) {
     try {
-      sendJson(response, 200, handleDomainStateEndpoint(runtime, endpoint.path, body, requestId));
+      sendJson(response, 200, await handleDomainStateEndpoint(runtime, endpoint.path, body, requestId));
     } catch (caught) {
       if (caught instanceof GxserverDomainStateError) {
         sendJson(response, statusForDomainStateError(caught.code), createRpcError(caught.code, caught.message, requestId));
@@ -840,16 +852,16 @@ function shouldStopAllKillSession(session: GxserverSessionDomainState): boolean 
   return session.lifecycleState !== "stopped" && session.providerState.lifecycleState !== "missing";
 }
 
-function handleDomainStateEndpoint(
+async function handleDomainStateEndpoint(
   runtime: GxserverApiRuntime,
   endpointPath: GxserverEndpointPath,
   body: unknown,
   requestId: string,
-): GxserverRpcSuccessResponse {
+): Promise<GxserverRpcSuccessResponse> {
   const db = openGxserverDatabase(runtime.paths);
   try {
     const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
-    const result = dispatchDomainStateEndpoint(runtime, db, repository, endpointPath, readDomainRpcParams(body));
+    const result = await dispatchDomainStateEndpoint(runtime, db, repository, endpointPath, readDomainRpcParams(body), requestId);
     return {
       ok: true,
       product: GXSERVER_PRODUCT,
@@ -862,13 +874,14 @@ function handleDomainStateEndpoint(
   }
 }
 
-function dispatchDomainStateEndpoint(
+async function dispatchDomainStateEndpoint(
   runtime: GxserverApiRuntime,
   db: ReturnType<typeof openGxserverDatabase>,
   repository: GxserverDomainRepository,
   endpointPath: GxserverEndpointPath,
   params: Record<string, unknown>,
-): Record<string, unknown> {
+  requestId: string,
+): Promise<Record<string, unknown>> {
   const agentSettingsRepository = new GxserverAgentSettingsRepository(db);
   switch (endpointPath) {
     case "/api/readAgentSettings": {
@@ -961,6 +974,16 @@ function dispatchDomainStateEndpoint(
         session,
       };
     }
+    case "/api/forkSession":
+      return {
+        fork: await forkSession(
+          runtime,
+          repository,
+          params as unknown as GxserverSessionLifecycleParams,
+          requestId,
+          agentSettingsRepository.read(),
+        ),
+      };
     case "/api/readAgentLaunchPlan": {
       const projectId = readProjectId(params);
       const project = repository.getProject(projectId);
@@ -1039,6 +1062,15 @@ function dispatchDomainStateEndpoint(
         sessionId: lifecycle.sessionId,
       });
       const session = reconciled?.session ?? repository.getSession(lifecycle.projectId, lifecycle.sessionId) ?? result.session;
+      const autoTitleClaim = claimGxserverFirstPromptAutoTitle(repository, session, stateEvent.firstUserMessage);
+      const responseSession = autoTitleClaim.session ?? session;
+      if (autoTitleClaim.claimed) {
+        scheduleGxserverFirstPromptAutoTitleJob(runtime, {
+          projectId: lifecycle.projectId,
+          requestId,
+          sessionId: lifecycle.sessionId,
+        });
+      }
       schedulePresentationSessionDelta(runtime, repository, {
         projectId: lifecycle.projectId,
         reason: "session-state-event",
@@ -1046,10 +1078,10 @@ function dispatchDomainStateEndpoint(
       });
       return {
         ...result,
-        changed: result.changed || reconciled?.changed === true,
-        projection: projectSessionTitle(session),
+        changed: result.changed || reconciled?.changed === true || autoTitleClaim.claimed,
+        projection: projectSessionTitle(responseSession),
         reason: reconciled?.changed === true ? reconciled.reason : result.reason,
-        session,
+        session: responseSession,
       } satisfies Record<string, unknown> & GxserverSessionStateEventResult;
     }
     case "/api/ingestTerminalTitleEvent": {
@@ -2121,6 +2153,433 @@ async function runZmxInteractionCommand(
   return result;
 }
 
+function claimGxserverFirstPromptAutoTitle(
+  repository: GxserverDomainRepository,
+  session: GxserverSessionDomainState,
+  prompt: string | undefined,
+): { claimed: boolean; session?: GxserverSessionDomainState } {
+  const decision = decideGxserverFirstPromptAutoTitle(session, prompt);
+  if (!decision.shouldRun || !decision.normalizedPrompt) {
+    return { claimed: false };
+  }
+  const runtimeSettings = {
+    ...session.runtimeSettings,
+    firstUserMessage: prompt,
+    gxserverFirstPromptAutoTitleStatus: "running",
+    gxserverFirstPromptAutoTitleStartedAt: new Date().toISOString(),
+  };
+  /*
+  CDXC:GxserverSessionTitle 2026-06-04-04:05:
+  First-prompt auto-title is a gxserver responsibility. Hooks and clients report observed agent identity plus first-user-message metadata; gxserver alone claims, generates, persists, and submits the rename command so macOS, Android, iOS, CLI, and future clients do not implement separate session-title flows.
+  */
+  const updated = repository.updateSession({
+    projectId: session.projectId,
+    runtimeSettings,
+    sessionId: session.sessionId,
+  });
+  return { claimed: true, session: updated };
+}
+
+function scheduleGxserverFirstPromptAutoTitleJob(
+  runtime: GxserverApiRuntime,
+  input: {
+    projectId: GxserverProjectId;
+    requestId: string;
+    sessionId: GxserverSessionId;
+  },
+): void {
+  const timeout = setTimeout(() => {
+    void runGxserverFirstPromptAutoTitleJob(runtime, input);
+  }, 0);
+  timeout.unref();
+}
+
+async function runGxserverFirstPromptAutoTitleJob(
+  runtime: GxserverApiRuntime,
+  input: {
+    projectId: GxserverProjectId;
+    requestId: string;
+    sessionId: GxserverSessionId;
+  },
+): Promise<void> {
+  const db = openGxserverDatabase(runtime.paths);
+  try {
+    const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
+    const session = repository.getSession(input.projectId, input.sessionId);
+    const project = repository.getProject(input.projectId);
+    if (!session || !project) {
+      return;
+    }
+    const prompt = readRuntimeText(session.runtimeSettings, "firstUserMessage");
+    const decision = decideGxserverFirstPromptAutoTitle(session, prompt, { allowRunning: true });
+    if (!decision.shouldRun || !decision.normalizedPrompt || !decision.strategy) {
+      await markGxserverFirstPromptAutoTitleSkipped(runtime, repository, session, decision.reason, input.requestId);
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: input.projectId,
+        reason: "first-prompt-auto-title-skipped",
+        sessionId: input.sessionId,
+      });
+      return;
+    }
+    const title = await generateGxserverFirstPromptSessionTitle(runtime, project.path, decision.normalizedPrompt);
+    const commandText = decision.strategy === "generateTitleAndName" ? `/name ${title}` : `/rename ${title}`;
+    const zmx = await (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)();
+    await runZmxInteractionCommand(
+      runtime,
+      buildZmxSendCommand({
+        sessionName: providerZmxSessionName(session),
+        zmxExecutablePath: zmx.executablePath,
+      }),
+      { stdin: `${commandText}\r` },
+    );
+    const updated = repository.updateSession({
+      projectId: session.projectId,
+      runtimeSettings: {
+        ...session.runtimeSettings,
+        autoTitleFromFirstPrompt: true,
+        gxserverFirstPromptAutoTitleAppliedAt: new Date().toISOString(),
+        gxserverFirstPromptAutoTitleReason: decision.reason,
+        gxserverFirstPromptAutoTitleStatus: "applied",
+        titleSource: "generated",
+      },
+      sessionId: session.sessionId,
+      title,
+    });
+    observeZmxTitleForSession(runtime, updated, "first-prompt-auto-title");
+    schedulePresentationSessionDelta(runtime, repository, {
+      projectId: updated.projectId,
+      reason: "first-prompt-auto-title",
+      sessionId: updated.sessionId,
+    });
+    await runtime.logger.log({
+      details: {
+        agentName: getGxserverFirstPromptAgentName(updated),
+        status: "applied",
+        strategy: decision.strategy,
+        titleLength: title.length,
+      },
+      event: "session-title.firstPromptAutoTitle",
+      level: "info",
+      projectId: updated.projectId,
+      requestId: input.requestId,
+      serverId: runtime.metadata.serverId,
+      sessionId: updated.sessionId,
+    });
+  } catch (error) {
+    await markGxserverFirstPromptAutoTitleFailed(runtime, input, error);
+  } finally {
+    db.close();
+  }
+}
+
+async function markGxserverFirstPromptAutoTitleSkipped(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  session: GxserverSessionDomainState,
+  reason: string,
+  requestId: string,
+): Promise<void> {
+  const updated = repository.updateSession({
+    projectId: session.projectId,
+    runtimeSettings: {
+      ...session.runtimeSettings,
+      gxserverFirstPromptAutoTitleReason: reason,
+      gxserverFirstPromptAutoTitleStatus: "skipped",
+    },
+    sessionId: session.sessionId,
+  });
+  await runtime.logger.log({
+    details: {
+      agentName: getGxserverFirstPromptAgentName(updated),
+      reason,
+      status: "skipped",
+    },
+    event: "session-title.firstPromptAutoTitle",
+    level: "debug",
+    projectId: updated.projectId,
+    requestId,
+    serverId: runtime.metadata.serverId,
+    sessionId: updated.sessionId,
+  });
+}
+
+async function markGxserverFirstPromptAutoTitleFailed(
+  runtime: GxserverApiRuntime,
+  input: {
+    projectId: GxserverProjectId;
+    requestId: string;
+    sessionId: GxserverSessionId;
+  },
+  error: unknown,
+): Promise<void> {
+  const db = openGxserverDatabase(runtime.paths);
+  try {
+    const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
+    const session = repository.getSession(input.projectId, input.sessionId);
+    if (!session) {
+      return;
+    }
+    const updated = repository.updateSession({
+      projectId: session.projectId,
+      runtimeSettings: {
+        ...session.runtimeSettings,
+        gxserverFirstPromptAutoTitleFailedAt: new Date().toISOString(),
+        gxserverFirstPromptAutoTitleStatus: "failed",
+      },
+      sessionId: session.sessionId,
+    });
+    schedulePresentationSessionDelta(runtime, repository, {
+      projectId: updated.projectId,
+      reason: "first-prompt-auto-title-failed",
+      sessionId: updated.sessionId,
+    });
+    await runtime.logger.log({
+      details: {
+        agentName: getGxserverFirstPromptAgentName(updated),
+        status: "failed",
+      },
+      error: error instanceof GxserverTypedOperationError ? error.code : error instanceof Error ? error.name : "unknown",
+      event: "session-title.firstPromptAutoTitle",
+      level: "warn",
+      projectId: updated.projectId,
+      requestId: input.requestId,
+      serverId: runtime.metadata.serverId,
+      sessionId: updated.sessionId,
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function decideGxserverFirstPromptAutoTitle(
+  session: GxserverSessionDomainState,
+  prompt: string | undefined,
+  options: { allowRunning?: boolean } = {},
+): {
+  normalizedPrompt?: string;
+  reason: string;
+  shouldRun: boolean;
+  strategy?: "generateTitleAndRename" | "generateTitleAndName";
+} {
+  const status = readRuntimeText(session.runtimeSettings, "gxserverFirstPromptAutoTitleStatus");
+  if ((status === "running" && !options.allowRunning) || status === "applied" || status === "failed" || status === "skipped") {
+    return { reason: `already-${status}`, shouldRun: false };
+  }
+  if (session.runtimeSettings.autoTitleFromFirstPrompt === true) {
+    return { reason: "alreadyAutoNamed", shouldRun: false };
+  }
+  const agentName = getGxserverFirstPromptAgentName(session);
+  const strategy = resolveGxserverFirstPromptAutoTitleStrategy(agentName);
+  if (!strategy) {
+    return { reason: "unsupportedAgent", shouldRun: false };
+  }
+  const normalizedPrompt = normalizeGxserverFirstPromptTitlePrompt(prompt);
+  if (!normalizedPrompt) {
+    return { reason: "emptyPrompt", shouldRun: false, strategy };
+  }
+  if (isGxserverFirstPromptMetaPrompt(normalizedPrompt)) {
+    return { normalizedPrompt, reason: "metaPrompt", shouldRun: false, strategy };
+  }
+  if (
+    normalizedPrompt.length <= 50 &&
+    /(?:^|\r?\n)[ \t]*\/[a-z][\w-]*(?=\s|$|[).,:;!?'"`])/iu.test(prompt ?? "")
+  ) {
+    return { normalizedPrompt, reason: "slashCommand", shouldRun: false, strategy };
+  }
+  if (!isGxserverGenericAgentSessionTitle(agentName, session.title)) {
+    return { normalizedPrompt, reason: "nonGenericCurrentTitle", shouldRun: false, strategy };
+  }
+  return { normalizedPrompt, reason: "eligible", shouldRun: true, strategy };
+}
+
+function resolveGxserverFirstPromptAutoTitleStrategy(
+  agentName: string | undefined,
+): "generateTitleAndRename" | "generateTitleAndName" | undefined {
+  const normalized = normalizeGxserverAgentName(agentName);
+  if (normalized === "codex") {
+    return "generateTitleAndRename";
+  }
+  if (normalized === "pi") {
+    return "generateTitleAndName";
+  }
+  return undefined;
+}
+
+function getGxserverFirstPromptAgentName(session: GxserverSessionDomainState): string | undefined {
+  return session.agentId ?? readRuntimeText(session.runtimeSettings, "agentName");
+}
+
+function normalizeGxserverAgentName(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "openai codex" || normalized === "codex cli") {
+    return "codex";
+  }
+  if (normalized === "π") {
+    return "pi";
+  }
+  return normalized;
+}
+
+function isGxserverGenericAgentSessionTitle(agentName: string | undefined, title: string | undefined): boolean {
+  const normalizedTitle = title?.trim().replace(/\s+/gu, " ").toLowerCase();
+  if (!normalizedTitle) {
+    return true;
+  }
+  const normalizedAgent = normalizeGxserverAgentName(agentName);
+  const generic = new Set([
+    "terminal",
+    "terminal session",
+    "agent",
+    "agent session",
+    "codex",
+    "codex cli",
+    "codex session",
+    "openai codex",
+    "openai codex session",
+    "pi",
+    "π",
+    "pi session",
+  ]);
+  return generic.has(normalizedTitle) || (normalizedAgent !== undefined && normalizedTitle === normalizedAgent);
+}
+
+function normalizeGxserverFirstPromptTitlePrompt(prompt: string | undefined): string | undefined {
+  const normalized = prompt?.replace(/\s+/gu, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+  const stripped = normalized
+    .replace(
+      /^(?:(?:please|kindly|hey|hi|hello)\s+|(?:can|could|would|will)\s+you\s+|(?:can|could|would)\s+we\s+|help\s+me\s+|i\s+need(?:\s+you)?\s+to\s+|i\s+need\s+|how\s+do\s+i\s+|how\s+does\s+|is\s+there\s+(?:any\s+)?way\s+to\s+)+/iu,
+      "",
+    )
+    .trim();
+  const cleaned = (stripped || normalized).replace(/[.?!:;,]+$/gu, "").trim();
+  return cleaned || undefined;
+}
+
+function isGxserverFirstPromptMetaPrompt(prompt: string): boolean {
+  if (prompt.startsWith("# AGENTS") || prompt.includes("tool_use_id")) {
+    return true;
+  }
+  return [
+    "<command",
+    "<environment_context",
+    "<permissions instructions>",
+    "<user_instructions>",
+    "<INSTRUCTIONS>",
+    "<collaboration_mode>",
+    "<app-context>",
+    "<turn_aborted>",
+    "<ide_opened_file>",
+    "<local-",
+    "[Tool Result]",
+    "Caveat:",
+  ].some((prefix) => prompt.startsWith(prefix));
+}
+
+async function generateGxserverFirstPromptSessionTitle(
+  runtime: GxserverApiRuntime,
+  cwd: string | undefined,
+  prompt: string,
+): Promise<string> {
+  const injectedGenerator = runtime.firstPromptTitleGeneration?.generateTitle;
+  if (injectedGenerator) {
+    return parseGxserverGeneratedSessionTitleText(await injectedGenerator({ cwd, prompt }));
+  }
+  const sourceText = prompt.slice(0, GXSERVER_FIRST_PROMPT_TITLE_SOURCE_MAX_LENGTH);
+  const generationPrompt = buildGxserverFirstPromptTitleGenerationPrompt(sourceText);
+  const delimiter = `ghostex_GXSERVER_SESSION_TITLE_${Date.now().toString(36)}`;
+  const command = [
+    "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"' <<'",
+    delimiter,
+    "'\n",
+    generationPrompt,
+    "\n",
+    delimiter,
+  ].join("");
+  const pathValue = await normalizeGxserverProcessPath(process.env.PATH, {
+    ...process.env,
+    HOME: runtime.paths.homeDir,
+  });
+  const result = await execFileAsync("/bin/zsh", ["-lic", command], {
+    cwd: cwd || runtime.paths.homeDir,
+    env: {
+      ...process.env,
+      HOME: runtime.paths.homeDir,
+      PATH: pathValue,
+    },
+    maxBuffer: 64 * 1024,
+    timeout: GXSERVER_FIRST_PROMPT_TITLE_GENERATION_TIMEOUT_MS,
+  });
+  return parseGxserverGeneratedSessionTitleText(String(result.stdout ?? ""));
+}
+
+function buildGxserverFirstPromptTitleGenerationPrompt(sourceText: string): string {
+  return [
+    "Write a concise session title that summarizes the user's text.",
+    "Return plain text only.",
+    "Rules:",
+    "- keep it specific and scannable",
+    "- prefer 2 to 4 words when possible",
+    `- must be fewer than ${GXSERVER_GENERATED_SESSION_TITLE_MAX_LENGTH + 1} characters`,
+    "- do not abbreviate with ellipses",
+    "- do not use quotes, markdown, or commentary",
+    "- do not end with punctuation",
+    "- focus on the task, bug, feature, or topic",
+    "",
+    "User text:",
+    sourceText,
+    "",
+    "Output handling:",
+    "- Produce only the final session title.",
+    "- Do not wrap the result in backticks.",
+    "- Print only the final result to stdout.",
+  ].join("\n");
+}
+
+function parseGxserverGeneratedSessionTitleText(value: string): string {
+  const normalized = normalizeGxserverGeneratedText(value);
+  const titleLine = normalized.split(/\r?\n/gu).find((line) => line.trim().length > 0);
+  if (!titleLine) {
+    throw new Error("Title generation returned an empty session title.");
+  }
+  const sanitized = titleLine
+    .replace(/^["'`]+|["'`]+$/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/[.…]+$/gu, "");
+  if (!sanitized) {
+    throw new Error("Title generation returned an empty session title.");
+  }
+  return clampGxserverGeneratedSessionTitleLength(sanitized);
+}
+
+function normalizeGxserverGeneratedText(value: string): string {
+  const trimmed = value.trim();
+  const fencedMatch = /^```(?:[a-z0-9_-]+)?\n([\s\S]*?)\n```$/iu.exec(trimmed);
+  return fencedMatch ? fencedMatch[1].trim() : trimmed;
+}
+
+function clampGxserverGeneratedSessionTitleLength(value: string): string {
+  if (value.length <= GXSERVER_GENERATED_SESSION_TITLE_MAX_LENGTH) {
+    return value;
+  }
+  const words = value.split(" ").filter(Boolean);
+  let candidate = "";
+  for (const word of words) {
+    const nextCandidate = candidate ? `${candidate} ${word}` : word;
+    if (nextCandidate.length > GXSERVER_GENERATED_SESSION_TITLE_MAX_LENGTH) {
+      break;
+    }
+    candidate = nextCandidate;
+  }
+  return candidate || value.slice(0, GXSERVER_GENERATED_SESSION_TITLE_MAX_LENGTH).trim();
+}
+
 function readInteractionText(value: unknown, commandName: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new GxserverDomainStateError("badRequest", `${commandName} requires non-empty text.`);
@@ -2205,7 +2664,9 @@ async function createAttachSessionMetadata(
     attachCommand: buildZmxAttachCommand({
       cwd: cwd ?? "",
       globalSessionRef: probedSession.globalRef,
+      gxserverAuthTokenFile: runtime.paths.authTokenFile,
       gxserverBaseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
+      gxserverProtocolVersion: GXSERVER_PROTOCOL_VERSION,
       sessionName: zmxSessionName,
       title: probedSession.title,
       zmxExecutablePath: zmx.executablePath,
@@ -2350,7 +2811,9 @@ async function startSessionProvider(
     buildZmxRunCommand({
       cwd,
       globalSessionRef: probedSession.globalRef,
+      gxserverAuthTokenFile: runtime.paths.authTokenFile,
       gxserverBaseUrl: `http://${GXSERVER_LOCAL_API_HOST}:${GXSERVER_LOCAL_API_PORT}`,
+      gxserverProtocolVersion: GXSERVER_PROTOCOL_VERSION,
       sessionName: zmxSessionName,
       startupText,
       zmxExecutablePath: zmx.executablePath,
@@ -2405,6 +2868,58 @@ function requireSession(
   return session;
 }
 
+async function forkSession(
+  runtime: GxserverApiRuntime,
+  repository: GxserverDomainRepository,
+  params: GxserverSessionLifecycleParams,
+  requestId: string,
+  agentSettings: GxserverAgentSettings,
+): Promise<GxserverForkSessionResult> {
+  const lifecycle = readSessionLifecycleParams(params as unknown as Record<string, unknown>);
+  const project = repository.getProject(lifecycle.projectId);
+  if (!project) {
+    throw new GxserverDomainStateError("notFound", `Project ${lifecycle.projectId} does not exist.`);
+  }
+  const sourceSession = requireSession(repository, lifecycle);
+  const plan = buildAgentForkPlan(project, sourceSession, agentSettings);
+  if (!plan.startupText?.trim() || !plan.primaryCommand?.trim()) {
+    throw new GxserverDomainStateError(
+      "badRequest",
+      "Fork is only available for Codex, Claude, and Pi sessions with a restorable identity.",
+    );
+  }
+  /*
+  CDXC:GxserverForkSession 2026-06-04-07:42:
+  Fork creates the canonical G-session and provider startup plan in gxserver before any client materializes UI. This lets macOS, Electron, CLI, Android, and iOS share the same Codex/Claude/Pi fork behavior and avoids using stale local sidebar fields as the availability check.
+  */
+  const createdSession = repository.createSession(
+    createAgentForkSessionParams(project, sourceSession, plan) as GxserverCreateSessionDomainParams,
+  );
+  const provider = await startSessionProvider(
+    runtime,
+    repository,
+    {
+      projectId: createdSession.projectId,
+      sessionId: createdSession.sessionId,
+    },
+    requestId,
+    agentSettings,
+  );
+  const session = provider.session;
+  observeZmxTitleForSession(runtime, session, "fork-session");
+  schedulePresentationSessionDelta(runtime, repository, {
+    projectId: session.projectId,
+    reason: "fork-session",
+    sessionId: session.sessionId,
+  });
+  return {
+    plan,
+    provider,
+    session,
+    sourceSession,
+  };
+}
+
 function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
   return (
     path === "/api/createProject" ||
@@ -2417,6 +2932,7 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/removeProject" ||
     path === "/api/createSession" ||
     path === "/api/createAgentSession" ||
+    path === "/api/forkSession" ||
     path === "/api/readAgentLaunchPlan" ||
     path === "/api/readAgentResumePlan" ||
     path === "/api/requestSessionRename" ||

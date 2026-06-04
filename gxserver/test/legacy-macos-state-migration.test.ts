@@ -127,10 +127,10 @@ test("first-run import migrates macOS sidebar projects, active and sleeping sess
       assert.equal(live?.isPinned, true);
       assert.equal(live?.isFavorite, true);
       assert.equal(live?.lifecycleState, "running");
-      assert.equal(live?.zmxName, "P3a91-G8v20");
+      assert.equal(live?.zmxName, "S7k-P3a91-G8v20");
       assert.equal(live?.providerState.legacyProvider, "zmx");
       assert.equal(live?.providerState.legacyProviderSessionName, "legacy-zmx-live");
-      assert.equal(live?.providerState.zmxName, "P3a91-G8v20");
+      assert.equal(live?.providerState.zmxName, "S7k-P3a91-G8v20");
       assert.equal(live?.runtimeSettings.agentSessionId, "codex-thread-1");
       assert.equal(live?.launchSettings.firstUserMessage, "Fix the sidebar");
 

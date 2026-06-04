@@ -121,6 +121,77 @@ test("agent settings API owns inherited Accept All launch policy", async () => {
   });
 });
 
+test("forkSession creates and starts a gxserver-owned Codex fork", async () => {
+  const zmxCalls: string[] = [];
+  await withApiServer("local", async ({ baseUrl, paths, token }) => {
+    const project = (
+      await requestJson(baseUrl, "/api/createProject", {
+        body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+        method: "POST",
+        token,
+      })
+    ).body.result.project;
+    const source = (
+      await requestJson(baseUrl, "/api/createAgentSession", {
+        body: {
+          params: {
+            agentId: "codex",
+            projectId: project.projectId,
+            runtimeSettings: {
+              agentName: "codex",
+              agentSessionId: "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56",
+              titleSource: "user",
+            },
+            title: "Existing Codex task",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      })
+    ).body.result.session;
+
+    const forkResponse = await requestJson(baseUrl, "/api/forkSession", {
+      body: {
+        params: { projectId: project.projectId, sessionId: source.sessionId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+
+    assert.equal(forkResponse.status, 200);
+    const fork = forkResponse.body.result.fork;
+    assert.equal(fork.session.agentId, "codex");
+    assert.notEqual(fork.session.sessionId, source.sessionId);
+    assert.equal(fork.session.hiddenMetadata.restoredFromSessionId, source.sessionId);
+    assert.equal(fork.session.launchSettings.forkedFromSessionId, source.sessionId);
+    assert.equal(fork.session.runtimeSettings.forkedFromSessionId, source.sessionId);
+    assert.equal(fork.provider.providerState.lifecycleState, "exists");
+    assert.equal(fork.provider.session.providerState.lifecycleState, "exists");
+    assert.equal(fork.session.providerState.lifecycleState, "exists");
+    assert.equal(
+      fork.session.launchSettings.agentLaunchPlan.command,
+      'codex --yolo fork "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"',
+    );
+    const readFork = await requestJson(baseUrl, "/api/readProjectStatus", {
+      body: {
+        params: { projectId: project.projectId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    const persistedFork = readFork.body.result.sessions.find(
+      (session: { sessionId: string }) => session.sessionId === fork.session.sessionId,
+    );
+    assert.equal(persistedFork?.providerState.lifecycleState, "exists");
+    assert.ok(zmxCalls.some((script) => script.includes('codex --yolo fork "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"')));
+  }, {
+    zmxLifecycle: fakeZmxLifecycle(zmxCalls, () => 1),
+  });
+});
+
 test("foreground gxserver process uses temporary HOME, writes daemon state, and stops only the control plane", async (t) => {
   /*
   CDXC:GxserverVerification 2026-05-30-18:37:
@@ -481,7 +552,7 @@ test("project and session domain-state APIs create, update, and list shared doma
     assert.equal(originalSession.status, 200);
     const original = originalSession.body.result.session;
     assert.match(original.sessionId, /^G[0-9][a-z0-9]{3}$/);
-    assert.equal(original.zmxName, `${project.projectId}-${original.sessionId}`);
+    assert.equal(original.zmxName, `S7k-${project.projectId}-${original.sessionId}`);
 
     const restoredSession = await requestJson(baseUrl, "/api/createSession", {
       body: {
@@ -818,6 +889,74 @@ test("session state event API resolves resumed Codex sessions from shared histor
     assert.equal(ingested.body.result.session.title, "Shorter native tabs bar");
     assert.equal(ingested.body.result.projection.primaryTitle, "Shorter native tabs bar");
   });
+});
+
+test("session state event API runs first-prompt auto-title through gxserver", async () => {
+  const zmxCalls: string[] = [];
+  const sendInputs: string[] = [];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, token }) => {
+      const createdProject = await requestJson(baseUrl, "/api/createProject", {
+        body: {
+          params: { name: "Ghostex", path: "/repo/ghostex" },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const project = createdProject.body.result.project;
+      const createdSession = await requestJson(baseUrl, "/api/createSession", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            runtimeSettings: { titleSource: "placeholder" },
+            title: "Terminal",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const session = createdSession.body.result.session;
+      const ingested = await requestJson(baseUrl, "/api/ingestSessionStateEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            agentSessionId: "019e8fd3-f8ad-7932-baeb-d9f6f912c57b",
+            firstUserMessage: "Please implement the gxserver session title flow",
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(ingested.status, 200);
+      assert.equal(ingested.body.result.session.kind, "agent");
+      assert.equal(ingested.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "running");
+
+      const titledSession = await waitForSession(
+        baseUrl,
+        token,
+        project.projectId,
+        session.sessionId,
+        (candidate) => candidate.runtimeSettings?.gxserverFirstPromptAutoTitleStatus === "applied",
+      );
+      assert.equal(titledSession.title, "Server Title Flow");
+      assert.equal(titledSession.runtimeSettings.titleSource, "generated");
+      assert.equal(titledSession.runtimeSettings.autoTitleFromFirstPrompt, true);
+      assert.deepEqual(sendInputs, ["/rename Server Title Flow\r"]);
+      assert.ok(zmxCalls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')));
+    },
+    {
+      firstPromptTitleGeneration: {
+        generateTitle: async () => "Server Title Flow",
+      },
+      zmxLifecycle: fakeZmxLifecycle(zmxCalls, () => 0, { stdinInputs: sendInputs }),
+    },
+  );
 });
 
 test("domain-state APIs reject oversized and too-deep project/session JSON before SQLite persistence", async () => {
@@ -1242,7 +1381,7 @@ test("zmx session interaction APIs read and send through bundled zmx, with expli
       assert.equal(read.body.result.text, "first line\nsecond line");
       assert.equal(read.body.result.truncated, false);
       assert.equal(read.body.result.limitBytes, GXSERVER_ZMX_HISTORY_STDOUT_LIMIT_BYTES);
-      assert.equal(read.body.result.zmxName, `${project.projectId}-${session.sessionId}`);
+      assert.equal(read.body.result.zmxName, `S7k-${project.projectId}-${session.sessionId}`);
 
       const send = await requestJson(baseUrl, "/api/sendSessionText", {
         body: {
@@ -1443,7 +1582,7 @@ test("gxserver restart preserves session state and does not replay startup text 
       assert.equal(createdSession.status, 200);
       const session = createdSession.body.result.session;
       sessionId = session.sessionId;
-      assert.equal(session.zmxName, `${projectId}-${sessionId}`);
+      assert.equal(session.zmxName, `S7k-${projectId}-${sessionId}`);
     } finally {
       await first.close();
     }
@@ -1465,7 +1604,7 @@ test("gxserver restart preserves session state and does not replay startup text 
       assert.equal(attach.body.result.attach.persistenceSessionCreated, false);
       assert.equal(attach.body.result.attach.startupTextDisposition, "discardExistingProvider");
       assert.equal(attach.body.result.attach.startupText, undefined);
-      assert.equal(attach.body.result.attach.session.zmxName, `${projectId}-${sessionId}`);
+      assert.equal(attach.body.result.attach.session.zmxName, `S7k-${projectId}-${sessionId}`);
       assert.ok(calls.some((script) => script.includes("list --short")));
       assert.equal(calls.some((script) => script.includes('kill "$zmx_session" --force')), false);
     } finally {
@@ -1926,7 +2065,7 @@ test("kill failure keeps stored zmx provider route unknown instead of stopped an
   );
 });
 
-test("migrated zmx sessions keep using the legacy provider session name", async () => {
+test("migrated zmx sessions use the canonical server-project-session zmx name", async () => {
   const calls: string[] = [];
   await withApiServer(
     "local",
@@ -1962,8 +2101,9 @@ test("migrated zmx sessions keep using the legacy provider session name", async 
         token,
       });
       assert.equal(attach.status, 200);
-      assert.equal(attach.body.result.attach.zmxName, "legacy-zmx-live");
-      assert.match(attach.body.result.attach.attachCommand, /legacy-zmx-live/);
+      const expectedZmxName = `S7k-${project.projectId}-${session.sessionId}`;
+      assert.equal(attach.body.result.attach.zmxName, expectedZmxName);
+      assert.match(attach.body.result.attach.attachCommand, new RegExp(expectedZmxName));
 
       const sleep = await requestJson(baseUrl, "/api/sleepSession", {
         body: { params: { projectId: project.projectId, sessionId: session.sessionId }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
@@ -1971,7 +2111,7 @@ test("migrated zmx sessions keep using the legacy provider session name", async 
         token,
       });
       assert.equal(sleep.status, 200);
-      assert.equal(calls.some((script) => script.includes("zmx_session='legacy-zmx-live'")), true);
+      assert.equal(calls.some((script) => script.includes(`zmx_session='${expectedZmxName}'`)), true);
     },
     {
       zmxLifecycle: fakeZmxLifecycle(calls, () => 0),
@@ -2769,6 +2909,7 @@ async function withApiServer(
   run: (fixture: ServerFixture) => Promise<void>,
   options: {
     configureConfig?: (config: GxserverConfig) => GxserverConfig;
+    firstPromptTitleGeneration?: GxserverApiRuntime["firstPromptTitleGeneration"];
     zmxLifecycle?: GxserverApiRuntime["zmxLifecycle"];
   } = {},
 ): Promise<void> {
@@ -2788,6 +2929,7 @@ async function startApiServerFixture(
   listenerKind: "local" | "remote",
   options: {
     configureConfig?: (config: GxserverConfig) => GxserverConfig;
+    firstPromptTitleGeneration?: GxserverApiRuntime["firstPromptTitleGeneration"];
     zmxLifecycle?: GxserverApiRuntime["zmxLifecycle"];
   } = {},
 ): Promise<RunningServerFixture> {
@@ -2826,6 +2968,7 @@ async function startApiServerFixture(
     paths,
     shutdown: () => undefined,
     version: "0.1.0-test",
+    ...(options.firstPromptTitleGeneration ? { firstPromptTitleGeneration: options.firstPromptTitleGeneration } : {}),
     ...(options.zmxLifecycle ? { zmxLifecycle: options.zmxLifecycle } : {}),
   };
   const server = createGxserverHttpServer(runtime, listenerKind);
@@ -2852,10 +2995,14 @@ function fakeZmxLifecycle(
   options: {
     killExitCode?: () => number;
     runExitCode?: () => number;
+    stdinInputs?: string[];
   } = {},
 ): NonNullable<GxserverApiRuntime["zmxLifecycle"]> {
-  const runZsh: GxserverZmxCommandRunner = async (script) => {
+  const runZsh: GxserverZmxCommandRunner = async (script, commandOptions) => {
     calls.push(script);
+    if (commandOptions?.stdin !== undefined) {
+      options.stdinInputs?.push(commandOptions.stdin);
+    }
     if (script.includes('run "$zmx_session" -d')) {
       const exitCode = options.runExitCode?.() ?? 0;
       return { exitCode, stderr: exitCode === 0 ? "" : `zmx run failed with exit ${exitCode}`, stdout: "" };
@@ -2928,6 +3075,33 @@ async function requestJson(
     headers: response.headers,
     status: response.status,
   };
+}
+
+async function waitForSession(
+  baseUrl: string,
+  token: GxserverAuthToken,
+  projectId: string,
+  sessionId: string,
+  predicate: (session: Record<string, any>) => boolean,
+): Promise<Record<string, any>> {
+  const deadline = Date.now() + 2_000;
+  let latest: Record<string, any> | undefined;
+  while (Date.now() < deadline) {
+    const response = await requestJson(baseUrl, "/api/readProjectStatus", {
+      body: {
+        params: { projectId },
+        protocolVersion: GXSERVER_PROTOCOL_VERSION,
+      },
+      method: "POST",
+      token,
+    });
+    latest = response.body.result.sessions.find((session: Record<string, any>) => session.sessionId === sessionId);
+    if (latest && predicate(latest)) {
+      return latest;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for session ${sessionId}. Latest: ${JSON.stringify(latest)}`);
 }
 
 async function requestRawJson(

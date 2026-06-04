@@ -2,11 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   applyAgentActivityTransition,
+  buildAgentForkPlan,
   buildAgentLaunchPlan,
   buildAgentResumeCommand,
   buildAgentResumeFallbackCommand,
   buildAgentResumePlan,
   buildAgentResumeStartupText,
+  createAgentForkSessionParams,
   getEffectiveAgentActivityState,
 } from "../src/agents/lifecycle.js";
 import type { GxserverProjectDomainState, GxserverSessionDomainState } from "../protocol/index.js";
@@ -154,6 +156,73 @@ test("resume startup commands apply Accept All at runtime without changing store
   );
   assert.equal(buildAgentResumeFallbackCommand(project, session), 'codex --yolo resume "Readable thread title"');
   assert.equal(session.runtimeSettings.agentCommand, "codex");
+});
+
+test("fork plan uses gxserver Codex runtime identity and Accept All policy", () => {
+  const project = {
+    ...projectFixture(),
+    launchSettings: { agentAcceptAllEnabled: true },
+  };
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentCommand: "codex",
+      agentName: "codex",
+      agentSessionId: "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56",
+      titleSource: "user",
+    },
+  });
+
+  const plan = buildAgentForkPlan(project, session);
+  assert.equal(plan.primaryCommand, 'codex --yolo fork "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"');
+  assert.equal(plan.startupText, 'codex --yolo fork "6a6c2672-6b45-45fe-a1a8-a73f9a3a9c56"\r');
+  assert.equal(plan.startupTextDisposition, "queueAfterTerminalReady");
+});
+
+test("fork plan can use trusted Codex title lookup when exact identity is missing", () => {
+  const project = projectFixture();
+  const session = sessionFixture({
+    agentId: "codex",
+    runtimeSettings: {
+      agentCommand: "codex",
+      agentName: "codex",
+      titleSource: "user",
+    },
+    title: "Readable thread title",
+  });
+
+  const plan = buildAgentForkPlan(project, session);
+  assert.match(plan.primaryCommand ?? "", /CODEX_FORK_SESSION_ID/);
+  assert.match(plan.primaryCommand ?? "", /codex fork "\$CODEX_FORK_SESSION_ID"/);
+  assert.equal(plan.displayCommand, 'codex fork "Readable thread title"  # lookup Codex session id by title');
+});
+
+test("fork session params persist server-owned startup plan for clients", () => {
+  const project = projectFixture();
+  const sourceSession = sessionFixture({
+    agentId: "claude",
+    sessionId: "G1src",
+    runtimeSettings: {
+      agentCommand: "claude",
+      agentName: "claude",
+      agentSessionId: "claude-thread",
+      titleSource: "user",
+    },
+    title: "Review work",
+  });
+  const plan = buildAgentForkPlan(project, sourceSession);
+
+  const params = createAgentForkSessionParams(project, sourceSession, plan);
+  assert.equal(params.agentId, "claude");
+  assert.equal(params.kind, "agent");
+  assert.equal(params.providerState?.lifecycleState, "missing");
+  assert.equal(params.providerState?.provider, "zmx");
+  assert.equal(params.restoredFromSessionId, "G1src");
+  assert.equal(params.runtimeSettings?.agentName, "claude");
+  assert.equal(params.runtimeSettings?.forkedFromSessionId, "G1src");
+  const launchPlan = params.launchSettings?.agentLaunchPlan as Record<string, unknown> | undefined;
+  assert.equal(launchPlan?.command, 'claude --resume "claude-thread" --fork-session');
+  assert.equal(launchPlan?.startupText, 'claude --resume "claude-thread" --fork-session\r');
 });
 
 test("resume plan separates OpenCode lookup command from runtime Accept All command", () => {
@@ -482,13 +551,13 @@ function sessionFixture(
     lifecycleState: "running",
     notificationRules: {},
     projectId: "P3a91",
-    providerState: { lifecycleState: "missing", zmxName: "P3a91-G8v20" },
+    providerState: { lifecycleState: "missing", zmxName: "S1abcd-P3a91-G8v20" },
     runtimeSettings: {},
     sessionId: "G8v20",
     surface: "workspace",
     title: "Agent task",
     updatedAt: "2026-05-30T12:00:00.000Z",
-    zmxName: "P3a91-G8v20",
+    zmxName: "S1abcd-P3a91-G8v20",
     ...partial,
   };
 }

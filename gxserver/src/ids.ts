@@ -19,7 +19,10 @@ export type GxserverCandidateFactory<T extends string> = () => T;
 
 /*
 CDXC:GxserverIds 2026-05-30-14:16:
-gxserver, not clients, generates stable short IDs. Server IDs survive daemon restarts via identity.json, project IDs survive rename/move, and session IDs are immutable; zmx session names use `projectId-sessionId` because global refs use colons that provider session names should avoid.
+gxserver, not clients, generates stable short IDs. Server IDs survive daemon restarts via identity.json, project IDs survive rename/move, and session IDs are immutable; zmx session names use hyphen-separated global refs because provider session names should avoid colons.
+
+CDXC:GxserverIds 2026-06-04-01:40:
+zmx session names must include server, project, and session identity (`S-P-G`) so every renderer, CLI, remote client, and recreated gxserver asks zmx for one canonical provider name instead of mixing pre-server `g-*` names with project-scoped `P-G` names.
 */
 export function createServerId(): GxserverServerId {
   return `S${randomChar(DIGITS)}${randomChar(LOWERCASE_OR_DIGIT)}` as GxserverServerId;
@@ -56,10 +59,11 @@ export function createGlobalSessionRef(
 }
 
 export function createZmxSessionName(
+  serverId: GxserverServerId,
   projectId: GxserverProjectId,
   sessionId: GxserverSessionId,
 ): GxserverZmxSessionName {
-  return `${projectId}-${sessionId}` as GxserverZmxSessionName;
+  return `${serverId}-${projectId}-${sessionId}` as GxserverZmxSessionName;
 }
 
 export function isGxserverServerId(value: unknown): value is GxserverServerId {

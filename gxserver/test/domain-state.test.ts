@@ -80,7 +80,7 @@ test("sessions use G IDs, zmx names, hidden previous-session metadata, and indep
 
     assert.equal(original.sessionId, "G8v20");
     assert.equal(restored.sessionId, "G1z99");
-    assert.equal(restored.zmxName, "P3a91-G1z99");
+    assert.equal(restored.zmxName, "S7k-P3a91-G1z99");
     assert.equal(restored.globalRef, "S7k:P3a91:G1z99");
     assert.equal(restored.title, "Follow-up agent");
     assert.equal(restored.hiddenMetadata.restoredFromSessionId, "G8v20");
@@ -101,7 +101,7 @@ test("sessions use G IDs, zmx names, hidden previous-session metadata, and indep
     assert.equal(updated.isFavorite, true);
     assert.equal(updated.lifecycleState, "sleeping");
     assert.equal(updated.providerState.lifecycleState, "missing");
-    assert.equal(updated.providerState.zmxName, "P3a91-G1z99");
+    assert.equal(updated.providerState.zmxName, "S7k-P3a91-G1z99");
     assert.equal(updated.runtimeSettings.delayedSendMs, 250);
     assert.deepEqual(
       repository.listSessions(project.projectId).map((session) => session.sessionId),

@@ -453,14 +453,14 @@ function normalizeSessionInput(
   timestamp: string,
   input: GxserverCreateSessionDomainParams,
 ): GxserverSessionDomainState {
-  const zmxName = createZmxSessionName(input.projectId, sessionId);
+  const zmxName = createZmxSessionName(serverId, input.projectId, sessionId);
   const inputProviderState = normalizeObject(input.providerState);
   const runtimeSettings = normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title);
   const launchSettings = normalizeSessionLaunchSettingsWithSurface(normalizeObject(input.launchSettings), input.surface);
   const providerState = {
     lifecycleState: normalizeProviderLifecycleState(input.providerState?.lifecycleState),
     ...inputProviderState,
-    zmxName: normalizeProviderZmxName(inputProviderState.zmxName, zmxName),
+    zmxName,
   };
   return {
     agentId: normalizeOptionalText(input.agentId),
@@ -500,7 +500,7 @@ function mergeSessionUpdate(
   updatedAt: string,
   input: GxserverUpdateSessionParams,
 ): GxserverSessionDomainState {
-  const zmxName = createZmxSessionName(current.projectId, current.sessionId);
+  const zmxName = createZmxSessionName(serverId, current.projectId, current.sessionId);
   const inputProviderState = normalizeObject(input.providerState);
   const runtimeSettings = hasOwn(input, "runtimeSettings")
     ? normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title ?? current.title)
@@ -540,9 +540,9 @@ function mergeSessionUpdate(
       ? {
           ...inputProviderState,
           lifecycleState: normalizeProviderLifecycleState(input.providerState?.lifecycleState),
-          zmxName: normalizeProviderZmxName(inputProviderState.zmxName, zmxName),
+          zmxName,
         }
-      : { ...current.providerState, zmxName: normalizeProviderZmxName(current.providerState.zmxName, zmxName) },
+      : { ...current.providerState, zmxName },
     runtimeSettings,
     sidebarOrder: hasOwn(input, "sidebarOrder")
       ? normalizeOptionalSidebarOrder(input.sidebarOrder)
@@ -714,7 +714,7 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
   const projectId = row.projectId as GxserverProjectId;
   const sessionId = row.sessionId as GxserverSessionId;
   const rowId = `${row.projectId}/${row.sessionId}`;
-  const zmxName = createZmxSessionName(projectId, sessionId);
+  const zmxName = createZmxSessionName(serverId, projectId, sessionId);
   const providerState: JsonObject = parseObject(row.providerStateJson, "providerStateJson", "session", rowId);
   const worktree = parseObject(row.worktreeJson, "worktreeJson", "session", rowId);
   const launchSettings = parseObject(row.launchSettingsJson, "launchSettingsJson", "session", rowId);
@@ -742,7 +742,7 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
     providerState: {
       ...providerState,
       lifecycleState: normalizeProviderLifecycleState(providerState.lifecycleState),
-      zmxName: normalizeProviderZmxName(providerState.zmxName, zmxName),
+      zmxName,
     },
     runtimeSettings,
     sessionId,
@@ -826,11 +826,6 @@ function normalizeDomainLifecycleState(value: unknown): GxserverDomainLifecycleS
 
 function normalizeProviderLifecycleState(value: unknown): GxserverProviderLifecycleState {
   return value === "exists" || value === "missing" || value === "unknown" ? value : "unknown";
-}
-
-function normalizeProviderZmxName(value: unknown, fallback: string): GxserverZmxSessionName {
-  const trimmed = typeof value === "string" ? value.trim() : "";
-  return (trimmed || fallback) as GxserverZmxSessionName;
 }
 
 function normalizeSessionRestoreId(value: unknown): GxserverSessionId | undefined {

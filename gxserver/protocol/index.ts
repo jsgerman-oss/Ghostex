@@ -1,6 +1,9 @@
 /*
 CDXC:GxserverProtocol 2026-05-30-14:04:
 The gxserver protocol is the shared contract for the daemon, future gx/ghostex CLI clients, macOS clients, and remote clients. JSON fields and endpoint path tokens stay camelCase; protocol mismatch is a hard failure that asks the user to update instead of falling back to compatibility behavior.
+
+CDXC:GxserverProtocol 2026-06-04-03:20:
+`zmxName` is the canonical provider identity and must carry the full server-project-session id. Clients should treat shorter project/session or compact g-* names as legacy display/state data, not as the reconnect target for gxserver zmx sessions.
 */
 
 export const GXSERVER_PRODUCT = "gxserver" as const;
@@ -19,7 +22,7 @@ export type GxserverServerId = `S${number}${Lowercase<string>}`;
 export type GxserverProjectId = `P${number}${Lowercase<string>}`;
 export type GxserverSessionId = `G${number}${Lowercase<string>}`;
 export type GxserverGlobalSessionRef = `${GxserverServerId}:${GxserverProjectId}:${GxserverSessionId}`;
-export type GxserverZmxSessionName = `${GxserverProjectId}-${GxserverSessionId}`;
+export type GxserverZmxSessionName = `${GxserverServerId}-${GxserverProjectId}-${GxserverSessionId}`;
 export type GxserverAuthToken = string & { readonly __gxserverAuthToken: unique symbol };
 export type GxserverLogLevel = "debug" | "info" | "warn" | "error";
 export type GxserverLogOrder = "asc" | "desc";
@@ -49,6 +52,7 @@ export type GxserverEndpointPath =
   | "/api/installAgentHooks"
   | "/api/createSession"
   | "/api/createAgentSession"
+  | "/api/forkSession"
   | "/api/readAgentLaunchPlan"
   | "/api/readAgentResumePlan"
   | "/api/requestSessionRename"
@@ -805,6 +809,25 @@ export type GxserverUpdateSessionParams = Partial<Omit<GxserverCreateSessionPara
   sessionId: GxserverSessionId;
 };
 
+export interface GxserverForkSessionParams extends GxserverSessionLifecycleParams {}
+
+export interface GxserverAgentForkPlan {
+  agentId?: string;
+  baseCommand?: string;
+  displayCommand?: string;
+  primaryCommand?: string;
+  runtimeCommand?: string;
+  startupText?: string;
+  startupTextDisposition: GxserverAgentStartupTextDisposition;
+}
+
+export interface GxserverForkSessionResult {
+  plan: GxserverAgentForkPlan;
+  provider?: GxserverStartSessionProviderResult;
+  session: GxserverSessionDomainState;
+  sourceSession: GxserverSessionDomainState;
+}
+
 export interface GxserverUpdateSessionOrderParams {
   projectId: GxserverProjectId;
   sessionIds: readonly GxserverSessionId[];
@@ -868,6 +891,18 @@ export interface GxserverPresentationAttentionState {
   enteredAt?: string;
 }
 
+export interface GxserverPresentationSessionActions {
+  acknowledgeAttention: boolean;
+  attach: boolean;
+  focus: boolean;
+  kill: boolean;
+  readText: boolean;
+  sendMessage: boolean;
+  sendText: boolean;
+  sleep: boolean;
+  wake: boolean;
+}
+
 export interface GxserverPresentationProject {
   createdAt: string;
   groupIds: readonly string[];
@@ -890,6 +925,7 @@ export interface GxserverPresentationGroup {
 }
 
 export interface GxserverPresentationSession {
+  actions: GxserverPresentationSessionActions;
   activity: GxserverPresentationSessionActivity;
   agentIcon?: string;
   agentId?: string;
