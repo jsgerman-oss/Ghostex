@@ -5061,11 +5061,21 @@ final class TerminalWorkspaceView: NSView {
         "visibleSessionIds": orderedVisibleSessionIds(),
         "windowIsKey": window?.isKeyWindow ?? false,
       ])
-    refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
-      sessionId: sessionId,
-      previousSessionId: previousFocusedTerminalSessionId,
-      didSurface: false,
-      reason: "focusTerminal.\(reason)")
+    /*
+     CDXC:ZmxPersistenceRefresh 2026-06-04-21:39:
+     Sidebar session-button and terminal-content clicks must request a zmx display refresh even when the clicked terminal is already focused and the native focus command is otherwise a no-op. Keep using Ghostex's private zmx refresh sequence instead of typing a shell command so the request stays display-only.
+     */
+    if reason == "sidebarFocusCommand" || reason == "nativeTerminalContentMouseDown" {
+      refreshZmxPersistenceTerminalIfNeeded(
+        sessionId: sessionId,
+        reason: "focusTerminal.\(reason)")
+    } else {
+      refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
+        sessionId: sessionId,
+        previousSessionId: previousFocusedTerminalSessionId,
+        didSurface: false,
+        reason: "focusTerminal.\(reason)")
+    }
     if isCommandPanelSession {
       emitFocusedSessionSelectionIfNeeded(sessionId: sessionId, reason: reason)
     }
@@ -5284,6 +5294,13 @@ final class TerminalWorkspaceView: NSView {
       || responderSessionId != clickedSessionId
       || !isSurfaceFirstResponder
     else {
+      /*
+       CDXC:ZmxPersistenceRefresh 2026-06-04-21:39:
+       Clicking inside an already-focused terminal pane is an explicit user request to wake the visible attached zmx client. Refresh inside the duplicate-focus suppression branch so focus-changing clicks keep using the single focusTerminal refresh path.
+       */
+      refreshZmxPersistenceTerminalIfNeeded(
+        sessionId: clickedSessionId,
+        reason: "nativeTerminalContentMouseDown.duplicateFocus")
       return
     }
     /**
@@ -6959,13 +6976,22 @@ final class TerminalWorkspaceView: NSView {
      CDXC:ZmxPersistenceRefresh 2026-05-18-09:04:
      Code-mode sidebar session switches surface terminals through the project-editor companion branch, which returns before the ordinary focusTerminal refresh hook.
      Refresh zmx after the companion pane has been retargeted and focused so broken persisted terminal text is corrected without manual terminal input.
+
+     CDXC:ZmxPersistenceRefresh 2026-06-04-21:39:
+     Sidebar session-button clicks inside Code/Git/Project companion mode need the same always-refresh behavior as normal Agents-mode sidebar clicks, because retargeting can be a no-op while the attached zmx client still needs a repaint.
      */
     if sessions[sessionId] != nil {
-      refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
-        sessionId: sessionId,
-        previousSessionId: previousCompanionSessionId,
-        didSurface: !wasCompanionVisible || previousCompanionSessionId != sessionId,
-        reason: "projectEditorCompanion.\(reason)")
+      if reason == "sidebarFocusCommand" {
+        refreshZmxPersistenceTerminalIfNeeded(
+          sessionId: sessionId,
+          reason: "projectEditorCompanion.\(reason)")
+      } else {
+        refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
+          sessionId: sessionId,
+          previousSessionId: previousCompanionSessionId,
+          didSurface: !wasCompanionVisible || previousCompanionSessionId != sessionId,
+          reason: "projectEditorCompanion.\(reason)")
+      }
     }
     return true
   }
@@ -10461,7 +10487,13 @@ final class TerminalWorkspaceView: NSView {
      offscreen. Start a pane drag from the tab's session id without requiring
      the event point to match that hidden title-bar frame; a click without drag
      selects the tab on mouse-up.
+
+     CDXC:ZmxPersistenceRefresh 2026-06-04-21:39:
+     Native pane-tab clicks should repaint the tab's zmx-backed terminal immediately on mouse-down. The normal tab-selection mouse-up path may be a layout no-op for the already-selected tab, so the refresh must not depend on sidebar state changing.
      */
+    refreshZmxPersistenceTerminalIfNeeded(
+      sessionId: sessionId,
+      reason: "nativePaneTabMouseDown")
     paneHeaderDrag = PaneHeaderDrag(
       isDragging: false,
       lastLoggedMoveAt: 0,
@@ -18657,6 +18689,11 @@ private final class TerminalSessionTitleBarView: NSView {
     let title: String
   }
 
+  private enum StickyActiveTabEdge {
+    case leading
+    case trailing
+  }
+
   struct TabReorderTarget {
     let lineFrame: CGRect
     let position: PaneTabReorderPosition
@@ -18668,6 +18705,17 @@ private final class TerminalSessionTitleBarView: NSView {
     green: 0x6F / 255,
     blue: 0x95 / 255,
     alpha: 0.24
+  ).cgColor
+  /**
+   CDXC:PaneTabs 2026-06-04-22:26:
+   The one-pixel line below the native tabs bar should be #252525, distinct
+   from the #292f39 sticky active-tab proxy border.
+   */
+  private static let tabBarSeparatorColor = NSColor(
+    calibratedRed: 0x25 / 255,
+    green: 0x25 / 255,
+    blue: 0x25 / 255,
+    alpha: 1
   ).cgColor
   private static let backgroundColor = NSColor(
     calibratedRed: 0x05 / 255,
@@ -18718,6 +18766,14 @@ private final class TerminalSessionTitleBarView: NSView {
   private static let minimumDiscreteVerticalWheelTabScrollDelta: CGFloat = 96
   private static let activeTabRevealScrollMargin: CGFloat = 12
   private static let activeTabRevealMinimumVisibleWidth: CGFloat = 60
+  private static let stickyActiveTabButtonSize: CGFloat = 18
+  private static let stickyActiveTabButtonEdgeInset: CGFloat = 7
+  private static let stickyActiveTabButtonBorderColor = NSColor(
+    calibratedRed: 0x29 / 255,
+    green: 0x2F / 255,
+    blue: 0x39 / 255,
+    alpha: 1
+  ).cgColor
   /**
    CDXC:PaneTabs 2026-05-31-05:51:
    Main workspace native tab-bar actions must visually match the React titlebar
@@ -18772,7 +18828,10 @@ private final class TerminalSessionTitleBarView: NSView {
    Vertical wheel gestures over the horizontal tab strip should move through tabs much faster than raw AppKit deltas, while direct horizontal wheel gestures keep their native precision.
 
    CDXC:PaneTabs 2026-05-15-19:50:
-   The first vertical-wheel multiplier was still too slow in normal use. Boost precise vertical gestures harder and give non-precision wheel ticks a meaningful minimum horizontal step so tabs move several visible chunks per wheel action instead of creeping by raw AppKit delta size.
+   The first vertical-wheel multiplier was still too slow in normal use. Boost converted vertical wheel gestures harder and give non-precision wheel ticks a meaningful minimum horizontal step so tabs move several visible chunks per wheel action instead of creeping by raw AppKit delta size.
+
+   CDXC:PaneTabs 2026-06-04-21:45:
+   Trackpad-style vertical scrolling over the native tabs bar should not be remapped into horizontal tab movement. Keep vertical-to-horizontal conversion for non-precise mouse wheel events only, while direct horizontal precise gestures still scroll overflowing tabs.
 
    CDXC:PaneTabs 2026-05-15-19:40:
    Any detected active-tab change should automatically scroll the tab strip enough to reveal the active session's tab after the next native layout pass computes tab widths.
@@ -18793,6 +18852,14 @@ private final class TerminalSessionTitleBarView: NSView {
    CDXC:PaneTabs 2026-05-31-02:17:
    Main workspace tab buttons must shrink with the 36pt native tab bar instead
    of preserving the older 42pt control height.
+
+   CDXC:PaneTabs 2026-06-04-21:57:
+   Users need the selected tab to remain discoverable after manually scrolling
+   the native tab strip away from it. Show a small edge-stuck chevron only while
+   the active tab is offscreen or barely visible; clicking it centers the real
+   active tab when scroll bounds allow, otherwise it clamps the tab into view.
+   The proxy control is an 18px square with a #292f39 border, vertically centered
+   in the tab bar and inset 7px from the visible tab-strip edge.
    */
   private static let workspaceTabButtonHeight: CGFloat = 36
   private static var tabScrollOffsetByGroupSignature: [String: CGFloat] = [:]
@@ -18804,6 +18871,7 @@ private final class TerminalSessionTitleBarView: NSView {
   private let tabContentView = NSView(frame: .zero)
   private let tabAddButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private let tabBrowserButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
+  private let stickyActiveTabButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
   private let commandCollapsedTrailingBackgroundView = NSView(frame: .zero)
   private let bottomBorderView = NSView(frame: .zero)
   private let actionMenuButton = TerminalTitleBarActionButton(title: "", target: nil, action: nil)
@@ -18913,6 +18981,7 @@ private final class TerminalSessionTitleBarView: NSView {
     }
     tabAddButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     tabBrowserButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
+    stickyActiveTabButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     actionMenuButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     projectEditorCompanionCloseButton.setOverlayInteractionSuppressed(isOverlayInteractionSuppressed)
     for item in actionButtons {
@@ -19069,7 +19138,7 @@ private final class TerminalSessionTitleBarView: NSView {
     }
     chromeRole = role
     layer?.backgroundColor = backgroundColor(for: role)
-    bottomBorderView.layer?.backgroundColor = borderColor(for: role)
+    bottomBorderView.layer?.backgroundColor = tabBarSeparatorColor(for: role)
     titleLabel.textColor = titleColor(for: role)
     /*
      CDXC:CommandsPanel 2026-05-31-08:03:
@@ -19089,6 +19158,7 @@ private final class TerminalSessionTitleBarView: NSView {
       setWorkspaceTabBarActionChrome(for: tabBrowserButton, enabled: false)
       setWorkspaceTabBarActionChrome(for: actionMenuButton, enabled: false)
     }
+    stickyActiveTabButton.normalBackgroundColor = backgroundColor(for: role)
     for button in tabButtons {
       button.setChromeRole(role)
     }
@@ -19207,6 +19277,7 @@ private final class TerminalSessionTitleBarView: NSView {
     tabClipView.addSubview(tabContentView)
     configureTabAddButton()
     configureTabBrowserButton()
+    configureStickyActiveTabButton()
 
     commandCollapsedTrailingBackgroundView.wantsLayer = true
     commandCollapsedTrailingBackgroundView.layer?.backgroundColor =
@@ -19214,7 +19285,7 @@ private final class TerminalSessionTitleBarView: NSView {
     commandCollapsedTrailingBackgroundView.isHidden = true
 
     bottomBorderView.wantsLayer = true
-    bottomBorderView.layer?.backgroundColor = Self.borderColor
+    bottomBorderView.layer?.backgroundColor = Self.tabBarSeparatorColor
 
     addSubview(faviconImageView)
     addSubview(titleLabel)
@@ -19222,6 +19293,7 @@ private final class TerminalSessionTitleBarView: NSView {
     addSubview(tabClipView)
     addSubview(tabAddButton)
     addSubview(tabBrowserButton)
+    addSubview(stickyActiveTabButton)
     addSubview(commandCollapsedTrailingBackgroundView, positioned: .below, relativeTo: tabClipView)
     /**
      CDXC:PaneTabs 2026-05-12-12:44
@@ -19292,6 +19364,10 @@ private final class TerminalSessionTitleBarView: NSView {
     role == .commands ? Self.commandBorderColor : Self.borderColor
   }
 
+  private func tabBarSeparatorColor(for role: TerminalPaneChromeRole) -> CGColor {
+    role == .commands ? Self.commandBorderColor : Self.tabBarSeparatorColor
+  }
+
   private func titleColor(for role: TerminalPaneChromeRole) -> NSColor {
     Self.titleColor
   }
@@ -19310,6 +19386,10 @@ private final class TerminalSessionTitleBarView: NSView {
       return
     }
     let isVerticalWheelGesture = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
+    if event.hasPreciseScrollingDeltas, isVerticalWheelGesture {
+      super.scrollWheel(with: event)
+      return
+    }
     let rawDelta =
       isVerticalWheelGesture
       ? amplifiedVerticalWheelTabDelta(for: event)
@@ -19322,7 +19402,7 @@ private final class TerminalSessionTitleBarView: NSView {
 
   private func amplifiedVerticalWheelTabDelta(for event: NSEvent) -> CGFloat {
     let scaledDelta = event.scrollingDeltaY * Self.verticalWheelTabScrollMultiplier
-    guard !event.hasPreciseScrollingDeltas, scaledDelta != 0 else {
+    guard scaledDelta != 0 else {
       return scaledDelta
     }
     guard abs(scaledDelta) < Self.minimumDiscreteVerticalWheelTabScrollDelta else {
@@ -19411,6 +19491,9 @@ private final class TerminalSessionTitleBarView: NSView {
     }
     if let addButton = tabAddButton(at: point) {
       return addButton
+    }
+    if let stickyButton = stickyActiveTabButton(at: point) {
+      return stickyButton
     }
     if let tabButton = tabButton(at: point) {
       return tabButton
@@ -19674,6 +19757,17 @@ private final class TerminalSessionTitleBarView: NSView {
     return tabBrowserButton
   }
 
+  private func stickyActiveTabButton(at point: NSPoint) -> NSButton? {
+    guard stickyActiveTabButton.frame.contains(point),
+      !stickyActiveTabButton.isHidden,
+      stickyActiveTabButton.isEnabled,
+      stickyActiveTabButton.alphaValue > 0
+    else {
+      return nil
+    }
+    return stickyActiveTabButton
+  }
+
   private func isEmptyTitleBarDoubleClickPoint(_ point: NSPoint) -> Bool {
     /**
      CDXC:PaneTabs 2026-05-11-11:47
@@ -19695,6 +19789,9 @@ private final class TerminalSessionTitleBarView: NSView {
       return false
     }
     if tabBrowserButton(at: point) != nil {
+      return false
+    }
+    if stickyActiveTabButton(at: point) != nil {
       return false
     }
     if tabInlineAction(at: point) != nil || tabSessionId(at: point) != nil {
@@ -19789,6 +19886,13 @@ private final class TerminalSessionTitleBarView: NSView {
 
   private func updateHoveredTab(for point: NSPoint?) {
     guard !isOverlayInteractionSuppressed else {
+      for button in tabButtons {
+        button.setTabHovered(false)
+        button.setHoveredInlineAction(nil)
+      }
+      return
+    }
+    if let point, stickyActiveTabButton(at: point) != nil {
       for button in tabButtons {
         button.setTabHovered(false)
         button.setHoveredInlineAction(nil)
@@ -20127,6 +20231,7 @@ private final class TerminalSessionTitleBarView: NSView {
     tabViewportFrame = .zero
     tabContentWidth = 0
     tabScrollOffsetX = 0
+    hideStickyActiveTabButton()
     hideTabAddButton()
     hideTabBrowserButton()
     for button in tabButtons {
@@ -20249,6 +20354,7 @@ private final class TerminalSessionTitleBarView: NSView {
       tabContentView.frame = .zero
       tabViewportFrame = .zero
       tabContentWidth = 0
+      hideStickyActiveTabButton()
       for button in tabButtons {
         button.frame = .zero
       }
@@ -20291,6 +20397,7 @@ private final class TerminalSessionTitleBarView: NSView {
       scrollActiveTabIntoView(tabWidth: tabWidth, gap: gap, availableWidth: availableWidth)
       shouldScrollActiveTabIntoViewAfterLayout = false
     }
+    updateStickyActiveTabButton(tabWidth: tabWidth, gap: gap, availableWidth: availableWidth)
     syncTabScrollOffsetCache()
     tabClipView.frame = tabViewportFrame
     tabContentView.frame = CGRect(
@@ -20332,6 +20439,84 @@ private final class TerminalSessionTitleBarView: NSView {
       nextOffset = activeTabMaxX - availableWidth + Self.activeTabRevealScrollMargin
     }
     tabScrollOffsetX = min(max(nextOffset, 0), maxOffset)
+  }
+
+  private func updateStickyActiveTabButton(tabWidth: CGFloat, gap: CGFloat, availableWidth: CGFloat) {
+    guard let activeTabSessionId,
+      let activeIndex = tabItems.firstIndex(where: { $0.sessionId == activeTabSessionId }),
+      availableWidth >= Self.stickyActiveTabButtonSize + Self.stickyActiveTabButtonEdgeInset * 2,
+      tabContentWidth > availableWidth
+    else {
+      hideStickyActiveTabButton()
+      return
+    }
+    let activeTabMinX = CGFloat(activeIndex) * (tabWidth + gap)
+    let activeTabMaxX = activeTabMinX + tabWidth
+    let visibleMinX = tabScrollOffsetX
+    let visibleMaxX = tabScrollOffsetX + availableWidth
+    let visibleActiveTabWidth =
+      max(0, min(activeTabMaxX, visibleMaxX) - max(activeTabMinX, visibleMinX))
+    let minimumUsableVisibleWidth = min(tabWidth, Self.activeTabRevealMinimumVisibleWidth)
+    guard visibleActiveTabWidth < minimumUsableVisibleWidth else {
+      hideStickyActiveTabButton()
+      return
+    }
+
+    let nextEdge: StickyActiveTabEdge = activeTabMinX < visibleMinX ? .leading : .trailing
+    let buttonX: CGFloat
+    switch nextEdge {
+    case .leading:
+      buttonX = tabViewportFrame.minX + Self.stickyActiveTabButtonEdgeInset
+    case .trailing:
+      buttonX = tabViewportFrame.maxX - Self.stickyActiveTabButtonEdgeInset - Self.stickyActiveTabButtonSize
+    }
+    stickyActiveTabButton.frame = CGRect(
+      x: buttonX,
+      y: floor(tabViewportFrame.midY - Self.stickyActiveTabButtonSize / 2),
+      width: Self.stickyActiveTabButtonSize,
+      height: Self.stickyActiveTabButtonSize)
+    stickyActiveTabButton.image = stickyActiveTabButtonImage(for: nextEdge)
+    stickyActiveTabButton.isHidden = false
+    stickyActiveTabButton.alphaValue = 1
+    stickyActiveTabButton.isEnabled = true
+  }
+
+  private func centerActiveTabInTabStrip() {
+    guard let activeTabSessionId,
+      let activeButton = tabButtons.first(where: { !$0.isHidden && $0.sessionId == activeTabSessionId }),
+      tabViewportFrame.width > 0,
+      tabContentWidth > tabViewportFrame.width
+    else {
+      hideStickyActiveTabButton()
+      return
+    }
+    let maxOffset = max(tabContentWidth - tabViewportFrame.width, 0)
+    let centeredOffset = activeButton.frame.midX - tabViewportFrame.width / 2
+    tabScrollOffsetX = min(max(centeredOffset, 0), maxOffset)
+    syncTabScrollOffsetCache()
+    needsLayout = true
+  }
+
+  private func hideStickyActiveTabButton() {
+    stickyActiveTabButton.frame = .zero
+    stickyActiveTabButton.isHidden = true
+    stickyActiveTabButton.alphaValue = 0
+    stickyActiveTabButton.isEnabled = false
+  }
+
+  private func stickyActiveTabButtonImage(for edge: StickyActiveTabEdge) -> NSImage? {
+    let symbolName: String
+    switch edge {
+    case .leading:
+      symbolName = "chevron.left"
+    case .trailing:
+      symbolName = "chevron.right"
+    }
+    guard let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Show Active Tab") else {
+      return nil
+    }
+    let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+    return image.withSymbolConfiguration(configuration) ?? image
   }
 
   private func layoutTabAddButton(
@@ -20700,6 +20885,16 @@ private final class TerminalSessionTitleBarView: NSView {
     onAction?(.openBrowser)
   }
 
+  @objc private func performStickyActiveTabButton(_ sender: NSButton) {
+    guard sender === stickyActiveTabButton,
+      !stickyActiveTabButton.isHidden,
+      stickyActiveTabButton.isEnabled
+    else {
+      return
+    }
+    centerActiveTabInTabStrip()
+  }
+
   @objc private func performActionMenuButton(_ sender: NSButton) {
     showCollapsedActionMenu(from: sender, source: "buttonAction")
   }
@@ -20857,6 +21052,24 @@ private final class TerminalSessionTitleBarView: NSView {
       tabBrowserButton.font = NSFont.systemFont(ofSize: 11, weight: .bold)
     }
     hideTabBrowserButton()
+  }
+
+  private func configureStickyActiveTabButton() {
+    stickyActiveTabButton.bezelStyle = .texturedRounded
+    stickyActiveTabButton.isBordered = false
+    stickyActiveTabButton.imagePosition = .imageOnly
+    stickyActiveTabButton.toolTip = "Show Active Tab"
+    stickyActiveTabButton.target = self
+    stickyActiveTabButton.action = #selector(performStickyActiveTabButton(_:))
+    stickyActiveTabButton.sendAction(on: [.leftMouseDown])
+    stickyActiveTabButton.chromeCornerRadius = 0
+    stickyActiveTabButton.normalBackgroundColor = Self.backgroundColor
+    stickyActiveTabButton.hoverBackgroundColor = Self.workspaceTabBarActionHoverBackgroundColor
+    stickyActiveTabButton.activeBackgroundColor = Self.workspaceTabBarActionActiveBackgroundColor
+    stickyActiveTabButton.wantsLayer = true
+    stickyActiveTabButton.layer?.borderWidth = 1
+    stickyActiveTabButton.layer?.borderColor = Self.stickyActiveTabButtonBorderColor
+    hideStickyActiveTabButton()
   }
 
   private func configureActionMenuButton() {
