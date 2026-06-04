@@ -51,6 +51,39 @@ struct GhostexCEFProfileFlushState {
   GhostexCEFCompletionBlock completion;
 };
 
+struct GhostexCEFCookieImportState {
+  explicit GhostexCEFCookieImportState(void (^completionBlock)(NSInteger))
+      : completion([completionBlock copy]) {}
+
+  ~GhostexCEFCookieImportState() {
+    completion = nil;
+  }
+
+  std::atomic<int> pending{0};
+  std::atomic<int> imported{0};
+  void (^completion)(NSInteger);
+};
+
+static void GhostexCEFFinishCookieImport(std::shared_ptr<GhostexCEFCookieImportState> state,
+                                         bool success) {
+  if (!state) {
+    return;
+  }
+  if (success) {
+    state->imported.fetch_add(1);
+  }
+  if (state->pending.fetch_sub(1) != 1) {
+    return;
+  }
+  auto importedCount = state->imported.load();
+  void (^completion)(NSInteger) = [state->completion copy];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (completion) {
+      completion(importedCount);
+    }
+  });
+}
+
 static void GhostexCEFFinishProfileFlush(std::shared_ptr<GhostexCEFProfileFlushState> state) {
   if (!state || state->pending.fetch_sub(1) != 1) {
     return;
@@ -77,6 +110,22 @@ class GhostexCEFCookieFlushCallback : public CefCompletionCallback {
 
   IMPLEMENT_REFCOUNTING(GhostexCEFCookieFlushCallback);
   DISALLOW_COPY_AND_ASSIGN(GhostexCEFCookieFlushCallback);
+};
+
+class GhostexCEFCookieImportCallback : public CefSetCookieCallback {
+ public:
+  explicit GhostexCEFCookieImportCallback(std::shared_ptr<GhostexCEFCookieImportState> state)
+      : state_(std::move(state)) {}
+
+  void OnComplete(bool success) override {
+    GhostexCEFFinishCookieImport(state_, success);
+  }
+
+ private:
+  std::shared_ptr<GhostexCEFCookieImportState> state_;
+
+  IMPLEMENT_REFCOUNTING(GhostexCEFCookieImportCallback);
+  DISALLOW_COPY_AND_ASSIGN(GhostexCEFCookieImportCallback);
 };
 
 static bool GhostexCEFFlushCookieManager(CefRefPtr<CefCookieManager> manager,
@@ -708,6 +757,85 @@ static CefRefPtr<CefRequestContext> GhostexCEFRequestContextForProfile(NSString*
   }
   g_persistentRequestContexts[key] = context;
   return context;
+}
+
+void GhostexCEFImportCookiesForProfile(
+  NSString* profileIdentifier,
+  NSArray<NSHTTPCookie*>* cookies,
+  void (^completion)(NSInteger importedCount)) {
+  if (!g_cefInitialized || cookies.count == 0) {
+    if (completion) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(0);
+      });
+    }
+    return;
+  }
+
+  CefRefPtr<CefRequestContext> requestContext = GhostexCEFRequestContextForProfile(profileIdentifier);
+  CefRefPtr<CefCookieManager> cookieManager = requestContext ? requestContext->GetCookieManager(nullptr) : nullptr;
+  if (!cookieManager) {
+    if (completion) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(0);
+      });
+    }
+    return;
+  }
+
+  /*
+   CDXC:BrowserImport 2026-06-04-11:40:
+   Browser data import must populate the selected Ghostex browser profile through CEF's cookie manager instead of copying another browser's raw profile database. Chromium profile stores include browser-specific encryption, locks, and schema state; importing compatible cookies at the writer boundary keeps the destination profile owned by Ghostex and lets CEF decide which cookies are valid.
+   */
+  auto state = std::make_shared<GhostexCEFCookieImportState>(completion);
+  for (NSHTTPCookie* cookie in cookies) {
+    NSString* name = cookie.name ?: @"";
+    NSString* value = cookie.value ?: @"";
+    NSString* domain = cookie.domain ?: @"";
+    if (name.length == 0 || domain.length == 0) {
+      continue;
+    }
+    NSString* normalizedHost = domain;
+    while ([normalizedHost hasPrefix:@"."]) {
+      normalizedHost = [normalizedHost substringFromIndex:1];
+    }
+    if (normalizedHost.length == 0) {
+      continue;
+    }
+
+    NSString* path = cookie.path.length > 0 ? cookie.path : @"/";
+    NSString* scheme = cookie.isSecure ? @"https" : @"http";
+    NSString* url = [NSString stringWithFormat:@"%@://%@%@", scheme, normalizedHost, path];
+
+    CefCookie cefCookie;
+    CefString(&cefCookie.name) = [name UTF8String];
+    CefString(&cefCookie.value) = [value UTF8String];
+    CefString(&cefCookie.domain) = [domain UTF8String];
+    CefString(&cefCookie.path) = [path UTF8String];
+    cefCookie.secure = cookie.isSecure;
+    cefCookie.httponly = cookie.isHTTPOnly;
+    if (cookie.expiresDate) {
+      cefCookie.has_expires = true;
+      cefCookie.expires.val = static_cast<int64_t>(
+        (cookie.expiresDate.timeIntervalSince1970 + 11644473600.0) * 1000000.0);
+    }
+
+    state->pending.fetch_add(1);
+    if (!cookieManager->SetCookie(
+          CefString([url UTF8String]),
+          cefCookie,
+          new GhostexCEFCookieImportCallback(state))) {
+      GhostexCEFFinishCookieImport(state, false);
+    }
+  }
+
+  if (state->pending.load() == 0) {
+    if (completion) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        completion(0);
+      });
+    }
+  }
 }
 
 static NSString* GhostexCEFFrameworkExecutablePath(void) {
