@@ -10,6 +10,7 @@ import {
   GxserverPresentationDeltaCoalescer,
   projectGxserverPresentationSnapshot,
   reconcileAgentMetadataTitle,
+  searchGxserverPreviousSessions,
   searchGxserverPresentationSessions,
 } from "../src/session-presentation/index.js";
 import type {
@@ -96,6 +97,35 @@ test("session state events preserve an already trusted current title", () => {
   assert.equal(result.projection.trustedResumeTitle, "Current user title");
 });
 
+test("session state events persist first-prompt title generation settings", () => {
+  const project = projectFixture({});
+  const session = sessionFixture({
+    runtimeSettings: {
+      firstPromptTitleGenerationCommand: "old-title-command",
+      titleSource: "placeholder",
+    },
+  });
+  const repository = new MockPresentationRepository(project, [session]);
+
+  const result = applySessionStateEvent(repository, {
+    agentName: "codex",
+    firstPromptTitleGenerationAgent: "custom",
+    firstPromptTitleGenerationCommand: "",
+    firstUserMessage: "Please wire the title generator selector",
+    projectId: session.projectId,
+    sessionId: session.sessionId,
+  });
+
+  /*
+  CDXC:GxserverSessionTitle 2026-06-04-08:24:
+  The first-prompt state event must carry the Settings-selected title generator into gxserver runtime state, including an explicit empty custom command so clearing a custom command cannot reuse stale session metadata.
+  */
+  assert.equal(result.changed, true);
+  assert.equal(result.session.runtimeSettings.firstPromptTitleGenerationAgent, "custom");
+  assert.equal(result.session.runtimeSettings.firstPromptTitleGenerationCommand, "");
+  assert.equal(result.session.runtimeSettings.firstUserMessage, "Please wire the title generator selector");
+});
+
 test("agent rename requests stay pending until Codex metadata supplies the canonical title", async () => {
   const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-agent-title-home-"));
   const codexSessionId = "019e7af5-c610-7f62-a129-db7bb510b48d";
@@ -170,6 +200,27 @@ test("non-agent rename requests apply the client title immediately", () => {
   assert.equal(result.shouldSendAgentRenameCommand, false);
   assert.equal(result.session.title, "Build Watch");
   assert.equal(result.session.runtimeSettings.titleSource, "user");
+});
+
+test("presentation sessions expose gxserver first-prompt title generation state", () => {
+  /*
+  CDXC:GxserverSessionTitle 2026-06-04-07:11:
+  Clients need a server-owned loading signal for first-prompt title generation so the terminal overlay and sidebar "Generating title" text can render during gxserver-owned auto-title jobs and clear from the next presentation delta.
+  */
+  const project = projectFixture({});
+  const snapshot = projectGxserverPresentationSnapshot({
+    projects: [project],
+    revision: 1 as GxserverPresentationRevision,
+    sessions: [
+      sessionFixture({
+        runtimeSettings: {
+          gxserverFirstPromptAutoTitleStatus: "running",
+        },
+      }),
+    ],
+  });
+
+  assert.equal(snapshot.sessions[0]?.isGeneratingFirstPromptTitle, true);
 });
 
 test("agent title metadata debounce runs leading and trailing checks for a burst", () => {
@@ -489,6 +540,54 @@ test("metadata search can page previous sessions without hydrating them into the
   assert.equal(search.results[0]?.titleSource, "terminal-auto");
   assert.equal(search.results[0]?.trustedResumeTitle, "Presentation Cutover");
   assert.equal(search.results[0]?.surface, "workspace");
+});
+
+test("previous sessions search hides placeholder inactive rows but keeps restorable history", () => {
+  const project = projectFixture({ name: "Ghostex" });
+  const trusted = sessionFixture({
+    agentId: "codex",
+    createdAt: "2026-06-01T10:00:00.000Z",
+    lifecycleState: "stopped",
+    runtimeSettings: { titleSource: "terminal-auto" },
+    sessionId: "G1trust",
+    title: "Fix previous session list",
+    updatedAt: "2026-06-01T10:08:00.000Z",
+  });
+  const placeholder = sessionFixture({
+    lifecycleState: "stopped",
+    runtimeSettings: { titleSource: "placeholder" },
+    sessionId: "G2noise",
+    title: "Terminal Session",
+  });
+  const unknown = sessionFixture({
+    lifecycleState: "unknown",
+    runtimeSettings: { titleSource: "terminal-auto" },
+    sessionId: "G3unkn",
+    title: "Unknown but titled",
+  });
+  const favoritePlaceholder = sessionFixture({
+    isFavorite: true,
+    lifecycleState: "stopped",
+    runtimeSettings: { titleSource: "placeholder" },
+    sessionId: "G4fav",
+    title: "Codex Session",
+  });
+
+  /*
+  CDXC:PreviousSessions 2026-06-04-20:21:
+  listPreviousSessions should be a useful restore list, not every inactive gxserver row. Hide unpinned placeholder and unknown rows while preserving trusted stopped rows and rows the user explicitly kept with Favorite/Pin.
+  */
+  const search = searchGxserverPreviousSessions(
+    { projects: [project], sessions: [trusted, placeholder, unknown, favoritePlaceholder] },
+    { includeActive: false, includePrevious: true },
+  );
+
+  assert.deepEqual(
+    search.results.map((result) => result.sessionId),
+    ["G1trust", "G4fav"],
+  );
+  assert.equal(search.results.find((result) => result.sessionId === "G1trust")?.createdAt, trusted.createdAt);
+  assert.equal(search.results.find((result) => result.sessionId === "G1trust")?.updatedAt, trusted.updatedAt);
 });
 
 class MockPresentationRepository {

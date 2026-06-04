@@ -58,6 +58,7 @@ import {
   defaultGroupId,
   GxserverPresentationDeltaCoalescer,
   incrementPresentationRevision,
+  listGxserverPreviousSessions,
   projectPresentationProject,
   projectPresentationSession,
   readGxserverPresentationSnapshot,
@@ -132,6 +133,8 @@ import type {
   GxserverProviderProbeResult,
   GxserverPresentationSearchParams,
   GxserverPresentationDelta,
+  GxserverCancelFirstPromptAutoTitleParams,
+  GxserverCancelFirstPromptAutoTitleResult,
   GxserverResolveGitRootForPathResult,
   GxserverRemoveSessionParams,
   GxserverRunBeadsActionParams,
@@ -163,6 +166,7 @@ import type {
   GxserverUpdateAgentActivityParams,
   GxserverUpdateSessionOrderParams,
   GxserverUpdateSessionParams,
+  GxserverFirstPromptTitleGenerationAgent,
 } from "../protocol/index.js";
 import { createSourceGxserverBuildIdentity } from "./build-identity.js";
 
@@ -1047,6 +1051,22 @@ async function dispatchDomainStateEndpoint(
         session,
       } satisfies Record<string, unknown> & GxserverSessionRenameRequestResult;
     }
+    case "/api/cancelFirstPromptAutoTitle": {
+      const lifecycle = readSessionLifecycleParams(params);
+      const result = cancelGxserverFirstPromptAutoTitle(repository, {
+        ...(params as unknown as GxserverCancelFirstPromptAutoTitleParams),
+        projectId: lifecycle.projectId,
+        sessionId: lifecycle.sessionId,
+      });
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: lifecycle.projectId,
+        reason: "first-prompt-auto-title-cancelled",
+        sessionId: lifecycle.sessionId,
+      });
+      return {
+        ...result,
+      } satisfies Record<string, unknown> & GxserverCancelFirstPromptAutoTitleResult;
+    }
     case "/api/ingestSessionStateEvent": {
       const stateEvent = params as unknown as GxserverSessionStateEventParams;
       const lifecycle = readSessionLifecycleParams(params);
@@ -1231,7 +1251,7 @@ async function dispatchDomainStateEndpoint(
         params as unknown as GxserverPresentationSearchParams,
       ) as unknown as Record<string, unknown>;
     case "/api/listPreviousSessions":
-      return searchGxserverPresentation(db, runtime.metadata.serverId, {
+      return listGxserverPreviousSessions(db, runtime.metadata.serverId, {
         ...(params as unknown as GxserverPresentationSearchParams),
         includeActive: false,
         includePrevious: true,
@@ -2180,6 +2200,48 @@ function claimGxserverFirstPromptAutoTitle(
   return { claimed: true, session: updated };
 }
 
+function cancelGxserverFirstPromptAutoTitle(
+  repository: GxserverDomainRepository,
+  params: GxserverCancelFirstPromptAutoTitleParams,
+): GxserverCancelFirstPromptAutoTitleResult {
+  const session = repository.getSession(params.projectId, params.sessionId);
+  if (!session) {
+    throw new GxserverDomainStateError(
+      "notFound",
+      `Session ${params.projectId}/${params.sessionId} does not exist.`,
+    );
+  }
+  const previousStatus = readRuntimeText(session.runtimeSettings, "gxserverFirstPromptAutoTitleStatus");
+  if (previousStatus !== "running") {
+    return {
+      changed: false,
+      ...(previousStatus ? { previousStatus } : {}),
+      reason: previousStatus ? `already-${previousStatus}` : "not-running",
+      session,
+    };
+  }
+  /*
+  CDXC:GxserverSessionTitle 2026-06-04-07:43:
+  Escape cancellation is a gxserver state transition, not a local sidebar suppression. Mark the first-prompt title job as cancelled so presentation clears the terminal overlay and the background job can observe the terminal status before sending `/rename`.
+  */
+  const updated = repository.updateSession({
+    projectId: session.projectId,
+    runtimeSettings: {
+      ...session.runtimeSettings,
+      gxserverFirstPromptAutoTitleCancelledAt: new Date().toISOString(),
+      gxserverFirstPromptAutoTitleReason: params.reason ?? "userCancelled",
+      gxserverFirstPromptAutoTitleStatus: "cancelled",
+    },
+    sessionId: session.sessionId,
+  });
+  return {
+    changed: true,
+    previousStatus,
+    reason: "cancelled",
+    session: updated,
+  };
+}
+
 function scheduleGxserverFirstPromptAutoTitleJob(
   runtime: GxserverApiRuntime,
   input: {
@@ -2221,28 +2283,62 @@ async function runGxserverFirstPromptAutoTitleJob(
       });
       return;
     }
-    const title = await generateGxserverFirstPromptSessionTitle(runtime, project.path, decision.normalizedPrompt);
+    const title = await generateGxserverFirstPromptSessionTitle(
+      runtime,
+      project.path,
+      decision.normalizedPrompt,
+      session.runtimeSettings,
+    );
+    const latestSession = repository.getSession(input.projectId, input.sessionId);
+    if (!latestSession) {
+      return;
+    }
+    const latestStatus = readRuntimeText(latestSession.runtimeSettings, "gxserverFirstPromptAutoTitleStatus");
+    if (latestStatus === "cancelled") {
+      /*
+      CDXC:GxserverSessionTitle 2026-06-04-07:43:
+      Title generation may finish after the user presses Escape. Re-read gxserver state after generation and before provider interaction so a cancelled job never submits `/rename` even though the title model already returned text.
+      */
+      schedulePresentationSessionDelta(runtime, repository, {
+        projectId: latestSession.projectId,
+        reason: "first-prompt-auto-title-cancelled",
+        sessionId: latestSession.sessionId,
+      });
+      await runtime.logger.log({
+        details: {
+          agentName: getGxserverFirstPromptAgentName(latestSession),
+          status: "cancelled",
+        },
+        event: "session-title.firstPromptAutoTitle",
+        level: "info",
+        projectId: latestSession.projectId,
+        requestId: input.requestId,
+        serverId: runtime.metadata.serverId,
+        sessionId: latestSession.sessionId,
+      });
+      return;
+    }
     const commandText = decision.strategy === "generateTitleAndName" ? `/name ${title}` : `/rename ${title}`;
     const zmx = await (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)();
     await runZmxInteractionCommand(
       runtime,
       buildZmxSendCommand({
-        sessionName: providerZmxSessionName(session),
+        sessionName: providerZmxSessionName(latestSession),
         zmxExecutablePath: zmx.executablePath,
       }),
       { stdin: `${commandText}\r` },
     );
     const updated = repository.updateSession({
-      projectId: session.projectId,
+      projectId: latestSession.projectId,
       runtimeSettings: {
-        ...session.runtimeSettings,
+        ...latestSession.runtimeSettings,
         autoTitleFromFirstPrompt: true,
         gxserverFirstPromptAutoTitleAppliedAt: new Date().toISOString(),
         gxserverFirstPromptAutoTitleReason: decision.reason,
         gxserverFirstPromptAutoTitleStatus: "applied",
         titleSource: "generated",
       },
-      sessionId: session.sessionId,
+      sessionId: latestSession.sessionId,
       title,
     });
     observeZmxTitleForSession(runtime, updated, "first-prompt-auto-title");
@@ -2362,7 +2458,13 @@ function decideGxserverFirstPromptAutoTitle(
   strategy?: "generateTitleAndRename" | "generateTitleAndName";
 } {
   const status = readRuntimeText(session.runtimeSettings, "gxserverFirstPromptAutoTitleStatus");
-  if ((status === "running" && !options.allowRunning) || status === "applied" || status === "failed" || status === "skipped") {
+  if (
+    (status === "running" && !options.allowRunning) ||
+    status === "applied" ||
+    status === "cancelled" ||
+    status === "failed" ||
+    status === "skipped"
+  ) {
     return { reason: `already-${status}`, shouldRun: false };
   }
   if (session.runtimeSettings.autoTitleFromFirstPrompt === true) {
@@ -2485,6 +2587,7 @@ async function generateGxserverFirstPromptSessionTitle(
   runtime: GxserverApiRuntime,
   cwd: string | undefined,
   prompt: string,
+  runtimeSettings: Record<string, unknown>,
 ): Promise<string> {
   const injectedGenerator = runtime.firstPromptTitleGeneration?.generateTitle;
   if (injectedGenerator) {
@@ -2493,14 +2596,15 @@ async function generateGxserverFirstPromptSessionTitle(
   const sourceText = prompt.slice(0, GXSERVER_FIRST_PROMPT_TITLE_SOURCE_MAX_LENGTH);
   const generationPrompt = buildGxserverFirstPromptTitleGenerationPrompt(sourceText);
   const delimiter = `ghostex_GXSERVER_SESSION_TITLE_${Date.now().toString(36)}`;
-  const command = [
-    "codex exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort=\"low\"' <<'",
+  const agent = normalizeGxserverFirstPromptTitleGenerationAgent(
+    runtimeSettings.firstPromptTitleGenerationAgent,
+  );
+  const command = buildGxserverFirstPromptTitleGenerationCommand({
+    agent,
+    command: readGxserverFirstPromptTitleGenerationCommand(runtimeSettings, agent),
     delimiter,
-    "'\n",
-    generationPrompt,
-    "\n",
-    delimiter,
-  ].join("");
+    prompt: generationPrompt,
+  });
   const pathValue = await normalizeGxserverProcessPath(process.env.PATH, {
     ...process.env,
     HOME: runtime.paths.homeDir,
@@ -2516,6 +2620,76 @@ async function generateGxserverFirstPromptSessionTitle(
     timeout: GXSERVER_FIRST_PROMPT_TITLE_GENERATION_TIMEOUT_MS,
   });
   return parseGxserverGeneratedSessionTitleText(String(result.stdout ?? ""));
+}
+
+function normalizeGxserverFirstPromptTitleGenerationAgent(
+  value: unknown,
+): GxserverFirstPromptTitleGenerationAgent {
+  return value === "cursor" || value === "claude" || value === "custom" ? value : "codex";
+}
+
+function readGxserverFirstPromptTitleGenerationCommand(
+  runtimeSettings: Record<string, unknown>,
+  agent: GxserverFirstPromptTitleGenerationAgent,
+): string {
+  const configuredCommand =
+    typeof runtimeSettings.firstPromptTitleGenerationCommand === "string"
+      ? runtimeSettings.firstPromptTitleGenerationCommand.trim()
+      : "";
+  if (configuredCommand) {
+    return configuredCommand;
+  }
+  switch (agent) {
+    case "codex":
+      return "codex";
+    case "cursor":
+      return "cursor-agent";
+    case "claude":
+      return "claude";
+    case "custom":
+      throw new GxserverTypedOperationError(
+        "badRequest",
+        "Custom title generation command is not configured.",
+      );
+  }
+}
+
+function buildGxserverFirstPromptTitleGenerationCommand(input: {
+  agent: GxserverFirstPromptTitleGenerationAgent;
+  command: string;
+  delimiter: string;
+  prompt: string;
+}): string {
+  /*
+  CDXC:GxserverSessionTitle 2026-06-04-08:24:
+  Settings can select Codex, Cursor, Claude, or a custom title generator for gxserver-owned first-prompt titles. Keep Codex on the existing low-reasoning `gpt-5.4-mini` command, pass the prompt over stdin for heredoc-friendly CLIs, and let Cursor use its print mode so the background job receives title text on stdout without opening an interactive pane.
+  */
+  switch (input.agent) {
+    case "codex":
+      return createGxserverHereDocCommand(
+        `${input.command} exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
+        input.delimiter,
+        input.prompt,
+      );
+    case "cursor":
+      return [
+        input.command,
+        "--print --mode ask --trust --output-format text",
+        quoteGxserverShellArg(input.prompt),
+      ].join(" ");
+    case "claude":
+      return createGxserverHereDocCommand(`${input.command} -p`, input.delimiter, input.prompt);
+    case "custom":
+      return createGxserverHereDocCommand(input.command, input.delimiter, input.prompt);
+  }
+}
+
+function createGxserverHereDocCommand(command: string, delimiter: string, body: string): string {
+  return `${command} <<'${delimiter}'\n${body}\n${delimiter}`;
+}
+
+function quoteGxserverShellArg(value: string): string {
+  return `'${value.replace(/'/gu, "'\\''")}'`;
 }
 
 function buildGxserverFirstPromptTitleGenerationPrompt(sourceText: string): string {
@@ -2936,6 +3110,7 @@ function isDomainStateEndpoint(path: GxserverEndpointPath): boolean {
     path === "/api/readAgentLaunchPlan" ||
     path === "/api/readAgentResumePlan" ||
     path === "/api/requestSessionRename" ||
+    path === "/api/cancelFirstPromptAutoTitle" ||
     path === "/api/ingestSessionStateEvent" ||
     path === "/api/ingestTerminalTitleEvent" ||
     path === "/api/updateAgentActivity" ||

@@ -116,6 +116,11 @@ export function projectPresentationSession(
     ...(session.cwd ? { cwd: session.cwd } : {}),
     groupId,
     isFavorite: session.isFavorite,
+    /*
+    CDXC:GxserverSessionTitle 2026-06-04-07:11:
+    First-prompt title generation is gxserver-owned, but clients still own their local loading chrome. Publish a privacy-safe boolean in presentation rows so native terminal overlays, sidebar card text, and future clients can render and clear "Generating title" without reading raw prompts or duplicating server runtime-status rules.
+    */
+    isGeneratingFirstPromptTitle: readText(session.runtimeSettings.gxserverFirstPromptAutoTitleStatus) === "running",
     isPinned: session.isPinned,
     isPrimaryTitleTerminalTitle: titleProjection.isPrimaryTitleTerminalTitle,
     isTemporaryTitle: titleProjection.isTemporaryTitle,

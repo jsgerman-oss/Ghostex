@@ -222,7 +222,7 @@ test("foreground gxserver process uses temporary HOME, writes daemon state, and 
     const token = (await waitForFileText(paths.authTokenFile, 5_000)).trim() as GxserverAuthToken;
     const health = await waitForHealth(token, 5_000);
     assert.equal(health.serverId.startsWith("S"), true);
-    assert.equal(health.migration.currentVersion, 3);
+    assert.equal(health.migration.currentVersion, 4);
     assert.equal(health.listeners.local.port, GXSERVER_LOCAL_API_PORT);
 
     const stop = await requestJson(`http://127.0.0.1:${GXSERVER_LOCAL_API_PORT}`, "/api/control/stop", {
@@ -924,6 +924,8 @@ test("session state event API runs first-prompt auto-title through gxserver", as
           params: {
             agentName: "codex",
             agentSessionId: "019e8fd3-f8ad-7932-baeb-d9f6f912c57b",
+            firstPromptTitleGenerationAgent: "cursor",
+            firstPromptTitleGenerationCommand: "cursor-agent",
             firstUserMessage: "Please implement the gxserver session title flow",
             projectId: project.projectId,
             sessionId: session.sessionId,
@@ -935,6 +937,8 @@ test("session state event API runs first-prompt auto-title through gxserver", as
       });
       assert.equal(ingested.status, 200);
       assert.equal(ingested.body.result.session.kind, "agent");
+      assert.equal(ingested.body.result.session.runtimeSettings.firstPromptTitleGenerationAgent, "cursor");
+      assert.equal(ingested.body.result.session.runtimeSettings.firstPromptTitleGenerationCommand, "cursor-agent");
       assert.equal(ingested.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "running");
 
       const titledSession = await waitForSession(
@@ -953,6 +957,102 @@ test("session state event API runs first-prompt auto-title through gxserver", as
     {
       firstPromptTitleGeneration: {
         generateTitle: async () => "Server Title Flow",
+      },
+      zmxLifecycle: fakeZmxLifecycle(zmxCalls, () => 0, { stdinInputs: sendInputs }),
+    },
+  );
+});
+
+test("first-prompt auto-title cancellation prevents the pending rename command", async () => {
+  const zmxCalls: string[] = [];
+  const sendInputs: string[] = [];
+  let releaseTitle: ((title: string) => void) | undefined;
+  let titleGenerationStarted: (() => void) | undefined;
+  const titleStarted = new Promise<void>((resolve) => {
+    titleGenerationStarted = resolve;
+  });
+  const titleResult = new Promise<string>((resolve) => {
+    releaseTitle = resolve;
+  });
+
+  await withApiServer(
+    "local",
+    async ({ baseUrl, token }) => {
+      const createdProject = await requestJson(baseUrl, "/api/createProject", {
+        body: {
+          params: { name: "Ghostex", path: "/repo/ghostex" },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const project = createdProject.body.result.project;
+      const createdSession = await requestJson(baseUrl, "/api/createSession", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            runtimeSettings: { titleSource: "placeholder" },
+            title: "Terminal",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      const session = createdSession.body.result.session;
+      const ingested = await requestJson(baseUrl, "/api/ingestSessionStateEvent", {
+        body: {
+          params: {
+            agentName: "codex",
+            agentSessionId: "019e8fd3-f8ad-7932-baeb-d9f6f912c57c",
+            firstUserMessage: "Please cancel this generated title before rename",
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(ingested.status, 200);
+      assert.equal(ingested.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "running");
+      await titleStarted;
+
+      const cancelled = await requestJson(baseUrl, "/api/cancelFirstPromptAutoTitle", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            reason: "escape",
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(cancelled.status, 200);
+      assert.equal(cancelled.body.result.changed, true);
+      assert.equal(cancelled.body.result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus, "cancelled");
+
+      releaseTitle?.("Cancelled Title");
+      const cancelledSession = await waitForSession(
+        baseUrl,
+        token,
+        project.projectId,
+        session.sessionId,
+        (candidate) => candidate.runtimeSettings?.gxserverFirstPromptAutoTitleStatus === "cancelled",
+      );
+      assert.equal(cancelledSession.title, "Terminal");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(sendInputs, []);
+      assert.equal(zmxCalls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')), false);
+    },
+    {
+      firstPromptTitleGeneration: {
+        generateTitle: async () => {
+          titleGenerationStarted?.();
+          return titleResult;
+        },
       },
       zmxLifecycle: fakeZmxLifecycle(zmxCalls, () => 0, { stdinInputs: sendInputs }),
     },
@@ -2734,7 +2834,7 @@ test("authenticated health includes listener, tool, and migration status", async
     assert.equal(health.body.serverId, "S7k");
     assert.equal(health.body.listeners.local.port, GXSERVER_LOCAL_API_PORT);
     assert.equal(health.body.listeners.remote.enabled, false);
-    assert.equal(health.body.migration.currentVersion, 3);
+    assert.equal(health.body.migration.currentVersion, 4);
     assert.equal(health.body.migration.stateImports.legacyMacosState.id, LEGACY_MACOS_STATE_IMPORT_ID);
     assert.equal(health.body.migration.stateImports.legacyMacosState.status, "notRun");
     assert.equal(Array.isArray(health.body.tools), true);

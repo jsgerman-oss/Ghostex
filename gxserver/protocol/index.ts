@@ -56,6 +56,7 @@ export type GxserverEndpointPath =
   | "/api/readAgentLaunchPlan"
   | "/api/readAgentResumePlan"
   | "/api/requestSessionRename"
+  | "/api/cancelFirstPromptAutoTitle"
   | "/api/ingestSessionStateEvent"
   | "/api/ingestTerminalTitleEvent"
   | "/api/updateAgentActivity"
@@ -866,6 +867,15 @@ export interface GxserverSessionTransitionResult {
   };
 }
 
+export interface GxserverCancelFirstPromptAutoTitleParams extends GxserverSessionLifecycleParams {}
+
+export interface GxserverCancelFirstPromptAutoTitleResult {
+  changed: boolean;
+  previousStatus?: string;
+  reason: string;
+  session: GxserverSessionDomainState;
+}
+
 export type GxserverSessionTitleSource =
   | "browser-auto"
   | "generated"
@@ -935,6 +945,7 @@ export interface GxserverPresentationSession {
   cwd?: string;
   groupId: string;
   isFavorite: boolean;
+  isGeneratingFirstPromptTitle: boolean;
   isPinned: boolean;
   kind: GxserverSessionKind;
   lastActiveAt?: string;
@@ -1025,6 +1036,7 @@ export interface GxserverPresentationSearchParams {
 
 export interface GxserverPresentationSearchResult {
   agentId?: string;
+  createdAt: string;
   cwd?: string;
   isFavorite: boolean;
   isPinned: boolean;
@@ -1046,6 +1058,7 @@ export interface GxserverPresentationSearchResult {
   title: string;
   titleSource: GxserverSessionTitleSource;
   trustedResumeTitle?: string;
+  updatedAt: string;
 }
 
 export interface GxserverPresentationSearchResponse {
@@ -1073,10 +1086,14 @@ export interface GxserverTerminalTitleEventResult {
   visibleTitle?: string;
 }
 
+export type GxserverFirstPromptTitleGenerationAgent = "codex" | "cursor" | "claude" | "custom";
+
 export interface GxserverSessionStateEventParams extends GxserverSessionLifecycleParams {
   agentName?: string;
   agentSessionId?: string;
   agentSessionPath?: string;
+  firstPromptTitleGenerationAgent?: GxserverFirstPromptTitleGenerationAgent;
+  firstPromptTitleGenerationCommand?: string;
   firstUserMessage?: string;
   startupText?: string;
   title?: string;

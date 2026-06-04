@@ -10,7 +10,7 @@ import type {
 } from "../../protocol/index.js";
 import { GxserverDomainRepository } from "../domain-state.js";
 import { projectGxserverPresentationSnapshot } from "./projector.js";
-import { searchGxserverPresentationSessions } from "./search.js";
+import { searchGxserverPresentationSessions, searchGxserverPreviousSessions } from "./search.js";
 
 const PRESENTATION_REVISION_KEY = "presentationRevision";
 
@@ -43,6 +43,14 @@ export function searchGxserverPresentation(
   params: GxserverPresentationSearchParams,
 ): GxserverPresentationSearchResponse {
   return searchGxserverPresentationSessions(readPresentationState(db, serverId), params);
+}
+
+export function listGxserverPreviousSessions(
+  db: Database.Database,
+  serverId: GxserverServerId,
+  params: GxserverPresentationSearchParams,
+): GxserverPresentationSearchResponse {
+  return searchGxserverPreviousSessions(readPresentationState(db, serverId), params);
 }
 
 export function readPresentationState(

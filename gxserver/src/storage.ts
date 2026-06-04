@@ -156,6 +156,63 @@ export const GxserverStorageMigrations: readonly GxserverMigration[] = [
       PRAGMA user_version = 3;
     `,
   },
+  {
+    id: "0004_previous_session_history_quality",
+    sql: `
+      DELETE FROM sessions
+      WHERE lifecycleState NOT IN ('running', 'sleeping')
+        AND isPinned = 0
+        AND isFavorite = 0
+        AND lastActiveAt IS NULL
+        AND (
+          lifecycleState <> 'stopped'
+          OR lower(trim(title)) IN (
+            'terminal session',
+            'amp cli session',
+            'amp session',
+            'antigravity cli session',
+            'antigravity session',
+            'claude session',
+            'claude code session',
+            'codebuddy session',
+            'code buddy session',
+            'codex session',
+            'codex cli session',
+            'copilot session',
+            'cursor agent session',
+            'cursor cli session',
+            'cursor session',
+            'droid session',
+            'factory droid session',
+            'gemini session',
+            'grok session',
+            'grok build session',
+            'hermes session',
+            'hermes agent session',
+            'opencode session',
+            'open code session',
+            'openai codex session',
+            'pi session',
+            'qoder session',
+            'qodercli session',
+            'rovo session',
+            'rovo dev session',
+            'rovodev session',
+            'search by text',
+            't3 code session'
+          )
+          OR trim(title) GLOB 'Session [0-9]*'
+          OR trim(title) GLOB '👻*'
+        );
+
+      UPDATE sessions
+      SET lastActiveAt = updatedAt
+      WHERE lifecycleState NOT IN ('running', 'sleeping')
+        AND lastActiveAt IS NULL;
+
+      PRAGMA user_version = 4;
+    `,
+  },
 ];
 
 /*
@@ -170,6 +227,9 @@ Client-local pane, tab, and chrome layout belongs to the macOS app after the own
 
 CDXC:PinnedSessions 2026-06-02-20:11:
 Pinned session row order is shared project-session metadata, not current-window pane layout. Store the explicit sidebar order beside gxserver sessions so drag-to-reorder under a project survives presentation refreshes, restarts, and other clients.
+
+CDXC:PreviousSessions 2026-06-04-20:21:
+Previous Sessions should not preserve low-signal inactive placeholder rows created before gxserver owned history quality. The migration removes unpinned/unfavorited placeholder inactive rows and backfills retained inactive rows with updatedAt so history grouping never invents today's date for missing lastActiveAt.
 */
 export async function initializeGxserverStorage(paths: GxserverPaths): Promise<GxserverStorageInitResult> {
   await ensureGxserverStorageLayout(paths);

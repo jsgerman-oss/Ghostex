@@ -46,6 +46,12 @@ export function applySessionStateEvent(
     ...(identity.agentId ? { agentName: identity.agentId } : {}),
     ...(identity.agentSessionId ? { agentSessionId: identity.agentSessionId } : {}),
     ...(identity.agentSessionPath ? { agentSessionPath: identity.agentSessionPath } : {}),
+    ...("firstPromptTitleGenerationAgent" in params && params.firstPromptTitleGenerationAgent
+      ? { firstPromptTitleGenerationAgent: params.firstPromptTitleGenerationAgent }
+      : {}),
+    ...("firstPromptTitleGenerationCommand" in params
+      ? { firstPromptTitleGenerationCommand: params.firstPromptTitleGenerationCommand }
+      : {}),
     ...(params.firstUserMessage ? { firstUserMessage: params.firstUserMessage } : {}),
   };
   const nextAgentId = identity.agentId ?? session.agentId;
@@ -87,6 +93,10 @@ export function applySessionStateEvent(
     runtimeSettings.agentName !== session.runtimeSettings.agentName ||
     runtimeSettings.agentSessionId !== session.runtimeSettings.agentSessionId ||
     runtimeSettings.agentSessionPath !== session.runtimeSettings.agentSessionPath ||
+    runtimeSettings.firstPromptTitleGenerationAgent !==
+      session.runtimeSettings.firstPromptTitleGenerationAgent ||
+    runtimeSettings.firstPromptTitleGenerationCommand !==
+      session.runtimeSettings.firstPromptTitleGenerationCommand ||
     runtimeSettings.firstUserMessage !== session.runtimeSettings.firstUserMessage ||
     runtimeSettings.titleSource !== session.runtimeSettings.titleSource;
 

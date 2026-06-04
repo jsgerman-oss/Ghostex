@@ -8,6 +8,7 @@ import type {
 import type { GxserverPresentationReadModel } from "./repository.js";
 import { isActivePresentationSession } from "./projector.js";
 import { projectSessionTitle } from "../session-title/projection.js";
+import { getTrustedResumeTitle } from "../session-title/trust.js";
 
 const DEFAULT_SEARCH_LIMIT = 40;
 const MAX_SEARCH_LIMIT = 100;
@@ -45,6 +46,27 @@ export function searchGxserverPresentationSessions(
   };
 }
 
+export function searchGxserverPreviousSessions(
+  state: GxserverPresentationReadModel,
+  params: GxserverPresentationSearchParams,
+): GxserverPresentationSearchResponse {
+  /*
+  CDXC:PreviousSessions 2026-06-04-20:21:
+  The Previous Sessions modal is a restore surface, not a dump of every inactive gxserver row. Return stopped sessions with trusted resume titles plus explicitly pinned/favorited rows, so placeholder terminals created during migration or startup do not keep reappearing without useful activity metadata.
+  */
+  return searchGxserverPresentationSessions(
+    {
+      projects: state.projects,
+      sessions: state.sessions.filter(isPreviousSessionHistoryCandidate),
+    },
+    {
+      ...params,
+      includeActive: false,
+      includePrevious: true,
+    },
+  );
+}
+
 function toSearchResult(
   project: GxserverProjectDomainState | undefined,
   session: GxserverSessionDomainState,
@@ -57,6 +79,7 @@ function toSearchResult(
   */
   return {
     ...(session.agentId ? { agentId: session.agentId } : {}),
+    createdAt: session.createdAt,
     ...(session.cwd ? { cwd: session.cwd } : {}),
     isFavorite: session.isFavorite,
     isPinned: session.isPinned,
@@ -75,7 +98,21 @@ function toSearchResult(
     title: titleProjection.title,
     titleSource: titleProjection.titleSource,
     ...(titleProjection.trustedResumeTitle !== undefined ? { trustedResumeTitle: titleProjection.trustedResumeTitle } : {}),
+    updatedAt: session.updatedAt,
   };
+}
+
+function isPreviousSessionHistoryCandidate(session: GxserverSessionDomainState): boolean {
+  if (isActivePresentationSession(session)) {
+    return false;
+  }
+  if (session.isPinned || session.isFavorite) {
+    return true;
+  }
+  if (session.lifecycleState !== "stopped") {
+    return false;
+  }
+  return getTrustedResumeTitle(session).title !== undefined;
 }
 
 function matchSession(
