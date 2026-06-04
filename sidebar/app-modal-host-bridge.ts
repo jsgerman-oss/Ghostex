@@ -1,6 +1,7 @@
 import type { AgentConfigDraft } from "./agent-config-modal";
 import { logAppModalError } from "./app-modal-error-log";
 import type { CommandConfigDraft } from "./command-config-modal";
+import type { SettingsModalTab } from "./settings-modal";
 import type { SidebarActionType } from "../shared/sidebar-commands";
 import type { ExtensionToSidebarMessage } from "../shared/session-grid-contract";
 
@@ -78,6 +79,12 @@ export type OpenAppModalMessage =
       type: "open";
     }
   | { initialQuery?: string; modal: "findPreviousSession"; type: "open" }
+  | {
+      initialSearchQuery?: string;
+      initialTab?: SettingsModalTab;
+      modal: "settings";
+      type: "open";
+    }
   | { access: T3BrowserAccessMessage; modal: "t3BrowserAccess"; type: "open" }
   | { modal: "t3ThreadId"; sessionId: string; threadId: string; type: "open" }
   | { agentDraft: AgentConfigDraft; modal: "agentConfig"; type: "open" }

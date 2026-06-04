@@ -14,17 +14,17 @@ import {
   type NativeGxserverRequestCommand,
   type NativeGxserverResponseEvent,
 } from "./gxserver-client";
-import { splitAgentPromptTextIntoLineChunks } from "./native-agent-prompt-text";
 import {
-  explainFirstPromptAutoRenameDecision,
-  getCurrentTitleForFirstPromptAutoRename,
-  resolveFirstPromptAutoRenameStrategy,
-  type FirstPromptAutoRenameStrategy,
-} from "../../shared/first-prompt-session-title";
+  createNativeLayoutSyncKey,
+  createNativePaneOwnerSelectionKey,
+  normalizeNativeLayoutSyncValue,
+} from "./native-layout-sync-key";
+import { splitAgentPromptTextIntoLineChunks } from "./native-agent-prompt-text";
 import {
   DEFAULT_FIND_PREVIOUS_SESSION_PROMPT_TEMPLATE,
   renderFindPreviousSessionPrompt,
 } from "../../shared/find-previous-session-prompt";
+import type { NativeTerminalLayout } from "../../shared/native-ghostty-host-protocol";
 import {
   clampVisibleSessionCount,
   createAgentSessionDefaultTitle,
@@ -177,7 +177,6 @@ import {
   getCursorChatSessionLookupScript,
   isCursorAgentTranscriptPath,
 } from "../../shared/cursor-cli-session";
-import { quoteShellDoubleArg } from "../../shared/shell-quote";
 import { FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY } from "../../shared/first-launch-setup-settings";
 import {
   createDefaultProjectSidebarCommandsState,
@@ -368,7 +367,7 @@ type NativeHostCommand =
       activateOnCreate?: boolean;
       cwd: string;
 	      env?: Record<string, string>;
-	      diagnosticSource?: "previousSessionRestore";
+      diagnosticSource?: "fork-session" | "previousSessionRestore";
 	      initialInput?: string;
       persistenceSessionCreated?: boolean;
 	      sessionId: string;
@@ -490,8 +489,14 @@ type NativeHostCommand =
        * CDXC:NativeGpu 2026-05-08-16:45
        * Metadata-only native syncs update pane chrome without forcing AppKit
        * to reframe terminal/browser surfaces.
+       *
+       * CDXC:PaneTabs 2026-06-04-12:54:
+       * Active tab owner changes are applied by native as targeted surface
+       * swaps, not full geometry relayout, so session-card clicks can surface
+       * the selected tab without companion CEF flicker.
        */
       layoutChanged?: boolean;
+      paneOwnerSelectionChanged?: boolean;
       layout?: NativeTerminalLayout;
       paneGap?: number;
       poppedOutSessionIds?: string[];
@@ -521,7 +526,8 @@ type NativeHostCommand =
       sidebarActions?: {
         commands: SidebarCommandButton[];
       };
-      sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
+      agentHookStatus?: SidebarAgentHookStatusMessage;
+      sessionPersistenceProvider?: ghostexSettings["sessionPersistenceProvider"];
       titlebarResourceGroups?: TitlebarResourceGroup[];
 	      type: "setActiveTerminalSet";
 	      workspaceOpenTargets?: {
@@ -722,16 +728,6 @@ type NativeSetActiveTerminalSetCommand = Extract<
   NativeHostCommand,
   { type: "setActiveTerminalSet" }
 >;
-
-type NativeTerminalLayout =
-  | { kind: "leaf"; sessionId: string }
-  | { activeSessionId?: string; kind: "tabs"; sessionIds: string[] }
-  | {
-      children: NativeTerminalLayout[];
-      direction: "horizontal" | "vertical";
-      kind: "split";
-      ratio?: number;
-    };
 
 type NativeSplitLayoutHint = {
   direction: "horizontal" | "vertical";
@@ -1173,6 +1169,7 @@ const projectDiffStatsByProjectId = new Map<string, SidebarProjectDiffStats>();
 const pendingProjectDiffRefreshProjectIds = new Set<string>();
 let lastNativeLayoutSyncKey: string | undefined;
 let lastNativeNonPaneChromeSetActiveTerminalSetCommandKey: string | undefined;
+let lastNativePaneOwnerSelectionKey: string | undefined;
 let lastNativeSetActiveTerminalSetCommandKey: string | undefined;
 let lastNativeFocusTraceLayoutFocusedSessionId: string | undefined;
 let lastNativeFocusedSidebarSessionId: string | undefined;
@@ -1589,8 +1586,9 @@ native sidebar caches the returned projection only to render local client-owned
 layout rows; it does not recompute whether a raw terminal title is final.
 */
 const gxserverTitleProjectionBySessionKey = new Map<string, GxserverSessionTitleProjection>();
-let nextFirstPromptAutoRenameGenerationId = 0;
-const cancelledFirstPromptAutoRenameGenerationIds = new Set<number>();
+let latestNativeAgentHookStatus: SidebarAgentHookStatusMessage | undefined;
+let nativeAgentHookStatusRequestInFlight = false;
+let nativeAgentHookStatusAutoRequestQueued = false;
 type NativePaneState = "mounted" | "mounting" | "unmounted";
 type ProviderSessionState = "exists" | "missing" | "persistence-disabled" | "unknown";
 type ProviderSessionStateLookupOptions = {
@@ -3413,8 +3411,10 @@ function postGhostexFolderStats(message: SidebarGhostexFolderStatsMessage): void
 }
 
 function postAgentHookStatus(message: SidebarAgentHookStatusMessage): void {
+  latestNativeAgentHookStatus = message;
   sidebarBus.post(message);
   postAppModalHost({ message, type: "sidebarState" });
+  syncNativeLayout();
 }
 
 function postGhostexCliStatus(message: SidebarGhostexCliStatusMessage): void {
@@ -13145,6 +13145,25 @@ function createTitlebarResourceSession(
   };
 }
 
+function titlebarResourceGroupsContainLiveSupportedAgent(
+  resourceGroups: TitlebarResourceGroup[],
+): boolean {
+  return resourceGroups.some((group) =>
+    group.sessions.some((session) => {
+      if (
+        session.sessionKind !== "terminal" ||
+        session.isRunning !== true ||
+        session.isSleeping === true ||
+        !session.agentIcon
+      ) {
+        return false;
+      }
+      const agent = getDefaultSidebarAgentByIcon(session.agentIcon as SidebarAgentButton["icon"]);
+      return Boolean(agent && agent.agentId !== "t3");
+    }),
+  );
+}
+
 function createSidebarRecentProjects(): SidebarRecentProject[] {
   /**
    * CDXC:RecentProjects 2026-05-04-14:25:
@@ -15746,27 +15765,31 @@ async function requestNativeAgentHookStatus(): Promise<void> {
    * payload so Settings stays a view over hook state instead of owning plugin
    * marker/config logic.
    */
-  const result = await runNativeProcess("/usr/bin/python3", [
-    "-c",
-    getNativeAgentHookStatusPythonScript(),
-    nativeHomeDirectory(),
-    ghostex_AGENT_NOTIFY_HOOK_PATH,
-    GHOSTEX_AGENT_HOOK_STATE_DIR,
-    NATIVE_PI_EXTENSION_PATH,
-  ]);
-
-  if (result.exitCode !== 0) {
-    const errorMessage =
-      result.stderr.trim() || result.stdout.trim() || "Unable to inspect agent hook status.";
-    showNativeMessage(
-      "error",
-      errorMessage,
-    );
-    postAgentHookStatus(createNativeAgentHookStatusErrorMessage(errorMessage));
+  if (nativeAgentHookStatusRequestInFlight) {
     return;
   }
-
+  nativeAgentHookStatusRequestInFlight = true;
   try {
+    const result = await runNativeProcess("/usr/bin/python3", [
+      "-c",
+      getNativeAgentHookStatusPythonScript(),
+      nativeHomeDirectory(),
+      ghostex_AGENT_NOTIFY_HOOK_PATH,
+      GHOSTEX_AGENT_HOOK_STATE_DIR,
+      NATIVE_PI_EXTENSION_PATH,
+    ]);
+
+    if (result.exitCode !== 0) {
+      const errorMessage =
+        result.stderr.trim() || result.stdout.trim() || "Unable to inspect agent hook status.";
+      showNativeMessage(
+        "error",
+        errorMessage,
+      );
+      postAgentHookStatus(createNativeAgentHookStatusErrorMessage(errorMessage));
+      return;
+    }
+
     const nativeStatus = JSON.parse(result.stdout) as SidebarAgentHookStatusMessage;
     try {
       const openCodeStatus = await gxserverClient.readAgentHookStatus(["opencode"]);
@@ -15786,6 +15809,8 @@ async function requestNativeAgentHookStatus(): Promise<void> {
       errorMessage,
     );
     postAgentHookStatus(createNativeAgentHookStatusErrorMessage(errorMessage));
+  } finally {
+    nativeAgentHookStatusRequestInFlight = false;
   }
 }
 
@@ -16200,7 +16225,10 @@ fi
 
 SESSION_STATE_FILE="\${VSMUX_SESSION_STATE_FILE:-\${GHOSTEX_SESSION_STATE_FILE:-$ghostex_SESSION_STATE_FILE}}"
 HOOK_STATE_DIR=${quoteNativeShellArg(GHOSTEX_AGENT_HOOK_STATE_DIR)}
-if [ -z "$SESSION_STATE_FILE" ]; then
+GHOSTEX_DIRECT_SESSION_REF="\${GHOSTEX_GLOBAL_SESSION_REF:-}"
+GHOSTEX_DIRECT_BASE_URL="\${GHOSTEX_GXSERVER_BASE_URL:-}"
+GHOSTEX_DIRECT_TOKEN_FILE="\${GHOSTEX_GXSERVER_AUTH_TOKEN_FILE:-}"
+if [ -z "$SESSION_STATE_FILE" ] && { [ -z "$GHOSTEX_DIRECT_SESSION_REF" ] || [ -z "$GHOSTEX_DIRECT_BASE_URL" ] || [ -z "$GHOSTEX_DIRECT_TOKEN_FILE" ]; }; then
   printf '{"continue":true}'
   exit 0
 fi
@@ -16213,24 +16241,27 @@ import os
 import pathlib
 import time
 import sys
+import urllib.request
 
 state_path = sys.argv[1]
 raw_input = sys.argv[2]
 hook_state_dir = pathlib.Path(sys.argv[3]).expanduser()
+has_state_path = bool(state_path.strip())
 try:
     payload = json.loads(raw_input)
 except Exception:
     payload = {}
 
 state = {}
-try:
-    with open(state_path, "r", encoding="utf-8") as handle:
-        for line in handle:
-            key, separator, value = line.partition("=")
-            if separator:
-                state[key] = value.strip() if key in {"firstUserMessageBase64", "agentSessionPath"} else " ".join(value.strip().split())
-except FileNotFoundError:
-    pass
+if has_state_path:
+    try:
+        with open(state_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                key, separator, value = line.partition("=")
+                if separator:
+                    state[key] = value.strip() if key in {"firstUserMessageBase64", "agentSessionPath"} else " ".join(value.strip().split())
+    except FileNotFoundError:
+        pass
 
 def first_string(*values):
     for value in values:
@@ -16296,6 +16327,8 @@ def nested_get(source, *path):
     return current
 
 def write_state():
+    if not has_state_path:
+        return
     keys = [
         "status",
         "statusUpdatedAt",
@@ -16322,6 +16355,10 @@ def write_state():
 def write_hook_store(agent_key, session_id, transcript_path):
     workspace_id = first_string(os.environ.get("GHOSTEX_WORKSPACE_ID"), os.environ.get("VSMUX_WORKSPACE_ID"), os.environ.get("ghostex_WORKSPACE_ID"))
     surface_id = first_string(os.environ.get("GHOSTEX_SESSION_ID"), os.environ.get("VSMUX_SESSION_ID"), os.environ.get("ghostex_SESSION_ID"))
+    if not workspace_id or not surface_id:
+        direct_project_id, direct_session_id = parse_global_session_ref(os.environ.get("GHOSTEX_GLOBAL_SESSION_REF", ""))
+        workspace_id = workspace_id or direct_project_id
+        surface_id = surface_id or direct_session_id
     if not session_id or not workspace_id or not surface_id:
         return
     store_path = hook_state_dir / f"{agent_key}-hook-sessions.json"
@@ -16350,6 +16387,59 @@ def write_hook_store(agent_key, session_id, transcript_path):
     temp_path = store_path.with_suffix(store_path.suffix + ".tmp")
     temp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
     temp_path.replace(store_path)
+
+def parse_global_session_ref(value):
+    parts = str(value or "").strip().split(":")
+    if len(parts) == 3 and parts[1] and parts[2]:
+        return parts[1], parts[2]
+    return "", ""
+
+def read_gxserver_auth_token():
+    token_file = first_path(os.environ.get("GHOSTEX_GXSERVER_AUTH_TOKEN_FILE"))
+    if not token_file:
+        return ""
+    try:
+        return pathlib.Path(token_file).expanduser().read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+def post_gxserver_session_state(agent_key, session_id, transcript_path, first_user_message):
+    base_url = first_string(os.environ.get("GHOSTEX_GXSERVER_BASE_URL")).rstrip("/")
+    project_id, surface_id = parse_global_session_ref(os.environ.get("GHOSTEX_GLOBAL_SESSION_REF", ""))
+    token = read_gxserver_auth_token()
+    if not base_url or not project_id or not surface_id or not token:
+        return
+    try:
+        protocol_version = int(first_string(os.environ.get("GHOSTEX_GXSERVER_PROTOCOL_VERSION"), "0"))
+    except Exception:
+        protocol_version = 0
+    params = {
+        "agentName": agent_key,
+        "projectId": project_id,
+        "sessionId": surface_id,
+    }
+    if session_id:
+        params["agentSessionId"] = session_id
+    if transcript_path:
+        params["agentSessionPath"] = transcript_path
+    if first_user_message:
+        params["firstUserMessage"] = first_user_message
+    body = json.dumps({"protocolVersion": protocol_version, "params": params}).encode("utf-8")
+    request = urllib.request.Request(
+        base_url + "/api/ingestSessionStateEvent",
+        data=body,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "x-gxserver-protocol-version": str(protocol_version),
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            response.read(128)
+    except Exception:
+        pass
 
 # CDXC:CursorCLI 2026-05-27-09:06:
 # Cursor Agent's global hook command exports GHOSTEX_AGENT=cursor even when a manually-started pane inherited another agent value. Prefer that explicit hook identity so Cursor transcript metadata cannot be persisted as Codex.
@@ -16432,6 +16522,12 @@ if event_name in {"UserPromptSubmit", "BeforeAgent", "PreInvocation", "beforeSub
         else:
             state["pendingFirstPromptAutoRenamePrompt"] = current_prompt
 
+first_user_message = first_string(
+    state.get("pendingFirstPromptAutoRenamePrompt"),
+    decode_base64_text(state.get("firstUserMessageBase64", "")),
+    prompt,
+)
+post_gxserver_session_state(agent_key, session_id, transcript_path, first_user_message)
 write_state()
 PY
 
@@ -17259,63 +17355,6 @@ function resolveNativeResumeAgentIdForSession(
   return resolveNativeResumeAgentId(session.agentName);
 }
 
-function buildNativeCodexForkCommand(session: TerminalSessionRecord): string | undefined {
-  const agentCommand = readGxserverAgentRuntimeCommandForSession("codex", session);
-  const codexSessionReference = getNativeCodexSessionReference(session);
-  const resumeTitle = getNativeTrustedResumeTitle(session);
-  if (!agentCommand || (!codexSessionReference && !resumeTitle)) {
-    return undefined;
-  }
-  if (codexSessionReference) {
-    return `${agentCommand} fork ${quoteShellDoubleArg(codexSessionReference)}`;
-  }
-  const resumeTitleForLookup = resumeTitle;
-  if (!resumeTitleForLookup) {
-    return undefined;
-  }
-
-  /**
-   * CDXC:CodexAgent 2026-05-08-16:22
-   * Codex title-bar Fork must launch `codex fork <session-id>` instead of a
-   * blank terminal. The CLI fork subcommand accepts UUIDs, while ghostex's stored
-   * Codex identity is the trusted thread title used for resume, so resolve the
-   * latest matching thread name from Codex session indexes at launch time.
-   */
-  const lookupCommand = [
-    "CODEX_FORK_SESSION_ID=\"$(",
-    `/usr/bin/python3 -c ${quoteNativeShellArg(getNativeCodexSessionIdLookupScript())} ${quoteNativeShellArg(resumeTitleForLookup)}`,
-    ")\"",
-    "&&",
-    "test -n \"$CODEX_FORK_SESSION_ID\"",
-    "&&",
-    `${agentCommand} fork "$CODEX_FORK_SESSION_ID"`,
-    "||",
-    `printf '%s\\n' ${quoteNativeShellArg(`Unable to find Codex session id for "${resumeTitleForLookup}".`)}`,
-  ].join(" ");
-  return lookupCommand;
-}
-
-function buildNativeClaudeForkCommand(session: TerminalSessionRecord): string | undefined {
-  const agentCommand = readGxserverAgentRuntimeCommandForSession("claude", session);
-  const claudeSessionReference = getNativeClaudeSessionReference(session);
-  const resumeTitle = getNativeTrustedResumeTitle(session);
-  if (!agentCommand || (!claudeSessionReference && !resumeTitle)) {
-    return undefined;
-  }
-  const claudeResumeReference = claudeSessionReference ?? resumeTitle;
-  if (!claudeResumeReference) {
-    return undefined;
-  }
-
-  /**
-   * CDXC:ClaudeAgent 2026-05-08-16:25
-   * Claude Code exposes forking as `--fork-session` on a resumed conversation.
-   * Use that real CLI path for native Fork actions instead of opening an empty
-   * pane, matching Claude's documented resume/fork semantics.
-   */
-  return `${agentCommand} --resume ${quoteShellDoubleArg(claudeResumeReference)} --fork-session`;
-}
-
 function getNativeCodexSessionReference(session: TerminalSessionRecord): string | undefined {
   const sessionIdentity = session.agentSessionId?.trim();
   return sessionIdentity ? (getCodexSessionIdFromTitle(sessionIdentity) ?? sessionIdentity) : undefined;
@@ -17393,7 +17432,7 @@ type LaunchAgentTerminalOptions = {
   agentSessionId?: string;
   commandId?: string;
   commandTitle?: string;
-  diagnosticSource?: "previousSessionRestore";
+  diagnosticSource?: "fork-session" | "previousSessionRestore";
   focusAfterCreate?: boolean;
   initialPresentation?: "background" | "focused";
   queueProviderStartupText?: boolean;
@@ -17498,68 +17537,6 @@ async function stageNativeAgentPrompt(input: {
     await delayNativeAgentPromptStep(AGENT_PROMPT_SUBMIT_DELAY_MS);
     postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
   }
-}
-
-function buildNativePiForkCommand(session: TerminalSessionRecord): string | undefined {
-  const agentCommand = readGxserverAgentRuntimeCommandForSession("pi", session);
-  const piSessionReference = getNativePiSessionReference(session);
-  return agentCommand && piSessionReference
-    ? `${agentCommand} --fork ${quoteShellDoubleArg(piSessionReference)}`
-    : undefined;
-}
-
-function getNativeCodexSessionIdLookupScript(): string {
-  return `import json
-import os
-import pathlib
-import sys
-
-title = sys.argv[1].strip()
-if not title:
-    sys.exit(1)
-
-home = pathlib.Path.home()
-candidate_homes = []
-for value in [os.environ.get("CODEX_HOME")]:
-    if value:
-        candidate_homes.append(pathlib.Path(value).expanduser())
-for value in [
-    home / ".codex-profiles" / "personal",
-    home / ".codex-profiles" / "work",
-    home / ".codex",
-]:
-    candidate_homes.append(value)
-
-seen = set()
-matches = []
-for codex_home in candidate_homes:
-    codex_home = codex_home.resolve() if codex_home.exists() else codex_home
-    if str(codex_home) in seen:
-        continue
-    seen.add(str(codex_home))
-    index_path = codex_home / "session_index.jsonl"
-    try:
-        lines = index_path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        continue
-    for line in lines:
-        try:
-            item = json.loads(line)
-        except Exception:
-            continue
-        if str(item.get("thread_name") or "").strip() != title:
-            continue
-        session_id = str(item.get("id") or "").strip()
-        if not session_id:
-            continue
-        matches.append((str(item.get("updated_at") or ""), session_id))
-
-if not matches:
-    sys.exit(1)
-
-matches.sort()
-sys.stdout.write(matches[-1][1])
-`;
 }
 
 function getNativeTrustedResumeTitle(session: TerminalSessionRecord): string | undefined {
@@ -19488,166 +19465,43 @@ async function processNativeFirstPromptAutoRename(
   ) {
     publish();
   }
-  const pendingPrompt = persistedState.pendingFirstPromptAutoRenamePrompt?.trim();
-  const agentName = persistedState.agentName || terminalState.agentName;
-  const currentTitle = getCurrentTitleForFirstPromptAutoRename({
-    agentName,
-    pendingPrompt,
-    persistedTitle: persistedState.title,
-    protectStoredTitleFromAutomation: terminalState.protectStoredTitleFromAutomation,
-    sessionTitle: session.title,
-    terminalTitle: terminalState.terminalTitle,
-  });
-  const decision = explainFirstPromptAutoRenameDecision({
-    agentName,
-    /**
-     * CDXC:SessionTitleSync 2026-04-28-03:49
-     * Native first-prompt auto-title may only name still-untitled sessions.
-     * Hooks can fire after resume or mid-conversation, so meaningful persisted,
-     * terminal-auto, generated, and user titles must block generation instead
-     * of being overwritten by a later prompt sample.
-     */
-    currentTitle,
-    hasAutoTitleFromFirstPrompt: persistedState.hasAutoTitleFromFirstPrompt,
-    pendingFirstPromptAutoRenamePrompt:
-      terminalState.firstPromptAutoRenameProcessedPrompt === pendingPrompt
-        ? pendingPrompt
-        : undefined,
-    prompt: pendingPrompt,
-  });
-  if (!decision.shouldAutoName || !pendingPrompt) {
-    const shouldClearStalePendingPrompt =
-      Boolean(pendingPrompt) &&
-      (decision.reason === "nonGenericCurrentTitle" ||
-        decision.reason === "alreadyAutoNamed" ||
-        isFirstPromptAutoRenameDisabledAgent(agentName));
-    if (shouldClearStalePendingPrompt && pendingPrompt && terminalState.sessionStateFilePath) {
-      await clearNativeFirstPromptAutoRenamePendingPrompt(
-        terminalState.sessionStateFilePath,
-        pendingPrompt,
-      );
-      terminalState.firstPromptAutoRenameProcessedPrompt = pendingPrompt;
-    }
-    logNativeFirstPromptAutoRenameSkipOnce(sessionId, terminalState, decision.reason, {
-      agentName,
-      currentTitle,
-      hasAutoTitleFromFirstPrompt: persistedState.hasAutoTitleFromFirstPrompt,
-      hasPendingPrompt: Boolean(pendingPrompt),
-      pendingPromptCleared: shouldClearStalePendingPrompt,
-      sessionStateFilePath: terminalState.sessionStateFilePath,
-      strategy: decision.strategy,
-    });
-    return;
-  }
-
-  const strategy = resolveFirstPromptAutoRenameStrategy(agentName);
-  if (!strategy) {
-    if (isFirstPromptAutoRenameDisabledAgent(agentName) && pendingPrompt) {
-      await clearNativeFirstPromptAutoRenamePendingPrompt(
-        terminalState.sessionStateFilePath,
-        pendingPrompt,
-      );
-    }
-    logNativeFirstPromptAutoRenameSkipOnce(sessionId, terminalState, "unsupportedAgent", {
-      agentName,
+  const firstPromptForGxserver =
+    persistedState.pendingFirstPromptAutoRenamePrompt?.trim() ||
+    persistedState.firstUserMessage?.trim();
+  if (!firstPromptForGxserver) {
+    logNativeFirstPromptAutoRenameSkipOnce(sessionId, terminalState, "emptyPrompt", {
+      agentName: persistedState.agentName || terminalState.agentName,
+      hasPendingPrompt: false,
       sessionStateFilePath: terminalState.sessionStateFilePath,
     });
     return;
   }
-
-  const generationId = ++nextFirstPromptAutoRenameGenerationId;
-  terminalState.firstPromptAutoRenameActivePrompt = pendingPrompt;
-  terminalState.firstPromptAutoRenameGenerationId = generationId;
-  terminalState.firstPromptAutoRenameInProgress = true;
-  terminalState.firstPromptAutoRenameLastLogKey = undefined;
-  publish();
-  appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.started", {
-    agentName,
-    promptPreview: getNativePromptPreview(pendingPrompt),
-    sessionId,
-    strategy,
-  });
-  try {
-    const title =
-      strategy === "sendBareRenameCommand"
-        ? undefined
-        : await generateNativeSessionTitleFromPrompt(activeProject().path, pendingPrompt);
-    if (isFirstPromptAutoRenameGenerationCancelled(generationId)) {
-      appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.cancelledAfterGeneration", {
-        agentName,
-        promptPreview: getNativePromptPreview(pendingPrompt),
-        sessionId,
-        strategy,
-      });
-      return;
-    }
-    await sendNativeFirstPromptRenameCommand(sessionId, strategy, title);
-    if (isFirstPromptAutoRenameGenerationCancelled(generationId)) {
-      return;
-    }
-    terminalState.firstPromptAutoRenameProcessedPrompt = pendingPrompt;
-    if (title) {
-      updateActiveProjectWorkspace(
-        (workspace) =>
-          setSessionTitleInSimpleWorkspace(workspace, sessionId, title, {
-            titleSource: "generated",
-          }).snapshot,
-      );
-    }
-    appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.applied", {
-      agentName,
-      promptPreview: getNativePromptPreview(pendingPrompt),
-      sessionId,
-      strategy,
-      title,
+  if (terminalState.firstPromptAutoRenameProcessedPrompt === firstPromptForGxserver) {
+    logNativeFirstPromptAutoRenameSkipOnce(sessionId, terminalState, "alreadyForwardedToGxserver", {
+      agentName: persistedState.agentName || terminalState.agentName,
+      hasPendingPrompt: Boolean(persistedState.pendingFirstPromptAutoRenamePrompt),
+      sessionStateFilePath: terminalState.sessionStateFilePath,
     });
-    publish();
-  } catch (error) {
-    if (isFirstPromptAutoRenameGenerationCancelled(generationId)) {
-      return;
-    }
-    await clearNativeFirstPromptAutoRenamePendingPrompt(
-      terminalState.sessionStateFilePath,
-      pendingPrompt,
-    );
-    terminalState.firstPromptAutoRenameProcessedPrompt = pendingPrompt;
-    appendSessionTitleGenerationErrorLog("nativeSidebar.firstPromptAutoRename.failed", {
-      agentName,
-      error: error instanceof Error ? error.message : String(error),
-      pendingPromptCleared: true,
-      sessionId,
-      strategy,
-    });
-  } finally {
-    cancelledFirstPromptAutoRenameGenerationIds.delete(generationId);
-    if (terminalState.firstPromptAutoRenameGenerationId === generationId) {
-      terminalState.firstPromptAutoRenameActivePrompt = undefined;
-      terminalState.firstPromptAutoRenameGenerationId = undefined;
-      terminalState.firstPromptAutoRenameInProgress = false;
-      publish();
-    }
+    return;
   }
-}
-
-function isFirstPromptAutoRenameDisabledAgent(agentName: string | undefined): boolean {
-  /**
-   * CDXC:SessionTitleSync 2026-05-30-05:42:
-   * Cursor Agent and Claude Code publish their own session names. Clear stale
-   * first-prompt pending prompts for these agents, but do not enter Ghostex's
-   * generation, overlay, cancellation, or command-send path.
-   */
-  const normalizedAgentName = agentName?.trim().toLowerCase();
-  return (
-    normalizedAgentName === "claude" ||
-    normalizedAgentName === "cursor" ||
-    normalizedAgentName === "cursor agent" ||
-    normalizedAgentName === "cursor cli" ||
-    normalizedAgentName === "cursor-agent"
-  );
-}
-
-function isFirstPromptAutoRenameGenerationCancelled(generationId: number): boolean {
-  return cancelledFirstPromptAutoRenameGenerationIds.has(generationId);
+  /*
+  CDXC:GxserverSessionTitle 2026-06-04-04:05:
+  macOS no longer generates first-prompt titles or submits `/rename` from the sidebar poller. Legacy state-file hooks are only an observation bridge; gxserver receives the agent identity and first prompt, then owns eligibility, generation, persistence, and command submission for every client surface.
+  */
+  await syncGxserverSessionStateEvent(sessionId, {
+    agentName: persistedState.agentName || terminalState.agentName,
+    agentSessionId: persistedState.agentSessionId || terminalState.agentSessionId,
+    agentSessionPath: persistedState.agentSessionPath || terminalState.agentSessionPath,
+    firstUserMessage: firstPromptForGxserver,
+    title: persistedState.title,
+    titleSource: persistedState.title ? "terminal-auto" : undefined,
+  });
+  terminalState.firstPromptAutoRenameProcessedPrompt = firstPromptForGxserver;
+  logNativeFirstPromptAutoRenameSkipOnce(sessionId, terminalState, "forwardedToGxserver", {
+    agentName: persistedState.agentName || terminalState.agentName,
+    hasPendingPrompt: Boolean(persistedState.pendingFirstPromptAutoRenamePrompt),
+    sessionStateFilePath: terminalState.sessionStateFilePath,
+  });
 }
 
 async function cancelNativeFirstPromptAutoRename(sessionId: string): Promise<void> {
@@ -19655,29 +19509,14 @@ async function cancelNativeFirstPromptAutoRename(sessionId: string): Promise<voi
   if (!terminalState?.firstPromptAutoRenameInProgress) {
     return;
   }
-  const generationId = terminalState.firstPromptAutoRenameGenerationId;
-  const pendingPrompt = terminalState.firstPromptAutoRenameActivePrompt;
-  if (generationId !== undefined) {
-    cancelledFirstPromptAutoRenameGenerationIds.add(generationId);
-  }
   terminalState.firstPromptAutoRenameActivePrompt = undefined;
   terminalState.firstPromptAutoRenameGenerationId = undefined;
   terminalState.firstPromptAutoRenameInProgress = false;
   terminalState.firstPromptAutoRenameLastLogKey = undefined;
-  terminalState.firstPromptAutoRenameProcessedPrompt = pendingPrompt;
   publish();
-  if (terminalState.sessionStateFilePath && pendingPrompt) {
-    await clearNativeFirstPromptAutoRenamePendingPrompt(
-      terminalState.sessionStateFilePath,
-      pendingPrompt,
-    );
-  }
-  if (terminalState.firstPromptAutoRenameProcessedPrompt === pendingPrompt) {
-    terminalState.firstPromptAutoRenameProcessedPrompt = undefined;
-  }
   appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.cancelled", {
-    pendingPromptCleared: Boolean(terminalState.sessionStateFilePath && pendingPrompt),
-    promptPreview: getNativePromptPreview(pendingPrompt),
+    pendingPromptCleared: false,
+    reason: "gxserver-owned",
     sessionId,
   });
 }
@@ -20008,75 +19847,6 @@ function syncNativePersistedAgentSessionState(
   }
 
   return didChange;
-}
-
-async function clearNativeFirstPromptAutoRenamePendingPrompt(
-  sessionStateFilePath: string,
-  failedPrompt: string,
-): Promise<void> {
-  /**
-   * CDXC:SessionTitleSync 2026-04-26-20:27
-   * A failed first-prompt title generation must not leave the same pending
-   * prompt in the state file. Otherwise the poller restarts every few seconds
-   * and the sidebar repeatedly flashes the "generating title" state.
-   */
-  const command = [
-    `/usr/bin/python3 - ${quoteNativeShellArg(sessionStateFilePath)} ${quoteNativeShellArg(failedPrompt)} <<'GHOSTEX_CLEAR_PENDING_PROMPT'`,
-    getClearNativeFirstPromptPendingPromptScript(),
-    "GHOSTEX_CLEAR_PENDING_PROMPT",
-  ].join("\n");
-  const result = await runNativeProcess("/bin/zsh", ["-lc", command]);
-  if (result.exitCode !== 0) {
-    appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.clearPendingFailed", {
-      error: result.stderr.trim() || result.stdout.trim() || "clear pending prompt failed",
-      sessionStateFilePath,
-    });
-  }
-}
-
-function getClearNativeFirstPromptPendingPromptScript(): string {
-  return `import pathlib
-import sys
-
-state_path = pathlib.Path(sys.argv[1])
-failed_prompt = " ".join(sys.argv[2].split())
-try:
-    lines = state_path.read_text(encoding="utf-8").splitlines()
-except FileNotFoundError:
-    sys.exit(0)
-
-state = {}
-for line in lines:
-    key, separator, value = line.partition("=")
-    if separator:
-        state[key] = value
-
-if " ".join(state.get("pendingFirstPromptAutoRenamePrompt", "").split()) != failed_prompt:
-    sys.exit(0)
-
-state["pendingFirstPromptAutoRenamePrompt"] = ""
-keys = [
-    "status",
-    "statusUpdatedAt",
-    "attentionEventId",
-    "attentionAcknowledgedAt",
-    "attentionAcknowledgedEventId",
-    "agent",
-    "agentSessionId",
-    "agentSessionPath",
-    "firstUserMessageBase64",
-    "frozenAt",
-    "autoTitleFromFirstPrompt",
-    "historyBase64",
-    "lastActivityAt",
-    "pendingFirstPromptAutoRenamePrompt",
-    "title",
-]
-state_path.parent.mkdir(parents=True, exist_ok=True)
-temp_path = state_path.with_suffix(state_path.suffix + ".tmp")
-temp_path.write_text("".join(f"{key}={state.get(key, '')}\\n" for key in keys), encoding="utf-8")
-temp_path.replace(state_path)
-`;
 }
 
 function getStampNativeSessionSemanticActivityScript(): string {
@@ -20418,36 +20188,6 @@ function normalizeNativeWorktreeSlug(value: string): string {
     .slice(0, 48)
     .replace(/^-+|-+$/g, "");
   return slug || `worktree-${Date.now().toString(36)}`;
-}
-
-async function sendNativeFirstPromptRenameCommand(
-  sessionId: string,
-  strategy: FirstPromptAutoRenameStrategy,
-  title: string | undefined,
-): Promise<void> {
-  const nativeSessionId = nativeSessionIdForSidebarSession(sessionId);
-  const commandText =
-    strategy === "sendBareRenameCommand"
-      ? "/rename"
-      : strategy === "generateTitleAndName"
-        ? `/name ${title ?? ""}`.trim()
-        : `/rename ${title ?? ""}`.trim();
-  postNative({ sessionId: nativeSessionId, text: commandText, type: "writeTerminalText" });
-  await new Promise((resolve) => window.setTimeout(resolve, AUTO_SUBMIT_STAGED_RENAME_DELAY_MS));
-  /**
-   * CDXC:SessionTitleSync 2026-04-26-10:04
-   * Auto rename must submit the staged `/rename <title>` through Ghostty's
-   * Return-key path, matching ghostex. Writing "\r" as terminal text creates a
-   * visible newline in Codex instead of accepting the command.
-   */
-  postNative({ sessionId: nativeSessionId, type: "sendTerminalEnter" });
-  appendSessionTitleDebugLog("terminalRenameCommand.sent", {
-    commandText,
-    nativeSessionId,
-    reason: "first-prompt-auto-rename",
-    sessionId,
-    strategy,
-  });
 }
 
 function logNativeFirstPromptAutoRenameSkipOnce(
@@ -23744,35 +23484,16 @@ function restartNativeSession(sessionId: string): void {
   publish();
 }
 
-function forkNativeSession(sessionId: string): void {
+async function forkNativeSession(sessionId: string): Promise<void> {
   const reference = resolveSidebarSessionReference(sessionId);
   const session = findTerminalSessionInProject(reference.project, reference.sessionId);
   const groupId = findSessionGroupId(sessionId);
-  if (!session) {
-    return;
-  }
-  if (!canRestoreNativeTerminalSession(session)) {
-    showNativeMessage(
-      "info",
-      "Fork is only available for Codex, Claude, OpenCode, and Pi sessions with a restorable identity.",
-    );
+  if (!session && !findGxserverPresentationSession(reference.project.projectId, reference.sessionId)) {
     return;
   }
   if (activeProjectId !== reference.project.projectId) {
     focusProject(reference.project.projectId);
   }
-  const agentId = resolveNativeResumeAgentId(session.agentName);
-  const forkCommand =
-    agentId === "pi"
-      ? buildNativePiForkCommand(session)
-      : agentId === "codex"
-        ? buildNativeCodexForkCommand(session)
-        : agentId === "claude"
-          ? buildNativeClaudeForkCommand(session)
-          : undefined;
-  const sessionPersistenceProvider = forkCommand
-    ? resolveTerminalSessionPersistenceProvider()
-    : undefined;
   const targetGroup = reference.project.workspace.groups.find((group) => group.groupId === groupId);
   const visiblePlacement: VisibleSessionPlacement | undefined =
     targetGroup?.snapshot.visibleSessionIds.includes(reference.sessionId) === true
@@ -23792,20 +23513,88 @@ function forkNativeSession(sessionId: string): void {
     targetSessionId: reference.sessionId,
     visiblePlacement: summarizeVisiblePlacement(visiblePlacement),
   });
-  createTerminal(
-    `${session.title || DEFAULT_TERMINAL_SESSION_TITLE} Fork`,
-    forkCommand ? `${forkCommand}\r` : "",
-    groupId,
-    forkCommand ? session.agentName : undefined,
+  try {
+    const fork = await gxserverClient.forkSession({
+      projectId: reference.project.projectId as never,
+      sessionId: reference.sessionId as never,
+    });
+    materializeNativeForkedGxserverSession(reference.project, fork.session, groupId, visiblePlacement);
+  } catch (error) {
+    showNativeMessage("info", error instanceof Error ? error.message : String(error));
+  }
+}
+
+function materializeNativeForkedGxserverSession(
+  project: NativeProject,
+  gxserverSession: GxserverSessionDomainState,
+  groupId: string | undefined,
+  visiblePlacement: VisibleSessionPlacement | undefined,
+): TerminalSessionRecord | undefined {
+  /*
+  CDXC:GxserverForkSession 2026-06-04-07:42:
+  gxserver owns fork session creation and provider startup. Native only materializes the returned G-session into the clicked tab group, preserving macOS pane placement without reconstructing Codex/Claude/Pi fork commands locally.
+  */
+  const targetWorkspace = groupId
+    ? focusGroupInSimpleWorkspace(project.workspace, groupId).snapshot
+    : project.workspace;
+  const agentName = textValue(gxserverSession.agentId) ?? textValue(gxserverSession.runtimeSettings.agentName);
+  const result = createSessionInSimpleWorkspace(
+    targetWorkspace,
     {
-      sessionPersistenceName: sessionPersistenceNameForProvider(
-        sessionPersistenceProvider,
-        session,
-      ),
-      sessionPersistenceProvider,
-      visiblePlacement,
+      agentName,
+      agentSessionId: textValue(gxserverSession.runtimeSettings.agentSessionId),
+      agentSessionPath: textValue(gxserverSession.runtimeSettings.agentSessionPath),
+      initialPresentation: "focused",
+      sessionId: gxserverSession.sessionId,
+      sessionPersistenceName: gxserverSession.zmxName,
+      sessionPersistenceProvider: "zmx",
+      terminalEngine: "ghostty-native",
+      title: gxserverSession.title || DEFAULT_TERMINAL_SESSION_TITLE,
+      titleSource: "placeholder",
     },
+    visiblePlacement ? { visiblePlacement } : undefined,
   );
+  const session = result.session?.kind === "terminal" ? result.session : undefined;
+  if (!session) {
+    return undefined;
+  }
+  updateProjectWorkspace(project.projectId, () => result.snapshot);
+  const nativeSessionId = rememberNativeSessionMapping(project.projectId, session.sessionId);
+  const sessionStateFilePath = createNativeSessionStateFilePath(project.projectId, session.sessionId);
+  terminalStateById.set(session.sessionId, {
+    activity: "working",
+    agentName,
+    agentSessionId: session.agentSessionId,
+    agentSessionPath: session.agentSessionPath,
+    lifecycleState: "running",
+    sessionPersistenceName: gxserverSession.zmxName,
+    sessionPersistenceProvider: "zmx",
+    sessionStateFilePath,
+    terminalTitle: session.title,
+  });
+  scheduleSettledTerminalTitleSync(session.sessionId, "fork-session-created");
+  markNativeTerminalSurfaceCreationPending(project.projectId, session.sessionId, nativeSessionId, "fork-session");
+  const nativeEnvironment = createNativeAgentSessionEnvironment({
+    agentName,
+    project,
+    sessionId: session.sessionId,
+    sessionStateFilePath,
+  });
+  void postNativeCreateTerminalWithGxserverAttach({
+    activateOnCreate: false,
+    cwd: gxserverSession.cwd ?? project.path,
+    diagnosticSource: "fork-session",
+    env: nativeEnvironment,
+    initialInput: "",
+    sessionId: nativeSessionId,
+    sessionPersistenceName: gxserverSession.zmxName,
+    sessionPersistenceProvider: "zmx",
+    title: session.title,
+    type: "createTerminal",
+  }, project, session.sessionId, "", {
+    focusAfterCreate: true,
+  });
+  return session;
 }
 
 function promptDelayedSend(sessionId: string): void {
@@ -25645,7 +25434,7 @@ async function handleNativeCliCommand(action: string, payload: Record<string, un
       }
       case "forkSession": {
         const session = requireCliSession(payload);
-        forkNativeSession(session.sessionId);
+        void forkNativeSession(session.sessionId);
         return { ok: true, state: summarizeCliState() };
       }
       case "fullReloadSession": {
@@ -27311,7 +27100,7 @@ function resolveWorktreeSourceProject(scope: {
 
   /*
    * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
-   * New Worktree can open from gxserver presentation rows before the project is
+   * Add Worktree can open from gxserver presentation rows before the project is
    * materialized into the local sidebar project cache. Resolve by projectPath
    * and create an in-memory source so existing-worktree listing still works.
    */
@@ -27351,7 +27140,7 @@ async function listNativeExistingProjectWorktrees(
 
   /*
    * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
-   * The New Worktree modal lists existing linked worktrees for the selected
+   * The Add Worktree modal lists existing linked worktrees for the selected
    * project family. Exclude the main checkout but keep already registered
    * worktrees selectable so Open Existing can focus that worktree project
    * without creating another checkout.
@@ -28039,7 +27828,7 @@ async function openExistingNativeWorktreeProject(input: {
 
   /*
    * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
-   * Opening an existing worktree from the New Worktree modal must register the
+   * Opening an existing worktree from the Add Worktree modal must register the
    * selected checkout through gxserver, focus the canonical worktree project,
    * and create a starter terminal when the project has no visible sessions,
    * without creating another checkout.
@@ -33553,7 +33342,7 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
         showAppToast("info", "Remote fork unavailable", "Remote fork is not wired yet.");
         return;
       }
-      forkNativeSession(message.sessionId);
+      void forkNativeSession(message.sessionId);
       return;
     case "scheduleDelayedSend":
       scheduleDelayedSend(message.sessionId, message.delayMs);
@@ -34210,22 +33999,32 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
 function postNativeLayoutSync(
   command: NativeSetActiveTerminalSetCommand,
   options: { force?: boolean } = {},
-): { didPost: boolean; layoutChanged: boolean } {
+): { didPost: boolean; layoutChanged: boolean; paneOwnerSelectionChanged: boolean } {
   const commandSyncKey = createNativeCommandSyncKey(command);
   const nonPaneChromeCommandSyncKey = createNativeNonPaneChromeCommandSyncKey(command);
   const layoutSyncKey = createNativeLayoutSyncKey(command);
+  const paneOwnerSelectionKey = createNativePaneOwnerSelectionKey(command);
   const layoutChanged = options.force === true || layoutSyncKey !== lastNativeLayoutSyncKey;
+  /*
+  CDXC:PaneTabs 2026-06-04-12:54:
+  A session-card click can change only the selected tab owner. Keep that out of
+  the expensive geometry hash for CEF stability, but still tell AppKit to swap
+  the visible terminal surface inside the existing pane rect.
+  */
+  const paneOwnerSelectionChanged =
+    options.force === true || paneOwnerSelectionKey !== lastNativePaneOwnerSelectionKey;
   if (
     options.force !== true &&
     command.focusRequestId === undefined &&
     commandSyncKey === lastNativeSetActiveTerminalSetCommandKey
   ) {
-    return { didPost: false, layoutChanged };
+    return { didPost: false, layoutChanged, paneOwnerSelectionChanged };
   }
   if (
     options.force !== true &&
     command.focusRequestId === undefined &&
     !layoutChanged &&
+    !paneOwnerSelectionChanged &&
     lastNativeNonPaneChromeSetActiveTerminalSetCommandKey !== undefined &&
     nonPaneChromeCommandSyncKey === lastNativeNonPaneChromeSetActiveTerminalSetCommandKey
   ) {
@@ -34244,13 +34043,14 @@ function postNativeLayoutSync(
       showSessionIdInTerminalPanes: command.showSessionIdInTerminalPanes,
       type: "setSessionPaneChrome",
     });
-    return { didPost: false, layoutChanged };
+    return { didPost: false, layoutChanged, paneOwnerSelectionChanged };
   }
   lastNativeSetActiveTerminalSetCommandKey = commandSyncKey;
   lastNativeNonPaneChromeSetActiveTerminalSetCommandKey = nonPaneChromeCommandSyncKey;
   lastNativeLayoutSyncKey = layoutSyncKey;
-  postNative({ ...command, layoutChanged });
-  return { didPost: true, layoutChanged };
+  lastNativePaneOwnerSelectionKey = paneOwnerSelectionKey;
+  postNative({ ...command, layoutChanged, paneOwnerSelectionChanged });
+  return { didPost: true, layoutChanged, paneOwnerSelectionChanged };
 }
 
 function createNativeCommandSyncKey(command: NativeSetActiveTerminalSetCommand): string {
@@ -34338,44 +34138,6 @@ function getNativePaneProjectedSessionTitle(
   session: SidebarSessionItem | undefined,
 ): string | undefined {
   return session?.primaryTitle ?? session?.terminalTitle ?? session?.alias;
-}
-
-function createNativeLayoutSyncKey(command: NativeSetActiveTerminalSetCommand): string {
-  /**
-   * CDXC:NativeGpu 2026-05-08-16:45
-   * The expensive native AppKit layout only depends on visible surface
-   * identity, split geometry, fixed pane gap, and active editor surface. Pane
-   * titles, activity colors, focus display, and icons are chrome metadata and
-   * must not make the host reframe IOSurface-backed terminal/browser views.
-   */
-  return JSON.stringify(
-    normalizeNativeLayoutSyncValue({
-      activeProjectEditorId: command.activeProjectEditorId,
-      activeSessionIds: command.activeSessionIds,
-      commandsPanelActiveSessionIds: command.commandsPanelActiveSessionIds,
-      commandsPanelHeightRatio: command.commandsPanelHeightRatio,
-      commandsPanelIsVisible: command.commandsPanelIsVisible,
-      commandsPanelLayout: command.commandsPanelLayout,
-      commandsPanelMode: command.commandsPanelMode,
-      layout: command.layout,
-      paneGap: command.paneGap,
-    }),
-  );
-}
-
-function normalizeNativeLayoutSyncValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(normalizeNativeLayoutSyncValue);
-  }
-  if (value === null || typeof value !== "object") {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
-      .map(([key, entryValue]) => [key, normalizeNativeLayoutSyncValue(entryValue)]),
-  );
 }
 
 function syncNativeLayout(
@@ -34630,6 +34392,23 @@ function syncNativeLayout(
     ? pendingNativeLayoutFocusRequest?.requestId
     : undefined;
   const sidebarCardFocusTrace = getRecentSidebarCardFocusTrace(snapshot.focusedSessionId);
+  const titlebarResourceGroups = createTitlebarResourceGroups();
+  if (
+    !latestNativeAgentHookStatus &&
+    !nativeAgentHookStatusRequestInFlight &&
+    !nativeAgentHookStatusAutoRequestQueued &&
+    titlebarResourceGroupsContainLiveSupportedAgent(titlebarResourceGroups)
+  ) {
+    /**
+     * CDXC:AgentHookSettings 2026-06-04-03:05:
+     * Tips & Tricks should warn about live supported agents whose hooks are not
+     * installed, but the titlebar must not inspect user config files itself.
+     * Queue one native hook-status check when live agents appear and no status
+     * snapshot has been loaded yet; later Settings refreshes keep it current.
+     */
+    nativeAgentHookStatusAutoRequestQueued = true;
+    void requestNativeAgentHookStatus();
+  }
   /**
    * CDXC:NativeTerminals 2026-04-28-03:37
    * Native title bars must mirror the same per-session state used by sidebar
@@ -34731,8 +34510,14 @@ function syncNativeLayout(
     sidebarActions: {
       commands,
     },
-    sessionPersistenceProvider:
-      settings.sessionPersistenceProvider === "off" ? undefined : settings.sessionPersistenceProvider,
+    agentHookStatus: latestNativeAgentHookStatus,
+    /**
+     * CDXC:SessionPersistence 2026-06-04-01:57:
+     * The titlebar Tips & Tricks menu needs the literal Off setting so it can
+     * show the non-dismissable mobile-attach notice. Do not erase Off to
+     * undefined here; undefined means the titlebar should keep prior state.
+     */
+    sessionPersistenceProvider: settings.sessionPersistenceProvider,
     sessionTitleBarActions,
     sessionTitles,
     petOverlayEnabled: settings.petOverlayEnabled,
@@ -34744,7 +34529,7 @@ function syncNativeLayout(
      */
     showSessionIdInTerminalPanes: settings.showSessionIdInTerminalPanes,
     showProjectEditorDiffFileCount: settings.showProjectEditorDiffFileCount,
-    titlebarResourceGroups: createTitlebarResourceGroups(),
+    titlebarResourceGroups,
     type: "setActiveTerminalSet",
     workspaceOpenTargets: {
       availability: settings.workspaceOpenTargetAvailability,
@@ -34829,6 +34614,7 @@ function syncNativeLayout(
       didPostNativeLayoutSync,
       focusRequestId,
       layoutChanged: layoutSyncResult.layoutChanged,
+      paneOwnerSelectionChanged: layoutSyncResult.paneOwnerSelectionChanged,
     });
   }
   if (layoutSyncResult.didPost && (layoutSyncResult.layoutChanged || focusRequestId !== undefined)) {
@@ -34840,6 +34626,7 @@ function syncNativeLayout(
       focusRequestId,
       layoutChanged: layoutSyncResult.layoutChanged,
       nativeLayout: summarizeNativePaneLayout(layout),
+      paneOwnerSelectionChanged: layoutSyncResult.paneOwnerSelectionChanged,
       pendingFocusRequest: pendingNativeLayoutFocusRequest,
       projectId: currentProject.projectId,
       sidebarCardFocusTrace: summarizeSidebarCardFocusTrace(sidebarCardFocusTrace),
@@ -34949,10 +34736,19 @@ function buildLayout(
      * the focused tab group, not the first split in layout order. This keeps
      * sidebar, native chrome, and later drag/drop restore behavior aligned with
      * the pane the user is actively working in.
+     *
+     * CDXC:PaneTabs 2026-06-04-12:54:
+     * Existing persisted tab groups still need the sidebar-focused session
+     * promoted to activeSessionId. Otherwise a focus request can make AppKit
+     * first responder an offscreen tab while hit routing and the onscreen frame
+     * keep the previous pane owner.
      */
+    const activePersistedLayout = preferredActiveSessionId
+      ? activatePreferredNativeTabOwner(persistedLayout, preferredActiveSessionId)
+      : persistedLayout;
     const missingSessionEntries = sessionIds.flatMap((sessionId, index) => {
       const sidebarSessionId = sidebarSessionIds[index];
-      return sidebarSessionId !== undefined && !nativeLayoutContainsSession(persistedLayout, sessionId)
+      return sidebarSessionId !== undefined && !nativeLayoutContainsSession(activePersistedLayout, sessionId)
         ? [{ sessionId, sidebarSessionId }]
         : [];
     });
@@ -34963,7 +34759,7 @@ function buildLayout(
       .filter((entry) => !activeSidebarSessionIds.has(entry.sidebarSessionId))
       .map((entry) => entry.sessionId);
     const layoutWithParkedTabs = addParkedSessionsToNativeTabGroup(
-      persistedLayout,
+      activePersistedLayout,
       missingParkedSessionIds,
       activeSessionIds,
       preferredActiveSessionId,
@@ -34988,7 +34784,7 @@ function buildLayout(
           activeSidebarSessionIds.has(entry.sidebarSessionId),
         ),
         missingParkedSessionIds,
-        persistedLayout: summarizeNativePaneLayout(persistedLayout),
+        persistedLayout: summarizeNativePaneLayout(activePersistedLayout),
         preferredActiveSessionId,
         sidebarSessionIds,
         splitHint,
@@ -35047,6 +34843,32 @@ function buildLayout(
     activeSessionIds,
     preferredActiveSessionId,
   );
+}
+
+function activatePreferredNativeTabOwner(
+  layout: NativeTerminalLayout,
+  preferredActiveSessionId: string,
+): NativeTerminalLayout {
+  switch (layout.kind) {
+    case "leaf":
+      return layout;
+    case "tabs":
+      return layout.sessionIds.includes(preferredActiveSessionId)
+        ? { ...layout, activeSessionId: preferredActiveSessionId }
+        : layout;
+    case "split": {
+      let didActivate = false;
+      const children = layout.children.map((child) => {
+        if (didActivate) {
+          return child;
+        }
+        const nextChild = activatePreferredNativeTabOwner(child, preferredActiveSessionId);
+        didActivate = nextChild !== child;
+        return nextChild;
+      });
+      return didActivate ? { ...layout, children } : layout;
+    }
+  }
 }
 
 function addMissingSessionsToNativeTabGroup(
@@ -36920,7 +36742,7 @@ function handleNativeTerminalTitleBarAction(
       return;
     case "fork":
       if (session.kind === "terminal") {
-        forkNativeSession(sessionId);
+        void forkNativeSession(sessionId);
       } else if (session.kind === "browser") {
         createNativeBrowserSession(session.browser.url, findSessionGroupId(sessionId), {
           visiblePlacement: { kind: "appendToTabGroup", targetSessionId: sessionId },

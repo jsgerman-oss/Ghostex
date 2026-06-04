@@ -577,6 +577,7 @@ struct SetActiveTerminalSet: Decodable {
   let sessionFocusModeAvailableSessionIds: [String]?
   let sleepingSessionIds: [String]?
   let layoutChanged: Bool?
+  let paneOwnerSelectionChanged: Bool?
   let layout: NativeTerminalLayout?
   let keepAwake: TitlebarKeepAwakeSettings?
   let gxserverDaemon: TitlebarGxserverDaemon?
@@ -617,6 +618,7 @@ struct SetActiveTerminalSet: Decodable {
   let showSessionIdInTerminalPanes: Bool?
   let showProjectEditorDiffFileCount: Bool?
   let sidebarActions: TitlebarSidebarActions?
+  let agentHookStatus: TitlebarAgentHookStatus?
   let sessionPersistenceProvider: String?
   let titlebarResourceGroups: [TitlebarResourceGroup]?
   let workspaceOpenTargets: TitlebarWorkspaceOpenTargets?
@@ -649,6 +651,25 @@ struct TitlebarResourceGroup: Decodable {
   let projectPath: String
   let sessions: [TitlebarResourceSession]
   let title: String
+}
+
+struct TitlebarAgentHookStatusItem: Decodable {
+  let agentId: String
+  let cliCommand: String
+  let cliInstalled: Bool
+  let detail: String
+  let hookInstalled: Bool
+  let paths: [String]
+  let status: String
+}
+
+struct TitlebarAgentHookStatus: Decodable {
+  let agents: [TitlebarAgentHookStatusItem]
+  let errorMessage: String?
+  let generatedAt: String
+  let hookStateDirectory: String
+  let notifyHookPath: String
+  let type: String
 }
 
 struct TitlebarKeepAwakeSettings: Decodable {

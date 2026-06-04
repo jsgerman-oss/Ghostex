@@ -3844,9 +3844,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
 
     /**
      CDXC:WorkspaceActions 2026-05-04-08:22
-     Project right-click "Open in Finder" should reveal the actual stored
-     workspace folder through Finder instead of routing through a URL opener or
+     Project right-click "Open Folder" should reveal the actual stored
+     workspace folder through the platform file viewer instead of routing through a URL opener or
      creating a fallback path when the project record is wrong.
+
+     CDXC:WorkspaceActions 2026-06-04-13:39
+     Keep the native reveal implementation while using Open Folder as the user-facing label so filesystem actions are OS-agnostic.
      */
     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path, isDirectory: true)])
   }
@@ -5933,6 +5936,36 @@ final class ghostexRootView: NSView {
           return item
         } ?? []
       ]
+    }
+    if let agentHookStatus = command.agentHookStatus {
+      /**
+       CDXC:AgentHookSettings 2026-06-04-03:05:
+       Titlebar Tips & Tricks only needs normalized hook status to warn about
+       live affected agents. Do not forward hook file paths or state-directory
+       paths into the isolated titlebar payload because the notice is not a
+       diagnostics surface.
+       */
+      var hookPayload: [String: Any] = [
+        "agents": agentHookStatus.agents.map { agent in
+          [
+            "agentId": agent.agentId,
+            "cliCommand": agent.cliCommand,
+            "cliInstalled": agent.cliInstalled,
+            "detail": "",
+            "hookInstalled": agent.hookInstalled,
+            "paths": [],
+            "status": agent.status,
+          ] as [String: Any]
+        },
+        "generatedAt": agentHookStatus.generatedAt,
+        "hookStateDirectory": "",
+        "notifyHookPath": "",
+        "type": agentHookStatus.type,
+      ]
+      if let errorMessage = agentHookStatus.errorMessage {
+        hookPayload["errorMessage"] = errorMessage
+      }
+      payload["agentHookStatus"] = hookPayload
     }
     if let resourceGroups = command.titlebarResourceGroups {
       /**
@@ -8035,7 +8068,7 @@ final class ghostexRootView: NSView {
     case "projectWorktreesResult":
       /**
        CDXC:WorktreeProjectRegistration 2026-06-01-21:33:
-       The New Worktree modal asks the sidebar webview to list existing Git
+       The Add Worktree modal asks the sidebar webview to list existing Git
        worktrees, then the sidebar sends this result back through the native
        modal bridge. Forward the result into the modal host instead of treating
        it as an unknown bridge command, otherwise the Open Existing selector

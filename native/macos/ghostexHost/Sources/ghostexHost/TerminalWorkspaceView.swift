@@ -3059,16 +3059,31 @@ final class TerminalWorkspaceView: NSView {
     let sessionPersistenceProvider = NativeSessionPersistenceProvider.resolve(command)
     let sessionPersistenceName: String?
     if let sessionPersistenceProvider {
-      sessionPersistenceName =
-        NativeSessionPersistenceMode.compactSessionName(command.sessionId)
-        ??
-        NativeSessionPersistenceMode.normalizedSessionName(
-          command.sessionPersistenceName ?? command.tmuxSessionName,
-          provider: sessionPersistenceProvider)
-        ?? NativeSessionPersistenceMode.sessionName(
-          provider: sessionPersistenceProvider,
-          sessionId: command.sessionId,
-          title: command.title)
+      let providedSessionName = NativeSessionPersistenceMode.normalizedSessionName(
+        command.sessionPersistenceName ?? command.tmuxSessionName,
+        provider: sessionPersistenceProvider)
+      /**
+       CDXC:GxserverZmxIdentity 2026-06-04-02:22:
+       gxserver zmx sessions use the full server-project-session provider name
+       (S-P-G). Prefer that explicit zmx name over legacy compact g-* ids so
+       native state, resource actions, and reconnect diagnostics stay aligned
+       with the zmx session that gxserver attached.
+       */
+      if sessionPersistenceProvider == .zmx {
+        sessionPersistenceName = providedSessionName
+          ?? NativeSessionPersistenceMode.compactSessionName(command.sessionId)
+          ?? NativeSessionPersistenceMode.sessionName(
+            provider: sessionPersistenceProvider,
+            sessionId: command.sessionId,
+            title: command.title)
+      } else {
+        sessionPersistenceName = NativeSessionPersistenceMode.compactSessionName(command.sessionId)
+          ?? providedSessionName
+          ?? NativeSessionPersistenceMode.sessionName(
+            provider: sessionPersistenceProvider,
+            sessionId: command.sessionId,
+            title: command.title)
+      }
     } else {
       sessionPersistenceName = nil
     }
@@ -5715,6 +5730,8 @@ final class TerminalWorkspaceView: NSView {
     let previousSessionFocusModeAvailableSessionIds = sessionFocusModeAvailableSessionIds
     let previousSessionTitleBarActions = sessionTitleBarActions
     let previousSessionTitles = sessionTitles
+    let shouldApplyPaneOwnerSelection =
+      command.paneOwnerSelectionChanged == true && !shouldRelayout
     let responderSessionIdBefore = currentResponderSessionId()
     let passiveResponderSessionId = command.focusRequestId == nil ? responderSessionIdBefore : nil
     let passiveResponderFocusedSessionId = passiveResponderSessionId.flatMap {
@@ -5740,6 +5757,7 @@ final class TerminalWorkspaceView: NSView {
           "previousFocusedSessionId": nullableString(previousFocusedSessionId),
           "responderBefore": responderSnapshot(),
           "responderSessionIdBefore": nullableString(responderSessionIdBefore),
+          "paneOwnerSelectionChanged": command.paneOwnerSelectionChanged == true,
           "shouldRelayout": shouldRelayout,
         ])
     }
@@ -5877,6 +5895,10 @@ final class TerminalWorkspaceView: NSView {
         }
       }
     }
+    let didApplyPaneOwnerSelection =
+      shouldApplyPaneOwnerSelection
+        ? applyPaneOwnerSelectionFromCurrentLayout(reason: "setActiveTerminalSet")
+        : false
     syncPoppedOutPaneWindows(reason: "setActiveTerminalSet")
     if shouldRelayout {
       for session in projectEditorPaneSessions.values {
@@ -5935,6 +5957,8 @@ final class TerminalWorkspaceView: NSView {
           "focusRequestId": command.focusRequestId ?? 0,
           "focusedSurfaceSessionIdsAfterActiveSet": focusedSurfaceSessionIdsAfterActiveSet,
           "layoutChanged": shouldRelayout,
+          "paneOwnerSelectionApplied": didApplyPaneOwnerSelection,
+          "paneOwnerSelectionChanged": command.paneOwnerSelectionChanged == true,
           "previousFocusedSessionId": nullableString(previousFocusedSessionId),
           "responderSessionIdAfterBorderApply": nullableString(responderSessionIdAfterBorderApply),
         ])
@@ -5949,6 +5973,8 @@ final class TerminalWorkspaceView: NSView {
         "focusRequestId": command.focusRequestId ?? 0,
         "focusedSessionId": nullableString(command.focusedSessionId),
         "layoutChanged": shouldRelayout,
+        "paneOwnerSelectionApplied": didApplyPaneOwnerSelection,
+        "paneOwnerSelectionChanged": command.paneOwnerSelectionChanged == true,
         "paneGap": Double(paneGap),
         "poppedOutSessionIds": Array(poppedOutSessionIds).sorted(),
         "responderAfterLayout": responderSnapshot(),
@@ -8443,6 +8469,166 @@ final class TerminalWorkspaceView: NSView {
         paneResizeRatiosByPath[path] = ratios
       }
     }
+  }
+
+  private func applyPaneOwnerSelectionFromCurrentLayout(reason: String) -> Bool {
+    /*
+     CDXC:PaneTabs 2026-06-04-12:54:
+     Sidebar focus changes can select a different tab owner without changing
+     split geometry. Apply that owner swap against the existing pane hit region
+     so terminal clicks surface the selected tab without running the full CEF
+     editor relayout path.
+     */
+    var didApply = false
+    if activeProjectEditorId == nil, let terminalLayout {
+      applyPaneOwnerSelection(
+        in: terminalLayout,
+        role: .workspace,
+        path: "root",
+        reason: reason,
+        didApply: &didApply)
+    }
+    if let commandsPanelLayout {
+      applyPaneOwnerSelection(
+        in: commandsPanelLayout,
+        role: .commands,
+        path: "commands",
+        reason: reason,
+        didApply: &didApply)
+    }
+    return didApply
+  }
+
+  private func applyPaneOwnerSelection(
+    in node: NativeTerminalLayout,
+    role: PaneContentHitRole,
+    path: String,
+    reason: String,
+    didApply: inout Bool
+  ) {
+    switch node {
+    case .leaf(let sessionId):
+      guard isPaneSessionVisible(sessionId, role: role) else {
+        return
+      }
+      setPaneTabs([sessionId], activeSessionId: sessionId, on: sessionId)
+    case .tabs(let activeSessionId, let sessionIds):
+      let tabSessionIds = sessionIds.filter {
+        isPaneSessionVisible($0, role: role) || sleepingSessionIds.contains($0)
+      }
+      let activeTabSessionIds = tabSessionIds.filter { isPaneSessionVisible($0, role: role) }
+      guard !activeTabSessionIds.isEmpty else {
+        return
+      }
+      let selectedSessionId =
+        activeSessionId.flatMap { activeTabSessionIds.contains($0) ? $0 : nil } ?? activeTabSessionIds[0]
+      guard let region = paneContentHitRegion(
+        forTabPath: path,
+        role: role,
+        sessionIds: Set(activeTabSessionIds))
+      else {
+        appendLayoutLayeringDebugLog(
+          "nativePaneLayoutTrace.paneOwnerSelectionMissingRegion",
+          details: [
+            "activeSessionIds": Array(activeSessionIds).sorted(),
+            "path": path,
+            "reason": reason,
+            "role": role == .commands ? "commands" : "workspace",
+            "selectedSessionId": selectedSessionId,
+            "tabSessionIds": tabSessionIds,
+            "visiblePaneOwnerSessionIds": orderedVisiblePaneOwnerSessionIds(),
+          ],
+          force: true)
+        return
+      }
+      setPaneTabs(tabSessionIds, activeSessionId: selectedSessionId, on: selectedSessionId)
+      if region.sessionId != selectedSessionId {
+        let paneRect = paneRect(fromContentHitRegion: region, for: selectedSessionId)
+        for sessionId in activeTabSessionIds where sessionId != selectedSessionId {
+          movePaneSessionOffscreen(sessionId)
+        }
+        setFrame(paneRect, for: selectedSessionId)
+        if sessions[selectedSessionId] != nil {
+          orderTerminalPaneViewsToFront(sessions[selectedSessionId])
+        } else {
+          orderWebPaneViewsToFront(webPaneSessions[selectedSessionId])
+        }
+        replacePaneContentHitRegion(
+          path: path,
+          role: role,
+          sessionIds: Set(activeTabSessionIds),
+          selectedSessionId: selectedSessionId,
+          paneRect: paneRect)
+        appendLayoutLayeringDebugLog(
+          "nativePaneLayoutTrace.paneOwnerSelectionApplied",
+          details: [
+            "fromSessionId": region.sessionId,
+            "paneRect": describeFrame(paneRect),
+            "path": path,
+            "reason": reason,
+            "role": role == .commands ? "commands" : "workspace",
+            "toSessionId": selectedSessionId,
+          ],
+          force: true)
+        didApply = true
+      }
+    case .split(_, _, let children):
+      let visibleChildren = children.filter {
+        !leafSessionIds($0).allSatisfy { !isPaneSessionVisible($0, role: role) }
+      }
+      guard !visibleChildren.isEmpty else {
+        return
+      }
+      for (index, child) in visibleChildren.enumerated() {
+        applyPaneOwnerSelection(
+          in: child,
+          role: role,
+          path: "\(path).\(index)",
+          reason: reason,
+          didApply: &didApply)
+      }
+    }
+  }
+
+  private func isPaneSessionVisible(_ sessionId: String, role: PaneContentHitRole) -> Bool {
+    switch role {
+    case .commands:
+      return commandsPanelActiveSessionIds.contains(sessionId)
+    case .workspace:
+      return activeSessionIds.contains(sessionId)
+    }
+  }
+
+  private func paneContentHitRegion(
+    forTabPath path: String,
+    role: PaneContentHitRole,
+    sessionIds: Set<String>
+  ) -> PaneContentHitRegion? {
+    paneContentHitRegions.reversed().first {
+      $0.role == role && ($0.path == path || sessionIds.contains($0.sessionId))
+    }
+  }
+
+  private func paneRect(fromContentHitRegion region: PaneContentHitRegion, for sessionId: String) -> CGRect {
+    CGRect(
+      x: region.rect.minX,
+      y: region.rect.minY,
+      width: region.rect.width,
+      height: region.rect.height + titleBarHeight(for: sessionId)
+    )
+  }
+
+  private func replacePaneContentHitRegion(
+    path: String,
+    role: PaneContentHitRole,
+    sessionIds: Set<String>,
+    selectedSessionId: String,
+    paneRect: CGRect
+  ) {
+    paneContentHitRegions.removeAll {
+      $0.role == role && ($0.path == path || sessionIds.contains($0.sessionId))
+    }
+    recordPaneContentHitRegion(sessionId: selectedSessionId, paneRect: paneRect, path: path)
   }
 
   private func recordPaneContentHitRegion(sessionId: String, paneRect: CGRect, path: String) {

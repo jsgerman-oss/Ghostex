@@ -1,4 +1,5 @@
 import {
+  IconAlertTriangle,
   IconArrowsDiagonal2,
   IconArrowsDiagonalMinimize,
   IconBox,
@@ -77,11 +78,16 @@ import {
 } from "../../shared/sidebar-command-icons";
 import type { CommandConfigDraft } from "../../sidebar/command-config-modal";
 import { AGENT_LOGO_COLORS, AGENT_LOGOS } from "../../sidebar/agent-logos";
-import type { SidebarAgentIcon } from "../../shared/sidebar-agents";
+import {
+  getDefaultSidebarAgentByIcon,
+  type SidebarAgentIcon,
+} from "../../shared/sidebar-agents";
+import type { SidebarAgentHookStatusMessage } from "../../shared/session-grid-contract-sidebar";
 import {
   KEEP_AWAKE_DURATION_OPTIONS,
   normalizeghostexSettings,
   type KeepAwakeDurationMinutes,
+  type SessionPersistenceProvider,
 } from "../../shared/ghostex-settings";
 import {
   BUILT_IN_WORKSPACE_OPEN_TARGETS,
@@ -151,6 +157,7 @@ type TitlebarResourceGroup = {
 type TitlebarResourceSession = {
   activity: "attention" | "idle" | "working";
   agentIcon?: string;
+  isLive?: boolean;
   isRunning: boolean;
   isSleeping?: boolean;
   lastInteractionAt?: string;
@@ -163,10 +170,20 @@ type TitlebarResourceSession = {
   title: string;
 };
 
+type TitlebarTipIcon = "browser" | "command" | "moon" | "resources" | "search" | "warning";
+
 type TitlebarTip = {
   body: string;
-  icon: "browser" | "command" | "moon" | "resources" | "search";
+  icon: TitlebarTipIcon;
   id: string;
+  title: string;
+};
+
+type TitlebarNotice = {
+  body: string;
+  icon: TitlebarTipIcon;
+  id: string;
+  settingsTarget: "agentHooks" | "sessionPersistence";
   title: string;
 };
 
@@ -196,6 +213,7 @@ type TitlebarGxserverDaemonStatus = {
 type TitlebarProjectState = {
   activeMode: TitlebarMode;
   browserTabs: TitlebarBrowserTabResource[];
+  agentHookStatus?: SidebarAgentHookStatusMessage;
   debuggingMode: boolean;
   diffStats: SidebarProjectDiffStats;
   editorIsOpen: boolean;
@@ -213,7 +231,7 @@ type TitlebarProjectState = {
   resourceGroups: TitlebarResourceGroup[];
   sidebarActions: TitlebarSidebarActionsSettings;
   showProjectEditorDiffFileCount: boolean;
-  sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
+  sessionPersistenceProvider: SessionPersistenceProvider;
   workspaceOpenTargets: TitlebarOpenTargetsSettings;
   isFocusModeActive?: boolean;
   updateAvailable: boolean;
@@ -398,6 +416,90 @@ const TITLEBAR_TIPS: TitlebarTip[] = [
     title: "Add all your Todos in the Kanban page",
   },
 ];
+
+/**
+ * CDXC:SessionPersistence 2026-06-04-01:57:
+ * When Session Persistence is Off, Android and iOS attach can reconnect to the
+ * macOS native terminal instead of a durable zmx/tmux/zellij session. Surface
+ * this as a non-dismissable Tips & Tricks notice, not a normal read tip, so it
+ * stays visible until persistence is enabled again.
+ */
+const TITLEBAR_PERSISTENCE_OFF_NOTICE: TitlebarNotice = {
+  body: "Android and iOS attach can have issues while Session Persistence is Off. Enable zmx persistence so mobile clients reconnect to durable terminal sessions.",
+  icon: "warning",
+  id: "session-persistence-off-mobile-attach",
+  settingsTarget: "sessionPersistence",
+  title: "Mobile attach needs persistence",
+};
+
+function createTitlebarMissingAgentHooksNotice(
+  resourceGroups: TitlebarResourceGroup[],
+  agentHookStatus: SidebarAgentHookStatusMessage | undefined,
+): TitlebarNotice | undefined {
+  if (!agentHookStatus || agentHookStatus.errorMessage) {
+    return undefined;
+  }
+  const hookStatusByAgentId = new Map(
+    agentHookStatus.agents.map((status) => [status.agentId, status]),
+  );
+  const missingLiveAgents = new Map<string, string>();
+  for (const group of resourceGroups) {
+    for (const session of group.sessions) {
+      if (!isTitlebarLiveTerminalAgentSession(session)) {
+        continue;
+      }
+      const agent = getDefaultSidebarAgentByIcon(session.agentIcon as SidebarAgentIcon | undefined);
+      if (!agent || agent.agentId === "t3") {
+        continue;
+      }
+      const status = hookStatusByAgentId.get(agent.agentId);
+      if (!status || status.status === "installed" || status.status === "notRequired") {
+        continue;
+      }
+      missingLiveAgents.set(agent.agentId, agent.name);
+    }
+  }
+  const agentNames = [...missingLiveAgents.values()];
+  if (agentNames.length === 0) {
+    return undefined;
+  }
+
+  /**
+   * CDXC:AgentHookSettings 2026-06-04-03:05:
+   * Live supported agents without installed Ghostex hooks should surface in
+   * Tips & Tricks as non-dismissable runtime notices. Hooks power exact resume
+   * metadata, attention state, and first-message naming, so read-once tips are
+   * the wrong model while affected sessions are still running.
+   */
+  const formattedAgents = formatTitlebarNoticeNameList(agentNames);
+  const plural = agentNames.length > 1;
+  return {
+    body: `${formattedAgents} ${plural ? "are" : "is"} running without ${plural ? "their" : "its"} Ghostex ${plural ? "hooks" : "hook"}. Resume metadata, attention state, and first-message session naming can be unreliable until hooks are installed.`,
+    icon: "warning",
+    id: `missing-agent-hooks-${[...missingLiveAgents.keys()].sort().join("-")}`,
+    settingsTarget: "agentHooks",
+    title: plural ? "Install hooks for live agents" : `${formattedAgents} hook is missing`,
+  };
+}
+
+function isTitlebarLiveTerminalAgentSession(session: TitlebarResourceSession): boolean {
+  return (
+    session.sessionKind === "terminal" &&
+    session.isRunning === true &&
+    session.isSleeping !== true &&
+    Boolean(session.agentIcon)
+  );
+}
+
+function formatTitlebarNoticeNameList(names: string[]): string {
+  if (names.length <= 1) {
+    return names[0] ?? "";
+  }
+  if (names.length === 2) {
+    return `${names[0]} and ${names[1]}`;
+  }
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
 
 type KeepAwakeRuntimeState = {
   durationMinutes: KeepAwakeDurationMinutes;
@@ -1196,6 +1298,19 @@ function App() {
     () => TITLEBAR_TIPS.filter((tip) => readTipIds.has(tip.id)),
     [readTipIds],
   );
+  const missingAgentHooksNotice = useMemo(
+    () => createTitlebarMissingAgentHooksNotice(projectState.resourceGroups, projectState.agentHookStatus),
+    [projectState.agentHookStatus, projectState.resourceGroups],
+  );
+  const notices = useMemo(
+    () => [
+      ...(projectState.sessionPersistenceProvider === "off"
+        ? [TITLEBAR_PERSISTENCE_OFF_NOTICE]
+        : []),
+      ...(missingAgentHooksNotice ? [missingAgentHooksNotice] : []),
+    ],
+    [missingAgentHooksNotice, projectState.sessionPersistenceProvider],
+  );
   const markTipRead = useCallback((tipId: string) => {
     setReadTipIds((current) => {
       if (current.has(tipId)) {
@@ -1488,6 +1603,7 @@ function App() {
             state.activeMode === undefined
               ? current.activeMode
               : normalizeTitlebarMode(state.activeMode),
+          agentHookStatus: state.agentHookStatus ?? current.agentHookStatus,
           debuggingMode: state.debuggingMode ?? current.debuggingMode,
           diffStats: state.diffStats ?? current.diffStats,
           git: state.git ?? current.git,
@@ -1879,6 +1995,45 @@ function App() {
     });
   };
 
+  const openSessionPersistenceSettings = () => {
+    /**
+     * CDXC:SessionPersistence 2026-06-04-02:52:
+     * The persistence-off Tips notice is an actionable warning. Clicking it
+     * should open the Ghostty/Terminal settings tab and pre-fill search with
+     * the exact setting label so users land on Session Persistence immediately.
+     */
+    setTipsMenuOpen(false);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialSearchQuery: "Session Persistence",
+      initialTab: "ghostty",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
+  const openAgentHooksSettings = () => {
+    /**
+     * CDXC:AgentHookSettings 2026-06-04-03:05:
+     * Missing-hook Tips notices are actionable runtime warnings. Clicking one
+     * should open Settings on the Agents tab because that tab owns hook status,
+     * refresh, and Install Hooks actions for supported live agents.
+     */
+    setTipsMenuOpen(false);
+    window.webkit?.messageHandlers?.ghostexAppModalHost?.postMessage({
+      initialTab: "agents",
+      modal: "settings",
+      type: "open",
+    });
+  };
+
+  const openNoticeSettings = (target: TitlebarNotice["settingsTarget"]) => {
+    if (target === "agentHooks") {
+      openAgentHooksSettings();
+      return;
+    }
+    openSessionPersistenceSettings();
+  };
+
   useEffect(() => {
     if (!projectState.keepAwake.hideTitlebarControl && !keepAwakeMenuOpen) {
       return;
@@ -2212,8 +2367,8 @@ function App() {
                     render={
                       <Button
                         aria-label={
-                          unreadTips.length > 0
-                            ? `Tips and tricks, ${unreadTips.length} unread`
+                          unreadTips.length + notices.length > 0
+                            ? `Tips and tricks, ${unreadTips.length + notices.length} unread`
                             : "Tips and tricks"
                         }
                         className="titlebar-session-button titlebar-tips-button"
@@ -2234,7 +2389,7 @@ function App() {
                          * blue dot without a visible number so the icon stays quiet.
                          */}
                         <IconInfoCircle aria-hidden="true" size={16} stroke={1.8} />
-                        {unreadTips.length > 0 ? (
+                        {unreadTips.length + notices.length > 0 ? (
                           <span aria-hidden="true" className="titlebar-tips-unread-badge" />
                         ) : null}
                       </Button>
@@ -2263,8 +2418,10 @@ function App() {
                 style={{ backgroundColor: "#0e0e0e" }}
               >
                 <TitlebarTipsMenu
+                  notices={notices}
                   onMarkAllRead={markAllTipsRead}
                   onMarkRead={markTipRead}
+                  onOpenNoticeSettings={openNoticeSettings}
                   readTips={readTips}
                   unreadTips={unreadTips}
                 />
@@ -2441,7 +2598,11 @@ function App() {
                   onToggle={toggleResourceCollapse}
                   orphanBundles={resourceViews.orphanBundles}
                   quittingKeys={quittingResourceKeys}
-                  sessionPersistenceProvider={projectState.sessionPersistenceProvider}
+                  sessionPersistenceProvider={
+                    projectState.sessionPersistenceProvider === "off"
+                      ? undefined
+                      : projectState.sessionPersistenceProvider
+                  }
                 />
               </DropdownMenuContent>
             </DropdownMenu>
@@ -2740,6 +2901,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
   const settings = normalizeghostexSettings(parseSharedSettings(sharedSettingsJson));
   return {
     activeMode: resolveInitialTitlebarMode(bootstrap),
+    agentHookStatus: undefined,
     browserTabs: [],
     debuggingMode: settings.debuggingMode,
     diffStats: createDefaultSidebarProjectDiffStats(false),
@@ -2764,8 +2926,7 @@ function createInitialProjectState(bootstrap: Record<string, unknown>): Titlebar
       commands: [],
     },
     showProjectEditorDiffFileCount: settings.showProjectEditorDiffFileCount,
-    sessionPersistenceProvider:
-      settings.sessionPersistenceProvider === "off" ? undefined : settings.sessionPersistenceProvider,
+    sessionPersistenceProvider: settings.sessionPersistenceProvider,
     workspaceOpenTargets: {
       availability: settings.workspaceOpenTargetAvailability,
       customTargets: settings.customWorkspaceOpenTargets,
@@ -2907,13 +3068,17 @@ async function readKeepAwakePowerSnapshot(): Promise<
 }
 
 function TitlebarTipsMenu({
+  notices,
   onMarkAllRead,
   onMarkRead,
+  onOpenNoticeSettings,
   readTips,
   unreadTips,
 }: {
+  notices: TitlebarNotice[];
   onMarkAllRead: () => void;
   onMarkRead: (tipId: string) => void;
+  onOpenNoticeSettings: (target: TitlebarNotice["settingsTarget"]) => void;
   readTips: TitlebarTip[];
   unreadTips: TitlebarTip[];
 }) {
@@ -2928,6 +3093,7 @@ function TitlebarTipsMenu({
     setReadSectionCollapsed(unreadTips.length > 0);
   }, [unreadTips.length]);
   const readSectionOpen = !readSectionCollapsed;
+  const unreadTotal = notices.length + unreadTips.length;
   return (
     <div className="titlebar-tips-panel" onClick={(event) => event.stopPropagation()}>
       <div className="titlebar-tips-header">
@@ -2946,10 +3112,25 @@ function TitlebarTipsMenu({
             <IconCheck aria-hidden="true" size={14} stroke={1.9} />
             <span>Read all</span>
           </button>
-          <span className="titlebar-tips-summary">{unreadTips.length} unread</span>
+          <span className="titlebar-tips-summary">{unreadTotal} unread</span>
         </div>
       </div>
       <div className="titlebar-tips-scroll">
+        {notices.length > 0 ? (
+          <TitlebarTipsSection
+            count={notices.length}
+            emptyText=""
+            title="Notices"
+          >
+            {notices.map((notice) => (
+              <TitlebarNoticeRow
+                key={notice.id}
+                notice={notice}
+                onOpenSettings={() => onOpenNoticeSettings(notice.settingsTarget)}
+              />
+            ))}
+          </TitlebarTipsSection>
+        ) : null}
         <TitlebarTipsSection
           count={unreadTips.length}
           emptyText="All caught up."
@@ -3024,6 +3205,30 @@ function TitlebarTipsSection({
   );
 }
 
+function TitlebarNoticeRow({
+  notice,
+  onOpenSettings,
+}: {
+  notice: TitlebarNotice;
+  onOpenSettings: () => void;
+}) {
+  return (
+    <button
+      aria-label={`${notice.title}. Open related settings.`}
+      className="titlebar-tip-row titlebar-tip-row-notice"
+      data-read="false"
+      onClick={onOpenSettings}
+      type="button"
+    >
+      <div className="titlebar-tip-icon">{getTitlebarTipIcon(notice.icon)}</div>
+      <div className="titlebar-tip-copy">
+        <div className="titlebar-tip-title">{notice.title}</div>
+        <div className="titlebar-tip-body">{notice.body}</div>
+      </div>
+    </button>
+  );
+}
+
 function TitlebarTipRow({
   onMarkRead,
   read,
@@ -3058,7 +3263,7 @@ function TitlebarTipRow({
   );
 }
 
-function getTitlebarTipIcon(icon: TitlebarTip["icon"]): ReactNode {
+function getTitlebarTipIcon(icon: TitlebarTipIcon): ReactNode {
   switch (icon) {
     case "browser":
       return <IconWorld aria-hidden="true" size={16} stroke={1.8} />;
@@ -3070,6 +3275,8 @@ function getTitlebarTipIcon(icon: TitlebarTip["icon"]): ReactNode {
       return <IconDeviceDesktop aria-hidden="true" size={16} stroke={1.8} />;
     case "search":
       return <IconSearch aria-hidden="true" size={16} stroke={1.8} />;
+    case "warning":
+      return <IconAlertTriangle aria-hidden="true" size={16} stroke={1.8} />;
   }
 }
 
@@ -3108,7 +3315,7 @@ function TitlebarResourcesMenu({
   onToggle: (key: string) => void;
   orphanBundles: ResourceProcessBundle[];
   quittingKeys: Set<string>;
-  sessionPersistenceProvider?: "tmux" | "zmx" | "zellij";
+  sessionPersistenceProvider?: Exclude<SessionPersistenceProvider, "off">;
 }) {
   const visibleGroupViews = groupViews.filter((view) => view.bundles.length > 0);
   const allBundles = [
@@ -4870,6 +5077,21 @@ styleElement.textContent = `
   }
   .titlebar-tip-row[data-read="true"] {
     opacity: 0.72;
+  }
+  .titlebar-tip-row-notice {
+    cursor: pointer;
+    grid-template-columns: 28px minmax(0, 1fr);
+    text-align: left;
+    transition: background 120ms ease, border-color 120ms ease;
+    width: 100%;
+  }
+  .titlebar-tip-row-notice:hover {
+    background: rgba(245,158,11,0.06);
+    border-color: rgba(245,158,11,0.34);
+  }
+  .titlebar-tip-row-notice .titlebar-tip-icon {
+    background: rgba(245,158,11,0.14);
+    color: rgba(251,191,36,0.95);
   }
   .titlebar-tip-icon {
     align-items: center;

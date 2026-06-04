@@ -13,6 +13,8 @@ import {
   type GxserverAttachSessionMetadataResult,
   type GxserverCreateSessionParams,
   type GxserverEvent,
+  type GxserverForkSessionParams,
+  type GxserverForkSessionResult,
   type GxserverPresentationDelta,
   type GxserverPresentationSearchParams,
   type GxserverPresentationSearchResponse,
@@ -465,6 +467,20 @@ export function createNativeSidebarGxserverClient(
     return session;
   }
 
+  async function forkSession(
+    params: GxserverForkSessionParams,
+  ): Promise<GxserverForkSessionResult> {
+    /*
+    CDXC:GxserverForkSession 2026-06-04-07:42:
+    Native sidebar Fork delegates session creation and provider command construction to gxserver. The macOS app remains responsible only for placing the returned session in the clicked tab group.
+    */
+    const { fork } = await rpc<{ fork: GxserverForkSessionResult }>(
+      "/api/forkSession",
+      params as unknown as Record<string, unknown>,
+    );
+    return fork;
+  }
+
   function addProjectPathSync(params: { name?: string; path: string }): GxserverProjectDomainState {
     /*
     CDXC:GxserverProjectIdentity 2026-05-31-17:47:
@@ -539,6 +555,7 @@ export function createNativeSidebarGxserverClient(
     fetchAgentResumePlanSync,
     fetchAttachSessionMetadata,
     fetchHealth,
+    forkSession,
     installAgentHooks,
     fetchPresentationSnapshot,
     fetchStartupSnapshot,

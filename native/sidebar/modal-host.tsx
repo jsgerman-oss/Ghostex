@@ -115,6 +115,8 @@ type AppModalHostMessage =
       worktreeDeleteDraft?: WorktreeDeleteModalDraft;
       initialFrame?: FloatingPromptEditorFrame;
       initialSection?: MainSettingsInitialSectionId;
+      initialSearchQuery?: string;
+      initialTab?: SettingsModalTab;
       initialText?: string;
       lockedActionType?: SidebarActionType;
       language?: string;
@@ -1550,6 +1552,21 @@ function getSettingsInitialTab(modal: AppModalKind | undefined): SettingsModalTa
   return "settings";
 }
 
+function isSettingsModalTab(value: unknown): value is SettingsModalTab {
+  return (
+    value === "settings" ||
+    value === "ghostty" ||
+    value === "integrations" ||
+    value === "osIntegration" ||
+    value === "remote" ||
+    value === "projects" ||
+    value === "agents" ||
+    value === "actions" ||
+    value === "openTargets" ||
+    value === "hotkeys"
+  );
+}
+
 function readPromptAgentModalOverride(modal: PromptAgentModalKey): string | undefined {
   const value = localStorage.getItem(PROMPT_AGENT_MODAL_STORAGE_KEYS[modal])?.trim();
   return value || undefined;
@@ -1694,6 +1711,8 @@ function AppModalHost() {
     ghostexFolderStats,
     osIntegrationStatus,
     settingsInitialSection,
+    settingsInitialSearchQuery,
+    settingsInitialTabOverride,
   } = useModalStateFromNative();
   const [agentHookStatusLoading, setAgentHookStatusLoading] = useState(false);
   const [ghostexCliStatusLoading, setGhostexCliStatusLoading] = useState(false);
@@ -1726,7 +1745,7 @@ function AppModalHost() {
     settings?.defaultPromptAgentId,
   );
   const isSettingsRenderable = isSettingsModalKind(activeModal) && settings !== undefined;
-  const settingsInitialTab = getSettingsInitialTab(activeModal);
+  const settingsInitialTab = settingsInitialTabOverride ?? getSettingsInitialTab(activeModal);
   const isBaseActiveModalRenderable = isModalRenderable({
     activeModal,
     config,
@@ -2220,6 +2239,7 @@ function AppModalHost() {
         agentHookStatus={agentHookStatus}
         agentHookStatusLoading={agentHookStatusLoading}
         initialSection={settingsInitialSection}
+        initialSearchQuery={settingsInitialSearchQuery}
         initialTab={settingsInitialTab}
         isOpen={isSettingsRenderable}
         onChange={(nextSettings) => {
@@ -2580,6 +2600,8 @@ function useModalStateFromNative() {
   const [osIntegrationStatus, setOSIntegrationStatus] = useState<OSIntegrationStatusMessage>();
   const [settingsInitialSection, setSettingsInitialSection] =
     useState<MainSettingsInitialSectionId>();
+  const [settingsInitialSearchQuery, setSettingsInitialSearchQuery] = useState<string>();
+  const [settingsInitialTabOverride, setSettingsInitialTabOverride] = useState<SettingsModalTab>();
   const activeModalRef = useRef<AppModalKind | undefined>(activeModal);
   const toastTokenRef = useRef(0);
 
@@ -2604,6 +2626,8 @@ function useModalStateFromNative() {
     setOSIntegrationStatus(undefined);
     setAgentsHubCatalog(undefined);
     setSettingsInitialSection(undefined);
+    setSettingsInitialSearchQuery(undefined);
+    setSettingsInitialTabOverride(undefined);
   }, []);
 
   const closeModal = useCallback(() => {
@@ -2997,8 +3021,25 @@ function useModalStateFromNative() {
             setSettingsInitialSection(
               typeof message.initialSection === "string" ? message.initialSection : undefined,
             );
+            /**
+             * CDXC:SessionPersistence 2026-06-04-02:52:
+             * Titlebar Tips notices can open Settings directly to a searchable
+             * tab and pre-fill the query with a setting name. Carry that state
+             * through the full-window modal host instead of requiring titlebar
+             * code to know the Settings DOM.
+             */
+            setSettingsInitialSearchQuery(
+              typeof message.initialSearchQuery === "string"
+                ? message.initialSearchQuery
+                : undefined,
+            );
+            setSettingsInitialTabOverride(
+              isSettingsModalTab(message.initialTab) ? message.initialTab : undefined,
+            );
           } else {
             setSettingsInitialSection(undefined);
+            setSettingsInitialSearchQuery(undefined);
+            setSettingsInitialTabOverride(undefined);
           }
           if (message.modal !== "agentsHub") {
             setAgentsHubCatalog(undefined);
@@ -3196,6 +3237,8 @@ function useModalStateFromNative() {
     ghostexFolderStats,
     osIntegrationStatus,
     settingsInitialSection,
+    settingsInitialSearchQuery,
+    settingsInitialTabOverride,
   };
 }
 

@@ -292,8 +292,14 @@ export type NativeGhosttyHostCommand =
        * Sidebar status/title/icon updates must still reach native pane chrome,
        * but they must not be treated as geometry changes. This flag lets the
        * native host skip AppKit surface relayout when only metadata changed.
+       *
+       * CDXC:PaneTabs 2026-06-04-12:54:
+       * Tab owner selection is not full split geometry. The host needs a
+       * separate signal so it can surface the selected tab without reframing
+       * adjacent CEF/editor panes.
        */
       layoutChanged?: boolean;
+      paneOwnerSelectionChanged?: boolean;
       layout?: NativeTerminalLayout;
       paneGap?: number;
       /**
