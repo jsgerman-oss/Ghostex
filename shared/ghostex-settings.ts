@@ -577,8 +577,11 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   customWorkspaceOpenTargets: [],
   /**
    * CDXC:TitlebarOpenIn 2026-05-11-02:03
-   * First launch starts with only ghostex/Finder until the native sidebar performs
+   * First launch starts with only ghostex/Open Folder until the native sidebar performs
    * its one startup installed-target scan and persists the detected IDE list.
+   *
+   * CDXC:TitlebarOpenIn 2026-06-04-13:39:
+   * The default folder target should be described with OS-agnostic Open Folder copy even though the persisted target id remains finder for compatibility.
    */
   workspaceOpenTargetAvailability: DEFAULT_WORKSPACE_OPEN_TARGET_AVAILABILITY,
   workspaceOpenTargetHiddenIds: [],

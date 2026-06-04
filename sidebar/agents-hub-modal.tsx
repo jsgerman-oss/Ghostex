@@ -4,6 +4,7 @@ import {
   IconDeviceFloppy,
   IconEdit,
   IconFile,
+  IconFolderOpen,
   IconSearch,
   IconX,
 } from "@tabler/icons-react";
@@ -386,7 +387,10 @@ function GroupList({
 function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode: WebviewApi }) {
   /**
    * CDXC:AgentsHub 2026-05-15-15:41:
-   * Profile icon tooltips must keep the same profile label, instruction file path, optional resolved target path, and Finder action as the original tooltip, but render them as organized sections instead of a loose preformatted text block so dense path content remains scannable.
+   * Profile icon tooltips must keep the same profile label, instruction file path, optional resolved target path, and folder-opening action as the original tooltip, but render them as organized sections instead of a loose preformatted text block so dense path content remains scannable.
+   *
+   * CDXC:AgentsHub 2026-06-04-13:39:
+   * Filesystem actions in Agents Hub should use OS-agnostic "Open Folder" language so the shared modal does not expose Finder-specific copy outside macOS implementation details.
    */
   return (
     <div className="agents-hub-profile-row" aria-label="Profiles using this item">
@@ -398,7 +402,7 @@ function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode
             <TooltipTrigger
               render={
                 <button
-                  aria-label={`Open ${profile.label} profile in Finder`}
+                  aria-label={`Open ${profile.label} profile folder`}
                   className="agents-hub-agent-icon"
                   onClick={(event) => {
                     event.stopPropagation();
@@ -439,7 +443,7 @@ function ProfileRow({ profiles, vscode }: { profiles: AgentsHubProfile[]; vscode
                     <div className="agents-hub-profile-tooltip-path">{profile.targetPath}</div>
                   </div>
                 ) : null}
-                <div className="agents-hub-profile-tooltip-action">Click to open in Finder</div>
+                <div className="agents-hub-profile-tooltip-action">Click to open folder</div>
               </div>
             </TooltipContent>
           </Tooltip>
@@ -582,6 +586,24 @@ function EditorPane({
           <span className="agents-hub-path">{file.path}</span>
         </div>
         <div className="agents-hub-editor-actions">
+          {/*
+           * CDXC:AgentsHub 2026-06-04-13:39:
+           * The selected file header needs an explicit Open Folder action before the external-editor button so users can jump to the file's containing location without switching their configured code editor.
+           */}
+          <Button
+            onClick={() =>
+              vscode.postMessage({
+                path: file.path,
+                type: "openAgentsHubPathInFinder",
+              })
+            }
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <IconFolderOpen data-icon="inline-start" />
+            Open Folder
+          </Button>
           <Button
             onClick={() =>
               vscode.postMessage({

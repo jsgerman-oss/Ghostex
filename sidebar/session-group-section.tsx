@@ -1849,7 +1849,7 @@ export function SessionGroupSection({
                               event.stopPropagation();
                               openWorktreeModal();
                             }}
-                            tooltip="New Worktree"
+                            tooltip="Add Worktree"
                             type="button"
                           >
                             <IconGitBranch
@@ -2258,6 +2258,9 @@ export function SessionGroupSection({
                     {/*
                      * CDXC:WorktreeDelete 2026-05-28-07:46:
                      * Worktree project rows have their own compact context menu: open/reveal/rename first, then destructive worktree-specific actions. Delete removes the Git worktree checkout after confirmation; Remove only drops the Ghostex project row.
+                     *
+                     * CDXC:ProjectGroups 2026-06-04-13:39:
+                     * Project and worktree filesystem menu items should say Open Folder instead of Finder-specific copy so the macOS app presents OS-agnostic action names.
                      */}
                     <button
                       className="session-context-menu-item"
@@ -2283,7 +2286,7 @@ export function SessionGroupSection({
                         className="session-context-menu-icon"
                         size={14}
                       />
-                      Reveal in Finder
+                      Open Folder
                     </button>
                     <button
                       className="session-context-menu-item"
@@ -2375,7 +2378,7 @@ export function SessionGroupSection({
                         className="session-context-menu-icon"
                         size={14}
                       />
-                      Open in Finder
+                      Open Folder
                     </button>
                     <div className="session-context-menu-divider" role="separator" />
                     <button
