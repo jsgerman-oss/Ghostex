@@ -101,6 +101,7 @@ import {
   type PromptEditorBackend,
   SESSION_PERSISTENCE_PROVIDER_OPTIONS,
   SESSION_STATUS_INDICATOR_SIZE_OPTIONS,
+  SESSION_TITLE_GENERATION_AGENT_OPTIONS,
   SIDEBAR_SETTINGS_PRESETS,
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
@@ -120,6 +121,7 @@ import {
   type RemoteMachineSettings,
   type SessionPersistenceProvider,
   type SessionStatusIndicatorSize,
+  type SessionTitleGenerationAgent,
   type SidebarSettingsPresetId,
   type SidebarSide,
   type TerminalCursorStyle,
@@ -2976,7 +2978,9 @@ export function SettingsModal({
               agentHookStatus={agentHookStatus}
               agentHookStatusLoading={agentHookStatusLoading}
               agentAcceptAllEnabled={draft.agentAcceptAllEnabled}
+              customSessionTitleGenerationCommand={draft.customSessionTitleGenerationCommand}
               defaultPromptAgentId={draft.defaultPromptAgentId}
+              sessionTitleGenerationAgent={draft.sessionTitleGenerationAgent}
               onAgentAcceptAllEnabledChange={(checked) =>
                 applySettings({
                   ...draft,
@@ -2989,8 +2993,20 @@ export function SettingsModal({
                   defaultPromptAgentId: agentId,
                 })
               }
+              onCustomSessionTitleGenerationCommandChange={(command) =>
+                applySettings({
+                  ...draft,
+                  customSessionTitleGenerationCommand: command,
+                })
+              }
               onInstallAgentHooks={onInstallAgentHooks}
               onRequestAgentHookStatus={onRequestAgentHookStatus}
+              onSessionTitleGenerationAgentChange={(agent) =>
+                applySettings({
+                  ...draft,
+                  sessionTitleGenerationAgent: agent,
+                })
+              }
               vscode={vscode}
             />
           </TabsContent>
@@ -4141,21 +4157,29 @@ function AgentsSettingsTab({
   agentHookStatus,
   agentHookStatusLoading,
   agentAcceptAllEnabled,
+  customSessionTitleGenerationCommand,
   defaultPromptAgentId,
+  sessionTitleGenerationAgent,
   onAgentAcceptAllEnabledChange,
+  onCustomSessionTitleGenerationCommandChange,
   onDefaultPromptAgentIdChange,
   onInstallAgentHooks,
   onRequestAgentHookStatus,
+  onSessionTitleGenerationAgentChange,
   vscode,
 }: {
   agentHookStatus?: SidebarAgentHookStatusMessage;
   agentHookStatusLoading: boolean;
   agentAcceptAllEnabled: boolean;
+  customSessionTitleGenerationCommand: string;
   defaultPromptAgentId: string;
+  sessionTitleGenerationAgent: SessionTitleGenerationAgent;
   onAgentAcceptAllEnabledChange: (checked: boolean) => void;
+  onCustomSessionTitleGenerationCommandChange: (command: string) => void;
   onDefaultPromptAgentIdChange: (agentId: string) => void;
   onInstallAgentHooks?: () => void;
   onRequestAgentHookStatus?: () => void;
+  onSessionTitleGenerationAgentChange: (agent: SessionTitleGenerationAgent) => void;
   vscode?: WebviewApi;
 }) {
   const agents = useSidebarStore((state) => state.hud.agents);
@@ -4363,6 +4387,50 @@ function AgentsSettingsTab({
           <StaticNoteField
             description="Configure at least one CLI agent before selecting a default prompt agent."
             label="Default Prompt Agent"
+          />
+        ) : null}
+        {!editorState ? (
+          <>
+            {/*
+             * CDXC:GxserverSessionTitle 2026-06-04-08:24:
+             * First-prompt session-title generation needs its own agent selector instead of reusing Default Prompt Agent, because title generation is a gxserver-owned background job while prompt-launch defaults affect Git helpers, search prompts, project-board prompts, and worktree starts.
+             */}
+            <SelectField
+              description="Choose the headless agent Ghostex uses for first-prompt session title generation."
+              isModified={
+                sessionTitleGenerationAgent !==
+                DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent
+              }
+              label="Title Generation Agent"
+              onChange={(value) =>
+                onSessionTitleGenerationAgentChange(value as SessionTitleGenerationAgent)
+              }
+              onResetToDefault={() =>
+                onSessionTitleGenerationAgentChange(
+                  DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent,
+                )
+              }
+              options={SESSION_TITLE_GENERATION_AGENT_OPTIONS}
+              value={sessionTitleGenerationAgent}
+            />
+          </>
+        ) : null}
+        {!editorState && sessionTitleGenerationAgent === "custom" ? (
+          <TextField
+            description="Run this command with the title prompt on stdin. It should print only the title."
+            isModified={
+              customSessionTitleGenerationCommand !==
+              DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand
+            }
+            label="Custom Title Command"
+            onChange={onCustomSessionTitleGenerationCommandChange}
+            onResetToDefault={() =>
+              onCustomSessionTitleGenerationCommandChange(
+                DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand,
+              )
+            }
+            placeholder="title-generator"
+            value={customSessionTitleGenerationCommand}
           />
         ) : null}
         {!editorState ? (

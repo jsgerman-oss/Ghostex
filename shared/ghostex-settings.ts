@@ -56,6 +56,7 @@ export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large
 export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
+export type SessionTitleGenerationAgent = "codex" | "cursor" | "claude" | "custom";
 export type KeepAwakeDurationMinutes = 0 | 120 | 300;
 export type AutoSleepIdleMinutes = 5 | 10 | 15 | 30 | 60 | 120 | 300;
 export type RemoteMachineSettings = {
@@ -72,6 +73,15 @@ const MIN_GHOSTTY_SCROLLBACK_LIMIT_MB = 1;
 const MAX_GHOSTTY_SCROLLBACK_LIMIT_MB = 200;
 export const MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 40;
 export const MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 600;
+export const SESSION_TITLE_GENERATION_AGENT_OPTIONS: ReadonlyArray<{
+  label: string;
+  value: SessionTitleGenerationAgent;
+}> = [
+  { label: "Codex", value: "codex" },
+  { label: "Cursor", value: "cursor" },
+  { label: "Claude", value: "claude" },
+  { label: "Custom", value: "custom" },
+];
 
 export function clampCommandsPanelDefaultHeightPx(value: number): number {
   if (!Number.isFinite(value)) {
@@ -115,6 +125,15 @@ export type ghostexSettings = {
    * agent instead of hardcoding Codex in each launcher.
    */
   defaultPromptAgentId: string;
+  /**
+   * CDXC:GxserverSessionTitle 2026-06-04-08:24:
+   * First-prompt session-title generation is gxserver-owned, but Settings owns
+   * which headless agent command should produce those titles. Keep this scoped
+   * away from Default Prompt Agent so changing title generation does not alter
+   * Git prompts, worktree starts, project-board prompts, or search prompts.
+   */
+  sessionTitleGenerationAgent: SessionTitleGenerationAgent;
+  customSessionTitleGenerationCommand: string;
   browserFeedbackTool: BrowserFeedbackTool;
   browserOpenMode: BrowserOpenMode;
   codeServerLinkVscodeUserConfig: boolean;
@@ -296,6 +315,8 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
   agentAcceptAllEnabled: true,
   agentManagerZoomPercent: DEFAULT_AGENT_MANAGER_ZOOM_PERCENT,
   defaultPromptAgentId: "codex",
+  sessionTitleGenerationAgent: "codex",
+  customSessionTitleGenerationCommand: "",
   /**
    * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
    * Browser panes can inject either React Grab or Agentation for visual
@@ -784,6 +805,20 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
      */
     defaultPromptAgentId: normalizeDefaultPromptAgentId(
       readString(source, "defaultPromptAgentId", DEFAULT_ghostex_SETTINGS.defaultPromptAgentId),
+    ),
+    sessionTitleGenerationAgent: normalizeSessionTitleGenerationAgent(
+      readString(
+        source,
+        "sessionTitleGenerationAgent",
+        DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent,
+      ),
+    ),
+    customSessionTitleGenerationCommand: normalizeCustomSessionTitleGenerationCommand(
+      readString(
+        source,
+        "customSessionTitleGenerationCommand",
+        DEFAULT_ghostex_SETTINGS.customSessionTitleGenerationCommand,
+      ),
     ),
     /**
      * CDXC:BrowserFeedbackTools 2026-05-22-09:18:
@@ -1431,6 +1466,18 @@ function normalizeCustomDefaultEditorCommand(value: string | undefined): string 
 
 function normalizeDefaultPromptAgentId(value: string | undefined): string {
   return ((value ?? "").trim() || DEFAULT_ghostex_SETTINGS.defaultPromptAgentId).slice(0, 120);
+}
+
+function normalizeSessionTitleGenerationAgent(
+  value: string | undefined,
+): SessionTitleGenerationAgent {
+  return value === "cursor" || value === "claude" || value === "custom"
+    ? value
+    : DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent;
+}
+
+function normalizeCustomSessionTitleGenerationCommand(value: string | undefined): string {
+  return (value ?? "").trim().slice(0, 240);
 }
 
 function normalizeCustomPromptEditorCommand(value: string | undefined): string {

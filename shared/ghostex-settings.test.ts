@@ -89,6 +89,28 @@ describe("normalizeghostexSettings", () => {
     });
   });
 
+  test("normalizes the session title generation agent settings", () => {
+    /*
+    CDXC:GxserverSessionTitle 2026-06-04-08:24:
+    Settings exposes a separate first-prompt title generator choice so users can switch Codex, Cursor, Claude, or a custom command without changing the broader default prompt agent used by Git, board, worktree, or search prompts.
+    */
+    expect(DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent).toBe("codex");
+    expect(normalizeghostexSettings({})).toMatchObject({
+      customSessionTitleGenerationCommand: "",
+      sessionTitleGenerationAgent: "codex",
+    });
+    expect(normalizeghostexSettings({
+      customSessionTitleGenerationCommand: "  title-wrapper --json  ",
+      sessionTitleGenerationAgent: "custom",
+    })).toMatchObject({
+      customSessionTitleGenerationCommand: "title-wrapper --json",
+      sessionTitleGenerationAgent: "custom",
+    });
+    expect(normalizeghostexSettings({ sessionTitleGenerationAgent: "unknown" })).toMatchObject({
+      sessionTitleGenerationAgent: "codex",
+    });
+  });
+
   test("keeps untracked project diff lines off unless explicitly enabled", () => {
     expect(DEFAULT_ghostex_SETTINGS.showUntrackedProjectDiffWhenNoTrackedChanges).toBe(false);
     expect(normalizeghostexSettings({})).toMatchObject({
