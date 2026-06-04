@@ -216,7 +216,10 @@ import {
   createLocalPersistableSessionRecord,
   isGxserverBackedLocalPersistedSession,
 } from "./native-project-local-persistence";
-import { normalizeLiveCommandsPanelState } from "./native-command-panel-local-state";
+import {
+  createCommandsPanelOpenStatePatch,
+  normalizeLiveCommandsPanelState,
+} from "./native-command-panel-local-state";
 import { resolveNativeSessionInventoryOwnership } from "./native-session-inventory-ownership";
 import {
   compareRecentProjectsByClosedAt,
@@ -234,6 +237,7 @@ import {
   DEFAULT_ghostex_SETTINGS,
   getDefaultEditorCommandForSettings,
   normalizeghostexSettings,
+  type SessionTitleGenerationAgent,
   type SidebarSide,
   type ghostexSettings,
 } from "../../shared/ghostex-settings";
@@ -294,6 +298,7 @@ import type {
   GxserverAgentResumePlan,
   GxserverAgentSettings,
   GxserverAttachSessionMetadataResult,
+  GxserverCancelFirstPromptAutoTitleResult,
   GxserverPresentationDelta,
   GxserverPresentationProject,
   GxserverPresentationSearchResponse,
@@ -308,6 +313,7 @@ import type {
   GxserverSessionDomainState,
   GxserverSessionId,
   GxserverSessionRenameRequestResult,
+  GxserverSessionStateEventParams,
   GxserverSessionStateEventResult,
   GxserverSessionTitleProjection,
   GxserverTerminalTitleEventResult,
@@ -508,6 +514,12 @@ type NativeHostCommand =
       sessionFirstPromptTitleGenerationSessionIds?: string[];
       sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;
+      /**
+       * CDXC:PaneTabs 2026-06-04-20:36:
+       * The native tab moon represents an inactive zmx provider session, not
+       * whether AppKit currently has a terminal renderer mounted.
+       */
+      sessionZmxInactiveIds?: string[];
       keepAwake?: {
         activateOnExternalDisplay: boolean;
         activateOnLaunch: boolean;
@@ -552,6 +564,12 @@ type NativeHostCommand =
       sessionFirstPromptTitleGenerationSessionIds?: string[];
       sessionTitleBarActions?: Record<string, NativeTerminalTitleBarAction[]>;
       sessionTitles?: Record<string, string>;
+      /**
+       * CDXC:PaneTabs 2026-06-04-20:36:
+       * Keep zmx inactive tab markers in the narrow pane-chrome update path so
+       * provider liveness changes do not force a native layout sync.
+       */
+      sessionZmxInactiveIds?: string[];
       showSessionIdInTerminalPanes?: boolean;
       type: "setSessionPaneChrome";
     }
@@ -1189,6 +1207,7 @@ const projectEditorOpenTimeoutByProjectId = new Map<string, number>();
 let nativeAutoSleepMonitorIntervalId: number | undefined;
 let gxserverPresentationRecoveryTimeout: number | undefined;
 let gxserverPresentationRecoveryAttempt = 0;
+let lastGxserverPresentationTabReconciliationLogKey: string | undefined;
 const sessionFocusPreviousProjectModeByProjectId = new Map<string, ProjectEditorSurfaceMode>();
 const awakeProjectEditorModesByProjectId = new Map<string, Set<ProjectEditorSurfaceMode>>();
 const projectEditorSurfaceByProjectId = new Map<
@@ -2261,6 +2280,7 @@ async function refreshGxserverStartupSnapshot(reason: string): Promise<void> {
       previousProjectCount: previousSnapshot?.projects.length,
       projectCount: snapshot.projects.length,
       presentationSessionCount: snapshot.presentation?.sessions.length,
+      presentationVisibility: summarizeGxserverPresentationVisibility(snapshot.presentation),
       gxserverSharedStateSync: {
         ...gxserverSharedStateSync,
         restoredAgentSettings,
@@ -2584,6 +2604,14 @@ function applyGxserverPresentationSessionToNativePaneChrome(
     const nextAgentName = presentation.agentName ?? presentation.agentId;
     if (nextAgentName && terminalState.agentName !== nextAgentName) {
       terminalState.agentName = nextAgentName;
+      didChange = true;
+    }
+    if (terminalState.firstPromptAutoRenameInProgress !== presentation.isGeneratingFirstPromptTitle) {
+      /*
+      CDXC:GxserverSessionTitle 2026-06-04-07:11:
+      Presentation deltas carry the gxserver first-prompt title running state so macOS can clear the native overlay when generation applies, skips, or fails without reintroducing a sidebar-owned generation fallback.
+      */
+      terminalState.firstPromptAutoRenameInProgress = presentation.isGeneratingFirstPromptTitle;
       didChange = true;
     }
   }
@@ -11021,7 +11049,7 @@ function gxserverSearchResultToPreviousSessionItem(
   options: { historyIdPrefix?: string; projectNamePrefix?: string } = {},
 ): SidebarPreviousSessionItem {
   const title = result.primaryTitle || result.title || "Previous Session";
-  const closedAt = result.lastActiveAt ?? new Date().toISOString();
+  const closedAt = result.lastActiveAt ?? result.updatedAt ?? result.createdAt;
   const archivedRecord = {
     alias: title,
     agentName: result.agentId,
@@ -11037,6 +11065,9 @@ function gxserverSearchResultToPreviousSessionItem(
   /*
   CDXC:GxserverPresentationSearch 2026-06-01-22:06:
   Previous-session rows are dumb receivers of gxserver title projection. Preserve `isPrimaryTitleTerminalTitle` and terminal/primary title fields from search results so the shared card renderer only shows the `∗` unsynced marker for placeholders or non-persistent titles.
+
+  CDXC:PreviousSessions 2026-06-04-20:21:
+  Missing last-active metadata must not make stale history look active today. Use gxserver's durable updated/created timestamps as the closed-date fallback and reserve Last Active text for rows that actually have lastActiveAt.
   */
   return {
     activity: result.lifecycleState === "running" ? "idle" : "idle",
@@ -12670,9 +12701,10 @@ function addSessionToCommandsPanel(
       : appendCommandSessionToPaneLayout(panel.paneLayout, session.sessionId);
   return normalizeStoredCommandsPanelState({
     ...panel,
+    ...createCommandsPanelOpenStatePatch(panel, {
+      defaultHeightPx: settings.commandsPanelDefaultHeightPx,
+    }),
     activeSessionId: session.sessionId,
-    isVisible: true,
-    mode: panel.mode ?? "pinned",
     paneLayout,
     sessions,
   });
@@ -13883,6 +13915,7 @@ function createRemotePresentationSidebarSession(
 ): SidebarSessionItem {
   const lifecycleState = presentationLifecycleStateForSidebar(presentation.lifecycleState);
   const isLive = presentation.lifecycleState === "running";
+  const providerSessionState = providerSessionStateForGxserverPresentation(presentation.lifecycleState);
   const agentIcon = resolveNativeSidebarAgentIcon(presentation.agentIcon ?? presentation.agentName ?? presentation.agentId);
   return {
     activity: presentation.activity,
@@ -13892,6 +13925,7 @@ function createRemotePresentationSidebarSession(
     detail: presentation.subtitle,
     isFavorite: presentation.isFavorite,
     isFocused: false,
+    isGeneratingFirstPromptTitle: presentation.isGeneratingFirstPromptTitle,
     isLive,
     isPinned: presentation.isPinned,
     isPrimaryTitleTerminalTitle: presentation.isPrimaryTitleTerminalTitle,
@@ -13901,9 +13935,7 @@ function createRemotePresentationSidebarSession(
     lastInteractionAt: presentation.lastActiveAt ?? presentation.updatedAt,
     lifecycleState,
     primaryTitle: presentation.primaryTitle ?? presentation.title,
-    providerSessionState: presentation.lifecycleState === "running" || presentation.lifecycleState === "sleeping"
-      ? "exists"
-      : "missing",
+    providerSessionState,
     row: Math.floor(index / GRID_COLUMN_COUNT),
     sessionId: createRemotePresentationSessionId(machineId, projectId, presentation.sessionId),
     sessionKind: presentation.kind === "agent" ? "terminal" : presentation.kind,
@@ -14065,6 +14097,49 @@ function createPresentationSessionsByProjectFromGroups(
 
 function presentationSessionKey(projectId: string, sessionId: string): string {
   return `${projectId}\u0000${sessionId}`;
+}
+
+function summarizeGxserverPresentationVisibility(
+  presentation: GxserverPresentationSnapshot | undefined,
+): Record<string, unknown> {
+  if (!presentation) {
+    return { hasPresentation: false };
+  }
+  const lifecycleCounts: Record<string, number> = {};
+  let commandSurfaceCount = 0;
+  let locallyHiddenSessionCount = 0;
+  let workspaceDefaultVisibleCount = 0;
+  let workspaceFilteredCount = 0;
+  for (const session of presentation.sessions) {
+    lifecycleCounts[session.lifecycleState] = (lifecycleCounts[session.lifecycleState] ?? 0) + 1;
+    if (session.surface === "commands") {
+      commandSurfaceCount += 1;
+    }
+    if (isGxserverPresentationSessionLocallyHidden(session.projectId, session.sessionId)) {
+      locallyHiddenSessionCount += 1;
+    }
+    if (session.surface === "workspace" && session.visibleInSidebarByDefault === true) {
+      workspaceDefaultVisibleCount += 1;
+    } else if (session.surface === "workspace") {
+      workspaceFilteredCount += 1;
+    }
+  }
+  /*
+  CDXC:GxserverPresentationDiagnostics 2026-06-04-19:39:
+  Startup tab/sidebar mismatch repros need to prove whether gxserver omitted a row, projected it as a command surface, locally hid it, or marked it not visible by default. Keep the summary count-only so support can compare presentation inventory with native tab inventory without logging titles, paths, commands, or user text.
+  */
+  return {
+    commandSurfaceCount,
+    groupCount: presentation.groups.length,
+    hasPresentation: true,
+    lifecycleCounts,
+    locallyHiddenSessionCount,
+    projectCount: presentation.projects.length,
+    revision: presentation.revision,
+    sessionCount: presentation.sessions.length,
+    workspaceDefaultVisibleCount,
+    workspaceFilteredCount,
+  };
 }
 
 function createPresentationQuickSidebarSessions(
@@ -14264,9 +14339,7 @@ function createPresentationSidebarSession(
   );
   const nativePaneState = getNativePaneStateForSession(presentation.sessionId);
   const lifecycleState = presentationLifecycleStateForSidebar(presentation.lifecycleState);
-  const providerSessionState = presentation.lifecycleState === "running" || presentation.lifecycleState === "sleeping"
-    ? "exists"
-    : "missing";
+  const providerSessionState = providerSessionStateForGxserverPresentation(presentation.lifecycleState);
   const isLive = presentation.lifecycleState === "running";
   const agentIcon = resolveNativeSidebarAgentIcon(presentation.agentIcon ?? presentation.agentName ?? presentation.agentId);
   return {
@@ -14278,6 +14351,7 @@ function createPresentationSidebarSession(
     detail: presentation.subtitle,
     isFavorite: presentation.isFavorite,
     isFocused,
+    isGeneratingFirstPromptTitle: presentation.isGeneratingFirstPromptTitle,
     isLive,
     isPinned: presentation.isPinned,
     isPrimaryTitleTerminalTitle: presentation.isPrimaryTitleTerminalTitle,
@@ -14327,6 +14401,28 @@ function presentationLifecycleStateForSidebar(
     case "stopped":
     default:
       return "done";
+  }
+}
+
+function providerSessionStateForGxserverPresentation(
+  lifecycleState: GxserverPresentationSession["lifecycleState"],
+): NonNullable<SidebarSessionItem["providerSessionState"]> {
+  /*
+  CDXC:PaneTabs 2026-06-04-20:36:
+  Native tab moons follow zmx provider liveness, not mounted renderer state.
+  gxserver sleep/stop transitions kill the named zmx provider session, while
+  `unknown` means the client should avoid claiming the provider is inactive.
+  */
+  switch (lifecycleState) {
+    case "running":
+      return "exists";
+    case "sleeping":
+    case "missing":
+    case "stopped":
+      return "missing";
+    case "unknown":
+    default:
+      return "unknown";
   }
 }
 
@@ -18261,9 +18357,9 @@ function openCommandsPanelForActiveProject(): void {
   rememberActiveProjectWorkspaceTerminalBeforeCommandsPanel("openCommandsPanel");
   updateActiveProjectCommandsPanel((panel) => ({
     ...panel,
-    isVisible: true,
-    mode: panel.mode ?? "pinned",
-    heightRatio: resolveCommandsPanelDefaultHeightRatio(),
+    ...createCommandsPanelOpenStatePatch(panel, {
+      defaultHeightPx: settings.commandsPanelDefaultHeightPx,
+    }),
   }));
   const activeCommandSessionId = activeProject().commandsPanel.activeSessionId;
   if (!activeCommandSessionId) {
@@ -19151,6 +19247,8 @@ async function syncGxserverSessionStateEvent(
     agentName?: string;
     agentSessionId?: string;
     agentSessionPath?: string;
+    firstPromptTitleGenerationAgent?: GxserverSessionStateEventParams["firstPromptTitleGenerationAgent"];
+    firstPromptTitleGenerationCommand?: string;
     firstUserMessage?: string;
     title?: string;
     titleSource?: TerminalSessionRecord["titleSource"];
@@ -19195,6 +19293,20 @@ function applyGxserverSessionStateEventResult(
   const nextAgentName = textValue(result.session.agentId) ?? textValue(result.session.runtimeSettings.agentName);
   const nextAgentSessionId = textValue(result.session.runtimeSettings.agentSessionId);
   const nextAgentSessionPath = textValue(result.session.runtimeSettings.agentSessionPath);
+  const nextFirstPromptTitleGenerationInProgress = readGxserverFirstPromptTitleGenerationRunning(
+    result.session.runtimeSettings,
+  );
+  if (
+    nextFirstPromptTitleGenerationInProgress !== undefined &&
+    terminalState.firstPromptAutoRenameInProgress !== nextFirstPromptTitleGenerationInProgress
+  ) {
+    /*
+    CDXC:GxserverSessionTitle 2026-06-04-07:11:
+    gxserver now owns first-prompt title generation. Mirror its running status into the legacy native flag immediately after ingest so the existing sidebar card animation and AppKit terminal overlay appear as soon as gxserver claims the job, then clear when later gxserver responses report a terminal status.
+    */
+    terminalState.firstPromptAutoRenameInProgress = nextFirstPromptTitleGenerationInProgress;
+    didChange = true;
+  }
   if (nextAgentName && terminalState.agentName !== nextAgentName) {
     terminalState.agentName = nextAgentName;
     setTerminalSessionAgentName(sessionId, nextAgentName);
@@ -19382,6 +19494,20 @@ type NativePersistedSessionState = {
   title?: string;
 };
 
+function readGxserverFirstPromptTitleGenerationRunning(
+  runtimeSettings: Record<string, unknown> | undefined,
+): boolean | undefined {
+  /*
+  CDXC:GxserverSessionTitle 2026-06-04-07:11:
+  Direct gxserver state-event responses should mutate the legacy native overlay flag only when gxserver includes an explicit first-prompt title status. `running` starts the overlay, terminal statuses clear it, and unrelated missing statuses leave any separate local loading flow alone.
+  */
+  const status = textValue(runtimeSettings?.gxserverFirstPromptAutoTitleStatus);
+  if (!status) {
+    return undefined;
+  }
+  return status === "running";
+}
+
 async function pollNativeFirstPromptAutoRenameSessions(): Promise<void> {
   for (const [sessionId, terminalState] of terminalStateById.entries()) {
     if (
@@ -19487,11 +19613,18 @@ async function processNativeFirstPromptAutoRename(
   /*
   CDXC:GxserverSessionTitle 2026-06-04-04:05:
   macOS no longer generates first-prompt titles or submits `/rename` from the sidebar poller. Legacy state-file hooks are only an observation bridge; gxserver receives the agent identity and first prompt, then owns eligibility, generation, persistence, and command submission for every client surface.
+
+  CDXC:GxserverSessionTitle 2026-06-04-08:24:
+  Settings owns the user's title-generation agent choice, while gxserver owns the title job. Forward the selected built-in/custom command with the observed first prompt so the server can generate names through Cursor, Claude, Codex, or a user command without moving generation back into the sidebar.
   */
   await syncGxserverSessionStateEvent(sessionId, {
     agentName: persistedState.agentName || terminalState.agentName,
     agentSessionId: persistedState.agentSessionId || terminalState.agentSessionId,
     agentSessionPath: persistedState.agentSessionPath || terminalState.agentSessionPath,
+    firstPromptTitleGenerationAgent: settings.sessionTitleGenerationAgent,
+    firstPromptTitleGenerationCommand: resolveSessionTitleGenerationCommandForGxserver(
+      settings.sessionTitleGenerationAgent,
+    ),
     firstUserMessage: firstPromptForGxserver,
     title: persistedState.title,
     titleSource: persistedState.title ? "terminal-auto" : undefined,
@@ -19504,16 +19637,45 @@ async function processNativeFirstPromptAutoRename(
   });
 }
 
+function resolveSessionTitleGenerationCommandForGxserver(
+  agent: SessionTitleGenerationAgent,
+): string | undefined {
+  if (agent === "custom") {
+    return settings.customSessionTitleGenerationCommand.trim();
+  }
+  return resolveSidebarAgentButtonById(agent)?.command?.trim() || undefined;
+}
+
 async function cancelNativeFirstPromptAutoRename(sessionId: string): Promise<void> {
   const terminalState = terminalStateById.get(sessionId);
   if (!terminalState?.firstPromptAutoRenameInProgress) {
     return;
   }
+  const reference = resolveSidebarSessionReference(sessionId);
   terminalState.firstPromptAutoRenameActivePrompt = undefined;
   terminalState.firstPromptAutoRenameGenerationId = undefined;
   terminalState.firstPromptAutoRenameInProgress = false;
   terminalState.firstPromptAutoRenameLastLogKey = undefined;
   publish();
+  try {
+    const result = await gxserverClient.rpc<GxserverCancelFirstPromptAutoTitleResult>(
+      "/api/cancelFirstPromptAutoTitle",
+      {
+        projectId: reference.project.projectId,
+        reason: "escape",
+        sessionId: reference.sessionId,
+      },
+    );
+    if (result.session.runtimeSettings.gxserverFirstPromptAutoTitleStatus === "cancelled") {
+      terminalState.firstPromptAutoRenameInProgress = false;
+      publish();
+    }
+  } catch (error) {
+    appendSessionTitleGenerationErrorLog("nativeSidebar.firstPromptAutoRename.cancelFailed", {
+      error: error instanceof Error ? error.message : String(error),
+      sessionId,
+    });
+  }
   appendSessionTitleDebugLog("nativeSidebar.firstPromptAutoRename.cancelled", {
     pendingPromptCleared: false,
     reason: "gxserver-owned",
@@ -25154,8 +25316,10 @@ function runNativeSidebarCommand(
     );
     updateActiveProjectCommandsPanel((panel) => ({
       ...panel,
+      ...createCommandsPanelOpenStatePatch(panel, {
+        defaultHeightPx: settings.commandsPanelDefaultHeightPx,
+      }),
       activeSessionId: reusableSession.sessionId,
-      isVisible: true,
     }));
     setNativeSidebarCommandPaneTitle(reusableSession.sessionId, sessionTitle);
     setNativeSidebarCommandSession(command, reusableSession.sessionId, closeOnExit, runId);
@@ -29083,7 +29247,15 @@ for plugins_root in [p(".codex-profiles"), p(".claude-profiles")]:
 
 hooks_root = home / "agents" / "hooks"
 add_group("hooks", "hooks-shared", "Shared hooks", hooks_root, "Shared hook scripts and documentation used by agent profiles.", walk_files(hooks_root, 3, lambda path: path.suffix in text_suffixes), [*linked_profiles, pi_agent])
+#
+# CDXC:AgentsHub 2026-06-04-19:45:
+# Hook-specific files must be findable from the Hooks tab even when an agent stores them as JSON config files. Keep discrete hook files out of Configs so tab-scoped search and browsing match the user's hook-management intent in the macOS app.
+#
+add_group("hooks", "hooks-codex-main", "Codex main hooks", p(".codex"), "Global Codex hook configuration.", existing([p(".codex", "hooks.json")]), [main_codex])
 add_group("hooks", "hooks-codex-profiles", "Codex profile hooks", p(".codex-profiles"), "hooks.json files owned by Codex profiles.", walk_files(p(".codex-profiles"), 2, lambda path: path.name == "hooks.json"), [item for item in profiles if item["agentIcon"] == "codex"])
+add_group("hooks", "hooks-cursor-main", "Cursor hooks", p(".cursor"), "Cursor Agent hook configuration.", existing([p(".cursor", "hooks.json")]), [])
+add_group("hooks", "hooks-antigravity-main", "Antigravity hooks", p(".gemini", "config"), "Antigravity hook configuration.", existing([p(".gemini", "config", "hooks.json")]), [])
+add_group("hooks", "hooks-grok-main", "Grok hooks", p(".grok", "hooks"), "Grok hook configuration.", existing([p(".grok", "hooks", "ghostex-session.json")]), [])
 add_group("hooks", "hooks-pi-agent", "Pi extensions", p(".pi", "agent"), "Pi agent extension hooks and settings-adjacent TypeScript files.", walk_files(p(".pi", "agent", "extensions"), 2, lambda path: path.suffix in {".ts", ".js", ".json"}), [pi_agent])
 
 add_group("configs", "config-shared-agents", "Shared agent config", p(".agents"), "Shared agent lock and setup files.", walk_files(p(".agents"), 1, lambda path: path.name.endswith(".json")), linked_profiles)
@@ -29092,11 +29264,11 @@ for item in [profile_item for profile_item in profiles if profile_item["agentIco
     root = Path(item["profilePath"])
     files = existing([root / ".claude.json", root / "settings.json", root / "settings.local.json", root / "policy-limits.json", root / "stats-cache.json", root / "plugins" / "installed_plugins.json", root / "plugins" / "known_marketplaces.json", root / "plugins" / "blocklist.json"])
     add_group("configs", f"config-claude-{file_id(root)}", f"Claude {root.name} configs", root, "Claude profile-owned config and plugin registry files.", files, [item])
-add_group("configs", "config-codex-main", "Codex main configs", p(".codex"), "Global Codex TOML and hook configuration.", existing([p(".codex", "config.toml"), p(".codex", "hooks.json")]), [main_codex])
+add_group("configs", "config-codex-main", "Codex main configs", p(".codex"), "Global Codex TOML configuration.", existing([p(".codex", "config.toml")]), [main_codex])
 for item in [profile_item for profile_item in profiles if profile_item["agentIcon"] == "codex" and "-profiles" in profile_item["profilePath"]]:
     root = Path(item["profilePath"])
-    files = existing([root / "config.toml", root / "hooks.json", root / ".codex-global-state.json", root / "browser" / "config.toml", root / "plugins" / "installed_plugins.json", root / "plugins" / "known_marketplaces.json", root / "plugins" / "blocklist.json"])
-    add_group("configs", f"config-codex-{file_id(root)}", f"Codex {root.name} configs", root, "Codex profile-owned config, hook, browser, and plugin registry files.", files, [item])
+    files = existing([root / "config.toml", root / ".codex-global-state.json", root / "browser" / "config.toml", root / "plugins" / "installed_plugins.json", root / "plugins" / "known_marketplaces.json", root / "plugins" / "blocklist.json"])
+    add_group("configs", f"config-codex-{file_id(root)}", f"Codex {root.name} configs", root, "Codex profile-owned config, browser, and plugin registry files.", files, [item])
 add_group("configs", "config-opencode", "OpenCode configs", Path(open_code["profilePath"]), "OpenCode JSON, package, and plugin files.", walk_files(Path(open_code["profilePath"]), 2, lambda path: path.name in {"opencode.json", "tui.json", "package.json"} or (path.parent.name == "plugin" and path.suffix == ".js")), [open_code])
 add_group("configs", "config-pi", "Pi configs", Path(pi_agent["profilePath"]), "Pi agent settings and local extension files.", walk_files(Path(pi_agent["profilePath"]), 2, lambda path: path.suffix in {".json", ".ts", ".js"} and path.name != "auth.json"), [pi_agent])
 
@@ -34040,6 +34212,7 @@ function postNativeLayoutSync(
         command.sessionFirstPromptTitleGenerationSessionIds,
       sessionTitleBarActions: command.sessionTitleBarActions,
       sessionTitles: command.sessionTitles,
+      sessionZmxInactiveIds: command.sessionZmxInactiveIds,
       showSessionIdInTerminalPanes: command.showSessionIdInTerminalPanes,
       type: "setSessionPaneChrome",
     });
@@ -34071,11 +34244,31 @@ function createNativeNonPaneChromeCommandSyncKey(command: NativeSetActiveTermina
       _sessionFirstPromptTitleGenerationSessionIds,
     sessionTitleBarActions: _sessionTitleBarActions,
     sessionTitles: _sessionTitles,
+    sessionZmxInactiveIds: _sessionZmxInactiveIds,
     showSessionIdInTerminalPanes: _showSessionIdInTerminalPanes,
     titlebarResourceGroups: _titlebarResourceGroups,
     ...nonPaneChromeCommand
   } = command;
   return JSON.stringify(normalizeNativeLayoutSyncValue(nonPaneChromeCommand));
+}
+
+function shouldShowNativeTabZmxInactiveMarker(
+  session: Pick<
+    SidebarSessionItem,
+    "providerSessionState" | "sessionKind" | "sessionPersistenceProvider"
+  >,
+): boolean {
+  /*
+  CDXC:PaneTabs 2026-06-04-20:36:
+  The tab moon must mean the named zmx provider session is absent. Do not use
+  native pane sleep/unmount state here because background tabs can be renderer-
+  inactive while their zmx session is still alive.
+  */
+  return (
+    session.sessionKind === "terminal" &&
+    session.sessionPersistenceProvider === "zmx" &&
+    session.providerSessionState === "missing"
+  );
 }
 
 function getNativeCommandPaneTabActivity(
@@ -34138,6 +34331,60 @@ function getNativePaneProjectedSessionTitle(
   session: SidebarSessionItem | undefined,
 ): string | undefined {
   return session?.primaryTitle ?? session?.terminalTitle ?? session?.alias;
+}
+
+function maybeLogGxserverPresentationTabReconciliation(input: {
+  commandPanelVisibleSessions: readonly SessionRecord[];
+  forceLayout: boolean;
+  sidebarSessionsByNativeId: ReadonlyMap<string, SidebarSessionItem>;
+  visibleSessions: readonly SessionRecord[];
+}): void {
+  const workspaceNativeSessionIds = input.visibleSessions.map((session) =>
+    nativeSessionIdForSidebarSession(session.sessionId),
+  );
+  const commandNativeSessionIds = input.commandPanelVisibleSessions.map((session) =>
+    nativeSessionIdForSidebarSession(session.sessionId),
+  );
+  const missingWorkspaceNativeSessionIds = workspaceNativeSessionIds.filter(
+    (sessionId) => !input.sidebarSessionsByNativeId.has(sessionId),
+  );
+  const hasPresentation = gxserverStartupSnapshot?.presentation !== undefined;
+  const shouldLog =
+    (!hasPresentation && (workspaceNativeSessionIds.length > 0 || commandNativeSessionIds.length > 0)) ||
+    missingWorkspaceNativeSessionIds.length > 0;
+  if (!shouldLog) {
+    return;
+  }
+  const presentation = gxserverStartupSnapshot?.presentation;
+  const logKey = JSON.stringify({
+    commandNativeSessionCount: commandNativeSessionIds.length,
+    forceLayout: input.forceLayout,
+    hasPresentation,
+    missingWorkspaceNativeSessionIds,
+    revision: presentation?.revision,
+    state: currentGxserverStatus.state,
+    workspaceNativeSessionCount: workspaceNativeSessionIds.length,
+  });
+  if (logKey === lastGxserverPresentationTabReconciliationLogKey) {
+    return;
+  }
+  lastGxserverPresentationTabReconciliationLogKey = logKey;
+  /*
+  CDXC:GxserverPresentationDiagnostics 2026-06-04-19:39:
+  When users see native Terminal/Agent tabs that are absent from the sidebar, support needs the exact ownership split: local AppKit tab inventory versus gxserver presentation-backed sidebar inventory. Log only IDs, counts, gxserver status, and visibility summaries, and de-duplicate identical states so routine publish/layout passes do not flood the debug log.
+  */
+  appendSidebarRefreshDebugLog("nativeSidebar.gxserver.presentationTabReconciliation.mismatch", {
+    commandNativeSessionCount: commandNativeSessionIds.length,
+    forceLayout: input.forceLayout,
+    gxserverOk: currentGxserverStatus.ok === true,
+    gxserverState: currentGxserverStatus.state ?? "unknown",
+    hasPresentation,
+    missingWorkspaceNativeSessionCount: missingWorkspaceNativeSessionIds.length,
+    missingWorkspaceNativeSessionIds,
+    presentationVisibility: summarizeGxserverPresentationVisibility(presentation),
+    sidebarProjectedNativeSessionCount: input.sidebarSessionsByNativeId.size,
+    workspaceNativeSessionCount: workspaceNativeSessionIds.length,
+  });
 }
 
 function syncNativeLayout(
@@ -34208,6 +34455,12 @@ function syncNativeLayout(
     commandsPanel.activeSessionId && commandPanelVisibleSessionIds.has(commandsPanel.activeSessionId)
     ? nativeSessionIdForSidebarSession(commandsPanel.activeSessionId)
     : undefined;
+  maybeLogGxserverPresentationTabReconciliation({
+    commandPanelVisibleSessions,
+    forceLayout: options.force === true,
+    sidebarSessionsByNativeId,
+    visibleSessions,
+  });
   const workspaceSleepingSessionIds = visibleSessions
     .filter((session) => session.isSleeping === true)
     .map((session) => nativeSessionIdForSidebarSession(session.sessionId));
@@ -34233,6 +34486,7 @@ function syncNativeLayout(
   const sessionFirstPromptTitleGenerationSessionIds: string[] = [];
   const sessionTitleBarActions: Record<string, NativeTerminalTitleBarAction[]> = {};
   const sessionTitles: Record<string, string> = {};
+  const sessionZmxInactiveIds: string[] = [];
   const poppedOutSessionIds: string[] = [];
   for (const session of [...visibleSessions, ...commandPanelVisibleSessions]) {
     const nativeSessionId = nativeSessionIdForSidebarSession(session.sessionId);
@@ -34268,8 +34522,8 @@ function syncNativeLayout(
     if (session.isPoppedOut === true && session.isSleeping !== true) {
       poppedOutSessionIds.push(nativeSessionId);
     }
-    if (session.isSleeping === true) {
-      sessionActivities[nativeSessionId] = "sleeping";
+    if (projectedSidebarSession && shouldShowNativeTabZmxInactiveMarker(projectedSidebarSession)) {
+      sessionZmxInactiveIds.push(nativeSessionId);
     }
     /**
      * CDXC:PaneTabs 2026-05-15-15:43:
@@ -34494,6 +34748,7 @@ function syncNativeLayout(
     sessionFirstPromptTitleGenerationSessionIds,
     sessionFaviconDataUrls,
     sessionActivities,
+    sessionZmxInactiveIds,
     sleepingSessionIds,
     keepAwake: {
       activateOnExternalDisplay: settings.keepAwakeActivateOnExternalDisplay,

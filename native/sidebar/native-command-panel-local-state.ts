@@ -60,6 +60,23 @@ export function normalizeLiveCommandsPanelState(
   };
 }
 
+export function createCommandsPanelOpenStatePatch(
+  panel: CommandsPanelState,
+  options: { defaultHeightPx?: number; workspaceHeightPx?: number } = {},
+): Pick<CommandsPanelState, "heightRatio" | "isVisible" | "mode"> {
+  /*
+  CDXC:CommandsPanel 2026-06-04-18:50:
+  Opening a hidden Commands panel from F12, titlebar Actions, or command-tab launch should restore the Command Pane Default Height from Settings. If the panel is already visible, preserve the user's live resize instead of snapping the panel while adding or reusing a command tab.
+  */
+  return {
+    heightRatio: panel.isVisible
+      ? panel.heightRatio
+      : resolveDefaultCommandsPanelHeightRatio(options.workspaceHeightPx, options.defaultHeightPx),
+    isVisible: true,
+    mode: normalizeCommandsPanelMode(panel.mode),
+  };
+}
+
 function normalizeCommandsPanelMode(mode: unknown): CommandsPanelMode {
   return mode === "floating" ? "floating" : "pinned";
 }

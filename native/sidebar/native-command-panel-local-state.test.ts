@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import type { CommandsPanelState, TerminalSessionRecord } from "../../shared/session-grid-contract";
-import { normalizeLiveCommandsPanelState } from "./native-command-panel-local-state";
+import {
+  createCommandsPanelOpenStatePatch,
+  normalizeLiveCommandsPanelState,
+} from "./native-command-panel-local-state";
 
 describe("native command panel local state", () => {
   test("preserves live local command tab fields without restoring legacy command sessions", () => {
@@ -78,6 +81,56 @@ describe("native command panel local state", () => {
       surface: "commands",
       title: "Build",
       titleSource: "user",
+    });
+  });
+
+  test("opens hidden command panels at the configured default height", () => {
+    /*
+    CDXC:CommandsPanel 2026-06-04-18:50:
+    Titlebar Action launches must use Command Pane Default Height when revealing a hidden Commands panel, matching F12 and resize-rail reset behavior.
+    */
+    const state: CommandsPanelState = {
+      activeSessionId: "G1abc",
+      heightRatio: 0.75,
+      isVisible: false,
+      mode: "floating",
+      sessions: [],
+    };
+
+    const patch = createCommandsPanelOpenStatePatch(state, {
+      defaultHeightPx: 180,
+      workspaceHeightPx: 600,
+    });
+
+    expect(patch).toEqual({
+      heightRatio: 0.3,
+      isVisible: true,
+      mode: "floating",
+    });
+  });
+
+  test("preserves visible command panel height while selecting or adding command tabs", () => {
+    /*
+    CDXC:CommandsPanel 2026-06-04-18:50:
+    Running another titlebar Action while the Commands panel is already visible should not undo the user's live command-pane resize.
+    */
+    const state: CommandsPanelState = {
+      activeSessionId: "G1abc",
+      heightRatio: 0.42,
+      isVisible: true,
+      mode: "pinned",
+      sessions: [],
+    };
+
+    const patch = createCommandsPanelOpenStatePatch(state, {
+      defaultHeightPx: 180,
+      workspaceHeightPx: 600,
+    });
+
+    expect(patch).toEqual({
+      heightRatio: 0.42,
+      isVisible: true,
+      mode: "pinned",
     });
   });
 });

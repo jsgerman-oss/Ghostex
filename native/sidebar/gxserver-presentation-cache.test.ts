@@ -65,6 +65,7 @@ function session(
     createdAt: "2026-06-02T07:18:00.000Z",
     groupId: "Pmain:active",
     isFavorite: false,
+    isGeneratingFirstPromptTitle: false,
     isPinned: false,
     isPrimaryTitleTerminalTitle: false,
     isTemporaryTitle: false,
