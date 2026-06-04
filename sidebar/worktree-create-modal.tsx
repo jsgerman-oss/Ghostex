@@ -114,12 +114,12 @@ export function WorktreeCreateModal({
    *
    * CDXC:AppModals 2026-05-29-19:44:
    * Session attention/activity can refresh app-modal props while a user is
-   * typing. The New Worktree draft is initialized only when the modal opens;
+   * typing. The Add Worktree draft is initialized only when the modal opens;
    * later agent-list updates may repair an invalid selection but must not clear
    * the prompt, images, or a still-valid selected agent.
    *
    * CDXC:WorktreeProjectRegistration 2026-06-01-20:59:
-   * New Worktree supports creating a fresh checkout or opening an existing Git
+   * Add Worktree supports creating a fresh checkout or opening an existing Git
    * worktree from the same machine. The existing-worktree list is requested when
    * the modal opens and submit carries the selected path so native registers and
    * opens it through gxserver.
@@ -341,7 +341,7 @@ export function WorktreeCreateModal({
       >
         <form className="session-rename-form worktree-create-form" onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle className="text-xl">New Worktree</DialogTitle>
+            <DialogTitle className="text-xl">Add Worktree</DialogTitle>
             <DialogDescription>
               Start a worktree from {projectName?.trim() || "this project"}.
             </DialogDescription>
