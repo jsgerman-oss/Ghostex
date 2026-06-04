@@ -2662,7 +2662,7 @@ function buildGxserverFirstPromptTitleGenerationCommand(input: {
 }): string {
   /*
   CDXC:GxserverSessionTitle 2026-06-04-08:24:
-  Settings can select Codex, Cursor, Claude, or a custom title generator for gxserver-owned first-prompt titles. Keep Codex on the existing low-reasoning `gpt-5.4-mini` command, pass the prompt over stdin for heredoc-friendly CLIs, and let Cursor use its print mode so the background job receives title text on stdout without opening an interactive pane.
+  Settings can select Codex, Cursor, Claude, or a custom title generator for gxserver-owned first-prompt titles. Keep Codex on the existing low-reasoning `gpt-5.4-mini` command, use Claude's Haiku alias for this short summarization task, pass the prompt over stdin for heredoc-friendly CLIs, and let Cursor use print plus YOLO mode so the background job receives title text on stdout without opening an interactive pane.
   */
   switch (input.agent) {
     case "codex":
@@ -2674,11 +2674,15 @@ function buildGxserverFirstPromptTitleGenerationCommand(input: {
     case "cursor":
       return [
         input.command,
-        "--print --mode ask --trust --output-format text",
+        "--print --yolo --trust --output-format text",
         quoteGxserverShellArg(input.prompt),
       ].join(" ");
     case "claude":
-      return createGxserverHereDocCommand(`${input.command} -p`, input.delimiter, input.prompt);
+      return createGxserverHereDocCommand(
+        `${input.command} -p --model haiku`,
+        input.delimiter,
+        input.prompt,
+      );
     case "custom":
       return createGxserverHereDocCommand(input.command, input.delimiter, input.prompt);
   }
