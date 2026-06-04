@@ -47,10 +47,12 @@ import type {
 } from "../shared/session-grid-contract";
 import {
   DEFAULT_ghostex_SETTINGS,
+  SESSION_TITLE_GENERATION_AGENT_OPTIONS,
   SIDEBAR_SETTINGS_PRESETS,
   applySidebarSettingsPreset,
   getSidebarSettingsPresetId,
   normalizeghostexSettings,
+  type SessionTitleGenerationAgent,
   type SidebarSettingsPresetId,
   type ghostexSettings,
 } from "../shared/ghostex-settings";
@@ -719,6 +721,12 @@ type FirstLaunchHookStatusGroup = {
  * CLI setup no longer silently installs bundled skills. First launch includes a
  * dedicated skills page so users explicitly choose Browser Use, Computer Use,
  * Agent Orchestration, and Generate Title with a short explanation for each one.
+ *
+ * CDXC:FirstLaunchPreferences 2026-06-04-21:02:
+ * New users need the same first-prompt title-generation agent choice available
+ * in Settings before their first automatic title job runs. Keep the first-time
+ * modal wired to the shared Settings fields so Codex, Cursor, Claude, and
+ * Custom stay consistent across onboarding and Settings.
  */
 export function FirstLaunchSetupModal({
   agentHookStatus,
@@ -1113,6 +1121,55 @@ function FirstLaunchPreferencesPage({
               ))}
             </select>
           </label>
+        </article>
+
+        <article className="first-launch-setup-preference-card">
+          <label className="first-launch-setup-preference-select-label">
+            <span className="first-launch-setup-preference-heading">
+              <span className="first-launch-setup-preference-icon">
+                <IconSparkles aria-hidden="true" size={16} />
+              </span>
+              <span>
+                <span className="first-launch-setup-preference-title">
+                  Title generation agent
+                </span>
+                <span className="first-launch-setup-preference-description">
+                  Used for automatic first-prompt session names.
+                </span>
+              </span>
+            </span>
+            <select
+              className="first-launch-setup-preference-select"
+              onChange={(event) =>
+                updateSetting(
+                  "sessionTitleGenerationAgent",
+                  event.currentTarget.value as SessionTitleGenerationAgent,
+                )
+              }
+              value={settings.sessionTitleGenerationAgent}
+            >
+              {SESSION_TITLE_GENERATION_AGENT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {settings.sessionTitleGenerationAgent === "custom" ? (
+            <label className="first-launch-setup-preference-select-label">
+              <span className="first-launch-setup-preference-description">
+                Command that reads the title prompt on stdin and prints only the title.
+              </span>
+              <input
+                className="first-launch-setup-preference-input"
+                onChange={(event) =>
+                  updateSetting("customSessionTitleGenerationCommand", event.currentTarget.value)
+                }
+                placeholder="title-generator"
+                value={settings.customSessionTitleGenerationCommand}
+              />
+            </label>
+          ) : null}
         </article>
 
         {/*

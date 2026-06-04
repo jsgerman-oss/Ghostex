@@ -78,7 +78,7 @@ export const SESSION_TITLE_GENERATION_AGENT_OPTIONS: ReadonlyArray<{
   value: SessionTitleGenerationAgent;
 }> = [
   { label: "Codex", value: "codex" },
-  { label: "Cursor", value: "cursor" },
+  { label: "Cursor CLI", value: "cursor" },
   { label: "Claude", value: "claude" },
   { label: "Custom", value: "custom" },
 ];

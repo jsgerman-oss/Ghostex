@@ -12,6 +12,11 @@ export const FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY = "ghostex-native-first-launch-
  * ZMU-71: the first-time defaults step must include keepAwakePreventLidSleep
  * ("Keep awake when lid is closed") alongside the other high-impact toggles on
  * FirstLaunchPreferencesPage. Keep this list aligned with that page.
+ *
+ * CDXC:FirstLaunchPreferences 2026-06-04-21:02:
+ * The first-time defaults modal must also expose the first-prompt title
+ * generation agent selector so new installs can choose Codex, Cursor, Claude,
+ * or Custom before automatic session naming runs.
  */
 export type FirstLaunchSetupMainSettingKey =
   | keyof ghostexSettings
@@ -24,6 +29,8 @@ export type FirstLaunchSetupMainSettingKey =
 export const FIRST_LAUNCH_PREFERENCES_MAIN_SETTING_KEYS = [
   "sidebarSettingsPreset",
   "defaultPromptAgentId",
+  "sessionTitleGenerationAgent",
+  "customSessionTitleGenerationCommand",
   "keepAwakePreventLidSleep",
   "agentAcceptAllEnabled",
   "showMacOSAttentionNotifications",
