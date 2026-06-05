@@ -448,6 +448,7 @@ struct ProjectBoardBridgeRequest: Decodable {
   let beadId: String?
   let details: String?
   let event: String?
+  let projectEditorId: String?
   let prompt: String?
   let projectId: String?
   let projectPath: String?
@@ -1260,6 +1261,8 @@ enum HostEvent: Encodable {
     case agentId
     case beadDisplayId
     case beadId
+    case details
+    case event
     case placement
     case actionId
     case sessionId
@@ -1268,6 +1271,7 @@ enum HostEvent: Encodable {
     case title
     case faviconDataUrl
     case url
+    case projectEditorId
     case projectId
     case serverOrigin
     case threadId
@@ -1292,6 +1296,7 @@ enum HostEvent: Encodable {
     case scope
     case status
     case statusCode
+    case startLocation
     case ticketTitle
     case position
     case sourceSessionId
@@ -1500,18 +1505,25 @@ enum HostEvent: Encodable {
        The Project WKWebView cannot own Ghostex session state. Forward its
        conversation-link actions over the typed host-event bus so the sidebar
        remains the single owner of project/session persistence and focusing.
+
+       CDXC:ProjectBoardRouting 2026-06-04-23:51:
+       Forward both the raw Project board project id and the native editor id. The raw id selects gxserver data, while projectEditorId routes the sidebar response back to the WKWebView that sent the request.
       */
       try container.encode("projectBoardRequest", forKey: .type)
       try container.encode(request.action, forKey: .action)
       try container.encodeIfPresent(request.agentId, forKey: .agentId)
       try container.encodeIfPresent(request.beadDisplayId, forKey: .beadDisplayId)
       try container.encodeIfPresent(request.beadId, forKey: .beadId)
+      try container.encodeIfPresent(request.details, forKey: .details)
+      try container.encodeIfPresent(request.event, forKey: .event)
+      try container.encodeIfPresent(request.projectEditorId, forKey: .projectEditorId)
       try container.encodeIfPresent(request.prompt, forKey: .prompt)
       try container.encodeIfPresent(request.projectId, forKey: .projectId)
       try container.encodeIfPresent(request.projectPath, forKey: .projectPath)
       try container.encodeIfPresent(request.remoteMachineId, forKey: .remoteMachineId)
       try container.encode(request.requestId, forKey: .requestId)
       try container.encodeIfPresent(request.sessionId, forKey: .sessionId)
+      try container.encodeIfPresent(request.startLocation, forKey: .startLocation)
       try container.encodeIfPresent(request.ticketTitle, forKey: .ticketTitle)
     case .osIntegrationStatus(let payloadJson):
       try container.encode("osIntegrationStatus", forKey: .type)

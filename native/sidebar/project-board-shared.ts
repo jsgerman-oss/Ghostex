@@ -13,6 +13,15 @@ export type BeadsComment = {
   text?: string;
 };
 
+export type ProjectBoardCommentMetadata = {
+  agentName?: string;
+  sessionId?: string;
+};
+
+export type ParsedProjectBoardComment = ProjectBoardCommentMetadata & {
+  body: string;
+};
+
 export type BeadsDependency = {
   created_at?: string;
   created_by?: string;
@@ -94,6 +103,7 @@ export type BeadsBridgeRequest = {
   label?: string;
   labels?: string[];
   priority?: string;
+  projectId?: string;
   prompt?: string;
   query?: string;
   remoteMachineId?: string;
@@ -154,6 +164,9 @@ export type BoardPriorityFilter = "all" | (typeof PRIORITY_OPTIONS)[number]["val
 export type BoardEstimateFilter = "all" | "none" | TshirtSize;
 
 const REQUIRED_CUSTOM_STATUS_CONFIG = "backlog,test,review";
+const PROJECT_BOARD_COMMENT_METADATA_SEPARATOR = "---";
+const PROJECT_BOARD_COMMENT_AGENT_PREFIX = "Agent:";
+const PROJECT_BOARD_COMMENT_SESSION_PREFIX = "Session:";
 
 export function beadsStatusToBoardStatus(status: string): BoardStatusKey {
   switch (status) {
@@ -293,6 +306,23 @@ export function beadsErrorMessage(message: string): string {
     // Human stderr is the normal Beads failure path.
   }
   return trimmed;
+}
+
+export function projectBoardRawProjectIdFromUrlParam(projectId: string): string {
+  /*
+   * CDXC:ProjectBoardRouting 2026-06-04-23:51:
+   * Project Board URLs created before the raw-id/editor-id split stored the native editor id in projectId. Normalize those old URLs at the web surface boundary so Beads requests use the canonical gxserver/native project id.
+   */
+  const match = /^project-editor:(?<projectId>.+):(?<mode>code|git|tasks)$/u.exec(projectId);
+  const encodedProjectId = match?.groups?.projectId;
+  if (!encodedProjectId) {
+    return projectId;
+  }
+  try {
+    return decodeURIComponent(encodedProjectId);
+  } catch {
+    return projectId;
+  }
 }
 
 export async function ensureWorkflowStatuses(
@@ -529,6 +559,12 @@ function isLegacyDataImageSource(source: string): boolean {
  * CDXC:ProjectBoard 2026-05-30-09:25:
  * Start Work must tell agents to leave bead comments after each turn so humans can follow ticket progress without reading the full agent transcript.
  * Comments should capture user-facing outcomes and high-level technical decisions, not per-file diffs.
+ *
+ * CDXC:ProjectBoardComments 2026-06-05-06:43:
+ * Agent-authored bead comments should carry a parseable agent label and a resumable agent CLI session id at the bottom of the comment. Keep the stored Beads comment as plain text while letting the ticket editor render `madda (Cursor CLI)`-style attribution and a dedicated session footer.
+ *
+ * CDXC:ProjectBoardComments 2026-06-05-06:55:
+ * The Session footer is the saved session identity from the agent CLI that authored the comment, such as a Codex thread id or Cursor chat id, not the Ghostex pane/provider session id. Users need this id to resume the actual agent session that made the comment.
  */
 export function buildAgentWorkPrompt(ticket: BoardTicket): string {
   const beadId = ticket.id;
@@ -541,6 +577,7 @@ export function buildAgentWorkPrompt(ticket: BoardTicket): string {
     `- \`bd comment ${beadId} "<summary>"\``,
     "- Focus on user-facing requirements delivered and high-level technical approach.",
     "- Do not list specific files or line numbers.",
+    "- End the comment with `Agent: <agent name>` and `Session: <saved agent CLI session id>` lines so the ticket view can show the agent after the user name and the resumable agent session id at the bottom.",
     "",
     "Status workflow for this project board:",
     `- Park for later: \`bd update ${beadId} --status backlog\``,
@@ -549,6 +586,85 @@ export function buildAgentWorkPrompt(ticket: BoardTicket): string {
     `- When ready for review: \`bd update ${beadId} --status review\``,
     `- When done: \`bd close ${beadId}\``,
   ].join("\n");
+}
+
+/*
+ * CDXC:ProjectBoardComments 2026-06-05-06:43:
+ * The ticket editor stores agent/session attribution in a bd-compatible plain-text footer because Beads comments only expose author, timestamp, and text. Parse that footer at the display boundary so old comments still render, while new comments get structured UI treatment without changing Beads storage.
+ */
+export function formatProjectBoardCommentText(
+  body: string,
+  metadata: ProjectBoardCommentMetadata = {},
+): string {
+  const trimmedBody = body.trim();
+  const agentName = normalizeCommentMetadataValue(metadata.agentName);
+  const sessionId = normalizeCommentMetadataValue(metadata.sessionId);
+  const metadataLines = [
+    agentName ? `${PROJECT_BOARD_COMMENT_AGENT_PREFIX} ${agentName}` : undefined,
+    sessionId ? `${PROJECT_BOARD_COMMENT_SESSION_PREFIX} ${sessionId}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+  if (metadataLines.length === 0) {
+    return trimmedBody;
+  }
+  return [
+    trimmedBody,
+    "",
+    PROJECT_BOARD_COMMENT_METADATA_SEPARATOR,
+    ...metadataLines,
+  ].join("\n");
+}
+
+export function parseProjectBoardCommentText(text: string | undefined): ParsedProjectBoardComment {
+  const originalBody = (text ?? "").trim();
+  if (!originalBody) {
+    return { body: "" };
+  }
+  const lines = originalBody.split(/\r?\n/u);
+  let cursor = lines.length - 1;
+  let sessionId: string | undefined;
+  let agentName: string | undefined;
+  let hasMetadataSeparator = false;
+
+  const sessionLine = lines[cursor]?.trim() ?? "";
+  if (sessionLine.startsWith(PROJECT_BOARD_COMMENT_SESSION_PREFIX)) {
+    sessionId = normalizeCommentMetadataValue(sessionLine.slice(PROJECT_BOARD_COMMENT_SESSION_PREFIX.length));
+    cursor -= 1;
+  }
+
+  const agentLine = lines[cursor]?.trim() ?? "";
+  if (agentLine.startsWith(PROJECT_BOARD_COMMENT_AGENT_PREFIX)) {
+    agentName = normalizeCommentMetadataValue(agentLine.slice(PROJECT_BOARD_COMMENT_AGENT_PREFIX.length));
+    cursor -= 1;
+  }
+
+  if (!sessionId && !agentName) {
+    return { body: originalBody };
+  }
+
+  while (cursor >= 0 && lines[cursor]?.trim() === "") {
+    cursor -= 1;
+  }
+  if (lines[cursor]?.trim() === PROJECT_BOARD_COMMENT_METADATA_SEPARATOR) {
+    hasMetadataSeparator = true;
+    cursor -= 1;
+  }
+  if (sessionId && !agentName && !hasMetadataSeparator) {
+    return { body: originalBody };
+  }
+  while (cursor >= 0 && lines[cursor]?.trim() === "") {
+    cursor -= 1;
+  }
+
+  return {
+    agentName,
+    body: lines.slice(0, cursor + 1).join("\n").trim(),
+    sessionId,
+  };
+}
+
+function normalizeCommentMetadataValue(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized || undefined;
 }
 
 export function getBlockedByIds(issue: BeadsIssue): string[] {

@@ -86,6 +86,7 @@ export type ProjectBoardBridgeRequest = {
   beadId?: string;
   details?: string;
   event?: string;
+  projectEditorId?: string;
   prompt?: string;
   projectId?: string;
   projectPath?: string;

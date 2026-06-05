@@ -70,14 +70,17 @@ import {
   extractDescriptionImageReferences,
   extractPreviewableDescriptionImageReferences,
   filterBoardTickets,
+  formatProjectBoardCommentText,
   formatShortDate,
   getBlockedByIds,
   getBlockingIds,
   normalizeBeadsPayload,
   normalizeDisplayIssueKey,
+  parseProjectBoardCommentText,
   parseBeadsJson,
   priorityLabel,
   prioritySelectValue,
+  projectBoardRawProjectIdFromUrlParam,
   removeDescriptionImageReference,
   isDescriptionImageSource,
   tshirtToEstimate,
@@ -87,6 +90,7 @@ import {
   type BeadsBridgeResponse,
   type BoardEstimateFilter,
   type BoardPriorityFilter,
+  type ProjectBoardCommentMetadata,
   type BeadsIssue,
   type BoardStatusKey,
   type BoardTicket,
@@ -241,12 +245,15 @@ function createEmptyTicketFormDraft(): TicketFormDraft {
 }
 
 function ProjectBoardApp() {
-  const projectName = new URLSearchParams(window.location.search).get("projectName") || "Project";
-  const projectPath = new URLSearchParams(window.location.search).get("projectPath") || "";
-  const projectId = new URLSearchParams(window.location.search).get("projectId") || "";
-  const remoteMachineId = new URLSearchParams(window.location.search).get("remoteMachineId") || "";
+  const urlSearchParams = new URLSearchParams(window.location.search);
+  const projectName = urlSearchParams.get("projectName") || "Project";
+  const projectPath = urlSearchParams.get("projectPath") || "";
+  const projectIdParam = urlSearchParams.get("projectId") || "";
+  const projectId = projectBoardRawProjectIdFromUrlParam(projectIdParam);
+  const projectEditorId = urlSearchParams.get("projectEditorId") || projectIdParam;
+  const remoteMachineId = urlSearchParams.get("remoteMachineId") || "";
   const displayKey = normalizeDisplayIssueKey(
-    new URLSearchParams(window.location.search).get("beadsDisplayKey") ?? projectName,
+    urlSearchParams.get("beadsDisplayKey") ?? projectName,
   );
   const [tickets, setTickets] = useState<BoardTicket[]>([]);
   const [allIssues, setAllIssues] = useState<BeadsIssue[]>([]);
@@ -369,9 +376,14 @@ function ProjectBoardApp() {
       if (!projectPath) {
         throw new Error("No active project path is available.");
       }
+      /*
+       * CDXC:ProjectBoardRouting 2026-06-04-23:51:
+       * Beads CRUD must address gxserver by the raw project id when the Project pane has one, not only by the URL path. Project paths in restored WKWebView URLs can be stale, while gxserver project ids are the canonical board scope.
+       */
       const response = await sendBeadsRequest({
         ...request,
         cwd: projectPath,
+        ...(projectId ? { projectId } : {}),
         ...(remoteMachineId ? { remoteMachineId } : {}),
       });
       if (response.exitCode !== 0) {
@@ -379,7 +391,7 @@ function ProjectBoardApp() {
       }
       return parseBeadsJson(response.stdout);
     },
-    [projectPath, remoteMachineId],
+    [projectId, projectPath, remoteMachineId],
   );
 
   const loadConversationState = useCallback(async () => {
@@ -387,6 +399,7 @@ function ProjectBoardApp() {
       const response = await sendProjectBoardRequest({
         action: "getState",
         projectId,
+        projectEditorId,
         projectPath,
         ...(remoteMachineId ? { remoteMachineId } : {}),
       });
@@ -399,7 +412,7 @@ function ProjectBoardApp() {
     } catch (error) {
       console.warn("Project board conversation state unavailable.", error);
     }
-  }, [projectId, projectPath]);
+  }, [projectEditorId, projectId, projectPath, remoteMachineId]);
 
   const logProjectBoardDebug = useCallback(
     (event: string, details?: Record<string, unknown>) => {
@@ -411,13 +424,14 @@ function ProjectBoardApp() {
         details: stringifyProjectBoardDebugDetails(details),
         event,
         projectId,
+        projectEditorId,
         projectPath,
         ...(remoteMachineId ? { remoteMachineId } : {}),
       }).catch((error) => {
         console.warn("Project board debug log unavailable.", error);
       });
     },
-    [conversationState.debuggingMode, projectId, projectPath, remoteMachineId],
+    [conversationState.debuggingMode, projectEditorId, projectId, projectPath, remoteMachineId],
   );
 
   const loadTickets = useCallback(async (options: BoardRefreshOptions = {}) => {
@@ -738,7 +752,10 @@ function ProjectBoardApp() {
       if (trimmedComment) {
         await runBeads({
           action: "addComment",
-          comment: trimmedComment,
+          comment: formatProjectBoardCommentText(
+            trimmedComment,
+            projectBoardCommentMetadataFromLink(detailCommentMetadataLink),
+          ),
           issueId: detail.ticket.id,
         });
       }
@@ -1134,6 +1151,7 @@ function ProjectBoardApp() {
 
   const detailConversationLinks = detail.ticket ? (linksByBeadId.get(detail.ticket.id) ?? []) : [];
   const detailPrimaryConversationLink = getPrimaryUsableConversationLink(detailConversationLinks);
+  const detailCommentMetadataLink = detailPrimaryConversationLink ?? detailConversationLinks[0];
   const detailPrimaryActionLabel =
     conversationAction?.kind === "jump" && conversationAction.linkId === detailPrimaryConversationLink?.id
       ? "Opening"
@@ -1405,15 +1423,39 @@ function ProjectBoardApp() {
               <div className="project-ticket-section-title">Comments</div>
               <ScrollArea className="project-ticket-comment-list">
                 {detail.ticket?.comments?.length ? (
-                  detail.ticket.comments.map((comment, index) => (
-                    <article className="project-ticket-comment" key={`${comment.created_at}-${index}`}>
-                      <div>
-                        <strong>{comment.author || "Comment"}</strong>
-                        <span>{formatShortDate(comment.created_at)}</span>
-                      </div>
-                      <p>{comment.text}</p>
-                    </article>
-                  ))
+                  detail.ticket.comments.map((comment, index) => {
+                    const parsedComment = parseProjectBoardCommentText(comment.text);
+                    const fallbackMetadata = projectBoardCommentMetadataFromLink(detailCommentMetadataLink);
+                    const agentName = parsedComment.agentName ?? fallbackMetadata.agentName;
+                    const sessionId = parsedComment.sessionId ?? fallbackMetadata.sessionId;
+                    const createdAtLabel = formatShortDate(comment.created_at);
+                    return (
+                      <article className="project-ticket-comment" key={`${comment.created_at}-${index}`}>
+                        <div className="project-ticket-comment-header">
+                          <div className="project-ticket-comment-author-row">
+                            <strong className="project-ticket-comment-author">
+                              {comment.author || "Comment"}
+                            </strong>
+                            {agentName ? (
+                              <span className="project-ticket-comment-agent">({agentName})</span>
+                            ) : null}
+                          </div>
+                          {createdAtLabel ? (
+                            <time dateTime={comment.created_at} className="project-ticket-comment-date">
+                              {createdAtLabel}
+                            </time>
+                          ) : null}
+                        </div>
+                        <p>{parsedComment.body || comment.text}</p>
+                        {sessionId ? (
+                          <footer className="project-ticket-comment-session">
+                            <span>Session</span>
+                            <code>{sessionId}</code>
+                          </footer>
+                        ) : null}
+                      </article>
+                    );
+                  })
                 ) : (
                   <p className="project-ticket-empty">No comments yet.</p>
                 )}
@@ -2171,6 +2213,25 @@ function conversationLinkStatusText(link: ProjectBoardConversationLinkView): str
         : "Unavailable";
   const agentSessionPreview = link.agentSessionId ? ` · ${link.agentSessionId.slice(0, 8)}` : "";
   return `${sessionStatus}${agentSessionPreview}`;
+}
+
+function projectBoardCommentMetadataFromLink(
+  link: ProjectBoardConversationLinkView | undefined,
+): ProjectBoardCommentMetadata {
+  /*
+   * CDXC:ProjectBoardComments 2026-06-05-06:43:
+   * UI-added comments should use the linked agent conversation as their metadata source so the rendered author line can show the agent beside the Beads user and the footer can show the resumable agent CLI session id instead of the truncated status preview.
+   *
+   * CDXC:ProjectBoardComments 2026-06-05-06:55:
+   * The comment Session footer must be the saved session id from the agent CLI, not the Ghostex pane id. If the linked conversation has not reported an agent session id yet, omit the footer rather than displaying the wrong id as resumable.
+   */
+  if (!link) {
+    return {};
+  }
+  return {
+    agentName: link.agentName || link.agentId,
+    sessionId: link.agentSessionId,
+  };
 }
 
 function compareConversationLinksNewestFirst(
@@ -3666,15 +3727,76 @@ styleElement.textContent = `
   }
 
   .project-ticket-comment-list {
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(255, 255, 255, 0.02);
     border: 1px solid rgba(255, 255, 255, 0.08);
     max-height: 180px;
     min-height: 92px;
+    padding: 6px;
   }
 
-  .project-ticket-comment,
+  .project-ticket-comment-list [data-slot="scroll-area-viewport"] > div {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /*
+   * CDXC:ProjectBoardComments 2026-06-05-06:43:
+   * Ticket comments in the edit dialog need readable author/date separation, author (agent) attribution, and a bottom-aligned full session id while preserving multiline comment text.
+   */
+  .project-ticket-comment {
+    background: rgba(250, 250, 250, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-left: 2px solid rgba(125, 211, 252, 0.72);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
   .project-ticket-empty {
     padding: 12px;
+  }
+
+  .project-ticket-comment-header {
+    align-items: baseline;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .project-ticket-comment-author-row {
+    align-items: baseline;
+    display: flex;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .project-ticket-comment-author {
+    color: rgba(250, 250, 250, 0.94);
+    font-size: 13px;
+    font-weight: 700;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-ticket-comment-agent {
+    color: rgba(186, 230, 253, 0.86);
+    font-size: 12px;
+    font-weight: 620;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-ticket-comment-date {
+    color: rgba(244, 244, 245, 0.46);
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .project-ticket-comment p,
@@ -3685,6 +3807,38 @@ styleElement.textContent = `
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .project-ticket-comment p {
+    margin: 0;
+  }
+
+  .project-ticket-comment-session {
+    align-items: center;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    color: rgba(244, 244, 245, 0.48);
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    min-width: 0;
+    padding-top: 8px;
+  }
+
+  .project-ticket-comment-session span {
+    flex: 0 0 auto;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+
+  .project-ticket-comment-session code {
+    color: rgba(244, 244, 245, 0.74);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-align: right;
   }
 
   @media (max-width: 900px) {
