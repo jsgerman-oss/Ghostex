@@ -138,7 +138,7 @@ Ghostex is moving quickly, and help is welcome on platform ports, missing agent 
 
 Join the Discord: https://discord.gg/df7b3G92CS
 
-New screenshots as of v4
+## New screenshots of v4
 
 <img width="3456" height="2060" alt="2026-06-05_Ghostex_20-37-14@2x" src="https://github.com/user-attachments/assets/e857705c-6c94-44f6-adf9-91fb3fa49ec1" />
 
