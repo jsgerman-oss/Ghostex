@@ -222,7 +222,7 @@ test("foreground gxserver process uses temporary HOME, writes daemon state, and 
     const token = (await waitForFileText(paths.authTokenFile, 5_000)).trim() as GxserverAuthToken;
     const health = await waitForHealth(token, 5_000);
     assert.equal(health.serverId.startsWith("S"), true);
-    assert.equal(health.migration.currentVersion, 8);
+    assert.equal(health.migration.currentVersion, 9);
     assert.equal(health.listeners.local.port, GXSERVER_LOCAL_API_PORT);
 
     const stop = await requestJson(`http://127.0.0.1:${GXSERVER_LOCAL_API_PORT}`, "/api/control/stop", {
@@ -2982,7 +2982,7 @@ test("authenticated health includes listener, tool, and migration status", async
     assert.equal(health.body.serverId, "S7k");
     assert.equal(health.body.listeners.local.port, GXSERVER_LOCAL_API_PORT);
     assert.equal(health.body.listeners.remote.enabled, false);
-    assert.equal(health.body.migration.currentVersion, 8);
+    assert.equal(health.body.migration.currentVersion, 9);
     assert.equal(health.body.migration.stateImports.legacyMacosState.id, LEGACY_MACOS_STATE_IMPORT_ID);
     assert.equal(health.body.migration.stateImports.legacyMacosState.status, "notRun");
     assert.equal(Array.isArray(health.body.tools), true);

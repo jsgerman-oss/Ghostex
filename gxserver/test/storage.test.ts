@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   GXSERVER_LOCAL_API_HOST,
   GXSERVER_LOCAL_API_PORT,
+  type GxserverProjectId,
   type GxserverServerId,
   type GxserverSessionId,
 } from "../protocol/index.js";
@@ -132,6 +133,7 @@ test("SQLite migrations are idempotent and create foundation schema", async () =
       "0006_expand_session_tags",
       "0007_expand_session_tags_in_progress_and_type",
       "0008_remove_retired_session_type_tags",
+      "0009_remove_legacy_zmux_chat_projects",
     ]);
     assert.deepEqual(second.appliedMigrations, []);
     assert.equal((await stat(paths.stateDbFile)).isFile(), true);
@@ -154,11 +156,80 @@ test("SQLite migrations are idempotent and create foundation schema", async () =
         .prepare<[string], { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get("sessions");
 
-      assert.equal(migrations?.count, 8);
+      assert.equal(migrations?.count, 9);
       assert.equal(metadataTable?.name, "metadata");
       assert.equal(idsTable?.name, "id_allocations");
       assert.equal(projectsTable?.name, "projects");
       assert.equal(sessionsTable?.name, "sessions");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("legacy zmux chat project migration removes stale quick-project rows only", async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-storage-legacy-chats-"));
+  try {
+    const paths = getGxserverPaths(homeDir);
+    await mkdir(paths.rootDir, { recursive: true });
+    const db = openGxserverDatabase(paths);
+    try {
+      runGxserverMigrations(db, GxserverStorageMigrations.slice(0, 8));
+      const projectIds = ["P4rpp", "P5rpk", "P6new", "P7rep"] as GxserverProjectId[];
+      const repository = new GxserverDomainRepository(db, "S90" as GxserverServerId, {
+        createProjectId: (() => {
+          let index = 0;
+          return () => projectIds[index++] ?? "P8extra";
+        })(),
+        createSessionId: () => "G1old" as GxserverSessionId,
+        now: () => "2026-06-05T16:07:00.000Z",
+      });
+      const oldChat = repository.createProject({
+        name: "Chat 2026-05-08 14:07",
+        path: path.join(homeDir, "zmux", "chats", "2026-05-08-140732018-chat"),
+      });
+      repository.createSession({
+        projectId: oldChat.projectId,
+        title: "Terminal Session",
+      });
+      repository.createProject({
+        name: "Plugins",
+        path: path.join(homeDir, "zmux", "chats", "2026-05-08-110833862-plugins"),
+      });
+      repository.createProject({
+        name: "Chat 2026-06-05 20:07",
+        path: path.join(homeDir, "ghostex", "chats", "2026-06-05-200700000-chat"),
+      });
+      repository.createProject({
+        name: "Repo",
+        path: path.join(homeDir, "dev", "zmux", "chats", "repo"),
+      });
+
+      /*
+      CDXC:GxserverProjectPaths 2026-06-05-20:07:
+      Imported `~/zmux/chats` Chat/Plugins/Browser rows were transient quick-project containers, while current `~/ghostex/chats` rows and normal code projects must remain registered. Cleanup should remove the stale legacy rows and their sessions without broad path-based deletion.
+      */
+      runGxserverMigrations(db, GxserverStorageMigrations.slice(8, 9));
+
+      const projects = db
+        .prepare<[], { name: string; path: string }>("SELECT name, path FROM projects ORDER BY projectId")
+        .all();
+      assert.deepEqual(projects, [
+        {
+          name: "Chat 2026-06-05 20:07",
+          path: path.join(homeDir, "ghostex", "chats", "2026-06-05-200700000-chat"),
+        },
+        {
+          name: "Repo",
+          path: path.join(homeDir, "dev", "zmux", "chats", "repo"),
+        },
+      ]);
+      const oldSessionCount = db
+        .prepare<[string], { count: number }>("SELECT COUNT(*) AS count FROM sessions WHERE projectId = ?")
+        .get(oldChat.projectId);
+      assert.equal(oldSessionCount?.count, 0);
     } finally {
       db.close();
     }

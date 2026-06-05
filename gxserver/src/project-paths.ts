@@ -31,6 +31,10 @@ export function normalizeExistingDirectoryPath(input: unknown, field: string, ho
   return normalized;
 }
 
+/*
+CDXC:GxserverProjectPaths 2026-06-05-20:07:
+Project-path lookup must not stat every registered project because deleted legacy quick/chat projects can poison unrelated active-project operations. Compare candidate paths by syntax only, then validate the selected project at the operation boundary.
+*/
 export function normalizeAbsolutePath(input: unknown, field: string, homeDir = os.homedir()): string {
   if (typeof input !== "string" || !input.trim()) {
     throw new GxserverProjectPathError("badRequest", `${field} must be a non-empty path.`);
@@ -88,7 +92,7 @@ function resolveScopedProject(
     }
     if (scope.projectPath !== undefined) {
       const scopedPath = normalizeExistingDirectoryPath(scope.projectPath, "projectPath", homeDir);
-      if (!project.path || normalizeExistingDirectoryPath(project.path, "project.path", homeDir) !== scopedPath) {
+      if (!project.path || normalizeProjectPathForLookup(project.path, homeDir) !== scopedPath) {
         throw new GxserverProjectPathError("forbidden", "projectPath does not match the requested projectId.");
       }
     }
@@ -97,10 +101,7 @@ function resolveScopedProject(
 
   const scopedPath = normalizeExistingDirectoryPath(scope.projectPath, "projectPath", homeDir);
   const project = projects.find((candidate) => {
-    if (!candidate.path) {
-      return false;
-    }
-    return normalizeExistingDirectoryPath(candidate.path, "project.path", homeDir) === scopedPath;
+    return normalizeProjectPathForLookup(candidate.path, homeDir) === scopedPath;
   });
   if (!project) {
     throw new GxserverProjectPathError("forbidden", "projectPath must be a registered gxserver project path.");
@@ -111,12 +112,20 @@ function resolveScopedProject(
 function registeredProjectRoots(projects: readonly GxserverProjectDomainState[], homeDir: string): readonly string[] {
   const roots = new Set<string>();
   for (const project of projects) {
-    if (!project.path) {
-      continue;
+    const normalizedPath = normalizeProjectPathForLookup(project.path, homeDir);
+    if (normalizedPath) {
+      roots.add(normalizedPath);
     }
-    roots.add(normalizeExistingDirectoryPath(project.path, "project.path", homeDir));
   }
   return [...roots];
+}
+
+function normalizeProjectPathForLookup(input: unknown, homeDir: string): string | undefined {
+  try {
+    return normalizeAbsolutePath(input, "project.path", homeDir);
+  } catch {
+    return undefined;
+  }
 }
 
 function expandUserPath(input: string, homeDir: string): string {

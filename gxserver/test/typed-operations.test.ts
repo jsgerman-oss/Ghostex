@@ -14,7 +14,7 @@ import {
   runProjectSetupCommand,
   runWorktreeAction,
 } from "../src/typed-operations.js";
-import { normalizeExistingDirectoryPath } from "../src/project-paths.js";
+import { normalizeExistingDirectoryPath, resolveProjectOperationDirectory } from "../src/project-paths.js";
 import type { GxserverProjectDomainState, GxserverProjectId } from "../protocol/index.js";
 
 test("Git command construction is allowlisted and keeps file paths project-relative", () => {
@@ -736,6 +736,28 @@ test("project path normalization expands tilde and rejects files", async () => {
     assert.equal(normalizeExistingDirectoryPath("~/repo", "path", root), path.join(root, "repo"));
     assert.throws(() => normalizeExistingDirectoryPath("~/file.txt", "path", root), /not a directory/);
     assert.throws(() => normalizeExistingDirectoryPath("relative", "path", root), /absolute path/);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+test("project path resolution ignores unrelated missing legacy chat projects", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "gxserver-project-path-resolution-"));
+  try {
+    const repo = path.join(root, "repo");
+    const staleChat = path.join(root, "zmux", "chats", "2026-05-08-140732018-chat");
+    await mkdir(repo);
+
+    const result = resolveProjectOperationDirectory(
+      [
+        project("P4rpp" as GxserverProjectId, staleChat),
+        project("P3a91" as GxserverProjectId, repo),
+      ],
+      { projectPath: repo },
+    );
+
+    assert.equal(result.cwd, repo);
+    assert.equal(result.project.projectId, "P3a91");
   } finally {
     await rm(root, { force: true, recursive: true });
   }

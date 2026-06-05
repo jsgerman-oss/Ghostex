@@ -647,6 +647,30 @@ export const GxserverStorageMigrations: readonly GxserverMigration[] = [
       PRAGMA user_version = 8;
     `,
   },
+  {
+    id: "0009_remove_legacy_zmux_chat_projects",
+    sql: `
+      DELETE FROM sessions
+      WHERE projectId IN (
+        SELECT projectId
+        FROM projects
+        WHERE path LIKE '%/zmux/chats/%'
+          AND (
+            name GLOB 'Chat [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] *'
+            OR name IN ('Browser', 'Plugins')
+          )
+      );
+
+      DELETE FROM projects
+      WHERE path LIKE '%/zmux/chats/%'
+        AND (
+          name GLOB 'Chat [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] *'
+          OR name IN ('Browser', 'Plugins')
+        );
+
+      PRAGMA user_version = 9;
+    `,
+  },
 ];
 
 /*
@@ -676,6 +700,9 @@ In Progress and Type tags are durable user tags. Migration 0007 rebuilds the ses
 
 CDXC:SessionTags 2026-06-05-19:12:
 Type tags are limited to Research, Bug, Feature, and Design. Migration 0008 clears retired values and rebuilds the sessionTag CHECK constraint so already-upgraded databases cannot keep values that no longer appear in sidebar menus and filters.
+
+CDXC:GxserverProjectPaths 2026-06-05-20:07:
+Legacy macOS chat/plugin/browser projects imported from `~/zmux/chats` are transient workspace containers from before chats moved to `~/ghostex/chats`. Migration 0009 removes only those legacy quick-project rows so missing old chat directories cannot keep appearing as durable gxserver projects.
 */
 export async function initializeGxserverStorage(paths: GxserverPaths): Promise<GxserverStorageInitResult> {
   await ensureGxserverStorageLayout(paths);
