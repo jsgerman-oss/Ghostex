@@ -135,6 +135,25 @@ if [[ -d "$RESOURCE_BIN_PATH" ]]; then
 	done
 fi
 
+GXSERVER_RESOURCE_PATH="$APP_PATH/Contents/Resources/Web/gxserver"
+if [[ -d "$GXSERVER_RESOURCE_PATH" ]]; then
+	# CDXC:BetaDistribution 2026-06-06-00:57: The 4.0 beta release bundles gxserver with its own zmx/zehn copies and native Node modules. Apple notarization validates those Mach-O payloads independently, so sign each nested executable or module with Developer ID, secure timestamp, and hardened runtime before signing the outer app.
+	find "$GXSERVER_RESOURCE_PATH" \
+		-type f \
+		\( -perm -111 -o -name '*.node' -o -name '*.dylib' \) \
+		-print0 |
+		while IFS= read -r -d '' gxserver_code; do
+			if file "$gxserver_code" | grep -q 'Mach-O'; then
+				codesign \
+					--force \
+					--options runtime \
+					"$CODE_SIGN_TIMESTAMP_FLAG" \
+					--sign "$CODE_SIGN_IDENTITY" \
+					"$gxserver_code"
+			fi
+	done
+fi
+
 sign_lid_sleep_helper() {
 	local helper_executable="$1"
 	if [[ ! -f "$helper_executable" ]]; then
