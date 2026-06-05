@@ -726,7 +726,8 @@ EOF_HELPER
 copy_cef_runtime "$APP_PATH"
 copy_lid_sleep_helper "$APP_PATH"
 
-"$SCRIPT_DIR/codesign-ghostex-host.sh" "$APP_PATH"
+# CDXC:BetaDistribution 2026-06-06-01:04: The 4.0 beta release must run the Developer ID signing helper reliably from temporary release worktrees. Invoke the helper through bash explicitly because direct shebang execution can be killed by macOS provenance checks on this machine even though the same script succeeds under /bin/bash.
+/bin/bash "$SCRIPT_DIR/codesign-ghostex-host.sh" "$APP_PATH"
 
 APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
 printf '%s\n' "$APP_PATH" >"/tmp/ghostex-$APP_VERSION-$GHOSTEX_MACOS_ARCH-app-path"
