@@ -1086,7 +1086,12 @@ export interface GxserverTerminalTitleEventResult {
   visibleTitle?: string;
 }
 
-export type GxserverFirstPromptTitleGenerationAgent = "codex" | "cursor" | "claude" | "custom";
+export type GxserverFirstPromptTitleGenerationAgent =
+  | "codex"
+  | "cursor"
+  | "claude"
+  | "grok"
+  | "custom";
 
 export interface GxserverSessionStateEventParams extends GxserverSessionLifecycleParams {
   agentName?: string;

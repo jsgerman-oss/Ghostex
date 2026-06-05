@@ -1258,7 +1258,12 @@ async function dispatchDomainStateEndpoint(
       }) as unknown as Record<string, unknown>;
     case "/api/updateSession":
     case "/api/attachSessionMetadata": {
-      const session = repository.updateSession(params as unknown as GxserverUpdateSessionParams);
+      const updateParams = normalizeMetadataSessionUpdateParams(
+        repository,
+        params as unknown as GxserverUpdateSessionParams,
+        endpointPath === "/api/updateSession" ? "update-session" : "attach-session-metadata",
+      );
+      const session = repository.updateSession(updateParams);
       scheduleZmxTitleObserverSync(runtime, repository, endpointPath === "/api/updateSession" ? "update-session" : "attach-session-metadata");
       schedulePresentationSessionDelta(runtime, repository, {
         projectId: session.projectId,
@@ -1825,7 +1830,34 @@ async function handleTypedOperationEndpoint(
   try {
     const repository = new GxserverDomainRepository(db, runtime.metadata.serverId);
     const projects = repository.listProjects();
-    const { cwd, project } = resolveProjectOperationDirectory(projects, params);
+    let scope: ReturnType<typeof resolveProjectOperationDirectory>;
+    try {
+      scope = resolveProjectOperationDirectory(projects, params);
+    } catch (error) {
+      /*
+       * CDXC:ProjectBoardRouting 2026-06-04-23:51:
+       * Typed operation scope failures are the signal for stale Project board URLs and mismatched project ids. Log only enum/count/identity facts at the gxserver boundary so support can diagnose the mismatch without recording raw paths, URLs, command text, or user content.
+       */
+      await runtime.logger.log({
+        details: {
+          action: typeof params.action === "string" ? params.action : undefined,
+          endpoint: endpointPath.replace(/^\/api\//u, ""),
+          errorCode:
+            error instanceof GxserverProjectPathError || error instanceof GxserverTypedOperationError
+              ? error.code
+              : undefined,
+          errorType: error instanceof Error ? error.name : typeof error,
+          hasProjectId: typeof params.projectId === "string" && params.projectId.trim().length > 0,
+          hasProjectPath: typeof params.projectPath === "string" && params.projectPath.trim().length > 0,
+        },
+        event: "typedOperation.scopeRejected",
+        level: "warn",
+        requestId,
+        serverId: runtime.metadata.serverId,
+      });
+      throw error;
+    }
+    const { cwd, project } = scope;
     const context = { abortSignal, cwd, envPath: process.env.PATH, projects };
     const result =
       endpointPath === "/api/runGitAction"
@@ -1886,6 +1918,42 @@ async function handleZmxLifecycleEndpoint(
   } finally {
     db.close();
   }
+}
+
+function normalizeMetadataSessionUpdateParams(
+  repository: GxserverDomainRepository,
+  params: GxserverUpdateSessionParams,
+  reason: string,
+): GxserverUpdateSessionParams {
+  const current = repository.getSession(params.projectId, params.sessionId);
+  if (!current) {
+    throw new GxserverDomainStateError(
+      "notFound",
+      `Session ${params.projectId}/${params.sessionId} does not exist.`,
+    );
+  }
+  if (current.lifecycleState !== "stopped") {
+    return params;
+  }
+  const requestedLifecycle = params.lifecycleState;
+  const requestedProviderLifecycle = params.providerState?.lifecycleState;
+  /*
+  CDXC:GxserverSessionLifecycle 2026-06-05-12:25:
+  Closed sessions must not reappear because a stale renderer, Electron window, zmx title observer, or native AppKit surface sends late metadata. Only explicit lifecycle endpoints may revive a stopped row; generic metadata updates can still persist flags, titles, and runtime details, but cannot change domain lifecycle or mark the provider live.
+  */
+  if (requestedLifecycle && requestedLifecycle !== "stopped") {
+    throw new GxserverDomainStateError(
+      "badRequest",
+      `${reason} cannot change a stopped session to ${requestedLifecycle}; use a lifecycle endpoint to wake or start it.`,
+    );
+  }
+  if (requestedProviderLifecycle === "exists") {
+    throw new GxserverDomainStateError(
+      "badRequest",
+      `${reason} cannot mark a stopped session provider as exists; use a lifecycle endpoint to wake or start it.`,
+    );
+  }
+  return params;
 }
 
 async function dispatchZmxLifecycleEndpoint(
@@ -2625,7 +2693,9 @@ async function generateGxserverFirstPromptSessionTitle(
 function normalizeGxserverFirstPromptTitleGenerationAgent(
   value: unknown,
 ): GxserverFirstPromptTitleGenerationAgent {
-  return value === "cursor" || value === "claude" || value === "custom" ? value : "codex";
+  return value === "cursor" || value === "claude" || value === "grok" || value === "custom"
+    ? value
+    : "codex";
 }
 
 function readGxserverFirstPromptTitleGenerationCommand(
@@ -2646,6 +2716,8 @@ function readGxserverFirstPromptTitleGenerationCommand(
       return "cursor-agent";
     case "claude":
       return "claude";
+    case "grok":
+      return "grok";
     case "custom":
       throw new GxserverTypedOperationError(
         "badRequest",
@@ -2662,7 +2734,10 @@ function buildGxserverFirstPromptTitleGenerationCommand(input: {
 }): string {
   /*
   CDXC:GxserverSessionTitle 2026-06-04-08:24:
-  Settings can select Codex, Cursor, Claude, or a custom title generator for gxserver-owned first-prompt titles. Keep Codex on the existing low-reasoning `gpt-5.4-mini` command, use Claude's Haiku alias for this short summarization task, pass the prompt over stdin for heredoc-friendly CLIs, and let Cursor use print plus YOLO mode so the background job receives title text on stdout without opening an interactive pane.
+  Settings can select Codex, Cursor, Claude, Grok Build, or a custom title generator for gxserver-owned first-prompt titles. Keep Codex on the existing low-reasoning `gpt-5.4-mini` command, use Claude's Haiku alias for this short summarization task, pass the prompt over stdin for heredoc-friendly CLIs, and let Cursor use print plus YOLO mode so the background job receives title text on stdout without opening an interactive pane.
+
+  CDXC:GxserverSessionTitle 2026-06-04-22:44:
+  Grok Build is available as a first-prompt title generator. The local `grok --help` contract exposes headless `-p`, `--model`, plain output, no alternate screen, no plan, no subagents, web-search disabling, and max-turn limits; `grok models` exposes Composer 2.5 as `grok-composer-2.5-fast`, so use that exact model id for the background summarization command.
   */
   switch (input.agent) {
     case "codex":
@@ -2683,6 +2758,12 @@ function buildGxserverFirstPromptTitleGenerationCommand(input: {
         input.delimiter,
         input.prompt,
       );
+    case "grok":
+      return [
+        input.command,
+        "-p --model grok-composer-2.5-fast --output-format plain --no-alt-screen --no-plan --no-subagents --disable-web-search --max-turns 1",
+        quoteGxserverShellArg(input.prompt),
+      ].join(" ");
     case "custom":
       return createGxserverHereDocCommand(input.command, input.delimiter, input.prompt);
   }

@@ -1913,6 +1913,150 @@ test("explicit sleep and close kill the zmx provider session", async () => {
   );
 });
 
+test("stopped sessions cannot be revived by late metadata updates", async () => {
+  const calls: string[] = [];
+  await withApiServer(
+    "local",
+    async ({ baseUrl, paths, token }) => {
+      const project = (
+        await requestJson(baseUrl, "/api/createProject", {
+          body: { params: { name: "Ghostex", path: paths.rootDir }, protocolVersion: GXSERVER_PROTOCOL_VERSION },
+          method: "POST",
+          token,
+        })
+      ).body.result.project;
+      const session = (
+        await requestJson(baseUrl, "/api/createAgentSession", {
+          body: {
+            params: {
+              agentId: "codex",
+              projectId: project.projectId,
+              providerState: { lifecycleState: "exists" },
+              runtimeSettings: { titleSource: "placeholder" },
+              title: "Worktree: Codex",
+            },
+            protocolVersion: GXSERVER_PROTOCOL_VERSION,
+          },
+          method: "POST",
+          token,
+        })
+      ).body.result.session;
+
+      const close = await requestJson(baseUrl, "/api/transitionSession", {
+        body: {
+          params: { action: "close", projectId: project.projectId, sessionId: session.sessionId },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(close.status, 200);
+      assert.equal(close.body.result.session.lifecycleState, "stopped");
+      assert.equal(close.body.result.session.providerState.lifecycleState, "missing");
+
+      const rejectedLifecycle = await requestJson(baseUrl, "/api/updateSession", {
+        body: {
+          params: {
+            lifecycleState: "running",
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(rejectedLifecycle.status, 400);
+      assert.equal(rejectedLifecycle.body.error, "badRequest");
+      assert.match(rejectedLifecycle.body.message, /cannot change a stopped session to running/u);
+
+      const rejectedProvider = await requestJson(baseUrl, "/api/updateSession", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            providerState: { lifecycleState: "exists" },
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(rejectedProvider.status, 400);
+      assert.equal(rejectedProvider.body.error, "badRequest");
+      assert.match(rejectedProvider.body.message, /cannot mark a stopped session provider as exists/u);
+
+      const lateActivity = await requestJson(baseUrl, "/api/updateAgentActivity", {
+        body: {
+          params: {
+            activity: "working",
+            nowMs: Date.parse("2026-06-05T08:25:00.000Z"),
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(lateActivity.status, 200);
+      assert.equal(lateActivity.body.result.session.lifecycleState, "stopped");
+
+      const lateTitle = await requestJson(baseUrl, "/api/ingestTerminalTitleEvent", {
+        body: {
+          params: {
+            projectId: project.projectId,
+            rawTitle: "Late title after close",
+            sessionId: session.sessionId,
+            sessionPersistenceProvider: "zmx",
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(lateTitle.status, 200);
+      assert.equal(lateTitle.body.result.session.lifecycleState, "stopped");
+
+      const flags = await requestJson(baseUrl, "/api/updateSession", {
+        body: {
+          params: {
+            isFavorite: true,
+            projectId: project.projectId,
+            sessionId: session.sessionId,
+          },
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(flags.status, 200);
+      assert.equal(flags.body.result.session.isFavorite, true);
+      assert.equal(flags.body.result.session.lifecycleState, "stopped");
+
+      const presentation = await requestJson(baseUrl, "/api/readPresentationSnapshot", {
+        body: {
+          params: {},
+          protocolVersion: GXSERVER_PROTOCOL_VERSION,
+        },
+        method: "POST",
+        token,
+      });
+      assert.equal(presentation.status, 200);
+      const projected = presentation.body.result.snapshot.sessions.find(
+        (candidate: { projectId: string; sessionId: string }) =>
+          candidate.projectId === project.projectId && candidate.sessionId === session.sessionId,
+      );
+      assert.equal(projected.lifecycleState, "stopped");
+      assert.equal(projected.visibleInSidebarByDefault, false);
+      assert.equal(calls.filter((script) => script.includes('kill "$zmx_session" --force')).length, 1);
+    },
+    {
+      zmxLifecycle: fakeZmxLifecycle(calls, () => 0),
+    },
+  );
+});
+
 test("transitionSession mutates lifecycle without owning client focus target", async () => {
   const calls: string[] = [];
   await withApiServer(

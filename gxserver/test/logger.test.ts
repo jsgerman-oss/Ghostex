@@ -109,3 +109,39 @@ test("log normalization redacts project/session names, paths, command text, urls
   assert.equal(normalized.source, "[redacted:path]");
   assert.doesNotMatch(JSON.stringify(normalized), /Customer deploy|private-project|secret-token|private project note/);
 });
+
+test("typed operation scope rejection logs stay shareable", () => {
+  const normalized = normalizeLogEntry({
+    details: {
+      action: "board",
+      commandText: "bd list --repo /Users/person/dev/private-project",
+      endpoint: "runBeadsAction",
+      errorCode: "notFound",
+      errorType: "GxserverProjectPathError",
+      hasProjectId: true,
+      hasProjectPath: true,
+      projectPath: "/Users/person/dev/private-project",
+      secretToken: "secret-token",
+      url: "https://example.test/repo?token=secret-token",
+    },
+    event: "typedOperation.scopeRejected",
+    level: "warn",
+    requestId: "req-1",
+    serverId: "S7k",
+    ts: "now",
+  });
+
+  assert.equal(normalized.event, "typedOperation.scopeRejected");
+  assert.equal(normalized.details?.action, "board");
+  assert.equal(normalized.details?.endpoint, "runBeadsAction");
+  assert.equal(normalized.details?.projectPath, "[redacted:path]");
+  assert.equal(normalized.details?.commandText, "[redacted]");
+  assert.equal(normalized.details?.secretToken, "[redacted:secret]");
+  assert.deepEqual(normalized.details?.url, {
+    host: "example.test",
+    protocol: "https",
+    redacted: true,
+    type: "url",
+  });
+  assert.doesNotMatch(JSON.stringify(normalized), /private-project|secret-token|bd list/);
+});
