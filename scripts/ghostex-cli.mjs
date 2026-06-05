@@ -3389,6 +3389,7 @@ async function ghostexTuiCommand(args) {
 
 async function zehnSearchCommand(args) {
   const launch = resolveZehnLaunch();
+  const zehnArgs = await resolveZehnSearchArgs(args);
   /**
    * CDXC:AgentHistorySearch 2026-05-29-12:27:
    * `gx find` and `gx f` should show the pinned zehn CLI for
@@ -3396,11 +3397,36 @@ async function zehnSearchCommand(args) {
    * command because that alias was already part of the public Ghostex CLI.
    * Forward zehn flags untouched so modes such as --print, --project, --list,
    * --version, and --help remain owned by zehn rather than Ghostex parsing.
+   *
+   * CDXC:AgentHistorySearch 2026-06-04-23:31:
+   * `gx find` is the Ghostex-owned launcher for zehn, so it should honor the
+   * gxserver global Accept All setting by passing zehn's explicit
+   * `--accept-all` resume flag. Standalone zehn remains independent, and
+   * user-provided `--accept-all` or `--no-accept-all` wins over daemon state.
    */
-  await runInteractiveProcess(launch.command, [...launch.args, ...args], {
+  await runInteractiveProcess(launch.command, [...launch.args, ...zehnArgs], {
     cwd: launch.cwd,
     env: launch.env,
   });
+}
+
+async function resolveZehnSearchArgs(args) {
+  if (hasZehnAcceptAllOverride(args)) {
+    return args;
+  }
+  const result = await callGxserverRpc("/api/readAgentSettings", {}).catch(() => undefined);
+  return applyZehnAcceptAllArgs(args, result?.settings?.agentAcceptAllEnabled === true);
+}
+
+function applyZehnAcceptAllArgs(args, acceptAllEnabled) {
+  if (hasZehnAcceptAllOverride(args) || acceptAllEnabled !== true) {
+    return args;
+  }
+  return ["--accept-all", ...args];
+}
+
+function hasZehnAcceptAllOverride(args) {
+  return args.some((arg) => arg === "--accept-all" || arg === "--no-accept-all");
 }
 
 function resolveZehnLaunch() {
@@ -5212,6 +5238,7 @@ Boundary:
 
 export {
   agentOrchestrationUsage,
+  applyZehnAcceptAllArgs,
   browserUsage,
   buildSessionPickerModel,
   buildSessionPickerRows,

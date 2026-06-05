@@ -9,6 +9,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   agentOrchestrationUsage,
+  applyZehnAcceptAllArgs,
   browserUsage,
   buildSessionPickerModel,
   buildSessionPickerRows,
@@ -325,6 +326,30 @@ printf 'forwarded:%s\\n' "$1"
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
+  });
+
+  test("gx find passes Accept All to zehn from gxserver settings unless user overrides it", () => {
+    /**
+     * CDXC:AgentHistorySearch 2026-06-04-23:31:
+     * Ghostex-owned `gx find` should make Enter resume match the gxserver
+     * global Accept All policy while preserving explicit zehn CLI flags.
+     */
+    expect(applyZehnAcceptAllArgs(["--agent", "codex"], true)).toEqual([
+      "--accept-all",
+      "--agent",
+      "codex",
+    ]);
+    expect(applyZehnAcceptAllArgs(["--agent", "codex"], false)).toEqual(["--agent", "codex"]);
+    expect(applyZehnAcceptAllArgs(["--no-accept-all", "--agent", "codex"], true)).toEqual([
+      "--no-accept-all",
+      "--agent",
+      "codex",
+    ]);
+    expect(applyZehnAcceptAllArgs(["--accept-all", "--agent", "codex"], true)).toEqual([
+      "--accept-all",
+      "--agent",
+      "codex",
+    ]);
   });
 
   test("parses OS integration path open commands", () => {
