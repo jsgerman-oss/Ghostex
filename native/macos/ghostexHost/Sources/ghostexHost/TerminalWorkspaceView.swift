@@ -64,6 +64,58 @@ private let projectBeadsResponseEventName = "ghostex-project-beads-response"
 private let projectBoardResponseEventName = "ghostex-project-board-response"
 private let projectBoardImageResponseEventName = "ghostex-project-board-image-response"
 
+private struct NativeZmxRefreshIfStaleProcessResult: Sendable {
+  let didLaunch: Bool
+  let exitCode: Int32
+  let timedOut: Bool
+}
+
+private func nativeBundledZmxExecutablePath() -> String? {
+  Bundle.main.resourceURL?
+    .appendingPathComponent("Web/bin/zmx", isDirectory: false)
+    .path
+}
+
+private func nativeRunZmxRefreshIfStaleProcess(
+  zmxPath: String,
+  sessionName: String,
+  rows: Int,
+  columns: Int
+) -> NativeZmxRefreshIfStaleProcessResult {
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: zmxPath)
+  process.arguments = ["refresh-if-stale", sessionName, String(rows), String(columns)]
+  process.standardInput = FileHandle.nullDevice
+  let stdoutPipe = Pipe()
+  let stderrPipe = Pipe()
+  process.standardOutput = stdoutPipe
+  process.standardError = stderrPipe
+
+  do {
+    try process.run()
+  } catch {
+    return NativeZmxRefreshIfStaleProcessResult(didLaunch: false, exitCode: -1, timedOut: false)
+  }
+
+  let deadline = Date().addingTimeInterval(1.0)
+  while process.isRunning && Date() < deadline {
+    Thread.sleep(forTimeInterval: 0.02)
+  }
+
+  var timedOut = false
+  if process.isRunning {
+    timedOut = true
+    process.terminate()
+  }
+  process.waitUntilExit()
+  _ = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+  _ = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+  return NativeZmxRefreshIfStaleProcessResult(
+    didLaunch: true,
+    exitCode: process.terminationStatus,
+    timedOut: timedOut)
+}
+
 /*
 CDXC:ProjectBoard 2026-06-02-13:43:
 Project board Beads requests run through a detached gxserver call so native UI remains responsive. Hold the WKWebView weakly behind a sendable response target and dispatch only on MainActor so the bridge does not capture AppKit/WebKit objects directly in backend work.
@@ -90,6 +142,7 @@ private struct ProjectBeadsBridgeRequest: Decodable {
   let label: String?
   let labels: [String]?
   let priority: String?
+  let projectId: String?
   let prompt: String?
   let query: String?
   let remoteMachineId: String?
@@ -2038,6 +2091,11 @@ final class TerminalWorkspaceView: NSView {
     var webView: WKWebView?
     var title: String
     var url: String
+  }
+
+  private enum ZmxPersistenceRefreshMode: String {
+    case always
+    case ifStale
   }
 
   private struct PaneResizeHit {
@@ -5062,13 +5120,14 @@ final class TerminalWorkspaceView: NSView {
         "windowIsKey": window?.isKeyWindow ?? false,
       ])
     /*
-     CDXC:ZmxPersistenceRefresh 2026-06-04-21:39:
-     Sidebar session-button and terminal-content clicks must request a zmx display refresh even when the clicked terminal is already focused and the native focus command is otherwise a no-op. Keep using Ghostex's private zmx refresh sequence instead of typing a shell command so the request stays display-only.
+     CDXC:ZmxPersistenceRefresh 2026-06-05-21:27:
+     Sidebar session-button and terminal-content clicks should repair a zmx session that another client resized, but a normal click inside an already-correct pane must not repaint the terminal because the repaint scrolls the Ghostty view to the visible bottom. Use zmx's conditional grid-size refresh for click-originated requests.
      */
     if reason == "sidebarFocusCommand" || reason == "nativeTerminalContentMouseDown" {
       refreshZmxPersistenceTerminalIfNeeded(
         sessionId: sessionId,
-        reason: "focusTerminal.\(reason)")
+        reason: "focusTerminal.\(reason)",
+        mode: .ifStale)
     } else {
       refreshZmxPersistenceTerminalIfFocusOrSurfaceChanged(
         sessionId: sessionId,
@@ -5093,7 +5152,11 @@ final class TerminalWorkspaceView: NSView {
     refreshZmxPersistenceTerminalIfNeeded(sessionId: sessionId, reason: reason)
   }
 
-  private func refreshZmxPersistenceTerminalIfNeeded(sessionId: String, reason: String) {
+  private func refreshZmxPersistenceTerminalIfNeeded(
+    sessionId: String,
+    reason: String,
+    mode: ZmxPersistenceRefreshMode = .always
+  ) {
     let session = sessions[sessionId]
     let isWorkspaceActive = activeSessionIds.contains(sessionId)
     let isCommandActive = commandsPanelActiveSessionIds.contains(sessionId)
@@ -5119,13 +5182,21 @@ final class TerminalWorkspaceView: NSView {
       return
     }
     guard let session else { return }
-    session.view.refreshZmxPersistenceViewport(reason: reason)
+    switch mode {
+    case .always:
+      session.view.refreshZmxPersistenceViewport(reason: reason)
+    case .ifStale:
+      session.view.refreshZmxPersistenceViewportIfStale(
+        sessionName: session.sessionPersistenceName,
+        reason: reason)
+    }
     TerminalFocusDebugLog.append(
       event: "nativeWorkspace.zmxPersistenceViewportRefresh.sent",
       details: zmxPersistenceRefreshDiagnosticDetails(
         sessionId: sessionId,
         reason: reason,
-        session: session),
+        session: session,
+        extra: ["mode": mode.rawValue]),
       force: true)
   }
 
@@ -5262,7 +5333,7 @@ final class TerminalWorkspaceView: NSView {
       "reason": reason,
       "responder": responderSnapshot(),
       "sessionId": sessionId,
-      "sessionPersistenceName": nullableString(session?.sessionPersistenceName),
+      "hasSessionPersistenceName": !(session?.sessionPersistenceName?.isEmpty ?? true),
       "sessionPersistenceProvider": session?.sessionPersistenceProvider?.rawValue ?? "none",
       "surfaceHasGhosttySurface": session?.view.hasGhosttySurfaceForDiagnostics ?? false,
       "visibleCommandSessionIds": orderedVisibleCommandSessionIds(),
@@ -5295,12 +5366,13 @@ final class TerminalWorkspaceView: NSView {
       || !isSurfaceFirstResponder
     else {
       /*
-       CDXC:ZmxPersistenceRefresh 2026-06-04-21:39:
-       Clicking inside an already-focused terminal pane is an explicit user request to wake the visible attached zmx client. Refresh inside the duplicate-focus suppression branch so focus-changing clicks keep using the single focusTerminal refresh path.
+       CDXC:ZmxPersistenceRefresh 2026-06-05-21:27:
+       Clicking inside an already-focused terminal pane is an explicit opportunity to recover from a zmx daemon grid that another client changed. Use conditional refresh here because duplicate-focus clicks are common and must not repaint or scroll when the pane dimensions already match.
        */
       refreshZmxPersistenceTerminalIfNeeded(
         sessionId: clickedSessionId,
-        reason: "nativeTerminalContentMouseDown.duplicateFocus")
+        reason: "nativeTerminalContentMouseDown.duplicateFocus",
+        mode: .ifStale)
       return
     }
     /**
@@ -7612,9 +7684,16 @@ final class TerminalWorkspaceView: NSView {
       }
       let remoteMachineId = request.remoteMachineId?.trimmingCharacters(in: .whitespacesAndNewlines)
       let isRemoteRequest = remoteMachineId?.isEmpty == false
+      let hasProjectId = request.projectId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
       let projectPath: String
       if isRemoteRequest {
         projectPath = try projectBeadsRemoteWorkingDirectoryPath(request.cwd)
+      } else if hasProjectId {
+        /*
+         CDXC:ProjectBoardRouting 2026-06-04-23:51:
+         Local Project board Beads requests can carry a canonical gxserver project id. Do not validate the WK URL cwd first in that path; gxserver should resolve the current registered project path by id so stale restored board URLs cannot block the real project board.
+         */
+        projectPath = request.cwd.trimmingCharacters(in: .whitespacesAndNewlines)
       } else {
         projectPath = try projectBeadsWorkingDirectory(request.cwd).path
       }
@@ -7660,8 +7739,12 @@ final class TerminalWorkspaceView: NSView {
   ) throws -> String {
     var params: [String: Any] = [
       "action": try projectBeadsGxserverAction(for: request.action),
-      "projectPath": projectPath,
     ]
+    if let projectId = request.projectId?.trimmingCharacters(in: .whitespacesAndNewlines), !projectId.isEmpty {
+      params["projectId"] = projectId
+    } else {
+      params["projectPath"] = projectPath
+    }
     if let comment = request.comment { params["comment"] = comment }
     if let dependsOnId = request.dependsOnId { params["dependsOnId"] = dependsOnId }
     if let depType = request.depType { params["depType"] = depType }
@@ -10488,12 +10571,13 @@ final class TerminalWorkspaceView: NSView {
      the event point to match that hidden title-bar frame; a click without drag
      selects the tab on mouse-up.
 
-     CDXC:ZmxPersistenceRefresh 2026-06-04-21:39:
-     Native pane-tab clicks should repaint the tab's zmx-backed terminal immediately on mouse-down. The normal tab-selection mouse-up path may be a layout no-op for the already-selected tab, so the refresh must not depend on sidebar state changing.
+     CDXC:ZmxPersistenceRefresh 2026-06-05-21:27:
+     Native pane-tab clicks should repair the tab's zmx-backed terminal immediately on mouse-down when another client resized the daemon grid. Keep the request conditional so selecting an already-correct tab does not repaint and scroll the terminal.
      */
     refreshZmxPersistenceTerminalIfNeeded(
       sessionId: sessionId,
-      reason: "nativePaneTabMouseDown")
+      reason: "nativePaneTabMouseDown",
+      mode: .ifStale)
     paneHeaderDrag = PaneHeaderDrag(
       isDragging: false,
       lastLoggedMoveAt: 0,
@@ -16166,6 +16250,112 @@ final class GhostexGhosttySurfaceView: NSView {
       force: true)
   }
 
+  func refreshZmxPersistenceViewportIfStale(sessionName: String?, reason: String) {
+    /**
+     CDXC:ZmxPersistenceRefresh 2026-06-05-21:27:
+     Terminal-content, sidebar session-button, and native tab clicks are frequent focus gestures. They should restore a zmx pane after a phone-sized attach only when the daemon grid differs from this Mac Ghostty surface, using bundled zmx IPC outside the terminal input/output path so a matching-size click does not repaint or scroll.
+     */
+    guard surface != nil else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.ifStale",
+        details: [
+          "didRequest": false,
+          "reason": reason,
+          "sessionId": ghostexSessionId ?? "",
+          "skipReason": "missingSurface",
+        ],
+        force: true)
+      return
+    }
+    guard window != nil, !isHidden, !bounds.isEmpty else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.ifStale",
+        details: [
+          "boundsHeight": bounds.height,
+          "boundsWidth": bounds.width,
+          "didRequest": false,
+          "isHidden": isHidden,
+          "reason": reason,
+          "sessionId": ghostexSessionId ?? "",
+          "skipReason": window == nil ? "missingWindow" : "hiddenOrEmptyBounds",
+        ],
+        force: true)
+      return
+    }
+    guard let sessionName,
+      !sessionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.ifStale",
+        details: [
+          "didRequest": false,
+          "reason": reason,
+          "sessionId": ghostexSessionId ?? "",
+          "skipReason": "missingSessionName",
+        ],
+        force: true)
+      return
+    }
+    let currentSurfaceSize = surface.map { ghostty_surface_size($0) } ?? surfaceSize
+    guard let currentSurfaceSize,
+      currentSurfaceSize.rows > 0,
+      currentSurfaceSize.columns > 0,
+      Int(currentSurfaceSize.rows) <= Int(UInt16.max),
+      Int(currentSurfaceSize.columns) <= Int(UInt16.max)
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.ifStale",
+        details: [
+          "didRequest": false,
+          "reason": reason,
+          "sessionId": ghostexSessionId ?? "",
+          "skipReason": "invalidSurfaceSize",
+        ],
+        force: true)
+      return
+    }
+    guard let zmxPath = nativeBundledZmxExecutablePath(),
+      FileManager.default.isExecutableFile(atPath: zmxPath)
+    else {
+      TerminalFocusDebugLog.append(
+        event: "nativeWorkspace.zmxPersistenceViewportRefresh.ifStale",
+        details: [
+          "didRequest": false,
+          "reason": reason,
+          "sessionId": ghostexSessionId ?? "",
+          "skipReason": "missingBundledZmx",
+        ],
+        force: true)
+      return
+    }
+
+    let rows = Int(currentSurfaceSize.rows)
+    let columns = Int(currentSurfaceSize.columns)
+    let sessionId = ghostexSessionId ?? ""
+    DispatchQueue.global(qos: .utility).async {
+      let result = nativeRunZmxRefreshIfStaleProcess(
+        zmxPath: zmxPath,
+        sessionName: sessionName,
+        rows: rows,
+        columns: columns)
+      DispatchQueue.main.async {
+        TerminalFocusDebugLog.append(
+          event: "nativeWorkspace.zmxPersistenceViewportRefresh.ifStale",
+          details: [
+            "columns": columns,
+            "didLaunch": result.didLaunch,
+            "didRequest": true,
+            "exitCode": Int(result.exitCode),
+            "reason": reason,
+            "rows": rows,
+            "sessionId": sessionId,
+            "timedOut": result.timedOut,
+          ],
+          force: true)
+      }
+    }
+  }
+
   private func updateGhosttySurfaceSize() {
     guard let surface else { return }
     let scale = Double(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2)
@@ -17494,6 +17684,15 @@ private final class TerminalTitleBarActionButton: NSButton {
   var activeBackgroundColor: CGColor = TerminalTitleBarActionButton.activeBackgroundColor {
     didSet { updateActionChrome() }
   }
+  var normalContentTintColor: NSColor = TerminalTitleBarActionButton.normalTintColor {
+    didSet { updateActionChrome() }
+  }
+  var hoverContentTintColor: NSColor = TerminalTitleBarActionButton.hoverTintColor {
+    didSet { updateActionChrome() }
+  }
+  var activeContentTintColor: NSColor = TerminalTitleBarActionButton.activeTintColor {
+    didSet { updateActionChrome() }
+  }
   var leftBorderColor: CGColor? {
     didSet {
       leftBorderLayer.backgroundColor = leftBorderColor
@@ -17540,7 +17739,7 @@ private final class TerminalTitleBarActionButton: NSButton {
     leftBorderLayer.isHidden = true
     layer?.addSublayer(leftBorderLayer)
     imageScaling = .scaleProportionallyDown
-    contentTintColor = Self.normalTintColor
+    contentTintColor = normalContentTintColor
   }
 
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -17614,18 +17813,18 @@ private final class TerminalTitleBarActionButton: NSButton {
 
   private func updateActionChrome() {
     guard isEnabled else {
-      contentTintColor = Self.normalTintColor.withAlphaComponent(0.4)
+      contentTintColor = normalContentTintColor.withAlphaComponent(0.4)
       layer?.backgroundColor = normalBackgroundColor ?? NSColor.clear.cgColor
       return
     }
     if isHighlighted {
-      contentTintColor = Self.activeTintColor
+      contentTintColor = activeContentTintColor
       layer?.backgroundColor = activeBackgroundColor
     } else if isPointerInside {
-      contentTintColor = Self.hoverTintColor
+      contentTintColor = hoverContentTintColor
       layer?.backgroundColor = hoverBackgroundColor
     } else {
-      contentTintColor = Self.normalTintColor
+      contentTintColor = normalContentTintColor
       layer?.backgroundColor = normalBackgroundColor ?? NSColor.clear.cgColor
     }
   }
@@ -18709,7 +18908,7 @@ private final class TerminalSessionTitleBarView: NSView {
   /**
    CDXC:PaneTabs 2026-06-04-22:26:
    The one-pixel line below the native tabs bar should be #252525, distinct
-   from the #292f39 sticky active-tab proxy border.
+   from the sticky active-tab proxy border.
    */
   private static let tabBarSeparatorColor = NSColor(
     calibratedRed: 0x25 / 255,
@@ -18766,14 +18965,26 @@ private final class TerminalSessionTitleBarView: NSView {
   private static let minimumDiscreteVerticalWheelTabScrollDelta: CGFloat = 96
   private static let activeTabRevealScrollMargin: CGFloat = 12
   private static let activeTabRevealMinimumVisibleWidth: CGFloat = 60
-  private static let stickyActiveTabButtonSize: CGFloat = 18
+  private static let stickyActiveTabButtonSize: CGFloat = 20
   private static let stickyActiveTabButtonEdgeInset: CGFloat = 7
-  private static let stickyActiveTabButtonBorderColor = NSColor(
-    calibratedRed: 0x29 / 255,
-    green: 0x2F / 255,
-    blue: 0x39 / 255,
+  private static let stickyActiveTabButtonBackgroundColor = NSColor(
+    calibratedRed: 0x10 / 255,
+    green: 0x10 / 255,
+    blue: 0x10 / 255,
     alpha: 1
   ).cgColor
+  private static let stickyActiveTabButtonBorderColor = NSColor(
+    calibratedRed: 0xA6 / 255,
+    green: 0xA6 / 255,
+    blue: 0xA6 / 255,
+    alpha: 1
+  ).cgColor
+  private static let stickyActiveTabButtonTintColor = NSColor(
+    calibratedRed: 0xA6 / 255,
+    green: 0xA6 / 255,
+    blue: 0xA6 / 255,
+    alpha: 1
+  )
   /**
    CDXC:PaneTabs 2026-05-31-05:51:
    Main workspace native tab-bar actions must visually match the React titlebar
@@ -18858,8 +19069,13 @@ private final class TerminalSessionTitleBarView: NSView {
    the native tab strip away from it. Show a small edge-stuck chevron only while
    the active tab is offscreen or barely visible; clicking it centers the real
    active tab when scroll bounds allow, otherwise it clamps the tab into view.
-   The proxy control is an 18px square with a #292f39 border, vertically centered
-   in the tab bar and inset 7px from the visible tab-strip edge.
+   Keep the proxy vertically centered in the tab bar and inset 7px from the
+   visible tab-strip edge.
+
+   CDXC:PaneTabs 2026-06-05-06:02:
+   The sticky active-tab proxy should read as stronger navigation chrome: use a
+   20px square, #101010 background, and #a6a6a6 for both the border and chevron
+   glyph while preserving the 7px edge inset.
    */
   private static let workspaceTabButtonHeight: CGFloat = 36
   private static var tabScrollOffsetByGroupSignature: [String: CGFloat] = [:]
@@ -19158,7 +19374,7 @@ private final class TerminalSessionTitleBarView: NSView {
       setWorkspaceTabBarActionChrome(for: tabBrowserButton, enabled: false)
       setWorkspaceTabBarActionChrome(for: actionMenuButton, enabled: false)
     }
-    stickyActiveTabButton.normalBackgroundColor = backgroundColor(for: role)
+    stickyActiveTabButton.normalBackgroundColor = Self.stickyActiveTabButtonBackgroundColor
     for button in tabButtons {
       button.setChromeRole(role)
     }
@@ -21063,9 +21279,12 @@ private final class TerminalSessionTitleBarView: NSView {
     stickyActiveTabButton.action = #selector(performStickyActiveTabButton(_:))
     stickyActiveTabButton.sendAction(on: [.leftMouseDown])
     stickyActiveTabButton.chromeCornerRadius = 0
-    stickyActiveTabButton.normalBackgroundColor = Self.backgroundColor
-    stickyActiveTabButton.hoverBackgroundColor = Self.workspaceTabBarActionHoverBackgroundColor
-    stickyActiveTabButton.activeBackgroundColor = Self.workspaceTabBarActionActiveBackgroundColor
+    stickyActiveTabButton.normalBackgroundColor = Self.stickyActiveTabButtonBackgroundColor
+    stickyActiveTabButton.hoverBackgroundColor = Self.stickyActiveTabButtonBackgroundColor
+    stickyActiveTabButton.activeBackgroundColor = Self.stickyActiveTabButtonBackgroundColor
+    stickyActiveTabButton.normalContentTintColor = Self.stickyActiveTabButtonTintColor
+    stickyActiveTabButton.hoverContentTintColor = Self.stickyActiveTabButtonTintColor
+    stickyActiveTabButton.activeContentTintColor = Self.stickyActiveTabButtonTintColor
     stickyActiveTabButton.wantsLayer = true
     stickyActiveTabButton.layer?.borderWidth = 1
     stickyActiveTabButton.layer?.borderColor = Self.stickyActiveTabButtonBorderColor
@@ -22938,29 +23157,33 @@ private final class TerminalPaneScrollButton: NSButton {
   }
 
   private static let normalBackgroundColor = NSColor(
-    calibratedWhite: 0,
+    calibratedRed: 0x10 / 255,
+    green: 0x10 / 255,
+    blue: 0x10 / 255,
     alpha: 1
   ).cgColor
   private static let hoverBackgroundColor = NSColor(
-    calibratedWhite: 0,
+    calibratedRed: 0x10 / 255,
+    green: 0x10 / 255,
+    blue: 0x10 / 255,
     alpha: 1
   ).cgColor
   private static let borderColor = NSColor(
-    calibratedRed: 0x75 / 255,
-    green: 0x75 / 255,
-    blue: 0x75 / 255,
+    calibratedRed: 0xA6 / 255,
+    green: 0xA6 / 255,
+    blue: 0xA6 / 255,
     alpha: 1
   ).cgColor
   private static let hoverBorderColor = NSColor(
-    calibratedRed: 0x75 / 255,
-    green: 0x75 / 255,
-    blue: 0x75 / 255,
+    calibratedRed: 0xA6 / 255,
+    green: 0xA6 / 255,
+    blue: 0xA6 / 255,
     alpha: 1
   ).cgColor
   private static let glyphColor = NSColor(
-    calibratedRed: 0x75 / 255,
-    green: 0x75 / 255,
-    blue: 0x75 / 255,
+    calibratedRed: 0xA6 / 255,
+    green: 0xA6 / 255,
+    blue: 0xA6 / 255,
     alpha: 1
   )
 
@@ -23028,8 +23251,14 @@ private final class TerminalPaneScrollButton: NSButton {
      but set button roundness to zero instead of drawing circular controls.
 
      CDXC:NativeTerminalScroll 2026-06-04-20:11:
-     Scroll-to-top and scroll-to-bottom overlay buttons should render with a
-     black background, #757575 border, and #757575 arrow glyphs in every state.
+     Scroll-to-top and scroll-to-bottom overlay buttons should keep one stable
+     background, border, and arrow glyph color across normal, hover, and pressed
+     states.
+
+     CDXC:NativeTerminalScroll 2026-06-05-06:05:
+     Terminal scroll-to-top and scroll-to-bottom overlays should match the
+     sticky active-tab proxy colors: #101010 background with #a6a6a6 border and
+     chevron glyph in every state.
      */
     title = ""
     isBordered = false
