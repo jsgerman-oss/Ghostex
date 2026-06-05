@@ -5,6 +5,7 @@ import {
   filterPreviousSessions,
   filterPreviousSessionsModalItems,
   groupPreviousSessionsByDay,
+  removePreviousSessionByHistoryId,
 } from "./previous-session-search";
 import { SessionHistoryCard } from "./session-history-card";
 import { useSidebarStore } from "./sidebar-store";
@@ -301,6 +302,9 @@ export function PreviousSessionsModal({
                       <SessionHistoryCard
                         key={session.historyId}
                         onDelete={() => {
+                          setRemotePreviousSessions((current) =>
+                            removePreviousSessionByHistoryId(current ?? modalPreviousSessions, session.historyId),
+                          );
                           vscode.postMessage({
                             historyId: session.historyId,
                             type: "deletePreviousSession",

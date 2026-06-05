@@ -64,6 +64,17 @@ export function filterPreviousSessionsModalItems(
   return previousSessions.filter((session) => !isPreviousSessionWebPage(session));
 }
 
+export function removePreviousSessionByHistoryId(
+  previousSessions: readonly SidebarPreviousSessionItem[],
+  historyId: string,
+): SidebarPreviousSessionItem[] {
+  /*
+  CDXC:PreviousSessions 2026-06-04-22:52:
+  The full Previous Sessions modal keeps gxserver query results in component state. Delete must remove the clicked row from that modal-owned result page immediately, because native/gxserver deletion is asynchronous and does not send a matching previousSessionsResult request id back to the open modal.
+  */
+  return previousSessions.filter((session) => session.historyId !== historyId);
+}
+
 export function groupPreviousSessionsByDay(
   previousSessions: readonly SidebarPreviousSessionItem[],
 ): PreviousSessionsModalDayGroup[] {

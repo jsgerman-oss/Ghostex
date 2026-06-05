@@ -3,6 +3,7 @@ import type { SidebarPreviousSessionItem } from "../shared/session-grid-contract
 import {
   filterPreviousSessions,
   filterPreviousSessionsModalItems,
+  removePreviousSessionByHistoryId,
 } from "./previous-session-search";
 
 describe("filterPreviousSessions", () => {
@@ -147,6 +148,21 @@ describe("filterPreviousSessionsModalItems", () => {
 
     expect(filterPreviousSessionsModalItems(previousSessions)).toMatchObject([
       { historyId: "history-agent" },
+    ]);
+  });
+});
+
+describe("removePreviousSessionByHistoryId", () => {
+  test("should remove the clicked row from the modal result page", () => {
+    const previousSessions = [
+      createPreviousSession({ historyId: "history-1" }),
+      createPreviousSession({ historyId: "history-2" }),
+      createPreviousSession({ historyId: "history-3" }),
+    ];
+
+    expect(removePreviousSessionByHistoryId(previousSessions, "history-2")).toMatchObject([
+      { historyId: "history-1" },
+      { historyId: "history-3" },
     ]);
   });
 });
