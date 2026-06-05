@@ -278,6 +278,15 @@ export function reduceSidebarStoryWorkspace(
         },
       };
 
+    case "setActiveSessionsSortMode":
+      return {
+        ...workspace,
+        options: {
+          ...workspace.options,
+          activeSessionsSortMode: message.sortMode,
+        },
+      };
+
     case "cycleSessionPersistenceProvider":
       return workspace.options.settings
         ? {

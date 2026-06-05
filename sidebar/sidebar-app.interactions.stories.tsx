@@ -800,14 +800,15 @@ export const SessionCardActions: Story = {
       await expectMessage({ sessionId: "session-3", type: "copyResumeCommand" });
     });
 
-    await step("favorite through the session context menu", async () => {
+    await step("tag favorite through the session context menu", async () => {
       resetSidebarStoryMessages();
 
       const sessionCard = await findSessionCard();
       await openContextMenu(sessionCard);
-      await userEvent.click(await body.findByRole("menuitem", { name: "Favorite" }));
+      await userEvent.click(await body.findByRole("menuitem", { name: "Tag as" }));
+      await userEvent.click(await body.findByRole("menuitemradio", { name: "Tag as Favorite" }));
 
-      await expectMessage({ favorite: true, sessionId: "session-3", type: "setSessionFavorite" });
+      await expectMessage({ sessionId: "session-3", sessionTag: "favorite", type: "setSessionTag" });
     });
 
     await step("fork through the session context menu", async () => {

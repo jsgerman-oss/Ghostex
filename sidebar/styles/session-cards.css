@@ -1080,6 +1080,86 @@
   --session-agent-icon-color: #c8ff62;
 }
 
+.session-tag-colored-icon,
+.session-tag-agent-icon {
+  /*
+   * CDXC:SessionTags 2026-06-05-14:45:
+   * Tag picker and filter menu icons must use the same color mapping as the
+   * sidebar row tag icons so a tag reads as one visual state across menus,
+   * active sessions, and Previous Sessions.
+   */
+  color: color-mix(in srgb, #9aa8b6 84%, var(--app-foreground) 16%);
+}
+
+.session-tag-agent-icon {
+  opacity: 1;
+}
+
+.session-tag-colored-icon[data-session-tag="favorite"],
+.session-tag-agent-icon[data-session-tag="favorite"] {
+  color: color-mix(in srgb, #ffdf75 78%, #c78b12 22%);
+}
+
+.session-tag-colored-icon[data-session-tag="high-priority"],
+.session-tag-agent-icon[data-session-tag="high-priority"] {
+  color: #ff8b6b;
+}
+
+.session-tag-colored-icon[data-session-tag="research"],
+.session-tag-agent-icon[data-session-tag="research"] {
+  color: #8fb8ff;
+}
+
+.session-tag-colored-icon[data-session-tag="todo"],
+.session-tag-agent-icon[data-session-tag="todo"] {
+  color: #d9dee6;
+}
+
+.session-tag-colored-icon[data-session-tag="in-progress"],
+.session-tag-agent-icon[data-session-tag="in-progress"] {
+  color: #4ee6b8;
+}
+
+.session-tag-colored-icon[data-session-tag="testing"],
+.session-tag-agent-icon[data-session-tag="testing"] {
+  color: #59d9ff;
+}
+
+.session-tag-colored-icon[data-session-tag="blocked"],
+.session-tag-agent-icon[data-session-tag="blocked"] {
+  color: #ff5f73;
+}
+
+.session-tag-colored-icon[data-session-tag="low-priority"],
+.session-tag-agent-icon[data-session-tag="low-priority"] {
+  color: #8e949d;
+}
+
+.session-tag-colored-icon[data-session-tag="on-hold"],
+.session-tag-agent-icon[data-session-tag="on-hold"] {
+  color: #d2a7ff;
+}
+
+.session-tag-colored-icon[data-session-tag="done"],
+.session-tag-agent-icon[data-session-tag="done"] {
+  color: #73e79c;
+}
+
+.session-tag-colored-icon[data-session-tag="bug"],
+.session-tag-agent-icon[data-session-tag="bug"] {
+  color: #ff7a90;
+}
+
+.session-tag-colored-icon[data-session-tag="feature"],
+.session-tag-agent-icon[data-session-tag="feature"] {
+  color: #f0c66e;
+}
+
+.session-tag-colored-icon[data-session-tag="design"],
+.session-tag-agent-icon[data-session-tag="design"] {
+  color: #ff9ee7;
+}
+
 .session-floating-agent-icon[data-favorite="true"],
 .session-floating-agent-tabler-icon[data-favorite="true"],
 .session-header-agent-icon[data-favorite="true"],
@@ -1097,6 +1177,8 @@
 
 .session-frame[data-pinned="true"]:is(:hover, :has(.session:hover), :has(.session:focus-visible), :has(.session:focus-within))
   .session-pinned-agent-icon,
+.session-frame[data-tagged="true"]:is(:hover, :has(.session:hover), :has(.session:focus-visible), :has(.session:focus-within))
+  .session-tag-agent-icon,
 .session-frame[data-pinned="true"]:is(:hover, :has(.session:hover), :has(.session:focus-visible), :has(.session:focus-within))
   .session-delayed-send-agent-icon {
   /*
@@ -1979,7 +2061,11 @@
 .session-frame[data-pinned="true"][data-agent-icon-hover-only="true"]:not(:hover):not(
     :has(.session:hover)
   ):not(:has(.session:focus-visible)):not(:has(.session:focus-within))
-  .session-pinned-agent-icon {
+  .session-pinned-agent-icon,
+.session-frame[data-tagged="true"][data-agent-icon-hover-only="true"]:not(:hover):not(
+    :has(.session:hover)
+  ):not(:has(.session:focus-visible)):not(:has(.session:focus-within))
+  .session-tag-agent-icon {
   opacity: 1 !important;
 }
 
@@ -2015,6 +2101,15 @@
   width: var(--reference-session-icon-size);
 }
 
+.sidebar-reference-layout[data-reference-sidebar="true"] .session-tag-agent-icon {
+  height: var(--reference-session-icon-size);
+  left: var(--reference-session-leading-inset);
+  opacity: 1;
+  top: 50%;
+  translate: 0 -50%;
+  width: var(--reference-session-icon-size);
+}
+
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-frame[data-pinned="true"]:is(
     :hover,
@@ -2023,6 +2118,14 @@
     :has(.session:focus-within)
   )
   .session-pinned-agent-icon,
+.sidebar-reference-layout[data-reference-sidebar="true"]
+  .session-frame[data-tagged="true"]:is(
+    :hover,
+    :has(.session:hover),
+    :has(.session:focus-visible),
+    :has(.session:focus-within)
+  )
+  .session-tag-agent-icon,
 .sidebar-reference-layout[data-reference-sidebar="true"]
   .session-frame[data-pinned="true"]:is(
     :hover,

@@ -1394,6 +1394,45 @@
   color: color-mix(in srgb, #ffdf75 78%, #c78b12 22%);
 }
 
+.previous-sessions-tag-filter {
+  position: relative;
+}
+
+.previous-sessions-tag-filter-toggle[data-selected="true"] {
+  color: var(--app-foreground);
+}
+
+.previous-sessions-tag-filter-menu {
+  /*
+   * CDXC:PreviousSessions 2026-06-05-18:39:
+   * The tag filter dropdown is portaled out of the modal because Previous
+   * Sessions clips its content area. Keep the menu fixed above the modal layer
+   * so the filter button can show all grouped tag sections.
+   */
+  min-width: 224px;
+  position: fixed;
+  z-index: 1302;
+}
+
+.app-modal-host-body .previous-sessions-tag-filter-menu {
+  /*
+   * CDXC:PreviousSessions 2026-06-05-19:23:
+   * The full-window native modal host lowers generic session context menus to
+   * its local overlay stack. Previous Sessions tag filters are portaled to the
+   * body and must stay above the modal/backdrop, otherwise the button appears
+   * inert because the opened menu is hidden behind the dialog.
+   */
+  z-index: 1302;
+}
+
+.previous-sessions-tag-filter-check[data-visible="false"] {
+  opacity: 0;
+}
+
+.previous-sessions-tag-filter-item[data-selected="true"] {
+  color: var(--app-foreground);
+}
+
 .previous-sessions-clear-button {
   align-items: center;
   background: color-mix(in srgb, var(--app-card-active) 90%, transparent);

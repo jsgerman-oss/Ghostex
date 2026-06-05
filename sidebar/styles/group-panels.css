@@ -1708,6 +1708,32 @@ body[data-sidebar-tooltips-suppressed="true"] [data-slot="tooltip-content"] {
   width: 22px;
 }
 
+/*
+CDXC:ManualSessionSorting 2026-06-05-12:30:
+The Quick and Projects sort picker is compact header chrome, not a settings
+surface. Keep the filter icon aligned with existing hover actions while making
+manual mode visibly selected without adding text to the section row.
+*/
+.reference-sidebar-section-sort-action[data-selected="true"] {
+  color: color-mix(in srgb, var(--app-foreground) 86%, transparent);
+}
+
+.reference-sidebar-sort-menu {
+  min-width: 204px;
+}
+
+.reference-sidebar-sort-menu .session-context-menu-icon[data-visible="false"] {
+  opacity: 0;
+}
+
+.reference-sidebar-tag-filter-check[data-visible="false"] {
+  opacity: 0;
+}
+
+.reference-sidebar-tag-filter-item[data-selected="true"] {
+  color: var(--app-foreground);
+}
+
 .reference-sidebar-section-bulk-project-action svg {
   /*
    * CDXC:SidebarReference 2026-05-28-12:59:

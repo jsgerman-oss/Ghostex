@@ -812,6 +812,7 @@ function haveSameSidebarSessionItem(left: SidebarSessionItem, right: SidebarSess
     left.isFocused === right.isFocused &&
     left.isFavorite === right.isFavorite &&
     left.isPinned === right.isPinned &&
+    left.sessionTag === right.sessionTag &&
     left.isSleeping === right.isSleeping &&
     left.isRunning === right.isRunning &&
     left.isVisible === right.isVisible &&

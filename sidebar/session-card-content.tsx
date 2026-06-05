@@ -27,6 +27,12 @@ import {
 import { getSidebarAgentNameByIcon, type SidebarAgentIcon } from "../shared/sidebar-agents";
 import { AGENT_LOGOS } from "./agent-logos";
 import {
+  getEffectiveSessionTag,
+  getSidebarSessionTagLabel,
+  SessionTagIcon,
+  type SidebarSessionTag,
+} from "./session-tag-ui";
+import {
   areSidebarTooltipsSuppressed,
   SIDEBAR_TOOLTIP_DISMISS_EVENT,
   SIDEBAR_TOOLTIP_SUPPRESSION_CHANGED_EVENT,
@@ -277,10 +283,12 @@ export function getSessionCardTitleTooltip({
     | "delayedSendRemainingLabel"
     | "detail"
     | "firstUserMessage"
+    | "isFavorite"
     | "kind"
     | "isPrimaryTitleTerminalTitle"
     | "primaryTitle"
     | "sessionKind"
+    | "sessionTag"
     | "sessionRoutingId"
     | "sessionPersistenceName"
     | "sessionPersistenceProvider"
@@ -319,7 +327,7 @@ export function getSessionCardTitleTooltip({
   });
   const fullTooltipHeadingText = getFullSessionTooltipHeadingText({
     firstUserMessage: session.firstUserMessage,
-    headingText: tooltipHeadingText,
+    headingText: formatSessionTagTooltipHeadingText(session, tooltipHeadingText),
   });
   /**
    * CDXC:PreviousSessions 2026-05-08-16:07
@@ -388,6 +396,24 @@ function getCapturedAgentSessionIdTooltipText(
 ): string | undefined {
   const agentSessionId = session.agentSessionId?.trim();
   return agentSessionId || undefined;
+}
+
+function formatSessionTagTooltipHeadingText(
+  session: Pick<SidebarSessionItem, "isFavorite" | "sessionTag">,
+  headingText: string,
+): string {
+  const sessionTag = getEffectiveSessionTag(session);
+  const label = getSidebarSessionTagLabel(sessionTag);
+  if (!label) {
+    return headingText;
+  }
+
+  /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * Session-card hover tooltips prefix the title with the active tag, for
+   * example `[Todo]`, without changing the visible row title.
+   */
+  return `[${label}] ${headingText}`;
 }
 
 function getFullSessionTooltipHeadingText({
@@ -602,6 +628,7 @@ type SessionAgentIconProps = {
   faviconDataUrl?: string;
   isFavorite?: boolean;
   isPinned?: boolean;
+  sessionTag?: SidebarSessionTag;
   isGeneratingFirstPromptTitle?: boolean;
   isReloading?: boolean;
   sessionPersistenceName?: string;
@@ -717,10 +744,13 @@ export function SessionFloatingAgentIcon({
   isFavorite = false,
   isPinned = false,
   onDelayedSendClick,
+  sessionTag,
   sessionPersistenceName,
   sessionPersistenceProvider,
   showTerminalIcon = false,
 }: SessionAgentIconProps & { onDelayedSendClick?: () => void }) {
+  const effectiveSessionTag = getEffectiveSessionTag({ isFavorite, sessionTag });
+
   if (delayedSendRemainingLabel && !isPinned) {
     return (
       <DelayedSendSidebarIcon
@@ -739,6 +769,8 @@ export function SessionFloatingAgentIcon({
           onClick={onDelayedSendClick}
           remainingLabel={delayedSendRemainingLabel}
         />
+      ) : effectiveSessionTag ? (
+        <SessionTagSidebarIcon sessionTag={effectiveSessionTag} />
       ) : isPinned ? (
         <PinnedSessionSidebarIcon />
       ) : null}
@@ -757,6 +789,24 @@ export function SessionFloatingAgentIcon({
         slot="floating"
       />
     </>
+  );
+}
+
+function SessionTagSidebarIcon({ sessionTag }: { sessionTag: SidebarSessionTag }) {
+  /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * A tagged session shows its tag glyph in the same leading identity slot used
+   * by agent icons. Delayed Send owns higher precedence; otherwise the tag is
+   * visible at rest and hover/focus can reveal the hidden agent identity.
+   */
+  return (
+    <SessionTagIcon
+      className="session-floating-agent-tabler-icon session-tag-agent-icon"
+      fillFavorite
+      size={15}
+      stroke={1.9}
+      tag={sessionTag}
+    />
   );
 }
 

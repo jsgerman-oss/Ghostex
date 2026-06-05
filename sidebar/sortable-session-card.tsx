@@ -1,4 +1,6 @@
 import {
+  IconChevronRight,
+  IconCheck,
   IconCopy,
   IconCode,
   IconClock,
@@ -17,7 +19,7 @@ import {
   IconPlayerPlay,
   IconRefresh,
   IconSparkles,
-  IconStar,
+  IconTag,
   IconUserCircle,
   IconX,
 } from "@tabler/icons-react";
@@ -59,8 +61,16 @@ import {
 import { openAppModal } from "./app-modal-host-bridge";
 import { SidebarContextMenuPortal } from "./sidebar-context-menu-portal";
 import { useSidebarStore } from "./sidebar-store";
+import {
+  getEffectiveSessionTag,
+  getSidebarSessionTagLabel,
+  SessionTagIcon,
+  SIDEBAR_SESSION_TAG_OPTIONS,
+  SIDEBAR_SESSION_TAG_SECTIONS,
+  type SidebarSessionTag,
+} from "./session-tag-ui";
 import type { WebviewApi } from "./webview-api";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 
 const CONTEXT_MENU_MARGIN_PX = 12;
 const CONTEXT_MENU_WIDTH_PX = 178;
@@ -122,7 +132,8 @@ type SessionContextMenuAction = {
   icon: ReactNode;
   key: string;
   label: string;
-  onClick: () => void;
+  onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
+  submenu?: "session-tags";
 };
 
 export type SortableSessionCardProps = {
@@ -248,6 +259,7 @@ export function SortableSessionCard({
     })),
   );
   const [contextMenuPosition, setContextMenuPosition] = useState<ContextMenuPosition>();
+  const [tagSubmenuPosition, setTagSubmenuPosition] = useState<ContextMenuPosition>();
   const [completionFlashRunId, setCompletionFlashRunId] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const aliasHeadingRef = useRef<HTMLDivElement>(null);
@@ -257,7 +269,7 @@ export function SortableSessionCard({
   const lastAgentIconRenderDebugKeyRef = useRef<string | undefined>(undefined);
   const isBrowserSession = session?.sessionKind === "browser" || session?.kind === "browser";
   const isT3Session = session?.sessionKind === "t3";
-  const canFavoriteSession = !isBrowserSession;
+  const canTagSession = !isBrowserSession;
   const canForkSession = session ? !isBrowserSession && supportsFork(session) : false;
   const canDelayedSend = session ? !isBrowserSession && !isT3Session : false;
   const canCopyResumeCommand = session
@@ -355,6 +367,7 @@ export function SortableSessionCard({
     return null;
   }
 
+  const currentSessionTag = getEffectiveSessionTag(session);
   const sessionTitleTooltip = getSessionCardTitleTooltip({
     session,
     showDebugSessionNumbers,
@@ -367,6 +380,7 @@ export function SortableSessionCard({
   const showTerminalSessionIcon = shouldShowTerminalSessionIcon(session);
   const hasSessionCardIcon =
     session.isPinned === true ||
+    Boolean(currentSessionTag) ||
     Boolean(session.delayedSendRemainingLabel) ||
     Boolean(session.agentIcon) ||
     showTerminalSessionIcon ||
@@ -391,6 +405,7 @@ export function SortableSessionCard({
 
   useEffect(() => {
     setContextMenuPosition(undefined);
+    setTagSubmenuPosition(undefined);
   }, [session.alias, session.sessionId]);
 
   useEffect(() => {
@@ -611,6 +626,7 @@ export function SortableSessionCard({
   ]);
 
   const openContextMenu = (clientX: number, clientY: number) => {
+    setTagSubmenuPosition(undefined);
     setContextMenuPosition(
       clampContextMenuPosition(clientX, clientY, contextMenuItemCount, contextMenuDividerCount),
     );
@@ -904,12 +920,34 @@ export function SortableSessionCard({
     }
   };
 
-  const requestSetFavorite = (favorite: boolean) => {
+  const requestSetSessionTag = (tag: SidebarSessionTag | undefined) => {
     setContextMenuPosition(undefined);
+    setTagSubmenuPosition(undefined);
     vscode.postMessage({
-      favorite,
       sessionId: session.sessionId,
-      type: "setSessionFavorite",
+      sessionTag: tag ?? null,
+      type: "setSessionTag",
+    });
+  };
+
+  const openSessionTagSubmenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const submenuWidth = 204;
+    const submenuHeight =
+      CONTEXT_MENU_VERTICAL_PADDING_PX +
+      SIDEBAR_SESSION_TAG_OPTIONS.length * CONTEXT_MENU_ITEM_HEIGHT_PX +
+      SIDEBAR_SESSION_TAG_SECTIONS.length * 18 +
+      Math.max(0, SIDEBAR_SESSION_TAG_SECTIONS.length - 1) * 10;
+    const shouldOpenLeft =
+      bounds.right + submenuWidth + CONTEXT_MENU_MARGIN_PX > window.innerWidth;
+    setTagSubmenuPosition({
+      x: shouldOpenLeft
+        ? Math.max(CONTEXT_MENU_MARGIN_PX, bounds.left - submenuWidth - 4)
+        : Math.min(bounds.right + 4, window.innerWidth - submenuWidth - CONTEXT_MENU_MARGIN_PX),
+      y: Math.max(
+        CONTEXT_MENU_MARGIN_PX,
+        Math.min(bounds.top, window.innerHeight - submenuHeight - CONTEXT_MENU_MARGIN_PX),
+      ),
     });
   };
 
@@ -964,14 +1002,15 @@ export function SortableSessionCard({
     label: session.isPinned ? "Unpin" : "Pin",
     onClick: () => requestSetPinned(!session.isPinned),
   });
-  if (canFavoriteSession) {
+  if (canTagSession) {
     primaryActions.push({
       icon: (
-        <IconStar aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
+        <IconTag aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
       ),
-      key: "favorite",
-      label: session.isFavorite ? "Unfavorite" : "Favorite",
-      onClick: () => requestSetFavorite(!session.isFavorite),
+      key: "tag-as",
+      label: "Tag as",
+      onClick: openSessionTagSubmenu,
+      submenu: "session-tags",
     });
   }
   if (canSleepSession) {
@@ -1352,6 +1391,7 @@ export function SortableSessionCard({
           )}
           data-lifecycle-state={lifecycleState}
           data-pinned={String(session.isPinned === true)}
+          data-tagged={String(Boolean(currentSessionTag))}
           data-running={String(lifecycleState === "running")}
           data-sleeping={String(Boolean(session.isSleeping))}
           data-visible={String(session.isVisible)}
@@ -1393,6 +1433,7 @@ export function SortableSessionCard({
             data-running={String(lifecycleState === "running")}
             data-search-selected={String(isSearchSelected)}
             data-pinned={String(session.isPinned === true)}
+            data-tagged={String(Boolean(currentSessionTag))}
             data-sleeping={String(Boolean(session.isSleeping))}
             data-sidebar-session-id={session.sessionId}
             data-visible={String(session.isVisible)}
@@ -1471,6 +1512,7 @@ export function SortableSessionCard({
               isPinned={session.isPinned}
               isReloading={session.isReloading}
               onDelayedSendClick={requestDelayedSend}
+              sessionTag={session.sessionTag}
               sessionPersistenceName={session.sessionPersistenceName}
               sessionPersistenceProvider={session.sessionPersistenceProvider}
               showTerminalIcon={showTerminalSessionIcon}
@@ -1503,6 +1545,7 @@ export function SortableSessionCard({
           }}
           onDismiss={() => {
             setContextMenuPosition(undefined);
+            setTagSubmenuPosition(undefined);
           }}
           vscode={vscode}
         >
@@ -1516,12 +1559,21 @@ export function SortableSessionCard({
                   <button
                     key={action.key}
                     className={`session-context-menu-item${action.danger ? " session-context-menu-item-danger" : ""}`}
-                    onClick={action.onClick}
+                    onClick={(event) => action.onClick(event)}
+                    onMouseEnter={action.submenu === "session-tags" ? action.onClick : undefined}
                     role="menuitem"
                     type="button"
                   >
                     {action.icon}
                     {action.label}
+                    {action.submenu === "session-tags" ? (
+                      <IconChevronRight
+                        aria-hidden="true"
+                        className="session-context-menu-trailing-icon"
+                        size={14}
+                        stroke={1.8}
+                      />
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -1529,6 +1581,72 @@ export function SortableSessionCard({
           ))}
         </SidebarContextMenuPortal>
       ) : null}
+      {contextMenuPosition && tagSubmenuPosition
+        ? createPortal(
+            <div
+              aria-label="Tag as"
+              className="session-context-menu session-tag-submenu"
+              data-empty-space-blocking="true"
+              onClick={(event) => event.stopPropagation()}
+              role="menu"
+              style={{
+                left: `${tagSubmenuPosition.x}px`,
+                top: `${tagSubmenuPosition.y}px`,
+                zIndex: 21,
+              }}
+            >
+              {/*
+               * CDXC:SessionTags 2026-06-05-12:30:
+               * The session context menu exposes `Tag as` as a submenu with the
+               * canonical session tag list. Choosing the current marker clears
+               * it so the old Favorite/Unfavorite workflow remains one click deep.
+               */}
+              {SIDEBAR_SESSION_TAG_SECTIONS.map((section) => (
+                <div className="session-tag-menu-section" key={section.label}>
+                  <div className="session-tag-menu-section-label">{section.label}</div>
+                  {section.options.map((option) => {
+                    const isSelected = currentSessionTag === option.value;
+                    return (
+                      <button
+                        aria-checked={isSelected}
+                        aria-label={
+                          isSelected
+                            ? `Remove ${getSidebarSessionTagLabel(option.value)} tag`
+                            : `Tag as ${getSidebarSessionTagLabel(option.value)}`
+                        }
+                        className="session-context-menu-item session-tag-menu-item"
+                        data-selected={String(isSelected)}
+                        key={option.value}
+                        onClick={() =>
+                          requestSetSessionTag(isSelected ? undefined : option.value)
+                        }
+                        role="menuitemradio"
+                        type="button"
+                      >
+                        <SessionTagIcon
+                          className="session-context-menu-icon session-tag-colored-icon"
+                          fillFavorite
+                          size={16}
+                          stroke={1.8}
+                          tag={option.value}
+                        />
+                        <span className="session-tag-menu-item-label">{option.label}</span>
+                        <IconCheck
+                          aria-hidden="true"
+                          className="session-tag-menu-item-check"
+                          data-visible={String(isSelected)}
+                          size={14}
+                          stroke={2}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>,
+            document.body,
+          )
+        : null}
     </>
   );
 }

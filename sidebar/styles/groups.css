@@ -1806,7 +1806,11 @@
   letter-spacing: 0;
   line-height: 1.15;
   margin-top: 8px;
-  padding-left: 10px;
+  /*
+   * CDXC:SidebarReference 2026-06-05-14:19:
+   * The empty Projects copy must align under the Projects section label in the reference sidebar. Keep the placeholder 8px farther right than the previous inset so "No projects" starts in the same text column as the header.
+   */
+  padding-left: 18px;
 }
 
 .sidebar-reference-layout[data-reference-sidebar="true"] .group[data-project-group="true"] .group-head:hover .section-titlebar-toggle-idle-icon,

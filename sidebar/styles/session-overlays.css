@@ -68,6 +68,57 @@
   white-space: nowrap;
 }
 
+.session-context-menu-trailing-icon {
+  margin-left: auto;
+}
+
+.session-tag-submenu {
+  min-width: 204px;
+}
+
+.session-tag-menu-section {
+  display: grid;
+  gap: 2px;
+}
+
+.session-tag-menu-section + .session-tag-menu-section {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--app-border) 60%, transparent);
+}
+
+.session-tag-menu-section-label {
+  /*
+   * CDXC:SessionTags 2026-06-05-15:22:
+   * Tag menus are grouped by Priority, Progress, and Type so workflow-related
+   * tags stay together while non-progress markers remain easy to scan.
+   */
+  padding: 4px 10px 2px;
+  color: color-mix(in srgb, var(--app-foreground) 50%, transparent);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.session-tag-menu-item[data-selected="true"] {
+  color: var(--app-foreground);
+}
+
+.session-tag-menu-item-label {
+  min-width: 0;
+}
+
+.session-tag-menu-item-check {
+  margin-left: auto;
+  opacity: 0;
+}
+
+.session-tag-menu-item-check[data-visible="true"] {
+  opacity: 1;
+}
+
 .session-context-menu-group {
   display: grid;
   gap: 6px;

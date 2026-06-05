@@ -19,6 +19,7 @@ export type SessionHistoryCardProps = {
 };
 
 export function SessionHistoryCard({
+  isSearchSelected = false,
   onDelete,
   onRestore,
   session,
@@ -74,14 +75,6 @@ export function SessionHistoryCard({
          * with the same row chrome; active/live highlights are misleading here
          * because these rows restore history instead of representing open UI.
          */}
-        <SessionFloatingAgentIcon
-          agentIcon={session.agentIcon}
-          faviconDataUrl={session.faviconDataUrl}
-          isFavorite={session.isFavorite}
-          sessionPersistenceName={session.sessionPersistenceName}
-          sessionPersistenceProvider={session.sessionPersistenceProvider}
-          showTerminalIcon={shouldShowTerminalSessionIcon(session)}
-        />
         <article
           aria-disabled={!session.isRestorable}
           aria-pressed="false"
@@ -93,7 +86,7 @@ export function SessionHistoryCard({
           data-dragging="false"
           data-focused="false"
           data-running="false"
-          data-search-selected="false"
+          data-search-selected={String(isSearchSelected)}
           data-sidebar-history-id={session.historyId}
           data-restorable={String(session.isRestorable)}
           data-visible="false"
@@ -131,6 +124,23 @@ export function SessionHistoryCard({
           role={session.isRestorable ? "button" : undefined}
           tabIndex={session.isRestorable ? 0 : -1}
         >
+          {/**
+           * CDXC:PreviousSessions 2026-06-05-14:21:
+           * Inline Previous Sessions search rows must match project-session row
+           * icon placement on both macOS and Electron. Keep the floating
+           * identity glyph inside the clickable session button so absolute
+           * positioning uses the same containing block and cannot overlap the
+           * title text.
+           */}
+          <SessionFloatingAgentIcon
+            agentIcon={session.agentIcon}
+            faviconDataUrl={session.faviconDataUrl}
+            isFavorite={session.isFavorite}
+            sessionTag={session.sessionTag}
+            sessionPersistenceName={session.sessionPersistenceName}
+            sessionPersistenceProvider={session.sessionPersistenceProvider}
+            showTerminalIcon={shouldShowTerminalSessionIcon(session)}
+          />
           <button
             aria-label={`Delete ${displayTitle} from previous sessions`}
             className="previous-session-delete-button"
