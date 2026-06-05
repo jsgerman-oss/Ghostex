@@ -1147,7 +1147,12 @@
 
 .session-tag-colored-icon[data-session-tag="bug"],
 .session-tag-agent-icon[data-session-tag="bug"] {
-  color: #ff7a90;
+  /*
+   * CDXC:SessionTags 2026-06-05-20:17:
+   * Bug uses a muted red, not the brighter pink-red tag color, so it reads as
+   * issue severity without competing with higher-priority status colors.
+   */
+  color: #a54646;
 }
 
 .session-tag-colored-icon[data-session-tag="feature"],
