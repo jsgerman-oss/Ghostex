@@ -1277,6 +1277,16 @@ export type SidebarToExtensionMessage =
     }
   | {
       /**
+       * CDXC:ProjectClose 2026-06-04-23:40:
+       * Combined project-row Close inactive is project-scoped, not group-scoped.
+       * It closes idle terminal sessions while preserving working and attention
+       * sessions, and it must not park the whole project in Recent Projects.
+       */
+      type: "closeInactiveProjectSessions";
+      groupId: string;
+    }
+  | {
+      /**
        * CDXC:ProjectSleep 2026-05-27-02:18:
        * Combined project-row Wake must wake sleeping terminal sessions across
        * every workspace group because the row does not carry a concrete native

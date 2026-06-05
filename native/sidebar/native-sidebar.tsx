@@ -1647,6 +1647,19 @@ const nativeTerminalReadyAtBySessionId = new Map<string, number>();
 const nativeTerminalReadyWaitersBySessionId = new Map<string, Set<() => void>>();
 const NATIVE_TERMINAL_SURFACE_CREATION_PENDING_MS = 5_000;
 type PendingNativeTerminalSurfaceCreationState = {
+  /**
+   * CDXC:ProjectEditorCompanion 2026-06-05-03:59:
+   * Sidebar clicks in Project/Kanban mode can wake a terminal before AppKit has
+   * registered its Ghostty surface. Carry the requested focus surface through
+   * native terminalReady so the companion pane switches after the terminal is
+   * eligible, while the stored focus intent prevents stale clicks from stealing
+   * focus after a later selection.
+   */
+  focusAfterReady?: {
+    focusIntent?: NativeSidebarFocusIntent;
+    reason: string;
+    surface: NativeSidebarFocusSurface;
+  };
   nativeSessionId: string;
   needsFocusAfterReady: boolean;
   projectId: string;
@@ -1777,6 +1790,13 @@ function markNativeTerminalSurfaceCreationPending(
   sessionId: string,
   nativeSessionId: string,
   reason: string,
+  options: {
+    focusAfterReady?: {
+      focusIntent?: NativeSidebarFocusIntent;
+      reason: string;
+      surface: NativeSidebarFocusSurface;
+    };
+  } = {},
 ): void {
   nativeTerminalReadyAtBySessionId.delete(sessionId);
   /**
@@ -1787,6 +1807,7 @@ function markNativeTerminalSurfaceCreationPending(
    * instead of replacing the restorable session with a fresh empty terminal.
    */
   pendingNativeTerminalSurfaceCreationBySessionId.set(sessionId, {
+    focusAfterReady: options.focusAfterReady,
     nativeSessionId,
     needsFocusAfterReady: false,
     projectId,
@@ -14878,6 +14899,13 @@ function restoreNativeTerminalSession(
   project: NativeProject,
   session: TerminalSessionRecord,
   reason: string,
+  options: {
+    focusAfterReady?: {
+      focusIntent?: NativeSidebarFocusIntent;
+      reason: string;
+      surface: NativeSidebarFocusSurface;
+    };
+  } = {},
 ): void {
   const hadNativeSessionMapping = nativeSessionIdBySidebarSessionId.has(session.sessionId);
   const existingTerminalState = terminalStateById.get(session.sessionId);
@@ -15030,7 +15058,13 @@ function restoreNativeTerminalSession(
       title: session.title,
     });
   }
-  markNativeTerminalSurfaceCreationPending(project.projectId, session.sessionId, nativeSessionId, reason);
+  markNativeTerminalSurfaceCreationPending(
+    project.projectId,
+    session.sessionId,
+    nativeSessionId,
+    reason,
+    { focusAfterReady: options.focusAfterReady },
+  );
   void postNativeCreateTerminalWithGxserverAttach({
     /**
      * CDXC:CrashRootCause 2026-05-04-11:53
@@ -15155,6 +15189,16 @@ function materializeGxserverPresentationSessionForFocus(
     session.sessionId,
     nativeSessionId,
     reason,
+    {
+      focusAfterReady: {
+        focusIntent,
+        reason:
+          focusSurface === "projectEditorCompanion"
+            ? "gxserver-presentation-focus-after-ready-project-editor-companion"
+            : "gxserver-presentation-focus-after-ready-workspace-terminal",
+        surface: focusSurface,
+      },
+    },
   );
   void postNativeCreateTerminalWithGxserverAttach({
     activateOnCreate: false,
@@ -15167,7 +15211,7 @@ function materializeGxserverPresentationSessionForFocus(
     title: presentation.title,
     type: "createTerminal",
   }, reference.project, session.sessionId, "", {
-    focusAfterCreate: true,
+    focusAfterCreate: false,
     focusIntent,
     focusSurface,
     intent: presentation.lifecycleState === "sleeping" ? "wake" : "attach",
@@ -19615,7 +19659,7 @@ async function processNativeFirstPromptAutoRename(
   macOS no longer generates first-prompt titles or submits `/rename` from the sidebar poller. Legacy state-file hooks are only an observation bridge; gxserver receives the agent identity and first prompt, then owns eligibility, generation, persistence, and command submission for every client surface.
 
   CDXC:GxserverSessionTitle 2026-06-04-08:24:
-  Settings owns the user's title-generation agent choice, while gxserver owns the title job. Forward the selected built-in/custom command with the observed first prompt so the server can generate names through Cursor, Claude, Codex, or a user command without moving generation back into the sidebar.
+  Settings owns the user's title-generation agent choice, while gxserver owns the title job. Forward the selected built-in/custom command with the observed first prompt so the server can generate names through Cursor, Claude, Codex, Grok Build, or a user command without moving generation back into the sidebar.
   */
   await syncGxserverSessionStateEvent(sessionId, {
     agentName: persistedState.agentName || terminalState.agentName,
@@ -21180,6 +21224,15 @@ function focusTerminal(sessionId: string): void {
       providerSessionState === "exists"
         ? "focus-live-provider-session"
         : "focus-sleeping-session",
+      shouldKeepProjectEditorOpen
+        ? {
+            focusAfterReady: {
+              focusIntent,
+              reason: "focus-project-editor-companion-restored-terminal-ready",
+              surface: "projectEditorCompanion",
+            },
+          }
+        : undefined,
     );
     restoredSleepingTerminal = true;
   }
@@ -21205,14 +21258,13 @@ function focusTerminal(sessionId: string): void {
   if (restoredSleepingTerminal) {
     publish();
     if (shouldKeepProjectEditorOpen) {
-      postNativeFocusProjectEditorCompanionForCurrentIntent(
-        nativeSessionIdForProjectSidebarSession(
-          reference.project.projectId,
-          reference.sessionId,
-        ),
-        focusIntent,
-        "focus-project-editor-companion-restored-terminal",
-      );
+      /*
+       * CDXC:ProjectEditorCompanion 2026-06-05-03:59:
+       * Restored Project/Kanban companion terminals focus from terminalReady,
+       * not from this click turn. Sending focus here can race AppKit surface
+       * registration and be skipped because the terminal is not yet eligible
+       * for the companion pane.
+       */
       return;
     }
     postNativeFocusTerminalForCurrentIntent(
@@ -22807,6 +22859,77 @@ function sleepInactiveProjectSessions(projectId: string): void {
       } else if (session.kind === "browser") {
         setNativeBrowserSessionSleeping(project.projectId, session.sessionId, true);
       }
+    }
+  }
+}
+
+function closeInactiveProjectSessions(projectId: string): void {
+  /*
+   * CDXC:ProjectClose 2026-06-04-23:40:
+   * Project-level Close inactive shares Sleep Inactive's project-wide terminal
+   * eligibility but applies the normal close path. Working and attention
+   * sessions stay alive, and the project itself is not moved to Recent Projects.
+   */
+  const project = findProject(projectId);
+  if (!project) {
+    return;
+  }
+  const presentationGroups = createPresentationSidebarGroups(gxserverStartupSnapshot?.presentation)
+    ?.filter((group) => group.projectContext?.editor.projectId === project.projectId);
+  if (presentationGroups && presentationGroups.length > 0) {
+    for (const group of presentationGroups) {
+      for (const projectedSession of group.sessions) {
+        if (
+          projectedSession.sessionKind !== "terminal" ||
+          projectedSession.isSleeping === true ||
+          projectedSession.lifecycleState === "sleeping" ||
+          projectedSession.activity === "working" ||
+          projectedSession.activity === "attention"
+        ) {
+          continue;
+        }
+        closeTerminal(projectedSession.sessionId);
+      }
+    }
+    const commandGroup = createProjectedSidebarGroupsForProject(project).find(
+      (group) => group.groupId === COMMANDS_PANEL_SESSION_GROUP_ID,
+    );
+    for (const projectedSession of commandGroup?.sessions ?? []) {
+      if (
+        projectedSession.sessionKind !== "terminal" ||
+        projectedSession.isSleeping === true ||
+        projectedSession.lifecycleState === "sleeping" ||
+        projectedSession.activity === "working" ||
+        projectedSession.activity === "attention"
+      ) {
+        continue;
+      }
+      closeTerminal(createCombinedProjectSessionId(project.projectId, projectedSession.sessionId));
+    }
+    return;
+  }
+
+  const projectedSessionsById = new Map(
+    createProjectedSidebarGroupsForProject(project)
+      .flatMap((group) => group.sessions)
+      .map((session) => [session.sessionId, session]),
+  );
+
+  for (const group of createProjectSessionGroupsForProjection(project)) {
+    for (const session of group.snapshot.sessions) {
+      if (session.kind !== "terminal") {
+        continue;
+      }
+      const projectedSession = projectedSessionsById.get(session.sessionId);
+      if (projectedSession?.isSleeping === true) {
+        continue;
+      }
+      const terminalState = terminalStateById.get(session.sessionId);
+      const activity = projectedSession?.activity ?? terminalState?.activity ?? "idle";
+      if (activity === "working" || activity === "attention") {
+        continue;
+      }
+      closeTerminal(createCombinedProjectSessionId(project.projectId, session.sessionId));
     }
   }
 }
@@ -30379,6 +30502,7 @@ async function upsertRemoteProjectBoardConversationLink(
   const nextLink: BeadConversationLink = {
     agentId: args.agent.agentId,
     agentName: args.agent.name,
+    agentSessionId: textValue(args.session.runtimeSettings.agentSessionId),
     beadDisplayId: args.beadDisplayId,
     beadId: args.beadId,
     createdAt: now,
@@ -30703,7 +30827,11 @@ function postProjectBoardResponse(
       payload,
       requestId: request.requestId,
     }),
-    projectId: request.projectId,
+    /*
+     * CDXC:ProjectBoardRouting 2026-06-04-23:51:
+     * Project board response routing targets the native Project editor pane, while request.projectId now remains the raw gxserver/native project id used for board data. Keep the editor id separate so a correct data id cannot make AppKit dispatch the response to the wrong WKWebView.
+     */
+    projectId: request.projectEditorId ?? request.projectId,
     requestId: request.requestId,
     type: "projectBoardResponse",
   });
@@ -31827,7 +31955,8 @@ function openTasksPlaceholderFromTitlebar(): void {
   const url = new URL("tasks-placeholder.html", window.location.href);
   url.searchParams.set("projectName", boardMetadata.name);
   url.searchParams.set("projectPath", boardMetadata.path);
-  url.searchParams.set("projectId", createNativeProjectEditorId(project.projectId, "tasks"));
+  url.searchParams.set("projectId", project.projectId);
+  url.searchParams.set("projectEditorId", createNativeProjectEditorId(project.projectId, "tasks"));
   url.searchParams.set("beadsDisplayKey", boardMetadata.beadsDisplayKey);
   openProjectTasksEditorSurface(project, url.toString());
 }
@@ -31849,7 +31978,8 @@ function openRemoteProjectBoardForGroup(groupId: string): boolean {
   const url = new URL("tasks-placeholder.html", window.location.href);
   url.searchParams.set("projectName", project.title);
   url.searchParams.set("projectPath", project.path ?? "");
-  url.searchParams.set("projectId", nativeEditorId);
+  url.searchParams.set("projectId", project.projectId);
+  url.searchParams.set("projectEditorId", nativeEditorId);
   url.searchParams.set("remoteMachineId", remoteReference.machineId);
   url.searchParams.set("beadsDisplayKey", project.title);
   /*
@@ -32903,6 +33033,40 @@ function sleepInactiveRemoteProjectSessions(remoteReference: { machineId: string
   }
 }
 
+function closeInactiveRemoteProjectSessions(remoteReference: { machineId: string; projectId: string }): void {
+  const presentation = remotePresentationSnapshotsByMachineId.get(remoteReference.machineId);
+  /*
+   * CDXC:RemoteLifecycle 2026-06-04-23:40:
+   * Remote Close inactive mirrors local project Close inactive against the
+   * machine-owned gxserver presentation. Only idle running terminal/agent
+   * sessions are stopped so active remote work remains uninterrupted.
+   */
+  for (const session of presentation?.sessions.filter((candidate) => candidate.projectId === remoteReference.projectId) ?? []) {
+    if (
+      session.kind !== "terminal" &&
+      session.kind !== "agent"
+    ) {
+      continue;
+    }
+    if (
+      session.lifecycleState !== "running" ||
+      session.activity === "working" ||
+      session.activity === "attention"
+    ) {
+      continue;
+    }
+    void updateRemotePresentationSession(
+      createRemotePresentationSessionId(
+        remoteReference.machineId,
+        remoteReference.projectId,
+        session.sessionId,
+      ),
+      { lifecycleState: "stopped" },
+      "close-inactive-project-sessions",
+    );
+  }
+}
+
 async function removeRemotePresentationProjectForGroup(groupId: string, reason: string): Promise<boolean> {
   const target = parseRemotePresentationGroupId(groupId);
   if (!target) {
@@ -33682,6 +33846,16 @@ function handleSidebarMessage(message: SidebarToExtensionMessage): void {
       }
       const groupReference = resolveSidebarGroupReference(message.groupId);
       sleepInactiveProjectSessions(groupReference.project.projectId);
+      return;
+    }
+    case "closeInactiveProjectSessions": {
+      const remoteReference = parseRemotePresentationGroupId(message.groupId);
+      if (remoteReference) {
+        closeInactiveRemoteProjectSessions(remoteReference);
+        return;
+      }
+      const groupReference = resolveSidebarGroupReference(message.groupId);
+      closeInactiveProjectSessions(groupReference.project.projectId);
       return;
     }
     case "wakeProjectSleepingSessions": {
@@ -35595,6 +35769,7 @@ window.addEventListener("ghostex-native-host-event", (event) => {
   if (!hostEvent || hostEvent.type === "hostReady") {
     return;
   }
+  let afterPublish: (() => void) | undefined;
   if (hostEvent.type === "processResult") {
     const pending = pendingProcessResults.get(hostEvent.requestId);
     if (!pending) {
@@ -36196,9 +36371,24 @@ window.addEventListener("ghostex-native-host-event", (event) => {
       if (pendingSurfaceCreate?.needsFocusAfterReady) {
         queueNativeLayoutFocusRequest(sidebarSessionId, "terminalReadyAfterPendingSurfaceCreate");
       }
+      if (pendingSurfaceCreate?.focusAfterReady) {
+        const focusAfterReady = pendingSurfaceCreate.focusAfterReady;
+        if (focusAfterReady.surface === "workspaceTerminal") {
+          queueNativeLayoutFocusRequest(sidebarSessionId, focusAfterReady.reason);
+        } else {
+          afterPublish = () => {
+            postNativeFocusProjectEditorCompanionForCurrentIntent(
+              hostEvent.sessionId,
+              focusAfterReady.focusIntent,
+              focusAfterReady.reason,
+            );
+          };
+        }
+      }
     }
   }
   publish();
+  afterPublish?.();
 });
 
 function handleNativePaneReorderRequested(

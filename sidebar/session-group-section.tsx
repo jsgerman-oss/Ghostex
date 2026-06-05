@@ -1336,6 +1336,14 @@ export function SessionGroupSection({
     });
   };
 
+  const requestCloseInactiveProjectSessions = () => {
+    setContextMenuPosition(undefined);
+    vscode.postMessage({
+      groupId: group.groupId,
+      type: "closeInactiveProjectSessions",
+    });
+  };
+
   const requestWakeProjectSleepingSessions = () => {
     setContextMenuPosition(undefined);
     vscode.postMessage({
@@ -2047,6 +2055,7 @@ export function SessionGroupSection({
                       index={sessionIndex}
                       isSearchSelected={selectedSearchSessionId === sessionId}
                       onFocusRequested={onFocusRequested}
+                      sessionIdsBelow={visibleSessionIds.slice(sessionIndex + 1)}
                       sessionId={sessionId}
                       showGroupDropTargetChrome={!allowPinnedSessionReorder}
                       showGroupConnector={showSessionGroupConnector}
@@ -2348,6 +2357,11 @@ export function SessionGroupSection({
                      * messages because the rendered row owns a synthetic group
                      * id. Full reload is intentionally narrower than group
                      * reload: native only reloads idle attached zmx terminals.
+                     * CDXC:ProjectClose 2026-06-04-23:40:
+                     * Project rows expose Close inactive directly above Close
+                     * Project so users can remove idle project terminal
+                     * sessions without parking the whole project in Recent
+                     * Projects or interrupting working/attention sessions.
                      * CDXC:WorkspaceTheme 2026-05-09-17:18
                      * The Theme submenu is unused in the UI for now because
                      * theming has been disabled in this app for now. Keep the
@@ -2425,6 +2439,16 @@ export function SessionGroupSection({
                       </button>
                     ) : null}
                     <div className="session-context-menu-divider" role="separator" />
+                    <button
+                      className="session-context-menu-item session-context-menu-item-danger"
+                      disabled={!hasInactiveProjectSessionsToSleep}
+                      onClick={requestCloseInactiveProjectSessions}
+                      role="menuitem"
+                      type="button"
+                    >
+                      <IconX aria-hidden="true" className="session-context-menu-icon" size={14} />
+                      Close inactive
+                    </button>
                     <button
                       className="session-context-menu-item session-context-menu-item-danger"
                       disabled={!projectContext.canRemoveProject}

@@ -134,6 +134,7 @@ export type SortableSessionCardProps = {
   index: number;
   isSearchSelected?: boolean;
   onFocusRequested?: (groupId: string, sessionId: string) => void;
+  sessionIdsBelow?: readonly string[];
   sessionId: string;
   showGroupDropTargetChrome?: boolean;
   showGroupConnector?: boolean;
@@ -183,6 +184,7 @@ export function SortableSessionCard({
   index,
   isSearchSelected = false,
   onFocusRequested,
+  sessionIdsBelow = [],
   sessionId,
   showGroupDropTargetChrome = true,
   showGroupConnector = false,
@@ -190,6 +192,13 @@ export function SortableSessionCard({
   vscode,
 }: SortableSessionCardProps) {
   const session = useSidebarStore((state) => state.sessionsById[sessionId]);
+  const sleepableSessionIdsBelow = useSidebarStore(
+    useShallow((state) =>
+      sessionIdsBelow.filter((candidateSessionId) =>
+        canSleepSidebarSession(state.sessionsById[candidateSessionId]),
+      ),
+    ),
+  );
   const canFocusMode = useSidebarStore((state) => state.groupsById[groupId]?.canFocusMode === true);
   const shouldKeepLastProjectSessionVisibleOnClose = useSidebarStore(
     useShallow((state) => {
@@ -856,6 +865,45 @@ export function SortableSessionCard({
     });
   };
 
+  const requestSleepBelow = () => {
+    if (sleepableSessionIdsBelow.length === 0) {
+      return;
+    }
+
+    flushSync(() => {
+      setContextMenuPosition(undefined);
+      for (const targetSessionId of sleepableSessionIdsBelow) {
+        useSidebarStore.getState().setSessionSleepingLocally(targetSessionId, true);
+      }
+    });
+    for (const targetSessionId of sleepableSessionIdsBelow) {
+      vscode.postMessage({
+        sessionId: targetSessionId,
+        sleeping: true,
+        type: "setSessionSleeping",
+      });
+    }
+  };
+
+  const requestCloseBelow = () => {
+    if (sessionIdsBelow.length === 0) {
+      return;
+    }
+
+    flushSync(() => {
+      setContextMenuPosition(undefined);
+      for (const targetSessionId of sessionIdsBelow) {
+        useSidebarStore.getState().hideSessionLocally(targetSessionId);
+      }
+    });
+    for (const targetSessionId of sessionIdsBelow) {
+      vscode.postMessage({
+        sessionId: targetSessionId,
+        type: "closeSession",
+      });
+    }
+  };
+
   const requestSetFavorite = (favorite: boolean) => {
     setContextMenuPosition(undefined);
     vscode.postMessage({
@@ -941,6 +989,41 @@ export function SortableSessionCard({
       key: "sleep",
       label: session.isSleeping ? "Wake" : "Sleep",
       onClick: () => requestSetSleeping(!session.isSleeping),
+    });
+  }
+
+  const belowActions: SessionContextMenuAction[] = [];
+  if (sessionIdsBelow.length > 0) {
+    /**
+     * CDXC:SidebarContextMenu 2026-06-04-23:40:
+     * Session row context menus expose below-scoped lifecycle actions only
+     * when the clicked row has visible sessions beneath it. Sleep below targets
+     * sleepable terminal/agent rows, while Close below removes every visible
+     * row beneath the clicked session in the current sidebar order.
+     */
+    if (sleepableSessionIdsBelow.length > 0) {
+      belowActions.push({
+        icon: (
+          <IconMoon
+            aria-hidden="true"
+            className="session-context-menu-icon"
+            size={16}
+            stroke={1.8}
+          />
+        ),
+        key: "sleep-below",
+        label: "Sleep below",
+        onClick: requestSleepBelow,
+      });
+    }
+    belowActions.push({
+      danger: true,
+      icon: (
+        <IconX aria-hidden="true" className="session-context-menu-icon" size={16} stroke={1.8} />
+      ),
+      key: "close-below",
+      label: "Close below",
+      onClick: requestCloseBelow,
     });
   }
 
@@ -1179,7 +1262,7 @@ export function SortableSessionCard({
       onClick: () => requestClose("context-menu"),
     },
   ];
-  const contextMenuSections = [primaryActions, sessionActions, destructiveActions].filter(
+  const contextMenuSections = [primaryActions, sessionActions, belowActions, destructiveActions].filter(
     (section) => section.length > 0,
   );
   const contextMenuItemCount = contextMenuSections.reduce(
@@ -1452,6 +1535,10 @@ export function SortableSessionCard({
 
 function getSessionRenameInitialTitle(session: SidebarSessionItem): string {
   return session.primaryTitle?.trim() || session.terminalTitle?.trim() || session.alias;
+}
+
+function canSleepSidebarSession(session: SidebarSessionItem | undefined): boolean {
+  return Boolean(session) && session?.sessionKind !== "browser" && session?.kind !== "browser";
 }
 
 function supportsResumeCommandCopy(session: SidebarSessionItem): boolean {
