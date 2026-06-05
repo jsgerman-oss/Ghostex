@@ -24,10 +24,16 @@ export function createDisplaySessionLayout({
   const manualSessionIdsByGroup = Object.fromEntries(
     workspaceGroupIds.map((groupId) => [
       groupId,
-      orderProjectSessionsForDisplay(sessionIdsByGroup[groupId] ?? [], sessionsById),
+      [...(sessionIdsByGroup[groupId] ?? [])],
     ]),
   );
   if (sortMode === "manual") {
+    /*
+    CDXC:ManualSessionSorting 2026-06-05-12:30:
+    Manual Sorting must render the saved order exactly. Do not force pinned or
+    browser partitions here; users can move pinned and non-pinned rows freely,
+    and the first manual snapshot should not shift after the mode changes.
+    */
     return {
       groupIds: [...workspaceGroupIds],
       sessionIdsByGroup: manualSessionIdsByGroup,

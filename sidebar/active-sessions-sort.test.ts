@@ -24,10 +24,10 @@ describe("createDisplaySessionLayout", () => {
     });
   });
 
-  test("should place project browser sessions before other sessions in manual mode", () => {
+  test("should preserve browser and pinned positions in manual mode", () => {
     const layout = createDisplaySessionLayout({
       sessionIdsByGroup: {
-        "group-1": ["session-1", "session-2", "session-3", "session-4"],
+        "group-1": ["session-1", "session-2", "session-3", "session-4", "session-5"],
       },
       sessionsById: {
         "session-1": createSession("session-1", "2026-04-07T12:00:00.000Z"),
@@ -38,16 +38,20 @@ describe("createDisplaySessionLayout", () => {
         "session-4": createSession("session-4", "2026-04-07T11:00:00.000Z", "idle", {
           kind: "browser",
         }),
+        "session-5": createSession("session-5", "2026-04-07T10:00:00.000Z", "idle", {
+          isPinned: true,
+        }),
       },
       sortMode: "manual",
       workspaceGroupIds: ["group-1"],
     });
 
     expect(layout.sessionIdsByGroup["group-1"]).toEqual([
-      "session-2",
-      "session-4",
       "session-1",
+      "session-2",
       "session-3",
+      "session-4",
+      "session-5",
     ]);
   });
 
