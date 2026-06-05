@@ -18010,7 +18010,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     case close
   }
 
-  private static let inlineButtonWidth: CGFloat = 24
+  private static let inlineButtonWidth: CGFloat = 20
   private static let inlineButtonHeight: CGFloat = 20
   private static let inlineButtonTrailingPadding: CGFloat = 4
   private static let inlineButtonBackgroundColor = NSColor(
@@ -18426,6 +18426,10 @@ private final class TerminalTitleBarTabButton: NSButton {
      When the hovered tab shows its inline Close button, draw a #4f4f4f backing
      behind the X and switch that backing to #363636 only while hovering the
      Close hit target.
+
+     CDXC:PaneTabs 2026-06-05-21:39:
+     The inline Close backing should be 2px tighter on both left and right sides
+     while keeping the X stroke visually stable inside the smaller hit chrome.
      */
     if allowsClose {
       drawInlineActionControl()
@@ -19007,7 +19011,7 @@ private final class TerminalTitleBarTabButton: NSButton {
     guard let context = NSGraphicsContext.current?.cgContext else {
       return
     }
-    let insetX: CGFloat = 7.8
+    let insetX: CGFloat = 5.8
     let insetY: CGFloat = 5.8
     context.saveGState()
     context.setStrokeColor(Self.inlineButtonIconColor)
