@@ -4793,6 +4793,7 @@ final class ghostexRootView: NSView {
   private var isModalHostReady = false
   private var activeAppModalKind: String?
   private var appModalPresentationPending = false
+  private var sidebarWorkspaceFocusRequestId: UInt64 = 0
   private var appModalReturnFocusSessionId: String?
   private var pendingModalHostOpenMessage: [String: Any]?
   private var latestModalHostSidebarState: [String: Any]?
@@ -6815,6 +6816,8 @@ final class ghostexRootView: NSView {
     sessionId: String,
     kind: SidebarWorkspaceFocusKind
   ) {
+    sidebarWorkspaceFocusRequestId += 1
+    let focusRequestId = sidebarWorkspaceFocusRequestId
     /**
      CDXC:SidebarSessionFocus 2026-05-15-17:20:
      Sidebar session-card clicks run inside WebKit's click dispatch, and WebKit
@@ -6827,10 +6830,17 @@ final class ghostexRootView: NSView {
      reproduction shows whether focus is lost before the command leaves the
      sidebar bridge, inside TerminalWorkspaceView, or after AppKit accepts the
      new first responder.
+
+     CDXC:SidebarSessionFocus 2026-06-05-22:12:
+     Sidebar session clicks must leave the clicked session ready for typing.
+     WebKit can still win first responder after the deferred focus command, so
+     tag each click with a monotonic request id and run one idempotent
+     first-responder reinforcement after the sidebar event has settled.
      */
     TerminalFocusDebugLog.append(
       event: "nativeFocusTrace.sidebarFocusCommandQueued",
       details: [
+        "focusRequestId": focusRequestId,
         "kind": kind.debugName,
         "responderBeforeQueue": responderSnapshot(),
         "sessionId": sessionId,
@@ -6844,6 +6854,7 @@ final class ghostexRootView: NSView {
       TerminalFocusDebugLog.append(
         event: "nativeFocusTrace.sidebarFocusCommandDispatching",
         details: [
+          "focusRequestId": focusRequestId,
           "kind": kind.debugName,
           "responderBeforeDispatch": self.responderSnapshot(),
           "sessionId": sessionId,
@@ -6860,14 +6871,61 @@ final class ghostexRootView: NSView {
       case .webPane:
         self.workspaceView.focusWebPane(sessionId: sessionId, reason: "sidebarFocusCommand")
       }
+      let immediateReinforceResult = self.workspaceView.reinforceSidebarWorkspaceFocus(
+        sessionId: sessionId,
+        reason: "sidebarFocusCommand.immediate.\(kind.debugName)")
       TerminalFocusDebugLog.append(
         event: "nativeFocusTrace.sidebarFocusCommandDispatched",
         details: [
+          "focusRequestId": focusRequestId,
+          "immediateReinforceResult": immediateReinforceResult,
           "kind": kind.debugName,
           "responderAfterDispatch": self.responderSnapshot(),
           "sessionId": sessionId,
           "webChromeFirstResponder": self.isWebChromeFirstResponder(),
           "workspaceSnapshotAfterDispatch": self.workspaceView.activationDebugSnapshot(),
+        ])
+      self.scheduleSidebarWorkspaceFocusReinforcement(
+        sessionId: sessionId,
+        kind: kind,
+        focusRequestId: focusRequestId)
+    }
+  }
+
+  private func scheduleSidebarWorkspaceFocusReinforcement(
+    sessionId: String,
+    kind: SidebarWorkspaceFocusKind,
+    focusRequestId: UInt64
+  ) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(140)) { [weak self] in
+      guard let self else {
+        return
+      }
+      guard self.sidebarWorkspaceFocusRequestId == focusRequestId else {
+        TerminalFocusDebugLog.append(
+          event: "nativeFocusTrace.sidebarFocusReinforcementSkipped",
+          details: [
+            "focusRequestId": focusRequestId,
+            "kind": kind.debugName,
+            "latestFocusRequestId": self.sidebarWorkspaceFocusRequestId,
+            "sessionId": sessionId,
+            "skipReason": "staleFocusRequest",
+          ])
+        return
+      }
+      let reinforceResult = self.workspaceView.reinforceSidebarWorkspaceFocus(
+        sessionId: sessionId,
+        reason: "sidebarFocusCommand.delayed.\(kind.debugName)")
+      TerminalFocusDebugLog.append(
+        event: "nativeFocusTrace.sidebarFocusReinforcementCompleted",
+        details: [
+          "focusRequestId": focusRequestId,
+          "kind": kind.debugName,
+          "reinforceResult": reinforceResult,
+          "responderAfterReinforcement": self.responderSnapshot(),
+          "sessionId": sessionId,
+          "webChromeFirstResponder": self.isWebChromeFirstResponder(),
+          "workspaceSnapshotAfterReinforcement": self.workspaceView.activationDebugSnapshot(),
         ])
     }
   }
