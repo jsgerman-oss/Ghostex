@@ -463,7 +463,7 @@ export function focusSessionExclusivelyInSimpleWorkspace(
     });
     if (!hasMultiplePaneOwners(selectedSnapshot)) {
       return {
-        changed: !areSnapshotsEqual(directGroupSnapshot, selectedSnapshot),
+        changed: !areGroupSnapshotsEqual(directGroupSnapshot, selectedSnapshot),
         snapshot: updateGroup(normalizedSnapshot, directOwningGroup.groupId, (group) => ({
           ...group,
           snapshot: selectedSnapshot,
@@ -4127,5 +4127,15 @@ function areSnapshotsEqual(
   left: GroupedSessionWorkspaceSnapshot,
   right: GroupedSessionWorkspaceSnapshot,
 ): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/*
+CDXC:SessionFocusMode 2026-06-05-22:26:
+Focus-mode mutations compare both whole workspaces and individual group snapshots.
+Keep group-level equality typed separately so release typecheck catches accidental
+cross-scope comparisons instead of weakening the workspace snapshot contract.
+*/
+function areGroupSnapshotsEqual(left: SessionGridSnapshot, right: SessionGridSnapshot): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
