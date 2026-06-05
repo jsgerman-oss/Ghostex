@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { GXSERVER_LOCAL_API_HOST, GXSERVER_LOCAL_API_PORT, type GxserverServerId } from "../protocol/index.js";
+import {
+  GXSERVER_LOCAL_API_HOST,
+  GXSERVER_LOCAL_API_PORT,
+  type GxserverServerId,
+  type GxserverSessionId,
+} from "../protocol/index.js";
 import { GxserverDomainRepository } from "../src/domain-state.js";
 import { getGxserverPaths } from "../src/paths.js";
 import {
@@ -123,6 +128,10 @@ test("SQLite migrations are idempotent and create foundation schema", async () =
       "0002_domain_state",
       "0003_session_sidebar_order",
       "0004_previous_session_history_quality",
+      "0005_session_tags",
+      "0006_expand_session_tags",
+      "0007_expand_session_tags_in_progress_and_type",
+      "0008_remove_retired_session_type_tags",
     ]);
     assert.deepEqual(second.appliedMigrations, []);
     assert.equal((await stat(paths.stateDbFile)).isFile(), true);
@@ -145,11 +154,104 @@ test("SQLite migrations are idempotent and create foundation schema", async () =
         .prepare<[string], { name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
         .get("sessions");
 
-      assert.equal(migrations?.count, 4);
+      assert.equal(migrations?.count, 8);
       assert.equal(metadataTable?.name, "metadata");
       assert.equal(idsTable?.name, "id_allocations");
       assert.equal(projectsTable?.name, "projects");
       assert.equal(sessionsTable?.name, "sessions");
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(homeDir, { force: true, recursive: true });
+  }
+});
+
+test("session tag expansion migrations allow newly added tag values on existing databases", async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), "gxserver-storage-tags-"));
+  try {
+    const paths = getGxserverPaths(homeDir);
+    await mkdir(paths.rootDir, { recursive: true });
+    const db = openGxserverDatabase(paths);
+    try {
+      runGxserverMigrations(db, GxserverStorageMigrations.slice(0, 5));
+      const repository = new GxserverDomainRepository(db, "S90" as GxserverServerId, {
+        createProjectId: () => "P1tag",
+        createSessionId: (() => {
+          const ids = ["G1old", "G2new", "G3wip", "G4typ", "G5des"] as const;
+          let index = 0;
+          return () => ids[index++] ?? "G3extra";
+        })(),
+        now: () => "2026-06-05T10:45:00.000Z",
+      });
+      const project = repository.createProject({ name: "Ghostex", path: "/repo/ghostex" });
+      repository.createSession({
+        projectId: project.projectId,
+        sessionTag: "todo",
+        title: "Old allowed tag",
+      });
+
+      /*
+      CDXC:SessionTags 2026-06-05-14:45:
+      Databases that already ran the original sessionTag migration have a SQLite CHECK constraint with the old allowed value list. Rebuild that table constraint so Testing and Blocked can be stored without requiring a new database.
+      */
+      runGxserverMigrations(db, GxserverStorageMigrations.slice(5, 6));
+
+      repository.updateSession({
+        projectId: project.projectId,
+        sessionId: "G1old" as GxserverSessionId,
+        sessionTag: "testing",
+      });
+      repository.createSession({
+        projectId: project.projectId,
+        sessionTag: "blocked",
+        title: "Blocked tag",
+      });
+
+      /*
+      CDXC:SessionTags 2026-06-05-15:22:
+      In Progress and Type tags were added after Testing and Blocked, so databases
+      that already ran migration 0006 need migration 0007 before the runtime can
+      store the new values.
+      */
+      runGxserverMigrations(db, GxserverStorageMigrations.slice(6, 7));
+      repository.createSession({
+        projectId: project.projectId,
+        sessionTag: "in-progress",
+        title: "In Progress tag",
+      });
+      repository.createSession({
+        projectId: project.projectId,
+        sessionTag: "bug",
+        title: "Bug tag",
+      });
+      repository.createSession({
+        projectId: project.projectId,
+        sessionTag: "design",
+        title: "Design tag",
+      });
+
+      /*
+      CDXC:SessionTags 2026-06-05-19:12:
+      Databases that already reached the prior tag schema can retain values that are no longer in the supported tag registry. Migration 0008 clears unsupported values before rebuilding the CHECK constraint, while retaining the current Type tags.
+      */
+      db.pragma("ignore_check_constraints = ON");
+      db.prepare("UPDATE sessions SET sessionTag = ? WHERE sessionId = ?").run("retired-type", "G4typ");
+      db.pragma("ignore_check_constraints = OFF");
+      runGxserverMigrations(db, GxserverStorageMigrations.slice(7, 8));
+
+      const rows = db
+        .prepare<[], { sessionId: string; sessionTag: string | null }>(
+          "SELECT sessionId, sessionTag FROM sessions ORDER BY sessionId",
+        )
+        .all();
+      assert.deepEqual(rows, [
+        { sessionId: "G1old", sessionTag: "testing" },
+        { sessionId: "G2new", sessionTag: "blocked" },
+        { sessionId: "G3wip", sessionTag: "in-progress" },
+        { sessionId: "G4typ", sessionTag: null },
+        { sessionId: "G5des", sessionTag: "design" },
+      ]);
     } finally {
       db.close();
     }
@@ -168,42 +270,113 @@ test("previous-session quality migration removes placeholder inactive rows and b
       runGxserverMigrations(db, GxserverStorageMigrations.slice(0, 3));
       const repository = new GxserverDomainRepository(db, "S90" as GxserverServerId, {
         createProjectId: () => "P1cle",
-        createSessionId: (() => {
-          const ids = ["G1noi", "G2kee", "G3fav", "G4unk", "G5run"] as const;
-          let index = 0;
-          return () => ids[index++] ?? "G6extra";
-        })(),
+        createSessionId: () => "G6extra",
         now: () => "2026-06-04T16:21:00.000Z",
       });
       const project = repository.createProject({ name: "Ghostex", path: "/repo/ghostex" });
-      repository.createSession({
+      const insertLegacySession = db.prepare<{
+        isFavorite: number;
+        lifecycleState: string;
+        now: string;
+        projectId: string;
+        runtimeSettingsJson: string;
+        sessionId: string;
+        title: string;
+        zmxName: string;
+      }>(`
+        INSERT INTO sessions (
+          projectId,
+          sessionId,
+          kind,
+          title,
+          lifecycleState,
+          providerStateJson,
+          zmxName,
+          isPinned,
+          isFavorite,
+          launchSettingsJson,
+          runtimeSettingsJson,
+          completionRulesJson,
+          attentionRulesJson,
+          notificationRulesJson,
+          worktreeJson,
+          createdAt,
+          updatedAt
+        )
+        VALUES (
+          @projectId,
+          @sessionId,
+          'terminal',
+          @title,
+          @lifecycleState,
+          '{}',
+          @zmxName,
+          0,
+          @isFavorite,
+          '{}',
+          @runtimeSettingsJson,
+          '{}',
+          '{}',
+          '{}',
+          '{}',
+          @now,
+          @now
+        )
+      `);
+      const seedLegacySession = (input: {
+        isFavorite?: boolean;
+        lifecycleState: string;
+        runtimeSettings?: Record<string, unknown>;
+        sessionId: string;
+        title: string;
+      }) => {
+        insertLegacySession.run({
+          isFavorite: input.isFavorite === true ? 1 : 0,
+          lifecycleState: input.lifecycleState,
+          projectId: project.projectId,
+          runtimeSettingsJson: JSON.stringify(input.runtimeSettings ?? {}),
+          sessionId: input.sessionId,
+          title: input.title,
+          now: "2026-06-04T16:21:00.000Z",
+          zmxName: `S90-${project.projectId}-${input.sessionId}`,
+        });
+      };
+
+      /*
+      CDXC:SessionTags 2026-06-05-14:45:
+      This test intentionally seeds migration-0003 session rows directly. The
+      current repository writes sessionTag, which did not exist before migration
+      0005 and would stop this migration-0004 fixture from representing an old
+      database.
+      */
+      seedLegacySession({
         lifecycleState: "stopped",
-        projectId: project.projectId,
         runtimeSettings: { titleSource: "placeholder" },
+        sessionId: "G1noi",
         title: "Terminal Session",
       });
-      repository.createSession({
+      seedLegacySession({
         lifecycleState: "stopped",
-        projectId: project.projectId,
         runtimeSettings: { titleSource: "terminal-auto" },
+        sessionId: "G2kee",
         title: "Useful restore row",
       });
-      repository.createSession({
+      seedLegacySession({
         isFavorite: true,
         lifecycleState: "stopped",
-        projectId: project.projectId,
         runtimeSettings: { titleSource: "placeholder" },
+        sessionId: "G3fav",
         title: "Codex Session",
       });
-      repository.createSession({
+      seedLegacySession({
         lifecycleState: "unknown",
-        projectId: project.projectId,
         runtimeSettings: { titleSource: "terminal-auto" },
+        sessionId: "G4unk",
         title: "Unknown stale row",
       });
-      repository.createSession({
+      seedLegacySession({
         lifecycleState: "running",
-        projectId: project.projectId,
+        sessionId: "G5run",
         title: "Running row",
       });
 

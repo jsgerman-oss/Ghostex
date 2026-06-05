@@ -115,7 +115,7 @@ export function projectPresentationSession(
     createdAt: session.createdAt,
     ...(session.cwd ? { cwd: session.cwd } : {}),
     groupId,
-    isFavorite: session.isFavorite,
+    isFavorite: session.sessionTag === "favorite" || session.isFavorite,
     /*
     CDXC:GxserverSessionTitle 2026-06-04-07:11:
     First-prompt title generation is gxserver-owned, but clients still own their local loading chrome. Publish a privacy-safe boolean in presentation rows so native terminal overlays, sidebar card text, and future clients can render and clear "Generating title" without reading raw prompts or duplicating server runtime-status rules.
@@ -130,6 +130,7 @@ export function projectPresentationSession(
     ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
     projectId: session.projectId,
     sessionId: session.sessionId,
+    ...(session.sessionTag ? { sessionTag: session.sessionTag } : {}),
     ...(session.sidebarOrder !== undefined ? { sidebarOrder: session.sidebarOrder } : {}),
     sortKey: sessionSortKey(session),
     ...(subtitle ? { subtitle } : {}),
@@ -185,7 +186,7 @@ export function isVisibleInWorkspaceSidebar(session: GxserverSessionDomainState)
 }
 
 export function shouldIncludePresentationSession(session: GxserverSessionDomainState): boolean {
-  return isActivePresentationSession(session) || session.isPinned || session.isFavorite;
+  return isActivePresentationSession(session) || session.isPinned || session.isFavorite || Boolean(session.sessionTag);
 }
 
 export function defaultGroupId(projectId: string): string {
@@ -239,13 +240,27 @@ function projectSortKey(project: GxserverProjectDomainState): string {
 
 function sessionSortKey(session: GxserverSessionDomainState): string {
   const activeRank = isActivePresentationSession(session) ? "0" : "1";
-  const pinRank = session.isPinned ? "0" : session.isFavorite ? "1" : "2";
+  const pinRank = session.isPinned
+    ? "0"
+    : session.sessionTag === "favorite" || session.isFavorite
+      ? "1"
+      : "2";
   /*
   CDXC:PinnedSessions 2026-06-02-20:11:
-  Pinned sessions under a project need a durable user-defined order. Sort pinned rows by the explicit gxserver sidebar order before recency so drag-to-reorder cannot be undone by the next presentation snapshot or lifecycle/title delta.
+  Pinned sessions under a project need a durable user-defined order. Sort rows by
+  the explicit gxserver sidebar order before recency so drag-to-reorder cannot
+  be undone by the next presentation snapshot or lifecycle/title delta.
+
+  CDXC:ManualSessionSorting 2026-06-05-12:30:
+  Manual Sorting uses the same gxserver sidebar order for non-pinned sessions.
+  New sessions receive order 0, while saved manual snapshots start at 1000, so
+  new rows land at the top and previously ordered rows keep their saved order.
+  Put sidebar order before active/pinned rank so manual mode can move pinned,
+  stopped, and non-pinned rows freely; last-active mode applies its own display
+  partitions in the shared sidebar sorter.
   */
-  const sidebarOrder = session.isPinned ? formatSidebarOrder(session.sidebarOrder) : "z";
-  return `${activeRank}:${pinRank}:${sidebarOrder}:${session.lastActiveAt ?? session.updatedAt}:${session.sessionId}`;
+  const sidebarOrder = formatSidebarOrder(session.sidebarOrder);
+  return `${sidebarOrder}:${activeRank}:${pinRank}:${session.lastActiveAt ?? session.updatedAt}:${session.sessionId}`;
 }
 
 function formatSidebarOrder(value: unknown): string {

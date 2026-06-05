@@ -26,9 +26,11 @@ export function searchGxserverPresentationSessions(
   const includeActive = params.includeActive !== false;
   const includePrevious = params.includePrevious !== false;
   const query = normalizeQuery(params.query);
+  const sessionTags = normalizeSessionTags(params.sessionTags);
   const projectsById = new Map(state.projects.map((project) => [project.projectId, project]));
   const candidates = state.sessions
     .filter((session) => !params.projectId || session.projectId === params.projectId)
+    .filter((session) => sessionTags.length === 0 || (session.sessionTag && sessionTags.includes(session.sessionTag)))
     .filter((session) => {
       const active = isActivePresentationSession(session);
       return (active && includeActive) || (!active && includePrevious);
@@ -81,7 +83,7 @@ function toSearchResult(
     ...(session.agentId ? { agentId: session.agentId } : {}),
     createdAt: session.createdAt,
     ...(session.cwd ? { cwd: session.cwd } : {}),
-    isFavorite: session.isFavorite,
+    isFavorite: session.sessionTag === "favorite" || session.isFavorite,
     isPinned: session.isPinned,
     isPrimaryTitleTerminalTitle: titleProjection.isPrimaryTitleTerminalTitle,
     isTemporaryTitle: titleProjection.isTemporaryTitle,
@@ -92,6 +94,7 @@ function toSearchResult(
     projectTitle: project?.name ?? session.projectId,
     ...(titleProjection.primaryTitle !== undefined ? { primaryTitle: titleProjection.primaryTitle } : {}),
     sessionId: session.sessionId,
+    ...(session.sessionTag ? { sessionTag: session.sessionTag } : {}),
     subtitle: session.cwd ?? project?.path,
     surface: session.surface,
     ...(titleProjection.terminalTitle !== undefined ? { terminalTitle: titleProjection.terminalTitle } : {}),
@@ -106,13 +109,19 @@ function isPreviousSessionHistoryCandidate(session: GxserverSessionDomainState):
   if (isActivePresentationSession(session)) {
     return false;
   }
-  if (session.isPinned || session.isFavorite) {
+  if (session.isPinned || session.isFavorite || session.sessionTag) {
     return true;
   }
   if (session.lifecycleState !== "stopped") {
     return false;
   }
   return getTrustedResumeTitle(session).title !== undefined;
+}
+
+function normalizeSessionTags(
+  values: GxserverPresentationSearchParams["sessionTags"],
+): NonNullable<GxserverPresentationSearchParams["sessionTags"]> {
+  return values?.filter((value, index, allValues) => allValues.indexOf(value) === index) ?? [];
 }
 
 function matchSession(

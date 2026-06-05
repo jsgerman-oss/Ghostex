@@ -213,6 +213,440 @@ export const GxserverStorageMigrations: readonly GxserverMigration[] = [
       PRAGMA user_version = 4;
     `,
   },
+  {
+    id: "0005_session_tags",
+    sql: `
+      ALTER TABLE sessions ADD COLUMN sessionTag TEXT CHECK (
+        sessionTag IS NULL OR sessionTag IN (
+          'favorite',
+          'high-priority',
+          'research',
+          'todo',
+          'in-progress',
+          'testing',
+          'blocked',
+          'low-priority',
+          'on-hold',
+          'done',
+          'bug',
+          'feature',
+          'design'
+        )
+      );
+
+      UPDATE sessions
+      SET sessionTag = 'favorite'
+      WHERE isFavorite = 1
+        AND sessionTag IS NULL;
+
+      PRAGMA user_version = 5;
+    `,
+  },
+  {
+    id: "0006_expand_session_tags",
+    sql: `
+      UPDATE sessions
+      SET sessionTag = NULL
+      WHERE sessionTag IS NOT NULL
+        AND sessionTag NOT IN (
+          'favorite',
+          'high-priority',
+          'research',
+          'todo',
+          'in-progress',
+          'testing',
+          'blocked',
+          'low-priority',
+          'on-hold',
+          'done',
+          'bug',
+          'feature',
+          'design'
+        );
+
+      CREATE TABLE sessions_next (
+        projectId TEXT NOT NULL,
+        sessionId TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('terminal', 'agent')),
+        title TEXT NOT NULL,
+        lifecycleState TEXT NOT NULL CHECK (lifecycleState IN ('running', 'sleeping', 'stopped', 'missing', 'unknown')),
+        providerStateJson TEXT NOT NULL,
+        zmxName TEXT NOT NULL,
+        cwd TEXT,
+        agentId TEXT,
+        commandId TEXT,
+        isPinned INTEGER NOT NULL DEFAULT 0 CHECK (isPinned IN (0, 1)),
+        isFavorite INTEGER NOT NULL DEFAULT 0 CHECK (isFavorite IN (0, 1)),
+        restoredFromSessionId TEXT,
+        restoredFromHistoryId TEXT,
+        launchSettingsJson TEXT NOT NULL DEFAULT '{}',
+        runtimeSettingsJson TEXT NOT NULL DEFAULT '{}',
+        completionRulesJson TEXT NOT NULL DEFAULT '{}',
+        attentionRulesJson TEXT NOT NULL DEFAULT '{}',
+        notificationRulesJson TEXT NOT NULL DEFAULT '{}',
+        worktreeJson TEXT NOT NULL DEFAULT '{}',
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        lastActiveAt TEXT,
+        sidebarOrder REAL,
+        sessionTag TEXT CHECK (
+          sessionTag IS NULL OR sessionTag IN (
+            'favorite',
+            'high-priority',
+            'research',
+            'todo',
+            'in-progress',
+            'testing',
+            'blocked',
+            'low-priority',
+            'on-hold',
+            'done',
+            'bug',
+            'feature',
+            'design'
+          )
+        ),
+        PRIMARY KEY (projectId, sessionId),
+        FOREIGN KEY (projectId) REFERENCES projects(projectId) ON DELETE CASCADE
+      );
+
+      INSERT INTO sessions_next (
+        projectId,
+        sessionId,
+        kind,
+        title,
+        lifecycleState,
+        providerStateJson,
+        zmxName,
+        cwd,
+        agentId,
+        commandId,
+        isPinned,
+        isFavorite,
+        restoredFromSessionId,
+        restoredFromHistoryId,
+        launchSettingsJson,
+        runtimeSettingsJson,
+        completionRulesJson,
+        attentionRulesJson,
+        notificationRulesJson,
+        worktreeJson,
+        createdAt,
+        updatedAt,
+        lastActiveAt,
+        sidebarOrder,
+        sessionTag
+      )
+      SELECT
+        projectId,
+        sessionId,
+        kind,
+        title,
+        lifecycleState,
+        providerStateJson,
+        zmxName,
+        cwd,
+        agentId,
+        commandId,
+        isPinned,
+        isFavorite,
+        restoredFromSessionId,
+        restoredFromHistoryId,
+        launchSettingsJson,
+        runtimeSettingsJson,
+        completionRulesJson,
+        attentionRulesJson,
+        notificationRulesJson,
+        worktreeJson,
+        createdAt,
+        updatedAt,
+        lastActiveAt,
+        sidebarOrder,
+        sessionTag
+      FROM sessions;
+
+      DROP TABLE sessions;
+      ALTER TABLE sessions_next RENAME TO sessions;
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_project_updated
+        ON sessions(projectId, updatedAt);
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_project_sidebar_order
+        ON sessions(projectId, sidebarOrder);
+
+      PRAGMA user_version = 6;
+    `,
+  },
+  {
+    id: "0007_expand_session_tags_in_progress_and_type",
+    sql: `
+      UPDATE sessions
+      SET sessionTag = NULL
+      WHERE sessionTag IS NOT NULL
+        AND sessionTag NOT IN (
+          'favorite',
+          'high-priority',
+          'research',
+          'todo',
+          'in-progress',
+          'testing',
+          'blocked',
+          'low-priority',
+          'on-hold',
+          'done',
+          'bug',
+          'feature',
+          'design'
+        );
+
+      CREATE TABLE sessions_next (
+        projectId TEXT NOT NULL,
+        sessionId TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('terminal', 'agent')),
+        title TEXT NOT NULL,
+        lifecycleState TEXT NOT NULL CHECK (lifecycleState IN ('running', 'sleeping', 'stopped', 'missing', 'unknown')),
+        providerStateJson TEXT NOT NULL,
+        zmxName TEXT NOT NULL,
+        cwd TEXT,
+        agentId TEXT,
+        commandId TEXT,
+        isPinned INTEGER NOT NULL DEFAULT 0 CHECK (isPinned IN (0, 1)),
+        isFavorite INTEGER NOT NULL DEFAULT 0 CHECK (isFavorite IN (0, 1)),
+        restoredFromSessionId TEXT,
+        restoredFromHistoryId TEXT,
+        launchSettingsJson TEXT NOT NULL DEFAULT '{}',
+        runtimeSettingsJson TEXT NOT NULL DEFAULT '{}',
+        completionRulesJson TEXT NOT NULL DEFAULT '{}',
+        attentionRulesJson TEXT NOT NULL DEFAULT '{}',
+        notificationRulesJson TEXT NOT NULL DEFAULT '{}',
+        worktreeJson TEXT NOT NULL DEFAULT '{}',
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        lastActiveAt TEXT,
+        sidebarOrder REAL,
+        sessionTag TEXT CHECK (
+          sessionTag IS NULL OR sessionTag IN (
+            'favorite',
+            'high-priority',
+            'research',
+            'todo',
+            'in-progress',
+            'testing',
+            'blocked',
+            'low-priority',
+            'on-hold',
+            'done',
+            'bug',
+            'feature',
+            'design'
+          )
+        ),
+        PRIMARY KEY (projectId, sessionId),
+        FOREIGN KEY (projectId) REFERENCES projects(projectId) ON DELETE CASCADE
+      );
+
+      INSERT INTO sessions_next (
+        projectId,
+        sessionId,
+        kind,
+        title,
+        lifecycleState,
+        providerStateJson,
+        zmxName,
+        cwd,
+        agentId,
+        commandId,
+        isPinned,
+        isFavorite,
+        restoredFromSessionId,
+        restoredFromHistoryId,
+        launchSettingsJson,
+        runtimeSettingsJson,
+        completionRulesJson,
+        attentionRulesJson,
+        notificationRulesJson,
+        worktreeJson,
+        createdAt,
+        updatedAt,
+        lastActiveAt,
+        sidebarOrder,
+        sessionTag
+      )
+      SELECT
+        projectId,
+        sessionId,
+        kind,
+        title,
+        lifecycleState,
+        providerStateJson,
+        zmxName,
+        cwd,
+        agentId,
+        commandId,
+        isPinned,
+        isFavorite,
+        restoredFromSessionId,
+        restoredFromHistoryId,
+        launchSettingsJson,
+        runtimeSettingsJson,
+        completionRulesJson,
+        attentionRulesJson,
+        notificationRulesJson,
+        worktreeJson,
+        createdAt,
+        updatedAt,
+        lastActiveAt,
+        sidebarOrder,
+        sessionTag
+      FROM sessions;
+
+      DROP TABLE sessions;
+      ALTER TABLE sessions_next RENAME TO sessions;
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_project_updated
+        ON sessions(projectId, updatedAt);
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_project_sidebar_order
+        ON sessions(projectId, sidebarOrder);
+
+      PRAGMA user_version = 7;
+    `,
+  },
+  {
+    id: "0008_remove_retired_session_type_tags",
+    sql: `
+      UPDATE sessions
+      SET sessionTag = NULL
+      WHERE sessionTag IS NOT NULL
+        AND sessionTag NOT IN (
+          'favorite',
+          'high-priority',
+          'research',
+          'todo',
+          'in-progress',
+          'testing',
+          'blocked',
+          'low-priority',
+          'on-hold',
+          'done',
+          'bug',
+          'feature',
+          'design'
+        );
+
+      CREATE TABLE sessions_next (
+        projectId TEXT NOT NULL,
+        sessionId TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('terminal', 'agent')),
+        title TEXT NOT NULL,
+        lifecycleState TEXT NOT NULL CHECK (lifecycleState IN ('running', 'sleeping', 'stopped', 'missing', 'unknown')),
+        providerStateJson TEXT NOT NULL,
+        zmxName TEXT NOT NULL,
+        cwd TEXT,
+        agentId TEXT,
+        commandId TEXT,
+        isPinned INTEGER NOT NULL DEFAULT 0 CHECK (isPinned IN (0, 1)),
+        isFavorite INTEGER NOT NULL DEFAULT 0 CHECK (isFavorite IN (0, 1)),
+        restoredFromSessionId TEXT,
+        restoredFromHistoryId TEXT,
+        launchSettingsJson TEXT NOT NULL DEFAULT '{}',
+        runtimeSettingsJson TEXT NOT NULL DEFAULT '{}',
+        completionRulesJson TEXT NOT NULL DEFAULT '{}',
+        attentionRulesJson TEXT NOT NULL DEFAULT '{}',
+        notificationRulesJson TEXT NOT NULL DEFAULT '{}',
+        worktreeJson TEXT NOT NULL DEFAULT '{}',
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL,
+        lastActiveAt TEXT,
+        sidebarOrder REAL,
+        sessionTag TEXT CHECK (
+          sessionTag IS NULL OR sessionTag IN (
+            'favorite',
+            'high-priority',
+            'research',
+            'todo',
+            'in-progress',
+            'testing',
+            'blocked',
+            'low-priority',
+            'on-hold',
+            'done',
+            'bug',
+            'feature',
+            'design'
+          )
+        ),
+        PRIMARY KEY (projectId, sessionId),
+        FOREIGN KEY (projectId) REFERENCES projects(projectId) ON DELETE CASCADE
+      );
+
+      INSERT INTO sessions_next (
+        projectId,
+        sessionId,
+        kind,
+        title,
+        lifecycleState,
+        providerStateJson,
+        zmxName,
+        cwd,
+        agentId,
+        commandId,
+        isPinned,
+        isFavorite,
+        restoredFromSessionId,
+        restoredFromHistoryId,
+        launchSettingsJson,
+        runtimeSettingsJson,
+        completionRulesJson,
+        attentionRulesJson,
+        notificationRulesJson,
+        worktreeJson,
+        createdAt,
+        updatedAt,
+        lastActiveAt,
+        sidebarOrder,
+        sessionTag
+      )
+      SELECT
+        projectId,
+        sessionId,
+        kind,
+        title,
+        lifecycleState,
+        providerStateJson,
+        zmxName,
+        cwd,
+        agentId,
+        commandId,
+        isPinned,
+        isFavorite,
+        restoredFromSessionId,
+        restoredFromHistoryId,
+        launchSettingsJson,
+        runtimeSettingsJson,
+        completionRulesJson,
+        attentionRulesJson,
+        notificationRulesJson,
+        worktreeJson,
+        createdAt,
+        updatedAt,
+        lastActiveAt,
+        sidebarOrder,
+        sessionTag
+      FROM sessions;
+
+      DROP TABLE sessions;
+      ALTER TABLE sessions_next RENAME TO sessions;
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_project_updated
+        ON sessions(projectId, updatedAt);
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_project_sidebar_order
+        ON sessions(projectId, sidebarOrder);
+
+      PRAGMA user_version = 8;
+    `,
+  },
 ];
 
 /*
@@ -230,6 +664,18 @@ Pinned session row order is shared project-session metadata, not current-window 
 
 CDXC:PreviousSessions 2026-06-04-20:21:
 Previous Sessions should not preserve low-signal inactive placeholder rows created before gxserver owned history quality. The migration removes unpinned/unfavorited placeholder inactive rows and backfills retained inactive rows with updatedAt so history grouping never invents today's date for missing lastActiveAt.
+
+CDXC:SessionTags 2026-06-05-12:30:
+The expanded session tag feature is durable gxserver metadata. Store a nullable sessionTag column and backfill legacy favorites to `favorite` so older Favorite rows render and filter as the new Favorite tag without a separate compatibility table.
+
+CDXC:SessionTags 2026-06-05-14:45:
+Testing and Blocked expand the allowed durable sessionTag values. Existing databases may already have the old SQLite CHECK constraint, so migration 0006 rebuilds only the sessions table constraint instead of relying on runtime validation alone.
+
+CDXC:SessionTags 2026-06-05-15:22:
+In Progress and Type tags are durable user tags. Migration 0007 rebuilds the sessions table CHECK constraint again so already-upgraded databases can store `in-progress`, Bug, Feature, and Design.
+
+CDXC:SessionTags 2026-06-05-19:12:
+Type tags are limited to Research, Bug, Feature, and Design. Migration 0008 clears retired values and rebuilds the sessionTag CHECK constraint so already-upgraded databases cannot keep values that no longer appear in sidebar menus and filters.
 */
 export async function initializeGxserverStorage(paths: GxserverPaths): Promise<GxserverStorageInitResult> {
   await ensureGxserverStorageLayout(paths);

@@ -25,6 +25,7 @@ import type {
   GxserverSessionDomainState,
   GxserverSessionId,
   GxserverSessionKind,
+  GxserverSessionTag,
   GxserverUpdateProjectParams,
   GxserverUpdateSessionOrderParams,
   GxserverUpdateSessionParams,
@@ -197,12 +198,12 @@ export class GxserverDomainRepository {
         .prepare(
           `INSERT INTO sessions (
             projectId, sessionId, kind, title, lifecycleState, providerStateJson, zmxName, cwd,
-            agentId, commandId, isPinned, isFavorite, restoredFromSessionId, restoredFromHistoryId,
+            agentId, commandId, isPinned, isFavorite, sessionTag, restoredFromSessionId, restoredFromHistoryId,
             launchSettingsJson, runtimeSettingsJson, completionRulesJson, attentionRulesJson,
             notificationRulesJson, worktreeJson, createdAt, updatedAt, lastActiveAt, sidebarOrder
           ) VALUES (
             @projectId, @sessionId, @kind, @title, @lifecycleState, @providerStateJson, @zmxName, @cwd,
-            @agentId, @commandId, @isPinned, @isFavorite, @restoredFromSessionId, @restoredFromHistoryId,
+            @agentId, @commandId, @isPinned, @isFavorite, @sessionTag, @restoredFromSessionId, @restoredFromHistoryId,
             @launchSettingsJson, @runtimeSettingsJson, @completionRulesJson, @attentionRulesJson,
             @notificationRulesJson, @worktreeJson, @createdAt, @updatedAt, @lastActiveAt, @sidebarOrder
           )`,
@@ -234,6 +235,7 @@ export class GxserverDomainRepository {
             commandId = @commandId,
             isPinned = @isPinned,
             isFavorite = @isFavorite,
+            sessionTag = @sessionTag,
             restoredFromSessionId = @restoredFromSessionId,
             restoredFromHistoryId = @restoredFromHistoryId,
             launchSettingsJson = @launchSettingsJson,
@@ -271,7 +273,7 @@ export class GxserverDomainRepository {
         const next = mergeSessionUpdate(this.#serverId, current, updatedAt, {
           projectId: input.projectId,
           sessionId,
-          sidebarOrder: index * 1000,
+          sidebarOrder: (index + 1) * 1000,
         });
         this.#db
           .prepare(
@@ -286,6 +288,7 @@ export class GxserverDomainRepository {
               commandId = @commandId,
               isPinned = @isPinned,
               isFavorite = @isFavorite,
+              sessionTag = @sessionTag,
               restoredFromSessionId = @restoredFromSessionId,
               restoredFromHistoryId = @restoredFromHistoryId,
               launchSettingsJson = @launchSettingsJson,
@@ -457,6 +460,7 @@ function normalizeSessionInput(
   const inputProviderState = normalizeObject(input.providerState);
   const runtimeSettings = normalizeSessionTitleRuntimeSettings(input.runtimeSettings, input.title);
   const launchSettings = normalizeSessionLaunchSettingsWithSurface(normalizeObject(input.launchSettings), input.surface);
+  const sessionTag = normalizeOptionalSessionTag(input.sessionTag);
   const providerState = {
     lifecycleState: normalizeProviderLifecycleState(input.providerState?.lifecycleState),
     ...inputProviderState,
@@ -474,7 +478,7 @@ function normalizeSessionInput(
       restoredFromHistoryId: normalizeOptionalText(input.restoredFromHistoryId),
       restoredFromSessionId: normalizeSessionRestoreId(input.restoredFromSessionId),
     },
-    isFavorite: input.isFavorite === true,
+    isFavorite: sessionTag ? sessionTag === "favorite" : input.isFavorite === true,
     isPinned: input.isPinned === true,
     kind: normalizeSessionKind(input.kind),
     lastActiveAt: normalizeOptionalText(input.lastActiveAt),
@@ -485,7 +489,8 @@ function normalizeSessionInput(
     providerState,
     runtimeSettings,
     sessionId,
-    sidebarOrder: normalizeOptionalSidebarOrder(input.sidebarOrder),
+    ...(sessionTag ? { sessionTag } : {}),
+    sidebarOrder: normalizeOptionalSidebarOrder(input.sidebarOrder) ?? 0,
     surface: resolveSessionSurface({ launchSettings, runtimeSettings, surface: input.surface }),
     title: normalizeOptionalText(input.title) ?? sessionId,
     updatedAt: timestamp,
@@ -511,6 +516,13 @@ function mergeSessionUpdate(
         hasOwn(input, "surface") ? input.surface : undefined,
       )
     : current.launchSettings;
+  const sessionTag = hasOwn(input, "sessionTag")
+    ? normalizeOptionalSessionTag(input.sessionTag)
+    : hasOwn(input, "isFavorite")
+      ? input.isFavorite === true
+        ? "favorite"
+        : undefined
+      : current.sessionTag;
   return {
     ...current,
     agentId: hasOwn(input, "agentId") ? normalizeOptionalText(input.agentId) : current.agentId,
@@ -527,7 +539,7 @@ function mergeSessionUpdate(
         ? normalizeSessionRestoreId(input.restoredFromSessionId)
         : current.hiddenMetadata.restoredFromSessionId,
     },
-    isFavorite: hasOwn(input, "isFavorite") ? input.isFavorite === true : current.isFavorite,
+    isFavorite: sessionTag ? sessionTag === "favorite" : false,
     isPinned: hasOwn(input, "isPinned") ? input.isPinned === true : current.isPinned,
     kind: hasOwn(input, "kind") ? normalizeSessionKind(input.kind) : current.kind,
     lastActiveAt: hasOwn(input, "lastActiveAt") ? normalizeOptionalText(input.lastActiveAt) : current.lastActiveAt,
@@ -544,6 +556,7 @@ function mergeSessionUpdate(
         }
       : { ...current.providerState, zmxName },
     runtimeSettings,
+    ...(sessionTag ? { sessionTag } : { sessionTag: undefined }),
     sidebarOrder: hasOwn(input, "sidebarOrder")
       ? normalizeOptionalSidebarOrder(input.sidebarOrder)
       : current.sidebarOrder,
@@ -605,6 +618,7 @@ interface SessionRow {
   restoredFromSessionId: string | null;
   runtimeSettingsJson: string;
   sessionId: string;
+  sessionTag: string | null;
   sidebarOrder: number | null;
   title: string;
   updatedAt: string;
@@ -702,6 +716,7 @@ function toSessionRow(session: GxserverSessionDomainState): SessionRow {
     restoredFromSessionId: session.hiddenMetadata.restoredFromSessionId ?? null,
     runtimeSettingsJson: stringifyDomainJsonField("runtimeSettings", session.runtimeSettings),
     sessionId: session.sessionId,
+    sessionTag: session.sessionTag ?? null,
     sidebarOrder: session.sidebarOrder ?? null,
     title: session.title,
     updatedAt: session.updatedAt,
@@ -731,7 +746,7 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
       restoredFromHistoryId: row.restoredFromHistoryId ?? undefined,
       restoredFromSessionId: row.restoredFromSessionId ? (row.restoredFromSessionId as GxserverSessionId) : undefined,
     },
-    isFavorite: row.isFavorite === 1,
+    isFavorite: normalizeOptionalSessionTag(row.sessionTag) === "favorite" || row.isFavorite === 1,
     isPinned: row.isPinned === 1,
     kind: normalizeSessionKind(row.kind),
     lastActiveAt: row.lastActiveAt ?? undefined,
@@ -746,6 +761,9 @@ function fromSessionRow(serverId: GxserverServerId, row: SessionRow): GxserverSe
     },
     runtimeSettings,
     sessionId,
+    ...(normalizeOptionalSessionTag(row.sessionTag) ?? (row.isFavorite === 1 ? "favorite" : undefined)
+      ? { sessionTag: normalizeOptionalSessionTag(row.sessionTag) ?? "favorite" }
+      : {}),
     ...(typeof row.sidebarOrder === "number" && Number.isFinite(row.sidebarOrder)
       ? { sidebarOrder: row.sidebarOrder }
       : {}),
@@ -812,6 +830,31 @@ function normalizeOptionalSidebarOrder(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : undefined;
+}
+
+function normalizeOptionalSessionTag(value: unknown): GxserverSessionTag | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (
+    value === "favorite" ||
+    value === "high-priority" ||
+    value === "research" ||
+    value === "todo" ||
+    value === "in-progress" ||
+    value === "testing" ||
+    value === "blocked" ||
+    value === "low-priority" ||
+    value === "on-hold" ||
+    value === "done" ||
+    value === "bug" ||
+    value === "feature" ||
+    value === "design"
+  ) {
+    return value;
+  }
+
+  throw new GxserverDomainStateError("badRequest", "sessionTag must be a supported session tag.");
 }
 
 function normalizeSessionKind(value: unknown): GxserverSessionKind {

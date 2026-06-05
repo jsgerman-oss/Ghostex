@@ -624,6 +624,20 @@ export type GxserverMixedStateArea =
 
 export type GxserverSessionKind = "terminal" | "agent";
 export type GxserverSessionSurface = "workspace" | "commands";
+export type GxserverSessionTag =
+  | "favorite"
+  | "high-priority"
+  | "research"
+  | "todo"
+  | "in-progress"
+  | "testing"
+  | "blocked"
+  | "low-priority"
+  | "on-hold"
+  | "done"
+  | "bug"
+  | "feature"
+  | "design";
 export type GxserverDomainLifecycleState = "running" | "sleeping" | "stopped" | "missing" | "unknown";
 export type GxserverProviderLifecycleState = "exists" | "missing" | "unknown";
 export type GxserverStartupTextDisposition =
@@ -744,6 +758,7 @@ export interface GxserverSessionDomainState {
   } & Record<string, unknown>;
   runtimeSettings: Record<string, unknown>;
   sessionId: GxserverSessionId;
+  sessionTag?: GxserverSessionTag;
   sidebarOrder?: number;
   surface: GxserverSessionSurface;
   title: string;
@@ -799,6 +814,7 @@ export interface GxserverCreateSessionParams {
   restoredFromHistoryId?: string;
   restoredFromSessionId?: GxserverSessionId;
   runtimeSettings?: Record<string, unknown>;
+  sessionTag?: GxserverSessionTag | null;
   sidebarOrder?: number;
   surface?: GxserverSessionSurface;
   title?: string;
@@ -952,6 +968,7 @@ export interface GxserverPresentationSession {
   lifecycleState: GxserverDomainLifecycleState;
   projectId: GxserverProjectId;
   sessionId: GxserverSessionId;
+  sessionTag?: GxserverSessionTag;
   sidebarOrder?: number;
   sortKey: string;
   subtitle?: string;
@@ -1032,6 +1049,7 @@ export interface GxserverPresentationSearchParams {
   limit?: number;
   projectId?: GxserverProjectId;
   query?: string;
+  sessionTags?: readonly GxserverSessionTag[];
 }
 
 export interface GxserverPresentationSearchResult {
@@ -1052,6 +1070,7 @@ export interface GxserverPresentationSearchResult {
   projectTitle: string;
   primaryTitle?: string;
   sessionId: GxserverSessionId;
+  sessionTag?: GxserverSessionTag;
   subtitle?: string;
   surface: GxserverSessionSurface;
   terminalTitle?: string;
