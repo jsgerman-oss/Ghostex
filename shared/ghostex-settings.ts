@@ -56,7 +56,7 @@ export type SessionStatusIndicatorSize = "small" | "medium" | "large" | "x-large
 export type SidebarSide = "left" | "right";
 export type SidebarSettingsPresetId = "codex" | "minimal" | "detailed";
 export type PromptEditorBackend = "inherit" | "monaco" | "gte" | "custom";
-export type SessionTitleGenerationAgent = "codex" | "cursor" | "claude" | "custom";
+export type SessionTitleGenerationAgent = "codex" | "cursor" | "claude" | "grok" | "custom";
 export type KeepAwakeDurationMinutes = 0 | 120 | 300;
 export type AutoSleepIdleMinutes = 5 | 10 | 15 | 30 | 60 | 120 | 300;
 export type RemoteMachineSettings = {
@@ -73,6 +73,9 @@ const MIN_GHOSTTY_SCROLLBACK_LIMIT_MB = 1;
 const MAX_GHOSTTY_SCROLLBACK_LIMIT_MB = 200;
 export const MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 40;
 export const MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX = 600;
+export const DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX = 235;
+export const MIN_SIDEBAR_DEFAULT_WIDTH_PX = 150;
+export const MAX_SIDEBAR_DEFAULT_WIDTH_PX = 520;
 export const SESSION_TITLE_GENERATION_AGENT_OPTIONS: ReadonlyArray<{
   label: string;
   value: SessionTitleGenerationAgent;
@@ -80,8 +83,10 @@ export const SESSION_TITLE_GENERATION_AGENT_OPTIONS: ReadonlyArray<{
   { label: "Codex", value: "codex" },
   { label: "Cursor CLI", value: "cursor" },
   { label: "Claude", value: "claude" },
+  { label: "Grok Build", value: "grok" },
   { label: "Custom", value: "custom" },
 ];
+export const SESSION_TITLE_GENERATION_PROMPT_PLACEHOLDER = "<title generation prompt>";
 
 export function clampCommandsPanelDefaultHeightPx(value: number): number {
   if (!Number.isFinite(value)) {
@@ -90,6 +95,16 @@ export function clampCommandsPanelDefaultHeightPx(value: number): number {
   return Math.min(
     MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
     Math.max(MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX, Math.round(value)),
+  );
+}
+
+export function clampSidebarDefaultWidthPx(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX;
+  }
+  return Math.min(
+    MAX_SIDEBAR_DEFAULT_WIDTH_PX,
+    Math.max(MIN_SIDEBAR_DEFAULT_WIDTH_PX, Math.round(value)),
   );
 }
 
@@ -131,6 +146,11 @@ export type ghostexSettings = {
    * which headless agent command should produce those titles. Keep this scoped
    * away from Default Prompt Agent so changing title generation does not alter
    * Git prompts, worktree starts, project-board prompts, or search prompts.
+   *
+   * CDXC:GxserverSessionTitle 2026-06-04-22:44:
+   * The selector includes Grok Build and its Composer 2.5 command preview, so
+   * users can see the exact headless CLI command Ghostex will send before
+   * automatic first-prompt session naming runs.
    */
   sessionTitleGenerationAgent: SessionTitleGenerationAgent;
   customSessionTitleGenerationCommand: string;
@@ -191,6 +211,14 @@ export type ghostexSettings = {
   sessionPersistenceProvider: SessionPersistenceProvider;
   showSessionIdInTerminalPanes: boolean;
   sidebarSide: SidebarSide;
+  /**
+   * CDXC:SidebarChrome 2026-06-05-04:40:
+   * The sidebar default width is the reset target for a double-click on the
+   * sidebar drag handle in Electron and native macOS. Restart hydration must
+   * continue using the last persisted sidebarWidth so changing this default
+   * does not erase the user's last manual resize.
+   */
+  sidebarDefaultWidthPx: number;
   sidebarTheme: SidebarThemeSetting;
   terminalCursorStyle: TerminalCursorStyle;
   terminalCursorStyleBlink: boolean;
@@ -522,6 +550,13 @@ export const DEFAULT_ghostex_SETTINGS: ghostexSettings = {
    * placement from Settings instead of relying only on the move-sidebar hotkey.
    */
   sidebarSide: "left",
+  /**
+   * CDXC:SidebarChrome 2026-06-05-04:40:
+   * First-run reset target remains 235px, but users can change this Settings
+   * value for explicit sidebar-handle double-click resets without changing the
+   * last-width restore path used at app restart.
+   */
+  sidebarDefaultWidthPx: DEFAULT_SIDEBAR_DEFAULT_WIDTH_PX,
   /**
    * CDXC:SidebarTheme 2026-05-08-11:14
    * Dark Gray is the only active user-facing sidebar theme while the broader
@@ -1160,6 +1195,13 @@ export function normalizeghostexSettings(candidate: unknown): ghostexSettings {
     sidebarSide: normalizeSidebarSide(
       readString(source, "sidebarSide", DEFAULT_ghostex_SETTINGS.sidebarSide),
     ),
+    sidebarDefaultWidthPx: clampSidebarDefaultWidthPx(
+      readNumber(
+        source,
+        "sidebarDefaultWidthPx",
+        DEFAULT_ghostex_SETTINGS.sidebarDefaultWidthPx,
+      ),
+    ),
     sidebarTheme: clampSidebarThemeSetting(
       readString(source, "sidebarTheme", DEFAULT_ghostex_SETTINGS.sidebarTheme),
     ),
@@ -1471,13 +1513,62 @@ function normalizeDefaultPromptAgentId(value: string | undefined): string {
 function normalizeSessionTitleGenerationAgent(
   value: string | undefined,
 ): SessionTitleGenerationAgent {
-  return value === "cursor" || value === "claude" || value === "custom"
+  return value === "cursor" || value === "claude" || value === "grok" || value === "custom"
     ? value
     : DEFAULT_ghostex_SETTINGS.sessionTitleGenerationAgent;
 }
 
 function normalizeCustomSessionTitleGenerationCommand(value: string | undefined): string {
   return (value ?? "").trim().slice(0, 240);
+}
+
+export function getSessionTitleGenerationCommandPreview(
+  agent: SessionTitleGenerationAgent,
+  options: { command?: string } = {},
+): string {
+  const command = readSessionTitleGenerationPreviewCommand(agent, options.command);
+  const prompt = SESSION_TITLE_GENERATION_PROMPT_PLACEHOLDER;
+  switch (agent) {
+    case "codex":
+      return createSessionTitleGenerationHereDocPreview(
+        `${command} exec --skip-git-repo-check -m gpt-5.4-mini -c 'model_reasoning_effort="low"'`,
+        prompt,
+      );
+    case "cursor":
+      return `${command} --print --yolo --trust --output-format text '${prompt}'`;
+    case "claude":
+      return createSessionTitleGenerationHereDocPreview(`${command} -p --model haiku`, prompt);
+    case "grok":
+      return `${command} -p --model grok-composer-2.5-fast --output-format plain --no-alt-screen --no-plan --no-subagents --disable-web-search --max-turns 1 '${prompt}'`;
+    case "custom":
+      return createSessionTitleGenerationHereDocPreview(command, prompt);
+  }
+}
+
+function readSessionTitleGenerationPreviewCommand(
+  agent: SessionTitleGenerationAgent,
+  command: string | undefined,
+): string {
+  const configured = command?.trim();
+  if (configured) {
+    return configured;
+  }
+  switch (agent) {
+    case "codex":
+      return "codex";
+    case "cursor":
+      return "cursor-agent";
+    case "claude":
+      return "claude";
+    case "grok":
+      return "grok";
+    case "custom":
+      return "<custom command>";
+  }
+}
+
+function createSessionTitleGenerationHereDocPreview(command: string, prompt: string): string {
+  return `${command} <<'PROMPT'\n${prompt}\nPROMPT`;
 }
 
 function normalizeCustomPromptEditorCommand(value: string | undefined): string {
