@@ -2388,13 +2388,17 @@ async function runGxserverFirstPromptAutoTitleJob(
     }
     const commandText = decision.strategy === "generateTitleAndName" ? `/name ${title}` : `/rename ${title}`;
     const zmx = await (runtime.zmxLifecycle?.requireZmx ?? requireBundledZmx)();
+    /*
+    CDXC:GxserverSessionTitle 2026-06-05-12:43:
+    Generated first-prompt titles must be staged as terminal text only. The macOS client observes the applied title transition and sends the real programmatic Enter key event, because appending a carriage return to zmx text input can insert a newline in agent prompt editors instead of submitting the staged rename command.
+    */
     await runZmxInteractionCommand(
       runtime,
       buildZmxSendCommand({
         sessionName: providerZmxSessionName(latestSession),
         zmxExecutablePath: zmx.executablePath,
       }),
-      { stdin: `${commandText}\r` },
+      { stdin: commandText },
     );
     const updated = repository.updateSession({
       projectId: latestSession.projectId,
