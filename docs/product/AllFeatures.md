@@ -1,6 +1,14 @@
 
 ## All features:
 
+- 4.0.0 beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds stay on the current public release.
+- Session tags can be applied, displayed on session cards, filtered in Active and Previous Sessions, and preserved in manual session order.
+- Git commit review can inspect changed-file diffs inline inside the review modal.
+- First-prompt title generation includes Grok Build support, staged rename handling, and submit guards for skipped or stale generated titles.
+- Native workspace focus, pane-tab close button chrome, centered sidebar context menus, and visible-row Cmd+number shortcuts are improved in nightly builds.
+- Zmx-backed terminal panes can refresh stale persisted state for resize repair, and gxserver nightly sessions avoid legacy zmux chat project behavior.
+- Project board and Tasks flows improve ticket routing, comments, placeholders, and Create & Start handoff behavior.
+- Nightly builds improve window geometry restore, sidebar default width, title-agent previews, and `gx find` Accept All policy handling.
 - Project board Backlog lane, per-lane ticket creation, improved Create & Start, bead-comment Start Work prompts, and immediate session focus when starting work from Kanban.
 - Command pane defaults to 125px height, supports up to 90% workspace height, and native Beads accepts backlog status updates.
 - Floating menus, selects, popovers, and tooltips share sidebar tooltip border styling for clearer edges.

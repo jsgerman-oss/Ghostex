@@ -1,6 +1,18 @@
 # Changelog
 
 <!-- CDXC:Distribution 2026-05-30-09:52: Release notes for 3.26.0 must include all user-facing commits after v3.25.0 so README, GitHub, Sparkle, and Homebrew describe the same shipped behavior. -->
+<!-- CDXC:BetaDistribution 2026-06-05-22:26: Release notes for 4.0.0-beta.1 must make clear that the nightly beta is distributed through GitHub Releases and Homebrew without moving Sparkle users onto the beta feed. -->
+
+## 4.0.0-beta.1 - 2026-06-05
+
+- Beta distribution is available through GitHub Releases and Homebrew DMG installs while Sparkle automatic-update feeds remain on the current public release.
+- Session tags can now be applied, displayed on cards, filtered in Active and Previous Sessions, and kept in manual order without unexpected resorting.
+- Git commit review adds inline changed-file diff inspection so review prompts can inspect file patches without leaving the modal.
+- First-prompt title generation is more reliable, including Grok Build support, staged rename handling, and guards that avoid submitting skipped or stale generated titles.
+- Native workspace focus, tab chrome, and sidebar shortcuts are tighter: visible Cmd+number slots match painted session rows, session-click focus is reinforced, context menus are centered, and close buttons use cleaner pane-tab chrome.
+- Zmx-backed terminals can refresh stale persisted pane state for resize repair, and gxserver no longer carries legacy zmux chat project behavior into nightly sessions.
+- Project board and Tasks flows improve ticket routing, comments, placeholders, and create/start handoff behavior.
+- Window geometry, sidebar default width, title-agent previews, and `gx find` Accept All policy handling have been improved for nightly builds.
 
 ## 3.26.0 - 2026-05-30
 
