@@ -2,7 +2,9 @@ import Fuse, { type IFuseOptions } from "fuse.js";
 import type {
   SidebarPreviousSessionItem,
   SidebarSessionItem,
+  SidebarSessionTag,
 } from "../shared/session-grid-contract";
+import { getEffectiveSidebarSessionTag, getSidebarSessionTagLabel } from "../shared/session-tags";
 import { getSessionHistoryCardTitle } from "./session-history-card-title";
 
 export type PreviousSessionsModalDayGroup = {
@@ -11,12 +13,12 @@ export type PreviousSessionsModalDayGroup = {
 };
 
 export type FilterPreviousSessionsOptions = {
-  favoritesOnly?: boolean;
+  sessionTags?: readonly SidebarSessionTag[];
 };
 
 type SidebarSearchableSession = Pick<
   SidebarSessionItem,
-  "alias" | "detail" | "primaryTitle" | "sessionNumber" | "terminalTitle"
+  "alias" | "detail" | "isFavorite" | "primaryTitle" | "sessionNumber" | "sessionTag" | "terminalTitle"
 >;
 
 type SidebarSessionSearchRecord<T extends SidebarSearchableSession> = {
@@ -40,9 +42,15 @@ export function filterPreviousSessions(
   options: FilterPreviousSessionsOptions = {},
 ): SidebarPreviousSessionItem[] {
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredSessions = options.favoritesOnly
-    ? previousSessions.filter((session) => session.isFavorite)
-    : [...previousSessions];
+  const selectedSessionTags = options.sessionTags ?? [];
+  const selectedTagSet = new Set(selectedSessionTags);
+  const filteredSessions =
+    selectedSessionTags.length > 0
+      ? previousSessions.filter((session) => {
+          const sessionTag = getEffectiveSidebarSessionTag(session);
+          return sessionTag ? selectedTagSet.has(sessionTag) : false;
+        })
+      : [...previousSessions];
   const dedupedSessions = dedupePreviousSessionsByProjectAndTitle(filteredSessions);
 
   if (!normalizedQuery) {
@@ -154,6 +162,7 @@ function createSidebarSessionSearchRecord<T extends SidebarSearchableSession>(
       session.terminalTitle,
       session.detail,
       session.sessionNumber,
+      getSidebarSessionTagLabel(getEffectiveSidebarSessionTag(session)),
     ]
       .map((part) => normalizeSessionSearchValue(part))
       .filter(Boolean)

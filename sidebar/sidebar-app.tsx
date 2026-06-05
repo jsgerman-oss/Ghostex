@@ -11,6 +11,7 @@ import {
   IconCaretRightFilled,
   IconChevronDown,
   IconChevronRight,
+  IconCheck,
   IconCopy,
   IconDownload,
   IconEye,
@@ -55,6 +56,7 @@ import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import {
   MAX_GROUP_COUNT,
+  type SidebarActiveSessionsSortMode,
   type ExtensionToSidebarMessage,
   type SidebarPreviousSessionItem,
 } from "../shared/session-grid-contract";
@@ -125,6 +127,12 @@ import { useScrollGlowState } from "./use-scroll-glow-state";
 import type { WebviewApi } from "./webview-api";
 import { createDisplaySessionLayout } from "../shared/active-sessions-sort";
 import { filterPreviousSessions, filterSidebarSessionItems } from "./previous-session-search";
+import {
+  getEffectiveSessionTag,
+  SessionTagIcon,
+  SIDEBAR_SESSION_TAG_SECTIONS,
+  type SidebarSessionTag,
+} from "./session-tag-ui";
 import { filterRecentProjects } from "./recent-project-search";
 import { isEmptySidebarDoubleClick } from "./empty-sidebar-double-click";
 import { closeAppModal, openAppModal } from "./app-modal-host-bridge";
@@ -147,6 +155,11 @@ type RemoteMachineRuntimeStatus = Extract<ExtensionToSidebarMessage, { type: "re
 type RemoteMachineRuntimeStatuses = Record<string, RemoteMachineRuntimeStatus["state"]>;
 type FloatingMenuPosition = {
   right: number;
+  top: number;
+};
+
+type HeaderSortMenuPosition = {
+  left: number;
   top: number;
 };
 
@@ -580,6 +593,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const previousExpandedReferenceProjectGroupIdsRef = useRef<string[]>([]);
   const [recentProjectsQuery, setRecentProjectsQuery] = useState("");
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
+  const [selectedSessionTagFilters, setSelectedSessionTagFilters] = useState<
+    SidebarSessionTag[]
+  >([]);
   const [remoteSessionSearchPreviousSessions, setRemoteSessionSearchPreviousSessions] =
     useState<SidebarPreviousSessionItem[] | undefined>(undefined);
   const [groupDropIndicator, setGroupDropIndicator] = useState<SidebarGroupDropTarget>();
@@ -1636,6 +1652,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       createDisplayedSessionIdsByGroup({
         groupIds: effectiveGroupIds,
         query: normalizedSessionSearchQuery,
+        selectedSessionTags: selectedSessionTagFilters,
         sessionIdsByGroup: effectiveSessionIdsByGroup,
         sessionsById,
         shouldFilter: isSessionSearchFiltering,
@@ -1645,6 +1662,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       effectiveSessionIdsByGroup,
       isSessionSearchFiltering,
       normalizedSessionSearchQuery,
+      selectedSessionTagFilters,
       sessionsById,
     ],
   );
@@ -1653,9 +1671,14 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
       createDisplayedGroupIds(
         effectiveGroupIds,
         displayedWorkspaceSessionIdsByGroup,
-        isSessionSearchFiltering,
+        isSessionSearchFiltering || selectedSessionTagFilters.length > 0,
       ),
-    [displayedWorkspaceSessionIdsByGroup, effectiveGroupIds, isSessionSearchFiltering],
+    [
+      displayedWorkspaceSessionIdsByGroup,
+      effectiveGroupIds,
+      isSessionSearchFiltering,
+      selectedSessionTagFilters.length,
+    ],
   );
   const displayedReferenceChatGroupIds = useMemo(
     () =>
@@ -2849,9 +2872,35 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     vscode.postMessage({ projectId, type: "removeRecentProject" });
   };
 
-  const toggleActiveSessionsSortMode = () => {
+  const setActiveSessionsSortMode = (sortMode: SidebarActiveSessionsSortMode) => {
     setIsOverflowMenuOpen(false);
-    vscode.postMessage({ type: "toggleActiveSessionsSortMode" });
+    vscode.postMessage({
+      manualSessionIdsByGroup:
+        sortMode === "manual" && activeSessionsSortMode !== "manual"
+          ? Object.fromEntries(
+              workspaceGroupIds.map((groupId) => [
+                groupId,
+                [...(effectiveSessionIdsByGroup[groupId] ?? [])],
+              ]),
+            )
+          : undefined,
+      sortMode,
+      type: "setActiveSessionsSortMode",
+    });
+  };
+
+  const toggleActiveSessionsSortMode = () => {
+    setActiveSessionsSortMode(
+      activeSessionsSortMode === "manual" ? "lastActivity" : "manual",
+    );
+  };
+
+  const toggleSessionTagFilter = (sessionTag: SidebarSessionTag) => {
+    setSelectedSessionTagFilters((current) =>
+      current.includes(sessionTag)
+        ? current.filter((tag) => tag !== sessionTag)
+        : [...current, sessionTag],
+    );
   };
 
   const moveSidebar = () => {
@@ -3055,10 +3104,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                   <>
                     {/* CDXC:QuickSessions 2026-05-16-12:55: The projectless chat collection is user-facing as Quick in the reference sidebar while internal chat group semantics stay unchanged. */}
                     <SidebarReferenceSectionHeader
+                      activeSessionsSortMode={activeSessionsSortMode}
                       collapsed={isReferenceChatsCollapsed}
                       onCreateBrowserChat={createReferenceBrowserChat}
                       onCreateChat={createReferenceChat}
                       onFilterChats={toggleSessionSearch}
+                      onSetActiveSessionsSortMode={setActiveSessionsSortMode}
+                      onToggleSessionTagFilter={toggleSessionTagFilter}
                       onToggleCollapsed={() => {
                         const nextCollapsed = !isReferenceChatsCollapsed;
                         postSidebarCollapseStateLog("sectionToggle", {
@@ -3072,6 +3124,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                         setIsReferenceChatsCollapsed((previous) => !previous);
                       }}
                       sectionKey="quick"
+                      selectedSessionTagFilters={selectedSessionTagFilters}
                       title="Quick"
                     />
                     <div
@@ -3085,7 +3138,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           autoEdit={autoEditingGroupId === groupId}
                           canClose={effectiveGroupIds.length > 1}
                           completionFlashNonceBySessionId={completionFlashNonceBySessionId}
-                          draggingDisabled={true}
+                          draggingDisabled={!isManualActiveSessionsSort}
                           groupDropIndicator={groupDropIndicator}
                           groupId={groupId}
                           index={groupIndex}
@@ -3105,9 +3158,9 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           }
                           enableProjectSessionListToggle={!isSessionSearchFiltering}
                           sessionDropIndicatorGroupId={sessionDropIndicatorGroupId}
-                          sessionDraggingDisabled={true}
+                          sessionDraggingDisabled={!isManualActiveSessionsSort}
                           showHeaderActions={true}
-                          showSessionDropPositionIndicators={false}
+                          showSessionDropPositionIndicators={isManualActiveSessionsSort}
                           vscode={vscode}
                         />
                       ))}
@@ -3116,6 +3169,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                 ) : null}
                 {!shouldHideReferenceSectionsForSearchEmptyState ? (
                   <SidebarReferenceSectionHeader
+                    activeSessionsSortMode={activeSessionsSortMode}
                     actionsAlwaysVisible={displayedReferenceProjectGroupIds.length === 0}
                     bulkActionLabel={
                       displayedReferenceProjectGroupIds.length > 0
@@ -3171,6 +3225,8 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           }
                         : undefined
                     }
+                    onSetActiveSessionsSortMode={setActiveSessionsSortMode}
+                    onToggleSessionTagFilter={toggleSessionTagFilter}
                     onToggleCollapsed={() => {
                       const nextCollapsed = !isReferenceProjectsCollapsed;
                       postSidebarCollapseStateLog("sectionToggle", {
@@ -3184,6 +3240,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                       setIsReferenceProjectsCollapsed((previous) => !previous);
                     }}
                     sectionKey="projects"
+                    selectedSessionTagFilters={selectedSessionTagFilters}
                     title="Projects"
                   />
                 ) : null}
@@ -3211,7 +3268,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           onCollapsedChange={setGroupCollapsed}
                           onFocusRequested={applyLocalFocus}
                           orderedSessionIds={displayedWorkspaceSessionIdsByGroup[groupId] ?? []}
-                          allowPinnedSessionReorder={true}
+                          allowPinnedSessionReorder={!isManualActiveSessionsSort}
                           pinnedSessionDropIndicator={pinnedSessionDropIndicator}
                           selectedSearchSessionId={
                             isSessionSearchSelectionVisible &&
@@ -3221,7 +3278,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
                           }
                           enableProjectSessionListToggle={!isSessionSearchFiltering}
                           sessionDropIndicatorGroupId={sessionDropIndicatorGroupId}
-                          sessionDraggingDisabled={true}
+                          sessionDraggingDisabled={!isManualActiveSessionsSort}
                           showHeaderActions={true}
                           showSessionDropPositionIndicators={true}
                           vscode={vscode}
@@ -3795,6 +3852,7 @@ function isNode(value: EventTarget | null): value is Node {
 }
 
 function SidebarReferenceSectionHeader({
+  activeSessionsSortMode,
   actionsAlwaysVisible,
   bulkActionLabel,
   collapsed,
@@ -3805,10 +3863,14 @@ function SidebarReferenceSectionHeader({
   onCreateChat,
   onFilterChats,
   onReconnect,
+  onSetActiveSessionsSortMode,
+  onToggleSessionTagFilter,
   onToggleCollapsed,
   sectionKey,
+  selectedSessionTagFilters = [],
   title,
 }: {
+  activeSessionsSortMode?: SidebarActiveSessionsSortMode;
   actionsAlwaysVisible?: boolean;
   bulkActionLabel?: string;
   collapsed: boolean;
@@ -3819,8 +3881,11 @@ function SidebarReferenceSectionHeader({
   onCreateChat?: () => void;
   onFilterChats?: () => void;
   onReconnect?: () => void;
+  onSetActiveSessionsSortMode?: (sortMode: SidebarActiveSessionsSortMode) => void;
+  onToggleSessionTagFilter?: (tag: SidebarSessionTag) => void;
   onToggleCollapsed: () => void;
   sectionKey: ReferenceSidebarSectionId;
+  selectedSessionTagFilters?: readonly SidebarSessionTag[];
   title: string;
 }) {
   /**
@@ -3856,9 +3921,17 @@ function SidebarReferenceSectionHeader({
    * Section headers need a stable section key in the DOM so spacing can be
    * tuned for Projects and Quick independently without depending on visible
    * label text or adjacent markup shape.
+   *
+   * CDXC:ManualSessionSorting 2026-06-05-12:30:
+   * Quick and Projects expose the same filter-shaped sort control in their
+   * section headers. Last Active Sorting remains the default, while Manual
+   * Sorting preserves the first visible last-active snapshot and later
+   * user-defined row order.
    */
+  const [sortMenuPosition, setSortMenuPosition] = useState<HeaderSortMenuPosition>();
   const BulkProjectIcon =
     bulkActionLabel === "Collapse All" ? IconArrowsDiagonalMinimize : IconArrowsDiagonal2;
+  const hasTagFilters = selectedSessionTagFilters.length > 0;
   const hasActions =
     onAddProject ||
     onAddRepository ||
@@ -3866,7 +3939,29 @@ function SidebarReferenceSectionHeader({
     onCreateBrowserChat ||
     onCreateChat ||
     onFilterChats ||
-    onReconnect;
+    onReconnect ||
+    onSetActiveSessionsSortMode ||
+    onToggleSessionTagFilter;
+  const sortModeLabel =
+    activeSessionsSortMode === "manual" ? "Manual Sorting" : "Last Active Sorting";
+  const filterLabel = hasTagFilters
+    ? `${sortModeLabel}, ${selectedSessionTagFilters.length} tag filter${
+        selectedSessionTagFilters.length === 1 ? "" : "s"
+      }`
+    : sortModeLabel;
+
+  const openSortMenu = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setSortMenuPosition({
+      left: bounds.left,
+      top: bounds.bottom + 4,
+    });
+  };
+
+  const selectSortMode = (sortMode: SidebarActiveSessionsSortMode) => {
+    setSortMenuPosition(undefined);
+    onSetActiveSessionsSortMode?.(sortMode);
+  };
 
   return (
     <div
@@ -3889,6 +3984,20 @@ function SidebarReferenceSectionHeader({
       </button>
       {hasActions ? (
         <div className="reference-sidebar-section-actions">
+          {onSetActiveSessionsSortMode || onToggleSessionTagFilter ? (
+            <button
+              aria-expanded={sortMenuPosition !== undefined}
+              aria-haspopup="menu"
+              aria-label={`Filter sessions: ${filterLabel}`}
+              className="reference-sidebar-section-action reference-sidebar-section-sort-action reference-sidebar-hover-action-tooltip"
+              data-selected={String(activeSessionsSortMode === "manual" || hasTagFilters)}
+              data-tooltip={filterLabel}
+              onClick={openSortMenu}
+              type="button"
+            >
+              <IconFilter2 aria-hidden="true" size={14} stroke={1.9} />
+            </button>
+          ) : null}
           {onCreateBrowserChat ? (
             <button
               aria-label="Quick Browser Tab"
@@ -3956,6 +4065,93 @@ function SidebarReferenceSectionHeader({
             </button>
           ) : null}
         </div>
+      ) : null}
+      {sortMenuPosition ? (
+        <SidebarContextMenuPortal
+          menuClassName="session-context-menu reference-sidebar-sort-menu"
+          menuStyle={{
+            left: sortMenuPosition.left,
+            top: sortMenuPosition.top,
+          }}
+          onDismiss={() => setSortMenuPosition(undefined)}
+        >
+          {onSetActiveSessionsSortMode ? (
+            <>
+              <button
+                aria-checked={activeSessionsSortMode !== "manual"}
+                className="session-context-menu-item"
+                onClick={() => selectSortMode("lastActivity")}
+                role="menuitemradio"
+                type="button"
+              >
+                <IconCheck
+                  aria-hidden="true"
+                  className="session-context-menu-icon"
+                  data-visible={String(activeSessionsSortMode !== "manual")}
+                  size={14}
+                  stroke={2}
+                />
+                Last Active Sorting
+              </button>
+              <button
+                aria-checked={activeSessionsSortMode === "manual"}
+                className="session-context-menu-item"
+                onClick={() => selectSortMode("manual")}
+                role="menuitemradio"
+                type="button"
+              >
+                <IconCheck
+                  aria-hidden="true"
+                  className="session-context-menu-icon"
+                  data-visible={String(activeSessionsSortMode === "manual")}
+                  size={14}
+                  stroke={2}
+                />
+                Manual Sorting
+              </button>
+            </>
+          ) : null}
+          {onSetActiveSessionsSortMode && onToggleSessionTagFilter ? (
+            <div className="session-context-menu-divider" role="separator" />
+          ) : null}
+          {onToggleSessionTagFilter
+            ? SIDEBAR_SESSION_TAG_SECTIONS.map((section) => (
+                <div className="session-tag-menu-section" key={section.label}>
+                  <div className="session-tag-menu-section-label">{section.label}</div>
+                  {section.options.map((option) => {
+                    const isSelected = selectedSessionTagFilters.includes(option.value);
+                    return (
+                      <button
+                        aria-checked={isSelected}
+                        className="session-context-menu-item reference-sidebar-tag-filter-item"
+                        data-selected={String(isSelected)}
+                        key={option.value}
+                        onClick={() => onToggleSessionTagFilter(option.value)}
+                        role="menuitemcheckbox"
+                        type="button"
+                      >
+                        <SessionTagIcon
+                          className="session-context-menu-icon session-tag-colored-icon"
+                          fillFavorite
+                          size={14}
+                          stroke={1.8}
+                          tag={option.value}
+                        />
+                        {option.label}
+                        <IconCheck
+                          aria-hidden="true"
+                          className="session-context-menu-trailing-icon reference-sidebar-tag-filter-check"
+                          data-visible={String(isSelected)}
+                          size={14}
+                          stroke={2}
+                        />
+                      </button>
+                    );
+                  })}
+                </div>
+              ))
+            : null}
+        </SidebarContextMenuPortal>
       ) : null}
     </div>
   );
@@ -5116,12 +5312,14 @@ function summarizeSidebarAgentIconSessions(
 function createDisplayedSessionIdsByGroup({
   groupIds,
   query,
+  selectedSessionTags,
   sessionIdsByGroup,
   sessionsById,
   shouldFilter,
 }: {
   groupIds: readonly string[];
   query: string;
+  selectedSessionTags: readonly SidebarSessionTag[];
   sessionIdsByGroup: SessionIdsByGroup;
   sessionsById: ReturnType<typeof useSidebarStore.getState>["sessionsById"];
   shouldFilter: boolean;
@@ -5130,12 +5328,34 @@ function createDisplayedSessionIdsByGroup({
 
   for (const groupId of groupIds) {
     const sessionIds = sessionIdsByGroup[groupId] ?? [];
-    displayedSessionIdsByGroup[groupId] = !shouldFilter
+    const queryFilteredSessionIds = !shouldFilter
       ? [...sessionIds]
       : filterSessionIdsByQuery(sessionIds, sessionsById, query);
+    displayedSessionIdsByGroup[groupId] = filterSessionIdsByTags(
+      queryFilteredSessionIds,
+      sessionsById,
+      selectedSessionTags,
+    );
   }
 
   return displayedSessionIdsByGroup;
+}
+
+function filterSessionIdsByTags(
+  sessionIds: readonly string[],
+  sessionsById: ReturnType<typeof useSidebarStore.getState>["sessionsById"],
+  selectedSessionTags: readonly SidebarSessionTag[],
+): string[] {
+  if (selectedSessionTags.length === 0) {
+    return [...sessionIds];
+  }
+
+  const selectedTagSet = new Set(selectedSessionTags);
+  return sessionIds.filter((sessionId) => {
+    const session = sessionsById[sessionId];
+    const sessionTag = session ? getEffectiveSessionTag(session) : undefined;
+    return sessionTag ? selectedTagSet.has(sessionTag) : false;
+  });
 }
 
 function filterSessionIdsByQuery(
