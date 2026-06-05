@@ -165,7 +165,6 @@ export function getSessionCardAccessibleLabel({
 }
 
 function clampContextMenuPosition(
-  clientX: number,
   clientY: number,
   itemCount: number,
   dividerCount: number,
@@ -175,15 +174,25 @@ function clampContextMenuPosition(
     itemCount * CONTEXT_MENU_ITEM_HEIGHT_PX +
     dividerCount * CONTEXT_MENU_DIVIDER_HEIGHT_PX;
   return {
-    x: Math.max(
-      CONTEXT_MENU_MARGIN_PX,
-      Math.min(clientX, window.innerWidth - CONTEXT_MENU_WIDTH_PX - CONTEXT_MENU_MARGIN_PX),
-    ),
+    x: getCenteredSidebarMenuX(CONTEXT_MENU_WIDTH_PX),
     y: Math.max(
       CONTEXT_MENU_MARGIN_PX,
       Math.min(clientY, window.innerHeight - menuHeight - CONTEXT_MENU_MARGIN_PX),
     ),
   };
+}
+
+function getCenteredSidebarMenuX(menuWidth: number): number {
+  /*
+   * CDXC:SidebarContextMenu 2026-06-05-21:23:
+   * Session context menus and the Tag as submenu should be horizontally
+   * centered in the sidebar webview rather than opening at the pointer x.
+   * Clamp against the sidebar viewport so narrow sidebars cap menu width at
+   * the available sidebar width instead of overflowing into native surfaces.
+   */
+  const availableWidth = Math.max(0, window.innerWidth - CONTEXT_MENU_MARGIN_PX * 2);
+  const renderedWidth = Math.min(menuWidth, availableWidth);
+  return Math.max(CONTEXT_MENU_MARGIN_PX, (window.innerWidth - renderedWidth) / 2);
 }
 
 export function SortableSessionCard({
@@ -625,10 +634,10 @@ export function SortableSessionCard({
     vscode,
   ]);
 
-  const openContextMenu = (clientX: number, clientY: number) => {
+  const openContextMenu = (clientY: number) => {
     setTagSubmenuPosition(undefined);
     setContextMenuPosition(
-      clampContextMenuPosition(clientX, clientY, contextMenuItemCount, contextMenuDividerCount),
+      clampContextMenuPosition(clientY, contextMenuItemCount, contextMenuDividerCount),
     );
   };
 
@@ -938,15 +947,11 @@ export function SortableSessionCard({
       SIDEBAR_SESSION_TAG_OPTIONS.length * CONTEXT_MENU_ITEM_HEIGHT_PX +
       SIDEBAR_SESSION_TAG_SECTIONS.length * 18 +
       Math.max(0, SIDEBAR_SESSION_TAG_SECTIONS.length - 1) * 10;
-    const shouldOpenLeft =
-      bounds.right + submenuWidth + CONTEXT_MENU_MARGIN_PX > window.innerWidth;
     setTagSubmenuPosition({
-      x: shouldOpenLeft
-        ? Math.max(CONTEXT_MENU_MARGIN_PX, bounds.left - submenuWidth - 4)
-        : Math.min(bounds.right + 4, window.innerWidth - submenuWidth - CONTEXT_MENU_MARGIN_PX),
+      x: getCenteredSidebarMenuX(submenuWidth),
       y: Math.max(
         CONTEXT_MENU_MARGIN_PX,
-        Math.min(bounds.top, window.innerHeight - submenuHeight - CONTEXT_MENU_MARGIN_PX),
+        Math.min(bounds.bottom + 4, window.innerHeight - submenuHeight - CONTEXT_MENU_MARGIN_PX),
       ),
     });
   };
@@ -1355,7 +1360,7 @@ export function SortableSessionCard({
       event.preventDefault();
       event.stopPropagation();
       const bounds = event.currentTarget.getBoundingClientRect();
-      openContextMenu(bounds.left + 24, bounds.top + 18);
+      openContextMenu(bounds.top + 18);
       return;
     }
 
@@ -1496,7 +1501,7 @@ export function SortableSessionCard({
             onContextMenu={(event: ReactMouseEvent<HTMLElement>) => {
               event.preventDefault();
               event.stopPropagation();
-              openContextMenu(event.clientX, event.clientY);
+              openContextMenu(event.clientY);
             }}
             onKeyDown={handleKeyDown}
             ref={setSessionCardElement}
@@ -1538,6 +1543,7 @@ export function SortableSessionCard({
       </OverflowTooltipText>
       {contextMenuPosition ? (
         <SidebarContextMenuPortal
+          menuClassName="session-context-menu sidebar-session-context-menu"
           menuRef={menuRef}
           menuStyle={{
             left: `${contextMenuPosition.x}px`,
@@ -1560,7 +1566,12 @@ export function SortableSessionCard({
                     key={action.key}
                     className={`session-context-menu-item${action.danger ? " session-context-menu-item-danger" : ""}`}
                     onClick={(event) => action.onClick(event)}
-                    onMouseEnter={action.submenu === "session-tags" ? action.onClick : undefined}
+                    aria-expanded={
+                      action.submenu === "session-tags"
+                        ? Boolean(tagSubmenuPosition)
+                        : undefined
+                    }
+                    aria-haspopup={action.submenu === "session-tags" ? "menu" : undefined}
                     role="menuitem"
                     type="button"
                   >

@@ -72,8 +72,26 @@
   margin-left: auto;
 }
 
+.sidebar-session-context-menu {
+  /*
+   * CDXC:SidebarContextMenu 2026-06-05-21:23:
+   * Session context menus are centered by JS within the sidebar viewport. Keep
+   * the rendered width deterministic and cap it to the sidebar webview width so
+   * the post-render clamp and the visible menu agree in narrow sidebars.
+   */
+  max-width: calc(100vw - 24px);
+  width: min(178px, calc(100vw - 24px));
+}
+
 .session-tag-submenu {
-  min-width: 204px;
+  /*
+   * CDXC:SessionTags 2026-06-05-21:23:
+   * The Tag as submenu opens only after the Tag as row is clicked and shares
+   * the same sidebar-centered placement as the parent session context menu.
+   */
+  max-width: calc(100vw - 24px);
+  min-width: 0;
+  width: min(204px, calc(100vw - 24px));
 }
 
 .session-tag-menu-section {
