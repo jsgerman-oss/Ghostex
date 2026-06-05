@@ -22,6 +22,7 @@ export type ChangedFilesTreeProps = {
   isEditing?: boolean;
   onOpenFile?: (filePath: string) => void;
   onToggleFile?: (filePath: string) => void;
+  selectedPath?: string;
 };
 
 export const ChangedFilesTree = memo(function ChangedFilesTree({
@@ -32,6 +33,7 @@ export const ChangedFilesTree = memo(function ChangedFilesTree({
   isEditing = false,
   onOpenFile,
   onToggleFile,
+  selectedPath,
 }: ChangedFilesTreeProps) {
   const treeNodes = useMemo(() => buildChangedFilesTree(files), [files]);
   const directoryPathsKey = useMemo(
@@ -107,6 +109,7 @@ export const ChangedFilesTree = memo(function ChangedFilesTree({
       <div
         className="changed-files-tree-row changed-files-tree-file"
         data-excluded={String(isExcluded)}
+        data-selected={String(node.path === selectedPath)}
         key={`file:${node.path}`}
         style={{ paddingLeft: `${leftPadding}px` }}
       >

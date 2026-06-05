@@ -3,7 +3,7 @@ import { createDefaultSidebarAgentButtons } from "../shared/sidebar-agents";
 import { createDefaultSidebarCommandButtons } from "../shared/sidebar-commands";
 import { DEFAULT_COMPLETION_SOUND, getCompletionSoundLabel } from "../shared/completion-sound";
 import { DEFAULT_ghostex_SETTINGS } from "../shared/ghostex-settings";
-import { createDefaultSidebarGitState } from "../shared/sidebar-git";
+import { createDefaultSidebarGitState, type SidebarGitFileDiffDraft } from "../shared/sidebar-git";
 import type {
   SidebarCommandRunStateClearedMessage,
   SidebarCommandRunStateChangedMessage,
@@ -31,6 +31,7 @@ type SidebarStoreDataState = {
   commandRunStates: Record<string, SidebarCommandRunFeedbackState>;
   daemonSessionsState: SidebarDaemonSessionsStateMessage | undefined;
   gitCommitDraft: SidebarPromptGitCommitMessage | undefined;
+  gitFileDiffDraft: SidebarGitFileDiffDraft | undefined;
   groupOrder: string[];
   groupsById: Record<string, SidebarGroupRecord>;
   hud: SidebarHudState;
@@ -61,6 +62,7 @@ type SidebarStoreActions = {
   reset: () => void;
   setDaemonSessionsState: (message: SidebarDaemonSessionsStateMessage | undefined) => void;
   setGitCommitDraft: (message: SidebarPromptGitCommitMessage | undefined) => void;
+  setGitFileDiffDraft: (draft: SidebarGitFileDiffDraft | undefined) => void;
 };
 
 export type SidebarStoreState = SidebarStoreDataState & SidebarStoreActions;
@@ -70,6 +72,7 @@ export function createInitialSidebarStoreDataState(): SidebarStoreDataState {
     commandRunStates: {},
     daemonSessionsState: undefined,
     gitCommitDraft: undefined,
+    gitFileDiffDraft: undefined,
     groupOrder: [],
     groupsById: {},
     hud: {
@@ -193,7 +196,10 @@ export const useSidebarStore = create<SidebarStoreState>((set) => ({
     set({ daemonSessionsState: message });
   },
   setGitCommitDraft: (message) => {
-    set({ gitCommitDraft: message });
+    set({ gitCommitDraft: message, gitFileDiffDraft: undefined });
+  },
+  setGitFileDiffDraft: (draft) => {
+    set({ gitFileDiffDraft: draft });
   },
 }));
 

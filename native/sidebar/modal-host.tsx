@@ -2111,6 +2111,7 @@ function AppModalHost() {
           }
         }
         isOpen={activeModal === "gitCommit" && gitCommit !== undefined}
+        fileDiffDraft={gitFileDiff}
         onCancel={(requestId) => {
           vscode.postMessage({ requestId, type: "cancelSidebarGitCommit" });
           closeModal();
@@ -2148,16 +2149,18 @@ function AppModalHost() {
         onPromptAgentIdChange={updateGitCommitPromptAgentId}
         promptAgentId={resolvedGitCommitPromptAgentId}
       />
-      <GitFileDiffModal
-        draft={
-          gitFileDiff ?? {
-            filePath: "",
-            patch: "No diff is available for this file.",
+      {activeModal === "gitCommit" ? null : (
+        <GitFileDiffModal
+          draft={
+            gitFileDiff ?? {
+              filePath: "",
+              patch: "No diff is available for this file.",
+            }
           }
-        }
-        isOpen={gitFileDiff !== undefined}
-        onClose={closeGitFileDiff}
-      />
+          isOpen={gitFileDiff !== undefined}
+          onClose={closeGitFileDiff}
+        />
+      )}
       <WorktreeDeleteModal
         draft={
           worktreeDelete ?? {

@@ -139,11 +139,16 @@ import { closeAppModal, openAppModal } from "./app-modal-host-bridge";
 import { formatSidebarHotkeyLabel } from "./hotkey-label";
 import {
   GHOSTEX_HOTKEY_DEFINITIONS,
+  getghostexHotkeyActionById,
   normalizeHotkeyText,
   normalizeghostexHotkeySettings,
   type ghostexHotkeySettings,
 } from "../shared/ghostex-hotkeys";
 import type { RemoteMachineSettings } from "../shared/ghostex-settings";
+import {
+  readRenderedSidebarSessionSlotIds,
+  resolveVisibleSidebarSessionSlotId,
+} from "./sidebar-visible-session-slots";
 
 export type SidebarAppProps = {
   messageSource?: Pick<Window, "addEventListener" | "removeEventListener">;
@@ -666,6 +671,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   const applySidebarMessage = useSidebarStore((state) => state.applySidebarMessage);
   const setDaemonSessionsState = useSidebarStore((state) => state.setDaemonSessionsState);
   const setGitCommitDraft = useSidebarStore((state) => state.setGitCommitDraft);
+  const setGitFileDiffDraft = useSidebarStore((state) => state.setGitFileDiffDraft);
   const {
     activeSessionsSortMode,
     agentManagerZoomPercent,
@@ -702,6 +708,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     })),
   );
   const gitCommitDraft = useSidebarStore((state) => state.gitCommitDraft);
+  const gitFileDiffDraft = useSidebarStore((state) => state.gitFileDiffDraft);
   const authoritativeSessionIdsByGroup = useSidebarStore((state) => state.sessionIdsByGroup);
   const [remoteMachineRuntimeStatuses, setRemoteMachineRuntimeStatuses] =
     useState<RemoteMachineRuntimeStatuses>({});
@@ -995,6 +1002,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   const handleWindowMessage = useEffectEvent((event: MessageEvent<ExtensionToSidebarMessage>) => {
     if (!event.data) {
+      return;
+    }
+
+    if (event.data.type === "nativeHotkey") {
+      runGhostexHotkeyAction(event.data.actionId);
       return;
     }
 
@@ -1391,6 +1403,30 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
   }, [handleWindowMessage, messageSource]);
 
   useEffect(() => {
+    const handleNativeHostEvent = (event: Event) => {
+      if (!(event instanceof CustomEvent)) {
+        return;
+      }
+
+      handleWindowMessage(
+        new MessageEvent<ExtensionToSidebarMessage>("message", {
+          data: event.detail,
+        }),
+      );
+    };
+
+    /**
+     * CDXC:Hotkeys 2026-06-05-21:17:
+     * Native macOS shortcuts arrive through the Ghostex host custom event, while extension-style traffic arrives through postMessage. Route both into the same sidebar action handler so Cmd+number uses the visible-row slot resolver consistently.
+     */
+    window.addEventListener("ghostex-native-host-event", handleNativeHostEvent);
+
+    return () => {
+      window.removeEventListener("ghostex-native-host-event", handleNativeHostEvent);
+    };
+  }, [handleWindowMessage]);
+
+  useEffect(() => {
     return () => {
       for (const timeout of completionFlashTimeoutBySessionIdRef.current.values()) {
         window.clearTimeout(timeout);
@@ -1460,6 +1496,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
 
   const closeGitCommitModal = useEffectEvent((requestId: string) => {
     setGitCommitDraft(undefined);
+    setGitFileDiffDraft(undefined);
     vscode.postMessage({
       requestId,
       type: "cancelSidebarGitCommit",
@@ -1768,6 +1805,65 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
     () => Object.values(sessionsById).find((session) => session.isFocused)?.sessionId,
     [sessionsById],
   );
+  const focusSidebarSessionSlot = useEffectEvent((slotNumber: number) => {
+    /*
+     * CDXC:Hotkeys 2026-06-05-20:53:
+     * Cmd+1..9 must target sessions by the order of rows currently shown in the sidebar. Flatten the rendered Quick, Projects, and Remote project rows after group collapse and project Show less state so collapsed-project sessions are ignored instead of being selected from hidden inventory order.
+     *
+     * CDXC:Hotkeys 2026-06-05-21:17:
+     * A user repro showed the state-derived slot list could reserve a number for a hidden row, so Cmd+5 selected the sixth visible session and Cmd+6 jumped much lower. Resolve the slot list from the rendered session-card DOM rows at key time so numbering follows the sidebar exactly as shown.
+     */
+    const visibleSessionIds = readRenderedSidebarSessionSlotIds(
+      sessionGroupsContentRef.current ?? document,
+    );
+    const sessionId = resolveVisibleSidebarSessionSlotId({
+      focusedSessionId,
+      slotNumber,
+      visibleSessionIds,
+    });
+    if (!sessionId) {
+      return;
+    }
+
+    const groupId = findSessionGroupId(displayedWorkspaceSessionIdsByGroup, sessionId);
+    if (groupId) {
+      applyLocalFocus(groupId, sessionId);
+    }
+    vscode.postMessage({
+      sessionId,
+      type: "focusSession",
+    });
+  });
+  const runGhostexHotkeyAction = useEffectEvent((actionId: string) => {
+    const action = getghostexHotkeyActionById(actionId);
+    if (!action) {
+      return;
+    }
+
+    if (action.kind === "focusSessionSlot") {
+      focusSidebarSessionSlot(action.slotNumber);
+      return;
+    }
+
+    if (action.kind === "createSession") {
+      requestNewSession();
+      return;
+    }
+
+    if (action.kind === "openCommandPalette") {
+      openCommandPalette();
+      return;
+    }
+
+    if (action.kind === "openSettings") {
+      openSidebarSettings();
+      return;
+    }
+
+    if (action.kind === "moveSidebar") {
+      moveSidebar();
+    }
+  });
   useLayoutEffect(() => {
     if (
       didApplyStartupEmptyChatsCollapseRef.current ||
@@ -3583,11 +3679,13 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
             }
           }
           isOpen={gitCommitDraft !== undefined}
+          fileDiffDraft={gitFileDiffDraft}
           onCancel={(requestId) => {
             closeGitCommitModal(requestId);
           }}
           onConfirm={(requestId, message, options) => {
             setGitCommitDraft(undefined);
+            setGitFileDiffDraft(undefined);
             vscode.postMessage({
               agentId: options.agentId,
               commitOnNewRef: options.commitOnNewRef,
@@ -3600,6 +3698,7 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           }}
           onDirectMerge={(requestId, message, options) => {
             setGitCommitDraft(undefined);
+            setGitFileDiffDraft(undefined);
             vscode.postMessage({
               agentId: options.agentId,
               deleteWorktreeAfter: options.deleteWorktreeAfter,
@@ -3611,10 +3710,11 @@ export function SidebarApp({ messageSource = window, vscode }: SidebarAppProps) 
           }}
           onMultipleCommits={(requestId, agentId) => {
             setGitCommitDraft(undefined);
+            setGitFileDiffDraft(undefined);
             vscode.postMessage({ agentId, requestId, type: "runSidebarGitMultipleCommits" });
           }}
-          onOpenFileDiff={(filePath) => {
-            vscode.postMessage({ filePath, type: "openSidebarGitChangedFileDiff" });
+          onOpenFileDiff={(filePath, requestId) => {
+            vscode.postMessage({ filePath, requestId, type: "openSidebarGitChangedFileDiff" });
           }}
         />
         {buildStamp ? (

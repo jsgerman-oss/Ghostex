@@ -12,6 +12,13 @@ export type SidebarGitChangedFile = {
   path: string;
 };
 
+export type SidebarGitFileDiffDraft = {
+  additions?: number;
+  deletions?: number;
+  filePath: string;
+  patch: string;
+};
+
 export type SidebarGitPullRequest = {
   number?: number;
   state: "open" | "closed" | "merged";

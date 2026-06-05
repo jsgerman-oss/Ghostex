@@ -10100,7 +10100,12 @@ async function openSidebarGitChangedFileDiff(filePath: string, requestId?: strin
 
   /**
    * CDXC:TitlebarGit 2026-05-25-10:16:
-   * Commit-review file clicks should inspect the selected file's current Git patch in a large modal. Combine staged and unstaged file-based diffs so the viewer reflects what the review dialog can commit without switching users into the IDE.
+   * Commit-review file clicks should inspect the selected file's current Git patch in the review surface. Combine staged and unstaged file-based diffs so the viewer reflects what the review dialog can commit without switching users into the IDE.
+   *
+   * CDXC:TitlebarGit 2026-06-05-20:59:
+   * macOS still sends the selected patch through the app-modal host, but the
+   * commit modal consumes it as inline right-pane state instead of showing a
+   * second modal above the review.
    */
   try {
     const [stagedDiff, unstagedDiff] = await Promise.all([
@@ -22091,15 +22096,15 @@ function focusNativeHotkeyGroup(groupId: string, source: "index" | "next" | "pre
 }
 
 function focusNativeHotkeySessionSlot(slotNumber: number): void {
-  const sessions = getVisualNativeHotkeySessionsForActiveGroup();
-  const session = sessions[slotNumber - 1];
-  if (session) {
-    focusSidebarSession(session.sessionId);
+  const sessionIds = getRenderedNativeHotkeySidebarSessionSlotIds();
+  const sessionId = sessionIds[slotNumber - 1];
+  if (sessionId) {
+    focusSidebarSession(sessionId);
     return;
   }
   logNativeHotkeyDebug("nativeHotkeys.sessionSlotMissing", {
     activeSessionsSortMode,
-    sessionCount: sessions.length,
+    sessionCount: sessionIds.length,
     slotNumber,
   });
 }
@@ -22189,29 +22194,31 @@ function escapeNativeHotkeySelectorValue(value: string): string {
     : value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function getVisualNativeHotkeySessionsForActiveGroup(): SidebarSessionItem[] {
-  const group = activeWorkspaceGroup();
-  const projectedSessions = createProjectedSidebarSessionsForGroup(group);
-  const sessionsById = Object.fromEntries(
-    projectedSessions.map((session) => [session.sessionId, session]),
-  );
-  const manualSessionIds = projectedSessions.map((session) => session.sessionId);
-  const displayLayout = createDisplaySessionLayout({
-    sessionIdsByGroup: { [group.groupId]: manualSessionIds },
-    sessionsById,
-    sortMode: activeSessionsSortMode,
-    workspaceGroupIds: [group.groupId],
-  });
-  const visualSessionIds = displayLayout.sessionIdsByGroup[group.groupId] ?? manualSessionIds;
+function getRenderedNativeHotkeySidebarSessionSlotIds(): string[] {
+  const root = document.querySelector(".native-sidebar-main") ?? document;
+  const seenSessionIds = new Set<string>();
+  const sessionIds: string[] = [];
   /**
-   * CDXC:Hotkeys 2026-04-28-16:08
-   * Numeric session hotkeys must target the same visual order the user sees in
-   * the sidebar. Reuse the rendered active-session sorting projection so
-   * Cmd+Opt+number follows last-activity order when that mode is selected.
+   * CDXC:Hotkeys 2026-06-05-21:17:
+   * Cmd+1..9 must follow the exact session rows currently painted in the native sidebar. A repro showed state/group-derived slot order could reserve hidden rows, so read mounted session cards in DOM order and skip collapsed or non-rendered ancestors instead of selecting from active-group inventory.
    */
-  return visualSessionIds
-    .map((sessionId) => sessionsById[sessionId])
-    .filter((session): session is SidebarSessionItem => session !== undefined);
+  for (const element of Array.from(
+    root.querySelectorAll<HTMLElement>("[data-sidebar-session-id]"),
+  )) {
+    const sessionId = element.getAttribute("data-sidebar-session-id");
+    if (
+      !sessionId ||
+      seenSessionIds.has(sessionId) ||
+      element.getAttribute("data-visible") === "false" ||
+      element.closest('[aria-hidden="true"], [data-collapsed="true"]') ||
+      element.getClientRects().length === 0
+    ) {
+      continue;
+    }
+    seenSessionIds.add(sessionId);
+    sessionIds.push(sessionId);
+  }
+  return sessionIds;
 }
 
 function promptRenameFocusedNativeHotkeySession(): void {

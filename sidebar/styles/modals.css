@@ -1933,11 +1933,16 @@
    * The initial commit review view should not clip the bottom of the commit
    * message textarea. Use a little more available viewport height before the
    * body becomes scrollable.
+   *
+   * CDXC:TitlebarGit 2026-06-05-20:59:
+   * The commit review modal needs more width and height so the existing commit
+   * controls can stay on the left while selected file diffs and diff display
+   * controls live on the right without opening a second stacked modal.
    */
-  height: auto;
-  max-height: min(820px, calc(100vh - 1rem));
-  max-width: min(960px, calc(100vw - 2rem));
-  width: min(960px, calc(100vw - 2rem));
+  height: min(900px, calc(100vh - 1rem));
+  max-height: min(900px, calc(100vh - 1rem));
+  max-width: min(1480px, calc(100vw - 1rem));
+  width: min(1480px, calc(100vw - 1rem));
 }
 
 .git-commit-modal-header {
@@ -1953,10 +1958,21 @@
 
 .git-commit-modal-body {
   display: grid;
-  gap: 18px;
+  grid-template-columns: minmax(380px, 0.85fr) minmax(520px, 1.15fr);
+  gap: 16px;
+  flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   padding: 0 20px 24px;
+}
+
+.git-commit-modal-left {
+  display: grid;
+  gap: 18px;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .git-commit-modal-shadcn .command-config-label {
@@ -2021,6 +2037,8 @@
   border-radius: 0;
   display: grid;
   gap: 12px;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  min-height: 0;
   min-width: 0;
   padding: 14px;
 }
@@ -2101,10 +2119,49 @@
   background: color-mix(in srgb, var(--background) 56%, transparent);
   border: 1px solid color-mix(in srgb, var(--input) 62%, transparent);
   border-radius: 0;
-  max-height: min(300px, 36vh);
+  max-height: none;
+  min-height: 180px;
   min-width: 0;
   overflow: auto;
   padding: 8px;
+}
+
+.git-commit-inline-diff-panel {
+  background: color-mix(in srgb, var(--input) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--input) 82%, transparent);
+  border-radius: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.git-commit-inline-diff-header {
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.git-commit-inline-diff-title {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.git-commit-inline-diff-file {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.git-commit-inline-diff-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
 }
 
 .git-commit-files-summary {
@@ -2153,6 +2210,11 @@
   color: color-mix(in srgb, var(--foreground) 86%, var(--muted-foreground) 14%);
   gap: 7px;
   min-height: 28px;
+}
+
+.git-commit-modal-shadcn .changed-files-tree-row[data-selected="true"] {
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+  color: color-mix(in srgb, var(--foreground) 96%, var(--muted-foreground) 4%);
 }
 
 .git-commit-modal-shadcn .changed-files-tree-name {
@@ -2377,6 +2439,63 @@
   padding: 12px;
 }
 
+.git-file-diff-panel {
+  display: grid;
+  gap: 10px;
+  min-height: 100%;
+  min-width: 0;
+}
+
+.git-file-diff-panel-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.git-file-diff-panel-mode {
+  color: color-mix(in srgb, var(--foreground) 64%, var(--muted-foreground) 36%);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.git-file-diff-options-trigger {
+  align-items: center;
+  background: color-mix(in srgb, var(--input) 30%, transparent);
+  border: 1px solid var(--input);
+  border-radius: 0;
+  color: var(--foreground);
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  width: 34px;
+}
+
+.git-file-diff-options-trigger:hover,
+.git-file-diff-options-trigger:focus-visible {
+  background: color-mix(in srgb, var(--input) 50%, transparent);
+  outline: none;
+}
+
+.git-file-diff-options-menu {
+  min-width: 180px;
+}
+
+.git-file-diff-placeholder {
+  align-items: center;
+  background: color-mix(in srgb, var(--card) 72%, var(--background) 28%);
+  border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
+  color: var(--muted-foreground);
+  display: flex;
+  font-size: 13px;
+  font-weight: 700;
+  justify-content: center;
+  min-height: 180px;
+  padding: 20px;
+  text-align: center;
+}
+
 .git-file-diff-surface {
   background: color-mix(in srgb, var(--card) 84%, var(--background) 16%);
   border: 1px solid color-mix(in srgb, var(--border) 86%, transparent);
@@ -2393,6 +2512,12 @@
   min-height: 22px;
 }
 
+.git-file-diff-split-line {
+  display: grid;
+  grid-template-columns: 56px minmax(220px, 1fr) 56px minmax(220px, 1fr);
+  min-height: 22px;
+}
+
 .git-file-diff-line:hover {
   background: color-mix(in srgb, var(--foreground) 6%, transparent);
 }
@@ -2401,8 +2526,16 @@
   background: color-mix(in srgb, #16a34a 16%, transparent);
 }
 
+.git-file-diff-split-line[data-kind="addition"] {
+  background: color-mix(in srgb, #16a34a 10%, transparent);
+}
+
 .git-file-diff-line[data-kind="deletion"] {
   background: color-mix(in srgb, #ef4444 16%, transparent);
+}
+
+.git-file-diff-split-line[data-kind="deletion"] {
+  background: color-mix(in srgb, #ef4444 10%, transparent);
 }
 
 .git-file-diff-line[data-kind="hunk"] {
@@ -2442,6 +2575,26 @@
   padding: 2px 12px;
   tab-size: 2;
   white-space: pre;
+}
+
+.git-file-diff-split-cell {
+  border-right: 1px solid color-mix(in srgb, var(--border) 54%, transparent);
+}
+
+@media (max-width: 980px) {
+  .ghostex-settings-shadcn.settings-modal-dialog.git-commit-modal-shadcn {
+    height: min(900px, calc(100vh - 1rem));
+  }
+
+  .git-commit-modal-body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: auto;
+  }
+
+  .git-commit-modal-left,
+  .git-commit-inline-diff-panel {
+    min-height: 360px;
+  }
 }
 
 .command-icon-picker-fields {

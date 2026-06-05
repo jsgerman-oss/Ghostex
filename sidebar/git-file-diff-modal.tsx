@@ -1,4 +1,5 @@
-import { useId, useMemo } from "react";
+import { IconDotsVertical } from "@tabler/icons-react";
+import { useId, useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -6,13 +7,19 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { SidebarGitFileDiffDraft } from "../shared/sidebar-git";
 
-export type GitFileDiffModalDraft = {
-  additions?: number;
-  deletions?: number;
-  filePath: string;
-  patch: string;
-};
+export type GitFileDiffModalDraft = SidebarGitFileDiffDraft;
 
 export type GitFileDiffModalProps = {
   draft: GitFileDiffModalDraft;
@@ -28,15 +35,16 @@ type DiffLine = {
   number: number;
 };
 
+type GitDiffViewMode = "split" | "unified";
+
 export function GitFileDiffModal({ draft, isOpen, onClose }: GitFileDiffModalProps) {
   const descriptionId = useId();
   const titleId = useId();
-  const lines = useMemo(() => parseDiffLines(draft.patch), [draft.patch]);
   const hasStats = draft.additions !== undefined || draft.deletions !== undefined;
 
   /*
    * CDXC:TitlebarGit 2026-05-25-10:16:
-   * The commit review file tree opens this large app-modal diff viewer so users can inspect a single file patch without leaving the Git confirmation flow. It mirrors the t3code diff-panel experience with a sticky file header, monospaced patch rows, and addition/deletion coloring while staying inside Ghostex's existing modal host.
+   * The standalone file diff modal mirrors the t3code diff-panel experience with a sticky file header, monospaced patch rows, and addition/deletion coloring while staying inside Ghostex's existing modal host.
    */
   return (
     <Dialog
@@ -69,25 +77,134 @@ export function GitFileDiffModal({ draft, isOpen, onClose }: GitFileDiffModalPro
           </DialogDescription>
         </DialogHeader>
         <div className="git-file-diff-modal-body scroll-mask-y">
-          <div className="git-file-diff-surface" role="document">
-            {lines.map((line) => (
-              <div className="git-file-diff-line" data-kind={line.kind} key={line.number}>
-                <span aria-hidden="true" className="git-file-diff-line-number">
-                  {line.number}
-                </span>
-                <pre className="git-file-diff-line-content">{line.content || " "}</pre>
-              </div>
-            ))}
-          </div>
+          <GitFileDiffPanel draft={draft} />
         </div>
       </DialogContent>
     </Dialog>
   );
 }
 
+export function GitFileDiffPanel({
+  draft,
+  isLoading = false,
+  placeholder = "Select a file to preview its diff.",
+}: {
+  draft?: GitFileDiffModalDraft;
+  isLoading?: boolean;
+  placeholder?: string;
+}) {
+  const [viewMode, setViewMode] = useState<GitDiffViewMode>("unified");
+  const [hideWhitespace, setHideWhitespace] = useState(false);
+  const lines = useMemo(() => parseDiffLines(draft?.patch ?? ""), [draft?.patch]);
+  const visibleLines = useMemo(
+    () => (hideWhitespace ? lines.filter((line) => !isWhitespaceOnlyChangeLine(line)) : lines),
+    [hideWhitespace, lines],
+  );
+
+  /*
+   * CDXC:TitlebarGit 2026-06-05-20:59:
+   * Commit review now embeds file diffs in the right side of the widened review modal instead of opening a second modal. Keep diff display controls behind a single overflow menu so Unified, Split, and Hide whitespace do not compete with the selected file path for header space.
+   */
+  if (isLoading) {
+    return <div className="git-file-diff-placeholder">Loading diff...</div>;
+  }
+  if (!draft) {
+    return <div className="git-file-diff-placeholder">{placeholder}</div>;
+  }
+
+  return (
+    <div className="git-file-diff-panel">
+      <div className="git-file-diff-panel-toolbar">
+        <span className="git-file-diff-panel-mode">{viewMode === "split" ? "Split" : "Unified"}</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            aria-label="Diff display options"
+            className="git-file-diff-options-trigger"
+            type="button"
+          >
+            <IconDotsVertical aria-hidden="true" size={18} stroke={2.2} />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            className="git-file-diff-options-menu"
+            sideOffset={8}
+          >
+            <DropdownMenuLabel>Diff view</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              onValueChange={(value) => {
+                if (value === "split" || value === "unified") {
+                  setViewMode(value);
+                }
+              }}
+              value={viewMode}
+            >
+              <DropdownMenuRadioItem value="unified">Unified</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="split">Split</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuCheckboxItem
+              checked={hideWhitespace}
+              onCheckedChange={(checked) => setHideWhitespace(checked === true)}
+            >
+              Hide whitespace
+            </DropdownMenuCheckboxItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+      <div className="git-file-diff-surface" data-view-mode={viewMode} role="document">
+        {viewMode === "split"
+          ? visibleLines.map((line) => <SplitDiffLine key={line.number} line={line} />)
+          : visibleLines.map((line) => <UnifiedDiffLine key={line.number} line={line} />)}
+      </div>
+    </div>
+  );
+}
+
+function UnifiedDiffLine({ line }: { line: DiffLine }) {
+  return (
+    <div className="git-file-diff-line" data-kind={line.kind}>
+      <span aria-hidden="true" className="git-file-diff-line-number">
+        {line.number}
+      </span>
+      <pre className="git-file-diff-line-content">{line.content || " "}</pre>
+    </div>
+  );
+}
+
+function SplitDiffLine({ line }: { line: DiffLine }) {
+  if (line.kind === "metadata" || line.kind === "hunk" || line.kind === "raw") {
+    return <UnifiedDiffLine line={line} />;
+  }
+  const leftContent = line.kind === "deletion" || line.kind === "context" ? line.content : "";
+  const rightContent =
+    line.kind === "addition"
+      ? line.content
+      : line.kind === "context"
+        ? line.content
+        : "";
+  return (
+    <div className="git-file-diff-split-line" data-kind={line.kind}>
+      <span aria-hidden="true" className="git-file-diff-line-number">
+        {line.number}
+      </span>
+      <pre className="git-file-diff-line-content git-file-diff-split-cell">
+        {leftContent || " "}
+      </pre>
+      <span aria-hidden="true" className="git-file-diff-line-number">
+        {line.number}
+      </span>
+      <pre className="git-file-diff-line-content git-file-diff-split-cell">
+        {rightContent || " "}
+      </pre>
+    </div>
+  );
+}
+
 function parseDiffLines(patch: string): DiffLine[] {
   const rawLines = patch.trimEnd().split("\n");
-  const lines = rawLines.length > 0 ? rawLines : ["No diff is available for this file."];
+  const lines = rawLines.some((line) => line.length > 0)
+    ? rawLines
+    : ["No diff is available for this file."];
   return lines.map((content, index) => ({
     content,
     kind: classifyDiffLine(content),
@@ -122,4 +239,11 @@ function classifyDiffLine(line: string): DiffLineKind {
     return "raw";
   }
   return "context";
+}
+
+function isWhitespaceOnlyChangeLine(line: DiffLine): boolean {
+  if (line.kind !== "addition" && line.kind !== "deletion") {
+    return false;
+  }
+  return line.content.slice(1).trim().length === 0;
 }
