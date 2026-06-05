@@ -675,9 +675,19 @@ export type SidebarRemoteMachineStatusMessage = {
   type: "remoteMachineStatus";
 };
 
+export type SidebarNativeHotkeyMessage = {
+  /**
+   * CDXC:Hotkeys 2026-06-05-20:53:
+   * AppKit owns Cmd+number while terminal panes have focus, then forwards the shared hotkey action id into the sidebar so React can resolve session slots from the currently rendered row order, including collapsed-project filtering.
+   */
+  actionId: ghostexHotkeyActionId;
+  type: "nativeHotkey";
+};
+
 export type ExtensionToSidebarMessage =
   | SidebarHydrateMessage
   | SidebarSessionStateMessage
+  | SidebarNativeHotkeyMessage
   | AgentsHubCatalogMessage
   | SidebarSessionPresentationChangedMessage
   | SidebarPlayCompletionSoundMessage

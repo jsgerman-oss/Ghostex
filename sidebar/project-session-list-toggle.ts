@@ -55,3 +55,40 @@ export function getVisibleProjectSessionIds({
 
   return sessionIds.slice(0, PROJECT_SESSION_LIST_COLLAPSED_COUNT);
 }
+
+export function readProjectSessionListCollapsedState(
+  storage: Pick<Storage, "getItem"> | undefined = typeof localStorage === "undefined"
+    ? undefined
+    : localStorage,
+): ProjectSessionListCollapsedState {
+  if (!storage) {
+    return {};
+  }
+
+  try {
+    return normalizeStoredProjectSessionListCollapsedState(
+      JSON.parse(storage.getItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY) ?? "null"),
+    );
+  } catch {
+    return {};
+  }
+}
+
+export function writeProjectSessionListCollapsedState(
+  state: ProjectSessionListCollapsedState,
+): void {
+  /**
+   * CDXC:ProjectSessionLists 2026-05-16-21:50:
+   * Show less / Show more is per-project navigation state, not session data.
+   * Persist only the collapsed project ids so new projects and projects the
+   * user has never collapsed continue to start with all sessions shown.
+   *
+   * CDXC:WorktreeProjectOrder 2026-06-02-15:27:
+   * gxserver owns worktree creation, but the macOS sidebar owns the local Show less state for the source project after submit. Broadcast same-document updates because localStorage storage events do not fire in the writing webview.
+   *
+   * CDXC:ProjectSessionLists 2026-06-05-20:53:
+   * Cmd+number session slots and project row rendering must share the same Show less / Show more state so shortcuts target the sessions currently visible in the sidebar, not hidden rows from a collapsed project list.
+   */
+  localStorage.setItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY, JSON.stringify(state));
+  window.dispatchEvent(new Event(PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT));
+}

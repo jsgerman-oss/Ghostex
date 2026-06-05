@@ -73,10 +73,9 @@ import { openAppModal } from "./app-modal-host-bridge";
 import {
   PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT,
   PROJECT_SESSION_LIST_COLLAPSED_COUNT,
-  PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY,
   getVisibleProjectSessionIds,
-  normalizeStoredProjectSessionListCollapsedState,
-  type ProjectSessionListCollapsedState,
+  readProjectSessionListCollapsedState,
+  writeProjectSessionListCollapsedState,
 } from "./project-session-list-toggle";
 import {
   DEFAULT_WORKSPACE_THEME_COLOR,
@@ -2659,30 +2658,6 @@ function readPrimaryProjectAgentLauncherId(): string | undefined {
 
 function writePrimaryProjectAgentLauncherId(agentId: string): void {
   localStorage.setItem(PROJECT_AGENT_LAUNCHER_STORAGE_KEY, agentId);
-}
-
-function readProjectSessionListCollapsedState(): ProjectSessionListCollapsedState {
-  try {
-    return normalizeStoredProjectSessionListCollapsedState(
-      JSON.parse(localStorage.getItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY) ?? "null"),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function writeProjectSessionListCollapsedState(state: ProjectSessionListCollapsedState): void {
-  /**
-   * CDXC:ProjectSessionLists 2026-05-16-21:50:
-   * Show less / Show more is per-project navigation state, not session data.
-   * Persist only the collapsed project ids so new projects and projects the
-   * user has never collapsed continue to start with all sessions shown.
-   *
-   * CDXC:WorktreeProjectOrder 2026-06-02-15:27:
-   * gxserver owns worktree creation, but the macOS sidebar owns the local Show less state for the source project after submit. Broadcast same-document updates because localStorage storage events do not fire in the writing webview.
-   */
-  localStorage.setItem(PROJECT_SESSION_LIST_COLLAPSED_STORAGE_KEY, JSON.stringify(state));
-  window.dispatchEvent(new Event(PROJECT_SESSION_LIST_COLLAPSED_CHANGED_EVENT));
 }
 
 function getPortalMenuStyle(button: HTMLButtonElement | null, menuWidth: number) {
