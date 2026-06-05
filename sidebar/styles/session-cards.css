@@ -953,6 +953,7 @@
   align-items: center;
   background: color-mix(in srgb, var(--app-card-active) 88%, #000000 12%);
   border: 1px solid color-mix(in srgb, var(--app-button-background) 42%, var(--app-border));
+  border-inline-width: 0;
   border-radius: 0;
   color: color-mix(in srgb, var(--app-foreground) 76%, #82b7ff 24%);
   display: flex;
@@ -968,6 +969,11 @@
    * The visible generating label inherits the normal session title typography,
    * uses a slight blue tint, and replaces the extra left-side spinner with a
    * one/two/three-dot loop that advances every 0.75s.
+   *
+   * CDXC:SessionTitleLoading 2026-06-04-23:48
+   * Automatic session rename loading chrome keeps only the horizontal top and
+   * bottom separators, because the macOS sidebar row should not show left or
+   * right borders while "Generating title..." is displayed.
    */
   justify-content: flex-start;
   line-height: 1.3;
