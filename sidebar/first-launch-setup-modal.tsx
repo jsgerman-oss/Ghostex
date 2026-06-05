@@ -50,6 +50,7 @@ import {
   SESSION_TITLE_GENERATION_AGENT_OPTIONS,
   SIDEBAR_SETTINGS_PRESETS,
   applySidebarSettingsPreset,
+  getSessionTitleGenerationCommandPreview,
   getSidebarSettingsPresetId,
   normalizeghostexSettings,
   type SessionTitleGenerationAgent,
@@ -725,8 +726,8 @@ type FirstLaunchHookStatusGroup = {
  * CDXC:FirstLaunchPreferences 2026-06-04-21:02:
  * New users need the same first-prompt title-generation agent choice available
  * in Settings before their first automatic title job runs. Keep the first-time
- * modal wired to the shared Settings fields so Codex, Cursor, Claude, and
- * Custom stay consistent across onboarding and Settings.
+ * modal wired to the shared Settings fields so Codex, Cursor, Claude, Grok
+ * Build, and Custom stay consistent across onboarding and Settings.
  */
 export function FirstLaunchSetupModal({
   agentHookStatus,
@@ -1154,6 +1155,22 @@ function FirstLaunchPreferencesPage({
                 </option>
               ))}
             </select>
+          </label>
+          <label className="first-launch-setup-preference-select-label">
+            <span className="first-launch-setup-preference-description">
+              Command Ghostex sends for automatic first-prompt session titles.
+            </span>
+            <textarea
+              className="first-launch-setup-preference-command-preview"
+              disabled
+              readOnly
+              value={getSessionTitleGenerationCommandPreview(settings.sessionTitleGenerationAgent, {
+                command:
+                  settings.sessionTitleGenerationAgent === "custom"
+                    ? settings.customSessionTitleGenerationCommand
+                    : undefined,
+              })}
+            />
           </label>
           {settings.sessionTitleGenerationAgent === "custom" ? (
             <label className="first-launch-setup-preference-select-label">

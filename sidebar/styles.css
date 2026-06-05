@@ -815,6 +815,20 @@ button,
   width: 100%;
 }
 
+.ghostex-settings-shadcn .first-launch-setup-preference-command-preview {
+  background: color-mix(in srgb, var(--background) 84%, var(--foreground) 5%);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--settings-control-radius) - 2px);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  min-height: 5rem;
+  padding: 0.625rem 0.75rem;
+  resize: none;
+  width: 100%;
+}
+
 .ghostex-settings-shadcn .first-launch-setup-checkbox-setting {
   align-items: center;
   cursor: pointer;

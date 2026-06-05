@@ -26,7 +26,7 @@ describe("first launch setup visible settings", () => {
      * CDXC:FirstLaunchPreferences 2026-06-04-21:02:
      * The first-time modal must expose the same first-prompt title-generation
      * agent selector as Settings so new installs can choose Codex, Cursor,
-     * Claude, or Custom before automatic session naming runs.
+     * Claude, Grok Build, or Custom before automatic session naming runs.
      */
     expect(
       isFirstLaunchSetupMainSettingVisible(

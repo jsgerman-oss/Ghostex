@@ -16,7 +16,7 @@ export const FIRST_LAUNCH_SETUP_SEEN_STORAGE_KEY = "ghostex-native-first-launch-
  * CDXC:FirstLaunchPreferences 2026-06-04-21:02:
  * The first-time defaults modal must also expose the first-prompt title
  * generation agent selector so new installs can choose Codex, Cursor, Claude,
- * or Custom before automatic session naming runs.
+ * Grok Build, or Custom before automatic session naming runs.
  */
 export type FirstLaunchSetupMainSettingKey =
   | keyof ghostexSettings

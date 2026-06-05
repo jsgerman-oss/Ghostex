@@ -106,9 +106,12 @@ import {
   SIDEBAR_SIDE_OPTIONS,
   SIDEBAR_THEME_SETTING_OPTIONS,
   applySidebarSettingsPreset,
+  getSessionTitleGenerationCommandPreview,
   getSidebarSettingsPresetId,
   MAX_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
+  MAX_SIDEBAR_DEFAULT_WIDTH_PX,
   MIN_COMMANDS_PANEL_DEFAULT_HEIGHT_PX,
+  MIN_SIDEBAR_DEFAULT_WIDTH_PX,
   normalizeghostexSettings,
   normalizeRemoteMachineSettings,
   type BrowserFeedbackTool,
@@ -311,6 +314,7 @@ const MAIN_SETTINGS_SECTION_SETTING_KEYS: Record<
   sidebar: [
     "sidebarSettingsPreset",
     "sidebarSide",
+    "sidebarDefaultWidthPx",
     "sidebarTheme",
     "sessionStatusIndicatorSize",
     "agentManagerZoomPercent",
@@ -1037,6 +1041,11 @@ export function SettingsModal({
         options: SIDEBAR_SIDE_OPTIONS,
         subtitle: "Choose which side of the screen holds the sidebar.",
         title: "Side",
+      },
+      {
+        key: "sidebarDefaultWidthPx",
+        subtitle: "Width restored when double-clicking the sidebar resize handle.",
+        title: "Default Width",
       },
       {
         key: "sidebarTheme",
@@ -1790,6 +1799,25 @@ export function SettingsModal({
                 options={SIDEBAR_SIDE_OPTIONS}
                 value={draft.sidebarSide}
               />
+              ) : null}
+              {mainSettingVisible(settingsSearch.sidebar, "sidebarDefaultWidthPx") ? (
+              <>
+                {/*
+                 * CDXC:SidebarChrome 2026-06-05-04:40:
+                 * This setting changes only the explicit double-click reset target for the sidebar resize handle. App restart must keep restoring the last persisted sidebar width from native/Electron chrome state.
+                 */}
+                <SliderNumberField
+                  description="Used when double-clicking the sidebar resize handle. App restart still restores your last manually set sidebar width."
+                  label="Default Width"
+                  {...getSettingModificationProps("sidebarDefaultWidthPx")}
+                  max={MAX_SIDEBAR_DEFAULT_WIDTH_PX}
+                  min={MIN_SIDEBAR_DEFAULT_WIDTH_PX}
+                  onCommit={(value) => updateDraft("sidebarDefaultWidthPx", value)}
+                  onChange={(value) => updateDraftDebounced("sidebarDefaultWidthPx", value)}
+                  step={1}
+                  value={draft.sidebarDefaultWidthPx}
+                />
+              </>
               ) : null}
               {mainSettingVisible(settingsSearch.sidebar, "sidebarTheme") ? (
               <StaticNoteField
@@ -4219,6 +4247,16 @@ function AgentsSettingsTab({
         ?.value ??
       promptAgentOptions[0]?.value ??
       "";
+  const titleGenerationCommandPreview = getSessionTitleGenerationCommandPreview(
+    sessionTitleGenerationAgent,
+    {
+      command: resolveSettingsTitleGenerationCommand(
+        sessionTitleGenerationAgent,
+        orderedAgents,
+        customSessionTitleGenerationCommand,
+      ),
+    },
+  );
   const hookStatusByAgentId = useMemo(
     () => new Map(agentHookStatus?.agents.map((status) => [status.agentId, status]) ?? []),
     [agentHookStatus],
@@ -4394,6 +4432,9 @@ function AgentsSettingsTab({
             {/*
              * CDXC:GxserverSessionTitle 2026-06-04-08:24:
              * First-prompt session-title generation needs its own agent selector instead of reusing Default Prompt Agent, because title generation is a gxserver-owned background job while prompt-launch defaults affect Git helpers, search prompts, project-board prompts, and worktree starts.
+             *
+             * CDXC:GxserverSessionTitle 2026-06-04-22:44:
+             * Show the disabled command preview directly under the selector so users can inspect the exact Codex, Cursor CLI, Claude, Grok Build, or Custom command template before Ghostex sends a background title-generation prompt.
              */}
             <SelectField
               description="Choose the headless agent Ghostex uses for first-prompt session title generation."
@@ -4412,6 +4453,11 @@ function AgentsSettingsTab({
               }
               options={SESSION_TITLE_GENERATION_AGENT_OPTIONS}
               value={sessionTitleGenerationAgent}
+            />
+            <DisabledCommandPreviewField
+              description="Preview of the command Ghostex sends to generate automatic first-prompt session titles."
+              label="Title Generation Command"
+              value={titleGenerationCommandPreview}
             />
           </>
         ) : null}
@@ -4514,6 +4560,17 @@ function AgentsSettingsTab({
       </div>
     </ScrollArea>
   );
+}
+
+function resolveSettingsTitleGenerationCommand(
+  agent: SessionTitleGenerationAgent,
+  agents: readonly SidebarAgentButton[],
+  customCommand: string,
+): string | undefined {
+  if (agent === "custom") {
+    return customCommand.trim();
+  }
+  return agents.find((candidate) => candidate.agentId === agent)?.command?.trim();
 }
 
 function AgentHookStatusRow({
@@ -6392,6 +6449,29 @@ function TextField({
         className="h-10 px-3 text-sm"
         onChange={(event) => onChange(event.currentTarget.value)}
         placeholder={placeholder}
+        value={value}
+      />
+    </SettingRow>
+  );
+}
+
+function DisabledCommandPreviewField({
+  description,
+  label,
+  value,
+}: {
+  description?: string;
+  label: string;
+  value: string;
+}) {
+  const id = useId();
+  return (
+    <SettingRow description={description} htmlFor={id} label={label}>
+      <Textarea
+        className="min-h-24 resize-none px-3 py-2 font-mono text-xs leading-5"
+        disabled
+        id={id}
+        readOnly
         value={value}
       />
     </SettingRow>
