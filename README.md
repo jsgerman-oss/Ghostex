@@ -140,6 +140,8 @@ Join the Discord: https://discord.gg/df7b3G92CS
 
 ## New screenshots of v4
 
+<img width="3456" height="2060" alt="2026-06-05_Ghostex_14-00-35@2x" src="https://github.com/user-attachments/assets/1e31c6e9-f024-4b02-80a6-66dff0f7c21d" />
+
 <img width="3456" height="2060" alt="2026-06-05_Ghostex_20-37-14@2x" src="https://github.com/user-attachments/assets/e857705c-6c94-44f6-adf9-91fb3fa49ec1" />
 
 <img width="3456" height="2060" alt="2026-06-05_Ghostex_22-17-01@2x" src="https://github.com/user-attachments/assets/f60bbeed-ef21-436e-be49-b41ecd930f56" />
@@ -149,6 +151,3 @@ Join the Discord: https://discord.gg/df7b3G92CS
 <img width="3456" height="2060" alt="HJ_fys1bkAA_NlA" src="https://github.com/user-attachments/assets/94898687-187a-4b95-a0bb-cdc477ec7acb" />
 
 <img width="3456" height="2060" alt="HJ_fzIHbcAAzq5x" src="https://github.com/user-attachments/assets/65f778ad-d7e0-468c-8361-d4fde52fa526" />
-
-<img width="2048" height="1270" alt="HJ_fziYa8AAxI4j" src="https://github.com/user-attachments/assets/7d991271-2bf2-4ede-b265-efcc9ac3b151" />
-
