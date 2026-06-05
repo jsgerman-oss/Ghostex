@@ -222,7 +222,7 @@ test("foreground gxserver process uses temporary HOME, writes daemon state, and 
     const token = (await waitForFileText(paths.authTokenFile, 5_000)).trim() as GxserverAuthToken;
     const health = await waitForHealth(token, 5_000);
     assert.equal(health.serverId.startsWith("S"), true);
-    assert.equal(health.migration.currentVersion, 4);
+    assert.equal(health.migration.currentVersion, 8);
     assert.equal(health.listeners.local.port, GXSERVER_LOCAL_API_PORT);
 
     const stop = await requestJson(`http://127.0.0.1:${GXSERVER_LOCAL_API_PORT}`, "/api/control/stop", {
@@ -951,7 +951,11 @@ test("session state event API runs first-prompt auto-title through gxserver", as
       assert.equal(titledSession.title, "Server Title Flow");
       assert.equal(titledSession.runtimeSettings.titleSource, "generated");
       assert.equal(titledSession.runtimeSettings.autoTitleFromFirstPrompt, true);
-      assert.deepEqual(sendInputs, ["/rename Server Title Flow\r"]);
+      /*
+      CDXC:GxserverSessionTitle 2026-06-05-12:43:
+      gxserver-generated titles are staged without carriage-return bytes. Native macOS submits the staged command with sendTerminalEnter after observing the generated-title presentation transition, so agent prompt editors receive a real Enter action instead of typed newline input.
+      */
+      assert.deepEqual(sendInputs, ["/rename Server Title Flow"]);
       assert.ok(zmxCalls.some((script) => script.includes('exec "$zmx_bin" send "$zmx_session"')));
     },
     {
@@ -2978,7 +2982,7 @@ test("authenticated health includes listener, tool, and migration status", async
     assert.equal(health.body.serverId, "S7k");
     assert.equal(health.body.listeners.local.port, GXSERVER_LOCAL_API_PORT);
     assert.equal(health.body.listeners.remote.enabled, false);
-    assert.equal(health.body.migration.currentVersion, 4);
+    assert.equal(health.body.migration.currentVersion, 8);
     assert.equal(health.body.migration.stateImports.legacyMacosState.id, LEGACY_MACOS_STATE_IMPORT_ID);
     assert.equal(health.body.migration.stateImports.legacyMacosState.status, "notRun");
     assert.equal(Array.isArray(health.body.tools), true);
