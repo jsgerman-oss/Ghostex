@@ -137,3 +137,12 @@ Ghostex supports notifications, menu bar indicators, minimal floating counters, 
 Ghostex is moving quickly, and help is welcome on platform ports, missing agent CLI integrations, docs, testing, and feature polish.
 
 Join the Discord: https://discord.gg/df7b3G92CS
+
+New screenshots as of v4
+
+<img width="3456" height="2060" alt="HJ_fys1bkAA_NlA" src="https://github.com/user-attachments/assets/94898687-187a-4b95-a0bb-cdc477ec7acb" />
+
+<img width="3456" height="2060" alt="HJ_fzIHbcAAzq5x" src="https://github.com/user-attachments/assets/65f778ad-d7e0-468c-8361-d4fde52fa526" />
+
+<img width="2048" height="1270" alt="HJ_fziYa8AAxI4j" src="https://github.com/user-attachments/assets/7d991271-2bf2-4ede-b265-efcc9ac3b151" />
+
