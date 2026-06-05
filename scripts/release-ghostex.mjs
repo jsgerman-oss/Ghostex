@@ -984,7 +984,7 @@ async function buildArch(version, entry) {
   }
 
   logStep(`Build ${entry.arch}`);
-  await run("native/macos/ghostexHost/build-ghostex-host.sh", {
+  await run("/bin/bash native/macos/ghostexHost/build-ghostex-host.sh", {
     env,
     timeoutMs: releaseTimeouts.buildArchMs,
   });
