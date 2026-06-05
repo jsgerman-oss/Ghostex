@@ -14,6 +14,7 @@ import type { ghostexSettings } from "./ghostex-settings";
 import type { ghostexHotkeyActionId } from "./ghostex-hotkeys";
 import type { WorkspaceIdeTargetApp } from "./workspace-open-targets";
 import type { SidebarPinnedPrompt } from "./sidebar-pinned-prompts";
+import type { SidebarSessionTag } from "./session-tags";
 import type {
   SessionLifecycleState,
   SessionGridSnapshot,
@@ -171,6 +172,13 @@ export type SidebarSessionItem = {
   isReloading?: boolean;
   lifecycleState?: SessionLifecycleState;
   isFavorite?: boolean;
+  /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * Sidebar rows carry the expanded tag marker separately from legacy
+   * `isFavorite`. Renderers use this for the leading icon, tag filters, and
+   * tooltip prefix while older Favorite-only rows still project as Favorite.
+   */
+  sessionTag?: SidebarSessionTag;
   /**
    * CDXC:PinnedSessions 2026-05-28-12:04:
    * Sidebar rows carry project-local pin state so the React display sorter can
@@ -1255,6 +1263,11 @@ export type SidebarToExtensionMessage =
       sessionId: string;
     }
   | {
+      sessionId: string;
+      sessionTag?: SidebarSessionTag | null;
+      type: "setSessionTag";
+    }
+  | {
       pinned: boolean;
       type: "setSessionPinned";
       sessionId: string;
@@ -1381,10 +1394,10 @@ export type SidebarToExtensionMessage =
        * CDXC:GxserverPresentationSearch 2026-06-01-15:08:
        * Previous Sessions is loaded on demand from gxserver after the presentation hard cutover. React sends debounced metadata queries through native so startup no longer hydrates all previous-session history into the sidebar store.
        */
-      favoritesOnly?: boolean;
       limit?: number;
       query?: string;
       requestId: string;
+      sessionTags?: SidebarSessionTag[];
       type: "requestPreviousSessions";
     }
   | {
@@ -1458,6 +1471,11 @@ export type SidebarToExtensionMessage =
     }
   | {
       type: "toggleActiveSessionsSortMode";
+    }
+  | {
+      manualSessionIdsByGroup?: Record<string, string[]>;
+      sortMode: SidebarActiveSessionsSortMode;
+      type: "setActiveSessionsSortMode";
     }
   | {
       type: "syncSessionOrder";

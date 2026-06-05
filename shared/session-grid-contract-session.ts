@@ -531,11 +531,14 @@ export function createSessionRecord(
     createdAt,
     delayedSendDeadlineAt: normalizeTerminalDelayedSendDeadlineAt(options?.delayedSendDeadlineAt),
     displayId,
+    isFavorite: options?.sessionTag === "favorite" ? true : undefined,
     kind: "terminal",
     lastAccessedAt,
     lastStartedAt,
     row: position.row,
     sessionId,
+    sessionTag:
+      options?.kind === undefined || options?.kind === "terminal" ? options?.sessionTag : undefined,
     slotIndex,
     terminalEngine: normalizeTerminalEngine(options?.terminalEngine),
     sessionPersistenceName: normalizeTerminalSessionPersistenceName(

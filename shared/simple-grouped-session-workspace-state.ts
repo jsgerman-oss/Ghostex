@@ -21,6 +21,7 @@ import {
   type SessionTitleSource,
   type TerminalEngine,
   type TerminalSessionPersistenceProvider,
+  type SidebarSessionTag,
   type T3SessionMetadata,
   type TerminalViewMode,
   type VisibleSessionCount,
@@ -804,6 +805,38 @@ export function setSessionFavoriteInSimpleWorkspace(
   return updateSession(normalizedSnapshot, sessionId, (session) => ({
     ...session,
     isFavorite: favorite,
+  }));
+}
+
+export function setSessionTagInSimpleWorkspace(
+  snapshot: GroupedSessionWorkspaceSnapshot,
+  sessionId: string,
+  sessionTag: SidebarSessionTag | undefined,
+): WorkspaceMutationResult {
+  const normalizedSnapshot = normalizeSimpleGroupedSessionWorkspaceSnapshot(snapshot);
+  const owningGroup = getGroupForSession(normalizedSnapshot, sessionId);
+  if (!owningGroup) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  const currentSession = owningGroup.snapshot.sessions.find(
+    (session) => session.sessionId === sessionId,
+  );
+  if (!currentSession || currentSession.sessionTag === sessionTag) {
+    return { changed: false, snapshot: normalizedSnapshot };
+  }
+
+  /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * Local workspace snapshots store the expanded session tag while deriving
+   * legacy `isFavorite` only from the Favorite tag. This lets old Favorite rows
+   * keep their behavior without treating High Priority, Research, Todo, Low
+   * Priority, On Hold, or Done as favorites.
+   */
+  return updateSession(normalizedSnapshot, sessionId, (session) => ({
+    ...session,
+    isFavorite: sessionTag === "favorite" ? true : undefined,
+    sessionTag,
   }));
 }
 

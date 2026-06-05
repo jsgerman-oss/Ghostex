@@ -27,6 +27,7 @@ import {
   getVisibleSessionNumber,
   isSessionGridFocusModeActive,
 } from "./session-grid-contract-session";
+import { getEffectiveSidebarSessionTag } from "./session-tags";
 
 export function createSidebarHudState(
   snapshot: SessionGridSnapshot,
@@ -122,7 +123,8 @@ export function createSidebarSessionItems(
      * card icons receive data-favorite and context menus can toggle back to
      * Unfavorite after publish.
      */
-    isFavorite: session.isFavorite === true,
+    isFavorite: getEffectiveSidebarSessionTag(session) === "favorite",
+    sessionTag: getEffectiveSidebarSessionTag(session),
     /**
      * CDXC:PinnedSessions 2026-05-28-12:04:
      * Project the canonical pinned flag into sidebar items separately from

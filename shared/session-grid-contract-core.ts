@@ -1,3 +1,5 @@
+import type { SidebarSessionTag } from "./session-tags";
+
 export const GRID_COLUMN_COUNT = 3;
 export const MAX_GROUP_COUNT = 20;
 export const MAX_SESSION_DISPLAY_ID_COUNT = 100;
@@ -117,6 +119,13 @@ export type BaseSessionRecord = {
   titleSource?: SessionTitleSource;
   alias: string;
   isFavorite?: boolean;
+  /**
+   * CDXC:SessionTags 2026-06-05-12:30:
+   * Session tags persist the expanded Favorite replacement on the canonical
+   * session record so active rows, restored Previous Sessions, and local
+   * Electron panes can keep the same marker after app restart.
+   */
+  sessionTag?: SidebarSessionTag;
   /**
    * CDXC:PinnedSessions 2026-05-28-12:04:
    * Pinned sessions are project-scoped ordering state, separate from Favorite
@@ -238,6 +247,7 @@ export type CreateSessionRecordOptions =
       initialPresentation?: "background" | "focused";
       kind?: "terminal";
       sessionId?: string;
+      sessionTag?: SidebarSessionTag;
       sessionPersistenceName?: string;
       sessionPersistenceProvider?: TerminalSessionPersistenceProvider;
       surface?: TerminalSurface;
