@@ -1967,22 +1967,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     guard let storedFrame = stored.frame else {
       return nil
     }
-    let size = CGSize(
-      width: max(storedFrame.width, ghostexMainWindowMinimumSize.width),
-      height: max(storedFrame.height, ghostexMainWindowMinimumSize.height))
-    if let screen = screen(matchingIdentifier: stored.screenID),
-      let storedScreenFrame = stored.screenFrame
-    {
-      return NSRect(
-        x: screen.frame.minX + (storedFrame.minX - storedScreenFrame.minX),
-        y: screen.frame.minY + (storedFrame.minY - storedScreenFrame.minY),
+    guard let launchScreen = resolvedMainWindowLaunchScreen(from: stored, storedFrame: storedFrame)
+    else {
+      return nil
+    }
+    let size = constrainedMainWindowSize(storedFrame.size, for: launchScreen.screen)
+    let proposedFrame: NSRect
+    /**
+     CDXC:NativeWindowChrome 2026-06-05-05:06:
+     Relaunch must reopen the macOS app at the same outer-window size and
+     display-relative position saved at close. If that monitor is absent, choose
+     the nearest available display and preserve the saved relative placement
+     while shrinking and clamping the frame to the best visible size available
+     on that display.
+     */
+    if launchScreen.isStoredDisplayConnected, let storedScreenFrame = stored.screenFrame {
+      proposedFrame = NSRect(
+        x: launchScreen.screen.frame.minX + (storedFrame.minX - storedScreenFrame.minX),
+        y: launchScreen.screen.frame.minY + (storedFrame.minY - storedScreenFrame.minY),
         width: size.width,
         height: size.height)
+    } else if let storedScreenFrame = stored.screenFrame {
+      proposedFrame = remappedMainWindowFrame(
+        storedFrame: storedFrame,
+        storedScreenFrame: storedScreenFrame,
+        targetScreen: launchScreen.screen,
+        targetSize: size)
+    } else {
+      proposedFrame = NSRect(origin: storedFrame.origin, size: size)
     }
-    if screen(containingLargestVisibleAreaOf: storedFrame) != nil {
-      return NSRect(origin: storedFrame.origin, size: size)
-    }
-    return nil
+    return clampedMainWindowFrame(proposedFrame, to: launchScreen.screen.visibleFrame)
   }
 
   private static func defaultInitialWindowFrame(size: CGSize) -> NSRect {
@@ -1992,6 +2006,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
     let x = screenFrame.minX + min(100, max(0, screenFrame.width - width))
     let y = screenFrame.minY + min(80, max(0, screenFrame.height - height))
     return NSRect(x: x, y: y, width: width, height: height)
+  }
+
+  private struct MainWindowLaunchScreen {
+    let screen: NSScreen
+    let isStoredDisplayConnected: Bool
+  }
+
+  private static func resolvedMainWindowLaunchScreen(
+    from stored: NativeMainWindowChromeSettings,
+    storedFrame: NSRect
+  ) -> MainWindowLaunchScreen? {
+    if let screen = screen(matchingIdentifier: stored.screenID) {
+      return MainWindowLaunchScreen(screen: screen, isStoredDisplayConnected: true)
+    }
+    if let storedScreenFrame = stored.screenFrame {
+      if let screen = screen(containingLargestVisibleAreaOf: storedScreenFrame) {
+        return MainWindowLaunchScreen(screen: screen, isStoredDisplayConnected: false)
+      }
+      let storedScreenCenter = NSPoint(x: storedScreenFrame.midX, y: storedScreenFrame.midY)
+      if let screen = screen(nearestTo: storedScreenCenter) {
+        return MainWindowLaunchScreen(screen: screen, isStoredDisplayConnected: false)
+      }
+    }
+    if let screen = screen(containingLargestVisibleAreaOf: storedFrame) {
+      return MainWindowLaunchScreen(screen: screen, isStoredDisplayConnected: false)
+    }
+    return (NSScreen.main ?? NSScreen.screens.first).map {
+      MainWindowLaunchScreen(screen: $0, isStoredDisplayConnected: false)
+    }
+  }
+
+  private static func remappedMainWindowFrame(
+    storedFrame: NSRect,
+    storedScreenFrame: NSRect,
+    targetScreen: NSScreen,
+    targetSize: NSSize
+  ) -> NSRect {
+    let targetFrame = targetScreen.visibleFrame
+    let xRatio = mainWindowPositionRatio(
+      origin: storedFrame.minX,
+      containerOrigin: storedScreenFrame.minX,
+      containerLength: storedScreenFrame.width,
+      windowLength: storedFrame.width)
+    let yRatio = mainWindowPositionRatio(
+      origin: storedFrame.minY,
+      containerOrigin: storedScreenFrame.minY,
+      containerLength: storedScreenFrame.height,
+      windowLength: storedFrame.height)
+    return NSRect(
+      x: targetFrame.minX + xRatio * max(0, targetFrame.width - targetSize.width),
+      y: targetFrame.minY + yRatio * max(0, targetFrame.height - targetSize.height),
+      width: targetSize.width,
+      height: targetSize.height)
+  }
+
+  private static func mainWindowPositionRatio(
+    origin: CGFloat,
+    containerOrigin: CGFloat,
+    containerLength: CGFloat,
+    windowLength: CGFloat
+  ) -> CGFloat {
+    let availableLength = containerLength - windowLength
+    guard availableLength > 0 else {
+      return 0.5
+    }
+    return min(1, max(0, (origin - containerOrigin) / availableLength))
+  }
+
+  private static func constrainedMainWindowSize(_ size: NSSize, for screen: NSScreen) -> NSSize {
+    let visibleFrame = screen.visibleFrame
+    return NSSize(
+      width: min(
+        max(size.width, ghostexMainWindowMinimumSize.width),
+        max(visibleFrame.width, ghostexMainWindowMinimumSize.width)),
+      height: min(
+        max(size.height, ghostexMainWindowMinimumSize.height),
+        max(visibleFrame.height, ghostexMainWindowMinimumSize.height)))
+  }
+
+  private static func clampedMainWindowFrame(_ frame: NSRect, to visibleFrame: NSRect) -> NSRect {
+    let width = frame.width
+    let height = frame.height
+    let maxX = max(visibleFrame.minX, visibleFrame.maxX - width)
+    let maxY = max(visibleFrame.minY, visibleFrame.maxY - height)
+    return NSRect(
+      x: min(max(frame.minX, visibleFrame.minX), maxX),
+      y: min(max(frame.minY, visibleFrame.minY), maxY),
+      width: width,
+      height: height)
   }
 
   private func persistMainWindowChrome() {
@@ -2203,6 +2306,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, SPUU
       .filter { $0.area > 0 }
       .sorted { lhs, rhs in lhs.area > rhs.area }
     return candidates.first?.screen
+  }
+
+  private static func screen(nearestTo point: NSPoint) -> NSScreen? {
+    NSScreen.screens.min { lhs, rhs in
+      let lhsDistanceX = lhs.frame.midX - point.x
+      let lhsDistanceY = lhs.frame.midY - point.y
+      let rhsDistanceX = rhs.frame.midX - point.x
+      let rhsDistanceY = rhs.frame.midY - point.y
+      return lhsDistanceX * lhsDistanceX + lhsDistanceY * lhsDistanceY
+        < rhsDistanceX * rhsDistanceX + rhsDistanceY * rhsDistanceY
+    }
   }
 
   fileprivate static func screenIdentifier(_ screen: NSScreen?) -> UInt32? {
@@ -4172,6 +4286,19 @@ private final class NativeSettingsStore {
     return SidebarSide(rawValue: side) ?? .left
   }
 
+  func readSidebarDefaultWidth() -> CGFloat? {
+    /**
+     CDXC:SidebarChrome 2026-06-05-04:40:
+     The shared Settings file owns the sidebar handle reset target, but native
+     startup must keep using settings.json sidebarWidth from readSidebarChrome.
+     Read this value only for explicit resize-handle double-click resets.
+     */
+    guard let settings = readSharedSidebarSettingsDictionary() else {
+      return nil
+    }
+    return Self.readCGFloat(settings["sidebarDefaultWidthPx"])
+  }
+
   func readHotkeys() -> [String: String] {
     guard let settings = readSharedSidebarSettingsDictionary() else {
       return Self.defaultHotkeys
@@ -4705,6 +4832,10 @@ final class ghostexRootView: NSView {
    resize handle should snap the sidebar back to the same 260px width.
    CDXC:NativeSidebarChrome 2026-05-28-12:18:
    New sidebar sessions should now start at 235px, and double-clicking the native resize handle should snap back to the same 235px default.
+   CDXC:SidebarChrome 2026-06-05-04:40:
+   The Settings-owned sidebar default width now controls only explicit
+   double-click resets. Startup continues restoring the last native sidebarWidth
+   from settings.json so user-resized chrome survives normal restarts.
    */
   init(
     ghostty: GhostexGhosttyApp,
@@ -7610,9 +7741,17 @@ final class ghostexRootView: NSView {
      WKWebView, but no app overlay should cover the sidebar. Keep the sidebar
      and its resize divider visually above modal/titlebar web layers so session
      cards remain clickable while bottom-center toasts are visible.
+
+     CDXC:NativeSidebarChrome 2026-06-05-05:01:
+     The #252525 sidebar/workarea separator must remain visible on the
+     sidebar's right edge after both shrink and expand drags. The sidebar
+     WKWebView now paints under the transparent resize divider, so promote the
+     1px border above that webview and divider instead of leaving it in its
+     original insertion order where the extended webview can cover it.
      */
     addSubview(sidebarView, positioned: .above, relativeTo: titlebarChromeView)
     addSubview(divider, positioned: .above, relativeTo: sidebarView)
+    addSubview(sidebarWorkareaBorderView, positioned: .above, relativeTo: divider)
     addSubview(sidebarModalBackdropView, positioned: .above, relativeTo: divider)
   }
 
@@ -7914,8 +8053,9 @@ final class ghostexRootView: NSView {
   }
 
   private func resetSidebarWidth() {
+    let resetWidth = nativeSettingsStore.readSidebarDefaultWidth() ?? Self.sidebarResetWidth
     sidebarWidth = min(
-      max(Self.sidebarResetWidth, currentSidebarMinWidth()),
+      max(resetWidth, currentSidebarMinWidth()),
       currentMaxSidebarWidth()
     )
     needsLayout = true
