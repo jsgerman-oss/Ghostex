@@ -925,7 +925,7 @@ async function updatePackageJson(version) {
   await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 }
 
-async function updateProjectYml(version, buildVersion) {
+async function updateProjectYml(version, buildVersion, options) {
   const projectPath = path.join(repoRoot, "native/macos/ghostexHost/project.yml");
   const timestamp = timestampForComment();
   let text = await readFile(projectPath, "utf8");
@@ -935,22 +935,38 @@ async function updateProjectYml(version, buildVersion) {
    The local release script owns only deterministic release metadata after the agent has already split feature commits and written user-facing notes.
    Keep Sparkle's numeric build value monotonic and update the adjacent CDXC release comments so future agents can audit why the version fields changed.
    */
+  const distributionComment = options.skipSparkle
+    ? `# CDXC:BetaDistribution ${timestamp}: GitHub and Homebrew beta release v${version} must`
+    : `# CDXC:Distribution ${timestamp}: GitHub and Sparkle release v${version} must`;
+  const distributionContinuationLines = options.skipSparkle
+    ? [
+        "# publish a notarized Developer ID Ghostex app whose bundle metadata",
+        "# matches GitHub release assets while Sparkle appcasts remain on the",
+        "# current public update so existing Sparkle users are not offered the beta.",
+      ]
+    : [
+        "# publish a notarized Developer ID Ghostex app whose bundle metadata",
+        "# matches both GitHub release assets, Sparkle appcasts, and the",
+        "# architecture-aware Ghostex update feed.",
+      ];
+  const distributionContinuation = distributionContinuationLines.join("\n    ");
+
   text = text
     .replace(/# CDXC:AutoUpdate \d{4}-\d{2}-\d{2}-\d{2}:\d{2}:/, `# CDXC:AutoUpdate ${timestamp}:`)
     .replace(/CURRENT_PROJECT_VERSION:\s*\d+/, `CURRENT_PROJECT_VERSION: ${buildVersion}`)
     .replace(
-      /# CDXC:Distribution \d{4}-\d{2}-\d{2}-\d{2}:\d{2}: .*release v[\d.]+ must/,
-      `# CDXC:Distribution ${timestamp}: GitHub and Sparkle release v${version} must`,
+      /# CDXC:(?:Distribution|BetaDistribution) \d{4}-\d{2}-\d{2}-\d{2}:\d{2}: .*release v[\w.-]+ must\n\s*# publish a notarized Developer ID Ghostex app whose bundle metadata\n\s*# matches .*\n\s*# .*/,
+      `${distributionComment}\n    ${distributionContinuation}`,
     )
     .replace(/MARKETING_VERSION:\s*"[^"]+"/, `MARKETING_VERSION: "${version}"`);
 
   await writeFile(projectPath, text);
 }
 
-async function bumpReleaseMetadata(version, buildVersion) {
+async function bumpReleaseMetadata(version, buildVersion, options) {
   logStep(`Bump release metadata to ${version} (${buildVersion})`);
   await updatePackageJson(version);
-  await updateProjectYml(version, buildVersion);
+  await updateProjectYml(version, buildVersion, options);
   await run(`rg 'CURRENT_PROJECT_VERSION: ${buildVersion}|MARKETING_VERSION: "${version}"' native/macos/ghostexHost/project.yml -g '!node_modules/**' -g '!dist/**' -g '!build/**' -g '!coverage/**' -g '!.git/**'`);
 }
 
@@ -1486,7 +1502,7 @@ async function main() {
   assertReleaseWithinOverallBudget(releaseStartedAt, "preflight");
   await preflight(version, buildVersion, options);
   assertReleaseWithinOverallBudget(releaseStartedAt, "metadata bump");
-  await bumpReleaseMetadata(version, buildVersion);
+  await bumpReleaseMetadata(version, buildVersion, options);
   assertReleaseWithinOverallBudget(releaseStartedAt, "build and notarize");
   const { artifactDir, artifacts } = await buildAndPackage(version, buildVersion);
   let sparkleBinDir = null;
